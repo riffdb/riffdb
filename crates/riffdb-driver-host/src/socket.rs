@@ -13,7 +13,7 @@ use crate::{DriverHost, DriverRequest, DriverResponse, FrameCodec};
 const MAX_CONNECTIONS: usize = 256;
 const RESPONSE_QUEUE: usize = 64;
 const MAX_INFLIGHT_PER_CONNECTION: usize = 64;
-const IDLE_CONNECTION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
+const HANDSHAKE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
 
 /// Owned protected Unix listener for one driver host.
 pub struct DriverSocket {
@@ -117,7 +117,7 @@ async fn serve_connection(stream: UnixStream, host: DriverHost, mut drain: watch
     });
     let first = match tokio::select! {
         changed=drain.changed()=>{let _=changed;None}
-        request=tokio::time::timeout(IDLE_CONNECTION_TIMEOUT, FrameCodec::read_request(&mut reader))=>request.ok().and_then(Result::ok),
+        request=tokio::time::timeout(HANDSHAKE_TIMEOUT, FrameCodec::read_request(&mut reader))=>request.ok().and_then(Result::ok),
     } {
         Some(request) => request,
         None => {
@@ -139,7 +139,7 @@ async fn serve_connection(stream: UnixStream, host: DriverHost, mut drain: watch
         while operations.try_join_next().is_some() {}
         let request = tokio::select! {
             changed=drain.changed()=>{let _=changed;break;}
-            request=tokio::time::timeout(IDLE_CONNECTION_TIMEOUT, FrameCodec::read_request(&mut reader))=>match request{Ok(Ok(request))=>request,Ok(Err(_))|Err(_)=>break},
+            request=FrameCodec::read_request(&mut reader)=>match request{Ok(request)=>request,Err(_)=>break},
         };
         match request {
             DriverRequest::Invoke { .. } => {
@@ -246,6 +246,133 @@ fn local_capacity_error(request: &DriverRequest) -> DriverResponse {
         retryability: "retryable".to_owned(),
         recovery_action: "retry_later".to_owned(),
         outcome_uncertain: false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use riffdb_client_rust::{CallMetadata, StableApplicationClient};
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+    use tokio::net::UnixStream;
+    use tokio::sync::watch;
+    use tonic::transport::Endpoint;
+
+    use super::serve_connection;
+    use crate::{
+        ApplicationCatalog, DRIVER_ERROR_REGISTRY_HASH, DRIVER_PROTOCOL_VERSION,
+        DRIVER_VALUE_REGISTRY_HASH, DriverHost, DriverPool, DriverRequest, DriverResponse,
+        FrameCodec,
+    };
+
+    fn host_and_handshake() -> (DriverHost, DriverRequest) {
+        let catalog = ApplicationCatalog::from_exact_artifacts(
+            include_bytes!("../../../examples/agent-alpha/riffdb.application.lock.json"),
+            include_bytes!("../../../examples/agent-alpha/generated/riffdb.application.exact.json"),
+            include_bytes!("../../../examples/agent-alpha/generated/mcp/tools.json"),
+            "default",
+            "AgentAlphaApplication",
+        )
+        .expect("catalog");
+        let remote_identity_hash = "00".repeat(32);
+        let handshake = DriverRequest::Handshake {
+            request_id: "quiet-session-handshake".to_owned(),
+            protocol_version: DRIVER_PROTOCOL_VERSION,
+            application_manifest_hash: catalog.application_manifest_hash(),
+            operation_catalog_hash: catalog.catalog_hash(),
+            contract_lineage: catalog.contract_lineage().to_owned(),
+            contract_version: catalog.contract_version(),
+            contract_bundle_hash: catalog.contract_bundle_hash_hex(),
+            value_registry_hash: DRIVER_VALUE_REGISTRY_HASH.to_owned(),
+            error_registry_hash: DRIVER_ERROR_REGISTRY_HASH.to_owned(),
+            database: catalog.database().to_owned(),
+            role: catalog.role().to_owned(),
+            role_definition_hash: catalog.role_definition_hash(),
+            remote_identity_hash: remote_identity_hash.clone(),
+        };
+        let channel = Endpoint::from_static("http://127.0.0.1:9").connect_lazy();
+        let pool =
+            DriverPool::from_clients(vec![StableApplicationClient::from_channel(channel)], 1)
+                .expect("pool");
+        let host = DriverHost::new(catalog, pool, CallMetadata::default(), remote_identity_hash)
+            .expect("host");
+        (host, handshake)
+    }
+
+    async fn exchange(stream: &mut UnixStream, request: &DriverRequest) -> DriverResponse {
+        stream
+            .write_all(&FrameCodec::encode_request(request).expect("request frame"))
+            .await
+            .expect("write request");
+        let mut prefix = [0_u8; 4];
+        stream
+            .read_exact(&mut prefix)
+            .await
+            .expect("read response prefix");
+        let length = usize::try_from(u32::from_be_bytes(prefix)).expect("frame length");
+        let mut body = vec![0_u8; length];
+        stream
+            .read_exact(&mut body)
+            .await
+            .expect("read response body");
+        let mut frame = prefix.to_vec();
+        frame.extend_from_slice(&body);
+        FrameCodec::decode_response(&frame).expect("response frame")
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn established_session_survives_more_than_the_handshake_timeout_without_traffic() {
+        let (host, handshake) = host_and_handshake();
+        let (mut client, server) = UnixStream::pair().expect("local stream pair");
+        let (drain, receiver) = watch::channel(false);
+        let serving = tokio::spawn(serve_connection(server, host, receiver));
+
+        assert!(matches!(
+            exchange(&mut client, &handshake).await,
+            DriverResponse::Handshake { .. }
+        ));
+        tokio::time::advance(Duration::from_secs(301)).await;
+
+        let duplicate = match handshake {
+            DriverRequest::Handshake {
+                protocol_version,
+                application_manifest_hash,
+                operation_catalog_hash,
+                contract_lineage,
+                contract_version,
+                contract_bundle_hash,
+                value_registry_hash,
+                error_registry_hash,
+                database,
+                role,
+                role_definition_hash,
+                remote_identity_hash,
+                ..
+            } => DriverRequest::Handshake {
+                request_id: "quiet-session-still-attached".to_owned(),
+                protocol_version,
+                application_manifest_hash,
+                operation_catalog_hash,
+                contract_lineage,
+                contract_version,
+                contract_bundle_hash,
+                value_registry_hash,
+                error_registry_hash,
+                database,
+                role,
+                role_definition_hash,
+                remote_identity_hash,
+            },
+            _ => unreachable!("fixture is a handshake"),
+        };
+        assert!(matches!(
+            exchange(&mut client, &duplicate).await,
+            DriverResponse::Error { code, .. } if code == "RDB-DRIVER-0001"
+        ));
+
+        drain.send(true).expect("request drain");
+        serving.await.expect("connection task");
     }
 }
 
