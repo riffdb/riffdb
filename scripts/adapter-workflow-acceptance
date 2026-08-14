@@ -61,7 +61,7 @@ for adapter in mlflow woodpecker; do
                 name: "WoodpeckerSchedulerWorker",
                 environment: "development",
                 tenant_scope: "global",
-                queries: [],
+                queries: ["GetPipeline"],
                 commands: ["ClaimPipeline", "StartPipeline", "ReleasePipeline"],
                 event_streams: ["PipelineTransitions"],
                 watch_queries: [],
