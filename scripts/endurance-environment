@@ -1,0 +1,341 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+artifact_root="${RIFFDB_ENDURANCE_ARTIFACT_ROOT:-}"
+[[ -n "$artifact_root" && "$artifact_root" == /* && ! -L "$artifact_root" ]] || {
+    echo "RIFFDB_ENDURANCE_ARTIFACT_ROOT must be an absolute non-symlink directory" >&2
+    exit 2
+}
+environment_root="$artifact_root/environment-v1"
+state_path="$environment_root/state.json"
+
+action_result() {
+    local name="$1" digest="$2"
+    jq -cn --arg name "$name" --arg digest "$digest" '{
+      schema:"riffdb.alpha-endurance-action-result/v1",
+      kind:"environment",
+      name:$name,
+      status:"passed",
+      evidence_sha256:$digest,
+      frontier_before:0,
+      frontier_after:0,
+      recovered:true
+    }'
+}
+
+stop_pid() {
+    local pid="$1"
+    if [[ "$pid" =~ ^[1-9][0-9]*$ ]] && kill -0 "$pid" 2>/dev/null; then
+        kill -TERM "$pid" 2>/dev/null || true
+        local deadline=$((SECONDS + 30))
+        while kill -0 "$pid" 2>/dev/null && (( SECONDS < deadline )); do
+            sleep 0.05
+        done
+        if kill -0 "$pid" 2>/dev/null; then
+            kill -KILL "$pid" 2>/dev/null || true
+        fi
+    fi
+}
+
+teardown() {
+    [[ -f "$state_path" ]] || {
+        action_result teardown "$(printf '%s' 'endurance-environment-absent' | sha256sum | cut -d' ' -f1)"
+        return 0
+    }
+    for role in agent application seeder; do
+        pid="$(jq -r --arg role "$role" '.driver_pids[$role] // 0' "$state_path")"
+        stop_pid "$pid"
+    done
+    stop_pid "$(jq -r '.server_pid // 0' "$state_path")"
+    stop_pid "$(jq -r '.stdin_keeper_pid // 0' "$state_path")"
+    jq -nS \
+        --arg schema riffdb.alpha-endurance-environment-stop/v1 \
+        --arg state_sha256 "$(sha256sum "$state_path" | cut -d' ' -f1)" \
+        '{schema:$schema,state_sha256:$state_sha256,all_processes_stopped:true}' \
+        >"$environment_root/teardown-receipt.json"
+    action_result teardown "$(sha256sum "$environment_root/teardown-receipt.json" | cut -d' ' -f1)"
+}
+
+if [[ "${1:-}" == "teardown" && "$#" -eq 1 ]]; then
+    teardown
+    exit 0
+fi
+if [[ "${1:-}" != "setup" || "$#" -ne 1 ]]; then
+    echo "usage: ./scripts/endurance-environment <setup|teardown>" >&2
+    exit 2
+fi
+
+mkdir -p "$artifact_root"
+if [[ -e "$environment_root" ]]; then
+    echo "endurance environment already exists; use a fresh artifact root" >&2
+    exit 1
+fi
+mkdir -m 0700 "$environment_root" "$environment_root/data" "$environment_root/backups" \
+    "$environment_root/application" "$environment_root/python-dist"
+export UV_CACHE_DIR="$environment_root/uv-cache"
+mkdir -m 0700 "$UV_CACHE_DIR"
+
+cleanup_partial=true
+server_pid=0
+stdin_keeper_pid=0
+partial_pids=()
+cleanup() {
+    if [[ "$cleanup_partial" == true ]]; then
+        for pid in "${partial_pids[@]}"; do
+            stop_pid "$pid"
+        done
+        stop_pid "$server_pid"
+    fi
+}
+trap cleanup EXIT INT TERM
+
+cd "$repo_root"
+cargo +1.97.0 build --quiet \
+    -p riffdb-server --bin riffdbd \
+    -p riffdb-cli --bin riffdb \
+    -p riffdb-driver-host --bin riffdb-driverd >&2
+npm --prefix clients/typescript/runtime run build >/dev/null
+(
+    cd clients/python/runtime
+    python3 -m maturin build --quiet --interpreter python3 --compatibility linux \
+        --out "$environment_root/python-dist"
+) >&2
+python_wheel="$(find "$environment_root/python-dist" -maxdepth 1 -type f -name '*.whl' -print -quit)"
+[[ -n "$python_wheel" ]] || { echo "endurance Python wheel was not built" >&2; exit 1; }
+uv venv "$environment_root/python-venv" >/dev/null
+uv pip install --offline --python "$environment_root/python-venv/bin/python" "$python_wheel" >/dev/null
+
+port="$($environment_root/python-venv/bin/python - <<'PY'
+import socket
+with socket.socket() as listener:
+    listener.bind(("127.0.0.1", 0))
+    print(listener.getsockname()[1])
+PY
+)"
+
+cp crates/riffdb-server/tests/fixtures/localhost-cert.pem "$environment_root/server.pem"
+cp crates/riffdb-server/tests/fixtures/localhost-key.pem "$environment_root/server.key"
+cp crates/riffdb-server/tests/fixtures/test-ca.pem "$environment_root/ca.pem"
+chmod 0444 "$environment_root/server.pem" "$environment_root/ca.pem"
+chmod 0600 "$environment_root/server.key"
+printf '%s' 'riffdb-capability-digest-keys-v1
+1:000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f
+' >"$environment_root/capability.keys"
+printf '%s' 'riffdb-idempotency-digest-keys-v1
+1:202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f
+' >"$environment_root/idempotency.keys"
+chmod 0600 "$environment_root/"*.keys
+mkdir -m 0700 "$environment_root/backups/default"
+
+cat >"$environment_root/riffdbd.toml" <<EOF
+[server]
+database = "$environment_root/data/ticketdesk.redb"
+environment = "development"
+audience = "riffdb-alpha-endurance"
+capability_keys = "$environment_root/capability.keys"
+idempotency_keys = "$environment_root/idempotency.keys"
+
+[server.application_listener]
+mode = "direct_tls"
+listen = "127.0.0.1:$port"
+public_endpoint = "https://127.0.0.1:$port"
+certificate_chain = "$environment_root/server.pem"
+private_key = "$environment_root/server.key"
+
+[server.application_listener.bounds]
+max_connections = 128
+max_streams_per_connection = 256
+handshake_timeout_seconds = 5
+drain_timeout_seconds = 15
+
+[maintenance]
+backup_root = "$environment_root/backups/default"
+EOF
+chmod 0600 "$environment_root/riffdbd.toml"
+
+mkfifo "$environment_root/server.input"
+sleep infinity >"$environment_root/server.input" &
+stdin_keeper_pid=$!
+partial_pids+=("$stdin_keeper_pid")
+target/debug/riffdbd --config "$environment_root/riffdbd.toml" \
+    <"$environment_root/server.input" >"$environment_root/server.stdout" 2>"$environment_root/server.stderr" &
+server_pid=$!
+
+cat >"$environment_root/bootstrap-client.toml" <<EOF
+[client]
+endpoint = "https://127.0.0.1:$port"
+database = "default"
+output = "json"
+max_attempts = 3
+tls_trust_root = "$environment_root/ca.pem"
+tls_server_name = "127.0.0.1"
+EOF
+chmod 0600 "$environment_root/bootstrap-client.toml"
+
+deadline=$((SECONDS + 60))
+while (( SECONDS < deadline )); do
+    if ! kill -0 "$server_pid" 2>/dev/null; then
+        sed -n '1,200p' "$environment_root/server.stderr" >&2
+        echo "endurance RiffDB exited before readiness" >&2
+        exit 1
+    fi
+    if rg -q '^riffdbd-ready-v1' "$environment_root/server.stdout"; then
+        break
+    fi
+    sleep 0.05
+done
+rg -q '^riffdbd-ready-v1' "$environment_root/server.stdout" || {
+    sed -n '1,200p' "$environment_root/server.stderr" >&2
+    echo "endurance RiffDB did not become ready" >&2
+    exit 1
+}
+
+cat >"$environment_root/bootstrap.json" <<'EOF'
+{"principal_id":"alpha-endurance-operator","actor_kind":"human","requested_lifetime_seconds":86400,"audiences":["riffdb-alpha-endurance"],"grant":{"tenant_scope":{"type":"global"},"partition_scope":{"type":"all"},"permissions":[{"type":"validate_contract"},{"type":"read_contract"},{"type":"deploy_contract"},{"type":"read_health"},{"type":"create_capability"},{"type":"revoke_capability"},{"type":"administer_capabilities"}],"field_visibility":[],"max_scan_rows":50,"approval_required":[]}}
+EOF
+if ! target/debug/riffdb --config "$environment_root/bootstrap-client.toml" capability bootstrap \
+    --request "$environment_root/bootstrap.json" \
+    --generate "$environment_root/bootstrap.credential" \
+    --bearer-output "$environment_root/operator.credential" \
+    >"$environment_root/bootstrap-result.json"; then
+    sed -n '1,80p' "$environment_root/bootstrap-result.json" >&2
+    echo "endurance operator bootstrap failed" >&2
+    exit 1
+fi
+cat >>"$environment_root/bootstrap-client.toml" <<EOF
+credential_file = "$environment_root/operator.credential"
+EOF
+
+cp examples/ticketdesk/riffdb.application.json "$environment_root/application/"
+cp examples/ticketdesk/riffdb.application.lock.json "$environment_root/application/"
+cp -R examples/ticketdesk/riffdb "$environment_root/application/"
+cp -R examples/ticketdesk/generated "$environment_root/application/"
+mkdir -p "$environment_root/application/web/src/generated"
+cp examples/ticketdesk/web/src/generated/client.ts \
+    "$environment_root/application/web/src/generated/client.ts"
+(
+    cd "$environment_root/application"
+    "$repo_root/target/debug/riffdb" --config "$environment_root/bootstrap-client.toml" \
+        application deploy riffdb.application.json --lock riffdb.application.lock.json \
+        --provision-role TicketDeskApplication --lifetime-seconds 604800 \
+        >"$environment_root/application-deploy.json"
+)
+deployment_root="$environment_root/application/.riffdb/deployments/default"
+application_credential_name="$(jq -r '.role.credential_file | select(length > 0) // "application.credential"' "$deployment_root/deployment-state.json")"
+if [[ "$application_credential_name" == /* ]]; then
+    application_credential="$application_credential_name"
+else
+    application_credential="$deployment_root/$application_credential_name"
+fi
+[[ -f "$application_credential" ]] || { echo "endurance application credential is absent" >&2; exit 1; }
+cp "$application_credential" "$environment_root/application.credential"
+
+bind_role() {
+    local role="$1" principal="$2" output="$3"
+    target/debug/riffdb --config "$environment_root/bootstrap-client.toml" role bind \
+        "$environment_root/application/riffdb.application.json" \
+        --role "$role" --principal "$principal" --actor-kind service \
+        --audience riffdb-alpha-endurance --lifetime-seconds 604800 \
+        --credential-output "$output" --output json >/dev/null
+}
+bind_role TicketDeskSeeder alpha-endurance-seeder "$environment_root/seeder.credential"
+bind_role TicketDeskAgent alpha-endurance-agent "$environment_root/agent.credential"
+chmod 0600 "$environment_root/"*.credential
+
+manifest_hash="$(jq -r '.exact_manifest_hash' "$environment_root/application/riffdb.application.lock.json")"
+catalog_hash="$(jq -r '.artifacts[] | select(.kind == "mcp") | .content_hash' "$environment_root/application/riffdb.application.lock.json")"
+bundle_hash="$(jq -r '.contract.bundle_hash' "$environment_root/application/riffdb.application.lock.json")"
+remote_hash="$(printf 'https://127.0.0.1:%s|127.0.0.1' "$port" | sha256sum | cut -d' ' -f1)"
+
+declare -A driver_pids
+for role_key in application seeder agent; do
+    case "$role_key" in
+        application) role=TicketDeskApplication ;;
+        seeder) role=TicketDeskSeeder ;;
+        agent) role=TicketDeskAgent ;;
+    esac
+    role_hash="$(jq -r --arg role "$role" '.roles[] | select(.definition.name == $role) | .definition_hash' "$environment_root/application/riffdb.application.lock.json")"
+    jq -nS \
+        --arg applicationManifestHash "$manifest_hash" \
+        --arg operationCatalogHash "$catalog_hash" \
+        --arg contractLineage TicketDesk \
+        --argjson contractVersion 1 \
+        --arg contractBundleHash "$bundle_hash" \
+        --arg database default \
+        --arg role "$role" \
+        --arg roleDefinitionHash "$role_hash" \
+        --arg remoteIdentityHash "$remote_hash" \
+        '{applicationManifestHash:$applicationManifestHash,operationCatalogHash:$operationCatalogHash,contractLineage:$contractLineage,contractVersion:$contractVersion,contractBundleHash:$contractBundleHash,database:$database,role:$role,roleDefinitionHash:$roleDefinitionHash,remoteIdentityHash:$remoteIdentityHash}' \
+        >"$environment_root/$role_key.identity.json"
+    cat >"$environment_root/$role_key-driver.toml" <<EOF
+[driver]
+socket = "$environment_root/$role_key.sock"
+
+[application]
+lock_file = "$environment_root/application/riffdb.application.lock.json"
+manifest_file = "$environment_root/application/generated/riffdb.application.exact.json"
+operation_catalog_file = "$environment_root/application/generated/mcp/tools.json"
+database = "default"
+role = "$role"
+
+[remote]
+endpoint = "https://127.0.0.1:$port"
+tls_trust_root = "$environment_root/ca.pem"
+tls_server_name = "127.0.0.1"
+credential_file = "$environment_root/$role_key.credential"
+pool_connections = 4
+streams_per_connection = 64
+EOF
+    chmod 0600 "$environment_root/$role_key-driver.toml"
+    target/debug/riffdb-driverd "$environment_root/$role_key-driver.toml" \
+        >"$environment_root/$role_key-driver.stdout" \
+        2>"$environment_root/$role_key-driver.stderr" &
+    driver_pids[$role_key]=$!
+    partial_pids+=("${driver_pids[$role_key]}")
+done
+
+for role_key in application seeder agent; do
+    deadline=$((SECONDS + 30))
+    while [[ ! -S "$environment_root/$role_key.sock" && "$SECONDS" -lt "$deadline" ]]; do
+        kill -0 "${driver_pids[$role_key]}" 2>/dev/null || break
+        sleep 0.05
+    done
+    [[ -S "$environment_root/$role_key.sock" ]] || {
+        sed -n '1,100p' "$environment_root/$role_key-driver.stderr" >&2
+        echo "endurance $role_key driver did not become ready" >&2
+        exit 1
+    }
+done
+
+clients/typescript/runtime/node_modules/.bin/tsc \
+    "$environment_root/application/web/src/generated/client.ts" \
+    --target ES2022 --module NodeNext --moduleResolution NodeNext --strict --skipLibCheck \
+    --outDir "$environment_root/typescript"
+
+jq -nS \
+    --arg schema riffdb.alpha-endurance-environment/v1 \
+    --arg root "$environment_root" \
+    --arg endpoint "https://127.0.0.1:$port" \
+    --arg trust_root "$environment_root/ca.pem" \
+    --arg typescript_runtime "$repo_root/clients/typescript/runtime/dist/index.js" \
+    --arg typescript_generated "$environment_root/typescript/client.js" \
+    --arg python "$environment_root/python-venv/bin/python" \
+    --argjson server_pid "$server_pid" \
+    --argjson stdin_keeper_pid "$stdin_keeper_pid" \
+    --argjson application_pid "${driver_pids[application]}" \
+    --argjson seeder_pid "${driver_pids[seeder]}" \
+    --argjson agent_pid "${driver_pids[agent]}" \
+    '{schema:$schema,root:$root,endpoint:$endpoint,trust_root:$trust_root,typescript_runtime:$typescript_runtime,typescript_generated:$typescript_generated,python:$python,server_pid:$server_pid,stdin_keeper_pid:$stdin_keeper_pid,driver_pids:{application:$application_pid,seeder:$seeder_pid,agent:$agent_pid}}' \
+    >"$state_path"
+chmod 0600 "$state_path"
+
+cleanup_partial=false
+trap - EXIT INT TERM
+jq -nS \
+    --arg schema riffdb.alpha-endurance-environment-start/v1 \
+    --arg state_sha256 "$(sha256sum "$state_path" | cut -d' ' -f1)" \
+    --arg application_manifest_sha256 "$(sha256sum "$environment_root/application/riffdb.application.lock.json" | cut -d' ' -f1)" \
+    '{schema:$schema,state_sha256:$state_sha256,application_manifest_sha256:$application_manifest_sha256,remote_tls:true,roles:["TicketDeskAgent","TicketDeskApplication","TicketDeskSeeder"]}' \
+    >"$environment_root/setup-receipt.json"
+action_result setup "$(sha256sum "$environment_root/setup-receipt.json" | cut -d' ' -f1)"

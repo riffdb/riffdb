@@ -74,6 +74,22 @@ Each command is a nonempty JSON string array. Secrets remain in protected
 environment/configuration files and must not appear in the manifest, process
 inventory, observations, or receipt.
 
+The first-party environment action is `scripts/endurance-environment`. Setup
+creates a fresh, artifact-root-confined TicketDesk installation with a direct
+TLS listener, an exact deployed application lock, and three separately bound
+least-authority roles: `TicketDeskSeeder`, `TicketDeskApplication`, and
+`TicketDeskAgent`. It builds and installs the checked Rust, Go, TypeScript, and
+Python application prerequisites, starts one bounded driver pool per role, and
+publishes a protected state file plus a typed setup receipt. There is no broad
+endurance credential and no cleartext fallback. Teardown stops every recorded
+driver and server process without deleting the database, logs, or receipts.
+
+`RIFFDB_ENDURANCE_ARTIFACT_ROOT` must be an absolute, non-symlink path and must
+name a fresh run root. The script never reuses or erases an existing
+`environment-v1` directory. The server's stdin is held open for the complete
+environment lifetime because EOF is a supported clean-shutdown request; a
+daemon launched with `/dev/null` is therefore not a valid endurance setup.
+
 Every lifecycle and fault command must print one bounded
 `riffdb.alpha-endurance-action-result/v1` JSON object. It names the exact
 action, contains only an evidence SHA-256 and numeric before/after frontiers,

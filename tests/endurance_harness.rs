@@ -110,3 +110,42 @@ fn endurance_receipts_use_the_accepted_four_alpha_domains() {
         );
     }
 }
+
+#[test]
+fn endurance_environment_is_tls_exact_and_least_authority() {
+    let root = repository_root();
+    let script = root.join("scripts/endurance-environment");
+    let syntax = Command::new("bash")
+        .args(["-n", script.to_str().expect("script path is UTF-8")])
+        .current_dir(&root)
+        .output()
+        .expect("bash syntax check must launch");
+    assert!(
+        syntax.status.success(),
+        "environment syntax check failed:\n{}",
+        String::from_utf8_lossy(&syntax.stderr)
+    );
+
+    let source = fs::read_to_string(script).expect("environment source is readable");
+    for required in [
+        "mode = \"direct_tls\"",
+        "tls_trust_root",
+        "TicketDeskApplication",
+        "TicketDeskSeeder",
+        "TicketDeskAgent",
+        "application deploy",
+        "role bind",
+        "riffdb.alpha-endurance-environment-start/v1",
+        "riffdb.alpha-endurance-environment-stop/v1",
+    ] {
+        assert!(source.contains(required), "environment omits {required}");
+    }
+    assert!(
+        !source.contains("<\"/dev/null\"") && !source.contains("</dev/null"),
+        "server stdin must remain open for the complete environment lifetime"
+    );
+    assert!(
+        !source.contains("--no-tls") && !source.contains("mode = \"loopback\""),
+        "the evidentiary environment must not fall back to loopback cleartext"
+    );
+}
