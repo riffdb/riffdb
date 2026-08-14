@@ -5,7 +5,7 @@ repo_root="$(git rev-parse --show-toplevel)"
 cd "$repo_root"
 
 source_root="examples/ticketdesk/src"
-generated="fixtures/query-modules/ticketdesk.rs"
+generated="examples/ticketdesk/generated/rust/client.rs"
 forbidden='entity_type_id|field_id|index_id|command_input_id|capability_mask|FieldSelection|GetEntity|ScanIndex|RiffDbClient|riffdb_proto|app_v1|v1::|encoded_key|decode_key|key_bytes'
 
 if rg -n "$forbidden" "$source_root/lib.rs"; then
@@ -13,7 +13,7 @@ if rg -n "$forbidden" "$source_root/lib.rs"; then
     exit 1
 fi
 
-if ! rg -q 'include!\("../../../fixtures/query-modules/ticketdesk.rs"\)' \
+if ! rg -q 'include!\("../generated/rust/client.rs"\)' \
     "$source_root/generated.rs"; then
     echo "TicketDesk must consume the reviewed generated application facade" >&2
     exit 1
