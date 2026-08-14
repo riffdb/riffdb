@@ -26,7 +26,7 @@ use crate::campaign::{
     run_campaign_outcome,
 };
 use crate::generator::WORKLOAD_GENERATOR_VERSION;
-use crate::subsumption::COMMIT_ARMS_CONFIG;
+use crate::subsumption::{COMMIT_ARMS_CONFIG, COMMIT_PRESENT_ARMS_CONFIG};
 
 /// Minimum evidence one completing corpus replay must reproduce. Every
 /// variant maps to a `CampaignReport` counter, so a replay that "passes"
@@ -180,7 +180,11 @@ pub(crate) const REGRESSION_CORPUS: &[CorpusEntry] = &[
             CorpusExpectation::InFlightCommitAbsent,
             CorpusExpectation::InFlightAdmitResolved,
         ]),
-        rotation: None,
+        rotation: Some(CorpusWitnessRotation {
+            successor_seed: 0x51C2_C001,
+            invalidated_by_commit: "a725142385f26326e4af014414511b71e485033e",
+            rotated: "2026-08-14",
+        }),
     },
     CorpusEntry {
         seed: 0x51C2_C006,
@@ -197,7 +201,11 @@ pub(crate) const REGRESSION_CORPUS: &[CorpusEntry] = &[
             CorpusExpectation::TornDecisionsAtLeast(10),
             CorpusExpectation::InFlightAdmitResolved,
         ]),
-        rotation: None,
+        rotation: Some(CorpusWitnessRotation {
+            successor_seed: 0x51C2_C0DF,
+            invalidated_by_commit: "a725142385f26326e4af014414511b71e485033e",
+            rotated: "2026-08-14",
+        }),
     },
     CorpusEntry {
         seed: 0x51C2_C022,
@@ -212,7 +220,11 @@ pub(crate) const REGRESSION_CORPUS: &[CorpusEntry] = &[
                  identically in 12/12 runs before pinning.",
         pinned: "2026-08-11",
         outcome: CorpusOutcome::WedgesUntilRedbFileGrowthFix,
-        rotation: None,
+        rotation: Some(CorpusWitnessRotation {
+            successor_seed: 0x51C2_C06D,
+            invalidated_by_commit: "a725142385f26326e4af014414511b71e485033e",
+            rotated: "2026-08-14",
+        }),
     },
     CorpusEntry {
         seed: 0x51C2_C000,
@@ -231,6 +243,57 @@ pub(crate) const REGRESSION_CORPUS: &[CorpusEntry] = &[
             CorpusExpectation::RecoveryWindowCrash,
             CorpusExpectation::InitializationBoundary,
         ]),
+        rotation: None,
+    },
+    CorpusEntry {
+        seed: 0x51C2_C001,
+        generator_version: 1,
+        config: COMMIT_PRESENT_ARMS_CONFIG,
+        caught: "active successor for the commit-PRESENT recovery arm after \
+                 a7251423 added exact checkpoint-at-S entity heads and moved \
+                 the physical operation stream: one interrupted commit \
+                 resolved present, eight resolved absent, and two \
+                 interrupted admissions resolved absent across 32 \
+                 recoveries; rerun 12/12 with identical counters before \
+                 pinning.",
+        pinned: "2026-08-14",
+        outcome: CorpusOutcome::Completes(&[
+            CorpusExpectation::InFlightCommitPresent,
+            CorpusExpectation::InFlightCommitAbsent,
+            CorpusExpectation::InFlightAdmitResolved,
+        ]),
+        rotation: None,
+    },
+    CorpusEntry {
+        seed: 0x51C2_C0DF,
+        generator_version: 1,
+        config: COMMIT_ARMS_CONFIG,
+        caught: "active successor for crash-during-recovery plus interrupted \
+                 admission after a7251423 moved the physical operation \
+                 stream: five of fourteen crashes landed in recovery \
+                 windows, 47 torn decisions were resolved, and one \
+                 interrupted admission resolved present; rerun 12/12 with \
+                 identical counters before pinning.",
+        pinned: "2026-08-14",
+        outcome: CorpusOutcome::Completes(&[
+            CorpusExpectation::RecoveryWindowCrash,
+            CorpusExpectation::TornDecisionsAtLeast(10),
+            CorpusExpectation::InFlightAdmitResolved,
+        ]),
+        rotation: None,
+    },
+    CorpusEntry {
+        seed: 0x51C2_C06D,
+        generator_version: 1,
+        config: COMMIT_ARMS_CONFIG,
+        caught: "active successor witness for the redb 4.1.0 file-growth \
+                 torn-crash wedge after a7251423 moved the physical \
+                 operation stream: the seventh crash leaves redb's durable \
+                 file shorter than the layout named by its retained header, \
+                 and every subsequent open panics in page_manager.rs:231. \
+                 Reproduced identically in 12/12 runs before pinning.",
+        pinned: "2026-08-14",
+        outcome: CorpusOutcome::WedgesUntilRedbFileGrowthFix,
         rotation: None,
     },
 ];

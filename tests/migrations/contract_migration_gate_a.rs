@@ -653,6 +653,7 @@ async fn poll_terminal_migration(
     operation_id: riffdb_types::ContractMigrationOperationId,
     metadata: &CallMetadata,
 ) -> TestResult<v1::ContractMigrationOperation> {
+    let mut last_observation = String::from("no operation response observed");
     timeout(MIGRATION_TERMINAL_HANG_CEILING, async {
         loop {
             let request = v1::GetContractMigrationOperationRequest {
@@ -666,18 +667,38 @@ async fn poll_terminal_migration(
                 Ok(response) => {
                     if let Some(v1::get_contract_migration_operation_response::Result::Found(
                         operation,
-                    )) = response.result
-                        && matches!(
+                    )) = response.result {
+                        let observation = format!(
+                            "phase={} failure={}",
+                            operation.phase, operation.failure
+                        );
+                        if observation != last_observation {
+                            eprintln!(
+                                "contract_migration_gate_a: migration poll observed {observation}"
+                            );
+                            last_observation = observation;
+                        }
+                        if matches!(
                             v1::ContractMigrationPhase::try_from(operation.phase),
                             Ok(v1::ContractMigrationPhase::Succeeded
                                 | v1::ContractMigrationPhase::FailedClosed
                                 | v1::ContractMigrationPhase::FailedRolledBack)
                         )
-                    {
-                        return Ok(operation);
+                        {
+                            return Ok(operation);
+                        }
+                    } else {
+                        last_observation = String::from("operation not found");
                     }
                 }
-                Err(_) => {
+                Err(error) => {
+                    let observation = format!("poll RPC failed: {error}");
+                    if observation != last_observation {
+                        eprintln!(
+                            "contract_migration_gate_a: migration poll observed {observation}"
+                        );
+                        last_observation = observation;
+                    }
                     *client = connect_eventually(address).await?;
                 }
             }
@@ -687,7 +708,7 @@ async fn poll_terminal_migration(
     .await
     .map_err(|_| {
         test_failure(format!(
-            "migration did not become terminal within hang ceiling ({MIGRATION_TERMINAL_HANG_CEILING:?})"
+            "migration did not become terminal within hang ceiling ({MIGRATION_TERMINAL_HANG_CEILING:?}); last observation: {last_observation}"
         ))
     })?
 }

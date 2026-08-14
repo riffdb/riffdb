@@ -638,6 +638,15 @@ pub(crate) fn load_active_checkpoint(
     {
         return Err(CheckpointIgnoreReason::CountImpossible);
     }
+    // At S=head no legitimate suffix can change live entity cardinality. This
+    // O(1) check preserves the old fail-to-full-validation behavior for a
+    // vanished or injected current row without comparing the at-S snapshot to
+    // a legitimately newer current state when S<head.
+    if checkpoint.checkpoint_commit_sequence() == head
+        && checkpoint_v2.entity_counts().live_entity_count != full_counts[5]
+    {
+        return Err(CheckpointIgnoreReason::EntityChainMismatch);
+    }
     // The V2 proof is anchored at S, not at the current head. Comparing the
     // checkpoint fingerprint directly to current ENTITY_CHAIN_HEADS would
     // invalidate every legitimate post-checkpoint write. Load the atomically

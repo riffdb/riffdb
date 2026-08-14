@@ -197,6 +197,17 @@ pub(crate) const COMMIT_ARMS_CONFIG: CampaignConfig = CampaignConfig {
     torn_write_granularity: 512,
 };
 
+/// The pinned schedule for the rare commit-PRESENT arm after the exact
+/// checkpoint-at-S table moved the physical storage-operation stream. The
+/// narrower operation range and larger crash budget were scouted together;
+/// seed `0x51C2_C001` reproduces PRESENT, ABSENT, and interrupted-admission
+/// recovery with identical counters in 12/12 runs.
+pub(crate) const COMMIT_PRESENT_ARMS_CONFIG: CampaignConfig = CampaignConfig {
+    crash_operations: (1, 128),
+    max_crashes: 32,
+    ..COMMIT_ARMS_CONFIG
+};
+
 /// The pinned schedule shared by the covered initialization rows: a tight
 /// crash window aims the first crashes into the bring-up sequence.
 pub(crate) const INITIALIZATION_ARMS_CONFIG: CampaignConfig = CampaignConfig {
@@ -253,23 +264,23 @@ pub(crate) const SCENARIO_CLASSIFICATION: &[(&str, ScenarioClass)] = &[
         },
     ),
     (
-        // Scouted over 256 seeds; 0x51C2_C0E1 resolves an interrupted batch
-        // PRESENT in full (the crash landed after the engine commit) and was
-        // rerun 12/12 with identical counters before pinning.
+        // The exact checkpoint-at-S layout moved the former witness. The
+        // replacement was scouted against the new operation stream and rerun
+        // 12/12 with identical counters before pinning.
         "command.commit.after-engine-commit",
         ScenarioClass::CoveredByCampaign {
-            seed: 0x51C2_C0E1,
-            config: COMMIT_ARMS_CONFIG,
+            seed: 0x51C2_C001,
+            config: COMMIT_PRESENT_ARMS_CONFIG,
             evidence: CoveredEvidence::InFlightCommitPresent,
         },
     ),
     (
-        // The same pinned campaign resolves four interrupted batches ABSENT
+        // The same pinned campaign resolves eight interrupted batches ABSENT
         // in full (crashes before the engine commit).
         "command.commit.before-engine-commit",
         ScenarioClass::CoveredByCampaign {
-            seed: 0x51C2_C0E1,
-            config: COMMIT_ARMS_CONFIG,
+            seed: 0x51C2_C001,
+            config: COMMIT_PRESENT_ARMS_CONFIG,
             evidence: CoveredEvidence::InFlightCommitAbsent,
         },
     ),
