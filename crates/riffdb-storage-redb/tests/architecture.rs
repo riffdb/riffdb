@@ -311,6 +311,42 @@ fn startup_fast_path_does_not_rebuild_whole_history_accelerators() {
 }
 
 #[test]
+fn startup_full_validation_reuses_exact_embedded_command_authority() {
+    let startup = production_source(crate_root().join("src/startup.rs"));
+    let cache = startup
+        .split_once("fn ensure_command_cache(")
+        .expect("command cache")
+        .1
+        .split_once("\n    fn ensure_entity_chains_built(")
+        .expect("command cache end")
+        .0;
+    assert!(cache.contains("decode_command_segment_v1"));
+    assert!(cache.contains("embedded_authority.insert(sequence)"));
+    assert!(cache.contains("return Err(corrupt())"));
+
+    let commit = startup
+        .split_once("fn inspect_commit_row(")
+        .expect("commit inspector")
+        .1
+        .split_once("\nfn inspect_provenance_row(")
+        .expect("commit inspector end")
+        .0;
+    assert!(commit.contains("embedded_command_authority.contains"));
+    assert!(commit.contains("command_capsule_graph_is_reciprocal"));
+    assert!(!commit.contains("plan_bundle_exists"));
+
+    let audit = startup
+        .split_once("fn inspect_cached_command_audit_row(")
+        .expect("cached audit inspector")
+        .1
+        .split_once("\nfn inspect_cached_command_audit_request_row(")
+        .expect("cached audit inspector end")
+        .0;
+    assert!(audit.contains("embedded_command_authority.contains"));
+    assert!(!audit.contains("command_member_at"));
+}
+
+#[test]
 fn partial_contract_migration_reopen_is_confined_to_the_witness_gate() {
     let sources = rust_sources();
     assert_eq!(
