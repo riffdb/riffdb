@@ -185,19 +185,52 @@ fn generate_domain(root: &Path, domain: &Domain<'_>, write: bool) {
         .unwrap_or_else(|error| panic!("{} adapter mapping: {error:?}", domain.name));
 
     let outcome_hash = hash_generated_artifact(format!("{}-outcomes-v1", domain.name).as_bytes());
-    let receipt = ApplicationReimportReceipt::reconcile(
-        &manifest,
+    let destination = root.join("fixtures/export").join(domain.name);
+    let receipt = reimport_receipt(&manifest, domain, outcome_hash);
+    update(
+        destination.join("portability-manifest-v3.json"),
+        manifest.canonical_bytes(),
+        write,
+    );
+    let legacy_manifest_path = destination.join("portability-manifest-v2.json");
+    if legacy_manifest_path.is_file() {
+        let legacy_manifest = ApplicationPortabilityManifest::decode_canonical(
+            &fs::read(legacy_manifest_path).expect("read V2 portability manifest"),
+        )
+        .expect("decode V2 portability manifest");
+        let legacy_receipt = reimport_receipt(&legacy_manifest, domain, outcome_hash);
+        update(
+            destination.join("reimport-receipt-v2.json"),
+            legacy_receipt.canonical_bytes(),
+            write,
+        );
+    }
+    update(
+        destination.join("reimport-receipt-v3.json"),
+        receipt.canonical_bytes(),
+        write,
+    );
+}
+
+fn reimport_receipt(
+    manifest: &ApplicationPortabilityManifest,
+    domain: &Domain<'_>,
+    outcome_hash: riffdb_types::GeneratedArtifactHash,
+) -> ApplicationReimportReceipt {
+    ApplicationReimportReceipt::reconcile(
+        manifest,
         ApplicationExportManifestHash::from_bytes(
             *hash_generated_artifact(format!("{}-export-v1", domain.name).as_bytes()).as_bytes(),
         ),
         database_id(domain.seed),
-        domain
+        manifest
+            .input()
             .mappings
             .iter()
-            .map(|(entity, _)| {
+            .map(|mapping| {
                 ReimportMappingResult::new(
-                    PortableRecordClass::Entity,
-                    symbol(entity),
+                    mapping.class(),
+                    mapping.symbol().clone(),
                     2,
                     2,
                     0,
@@ -206,24 +239,19 @@ fn generate_domain(root: &Path, domain: &Domain<'_>, write: bool) {
                 .expect("mapping result")
             })
             .collect(),
-        vec![ReimportObservationResult::new(
-            symbol("application_observation"),
-            observation_hash,
-        )],
+        manifest
+            .input()
+            .observations
+            .iter()
+            .map(|observation| {
+                ReimportObservationResult::new(
+                    observation.name().clone(),
+                    observation.expected_hash(),
+                )
+            })
+            .collect(),
     )
-    .expect("reimport receipt");
-
-    let destination = root.join("fixtures/export").join(domain.name);
-    update(
-        destination.join("portability-manifest-v3.json"),
-        manifest.canonical_bytes(),
-        write,
-    );
-    update(
-        destination.join("reimport-receipt-v2.json"),
-        receipt.canonical_bytes(),
-        write,
-    );
+    .expect("reimport receipt")
 }
 
 fn symbol(value: &str) -> InstallationSymbol {

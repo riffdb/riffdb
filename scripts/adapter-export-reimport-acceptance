@@ -48,7 +48,7 @@ for domain in "${domains[@]}"; do
         .schema == "riffdb.application-reimport-receipt/v2"
         and (.portability_manifest_hash | test("^[0-9a-f]{64}$"))
         and (.observations | length) > 0
-    ' "$root/reimport-receipt-v2.json" >/dev/null
+    ' "$root/reimport-receipt-v3.json" >/dev/null
 done
 
 jq -e '
