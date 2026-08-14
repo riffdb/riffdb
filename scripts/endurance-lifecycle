@@ -23,6 +23,7 @@ LANGUAGES = ("go", "python", "rust", "typescript")
 MAX_JSON_BYTES = 1024 * 1024
 JOURNAL_HEADER_BYTES = 4096
 JOURNAL_MAGIC = b"RDBJEX03"
+MAX_RETAINED_BACKUPS = 2
 
 
 def fail(message: str) -> "None":
@@ -169,6 +170,38 @@ def cli(environment: Path) -> list[str]:
         "--config",
         str(environment / "bootstrap-client.toml"),
     ]
+
+
+def retention_cli(environment: Path) -> list[str]:
+    state = read_object(environment / "state.json")
+    executable = Path(str(state.get("riffdb", "")))
+    config = environment / "retention-seeder-client.toml"
+    if (
+        not executable.is_absolute()
+        or executable.is_symlink()
+        or not executable.is_file()
+        or config.is_symlink()
+        or not config.is_file()
+    ):
+        fail("endurance retention-lane CLI installation is invalid")
+    return [str(executable), "--config", str(config)]
+
+
+def retention_status(environment: Path, database: Path) -> dict[str, Any]:
+    status = run_json(
+        cli(environment)
+        + [
+            "retention",
+            "status",
+            "--database-path",
+            str(database),
+            "--output",
+            "json",
+        ]
+    )
+    if status is None or status.get("command") != "retention.status":
+        fail("endurance retention status unexpectedly returned no result")
+    return status["result"]
 
 
 def positive_decimal(value: Any, name: str) -> int:
@@ -337,19 +370,22 @@ def shutdown_writer_queue_depth(stdout: Path, offset: int) -> int:
         for line in suffix.splitlines()
         if line.startswith(b"riffdb-writer-evidence-v1\t")
     ]
-    if len(lines) != 1:
+    if len(lines) != 2:
         fail("endurance server emitted an incomplete writer evidence inventory")
-    scalar = lines[0].split("\t", 2)[1]
-    fields = {}
-    for item in scalar.split(";"):
-        name, separator, raw = item.partition("=")
-        if not separator or name in fields:
-            fail("endurance writer evidence is malformed")
-        fields[name] = raw
-    raw_depth = fields.get("dispatch_deferred_max")
-    if raw_depth is None or not raw_depth.isascii() or not raw_depth.isdigit():
-        fail("endurance writer queue evidence is absent")
-    return int(raw_depth)
+    depths = []
+    for line in lines:
+        scalar = line.split("\t", 2)[1]
+        fields = {}
+        for item in scalar.split(";"):
+            name, separator, raw = item.partition("=")
+            if not separator or name in fields:
+                fail("endurance writer evidence is malformed")
+            fields[name] = raw
+        raw_depth = fields.get("dispatch_deferred_max")
+        if raw_depth is None or not raw_depth.isascii() or not raw_depth.isdigit():
+            fail("endurance writer queue evidence is absent")
+        depths.append(int(raw_depth))
+    return max(depths)
 
 
 def inspect_checkpoint(environment: Path) -> int:
@@ -542,9 +578,11 @@ def backup(environment: Path, state: dict[str, Any]) -> tuple[int, int, dict[str
         for path in backup_root.iterdir()
         if path.name != ".maintenance" and path.is_dir() and not path.is_symlink()
     )
-    before = len(existing)
-    if before != integer(state["backup_count"], "backup_count"):
-        fail("endurance backup inventory differs from lifecycle state")
+    before = integer(state["backup_count"], "backup_count")
+    if len(existing) > MAX_RETAINED_BACKUPS or any(
+        not name.startswith("endurance-") for name in existing
+    ):
+        fail("endurance backup inventory exceeds its closed retention policy")
     name = f"endurance-{before + 1:06d}"
     started = run_json(cli(environment) + ["backup", "create", name, "--output", "json"])
     if started is None:
@@ -607,15 +645,32 @@ def backup(environment: Path, state: dict[str, Any]) -> tuple[int, int, dict[str
         }
         for artifact in sorted(expected)
     ]
-    after = len(
-        [
-            path
-            for path in backup_root.iterdir()
-            if path.name != ".maintenance" and path.is_dir() and not path.is_symlink()
-        ]
+    published = sorted(
+        path.name
+        for path in backup_root.iterdir()
+        if path.name != ".maintenance" and path.is_dir() and not path.is_symlink()
     )
-    if after != before + 1:
+    if name not in published or len(published) != len(existing) + 1:
         fail("endurance backup did not publish exactly one immutable inventory")
+    retired_backup_names = published[:-MAX_RETAINED_BACKUPS]
+    for retired_name in retired_backup_names:
+        retired = backup_root / retired_name
+        if (
+            retired.parent != backup_root
+            or retired.is_symlink()
+            or not retired.is_dir()
+            or not retired_name.startswith("endurance-")
+        ):
+            fail("endurance backup retirement target is invalid")
+        shutil.rmtree(retired)
+    retained_backup_names = sorted(
+        path.name
+        for path in backup_root.iterdir()
+        if path.name != ".maintenance" and path.is_dir() and not path.is_symlink()
+    )
+    if len(retained_backup_names) > MAX_RETAINED_BACKUPS or name not in retained_backup_names:
+        fail("endurance backup retention did not preserve the newest inventory")
+    after = before + 1
     state["backup_count"] = after
     health_frontier(environment)
     return before, after, {
@@ -625,6 +680,8 @@ def backup(environment: Path, state: dict[str, Any]) -> tuple[int, int, dict[str
         "input_hash": terminal.get("input_hash"),
         "phase": terminal.get("phase"),
         "inventory": inventory,
+        "retired_backup_names": retired_backup_names,
+        "retained_backup_names": retained_backup_names,
     }
 
 
@@ -836,26 +893,64 @@ def certificate_rotation(
     }
 
 
+def advance_retention_lane(environment: Path, previous_watermark: int) -> None:
+    """Create one event-free command history entry through the public symbolic surface."""
+    ordinal = previous_watermark + 1
+    if ordinal >= 1 << 48:
+        fail("endurance retention-lane identity space is exhausted")
+    organization_id = f"01980000-0000-7000-8000-{ordinal:012x}"
+    input_path = environment / f"retention-create-{ordinal:012x}.json"
+    atomic_write(
+        input_path,
+        {
+            "idempotency_key": f"alpha-endurance-retention-{ordinal}",
+            "organization_id": {"$uuid": organization_id},
+            "name": f"Retention lane {ordinal}",
+        },
+    )
+    result = run_json(
+        retention_cli(environment)
+        + [
+            "command",
+            "run",
+            "CreateOrganization",
+            "--input",
+            str(input_path),
+            "--application",
+            str(environment / "application" / "riffdb.application.json"),
+            "--output",
+            "json",
+        ]
+    )
+    if result is None or result.get("command") != "command.run":
+        fail("endurance retention-lane command returned the wrong operation identity")
+
+
 def retention(environment: Path, state: dict[str, Any]) -> tuple[int, int, dict[str, Any]]:
     before = integer(state["retention_watermark"], "retention_watermark")
+    advance_retention_lane(environment, before)
     process_state, application_frontier, checkpoint, queue_depth = stop_server(environment)
-    database = environment / "data" / "ticketdesk.redb"
+    primary_database = environment / "data" / "ticketdesk.redb"
+    database = environment / "data" / "retention.redb"
     restarted = False
     try:
-        status = run_json(
-            cli(environment)
-            + [
-                "retention",
-                "status",
-                "--database-path",
-                str(database),
-                "--output",
-                "json",
-            ]
+        primary = retention_status(environment, primary_database)
+        primary_fence_binding = primary.get("fence_binding")
+        primary_maximum_raw = primary.get("max_permissible_watermark")
+        primary_maximum = (
+            positive_decimal(
+                primary_maximum_raw, "primary maximum permissible watermark"
+            )
+            if primary_maximum_raw is not None
+            else 0
         )
-        if status is None or status.get("command") != "retention.status":
-            fail("endurance retention status unexpectedly returned no result")
-        current = status["result"]
+        if (
+            primary_fence_binding != "UndeliveredOutboxLowWater"
+            or primary_maximum >= application_frontier
+        ):
+            fail("endurance primary retention did not preserve its undelivered-outbox fence")
+
+        current = retention_status(environment, database)
         current_watermark = positive_decimal_or_zero(
             current.get("watermark_sequence"), "retention watermark"
         )
@@ -916,6 +1011,9 @@ def retention(environment: Path, state: dict[str, Any]) -> tuple[int, int, dict[
         "watermark_after": after,
         "tombstone_count": tombstones,
         "fence_binding": result.get("fence_binding"),
+        "retention_lane": "retention",
+        "primary_fence_binding": primary_fence_binding,
+        "primary_maximum_permissible_watermark": primary_maximum,
         "application_frontier_before": application_frontier,
         "application_frontier_after": after_frontier,
         "checkpoint_frontier": checkpoint,
