@@ -57,6 +57,7 @@ LATENCY_BOUNDS_US: Final = (
 )
 MAX_TRANSIENT_RETRIES: Final = 90
 MODELED_DURABLE_OPERATION_BYTES: Final = 32 * 1024
+METRICS_PUBLICATION_OPERATIONS: Final = 16
 
 
 class Metrics:
@@ -95,7 +96,7 @@ class Metrics:
                 len(LATENCY_BOUNDS_US) - 1,
             )
             self._latency_counts[bucket] += 1
-            if self._operations % 64 == 0:
+            if self._operations % METRICS_PUBLICATION_OPERATIONS == 0:
                 self._publish_locked()
 
     async def publish(self) -> None:

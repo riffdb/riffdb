@@ -23,6 +23,9 @@ operation weights. An action manifest cannot override those values: each
 worker repeats them alongside its exact command, and the outer harness rejects
 drift before starting the controller. The outer harness also hashes the exact
 action manifest and rejects a raw receipt that is not bound to that hash.
+Each worker publishes per-language progress inside the 30-second sampling
+interval. The validator rejects a stalled language frontier even when other
+workers keep the aggregate operation frontier moving.
 
 This release campaign is an endurance gate, not a throughput benchmark. Its
 closed ceiling is four logical operations per second in total: one per language

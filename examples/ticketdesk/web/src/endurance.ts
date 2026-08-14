@@ -28,6 +28,7 @@ const LATENCY_BOUNDS_US = [
 ] as const;
 const MAX_TRANSIENT_RETRIES = 90;
 const MODELED_DURABLE_OPERATION_BYTES = 32 * 1024;
+const METRICS_PUBLICATION_OPERATIONS = 16;
 
 interface IdentityFile {
   readonly applicationManifestHash: string;
@@ -85,7 +86,7 @@ class Metrics {
     const latencyUs = Math.max(0, Math.floor((performance.now() - startedAt) * 1_000));
     const bucket = LATENCY_BOUNDS_US.findIndex((bound) => latencyUs <= bound);
     this.#latencyCounts[bucket < 0 ? this.#latencyCounts.length - 1 : bucket]! += 1;
-    if (this.#logicalOperations % 64 === 0) await this.publish();
+    if (this.#logicalOperations % METRICS_PUBLICATION_OPERATIONS === 0) await this.publish();
   }
 
   public async publish(): Promise<void> {

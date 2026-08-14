@@ -313,12 +313,25 @@ def validate_growth(observations: list[dict[str, Any]], manifest: dict[str, Any]
     )
     maximum_stalled = integer(manifest["growth_limits"]["maximum_stalled_observations"], "invalid_manifest", "maximum_stalled_observations")
     stalled = 0
+    language_stalled = {name: 0 for name in REQUIRED_LANGUAGES}
     for before, after in zip(observations, observations[1:]):
         if integer(after["logical_operations"], "invalid_observation", "logical_operations") == integer(before["logical_operations"], "invalid_observation", "logical_operations"):
             stalled += 1
             require(stalled <= maximum_stalled, "starvation", "logical operation frontier stopped advancing")
         else:
             stalled = 0
+        for name in REQUIRED_LANGUAGES:
+            before_language = integer(before["language_operations"][name], "invalid_observation", f"language_operations.{name}")
+            after_language = integer(after["language_operations"][name], "invalid_observation", f"language_operations.{name}")
+            if after_language == before_language:
+                language_stalled[name] += 1
+                require(
+                    language_stalled[name] <= maximum_stalled,
+                    "starvation",
+                    f"{name} language operation frontier stopped advancing",
+                )
+            else:
+                language_stalled[name] = 0
 
     first, last = observations[0], observations[-1]
     require(all(last["language_operations"][name] > first["language_operations"][name] for name in REQUIRED_LANGUAGES), "missing_language", "every language must make measured progress")
@@ -788,7 +801,7 @@ def self_test() -> None:
         ("host_interference", "host_interference", lambda value: value["host_validity"]["postflight"].update(valid=False)),
         ("missing_lifecycle", "missing_lifecycle", lambda value: value["lifecycle_counts"].update(restart=0)),
         ("missing_fault", "missing_fault", lambda value: value["fault_counts"].update(process_kill=0)),
-        ("missing_language_progress", "missing_language", lambda value: value["observations"][-1]["language_operations"].update(rust=10)),
+        ("missing_language_progress", "starvation", lambda value: value["observations"][-1]["language_operations"].update(rust=10)),
         ("missing_workload_progress", "missing_workload", lambda value: value["observations"][-1]["workload_operations"].update(events=5)),
         ("missing_tenant_progress", "missing_workload", lambda value: value["observations"][-1]["tenant_operations"].update(tenant_alpha=5)),
         ("missing_restart_observation", "missing_lifecycle", lambda value: value["observations"][-1].update(restart_count=0)),
@@ -805,6 +818,7 @@ def self_test() -> None:
         ("hidden_retry", "hidden_retry", lambda value: value["observations"][-1].update(transport_attempts=20_000)),
         ("missing_generation", "missing_generation", lambda value: value["observations"][-1].update(journal_generation=1)),
         ("starvation", "starvation", lambda value: value["observations"][-1].update(logical_operations=100, transport_attempts=100, declared_retries=0)),
+        ("per_language_starvation", "starvation", lambda value: value["observations"][-1]["language_operations"].update(rust=10)),
         ("storage_unavailable", "storage_unavailable", lambda value: value.update(unsupported_storage_unavailable=1)),
         ("conformance_failure", "conformance_failed", lambda value: value["conformance"].update(all_passed=False)),
     ]
