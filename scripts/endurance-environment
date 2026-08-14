@@ -207,7 +207,10 @@ EOF
 chmod 0600 "$environment_root/riffdbd.toml"
 
 mkfifo "$environment_root/server.input"
-sleep infinity >"$environment_root/server.input" &
+# The setup command is captured by the controller. Close the keeper's stderr
+# explicitly so this long-lived child cannot retain the setup capture pipe and
+# prevent the controller from observing EOF after setup completes.
+sleep infinity >"$environment_root/server.input" 2>/dev/null &
 stdin_keeper_pid=$!
 partial_pids+=("$stdin_keeper_pid")
 "$environment_root/bin/riffdbd" --config "$environment_root/riffdbd.toml" \

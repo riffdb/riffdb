@@ -284,7 +284,13 @@ async fn run_client(
                     metrics.lock().await.transient_retry();
                     tokio::time::sleep(Duration::from_millis(100 * retries)).await;
                 }
-                Err(error) => return Err(error),
+                Err(error) => {
+                    return Err(format!(
+                        "Rust endurance client {client_index} failed at counter {counter} (slot {}): {error}",
+                        counter % 100,
+                    )
+                    .into());
+                }
             }
         }
         counter = counter.saturating_add(1);
@@ -580,9 +586,15 @@ async fn record(
 
 async fn publish_metrics(path: &Path, metrics: &Arc<Mutex<Metrics>>) -> WorkerResult<()> {
     let next = path.with_extension("json.next");
-    let value = metrics.lock().await.json();
+    // Keep one process-local publication critical section across both filesystem
+    // operations. Every client task shares this path; releasing the metrics lock
+    // after serialization allowed two tasks to race on the same `.next` file and
+    // one rename to fail with ENOENT.
+    let metrics = metrics.lock().await;
+    let value = metrics.json();
     fs::write(&next, value)?;
     fs::rename(next, path)?;
+    drop(metrics);
     Ok(())
 }
 
@@ -636,4 +648,39 @@ fn id(namespace: u64, value: u64) -> String {
         namespace = namespace & 0xffff_ffff,
         value = value & 0xffff_ffff_ffff,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Metrics, publish_metrics};
+    use std::fs;
+    use std::path::PathBuf;
+    use std::sync::Arc;
+    use tokio::sync::Mutex;
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_metrics_publishers_share_one_atomic_staging_path() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/endurance-metrics-publish-test")
+            .join(std::process::id().to_string());
+        fs::create_dir_all(&root).expect("create repository-local test scratch");
+        let path = root.join("rust.json");
+        let metrics = Arc::new(Mutex::new(Metrics::new().expect("metrics")));
+        let mut publishers = Vec::new();
+        for _ in 0..128 {
+            let path = path.clone();
+            let metrics = Arc::clone(&metrics);
+            publishers.push(tokio::spawn(async move {
+                publish_metrics(&path, &metrics).await
+            }));
+        }
+        for publisher in publishers {
+            publisher
+                .await
+                .expect("publisher task must not panic")
+                .expect("publisher must retain the shared staging file");
+        }
+        let published = fs::read_to_string(&path).expect("published metrics");
+        assert!(published.contains("\"schema\":\"riffdb.alpha-endurance-worker/v1\""));
+    }
 }

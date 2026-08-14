@@ -147,6 +147,10 @@ fn endurance_environment_is_tls_exact_and_least_authority() {
         "server stdin must remain open for the complete environment lifetime"
     );
     assert!(
+        source.contains("sleep infinity >\"$environment_root/server.input\" 2>/dev/null &"),
+        "the stdin keeper must close the controller capture pipe"
+    );
+    assert!(
         !source.contains("--no-tls") && !source.contains("mode = \"loopback\""),
         "the evidentiary environment must not fall back to loopback cleartext"
     );
