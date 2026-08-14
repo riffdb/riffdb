@@ -267,6 +267,36 @@ fn endurance_lifecycle_evidence_uses_durable_observations() {
             "{worker} counts contextual work without a durable acknowledgement"
         );
     }
+    for (worker, stable_identity) in [
+        (
+            "examples/ticketdesk/src/bin/endurance.rs",
+            "event_id.commit_sequence, event_id.event_ordinal",
+        ),
+        (
+            "examples/ticketdesk/endurance/go/main.go",
+            "item.Delivery.EventID",
+        ),
+        (
+            "examples/ticketdesk/web/src/endurance.ts",
+            "item.delivery.eventId",
+        ),
+        (
+            "examples/ticketdesk/endurance/python/main.py",
+            "item.event_id",
+        ),
+    ] {
+        let source = fs::read_to_string(root.join(worker)).expect("worker source is readable");
+        assert!(
+            source.contains(stable_identity),
+            "{worker} does not derive contextual-reaction identity from the durable event"
+        );
+        assert!(
+            !source.contains("reaction-{client_index}-{counter}")
+                && !source.contains("reaction-%d-%d")
+                && !source.contains("reaction-${index}-${counter}"),
+            "{worker} reuses contextual-reaction identities after a worker restart"
+        );
+    }
     for (worker, retry, classifier, limit) in [
         (
             "examples/ticketdesk/src/bin/endurance.rs",

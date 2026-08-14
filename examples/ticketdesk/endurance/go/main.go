@@ -372,8 +372,8 @@ func runIteration(ctx context.Context, clientSet *clients, events *ticketdesk.Ti
 			}
 			_, err = triage.ReactComment(ctx, *reaction, ticketdesk.CreateCommentInput{
 				Body: "go contextual endurance reaction", AuthorId: event.ReporterId,
-				TicketId: event.TicketId, CommentId: id(seed+1, 20_000+index*1_000_000+counter),
-				IdempotencyKey: fmt.Sprintf("endurance-go-reaction-%d-%d", index, counter), OrganizationId: organizationID,
+				TicketId: event.TicketId, CommentId: event.TicketId,
+				IdempotencyKey: fmt.Sprintf("endurance-go-reaction-%s", item.Delivery.EventID), OrganizationId: organizationID,
 			})
 			if err == nil {
 				err = metric.record("workflows", tenant, 512, &operationStarted)

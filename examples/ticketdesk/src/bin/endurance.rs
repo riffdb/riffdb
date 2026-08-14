@@ -351,6 +351,7 @@ async fn run_iteration(
         record(metrics, "workflows", tenant, 0, &mut operation_started).await;
         if let Some(item) = batch.items.first() {
             let TicketEventsEvent::TicketCreated(event) = &item.event;
+            let event_id = item.evidence().delivery.event.id;
             clients
                 .agent
                 .react_comment(
@@ -360,9 +361,10 @@ async fn run_iteration(
                         body: "rust contextual endurance reaction".to_owned(),
                         author_id: event.reporter_id.clone(),
                         ticket_id: event.ticket_id.clone(),
-                        comment_id: id(seed, 20_000 + client_index * 1_000_000 + counter),
+                        comment_id: event.ticket_id.clone(),
                         idempotency_key: format!(
-                            "endurance-rust-reaction-{client_index}-{counter}"
+                            "endurance-rust-reaction-{}-{}",
+                            event_id.commit_sequence, event_id.event_ordinal
                         ),
                         organization_id: organization_id.to_owned(),
                     },
