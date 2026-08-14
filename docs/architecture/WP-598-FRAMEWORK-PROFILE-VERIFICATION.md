@@ -19,6 +19,25 @@ dependency. Its acceptance artifact is the framework-neutral profile in
 | Keyless upstream retries | **VERIFIED** | `adapter_minted_idempotency_survives_driver_retries_with_fresh_transport_ids` proves an adapter-retained command input survives bounded driver retries while transport request identities rotate; `equal_key_commands_commit_once_and_replay_exactly` proves the admission property the minted identity rides — one commit sequence, byte-equal stored outcome on replay, one provenance record, typed input-mismatch for changed input. |
 | Framework-neutral alpha workload | **VERIFIED** | `adapter-framework-profile-acceptance` rejects framework-specific fixture names, runs the compiler, runtime, driver, and real-storage evidence above, and fails if any exact-match schedule resolves to an empty triggering set; `deployable-alpha-acceptance` includes it as a required phase. |
 
+## WP-606 discharge of the coordinator escalation
+
+The refresh/revoke race escalation above is discharged. WP-606 audited the
+derivation whitelist per version (audit notes at
+`index_derivation_version_supported` in
+`crates/riffdb-commit/src/command_index.rs`, per-version evidence tests in
+the same module) and both race schedules now run live and pass with their
+WP-598 assertions unchanged. Two corrections to the escalation text as
+written: grammar/IR V7 is current-row event policy anchors (ADR-0116) —
+vector-field specs require IR V6 and were already inside the audited set —
+and the whitelist had meanwhile been extended without audit by an
+out-of-package commit (`44e4afa0`); WP-606's audit is the retroactive
+discharge of both that extension and the original silent parking. The
+schedules' initial failure after the extension was not a derivation defect:
+the profile harness mixed the audited capsule path with the unaudited
+storage-only conformance path on one entity, which startup validation
+correctly reports as an Authoritative `MissingCrossLink`; the harness now
+uses the audited path consistently, matching public application commands.
+
 ## Corrections to the previous round
 
 The earlier revision of this page recorded the refresh/revoke race as
