@@ -2,7 +2,10 @@
 resolver = "3"
 members = [
   "crates/riffdb-api-grpc",
+  "crates/riffdb-application",
   "crates/riffdb-client-rust",
+  "crates/riffdb-config",
+  "crates/riffdb-contract-ir",
   "crates/riffdb-errors",
   "crates/riffdb-proto",
   "crates/riffdb-types",
@@ -14,6 +17,13 @@ edition = "2024"
 rust-version = "1.97.0"
 license = "MIT OR Apache-2.0"
 publish = false
+
+[workspace.dependencies]
+# Keep inherited SDK test dependencies resolvable even though the sealed-bundle
+# smoke compiles only the public runtime surface. This exact pin mirrors the
+# authoritative workspace and prevents a clean exported SDK from depending on
+# ambient repository metadata.
+tempfile = { version = "=3.24.0", default-features = false }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

@@ -25,7 +25,11 @@ parent="$(dirname "$destination")"
 temporary="$(mktemp -d "$parent/.riffdb-agent-alpha.XXXXXX")"
 cleanup() {
     if [[ -d "$temporary" ]]; then
-        rm -rf "$temporary"
+        if [[ "${RIFFDB_AGENT_ALPHA_PACKAGE_KEEP_WORKSPACE:-false}" == true ]]; then
+            echo "retained sealed-bundle workspace: $temporary" >&2
+        else
+            rm -rf "$temporary"
+        fi
     fi
 }
 trap cleanup EXIT INT TERM
@@ -39,6 +43,7 @@ done
 
 cargo build --quiet --release \
     -p riffdb-cli --bin riffdb \
+    -p riffdb-driver-host --bin riffdb-driverd \
     -p riffdb-server --bin riffdbd \
     -p riffdb-api-mcp --features stdio --bin riffdb-builder-mcp \
     -p riffdb-mcp-stdio --bin riffdb-mcp
@@ -68,6 +73,7 @@ cp "$python_wheel" "$temporary/public/python/$python_wheel_name"
 rm -rf "$temporary/.python-build"
 cp "$repo_root/target/release/riffdb" "$temporary/bin/"
 cp "$repo_root/target/release/riffdbd" "$temporary/bin/"
+cp "$repo_root/target/release/riffdb-driverd" "$temporary/bin/"
 cp "$repo_root/target/release/riffdb-mcp" "$temporary/bin/"
 cp "$repo_root/target/release/riffdb-builder-mcp" "$temporary/bin/"
 cp "$repo_root/scripts/riffdb-dev-installed" "$temporary/bin/riffdb-dev"
@@ -75,6 +81,17 @@ cp "$repo_root/scripts/check-application-boundary" \
     "$temporary/libexec/check-application-boundary"
 cp "$repo_root/release/config/bootstrap-ticketdesk-dev.json" \
     "$temporary/share/riffdb/bootstrap-dev.json"
+mkdir -p "$temporary/share/riffdb/dev-tls"
+cp "$repo_root/crates/riffdb-server/tests/fixtures/localhost-cert.pem" \
+    "$temporary/share/riffdb/dev-tls/server.pem"
+cp "$repo_root/crates/riffdb-server/tests/fixtures/localhost-key.pem" \
+    "$temporary/share/riffdb/dev-tls/server.key"
+cp "$repo_root/crates/riffdb-server/tests/fixtures/test-ca.pem" \
+    "$temporary/share/riffdb/dev-tls/ca.pem"
+chmod 0444 \
+    "$temporary/share/riffdb/dev-tls/server.pem" \
+    "$temporary/share/riffdb/dev-tls/ca.pem"
+chmod 0600 "$temporary/share/riffdb/dev-tls/server.key"
 cp "$repo_root/README.md" "$temporary/docs/README.md"
 cp "$repo_root/docs/safety-by-construction.md" "$temporary/docs/"
 cp "$repo_root/docs/agent-application-alpha.md" "$temporary/docs/"
@@ -99,7 +116,15 @@ cp "$repo_root/clients/typescript/runtime/package.json" "$temporary/public/types
 cp "$repo_root/clients/typescript/runtime/package-lock.json" "$temporary/public/typescript/"
 cp -R "$repo_root/clients/typescript/runtime/dist" "$temporary/public/typescript/"
 cp -R "$repo_root/clients/typescript/runtime/node_modules" "$temporary/public/typescript/"
-for crate in riffdb-client-rust riffdb-api-grpc riffdb-errors riffdb-proto riffdb-types; do
+for crate in \
+    riffdb-api-grpc \
+    riffdb-application \
+    riffdb-client-rust \
+    riffdb-config \
+    riffdb-contract-ir \
+    riffdb-errors \
+    riffdb-proto \
+    riffdb-types; do
     cp -R "$repo_root/crates/$crate" "$temporary/public/rust-sdk/crates/"
 done
 cp -R "$repo_root/proto" "$temporary/public/rust-sdk/"
@@ -111,6 +136,10 @@ cp "$repo_root/templates/application/Cargo.lock" \
     "$temporary/public/rust-sdk/Cargo.lock"
 cp "$repo_root/release/agent-application-alpha/riffdb-api-grpc-client.Cargo.toml" \
     "$temporary/public/rust-sdk/crates/riffdb-api-grpc/Cargo.toml"
+cp "$repo_root/release/agent-application-alpha/riffdb-application-client.Cargo.toml" \
+    "$temporary/public/rust-sdk/crates/riffdb-application/Cargo.toml"
+cp "$repo_root/release/agent-application-alpha/riffdb-contract-ir-client.Cargo.toml" \
+    "$temporary/public/rust-sdk/crates/riffdb-contract-ir/Cargo.toml"
 cp "$repo_root/release/agent-application-alpha/BUNDLE.md" "$temporary/README.md"
 cp "$repo_root/release/agent-application-alpha/cargo-config.toml" \
     "$temporary/.cargo/config.toml"

@@ -111,6 +111,15 @@ The starter serves `/item`, executes one generated idempotent command, performs
 one generated page-shaped read with the returned read-after-commit fence, and
 returns only the typed observation. Browser code never receives the credential.
 
+For the canonical local loop, run `riffdb dev --seed --run`. RiffDB starts a
+verified loopback-TLS daemon and the first-party `riffdb-driverd`, provisions
+the exact application role, and supplies the starter only the protected socket
+plus its public handshake identity. The sealed alpha bundle carries a static
+development-only loopback certificate and key for this workflow; they are not
+production credentials and the daemon never binds them to a non-loopback
+address. Remote and production deployments must supply their own TLS identity
+through the documented driver-host configuration.
+
 Application Source V4 additionally generates typed event async iterators, live
 query update unions, a framework-neutral live store, and an application-server
 SSE relay. The relay retains the RiffDB credential server-side and requires an
