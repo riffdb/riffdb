@@ -127,6 +127,14 @@ on-disk generation advance; reactive-consumer actions require exact durable
 acknowledgement progress. Evidence files are atomically written and only their
 SHA-256 enters the bounded action result.
 
+Backup actions start and poll one identity-stable public remote maintenance
+operation, require the exact four-file immutable backup inventory, and retain
+the checksum and size of every artifact. Capability-rotation actions issue a
+new least-authority health credential and revoke the preceding rotation
+credential; their frontier is the real administration sequence returned by
+those public operations. Neither action substitutes a harness counter for the
+durable server or filesystem result.
+
 `RIFFDB_ENDURANCE_ARTIFACT_ROOT` must be an absolute, non-symlink path and must
 name a fresh run root. The script never reuses or erases an existing
 `environment-v1` directory. The server's stdin is held open for the complete
