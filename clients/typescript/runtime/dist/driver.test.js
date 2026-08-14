@@ -58,6 +58,31 @@ test("one retained session handshakes once and multiplexes exact operations", as
         await fixture.close();
     }
 });
+test("concurrent sessions use distinct driver request identities", async () => {
+    const requestIds = new Set();
+    const fixture = await DriverFixture.start((request) => {
+        if (request.type !== "invoke")
+            return undefined;
+        requestIds.add(String(request.request_id));
+        return {
+            type: "result", request_id: request.request_id,
+            value: { type: "null" }, application_head: null, cursor: null, replayed: false,
+        };
+    });
+    try {
+        const [first, second] = await Promise.all([
+            DriverApplicationTransport.connect({ socketPath: fixture.path, identity }),
+            DriverApplicationTransport.connect({ socketPath: fixture.path, identity }),
+        ]);
+        const operation = { name: "ticketdesk_get_ticket", inputSchemaHash: HASH };
+        await Promise.all([first.invoke(operation, {}), second.invoke(operation, {})]);
+        assert.equal(requestIds.size, 2);
+        await Promise.all([first.shutdown(), second.shutdown()]);
+    }
+    finally {
+        await fixture.close();
+    }
+});
 test("u64 frontiers remain exact across the JSON number protocol", async () => {
     const maximum = 18446744073709551615n;
     const golden = (await readFile(new URL("../../../../fixtures/driver/v1/max-u64-result.json", import.meta.url), "utf8")).trim();

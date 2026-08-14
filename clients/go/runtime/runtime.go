@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"os"
 	"regexp"
 	"sort"
 	"strconv"
@@ -35,6 +36,7 @@ var (
 	hashPattern    = regexp.MustCompile(`^[0-9a-f]{64}$`)
 	symbolPattern  = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,256}$`)
 	requestPattern = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,128}$`)
+	nextSession    atomic.Uint64
 )
 
 // Value is the closed target-neutral application value registry.
@@ -402,15 +404,16 @@ type ApplicationError struct{ Details ErrorDetails }
 func (err *ApplicationError) Error() string { return err.Details.Code + ": " + err.Details.Message }
 
 type Session struct {
-	connection net.Conn
-	reader     *bufio.Reader
-	identity   Identity
-	writeMu    sync.Mutex
-	mu         sync.Mutex
-	pending    map[string]chan packet
-	next       atomic.Uint64
-	closed     chan struct{}
-	closeOnce  sync.Once
+	connection    net.Conn
+	reader        *bufio.Reader
+	identity      Identity
+	writeMu       sync.Mutex
+	mu            sync.Mutex
+	pending       map[string]chan packet
+	requestPrefix string
+	next          atomic.Uint64
+	closed        chan struct{}
+	closeOnce     sync.Once
 }
 
 type packet struct {
@@ -426,7 +429,7 @@ func Connect(ctx context.Context, socketPath string, identity Identity) (*Sessio
 	if err != nil {
 		return nil, errors.New("RiffDB driver session failed")
 	}
-	session := &Session{connection: connection, reader: bufio.NewReader(connection), identity: identity, pending: make(map[string]chan packet), closed: make(chan struct{})}
+	session := &Session{connection: connection, reader: bufio.NewReader(connection), identity: identity, pending: make(map[string]chan packet), requestPrefix: newSessionRequestPrefix(), closed: make(chan struct{})}
 	go session.readLoop()
 	requestID := session.requestID("handshake")
 	request := handshakeRequest{Type: "handshake", RequestID: requestID, ProtocolVersion: ProtocolVersion,
@@ -609,7 +612,11 @@ func (session *Session) remove(id string) {
 	session.mu.Unlock()
 }
 func (session *Session) requestID(kind string) string {
-	return fmt.Sprintf("go.%s.%d", kind, session.next.Add(1))
+	return fmt.Sprintf("%s.%s.%d", session.requestPrefix, kind, session.next.Add(1))
+}
+
+func newSessionRequestPrefix() string {
+	return fmt.Sprintf("go.%d.%d", os.Getpid(), nextSession.Add(1))
 }
 
 type wireOptions struct {

@@ -9,6 +9,7 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[89ab][0-9a-f]{3}-[0-9a-f]{12
 const REQUEST_ID = /^[A-Za-z0-9_.-]{1,128}$/;
 const MAX_U64 = 18446744073709551615n;
 const UTF8_DECODER = new TextDecoder("utf-8", { fatal: true });
+let nextSession = 0;
 /** Exact alpha driver protocol generation. */
 export const DRIVER_PROTOCOL_VERSION = 1;
 /** Exact tagged value registry compiled into `riffdb-driverd`. */
@@ -57,6 +58,7 @@ export class DriverApplicationError extends Error {
 export class DriverApplicationTransport {
     #socket;
     #identity;
+    #requestPrefix;
     #pending = new Map();
     #input = Buffer.alloc(0);
     #nextRequest = 1;
@@ -64,6 +66,8 @@ export class DriverApplicationTransport {
     constructor(socket, identity) {
         this.#socket = socket;
         this.#identity = identity;
+        nextSession = nextSession === Number.MAX_SAFE_INTEGER ? 1 : nextSession + 1;
+        this.#requestPrefix = `ts.${process.pid}.${nextSession}`;
         socket.on("data", (chunk) => this.#receive(chunk));
         socket.on("error", () => this.#fail(new Error("RiffDB driver session failed")));
         socket.on("close", () => this.#fail(new Error("RiffDB driver session closed")));
@@ -254,7 +258,7 @@ export class DriverApplicationTransport {
         this.#pending.clear();
     }
     #requestId(kind) {
-        const value = `ts.${kind}.${this.#nextRequest}`;
+        const value = `${this.#requestPrefix}.${kind}.${this.#nextRequest}`;
         this.#nextRequest = this.#nextRequest === Number.MAX_SAFE_INTEGER ? 1 : this.#nextRequest + 1;
         return value;
     }

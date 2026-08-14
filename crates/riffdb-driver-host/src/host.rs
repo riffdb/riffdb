@@ -35,6 +35,7 @@ pub const DRIVER_ERROR_REGISTRY_HASH: &str =
     "b94d685ecbc18f2369a2bfa1a53139d06100699c4ee41b31c86d6a7e17039850";
 const MAX_POOL_CONNECTIONS: usize = 16;
 const MAX_QUEUED_OPERATIONS: usize = 4_096;
+const REACTIVE_PROCESSING_ALLOWANCE: Duration = Duration::from_secs(5);
 
 /// Bounded reusable pool of verified application-only connections.
 pub struct DriverPool {
@@ -327,7 +328,11 @@ impl DriverHost {
                 },
             );
         }
-        let deadline = Duration::from_millis(options.deadline_millis);
+        let deadline = invocation_deadline(
+            spec.kind(),
+            spec.reactive_action(),
+            Duration::from_millis(options.deadline_millis),
+        );
         let execution = self.execute(request_id.clone(), &spec, input, options, permit);
         let response = tokio::select! {
             result = tokio::time::timeout(deadline, execution) => match result {
@@ -962,6 +967,18 @@ impl DriverHost {
     }
 }
 
+fn invocation_deadline(
+    kind: OperationKind,
+    reactive_action: Option<&str>,
+    caller_wait: Duration,
+) -> Duration {
+    if kind == OperationKind::Reactive && reactive_action == Some("next") {
+        caller_wait.saturating_add(REACTIVE_PROCESSING_ALLOWANCE)
+    } else {
+        caller_wait
+    }
+}
+
 /// Closed host setup/runtime failure.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DriverHostError {
@@ -1388,9 +1405,7 @@ fn take_lease(
     let lease = BASE64
         .decode(take_string(input, "lease_token")?)
         .map_err(|_| ApplicationClientError::InvalidInput)?;
-    let history = take_string(input, "history_incarnation")?
-        .parse()
-        .map_err(|_| ApplicationClientError::InvalidInput)?;
+    let history = take_bounded_u64(input, "history_incarnation", 0, 1, u64::MAX)?;
     ApplicationEventLeaseEvidence::new(event_id, lease, history)
 }
 fn parse_checkpoint(value: &str) -> Result<ApplicationEventCheckpoint, ApplicationClientError> {
@@ -1848,6 +1863,47 @@ fn raise_live_update(
 mod tests {
     use super::*;
     use tonic::transport::Endpoint;
+
+    #[test]
+    fn reactive_poll_reserves_bounded_processing_time_after_caller_wait() {
+        assert_eq!(
+            invocation_deadline(
+                OperationKind::Reactive,
+                Some("next"),
+                Duration::from_millis(1),
+            ),
+            Duration::from_millis(1) + REACTIVE_PROCESSING_ALLOWANCE,
+        );
+        assert_eq!(
+            invocation_deadline(
+                OperationKind::Reactive,
+                Some("ack"),
+                Duration::from_millis(1),
+            ),
+            Duration::from_millis(1),
+        );
+        assert_eq!(
+            invocation_deadline(OperationKind::Command, None, Duration::from_secs(2)),
+            Duration::from_secs(2),
+        );
+    }
+
+    #[test]
+    fn contextual_lease_accepts_the_generated_unsigned_history_value() {
+        let mut input = BTreeMap::from([
+            (
+                "event_id".to_owned(),
+                ApplicationValue::String("1:0".to_owned()),
+            ),
+            (
+                "lease_token".to_owned(),
+                ApplicationValue::String(BASE64.encode([7_u8; 32])),
+            ),
+            ("history_incarnation".to_owned(), ApplicationValue::U64(1)),
+        ]);
+        let _evidence = take_lease(&mut input).expect("generated lease evidence");
+        assert!(input.is_empty());
+    }
 
     fn host() -> DriverHost {
         let catalog = ApplicationCatalog::from_exact_artifacts(
