@@ -273,6 +273,44 @@ fn terminal_staging_reuses_the_same_transaction_current_admission_proof() {
 }
 
 #[test]
+fn startup_fast_path_does_not_rebuild_whole_history_accelerators() {
+    let startup = production_source(crate_root().join("src/startup.rs"));
+    let samples = startup
+        .split_once("fn run_checkpoint_sample_windows(")
+        .expect("checkpoint sampler")
+        .1
+        .split_once("\nimpl RedbStructuralEvidenceSession")
+        .expect("checkpoint sampler end")
+        .0;
+    assert!(!samples.contains("command_capsule_cache_from_segments"));
+    assert!(!samples.contains("command_audit_cache_from_segments"));
+    assert!(samples.contains("inspect_event_row"));
+    assert!(samples.contains("inspect_audit_row"));
+
+    let cursor = startup
+        .split_once("fn next_structural_row_raw(")
+        .expect("structural cursor")
+        .1
+        .split_once("\nfn inspect_table_row_from_bytes(")
+        .expect("structural cursor end")
+        .0;
+    assert!(
+        !cursor.contains("ensure_command_cache"),
+        "opening an empty checkpoint-truncated audit phase must not decode command history"
+    );
+
+    let index = startup
+        .split_once("fn inspect_index_row(")
+        .expect("index inspector")
+        .1
+        .split_once("\nfn inspect_epoch_row(")
+        .expect("index inspector end")
+        .0;
+    assert!(index.contains("binding_bundles.contains"));
+    assert!(!index.contains("open_table"));
+}
+
+#[test]
 fn partial_contract_migration_reopen_is_confined_to_the_witness_gate() {
     let sources = rust_sources();
     assert_eq!(

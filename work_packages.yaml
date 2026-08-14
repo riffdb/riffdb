@@ -11127,7 +11127,9 @@ work_packages:
     ADR-0103, ADR-0104, ADR-0110, ADR-0111, ADR-0112, ADR-0115, ADR-0116]
   allowed_paths: [SPEC.md, work_packages.yaml, fixtures/adapters/**,
     fixtures/endurance/**, examples/**, benchmarks/**, tests/**, scripts/**,
-    docs/**, release/evidence/**, .github/**]
+    docs/**, release/evidence/**, .github/**,
+    crates/riffdb-storage-redb/src/startup.rs,
+    crates/riffdb-storage-redb/tests/architecture.rs]
   deliverables:
   - One retained 72-hour remote mixed-load receipt with all four adapter shapes/languages, periodic
     conformance and policy probes, zero silent loss/leak, and no unsupported storage-unavailable path
