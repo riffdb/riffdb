@@ -45,6 +45,11 @@ REQUIRED_COVERAGE: Final = {
     "workflows",
     "writes",
 }
+LATENCY_BOUNDS_US: Final = (
+    50, 100, 200, 400, 800, 1_600, 3_200, 6_400,
+    12_800, 25_600, 51_200, 102_400, 204_800, 409_600, 819_200,
+    9_007_199_254_740_991,
+)
 
 
 class Metrics:
@@ -62,13 +67,22 @@ class Metrics:
             "writes": 0,
         }
         self._tenants = dict.fromkeys(TENANTS, 0)
+        self._latency_counts = [0] * len(LATENCY_BOUNDS_US)
 
-    async def record(self, workload: str, tenant: str, retained_bytes: int) -> None:
+    async def record(
+        self, workload: str, tenant: str, retained_bytes: int, started_ns: int
+    ) -> None:
         async with self._lock:
             self._operations += 1
             self._retained_bytes += retained_bytes
             self._workloads[workload] += 1
             self._tenants[tenant] += 1
+            latency_us = max(0, (time.perf_counter_ns() - started_ns) // 1_000)
+            bucket = next(
+                (index for index, bound in enumerate(LATENCY_BOUNDS_US) if latency_us <= bound),
+                len(LATENCY_BOUNDS_US) - 1,
+            )
+            self._latency_counts[bucket] += 1
             if self._operations % 64 == 0:
                 self._publish_locked()
 
@@ -87,6 +101,8 @@ class Metrics:
             "declared_retries": 0,
             "error_count": 0,
             "modeled_retained_bytes": self._retained_bytes,
+            "latency_bounds_us": LATENCY_BOUNDS_US,
+            "latency_counts": self._latency_counts,
             "workloads": self._workloads,
             "tenants": self._tenants,
         }
@@ -217,6 +233,7 @@ async def run_client(
         triage_consumer = f"endurance-python-triage-{client_index}"
         counter = 0
         while True:
+            operation_started = time.perf_counter_ns()
             slot = counter % 100
             if slot < 35:
                 result = await clients.application.ticket_page(
@@ -226,7 +243,7 @@ async def run_client(
                 )
                 if not isinstance(result.value, TicketPageFound):
                     raise RuntimeError("Python endurance read lost its hot ticket")
-                await metrics.record("reads", tenant, 0)
+                await metrics.record("reads", tenant, 0, operation_started)
             elif slot < 60:
                 await clients.application.create_comment(
                     CreateCommentInput(
@@ -243,12 +260,13 @@ async def run_client(
                         organization_id=organization_id,
                     )
                 )
-                await metrics.record("writes", tenant, 512)
+                await metrics.record("writes", tenant, 512, operation_started)
             elif slot < 70:
                 item = await clients.agent.next_triage_ticket(
                     triage_parameters, triage_consumer, 0
                 )
-                await metrics.record("workflows", tenant, 0)
+                await metrics.record("workflows", tenant, 0, operation_started)
+                operation_started = time.perf_counter_ns()
                 if item is not None:
                     await clients.agent.react_comment(
                         triage_parameters,
@@ -268,7 +286,7 @@ async def run_client(
                             organization_id=organization_id,
                         ),
                     )
-                    await metrics.record("workflows", tenant, 512)
+                    await metrics.record("workflows", tenant, 512, operation_started)
             elif slot < 80:
                 stream = clients.agent.ticket_events(
                     event_parameters, event_consumer
@@ -278,11 +296,12 @@ async def run_client(
                         delivery = await anext(stream)
                 finally:
                     await stream.aclose()
-                await metrics.record("events", tenant, 0)
+                await metrics.record("events", tenant, 0, operation_started)
+                operation_started = time.perf_counter_ns()
                 await clients.agent.ack_ticket_events(
                     event_parameters, event_consumer, delivery
                 )
-                await metrics.record("events", tenant, 0)
+                await metrics.record("events", tenant, 0, operation_started)
             else:
                 stream = clients.application.watch_ticket_queue_watch(
                     TicketQueueWatchParams(
@@ -294,8 +313,9 @@ async def run_client(
                         await anext(stream)
                 finally:
                     await stream.aclose()
-                await metrics.record("live_queries", tenant, 0)
+                await metrics.record("live_queries", tenant, 0, operation_started)
             if slot == 69:
+                operation_started = time.perf_counter_ns()
                 ordinal = (counter // 100) % 4_096
                 await clients.application.create_ticket(
                     CreateTicketInput(
@@ -313,7 +333,7 @@ async def run_client(
                         organization_id=organization_id,
                     )
                 )
-                await metrics.record("workflows", tenant, 768)
+                await metrics.record("workflows", tenant, 768, operation_started)
             counter += 1
             await asyncio.sleep(delay)
     finally:
@@ -331,6 +351,7 @@ async def seed_client(
     seed: int,
     client_index: int,
 ) -> None:
+    operation_started = time.perf_counter_ns()
     await clients.seeder.create_organization(
         CreateOrganizationInput(
             name=f"Endurance {tenant}",
@@ -338,7 +359,8 @@ async def seed_client(
             organization_id=organization_id,
         )
     )
-    await metrics.record("writes", tenant, 512)
+    await metrics.record("writes", tenant, 512, operation_started)
+    operation_started = time.perf_counter_ns()
     await clients.seeder.create_user(
         CreateUserInput(
             email=f"python-{client_index}@{tenant}.example.test",
@@ -348,7 +370,8 @@ async def seed_client(
             organization_id=organization_id,
         )
     )
-    await metrics.record("writes", tenant, 512)
+    await metrics.record("writes", tenant, 512, operation_started)
+    operation_started = time.perf_counter_ns()
     await clients.seeder.create_project(
         CreateProjectInput(
             name=f"Python endurance {client_index}",
@@ -357,7 +380,8 @@ async def seed_client(
             organization_id=organization_id,
         )
     )
-    await metrics.record("writes", tenant, 512)
+    await metrics.record("writes", tenant, 512, operation_started)
+    operation_started = time.perf_counter_ns()
     await clients.application.create_ticket(
         CreateTicketInput(
             title=f"Python hot ticket {client_index}",
@@ -370,7 +394,7 @@ async def seed_client(
             organization_id=organization_id,
         )
     )
-    await metrics.record("writes", tenant, 768)
+    await metrics.record("writes", tenant, 768, operation_started)
     await metrics.publish()
 
 

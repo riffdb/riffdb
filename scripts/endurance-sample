@@ -1,0 +1,357 @@
+#!/usr/bin/env python3
+"""Emit one bounded resource observation for the installed endurance environment."""
+
+from __future__ import annotations
+
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+import time
+from typing import Any
+
+
+LANGUAGES = ("go", "python", "rust", "typescript")
+TENANTS = ("tenant_alpha", "tenant_beta", "tenant_gamma", "tenant_delta")
+WORKLOADS = ("events", "live_queries", "reads", "workflows", "writes")
+LATENCY_BOUNDS_US = (
+    50, 100, 200, 400, 800, 1_600, 3_200, 6_400,
+    12_800, 25_600, 51_200, 102_400, 204_800, 409_600, 819_200,
+    9_007_199_254_740_991,
+)
+MAX_JSON_BYTES = 1024 * 1024
+
+
+def fail(message: str) -> "None":
+    raise ValueError(message)
+
+
+def required_root() -> Path:
+    raw = os.environ.get("RIFFDB_ENDURANCE_ARTIFACT_ROOT", "")
+    candidate = Path(raw)
+    if not raw or not candidate.is_absolute() or candidate.is_symlink() or not candidate.is_dir():
+        fail("RIFFDB_ENDURANCE_ARTIFACT_ROOT must be an absolute non-symlink directory")
+    return candidate
+
+
+def read_object(path: Path) -> dict[str, Any]:
+    if path.is_symlink() or not path.is_file():
+        fail(f"endurance observation input is absent: {path.name}")
+    encoded = path.read_bytes()
+    if not 0 < len(encoded) <= MAX_JSON_BYTES:
+        fail(f"endurance observation input exceeds its byte bound: {path.name}")
+    value = json.loads(encoded)
+    if not isinstance(value, dict):
+        fail(f"endurance observation input is not an object: {path.name}")
+    return value
+
+
+def integer(value: Any, name: str) -> int:
+    if type(value) is not int or value < 0:
+        fail(f"endurance observation {name} is invalid")
+    return value
+
+
+def checked_file_size(path: Path) -> int:
+    if not path.exists():
+        return 0
+    if path.is_symlink() or not path.is_file():
+        fail(f"endurance storage artifact is not a regular file: {path.name}")
+    return path.stat().st_size
+
+
+def tree_bytes(root: Path) -> int:
+    if root.is_symlink() or not root.is_dir():
+        fail("endurance backup root is invalid")
+    total = 0
+    files = 0
+    for candidate in root.rglob("*"):
+        if candidate.is_symlink():
+            fail("endurance backup inventory contains a symlink")
+        if candidate.is_file():
+            files += 1
+            if files > 4096:
+                fail("endurance backup inventory exceeds its file bound")
+            total += candidate.stat().st_size
+    return total
+
+
+def process_memory(pid: int) -> tuple[int, int]:
+    status = Path(f"/proc/{pid}/status")
+    if not status.is_file():
+        fail("endurance process inventory contains a stopped process")
+    rss = None
+    data = None
+    for line in status.read_text().splitlines():
+        if line.startswith("VmRSS:"):
+            rss = int(line.split()[1]) * 1024
+        elif line.startswith("VmData:"):
+            data = int(line.split()[1]) * 1024
+    if rss is None or data is None:
+        fail("endurance process memory observation is incomplete")
+    return rss, data
+
+
+def read_worker_metrics(environment: Path) -> list[dict[str, Any]]:
+    deadline = time.monotonic() + 5
+    while True:
+        paths = [environment / "metrics" / f"{language}.json" for language in LANGUAGES]
+        if all(path.is_file() and not path.is_symlink() for path in paths):
+            break
+        if time.monotonic() >= deadline:
+            fail("endurance language metrics did not become ready")
+        time.sleep(0.05)
+    values = []
+    for language, path in zip(LANGUAGES, paths):
+        value = read_object(path)
+        if value.get("schema") != "riffdb.alpha-endurance-worker/v1" or value.get("language") != language:
+            fail("endurance language metric identity is invalid")
+        workloads = value.get("workloads")
+        tenants = value.get("tenants")
+        if not isinstance(workloads, dict) or set(workloads) != set(WORKLOADS):
+            fail("endurance workload metric inventory is invalid")
+        if not isinstance(tenants, dict) or set(tenants) != set(TENANTS):
+            fail("endurance tenant metric inventory is invalid")
+        for name in WORKLOADS:
+            integer(workloads[name], f"{language}.{name}")
+        for name in TENANTS:
+            integer(tenants[name], f"{language}.{name}")
+        for name in (
+            "pid",
+            "logical_operations",
+            "transport_attempts",
+            "declared_retries",
+            "error_count",
+            "modeled_retained_bytes",
+        ):
+            integer(value.get(name), f"{language}.{name}")
+        bounds = value.get("latency_bounds_us")
+        counts = value.get("latency_counts")
+        if bounds != list(LATENCY_BOUNDS_US) or not isinstance(counts, list) or len(counts) != len(LATENCY_BOUNDS_US):
+            fail("endurance latency histogram identity is invalid")
+        if any(type(count) is not int or count < 0 for count in counts):
+            fail("endurance latency histogram count is invalid")
+        if sum(counts) != value["logical_operations"]:
+            fail("endurance latency histogram does not reconcile with operations")
+        values.append(value)
+    return values
+
+
+def health_frontier(environment: Path, riffdb_path: str) -> int:
+    executable = Path(riffdb_path)
+    if not executable.is_absolute() or executable.is_symlink() or not executable.is_file():
+        fail("endurance CLI installation is invalid")
+    command = [
+        str(executable),
+        "--config",
+        str(environment / "bootstrap-client.toml"),
+        "server",
+        "health",
+        "--output",
+        "json",
+    ]
+    result = subprocess.run(
+        command,
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    if result.returncode != 0:
+        fail("endurance health observation failed")
+    value = json.loads(result.stdout)
+    payload = value.get("result") if isinstance(value, dict) else None
+    if (
+        not isinstance(payload, dict)
+        or value.get("schema") != "riffdb.cli.output/v1"
+        or value.get("ok") is not True
+        or payload.get("status") != "ready"
+        or payload.get("database") != "default"
+    ):
+        fail("endurance health observation is not ready")
+    frontier = payload.get("last_commit_sequence")
+    if not isinstance(frontier, str) or not frontier.isascii() or not frontier.isdigit():
+        fail("endurance health frontier is invalid")
+    return int(frontier)
+
+
+def lifecycle_state(environment: Path) -> dict[str, int]:
+    path = environment / "lifecycle-state.json"
+    if not path.exists():
+        return {
+            "journal_generation": 0,
+            "retention_watermark": 0,
+            "tombstone_count": 0,
+            "writer_queue_depth": 0,
+            "consumer_backlog": 0,
+            "checkpoint_count": 0,
+            "restart_count": 0,
+            "lifecycle_microseconds": 0,
+        }
+    value = read_object(path)
+    expected = {
+        "schema",
+        "journal_generation",
+        "retention_watermark",
+        "tombstone_count",
+        "writer_queue_depth",
+        "consumer_backlog",
+        "checkpoint_count",
+        "restart_count",
+        "lifecycle_microseconds",
+    }
+    if set(value) != expected or value.get("schema") != "riffdb.alpha-endurance-lifecycle-state/v1":
+        fail("endurance lifecycle state has an invalid shape")
+    return {name: integer(value[name], name) for name in expected - {"schema"}}
+
+
+def throughput(environment: Path, operations: int) -> int:
+    state_path = environment / "sample-state.json"
+    now = time.monotonic_ns()
+    value = 0
+    if state_path.exists():
+        prior = read_object(state_path)
+        prior_time = integer(prior.get("monotonic_nanos"), "prior monotonic time")
+        prior_operations = integer(prior.get("logical_operations"), "prior operations")
+        if now > prior_time and operations >= prior_operations:
+            value = (operations - prior_operations) * 1_000_000_000 // (now - prior_time)
+    next_path = state_path.with_suffix(".json.next")
+    next_path.write_text(
+        json.dumps(
+            {"monotonic_nanos": now, "logical_operations": operations},
+            separators=(",", ":"),
+        )
+        + "\n"
+    )
+    os.chmod(next_path, 0o600)
+    next_path.replace(state_path)
+    return value
+
+
+def percentile(counts: list[int], numerator: int, denominator: int) -> int:
+    total = sum(counts)
+    if total == 0:
+        return 0
+    target = (total * numerator + denominator - 1) // denominator
+    cumulative = 0
+    for bound, count in zip(LATENCY_BOUNDS_US, counts):
+        cumulative += count
+        if cumulative >= target:
+            return bound
+    fail("endurance latency histogram is incomplete")
+
+
+def main() -> int:
+    if sys.argv[1:] == ["--self-test"]:
+        counts = [0] * len(LATENCY_BOUNDS_US)
+        counts[1] = 50
+        counts[4] = 49
+        counts[9] = 1
+        if percentile(counts, 50, 100) != 100 or percentile(counts, 99, 100) != 800:
+            fail("endurance latency histogram self-test failed")
+        print("endurance sampler histogram: passed")
+        return 0
+    if len(sys.argv) != 1:
+        fail("usage: endurance-sample [--self-test]")
+    root = required_root()
+    environment = root / "environment-v1"
+    state = read_object(environment / "state.json")
+    if state.get("schema") != "riffdb.alpha-endurance-environment/v1" or state.get("root") != str(environment):
+        fail("endurance environment identity is invalid")
+    workers = read_worker_metrics(environment)
+
+    pids = {
+        integer(state.get("server_pid"), "server pid"),
+        integer(state.get("stdin_keeper_pid"), "stdin keeper pid"),
+    }
+    driver_pids = state.get("driver_pids")
+    if not isinstance(driver_pids, dict) or set(driver_pids) != {"agent", "application", "seeder"}:
+        fail("endurance driver process inventory is invalid")
+    pids.update(integer(value, "driver pid") for value in driver_pids.values())
+    pids.update(integer(worker["pid"], "worker pid") for worker in workers)
+    rss_bytes = 0
+    allocator_envelope = 0
+    for pid in pids:
+        rss, data = process_memory(pid)
+        rss_bytes += rss
+        allocator_envelope += data
+
+    language_operations = {
+        language: integer(worker["logical_operations"], f"{language} operations")
+        for language, worker in zip(LANGUAGES, workers)
+    }
+    workload_operations = {
+        name: sum(integer(worker["workloads"][name], name) for worker in workers)
+        for name in WORKLOADS
+    }
+    workload_operations.update(
+        {
+            "hot_keys": workload_operations["reads"] + workload_operations["writes"],
+            "cold_keys": workload_operations["workflows"],
+            "multiple_tenants": sum(language_operations.values()),
+        }
+    )
+    tenant_operations = {
+        name: sum(integer(worker["tenants"][name], name) for worker in workers)
+        for name in TENANTS
+    }
+    logical_operations = sum(language_operations.values())
+    lifecycle = lifecycle_state(environment)
+    database = environment / "data" / "ticketdesk.redb"
+    journal_bytes = sum(
+        checked_file_size(Path(f"{database}{suffix}"))
+        for suffix in (".riffjournal", ".riffjournal.checkpoint", ".riffjournal.next")
+    )
+    riffdb_path = state.get("riffdb")
+    if not isinstance(riffdb_path, str):
+        fail("endurance CLI identity is absent")
+    frontier = health_frontier(environment, riffdb_path)
+    latency_counts = [
+        sum(integer(worker["latency_counts"][index], "latency count") for worker in workers)
+        for index in range(len(LATENCY_BOUNDS_US))
+    ]
+    observation = {
+        "rss_bytes": rss_bytes,
+        # VmData is a conservative writable-data envelope, not an allocator-internal counter.
+        "allocator_bytes": allocator_envelope,
+        "database_bytes": checked_file_size(database),
+        "journal_bytes": journal_bytes,
+        "backup_bytes": tree_bytes(environment / "backups"),
+        "journal_generation": lifecycle["journal_generation"],
+        "retention_watermark": lifecycle["retention_watermark"],
+        "tombstone_count": lifecycle["tombstone_count"],
+        "writer_queue_depth": lifecycle["writer_queue_depth"],
+        "consumer_backlog": lifecycle["consumer_backlog"],
+        "projection_backlog": 0,
+        "logical_operations": logical_operations,
+        "transport_attempts": sum(integer(worker["transport_attempts"], "transport attempts") for worker in workers),
+        "declared_retries": sum(integer(worker["declared_retries"], "declared retries") for worker in workers),
+        "modeled_retained_bytes": sum(integer(worker["modeled_retained_bytes"], "retained bytes") for worker in workers),
+        "lifecycle_seconds": lifecycle["lifecycle_microseconds"] // 1_000_000,
+        "latency_p50_us": percentile(latency_counts, 50, 100),
+        "latency_p99_us": percentile(latency_counts, 99, 100),
+        "throughput_ops_per_second": throughput(environment, logical_operations),
+        "checkpoint_count": lifecycle["checkpoint_count"],
+        "consumer_checkpoint": workload_operations["events"],
+        # TicketDesk has no deployed projection in this workload; authoritative health remains separate.
+        "projection_frontier": 0,
+        "application_frontier": frontier,
+        "error_count": sum(integer(worker["error_count"], "worker errors") for worker in workers),
+        "restart_count": lifecycle["restart_count"],
+        "process_count": len(pids),
+        "language_operations": language_operations,
+        "workload_operations": workload_operations,
+        "tenant_operations": tenant_operations,
+    }
+    print(json.dumps(observation, sort_keys=True, separators=(",", ":")))
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except (json.JSONDecodeError, OSError, subprocess.SubprocessError, ValueError) as error:
+        print(f"endurance_sample_invalid: {error}", file=sys.stderr)
+        raise SystemExit(3) from error

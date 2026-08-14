@@ -96,6 +96,18 @@ the same weighted page read, comment write, contextual reaction, durable event
 acknowledgement, live-query snapshot, and cold-ticket growth shapes; none may
 substitute a kernel read or benchmark-only mutation.
 
+`scripts/endurance-sample` merges the four atomic worker snapshots with the
+installed daemon/driver process inventory, authenticated health frontier, and
+closed storage/backup/lifecycle artifacts. Per-operation latency uses one
+identical 16-bucket microsecond histogram in every language, so aggregate p50
+and p99 remain bounded and mergeable without retaining individual samples.
+On Linux, `allocator_bytes` is deliberately the sum of `VmData` for the closed
+process inventory: it is a conservative writable-data envelope rather than an
+allocator-private counter. This may reject a healthy run by over-counting, but
+cannot hide growth by under-counting known process data. The observation names
+the authoritative application frontier separately and reports projection zero
+for TicketDesk because this workload deploys no projection.
+
 `RIFFDB_ENDURANCE_ARTIFACT_ROOT` must be an absolute, non-symlink path and must
 name a fresh run root. The script never reuses or erases an existing
 `environment-v1` directory. The server's stdin is held open for the complete

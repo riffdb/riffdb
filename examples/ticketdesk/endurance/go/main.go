@@ -22,6 +22,11 @@ var requiredCoverage = [...]string{
 	"multiple_tenants", "reads", "workflows", "writes",
 }
 
+var latencyBoundsUS = [...]uint64{
+	50, 100, 200, 400, 800, 1_600, 3_200, 6_400,
+	12_800, 25_600, 51_200, 102_400, 204_800, 409_600, 819_200, 9_007_199_254_740_991,
+}
+
 type identityFile struct {
 	ApplicationManifestHash string `json:"applicationManifestHash"`
 	OperationCatalogHash    string `json:"operationCatalogHash"`
@@ -58,6 +63,8 @@ type metricFile struct {
 	DeclaredRetries      uint64            `json:"declared_retries"`
 	ErrorCount           uint64            `json:"error_count"`
 	ModeledRetainedBytes uint64            `json:"modeled_retained_bytes"`
+	LatencyBoundsUS      []uint64          `json:"latency_bounds_us"`
+	LatencyCounts        []uint64          `json:"latency_counts"`
 	Workloads            map[string]uint64 `json:"workloads"`
 	Tenants              map[string]uint64 `json:"tenants"`
 }
@@ -77,10 +84,13 @@ func newMetrics(path string) *metrics {
 	return &metrics{path: path, value: metricFile{
 		Schema: "riffdb.alpha-endurance-worker/v1", Language: "go", PID: os.Getpid(),
 		StartedUnixSeconds: time.Now().Unix(), Workloads: workloads, Tenants: tenantCounts,
+		LatencyBoundsUS: latencyBoundsUS[:], LatencyCounts: make([]uint64, len(latencyBoundsUS)),
 	}}
 }
 
-func (value *metrics) record(workload, tenant string, retained uint64) error {
+func (value *metrics) record(workload, tenant string, retained uint64, started *time.Time) error {
+	latency := uint64(time.Since(*started).Microseconds())
+	*started = time.Now()
 	value.mu.Lock()
 	defer value.mu.Unlock()
 	value.value.LogicalOperations++
@@ -88,6 +98,14 @@ func (value *metrics) record(workload, tenant string, retained uint64) error {
 	value.value.ModeledRetainedBytes += retained
 	value.value.Workloads[workload]++
 	value.value.Tenants[tenant]++
+	bucket := len(latencyBoundsUS) - 1
+	for index, bound := range latencyBoundsUS {
+		if latency <= bound {
+			bucket = index
+			break
+		}
+	}
+	value.value.LatencyCounts[bucket]++
 	if value.value.LogicalOperations%64 == 0 {
 		return value.publishLocked()
 	}
@@ -265,6 +283,7 @@ func runClient(ctx context.Context, root string, seed, index uint64, delay time.
 	events := clientSet.agent.TicketEvents(ticketdesk.TicketEventsParams{OrganizationId: organizationID}, fmt.Sprintf("endurance-go-events-%d", index))
 	triage := clientSet.agent.TriageTicket(ticketdesk.TriageTicketParams{OrganizationId: organizationID}, fmt.Sprintf("endurance-go-triage-%d", index))
 	for counter := uint64(0); ; counter++ {
+		operationStarted := time.Now()
 		slot := counter % 100
 		switch {
 		case slot < 35:
@@ -275,7 +294,7 @@ func runClient(ctx context.Context, root string, seed, index uint64, delay time.
 			if _, ok := result.Value.(ticketdesk.TicketPageFound); !ok {
 				return errors.New("Go endurance read lost its hot ticket")
 			}
-			err = metric.record("reads", tenant, 0)
+			err = metric.record("reads", tenant, 0, &operationStarted)
 		case slot < 60:
 			_, err = clientSet.application.CreateComment(ctx, ticketdesk.CreateCommentInput{
 				Body: fmt.Sprintf("go endurance comment %d", counter), AuthorId: userID,
@@ -283,13 +302,13 @@ func runClient(ctx context.Context, root string, seed, index uint64, delay time.
 				IdempotencyKey: fmt.Sprintf("endurance-go-comment-%d-%d", index, counter), OrganizationId: organizationID,
 			})
 			if err == nil {
-				err = metric.record("writes", tenant, 512)
+				err = metric.record("writes", tenant, 512, &operationStarted)
 			}
 		case slot < 70:
 			var batch ticketdesk.ContextualBatch[ticketdesk.TicketEventsEvent]
 			batch, err = triage.Next(ctx, 0)
 			if err == nil {
-				err = metric.record("workflows", tenant, 0)
+				err = metric.record("workflows", tenant, 0, &operationStarted)
 			}
 			if err == nil && len(batch.Items) > 0 {
 				item := batch.Items[0]
@@ -313,19 +332,19 @@ func runClient(ctx context.Context, root string, seed, index uint64, delay time.
 					IdempotencyKey: fmt.Sprintf("endurance-go-reaction-%d-%d", index, counter), OrganizationId: organizationID,
 				})
 				if err == nil {
-					err = metric.record("workflows", tenant, 512)
+					err = metric.record("workflows", tenant, 512, &operationStarted)
 				}
 			}
 		case slot < 80:
 			var batch ticketdesk.ConsumerBatch[ticketdesk.TicketEventsEvent]
 			batch, err = events.Next(ctx, ticketdesk.ConsumerOptions{BatchLimit: 1, InFlightLimit: 4, LeaseSeconds: 60})
 			if err == nil {
-				err = metric.record("events", tenant, 0)
+				err = metric.record("events", tenant, 0, &operationStarted)
 			}
 			if err == nil && len(batch.Events) > 0 {
 				_, err = events.Ack(ctx, batch.Events[0])
 				if err == nil {
-					err = metric.record("events", tenant, 0)
+					err = metric.record("events", tenant, 0, &operationStarted)
 				}
 			}
 		default:
@@ -334,7 +353,7 @@ func runClient(ctx context.Context, root string, seed, index uint64, delay time.
 			_, err = watch.Next(watchContext)
 			cancel()
 			if err == nil {
-				err = metric.record("live_queries", tenant, 0)
+				err = metric.record("live_queries", tenant, 0, &operationStarted)
 			}
 		}
 		if err != nil {
@@ -351,7 +370,7 @@ func runClient(ctx context.Context, root string, seed, index uint64, delay time.
 			if err != nil {
 				return err
 			}
-			if err := metric.record("workflows", tenant, 768); err != nil {
+			if err := metric.record("workflows", tenant, 768, &operationStarted); err != nil {
 				return err
 			}
 		}
@@ -382,10 +401,11 @@ func seedClient(ctx context.Context, clients *clients, metric *metrics, tenant, 
 		}, 768},
 	}
 	for _, operation := range operations {
+		started := time.Now()
 		if err := operation.call(); err != nil {
 			return err
 		}
-		if err := metric.record("writes", tenant, operation.size); err != nil {
+		if err := metric.record("writes", tenant, operation.size, &started); err != nil {
 			return err
 		}
 	}
