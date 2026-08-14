@@ -205,6 +205,12 @@ fn endurance_retention_uses_a_disjoint_event_free_lane() {
         ),
         "the event-bearing database must not be used as the advancing retention lane"
     );
+    assert!(
+        lifecycle.contains(
+            "positive_decimal_or_zero(\n                primary_maximum_raw, \"primary maximum permissible watermark\""
+        ),
+        "before-first undelivered outbox work must accept the exact zero low-water mark"
+    );
 }
 
 #[test]

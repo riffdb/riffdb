@@ -216,3 +216,53 @@ that sparse acknowledgements cannot move the fence, that seek/retire can release
 it, and that any missing exact-end evidence fails toward retention.
 
 Status: Accepted by the maintainer on 2026-08-02.
+
+## Amendment 4 — offline retention journal rebase (Accepted 2026-08-14)
+
+ADR-0101 through ADR-0104 made one redb checkpoint plus its bounded durability
+journal suffix the standard-profile authority. Offline retention therefore may
+not open redb directly and begin deleting history while a side journal still
+names the pre-prune checkpoint. Before the first retention mutation, the
+exclusive maintenance path MUST perform the ordinary journal recovery
+ceremony: recover and validate any checkpoint extent and active suffix into
+redb, remove only the proven non-authoritative spare, and durably publish an
+empty active extent whose generation is strictly greater than every selected
+predecessor generation. A typed storage-internal preparation witness binds the
+database identity, application and administration frontiers, terminal frame
+hash, and selected successor generation. No CLI or application input can
+fabricate that witness, and checkpoint deletion or a prune sub-range cannot
+begin without it.
+
+The logical redb application frontier after retention is the greater of the
+last retained command and the verified retention watermark. A fully pruned
+`COMMITS` table therefore does not move the database back to before-first: the
+watermark and tombstone chain preserve the retired prefix while the application
+sequence allocator preserves the next sequence. Journal recovery, composite
+view construction, and the next writer use that same retention-aware frontier.
+An absent or invalid watermark, a retained command at or below the watermark,
+or disagreement among allocator, watermark, tombstone proof, journal header,
+and administration frontier is corruption; recovery never guesses a lower
+frontier.
+
+The durable ordering is:
+
+1. validate durable-format identity and recover every complete journal frame
+   into redb using the existing checkpoint-plus-suffix rules;
+2. fence and publish the empty strictly newer active extent, then durably
+   remove any recovered checkpoint name and non-authoritative spare;
+3. construct the internal preparation witness from the now-empty extent and
+   exact redb frontiers;
+4. delete the validated-prefix checkpoint in its existing Immediate
+   transaction; and
+5. execute the existing bounded tombstone-covered prune sub-ranges.
+
+Recovery/crash tests arm before, during, and after successor-extent creation,
+header sync, rename/directory sync, checkpoint deletion, and every prune
+sub-range. Every accepted state reopens as either wholly unpruned or as one
+contiguous tombstone-covered prefix. A stale scratch extent, mixed generation,
+unreconciled suffix, uncovered deletion, or frontier substitution remains a
+typed fail-closed storage error. Retention does not journal its system deletes
+one by one, discard a suffix, mark pending outbox work delivered, or weaken
+startup validation.
+
+Status: Accepted by the maintainer on 2026-08-14.

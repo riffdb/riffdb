@@ -4598,7 +4598,23 @@ fn retention_prune_refuses_on_empty_history() {
 #[test]
 fn retention_prune_deletes_live_checkpoint_first() {
     let path = TestDatabasePath::new("retention-checkpoint-delete");
-    prepare_checkpointed_command_database(&path.0);
+    prepare_command_database(&path.0);
+    let ports = open_operational(RedbStore::open(&path.0).expect("open journal fixture"));
+    fence_deferred_epoch(&ports, &[command_fixture()]);
+    assert!(
+        ports
+            .write_validated_prefix_checkpoint()
+            .expect("write clean-shutdown checkpoint"),
+        "clean validation must permit the checkpoint"
+    );
+    drop(ports);
+    let mut journal_path = path.0.as_os_str().to_os_string();
+    journal_path.push(".riffjournal");
+    let journal_path = PathBuf::from(journal_path);
+    assert!(
+        journal_path.is_file(),
+        "checkpointed standard-profile fixture must retain its active journal"
+    );
     assert!(
         retention_meta_present(&path.0, "validated_prefix_checkpoint/v1"),
         "fixture must start with a live checkpoint"
@@ -4612,6 +4628,40 @@ fn retention_prune_deletes_live_checkpoint_first() {
     assert!(
         !retention_meta_present(&path.0, "validated_prefix_checkpoint/v1"),
         "prune must delete the validated-prefix checkpoint in its first transaction"
+    );
+    assert!(
+        journal_path.is_file(),
+        "offline prune must not silently discard its journal"
+    );
+    let findings = collect_structural_findings(
+        RedbStore::open(&path.0).expect("reopen fully pruned checkpointed database"),
+    );
+    assert!(
+        findings.is_empty(),
+        "journal rebase plus tombstone proof must reopen clean: {findings:?}"
+    );
+
+    let ports = open_operational(
+        RedbStore::open(&path.0).expect("open fully pruned database for successor command"),
+    );
+    fence_deferred_epoch(&ports, &[command_fixture_at(2)]);
+    assert!(
+        ports
+            .write_validated_prefix_checkpoint()
+            .expect("write successor clean-shutdown checkpoint")
+    );
+    drop(ports);
+    retention_deliver_outbox_status_raw(&path.0, 2);
+    let status = riffdb_storage_redb::RedbOfflineRetention::bind(&path.0)
+        .prune_to(2)
+        .expect("prune successor command after the first full prune");
+    assert_eq!(status.watermark_sequence, 2);
+    let findings = collect_structural_findings(
+        RedbStore::open(&path.0).expect("reopen after second journal-backed full prune"),
+    );
+    assert!(
+        findings.is_empty(),
+        "second journal rebase and prune cycle must reopen clean: {findings:?}"
     );
 }
 

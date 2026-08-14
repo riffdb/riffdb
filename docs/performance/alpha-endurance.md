@@ -24,6 +24,13 @@ worker repeats them alongside its exact command, and the outer harness rejects
 drift before starting the controller. The outer harness also hashes the exact
 action manifest and rejects a raw receipt that is not bound to that hash.
 
+This release campaign is an endurance gate, not a throughput benchmark. Its
+closed ceiling is four logical operations per second in total: one per language
+worker across sixteen closed-loop language/tenant sessions. That still exceeds
+one million operations over 72 hours while keeping disk exhaustion from
+masquerading as a soak failure. Throughput evidence remains owned by the
+separate application benchmark suite.
+
 ## Fast regression gate
 
 Run this during ordinary development:
@@ -85,18 +92,29 @@ inventory, observations, or receipt.
 
 The first-party environment action is `scripts/endurance-environment`. Setup
 creates a fresh, artifact-root-confined TicketDesk installation with a direct
-TLS listener, an exact deployed application lock, and three separately bound
-least-authority roles: `TicketDeskSeeder`, `TicketDeskApplication`, and
-`TicketDeskAgent`. It builds and installs the checked Rust, Go, TypeScript, and
-Python application prerequisites, starts one bounded driver pool per role, and
-publishes a protected state file plus a typed setup receipt. There is no broad
-endurance credential and no cleartext fallback. Teardown stops every recorded
-driver and server process without deleting the database, logs, or receipts.
+TLS listener and two named databases whose data and backup roots are siblings.
+The `default` alias carries the complete event-bearing four-language workload.
+The `retention` alias deploys the same exact application lock but receives only
+event-free history commands through its own `TicketDeskSeeder` binding, so the
+campaign can exercise successful retention without pretending the primary
+database's pending outbox work is delivered. The main workload still uses
+three separately bound least-authority roles: `TicketDeskSeeder`,
+`TicketDeskApplication`, and `TicketDeskAgent`. Setup builds and installs the
+checked Rust, Go, TypeScript, and Python application prerequisites, starts one
+bounded driver pool per role, and publishes a protected state file plus a typed
+setup receipt. There is no broad endurance credential and no cleartext
+fallback. Teardown stops every recorded driver and server process without
+deleting either database, logs, or receipts.
 
 The installed `scripts/endurance-worker` dispatcher selects one compiled
 worker for `rust`, `go`, `typescript`, or `python`. Every worker independently
 revalidates the closed tenant inventory, workload coverage, four-client count,
-seed, and per-language rate ceiling before opening a session. Each worker uses
+seed, per-language rate ceiling, and exact 32-KiB modeled durable-operation
+charge before opening a session. The charge is a conservative accounting unit
+for every operation that may persist authoritative, audit, event, outbox,
+consumer, or provenance state; it is deliberately not an estimate of encoded
+payload bytes. Page reads and live-query snapshots carry no durable-operation
+charge. Each worker uses
 the generated TicketDesk facade with one transport attempt per logical
 operation, separate seeder/application/agent authority, four tenant-owned
 client loops, and atomic bounded metric snapshots under
@@ -141,12 +159,13 @@ counter only after the exact leased item is durably acknowledged.
 lock and refuses every lifecycle name until that operation has a real evidence
 implementation. Checkpoint and restart actions gracefully drain the installed
 daemon, inspect the stopped database's proof-carrying checkpoint, parse the
-exact maximum deferred writer queue from the daemon's shutdown evidence, start
-a fresh installed daemon process, and require authenticated readiness at or
-after the checkpoint frontier. Journal-recycle actions wait for a checksummed
-on-disk generation advance; reactive-consumer actions require exact durable
-acknowledgement progress. Evidence files are atomically written and only their
-SHA-256 enters the bounded action result.
+exact maximum deferred writer queue across the one shutdown-evidence line
+emitted for each configured database, start a fresh installed daemon process,
+and require authenticated readiness at or after the checkpoint frontier.
+Journal-recycle actions wait for a checksummed on-disk generation advance;
+reactive-consumer actions require exact durable acknowledgement progress.
+Evidence files are atomically written and only their SHA-256 enters the bounded
+action result.
 
 Recovery actions are deliberately different from clean restarts: they observe
 the authenticated application frontier and checksummed journal generation,
@@ -174,24 +193,40 @@ nack, kernel read, or harness-authored checkpoint substitutes for lease expiry.
 
 Backup actions start and poll one identity-stable public remote maintenance
 operation, require the exact four-file immutable backup inventory, and retain
-the checksum and size of every artifact. Capability-rotation actions issue a
-new least-authority health credential and revoke the preceding rotation
-credential; their frontier is the real administration sequence returned by
-those public operations. Neither action substitutes a harness counter for the
-durable server or filesystem result.
+the checksum and size of every artifact. Only the newest two verified
+`endurance-*` backup directories remain on disk. The action verifies the new
+backup completely before retiring an older one, and its receipt names both the
+retained and retired inventories. Capability-rotation actions issue a new
+least-authority health credential and revoke the preceding rotation credential;
+their frontier is the real administration sequence returned by those public
+operations. Neither action substitutes a harness counter for the durable server
+or filesystem result.
 
 Deploy-under-load actions invoke the exact checked application package through
 the public deploy command and bind their receipt to both manifest and lock
-hashes. Retention actions first drain and inspect the installed daemon, query
-the closed database's fencing status, prune only to the reported maximum
-permissible watermark, and then require the reopened daemon to preserve the
-pre-maintenance application frontier. A failed offline action still attempts a
-bounded restart; it cannot report success or advance lifecycle state.
+hashes. Retention actions first add one event-free symbolic command to the
+dedicated `retention` alias, then drain and inspect the installed daemon. The
+event-bearing `default` alias must report `UndeliveredOutboxLowWater` below its
+application head and is never pruned. Only the retention alias is pruned to its
+reported maximum permissible watermark. The reopened daemon must preserve the
+primary frontier, and every later retention cycle must advance the dedicated
+lane before pruning again. A failed offline action still attempts a bounded
+restart; it cannot report success or advance lifecycle state.
 Authenticated lifecycle probes accept the documented `ready` or `degraded`
 serving states only when authoritative storage, the catalog, and the commit
 coordinator are all explicitly healthy. A degraded projection or outbox does
 not hide an unhealthy authoritative component and does not prevent safe
 offline maintenance.
+
+The first installed split-lane rehearsal exposed and now regression-tests the
+ADR-0085 Amendment 4 boundary: offline prune previously changed redb while the
+durability journal still named the pre-prune suffix, so the next open returned
+`CorruptData`. Retention now performs ordinary journal recovery, durably rebases
+to an empty newer generation, and holds an internal preparation witness before
+checkpoint deletion or any prune transaction. No release receipt qualifies
+unless two installed prune/restart cycles pass. The harness never deletes the
+journal, marks pending intents delivered, or weakens startup validation to make
+that evidence green.
 
 Environment setup creates one short-lived test CA and two distinct leaf/key
 pairs before starting RiffDB. Certificate rotation atomically replaces the

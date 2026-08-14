@@ -991,3 +991,34 @@ fn the_changelog_emitter_can_only_read_published_durable_snapshots() {
         );
     }
 }
+
+#[test]
+fn offline_retention_mutations_require_the_journal_rebase_witness() {
+    let retention = without_whitespace(&production_source(crate_root().join("src/retention.rs")));
+    assert_eq!(
+        retention.matches("prepare_offline_retention()?").count(),
+        4,
+        "hold add/remove, projection administration, and prune each require the internal witness"
+    );
+    let prune = retention
+        .split_once("pubfnprune_to(")
+        .expect("offline prune implementation")
+        .1
+        .split_once("fnbefore_commit(")
+        .expect("offline prune end")
+        .0;
+    let prepare = prune
+        .find("prepare_offline_retention()?")
+        .expect("prune preparation");
+    let first_write = prune
+        .find("begin_durable_write(database)?")
+        .expect("checkpoint deletion write");
+    assert!(
+        prepare < first_write,
+        "the journal witness must exist before checkpoint deletion or any prune write"
+    );
+    assert!(
+        !prune.contains("Database::open(&self.database_path)"),
+        "prune must not bypass ordinary journal recovery with a direct redb open"
+    );
+}

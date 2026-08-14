@@ -42,6 +42,7 @@ use crate::layout::{
     META_HISTORY_INCARNATION, META_RETENTION_HOLDS, META_RETENTION_WATERMARK,
     META_VALIDATED_PREFIX_CHECKPOINT, OUTBOX, OUTBOX_STATUS, PROJECTION_FRONTIER, PROVENANCE,
 };
+use crate::store::RedbStore;
 
 /// Inclusive commit sequences pruned per offline sub-range transaction.
 pub(crate) const RETENTION_PRUNE_SUBRANGE_SEQUENCES: u64 = 1_024;
@@ -131,8 +132,9 @@ impl RedbOfflineRetention {
     ) -> Result<(), StorageError> {
         let hold = RetentionHoldV1::new(hold_id, sequence, reason)
             .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
-        let database = Database::open(&self.database_path).map_err(database_error)?;
-        let write = begin_durable_write(&database)?;
+        let store = RedbStore::open(&self.database_path)?;
+        let preparation = store.prepare_offline_retention()?;
+        let write = begin_durable_write(preparation.database())?;
         {
             let mut meta = write.open_table(META).map_err(table_error)?;
             let existing = read_holds_meta(&meta)?;
@@ -160,8 +162,9 @@ impl RedbOfflineRetention {
     /// Removes one OPERATOR hold by id. Missing is a no-op success; a
     /// projection-detach row with this id refuses (audited reattach only).
     pub fn remove_hold(&self, hold_id: &str) -> Result<(), StorageError> {
-        let database = Database::open(&self.database_path).map_err(database_error)?;
-        let write = begin_durable_write(&database)?;
+        let store = RedbStore::open(&self.database_path)?;
+        let preparation = store.prepare_offline_retention()?;
+        let write = begin_durable_write(preparation.database())?;
         {
             let mut meta = write.open_table(META).map_err(table_error)?;
             let existing = read_holds_meta(&meta)?;
@@ -234,8 +237,9 @@ impl RedbOfflineRetention {
         timestamp: Timestamp,
         action: RetentionAdministrationAction,
     ) -> Result<(), StorageError> {
-        let database = Database::open(&self.database_path).map_err(database_error)?;
-        let write = begin_durable_write(&database)?;
+        let store = RedbStore::open(&self.database_path)?;
+        let preparation = store.prepare_offline_retention()?;
+        let write = begin_durable_write(preparation.database())?;
         let already_detached = {
             let mut meta = write.open_table(META).map_err(table_error)?;
             let existing = read_holds_meta(&meta)?;
@@ -320,7 +324,14 @@ impl RedbOfflineRetention {
         if target_inclusive == 0 {
             return self.status();
         }
-        let database = Database::open(&self.database_path).map_err(database_error)?;
+        // Opening the ordinary store first is the non-bypassable ADR-0085 A4
+        // barrier: it recovers the complete checkpoint-plus-suffix authority,
+        // rebases the active extent, and removes only proven scratch state.
+        // The preparation value borrows that same exclusive redb handle, so no
+        // prune write can exist before the storage-internal witness.
+        let store = RedbStore::open(&self.database_path)?;
+        let preparation = store.prepare_offline_retention()?;
+        let database = preparation.database();
 
         // Pre-verification: refuse to extend a watermark/chain state that
         // does not verify (fail toward NOT deleting). Also fixes the chain
@@ -339,7 +350,7 @@ impl RedbOfflineRetention {
 
         // First exclusive transaction: delete validated-prefix checkpoint.
         {
-            let write = begin_durable_write(&database)?;
+            let write = begin_durable_write(database)?;
             {
                 let mut meta = write.open_table(META).map_err(table_error)?;
                 let _ = meta
@@ -383,7 +394,7 @@ impl RedbOfflineRetention {
             let previous_hash = load_last_tombstone_hash(&transaction)?;
             drop(transaction);
 
-            let mut write = begin_durable_write(&database)?;
+            let mut write = begin_durable_write(database)?;
             let (content_digest, counts) = digest_and_count_range(&write, first, last)?;
             // Pre-delete verification: the fencing head guarantees every
             // sequence in [first, last] committed, so exactly one commit row
@@ -446,8 +457,9 @@ impl RedbOfflineRetention {
             commit_durable(write)?;
             self.after_commit(RedbTestOperation::RetentionPruneSubrange)?;
         }
-        // Drop the exclusive database handle before reopening for status.
-        drop(database);
+        // The RedbStore remains the sole owner for the entire prune. Its
+        // preparation borrow ends after the final write above.
+        drop(store);
         self.status()
     }
 
