@@ -436,12 +436,17 @@ def start_server(
                 fail("endurance server exited before restart readiness")
             try:
                 after_frontier = health_frontier(environment)
-                ready = True
-                break
+                if after_frontier >= minimum_frontier:
+                    ready = True
+                    break
+                time.sleep(0.1)
             except (json.JSONDecodeError, OSError, subprocess.SubprocessError, ValueError):
                 time.sleep(0.1)
         if not ready or after_frontier < minimum_frontier:
-            fail("restarted server did not publish the checkpoint frontier")
+            fail(
+                "restarted server did not publish the checkpoint frontier "
+                f"(required {minimum_frontier}, observed {after_frontier})"
+            )
     except BaseException:
         if process.poll() is None:
             process.send_signal(signal.SIGTERM)
