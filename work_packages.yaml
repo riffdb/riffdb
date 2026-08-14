@@ -12195,3 +12195,55 @@ work_packages:
   - cargo test -p riffdb-contract-syntax -p riffdb-cli --all-features
   - ./scripts/handbook check
   human_review_triggers: *id001
+- id: WP-606
+  name: Commit-coordinator index-derivation audit — admit IR bundle versions V7 through V10
+  depends_on: [WP-598]
+  objective: Discharge WP-598's coordinator escalation. The checked-command index-derivation
+    whitelist ends at grammar/IR pair (V6, V6) while bundles pair through V10, so every
+    mutating command on V7+ bundles (vectors, secret-classified, framework-profile, reimport
+    era) fails closed before commit. Admit each version through a per-version audit with
+    evidence — what the version changed, why index derivation is correct for it, the test
+    proving it — never a blanket whitelist extension. WP-598's ignore-marked coordinator
+    race schedules flip to passing UNCHANGED as the acceptance contract; the beyond-audited
+    boundary stays fail-closed.
+  requirements: []
+  required_adrs: [ADR-0003, ADR-0107, ADR-0118, ADR-0119]
+  allowed_paths: [work_packages.yaml, SPEC.md, docs/**, fixtures/**, crates/riffdb-commit/**,
+    tests/command_semantics/**]
+  deliverables:
+  - Git-archaeology finding on the whitelist's intent (deliberate parking versus silent gap)
+    recorded before any change
+  - Per-version audit notes at the whitelist and in the report; V7 vector-field, V8
+    secret-field, V9 framework-profile derivation evidence tests; V10 reimport-class routing
+    pin (ordinary derivation refuses reimport commands)
+  - WP-598's two race schedules un-ignored and passing without assertion changes; the live
+    zero-mutation V9 pin retained; unknown-version refusal pinned
+  acceptance_commands:
+  - cargo test -p riffdb-commit --all-features
+  - cargo test --workspace --all-features
+  human_review_triggers: *id001
+- id: WP-607
+  name: Unseal entity delete for unique-carrying entities in the first delete format
+  depends_on: [WP-606]
+  objective: Discharge WP-598's second escalation. RDB-C044 unconditionally refuses delete on
+    unique-carrying entities in ADR-0107's sealed first delete format; the Better Auth gate
+    shape's delete-user and delete-session flows need it. Lift the seal through the
+    diagnostic-retirement ceremony with a changelog/tombstone audit for unique index entries
+    and both-order delete/create schedule evidence; commit-side index-entry delete derivation
+    already exists and is audited under WP-606.
+  requirements: []
+  required_adrs: [ADR-0100, ADR-0107]
+  allowed_paths: [work_packages.yaml, SPEC.md, docs/**, fixtures/**,
+    crates/riffdb-contract-compiler/**, crates/riffdb-commit/**, tests/command_semantics/**,
+    tests/storage_recovery/**]
+  deliverables:
+  - Diagnostic retirement for RDB-C044 on the audited path with span-asserted replacement
+    semantics; the WP-598 seal pin updated to the unsealed expectation deliberately
+  - Changelog/tombstone audit evidence for unique index entries under delete (delete-aware
+    changelog v2 reciprocity)
+  - Both-order delete/create and create/delete schedules with unique-value release semantics
+    pinned; release-then-reinsert extended through the deleted path
+  acceptance_commands:
+  - cargo test -p riffdb-contract-compiler -p riffdb-commit --all-features
+  - cargo test --test storage_recovery_matrix
+  human_review_triggers: *id001
