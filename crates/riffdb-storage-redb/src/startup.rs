@@ -6894,32 +6894,15 @@ fn administration_allocator_matches(
                 .flatten()
         },
     );
-    let checkpoint_allocator = checkpoint.map(|checkpoint| {
-        if checkpoint.retained.administration_sequence_exhausted {
-            riffdb_storage_api::AdministrationSequenceAllocator::Exhausted
-        } else {
-            riffdb_types::AdministrationSequence::new(
-                checkpoint.retained.next_administration_sequence,
-            )
-            .map_or(
-                riffdb_storage_api::AdministrationSequenceAllocator::Exhausted,
-                riffdb_storage_api::AdministrationSequenceAllocator::next,
-            )
-        }
-    });
-    let bound_allocator = checkpoint.map(|checkpoint| {
-        riffdb_types::AdministrationSequence::new(checkpoint.audit_sequence_bound)
-            .and_then(riffdb_types::AdministrationSequence::checked_next)
-            .map_or(
-                if checkpoint.audit_sequence_bound == u64::MAX {
-                    riffdb_storage_api::AdministrationSequenceAllocator::Exhausted
-                } else {
-                    riffdb_storage_api::AdministrationSequenceAllocator::initial()
-                },
-                riffdb_storage_api::AdministrationSequenceAllocator::next,
-            )
-    });
-    if checkpoint_allocator != bound_allocator {
+    // `audit_sequence_bound` is the last *physical* AUDIT row. Segmented
+    // commands carry later administration records inside COMMITS, so the
+    // retained allocator can legitimately be more than one past that physical
+    // bound. The checkpoint self-hash binds both facts; require only that its
+    // next logical sequence is strictly above every bound physical row.
+    if checkpoint.is_some_and(|checkpoint| {
+        !checkpoint.retained.administration_sequence_exhausted
+            && checkpoint.retained.next_administration_sequence <= checkpoint.audit_sequence_bound
+    }) {
         return Ok(false);
     }
     let mut accept = |sequence| {
@@ -11081,9 +11064,9 @@ contract RedbMigration version 1 {
     fn checkpointed_administration_allocator_proves_only_the_suffix() {
         let path = TestDatabasePath::new("checkpoint-administration-suffix");
         let store = initialized_store(&path, database_id(0xa4));
-        let second = AdministrationSequence::new(2).expect("second sequence");
         let third = AdministrationSequence::new(3).expect("third sequence");
-        let allocator = AdministrationSequenceAllocator::next(third);
+        let fourth = AdministrationSequence::new(4).expect("fourth sequence");
+        let allocator = AdministrationSequenceAllocator::next(fourth);
         let encoded_allocator =
             codec::encode_administration_sequence_allocator_v1(allocator).expect("allocator");
         let write = store.shared.database.begin_write().expect("write suffix");
@@ -11097,7 +11080,7 @@ contract RedbMigration version 1 {
                 .expect("prefix row");
             audit
                 .insert(
-                    keys::encode_audit_key(second).as_slice(),
+                    keys::encode_audit_key(third).as_slice(),
                     [0x22_u8].as_slice(),
                 )
                 .expect("suffix row");
@@ -11115,7 +11098,10 @@ contract RedbMigration version 1 {
             retained: riffdb_storage_api::ValidatedPrefixRetainedSnapshot {
                 next_application_sequence: 1,
                 application_sequence_exhausted: false,
-                next_administration_sequence: 2,
+                // Sequence 2 is a command audit embedded in the validated
+                // COMMITS prefix, not a physical AUDIT row. This is the normal
+                // segmented-command shape.
+                next_administration_sequence: 3,
                 administration_sequence_exhausted: false,
             },
             counts: riffdb_storage_api::ValidatedPrefixSequenceCounts {
@@ -11147,7 +11133,7 @@ contract RedbMigration version 1 {
         write
             .open_table(AUDIT)
             .expect("audit")
-            .remove(keys::encode_audit_key(second).as_slice())
+            .remove(keys::encode_audit_key(third).as_slice())
             .expect("remove suffix row");
         write.commit().expect("commit suffix gap");
         let read = store
