@@ -97,6 +97,16 @@ func TestBoundaryContainsNoRemoteTransport(t *testing.T) {
 	}
 }
 
+func TestRequestIdentityPrefixesAreUniqueAcrossConcurrentSessions(t *testing.T) {
+	first := &Session{requestPrefix: newSessionRequestPrefix()}
+	second := &Session{requestPrefix: newSessionRequestPrefix()}
+	firstID := first.requestID("invoke")
+	secondID := second.requestID("invoke")
+	if firstID == secondID || !requestPattern.MatchString(firstID) || !requestPattern.MatchString(secondID) {
+		t.Fatalf("session request identities are not distinct valid protocol values: %q %q", firstID, secondID)
+	}
+}
+
 func TestSchemaBoundDecimalAcceptsMissingWirePrecision(t *testing.T) {
 	decimal, err := DecimalValueWithSchema(Value{
 		Type: "decimal",
