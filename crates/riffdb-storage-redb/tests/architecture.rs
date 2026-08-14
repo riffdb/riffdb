@@ -401,11 +401,19 @@ fn checkpoint_prefix_skips_before_building_the_command_history_cache() {
         .expect("administration allocator end")
         .0;
     assert!(allocator.contains("checkpoint.retained.next_administration_sequence"));
-    assert!(allocator.contains("checkpoint.checkpoint_commit_sequence"));
     assert!(allocator.contains("Excluded(lower.as_slice()), Unbounded"));
-    assert!(
-        allocator.contains("command_audit_cache_from_segments(transaction, after_commit_sequence)")
-    );
+    assert!(allocator.contains("derived.keys().copied().peekable()"));
+    assert!(!startup.contains("fn command_audit_cache_from_segments("));
+
+    let header_dispatch = dispatch
+        .split_once("if position == 0")
+        .expect("header dispatch")
+        .1
+        .split_once("if self.structural_cursors.is_none()")
+        .expect("header dispatch end")
+        .0;
+    assert!(header_dispatch.contains("self.ensure_command_cache()?"));
+    assert!(header_dispatch.contains("&self.command_audits"));
 }
 
 #[test]

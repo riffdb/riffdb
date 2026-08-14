@@ -1520,8 +1520,18 @@ impl RedbStructuralEvidenceSession {
     ) -> Result<Option<StructuralFinding>, StorageError> {
         // Positions are always requested in strictly ascending order by the page loop.
         if position == 0 {
+            // Allocator continuity and the later command/audit phases need the
+            // same exact command graph. Build it once (suffix-only under a
+            // validated checkpoint) and share it instead of decoding every
+            // command segment again in the header proof.
+            self.ensure_command_cache()?;
             let transaction = self.validation_read.as_ref().ok_or_else(invariant)?;
-            return inspect_header(transaction, self.database_id, self.checkpoint.as_ref());
+            return inspect_header(
+                transaction,
+                self.database_id,
+                self.checkpoint.as_ref(),
+                &self.command_audits,
+            );
         }
         if self.structural_cursors.is_none() {
             self.structural_cursors = Some(StructuralCursors {
@@ -2802,6 +2812,10 @@ fn inspect_header(
     transaction: &ReadTransaction,
     database_id: DatabaseId,
     checkpoint: Option<&crate::validated_prefix::ActiveCheckpoint>,
+    command_audits: &std::collections::BTreeMap<
+        riffdb_types::AdministrationSequence,
+        CachedCommandAudit,
+    >,
 ) -> Result<Option<StructuralFinding>, StorageError> {
     let meta = transaction.open_table(META).map_err(table_error)?;
     let mut seen = BTreeSet::new();
@@ -2840,7 +2854,12 @@ fn inspect_header(
         Err(code) => return Ok(Some(authoritative(code))),
     };
     if !application_allocator_matches(transaction, application)?
-        || !administration_allocator_matches(transaction, administration, checkpoint)?
+        || !administration_allocator_matches(
+            transaction,
+            administration,
+            checkpoint,
+            command_audits,
+        )?
     {
         return Ok(Some(authoritative(
             StructuralFindingCode::SequenceDiscontinuity,
@@ -3700,76 +3719,6 @@ fn inspect_capability_lookup_row(
         (!matches!(capability, Ok(Some(value)) if value.token_digest() == digest))
             .then(|| authoritative(StructuralFindingCode::MissingCrossLink)),
     )
-}
-
-fn command_audit_cache_from_segments(
-    transaction: &ReadTransaction,
-    after_commit_sequence: u64,
-) -> Result<
-    std::collections::BTreeMap<riffdb_types::AdministrationSequence, CachedCommandAudit>,
-    StorageError,
-> {
-    let commits = transaction.open_table(COMMITS).map_err(table_error)?;
-    let mut audits = std::collections::BTreeMap::new();
-    let mut retained_bytes = 0usize;
-    let mut rows = if after_commit_sequence == 0 {
-        commits.iter().map_err(precommit_storage_error)?
-    } else {
-        let lower = keys::encode_application_sequence_key(
-            CommitSequence::new(after_commit_sequence).ok_or_else(invariant)?,
-        );
-        commits
-            .range::<&[u8]>((Excluded(lower.as_slice()), Unbounded))
-            .map_err(precommit_storage_error)?
-    };
-    for entry in &mut rows {
-        let (_, value) = entry.map_err(precommit_storage_error)?;
-        let segment = match riffdb_storage_api::decode_command_segment_v1(value.value()) {
-            Ok(segment) => segment.into_parts().0,
-            // Segment-only acceleration is advisory during structural
-            // validation. The owning physical-row phase reports malformed
-            // segment or historical bytes with the correct finding.
-            Err(_) => continue,
-        };
-        retained_bytes = retained_bytes
-            .checked_add(value.value().len())
-            .ok_or_else(limit_exceeded)?;
-        if retained_bytes > MAX_STARTUP_EVIDENCE_INDEX_BYTES {
-            return Err(limit_exceeded());
-        }
-        for command in segment.commands() {
-            let started = command.base().started_audit();
-            let terminal = command.base().terminal_audit();
-            for (member, record, peer_sequence) in [
-                (
-                    riffdb_storage_api::StoredCommandAuditMemberV1::Started,
-                    started,
-                    terminal.administration_sequence(),
-                ),
-                (
-                    riffdb_storage_api::StoredCommandAuditMemberV1::Terminal,
-                    terminal,
-                    started.administration_sequence(),
-                ),
-            ] {
-                if audits
-                    .insert(
-                        record.administration_sequence(),
-                        CachedCommandAudit {
-                            commit_sequence: command.commit_sequence(),
-                            member,
-                            record: record.clone(),
-                            peer_sequence,
-                        },
-                    )
-                    .is_some()
-                {
-                    return Err(corrupt());
-                }
-            }
-        }
-    }
-    Ok(audits)
 }
 
 fn inspect_cached_command_audit_row(
@@ -6875,12 +6824,9 @@ fn administration_allocator_matches(
     transaction: &ReadTransaction,
     allocator: riffdb_storage_api::AdministrationSequenceAllocator,
     checkpoint: Option<&crate::validated_prefix::ActiveCheckpoint>,
+    derived: &std::collections::BTreeMap<riffdb_types::AdministrationSequence, CachedCommandAudit>,
 ) -> Result<bool, StorageError> {
     let table = transaction.open_table(AUDIT).map_err(table_error)?;
-    let after_commit_sequence = checkpoint
-        .map(|checkpoint| checkpoint.checkpoint_commit_sequence)
-        .unwrap_or(0);
-    let derived = command_audit_cache_from_segments(transaction, after_commit_sequence)?;
     let mut derived_sequences = derived.keys().copied().peekable();
     let mut expected = checkpoint.map_or_else(
         || Some(riffdb_types::AdministrationSequence::first()),
@@ -11123,8 +11069,13 @@ contract RedbMigration version 1 {
             .begin_read()
             .expect("read intact suffix");
         assert!(
-            administration_allocator_matches(&read, allocator, Some(&checkpoint))
-                .expect("check intact suffix"),
+            administration_allocator_matches(
+                &read,
+                allocator,
+                Some(&checkpoint),
+                &std::collections::BTreeMap::new(),
+            )
+            .expect("check intact suffix"),
             "the exact row after the checkpoint must advance its allocator"
         );
         drop(read);
@@ -11142,8 +11093,13 @@ contract RedbMigration version 1 {
             .begin_read()
             .expect("read gapped suffix");
         assert!(
-            !administration_allocator_matches(&read, allocator, Some(&checkpoint))
-                .expect("check gapped suffix"),
+            !administration_allocator_matches(
+                &read,
+                allocator,
+                Some(&checkpoint),
+                &std::collections::BTreeMap::new(),
+            )
+            .expect("check gapped suffix"),
             "a live allocator ahead of a missing suffix row must fail closed"
         );
     }
