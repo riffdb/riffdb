@@ -40,7 +40,7 @@ run_exact_concurrency_test() {
 run_exact_concurrency_test \
     equal_scoped_unique_values_commit_once_and_loser_replays_without_sequence
 run_exact_concurrency_test \
-    sequential_reinsert_refuses_typed_until_release_frees_the_unique_value
+    create_before_delete_refuses_then_delete_releases_unique_value_for_reinsert
 run_exact_concurrency_test \
     framework_profile_declared_refusal_commits_terminally_on_the_v9_bundle
 
