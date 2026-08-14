@@ -413,6 +413,12 @@ fn endurance_faults_are_real_orchestrator_only_recovery_cells() {
         .expect("fault client source is readable");
     for required in [
         "AsyncTicketDeskReactiveClient",
+        "AsyncTicketDeskClient",
+        "seed-event",
+        "create_organization",
+        "create_user",
+        "create_project",
+        "create_ticket",
         "next_triage_ticket",
         "react_comment",
         "ack_triage_ticket",
@@ -420,6 +426,18 @@ fn endurance_faults_are_real_orchestrator_only_recovery_cells() {
     ] {
         assert!(client.contains(required), "fault client omits {required}");
     }
+    for required in [
+        "endurance-consumer-fault-organization-{ordinal}",
+        "endurance-consumer-fault-ticket-{ordinal}",
+        "mode=\"seed-event\"",
+        "CONSUMER_SEED_SCHEMA",
+    ] {
+        assert!(fault.contains(required), "fault controls omit {required}");
+    }
+    assert!(
+        !fault.contains("0000000a-0000-0000-0000-000000000001"),
+        "consumer fault must not depend on ambient worker seed identities"
+    );
 }
 
 #[test]
