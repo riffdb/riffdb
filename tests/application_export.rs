@@ -64,7 +64,7 @@ fn portable_adapter_manifests_are_exact_compiled_and_reconciled() {
             observation.module_hash().is_some() && !observation.parameters().is_empty()
         }));
         let receipt = ApplicationReimportReceipt::decode_canonical(
-            &fs::read(export_root.join("reimport-receipt-v2.json")).expect("reimport receipt"),
+            &fs::read(export_root.join("reimport-receipt-v3.json")).expect("reimport receipt"),
             &manifest,
         )
         .expect("terminal receipt reconciles exact observations");

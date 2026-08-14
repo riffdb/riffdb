@@ -32,7 +32,7 @@ fn fixtures() -> (ApplicationPortabilityManifest, ApplicationReimportReceipt) {
     ))
     .expect("manifest");
     let receipt = ApplicationReimportReceipt::decode_canonical(
-        include_bytes!("../../../fixtures/export/openfga/reimport-receipt-v2.json"),
+        include_bytes!("../../../fixtures/export/openfga/reimport-receipt-v3.json"),
         &manifest,
     )
     .expect("receipt");
@@ -70,7 +70,7 @@ fn domain_fixtures(domain: &str) -> (ApplicationPortabilityManifest, Application
     )
     .expect("canonical V3 manifest");
     let receipt = ApplicationReimportReceipt::decode_canonical(
-        &fs::read(root.join("reimport-receipt-v2.json")).expect("reimport receipt"),
+        &fs::read(root.join("reimport-receipt-v3.json")).expect("reimport receipt"),
         &manifest,
     )
     .expect("receipt reconciles the V3 manifest");
