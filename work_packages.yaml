@@ -11129,6 +11129,7 @@ work_packages:
     fixtures/endurance/**, examples/**, benchmarks/**, tests/**, scripts/**,
     docs/**, release/evidence/**, .github/**,
     crates/riffdb-service/src/live_query.rs,
+    crates/riffdb-storage-redb/src/journal.rs,
     crates/riffdb-storage-redb/src/layout.rs,
     crates/riffdb-storage-redb/src/store.rs,
     crates/riffdb-storage-redb/src/startup.rs,
