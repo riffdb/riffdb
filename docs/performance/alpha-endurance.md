@@ -145,6 +145,24 @@ terminate the daemon with `SIGKILL`, start a new installed process, and require
 journal recovery to publish at least both observed frontiers. Only that real
 unclean reopen increments the recovery counter.
 
+`scripts/endurance-fault` owns the five closed orchestrator-only fault cells and
+serializes them against lifecycle administration with the same protected lock.
+Process-kill and journal-recycle-crash cells kill the installed daemon and
+require recovery at or beyond the observed application and journal frontiers.
+The checkpoint-crash cell stops the daemon, leaves its graceful-termination
+checkpoint signal pending, kills it, inspects the unchanged stopped database,
+and requires suffix recovery. The network-interrupt cell stops only the server
+process, proves a public TLS health operation is unavailable, resumes that same
+process, and requires authenticated recovery.
+
+The consumer fault uses the installed generated Python client as a disposable
+public-surface process. It receives a contextual item, commits its declared
+idempotent reaction, publishes bounded evidence, and is killed without an ack.
+After the fixed 60-second contextual lease expires, a second generated-client
+process must receive the same event at a higher attempt, recover the persisted
+command outcome as a replay, and acknowledge the exact redelivery. No seek,
+nack, kernel read, or harness-authored checkpoint substitutes for lease expiry.
+
 Backup actions start and poll one identity-stable public remote maintenance
 operation, require the exact four-file immutable backup inventory, and retain
 the checksum and size of every artifact. Capability-rotation actions issue a

@@ -687,8 +687,14 @@ def expect_rejection(name: str, receipt: dict[str, Any], manifest: dict[str, Any
 
 
 def self_test() -> None:
-    checked_manifest = read_json(Path(__file__).resolve().parent.parent / "fixtures/endurance/alpha-manifest-v1.json")
+    root = Path(__file__).resolve().parent.parent
+    checked_manifest = read_json(root / "fixtures/endurance/alpha-manifest-v1.json")
     validate_manifest(checked_manifest)
+    checked_actions = read_json(root / "release/evidence/endurance-actions-v1.json")
+    validate_actions(checked_actions, checked_manifest)
+    if checked_actions != base_actions(checked_manifest):
+        raise AssertionError("checked action manifest differs from the closed workload")
+    print("checked_action_manifest: passed")
     manifest = base_manifest()
     actions = base_actions(manifest)
     validate_actions(actions, manifest)

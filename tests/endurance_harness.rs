@@ -35,6 +35,7 @@ fn self_test_rejects_incomplete_and_invalid_endurance_evidence() {
     );
     let stdout = String::from_utf8(output.stdout).expect("self-test output must be UTF-8");
     assert!(stdout.contains("action_manifest_drift: rejected"));
+    assert!(stdout.contains("checked_action_manifest: passed"));
     assert!(stdout.contains("missing_environment_lifecycle: rejected"));
     assert!(stdout.contains("short_duration: rejected"));
     assert!(stdout.contains("invalid_structure: rejected"));
@@ -270,6 +271,55 @@ fn endurance_lifecycle_evidence_uses_durable_observations() {
                 "{worker} omits bounded visible retry evidence: {required}"
             );
         }
+    }
+}
+
+#[test]
+fn endurance_faults_are_real_orchestrator_only_recovery_cells() {
+    let root = repository_root();
+    let output = Command::new(root.join("scripts/endurance-fault"))
+        .arg("--self-test")
+        .current_dir(&root)
+        .env("RIFFDB_TMP_ROOT", task_temporary_root())
+        .output()
+        .expect("endurance fault self-test must launch");
+    assert!(
+        output.status.success(),
+        "fault self-test failed:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let fault =
+        fs::read_to_string(root.join("scripts/endurance-fault")).expect("fault source is readable");
+    for required in [
+        "signal.SIGKILL",
+        "signal.SIGSTOP",
+        "pending_signal\": \"SIGTERM",
+        "generation_at_crash",
+        "time.sleep(61)",
+        "command_replayed",
+        "acknowledged_after_redelivery",
+        "lifecycle.lock",
+        "riffdb.alpha-endurance-action-result/v1",
+    ] {
+        assert!(fault.contains(required), "fault controls omit {required}");
+    }
+    assert!(
+        !fault.contains("frontier_after\": before + 1")
+            && !fault.contains("generation_at_crash\": generation_before + 1"),
+        "fault evidence must not manufacture durable frontiers"
+    );
+
+    let client = fs::read_to_string(root.join("scripts/endurance-fault-client"))
+        .expect("fault client source is readable");
+    for required in [
+        "AsyncTicketDeskReactiveClient",
+        "next_triage_ticket",
+        "react_comment",
+        "ack_triage_ticket",
+        "await asyncio.Event().wait()",
+    ] {
+        assert!(client.contains(required), "fault client omits {required}");
     }
 }
 
