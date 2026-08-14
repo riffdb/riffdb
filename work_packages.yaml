@@ -11115,7 +11115,7 @@ work_packages:
   human_review_triggers: *id001
 - id: WP-578
   name: Portability, disaster-recovery, and 72-hour endurance evidence
-  depends_on: [WP-573, WP-575, WP-576, WP-577]
+  depends_on: [WP-573, WP-575, WP-576, WP-577, WP-609]
   objective: Bank release-candidate evidence that every adapter preserves policy and portable data,
     restores after total local disk loss, and remains correct/resource-bounded for 72 continuous
     hours through repeated journal, checkpoint, retention, backup, rotation, and restart cycles.
@@ -12281,4 +12281,51 @@ work_packages:
   - cargo test -p riffdb-storage-redb --all-features
   - cargo test -p riffdb-commit --test command_concurrency --all-features
   - cargo test -p riffdb-sim --test seeded_campaign --all-features
+  human_review_triggers: *id001
+- id: WP-609
+  name: Rebase the durability journal before offline history retention
+  depends_on: [WP-423]
+  objective: Close the ADR-0085/ADR-0103 boundary exposed by the installed WP-578 endurance
+    rehearsal. Offline retention currently commits tombstones and deletes retained command/event
+    rows directly in redb while a clean-shutdown durability journal still names the pre-prune
+    suffix; the next RedbStore open therefore fails CorruptData. Define and implement one
+    fail-closed pre-prune recovery/rebase ceremony so no retention mutation can begin until the
+    redb checkpoint is reconciled and an empty strictly newer journal generation is durable.
+  requirements: [PERF-013, PERF-014, REC-001, REC-002, STO-001, STO-002]
+  required_adrs: [ADR-0085, ADR-0103, ADR-0104]
+  allowed_paths: [work_packages.yaml, SPEC.md, adr/0085-history-retention-and-startup-scaling.md,
+    docs/**, crates/riffdb-storage-redb/src/journal.rs,
+    crates/riffdb-storage-redb/src/retention.rs,
+    crates/riffdb-storage-redb/src/store.rs,
+    crates/riffdb-storage-redb/tests/architecture.rs,
+    crates/riffdb-cli/src/app.rs, tests/storage_recovery/**,
+    tests/endurance_harness.rs, scripts/endurance-lifecycle]
+  deliverables:
+  - Maintainer-accepted ADR-0085 amendment defining the exact pre-prune journal recovery and
+    rebase order; retention never journals each system delete and never starts from an
+    unreconciled or unpublished command suffix
+  - An exclusive typed retention preparation witness proving redb contains the complete published
+    frontier, followed by an empty journal extent whose generation is strictly greater than every
+    predecessor; checkpoint deletion and the first prune transaction are impossible before it
+  - Deterministic failures before, during, and after next-extent creation, sync, rename, checkpoint
+    deletion, and each prune sub-range; every accepted state reopens as either wholly unpruned or
+    a tombstone-covered prefix, and stale residue or mixed generations remain corruption
+  - Installed CLI evidence that a command-bearing database can shut down, prune, reopen, advance
+    with another public command, prune again, and reopen without a stale scratch extent or a
+    CorruptData startup failure
+  acceptance_commands:
+  - cargo +1.97.0 test -p riffdb-storage-redb --all-features
+  - cargo +1.97.0 test --test storage_recovery_matrix
+  - cargo +1.97.0 test -p riffdb-testkit --test endurance_harness
+  - cargo +1.97.0 test -p riffdb-cli --all-features
+  - ./scripts/check-requirement-coverage
+  exit_gate: Retention cannot mutate a database whose journal has not been recovered and durably
+    rebased; every rebase/prune crash arm reopens with exact frontier and tombstone semantics; two
+    installed prune/restart cycles pass through the same public maintenance surface used by WP-578.
+  standing_design_tests:
+    interface_safety: The public retention verbs and typed outcomes do not change. The preparation
+      witness is storage-internal and cannot be fabricated by CLI, service, or application code.
+    scale: Journal recovery is bounded by the existing extent limits and happens once per offline
+      prune invocation; rebase is O(one preallocated extent), while prune remains bounded by the
+      accepted 1,024-sequence sub-range transactions.
   human_review_triggers: *id001

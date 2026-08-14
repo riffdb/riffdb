@@ -130,8 +130,10 @@ framing or follower semantics.
    reconstitution gap without admitting a normal workflow-state write, then
    proves all-domain export/reimport into an empty database.
 9. **Disaster and endurance.** WP-576 exercises remote backup, volume loss, and
-   restore for every adapter. WP-577 builds the lifecycle harness; WP-578 banks
-   the uninterrupted 72-hour release receipt. A 24-hour run is rehearsal only.
+   restore for every adapter. WP-577 builds the lifecycle harness; WP-609 closes
+   the offline-retention/journal rebase boundary exposed by its installed
+   rehearsal; WP-578 then banks the uninterrupted 72-hour release receipt. A
+   24-hour run is rehearsal only.
 10. **WP-579 — installed alpha gate.** Run every adapter shape across the
    supported language/platform matrix, recovery boundaries, and security
    negatives. No waiver may introduce a kernel import, handwritten transport,
