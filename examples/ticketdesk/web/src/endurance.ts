@@ -213,8 +213,11 @@ async function runClient(tenant: Tenant, index: number, delayMilliseconds: numbe
             comment_id: id(namespace, 20_000n + BigInt(index) * 1_000_000n + BigInt(counter)),
             idempotency_key: `endurance-typescript-reaction-${index}-${counter}`, organization_id: organizationId,
           });
-          metrics.consumerAcknowledged();
           await metrics.record("workflows", tenant, 512, operationStarted);
+          operationStarted = performance.now();
+          await agent.reactive.ackTriageTicket(eventParameters, triageConsumer, item);
+          metrics.consumerAcknowledged();
+          await metrics.record("workflows", tenant, 0, operationStarted);
         }
       } else if (slot < 80) {
         const stream = agent.reactive.ticketEvents(eventParameters, eventConsumer, {

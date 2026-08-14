@@ -115,6 +115,9 @@ durably acknowledged normal/contextual deliveries. Consumer backlog is the
 closed TicketDesk relation `(two consumers × emitted TicketCreated) − durable
 acknowledgements`, and the checkpoint observation is the acknowledgement
 frontier rather than the number of event RPCs attempted.
+Contextual reaction execution and contextual acknowledgement are separate
+public operations: every worker records both, and advances its acknowledgement
+counter only after the exact leased item is durably acknowledged.
 
 `scripts/endurance-lifecycle` serializes action state under a protected file
 lock and refuses every lifecycle name until that operation has a real evidence

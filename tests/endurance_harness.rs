@@ -210,6 +210,27 @@ fn endurance_lifecycle_evidence_uses_durable_observations() {
             "{worker} omits exact emitted-event accounting"
         );
     }
+    for (worker, acknowledgement) in [
+        (
+            "examples/ticketdesk/src/bin/endurance.rs",
+            "ack_triage_ticket",
+        ),
+        ("examples/ticketdesk/endurance/go/main.go", "triage.Ack"),
+        (
+            "examples/ticketdesk/web/src/endurance.ts",
+            "ackTriageTicket",
+        ),
+        (
+            "examples/ticketdesk/endurance/python/main.py",
+            "ack_triage_ticket",
+        ),
+    ] {
+        let source = fs::read_to_string(root.join(worker)).expect("worker source is readable");
+        assert!(
+            source.contains(acknowledgement),
+            "{worker} counts contextual work without a durable acknowledgement"
+        );
+    }
 }
 
 #[test]

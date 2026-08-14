@@ -299,8 +299,13 @@ async def run_client(
                             organization_id=organization_id,
                         ),
                     )
-                    await metrics.consumer_acknowledged()
                     await metrics.record("workflows", tenant, 512, operation_started)
+                    operation_started = time.perf_counter_ns()
+                    await clients.agent.ack_triage_ticket(
+                        triage_parameters, triage_consumer, item
+                    )
+                    await metrics.consumer_acknowledged()
+                    await metrics.record("workflows", tenant, 0, operation_started)
             elif slot < 80:
                 stream = clients.agent.ticket_events(
                     event_parameters, event_consumer

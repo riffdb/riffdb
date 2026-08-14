@@ -346,8 +346,14 @@ func runClient(ctx context.Context, root string, seed, index uint64, delay time.
 					IdempotencyKey: fmt.Sprintf("endurance-go-reaction-%d-%d", index, counter), OrganizationId: organizationID,
 				})
 				if err == nil {
-					metric.consumerAcknowledged()
 					err = metric.record("workflows", tenant, 512, &operationStarted)
+				}
+				if err == nil {
+					_, err = triage.Ack(ctx, item)
+				}
+				if err == nil {
+					metric.consumerAcknowledged()
+					err = metric.record("workflows", tenant, 0, &operationStarted)
 				}
 			}
 		case slot < 80:
