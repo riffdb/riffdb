@@ -39,7 +39,7 @@ endurance work cannot be deferred into release day.
 | Per-row policy | ADR-0111 | WP-570, WP-572–WP-573 | Closed principal-aware predicates enforced before disclosure and transaction-current on writes; realistic Better Auth and MLflow policy proof |
 | Format compatibility and exit | ADR-0112/0119 | WP-574–WP-575, WP-599 | Release format manifest, refusal before mutation, snapshot-consistent symbolic export, and compiler-owned workflow-safe reimport |
 | Disaster recovery | ADR-0050/0112 | WP-576 | Remote backup, total database-volume loss, verified restore, and full adapter reconciliation |
-| Endurance | durability ADRs | WP-577–WP-578 | Reproducible lifecycle harness and retained 72-hour growth/recycling/recovery evidence |
+| Endurance | durability ADRs and ADR-0050 amendment | WP-577–WP-578, WP-609–WP-610 | Reproducible lifecycle harness, receipted bounded backup retirement, and retained 72-hour growth/recycling/recovery evidence |
 
 WP-550 freezes accepted text and adds normative requirement IDs before any
 track changes a public or durable interface. WP-551 and WP-552 close the two
@@ -132,8 +132,9 @@ framing or follower semantics.
 9. **Disaster and endurance.** WP-576 exercises remote backup, volume loss, and
    restore for every adapter. WP-577 builds the lifecycle harness; WP-609 closes
    the offline-retention/journal rebase boundary exposed by its installed
-   rehearsal; WP-578 then banks the uninterrupted 72-hour release receipt. A
-   24-hour run is rehearsal only.
+   rehearsal; WP-610 closes the unreceipted backup-retirement boundary exposed
+   by the repeated-cycle rehearsal; WP-578 then banks the uninterrupted 72-hour
+   release receipt. A 24-hour run is rehearsal only.
 10. **WP-579 — installed alpha gate.** Run every adapter shape across the
    supported language/platform matrix, recovery boundaries, and security
    negatives. No waiver may introduce a kernel import, handwritten transport,

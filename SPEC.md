@@ -37,6 +37,7 @@
 
 | Version | Date | Summary |
 |---|---|---|
+| 0.94 | 2026-08-14 | Amended ADR-0050 and registered END-011/WP-610 after the installed endurance rehearsal exposed unreceipted immutable-backup deletion: backup retention now uses one authorized public retirement operation whose V2 receipt binds the exact succeeded create receipt and manifest, permanently consumes the name, recovers every checked rename/delete crash state, and is the sole proof permitting an otherwise-published backup artifact to be absent. |
 | 0.93 | 2026-08-11 | Registered the SECF-* requirement family (SECF-001 through SECF-005) for ADR-0118 secret field classification: a contextual `secret` field modifier carried through versioned IR and bundle identity without rotating unclassified contracts; structural display-surface redaction through a wrapper whose only value escape is an architecture-enumerated reveal method; capability field-visibility default-deny with a dedicated explicit secret-naming surface and observed typed denial; predicates/uniqueness/index participation without read visibility; and full-fidelity durable storage, backup, export, and changelog carriage with an explicit no-cryptography non-promise. |
 | 0.92 | 2026-08-11 | Applied the maintainer-approved ADR-0107 correction: an indexed-restrict delete declares a distinct business outcome in grammar/executable/bundle IR v6; a stable inbound reference persists that zero-mutation outcome, while a racing reference causes bounded whole-command reevaluation rather than an infrastructure-error retry loop. Existing v5 no-inbound delete plans remain decodable. |
 | 0.91 | 2026-08-10 | Registered the VEC-* requirement family (VEC-001 through VEC-012) for native vector search projections under ADR-0091 as amended: client-supplied embeddings through typed commands, typed staleness tracking, exact-first KNN with a declared recall contract for approximate tiers, policy-before-ranking, per-organization statistics isolation, and mandatory K with organization scope. ADR-0091 Amendment 1 recorded: the application owns embedding computation; the database never calls external model endpoints. |
@@ -7637,6 +7638,13 @@ does not create a kernel or storage escape hatch.
   workload/fault manifest, environment and process inventory, format manifest,
   export/reimport and disaster receipts, observation digests, and complete
   adapter conformance without secrets or unbounded diagnostics.
+- `END-011`: Repeated backup cycles MUST enforce their retained-artifact bound
+  only through a public authorized receipted retirement operation. Retirement
+  MUST validate and bind the exact succeeded create receipt and immutable
+  manifest, consume the backup name permanently, recover every rename/delete
+  crash state, and fail startup on missing published artifacts unless one exact
+  valid terminal retirement receipt proves their removal. External filesystem
+  deletion, receipt deletion, or absence-tolerant reconciliation is forbidden.
 
 - `PERF-018`: The alpha performance comparator MUST freeze the safe-application
   PostgreSQL obligations, backend isolation, durability, transport/client

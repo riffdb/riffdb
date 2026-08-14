@@ -8,6 +8,8 @@
   session on 2026-07-24
 - **Clarification accepted:** 2026-07-24, human maintainer confirmation in the
   current Codex session
+- **Backup-retirement amendment accepted:** 2026-08-14, human maintainer
+  confirmation in the current Codex session
 - **Requires:** ADR-0004, ADR-0005, ADR-0006, ADR-0007, ADR-0009,
   ADR-0018, ADR-0019, ADR-0021, ADR-0025, ADR-0026, ADR-0027,
   ADR-0028, ADR-0032, ADR-0034, ADR-0037, ADR-0040, ADR-0041, and
@@ -334,6 +336,72 @@ optionally validate an `observed_history_incarnation` and receive
 the limitation narrows from "undetectable" to "detectable by participating
 clients." Residual risk for non-participating clients remains documented.
 
+### Accepted amendment: receipted immutable-backup retirement
+
+The original "exactly three public operations" and maintenance-receipt-V1-only
+clauses are superseded only as follows. The `AdminService` gains one additive
+unary `RetireOfflineBackup` RPC, and the CLI gains:
+
+```text
+backup.retire    riffdb backup retire <name>
+```
+
+Retirement is available only through gRPC, `riffdb-client-rust`, and
+`riffdb-cli`; it is not an MCP operation and accepts no path, URI, glob,
+retention expression, or caller-selected receipt identity. It uses the same
+checked `BackupNameV1`, caller-stable `OfflineMaintenanceOperationId`, current
+global `AdministerCapabilities` authorization, approval obligations, bounded
+polling operation, and external maintenance ownership lock as create and
+restore. No new capability permission, service-audit operation, application
+write, storage handle, or principal-less path is introduced.
+
+Retirement is permitted only when the selected named backup is a completely
+validated immutable inventory and an exact succeeded create receipt binds the
+same backup name and manifest identity. A retired name is permanently consumed:
+it cannot be used by a later create or restore, even after its artifact bytes
+are gone. The create receipt remains immutable audit history. A terminal retire
+receipt names the originating create operation and exact manifest identity, and
+is the sole evidence under which startup may accept that create receipt without
+its formerly published named artifact.
+
+Retirement uses maintenance receipt format V2. Existing V1 create/restore
+receipts remain byte-frozen and readable; create and restore continue writing
+the least sufficient V1 format. Only retire writes V2. An old binary that does
+not understand V2 refuses the maintenance subtree before database mutation.
+V2 retains the existing checksum, canonical input, monotonic phase, transition,
+size, and redaction rules and adds only the closed retire operation kind,
+originating-create identity, and retired-manifest identity required to prove
+the state transition.
+
+Deletion is crash-safe and does not reinterpret absence as success. After
+authorization and receipt admission, the adapter validates the named inventory,
+atomically renames that directory within the same backup root into the reserved
+`.maintenance/retired/<maintenance-operation-id>` stage, syncs both parent
+directories, and only then removes the staged immutable files with bounded
+inventory checks. Startup reconciliation accepts exactly these states:
+
+1. accepted retire receipt plus matching named backup: resume the checked rename;
+2. post-rename receipt plus one matching reserved retired stage: finish bounded
+   deletion and terminalization;
+3. terminal succeeded retire receipt plus neither named nor staged artifact:
+   accept the create/retire pair as durable retirement; or
+4. any missing, extra, mismatched, duplicated, symlinked, unknown-version, or
+   unreceipted state: fail closed before readiness.
+
+The reserved retirement directory and its entries are maintenance-owned,
+non-addressable by `BackupNameV1`, bounded by the one-incomplete-operation rule,
+and covered by path-pinning, same-filesystem, checksum, fsync, rename, inventory,
+and crash tests. Retirement may serialize through the existing offline
+maintenance controller; it never weakens database quiescence or claims an
+atomic transaction across database and filesystem state.
+
+WP-610 owns the additive protocol, V2 receipt fixtures and migration refusal,
+storage state machine, service/policy wiring, Rust client, CLI, handbook, and
+endurance integration. The alpha endurance harness MUST use this public
+operation to enforce its retained-backup bound. Direct `remove`, `rmtree`,
+receipt deletion, or startup tolerance for an absent published backup is a
+release-gate failure.
+
 ## Consequences
 
 - Backup and restore use the normal public-client and shared service/policy
@@ -436,6 +504,7 @@ documentation, systemd lifecycle, release artifacts, and known limitation.
   `STO-021`, `STO-022`, `REC-001`, `REC-002`, `SEC-001`, `SEC-002`,
   `SEC-003`, `POC-008`, `POC-009`, and `POC-010`
 - **Defines:** `WP-155`
+- **Amendment defines:** `WP-610`
 - **Corrective consumers:** `WP-070`, `WP-120`, `WP-127`, `WP-130`,
   `WP-150`, and `WP-185`
 - **Final evidence:** `WP-190` and `WP-200`
