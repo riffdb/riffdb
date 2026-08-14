@@ -450,6 +450,66 @@ fn expected_enum_values() -> BTreeSet<String> {
             "CAPABILITY_APPLICATION_REIMPORT_SCOPE_WHOLE_APPLICATION",
         ),
         (
+            "riffdb.v1.ApplicationReimportPhase",
+            0,
+            "APPLICATION_REIMPORT_PHASE_UNSPECIFIED",
+        ),
+        (
+            "riffdb.v1.ApplicationReimportPhase",
+            1,
+            "APPLICATION_REIMPORT_PHASE_APPLYING",
+        ),
+        (
+            "riffdb.v1.ApplicationReimportPhase",
+            2,
+            "APPLICATION_REIMPORT_PHASE_RECONCILING",
+        ),
+        (
+            "riffdb.v1.ApplicationReimportPhase",
+            3,
+            "APPLICATION_REIMPORT_PHASE_RECONCILED",
+        ),
+        (
+            "riffdb.v1.ApplicationReimportPhase",
+            4,
+            "APPLICATION_REIMPORT_PHASE_CANCELLED",
+        ),
+        (
+            "riffdb.v1.ApplicationReimportPhase",
+            5,
+            "APPLICATION_REIMPORT_PHASE_FAILED",
+        ),
+        (
+            "riffdb.v1.ApplicationReimportFailure",
+            0,
+            "APPLICATION_REIMPORT_FAILURE_UNSPECIFIED",
+        ),
+        (
+            "riffdb.v1.ApplicationReimportFailure",
+            1,
+            "APPLICATION_REIMPORT_FAILURE_AUTHORITY_CHANGED",
+        ),
+        (
+            "riffdb.v1.ApplicationReimportFailure",
+            2,
+            "APPLICATION_REIMPORT_FAILURE_SOURCE_MISMATCH",
+        ),
+        (
+            "riffdb.v1.ApplicationReimportFailure",
+            3,
+            "APPLICATION_REIMPORT_FAILURE_COMMAND_FAILED",
+        ),
+        (
+            "riffdb.v1.ApplicationReimportFailure",
+            4,
+            "APPLICATION_REIMPORT_FAILURE_OBSERVATION_MISMATCH",
+        ),
+        (
+            "riffdb.v1.ApplicationReimportFailure",
+            5,
+            "APPLICATION_REIMPORT_FAILURE_CANCELLED",
+        ),
+        (
             "riffdb.v1.ApplicationExportRecordClass",
             0,
             "APPLICATION_EXPORT_RECORD_CLASS_UNSPECIFIED",
