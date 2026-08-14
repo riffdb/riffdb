@@ -1216,9 +1216,8 @@ mod tests {
     fn index_derivation_admits_exactly_the_audited_identity_pairs() {
         for grammar in 0..=16_u32 {
             for ir in 0..=16_u32 {
-                let audited_identity_pair = grammar == ir
-                    && grammar >= GRAMMAR_VERSION_V1
-                    && grammar <= GRAMMAR_VERSION_V10;
+                let audited_identity_pair =
+                    grammar == ir && (GRAMMAR_VERSION_V1..=GRAMMAR_VERSION_V10).contains(&grammar);
                 assert_eq!(
                     index_derivation_version_supported(grammar, ir),
                     audited_identity_pair,
