@@ -1229,6 +1229,13 @@ impl FrameworkProfileDatabase {
                 ),
             ],
         );
+        // WP-606: audited, like every public application command and like
+        // the signup graph above. Mixing the audited capsule path with the
+        // unaudited storage-only conformance path on one entity leaves the
+        // stored chain head ahead of the walkable transition capsules, which
+        // startup validation correctly reports as an Authoritative
+        // MissingCrossLink. The harness now uses the production-shaped
+        // audited path consistently.
         self.prepare_command(
             ports,
             plan,
@@ -1236,7 +1243,7 @@ impl FrameworkProfileDatabase {
             &canonical_uuid_text(input_request_seed),
             digest_seed,
             admission_request_seed,
-            false,
+            true,
         )
     }
 
@@ -1266,6 +1273,7 @@ impl FrameworkProfileDatabase {
                 ("expected_revision", CanonicalValue::U64(expected_revision)),
             ],
         );
+        // WP-606: audited for the same reason as prepare_refresh above.
         self.prepare_command(
             ports,
             plan,
@@ -1273,7 +1281,7 @@ impl FrameworkProfileDatabase {
             &canonical_uuid_text(input_request_seed),
             digest_seed,
             admission_request_seed,
-            false,
+            true,
         )
     }
 
