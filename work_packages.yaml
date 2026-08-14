@@ -10744,7 +10744,7 @@ work_packages:
     feature catalog, receipt binding, and old/current fixtures
   - Manifest restrictions rejecting raw permissions/IDs, storage/kernel access, arbitrary methods,
     server hooks, unbounded version ranges, shell execution, and unsupported silent fallback
-  - Empty install and populated upgrade/evolution campaigns for OpenFGA, MLflow, Payload, and
+  - Empty install and populated upgrade/evolution campaigns for OpenFGA, MLflow, Better Auth, and
     Woodpecker shapes, including role/credential rotation and exact conformance observations
   - Immutable failed-campaign evidence, feature/platform gaps, no source access, no handwritten
     transport/query/mutation glue, and actionable product-defect classification
@@ -10882,10 +10882,10 @@ work_packages:
       with one partition and existing page/work ceilings; no global ACL scan is introduced.
   human_review_triggers: *id001
 - id: WP-573
-  name: Generated row-policy clients and realistic Payload/MLflow acceptance
+  name: Generated row-policy clients and realistic Better Auth/MLflow acceptance
   depends_on: [WP-565, WP-567, WP-572]
   objective: Generate principal-fact administration and policy-aware application operations and
-    prove Payload document ACLs plus MLflow experiment/run permissions without client filtering,
+    prove Better Auth per-user records plus MLflow experiment/run permissions without client filtering,
     middleware authorization, hidden queries, or broader roles.
   requirements: [AAA-001, AAA-002, AAA-003, AAA-004, AAA-005, AAA-009,
     AAA-010, AAA-012, AAA-018, PYD-004, PYD-005, SAFE-007, SAFE-008, RAP-016]
@@ -10901,23 +10901,24 @@ work_packages:
   deliverables:
   - Rust, Go, TypeScript, Python, CLI, and MCP parity for policy-aware queries/commands/errors and
     operator-only bounded principal-fact/role binding; applications never receive policy bytecode
-  - Payload corpus covers public/private, owner, team grant, draft, transfer, ACL revocation,
-    document lists/detail/search/live update, and aggregate inference
+  - Better Auth corpus covers per-user account/session/token visibility, lifecycle mutation,
+    revocation, and cross-principal isolation; the document ACL corpus remains a post-alpha Payload
+    regression fixture for owner/team/public lists, search, live update, and aggregate inference
   - MLflow corpus covers experiment/run owners and groups, nested metrics/artifacts, transition
     races, revocation, dashboards, events, and agents under least-authority roles
-  - The alpha protected-event corpus contains no deletion event; adding a protected Payload,
+  - The alpha protected-event corpus contains no deletion event; adding a protected Better Auth,
     MLflow, OpenFGA, or Woodpecker deletion notification requires the accepted immutable-event-
     policy successor and a human-reviewed amendment before it can enter the gate
   - Boundary lint rejects middleware/client filtering, raw capability facts, alternate queries,
     administrator credentials, hidden row IDs, and per-language policy implementations
   acceptance_commands:
-  - ./scripts/adapter-row-policy-acceptance --all-languages --domains payload,mlflow
+  - ./scripts/adapter-row-policy-acceptance --all-languages --domains better-auth,mlflow
   - ./scripts/check-application-bindings
   - ./scripts/driver-conformance --all-languages --row-policy
   - ./scripts/check-generated
   - ./scripts/check-requirement-coverage
   - ./scripts/handbook check
-  exit_gate: Realistic Payload and MLflow workloads enforce identical per-record decisions in every
+  exit_gate: Realistic Better Auth and MLflow workloads enforce identical per-record decisions in every
     language and surface, including revocation/races/inference, with no application-owned policy
     code, client filter, raw identity, or authority widening.
   standing_design_tests:
@@ -11196,11 +11197,12 @@ work_packages:
     certificate and application-credential rotation, backup/restore, and no host-loopback shortcut
   - Installed Rust, Go, TypeScript, and Python driver conformance over pooling, cancellation,
     typed errors, retries/uncertainty, read-after-commit, reactive streams, and overload
-  - OpenFGA, MLflow, Payload, and Woodpecker empty-install/populated-upgrade workloads exercising
+  - OpenFGA, MLflow, Better Auth, and Woodpecker empty-install/populated-upgrade workloads exercising
     collection commands, operational queries, row policies, workflows, events, migrations,
     portability/disaster recovery, and adapter manifests
-  - Payload document and MLflow experiment/run policy probes cover owner/group/public access,
-    revocation, mutation races, projections/search/aggregates/live queries, and inference negatives
+  - Better Auth per-user record and MLflow experiment/run policy probes cover isolation,
+    revocation, mutation races, projections/aggregates/live queries, and inference negatives;
+    Payload remains a generated post-alpha regression fixture
   - Published durable-format compatibility manifest plus same-epoch upgrade/refusal and breaking-
     epoch export/reimport evidence; no unsupported binary opens or resets existing data
   - Crash/network/revocation/expiry/deploy-under-load/history-growth/security-negative matrix with
@@ -11218,7 +11220,7 @@ work_packages:
   - cargo +1.97.0 test --workspace --all-features
   - ./scripts/deployable-alpha-acceptance --all-domains --all-languages --remote
   - ./scripts/driver-conformance --all-languages --remote
-  - ./scripts/adapter-row-policy-acceptance --all-languages --domains payload,mlflow
+  - ./scripts/adapter-row-policy-acceptance --all-languages --domains better-auth,mlflow
   - ./scripts/adapter-export-reimport-acceptance --all-domains --all-languages
   - ./scripts/adapter-disaster-recovery-acceptance --all-domains --remote
   - ./scripts/alpha-endurance --verify-release-receipt release/evidence/alpha-endurance-v1.json

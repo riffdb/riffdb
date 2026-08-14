@@ -32,7 +32,7 @@ use riffdb_testkit::authorization::{
 };
 use riffdb_types::{
     ActorId, ActorKind, AggregateTypeId, ApplicationRoleHash, Audience, CanonicalRecord,
-    CanonicalValue, CapabilityGrantV1, CapabilityId, CapabilityPermissionV1,
+    CanonicalString, CanonicalValue, CapabilityGrantV1, CapabilityId, CapabilityPermissionV1,
     CapabilityPermissionsV1, CapabilityPrincipalFactV1, CapabilityPrincipalFactsV1,
     CapabilityRowPolicyBindingV1, CapabilityRowPolicyGrantV1, CapabilityRowPolicyOperationV1,
     CommitSequence, ContractVersion, DatabaseId, DigestKeyId, EntityFieldVisibilityV1, EntityKey,
@@ -44,6 +44,7 @@ use riffdb_types::{
 const SOURCE: &str = include_str!("../fixtures/compiler/row-policy/valid/document-access.riff");
 const RELATIONSHIP_SOURCE: &str =
     include_str!("../fixtures/compiler/row-policy/valid/document-grant.riff");
+const BETTER_AUTH_SOURCE: &str = include_str!("../fixtures/adapters/better-auth/contract.riff");
 const OWNER: [u8; 16] = [0x11; 16];
 const TEAM: [u8; 16] = [0x22; 16];
 const OUTSIDER: [u8; 16] = [0x33; 16];
@@ -53,6 +54,45 @@ struct FixedAuthorizationClock(Timestamp);
 impl AuthorizationClock for FixedAuthorizationClock {
     fn now(&self) -> Result<Timestamp, AuthorizationClockError> {
         Ok(self.0)
+    }
+}
+
+#[test]
+fn better_auth_rows_are_owned_by_the_authenticated_user_for_every_operation() {
+    let bundle =
+        compile_contract_source(BETTER_AUTH_SOURCE).expect("Better Auth contract compiles");
+    let owner = principal(OWNER, &[]);
+    let outsider = principal(OUTSIDER, &[]);
+
+    for (policy_name, entity_name) in [
+        ("UserAccess", "User"),
+        ("AccountAccess", "Account"),
+        ("SessionAccess", "Session"),
+        ("VerificationTokenAccess", "VerificationToken"),
+    ] {
+        let policy = bundle
+            .row_policies()
+            .policies()
+            .iter()
+            .find(|policy| policy.name() == policy_name)
+            .expect("Better Auth row policy");
+        let row = better_auth_row(&bundle, entity_name, OWNER);
+
+        for operation in [
+            RowPolicyOperationV1::Read,
+            RowPolicyOperationV1::Create,
+            RowPolicyOperationV1::Update,
+            RowPolicyOperationV1::Delete,
+        ] {
+            assert!(
+                evaluate_row_policy(policy, operation, &row, &owner, &[]).is_allowed(),
+                "{policy_name} must allow its authenticated owner to {operation:?}",
+            );
+            assert!(
+                evaluate_row_policy(policy, operation, &row, &outsider, &[]).is_denied(),
+                "{policy_name} must deny another principal from {operation:?}",
+            );
+        }
     }
 }
 
@@ -630,6 +670,71 @@ fn relationship_document(bundle: &ContractBundle, published: bool) -> CanonicalR
             .collect(),
     )
     .expect("relationship document")
+}
+
+fn better_auth_row(
+    bundle: &ContractBundle,
+    entity_name: &str,
+    user_id: [u8; 16],
+) -> CanonicalRecord {
+    let entity = bundle
+        .schema()
+        .entities()
+        .iter()
+        .find(|entity| entity.name() == entity_name)
+        .expect("Better Auth entity");
+    CanonicalRecord::new(
+        entity
+            .record()
+            .fields()
+            .iter()
+            .map(|field| {
+                let value = match field.name() {
+                    "organization_id" => CanonicalValue::Uuid([0x01; 16]),
+                    "user_id" => CanonicalValue::Uuid(user_id),
+                    "account_id" | "session_id" | "verification_token_id" => {
+                        CanonicalValue::Uuid([0x02; 16])
+                    }
+                    "email" => CanonicalValue::String(
+                        CanonicalString::new("owner@example.test").expect("email"),
+                    ),
+                    "provider" => {
+                        CanonicalValue::String(CanonicalString::new("oidc").expect("provider"))
+                    }
+                    "provider_account_id" => CanonicalValue::String(
+                        CanonicalString::new("subject-1").expect("provider account"),
+                    ),
+                    "token_digest" => CanonicalValue::String(
+                        CanonicalString::new("digest").expect("token digest"),
+                    ),
+                    "expires_at" | "issued_at" => {
+                        CanonicalValue::Timestamp(Timestamp::new(5, 0).expect("timestamp"))
+                    }
+                    "consumed" => CanonicalValue::Bool(false),
+                    "state" => {
+                        let enumeration = bundle
+                            .schema()
+                            .enums()
+                            .iter()
+                            .find(|enumeration| enumeration.name() == "SessionState")
+                            .expect("session-state enum");
+                        let variant = enumeration
+                            .variants()
+                            .iter()
+                            .find(|variant| variant.name() == "Active")
+                            .expect("active session state");
+                        CanonicalValue::Enum {
+                            type_id: enumeration.id(),
+                            variant_id: variant.id(),
+                        }
+                    }
+                    name => panic!("unexpected Better Auth field {name}"),
+                };
+                (field.id(), value)
+            })
+            .collect(),
+    )
+    .expect("canonical Better Auth row")
 }
 
 fn principal(id: [u8; 16], teams: &[[u8; 16]]) -> PrincipalFactBindingV1 {

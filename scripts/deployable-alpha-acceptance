@@ -50,7 +50,7 @@ def phases() -> list[tuple[str, list[str]]]:
         ("operational_queries", ["scripts/adapter-operational-query-acceptance", "--all-languages"]),
         ("workflow_concurrency", ["scripts/adapter-workflow-acceptance", "--all-languages"]),
         ("framework_profile", ["scripts/adapter-framework-profile-acceptance"]),
-        ("row_policy", ["scripts/adapter-row-policy-acceptance", "--all-languages", "--domains", "payload,mlflow"]),
+        ("row_policy", ["scripts/adapter-row-policy-acceptance", "--all-languages", "--domains", "better-auth,mlflow"]),
         ("export_reimport", ["scripts/adapter-export-reimport-acceptance", "--all-domains", "--all-languages"]),
         ("disaster_recovery", ["scripts/adapter-disaster-recovery-acceptance", "--all-domains", "--remote"]),
         ("endurance_evidence", ["scripts/alpha-endurance", "--verify-release-receipt", "release/evidence/alpha-endurance-v1.json"]),
