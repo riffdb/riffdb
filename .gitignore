@@ -12,5 +12,9 @@
 # Nested crate unit-test target (CARGO_MANIFEST_DIR/target fallback)
 /crates/riffdb-bench-root/target/
 
+# Python bytecode caches
+__pycache__/
+*.py[cod]
+
 # AI coding tools
 .serena
