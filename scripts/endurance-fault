@@ -1,0 +1,486 @@
+#!/usr/bin/env python3
+"""Run one real, receipted orchestrator-only alpha endurance fault."""
+
+from __future__ import annotations
+
+import fcntl
+import hashlib
+import importlib.machinery
+import importlib.util
+import json
+import os
+from pathlib import Path
+import signal
+import subprocess
+import sys
+import time
+from types import ModuleType
+from typing import Any
+from uuid import UUID, uuid5
+
+
+RESULT_SCHEMA = "riffdb.alpha-endurance-action-result/v1"
+EVIDENCE_SCHEMA = "riffdb.alpha-endurance-fault-evidence/v1"
+CONSUMER_CLIENT_SCHEMA = "riffdb.alpha-endurance-consumer-fault-client/v1"
+FAULTS = {
+    "checkpoint_crash",
+    "consumer_after_command_before_ack",
+    "journal_recycle_crash",
+    "network_interrupt",
+    "process_kill",
+}
+MAX_JSON_BYTES = 1024 * 1024
+
+
+def fail(message: str) -> "None":
+    raise ValueError(message)
+
+
+def lifecycle_module() -> ModuleType:
+    source = Path(__file__).resolve().with_name("endurance-lifecycle")
+    loader = importlib.machinery.SourceFileLoader("riffdb_endurance_lifecycle", str(source))
+    specification = importlib.util.spec_from_loader(loader.name, loader)
+    if specification is None:
+        fail("endurance lifecycle support could not be loaded")
+    module = importlib.util.module_from_spec(specification)
+    loader.exec_module(module)
+    return module
+
+
+def environment_root(module: ModuleType) -> Path:
+    environment = module.artifact_root() / "environment-v1"
+    if environment.is_symlink() or not environment.is_dir():
+        fail("endurance environment is absent")
+    return environment
+
+
+def fault_ordinal(environment: Path, name: str) -> int:
+    evidence_root = environment / "fault-evidence"
+    evidence_root.mkdir(mode=0o700, exist_ok=True)
+    prefix = f"{name}-"
+    ordinals: list[int] = []
+    for path in evidence_root.iterdir():
+        if path.is_symlink() or not path.is_file() or not path.name.startswith(prefix):
+            continue
+        suffix = path.name[len(prefix) :]
+        if len(suffix) == 11 and suffix[:6].isdigit() and suffix[6:] == ".json":
+            ordinals.append(int(suffix[:6]))
+    expected = list(range(1, len(ordinals) + 1))
+    if sorted(ordinals) != expected:
+        fail("endurance fault evidence inventory is non-contiguous")
+    return len(ordinals) + 1
+
+
+def evidence_digest(
+    module: ModuleType,
+    environment: Path,
+    name: str,
+    ordinal: int,
+    evidence: dict[str, Any],
+) -> str:
+    evidence_root = environment / "fault-evidence"
+    path = evidence_root / f"{name}-{ordinal:06d}.json"
+    if path.exists() or path.is_symlink():
+        fail("endurance fault evidence already exists")
+    module.atomic_write(path, evidence)
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def process_kill(module: ModuleType, environment: Path) -> tuple[int, int, dict[str, Any]]:
+    process_state = module.read_object(environment / "state.json")
+    old_pid = module.integer(process_state.get("server_pid"), "server_pid")
+    if not module.process_alive(old_pid):
+        fail("endurance server was not running before process-kill fault")
+    before = module.health_frontier(environment)
+    database = environment / "data" / "ticketdesk.redb"
+    generation_before = module.journal_generation(database)
+    os.kill(old_pid, signal.SIGKILL)
+    module.wait_stopped(old_pid, 30)
+    after = module.start_server(environment, process_state, before)
+    generation_after = module.journal_generation(database)
+    if after < before or generation_after < generation_before:
+        fail("process-kill recovery regressed a durable frontier")
+    return before, after, {
+        "schema": EVIDENCE_SCHEMA,
+        "fault": "process_kill",
+        "termination_signal": "SIGKILL",
+        "application_frontier_before": before,
+        "application_frontier_after": after,
+        "journal_generation_before": generation_before,
+        "journal_generation_after": generation_after,
+    }
+
+
+def wait_healthy(module: ModuleType, environment: Path, minimum: int, timeout: int = 60) -> int:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            frontier = module.health_frontier(environment)
+            if frontier >= minimum:
+                return frontier
+        except (json.JSONDecodeError, OSError, subprocess.SubprocessError, ValueError):
+            pass
+        time.sleep(0.1)
+    fail("endurance server did not recover authenticated health")
+
+
+def network_interrupt(module: ModuleType, environment: Path) -> tuple[int, int, dict[str, Any]]:
+    process_state = module.read_object(environment / "state.json")
+    pid = module.integer(process_state.get("server_pid"), "server_pid")
+    if not module.process_alive(pid):
+        fail("endurance server was not running before network interruption")
+    before = module.health_frontier(environment)
+    os.kill(pid, signal.SIGSTOP)
+    failure_kind = ""
+    probe: subprocess.Popen[bytes] | None = None
+    try:
+        command = module.cli(environment) + ["server", "health", "--output", "json"]
+        probe = subprocess.Popen(
+            command,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        time.sleep(0.25)
+        status = probe.poll()
+        if status is None:
+            failure_kind = "public_operation_blocked"
+            probe.terminate()
+            probe.wait(timeout=5)
+        else:
+            if status == 0:
+                fail("network interruption left the public TLS operation available")
+            failure_kind = "public_operation_failed"
+    finally:
+        if probe is not None and probe.poll() is None:
+            probe.kill()
+            probe.wait(timeout=5)
+        os.kill(pid, signal.SIGCONT)
+    after = wait_healthy(module, environment, before)
+    return before, after, {
+        "schema": EVIDENCE_SCHEMA,
+        "fault": "network_interrupt",
+        "interruption": "SIGSTOP",
+        "public_failure": failure_kind,
+        "application_frontier_before": before,
+        "application_frontier_after": after,
+        "same_process_recovered": module.process_alive(pid),
+    }
+
+
+def checkpoint_crash(module: ModuleType, environment: Path) -> tuple[int, int, dict[str, Any]]:
+    process_state = module.read_object(environment / "state.json")
+    pid = module.integer(process_state.get("server_pid"), "server_pid")
+    lifecycle = module.read_object(environment / "lifecycle-state.json")
+    known_checkpoint = module.integer(lifecycle.get("checkpoint_frontier"), "checkpoint_frontier")
+    deadline = time.monotonic() + 30
+    before = module.health_frontier(environment)
+    while before <= known_checkpoint and time.monotonic() < deadline:
+        time.sleep(0.1)
+        before = module.health_frontier(environment)
+    if before <= known_checkpoint:
+        fail("checkpoint-crash fault found no journal suffix beyond the known checkpoint")
+    os.kill(pid, signal.SIGSTOP)
+    try:
+        os.kill(pid, signal.SIGTERM)
+        os.kill(pid, signal.SIGKILL)
+    finally:
+        if module.process_alive(pid):
+            try:
+                os.kill(pid, signal.SIGCONT)
+            except ProcessLookupError:
+                pass
+    module.wait_stopped(pid, 30)
+    checkpoint = module.inspect_checkpoint(environment)
+    if checkpoint > before:
+        fail("checkpoint-crash inspection exceeded the observed application frontier")
+    after = module.start_server(environment, process_state, before)
+    return before, after, {
+        "schema": EVIDENCE_SCHEMA,
+        "fault": "checkpoint_crash",
+        "pending_signal": "SIGTERM",
+        "termination_signal": "SIGKILL",
+        "known_checkpoint_before": known_checkpoint,
+        "stopped_checkpoint": checkpoint,
+        "application_frontier_before": before,
+        "application_frontier_after": after,
+    }
+
+
+def journal_recycle_crash(module: ModuleType, environment: Path) -> tuple[int, int, dict[str, Any]]:
+    process_state = module.read_object(environment / "state.json")
+    pid = module.integer(process_state.get("server_pid"), "server_pid")
+    database = environment / "data" / "ticketdesk.redb"
+    generation_before = module.journal_generation(database)
+    deadline = time.monotonic() + 540
+    generation_after_recycle = generation_before
+    while time.monotonic() < deadline:
+        generation_after_recycle = module.journal_generation(database)
+        if generation_after_recycle > generation_before:
+            break
+        time.sleep(0.05)
+    if generation_after_recycle <= generation_before:
+        fail("journal-recycle fault observed no new generation before its deadline")
+    before = module.health_frontier(environment)
+    os.kill(pid, signal.SIGKILL)
+    module.wait_stopped(pid, 30)
+    after = module.start_server(environment, process_state, before)
+    recovered_generation = module.journal_generation(database)
+    if recovered_generation < generation_after_recycle:
+        fail("journal-recycle crash recovery regressed the extent generation")
+    return before, after, {
+        "schema": EVIDENCE_SCHEMA,
+        "fault": "journal_recycle_crash",
+        "termination_signal": "SIGKILL",
+        "generation_before": generation_before,
+        "generation_at_crash": generation_after_recycle,
+        "generation_after_recovery": recovered_generation,
+        "application_frontier_before": before,
+        "application_frontier_after": after,
+    }
+
+
+def wait_for_file(path: Path, process: subprocess.Popen[bytes], timeout: int) -> dict[str, Any]:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if path.exists():
+            return read_client_result(path)
+        status = process.poll()
+        if status is not None:
+            _stdout, stderr = process.communicate(timeout=1)
+            diagnostic = stderr.decode("utf-8", errors="replace")[:4096].strip()
+            fail(f"endurance consumer fault client exited before evidence: {diagnostic}")
+        time.sleep(0.05)
+    fail("endurance consumer fault client exceeded its deadline")
+
+
+def read_client_result(path: Path) -> dict[str, Any]:
+    if path.is_symlink() or not path.is_file():
+        fail("endurance consumer fault client evidence is absent")
+    encoded = path.read_bytes()
+    if not 0 < len(encoded) <= MAX_JSON_BYTES:
+        fail("endurance consumer fault client evidence exceeds its bound")
+    value = json.loads(encoded)
+    expected = {"schema", "mode", "event_id", "attempt", "command_replayed", "acknowledged"}
+    if not isinstance(value, dict) or set(value) != expected or value.get("schema") != CONSUMER_CLIENT_SCHEMA:
+        fail("endurance consumer fault client evidence is invalid")
+    if (
+        not isinstance(value.get("event_id"), str)
+        or not value["event_id"]
+        or type(value.get("attempt")) is not int
+        or value["attempt"] < 1
+        or type(value.get("command_replayed")) is not bool
+        or type(value.get("acknowledged")) is not bool
+    ):
+        fail("endurance consumer fault client evidence fields are invalid")
+    return value
+
+
+def consumer_command(
+    environment: Path,
+    *,
+    mode: str,
+    consumer: str,
+    organization_id: UUID,
+    comment_id: UUID,
+    idempotency_key: str,
+    output: Path,
+    expected_event_id: str = "",
+) -> list[str]:
+    state = read_client_state(environment)
+    python = Path(str(state.get("python", "")))
+    helper = Path(__file__).resolve().with_name("endurance-fault-client")
+    try:
+        python.relative_to(environment)
+    except ValueError:
+        fail("endurance consumer fault Python installation escapes the environment")
+    if not python.resolve().is_file() or helper.is_symlink() or not helper.is_file():
+        fail("endurance consumer fault client installation is invalid")
+    return [
+        str(python),
+        str(helper),
+        "--environment",
+        str(environment),
+        "--mode",
+        mode,
+        "--consumer",
+        consumer,
+        "--organization-id",
+        str(organization_id),
+        "--comment-id",
+        str(comment_id),
+        "--idempotency-key",
+        idempotency_key,
+        "--expected-event-id",
+        expected_event_id,
+        "--output",
+        str(output),
+    ]
+
+
+def read_client_state(environment: Path) -> dict[str, Any]:
+    path = environment / "state.json"
+    if path.is_symlink() or not path.is_file():
+        fail("endurance consumer fault state is absent")
+    encoded = path.read_bytes()
+    if not 0 < len(encoded) <= MAX_JSON_BYTES:
+        fail("endurance consumer fault state exceeds its byte bound")
+    value = json.loads(encoded)
+    if not isinstance(value, dict):
+        fail("endurance consumer fault state is invalid")
+    return value
+
+
+def consumer_after_command_before_ack(
+    module: ModuleType,
+    environment: Path,
+    ordinal: int,
+) -> tuple[int, int, dict[str, Any]]:
+    before = module.health_frontier(environment)
+    namespace = UUID("7b459bfd-f7fd-4d6a-87c9-0d496fbf9de2")
+    organization_id = UUID("0000000a-0000-8000-8000-000000000000")
+    comment_id = uuid5(namespace, f"endurance-consumer-fault-{ordinal}")
+    consumer = f"endurance-crash-after-command-{ordinal}"
+    idempotency_key = f"endurance-crash-after-command-{ordinal}"
+    work_root = environment / "fault-work"
+    work_root.mkdir(mode=0o700, exist_ok=True)
+    first_path = work_root / f"consumer-{ordinal:06d}-first.json"
+    second_path = work_root / f"consumer-{ordinal:06d}-second.json"
+    for path in (first_path, second_path):
+        if path.exists() or path.is_symlink():
+            fail("endurance consumer fault work evidence already exists")
+
+    first = subprocess.Popen(
+        consumer_command(
+            environment,
+            mode="commit-and-wait",
+            consumer=consumer,
+            organization_id=organization_id,
+            comment_id=comment_id,
+            idempotency_key=idempotency_key,
+            output=first_path,
+        ),
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        start_new_session=True,
+    )
+    try:
+        first_result = wait_for_file(first_path, first, 60)
+        if first_result["acknowledged"] or first_result["command_replayed"]:
+            fail("first consumer fault command was acknowledged or unexpectedly replayed")
+        first.kill()
+        first.wait(timeout=15)
+    finally:
+        if first.poll() is None:
+            first.kill()
+            first.wait(timeout=15)
+
+    # Contextual leases are a fixed public 60-second bound in the generated
+    # alpha client. Waiting past it proves server-owned redelivery rather than
+    # a harness-side seek, nack, or checkpoint mutation.
+    time.sleep(61)
+    second = subprocess.run(
+        consumer_command(
+            environment,
+            mode="redeliver-and-ack",
+            consumer=consumer,
+            organization_id=organization_id,
+            comment_id=comment_id,
+            idempotency_key=idempotency_key,
+            expected_event_id=str(first_result["event_id"]),
+            output=second_path,
+        ),
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        timeout=60,
+        check=False,
+    )
+    if second.returncode != 0:
+        diagnostic = second.stderr.decode("utf-8", errors="replace")[:4096].strip()
+        fail(f"redelivered consumer fault client failed: {diagnostic}")
+    second_result = read_client_result(second_path)
+    if (
+        second_result["event_id"] != first_result["event_id"]
+        or second_result["attempt"] <= first_result["attempt"]
+        or second_result["command_replayed"] is not True
+        or second_result["acknowledged"] is not True
+    ):
+        fail("consumer fault did not prove redelivery, replay, and acknowledgement")
+    after = module.health_frontier(environment)
+    if after < before:
+        fail("consumer fault regressed the application frontier")
+    return before, after, {
+        "schema": EVIDENCE_SCHEMA,
+        "fault": "consumer_after_command_before_ack",
+        "consumer": consumer,
+        "event_id": first_result["event_id"],
+        "first_attempt": first_result["attempt"],
+        "redelivery_attempt": second_result["attempt"],
+        "first_command_replayed": first_result["command_replayed"],
+        "redelivered_command_replayed": second_result["command_replayed"],
+        "acknowledged_after_redelivery": second_result["acknowledged"],
+        "application_frontier_before": before,
+        "application_frontier_after": after,
+    }
+
+
+def run_action(module: ModuleType, environment: Path, name: str) -> dict[str, Any]:
+    if name not in FAULTS:
+        fail(f"endurance fault is invalid: {name}")
+    ordinal = fault_ordinal(environment, name)
+    if name == "process_kill":
+        before, after, evidence = process_kill(module, environment)
+    elif name == "network_interrupt":
+        before, after, evidence = network_interrupt(module, environment)
+    elif name == "checkpoint_crash":
+        before, after, evidence = checkpoint_crash(module, environment)
+    elif name == "journal_recycle_crash":
+        before, after, evidence = journal_recycle_crash(module, environment)
+    else:
+        before, after, evidence = consumer_after_command_before_ack(module, environment, ordinal)
+    digest = evidence_digest(module, environment, name, ordinal, evidence)
+    return {
+        "schema": RESULT_SCHEMA,
+        "kind": "fault",
+        "name": name,
+        "status": "passed",
+        "evidence_sha256": digest,
+        "frontier_before": before,
+        "frontier_after": after,
+        "recovered": True,
+    }
+
+
+def self_test() -> None:
+    if len(FAULTS) != 5 or "consumer_after_command_before_ack" not in FAULTS:
+        fail("endurance fault inventory self-test failed")
+    print("endurance fault controls: passed")
+
+
+def main() -> int:
+    if sys.argv[1:] == ["--self-test"]:
+        self_test()
+        return 0
+    if len(sys.argv) != 2:
+        fail(
+            "usage: endurance-fault <checkpoint_crash|consumer_after_command_before_ack|journal_recycle_crash|network_interrupt|process_kill> | --self-test"
+        )
+    module = lifecycle_module()
+    environment = environment_root(module)
+    lock_path = environment / "lifecycle.lock"
+    with lock_path.open("a+b") as lock:
+        os.chmod(lock_path, 0o600)
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        result = run_action(module, environment, sys.argv[1])
+    print(json.dumps(result, sort_keys=True, separators=(",", ":")))
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except (json.JSONDecodeError, OSError, subprocess.SubprocessError, ValueError) as error:
+        print(f"endurance_fault_invalid: {error}", file=sys.stderr)
+        raise SystemExit(3) from error

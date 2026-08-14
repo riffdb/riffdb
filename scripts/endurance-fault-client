@@ -1,0 +1,155 @@
+#!/usr/bin/env python3
+"""One-shot generated-client probe for the endurance consumer crash cell."""
+
+from __future__ import annotations
+
+import argparse
+import asyncio
+import json
+import os
+from pathlib import Path
+import sys
+from typing import Any
+from uuid import UUID
+
+
+SCHEMA = "riffdb.alpha-endurance-consumer-fault-client/v1"
+MAX_JSON_BYTES = 1024 * 1024
+
+
+def fail(message: str) -> "None":
+    raise ValueError(message)
+
+
+def read_object(path: Path) -> dict[str, Any]:
+    if path.is_symlink() or not path.is_file():
+        fail("endurance consumer fault input is absent")
+    encoded = path.read_bytes()
+    if not 0 < len(encoded) <= MAX_JSON_BYTES:
+        fail("endurance consumer fault input exceeds its byte bound")
+    value = json.loads(encoded)
+    if not isinstance(value, dict):
+        fail("endurance consumer fault input is not an object")
+    return value
+
+
+def atomic_write(path: Path, value: dict[str, Any]) -> None:
+    pending = path.with_name(f".{path.name}.{os.getpid()}.pending")
+    try:
+        with pending.open("x", encoding="utf-8") as destination:
+            os.chmod(pending, 0o600)
+            destination.write(json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n")
+            destination.flush()
+            os.fsync(destination.fileno())
+        pending.replace(path)
+    finally:
+        if pending.exists():
+            pending.unlink()
+
+
+async def run(arguments: argparse.Namespace) -> None:
+    environment = Path(arguments.environment)
+    if not environment.is_absolute() or environment.is_symlink() or not environment.is_dir():
+        fail("endurance consumer fault environment is invalid")
+    sys.path.insert(0, str(environment / "python-worker"))
+    from client import (  # noqa: PLC0415
+        AsyncTicketDeskReactiveClient,
+        CreateCommentInput,
+        TriageTicketParams,
+    )
+    from riffdb_application import (  # noqa: PLC0415
+        AsyncApplicationTransport,
+        AttemptBudget,
+        BearerCredential,
+        CallMetadata,
+        DatabaseAlias,
+        VerifiedTlsConfig,
+    )
+
+    state = read_object(environment / "state.json")
+    endpoint = state.get("endpoint")
+    if not isinstance(endpoint, str) or not endpoint.startswith("https://"):
+        fail("endurance consumer fault endpoint is invalid")
+    metadata = CallMetadata.authenticated(
+        BearerCredential.from_protected_file(str(environment / "agent.credential"))
+    ).with_database(DatabaseAlias("default"))
+    transport = await AsyncApplicationTransport.connect_verified_tls(
+        VerifiedTlsConfig(
+            endpoint=endpoint,
+            trust_root=str(environment / "ca.pem"),
+            server_name="127.0.0.1",
+            pool_connections=1,
+            streams_per_connection=4,
+        ),
+        metadata,
+    )
+    client = AsyncTicketDeskReactiveClient(transport, AttemptBudget(1))
+    try:
+        parameters = TriageTicketParams(organization_id=UUID(arguments.organization_id))
+        item = await client.next_triage_ticket(
+            parameters,
+            arguments.consumer,
+            30_000_000_000,
+        )
+        if item is None:
+            fail("endurance consumer fault found no contextual work")
+        if arguments.expected_event_id and item.event_id != arguments.expected_event_id:
+            fail("endurance consumer fault redelivered a different event")
+        result = await client.react_comment(
+            parameters,
+            arguments.consumer,
+            item,
+            CreateCommentInput(
+                body="endurance crash-after-command reaction",
+                author_id=item.event.reporter_id,
+                ticket_id=item.event.ticket_id,
+                comment_id=UUID(arguments.comment_id),
+                idempotency_key=arguments.idempotency_key,
+                organization_id=UUID(arguments.organization_id),
+            ),
+        )
+        acknowledged = False
+        if arguments.mode == "redeliver-and-ack":
+            await client.ack_triage_ticket(parameters, arguments.consumer, item)
+            acknowledged = True
+        atomic_write(
+            Path(arguments.output),
+            {
+                "schema": SCHEMA,
+                "mode": arguments.mode,
+                "event_id": item.event_id,
+                "attempt": item.attempt,
+                "command_replayed": result.replayed,
+                "acknowledged": acknowledged,
+            },
+        )
+        if arguments.mode == "commit-and-wait":
+            await asyncio.Event().wait()
+    finally:
+        await transport.close()
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("--environment", required=True)
+    parser.add_argument("--mode", choices=("commit-and-wait", "redeliver-and-ack"), required=True)
+    parser.add_argument("--consumer", required=True)
+    parser.add_argument("--organization-id", required=True)
+    parser.add_argument("--comment-id", required=True)
+    parser.add_argument("--idempotency-key", required=True)
+    parser.add_argument("--expected-event-id", default="")
+    parser.add_argument("--output", required=True)
+    arguments = parser.parse_args()
+    output = Path(arguments.output)
+    if not output.is_absolute() or output.is_symlink() or output.exists():
+        fail("endurance consumer fault output is invalid")
+    asyncio.run(run(arguments))
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except (json.JSONDecodeError, OSError, ValueError) as error:
+        print(f"endurance_consumer_fault_invalid: {error}", file=sys.stderr)
+        raise SystemExit(3) from error

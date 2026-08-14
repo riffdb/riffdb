@@ -1,0 +1,73 @@
+{
+  "schema": "riffdb.alpha-endurance-actions/v1",
+  "environment": {
+    "setup": ["scripts/endurance-environment", "setup"],
+    "teardown": ["scripts/endurance-environment", "teardown"]
+  },
+  "workers": [
+    {
+      "language": "go",
+      "command": ["scripts/endurance-worker", "--language", "go"],
+      "seed": 2002,
+      "clients": 4,
+      "maximum_operations_per_second": 1024,
+      "tenants": ["tenant_alpha", "tenant_beta", "tenant_gamma", "tenant_delta"],
+      "coverage": ["cold_keys", "events", "hot_keys", "live_queries", "multiple_tenants", "reads", "workflows", "writes"]
+    },
+    {
+      "language": "python",
+      "command": ["scripts/endurance-worker", "--language", "python"],
+      "seed": 4004,
+      "clients": 4,
+      "maximum_operations_per_second": 1024,
+      "tenants": ["tenant_alpha", "tenant_beta", "tenant_gamma", "tenant_delta"],
+      "coverage": ["cold_keys", "events", "hot_keys", "live_queries", "multiple_tenants", "reads", "workflows", "writes"]
+    },
+    {
+      "language": "rust",
+      "command": ["scripts/endurance-worker", "--language", "rust"],
+      "seed": 1001,
+      "clients": 4,
+      "maximum_operations_per_second": 1024,
+      "tenants": ["tenant_alpha", "tenant_beta", "tenant_gamma", "tenant_delta"],
+      "coverage": ["cold_keys", "events", "hot_keys", "live_queries", "multiple_tenants", "reads", "workflows", "writes"]
+    },
+    {
+      "language": "typescript",
+      "command": ["scripts/endurance-worker", "--language", "typescript"],
+      "seed": 3003,
+      "clients": 4,
+      "maximum_operations_per_second": 1024,
+      "tenants": ["tenant_alpha", "tenant_beta", "tenant_gamma", "tenant_delta"],
+      "coverage": ["cold_keys", "events", "hot_keys", "live_queries", "multiple_tenants", "reads", "workflows", "writes"]
+    }
+  ],
+  "sampler": {
+    "command": ["scripts/endurance-sample"],
+    "interval_seconds": 30
+  },
+  "conformance": {
+    "command": ["scripts/endurance-conformance"],
+    "interval_seconds": 300
+  },
+  "lifecycles": [
+    {"name": "backup", "command": ["scripts/endurance-lifecycle", "backup"], "interval_seconds": 600, "initial_delay_seconds": 30},
+    {"name": "capability_rotation", "command": ["scripts/endurance-lifecycle", "capability_rotation"], "interval_seconds": 600, "initial_delay_seconds": 45},
+    {"name": "certificate_rotation", "command": ["scripts/endurance-lifecycle", "certificate_rotation"], "interval_seconds": 600, "initial_delay_seconds": 60},
+    {"name": "checkpoint", "command": ["scripts/endurance-lifecycle", "checkpoint"], "interval_seconds": 600, "initial_delay_seconds": 75},
+    {"name": "deploy_under_load", "command": ["scripts/endurance-lifecycle", "deploy_under_load"], "interval_seconds": 600, "initial_delay_seconds": 90},
+    {"name": "journal_recycle", "command": ["scripts/endurance-lifecycle", "journal_recycle"], "interval_seconds": 600, "initial_delay_seconds": 105},
+    {"name": "reactive_consumer", "command": ["scripts/endurance-lifecycle", "reactive_consumer"], "interval_seconds": 600, "initial_delay_seconds": 120},
+    {"name": "recovery", "command": ["scripts/endurance-lifecycle", "recovery"], "interval_seconds": 600, "initial_delay_seconds": 135},
+    {"name": "restart", "command": ["scripts/endurance-lifecycle", "restart"], "interval_seconds": 600, "initial_delay_seconds": 150},
+    {"name": "retention", "command": ["scripts/endurance-lifecycle", "retention"], "interval_seconds": 600, "initial_delay_seconds": 165}
+  ],
+  "faults": [
+    {"name": "checkpoint_crash", "command": ["scripts/endurance-fault", "checkpoint_crash"], "interval_seconds": 900, "initial_delay_seconds": 300},
+    {"name": "consumer_after_command_before_ack", "command": ["scripts/endurance-fault", "consumer_after_command_before_ack"], "interval_seconds": 900, "initial_delay_seconds": 330},
+    {"name": "journal_recycle_crash", "command": ["scripts/endurance-fault", "journal_recycle_crash"], "interval_seconds": 900, "initial_delay_seconds": 360},
+    {"name": "network_interrupt", "command": ["scripts/endurance-fault", "network_interrupt"], "interval_seconds": 900, "initial_delay_seconds": 390},
+    {"name": "process_kill", "command": ["scripts/endurance-fault", "process_kill"], "interval_seconds": 900, "initial_delay_seconds": 420}
+  ],
+  "workload_coverage": ["cold_keys", "events", "hot_keys", "live_queries", "multiple_tenants", "reads", "workflows", "writes"]
+}
