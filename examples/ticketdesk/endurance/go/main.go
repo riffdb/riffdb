@@ -29,6 +29,7 @@ var latencyBoundsUS = [...]uint64{
 
 const maxTransientRetries uint64 = 90
 const MODELED_DURABLE_OPERATION_BYTES uint64 = 32 * 1024
+const metricsPublicationOperations uint64 = 16
 
 type identityFile struct {
 	ApplicationManifestHash string `json:"applicationManifestHash"`
@@ -130,7 +131,7 @@ func (value *metrics) record(workload, tenant string, retained uint64, started *
 		}
 	}
 	value.value.LatencyCounts[bucket]++
-	if value.value.LogicalOperations%64 == 0 {
+	if value.value.LogicalOperations%metricsPublicationOperations == 0 {
 		return value.publishLocked()
 	}
 	return nil

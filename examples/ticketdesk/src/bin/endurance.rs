@@ -55,6 +55,7 @@ const LATENCY_BOUNDS_US: [u64; 16] = [
 ];
 const MAX_TRANSIENT_RETRIES: u64 = 90;
 const MODELED_DURABLE_OPERATION_BYTES: u64 = 32 * 1024;
+const METRICS_PUBLICATION_ITERATIONS: u64 = 4;
 
 type WorkerResult<T> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
@@ -300,7 +301,7 @@ async fn run_client(
             }
         }
         counter = counter.saturating_add(1);
-        if counter.is_multiple_of(64) {
+        if counter.is_multiple_of(METRICS_PUBLICATION_ITERATIONS) {
             publish_metrics(metrics_path, &metrics).await?;
         }
         tokio::time::sleep(delay).await;

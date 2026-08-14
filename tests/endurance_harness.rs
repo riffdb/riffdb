@@ -60,6 +60,7 @@ fn self_test_rejects_incomplete_and_invalid_endurance_evidence() {
     assert!(stdout.contains("hidden_retry: rejected"));
     assert!(stdout.contains("missing_generation: rejected"));
     assert!(stdout.contains("starvation: rejected"));
+    assert!(stdout.contains("per_language_starvation: rejected"));
     assert!(stdout.contains("storage_unavailable: rejected"));
     assert!(stdout.contains("conformance_failure: rejected"));
     assert!(stdout.contains("release_evidence_omission: rejected"));
@@ -260,6 +261,42 @@ fn endurance_rate_accounting_and_backup_inventory_are_sustainable_for_seventy_tw
             "{worker} lacks durable-class growth accounting"
         );
     }
+}
+
+#[test]
+fn endurance_workers_publish_progress_inside_one_sampler_interval() {
+    let root = repository_root();
+    for (worker, cadence) in [
+        (
+            "examples/ticketdesk/src/bin/endurance.rs",
+            "METRICS_PUBLICATION_ITERATIONS: u64 = 4",
+        ),
+        (
+            "examples/ticketdesk/endurance/go/main.go",
+            "metricsPublicationOperations uint64 = 16",
+        ),
+        (
+            "examples/ticketdesk/web/src/endurance.ts",
+            "METRICS_PUBLICATION_OPERATIONS = 16",
+        ),
+        (
+            "examples/ticketdesk/endurance/python/main.py",
+            "METRICS_PUBLICATION_OPERATIONS: Final = 16",
+        ),
+    ] {
+        let source = fs::read_to_string(root.join(worker)).expect("worker source is readable");
+        assert!(
+            source.contains(cadence),
+            "{worker} can leave per-language progress stale across a 30-second sample: {cadence}"
+        );
+    }
+
+    let validator = fs::read_to_string(root.join("scripts/alpha-endurance"))
+        .expect("endurance validator is readable");
+    assert!(
+        validator.contains("language_stalled"),
+        "the release validator must reject one stalled language even while siblings advance"
+    );
 }
 
 #[test]
