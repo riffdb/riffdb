@@ -19,9 +19,9 @@ use riffdb_config::{
 };
 use riffdb_ticketdesk::{
     CreateCommentInput, CreateOrganizationInput, CreateProjectInput, CreateTicketInput,
-    CreateUserInput, TicketDeskClient, TicketEventsConsumer, TicketEventsEvent, TicketEventsParams,
-    TicketPageParams, TicketPageResult, TicketQueueWatchParams, TriageTicketConsumer,
-    TriageTicketParams,
+    CreateTicketOutcome, CreateUserInput, TicketDeskClient, TicketEventsConsumer,
+    TicketEventsEvent, TicketEventsParams, TicketPageParams, TicketPageResult,
+    TicketQueueWatchParams, TriageTicketConsumer, TriageTicketParams,
 };
 use tokio::sync::Mutex;
 
@@ -61,6 +61,8 @@ struct Metrics {
     operations: u64,
     transport_attempts: u64,
     modeled_retained_bytes: u64,
+    events_emitted: u64,
+    consumer_acknowledgements: u64,
     workloads: BTreeMap<&'static str, u64>,
     tenants: BTreeMap<&'static str, u64>,
     latency_counts: [u64; LATENCY_BOUNDS_US.len()],
@@ -74,10 +76,20 @@ impl Metrics {
             operations: 0,
             transport_attempts: 0,
             modeled_retained_bytes: 0,
+            events_emitted: 0,
+            consumer_acknowledgements: 0,
             workloads: WORKLOADS.into_iter().map(|name| (name, 0)).collect(),
             tenants: TENANTS.into_iter().map(|name| (name, 0)).collect(),
             latency_counts: [0; LATENCY_BOUNDS_US.len()],
         })
+    }
+
+    fn event_emitted(&mut self) {
+        self.events_emitted = self.events_emitted.saturating_add(1);
+    }
+
+    fn consumer_acknowledged(&mut self) {
+        self.consumer_acknowledgements = self.consumer_acknowledgements.saturating_add(1);
     }
 
     fn record(
@@ -106,6 +118,7 @@ impl Metrics {
                 "\"language\":\"rust\",\"pid\":{},\"started_unix_seconds\":{},",
                 "\"logical_operations\":{},\"transport_attempts\":{},",
                 "\"declared_retries\":0,\"error_count\":0,",
+                "\"events_emitted\":{},\"consumer_acknowledgements\":{},",
                 "\"modeled_retained_bytes\":{},",
                 "\"latency_bounds_us\":{:?},\"latency_counts\":{:?},",
                 "\"workloads\":{{\"events\":{},\"live_queries\":{},\"reads\":{},",
@@ -117,6 +130,8 @@ impl Metrics {
             self.started_seconds,
             self.operations,
             self.transport_attempts,
+            self.events_emitted,
+            self.consumer_acknowledgements,
             self.modeled_retained_bytes,
             LATENCY_BOUNDS_US,
             self.latency_counts,
@@ -285,6 +300,7 @@ async fn run_client(
                         },
                     )
                     .await?;
+                metrics.lock().await.consumer_acknowledged();
                 record(&metrics, "workflows", tenant, 512, &mut operation_started).await;
             }
         } else if slot < 80 {
@@ -306,6 +322,7 @@ async fn run_client(
                     .agent
                     .ack_ticket_events(&event_consumer, delivery)
                     .await?;
+                metrics.lock().await.consumer_acknowledged();
                 record(&metrics, "events", tenant, 0, &mut operation_started).await;
             }
         } else {
@@ -328,7 +345,7 @@ async fn run_client(
 
         if slot == 69 {
             let cold_ordinal = (counter / 100) % 4_096;
-            clients
+            let created = clients
                 .application
                 .create_ticket(CreateTicketInput {
                     title: format!("Rust cold ticket {client_index}-{cold_ordinal}"),
@@ -341,6 +358,9 @@ async fn run_client(
                     organization_id: organization_id.clone(),
                 })
                 .await?;
+            if !created.replayed && matches!(created.outcome, CreateTicketOutcome::Created { .. }) {
+                metrics.lock().await.event_emitted();
+            }
             record(&metrics, "workflows", tenant, 768, &mut operation_started).await;
         }
         counter = counter.saturating_add(1);
@@ -394,7 +414,7 @@ async fn seed_client(
         })
         .await?;
     record(metrics, "writes", tenant, 512, &mut operation_started).await;
-    clients
+    let created = clients
         .application
         .create_ticket(CreateTicketInput {
             title: format!("Rust hot ticket {client_index}"),
@@ -407,6 +427,9 @@ async fn seed_client(
             organization_id: organization_id.to_owned(),
         })
         .await?;
+    if !created.replayed && matches!(created.outcome, CreateTicketOutcome::Created { .. }) {
+        metrics.lock().await.event_emitted();
+    }
     record(metrics, "writes", tenant, 768, &mut operation_started).await;
     Ok(())
 }

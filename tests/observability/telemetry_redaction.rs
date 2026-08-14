@@ -921,6 +921,7 @@ fn command_group_dispatch_reasons_are_labeled_in_registry() {
     let writer = observability.writer_evidence_snapshot();
     assert_eq!(writer.dispatch_selected, 4);
     assert_eq!(writer.dispatch_deferred, 1);
+    assert_eq!(writer.dispatch_deferred_max, 1);
     assert_eq!(writer.compatibility_selected, 4);
     assert_eq!(writer.compatibility_groups, 2);
     assert_eq!(writer.compatibility_conflict_key_splits, 1);
@@ -928,7 +929,7 @@ fn command_group_dispatch_reasons_are_labeled_in_registry() {
     assert_eq!(writer.compatibility_commutative_shared_groups, 1);
     let line = format_writer_evidence_v1_line(&writer);
     assert!(line.starts_with(
-        "riffdb-writer-evidence-v1\tbusy_us=0;idle_us=0;dispatch_selected=4;dispatch_deferred=1;compatibility_selected=4;compatibility_groups=2;compatibility_conflict_key_splits=1;compatibility_exact_access_splits=0;compatibility_commutative_shared_groups=1;queue_delay_estimate_us=none\t"
+        "riffdb-writer-evidence-v1\tbusy_us=0;idle_us=0;dispatch_selected=4;dispatch_deferred=1;dispatch_deferred_max=1;compatibility_selected=4;compatibility_groups=2;compatibility_conflict_key_splits=1;compatibility_exact_access_splits=0;compatibility_commutative_shared_groups=1;queue_delay_estimate_us=none\t"
     ));
     assert!(line.contains("commit_us:0:0:"));
     assert!(line.contains("flush_us:0:0:"));

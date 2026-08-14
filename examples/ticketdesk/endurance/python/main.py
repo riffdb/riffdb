@@ -25,6 +25,7 @@ from client import (
     CreateOrganizationInput,
     CreateProjectInput,
     CreateTicketInput,
+    CreateTicketCreated,
     CreateUserInput,
     TicketEventsParams,
     TicketPageFound,
@@ -59,6 +60,8 @@ class Metrics:
         self._started = int(time.time())
         self._operations = 0
         self._retained_bytes = 0
+        self._events_emitted = 0
+        self._consumer_acknowledgements = 0
         self._workloads = {
             "events": 0,
             "live_queries": 0,
@@ -90,6 +93,14 @@ class Metrics:
         async with self._lock:
             self._publish_locked()
 
+    async def event_emitted(self) -> None:
+        async with self._lock:
+            self._events_emitted += 1
+
+    async def consumer_acknowledged(self) -> None:
+        async with self._lock:
+            self._consumer_acknowledgements += 1
+
     def _publish_locked(self) -> None:
         value = {
             "schema": "riffdb.alpha-endurance-worker/v1",
@@ -100,6 +111,8 @@ class Metrics:
             "transport_attempts": self._operations,
             "declared_retries": 0,
             "error_count": 0,
+            "events_emitted": self._events_emitted,
+            "consumer_acknowledgements": self._consumer_acknowledgements,
             "modeled_retained_bytes": self._retained_bytes,
             "latency_bounds_us": LATENCY_BOUNDS_US,
             "latency_counts": self._latency_counts,
@@ -286,6 +299,7 @@ async def run_client(
                             organization_id=organization_id,
                         ),
                     )
+                    await metrics.consumer_acknowledged()
                     await metrics.record("workflows", tenant, 512, operation_started)
             elif slot < 80:
                 stream = clients.agent.ticket_events(
@@ -301,6 +315,7 @@ async def run_client(
                 await clients.agent.ack_ticket_events(
                     event_parameters, event_consumer, delivery
                 )
+                await metrics.consumer_acknowledged()
                 await metrics.record("events", tenant, 0, operation_started)
             else:
                 stream = clients.application.watch_ticket_queue_watch(
@@ -317,7 +332,7 @@ async def run_client(
             if slot == 69:
                 operation_started = time.perf_counter_ns()
                 ordinal = (counter // 100) % 4_096
-                await clients.application.create_ticket(
+                created = await clients.application.create_ticket(
                     CreateTicketInput(
                         title=f"Python cold ticket {client_index}-{ordinal}",
                         status=TicketStatus.OPEN,
@@ -333,6 +348,8 @@ async def run_client(
                         organization_id=organization_id,
                     )
                 )
+                if not created.replayed and isinstance(created.outcome, CreateTicketCreated):
+                    await metrics.event_emitted()
                 await metrics.record("workflows", tenant, 768, operation_started)
             counter += 1
             await asyncio.sleep(delay)
@@ -382,7 +399,7 @@ async def seed_client(
     )
     await metrics.record("writes", tenant, 512, operation_started)
     operation_started = time.perf_counter_ns()
-    await clients.application.create_ticket(
+    created = await clients.application.create_ticket(
         CreateTicketInput(
             title=f"Python hot ticket {client_index}",
             status=TicketStatus.OPEN,
@@ -394,6 +411,8 @@ async def seed_client(
             organization_id=organization_id,
         )
     )
+    if not created.replayed and isinstance(created.outcome, CreateTicketCreated):
+        await metrics.event_emitted()
     await metrics.record("writes", tenant, 768, operation_started)
     await metrics.publish()
 

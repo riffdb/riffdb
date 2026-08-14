@@ -1,0 +1,486 @@
+#!/usr/bin/env python3
+"""Run one real, receipted lifecycle action for the alpha endurance harness."""
+
+from __future__ import annotations
+
+import fcntl
+import hashlib
+import json
+import os
+from pathlib import Path
+import signal
+import subprocess
+import sys
+import time
+from typing import Any
+
+
+STATE_SCHEMA = "riffdb.alpha-endurance-lifecycle-state/v1"
+RESULT_SCHEMA = "riffdb.alpha-endurance-action-result/v1"
+WORKER_SCHEMA = "riffdb.alpha-endurance-worker/v1"
+LANGUAGES = ("go", "python", "rust", "typescript")
+MAX_JSON_BYTES = 1024 * 1024
+JOURNAL_HEADER_BYTES = 4096
+JOURNAL_MAGIC = b"RDBJEX03"
+
+
+def fail(message: str) -> "None":
+    raise ValueError(message)
+
+
+def artifact_root() -> Path:
+    raw = os.environ.get("RIFFDB_ENDURANCE_ARTIFACT_ROOT", "")
+    candidate = Path(raw)
+    if not raw or not candidate.is_absolute() or candidate.is_symlink() or not candidate.is_dir():
+        fail("RIFFDB_ENDURANCE_ARTIFACT_ROOT must be an absolute non-symlink directory")
+    return candidate
+
+
+def read_object(path: Path) -> dict[str, Any]:
+    if path.is_symlink() or not path.is_file():
+        fail(f"endurance lifecycle input is absent: {path.name}")
+    encoded = path.read_bytes()
+    if not 0 < len(encoded) <= MAX_JSON_BYTES:
+        fail(f"endurance lifecycle input exceeds its byte bound: {path.name}")
+    value = json.loads(encoded)
+    if not isinstance(value, dict):
+        fail(f"endurance lifecycle input is not an object: {path.name}")
+    return value
+
+
+def integer(value: Any, name: str) -> int:
+    if type(value) is not int or value < 0:
+        fail(f"endurance lifecycle {name} is invalid")
+    return value
+
+
+def journal_generation(database: Path, *, allow_absent: bool = False) -> int:
+    generations: list[int] = []
+    for suffix in (".riffjournal", ".riffjournal.checkpoint"):
+        candidate = Path(f"{database}{suffix}")
+        if not candidate.exists():
+            continue
+        if candidate.is_symlink() or not candidate.is_file():
+            fail("endurance journal extent is not a regular file")
+        with candidate.open("rb") as source:
+            for _slot in range(2):
+                header = source.read(JOURNAL_HEADER_BYTES)
+                if len(header) != JOURNAL_HEADER_BYTES:
+                    break
+                if header[: len(JOURNAL_MAGIC)] != JOURNAL_MAGIC:
+                    continue
+                if hashlib.sha256(header[:-32]).digest() != header[-32:]:
+                    continue
+                generation = int.from_bytes(header[32:40], "big")
+                if generation > 0:
+                    generations.append(generation)
+    if not generations and allow_absent:
+        return 0
+    if not generations:
+        fail("endurance journal generation is unavailable")
+    return max(generations)
+
+
+def initial_state(generation: int) -> dict[str, Any]:
+    return {
+        "schema": STATE_SCHEMA,
+        "journal_generation": generation,
+        "retention_watermark": 0,
+        "tombstone_count": 0,
+        "writer_queue_depth": 0,
+        "consumer_backlog": 0,
+        "checkpoint_count": 0,
+        "checkpoint_frontier": 0,
+        "restart_count": 0,
+        "reactive_operations": 0,
+        "lifecycle_microseconds": 0,
+    }
+
+
+def validate_state(value: dict[str, Any]) -> None:
+    expected = set(initial_state(1))
+    if set(value) != expected or value.get("schema") != STATE_SCHEMA:
+        fail("endurance lifecycle state has an invalid shape")
+    for name in expected - {"schema"}:
+        integer(value.get(name), name)
+
+
+def atomic_write(path: Path, value: dict[str, Any]) -> None:
+    pending = path.with_name(f".{path.name}.{os.getpid()}.pending")
+    encoded = json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n"
+    try:
+        with pending.open("x", encoding="utf-8") as destination:
+            os.chmod(pending, 0o600)
+            destination.write(encoded)
+            destination.flush()
+            os.fsync(destination.fileno())
+        pending.replace(path)
+    finally:
+        if pending.exists():
+            pending.unlink()
+
+
+def reactive_operations(environment: Path) -> tuple[int, int, int]:
+    operations = 0
+    acknowledgements = 0
+    events_emitted = 0
+    for language in LANGUAGES:
+        value = read_object(environment / "metrics" / f"{language}.json")
+        if value.get("schema") != WORKER_SCHEMA or value.get("language") != language:
+            fail("endurance worker metric identity is invalid")
+        workloads = value.get("workloads")
+        if not isinstance(workloads, dict):
+            fail("endurance worker workload metrics are absent")
+        operations += integer(workloads.get("events"), f"{language}.events")
+        operations += integer(workloads.get("workflows"), f"{language}.workflows")
+        acknowledgements += integer(
+            value.get("consumer_acknowledgements"),
+            f"{language}.consumer_acknowledgements",
+        )
+        events_emitted += integer(value.get("events_emitted"), f"{language}.events_emitted")
+    return operations, acknowledgements, events_emitted
+
+
+def process_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        fail("endurance server process ownership changed")
+    return True
+
+
+def health_frontier(environment: Path) -> int:
+    state = read_object(environment / "state.json")
+    executable = Path(str(state.get("riffdb", "")))
+    if not executable.is_absolute() or executable.is_symlink() or not executable.is_file():
+        fail("endurance CLI installation is invalid")
+    result = subprocess.run(
+        [
+            str(executable),
+            "--config",
+            str(environment / "bootstrap-client.toml"),
+            "server",
+            "health",
+            "--output",
+            "json",
+        ],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    if result.returncode != 0:
+        fail("endurance server health failed")
+    value = json.loads(result.stdout)
+    payload = value.get("result") if isinstance(value, dict) else None
+    frontier = payload.get("last_commit_sequence") if isinstance(payload, dict) else None
+    if (
+        not isinstance(value, dict)
+        or not isinstance(payload, dict)
+        or value.get("schema") != "riffdb.cli.output/v1"
+        or value.get("ok") is not True
+        or payload.get("status") != "ready"
+        or payload.get("database") != "default"
+        or (
+            frontier is not None
+            and (
+                not isinstance(frontier, str)
+                or not frontier.isascii()
+                or not frontier.isdigit()
+                or frontier == "0"
+            )
+        )
+    ):
+        fail("endurance server health is not an authenticated ready frontier")
+    # Authenticated health omits the optional application head before the first
+    # command commit. That is the canonical before-first position, not an
+    # unavailable observation.
+    return 0 if frontier is None else int(frontier)
+
+
+def shutdown_writer_queue_depth(stdout: Path, offset: int) -> int:
+    if stdout.is_symlink() or not stdout.is_file():
+        fail("endurance server output is unavailable")
+    with stdout.open("rb") as source:
+        source.seek(offset)
+        suffix = source.read(MAX_JSON_BYTES + 1)
+    if len(suffix) > MAX_JSON_BYTES:
+        fail("endurance server shutdown evidence exceeds its byte bound")
+    lines = [
+        line.decode("ascii")
+        for line in suffix.splitlines()
+        if line.startswith(b"riffdb-writer-evidence-v1\t")
+    ]
+    if len(lines) != 1:
+        fail("endurance server emitted an incomplete writer evidence inventory")
+    scalar = lines[0].split("\t", 2)[1]
+    fields = {}
+    for item in scalar.split(";"):
+        name, separator, raw = item.partition("=")
+        if not separator or name in fields:
+            fail("endurance writer evidence is malformed")
+        fields[name] = raw
+    raw_depth = fields.get("dispatch_deferred_max")
+    if raw_depth is None or not raw_depth.isascii() or not raw_depth.isdigit():
+        fail("endurance writer queue evidence is absent")
+    return int(raw_depth)
+
+
+def inspect_checkpoint(environment: Path) -> int:
+    executable = environment / "bin" / "riffdb-endurance-inspect"
+    database = environment / "data" / "ticketdesk.redb"
+    if executable.is_symlink() or not executable.is_file():
+        fail("endurance stopped-database inspector is absent")
+    result = subprocess.run(
+        [str(executable), str(database)],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    if result.returncode != 0:
+        fail("endurance checkpoint inspection failed")
+    value = json.loads(result.stdout)
+    checkpoint = value.get("checkpoint_commit_sequence") if isinstance(value, dict) else None
+    if value.get("schema") != "riffdb.alpha-endurance-storage-inspection/v1":
+        fail("endurance checkpoint inspection identity is invalid")
+    return integer(checkpoint, "checkpoint_commit_sequence")
+
+
+def wait_stopped(pid: int, timeout_seconds: int) -> None:
+    deadline = time.monotonic() + timeout_seconds
+    while process_alive(pid):
+        if time.monotonic() >= deadline:
+            fail("endurance server did not stop before the bounded deadline")
+        time.sleep(0.05)
+
+
+def restart_server(environment: Path, lifecycle: dict[str, Any]) -> tuple[int, int, int]:
+    process_state_path = environment / "state.json"
+    process_state = read_object(process_state_path)
+    old_pid = integer(process_state.get("server_pid"), "server_pid")
+    if not process_alive(old_pid):
+        fail("endurance server was not running before lifecycle restart")
+    before_frontier = health_frontier(environment)
+    stdout_path = environment / "server.stdout"
+    stdout_offset = stdout_path.stat().st_size
+    with (environment / "server.input").open("w", encoding="ascii") as control:
+        control.write("shutdown\n")
+        control.flush()
+    wait_stopped(old_pid, 45)
+    checkpoint = inspect_checkpoint(environment)
+    if checkpoint < before_frontier:
+        fail("graceful shutdown checkpoint precedes the observed application frontier")
+    queue_depth = shutdown_writer_queue_depth(stdout_path, stdout_offset)
+
+    stdin = (environment / "server.input").open("rb", buffering=0)
+    stdout = stdout_path.open("ab", buffering=0)
+    stderr = (environment / "server.stderr").open("ab", buffering=0)
+    process: subprocess.Popen[bytes] | None = None
+    try:
+        process = subprocess.Popen(
+            [str(environment / "bin" / "riffdbd"), "--config", str(environment / "riffdbd.toml")],
+            stdin=stdin,
+            stdout=stdout,
+            stderr=stderr,
+            start_new_session=True,
+        )
+    finally:
+        stdin.close()
+        stdout.close()
+        stderr.close()
+    if process is None:
+        fail("endurance server restart did not launch")
+    try:
+        deadline = time.monotonic() + 60
+        after_frontier = 0
+        ready = False
+        while time.monotonic() < deadline:
+            if process.poll() is not None:
+                fail("endurance server exited before restart readiness")
+            try:
+                after_frontier = health_frontier(environment)
+                ready = True
+                break
+            except (json.JSONDecodeError, OSError, subprocess.SubprocessError, ValueError):
+                time.sleep(0.1)
+        if not ready or after_frontier < checkpoint:
+            fail("restarted server did not publish the checkpoint frontier")
+    except BaseException:
+        if process.poll() is None:
+            process.send_signal(signal.SIGTERM)
+        raise
+
+    process_state["server_pid"] = process.pid
+    atomic_write(process_state_path, process_state)
+    lifecycle["writer_queue_depth"] = max(
+        integer(lifecycle["writer_queue_depth"], "writer_queue_depth"), queue_depth
+    )
+    lifecycle["checkpoint_count"] = integer(lifecycle["checkpoint_count"], "checkpoint_count") + 1
+    lifecycle["checkpoint_frontier"] = checkpoint
+    lifecycle["restart_count"] = integer(lifecycle["restart_count"], "restart_count") + 1
+    return before_frontier, after_frontier, queue_depth
+
+
+def evidence_digest(environment: Path, name: str, ordinal: int, evidence: dict[str, Any]) -> str:
+    evidence_root = environment / "lifecycle-evidence"
+    evidence_root.mkdir(mode=0o700, exist_ok=True)
+    path = evidence_root / f"{name}-{ordinal:06}.json"
+    atomic_write(path, evidence)
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def initialize(environment: Path, state_path: Path) -> None:
+    if state_path.exists():
+        fail("endurance lifecycle state already exists")
+    database = environment / "data" / "ticketdesk.redb"
+    # The standard-profile extent is created lazily by the first application
+    # command. Environment setup deliberately precedes workload launch, so an
+    # absent extent is the only honest initial observation. Every subsequent
+    # sample and recycle action still requires a validated real extent header.
+    atomic_write(
+        state_path,
+        initial_state(journal_generation(database, allow_absent=True)),
+    )
+
+
+def journal_recycle(environment: Path, state: dict[str, Any]) -> tuple[int, int, dict[str, Any]]:
+    before = integer(state["journal_generation"], "journal_generation")
+    database = environment / "data" / "ticketdesk.redb"
+    deadline = time.monotonic() + 540
+    while True:
+        after = journal_generation(database)
+        if after > before:
+            state["journal_generation"] = after
+            return before, after, {
+                "schema": "riffdb.alpha-endurance-journal-recycle-evidence/v1",
+                "generation_before": before,
+                "generation_after": after,
+                "database": "default",
+            }
+        if time.monotonic() >= deadline:
+            fail("journal generation did not recycle before the bounded deadline")
+        time.sleep(0.25)
+
+
+def reactive_consumer(environment: Path, state: dict[str, Any]) -> tuple[int, int, dict[str, Any]]:
+    before = integer(state["reactive_operations"], "reactive_operations")
+    deadline = time.monotonic() + 60
+    while True:
+        operations, acknowledgements, events_emitted = reactive_operations(environment)
+        if acknowledgements > before and operations > 0:
+            state["reactive_operations"] = acknowledgements
+            backlog = max(0, events_emitted * 2 - acknowledgements)
+            state["consumer_backlog"] = backlog
+            return before, acknowledgements, {
+                "schema": "riffdb.alpha-endurance-reactive-consumer-evidence/v1",
+                "acknowledgements_before": before,
+                "acknowledgements_after": acknowledgements,
+                "reactive_operations": operations,
+                "events_emitted": events_emitted,
+                "consumer_backlog": backlog,
+                "languages": list(LANGUAGES),
+            }
+        if time.monotonic() >= deadline:
+            fail("reactive consumers did not advance before the bounded deadline")
+        time.sleep(0.1)
+
+
+def checkpoint_or_restart(
+    environment: Path, state: dict[str, Any], name: str
+) -> tuple[int, int, dict[str, Any]]:
+    checkpoint_count_before = integer(state["checkpoint_count"], "checkpoint_count")
+    restart_count_before = integer(state["restart_count"], "restart_count")
+    frontier_before, frontier_after, queue_depth = restart_server(environment, state)
+    if name == "checkpoint":
+        before = checkpoint_count_before
+        after = integer(state["checkpoint_count"], "checkpoint_count")
+    else:
+        before = restart_count_before
+        after = integer(state["restart_count"], "restart_count")
+    return before, after, {
+        "schema": "riffdb.alpha-endurance-checkpoint-restart-evidence/v1",
+        "action": name,
+        "application_frontier_before": frontier_before,
+        "application_frontier_after": frontier_after,
+        "checkpoint_frontier": integer(state["checkpoint_frontier"], "checkpoint_frontier"),
+        "writer_queue_depth_max": queue_depth,
+    }
+
+
+def run_action(environment: Path, state_path: Path, name: str) -> dict[str, Any]:
+    started = time.monotonic_ns()
+    state = read_object(state_path)
+    validate_state(state)
+    if name == "journal_recycle":
+        before, after, evidence = journal_recycle(environment, state)
+    elif name == "reactive_consumer":
+        before, after, evidence = reactive_consumer(environment, state)
+    elif name in {"checkpoint", "restart"}:
+        before, after, evidence = checkpoint_or_restart(environment, state, name)
+    else:
+        fail(f"endurance lifecycle action is not implemented: {name}")
+    elapsed_us = max(1, (time.monotonic_ns() - started) // 1_000)
+    state["lifecycle_microseconds"] = integer(
+        state["lifecycle_microseconds"], "lifecycle_microseconds"
+    ) + elapsed_us
+    validate_state(state)
+    atomic_write(state_path, state)
+    digest = evidence_digest(environment, name, after, evidence)
+    return {
+        "schema": RESULT_SCHEMA,
+        "kind": "lifecycle",
+        "name": name,
+        "status": "passed",
+        "evidence_sha256": digest,
+        "frontier_before": before,
+        "frontier_after": after,
+        "recovered": True,
+    }
+
+
+def self_test() -> None:
+    header = bytearray(JOURNAL_HEADER_BYTES)
+    header[:8] = JOURNAL_MAGIC
+    header[32:40] = (7).to_bytes(8, "big")
+    header[-32:] = hashlib.sha256(header[:-32]).digest()
+    if header[:8] != JOURNAL_MAGIC or int.from_bytes(header[32:40], "big") != 7:
+        fail("journal header self-test failed")
+    state = initial_state(7)
+    validate_state(state)
+    print("endurance lifecycle state: passed")
+
+
+def main() -> int:
+    if sys.argv[1:] == ["--self-test"]:
+        self_test()
+        return 0
+    root = artifact_root()
+    environment = root / "environment-v1"
+    if environment.is_symlink() or not environment.is_dir():
+        fail("endurance environment is absent")
+    state_path = environment / "lifecycle-state.json"
+    lock_path = environment / "lifecycle.lock"
+    with lock_path.open("a+b") as lock:
+        os.chmod(lock_path, 0o600)
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        if sys.argv[1:] == ["--initialize"]:
+            initialize(environment, state_path)
+            return 0
+        if len(sys.argv) != 2:
+            fail("usage: endurance-lifecycle <journal_recycle|reactive_consumer|checkpoint|restart> | --initialize | --self-test")
+        result = run_action(environment, state_path, sys.argv[1])
+    print(json.dumps(result, sort_keys=True, separators=(",", ":")))
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except (json.JSONDecodeError, OSError, ValueError) as error:
+        print(f"endurance_lifecycle_invalid: {error}", file=sys.stderr)
+        raise SystemExit(3) from error

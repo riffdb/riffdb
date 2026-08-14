@@ -149,6 +149,8 @@ def read_worker_metrics(environment: Path) -> list[dict[str, Any]]:
             "transport_attempts",
             "declared_retries",
             "error_count",
+            "events_emitted",
+            "consumer_acknowledgements",
             "modeled_retained_bytes",
         ):
             integer(value.get(name), f"{language}.{name}")
@@ -213,7 +215,9 @@ def lifecycle_state(environment: Path) -> dict[str, int]:
             "writer_queue_depth": 0,
             "consumer_backlog": 0,
             "checkpoint_count": 0,
+            "checkpoint_frontier": 0,
             "restart_count": 0,
+            "reactive_operations": 0,
             "lifecycle_microseconds": 0,
         }
     value = read_object(path)
@@ -225,7 +229,9 @@ def lifecycle_state(environment: Path) -> dict[str, int]:
         "writer_queue_depth",
         "consumer_backlog",
         "checkpoint_count",
+        "checkpoint_frontier",
         "restart_count",
+        "reactive_operations",
         "lifecycle_microseconds",
     }
     if set(value) != expected or value.get("schema") != "riffdb.alpha-endurance-lifecycle-state/v1":
@@ -324,6 +330,12 @@ def main() -> int:
         for name in TENANTS
     }
     logical_operations = sum(language_operations.values())
+    events_emitted = sum(integer(worker["events_emitted"], "events emitted") for worker in workers)
+    consumer_acknowledgements = sum(
+        integer(worker["consumer_acknowledgements"], "consumer acknowledgements")
+        for worker in workers
+    )
+    consumer_backlog = max(0, events_emitted * 2 - consumer_acknowledgements)
     lifecycle = lifecycle_state(environment)
     database = environment / "data" / "ticketdesk.redb"
     journal_bytes = sum(
@@ -349,7 +361,7 @@ def main() -> int:
         "retention_watermark": lifecycle["retention_watermark"],
         "tombstone_count": lifecycle["tombstone_count"],
         "writer_queue_depth": lifecycle["writer_queue_depth"],
-        "consumer_backlog": lifecycle["consumer_backlog"],
+        "consumer_backlog": consumer_backlog,
         "projection_backlog": 0,
         "logical_operations": logical_operations,
         "transport_attempts": sum(integer(worker["transport_attempts"], "transport attempts") for worker in workers),
@@ -360,7 +372,7 @@ def main() -> int:
         "latency_p99_us": percentile(latency_counts, 99, 100),
         "throughput_ops_per_second": throughput(environment, logical_operations),
         "checkpoint_count": lifecycle["checkpoint_count"],
-        "consumer_checkpoint": workload_operations["events"],
+        "consumer_checkpoint": consumer_acknowledgements,
         # TicketDesk has no deployed projection in this workload; authoritative health remains separate.
         "projection_frontier": 0,
         "application_frontier": frontier,
