@@ -5465,6 +5465,7 @@ fn build_entity_chains(
         >,
     )>,
 ) -> Result<EntityChainState, StorageError> {
+    let has_exact_head_snapshot = seed.is_some();
     let migrations = load_entity_migration_evidence(transaction)?;
     // Chains build from the RETAINED commit range only: below-watermark commit
     // bodies are tombstone-covered (verified before this walk began).
@@ -5478,6 +5479,7 @@ fn build_entity_chains(
     >::new();
     let mut orphan_targets = Vec::new();
     let mut overflow = false;
+    let mut suffix_is_transition_complete = true;
     let entity_count_usize = usize::try_from(entity_count).unwrap_or(usize::MAX);
     let mut walk_lower_bound = None;
     let mut walk_after = 0_u64;
@@ -5502,7 +5504,14 @@ fn build_entity_chains(
                     version,
                     hash,
                     expected_bundle: None,
-                    migration_cursor: migrations.len(),
+                    // Entity-chain heads describe application-command
+                    // transitions only. Offline contract migrations retain
+                    // their own predecessor evidence and can advance an
+                    // entity version without rewriting this head. Even an
+                    // exact at-S head snapshot must therefore replay the
+                    // bounded migration-evidence sequence before comparing a
+                    // current entity row or a later command transition.
+                    migration_cursor: 0,
                     intact: true,
                     consumed: false,
                 },
@@ -5567,6 +5576,10 @@ fn build_entity_chains(
             let EntityHistoryMembers::References(references) = members else {
                 unreachable!("transition members continue above")
             };
+            // Frozen predecessor commit formats carry post-image references
+            // but no transition heads. Their entities can legitimately have
+            // migrated durable heads that this suffix walk cannot derive.
+            suffix_is_transition_complete = false;
             let mut seen_in_commit = std::collections::BTreeSet::new();
             for reference in references {
                 let target_key = reference.target().clone();
@@ -5645,7 +5658,12 @@ fn build_entity_chains(
             }
         }
     }
-    validate_transition_chain_heads(transaction, &mut chains, &transition_heads)?;
+    validate_transition_chain_heads(
+        transaction,
+        &mut chains,
+        &transition_heads,
+        has_exact_head_snapshot && suffix_is_transition_complete,
+    )?;
     Ok(EntityChainState {
         chains,
         migrations,
@@ -5784,12 +5802,18 @@ fn validate_transition_chain_heads(
         riffdb_storage_api::EntityTarget,
         riffdb_storage_api::EntityChainHeadV1,
     >,
+    history_accounts_for_every_head: bool,
 ) -> Result<(), StorageError> {
     let stored_heads = transaction
         .open_table(crate::layout::ENTITY_CHAIN_HEADS)
         .map_err(table_error)?;
     let entities = transaction.open_table(ENTITIES).map_err(table_error)?;
-    if !expected_heads.is_empty()
+    // An exact checkpoint snapshot followed only by transition-bearing
+    // commits must account for every durable head. On a mixed-era fallback,
+    // however, a current head may legitimately come from a frozen legacy
+    // commit with no transition payload; the full entity/reference walk
+    // remains authoritative for that identity until a later exact checkpoint.
+    if history_accounts_for_every_head
         && stored_heads.len().map_err(precommit_storage_error)?
             != u64::try_from(expected_heads.len()).map_err(|_| limit_exceeded())?
     {
@@ -6864,6 +6888,24 @@ fn administration_allocator_matches(
             && checkpoint.retained.next_administration_sequence <= checkpoint.audit_sequence_bound
     }) {
         return Ok(false);
+    }
+    // A two-phase command may be admitted before S and commit after S. Its
+    // suffix command capsule repeats the Started audit that the checkpoint
+    // already covered physically. Retain that cached member for reciprocal
+    // command validation, but do not count it a second time when advancing the
+    // allocator from the checkpoint's exact next logical sequence.
+    if let (Some(checkpoint), Some(expected)) = (checkpoint, expected) {
+        while derived_sequences
+            .peek()
+            .is_some_and(|sequence| *sequence < expected)
+        {
+            let covered = derived_sequences
+                .next()
+                .expect("peeked checkpoint-covered administration sequence");
+            if covered.get() > checkpoint.audit_sequence_bound {
+                return Ok(false);
+            }
+        }
     }
     let mut accept = |sequence| {
         if expected != Some(sequence) {
@@ -11175,20 +11217,38 @@ contract RedbMigration version 1 {
             entity_heads_at_s: None,
             checkpoint_hash: [0; 32],
         };
+        let covered_sequence = AdministrationSequence::first();
+        let covered_record = StoredServiceAuditRecordV1::from_stored_parts(
+            covered_sequence,
+            request_id(0xa4),
+            Timestamp::new(1, 0).expect("timestamp"),
+            ServiceOperationV1::ExecuteCommand,
+            ServiceAuditPhaseV1::Started,
+            Some(audit_principal(0xa4)),
+            ServiceIngressKindV1::Grpc,
+            ServiceAuditTargetsV1::empty(),
+            None,
+            ServiceAuditLinkV1::None,
+        )
+        .expect("checkpoint-covered command audit");
+        let derived = std::collections::BTreeMap::from([(
+            covered_sequence,
+            CachedCommandAudit {
+                commit_sequence: CommitSequence::first(),
+                member: riffdb_storage_api::StoredCommandAuditMemberV1::Started,
+                record: covered_record,
+                peer_sequence: covered_sequence,
+            },
+        )]);
         let read = store
             .shared
             .database
             .begin_read()
             .expect("read intact suffix");
         assert!(
-            administration_allocator_matches(
-                &read,
-                allocator,
-                Some(&checkpoint),
-                &std::collections::BTreeMap::new(),
-            )
-            .expect("check intact suffix"),
-            "the exact row after the checkpoint must advance its allocator"
+            administration_allocator_matches(&read, allocator, Some(&checkpoint), &derived,)
+                .expect("check intact suffix"),
+            "a checkpoint-covered member must not be recounted before the exact suffix"
         );
         drop(read);
 
@@ -11205,13 +11265,8 @@ contract RedbMigration version 1 {
             .begin_read()
             .expect("read gapped suffix");
         assert!(
-            !administration_allocator_matches(
-                &read,
-                allocator,
-                Some(&checkpoint),
-                &std::collections::BTreeMap::new(),
-            )
-            .expect("check gapped suffix"),
+            !administration_allocator_matches(&read, allocator, Some(&checkpoint), &derived,)
+                .expect("check gapped suffix"),
             "a live allocator ahead of a missing suffix row must fail closed"
         );
     }

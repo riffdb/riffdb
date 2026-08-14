@@ -804,6 +804,7 @@ impl Deref for RedbReadAccess {
 enum LayoutState {
     Empty,
     Initialized,
+    InitializedWithoutValidatedPrefixEntityHeads,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1256,7 +1257,8 @@ impl RedbStore {
             .database
             .begin_read()
             .map_err(transaction_error)?;
-        if classify_read_layout(&transaction)? == LayoutState::Empty {
+        let layout = classify_read_layout(&transaction)?;
+        if layout == LayoutState::Empty {
             return Ok(());
         }
         let metadata = transaction.open_table(META).map_err(table_error)?;
@@ -1553,7 +1555,9 @@ impl RedbStore {
         // encoding, so installing it does not rotate the record registry.
         // Predecessor databases start with an empty snapshot and perform one
         // full validation before a subsequent checkpoint populates it.
-        if format == StorageFormatVersion::V2 {
+        if format == StorageFormatVersion::V2
+            && layout == LayoutState::InitializedWithoutValidatedPrefixEntityHeads
+        {
             install_validated_prefix_entity_heads_table(&self.shared)?;
         }
 
@@ -2896,15 +2900,6 @@ fn install_application_export_operation_table(shared: &SharedRedb) -> Result<(),
 }
 
 fn install_validated_prefix_entity_heads_table(shared: &SharedRedb) -> Result<(), StorageError> {
-    let read = shared.database.begin_read().map_err(transaction_error)?;
-    let installed = read
-        .list_tables()
-        .map_err(precommit_storage_error)?
-        .any(|table| table.name() == VALIDATED_PREFIX_ENTITY_HEADS.name());
-    drop(read);
-    if installed {
-        return Ok(());
-    }
     let mut transaction = shared.database.begin_write().map_err(transaction_error)?;
     transaction
         .set_durability(Durability::Immediate)
@@ -6352,8 +6347,11 @@ impl DatabaseIdentityProbePort for RedbStore {
             .map_err(transaction_error)?;
         match classify_read_layout(&transaction)? {
             LayoutState::Empty => Ok(DatabaseIdentityProbe::NeedsInitialization),
-            LayoutState::Initialized => read_identity_from_read_transaction(&transaction)
-                .map(DatabaseIdentityProbe::Existing),
+            LayoutState::Initialized
+            | LayoutState::InitializedWithoutValidatedPrefixEntityHeads => {
+                read_identity_from_read_transaction(&transaction)
+                    .map(DatabaseIdentityProbe::Existing)
+            }
         }
     }
 }
@@ -6377,7 +6375,8 @@ impl DatabaseInitializationPort for RedbStore {
             .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
 
         match classify_write_layout(&transaction)? {
-            LayoutState::Initialized => {
+            LayoutState::Initialized
+            | LayoutState::InitializedWithoutValidatedPrefixEntityHeads => {
                 let winner = read_identity_from_write_transaction(&transaction)?;
                 transaction.abort().map_err(precommit_storage_error)?;
                 Ok(DatabaseInitializationResult::ConcurrentWinner(winner))
@@ -6455,7 +6454,7 @@ fn classify_table_names(
     let mut pre_checkpoint_entity_heads = expected.clone();
     pre_checkpoint_entity_heads.remove("validated_prefix_entity_heads");
     if tables == pre_checkpoint_entity_heads {
-        return Ok(LayoutState::Initialized);
+        return Ok(LayoutState::InitializedWithoutValidatedPrefixEntityHeads);
     }
     // The WP-575 predecessor lacks only durable application-export operation
     // checkpoints. The table is installed before the registry advances.
@@ -6470,19 +6469,19 @@ fn classify_table_names(
     let mut pre_application_export = pre_checkpoint_entity_heads;
     pre_application_export.remove("application_export_operations");
     if tables == pre_application_export {
-        return Ok(LayoutState::Initialized);
+        return Ok(LayoutState::InitializedWithoutValidatedPrefixEntityHeads);
     }
     // The immediate predecessor lacks only delete-aware entity-chain heads.
     let mut pre_entity_transitions = pre_application_export;
     pre_entity_transitions.remove("entity_chain_heads");
     if tables == pre_entity_transitions {
-        return Ok(LayoutState::Initialized);
+        return Ok(LayoutState::InitializedWithoutValidatedPrefixEntityHeads);
     }
     // Pre-retention layout: missing history_tombstones is migration-eligible.
     let mut pre_retention = pre_entity_transitions;
     pre_retention.remove("history_tombstones");
     if tables == pre_retention {
-        return Ok(LayoutState::Initialized);
+        return Ok(LayoutState::InitializedWithoutValidatedPrefixEntityHeads);
     }
     // Pre-audit-request-index layout: exactly the 21-table predecessor is
     // migration-eligible and treated as initialized for open/identity probe.
@@ -6490,12 +6489,12 @@ fn classify_table_names(
     let mut pre_event_route = pre_retention;
     pre_event_route.remove("event_routes");
     if tables == pre_event_route {
-        return Ok(LayoutState::Initialized);
+        return Ok(LayoutState::InitializedWithoutValidatedPrefixEntityHeads);
     }
     let mut pre_audit_request_index = pre_event_route;
     pre_audit_request_index.remove("audit_by_request");
     if tables == pre_audit_request_index {
-        return Ok(LayoutState::Initialized);
+        return Ok(LayoutState::InitializedWithoutValidatedPrefixEntityHeads);
     }
     if tables.iter().any(|name| !expected.contains(name)) {
         return Err(storage_error(StorageErrorKind::IncompatibleFormat));

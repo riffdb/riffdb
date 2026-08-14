@@ -732,10 +732,11 @@ pub(crate) fn run_campaign_on(seed: u64, config: CampaignConfig, disk: &SimDisk)
 // The standing per-merge sweep and the env-gated deep exploration.
 // ---------------------------------------------------------------------------
 
-/// The per-merge sweep configuration: deliberately the commit-arms schedule
-/// (18 commands, crash range (1, 140), budget 14) — dense enough that every
-/// campaign crashes repeatedly, recovery-window crashes are common, and both
-/// commit two-state sides appear across the scouted seed range below.
+/// The per-merge broad-sweep configuration: deliberately the common
+/// commit-arms schedule (18 commands, crash range (1, 140), budget 14) —
+/// dense enough that every campaign crashes repeatedly and recovery-window
+/// crashes are common. The rare commit-PRESENT side is covered by the
+/// separately scouted targeted witness in the same standing test below.
 pub(crate) const SWEEP_CONFIG: CampaignConfig = CampaignConfig {
     generator: GeneratorConfig {
         commands: 18,
@@ -751,13 +752,10 @@ pub(crate) const SWEEP_CONFIG: CampaignConfig = CampaignConfig {
     torn_write_granularity: 512,
 };
 
-/// First seed of the standing sweep. The 24-seed range was scouted (all 24
-/// complete today — zero wedge placements — with aggregate crashes 328,
-/// recovery-window crashes 84, torn decisions 723, commit-present 1,
-/// commit-absent 93, admits resolved 29) and includes 0x51C2_C0E1, the
-/// commit-present seed rerun 12/12 identically before pinning. If the
-/// store's internal operation stream shifts, wedged placements are counted
-/// openly and the aggregate asserts are the falsifier.
+/// First seed of the standing broad sweep. If the store's internal operation
+/// stream shifts, wedged placements are counted openly and the aggregate
+/// assertions are the falsifier. Commit-PRESENT has its own stable targeted
+/// coordinate because its physical window is substantially rarer.
 pub(crate) const SWEEP_SEED_BASE: u64 = 0x51C2_C0D0;
 /// Number of seeds the standing sweep replays per merge.
 pub(crate) const SWEEP_SEEDS: u64 = 24;
@@ -765,9 +763,9 @@ pub(crate) const SWEEP_SEEDS: u64 = 24;
 /// The standing per-merge regression battery: every sweep seed's campaign
 /// completes with the oracle holding at every recovery, and the aggregate
 /// counters prove the swept territory is real — crashes landed, torn
-/// decisions were taken, crashes landed INSIDE recovery windows, and both
-/// sides of the commit two-state acceptance were exercised. A quiet aggregate
-/// is a reportable finding, never silence.
+/// decisions were taken, crashes landed INSIDE recovery windows, and the
+/// targeted companion exercises both sides of commit two-state acceptance.
+/// A quiet aggregate is a reportable finding, never silence.
 ///
 /// Seeds whose drawn placement lands in the redb 4.1.0 file-growth wedge
 /// window are counted OPENLY as excluded placements (the typed exclusion in
@@ -816,6 +814,34 @@ fn per_merge_sweep_holds_the_oracle_and_reaches_the_swept_territory() {
             .max_torn_in_one_recovery
             .max(report.max_torn_in_one_recovery);
     }
+    let commit_present =
+        match run_campaign_outcome(0x51C2_C001, crate::subsumption::COMMIT_PRESENT_ARMS_CONFIG) {
+            CampaignOutcome::Completed(report) => report,
+            CampaignOutcome::WedgedByRedb410FileGrowth { .. } => {
+                panic!("targeted commit-PRESENT witness wedged instead of completing")
+            }
+        };
+    assert_eq!(
+        commit_present.final_frontier,
+        u64::from(
+            crate::subsumption::COMMIT_PRESENT_ARMS_CONFIG
+                .generator
+                .commands
+        ),
+        "targeted commit-PRESENT witness did not drive the plan to completion"
+    );
+    assert!(
+        commit_present.in_flight_commit_present > 0,
+        "targeted recovery did not resolve an interrupted commit as present"
+    );
+    assert!(
+        commit_present.in_flight_commit_absent > 0,
+        "targeted recovery did not resolve an interrupted commit as absent"
+    );
+    assert!(
+        commit_present.in_flight_admit_present + commit_present.in_flight_admit_absent > 0,
+        "targeted recovery did not resolve an interrupted phase-one admission"
+    );
     assert!(
         completed + wedged_excluded == SWEEP_SEEDS,
         "every sweep seed is accounted for"
@@ -836,18 +862,6 @@ fn per_merge_sweep_holds_the_oracle_and_reaches_the_swept_territory() {
         "no crash landed inside a recovery window (crash-during-recovery \
          went unexercised) — a reportable finding, do not widen the sweep \
          without understanding why"
-    );
-    assert!(
-        total.in_flight_commit_present > 0,
-        "no swept recovery resolved an interrupted commit as present. This \
-         is the sweep's rarest arm (prevalence ~0.4% of scouted seeds; today \
-         one seed, 0x51C2_C0E1, carries it) and the most sensitive to \
-         operation-stream shifts from a generator or engine-pin change: a \
-         red HERE after such a change means the arm needs freshly scouted \
-         seeds (run the ignored scout over the sweep range and widen until \
-         a commit-present seed appears), NOT that the oracle broke — an \
-         oracle divergence panics with a named divergence long before this \
-         aggregate"
     );
     assert!(
         total.in_flight_commit_absent > 0,

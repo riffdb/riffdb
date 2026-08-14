@@ -11133,7 +11133,9 @@ work_packages:
     crates/riffdb-storage-redb/src/store.rs,
     crates/riffdb-storage-redb/src/startup.rs,
     crates/riffdb-storage-redb/src/validated_prefix.rs,
-    crates/riffdb-storage-redb/tests/architecture.rs]
+    crates/riffdb-storage-redb/tests/architecture.rs,
+    crates/riffdb-sim/tests/seeded_campaign/**,
+    tests/migrations/contract_migration_gate_a.rs]
   deliverables:
   - One retained 72-hour remote mixed-load receipt with all four adapter shapes/languages, periodic
     conformance and policy probes, zero silent loss/leak, and no unsupported storage-unavailable path
