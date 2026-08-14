@@ -196,6 +196,19 @@ fn endurance_lifecycle_evidence_uses_durable_observations() {
             && !lifecycle.contains("checkpoint_count\"] += 1"),
         "lifecycle evidence must not manufacture durable frontiers"
     );
+    let inspector = fs::read_to_string(root.join("tests/endurance_inspect.rs"))
+        .expect("stopped-database inspector source is readable");
+    assert!(inspector.contains("read_validated_prefix_checkpoint_commit_sequence_fixture"));
+    for forbidden in [
+        "begin_structural_evidence",
+        "scan_administration_audit",
+        "validate_catalog_history",
+    ] {
+        assert!(
+            !inspector.contains(forbidden),
+            "checkpoint inspection must not perform O(history) work: {forbidden}"
+        );
+    }
 
     let sampler = fs::read_to_string(root.join("scripts/endurance-sample"))
         .expect("sampler source is readable");
