@@ -127,6 +127,12 @@ on-disk generation advance; reactive-consumer actions require exact durable
 acknowledgement progress. Evidence files are atomically written and only their
 SHA-256 enters the bounded action result.
 
+Recovery actions are deliberately different from clean restarts: they observe
+the authenticated application frontier and checksummed journal generation,
+terminate the daemon with `SIGKILL`, start a new installed process, and require
+journal recovery to publish at least both observed frontiers. Only that real
+unclean reopen increments the recovery counter.
+
 Backup actions start and poll one identity-stable public remote maintenance
 operation, require the exact four-file immutable backup inventory, and retain
 the checksum and size of every artifact. Capability-rotation actions issue a

@@ -940,6 +940,37 @@ def checkpoint_or_restart(
     }
 
 
+def recovery(environment: Path, state: dict[str, Any]) -> tuple[int, int, dict[str, Any]]:
+    before = integer(state["recovery_count"], "recovery_count")
+    process_state = read_object(environment / "state.json")
+    old_pid = integer(process_state.get("server_pid"), "server_pid")
+    if not process_alive(old_pid):
+        fail("endurance server was not running before recovery crash")
+    frontier_before = health_frontier(environment)
+    database = environment / "data" / "ticketdesk.redb"
+    generation_before = journal_generation(database)
+    os.kill(old_pid, signal.SIGKILL)
+    wait_stopped(old_pid, 30)
+    recovery_started = time.monotonic_ns()
+    frontier_after = start_server(environment, process_state, frontier_before)
+    recovery_microseconds = max(1, (time.monotonic_ns() - recovery_started) // 1_000)
+    generation_after = journal_generation(database)
+    if frontier_after < frontier_before or generation_after < generation_before:
+        fail("endurance unclean recovery regressed a durable frontier")
+    after = before + 1
+    state["recovery_count"] = after
+    state["restart_count"] = integer(state["restart_count"], "restart_count") + 1
+    return before, after, {
+        "schema": "riffdb.alpha-endurance-recovery-evidence/v1",
+        "termination_signal": "SIGKILL",
+        "application_frontier_before": frontier_before,
+        "application_frontier_after": frontier_after,
+        "journal_generation_before": generation_before,
+        "journal_generation_after": generation_after,
+        "recovery_microseconds": recovery_microseconds,
+    }
+
+
 def run_action(environment: Path, state_path: Path, name: str) -> dict[str, Any]:
     started = time.monotonic_ns()
     state = read_object(state_path)
@@ -958,6 +989,8 @@ def run_action(environment: Path, state_path: Path, name: str) -> dict[str, Any]
         before, after, evidence = deploy_under_load(environment, state)
     elif name == "retention":
         before, after, evidence = retention(environment, state)
+    elif name == "recovery":
+        before, after, evidence = recovery(environment, state)
     elif name in {"checkpoint", "restart"}:
         before, after, evidence = checkpoint_or_restart(environment, state, name)
     else:
@@ -1010,7 +1043,7 @@ def main() -> int:
             initialize(environment, state_path)
             return 0
         if len(sys.argv) != 2:
-            fail("usage: endurance-lifecycle <backup|capability_rotation|certificate_rotation|checkpoint|deploy_under_load|journal_recycle|reactive_consumer|restart|retention> | --initialize | --self-test")
+            fail("usage: endurance-lifecycle <backup|capability_rotation|certificate_rotation|checkpoint|deploy_under_load|journal_recycle|reactive_consumer|recovery|restart|retention> | --initialize | --self-test")
         result = run_action(environment, state_path, sys.argv[1])
     print(json.dumps(result, sort_keys=True, separators=(",", ":")))
     return 0
