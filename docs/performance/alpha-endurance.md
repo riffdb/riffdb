@@ -174,6 +174,15 @@ adapter domains, current row-policy probes, exact data reconciliation, zero
 silent loss, and a content digest. The controller retains every result. Exit
 status alone cannot assert conformance or policy correctness.
 
+The first-party `scripts/endurance-conformance` checkpoint reconciles every
+worker's logical-operation, transport-attempt, workload, and tenant totals;
+reads all sixteen language/tenant hot tickets through the generated Python
+client over verified TLS; and proves the seeder role cannot read one. It also
+reruns the exact four-domain and row-policy semantic suites and binds their
+outputs to authenticated serving health, the application lock, and the four
+atomic worker snapshots. The retained evidence is content addressed; only its
+digest enters the controller result.
+
 The controller writes an untrusted raw receipt. The outer harness adds separate
 preflight and postflight host inventories, binds the receipt to the canonical
 workload manifest, exact action manifest, and release digest, and validates it

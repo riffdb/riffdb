@@ -1,0 +1,372 @@
+#!/usr/bin/env python3
+"""Run one bounded periodic alpha-endurance conformance checkpoint."""
+
+from __future__ import annotations
+
+import asyncio
+import hashlib
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+import time
+from typing import Any
+from uuid import UUID
+
+
+RESULT_SCHEMA = "riffdb.alpha-endurance-conformance-result/v1"
+WORKER_SCHEMA = "riffdb.alpha-endurance-worker/v1"
+DOMAINS = ("better-auth", "mlflow", "openfga", "woodpecker")
+LANGUAGES = ("go", "python", "rust", "typescript")
+TENANTS = ("tenant_alpha", "tenant_beta", "tenant_gamma", "tenant_delta")
+WORKLOADS = ("events", "live_queries", "reads", "workflows", "writes")
+SEEDS = (1001, 2002, 3003, 4004)
+MAX_BYTES = 1024 * 1024
+
+
+def fail(message: str) -> "None":
+    raise ValueError(message)
+
+
+def artifact_root() -> Path:
+    raw = os.environ.get("RIFFDB_ENDURANCE_ARTIFACT_ROOT", "")
+    candidate = Path(raw)
+    if not raw or not candidate.is_absolute() or candidate.is_symlink() or not candidate.is_dir():
+        fail("RIFFDB_ENDURANCE_ARTIFACT_ROOT must be an absolute non-symlink directory")
+    return candidate
+
+
+def read_object(path: Path) -> dict[str, Any]:
+    if path.is_symlink() or not path.is_file():
+        fail(f"endurance conformance input is absent: {path.name}")
+    encoded = path.read_bytes()
+    if not 0 < len(encoded) <= MAX_BYTES:
+        fail(f"endurance conformance input exceeds its byte bound: {path.name}")
+    value = json.loads(encoded)
+    if not isinstance(value, dict):
+        fail(f"endurance conformance input is not an object: {path.name}")
+    return value
+
+
+def integer(value: Any, name: str) -> int:
+    if type(value) is not int or value < 0:
+        fail(f"endurance conformance {name} is invalid")
+    return value
+
+
+def sha256_file(path: Path) -> str:
+    if path.is_symlink() or not path.is_file():
+        fail("endurance conformance artifact is not a regular file")
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        while chunk := source.read(64 * 1024):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def atomic_write(path: Path, value: dict[str, Any]) -> str:
+    pending = path.with_name(f".{path.name}.{os.getpid()}.pending")
+    encoded = (json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n").encode()
+    try:
+        with pending.open("xb") as destination:
+            os.chmod(pending, 0o600)
+            destination.write(encoded)
+            destination.flush()
+            os.fsync(destination.fileno())
+        pending.replace(path)
+    finally:
+        if pending.exists():
+            pending.unlink()
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def reexecute_installed_python(environment: Path) -> None:
+    state = read_object(environment / "state.json")
+    configured = Path(str(state.get("python", "")))
+    if not configured.is_absolute() or not configured.is_file():
+        fail("endurance conformance Python installation is invalid")
+    if os.environ.get("RIFFDB_ENDURANCE_CONFORMANCE_REEXEC") == "1":
+        if Path(sys.executable).resolve() != configured.resolve():
+            fail("endurance conformance re-executed with the wrong Python installation")
+        return
+    next_environment = os.environ.copy()
+    next_environment["RIFFDB_ENDURANCE_CONFORMANCE_REEXEC"] = "1"
+    os.execve(str(configured), [str(configured), str(Path(__file__).resolve())], next_environment)
+
+
+def bounded_command(argv: list[str], cwd: Path, environment: dict[str, str]) -> str:
+    result = subprocess.run(
+        argv,
+        cwd=cwd,
+        env=environment,
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=300,
+        check=False,
+    )
+    if result.returncode != 0:
+        fail("endurance conformance semantic suite failed")
+    encoded = result.stdout.encode()
+    if len(encoded) > MAX_BYTES:
+        fail("endurance conformance semantic suite output exceeds its byte bound")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def serving_frontier(environment: Path) -> tuple[int, str]:
+    result = subprocess.run(
+        [
+            str(environment / "bin" / "riffdb"),
+            "--config",
+            str(environment / "bootstrap-client.toml"),
+            "server",
+            "health",
+            "--output",
+            "json",
+        ],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    if result.returncode != 0 or len(result.stdout.encode()) > MAX_BYTES:
+        fail("endurance conformance authenticated health failed")
+    value = json.loads(result.stdout)
+    payload = value.get("result") if isinstance(value, dict) else None
+    components = payload.get("components") if isinstance(payload, dict) else None
+    statuses: dict[str, str] = {}
+    if isinstance(components, list):
+        for component in components:
+            if not isinstance(component, dict):
+                fail("endurance conformance health component is invalid")
+            name = component.get("component")
+            status = component.get("status")
+            if not isinstance(name, str) or not isinstance(status, str) or name in statuses:
+                fail("endurance conformance health component is invalid")
+            statuses[name] = status
+    if (
+        not isinstance(payload, dict)
+        or value.get("schema") != "riffdb.cli.output/v1"
+        or value.get("ok") is not True
+        or payload.get("status") not in ("ready", "degraded")
+        or payload.get("database") != "default"
+        or any(
+            statuses.get(name) != "healthy"
+            for name in ("authoritative_storage", "catalog", "commit_coordinator")
+        )
+    ):
+        fail("endurance conformance health is not an authenticated serving frontier")
+    raw_frontier = payload.get("last_commit_sequence")
+    if not isinstance(raw_frontier, str) or not raw_frontier.isascii() or not raw_frontier.isdigit():
+        fail("endurance conformance health frontier is invalid")
+    return int(raw_frontier), hashlib.sha256(result.stdout.encode()).hexdigest()
+
+
+def worker_observations(environment: Path) -> tuple[list[dict[str, Any]], dict[str, str]]:
+    deadline = time.monotonic() + 90
+    while True:
+        observations: list[dict[str, Any]] = []
+        try:
+            for language in LANGUAGES:
+                value = read_object(environment / "metrics" / f"{language}.json")
+                if value.get("schema") != WORKER_SCHEMA or value.get("language") != language:
+                    fail("endurance conformance worker identity is invalid")
+                logical = integer(value.get("logical_operations"), f"{language}.logical_operations")
+                attempts = integer(value.get("transport_attempts"), f"{language}.transport_attempts")
+                retries = integer(value.get("declared_retries"), f"{language}.declared_retries")
+                if integer(value.get("error_count"), f"{language}.error_count") != 0:
+                    fail("endurance conformance worker reports an error")
+                workloads = value.get("workloads")
+                tenants = value.get("tenants")
+                if not isinstance(workloads, dict) or set(workloads) != set(WORKLOADS):
+                    fail("endurance conformance worker workload inventory is invalid")
+                if not isinstance(tenants, dict) or set(tenants) != set(TENANTS):
+                    fail("endurance conformance worker tenant inventory is invalid")
+                workload_total = sum(integer(workloads[name], f"{language}.{name}") for name in WORKLOADS)
+                tenant_total = sum(integer(tenants[name], f"{language}.{name}") for name in TENANTS)
+                if logical == 0 or attempts != logical + retries or workload_total != logical or tenant_total != logical:
+                    fail("endurance conformance worker accounting is not exact")
+                if any(integer(workloads[name], f"{language}.{name}") == 0 for name in WORKLOADS):
+                    fail("endurance conformance worker has incomplete workload progress")
+                if any(integer(tenants[name], f"{language}.{name}") == 0 for name in TENANTS):
+                    fail("endurance conformance worker has incomplete tenant progress")
+                observations.append(value)
+        except (FileNotFoundError, json.JSONDecodeError, ValueError):
+            if time.monotonic() >= deadline:
+                raise
+            time.sleep(0.25)
+            continue
+        digests = {
+            language: sha256_file(environment / "metrics" / f"{language}.json")
+            for language in LANGUAGES
+        }
+        return observations, digests
+
+
+def identifier(namespace: int, value: int) -> UUID:
+    return UUID(f"{namespace & 0xffff_ffff:08x}-0000-8000-8000-{value & 0xffff_ffff_ffff:012x}")
+
+
+async def application_probes(environment: Path) -> int:
+    sys.path.insert(0, str(environment / "application" / "generated" / "python"))
+    from riffdb_application import (
+        ApplicationErrorCode,
+        AsyncApplicationTransport,
+        AttemptBudget,
+        BearerCredential,
+        CallMetadata,
+        DatabaseAlias,
+        RiffDbApplicationError,
+        VerifiedTlsConfig,
+    )
+    from client import AsyncTicketDeskClient, TicketPageFound, TicketPageParams
+
+    state = read_object(environment / "state.json")
+    endpoint = state.get("endpoint")
+    if not isinstance(endpoint, str):
+        fail("endurance conformance endpoint is invalid")
+
+    async def connect(credential_name: str) -> AsyncApplicationTransport:
+        metadata = CallMetadata.authenticated(
+            BearerCredential.from_protected_file(str(environment / credential_name))
+        ).with_database(DatabaseAlias("default"))
+        return await AsyncApplicationTransport.connect_verified_tls(
+            VerifiedTlsConfig(
+                endpoint=endpoint,
+                trust_root=str(environment / "ca.pem"),
+                server_name="127.0.0.1",
+                pool_connections=1,
+                streams_per_connection=16,
+            ),
+            metadata,
+        )
+
+    application_transport = await connect("application.credential")
+    seeder_transport = await connect("seeder.credential")
+    application = AsyncTicketDeskClient(application_transport, AttemptBudget(1))
+    seeder = AsyncTicketDeskClient(seeder_transport, AttemptBudget(1))
+    verified = 0
+    try:
+        for seed in SEEDS:
+            for client_index in range(4):
+                page = await application.ticket_page(
+                    TicketPageParams(
+                        organization_id=identifier(10, client_index),
+                        ticket_id=identifier(seed, 300 + client_index),
+                    )
+                )
+                if not isinstance(page.value, TicketPageFound):
+                    fail("endurance conformance hot-ticket reconciliation failed")
+                verified += 1
+        try:
+            await seeder.ticket_page(
+                TicketPageParams(
+                    organization_id=identifier(10, 0),
+                    ticket_id=identifier(SEEDS[0], 300),
+                )
+            )
+        except RiffDbApplicationError as error:
+            if error.details.code != ApplicationErrorCode.AUTHORIZATION_DENIED:
+                raise
+        else:
+            fail("endurance conformance least-authority policy probe unexpectedly succeeded")
+    finally:
+        await asyncio.gather(application_transport.close(), seeder_transport.close())
+    return verified
+
+
+def main() -> int:
+    root = artifact_root()
+    environment = root / "environment-v1"
+    if not environment.is_dir() or environment.is_symlink():
+        fail("endurance conformance environment is invalid")
+    reexecute_installed_python(environment)
+
+    frontier, health_sha256 = serving_frontier(environment)
+    observations, worker_sha256 = worker_observations(environment)
+    verified_hot_tickets = asyncio.run(application_probes(environment))
+
+    repository = Path(__file__).resolve().parent.parent
+    command_environment = os.environ.copy()
+    scratch = environment / "conformance-tmp"
+    scratch.mkdir(mode=0o700, exist_ok=True)
+    command_environment["RIFFDB_TMP_ROOT"] = str(scratch)
+    command_environment["TMPDIR"] = str(scratch)
+    adapter_suite_sha256 = bounded_command(
+        [
+            "cargo",
+            "+1.97.0",
+            "test",
+            "-p",
+            "riffdb-testkit",
+            "--test",
+            "adapter_conformance",
+            "--all-features",
+            "--quiet",
+        ],
+        repository,
+        command_environment,
+    )
+    row_policy_suite_sha256 = bounded_command(
+        [
+            "cargo",
+            "+1.97.0",
+            "test",
+            "-p",
+            "riffdb-testkit",
+            "--test",
+            "row_policy_conformance",
+            "--all-features",
+            "--quiet",
+        ],
+        repository,
+        command_environment,
+    )
+
+    evidence = {
+        "schema": "riffdb.alpha-endurance-conformance-evidence/v1",
+        "frontier": frontier,
+        "health_sha256": health_sha256,
+        "application_lock_sha256": sha256_file(
+            environment / "application" / "riffdb.application.lock.json"
+        ),
+        "worker_sha256": worker_sha256,
+        "logical_operations": sum(
+            integer(item["logical_operations"], "logical_operations") for item in observations
+        ),
+        "verified_hot_tickets": verified_hot_tickets,
+        "least_authority_policy_probe": "authorization_denied",
+        "adapter_suite_sha256": adapter_suite_sha256,
+        "row_policy_suite_sha256": row_policy_suite_sha256,
+        "domains": list(DOMAINS),
+    }
+    evidence_root = environment / "conformance-evidence"
+    evidence_root.mkdir(mode=0o700, exist_ok=True)
+    evidence_sha256 = hashlib.sha256(
+        (json.dumps(evidence, sort_keys=True, separators=(",", ":")) + "\n").encode()
+    ).hexdigest()
+    evidence_path = evidence_root / f"{evidence_sha256}.json"
+    retained_digest = atomic_write(evidence_path, evidence)
+    if retained_digest != evidence_sha256:
+        fail("endurance conformance evidence digest is unstable")
+    result = {
+        "schema": RESULT_SCHEMA,
+        "status": "passed",
+        "domains": list(DOMAINS),
+        "policy_probes_passed": True,
+        "data_reconciliation_passed": True,
+        "silent_loss": 0,
+        "evidence_sha256": evidence_sha256,
+    }
+    print(json.dumps(result, sort_keys=True, separators=(",", ":")))
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except (json.JSONDecodeError, OSError, subprocess.SubprocessError, ValueError) as error:
+        print(f"endurance_conformance_invalid: {error}", file=sys.stderr)
+        raise SystemExit(3) from error
