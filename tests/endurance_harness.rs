@@ -174,6 +174,11 @@ fn endurance_lifecycle_evidence_uses_durable_observations() {
         "consumer_acknowledgements",
         "backup.operation",
         "capability create administration sequence",
+        "retention fencing has not advanced",
+        "exact_lock_sha256",
+        "certificate_sha256_after",
+        "payload.get(\"status\") not in (\"ready\", \"degraded\")",
+        "authoritative_storage\", \"catalog\", \"commit_coordinator",
         "endurance lifecycle action is not implemented",
     ] {
         assert!(lifecycle.contains(required), "lifecycle omits {required}");

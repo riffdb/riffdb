@@ -135,6 +135,26 @@ credential; their frontier is the real administration sequence returned by
 those public operations. Neither action substitutes a harness counter for the
 durable server or filesystem result.
 
+Deploy-under-load actions invoke the exact checked application package through
+the public deploy command and bind their receipt to both manifest and lock
+hashes. Retention actions first drain and inspect the installed daemon, query
+the closed database's fencing status, prune only to the reported maximum
+permissible watermark, and then require the reopened daemon to preserve the
+pre-maintenance application frontier. A failed offline action still attempts a
+bounded restart; it cannot report success or advance lifecycle state.
+Authenticated lifecycle probes accept the documented `ready` or `degraded`
+serving states only when authoritative storage, the catalog, and the commit
+coordinator are all explicitly healthy. A degraded projection or outbox does
+not hide an unhealthy authoritative component and does not prevent safe
+offline maintenance.
+
+Environment setup creates one short-lived test CA and two distinct leaf/key
+pairs before starting RiffDB. Certificate rotation atomically replaces the
+configured leaf and key with the inactive pair, gracefully restarts the
+installed daemon, and proves authenticated readiness through the unchanged CA
+root. Receipts expose only public certificate hashes—never private-key bytes or
+digests—and alternate between the two leaves on successive actions.
+
 `RIFFDB_ENDURANCE_ARTIFACT_ROOT` must be an absolute, non-symlink path and must
 name a fresh run root. The script never reuses or erases an existing
 `environment-v1` directory. The server's stdin is held open for the complete

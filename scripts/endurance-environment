@@ -10,6 +10,11 @@ artifact_root="${RIFFDB_ENDURANCE_ARTIFACT_ROOT:-}"
 environment_root="$artifact_root/environment-v1"
 state_path="$environment_root/state.json"
 
+command -v openssl >/dev/null 2>&1 || {
+    echo "openssl is required for endurance certificate rotation" >&2
+    exit 2
+}
+
 action_result() {
     local name="$1" digest="$2"
     jq -cn --arg name "$name" --arg digest "$digest" '{
@@ -136,11 +141,36 @@ with socket.socket() as listener:
 PY
 )"
 
-cp crates/riffdb-server/tests/fixtures/localhost-cert.pem "$environment_root/server.pem"
-cp crates/riffdb-server/tests/fixtures/localhost-key.pem "$environment_root/server.key"
-cp crates/riffdb-server/tests/fixtures/test-ca.pem "$environment_root/ca.pem"
-chmod 0444 "$environment_root/server.pem" "$environment_root/ca.pem"
-chmod 0600 "$environment_root/server.key"
+openssl req -x509 -newkey rsa:2048 -nodes -days 7 \
+    -subj '/CN=RiffDB alpha endurance CA' \
+    -keyout "$environment_root/ca.key" -out "$environment_root/ca.pem" \
+    >/dev/null 2>&1
+cat >"$environment_root/server.ext" <<'EOF'
+subjectAltName=DNS:localhost,IP:127.0.0.1
+extendedKeyUsage=serverAuth
+EOF
+for certificate_slot in 1 2; do
+    openssl req -newkey rsa:2048 -nodes -subj '/CN=localhost' \
+        -keyout "$environment_root/server-$certificate_slot.key" \
+        -out "$environment_root/server-$certificate_slot.csr" \
+        >/dev/null 2>&1
+    serial_arguments=(-CAserial "$environment_root/ca.srl")
+    if [[ "$certificate_slot" == 1 ]]; then
+        serial_arguments=(-CAcreateserial)
+    fi
+    openssl x509 -req -days 7 -sha256 \
+        -in "$environment_root/server-$certificate_slot.csr" \
+        -CA "$environment_root/ca.pem" -CAkey "$environment_root/ca.key" \
+        "${serial_arguments[@]}" -extfile "$environment_root/server.ext" \
+        -out "$environment_root/server-$certificate_slot.pem" \
+        >/dev/null 2>&1
+done
+cp "$environment_root/server-1.pem" "$environment_root/server.pem"
+cp "$environment_root/server-1.key" "$environment_root/server.key"
+chmod 0444 "$environment_root/ca.pem" "$environment_root/server.pem" \
+    "$environment_root/server-1.pem" "$environment_root/server-2.pem"
+chmod 0600 "$environment_root/ca.key" "$environment_root/server.key" \
+    "$environment_root/server-1.key" "$environment_root/server-2.key"
 printf '%s' 'riffdb-capability-digest-keys-v1
 1:000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f
 ' >"$environment_root/capability.keys"
