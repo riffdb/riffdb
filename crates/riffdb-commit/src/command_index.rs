@@ -1710,6 +1710,25 @@ contract DeleteRestrict version 1 {
         )
     }
 
+    fn workflow_fixture_from_source(
+        source: &str,
+        command_name: &str,
+        request_key: &str,
+        next: ([u8; 16], &str),
+    ) -> Fixture {
+        custom_fixture_from_source(
+            source,
+            command_name,
+            &[
+                ("request_key", string(request_key)),
+                ("id", CanonicalValue::Uuid([0x11; 16])),
+                ("tenant", CanonicalValue::Uuid(next.0)),
+                ("category", string(next.1)),
+            ],
+            None,
+        )
+    }
+
     fn named_record(schema: &RecordSchema, supplied: &[(&str, CanonicalValue)]) -> CanonicalRecord {
         let supplied = supplied.iter().cloned().collect::<BTreeMap<_, _>>();
         CanonicalRecord::new(
@@ -2371,6 +2390,115 @@ contract SecretDeleteRows version 1 {
         assert_eq!(
             actual_generation_ids(&derived),
             expected_generation_ids(&[tenant, score])
+        );
+    }
+
+    // WP-606 V9 audit evidence: compiler-owned workflow initialization. The
+    // created row's state field is initialized by the compiler (no `set`),
+    // and that value must flow into index derivation like any other field.
+    const WORKFLOW_INITIALIZED_SOURCE: &str = r#"
+contract WorkflowInitializedRows version 1 {
+  enum RowState { Ready, Stopped }
+  entity Row {
+    key (id: uuid)
+    field tenant: uuid
+    field category: string<32>
+    field state: RowState
+    index by_tenant_category (tenant, category)
+    index by_state (state)
+  }
+  aggregate Rows { root Row partition_by id conflict_key (id) }
+  workflow RowLifecycle {
+    entity Row
+    state state
+    initial Ready
+    transition Stop from (Ready) to Stopped
+  }
+  command CreateRow {
+    input request_key: string<128>
+    input id: uuid
+    input tenant: uuid
+    input category: string<32>
+    idempotency_key request_key
+    create Row(id) as row else AlreadyExists {}
+    set row.tenant = tenant
+    set row.category = category
+    return Created { row: row }
+  }
+}
+"#;
+
+    #[test]
+    fn workflow_initialized_v9_create_derives_entries_including_initial_state() {
+        let fixture = workflow_fixture_from_source(
+            WORKFLOW_INITIALIZED_SOURCE,
+            "CreateRow",
+            "workflow-create-1",
+            ([0x21; 16], "new"),
+        );
+        // Non-empty trigger: the declared initial state alone must place the
+        // bundle at the V9 era.
+        assert_eq!(
+            fixture.resolved.bundle().bundle().grammar_version(),
+            GRAMMAR_VERSION_V9
+        );
+        assert_eq!(
+            fixture.resolved.bundle().bundle().ir_version(),
+            EXECUTABLE_IR_VERSION_V9
+        );
+        let derived = derive_grammar_v1_indexes(
+            &fixture.resolved,
+            &fixture.input,
+            &fixture.evaluated,
+            &fixture.current,
+            &[Some(0)],
+            &fixture.partition,
+        )
+        .expect("workflow-initialized create derivation on the V9 bundle");
+        let schema = fixture.resolved.bundle().bundle().schema();
+        let enumeration = schema
+            .enums()
+            .iter()
+            .find(|enumeration| enumeration.name() == "RowState")
+            .expect("RowState enum");
+        let ready = CanonicalValue::Enum {
+            type_id: enumeration.id(),
+            variant_id: enumeration
+                .variants()
+                .iter()
+                .find(|variant| variant.name() == "Ready")
+                .expect("Ready variant")
+                .id(),
+        };
+        let tenant = index(&fixture, "by_tenant_category");
+        let state = index(&fixture, "by_state");
+        let entity_key = fixture.evaluated.mutations()[0].target().key().clone();
+        assert_eq!(
+            actual_entry_kinds(&derived),
+            BTreeSet::from([
+                (
+                    tenant
+                        .key_schema()
+                        .encode_index(
+                            &[CanonicalValue::Uuid([0x21; 16]), string("new")],
+                            entity_key.clone(),
+                        )
+                        .expect("tenant index key")
+                        .as_bytes()
+                        .to_vec(),
+                    true,
+                ),
+                (
+                    state
+                        .key_schema()
+                        .encode_index(&[ready], entity_key)
+                        .expect("initial-state index key")
+                        .as_bytes()
+                        .to_vec(),
+                    true,
+                ),
+            ]),
+            "the compiler-initialized workflow state must derive its index entry"
         );
     }
 
