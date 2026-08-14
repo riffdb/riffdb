@@ -11115,14 +11115,14 @@ work_packages:
   human_review_triggers: *id001
 - id: WP-578
   name: Portability, disaster-recovery, and 72-hour endurance evidence
-  depends_on: [WP-573, WP-575, WP-576, WP-577, WP-609]
+  depends_on: [WP-573, WP-575, WP-576, WP-577, WP-609, WP-610]
   objective: Bank release-candidate evidence that every adapter preserves policy and portable data,
     restores after total local disk loss, and remains correct/resource-bounded for 72 continuous
     hours through repeated journal, checkpoint, retention, backup, rotation, and restart cycles.
   requirements: [AAA-003, AAA-010, AAA-012, AAA-013, AAA-014, AAA-018,
     SEC-001, SEC-002, SEC-003, SAFE-001, SAFE-002, SAFE-006, SAFE-007,
     SAFE-008, PERF-001, PERF-003, PERF-004, PERF-007, PERF-008, PERF-013,
-    PERF-014, REC-001, REC-002, STO-001, STO-002, END-009, END-010]
+    PERF-014, REC-001, REC-002, STO-001, STO-002, END-009, END-010, END-011]
   required_adrs: [ADR-0050, ADR-0080, ADR-0082, ADR-0085, ADR-0101,
     ADR-0103, ADR-0104, ADR-0110, ADR-0111, ADR-0112, ADR-0115, ADR-0116]
   allowed_paths: [SPEC.md, work_packages.yaml, fixtures/adapters/**,
@@ -12328,4 +12328,64 @@ work_packages:
     scale: Journal recovery is bounded by the existing extent limits and happens once per offline
       prune invocation; rebase is O(one preallocated extent), while prune remains bounded by the
       accepted 1,024-sequence sub-range transactions.
+  human_review_triggers: *id001
+- id: WP-610
+  name: Receipted immutable-backup retirement
+  depends_on: [WP-155, WP-577]
+  objective: Replace the endurance harness's direct deletion of published immutable backups with
+    one authorized, public, crash-recoverable retirement operation. Preserve V1 create/restore
+    receipts byte-for-byte, add a retire-only V2 receipt that binds the exact succeeded create
+    receipt and manifest, consume names permanently, and make a terminal retirement receipt the
+    only proof under which startup accepts an absent published backup artifact.
+  requirements: [API-001, SEC-001, SEC-002, SEC-003, REC-001, REC-002,
+    STO-001, STO-002, END-006, END-008, END-009, END-010, END-011]
+  required_adrs: [ADR-0050, ADR-0112]
+  allowed_paths: [SPEC.md, work_packages.yaml,
+    adr/0050-public-offline-backup-and-restore-maintenance.md,
+    proto/**, crates/riffdb-types/**, crates/riffdb-storage-api/**,
+    crates/riffdb-storage-redb/**, crates/riffdb-policy/**,
+    crates/riffdb-service/**, crates/riffdb-api-grpc/**,
+    crates/riffdb-client-rust/**, crates/riffdb-cli/**,
+    crates/riffdb-server/**, crates/riffdb-proto/**, fixtures/**,
+    tests/**, scripts/**, docs/**, release/**]
+  deliverables:
+  - Additive RetireOfflineBackup unary gRPC operation, API-neutral service request/result, Rust
+    operator client, and `riffdb backup retire <name>` CLI using checked BackupNameV1 and a
+    caller-stable maintenance operation ID; no MCP surface, path, URI, glob, retention expression,
+    new capability permission, or direct storage authority
+  - Byte-frozen readable V1 create/restore receipts and retire-only canonical V2 receipts binding
+    the exact succeeded create operation and immutable manifest; old/unknown readers refuse before
+    database mutation and create/restore continue least-version V1 writes
+  - Crash-safe same-filesystem rename into the reserved `.maintenance/retired/<operation-id>`
+    subtree, synced parent directories, bounded exact-file deletion, permanent name consumption,
+    and fail-closed reconciliation of every named/staged/terminal state
+  - Policy, audit, approval, cancellation, restart, operation polling, multi-database, symlink/path,
+    mismatch, duplicate, corruption, and process-crash tests proving retirement follows the same
+    global AdministerCapabilities and external maintenance-owner boundary as backup/restore
+  - Endurance lifecycle integration that retires excess backups only through the installed public
+    client/CLI, records operation and receipt evidence, and pins direct filesystem deletion or
+    receipt deletion as an architecture failure; handbook and generated public references updated
+  acceptance_commands:
+  - ./scripts/generate-proto --check
+  - cargo +1.97.0 test -p riffdb-types -p riffdb-storage-api -p riffdb-storage-redb --all-features
+  - cargo +1.97.0 test -p riffdb-policy -p riffdb-service -p riffdb-api-grpc --all-features
+  - cargo +1.97.0 test -p riffdb-client-rust -p riffdb-cli -p riffdb-server --all-features
+  - cargo +1.97.0 test --test storage_recovery_matrix
+  - cargo +1.97.0 test -p riffdb-testkit --test endurance_harness --all-features
+  - ./scripts/check-generated
+  - ./scripts/check-requirement-coverage
+  - ./scripts/handbook check
+  exit_gate: A third installed backup lifecycle retires the oldest artifact through the authorized
+    public surface, survives every rename/delete crash arm, restarts with exact create/retire
+    receipt reconciliation and a permanently consumed name, and never treats unexplained absence
+    as success. Existing V1 fixtures remain byte-identical and no MCP or raw-path operation exists.
+  standing_design_tests:
+    interface_safety: The caller names only one checked immutable backup and stable operation ID;
+      service policy derives global maintenance authority, storage resolves configured roots, and
+      only an exact terminal receipt pair can explain absence. No application, MCP, arbitrary path,
+      predicate, or capability-format surface is added.
+    scale: One incomplete retirement is bounded by the existing maintenance controller; validation
+      and deletion visit only the fixed backup inventory, reconciliation is bounded by receipt and
+      retired-stage ceilings, and retained backup count remains fixed without unbounded tombstones
+      beyond the already bounded durable receipt registry.
   human_review_triggers: *id001
