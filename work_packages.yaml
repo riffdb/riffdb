@@ -11128,6 +11128,7 @@ work_packages:
   allowed_paths: [SPEC.md, work_packages.yaml, fixtures/adapters/**,
     fixtures/endurance/**, examples/**, benchmarks/**, tests/**, scripts/**,
     docs/**, release/evidence/**, .github/**,
+    crates/riffdb-service/src/live_query.rs,
     crates/riffdb-storage-redb/src/startup.rs,
     crates/riffdb-storage-redb/tests/architecture.rs]
   deliverables:
