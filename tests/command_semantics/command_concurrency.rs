@@ -992,15 +992,14 @@ fn assert_transition_outcome(
     );
 }
 
-// WP-598 escalation: these two schedules are the acceptance evidence for the
-// commit-path version audit package. Every mutating command on a V7+ bundle
-// currently fails closed as an internal defect because
-// derive_grammar_v1_indexes (crates/riffdb-commit/src/command_index.rs)
-// whitelists only grammar/IR pairs through V6, and riffdb-commit is outside
-// WP-598's declared paths. Un-ignore both tests when the whitelist audit
-// lands; they must then pass unchanged.
+// WP-598 escalation, discharged by WP-606: these two schedules are the
+// acceptance evidence for the commit-path version audit. The V9 grammar/IR
+// pair is admitted by the audited derivation whitelist
+// (crates/riffdb-commit/src/command_index.rs, WP-606 audit notes at
+// `index_derivation_version_supported`), and the profile harness commits
+// through the audited capsule path consistently. Both schedules pass with
+// their WP-598 assertions unchanged.
 #[test]
-#[ignore = "blocked: commit-path index derivation refuses V7+ bundles (WP-598 escalation)"]
 fn framework_refresh_wins_the_race_and_revocation_observes_its_declared_stale_outcome() {
     let (database, winner, loser, replay, sequences) =
         race_session_transitions("refresh-first", true);
@@ -1047,7 +1046,6 @@ fn framework_refresh_wins_the_race_and_revocation_observes_its_declared_stale_ou
 }
 
 #[test]
-#[ignore = "blocked: commit-path index derivation refuses V7+ bundles (WP-598 escalation)"]
 fn framework_revocation_wins_the_race_and_refresh_observes_its_declared_stale_outcome() {
     let (database, winner, loser, replay, sequences) =
         race_session_transitions("revoke-first", false);
@@ -1144,11 +1142,11 @@ fn assert_defective_notification_sink(
     database.assert_one_budget_commit(&ports, &durable, 12_500);
 }
 
-// The one commit shape a V9 bundle can complete today: a declared refusal
-// with zero mutations bypasses index derivation entirely. This pins the
-// current boundary of the WP-598 escalation — declared outcomes commit
-// terminally while every mutating command on the same bundle is refused
-// before commit.
+// Retained live pin from WP-598: a declared refusal with zero mutations
+// bypasses index derivation entirely and commits terminally on the V9
+// bundle. Under WP-606's audited whitelist mutating commands also commit
+// (the race schedules above); this pin keeps the zero-mutation shape
+// independently anchored.
 #[test]
 fn framework_profile_declared_refusal_commits_terminally_on_the_v9_bundle() {
     let database = FrameworkProfileDatabase::create("v9-declared-refusal");
