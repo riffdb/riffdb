@@ -35,6 +35,7 @@ fn self_test_rejects_incomplete_and_invalid_endurance_evidence() {
     );
     let stdout = String::from_utf8(output.stdout).expect("self-test output must be UTF-8");
     assert!(stdout.contains("action_manifest_drift: rejected"));
+    assert!(stdout.contains("missing_environment_lifecycle: rejected"));
     assert!(stdout.contains("short_duration: rejected"));
     assert!(stdout.contains("invalid_structure: rejected"));
     assert!(stdout.contains("host_interference: rejected"));
@@ -84,6 +85,7 @@ fn controller_rejects_unreceipted_lifecycle_success() {
     let stdout = String::from_utf8(output.stdout).expect("self-test output must be UTF-8");
     assert!(stdout.contains("nonadvancing_lifecycle_result: rejected"));
     assert!(stdout.contains("bounded_action_result: passed"));
+    assert!(stdout.contains("bounded_environment_result: passed"));
     assert!(stdout.contains("silent_loss_conformance: rejected"));
     assert!(stdout.contains("bounded_conformance_result: passed"));
 }

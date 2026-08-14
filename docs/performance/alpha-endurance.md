@@ -59,6 +59,8 @@ export RIFFDB_ENDURANCE_RELEASE_ARTIFACT_SHA256='<sha256 of the installed releas
 
 The action manifest schema is `riffdb.alpha-endurance-actions/v1`. It contains:
 
+- one bounded setup command and one bounded teardown command for the isolated
+  remote environment; both emit retained, typed action receipts;
 - exactly four long-lived worker commands, one for each supported language;
 - the fixed seed, client count, per-worker rate ceiling, tenants, and complete
   workload coverage for each worker;

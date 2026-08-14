@@ -67,6 +67,11 @@ def load_actions(candidate: Path) -> dict[str, Any]:
         value = json.load(source)
     if not isinstance(value, dict) or value.get("schema") != SCHEMA:
         fail("action manifest has the wrong schema")
+    environment = value.get("environment")
+    if not isinstance(environment, dict) or set(environment) != {"setup", "teardown"}:
+        fail("action manifest must declare environment setup and teardown")
+    command(environment.get("setup"), "environment setup")
+    command(environment.get("teardown"), "environment teardown")
     workers = value.get("workers")
     if not isinstance(workers, list) or len(workers) != 4:
         fail("action manifest must declare four language workers")
@@ -176,6 +181,7 @@ def parse_action_result(output: str, kind: str, name: str) -> dict[str, Any]:
         or after < before
         or value.get("recovered") is not True
         or (kind == "lifecycle" and after == before)
+        or kind not in {"environment", "lifecycle", "fault"}
     ):
         fail(f"{kind} {name} did not prove advancement and recovery")
     return value
@@ -231,6 +237,9 @@ def self_test() -> None:
         }
     )
     parse_action_result(valid, "lifecycle", "checkpoint")
+    environment = json.loads(valid)
+    environment.update(kind="environment", name="setup", frontier_after=7)
+    parse_action_result(json.dumps(environment), "environment", "setup")
     invalid = json.loads(valid)
     invalid["frontier_after"] = invalid["frontier_before"]
     try:
@@ -240,6 +249,7 @@ def self_test() -> None:
     else:
         fail("nonadvancing lifecycle result passed")
     print("bounded_action_result: passed")
+    print("bounded_environment_result: passed")
     conformance = json.dumps(
         {
             "schema": CONFORMANCE_RESULT_SCHEMA,
@@ -282,6 +292,29 @@ def main() -> int:
         fail("action manifest differs from the outer validator identity")
     root = Path(__file__).resolve().parent.parent
     environment = os.environ.copy()
+    environment_results: list[dict[str, Any]] = []
+    setup = run_checked(
+        command(action_manifest["environment"]["setup"], "environment setup"),
+        root,
+        environment,
+    )
+    if setup.returncode != 0:
+        run_checked(
+            command(action_manifest["environment"]["teardown"], "environment teardown"),
+            root,
+            environment,
+        )
+        fail(f"environment setup failed with status {setup.returncode}")
+    try:
+        environment_results.append(parse_action_result(setup.stdout, "environment", "setup"))
+    except ValueError:
+        run_checked(
+            command(action_manifest["environment"]["teardown"], "environment teardown"),
+            root,
+            environment,
+        )
+        raise
+
     started = time.monotonic()
     deadline = started + duration
     workers: list[tuple[str, subprocess.Popen[bytes]]] = []
@@ -293,33 +326,33 @@ def main() -> int:
     conformance_checkpoints = 0
     conformance_results: list[dict[str, Any]] = []
 
-    for worker in action_manifest["workers"]:
-        worker_environment = environment.copy()
-        worker_environment.update(
-            {
-                "RIFFDB_ENDURANCE_LANGUAGE": worker["language"],
-                "RIFFDB_ENDURANCE_SEED": str(worker["seed"]),
-                "RIFFDB_ENDURANCE_CLIENTS": str(worker["clients"]),
-                "RIFFDB_ENDURANCE_MAXIMUM_OPERATIONS_PER_SECOND": str(worker["maximum_operations_per_second"]),
-                "RIFFDB_ENDURANCE_TENANTS_JSON": json.dumps(worker["tenants"], separators=(",", ":")),
-                "RIFFDB_ENDURANCE_WORKLOAD_COVERAGE_JSON": json.dumps(worker["coverage"], separators=(",", ":")),
-            }
-        )
-        process = subprocess.Popen(
-            command(worker["command"], "worker command"),
-            cwd=root,
-            env=worker_environment,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-        workers.append((worker["language"], process))
-
-    next_sample = started
-    next_conformance = started
-    lifecycle_due = {item["name"]: started + item["initial_delay_seconds"] for item in action_manifest["lifecycles"]}
-    fault_due = {item["name"]: started + item["initial_delay_seconds"] for item in action_manifest["faults"]}
     try:
+        for worker in action_manifest["workers"]:
+            worker_environment = environment.copy()
+            worker_environment.update(
+                {
+                    "RIFFDB_ENDURANCE_LANGUAGE": worker["language"],
+                    "RIFFDB_ENDURANCE_SEED": str(worker["seed"]),
+                    "RIFFDB_ENDURANCE_CLIENTS": str(worker["clients"]),
+                    "RIFFDB_ENDURANCE_MAXIMUM_OPERATIONS_PER_SECOND": str(worker["maximum_operations_per_second"]),
+                    "RIFFDB_ENDURANCE_TENANTS_JSON": json.dumps(worker["tenants"], separators=(",", ":")),
+                    "RIFFDB_ENDURANCE_WORKLOAD_COVERAGE_JSON": json.dumps(worker["coverage"], separators=(",", ":")),
+                }
+            )
+            process = subprocess.Popen(
+                command(worker["command"], "worker command"),
+                cwd=root,
+                env=worker_environment,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            workers.append((worker["language"], process))
+
+        next_sample = started
+        next_conformance = started
+        lifecycle_due = {item["name"]: started + item["initial_delay_seconds"] for item in action_manifest["lifecycles"]}
+        fault_due = {item["name"]: started + item["initial_delay_seconds"] for item in action_manifest["faults"]}
         while time.monotonic() < deadline:
             now = time.monotonic()
             for language, process in workers:
@@ -387,6 +420,20 @@ def main() -> int:
                 status = process.wait(timeout=10)
             if status not in (0, -15):
                 errors.append({"code": "worker_shutdown_failed", "language": language, "status": status})
+        teardown = run_checked(
+            command(action_manifest["environment"]["teardown"], "environment teardown"),
+            root,
+            environment,
+        )
+        if teardown.returncode != 0:
+            errors.append({"code": "environment_teardown_failed", "status": teardown.returncode})
+        else:
+            try:
+                environment_results.append(
+                    parse_action_result(teardown.stdout, "environment", "teardown")
+                )
+            except ValueError:
+                errors.append({"code": "environment_teardown_invalid"})
 
     measured = int(time.monotonic() - started)
     receipt = {
@@ -399,6 +446,7 @@ def main() -> int:
         "release_artifact_sha256": os.environ.get("RIFFDB_ENDURANCE_RELEASE_ARTIFACT_SHA256", ""),
         "languages_completed": sorted(REQUIRED_LANGUAGES) if not errors else [],
         "workload_coverage": action_manifest.get("workload_coverage", []),
+        "environment_results": environment_results,
         "fault_counts": fault_counts,
         "lifecycle_counts": lifecycle_counts,
         "action_results": action_results,

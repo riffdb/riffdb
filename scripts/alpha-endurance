@@ -170,6 +170,11 @@ def validate_manifest(manifest: dict[str, Any]) -> None:
 
 def validate_actions(actions: dict[str, Any], manifest: dict[str, Any]) -> None:
     require(actions.get("schema") == "riffdb.alpha-endurance-actions/v1", "invalid_actions", "wrong action manifest schema")
+    environment = actions.get("environment")
+    require(isinstance(environment, dict) and set(environment) == {"setup", "teardown"}, "invalid_actions", "environment setup and teardown are required")
+    for name in ("setup", "teardown"):
+        argv = environment.get(name)
+        require(isinstance(argv, list) and 1 <= len(argv) <= 64 and all(isinstance(part, str) and part and "\x00" not in part for part in argv), "invalid_actions", f"environment {name} is not a bounded argv")
     workers = actions.get("workers")
     require(isinstance(workers, list) and len(workers) == len(REQUIRED_LANGUAGES), "invalid_actions", "one worker per language is required")
     languages: set[str] = set()
@@ -321,6 +326,13 @@ def validate_receipt(receipt: dict[str, Any], manifest: dict[str, Any], requeste
     require(HEX_256.fullmatch(str(receipt.get("release_artifact_sha256", ""))) is not None, "artifact_mismatch", "release artifact digest is absent")
     require(exact_names(receipt.get("languages_completed"), REQUIRED_LANGUAGES), "missing_language", "not every language completed")
     require(exact_names(receipt.get("workload_coverage"), REQUIRED_WORKLOADS), "missing_workload", "receipt workload coverage is incomplete")
+    environment_results = receipt.get("environment_results")
+    require(isinstance(environment_results, list) and len(environment_results) == 2, "invalid_receipt", "environment setup/teardown receipts are absent")
+    for expected_name, result in zip(("setup", "teardown"), environment_results):
+        require(isinstance(result, dict) and set(result) == {"schema", "kind", "name", "status", "evidence_sha256", "frontier_before", "frontier_after", "recovered"}, "invalid_receipt", "environment receipt has an invalid shape")
+        require(result.get("schema") == ACTION_RESULT_SCHEMA and result.get("kind") == "environment" and result.get("name") == expected_name and result.get("status") == "passed" and result.get("recovered") is True, "invalid_receipt", "environment setup or teardown did not pass")
+        require(HEX_256.fullmatch(str(result.get("evidence_sha256", ""))) is not None, "invalid_receipt", "environment evidence digest is invalid")
+        require(integer(result.get("frontier_after"), "invalid_receipt", "environment.frontier_after") >= integer(result.get("frontier_before"), "invalid_receipt", "environment.frontier_before"), "invalid_receipt", "environment frontier regressed")
     fault_counts = receipt.get("fault_counts", {})
     require(set(fault_counts) == REQUIRED_FAULTS, "missing_fault", "fault count inventory is incomplete")
     for name, policy in manifest["faults"].items():
@@ -601,6 +613,19 @@ def base_receipt(manifest: dict[str, Any], hours: int = 1) -> dict[str, Any]:
         "host_validity": {"preflight": {"valid": True}, "postflight": {"valid": True}},
         "languages_completed": sorted(REQUIRED_LANGUAGES),
         "workload_coverage": sorted(REQUIRED_WORKLOADS),
+        "environment_results": [
+            {
+                "schema": ACTION_RESULT_SCHEMA,
+                "kind": "environment",
+                "name": name,
+                "status": "passed",
+                "evidence_sha256": hashlib.sha256(f"environment:{name}".encode()).hexdigest(),
+                "frontier_before": 0,
+                "frontier_after": 0,
+                "recovered": True,
+            }
+            for name in ("setup", "teardown")
+        ],
         "fault_counts": fault_counts,
         "lifecycle_counts": lifecycle_counts,
         "action_results": action_results,
@@ -631,6 +656,10 @@ def base_actions(manifest: dict[str, Any]) -> dict[str, Any]:
         )
     return {
         "schema": "riffdb.alpha-endurance-actions/v1",
+        "environment": {
+            "setup": ["scripts/endurance-environment", "setup"],
+            "teardown": ["scripts/endurance-environment", "teardown"],
+        },
         "workers": workers,
         "sampler": {"command": ["scripts/endurance-sample"], "interval_seconds": 30},
         "conformance": {"command": ["scripts/endurance-conformance"], "interval_seconds": 300},
@@ -673,6 +702,16 @@ def self_test() -> None:
         print("action_manifest_drift: rejected")
     else:
         raise AssertionError("drifted action manifest passed")
+    missing_environment = copy.deepcopy(actions)
+    del missing_environment["environment"]
+    try:
+        validate_actions(missing_environment, manifest)
+    except EvidenceError as error:
+        if error.code != "invalid_actions":
+            raise
+        print("missing_environment_lifecycle: rejected")
+    else:
+        raise AssertionError("action manifest without environment lifecycle passed")
     valid = base_receipt(manifest)
     cases: list[tuple[str, str, Any]] = [
         ("invalid_structure", "invalid_receipt", lambda value: value.update(schema="riffdb.invalid/v1")),
