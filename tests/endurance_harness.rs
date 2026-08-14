@@ -34,6 +34,7 @@ fn self_test_rejects_incomplete_and_invalid_endurance_evidence() {
         String::from_utf8_lossy(&output.stderr),
     );
     let stdout = String::from_utf8(output.stdout).expect("self-test output must be UTF-8");
+    assert!(stdout.contains("reviewed_action_manifest_default: passed"));
     assert!(stdout.contains("action_manifest_drift: rejected"));
     assert!(stdout.contains("checked_action_manifest: passed"));
     assert!(stdout.contains("missing_environment_lifecycle: rejected"));

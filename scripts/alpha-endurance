@@ -109,6 +109,15 @@ def read_json(candidate: Path) -> dict[str, Any]:
     return read_json_with_digest(candidate)[0]
 
 
+def select_action_manifest(
+    root: Path, environment_name: str, environment: dict[str, str]
+) -> Path:
+    selected = environment.get(environment_name)
+    if selected is None:
+        return root / "release/evidence/endurance-actions-v1.json"
+    return Path(selected).resolve()
+
+
 def canonical_digest(value: Any) -> str:
     encoded = json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
     return hashlib.sha256(encoded).hexdigest()
@@ -688,6 +697,13 @@ def expect_rejection(name: str, receipt: dict[str, Any], manifest: dict[str, Any
 
 def self_test() -> None:
     root = Path(__file__).resolve().parent.parent
+    require(
+        select_action_manifest(root, "RIFFDB_ENDURANCE_ACTION_MANIFEST", {})
+        == root / "release/evidence/endurance-actions-v1.json",
+        "invalid_invocation",
+        "the release command did not select the canonical reviewed action manifest",
+    )
+    print("reviewed_action_manifest_default: passed")
     checked_manifest = read_json(root / "fixtures/endurance/alpha-manifest-v1.json")
     validate_manifest(checked_manifest)
     checked_actions = read_json(root / "release/evidence/endurance-actions-v1.json")
@@ -818,12 +834,11 @@ def run_controller(arguments: argparse.Namespace, manifest: dict[str, Any]) -> i
     require(isinstance(command, list) and command and all(isinstance(part, str) and part for part in command), "invalid_manifest", "controller command must be a nonempty argv array")
     action_environment = controller.get("action_manifest_environment")
     require(isinstance(action_environment, str) and action_environment, "invalid_manifest", "controller action-manifest environment is absent")
-    action_path = os.environ.get(action_environment)
-    require(action_path is not None, "invalid_invocation", f"{action_environment} must select a reviewed action manifest")
-    actions = read_json(Path(action_path).resolve())
+    root = Path(__file__).resolve().parent.parent
+    action_path = select_action_manifest(root, action_environment, os.environ)
+    actions = read_json(action_path)
     validate_actions(actions, manifest)
     action_digest = canonical_digest(actions)
-    root = Path(__file__).resolve().parent.parent
     artifact_root = Path(arguments.artifact_root).resolve()
     artifact_root.mkdir(parents=True, exist_ok=True)
     raw_receipt = artifact_root / "raw-receipt-v1.json"
@@ -843,6 +858,7 @@ def run_controller(arguments: argparse.Namespace, manifest: dict[str, Any]) -> i
             "RIFFDB_ENDURANCE_RAW_RECEIPT": str(raw_receipt),
             "RIFFDB_ENDURANCE_MANIFEST_SHA256": canonical_digest(manifest),
             "RIFFDB_ENDURANCE_ACTION_MANIFEST_SHA256": action_digest,
+            action_environment: str(action_path),
         }
     )
     started = time.monotonic()
