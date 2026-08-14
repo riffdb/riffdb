@@ -13,7 +13,7 @@ use std::io::{Read, Seek, SeekFrom, Write};
 use std::os::unix::fs::FileExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, mpsc};
+use std::sync::{Arc, Condvar, Mutex, mpsc};
 use std::thread;
 
 use sha2::{Digest, Sha256};
@@ -1497,26 +1497,64 @@ pub(crate) enum JournalIoError {
 
 struct JournalSubmission {
     frame: EncodedJournalFrame,
-    completion: mpsc::Sender<Result<JournalFence, JournalIoError>>,
+    completion: Arc<JournalFenceCompletion>,
 }
 
+impl Drop for JournalSubmission {
+    fn drop(&mut self) {
+        // Preserve the former channel-disconnect behavior: a worker unwind or
+        // premature exit must wake every waiter instead of leaving a shared
+        // completion cell pending forever. Successful/error completion is
+        // idempotent and therefore wins before this fallback runs.
+        self.completion.complete(Err(JournalIoError::Stopped));
+    }
+}
+
+#[derive(Default)]
+struct JournalFenceCompletion {
+    result: Mutex<Option<Result<JournalFence, JournalIoError>>>,
+    ready: Condvar,
+}
+
+impl JournalFenceCompletion {
+    fn complete(&self, result: Result<JournalFence, JournalIoError>) {
+        if let Ok(mut slot) = self.result.lock()
+            && slot.is_none()
+        {
+            *slot = Some(result);
+            self.ready.notify_all();
+        }
+    }
+
+    fn try_wait(&self) -> Result<Option<JournalFence>, JournalIoError> {
+        self.result
+            .lock()
+            .map_err(|_| JournalIoError::Stopped)?
+            .clone()
+            .transpose()
+    }
+
+    fn wait(&self) -> Result<JournalFence, JournalIoError> {
+        let mut slot = self.result.lock().map_err(|_| JournalIoError::Stopped)?;
+        while slot.is_none() {
+            slot = self.ready.wait(slot).map_err(|_| JournalIoError::Stopped)?;
+        }
+        slot.clone().expect("journal completion is present")
+    }
+}
+
+#[derive(Clone)]
 pub(crate) struct JournalFenceReceipt {
-    completion: mpsc::Receiver<Result<JournalFence, JournalIoError>>,
+    completion: Arc<JournalFenceCompletion>,
 }
 
 impl JournalFenceReceipt {
     pub(crate) fn try_wait(&self) -> Result<Option<JournalFence>, JournalIoError> {
-        match self.completion.try_recv() {
-            Ok(result) => result.map(Some),
-            Err(mpsc::TryRecvError::Empty) => Ok(None),
-            Err(mpsc::TryRecvError::Disconnected) => Err(JournalIoError::Stopped),
-        }
+        self.completion.try_wait()
     }
 
-    pub(crate) fn wait(self) -> Result<JournalFence, JournalIoError> {
-        self.completion
-            .recv()
-            .unwrap_or(Err(JournalIoError::Stopped))
+    pub(crate) fn wait(&self) -> Result<JournalFence, JournalIoError> {
+        self.completion.wait()
     }
 }
 
@@ -1561,15 +1599,16 @@ impl JournalLane {
         &self,
         frame: EncodedJournalFrame,
     ) -> Result<JournalFenceReceipt, JournalIoError> {
-        let (completion, receiver) = mpsc::channel();
+        let completion = Arc::new(JournalFenceCompletion::default());
         self.sender
             .as_ref()
             .ok_or(JournalIoError::Stopped)?
-            .send(JournalSubmission { frame, completion })
+            .send(JournalSubmission {
+                frame,
+                completion: Arc::clone(&completion),
+            })
             .map_err(|_| JournalIoError::Stopped)?;
-        Ok(JournalFenceReceipt {
-            completion: receiver,
-        })
+        Ok(JournalFenceReceipt { completion })
     }
 
     #[cfg(test)]
@@ -1731,11 +1770,11 @@ fn journal_worker(
             } else {
                 Err(write.clone().expect_err("failed write carries an error"))
             };
-            let _ = submission.completion.send(result);
+            submission.completion.complete(result);
         }
         if let Err(error) = write {
             for submission in receiver.try_iter() {
-                let _ = submission.completion.send(Err(error.clone()));
+                submission.completion.complete(Err(error.clone()));
             }
             return;
         }
@@ -3136,6 +3175,31 @@ mod tests {
             );
         }
         assert!(lane.durable_flushes() < 100);
+    }
+
+    #[test]
+    fn cloned_receipts_observe_one_idempotent_durability_result() {
+        let path = TestPath::new("shared-receipt");
+        let database_id = database_id(10);
+        let header = JournalFileHeader::new(database_id, None, [0; 32]);
+        let lane = JournalLane::open(&path.0, &header).expect("open lane");
+        let frame = JournalFrame::new(
+            database_id,
+            sequence(1),
+            sequence(1),
+            1,
+            [0; 32],
+            vec![JournalMutation::put(JournalTable::Commits, vec![1], vec![2]).expect("put")],
+        )
+        .expect("frame")
+        .encode()
+        .expect("encode");
+        let first = lane.submit(frame).expect("submit");
+        let second = first.clone();
+
+        let expected = first.wait().expect("first receipt");
+        assert_eq!(second.wait(), Ok(expected));
+        assert_eq!(first.try_wait(), Ok(Some(expected)));
     }
 
     #[test]
