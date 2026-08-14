@@ -347,6 +347,54 @@ fn startup_full_validation_reuses_exact_embedded_command_authority() {
 }
 
 #[test]
+fn startup_publication_validation_uses_one_shared_audit_pass() {
+    let startup = production_source(crate_root().join("src/startup.rs"));
+    let builder = startup
+        .split_once("fn build_publication_audit_cache(")
+        .expect("publication cache builder")
+        .1
+        .split_once("\nfn inspect_event_consumer_row(")
+        .expect("publication cache builder end")
+        .0;
+    assert_eq!(builder.matches("audit.iter()").count(), 1);
+    assert!(builder.contains("decode_non_command_administration_audit"));
+    assert!(builder.contains("record.administration_sequence() != sequence"));
+    assert!(builder.contains("MAX_STARTUP_EVIDENCE_INDEX_BYTES"));
+
+    let dispatch = startup
+        .split_once("fn inspect_structural_forward(")
+        .expect("structural dispatch")
+        .1
+        .split_once("\n    fn ensure_command_cache(")
+        .expect("structural dispatch end")
+        .0;
+    assert!(dispatch.contains("ensure_publication_audit_cache"));
+    assert!(dispatch.contains("publication_audits: self.publication_audits"));
+
+    for helper in [
+        "fn bundle_has_activation_cached(",
+        "fn query_module_has_activation_cached(",
+        "fn query_module_record_is_reciprocal_cached(",
+        "fn catalog_record_is_reciprocal_cached(",
+        "fn active_catalog_matches_last_activation_cached(",
+        "fn inspect_reactive_module_row_cached(",
+    ] {
+        let body = startup
+            .split_once(helper)
+            .unwrap_or_else(|| panic!("missing cached helper {helper}"))
+            .1
+            .split_once("\nfn ")
+            .unwrap_or_else(|| panic!("missing cached helper end {helper}"))
+            .0;
+        assert!(!body.contains("open_table(AUDIT)"), "{helper}");
+        assert!(
+            !body.contains("decode_non_command_administration_audit"),
+            "{helper}"
+        );
+    }
+}
+
+#[test]
 fn checkpoint_prefix_skips_before_building_the_command_history_cache() {
     let startup = production_source(crate_root().join("src/startup.rs"));
     let dispatch = startup

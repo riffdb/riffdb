@@ -217,6 +217,21 @@ struct CachedCommandAudit {
     peer_sequence: riffdb_types::AdministrationSequence,
 }
 
+/// The small publication subset of the administration stream, decoded by one
+/// exact forward pass and shared by every startup reciprocity check.
+///
+/// Command and ordinary service audits are deliberately not retained. Catalog,
+/// query-module, and reactive-module publications are rare control-plane facts;
+/// retaining only those facts avoids repeatedly decoding the entire mixed audit
+/// stream while keeping the cache bounded by the startup evidence byte limit.
+struct PublicationAuditCache {
+    catalogs: Vec<riffdb_storage_api::StoredCatalogAdministrationV1>,
+    query_modules: Vec<riffdb_storage_api::StoredQueryModuleAdministrationV1>,
+    reactive_modules: BTreeSet<riffdb_types::ReactiveModuleHash>,
+    decoded_rows: u64,
+    valid: bool,
+}
+
 /// One exclusive startup session bound to a single immutable redb snapshot.
 pub struct RedbStructuralEvidenceSession {
     shared: Arc<SharedRedb>,
@@ -264,20 +279,18 @@ pub struct RedbStructuralEvidenceSession {
     /// segment/capsule row during the cache's exact forward `COMMITS` pass.
     embedded_command_authority: BTreeSet<CommitSequence>,
     command_cache_built: bool,
+    /// Publication facts decoded once from AUDIT and shared by catalog, query
+    /// module, reactive module, and suffix-audit validation.
+    publication_audits: Option<PublicationAuditCache>,
     /// Exact valid retained bundles collected once from the pinned startup
     /// snapshot. Entity and index validation consult this bounded set instead
     /// of reopening and decoding `CONTRACT_BUNDLES` for every retained row.
     binding_bundles: BTreeSet<riffdb_storage_api::DurableKeySchemaBindingV1>,
     /// Built at ENTITIES phase entry; dropped after orphan findings are queued.
     entity_chains: Option<EntityChainState>,
-    /// Reactive-module hashes a publication record names, collected in ONE
-    /// `AUDIT` pass; built on first need in the REACTIVE_MODULES phase and
-    /// dropped when that phase ends. See
-    /// [`build_reactive_publication_witness`].
-    reactive_publication_witness: Option<BTreeSet<riffdb_types::ReactiveModuleHash>>,
-    /// `AUDIT` rows decoded for publication witnesses this session. Exactly
-    /// `|AUDIT|` once when any retained reactive module is judged, never
-    /// `|REACTIVE_MODULES| × |AUDIT|`.
+    /// Non-command `AUDIT` rows decoded for publication proofs this session.
+    /// One whole physical pass serves every catalog, query-module, and reactive
+    /// module check; the counter excludes command locators skipped by dispatch.
     reactive_publication_audit_decodes: u64,
     /// Bounded cross-link findings for unconsumed/orphan chains (VecDeque: O(1) drain).
     pending_entity_orphan_findings: VecDeque<StructuralFinding>,
@@ -671,6 +684,12 @@ impl StructuralEvidenceOpen for RedbStore {
         // until this one finishes with zero findings (checkpoint write gate).
         self.shared.set_startup_validation_clean(false);
         let binding_bundles = collect_bundle_bindings(&transaction)?;
+        // The deterministic prefix sample and the full structural session both
+        // need publication reciprocity. Build their one bounded control-plane
+        // cache here so checkpoint sampling cannot add a second whole AUDIT
+        // pass before the header consumes the same evidence.
+        let publication_audits = build_publication_audit_cache(&transaction)?;
+        let reactive_publication_audit_decodes = publication_audits.decoded_rows;
         let mut checkpoint = None;
         let mut checkpoint_verified = false;
         let mut checkpoint_ignored_reason = None;
@@ -698,6 +717,7 @@ impl StructuralEvidenceOpen for RedbStore {
                     &active.checkpoint_hash,
                     active.checkpoint_commit_sequence,
                     active.audit_sequence_bound,
+                    &publication_audits,
                 )?;
                 sampled_window_rows_inspected = inspected;
                 if sample_finding.is_some() {
@@ -756,10 +776,10 @@ impl StructuralEvidenceOpen for RedbStore {
             command_capsules: std::collections::BTreeMap::new(),
             embedded_command_authority: BTreeSet::new(),
             command_cache_built: false,
+            publication_audits: Some(publication_audits),
             binding_bundles,
             entity_chains: None,
-            reactive_publication_witness: None,
-            reactive_publication_audit_decodes: 0,
+            reactive_publication_audit_decodes,
             pending_entity_orphan_findings: VecDeque::new(),
             historical_plan: None,
             checkpoint,
@@ -809,7 +829,7 @@ impl StructuralEvidenceSession for RedbStructuralEvidenceSession {
             self.structural_finished = true;
             self.structural_cursors = None;
             self.entity_chains = None;
-            self.reactive_publication_witness = None;
+            self.publication_audits = None;
             return Ok(StructuralEvidencePage::ExactEnd(
                 RedbStructuralEvidenceEnd { cursor },
             ));
@@ -1310,9 +1330,8 @@ impl RedbStructuralEvidenceSession {
     }
 
     /// Test/benchmark observability: AUDIT rows decoded to witness reactive
-    /// publications. Zero when no retained reactive module reaches the
-    /// publication check, otherwise exactly `|AUDIT|` — one pass for the phase,
-    /// never one per row.
+    /// publications. This is the non-command row count from the one physical
+    /// `AUDIT` pass shared by all publication checks, never one pass per row.
     #[doc(hidden)]
     #[must_use]
     pub fn reactive_publication_audit_decodes(&self) -> u64 {
@@ -1343,6 +1362,7 @@ fn run_checkpoint_sample_windows(
     checkpoint_hash: &[u8; 32],
     s: u64,
     audit_bound: u64,
+    publication_audits: &PublicationAuditCache,
 ) -> Result<(u64, Option<StructuralFinding>), StorageError> {
     use std::ops::Bound::{Included, Unbounded};
 
@@ -1462,7 +1482,13 @@ fn run_checkpoint_sample_windows(
                 }
                 inspected = inspected.saturating_add(1);
                 let index = seq.get().saturating_sub(1);
-                let finding = inspect_audit_row(transaction, index, key.value(), value.value())?;
+                let finding = inspect_audit_row(
+                    transaction,
+                    publication_audits,
+                    index,
+                    key.value(),
+                    value.value(),
+                )?;
                 if let Some(finding) = finding {
                     return Ok((inspected, Some(finding)));
                 }
@@ -1525,12 +1551,14 @@ impl RedbStructuralEvidenceSession {
             // validated checkpoint) and share it instead of decoding every
             // command segment again in the header proof.
             self.ensure_command_cache()?;
+            self.ensure_publication_audit_cache()?;
             let transaction = self.validation_read.as_ref().ok_or_else(invariant)?;
             return inspect_header(
                 transaction,
                 self.database_id,
                 self.checkpoint.as_ref(),
                 &self.command_audits,
+                self.publication_audits.as_ref().ok_or_else(invariant)?,
             );
         }
         if self.structural_cursors.is_none() {
@@ -1689,6 +1717,7 @@ impl RedbStructuralEvidenceSession {
         let context = StructuralInspectContext {
             inputs: &self.inputs,
             binding_bundles: &self.binding_bundles,
+            publication_audits: self.publication_audits.as_ref().ok_or_else(invariant)?,
             database_id: self.database_id,
         };
         let finding = inspect_table_row_from_bytes(
@@ -1825,6 +1854,17 @@ impl RedbStructuralEvidenceSession {
         Ok(())
     }
 
+    fn ensure_publication_audit_cache(&mut self) -> Result<(), StorageError> {
+        if self.publication_audits.is_some() {
+            return Ok(());
+        }
+        let transaction = self.validation_read.as_ref().ok_or_else(invariant)?;
+        let cache = build_publication_audit_cache(transaction)?;
+        self.reactive_publication_audit_decodes = cache.decoded_rows;
+        self.publication_audits = Some(cache);
+        Ok(())
+    }
+
     fn ensure_entity_chains_built(&mut self) -> Result<(), StorageError> {
         if self.entity_chains.is_some() {
             return Ok(());
@@ -1894,23 +1934,17 @@ impl RedbStructuralEvidenceSession {
         mark_entity_chain_consumed(&mut state.chains, key);
     }
 
-    /// Judges one retained `REACTIVE_MODULES` row against the transient
-    /// publication witness set, which the row inspection builds on first need.
-    ///
-    /// The set is session state rather than a per-row scan, so the whole
-    /// REACTIVE_MODULES phase costs ONE `AUDIT` pass instead of one per row.
+    /// Judges one retained `REACTIVE_MODULES` row against the session's shared
+    /// publication evidence, built once before header validation.
     fn inspect_reactive_module_row_with_witness(
         &mut self,
         key: &[u8],
         value: &[u8],
     ) -> Result<Option<StructuralFinding>, StorageError> {
-        // Disjoint field borrows: the snapshot is read-only, the witness and its
-        // decode counter are the only mutated state.
         let transaction = self.validation_read.as_ref().ok_or_else(invariant)?;
-        inspect_reactive_module_row(
+        inspect_reactive_module_row_cached(
             transaction,
-            &mut self.reactive_publication_witness,
-            &mut self.reactive_publication_audit_decodes,
+            self.publication_audits.as_ref().ok_or_else(invariant)?,
             key,
             value,
         )
@@ -2221,12 +2255,6 @@ impl RedbStructuralEvidenceSession {
                 self.queue_entity_orphan_findings();
                 self.entity_chains = None;
             }
-            // Phase 28 is REACTIVE_MODULES: the publication witness set has no
-            // reader past it (EVENT_CONSUMERS checks row presence, not
-            // publication), so release it with the phase.
-            if leaving == 28 {
-                self.reactive_publication_witness = None;
-            }
         }
     }
 }
@@ -2234,6 +2262,7 @@ impl RedbStructuralEvidenceSession {
 struct StructuralInspectContext<'a> {
     inputs: &'a StartupValidationInputs,
     binding_bundles: &'a BTreeSet<riffdb_storage_api::DurableKeySchemaBindingV1>,
+    publication_audits: &'a PublicationAuditCache,
     database_id: DatabaseId,
 }
 
@@ -2246,10 +2275,10 @@ fn inspect_table_row_from_bytes(
     value: &[u8],
 ) -> Result<Option<StructuralFinding>, StorageError> {
     match phase {
-        1 => inspect_bundle_row(transaction, key, value),
-        2 => inspect_active_row(transaction, key, value),
-        3 => inspect_query_module_row(transaction, key, value),
-        4 => inspect_active_query_module_row(transaction, key, value),
+        1 => inspect_bundle_row(transaction, context.publication_audits, key, value),
+        2 => inspect_active_row(transaction, context.publication_audits, key, value),
+        3 => inspect_query_module_row(transaction, context.publication_audits, key, value),
+        4 => inspect_active_query_module_row(transaction, context.publication_audits, key, value),
         // Phase 5 (ENTITIES) is handled exclusively by
         // `inspect_entity_row_with_chains` in `inspect_structural_forward`.
         6 => inspect_index_row(context.binding_bundles, key, value),
@@ -2267,7 +2296,7 @@ fn inspect_table_row_from_bytes(
         18 => inspect_projection_apply_row(transaction, key, value),
         19 => inspect_capability_row(transaction, context.inputs, context.database_id, key, value),
         20 => inspect_capability_lookup_row(transaction, key, value),
-        21 => inspect_audit_row(transaction, index, key, value),
+        21 => inspect_audit_row(transaction, context.publication_audits, index, key, value),
         22 => inspect_audit_by_request_row(transaction, key, value),
         23 => inspect_contract_migration_journal_row(key, value),
         24 => inspect_contract_migration_record_row(key, value),
@@ -2312,19 +2341,9 @@ fn inspect_application_installation_campaign_row(
 }
 
 /// Validates one retained reactive-module row against everything it names.
-///
-/// `witness` is the session's transient publication witness set, built here on
-/// first need — that is, the first row that reaches the publication check, which
-/// is exactly when the per-row scan this replaces would have opened `AUDIT`.
-/// Every later row answers by set lookup, so the phase costs ONE `AUDIT` pass
-/// rather than one per row (`|REACTIVE_MODULES| × |AUDIT|`, up to
-/// `MAX_RETAINED_REACTIVE_MODULES` = 4,096 full protobuf decode passes at every
-/// open). The proof itself is unchanged and stays unconditional: see
-/// [`build_reactive_publication_witness`].
-fn inspect_reactive_module_row(
+fn inspect_reactive_module_row_cached(
     transaction: &ReadTransaction,
-    witness: &mut Option<BTreeSet<riffdb_types::ReactiveModuleHash>>,
-    audit_decodes: &mut u64,
+    publication_audits: &PublicationAuditCache,
     key: &[u8],
     value: &[u8],
 ) -> Result<Option<StructuralFinding>, StorageError> {
@@ -2367,80 +2386,90 @@ fn inspect_reactive_module_row(
         }
     }
     drop(query_modules);
-    let published = match witness {
-        Some(published) => published,
-        None => witness.insert(build_reactive_publication_witness(
-            transaction,
-            audit_decodes,
-        )?),
-    };
-    if !published.contains(&module_hash) {
+    if !publication_audits.valid || !publication_audits.reactive_modules.contains(&module_hash) {
         return Ok(Some(authoritative(StructuralFindingCode::MissingCrossLink)));
     }
     Ok(None)
 }
 
-/// Collects every reactive-module hash a publication record names, in ONE
-/// forward `AUDIT` pass, keeping only hashes a retained `REACTIVE_MODULES` row
-/// can actually name.
+/// Collects the retained publication facts needed by every startup reciprocity
+/// check in one exact forward `AUDIT` pass.
 ///
-/// This replaces a per-row full `AUDIT` scan, and the proof it serves is
-/// unchanged: a retained row with no publication record still yields
-/// `Authoritative/MissingCrossLink`, and every retained row is still judged.
-///
-/// Two structural properties this pass deliberately does NOT delegate:
-///
-/// - **Unconditional under the validated-prefix checkpoint.** It is driven by the
-///   REACTIVE_MODULES phase, whose rows are an *additive* structural count; the
-///   checkpoint guard exempts only the prefix-bounded counts, so every retained
-///   row is inspected at every open, checkpointed or not. That unconditionality
-///   is what lets `read_reactive_module` skip the same check per read (see its
-///   ruling note), so it must not become skippable here.
-/// - **Its own `AUDIT` iteration.** The structural AUDIT phase (21) is
-///   range-skipped at the checkpoint's audit bound, so accumulating the set
-///   there would omit every below-bound publication record and report
-///   pre-checkpoint modules as unpublished. This pass reads the whole table from
-///   the same immutable snapshot instead.
-///
-/// Membership is filtered by a `REACTIVE_MODULES` point lookup so the transient
-/// set is bounded by the table under inspection (≤
-/// `MAX_RETAINED_REACTIVE_MODULES` after a clean open), never by audit history.
-fn build_reactive_publication_witness(
+/// Command locators are skipped without decoding their capsules. All other
+/// administration records are decoded and sequence-checked exactly once. Only
+/// rare catalog/query publications and reactive hashes with a retained module
+/// are kept, under the startup evidence byte cap. A malformed stream produces
+/// an invalid cache rather than partial authority; every cached lookup then
+/// fails closed and the structural walk emits an authoritative finding.
+fn build_publication_audit_cache(
     transaction: &ReadTransaction,
-    audit_decodes: &mut u64,
-) -> Result<BTreeSet<riffdb_types::ReactiveModuleHash>, StorageError> {
+) -> Result<PublicationAuditCache, StorageError> {
     let audit = transaction.open_table(AUDIT).map_err(table_error)?;
     let modules = transaction
         .open_table(REACTIVE_MODULES)
         .map_err(table_error)?;
-    let mut published = BTreeSet::new();
+    let mut cache = PublicationAuditCache {
+        catalogs: Vec::new(),
+        query_modules: Vec::new(),
+        reactive_modules: BTreeSet::new(),
+        decoded_rows: 0,
+        valid: true,
+    };
+    let mut retained_bytes = 0usize;
     for entry in audit.iter().map_err(precommit_storage_error)? {
         let (key, value) = entry.map_err(precommit_storage_error)?;
-        let sequence = keys::decode_audit_key(key.value()).map_err(|_| corrupt())?;
-        let Some(record) = decode_non_command_administration_audit(value.value())? else {
-            continue;
+        let Ok(sequence) = keys::decode_audit_key(key.value()) else {
+            cache.valid = false;
+            break;
         };
-        let record = record.into_parts().0;
-        *audit_decodes = audit_decodes.saturating_add(1);
-        // Retained from the per-row scan verbatim: a record whose own sequence
-        // disagrees with its key is corruption, not a missing witness.
+        let record = match decode_non_command_administration_audit(value.value()) {
+            Ok(Some(record)) => record.into_parts().0,
+            Ok(None) => continue,
+            Err(_) => {
+                cache.valid = false;
+                break;
+            }
+        };
+        cache.decoded_rows = cache.decoded_rows.saturating_add(1);
         if record.administration_sequence() != sequence {
-            return Err(corrupt());
+            cache.valid = false;
+            break;
         }
-        let riffdb_storage_api::StoredAdministrationAuditRecordV1::ReactiveModule(record) = record
-        else {
-            continue;
-        };
-        let module_key = keys::encode_reactive_module_key(record.module_hash());
-        if modules
-            .get(module_key.as_slice())
-            .map_err(precommit_storage_error)?
-            .is_some()
-        {
-            published.insert(record.module_hash());
+        match record {
+            riffdb_storage_api::StoredAdministrationAuditRecordV1::Catalog(record) => {
+                retained_bytes = retained_bytes
+                    .checked_add(value.value().len())
+                    .ok_or_else(limit_exceeded)?;
+                cache.catalogs.push(record);
+            }
+            riffdb_storage_api::StoredAdministrationAuditRecordV1::QueryModule(record) => {
+                retained_bytes = retained_bytes
+                    .checked_add(value.value().len())
+                    .ok_or_else(limit_exceeded)?;
+                cache.query_modules.push(record);
+            }
+            riffdb_storage_api::StoredAdministrationAuditRecordV1::ReactiveModule(record) => {
+                let module_key = keys::encode_reactive_module_key(record.module_hash());
+                if modules
+                    .get(module_key.as_slice())
+                    .map_err(precommit_storage_error)?
+                    .is_some()
+                {
+                    retained_bytes = retained_bytes
+                        .checked_add(std::mem::size_of::<riffdb_types::ReactiveModuleHash>())
+                        .ok_or_else(limit_exceeded)?;
+                    cache.reactive_modules.insert(record.module_hash());
+                }
+            }
+            riffdb_storage_api::StoredAdministrationAuditRecordV1::Capability(_)
+            | riffdb_storage_api::StoredAdministrationAuditRecordV1::Service(_)
+            | riffdb_storage_api::StoredAdministrationAuditRecordV1::Retention(_) => {}
+        }
+        if retained_bytes > MAX_STARTUP_EVIDENCE_INDEX_BYTES {
+            return Err(limit_exceeded());
         }
     }
-    Ok(published)
+    Ok(cache)
 }
 
 fn inspect_event_consumer_row(
@@ -2816,6 +2845,7 @@ fn inspect_header(
         riffdb_types::AdministrationSequence,
         CachedCommandAudit,
     >,
+    publication_audits: &PublicationAuditCache,
 ) -> Result<Option<StructuralFinding>, StorageError> {
     let meta = transaction.open_table(META).map_err(table_error)?;
     let mut seen = BTreeSet::new();
@@ -2874,7 +2904,11 @@ fn inspect_header(
     {
         return Ok(Some(authoritative(StructuralFindingCode::MissingCrossLink)));
     }
-    if !active_catalog_matches_last_activation(transaction, active.as_ref())? {
+    if !active_catalog_matches_last_activation_cached(
+        transaction,
+        publication_audits,
+        active.as_ref(),
+    )? {
         return Ok(Some(authoritative(
             StructuralFindingCode::CrossLinkMismatch,
         )));
@@ -2944,6 +2978,7 @@ fn inspect_meta_row(key: &str, value: &[u8], database_id: DatabaseId) -> Option<
 
 fn inspect_bundle_row(
     transaction: &ReadTransaction,
+    publication_audits: &PublicationAuditCache,
     key: &[u8],
     value: &[u8],
 ) -> Result<Option<StructuralFinding>, StorageError> {
@@ -2962,12 +2997,15 @@ fn inspect_bundle_row(
             StructuralFindingCode::CrossLinkMismatch,
         )));
     }
-    Ok((!bundle_has_activation(transaction, &bundle)?)
-        .then(|| authoritative(StructuralFindingCode::MissingCrossLink)))
+    Ok(
+        (!bundle_has_activation_cached(transaction, publication_audits, &bundle)?)
+            .then(|| authoritative(StructuralFindingCode::MissingCrossLink)),
+    )
 }
 
 fn inspect_active_row(
     transaction: &ReadTransaction,
+    publication_audits: &PublicationAuditCache,
     key: &[u8],
     value: &[u8],
 ) -> Result<Option<StructuralFinding>, StorageError> {
@@ -2981,14 +3019,17 @@ fn inspect_active_row(
     if !bundle_pointer_exists(transaction, &active)? {
         return Ok(Some(authoritative(StructuralFindingCode::MissingCrossLink)));
     }
-    Ok(
-        (!active_catalog_matches_last_activation(transaction, Some(&active))?)
-            .then(|| authoritative(StructuralFindingCode::CrossLinkMismatch)),
-    )
+    Ok((!active_catalog_matches_last_activation_cached(
+        transaction,
+        publication_audits,
+        Some(&active),
+    )?)
+    .then(|| authoritative(StructuralFindingCode::CrossLinkMismatch)))
 }
 
 fn inspect_query_module_row(
     transaction: &ReadTransaction,
+    publication_audits: &PublicationAuditCache,
     key: &[u8],
     value: &[u8],
 ) -> Result<Option<StructuralFinding>, StorageError> {
@@ -3009,12 +3050,15 @@ fn inspect_query_module_row(
     if !query_module_contract_exists(transaction, &module)? {
         return Ok(Some(authoritative(StructuralFindingCode::MissingCrossLink)));
     }
-    Ok((!query_module_has_activation(transaction, &module)?)
-        .then(|| authoritative(StructuralFindingCode::MissingCrossLink)))
+    Ok(
+        (!query_module_has_activation_cached(publication_audits, &module))
+            .then(|| authoritative(StructuralFindingCode::MissingCrossLink)),
+    )
 }
 
 fn inspect_active_query_module_row(
     transaction: &ReadTransaction,
+    publication_audits: &PublicationAuditCache,
     key: &[u8],
     value: &[u8],
 ) -> Result<Option<StructuralFinding>, StorageError> {
@@ -3037,8 +3081,10 @@ fn inspect_active_query_module_row(
     if !query_module_pointer_exists(transaction, activated)? {
         return Ok(Some(authoritative(StructuralFindingCode::MissingCrossLink)));
     }
-    Ok((!query_module_record_is_reciprocal(transaction, &record)?)
-        .then(|| authoritative(StructuralFindingCode::CrossLinkMismatch)))
+    Ok(
+        (!query_module_record_is_reciprocal_cached(transaction, publication_audits, &record)?)
+            .then(|| authoritative(StructuralFindingCode::CrossLinkMismatch)),
+    )
 }
 
 fn inspect_index_row(
@@ -3791,6 +3837,7 @@ fn inspect_cached_command_audit_row(
 
 fn inspect_audit_row(
     transaction: &ReadTransaction,
+    publication_audits: &PublicationAuditCache,
     index: u64,
     key: &[u8],
     value: &[u8],
@@ -3816,7 +3863,8 @@ fn inspect_audit_row(
         riffdb_storage_api::StoredAdministrationAuditRecordV1::Catalog(record) => {
             if !bundle_pointer_exists(transaction, record.activated())? {
                 Some(authoritative(StructuralFindingCode::MissingCrossLink))
-            } else if !catalog_record_is_reciprocal(transaction, record)? {
+            } else if !catalog_record_is_reciprocal_cached(transaction, publication_audits, record)?
+            {
                 Some(authoritative(StructuralFindingCode::CrossLinkMismatch))
             } else {
                 None
@@ -3825,7 +3873,11 @@ fn inspect_audit_row(
         riffdb_storage_api::StoredAdministrationAuditRecordV1::QueryModule(record) => {
             if !query_module_pointer_exists(transaction, record.activated())? {
                 Some(authoritative(StructuralFindingCode::MissingCrossLink))
-            } else if !query_module_record_is_reciprocal(transaction, record)? {
+            } else if !query_module_record_is_reciprocal_cached(
+                transaction,
+                publication_audits,
+                record,
+            )? {
                 Some(authoritative(StructuralFindingCode::CrossLinkMismatch))
             } else {
                 None
@@ -4715,33 +4767,30 @@ fn bundle_pointer_exists(
     )
 }
 
+#[cfg(test)]
 fn bundle_has_activation(
     transaction: &ReadTransaction,
     bundle: &riffdb_storage_api::StoredContractBundleV1,
 ) -> Result<bool, StorageError> {
-    let table = transaction.open_table(AUDIT).map_err(table_error)?;
-    for entry in table.iter().map_err(precommit_storage_error)? {
-        let (physical_key, value) = entry.map_err(precommit_storage_error)?;
-        let Ok(sequence) = keys::decode_audit_key(physical_key.value()) else {
-            return Ok(false);
-        };
-        let record = match decode_non_command_administration_audit(value.value()) {
-            Ok(Some(record)) => record.into_parts().0,
-            Ok(None) => continue,
-            Err(_) => return Ok(false),
-        };
-        if record.administration_sequence() != sequence {
-            return Ok(false);
-        }
-        if matches!(
-            record,
-            riffdb_storage_api::StoredAdministrationAuditRecordV1::Catalog(ref activation)
-                if activation.activated().matches_bundle(bundle)
-        ) {
-            return Ok(true);
-        }
+    let cache = build_publication_audit_cache(transaction)?;
+    bundle_has_activation_cached(transaction, &cache, bundle)
+}
+
+fn bundle_has_activation_cached(
+    transaction: &ReadTransaction,
+    cache: &PublicationAuditCache,
+    bundle: &riffdb_storage_api::StoredContractBundleV1,
+) -> Result<bool, StorageError> {
+    if !cache.valid {
+        return Ok(false);
     }
-    drop(table);
+    if cache
+        .catalogs
+        .iter()
+        .any(|activation| activation.activated().matches_bundle(bundle))
+    {
+        return Ok(true);
+    }
     let migrations = transaction
         .open_table(CONTRACT_MIGRATIONS)
         .map_err(table_error)?;
@@ -4793,33 +4842,15 @@ fn query_module_pointer_exists(
     Ok(matches!(module, Ok(Some(module)) if pointer.matches_module(&module)))
 }
 
-fn query_module_has_activation(
-    transaction: &ReadTransaction,
+fn query_module_has_activation_cached(
+    cache: &PublicationAuditCache,
     module: &riffdb_storage_api::StoredQueryModuleV1,
-) -> Result<bool, StorageError> {
-    let table = transaction.open_table(AUDIT).map_err(table_error)?;
-    for entry in table.iter().map_err(precommit_storage_error)? {
-        let (physical_key, value) = entry.map_err(precommit_storage_error)?;
-        let Ok(sequence) = keys::decode_audit_key(physical_key.value()) else {
-            return Ok(false);
-        };
-        let record = match decode_non_command_administration_audit(value.value()) {
-            Ok(Some(record)) => record.into_parts().0,
-            Ok(None) => continue,
-            Err(_) => return Ok(false),
-        };
-        if record.administration_sequence() != sequence {
-            return Ok(false);
-        }
-        if matches!(
-            record,
-            riffdb_storage_api::StoredAdministrationAuditRecordV1::QueryModule(ref activation)
-                if activation.activated().matches_module(module)
-        ) {
-            return Ok(true);
-        }
-    }
-    Ok(false)
+) -> bool {
+    cache.valid
+        && cache
+            .query_modules
+            .iter()
+            .any(|activation| activation.activated().matches_module(module))
 }
 
 fn same_query_module_contract(
@@ -4831,41 +4862,29 @@ fn same_query_module_contract(
         && left.contract_bundle_hash() == right.contract_bundle_hash()
 }
 
-fn query_module_record_is_reciprocal(
+fn query_module_record_is_reciprocal_cached(
     transaction: &ReadTransaction,
+    cache: &PublicationAuditCache,
     record: &riffdb_storage_api::StoredQueryModuleAdministrationV1,
 ) -> Result<bool, StorageError> {
+    if !cache.valid {
+        return Ok(false);
+    }
     if !query_module_pointer_exists(transaction, record.activated())? {
         return Ok(false);
     }
-    let table = transaction.open_table(AUDIT).map_err(table_error)?;
     let mut previous = None;
     let mut last = None;
     let mut found = false;
-    for entry in table.iter().map_err(precommit_storage_error)? {
-        let (physical_key, value) = entry.map_err(precommit_storage_error)?;
-        let Ok(sequence) = keys::decode_audit_key(physical_key.value()) else {
-            return Ok(false);
-        };
-        let candidate = match decode_non_command_administration_audit(value.value()) {
-            Ok(Some(record)) => record.into_parts().0,
-            Ok(None) => continue,
-            Err(_) => return Ok(false),
-        };
-        if candidate.administration_sequence() != sequence {
-            return Ok(false);
-        }
-        if let riffdb_storage_api::StoredAdministrationAuditRecordV1::QueryModule(candidate) =
-            candidate
-            && same_query_module_contract(candidate.activated(), record.activated())
-        {
-            if sequence < record.administration_sequence() {
+    for candidate in &cache.query_modules {
+        if same_query_module_contract(candidate.activated(), record.activated()) {
+            if candidate.administration_sequence() < record.administration_sequence() {
                 previous = Some(candidate.activated().clone());
             }
-            if sequence == record.administration_sequence() {
-                found = candidate == *record;
+            if candidate.administration_sequence() == record.administration_sequence() {
+                found = candidate == record;
             }
-            last = Some(candidate);
+            last = Some(candidate.clone());
         }
     }
     let active_key = keys::encode_active_query_module_key(
@@ -4885,73 +4904,62 @@ fn query_module_record_is_reciprocal(
         && matches!(&active, Ok(Some(active)) if Some(active) == last.as_ref()))
 }
 
+#[cfg(test)]
 fn catalog_record_is_reciprocal(
     transaction: &ReadTransaction,
     record: &riffdb_storage_api::StoredCatalogAdministrationV1,
 ) -> Result<bool, StorageError> {
+    let cache = build_publication_audit_cache(transaction)?;
+    catalog_record_is_reciprocal_cached(transaction, &cache, record)
+}
+
+fn catalog_record_is_reciprocal_cached(
+    transaction: &ReadTransaction,
+    cache: &PublicationAuditCache,
+    record: &riffdb_storage_api::StoredCatalogAdministrationV1,
+) -> Result<bool, StorageError> {
+    if !cache.valid {
+        return Ok(false);
+    }
     if !bundle_pointer_exists(transaction, record.activated())? {
         return Ok(false);
     }
-    let table = transaction.open_table(AUDIT).map_err(table_error)?;
     let mut previous = None;
     let mut found = false;
-    for entry in table.iter().map_err(precommit_storage_error)? {
-        let (physical_key, value) = entry.map_err(precommit_storage_error)?;
-        let Ok(sequence) = keys::decode_audit_key(physical_key.value()) else {
-            return Ok(false);
-        };
-        let candidate = match decode_non_command_administration_audit(value.value()) {
-            Ok(Some(record)) => record.into_parts().0,
-            Ok(None) => continue,
-            Err(_) => return Ok(false),
-        };
-        if candidate.administration_sequence() != sequence {
-            return Ok(false);
-        }
-        if sequence < record.administration_sequence() {
-            if let riffdb_storage_api::StoredAdministrationAuditRecordV1::Catalog(candidate) =
-                candidate
-            {
-                previous = Some(candidate.activated().clone());
-            }
+    for candidate in &cache.catalogs {
+        if candidate.administration_sequence() < record.administration_sequence() {
+            previous = Some(candidate.activated().clone());
             continue;
         }
-        if sequence == record.administration_sequence() {
-            found = matches!(
-                candidate,
-                riffdb_storage_api::StoredAdministrationAuditRecordV1::Catalog(candidate)
-                    if candidate == *record
-            );
+        if candidate.administration_sequence() == record.administration_sequence() {
+            found = candidate == record;
         }
         break;
     }
     Ok(found && record.previous_active() == previous.as_ref())
 }
 
+#[cfg(test)]
 fn active_catalog_matches_last_activation(
     transaction: &ReadTransaction,
     active: Option<&riffdb_storage_api::ActiveCatalogPointerV1>,
 ) -> Result<bool, StorageError> {
-    let table = transaction.open_table(AUDIT).map_err(table_error)?;
-    let mut last_catalog = None;
-    for entry in table.iter().map_err(precommit_storage_error)? {
-        let (physical_key, value) = entry.map_err(precommit_storage_error)?;
-        let Ok(sequence) = keys::decode_audit_key(physical_key.value()) else {
-            return Ok(false);
-        };
-        let record = match decode_non_command_administration_audit(value.value()) {
-            Ok(Some(record)) => record.into_parts().0,
-            Ok(None) => continue,
-            Err(_) => return Ok(false),
-        };
-        if record.administration_sequence() != sequence {
-            return Ok(false);
-        }
-        if let riffdb_storage_api::StoredAdministrationAuditRecordV1::Catalog(record) = record {
-            last_catalog = Some((sequence, record.activated().clone()));
-        }
+    let cache = build_publication_audit_cache(transaction)?;
+    active_catalog_matches_last_activation_cached(transaction, &cache, active)
+}
+
+fn active_catalog_matches_last_activation_cached(
+    transaction: &ReadTransaction,
+    cache: &PublicationAuditCache,
+    active: Option<&riffdb_storage_api::ActiveCatalogPointerV1>,
+) -> Result<bool, StorageError> {
+    if !cache.valid {
+        return Ok(false);
     }
-    drop(table);
+    let last_catalog = cache
+        .catalogs
+        .last()
+        .map(|record| (record.administration_sequence(), record.activated().clone()));
 
     let migrations = transaction
         .open_table(CONTRACT_MIGRATIONS)
