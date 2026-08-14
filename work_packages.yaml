@@ -11130,6 +11130,7 @@ work_packages:
     docs/**, release/evidence/**, .github/**,
     crates/riffdb-service/src/live_query.rs,
     crates/riffdb-storage-redb/src/startup.rs,
+    crates/riffdb-storage-redb/src/validated_prefix.rs,
     crates/riffdb-storage-redb/tests/architecture.rs]
   deliverables:
   - One retained 72-hour remote mixed-load receipt with all four adapter shapes/languages, periodic

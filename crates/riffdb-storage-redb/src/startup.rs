@@ -1521,7 +1521,7 @@ impl RedbStructuralEvidenceSession {
         // Positions are always requested in strictly ascending order by the page loop.
         if position == 0 {
             let transaction = self.validation_read.as_ref().ok_or_else(invariant)?;
-            return inspect_header(transaction, self.database_id);
+            return inspect_header(transaction, self.database_id, self.checkpoint.as_ref());
         }
         if self.structural_cursors.is_none() {
             self.structural_cursors = Some(StructuralCursors {
@@ -1648,7 +1648,7 @@ impl RedbStructuralEvidenceSession {
             let transaction = self.validation_read.as_ref().ok_or_else(invariant)?;
             return inspect_outbox_row(transaction, &self.command_capsules, &key, &value);
         }
-        if matches!(phase, 21 | 22) {
+        if phase == 21 {
             self.ensure_command_cache()?;
         }
         if phase == 21
@@ -1664,12 +1664,6 @@ impl RedbStructuralEvidenceSession {
             )?
         {
             self.walked_suffix_counts[phase] = self.walked_suffix_counts[phase].saturating_add(1);
-            return Ok(finding);
-        }
-        if phase == 22
-            && let Some(finding) =
-                inspect_cached_command_audit_request_row(&self.command_audits, &key, &value)?
-        {
             return Ok(finding);
         }
         let inspect_index = match phase {
@@ -1709,7 +1703,22 @@ impl RedbStructuralEvidenceSession {
         let mut audits = std::collections::BTreeMap::new();
         let mut embedded_authority = BTreeSet::new();
         let mut retained_bytes = 0usize;
-        for entry in commits.iter().map_err(precommit_storage_error)? {
+        let checkpoint_sequence = self
+            .checkpoint
+            .as_ref()
+            .map(|checkpoint| checkpoint.checkpoint_commit_sequence)
+            .unwrap_or(0);
+        let mut rows = if checkpoint_sequence == 0 {
+            commits.iter().map_err(precommit_storage_error)?
+        } else {
+            let checkpoint_key = keys::encode_application_sequence_key(
+                CommitSequence::new(checkpoint_sequence).ok_or_else(invariant)?,
+            );
+            commits
+                .range::<&[u8]>((Excluded(checkpoint_key.as_slice()), Unbounded))
+                .map_err(precommit_storage_error)?
+        };
+        for entry in &mut rows {
             let (key, value) = entry.map_err(precommit_storage_error)?;
             retained_bytes = retained_bytes
                 .checked_add(value.value().len())
@@ -2792,6 +2801,7 @@ fn table_len(
 fn inspect_header(
     transaction: &ReadTransaction,
     database_id: DatabaseId,
+    checkpoint: Option<&crate::validated_prefix::ActiveCheckpoint>,
 ) -> Result<Option<StructuralFinding>, StorageError> {
     let meta = transaction.open_table(META).map_err(table_error)?;
     let mut seen = BTreeSet::new();
@@ -2830,7 +2840,7 @@ fn inspect_header(
         Err(code) => return Ok(Some(authoritative(code))),
     };
     if !application_allocator_matches(transaction, application)?
-        || !administration_allocator_matches(transaction, administration)?
+        || !administration_allocator_matches(transaction, administration, checkpoint)?
     {
         return Ok(Some(authoritative(
             StructuralFindingCode::SequenceDiscontinuity,
@@ -3694,6 +3704,7 @@ fn inspect_capability_lookup_row(
 
 fn command_audit_cache_from_segments(
     transaction: &ReadTransaction,
+    after_commit_sequence: u64,
 ) -> Result<
     std::collections::BTreeMap<riffdb_types::AdministrationSequence, CachedCommandAudit>,
     StorageError,
@@ -3701,7 +3712,17 @@ fn command_audit_cache_from_segments(
     let commits = transaction.open_table(COMMITS).map_err(table_error)?;
     let mut audits = std::collections::BTreeMap::new();
     let mut retained_bytes = 0usize;
-    for entry in commits.iter().map_err(precommit_storage_error)? {
+    let mut rows = if after_commit_sequence == 0 {
+        commits.iter().map_err(precommit_storage_error)?
+    } else {
+        let lower = keys::encode_application_sequence_key(
+            CommitSequence::new(after_commit_sequence).ok_or_else(invariant)?,
+        );
+        commits
+            .range::<&[u8]>((Excluded(lower.as_slice()), Unbounded))
+            .map_err(precommit_storage_error)?
+    };
+    for entry in &mut rows {
         let (_, value) = entry.map_err(precommit_storage_error)?;
         let segment = match riffdb_storage_api::decode_command_segment_v1(value.value()) {
             Ok(segment) => segment.into_parts().0,
@@ -3811,32 +3832,6 @@ fn inspect_cached_command_audit_row(
         || peer.peer_sequence != sequence
         || peer.member == command.member
         || !request_index_exists
-    {
-        return Ok(Some(Some(authoritative(
-            StructuralFindingCode::CrossLinkMismatch,
-        ))));
-    }
-    Ok(Some(None))
-}
-
-fn inspect_cached_command_audit_request_row(
-    cached: &std::collections::BTreeMap<riffdb_types::AdministrationSequence, CachedCommandAudit>,
-    key: &[u8],
-    value: &[u8],
-) -> Result<Option<Option<StructuralFinding>>, StorageError> {
-    let Ok((request_id, sequence)) = keys::decode_audit_by_request_key(key) else {
-        return Ok(None);
-    };
-    let Some(command) = cached.get(&sequence) else {
-        return Ok(None);
-    };
-    let index = match decoded(codec::decode_service_audit_request_index_v1(value)) {
-        Ok(index) => index,
-        Err(code) => return Ok(Some(Some(authoritative(code)))),
-    };
-    if index.request_id() != request_id
-        || index.administration_sequence() != sequence
-        || command.record.request_id() != request_id
     {
         return Ok(Some(Some(authoritative(
             StructuralFindingCode::CrossLinkMismatch,
@@ -3972,13 +3967,29 @@ fn inspect_audit_by_request_row(
         )));
     }
     let audit = audit_record_at(transaction, sequence)?;
-    Ok((!matches!(
-        audit,
+    let record = match audit {
         Ok(Some(riffdb_storage_api::StoredAdministrationAuditRecordV1::Service(record)))
             if record.request_id() == request_id
-                && record.administration_sequence() == sequence
-    ))
-    .then(|| authoritative(StructuralFindingCode::MissingCrossLink)))
+                && record.administration_sequence() == sequence =>
+        {
+            record
+        }
+        Ok(Some(_)) => {
+            return Ok(Some(authoritative(
+                StructuralFindingCode::CrossLinkMismatch,
+            )));
+        }
+        Ok(None) | Err(_) => {
+            return Ok(Some(authoritative(StructuralFindingCode::MissingCrossLink)));
+        }
+    };
+    // The owning AUDIT phase proves lifecycle reciprocity (and does so only for
+    // the suffix under a validated-prefix checkpoint). This full-walk reverse
+    // index phase proves the row's own target and the target's authoritative
+    // command/control-plane link without rebuilding a whole-history command
+    // cache. Prefix lifecycle evidence is already bound by the checkpoint.
+    Ok((!service_link_is_valid(transaction, &record)?)
+        .then(|| authoritative(StructuralFindingCode::CrossLinkMismatch)))
 }
 
 const MAX_STARTUP_EVIDENCE_INDEX_BYTES: usize = 512 * 1024 * 1024;
@@ -6863,11 +6874,54 @@ fn physical_audit_row_repeats_derived(
 fn administration_allocator_matches(
     transaction: &ReadTransaction,
     allocator: riffdb_storage_api::AdministrationSequenceAllocator,
+    checkpoint: Option<&crate::validated_prefix::ActiveCheckpoint>,
 ) -> Result<bool, StorageError> {
     let table = transaction.open_table(AUDIT).map_err(table_error)?;
-    let derived = command_audit_cache_from_segments(transaction)?;
+    let after_commit_sequence = checkpoint
+        .map(|checkpoint| checkpoint.checkpoint_commit_sequence)
+        .unwrap_or(0);
+    let derived = command_audit_cache_from_segments(transaction, after_commit_sequence)?;
     let mut derived_sequences = derived.keys().copied().peekable();
-    let mut expected = Some(riffdb_types::AdministrationSequence::first());
+    let mut expected = checkpoint.map_or_else(
+        || Some(riffdb_types::AdministrationSequence::first()),
+        |checkpoint| {
+            (!checkpoint.retained.administration_sequence_exhausted)
+                .then(|| {
+                    riffdb_types::AdministrationSequence::new(
+                        checkpoint.retained.next_administration_sequence,
+                    )
+                })
+                .flatten()
+        },
+    );
+    let checkpoint_allocator = checkpoint.map(|checkpoint| {
+        if checkpoint.retained.administration_sequence_exhausted {
+            riffdb_storage_api::AdministrationSequenceAllocator::Exhausted
+        } else {
+            riffdb_types::AdministrationSequence::new(
+                checkpoint.retained.next_administration_sequence,
+            )
+            .map_or(
+                riffdb_storage_api::AdministrationSequenceAllocator::Exhausted,
+                riffdb_storage_api::AdministrationSequenceAllocator::next,
+            )
+        }
+    });
+    let bound_allocator = checkpoint.map(|checkpoint| {
+        riffdb_types::AdministrationSequence::new(checkpoint.audit_sequence_bound)
+            .and_then(riffdb_types::AdministrationSequence::checked_next)
+            .map_or(
+                if checkpoint.audit_sequence_bound == u64::MAX {
+                    riffdb_storage_api::AdministrationSequenceAllocator::Exhausted
+                } else {
+                    riffdb_storage_api::AdministrationSequenceAllocator::initial()
+                },
+                riffdb_storage_api::AdministrationSequenceAllocator::next,
+            )
+    });
+    if checkpoint_allocator != bound_allocator {
+        return Ok(false);
+    }
     let mut accept = |sequence| {
         if expected != Some(sequence) {
             return false;
@@ -6875,7 +6929,22 @@ fn administration_allocator_matches(
         expected = sequence.checked_next();
         true
     };
-    for entry in table.iter().map_err(precommit_storage_error)? {
+    let mut physical_rows = if let Some(checkpoint) = checkpoint {
+        if checkpoint.audit_sequence_bound == 0 {
+            table.iter().map_err(precommit_storage_error)?
+        } else {
+            let lower = keys::encode_audit_key(
+                riffdb_types::AdministrationSequence::new(checkpoint.audit_sequence_bound)
+                    .ok_or_else(invariant)?,
+            );
+            table
+                .range::<&[u8]>((Excluded(lower.as_slice()), Unbounded))
+                .map_err(precommit_storage_error)?
+        }
+    } else {
+        table.iter().map_err(precommit_storage_error)?
+    };
+    for entry in &mut physical_rows {
         let (key, value) = entry.map_err(precommit_storage_error)?;
         let Ok(physical) = keys::decode_audit_key(key.value()) else {
             return Ok(false);
@@ -11003,6 +11072,94 @@ contract RedbMigration version 1 {
         dormant
             .into_operational_after_catalog_validation()
             .expect("activate ports")
+    }
+
+    /// A validated-prefix checkpoint is an allocator anchor, not permission to
+    /// trust the live tail. The suffix must begin at the snapshotted next
+    /// administration sequence, remain gap-free, and end at the live allocator.
+    #[test]
+    fn checkpointed_administration_allocator_proves_only_the_suffix() {
+        let path = TestDatabasePath::new("checkpoint-administration-suffix");
+        let store = initialized_store(&path, database_id(0xa4));
+        let second = AdministrationSequence::new(2).expect("second sequence");
+        let third = AdministrationSequence::new(3).expect("third sequence");
+        let allocator = AdministrationSequenceAllocator::next(third);
+        let encoded_allocator =
+            codec::encode_administration_sequence_allocator_v1(allocator).expect("allocator");
+        let write = store.shared.database.begin_write().expect("write suffix");
+        {
+            let mut audit = write.open_table(AUDIT).expect("audit");
+            audit
+                .insert(
+                    keys::encode_audit_key(AdministrationSequence::first()).as_slice(),
+                    [0x11_u8].as_slice(),
+                )
+                .expect("prefix row");
+            audit
+                .insert(
+                    keys::encode_audit_key(second).as_slice(),
+                    [0x22_u8].as_slice(),
+                )
+                .expect("suffix row");
+        }
+        write
+            .open_table(META)
+            .expect("meta")
+            .insert(META_ADMINISTRATION_SEQUENCE, encoded_allocator.as_bytes())
+            .expect("advance allocator");
+        write.commit().expect("commit suffix");
+
+        let checkpoint = crate::validated_prefix::ActiveCheckpoint {
+            checkpoint_commit_sequence: 0,
+            audit_sequence_bound: 1,
+            retained: riffdb_storage_api::ValidatedPrefixRetainedSnapshot {
+                next_application_sequence: 1,
+                application_sequence_exhausted: false,
+                next_administration_sequence: 2,
+                administration_sequence_exhausted: false,
+            },
+            counts: riffdb_storage_api::ValidatedPrefixSequenceCounts {
+                commits_count: 0,
+                events_count: 0,
+                event_routes_count: 0,
+                outbox_count: 0,
+                outbox_status_count: 0,
+                idempotency_count: 0,
+                audit_count: 1,
+                audit_by_request_count: 0,
+            },
+            entities_at_s: None,
+            checkpoint_hash: [0; 32],
+        };
+        let read = store
+            .shared
+            .database
+            .begin_read()
+            .expect("read intact suffix");
+        assert!(
+            administration_allocator_matches(&read, allocator, Some(&checkpoint))
+                .expect("check intact suffix"),
+            "the exact row after the checkpoint must advance its allocator"
+        );
+        drop(read);
+
+        let write = store.shared.database.begin_write().expect("remove suffix");
+        write
+            .open_table(AUDIT)
+            .expect("audit")
+            .remove(keys::encode_audit_key(second).as_slice())
+            .expect("remove suffix row");
+        write.commit().expect("commit suffix gap");
+        let read = store
+            .shared
+            .database
+            .begin_read()
+            .expect("read gapped suffix");
+        assert!(
+            !administration_allocator_matches(&read, allocator, Some(&checkpoint))
+                .expect("check gapped suffix"),
+            "a live allocator ahead of a missing suffix row must fail closed"
+        );
     }
 
     /// The graceful-shutdown checkpoint write must read row COUNTS, not rows: no
