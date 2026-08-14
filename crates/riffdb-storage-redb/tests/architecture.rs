@@ -347,6 +347,43 @@ fn startup_full_validation_reuses_exact_embedded_command_authority() {
 }
 
 #[test]
+fn checkpoint_prefix_skips_before_building_the_command_history_cache() {
+    let startup = production_source(crate_root().join("src/startup.rs"));
+    let dispatch = startup
+        .split_once("fn inspect_structural_forward(")
+        .expect("structural dispatch")
+        .1
+        .split_once("\n    fn ensure_command_cache(")
+        .expect("structural dispatch end")
+        .0;
+    let terminal_branch = dispatch
+        .split_once("if phase == 8")
+        .expect("terminal phase")
+        .1
+        .split_once("if let Some(checkpoint)")
+        .expect("terminal phase end")
+        .0;
+    assert!(!terminal_branch.contains("ensure_command_cache"));
+    assert!(dispatch.contains("matches!(phase, 21 | 22)"));
+    assert!(startup.contains("fn inspect_cached_command_audit_request_row("));
+
+    let terminal = startup
+        .split_once("fn inspect_terminal_row_with_census(")
+        .expect("terminal inspector")
+        .1
+        .split_once("\n    fn inspect_entity_row_with_chains(")
+        .expect("terminal inspector end")
+        .0;
+    let checkpoint_skip = terminal
+        .find("class.is_prefix_outcome")
+        .expect("checkpoint terminal classification");
+    let command_cache = terminal
+        .find("self.ensure_command_cache()")
+        .expect("suffix command cache");
+    assert!(checkpoint_skip < command_cache);
+}
+
+#[test]
 fn partial_contract_migration_reopen_is_confined_to_the_witness_gate() {
     let sources = rust_sources();
     assert_eq!(

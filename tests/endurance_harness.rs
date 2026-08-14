@@ -151,6 +151,15 @@ fn endurance_environment_is_tls_exact_and_least_authority() {
         "the stdin keeper must close the controller capture pipe"
     );
     assert!(
+        source.contains("cargo +1.97.0 build --quiet --release")
+            && source.contains("cp target/release/riffdbd"),
+        "endurance evidence must exercise production-optimized server artifacts"
+    );
+    assert!(
+        !source.contains("target/debug"),
+        "endurance evidence must not exercise debug binaries"
+    );
+    assert!(
         !source.contains("--no-tls") && !source.contains("mode = \"loopback\""),
         "the evidentiary environment must not fall back to loopback cleartext"
     );
