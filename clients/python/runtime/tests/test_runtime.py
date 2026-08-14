@@ -10,6 +10,7 @@ from typing import Annotated
 from uuid import UUID
 
 from riffdb_application import (
+    AsyncApplicationTransport,
     AttemptBudget,
     BearerCredential,
     CallMetadata,
@@ -203,3 +204,35 @@ class RuntimeTests(unittest.TestCase):
         _validate_batch([object()], CommandBatchOptions(384))
         with self.assertRaises(InvalidInput):
             _validate_batch([object()], CommandBatchOptions(385))
+
+
+class AsyncRuntimeTests(unittest.IsolatedAsyncioTestCase):
+    async def test_event_batch_preserves_empty_bounded_pull_and_uses_zero_wait(self) -> None:
+        class NativeClient:
+            request: dict[str, object] | None = None
+
+            async def consume_event_stream(self, request: str) -> str:
+                self.request = json.loads(request)
+                return json.dumps(
+                    {
+                        "events": [],
+                        "status": {"history_incarnation": 1},
+                        "wait_timed_out": False,
+                        "disposition": "ready",
+                    }
+                )
+
+        native = NativeClient()
+        transport = AsyncApplicationTransport(native)  # type: ignore[arg-type]
+
+        batch = await transport._consume_event_batch(
+            reactive_module_hash="11" * 32,
+            operation_name="TicketEvents",
+            parameters={},
+            consumer_name="worker",
+        )
+
+        self.assertEqual(batch["events"], [])
+        self.assertEqual(batch["disposition"], "ready")
+        assert native.request is not None
+        self.assertEqual(native.request["maximum_wait_nanos"], 0)

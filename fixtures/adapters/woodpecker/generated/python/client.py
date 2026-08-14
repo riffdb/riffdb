@@ -410,12 +410,21 @@ class PipelineTransitionsDelivery:
     expires_at: dict[str, Any]
     history_incarnation: int
 
+@dataclass(frozen=True, slots=True, kw_only=True)
+class PipelineTransitionsBatch:
+    events: tuple[PipelineTransitionsDelivery, ...]
+    status: dict[str, Any]
+    disposition: Literal["ready", "wait_timed_out", "bounded_progress"]
+    wait_timed_out: bool
+
 class AsyncWoodpeckerSchedulerReactiveClient(AsyncWoodpeckerSchedulerClient):
-    async def pipeline_transitions(self, parameters: PipelineTransitionsParams, consumer_name: str) -> AsyncIterator[PipelineTransitionsDelivery]:
+    async def next_pipeline_transitions(self, parameters: PipelineTransitionsParams, consumer_name: str, *, batch_limit: int = 1, in_flight_limit: int = 16, lease_seconds: int = 60, maximum_wait_nanos: int = 0) -> PipelineTransitionsBatch:
         variants = {
             "PipelineStartedEvent": PipelineTransitionsPipelineStartedEvent,
         }
-        async for item in self._transport._consume_event_stream(reactive_module_hash=PIPELINE_ACTIVITY_REACTIVE_MODULE_HASH, operation_name="PipelineTransitions", parameters=encode_reactive_record(parameters, PipelineTransitions_PARAMETER_SCHEMA), consumer_name=consumer_name):
+        raw_batch = await self._transport._consume_event_batch(reactive_module_hash=PIPELINE_ACTIVITY_REACTIVE_MODULE_HASH, operation_name="PipelineTransitions", parameters=encode_reactive_record(parameters, PipelineTransitions_PARAMETER_SCHEMA), consumer_name=consumer_name, batch_limit=batch_limit, in_flight_limit=in_flight_limit, lease_seconds=lease_seconds, maximum_wait_nanos=maximum_wait_nanos)
+        deliveries: list[PipelineTransitionsDelivery] = []
+        for item in cast(list[dict[str, Any]], raw_batch["events"]):
             raw = dict(item)
             event_type = raw.pop("type")
             if not isinstance(event_type, str): raise ValueError("invalid RiffDB event type")
@@ -424,7 +433,14 @@ class AsyncWoodpeckerSchedulerReactiveClient(AsyncWoodpeckerSchedulerClient):
             delivery = cast(dict[str, Any], delivery_value)
             event_class = variants.get(event_type)
             if event_class is None: raise ValueError("undeclared RiffDB event")
-            yield PipelineTransitionsDelivery(event=decode_record(event_class, raw), event_id=delivery["event_id"], attempt=delivery["attempt"], lease_token=delivery["lease_token"], expires_at=delivery["expires_at"], history_incarnation=delivery["history_incarnation"])
+            deliveries.append(PipelineTransitionsDelivery(event=decode_record(event_class, raw), event_id=delivery["event_id"], attempt=delivery["attempt"], lease_token=delivery["lease_token"], expires_at=delivery["expires_at"], history_incarnation=delivery["history_incarnation"]))
+        return PipelineTransitionsBatch(events=tuple(deliveries), status=cast(dict[str, Any], raw_batch["status"]), disposition=cast(Literal["ready", "wait_timed_out", "bounded_progress"], raw_batch["disposition"]), wait_timed_out=cast(bool, raw_batch["wait_timed_out"]))
+
+    async def pipeline_transitions(self, parameters: PipelineTransitionsParams, consumer_name: str) -> AsyncIterator[PipelineTransitionsDelivery]:
+        while True:
+            batch = await self.next_pipeline_transitions(parameters, consumer_name, maximum_wait_nanos=30_000_000_000)
+            for delivery in batch.events:
+                yield delivery
 
     async def ack_pipeline_transitions(self, parameters: PipelineTransitionsParams, consumer_name: str, delivery: PipelineTransitionsDelivery) -> str:
         encoded = encode_reactive_record(parameters, PipelineTransitions_PARAMETER_SCHEMA)

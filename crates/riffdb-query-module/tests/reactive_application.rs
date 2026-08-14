@@ -378,6 +378,8 @@ fn reactive_generation_is_exact_typed_and_transport_neutral() {
     .expect("Python client");
     for required in [
         "RowChangesEvent: TypeAlias",
+        "class RowChangesBatch",
+        "async def next_row_changes",
         "class RowWatchSnapshot",
         "async def row_changes",
         "async def watch_row_watch",
