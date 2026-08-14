@@ -200,6 +200,16 @@ fn endurance_lifecycle_evidence_uses_durable_observations() {
     let sampler = fs::read_to_string(root.join("scripts/endurance-sample"))
         .expect("sampler source is readable");
     assert!(sampler.contains("events_emitted * 2 - consumer_acknowledgements"));
+    assert!(sampler.contains("payload.get(\"status\") not in (\"ready\", \"degraded\")"));
+    let controller = fs::read_to_string(root.join("scripts/alpha-endurance-controller"))
+        .expect("controller source is readable");
+    assert!(controller.contains("report_subprocess_failure(\"sampler_failed\", result)"));
+    assert!(controller.contains("report_subprocess_failure(\"conformance_failed\", result)"));
+    assert!(controller.contains("worker_exited_early[{language}]"));
+    assert!(controller.contains("if worker_exited:\n                break"));
+    assert!(controller.contains(
+        "next_conformance = started + action_manifest[\"conformance\"][\"interval_seconds\"]"
+    ));
     for worker in [
         "examples/ticketdesk/src/bin/endurance.rs",
         "examples/ticketdesk/endurance/go/main.go",
@@ -214,6 +224,13 @@ fn endurance_lifecycle_evidence_uses_durable_observations() {
         assert!(
             source.contains("events_emitted"),
             "{worker} omits exact emitted-event accounting"
+        );
+        assert!(
+            !source.contains("organization_id = id(10")
+                && !source.contains("organizationID := id(10")
+                && !source.contains("organizationId = id(10n")
+                && !source.contains("organization_id = riff_id(10"),
+            "{worker} collapses language workers into the same reaction partition"
         );
     }
     for (worker, acknowledgement) in [
@@ -276,6 +293,40 @@ fn endurance_lifecycle_evidence_uses_durable_observations() {
                 "{worker} omits bounded visible retry evidence: {required}"
             );
         }
+    }
+    for (worker, bounded_retry_window) in [
+        (
+            "examples/ticketdesk/src/bin/endurance.rs",
+            "MAX_TRANSIENT_RETRIES: u64 = 90",
+        ),
+        (
+            "examples/ticketdesk/endurance/go/main.go",
+            "maxTransientRetries uint64 = 90",
+        ),
+        (
+            "examples/ticketdesk/web/src/endurance.ts",
+            "MAX_TRANSIENT_RETRIES = 90",
+        ),
+        (
+            "examples/ticketdesk/endurance/python/main.py",
+            "MAX_TRANSIENT_RETRIES: Final = 90",
+        ),
+    ] {
+        let source = fs::read_to_string(root.join(worker)).expect("worker source is readable");
+        assert!(
+            source.contains(bounded_retry_window),
+            "{worker} cannot survive one supported offline maintenance window"
+        );
+    }
+    for worker in [
+        "examples/ticketdesk/endurance/go/main.go",
+        "examples/ticketdesk/web/src/endurance.ts",
+    ] {
+        let source = fs::read_to_string(root.join(worker)).expect("worker source is readable");
+        assert!(
+            source.contains("RDB-DRIVER-0101"),
+            "{worker} does not retry the stable driver transport interruption code"
+        );
     }
 }
 

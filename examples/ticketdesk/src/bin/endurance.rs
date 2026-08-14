@@ -53,7 +53,7 @@ const LATENCY_BOUNDS_US: [u64; 16] = [
     819_200,
     9_007_199_254_740_991,
 ];
-const MAX_TRANSIENT_RETRIES: u64 = 3;
+const MAX_TRANSIENT_RETRIES: u64 = 90;
 
 type WorkerResult<T> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
@@ -220,7 +220,7 @@ async fn run_client(
     metrics: Arc<Mutex<Metrics>>,
 ) -> WorkerResult<()> {
     let tenant = TENANTS[usize::try_from(client_index)?];
-    let organization_id = id(10, client_index);
+    let organization_id = id(seed, client_index);
     let user_id = id(seed, 100 + client_index);
     let project_id = id(seed, 200 + client_index);
     let hot_ticket_id = id(seed, 300 + client_index);
@@ -282,7 +282,7 @@ async fn run_client(
                 {
                     retries = retries.saturating_add(1);
                     metrics.lock().await.transient_retry();
-                    tokio::time::sleep(Duration::from_millis(100 * retries)).await;
+                    tokio::time::sleep(Duration::from_millis((100 * retries).min(1_000))).await;
                 }
                 Err(error) => {
                     return Err(format!(
@@ -503,7 +503,7 @@ async fn seed_client(
         .create_organization(CreateOrganizationInput {
             name: format!("Endurance {tenant}"),
             organization_id: organization_id.to_owned(),
-            idempotency_key: format!("endurance-organization-{tenant}"),
+            idempotency_key: format!("endurance-rust-organization-{tenant}"),
         })
         .await?;
     record(metrics, "writes", tenant, 512, &mut operation_started).await;

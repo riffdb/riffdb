@@ -106,16 +106,21 @@ def tree_bytes(root: Path) -> int:
 def process_memory(pid: int) -> tuple[int, int]:
     status = Path(f"/proc/{pid}/status")
     if not status.is_file():
-        fail("endurance process inventory contains a stopped process")
+        fail(f"endurance process inventory contains stopped pid {pid}")
     rss = None
     data = None
+    state = None
     for line in status.read_text().splitlines():
+        if line.startswith("State:"):
+            state = line.split()[1]
         if line.startswith("VmRSS:"):
             rss = int(line.split()[1]) * 1024
         elif line.startswith("VmData:"):
             data = int(line.split()[1]) * 1024
+    if state == "Z":
+        fail(f"endurance process inventory contains zombie pid {pid}")
     if rss is None or data is None:
-        fail("endurance process memory observation is incomplete")
+        fail(f"endurance process memory observation is incomplete for pid {pid}")
     return rss, data
 
 
@@ -195,10 +200,10 @@ def health_frontier(environment: Path, riffdb_path: str) -> int:
         not isinstance(payload, dict)
         or value.get("schema") != "riffdb.cli.output/v1"
         or value.get("ok") is not True
-        or payload.get("status") != "ready"
+        or payload.get("status") not in ("ready", "degraded")
         or payload.get("database") != "default"
     ):
-        fail("endurance health observation is not ready")
+        fail("endurance health observation is neither ready nor degraded")
     frontier = payload.get("last_commit_sequence")
     if not isinstance(frontier, str) or not frontier.isascii() or not frontier.isdigit():
         fail("endurance health frontier is invalid")

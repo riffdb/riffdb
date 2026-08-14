@@ -55,7 +55,7 @@ LATENCY_BOUNDS_US: Final = (
     12_800, 25_600, 51_200, 102_400, 204_800, 409_600, 819_200,
     9_007_199_254_740_991,
 )
-MAX_TRANSIENT_RETRIES: Final = 3
+MAX_TRANSIENT_RETRIES: Final = 90
 
 
 class Metrics:
@@ -237,7 +237,7 @@ async def run_client(
     clients = await connect_clients(environment_root)
     tenant = TENANTS[client_index]
     namespace = seed + 3
-    organization_id = riff_id(10, client_index)
+    organization_id = riff_id(namespace, client_index)
     user_id = riff_id(namespace, 100 + client_index)
     project_id = riff_id(namespace, 200 + client_index)
     hot_ticket_id = riff_id(namespace, 300 + client_index)
@@ -284,7 +284,7 @@ async def run_client(
                         raise
                     retries += 1
                     await metrics.transient_retry()
-                    await asyncio.sleep(0.1 * retries)
+                    await asyncio.sleep(min(0.1 * retries, 1.0))
             counter += 1
             await asyncio.sleep(delay)
     finally:
@@ -358,19 +358,22 @@ async def run_iteration(
             await metrics.consumer_acknowledged()
             await metrics.record("workflows", tenant, 0, operation_started)
     elif slot < 80:
-        stream = clients.agent.ticket_events(event_parameters, event_consumer)
-        try:
-            async with asyncio.timeout(5):
-                delivery = await anext(stream)
-        finally:
-            await stream.aclose()
-        await metrics.record("events", tenant, 0, operation_started)
-        operation_started = time.perf_counter_ns()
-        await clients.agent.ack_ticket_events(
-            event_parameters, event_consumer, delivery
+        batch = await clients.agent.next_ticket_events(
+            event_parameters,
+            event_consumer,
+            batch_limit=1,
+            in_flight_limit=4,
+            lease_seconds=60,
+            maximum_wait_nanos=0,
         )
-        await metrics.consumer_acknowledged()
         await metrics.record("events", tenant, 0, operation_started)
+        if batch.events:
+            operation_started = time.perf_counter_ns()
+            await clients.agent.ack_ticket_events(
+                event_parameters, event_consumer, batch.events[0]
+            )
+            await metrics.consumer_acknowledged()
+            await metrics.record("events", tenant, 0, operation_started)
     else:
         stream = clients.application.watch_ticket_queue_watch(
             TicketQueueWatchParams(
@@ -429,7 +432,7 @@ async def seed_client(
     await clients.seeder.create_organization(
         CreateOrganizationInput(
             name=f"Endurance {tenant}",
-            idempotency_key=f"endurance-organization-{tenant}",
+            idempotency_key=f"endurance-python-organization-{tenant}",
             organization_id=organization_id,
         )
     )

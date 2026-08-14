@@ -26,7 +26,7 @@ const LATENCY_BOUNDS_US = [
   50, 100, 200, 400, 800, 1_600, 3_200, 6_400,
   12_800, 25_600, 51_200, 102_400, 204_800, 409_600, 819_200, Number.MAX_SAFE_INTEGER,
 ] as const;
-const MAX_TRANSIENT_RETRIES = 3;
+const MAX_TRANSIENT_RETRIES = 90;
 
 interface IdentityFile {
   readonly applicationManifestHash: string;
@@ -189,7 +189,7 @@ async function runClient(tenant: Tenant, index: number, delayMilliseconds: numbe
   const agent = await connect("agent");
   try {
     const namespace = configuration.seed + 2n;
-    const organizationId = id(10n, BigInt(index));
+    const organizationId = id(namespace, BigInt(index));
     const userId = id(namespace, 100n + BigInt(index));
     const projectId = id(namespace, 200n + BigInt(index));
     const hotTicketId = id(namespace, 300n + BigInt(index));
@@ -211,7 +211,7 @@ async function runClient(tenant: Tenant, index: number, delayMilliseconds: numbe
           if (retries >= MAX_TRANSIENT_RETRIES || !transientError(error)) throw error;
           retries += 1;
           metrics.transientRetry();
-          await new Promise<void>((resolve) => setTimeout(resolve, 100 * retries));
+          await new Promise<void>((resolve) => setTimeout(resolve, Math.min(100 * retries, 1_000)));
         }
       }
       await new Promise<void>((resolve) => setTimeout(resolve, delayMilliseconds));
@@ -304,7 +304,7 @@ async function runIteration(
 
 function transientError(error: unknown): boolean {
   if (error instanceof DriverApplicationError) {
-    return new Set(["RDB-STORAGE-0101", "RDB-UNCERTAIN-0101", "RDB-CAPACITY-0101", "RDB-APP-0003"]).has(error.details.code);
+    return new Set(["RDB-DRIVER-0101", "RDB-STORAGE-0101", "RDB-UNCERTAIN-0101", "RDB-CAPACITY-0101", "RDB-APP-0003"]).has(error.details.code);
   }
   return error instanceof Error && (error.name === "AbortError" || (error as Error & { code?: string }).code === "ABORT_ERR");
 }
@@ -314,7 +314,7 @@ async function seedClient(
   organizationId: string, userId: string, projectId: string, ticketId: string,
 ): Promise<void> {
   let operationStarted = performance.now();
-  await seeder.createOrganization({ name: `Endurance ${tenant}`, organization_id: organizationId, idempotency_key: `endurance-organization-${tenant}` });
+  await seeder.createOrganization({ name: `Endurance ${tenant}`, organization_id: organizationId, idempotency_key: `endurance-typescript-organization-${tenant}` });
   await metrics.record("writes", tenant, 512, operationStarted);
   operationStarted = performance.now();
   await seeder.createUser({ email: `typescript-${index}@${tenant}.example.test`, user_id: userId, display_name: `TypeScript endurance ${index}`, idempotency_key: `endurance-typescript-user-${index}`, organization_id: organizationId });
