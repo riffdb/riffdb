@@ -32,9 +32,13 @@ runs this repository's Rust, TypeScript, or Python application with the scoped
 development credential. It fails with the exact unreferenced seed filenames
 and both corrective commands when `seed_inputs` is empty; use `riffdb dev
 --run` for an intentionally seedless application. Rust
-and Python runners may complete as one-shot checks; TypeScript web runners
-remain attached until you stop them. Use `riffdb dev --seed --watch` when you want contract/query
-regeneration without starting the application process.
+and Python runners may complete as one-shot checks. A TypeScript web runner is
+a foreground process: leave that terminal running after it prints
+`riffdb-app-ready-v1<TAB>PORT`, then exercise the application-owned HTTP route
+from a second terminal (the generated starter uses
+`curl http://127.0.0.1:PORT/item`). Stopping the foreground command shuts down
+the scoped driver and development daemon. Use `riffdb dev --seed --watch` when
+you want contract/query regeneration without starting the application process.
 
 Seed JSONL uses symbolic tagged values. UUID and enum examples are
 `{"$uuid":"01900000-0000-7000-8000-000000000001"}` and

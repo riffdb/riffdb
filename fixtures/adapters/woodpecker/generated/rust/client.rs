@@ -519,6 +519,17 @@ fn wire_bytes(value: Vec<u8>) -> v1::Value { v1::Value { kind: Some(WireKind::By
 fn wire_date(value: i32) -> v1::Value { v1::Value { kind: Some(WireKind::DateValue(v1::Date { days_since_unix_epoch: value })) } }
 fn wire_timestamp(value: &TimestampValue) -> Result<v1::Value, GeneratedCommandError> { if value.nanos >= 1_000_000_000 { return Err(GeneratedCommandError::InvalidInputShape); } Ok(v1::Value { kind: Some(WireKind::TimestampValue(v1::Timestamp { seconds: value.seconds, nanos: value.nanos })) }) }
 fn wire_decimal(value: &DecimalValue) -> v1::Value { v1::Value { kind: Some(WireKind::DecimalValue(v1::Decimal { coefficient_twos_complement: value.coefficient_twos_complement.clone(), scale: value.scale, precision: value.precision })) } }
+fn wire_money(value: &MoneyValue, expected_currency: &str) -> Result<v1::Value, GeneratedCommandError> {
+    if value.currency != expected_currency || value.amount.scale != 2 || value.amount.precision != Some(38) { return Err(GeneratedCommandError::InvalidInputShape); }
+    Ok(v1::Value { kind: Some(WireKind::MoneyValue(v1::Money {
+        currency: value.currency.clone(),
+        amount: Some(v1::Decimal {
+            coefficient_twos_complement: value.amount.coefficient_twos_complement.clone(),
+            scale: value.amount.scale,
+            precision: value.amount.precision,
+        }),
+    })) })
+}
 fn wire_enum(value: String) -> v1::Value { v1::Value { kind: Some(WireKind::EnumValue(v1::EnumValue { type_id: 0, variant_id: 0, name: value })) } }
 fn wire_uuid(value: &str) -> Result<v1::Value, GeneratedCommandError> {
     if value.len() != 36 { return Err(GeneratedCommandError::InvalidInputShape); }
@@ -562,6 +573,12 @@ fn decode_wire_bytes(value: v1::Value) -> Result<Vec<u8>, GeneratedCommandError>
 fn decode_wire_date(value: v1::Value) -> Result<i32, GeneratedCommandError> { if let Some(WireKind::DateValue(value)) = value.kind { Ok(value.days_since_unix_epoch) } else { Err(GeneratedCommandError::InvalidOutcomeShape) } }
 fn decode_wire_timestamp(value: v1::Value) -> Result<TimestampValue, GeneratedCommandError> { if let Some(WireKind::TimestampValue(value)) = value.kind { if value.nanos < 1_000_000_000 { Ok(TimestampValue { seconds: value.seconds, nanos: value.nanos }) } else { Err(GeneratedCommandError::InvalidOutcomeShape) } } else { Err(GeneratedCommandError::InvalidOutcomeShape) } }
 fn decode_wire_decimal(value: v1::Value) -> Result<DecimalValue, GeneratedCommandError> { if let Some(WireKind::DecimalValue(value)) = value.kind { Ok(DecimalValue { coefficient_twos_complement: value.coefficient_twos_complement, scale: value.scale, precision: value.precision }) } else { Err(GeneratedCommandError::InvalidOutcomeShape) } }
+fn decode_wire_money(value: v1::Value, expected_currency: &str) -> Result<MoneyValue, GeneratedCommandError> {
+    let Some(WireKind::MoneyValue(value)) = value.kind else { return Err(GeneratedCommandError::InvalidOutcomeShape); };
+    let amount = value.amount.ok_or(GeneratedCommandError::InvalidOutcomeShape)?;
+    if value.currency != expected_currency || amount.scale != 2 || amount.precision != Some(38) { return Err(GeneratedCommandError::InvalidOutcomeShape); }
+    Ok(MoneyValue { currency: value.currency, amount: DecimalValue { coefficient_twos_complement: amount.coefficient_twos_complement, scale: amount.scale, precision: amount.precision } })
+}
 
 use riffdb_client_rust::generated::{GeneratedEventConsumer, GeneratedLiveQuery};
 use riffdb_client_rust::{ApplicationEvent, ApplicationEventCheckpoint, ApplicationEventConsumer, ApplicationEventConsumerPublicStatus, ApplicationEventMutationResult, ApplicationEventProgressCursor, ApplicationLiveQueryUpdate, ApplicationReactiveOperation, EventConsumerOptions, LiveQueryCheckpoint, LiveQueryCursor, TypedContextualBatch, TypedContextualWorkItem, TypedEventBatch, TypedLiveQueryReset, TypedLiveQuerySnapshot, TypedLiveQueryStream};
