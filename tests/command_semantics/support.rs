@@ -143,6 +143,8 @@ contract BulkRowsRecovery version 1 {
   }
 }
 "#;
+const FRAMEWORK_PROFILE_SOURCE: &str =
+    include_str!("../../fixtures/adapters/framework-profile/riffdb/contract.riff");
 const PRINCIPAL: &str = "command-semantics-agent";
 const CALLER_KEY: &str = "command-semantics-idempotency-key";
 const ORGANIZATION_ID: [u8; 16] = [0x31; 16];
@@ -250,6 +252,15 @@ pub(crate) struct UniqueUserDatabase {
     checked_bundle: ValidatedContractBundle,
     user_entity_type: EntityTypeId,
     email_field: FieldId,
+    _scratch: ScratchDir,
+}
+
+pub(crate) struct FrameworkProfileDatabase {
+    path: PathBuf,
+    checked_bundle: ValidatedContractBundle,
+    session_entity_type: EntityTypeId,
+    session_state_field: FieldId,
+    session_digest_field: FieldId,
     _scratch: ScratchDir,
 }
 
@@ -1039,6 +1050,412 @@ impl UniqueUserDatabase {
             key.finish().expect("user entity key"),
         )
         .expect("User entity target")
+    }
+}
+
+impl FrameworkProfileDatabase {
+    pub(crate) fn create(label: &str) -> Self {
+        let scratch = ScratchDir::new(&format!("framework-profile-{label}"))
+            .expect("create framework-profile scratch directory");
+        let path = scratch.join("db.redb");
+        let compiled =
+            compile_contract_source(FRAMEWORK_PROFILE_SOURCE).expect("profile contract compiles");
+        let checked_bundle = ValidatedContractBundle::from_compiler_bundle(compiled)
+            .expect("profile bundle passes catalog validation");
+        let session = checked_bundle
+            .bundle()
+            .schema()
+            .entities()
+            .iter()
+            .find(|entity| entity.name() == "Session")
+            .expect("Session entity schema");
+        let session_entity_type = session.id();
+        let field = |name: &str| {
+            session
+                .record()
+                .fields()
+                .iter()
+                .find(|field| field.name() == name)
+                .unwrap_or_else(|| panic!("Session {name} field"))
+                .id()
+        };
+        let session_state_field = field("state");
+        let session_digest_field = field("token_digest");
+
+        let mut store = RedbStore::open(&path).expect("create redb profile database");
+        store
+            .initialize_database(database_id())
+            .expect("initialize profile database");
+        let mut ports = open_operational(store);
+        let stored_bundle = checked_bundle.to_stored().expect("stored profile bundle");
+        let activation = ports
+            .activate_catalog(&CatalogActivationIntentV1::new(
+                None,
+                stored_bundle.clone(),
+                request_id(0xb1),
+                catalog_principal(),
+                timestamp(1_700_000_000),
+                None,
+            ))
+            .expect("activate profile bundle");
+        assert!(matches!(
+            activation,
+            CatalogActivationResult::Activated { active, .. }
+                if active == ActiveCatalogPointerV1::from_bundle(&stored_bundle)
+        ));
+        drop(ports);
+
+        Self {
+            path,
+            checked_bundle,
+            session_entity_type,
+            session_state_field,
+            session_digest_field,
+            _scratch: scratch,
+        }
+    }
+
+    pub(crate) fn open(&self) -> RedbOperationalPorts {
+        open_operational(RedbStore::open(&self.path).expect("reopen profile database"))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn prepare_signup(
+        &self,
+        ports: &RedbOperationalPorts,
+        organization_id: [u8; 16],
+        user_id: [u8; 16],
+        account_id: [u8; 16],
+        session_id: [u8; 16],
+        token_digest: &str,
+        input_request_seed: u8,
+        digest_seed: u8,
+        admission_request_seed: u8,
+    ) -> CommandExecutionPreparation {
+        let plan = self.command_plan("CreateUserAccountSessions");
+        let signup_schema = self
+            .checked_bundle
+            .bundle()
+            .schema()
+            .entities()
+            .iter()
+            .find(|entity| entity.name() == "SignupGraphInput")
+            .expect("SignupGraphInput schema")
+            .record();
+        let signup = CanonicalValue::Record(input_record(
+            signup_schema,
+            [
+                ("organization_id", CanonicalValue::Uuid(organization_id)),
+                ("user_id", CanonicalValue::Uuid(user_id)),
+                ("account_id", CanonicalValue::Uuid(account_id)),
+                ("session_id", CanonicalValue::Uuid(session_id)),
+                (
+                    "email",
+                    CanonicalValue::string("signup@example.test").expect("bounded email"),
+                ),
+                (
+                    "provider",
+                    CanonicalValue::string("oidc").expect("bounded provider"),
+                ),
+                (
+                    "provider_account_id",
+                    CanonicalValue::string("provider-account-1").expect("bounded provider account"),
+                ),
+                (
+                    "token_digest",
+                    CanonicalValue::string(token_digest).expect("bounded token digest"),
+                ),
+                (
+                    "expires_at",
+                    CanonicalValue::Timestamp(timestamp(1_700_000_100)),
+                ),
+            ],
+        ));
+        let input = input_record(
+            plan.input().record(),
+            [
+                (
+                    "request_id",
+                    CanonicalValue::Uuid(uuid_bytes(input_request_seed)),
+                ),
+                (
+                    "signups",
+                    CanonicalValue::List(
+                        CanonicalList::new(vec![signup]).expect("bounded signup list"),
+                    ),
+                ),
+            ],
+        );
+        self.prepare_command(
+            ports,
+            plan,
+            input,
+            &canonical_uuid_text(input_request_seed),
+            digest_seed,
+            admission_request_seed,
+            true,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn prepare_refresh(
+        &self,
+        ports: &RedbOperationalPorts,
+        organization_id: [u8; 16],
+        user_id: [u8; 16],
+        session_id: [u8; 16],
+        expected_revision: u64,
+        successor_token_digest: &str,
+        input_request_seed: u8,
+        digest_seed: u8,
+        admission_request_seed: u8,
+    ) -> CommandExecutionPreparation {
+        let plan = self.command_plan("RefreshSession");
+        let input = input_record(
+            plan.input().record(),
+            [
+                (
+                    "request_id",
+                    CanonicalValue::Uuid(uuid_bytes(input_request_seed)),
+                ),
+                ("organization_id", CanonicalValue::Uuid(organization_id)),
+                ("user_id", CanonicalValue::Uuid(user_id)),
+                ("session_id", CanonicalValue::Uuid(session_id)),
+                ("expected_revision", CanonicalValue::U64(expected_revision)),
+                (
+                    "successor_token_digest",
+                    CanonicalValue::string(successor_token_digest)
+                        .expect("bounded successor digest"),
+                ),
+            ],
+        );
+        self.prepare_command(
+            ports,
+            plan,
+            input,
+            &canonical_uuid_text(input_request_seed),
+            digest_seed,
+            admission_request_seed,
+            false,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn prepare_revoke(
+        &self,
+        ports: &RedbOperationalPorts,
+        organization_id: [u8; 16],
+        user_id: [u8; 16],
+        session_id: [u8; 16],
+        expected_revision: u64,
+        input_request_seed: u8,
+        digest_seed: u8,
+        admission_request_seed: u8,
+    ) -> CommandExecutionPreparation {
+        let plan = self.command_plan("RevokeSession");
+        let input = input_record(
+            plan.input().record(),
+            [
+                (
+                    "request_id",
+                    CanonicalValue::Uuid(uuid_bytes(input_request_seed)),
+                ),
+                ("organization_id", CanonicalValue::Uuid(organization_id)),
+                ("user_id", CanonicalValue::Uuid(user_id)),
+                ("session_id", CanonicalValue::Uuid(session_id)),
+                ("expected_revision", CanonicalValue::U64(expected_revision)),
+            ],
+        );
+        self.prepare_command(
+            ports,
+            plan,
+            input,
+            &canonical_uuid_text(input_request_seed),
+            digest_seed,
+            admission_request_seed,
+            false,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn prepare_command(
+        &self,
+        ports: &RedbOperationalPorts,
+        plan: &CommandPlan,
+        input: CanonicalRecord,
+        caller_key_text: &str,
+        digest_seed: u8,
+        admission_request_seed: u8,
+        audited: bool,
+    ) -> CommandExecutionPreparation {
+        let reference = ExecutablePlanRef::new(
+            self.checked_bundle.lineage().clone(),
+            self.checked_bundle.contract_version(),
+            self.checked_bundle.bundle_hash(),
+            plan.command_id(),
+            plan.plan_hash(),
+        );
+        let resolved =
+            resolve_executable_plan(ports, &reference).expect("deployed profile command resolves");
+        let facts = derive_input_command_facts(plan, input.clone())
+            .expect("checked profile command input facts");
+        let caller_key = IdempotencyKey::new(caller_key_text).expect("bounded caller key");
+        let scope = CommandIdempotencyScopeV1::new(
+            database_id(),
+            environment(),
+            TenantScope::Global,
+            ActorId::new(PRINCIPAL).expect("bounded principal"),
+            reference.contract_lineage().clone(),
+            reference.command_id(),
+        );
+        let lookup =
+            prepare_idempotency_lookup(&scope, &caller_key, &FixedDigestProvider(digest_seed))
+                .expect("prepare profile caller-key lookup");
+        let idempotency = IdempotencyInspectionExecutor::new(ports)
+            .inspect(lookup)
+            .expect("inspect profile idempotency state")
+            .confirm_input(
+                &input,
+                plan.idempotency_input()
+                    .expect("profile command idempotency input"),
+                &caller_key,
+            )
+            .expect("confirm profile command input")
+            .bind_selected_plan(reference)
+            .expect("bind profile command plan");
+        let authorization = authorize_command(
+            plan,
+            self.checked_bundle.lineage().clone(),
+            facts.partition_key().clone(),
+        );
+        let (control, _cancellation) = CommandRequestControl::new(
+            Instant::now()
+                .checked_add(Duration::from_secs(30))
+                .expect("representable profile command deadline"),
+        );
+        let post_evaluation_authorization = audited.then(|| {
+            authorize_command(
+                plan,
+                self.checked_bundle.lineage().clone(),
+                facts.partition_key().clone(),
+            )
+        });
+        let preparation = CommandExecutionPreparation::new(
+            database_id(),
+            &environment(),
+            resolved,
+            input,
+            idempotency,
+            facts,
+            authorization,
+            request_id(admission_request_seed),
+            ServiceIngressKindV1::Grpc,
+            control,
+        )
+        .expect("join exact profile command preparation proofs");
+        if let Some(post_evaluation_authorization) = post_evaluation_authorization {
+            preparation
+                .with_audited_lifecycle(Box::new(StartedCommandAuditInput::new(request_id(
+                    admission_request_seed,
+                ))))
+                .expect("attach exact profile audit lifecycle")
+                .with_post_evaluation_authorizer(Box::new(
+                    FixedPostEvaluationCommandAuthorizer::new(post_evaluation_authorization),
+                ))
+                .expect("attach exact profile post-evaluation authorization")
+        } else {
+            preparation
+        }
+    }
+
+    pub(crate) fn outcome_id(
+        &self,
+        command_name: &str,
+        outcome_name: &str,
+    ) -> riffdb_types::OutcomeId {
+        self.command_plan(command_name)
+            .outcomes()
+            .iter()
+            .find(|outcome| outcome.name() == outcome_name)
+            .unwrap_or_else(|| panic!("{command_name} outcome {outcome_name}"))
+            .id()
+    }
+
+    pub(crate) fn session_state_value(&self, variant_name: &str) -> CanonicalValue {
+        let enumeration = self
+            .checked_bundle
+            .bundle()
+            .schema()
+            .enums()
+            .iter()
+            .find(|enumeration| enumeration.name() == "SessionState")
+            .expect("SessionState enum");
+        let variant_id = enumeration
+            .variants()
+            .iter()
+            .find(|variant| variant.name() == variant_name)
+            .unwrap_or_else(|| panic!("SessionState variant {variant_name}"))
+            .id();
+        CanonicalValue::Enum {
+            type_id: enumeration.id(),
+            variant_id,
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn assert_session(
+        &self,
+        ports: &RedbOperationalPorts,
+        organization_id: [u8; 16],
+        user_id: [u8; 16],
+        session_id: [u8; 16],
+        expected_state: &CanonicalValue,
+        expected_digest: &str,
+        expected_version: u64,
+    ) {
+        let mut key = EntityKeyBuilder::new(self.session_entity_type);
+        key.push_uuid(&organization_id)
+            .expect("session organization component");
+        key.push_uuid(&user_id).expect("session user component");
+        key.push_uuid(&session_id)
+            .expect("session identity component");
+        let target = riffdb_storage_api::EntityTarget::new(
+            self.session_entity_type,
+            key.finish().expect("session entity key"),
+        )
+        .expect("Session entity target");
+        let session = ports
+            .read_entity(&target)
+            .expect("read session")
+            .expect("session exists");
+        assert_eq!(
+            session.entity_version(),
+            EntityVersion::new(expected_version).expect("session revision"),
+            "exactly one transition may commit at one revision"
+        );
+        let field = |field_id: FieldId| {
+            session
+                .fields()
+                .fields()
+                .iter()
+                .find(|(field, _)| *field == field_id)
+                .map(|(_, value)| value.clone())
+                .expect("session field present")
+        };
+        assert_eq!(field(self.session_state_field), *expected_state);
+        assert_eq!(
+            field(self.session_digest_field),
+            CanonicalValue::string(expected_digest).expect("bounded expected digest")
+        );
+    }
+
+    fn command_plan(&self, name: &str) -> &CommandPlan {
+        self.checked_bundle
+            .bundle()
+            .commands()
+            .iter()
+            .find(|plan| plan.name() == name)
+            .unwrap_or_else(|| panic!("{name} command plan"))
     }
 }
 

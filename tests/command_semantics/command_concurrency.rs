@@ -19,10 +19,10 @@ use riffdb_types::{CommitSequence, ExecutionFailureCode};
 
 use support::{
     BudgetDatabase, CountingProvenanceSource, FailingApplicationCommitNotifications,
-    FixedAdmissionClock, IncrementingProvenanceSource, PanickingApplicationCommitNotifications,
-    RecordingApplicationCommitNotifications, UniqueUserDatabase, command_timestamp, runtime,
-    start_coordinator_with_notifications, start_group_coordinator_with_commit_telemetry,
-    start_group_coordinator_with_notifications,
+    FixedAdmissionClock, FrameworkProfileDatabase, IncrementingProvenanceSource,
+    PanickingApplicationCommitNotifications, RecordingApplicationCommitNotifications,
+    UniqueUserDatabase, command_timestamp, runtime, start_coordinator_with_notifications,
+    start_group_coordinator_with_commit_telemetry, start_group_coordinator_with_notifications,
 };
 
 #[test]
@@ -594,6 +594,146 @@ fn equal_scoped_unique_values_commit_once_and_loser_replays_without_sequence() {
 }
 
 #[test]
+fn sequential_reinsert_refuses_typed_until_release_frees_the_unique_value() {
+    let database = UniqueUserDatabase::create("release-reinsert");
+    let ports = database.open();
+    let organization = database.prepare_organization(&ports);
+    let first_user = [0x45; 16];
+    let second_user = [0x46; 16];
+    let third_user = [0x47; 16];
+    let first = database.prepare(
+        &ports,
+        first_user,
+        "owner@example.test",
+        "create-first-owner",
+        0x66,
+        0x58,
+    );
+    // A fresh identity (new user, caller key, and request) re-inserting the
+    // committed unique value sequentially: not a replay, a new admission.
+    let sequential_reinsert = database.prepare(
+        &ports,
+        second_user,
+        "owner@example.test",
+        "create-second-owner",
+        0x67,
+        0x59,
+    );
+    // Entity delete on a unique-carrying entity is still RDB-C044-refused by
+    // the sealed first delete format, so the release path expressible today
+    // is mutation: moving the owner off the value must free it atomically.
+    let release_first = database.prepare_email_change(
+        &ports,
+        first_user,
+        "moved@example.test",
+        "release-first-owner",
+        0x68,
+        0x5a,
+    );
+    let reinsert_after_release = database.prepare(
+        &ports,
+        third_user,
+        "owner@example.test",
+        "create-third-owner",
+        0x69,
+        0x5b,
+    );
+    let notifications = Arc::new(RecordingApplicationCommitNotifications::default());
+    let coordinator = start_coordinator_with_notifications(
+        ports,
+        Arc::new(FixedAdmissionClock::new(command_timestamp())),
+        Arc::new(IncrementingProvenanceSource::new(0x79)),
+        notifications.clone(),
+    );
+    let executor = coordinator.command_executor();
+
+    let (refused, released, reinserted) = runtime().block_on(async {
+        for preparation in [organization, first] {
+            let seeded = executor
+                .reserve_capacity()
+                .await
+                .expect("reserve unique seed")
+                .submit(preparation)
+                .expect("submit unique seed")
+                .completion()
+                .await
+                .expect("complete unique seed");
+            assert!(matches!(seeded, CommandExecutionResult::Committed(_)));
+        }
+        let refused = executor
+            .reserve_capacity()
+            .await
+            .expect("reserve sequential reinsert")
+            .submit(sequential_reinsert)
+            .expect("submit sequential reinsert")
+            .completion()
+            .await
+            .expect("complete sequential reinsert");
+        let released = executor
+            .reserve_capacity()
+            .await
+            .expect("reserve owner release")
+            .submit(release_first)
+            .expect("submit owner release")
+            .completion()
+            .await
+            .expect("complete owner release");
+        let reinserted = executor
+            .reserve_capacity()
+            .await
+            .expect("reserve post-release reinsert")
+            .submit(reinsert_after_release)
+            .expect("submit post-release reinsert")
+            .completion()
+            .await
+            .expect("complete post-release reinsert");
+        (refused, released, reinserted)
+    });
+
+    // Refusal side: the sequential re-insert of an owned unique value is the
+    // declared typed conflict, not a duplicate row and not a replay.
+    let CommandExecutionResult::ExecutionFailed(refused) = refused else {
+        panic!("sequential reinsert of an owned unique value must fail deterministically");
+    };
+    assert_eq!(refused.code(), ExecutionFailureCode::UniqueConflict);
+    assert_eq!(
+        refused.disposition(),
+        riffdb_commit::CommittedOutcomeDisposition::FirstCommit
+    );
+    // Success side: moving the owner off the value frees it for a new
+    // admission, proving the refusal above was the live unique index and
+    // that release rides the same transactional machinery.
+    assert!(matches!(released, CommandExecutionResult::Committed(_)));
+    assert!(matches!(reinserted, CommandExecutionResult::Committed(_)));
+    assert_eq!(
+        notifications.sequences(),
+        vec![
+            CommitSequence::first(),
+            CommitSequence::new(2).expect("first-owner sequence"),
+            CommitSequence::new(3).expect("release sequence"),
+            CommitSequence::new(4).expect("reinsert sequence"),
+        ],
+        "the refused reinsert must not allocate a commit sequence"
+    );
+
+    drop(executor);
+    coordinator
+        .shutdown()
+        .expect("drain release-reinsert coordinator");
+    let ports = database.open();
+    database.assert_user_email(&ports, first_user, "moved@example.test");
+    database.assert_user_exists(&ports, second_user, false);
+    database.assert_user_email(&ports, third_user, "owner@example.test");
+    assert!(
+        ports
+            .read_commit(CommitSequence::new(5).expect("fifth sequence"))
+            .expect("read fifth sequence")
+            .is_none(),
+        "exactly four commands may commit in the release-reinsert schedule"
+    );
+}
+
+#[test]
 fn changing_to_an_owned_unique_value_preserves_the_original_entity_and_replays() {
     let database = UniqueUserDatabase::create("change-email");
     let ports = database.open();
@@ -705,6 +845,251 @@ fn changing_to_an_owned_unique_value_preserves_the_original_entity_and_replays()
     );
 }
 
+fn race_session_transitions(
+    label: &str,
+    submit_refresh_first: bool,
+) -> (
+    FrameworkProfileDatabase,
+    CommandExecutionResult,
+    CommandExecutionResult,
+    CommandExecutionResult,
+    Vec<CommitSequence>,
+) {
+    let database = FrameworkProfileDatabase::create(label);
+    let ports = database.open();
+    let organization = [0x21; 16];
+    let user = [0x22; 16];
+    let account = [0x23; 16];
+    let session = [0x24; 16];
+    let signup = database.prepare_signup(
+        &ports,
+        organization,
+        user,
+        account,
+        session,
+        "digest-initial",
+        0xa1,
+        0x6a,
+        0x5c,
+    );
+    let refresh = database.prepare_refresh(
+        &ports,
+        organization,
+        user,
+        session,
+        1,
+        "digest-successor",
+        0xa2,
+        0x6b,
+        0x5d,
+    );
+    let revoke = database.prepare_revoke(&ports, organization, user, session, 1, 0xa3, 0x6c, 0x5e);
+    // The loser's declared refusal must be a durable terminal outcome: the
+    // same caller identity replayed later returns the stored outcome.
+    let loser_replay = if submit_refresh_first {
+        database.prepare_revoke(&ports, organization, user, session, 1, 0xa3, 0x6c, 0x5f)
+    } else {
+        database.prepare_refresh(
+            &ports,
+            organization,
+            user,
+            session,
+            1,
+            "digest-successor",
+            0xa2,
+            0x6b,
+            0x5f,
+        )
+    };
+    let notifications = Arc::new(RecordingApplicationCommitNotifications::default());
+    let coordinator = start_coordinator_with_notifications(
+        ports,
+        Arc::new(FixedAdmissionClock::new(command_timestamp())),
+        Arc::new(IncrementingProvenanceSource::new(0x7b)),
+        notifications.clone(),
+    );
+    let executor = coordinator.command_executor();
+
+    let (winner, loser, replay) = runtime().block_on(async {
+        let seeded = executor
+            .reserve_capacity()
+            .await
+            .expect("reserve signup graph")
+            .submit(signup)
+            .expect("submit signup graph")
+            .completion()
+            .await
+            .expect("complete signup graph");
+        assert!(matches!(seeded, CommandExecutionResult::Committed(_)));
+
+        // Deterministic schedule: both admissions are reserved before either
+        // submission, then submitted in a fixed order; the coordinator's
+        // conflict machinery decides the loser, not test timing.
+        let first_permit = executor
+            .reserve_capacity()
+            .await
+            .expect("reserve first transition");
+        let second_permit = executor
+            .reserve_capacity()
+            .await
+            .expect("reserve concurrent transition");
+        let (winner_receipt, loser_receipt) = if submit_refresh_first {
+            (
+                first_permit.submit(refresh).expect("submit refresh"),
+                second_permit.submit(revoke).expect("submit revoke"),
+            )
+        } else {
+            (
+                first_permit.submit(revoke).expect("submit revoke"),
+                second_permit.submit(refresh).expect("submit refresh"),
+            )
+        };
+        let winner = winner_receipt
+            .completion()
+            .await
+            .expect("complete winning transition");
+        let loser = loser_receipt
+            .completion()
+            .await
+            .expect("complete losing transition");
+        let replay = executor
+            .reserve_capacity()
+            .await
+            .expect("reserve loser replay")
+            .submit(loser_replay)
+            .expect("submit loser replay")
+            .completion()
+            .await
+            .expect("complete loser replay");
+        (winner, loser, replay)
+    });
+
+    drop(executor);
+    coordinator
+        .shutdown()
+        .expect("drain session race coordinator");
+    (database, winner, loser, replay, notifications.sequences())
+}
+
+fn assert_transition_outcome(
+    result: &CommandExecutionResult,
+    expected: riffdb_types::OutcomeId,
+    expected_disposition: CommittedOutcomeDisposition,
+    role: &str,
+) {
+    let CommandExecutionResult::Committed(outcome) = result else {
+        panic!("{role} transition must resolve to a declared terminal outcome");
+    };
+    assert_eq!(
+        outcome.stored_outcome().declared_outcome().outcome_id(),
+        expected,
+        "{role} outcome identity"
+    );
+    assert_eq!(
+        outcome.disposition(),
+        expected_disposition,
+        "{role} disposition"
+    );
+}
+
+// WP-598 escalation: these two schedules are the acceptance evidence for the
+// commit-path version audit package. Every mutating command on a V7+ bundle
+// currently fails closed as an internal defect because
+// derive_grammar_v1_indexes (crates/riffdb-commit/src/command_index.rs)
+// whitelists only grammar/IR pairs through V6, and riffdb-commit is outside
+// WP-598's declared paths. Un-ignore both tests when the whitelist audit
+// lands; they must then pass unchanged.
+#[test]
+#[ignore = "blocked: commit-path index derivation refuses V7+ bundles (WP-598 escalation)"]
+fn framework_refresh_wins_the_race_and_revocation_observes_its_declared_stale_outcome() {
+    let (database, winner, loser, replay, sequences) =
+        race_session_transitions("refresh-first", true);
+
+    // Winner side: the refresh committed its declared success outcome.
+    assert_transition_outcome(
+        &winner,
+        database.outcome_id("RefreshSession", "SessionRefreshed"),
+        CommittedOutcomeDisposition::FirstCommit,
+        "winning refresh",
+    );
+    // Loser side: the revocation observed its declared stale refusal, and
+    // that refusal is durable — the identical caller identity replays it.
+    assert_transition_outcome(
+        &loser,
+        database.outcome_id("RevokeSession", "RevokeSessionStale"),
+        CommittedOutcomeDisposition::FirstCommit,
+        "losing revocation",
+    );
+    assert_transition_outcome(
+        &replay,
+        database.outcome_id("RevokeSession", "RevokeSessionStale"),
+        CommittedOutcomeDisposition::Replay,
+        "replayed losing revocation",
+    );
+
+    // Exactly one transition survived revision 1: the session advanced once,
+    // kept the refreshed digest, and remained Active.
+    let ports = database.open();
+    database.assert_session(
+        &ports,
+        [0x21; 16],
+        [0x22; 16],
+        [0x24; 16],
+        &database.session_state_value("Active"),
+        "digest-successor",
+        2,
+    );
+    assert_eq!(
+        sequences.first(),
+        Some(&CommitSequence::first()),
+        "the signup graph owns the first commit sequence"
+    );
+}
+
+#[test]
+#[ignore = "blocked: commit-path index derivation refuses V7+ bundles (WP-598 escalation)"]
+fn framework_revocation_wins_the_race_and_refresh_observes_its_declared_stale_outcome() {
+    let (database, winner, loser, replay, sequences) =
+        race_session_transitions("revoke-first", false);
+
+    assert_transition_outcome(
+        &winner,
+        database.outcome_id("RevokeSession", "SessionRevoked"),
+        CommittedOutcomeDisposition::FirstCommit,
+        "winning revocation",
+    );
+    assert_transition_outcome(
+        &loser,
+        database.outcome_id("RefreshSession", "RefreshSessionStale"),
+        CommittedOutcomeDisposition::FirstCommit,
+        "losing refresh",
+    );
+    assert_transition_outcome(
+        &replay,
+        database.outcome_id("RefreshSession", "RefreshSessionStale"),
+        CommittedOutcomeDisposition::Replay,
+        "replayed losing refresh",
+    );
+
+    // The mirrored order: revocation survived, the refresh digest never
+    // landed, and the session is Revoked at exactly revision 2.
+    let ports = database.open();
+    database.assert_session(
+        &ports,
+        [0x21; 16],
+        [0x22; 16],
+        [0x24; 16],
+        &database.session_state_value("Revoked"),
+        "digest-initial",
+        2,
+    );
+    assert_eq!(
+        sequences.first(),
+        Some(&CommitSequence::first()),
+        "the signup graph owns the first commit sequence"
+    );
+}
+
 fn assert_defective_notification_sink(
     label: &str,
     seed: u8,
@@ -757,4 +1142,60 @@ fn assert_defective_notification_sink(
         .expect("join coordinator stopped by sink defect");
     let ports = database.open();
     database.assert_one_budget_commit(&ports, &durable, 12_500);
+}
+
+// The one commit shape a V9 bundle can complete today: a declared refusal
+// with zero mutations bypasses index derivation entirely. This pins the
+// current boundary of the WP-598 escalation — declared outcomes commit
+// terminally while every mutating command on the same bundle is refused
+// before commit.
+#[test]
+fn framework_profile_declared_refusal_commits_terminally_on_the_v9_bundle() {
+    let database = FrameworkProfileDatabase::create("v9-declared-refusal");
+    let ports = database.open();
+    let refresh = database.prepare_refresh(
+        &ports,
+        [0x21; 16],
+        [0x22; 16],
+        [0x24; 16],
+        1,
+        "digest-successor",
+        0xa2,
+        0x6b,
+        0x5d,
+    );
+    let coordinator = start_coordinator_with_notifications(
+        ports,
+        Arc::new(FixedAdmissionClock::new(command_timestamp())),
+        Arc::new(IncrementingProvenanceSource::new(0x7b)),
+        Arc::new(RecordingApplicationCommitNotifications::default()),
+    );
+    let executor = coordinator.command_executor();
+    let result = runtime().block_on(async {
+        executor
+            .reserve_capacity()
+            .await
+            .expect("reserve refresh")
+            .submit(refresh)
+            .expect("submit refresh")
+            .completion()
+            .await
+            .expect("complete refresh")
+    });
+    let CommandExecutionResult::Committed(outcome) = &result else {
+        panic!("refresh of missing session must produce a declared outcome");
+    };
+    assert_eq!(
+        outcome.stored_outcome().declared_outcome().outcome_id(),
+        database.outcome_id("RefreshSession", "RefreshSessionMissing")
+    );
+    assert_eq!(
+        outcome.disposition(),
+        CommittedOutcomeDisposition::FirstCommit,
+        "the declared refusal must persist as a first terminal outcome"
+    );
+    drop(executor);
+    coordinator
+        .shutdown()
+        .expect("drain declared-refusal coordinator");
 }

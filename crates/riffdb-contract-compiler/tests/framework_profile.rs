@@ -183,6 +183,124 @@ fn unknown_initial_state_has_a_source_spanned_semantic_error() {
 }
 
 #[test]
+fn token_handout_flow_is_the_declared_secret_to_outcome_read_wp600_will_annotate() {
+    // ADR-0118 Amendment 1 / WP-600 anchor: the issuance outcome hands out
+    // the secret-classified digest exactly once, as a plain bound-field
+    // read. When WP-600's flow analysis lands, this is the site that must
+    // gain a `reveals token.token_digest` annotation; this pin fails if the
+    // flow disappears or stops being a direct field read.
+    let bundle = compile_contract_source(PROFILE).expect("generic framework profile compiles");
+    let token = bundle
+        .schema()
+        .entities()
+        .iter()
+        .find(|entity| entity.name() == "VerificationToken")
+        .expect("verification token entity");
+    let digest_field = token
+        .record()
+        .fields()
+        .iter()
+        .find(|field| field.name() == "token_digest")
+        .expect("token digest field")
+        .id();
+    assert!(
+        bundle.schema().is_secret_field(token.id(), digest_field),
+        "the stored digest must stay secret-classified"
+    );
+
+    let issue = bundle
+        .commands()
+        .iter()
+        .find(|command| command.name() == "IssueVerificationToken")
+        .expect("issuance command");
+    let handout = issue
+        .instructions()
+        .iter()
+        .find_map(|instruction| match instruction {
+            Instruction::Return(construction) => Some(construction),
+            _ => None,
+        })
+        .expect("issuance success return");
+    let outcome = issue
+        .outcomes()
+        .iter()
+        .find(|outcome| outcome.name() == "VerificationTokenIssued")
+        .expect("issued outcome");
+    assert_eq!(handout.outcome_id(), outcome.id());
+    let outcome_digest = outcome
+        .payload()
+        .fields()
+        .iter()
+        .find(|field| field.name() == "token_digest")
+        .expect("outcome handout field")
+        .id();
+    let flow = handout
+        .payload()
+        .fields()
+        .iter()
+        .find(|field| field.field_id() == outcome_digest)
+        .expect("handout construction field");
+    let token_binding = issue
+        .bindings()
+        .iter()
+        .position(|binding| binding.entity_type() == token.id())
+        .expect("token binding");
+    assert!(
+        matches!(
+            issue.expressions().get(flow.expression()).map(|node| node.kind()),
+            Some(ExpressionKind::BoundField { binding, field })
+                if binding.get() as usize == token_binding && *field == digest_field
+        ),
+        "the handout must stay one direct secret-field read"
+    );
+}
+
+#[test]
+fn unique_entity_delete_remains_sealed_out_of_the_first_delete_format() {
+    // WP-598 escalation evidence: the profile's session sign-out-by-delete
+    // shape (entity delete on a unique-carrying entity) is refused at
+    // compile time by the sealed ADR-0107 first delete format. Lifting the
+    // seal is its own package; this pin keeps the boundary honest until it
+    // lands.
+    let source = PROFILE
+        .replacen(
+            "    unique session_token (organization_id, token_digest)",
+            "    unique session_token (organization_id, token_digest)\n    delete_policy no_inbound",
+            1,
+        )
+        .replacen(
+            "  command RevokeSession {",
+            concat!(
+                "  command DeleteSession {\n",
+                "    input request_id: uuid\n",
+                "    input organization_id: uuid\n",
+                "    input user_id: uuid\n",
+                "    input session_id: uuid\n",
+                "    idempotency_key request_id\n",
+                "    delete Session(organization_id, user_id, session_id) as session\n",
+                "      else DeleteSessionMissing {}\n",
+                "    return SessionDeleted {}\n",
+                "  }\n\n",
+                "  command RevokeSession {",
+            ),
+            1,
+        );
+    let expected_start = source
+        .find("session_token (organization_id, token_digest)")
+        .expect("unique declaration marker");
+    let error = validate_contract_source(&source)
+        .expect_err("unique-carrying entity delete must stay refused");
+    let diagnostic = error
+        .semantic()
+        .expect("semantic diagnostic")
+        .as_slice()
+        .iter()
+        .find(|diagnostic| diagnostic.code().as_str() == "RDB-C044")
+        .expect("sealed delete-format diagnostic");
+    assert_eq!(diagnostic.primary_span().start() as usize, expected_start);
+}
+
+#[test]
 fn caller_authored_workflow_state_assignment_remains_rejected() {
     let source = PROFILE.replacen(
         "set session.token_digest = signup.token_digest",
