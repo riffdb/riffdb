@@ -594,14 +594,14 @@ fn equal_scoped_unique_values_commit_once_and_loser_replays_without_sequence() {
 }
 
 #[test]
-fn sequential_reinsert_refuses_typed_until_release_frees_the_unique_value() {
-    let database = UniqueUserDatabase::create("release-reinsert");
+fn create_before_delete_refuses_then_delete_releases_unique_value_for_reinsert() {
+    let database = UniqueUserDatabase::create("create-delete-reinsert");
     let ports = database.open();
     let organization = database.prepare_organization(&ports);
     let first_user = [0x45; 16];
     let second_user = [0x46; 16];
     let third_user = [0x47; 16];
-    let first = database.prepare(
+    let first = database.prepare_audited(
         &ports,
         first_user,
         "owner@example.test",
@@ -619,18 +619,9 @@ fn sequential_reinsert_refuses_typed_until_release_frees_the_unique_value() {
         0x67,
         0x59,
     );
-    // Entity delete on a unique-carrying entity is still RDB-C044-refused by
-    // the sealed first delete format, so the release path expressible today
-    // is mutation: moving the owner off the value must free it atomically.
-    let release_first = database.prepare_email_change(
-        &ports,
-        first_user,
-        "moved@example.test",
-        "release-first-owner",
-        0x68,
-        0x5a,
-    );
-    let reinsert_after_release = database.prepare(
+    let delete_first =
+        database.prepare_delete(&ports, first_user, "delete-first-owner", 0x68, 0x5a);
+    let reinsert_after_release = database.prepare_audited(
         &ports,
         third_user,
         "owner@example.test",
@@ -647,7 +638,7 @@ fn sequential_reinsert_refuses_typed_until_release_frees_the_unique_value() {
     );
     let executor = coordinator.command_executor();
 
-    let (refused, released, reinserted) = runtime().block_on(async {
+    let (refused, deleted, reinserted) = runtime().block_on(async {
         for preparation in [organization, first] {
             let seeded = executor
                 .reserve_capacity()
@@ -669,15 +660,15 @@ fn sequential_reinsert_refuses_typed_until_release_frees_the_unique_value() {
             .completion()
             .await
             .expect("complete sequential reinsert");
-        let released = executor
+        let deleted = executor
             .reserve_capacity()
             .await
-            .expect("reserve owner release")
-            .submit(release_first)
-            .expect("submit owner release")
+            .expect("reserve owner delete")
+            .submit(delete_first)
+            .expect("submit owner delete")
             .completion()
             .await
-            .expect("complete owner release");
+            .expect("complete owner delete");
         let reinserted = executor
             .reserve_capacity()
             .await
@@ -687,7 +678,7 @@ fn sequential_reinsert_refuses_typed_until_release_frees_the_unique_value() {
             .completion()
             .await
             .expect("complete post-release reinsert");
-        (refused, released, reinserted)
+        (refused, deleted, reinserted)
     });
 
     // Refusal side: the sequential re-insert of an owned unique value is the
@@ -700,17 +691,16 @@ fn sequential_reinsert_refuses_typed_until_release_frees_the_unique_value() {
         refused.disposition(),
         riffdb_commit::CommittedOutcomeDisposition::FirstCommit
     );
-    // Success side: moving the owner off the value frees it for a new
-    // admission, proving the refusal above was the live unique index and
-    // that release rides the same transactional machinery.
-    assert!(matches!(released, CommandExecutionResult::Committed(_)));
+    // Success side: deleting the owner removes the exact old unique entry and
+    // frees it for a new admission in the next transaction.
+    assert!(matches!(deleted, CommandExecutionResult::Committed(_)));
     assert!(matches!(reinserted, CommandExecutionResult::Committed(_)));
     assert_eq!(
         notifications.sequences(),
         vec![
             CommitSequence::first(),
             CommitSequence::new(2).expect("first-owner sequence"),
-            CommitSequence::new(3).expect("release sequence"),
+            CommitSequence::new(3).expect("delete sequence"),
             CommitSequence::new(4).expect("reinsert sequence"),
         ],
         "the refused reinsert must not allocate a commit sequence"
@@ -719,18 +709,102 @@ fn sequential_reinsert_refuses_typed_until_release_frees_the_unique_value() {
     drop(executor);
     coordinator
         .shutdown()
-        .expect("drain release-reinsert coordinator");
+        .expect("drain create-delete-reinsert coordinator");
     let ports = database.open();
-    database.assert_user_email(&ports, first_user, "moved@example.test");
+    database.assert_user_exists(&ports, first_user, false);
     database.assert_user_exists(&ports, second_user, false);
     database.assert_user_email(&ports, third_user, "owner@example.test");
-    assert!(
-        ports
-            .read_commit(CommitSequence::new(5).expect("fifth sequence"))
-            .expect("read fifth sequence")
-            .is_none(),
-        "exactly four commands may commit in the release-reinsert schedule"
+}
+
+#[test]
+fn delete_before_create_releases_unique_value_in_submission_order() {
+    let database = UniqueUserDatabase::create("delete-create-order");
+    let ports = database.open();
+    let first_user = [0x48; 16];
+    let second_user = [0x49; 16];
+    let organization = database.prepare_organization(&ports);
+    let first = database.prepare_audited(
+        &ports,
+        first_user,
+        "ordered@example.test",
+        "ordered-first-owner",
+        0x6a,
+        0x5c,
     );
+    let delete_first =
+        database.prepare_delete(&ports, first_user, "ordered-delete-owner", 0x6b, 0x5d);
+    let create_second = database.prepare_audited(
+        &ports,
+        second_user,
+        "ordered@example.test",
+        "ordered-second-owner",
+        0x6c,
+        0x5e,
+    );
+    let notifications = Arc::new(RecordingApplicationCommitNotifications::default());
+    let coordinator = start_coordinator_with_notifications(
+        ports,
+        Arc::new(FixedAdmissionClock::new(command_timestamp())),
+        Arc::new(IncrementingProvenanceSource::new(0x7a)),
+        notifications.clone(),
+    );
+    let executor = coordinator.command_executor();
+
+    let (deleted, created) = runtime().block_on(async {
+        for preparation in [organization, first] {
+            let seeded = executor
+                .reserve_capacity()
+                .await
+                .expect("reserve ordered unique seed")
+                .submit(preparation)
+                .expect("submit ordered unique seed")
+                .completion()
+                .await
+                .expect("complete ordered unique seed");
+            assert!(matches!(seeded, CommandExecutionResult::Committed(_)));
+        }
+        let deleted = executor
+            .reserve_capacity()
+            .await
+            .expect("reserve ordered delete")
+            .submit(delete_first)
+            .expect("submit ordered delete");
+        let created = executor
+            .reserve_capacity()
+            .await
+            .expect("reserve ordered create")
+            .submit(create_second)
+            .expect("submit ordered create");
+        (
+            deleted
+                .completion()
+                .await
+                .expect("ordered delete completion"),
+            created
+                .completion()
+                .await
+                .expect("ordered create completion"),
+        )
+    });
+
+    assert!(matches!(deleted, CommandExecutionResult::Committed(_)));
+    assert!(matches!(created, CommandExecutionResult::Committed(_)));
+    assert_eq!(
+        notifications.sequences(),
+        vec![
+            CommitSequence::first(),
+            CommitSequence::new(2).expect("second sequence"),
+            CommitSequence::new(3).expect("third sequence"),
+            CommitSequence::new(4).expect("fourth sequence"),
+        ],
+        "the same aggregate conflict preserves delete-before-create order"
+    );
+
+    drop(executor);
+    coordinator.shutdown().expect("drain ordered coordinator");
+    let ports = database.open();
+    database.assert_user_exists(&ports, first_user, false);
+    database.assert_user_email(&ports, second_user, "ordered@example.test");
 }
 
 #[test]

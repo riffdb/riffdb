@@ -12236,8 +12236,8 @@ work_packages:
   requirements: []
   required_adrs: [ADR-0100, ADR-0107]
   allowed_paths: [work_packages.yaml, SPEC.md, docs/**, fixtures/**,
-    crates/riffdb-contract-compiler/**, crates/riffdb-commit/**, tests/command_semantics/**,
-    tests/storage_recovery/**]
+    crates/riffdb-contract-compiler/**, crates/riffdb-contract-ir/**,
+    crates/riffdb-commit/**, tests/command_semantics/**, tests/storage_recovery/**]
   deliverables:
   - Diagnostic retirement for RDB-C044 on the audited path with span-asserted replacement
     semantics; the WP-598 seal pin updated to the unsealed expectation deliberately

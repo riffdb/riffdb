@@ -2313,20 +2313,6 @@ fn derive_unique_conflicts(
     let mut conflicts = Vec::new();
     for binding in bindings
         .iter()
-        .filter(|binding| binding.mode() == BindingMode::Delete)
-    {
-        if schema
-            .unique_keys()
-            .iter()
-            .any(|unique| unique.source_entity() == binding.entity_type())
-        {
-            return Err(IrValidationError::InvalidDependency {
-                reason: "checked delete of an entity with a unique key lacks an input-computable release conflict",
-            });
-        }
-    }
-    for binding in bindings
-        .iter()
         .filter(|binding| matches!(binding.mode(), BindingMode::Create | BindingMode::Mutate))
     {
         let entity =

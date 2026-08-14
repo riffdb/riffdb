@@ -98,6 +98,21 @@ fn validate_command(
     command: &HirCommand,
     diagnostics: &mut Vec<CompilerDiagnostic>,
 ) {
+    for binding in command
+        .bindings
+        .iter()
+        .filter(|binding| binding.mode == BindingMode::Delete)
+    {
+        if hir
+            .entity(binding.entity_id)
+            .is_some_and(|entity| entity.delete_policy.is_none())
+        {
+            diagnostics.push(CompilerDiagnostic::new(
+                CompilerDiagnosticCode::InvalidDeletePolicy,
+                binding.entity_span,
+            ));
+        }
+    }
     let mut restrict_failures = command
         .bindings
         .iter()
@@ -378,26 +393,16 @@ fn validate_unique_conflicts(
             HirEffect::WorkflowTransition { .. } | HirEffect::WorkflowLease { .. } => None,
         })
         .collect::<BTreeMap<_, _>>();
-    for binding in command.bindings.iter().filter(|binding| {
-        matches!(
-            binding.mode,
-            BindingMode::Create | BindingMode::Mutate | BindingMode::Delete
-        )
-    }) {
+    for binding in command
+        .bindings
+        .iter()
+        .filter(|binding| matches!(binding.mode, BindingMode::Create | BindingMode::Mutate))
+    {
         let Some(entity) = hir.entity(binding.entity_id) else {
             continue;
         };
-        if binding.mode == BindingMode::Delete {
-            for unique in entity.indexes.iter().filter(|index| index.unique) {
-                diagnostics.push(CompilerDiagnostic::new(
-                    CompilerDiagnosticCode::UnsupportedCollectionMutation,
-                    unique.span,
-                ));
-            }
-            continue;
-        }
         for unique in entity.indexes.iter().filter(|index| index.unique) {
-            let changes = matches!(binding.mode, BindingMode::Create | BindingMode::Delete)
+            let changes = binding.mode == BindingMode::Create
                 || unique
                     .fields
                     .iter()

@@ -97,8 +97,6 @@ pub enum CompilerDiagnosticCode {
     CrossPartitionRowPolicy,
     /// `RDB-C043`: a row-policy relationship probe is absent, unindexed, or unsafe.
     InvalidRowPolicyRelationship,
-    /// `RDB-C044`: collection/delete syntax is known but its sealed plan is unavailable.
-    UnsupportedCollectionMutation,
     /// `RDB-C045`: a deletion policy lacks its complete compiler-owned safety proof.
     InvalidDeletePolicy,
     /// `RDB-C201`: an identifier cannot form an ADR-0064 command tool-name segment.
@@ -111,7 +109,7 @@ pub enum CompilerDiagnosticCode {
 
 impl CompilerDiagnosticCode {
     /// Complete pre-freeze public semantic diagnostic registry in code order.
-    pub const ALL: [Self; 48] = [
+    pub const ALL: [Self; 47] = [
         Self::InvalidContractVersion,
         Self::DuplicateName,
         Self::MissingDeclaration,
@@ -155,7 +153,6 @@ impl CompilerDiagnosticCode {
         Self::UnboundedRowPolicy,
         Self::CrossPartitionRowPolicy,
         Self::InvalidRowPolicyRelationship,
-        Self::UnsupportedCollectionMutation,
         Self::InvalidDeletePolicy,
         Self::InvalidCommandToolName,
         Self::CommandToolNameTooLong,
@@ -209,7 +206,6 @@ impl CompilerDiagnosticCode {
             Self::UnboundedRowPolicy => "RDB-C041",
             Self::CrossPartitionRowPolicy => "RDB-C042",
             Self::InvalidRowPolicyRelationship => "RDB-C043",
-            Self::UnsupportedCollectionMutation => "RDB-C044",
             Self::InvalidDeletePolicy => "RDB-C045",
             Self::InvalidCommandToolName => "RDB-C201",
             Self::CommandToolNameTooLong => "RDB-C202",
@@ -305,9 +301,6 @@ impl CompilerDiagnosticCode {
             }
             Self::InvalidRowPolicyRelationship => {
                 "the row-policy relationship must use one exact local declared index"
-            }
-            Self::UnsupportedCollectionMutation => {
-                "the collection or delete command plan is unavailable in this compiler"
             }
             Self::InvalidDeletePolicy => {
                 "the deletion policy lacks a complete no-inbound or indexed-restrict proof"
@@ -435,9 +428,6 @@ impl CompilerDiagnosticCode {
             Self::InvalidRowPolicyRelationship => {
                 Some("name one declared target index and provide its complete partition-routed key")
             }
-            Self::UnsupportedCollectionMutation => Some(
-                "use a compiler with the ADR-0107 bounded collection and delete plan format enabled",
-            ),
             Self::InvalidDeletePolicy => Some(
                 "declare no_inbound only with no inbound relation, or name one exact canonical reverse index covering every inbound relation",
             ),
@@ -615,7 +605,7 @@ mod tests {
 
     #[test]
     fn public_diagnostic_registry_is_complete_unique_and_code_ordered() {
-        assert_eq!(CompilerDiagnosticCode::ALL.len(), 48);
+        assert_eq!(CompilerDiagnosticCode::ALL.len(), 47);
         let codes = CompilerDiagnosticCode::ALL.map(CompilerDiagnosticCode::as_str);
         assert!(codes.windows(2).all(|pair| pair[0] < pair[1]));
         assert!(CompilerDiagnosticCode::ALL.iter().all(|code| {
