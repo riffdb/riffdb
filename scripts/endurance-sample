@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 from pathlib import Path
 import subprocess
@@ -59,6 +60,31 @@ def checked_file_size(path: Path) -> int:
     if path.is_symlink() or not path.is_file():
         fail(f"endurance storage artifact is not a regular file: {path.name}")
     return path.stat().st_size
+
+
+def journal_generation(database: Path) -> int:
+    generations: list[int] = []
+    for suffix in (".riffjournal", ".riffjournal.checkpoint"):
+        candidate = Path(f"{database}{suffix}")
+        if not candidate.exists():
+            continue
+        if candidate.is_symlink() or not candidate.is_file():
+            fail("endurance journal extent is not a regular file")
+        with candidate.open("rb") as source:
+            for _slot in range(2):
+                header = source.read(4_096)
+                if len(header) != 4_096:
+                    break
+                if header[:8] != b"RDBJEX03":
+                    continue
+                if hashlib.sha256(header[: 4_096 - 32]).digest() != header[4_096 - 32 :]:
+                    continue
+                generation = int.from_bytes(header[32:40], "big")
+                if generation > 0:
+                    generations.append(generation)
+    if not generations:
+        fail("endurance journal generation is unavailable")
+    return max(generations)
 
 
 def tree_bytes(root: Path) -> int:
@@ -319,7 +345,7 @@ def main() -> int:
         "database_bytes": checked_file_size(database),
         "journal_bytes": journal_bytes,
         "backup_bytes": tree_bytes(environment / "backups"),
-        "journal_generation": lifecycle["journal_generation"],
+        "journal_generation": journal_generation(database),
         "retention_watermark": lifecycle["retention_watermark"],
         "tombstone_count": lifecycle["tombstone_count"],
         "writer_queue_depth": lifecycle["writer_queue_depth"],
