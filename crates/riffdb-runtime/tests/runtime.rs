@@ -226,6 +226,57 @@ fn framework_profile_token_refuses_fresh_reuse_and_expired_consumption() {
 }
 
 #[test]
+fn framework_profile_token_expiry_boundary_is_exact_to_one_tick() {
+    let bundle = compile_contract_source(FRAMEWORK_PROFILE_SOURCE).expect("profile compiles");
+    let plan = command(&bundle, "ConsumeVerificationToken");
+    let expires_at = Timestamp::new(100, 500_000).expect("boundary expiry");
+    let one_tick_before = Timestamp::new(100, 499_999).expect("tick before expiry");
+    let one_tick_after = Timestamp::new(100, 500_001).expect("tick after expiry");
+
+    // One tick before expiry: the consume mutation passes.
+    let input = framework_token_input(plan, [0x24; 16]);
+    let target = derive_binding_target(plan, &input, 0);
+    let live = framework_token_record_at(
+        &bundle,
+        plan,
+        target.clone(),
+        EntityVersion::first(),
+        false,
+        expires_at,
+    );
+    let consumed = evaluate_profile_command_at(&bundle, plan, &input, live, one_tick_before);
+    assert_eq!(
+        consumed.outcome().outcome_id(),
+        outcome_id(plan, "VerificationTokenConsumed")
+    );
+    assert_eq!(consumed.mutations().len(), 1);
+
+    // Exactly at expiry: the declared typed refusal, zero mutations.
+    for (label, transaction_time) in [("at", expires_at), ("after", one_tick_after)] {
+        let stale_input = framework_token_input(plan, [0x25; 16]);
+        let live = framework_token_record_at(
+            &bundle,
+            plan,
+            target.clone(),
+            EntityVersion::first(),
+            false,
+            expires_at,
+        );
+        let refused =
+            evaluate_profile_command_at(&bundle, plan, &stale_input, live, transaction_time);
+        assert_eq!(
+            refused.outcome().outcome_id(),
+            outcome_id(plan, "VerificationTokenExpired"),
+            "consumption {label} the stored expiry must refuse typed"
+        );
+        assert!(
+            refused.mutations().is_empty(),
+            "consumption {label} the stored expiry must not mutate"
+        );
+    }
+}
+
+#[test]
 fn framework_profile_refresh_and_revocation_cannot_both_survive_one_revision() {
     let bundle = compile_contract_source(FRAMEWORK_PROFILE_SOURCE).expect("profile compiles");
     let refresh = command(&bundle, "RefreshSession");
@@ -2722,6 +2773,24 @@ fn framework_token_record(
     consumed: bool,
     expires_at: i64,
 ) -> StoredEntityRecordV1 {
+    framework_token_record_at(
+        bundle,
+        plan,
+        target,
+        version,
+        consumed,
+        Timestamp::new(expires_at, 0).expect("token expiry"),
+    )
+}
+
+fn framework_token_record_at(
+    bundle: &ContractBundle,
+    plan: &CommandPlan,
+    target: EntityTarget,
+    version: EntityVersion,
+    consumed: bool,
+    expires_at: Timestamp,
+) -> StoredEntityRecordV1 {
     let entity = bundle
         .schema()
         .entities()
@@ -2747,10 +2816,7 @@ fn framework_token_record(
                     "token_digest",
                     CanonicalValue::string("verification-digest-1").expect("digest"),
                 ),
-                (
-                    "expires_at",
-                    CanonicalValue::Timestamp(Timestamp::new(expires_at, 0).expect("token expiry")),
-                ),
+                ("expires_at", CanonicalValue::Timestamp(expires_at)),
                 ("consumed", CanonicalValue::Bool(consumed)),
                 (
                     "issued_at",
@@ -2823,16 +2889,27 @@ fn evaluate_profile_command(
     record: StoredEntityRecordV1,
     time: i64,
 ) -> riffdb_storage_api::EvaluatedCommand {
+    evaluate_profile_command_at(
+        bundle,
+        plan,
+        input,
+        record,
+        Timestamp::new(time, 0).expect("profile time"),
+    )
+}
+
+fn evaluate_profile_command_at(
+    bundle: &ContractBundle,
+    plan: &CommandPlan,
+    input: &CanonicalRecord,
+    record: StoredEntityRecordV1,
+    time: Timestamp,
+) -> riffdb_storage_api::EvaluatedCommand {
     let snapshot = snapshot(
         plan_ref(bundle, plan),
         vec![EntityObservation::Present(record)],
     );
-    let execution_context = context(
-        bundle,
-        plan,
-        input,
-        LogicalTime::new(Timestamp::new(time, 0).expect("profile time")),
-    );
+    let execution_context = context(bundle, plan, input, LogicalTime::new(time));
     let ExecutionResult::CommitRequired(evaluated) = execute_command(
         bundle,
         input,

@@ -105,7 +105,13 @@ contract FrameworkProfileAcceptance version 1 {
     return VerificationTokenIssued {
       verification_token_id: verification_token_id,
       issuance_id: issuance_id,
-      issued_at: issued_at
+      issued_at: issued_at,
+      // One-time handout of the secret-classified digest at issuance: this
+      // secret-to-non-secret flow is the exact site WP-600 (ADR-0118
+      // Amendment 1) turns into a compile error unless it carries an
+      // explicit `reveals token.token_digest` annotation. The annotation
+      // attaches to this outcome field; keep the flow a plain field read.
+      token_digest: token.token_digest
     }
   }
 
@@ -119,7 +125,9 @@ contract FrameworkProfileAcceptance version 1 {
       else VerificationTokenMissing {}
     require verification_token_unused: token.consumed == false
       else VerificationTokenAlreadyConsumed {}
-    require verification_token_unexpired: tx.time <= token.expires_at
+    // Expiry is exact to one tick: strictly before expires_at consumes,
+    // at or after expires_at refuses with the declared typed outcome.
+    require verification_token_unexpired: tx.time < token.expires_at
       else VerificationTokenExpired {}
     set token.consumed = true
     return VerificationTokenConsumed {
@@ -138,7 +146,7 @@ contract FrameworkProfileAcceptance version 1 {
     idempotency_key request_id
     mutate Session(organization_id, user_id, session_id) as session
       else RefreshSessionMissing {}
-    require refresh_unexpired: tx.time <= session.expires_at
+    require refresh_unexpired: tx.time < session.expires_at
       else RefreshSessionExpired {}
     transition Refresh on session revision expected_revision
       stale RefreshSessionStale {}
