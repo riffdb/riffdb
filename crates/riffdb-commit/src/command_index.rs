@@ -807,6 +807,101 @@ impl IndexDerivationBuilder {
     }
 }
 
+// WP-606 per-version index-derivation audit gate.
+//
+// This whitelist is a fail-closed audit boundary in the commit coordinator:
+// a grammar/IR pair is admitted only after a recorded audit of what the era
+// changed and why `derive_grammar_v1_indexes` remains exact for it. Every
+// admission below names its audit note and the evidence test that proves it.
+// A NEW contract-ir era must NOT be added here without repeating this
+// ceremony; the exhaustive boundary pin
+// (`index_derivation_admits_exactly_the_audited_identity_pairs`) refuses
+// anything beyond the audited set.
+//
+// Provenance (WP-606 git archaeology): V1..V6 were admitted incrementally
+// with their version bumps (V5 `c2f78f77`, V6 `2ecea31c`). V7..V10 were
+// introduced in contract-ir WITHOUT extending this gate — a silent gap, no
+// deferred record existed — which sealed every mutating command on a V7+
+// bundle (WP-598 escalation). Commit `44e4afa0` then extended the gate
+// V7..V10 in one step with no per-version audit, outside its package's
+// declared paths. WP-606 is the retroactive discharge of both: the notes and
+// evidence tests below are the audit that earns each admission.
+//
+// Per-version audit notes (each references its evidence test in this file's
+// test module unless stated otherwise):
+//
+// (V1..V6): the originally audited eras — base grammar, workflows/service
+//   values (V2), fenced leases (V3), row policies (V4; evidence
+//   `row_policy_ir_v4_preserves_ordinary_index_derivation`), bounded
+//   collection commands and checked deletes (V5), the distinct
+//   indexed-restrict delete outcome (V6). Vector-field specs require IR V6
+//   (`SchemaIr::requires_ir_v6`) and therefore sit inside this audited set;
+//   vector-typed fields are not index-key components, so they never enter
+//   `index_values`. Delete-capable grammar starts at V5
+//   (`CommandPlan::requires_ir_v5` — delete bindings), so ADR-0107's
+//   delete-aware entry derivation (the `BindingMode::Delete` arm below,
+//   emitting `IndexEntryMutationV1::Delete` per index) applies to every
+//   admitted era from V5 on; V7+ deletes are pinned by
+//   `secret_classified_v8_delete_derives_the_exact_old_index_keys`.
+//
+// (V7, V7) — current-row event policy anchors (ADR-0116). The era adds an
+//   optional per-event `policy_anchor` in the EVENT schema and nothing else.
+//   Derivation is correct because this function consumes only entity
+//   schemas: `entity.indexes()`, `schema.unique_keys()`, and mutation
+//   post-images; event schemas (and their anchors) have no path into
+//   `index_values`, entry encoding, or affected-target derivation. Anchors
+//   are consumed by the event policy machinery, never at index-derivation
+//   time. Evidence: `event_policy_anchor_v7_leaves_index_derivation_exact`
+//   (an anchored-event V7 bundle whose mutating command with an anchored
+//   emit derives exactly the entity-index entries and nothing more).
+//
+// (V8, V8) — contextual secret field classification (ADR-0118). The era adds
+//   schema-level secret classification and display-surface redaction.
+//   ADR-0118 §3 explicitly keeps index participation working without read
+//   visibility, and §4 keeps durable storage full-fidelity: stored index
+//   entries are at-rest artifacts, not display surfaces, so derivation MUST
+//   carry the exact classified bytes — and does, because classification is
+//   schema metadata, not a value wrapper; `CanonicalValue` has no secret
+//   variant for derivation to mishandle. Failure paths cannot echo entry
+//   bytes (`CommandIndexError` debug-renders as `[REDACTED]`). Evidence:
+//   `secret_classified_v8_index_entries_carry_exact_bytes_without_wrappers`
+//   (byte-identical entry keys against the unclassified twin contract) and
+//   `secret_classified_v8_delete_derives_the_exact_old_index_keys` (ADR-0107
+//   delete format on a V8 bundle).
+//
+// (V9, V9) — compiler-owned workflow initialization (ADR-0119 prerequisites;
+//   workflow initial states and self-transitions,
+//   `WorkflowSchema::requires_ir_v9`). The era changes workflow schemas and
+//   creation initialization; entity/index schemas and key codecs are
+//   untouched. Compiler-initialized state values arrive in mutation
+//   post-images exactly like `set` fields, so derivation reads them through
+//   the same `index_values` path. Evidence:
+//   `workflow_initialized_v9_create_derives_entries_including_initial_state`
+//   (unit level, initial state flowing into an index key) and — coordinator
+//   level, the WP-598 acceptance contract — the two un-ignored race
+//   schedules in tests/command_semantics/command_concurrency.rs plus the
+//   live zero-mutation pin
+//   `framework_profile_declared_refusal_commits_terminally_on_the_v9_bundle`.
+//
+// (V10, V10) — the operator-only reimport invocation class (ADR-0119). The
+//   era adds `CommandPlan::invocation_class`; entity/index schemas are
+//   untouched, so ordinary application commands on a V10 bundle derive
+//   exactly as on V9 (evidence:
+//   `reimport_era_v10_application_commands_derive_ordinarily`). Reimport
+//   commands deliberately COMMIT through ordinary commit semantics
+//   (ADR-0119: the coordinator remains the only sequencer), but they cannot
+//   REACH ordinary derivation through the application path: IR validation
+//   forces server-derived idempotency and a create-only collection shape
+//   (`validate_reimport_shape`), `CommandExecutionPreparation::new` refuses
+//   any plan without caller-declared idempotency
+//   (tests/command_preparation.rs
+//   `reimport_authority_and_server_identity_cannot_enter_the_ordinary_constructor`,
+//   `ordinary_command_authority_cannot_invoke_a_hidden_reimport_plan`), and
+//   the service layer never resolves reimport plans for application calls
+//   (riffdb-service architecture pin on the `!plan.is_reimport()` filter).
+//   The V10 evidence test additionally pins the reimport plan's structural
+//   guarantees (Reimport class, no idempotency input, create-only bindings)
+//   at this crate's boundary.
 const fn index_derivation_version_supported(grammar: u32, ir: u32) -> bool {
     matches!(
         (grammar, ir),
@@ -1110,15 +1205,28 @@ mod tests {
 
     use super::*;
 
+    // WP-606 boundary pin. A synthetic (V11, V11) bundle is not constructible
+    // through any public path — `ContractIrBundle` construction validates the
+    // version tuple against the same closed list — so the boundary is pinned
+    // exhaustively on the audit gate itself: the supported set is EXACTLY the
+    // identity pairs of the audited eras. Admitting a new era must flip this
+    // test deliberately, alongside a fresh per-version audit note above the
+    // gate.
     #[test]
-    fn index_derivation_accepts_every_catalog_bundle_era_and_rejects_cross_era_pairs() {
-        for version in 1..=10 {
-            assert!(index_derivation_version_supported(version, version));
+    fn index_derivation_admits_exactly_the_audited_identity_pairs() {
+        for grammar in 0..=16_u32 {
+            for ir in 0..=16_u32 {
+                let audited_identity_pair = grammar == ir
+                    && grammar >= GRAMMAR_VERSION_V1
+                    && grammar <= GRAMMAR_VERSION_V10;
+                assert_eq!(
+                    index_derivation_version_supported(grammar, ir),
+                    audited_identity_pair,
+                    "gate must admit exactly the audited identity pairs; \
+                     diverged at ({grammar}, {ir})"
+                );
+            }
         }
-        assert!(!index_derivation_version_supported(0, 0));
-        assert!(!index_derivation_version_supported(10, 9));
-        assert!(!index_derivation_version_supported(9, 10));
-        assert!(!index_derivation_version_supported(11, 11));
     }
 
     const INDEXED_SOURCE: &str = r#"
