@@ -12160,3 +12160,29 @@ work_packages:
   - ./scripts/check-requirement-coverage
   - cargo test --workspace --all-features
   human_review_triggers: *id001
+- id: WP-605
+  name: Contract-language editor tooling — tree-sitter grammar and compiler-backed LSP
+  depends_on: [WP-601]
+  objective: Implement ADR-0120 section 5. A tree-sitter grammar for .riff and .riffq
+    (editor and forge highlighting) and an LSP server shipped inside the CLI packages,
+    serving diagnostics by invoking the same compiler check path so editor feedback is
+    byte-identical to push diagnostics and can never drift from the authority; hover types,
+    go-to-definition over entities/fields/commands/queries, and schema-fed completions.
+    Serves agents equally — agent harnesses consume LSP diagnostics natively.
+  requirements: []
+  required_adrs: [ADR-0002, ADR-0120]
+  allowed_paths: [work_packages.yaml, SPEC.md, docs/**, fixtures/**, crates/riffdb-cli/**,
+    crates/riffdb-contract-syntax/**, crates/riffdb-contract-compiler/**, clients/**,
+    scripts/**]
+  deliverables:
+  - Tree-sitter grammar with a snapshot corpus over the language reference's examples,
+    regenerated with the grammar per house generated-artifact rules
+  - riffdb lsp serving diagnostics through the compiler's own check machinery with a
+    diagnostics-parity test (same broken contract, byte-identical primary diagnostic via
+    push and LSP), plus hover, definitions, and schema-fed completions with bounded responses
+  - Editor packaging — VS Code extension scaffold plus editor-agnostic binary documentation;
+    grammar published for forge highlighting
+  acceptance_commands:
+  - cargo test -p riffdb-contract-syntax -p riffdb-cli --all-features
+  - ./scripts/handbook check
+  human_review_triggers: *id001

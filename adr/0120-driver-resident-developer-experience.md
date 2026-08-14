@@ -96,7 +96,21 @@ package installation in an empty directory, never from a repository
 checkout, with time-to-first-committed-row, ceremony count, and rescue
 count recorded as standing evidence.
 
-### 5. Boundaries
+### 5. Editor tooling is part of the driver product
+
+The contract language gets first-class editor support, built on the
+compiler rather than beside it: a tree-sitter grammar for `.riff` and
+`.riffq` (highlighting in editors and on forges), and an LSP server
+(`riffdb lsp`) shipping inside the same CLI packages, serving diagnostics
+by running the same check path the compiler owns — spans and messages
+identical to `riffdb push`, so editor feedback can never drift from the
+authority. Beyond diagnostics: hover types, go-to-definition across
+entities, fields, commands, and queries, and completions fed by the schema.
+This serves agents as directly as humans: agent harnesses consume LSP
+diagnostics natively, so a contract error surfaces in the loop the moment
+it is written instead of at the next push.
+
+### 6. Boundaries
 
 The application starter (`riffdb new`) remains as optional greenfield sugar
 and is not the identity. Framework integrations remain in dedicated
@@ -160,6 +174,9 @@ authorization, never precedes it.
   changed lock requires acceptance; incompatible change refuses toward
   migrate.
 - Campaign-03 sealed runs from package install with recorded cliff metrics.
+- LSP diagnostics parity: the same broken contract produces byte-identical
+  primary diagnostics through riffdb push and the LSP; grammar snapshot
+  corpus over the language reference's examples.
 
 ## Requirements and Work Packages
 
@@ -169,7 +186,8 @@ authorization, never precedes it.
 - **Defines or blocks:** WP-601 (distribution and published runtimes),
   WP-602 (init/push/status/diff/migrate verbs and riffdb.toml), WP-603
   (agent init, MCP guidance resources, generated teaching artifacts),
-  WP-604 (cross-driver conformance matrix and campaign-03).
+  WP-604 (cross-driver conformance matrix and campaign-03), WP-605
+  (tree-sitter grammar and LSP server).
 
 ## Decision Deadline
 
