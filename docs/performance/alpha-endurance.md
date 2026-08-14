@@ -9,8 +9,10 @@ multiple tenants.
 The checked workload and safety bounds live in
 `fixtures/endurance/alpha-manifest-v1.json`. A release-specific action manifest
 supplies exact argument arrays for the four installed clients, the sampler,
-conformance checks, and every lifecycle operation. Select it with
-`RIFFDB_ENDURANCE_ACTION_MANIFEST`. Commands are executed directly without a
+conformance checks, and every lifecycle operation. The runner defaults to the
+reviewed `release/evidence/endurance-actions-v1.json` manifest used by the
+release gate. Set `RIFFDB_ENDURANCE_ACTION_MANIFEST` only to select another
+explicitly reviewed campaign manifest. Commands are executed directly without a
 shell, so the action manifest cannot inject an arbitrary command line through
 quoting or interpolation. Fault controls belong to the external orchestrator;
 they are never added to the production application protocol.
@@ -43,7 +45,6 @@ The 24-hour form is a rehearsal. Only an uninterrupted 72-hour run can satisfy
 the alpha release gate.
 
 ```bash
-export RIFFDB_ENDURANCE_ACTION_MANIFEST="$PWD/release/evidence/endurance-actions-v1.json"
 export RIFFDB_ENDURANCE_RELEASE_ARTIFACT_SHA256='<sha256 of the installed release bundle>'
 
 ./scripts/alpha-endurance \
