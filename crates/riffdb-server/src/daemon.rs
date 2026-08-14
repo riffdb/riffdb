@@ -1534,6 +1534,11 @@ async fn run_multi_database_server(
                 .map_err(|_| DaemonError::NotificationShutdown)?;
         }
     }
+    let writer_evidence = graphs
+        .iter()
+        .filter_map(|graph| graph.graph.as_ref())
+        .map(RunningProductionGraph::writer_evidence_snapshot)
+        .collect::<Vec<_>>();
     if !matches!(stop, MultiDatabaseStop::TransportEnded) {
         transport.drain_after_signal().await?;
     }
@@ -1547,6 +1552,15 @@ async fn run_multi_database_server(
         if let Some(graph) = graph.graph {
             graph.shutdown().await.map_err(DaemonError::GraphShutdown)?;
         }
+    }
+    if matches!(stop, MultiDatabaseStop::Clean) {
+        let stdout = io::stdout();
+        let mut stdout = stdout.lock();
+        for snapshot in &writer_evidence {
+            let line = riffdb_observability::format_writer_evidence_v1_line(snapshot);
+            let _ = writeln!(stdout, "{line}");
+        }
+        let _ = stdout.flush();
     }
     match stop {
         MultiDatabaseStop::Clean => Ok(()),

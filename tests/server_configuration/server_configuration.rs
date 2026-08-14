@@ -116,7 +116,15 @@ fn two_named_databases_start_on_one_listener_and_create_isolated_files() -> Test
     let mut command = Command::new(env!("CARGO_BIN_EXE_riffdbd"));
     clear_server_environment(&mut command);
     command.arg("--config").arg(config);
-    run_to_readiness_and_shutdown(command)?;
+    let stdout = run_to_readiness_and_capture_shutdown(command)?;
+    if stdout
+        .lines()
+        .filter(|line| line.starts_with("riffdb-writer-evidence-v1\t"))
+        .count()
+        != 2
+    {
+        return Err("named databases did not emit one writer evidence line per graph".into());
+    }
     if !alpha.is_file() || !beta.is_file() {
         return Err("named databases did not create two isolated storage files".into());
     }
@@ -184,6 +192,7 @@ fn hosted_mcp_selects_a_named_database_before_authentication() -> TestResult<()>
         assert_hosted_mcp_status(mcp_address, &[("riffdb-database", "alpha")], 401)?;
         Ok(())
     })
+    .map(|_| ())
 }
 
 #[test]
@@ -277,13 +286,17 @@ fn clear_server_environment(command: &mut Command) {
 }
 
 fn run_to_readiness_and_shutdown(command: Command) -> TestResult<()> {
+    run_to_readiness_with(command, || Ok(())).map(|_| ())
+}
+
+fn run_to_readiness_and_capture_shutdown(command: Command) -> TestResult<String> {
     run_to_readiness_with(command, || Ok(()))
 }
 
 fn run_to_readiness_with(
     mut command: Command,
     after_readiness: impl FnOnce() -> TestResult<()>,
-) -> TestResult<()> {
+) -> TestResult<String> {
     command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -292,10 +305,23 @@ fn run_to_readiness_with(
     let stdout = child.stdout.take().ok_or("missing child stdout")?;
     let stderr = child.stderr.take().ok_or("missing child stderr")?;
     let (ready_sender, ready_receiver) = mpsc::sync_channel(1);
-    let stdout_thread = std::thread::spawn(move || {
+    let stdout_thread = std::thread::spawn(move || -> std::io::Result<String> {
+        let mut reader = BufReader::new(stdout);
         let mut line = String::new();
-        let result = BufReader::new(stdout).read_line(&mut line).map(|_| line);
-        let _ = ready_sender.send(result);
+        match reader.read_line(&mut line) {
+            Ok(_) => {
+                let _ = ready_sender.send(Ok(line.clone()));
+            }
+            Err(error) => {
+                let _ =
+                    ready_sender.send(Err(std::io::Error::new(error.kind(), error.to_string())));
+                return Err(error);
+            }
+        }
+        let mut suffix = String::new();
+        reader.read_to_string(&mut suffix)?;
+        line.push_str(&suffix);
+        Ok(line)
     });
     let stderr_thread = std::thread::spawn(move || {
         let mut reader = BufReader::new(stderr);
@@ -325,7 +351,9 @@ fn run_to_readiness_with(
     drop(stdin);
 
     let status = child.wait()?;
-    stdout_thread.join().map_err(|_| "stdout reader panicked")?;
+    let stdout = stdout_thread
+        .join()
+        .map_err(|_| "stdout reader panicked")??;
     let stderr = stderr_thread.join().map_err(|_| "stderr reader panicked")?;
     if !status.success() {
         return Err(format!(
@@ -334,7 +362,8 @@ fn run_to_readiness_with(
         )
         .into());
     }
-    assertion
+    assertion?;
+    Ok(stdout)
 }
 
 fn reserve_loopback_address() -> TestResult<SocketAddr> {
