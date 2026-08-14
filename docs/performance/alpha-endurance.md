@@ -71,6 +71,14 @@ The action manifest schema is `riffdb.alpha-endurance-actions/v1`. It contains:
 - exactly one staggered orchestrator command for every required crash or
   network fault.
 
+The reviewed release campaign places all lifecycle and fault actions on one
+20-minute cadence. Initial offsets are unique and at least 75 seconds apart,
+so supported offline operations are exercised repeatedly without turning the
+first campaign wave into one artificial, continuously unavailable maintenance
+window. The runner validates the exact interval and offset assigned to every
+action before setup; a clustered or independently shortened schedule is an
+invalid action manifest rather than evidence with a larger retry budget.
+
 Each command is a nonempty JSON string array. Secrets remain in protected
 environment/configuration files and must not appear in the manifest, process
 inventory, observations, or receipt.

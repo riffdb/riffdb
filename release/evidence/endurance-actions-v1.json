@@ -51,23 +51,23 @@
     "interval_seconds": 300
   },
   "lifecycles": [
-    {"name": "backup", "command": ["scripts/endurance-lifecycle", "backup"], "interval_seconds": 600, "initial_delay_seconds": 30},
-    {"name": "capability_rotation", "command": ["scripts/endurance-lifecycle", "capability_rotation"], "interval_seconds": 600, "initial_delay_seconds": 45},
-    {"name": "certificate_rotation", "command": ["scripts/endurance-lifecycle", "certificate_rotation"], "interval_seconds": 600, "initial_delay_seconds": 60},
-    {"name": "checkpoint", "command": ["scripts/endurance-lifecycle", "checkpoint"], "interval_seconds": 600, "initial_delay_seconds": 75},
-    {"name": "deploy_under_load", "command": ["scripts/endurance-lifecycle", "deploy_under_load"], "interval_seconds": 600, "initial_delay_seconds": 90},
-    {"name": "journal_recycle", "command": ["scripts/endurance-lifecycle", "journal_recycle"], "interval_seconds": 600, "initial_delay_seconds": 105},
-    {"name": "reactive_consumer", "command": ["scripts/endurance-lifecycle", "reactive_consumer"], "interval_seconds": 600, "initial_delay_seconds": 120},
-    {"name": "recovery", "command": ["scripts/endurance-lifecycle", "recovery"], "interval_seconds": 600, "initial_delay_seconds": 135},
-    {"name": "restart", "command": ["scripts/endurance-lifecycle", "restart"], "interval_seconds": 600, "initial_delay_seconds": 150},
-    {"name": "retention", "command": ["scripts/endurance-lifecycle", "retention"], "interval_seconds": 600, "initial_delay_seconds": 165}
+    {"name": "backup", "command": ["scripts/endurance-lifecycle", "backup"], "interval_seconds": 1200, "initial_delay_seconds": 30},
+    {"name": "capability_rotation", "command": ["scripts/endurance-lifecycle", "capability_rotation"], "interval_seconds": 1200, "initial_delay_seconds": 180},
+    {"name": "certificate_rotation", "command": ["scripts/endurance-lifecycle", "certificate_rotation"], "interval_seconds": 1200, "initial_delay_seconds": 330},
+    {"name": "checkpoint", "command": ["scripts/endurance-lifecycle", "checkpoint"], "interval_seconds": 1200, "initial_delay_seconds": 480},
+    {"name": "deploy_under_load", "command": ["scripts/endurance-lifecycle", "deploy_under_load"], "interval_seconds": 1200, "initial_delay_seconds": 630},
+    {"name": "journal_recycle", "command": ["scripts/endurance-lifecycle", "journal_recycle"], "interval_seconds": 1200, "initial_delay_seconds": 780},
+    {"name": "reactive_consumer", "command": ["scripts/endurance-lifecycle", "reactive_consumer"], "interval_seconds": 1200, "initial_delay_seconds": 855},
+    {"name": "recovery", "command": ["scripts/endurance-lifecycle", "recovery"], "interval_seconds": 1200, "initial_delay_seconds": 930},
+    {"name": "restart", "command": ["scripts/endurance-lifecycle", "restart"], "interval_seconds": 1200, "initial_delay_seconds": 1005},
+    {"name": "retention", "command": ["scripts/endurance-lifecycle", "retention"], "interval_seconds": 1200, "initial_delay_seconds": 1080}
   ],
   "faults": [
-    {"name": "checkpoint_crash", "command": ["scripts/endurance-fault", "checkpoint_crash"], "interval_seconds": 900, "initial_delay_seconds": 300},
-    {"name": "consumer_after_command_before_ack", "command": ["scripts/endurance-fault", "consumer_after_command_before_ack"], "interval_seconds": 900, "initial_delay_seconds": 330},
-    {"name": "journal_recycle_crash", "command": ["scripts/endurance-fault", "journal_recycle_crash"], "interval_seconds": 900, "initial_delay_seconds": 360},
-    {"name": "network_interrupt", "command": ["scripts/endurance-fault", "network_interrupt"], "interval_seconds": 900, "initial_delay_seconds": 390},
-    {"name": "process_kill", "command": ["scripts/endurance-fault", "process_kill"], "interval_seconds": 900, "initial_delay_seconds": 420}
+    {"name": "checkpoint_crash", "command": ["scripts/endurance-fault", "checkpoint_crash"], "interval_seconds": 1200, "initial_delay_seconds": 105},
+    {"name": "consumer_after_command_before_ack", "command": ["scripts/endurance-fault", "consumer_after_command_before_ack"], "interval_seconds": 1200, "initial_delay_seconds": 255},
+    {"name": "journal_recycle_crash", "command": ["scripts/endurance-fault", "journal_recycle_crash"], "interval_seconds": 1200, "initial_delay_seconds": 405},
+    {"name": "network_interrupt", "command": ["scripts/endurance-fault", "network_interrupt"], "interval_seconds": 1200, "initial_delay_seconds": 555},
+    {"name": "process_kill", "command": ["scripts/endurance-fault", "process_kill"], "interval_seconds": 1200, "initial_delay_seconds": 705}
   ],
   "workload_coverage": ["cold_keys", "events", "hot_keys", "live_queries", "multiple_tenants", "reads", "workflows", "writes"]
 }
