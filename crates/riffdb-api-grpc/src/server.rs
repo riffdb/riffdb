@@ -15,7 +15,7 @@ use riffdb_auth::{
     AuthenticatedPrincipal, AuthenticationContext, CapabilityDigestKeyProvider,
     CredentialAuthenticator,
 };
-use riffdb_errors::{ApplicationOperation, PublicErrorKind};
+use riffdb_errors::{ApplicationOperation, PublicError, PublicErrorKind};
 use riffdb_proto::{
     MAX_CONTRACT_MIGRATION_REQUEST_BYTES, MAX_PUBLIC_REQUEST_BYTES, MAX_PUBLIC_RESPONSE_BYTES,
     PublicWireError, app::v1 as app_v1, application_error_to_proto, v1, validate_public_message,
@@ -48,7 +48,7 @@ use crate::authentication::{
 use crate::conversion::*;
 use crate::error::{
     RESPONSE_TOO_LARGE_MESSAGE, status_from_application_boundary, status_from_application_failure,
-    status_from_service_failure,
+    status_from_public_error, status_from_service_failure,
 };
 use crate::generated::admin_service_server::{AdminService, AdminServiceServer};
 use crate::generated::command_service_server::{CommandService, CommandServiceServer};
@@ -1043,7 +1043,7 @@ fn unauthenticated() -> Status {
 }
 
 fn service_not_ready() -> Status {
-    Status::unavailable("service is not ready")
+    status_from_public_error(&PublicError::storage_unavailable())
 }
 
 fn map_service<T>(result: ServiceResult<T>) -> Result<T, Status> {
@@ -3309,7 +3309,10 @@ mod tests {
             None => service_not_ready(),
         };
         assert_eq!(status.code(), tonic::Code::Unavailable);
-        assert!(status.details().is_empty());
+        assert_eq!(
+            riffdb_proto::decode_public_error(status.details()),
+            Ok(PublicError::storage_unavailable())
+        );
         assert_eq!(route.security_fetches.load(Ordering::SeqCst), 0);
     }
 
@@ -3432,6 +3435,10 @@ mod tests {
             };
 
         assert_eq!(status.code(), tonic::Code::Unavailable);
+        assert_eq!(
+            riffdb_proto::decode_public_error(status.details()),
+            Ok(PublicError::storage_unavailable())
+        );
         assert_eq!(route.security_fetches.load(Ordering::SeqCst), 0);
         assert_eq!(authenticator.0.load(Ordering::SeqCst), 0);
     }
