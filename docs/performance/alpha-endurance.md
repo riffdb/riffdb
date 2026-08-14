@@ -86,6 +86,13 @@ window. The runner validates the exact interval and offset assigned to every
 action before setup; a clustered or independently shortened schedule is an
 invalid action manifest rather than evidence with a larger retry budget.
 
+The first semantic conformance checkpoint waits 900 seconds. The slowest
+closed language worker needs one complete 100-slot schedule before every
+declared workload class is observable, and recovery or rotation pauses can
+extend that first cycle. Later checkpoints remain five minutes apart. The
+warmup is an exact checked part of the action manifest: pre-coverage worker
+evidence is not misclassified as an application conformance failure.
+
 Each command is a nonempty JSON string array. Secrets remain in protected
 environment/configuration files and must not appear in the manifest, process
 inventory, observations, or receipt.
