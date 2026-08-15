@@ -521,6 +521,31 @@ pub struct NearestQueryResult {
     /// accounting (ADR-0087); without it the adapter would have to fabricate
     /// the number the executor demands.
     pub scanned_rows: u64,
+    /// Compiler-owned exact/ANN routing decision for this organization.
+    pub search_kind: NearestSearchKind,
+    /// Bounded graph statistics when ANN engaged. These describe only the
+    /// already-authorized candidate set for this request.
+    pub ann_stats: Option<AnnExecutionStats>,
+}
+
+/// Search tier selected from the declared per-organization threshold.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum NearestSearchKind {
+    /// Exact reference evaluator and small-partition default.
+    Exact,
+    /// First-party HNSW under the declared recall target.
+    Approximate,
+}
+
+/// Safe bounded observability for one ephemeral per-organization graph.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct AnnExecutionStats {
+    /// Admitted vectors represented in the graph.
+    pub node_count: usize,
+    /// Directed neighbor links across all levels.
+    pub edge_count: usize,
+    /// Highest graph level.
+    pub maximum_level: usize,
 }
 
 /// Executes a nearest-neighbor query against a published snapshot using only
@@ -552,7 +577,8 @@ pub fn nearest_query_snapshot(
     }
 }
 
-/// Executes exact nearest search with mandatory principal-policy admission.
+/// Executes exact or declared-threshold ANN search with mandatory
+/// principal-policy admission.
 ///
 /// Ordinary predicates and `admission` both run before vector validation,
 /// distance computation, and ranking. A denied row therefore influences no
@@ -645,26 +671,45 @@ pub fn nearest_query_snapshot_with_admission<A: NearestCandidateAdmission>(
         }
     }
 
-    // Run exact KNN. Every candidate and the query vector were validated
-    // against the declared dimension above, so a mismatch here is unreachable
-    // in practice; it still maps to the typed error, never a panic.
+    // Route only from compiler-owned metadata and the admitted vector count
+    // for this one organization. ANN graph topology is constructed after all
+    // predicates and policy admission, so denied rows and other organizations
+    // cannot shape its statistics or traversal.
     let candidate_refs: Vec<&riffdb_types::CanonicalVector> = candidate_vectors.iter().collect();
-    let scored = crate::nearest::exact_knn(
-        &request.query_vector,
-        &candidate_refs,
-        request.metric,
-        request.k,
-    )
-    .map_err(
-        |crate::nearest::NearestError::DimensionMismatch {
-             query, candidate, ..
-         }| {
-            QueryError::VectorDimensionMismatch {
-                expected: query,
-                actual: candidate,
-            }
-        },
-    )?;
+    let ann_config = definition.vector_ann_config(request.vector_field);
+    let (scored, search_kind, ann_stats) = if let Some(config) =
+        ann_config.filter(|config| candidate_refs.len() > config.row_threshold() as usize)
+    {
+        let index = crate::hnsw::HnswIndex::build(&candidate_refs, request.metric)
+            .map_err(map_nearest_error)?;
+        let scored = index
+            .search(
+                &request.query_vector,
+                &candidate_refs,
+                request.k,
+                config.recall_target_bps(),
+            )
+            .map_err(map_nearest_error)?;
+        let stats = index.stats();
+        (
+            scored,
+            NearestSearchKind::Approximate,
+            Some(AnnExecutionStats {
+                node_count: stats.node_count,
+                edge_count: stats.edge_count,
+                maximum_level: stats.maximum_level,
+            }),
+        )
+    } else {
+        let scored = crate::nearest::exact_knn(
+            &request.query_vector,
+            &candidate_refs,
+            request.metric,
+            request.k,
+        )
+        .map_err(map_nearest_error)?;
+        (scored, NearestSearchKind::Exact, None)
+    };
 
     let primary_key_fields = definition.primary_key_fields().to_vec();
     let projected_fields = definition.projected_fields().to_vec();
@@ -686,7 +731,20 @@ pub fn nearest_query_snapshot_with_admission<A: NearestCandidateAdmission>(
         projected_fields,
         rows,
         scanned_rows: scanned as u64,
+        search_kind,
+        ann_stats,
     })
+}
+
+fn map_nearest_error(error: crate::nearest::NearestError) -> QueryError {
+    match error {
+        crate::nearest::NearestError::DimensionMismatch {
+            query, candidate, ..
+        } => QueryError::VectorDimensionMismatch {
+            expected: query,
+            actual: candidate,
+        },
+    }
 }
 
 /// Executes `request` against `snapshot` under `definition`.

@@ -63,6 +63,7 @@ mod checkpoint;
 mod definition;
 mod engine;
 mod error;
+mod hnsw;
 mod hooks;
 pub mod nearest;
 mod outcome;
@@ -73,7 +74,7 @@ pub use apply::ApplyProgress;
 pub use checkpoint::{CheckpointError, ManifestV1, SegmentInventoryEntry};
 pub use definition::{
     ColumnarProjectionDefinition, DefinitionError, DefinitionFingerprint, LAYOUT_VERSION,
-    RegisteredDefinition,
+    RegisteredDefinition, VectorAnnConfig,
 };
 pub use engine::{ColumnarEngine, OpenOptions};
 pub use error::{ColumnarError, StorageFailure};
@@ -83,11 +84,12 @@ pub use outcome::{
     frontier_lag_sequences, lagging_for,
 };
 pub use query::{
-    AggregateOp, AggregateValue, ColumnPredicate, ColumnarQueryRequest, GroupBySpec,
-    NearestCandidate, NearestCandidateAdmission, NearestQueryAdmissionError, NearestQueryRequest,
-    NearestQueryResult, NearestResultRow, OrderSpec, QueryBudget, QueryError, QueryResult,
-    QueryRow, QueryRows, SortDirection, nearest_query_snapshot,
-    nearest_query_snapshot_with_admission, query_snapshot, query_snapshot_with_policy_admission,
+    AggregateOp, AggregateValue, AnnExecutionStats, ColumnPredicate, ColumnarQueryRequest,
+    GroupBySpec, NearestCandidate, NearestCandidateAdmission, NearestQueryAdmissionError,
+    NearestQueryRequest, NearestQueryResult, NearestResultRow, NearestSearchKind, OrderSpec,
+    QueryBudget, QueryError, QueryResult, QueryRow, QueryRows, SortDirection,
+    nearest_query_snapshot, nearest_query_snapshot_with_admission, query_snapshot,
+    query_snapshot_with_policy_admission,
 };
 pub use store::{
     ColumnarSnapshot, LiveRow, MergedRow, OrgDelta, OrgKey, PrimaryKeyBytes, SegmentId,

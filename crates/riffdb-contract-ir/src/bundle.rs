@@ -67,6 +67,8 @@ pub const BUNDLE_FORMAT_VERSION_V9: u32 = 9;
 pub const BUNDLE_FORMAT_VERSION_V10: u32 = 10;
 /// Bundle framing containing declared secret-to-non-secret disclosures.
 pub const BUNDLE_FORMAT_VERSION_V11: u32 = 11;
+/// Bundle framing containing declared vector ANN thresholds and recall targets.
+pub const BUNDLE_FORMAT_VERSION_V12: u32 = 12;
 /// Canonical grammar version represented by a bundle.
 pub const GRAMMAR_VERSION_V1: u32 = 1;
 /// Contract grammar containing compiled workflows and service-owned values.
@@ -89,6 +91,8 @@ pub const GRAMMAR_VERSION_V9: u32 = 9;
 pub const GRAMMAR_VERSION_V10: u32 = 10;
 /// Contract grammar containing explicit `reveals` flow annotations.
 pub const GRAMMAR_VERSION_V11: u32 = 11;
+/// Contract grammar containing optional atomic vector ANN declarations.
+pub const GRAMMAR_VERSION_V12: u32 = 12;
 /// Executable IR version represented by a bundle.
 pub const EXECUTABLE_IR_VERSION_V1: u32 = 1;
 /// Executable IR containing compiled workflow transitions and service values.
@@ -111,6 +115,8 @@ pub const EXECUTABLE_IR_VERSION_V9: u32 = 9;
 pub const EXECUTABLE_IR_VERSION_V10: u32 = 10;
 /// Executable IR containing exact secret disclosure declarations.
 pub const EXECUTABLE_IR_VERSION_V11: u32 = 11;
+/// Executable IR containing `VectorAnnSpecV1` schema metadata.
+pub const EXECUTABLE_IR_VERSION_V12: u32 = 12;
 
 const RELATIONSHIP_SCHEMA_EXTENSION: u32 = 0xffff_fffe;
 const UNIQUE_KEY_SCHEMA_EXTENSION: u32 = 0xffff_fffd;
@@ -120,6 +126,7 @@ const INDEX_FIELD_ENCODING_EXTENSION: u32 = 0xffff_fffa;
 // 0xffff_fff9 is the high word of the event-policy-anchor magic below;
 // the secret extension takes the next clean value.
 const SECRET_FIELD_SPEC_SCHEMA_EXTENSION: u32 = 0xffff_fff8;
+const VECTOR_ANN_SPEC_SCHEMA_EXTENSION: u32 = 0xffff_fff7;
 // The second word cannot be a valid following source-name length. Keeping the
 // extension magic eight bytes wide prevents a future stable event ID equal to
 // the first word from being misread as a partition extension.
@@ -1035,7 +1042,9 @@ impl ContractBundle {
         mcp_command_names: McpCommandNameRegistryV2,
         compatibility: CompatibilityReport,
     ) -> Result<Self, IrValidationError> {
-        let version = if commands.iter().any(CommandPlan::requires_ir_v11) {
+        let version = if schema.requires_ir_v12() {
+            BUNDLE_FORMAT_VERSION_V12
+        } else if commands.iter().any(CommandPlan::requires_ir_v11) {
             BUNDLE_FORMAT_VERSION_V11
         } else if commands.iter().any(CommandPlan::requires_ir_v10) {
             BUNDLE_FORMAT_VERSION_V10
@@ -1145,6 +1154,10 @@ impl ContractBundle {
                 BUNDLE_FORMAT_VERSION_V11,
                 GRAMMAR_VERSION_V11,
                 EXECUTABLE_IR_VERSION_V11
+            ) | (
+                BUNDLE_FORMAT_VERSION_V12,
+                GRAMMAR_VERSION_V12,
+                EXECUTABLE_IR_VERSION_V12
             )
         ) || (ir_version < EXECUTABLE_IR_VERSION_V2
             && (!workflows.is_empty() || commands.iter().any(CommandPlan::requires_ir_v2)))
@@ -1163,6 +1176,7 @@ impl ContractBundle {
                 && commands.iter().any(CommandPlan::requires_ir_v10))
             || (ir_version < EXECUTABLE_IR_VERSION_V11
                 && commands.iter().any(CommandPlan::requires_ir_v11))
+            || (ir_version < EXECUTABLE_IR_VERSION_V12 && schema.requires_ir_v12())
             || (ir_version >= EXECUTABLE_IR_VERSION_V6
                 && commands
                     .iter()
@@ -2616,6 +2630,16 @@ fn encode_schema(writer: &mut Writer, schema: &SchemaIr) -> Result<(), IrValidat
             writer.u32(spec.field().get())?;
         }
     }
+    if !schema.vector_ann_specs().is_empty() {
+        writer.u32(VECTOR_ANN_SPEC_SCHEMA_EXTENSION)?;
+        writer.u32(schema.vector_ann_specs().len() as u32)?;
+        for spec in schema.vector_ann_specs() {
+            writer.u32(spec.entity().get())?;
+            writer.u32(spec.field().get())?;
+            writer.u32(spec.row_threshold())?;
+            writer.u32(spec.recall_target_bps())?;
+        }
+    }
     Ok(())
 }
 
@@ -3618,6 +3642,10 @@ fn decode_bundle(bytes: &[u8]) -> Result<ContractBundle, IrValidationError> {
             BUNDLE_FORMAT_VERSION_V11,
             GRAMMAR_VERSION_V11,
             EXECUTABLE_IR_VERSION_V11
+        ) | (
+            BUNDLE_FORMAT_VERSION_V12,
+            GRAMMAR_VERSION_V12,
+            EXECUTABLE_IR_VERSION_V12
         )
     ) {
         return Err(IrValidationError::UnsupportedVersion {
@@ -4173,6 +4201,20 @@ fn decode_schema(reader: &mut Reader<'_>) -> Result<SchemaIr, IrValidationError>
             secret_field_specs.push(crate::SecretFieldSpecV1::new(entity, field));
         }
     }
+    let mut vector_ann_specs = Vec::new();
+    if reader.remaining() >= 4 && reader.peek_u32()? == VECTOR_ANN_SPEC_SCHEMA_EXTENSION {
+        let _marker = reader.u32()?;
+        let spec_count = decode_len(reader, "vector ANN specs", crate::MAX_DECLARATIONS_PER_KIND)?;
+        vector_ann_specs.reserve(spec_count);
+        for _ in 0..spec_count {
+            vector_ann_specs.push(crate::VectorAnnSpecV1::new(
+                decode_entity_id(reader)?,
+                decode_field_id(reader)?,
+                reader.u32()?,
+                reader.u32()?,
+            )?);
+        }
+    }
     SchemaIr::with_integrity_and_delete_policies(
         entities,
         events,
@@ -4183,7 +4225,8 @@ fn decode_schema(reader: &mut Reader<'_>) -> Result<SchemaIr, IrValidationError>
         delete_policies,
     )?
     .with_vector_field_specs(vector_field_specs)?
-    .with_secret_field_specs(secret_field_specs)
+    .with_secret_field_specs(secret_field_specs)?
+    .with_vector_ann_specs(vector_ann_specs)
 }
 
 fn decode_entity_schema(reader: &mut Reader<'_>) -> Result<EntitySchema, IrValidationError> {

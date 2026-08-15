@@ -62,7 +62,28 @@ pub struct RegisteredDefinition {
     primary_key_types: Vec<ValueType>,
     /// Entity primary-key codec used to decode [`crate::PrimaryKeyBytes`].
     primary_key_schema: KeySchema,
+    vector_ann: std::collections::BTreeMap<FieldId, VectorAnnConfig>,
     fingerprint: DefinitionFingerprint,
+}
+
+/// Compiler-owned ANN routing and quality contract for one vector field.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct VectorAnnConfig {
+    row_threshold: u32,
+    recall_target_bps: u32,
+}
+
+impl VectorAnnConfig {
+    /// Per-organization admitted vector count above which ANN engages.
+    #[must_use]
+    pub const fn row_threshold(self) -> u32 {
+        self.row_threshold
+    }
+    /// Required recall in integer basis points.
+    #[must_use]
+    pub const fn recall_target_bps(self) -> u32 {
+        self.recall_target_bps
+    }
 }
 
 impl RegisteredDefinition {
@@ -134,12 +155,28 @@ impl RegisteredDefinition {
                 tag: org_field.value_type().tag(),
             });
         }
+        let vector_ann = definition
+            .projected_fields
+            .iter()
+            .filter_map(|field| {
+                schema.vector_ann_spec(entity.id(), *field).map(|spec| {
+                    (
+                        *field,
+                        VectorAnnConfig {
+                            row_threshold: spec.row_threshold(),
+                            recall_target_bps: spec.recall_target_bps(),
+                        },
+                    )
+                })
+            })
+            .collect::<std::collections::BTreeMap<_, _>>();
         let fingerprint = compute_fingerprint(
             entity.id(),
             &definition.projected_fields,
             &projected_types,
             definition.org_scope_field,
             org_field.value_type(),
+            &vector_ann,
         );
         let primary_key_fields = entity.primary_key_fields().to_vec();
         let primary_key_types: Vec<ValueType> = entity
@@ -159,6 +196,7 @@ impl RegisteredDefinition {
             primary_key_fields,
             primary_key_types,
             primary_key_schema: entity.primary_key().clone(),
+            vector_ann,
             fingerprint,
         })
     }
@@ -221,6 +259,12 @@ impl RegisteredDefinition {
     #[must_use]
     pub const fn primary_key_schema(&self) -> &KeySchema {
         &self.primary_key_schema
+    }
+
+    /// Returns the compiler-owned ANN contract for a projected vector field.
+    #[must_use]
+    pub fn vector_ann_config(&self, field: FieldId) -> Option<VectorAnnConfig> {
+        self.vector_ann.get(&field).copied()
     }
 
     /// Definition fingerprint.
@@ -328,6 +372,7 @@ fn compute_fingerprint(
     projected_types: &[ValueType],
     org_scope_field: FieldId,
     org_type: &ValueType,
+    vector_ann: &std::collections::BTreeMap<FieldId, VectorAnnConfig>,
 ) -> DefinitionFingerprint {
     let mut payload = Vec::new();
     payload.extend_from_slice(&LAYOUT_VERSION.to_be_bytes());
@@ -339,6 +384,18 @@ fn compute_fingerprint(
     }
     payload.extend_from_slice(&org_scope_field.get().to_be_bytes());
     encode_type_fingerprint(org_type, &mut payload);
+    // Preserve the exact pre-ANN fingerprint when the optional extension is
+    // absent, so opening an unchanged projection never spuriously invalidates
+    // its checkpoint. The marker makes the additive payload unambiguous.
+    if !vector_ann.is_empty() {
+        payload.extend_from_slice(b"ANN\0");
+        payload.extend_from_slice(&(vector_ann.len() as u32).to_be_bytes());
+        for (field, config) in vector_ann {
+            payload.extend_from_slice(&field.get().to_be_bytes());
+            payload.extend_from_slice(&config.row_threshold.to_be_bytes());
+            payload.extend_from_slice(&config.recall_target_bps.to_be_bytes());
+        }
+    }
     // Domain-separated SHA-256; CanonicalValue domain is acceptable for a
     // private engine fingerprint (not a public wire identity).
     let digest = hash(HashDomain::CanonicalValue, &payload);
@@ -468,6 +525,11 @@ contract ColumnarDef version 1 {
         )
         .expect("register again");
         assert_eq!(registered.fingerprint(), again.fingerprint());
+        assert_eq!(
+            registered.fingerprint().to_string(),
+            "51ace753d7352e880810b8671e66b49eafe4e382872dd616e64ef8f85f897561",
+            "an ANN-free definition must retain its pre-V12 fingerprint"
+        );
     }
 
     #[test]

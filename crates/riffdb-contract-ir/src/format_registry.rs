@@ -1031,6 +1031,7 @@ layout!(SCHEMA_LAYOUT, "StructuralSchema", {
     "delete_policies" => "IR v5+: optional u32 marker 0xfffffffc + u32 count + DeletePolicySchemaV1[]; omitted when empty",
     "vector_field_specs" => "IR v6+: optional u32 marker 0xfffffffb + u32 count + VectorFieldSpecV1[]; omitted when empty",
     "secret_field_specs" => "IR v8+: optional u32 marker 0xfffffff8 + u32 count + SecretFieldSpecV1[]; omitted when empty",
+    "vector_ann_specs" => "IR v12+: optional u32 marker 0xfffffff7 + u32 count + VectorAnnSpecV1[]; omitted when empty",
 });
 layout!(RELATIONSHIP_LAYOUT, "RelationshipSchema", {
     "name" => "string",
@@ -1060,6 +1061,12 @@ layout!(VECTOR_FIELD_SPEC_LAYOUT, "VectorFieldSpecV1", {
 layout!(SECRET_FIELD_SPEC_LAYOUT, "SecretFieldSpecV1", {
     "entity" => "EntityTypeId",
     "field" => "FieldId",
+});
+layout!(VECTOR_ANN_SPEC_LAYOUT, "VectorAnnSpecV1", {
+    "entity" => "EntityTypeId",
+    "field" => "FieldId",
+    "row_threshold" => "u32 rows per organization (1..=65536)",
+    "recall_target_bps" => "u32 basis points (1..=10000)",
 });
 layout!(ENTITY_LAYOUT, "EntitySchema", {
     "id" => "u32",
@@ -1391,6 +1398,7 @@ pub(crate) const FORMAT_LAYOUTS: &[FormatLayout] = &[
     DELETE_POLICY_LAYOUT,
     VECTOR_FIELD_SPEC_LAYOUT,
     SECRET_FIELD_SPEC_LAYOUT,
+    VECTOR_ANN_SPEC_LAYOUT,
     ENTITY_LAYOUT,
     EVENT_LAYOUT,
     EVENT_PARTITION_LAYOUT,
@@ -2290,7 +2298,7 @@ mod tests {
         // (or a witness list both sides also append to) would make that
         // merge pass silently. Re-run this test after any merge touching the
         // registry.
-        assert_eq!(FORMAT_LAYOUTS.len(), 61);
+        assert_eq!(FORMAT_LAYOUTS.len(), 62);
         for layout in FORMAT_LAYOUTS {
             assert!(!layout.fields.is_empty(), "{}", layout.name);
             assert!(

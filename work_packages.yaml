@@ -11797,10 +11797,17 @@ work_packages:
   required_adrs: [ADR-0002, ADR-0086, ADR-0091]
   allowed_paths: [work_packages.yaml, crates/riffdb-columnar/**, crates/riffdb-projection/**,
     crates/riffdb-contract-syntax/**, crates/riffdb-contract-ir/**,
-    crates/riffdb-contract-compiler/**, docs/**, fixtures/**, Cargo.toml, Cargo.lock, deny.toml]
+    crates/riffdb-contract-compiler/**, crates/riffdb-catalog/**, crates/riffdb-commit/**,
+    crates/riffdb-cli/assets/editor/**, docs/**, fixtures/**, Cargo.toml, Cargo.lock, deny.toml]
   scope_expansion: Contract syntax, IR, and compiler are included solely because VEC-009 and
     VEC-010 require the ANN row threshold and recall target to be declared on the projection;
-    the original ladder did not anticipate ownership of those declarations.
+    the original ladder did not anticipate ownership of those declarations. Maintainer approval
+    on 2026-08-15 additionally admits the optional `ann_threshold UInt, recall_target_bps UInt`
+    vector-field clause through additive grammar/IR/bundle V12, and expands catalog and commit
+    ownership only far enough to validate and audit that exact version. Existing bundles remain
+    byte-identical; ANN metadata does not change authoritative index derivation. Maintainer
+    approval on 2026-08-15 also admits `crates/riffdb-cli/assets/editor/**` only for the generated
+    highlight snapshot made stale by the new contextual vector-field words.
   deliverables:
   - First-party HNSW implementation with per-organization graph isolation, no external
     dependency (forbid(unsafe_code) preserved)
@@ -11814,6 +11821,7 @@ work_packages:
     declared, observable property
   acceptance_commands:
   - cargo test -p riffdb-contract-syntax -p riffdb-contract-ir -p riffdb-contract-compiler
+  - cargo test -p riffdb-catalog -p riffdb-commit --all-features
   - cargo test -p riffdb-columnar -p riffdb-projection --all-features
   - cargo deny check
   exit_gate: The approximate tier meets each projection's declared recall target against
@@ -11825,8 +11833,9 @@ work_packages:
     scale: Graph memory and maintenance work bounded per organization; recall harness
       budgeted.
   deferred:
-  - NOT STARTED. WP-596 must first close the exact-tier production path; the bounded exact
-    heap, declaration surface, and approximate structure then land here.
+  - Durable vector graphs are intentionally absent in the POC. The first-party graph is
+    deterministically rebuilt from the org-scoped visible snapshot, so compaction correctness
+    is measured as recall at a frozen frontier rather than byte equality.
   human_review_triggers: *id001
 - id: WP-595
   name: Vectors pillar acceptance — end-to-end evidence and handbook graduation

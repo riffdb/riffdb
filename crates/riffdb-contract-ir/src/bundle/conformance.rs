@@ -262,6 +262,7 @@ fn ordered_layout_registry_has_one_closed_witness_slot_per_layout() {
                 "delete_policies",
                 "vector_field_specs",
                 "secret_field_specs",
+                "vector_ann_specs",
             ],
         ),
         (
@@ -293,6 +294,10 @@ fn ordered_layout_registry_has_one_closed_witness_slot_per_layout() {
             ],
         ),
         ("SecretFieldSpecV1", vec!["entity", "field"]),
+        (
+            "VectorAnnSpecV1",
+            vec!["entity", "field", "row_threshold", "recall_target_bps"],
+        ),
         (
             "EntitySchema",
             vec![
@@ -612,6 +617,7 @@ fn ordered_layout_registry_has_one_closed_witness_slot_per_layout() {
         ("DeletePolicySchemaV1", "delete-policy schema fixture"),
         ("VectorFieldSpecV1", "vector contract front-door fixture"),
         ("SecretFieldSpecV1", "secret contract front-door fixture"),
+        ("VectorAnnSpecV1", "vector ANN contract front-door fixture"),
         ("EntitySchema", "command schema closure fixture"),
         ("EventSchema", "projection source fixture"),
         ("EventPartitionSchema", "partitioned event fixture"),

@@ -138,6 +138,7 @@ pub(crate) fn vector_field_item(
     source_fields: Vec<Spanned<String>>,
     slo_keyword: Spanned<String>,
     staleness_slo: Spanned<String>,
+    ann: Option<VectorAnnDeclaration>,
     lo: usize,
     hi: usize,
 ) -> Result<Spanned<EntityItem>, SyntaxDiagnostic> {
@@ -154,10 +155,36 @@ pub(crate) fn vector_field_item(
             metric,
             source_fields,
             staleness_slo,
+            ann,
         }),
         lo,
         hi,
     ))
+}
+
+/// Builds the optional ANN clause while keeping its vocabulary contextual.
+pub(crate) fn vector_ann_declaration(
+    threshold_keyword: Spanned<String>,
+    row_threshold: Spanned<String>,
+    recall_keyword: Spanned<String>,
+    recall_target_bps: Spanned<String>,
+) -> Result<VectorAnnDeclaration, SyntaxDiagnostic> {
+    if threshold_keyword.value != "ann_threshold" {
+        return Err(SyntaxDiagnostic::new(
+            SyntaxDiagnosticCode::InvalidToken,
+            threshold_keyword.span,
+        ));
+    }
+    if recall_keyword.value != "recall_target_bps" {
+        return Err(SyntaxDiagnostic::new(
+            SyntaxDiagnosticCode::InvalidToken,
+            recall_keyword.span,
+        ));
+    }
+    Ok(VectorAnnDeclaration {
+        row_threshold,
+        recall_target_bps,
+    })
 }
 
 /// Builds a stored entity field carrying a contextual classification
