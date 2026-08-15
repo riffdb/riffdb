@@ -78,6 +78,18 @@ def select_one(directory: Path, pattern: str) -> Path:
     return matches[0]
 
 
+def assert_editor_assets(installed: Path) -> None:
+    source = ROOT / "crates/riffdb-cli/assets/editor"
+    expected = sorted(path.relative_to(source) for path in source.rglob("*") if path.is_file())
+    actual = sorted(path.relative_to(installed) for path in installed.rglob("*") if path.is_file()) if installed.is_dir() else []
+    if len(expected) != 11 or actual != expected:
+        fail("installed CLI editor grammar inventory is not exact")
+    for relative in expected:
+        candidate = installed / relative
+        if candidate.is_symlink() or candidate.read_bytes() != (source / relative).read_bytes():
+            fail("installed CLI editor grammar asset differs from the canonical package input")
+
+
 def safe_extract_crate(archive_path: Path, destination: Path, expected_root: str) -> Path:
     with tarfile.open(archive_path, "r:gz") as archive:
         members = archive.getmembers()
@@ -119,6 +131,7 @@ def smoke_native(distribution: Path, target: str, scratch: Path) -> None:
         cwd=scratch,
     )
     run([str(prefix / "bin/riffdb"), "--help"], cwd=scratch)
+    assert_editor_assets(prefix / "share/riffdb/editor")
 
 
 def smoke_typescript(distribution: Path, arch: str, scratch: Path) -> None:
@@ -154,6 +167,7 @@ def smoke_typescript(distribution: Path, arch: str, scratch: Path) -> None:
         environment=environment,
     )
     run([str(project / "node_modules/.bin/riffdb"), "--help"], cwd=project, environment=environment)
+    assert_editor_assets(project / "node_modules/@riffdb/cli/editor")
     run(
         [
             "node",
@@ -193,6 +207,10 @@ def smoke_python(distribution: Path, scratch: Path) -> None:
         environment=environment,
     )
     run([str(virtual / "bin/riffdb"), "--help"], cwd=scratch, environment=environment)
+    site_packages = sorted((virtual / "lib").glob("python*/site-packages/riffdb_cli/editor"))
+    if len(site_packages) != 1:
+        fail("Python CLI editor grammar asset root is absent or ambiguous")
+    assert_editor_assets(site_packages[0])
     run(
         [
             str(python),
@@ -256,6 +274,7 @@ def smoke_rust(distribution: Path, scratch: Path) -> None:
         if not regular(archive):
             fail(f"Rust package artifact is absent: {name}")
         roots[name] = safe_extract_crate(archive, unpacked, f"{name}-{VERSION}")
+    assert_editor_assets(roots["riffdb-cli"] / "assets/editor")
     config = scratch / ".cargo/config.toml"
     patches = ["[patch.crates-io]"]
     for name in order:

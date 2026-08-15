@@ -9,6 +9,7 @@ mod cli;
 mod config;
 mod credential;
 mod input;
+mod lsp;
 mod output;
 mod project;
 mod runner;

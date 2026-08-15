@@ -1,0 +1,150 @@
+#!/usr/bin/env python3
+"""Generate/check bounded editor grammar inventories and highlight snapshots."""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+from pathlib import Path
+import re
+import sys
+
+
+ROOT = Path(__file__).resolve().parent.parent
+CONTRACT_LEXER = ROOT / "crates/riffdb-contract-syntax/src/lexer.rs"
+QUERY_PARSER = ROOT / "crates/riffdb-riffql-syntax/src/parser.rs"
+CONTRACT_KEYWORDS = ROOT / "clients/editor/tree-sitter-riff/keywords.json"
+QUERY_KEYWORDS = ROOT / "clients/editor/tree-sitter-riffql/keywords.json"
+SNAPSHOT = ROOT / "fixtures/editor-grammar/highlights-v1.json"
+CLI_ASSET_ROOT = ROOT / "crates/riffdb-cli/assets/editor"
+MAX_EXAMPLES = 256
+MAX_EXAMPLE_BYTES = 1_048_576
+WORD = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
+
+def canonical(value: object) -> bytes:
+    return (json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n").encode()
+
+
+def sha256(content: bytes) -> str:
+    return hashlib.sha256(content).hexdigest()
+
+
+def contract_keywords(source: str) -> list[str]:
+    values = re.findall(r'#\[token\("([^"\\]+)"', source)
+    return sorted({value for value in values if WORD.fullmatch(value)})
+
+
+def query_keywords(source: str) -> list[str]:
+    # The hand-written authoritative parser compares contextual words through
+    # several closed helpers and direct matches. Its standalone identifier
+    # string literals are exactly that registry; diagnostic prose contains
+    # whitespace and therefore cannot enter this inventory.
+    return sorted(set(re.findall(r'"([A-Za-z_][A-Za-z0-9_]*)"', source)))
+
+
+def fenced_sources(path: Path, languages: set[str]) -> list[str]:
+    source = path.read_text(encoding="utf-8")
+    results: list[str] = []
+    active = False
+    lines: list[str] = []
+    for line in source.splitlines(keepends=True):
+        if not active:
+            marker = re.fullmatch(r"```([A-Za-z0-9_-]+)\s*\n?", line)
+            if marker and marker.group(1) in languages:
+                active = True
+                lines = []
+        elif line.rstrip("\r\n") == "```":
+            value = "".join(lines)
+            if not value or len(value.encode()) > MAX_EXAMPLE_BYTES:
+                raise SystemExit("editor_grammar_generation_failed: example outside byte bounds")
+            results.append(value)
+            active = False
+        else:
+            lines.append(line)
+    if active:
+        raise SystemExit(f"editor_grammar_generation_failed: unclosed fence in {path}")
+    return results
+
+
+def capture_keywords(source: str, keywords: set[str]) -> list[dict[str, object]]:
+    captures = []
+    for match in WORD.finditer(source):
+        if match.group(0) in keywords:
+            captures.append({"end": match.end(), "start": match.start(), "text": match.group(0)})
+    return captures
+
+
+def build() -> dict[Path, bytes]:
+    contract_source = CONTRACT_LEXER.read_text(encoding="utf-8")
+    query_source = QUERY_PARSER.read_text(encoding="utf-8")
+    contract = contract_keywords(contract_source)
+    query = query_keywords(query_source)
+    examples: list[dict[str, object]] = []
+    contract_paths = sorted((ROOT / "docs/contracts").glob("*.md"))
+    for path in contract_paths:
+        for ordinal, source in enumerate(fenced_sources(path, {"riff"}), start=1):
+            examples.append({
+                "bytes": len(source.encode()),
+                "captures": capture_keywords(source, set(contract)),
+                "language": "riff",
+                "ordinal": ordinal,
+                "path": str(path.relative_to(ROOT)),
+                "sha256": sha256(source.encode()),
+            })
+    query_path = ROOT / "docs/riffql/LANGUAGE.md"
+    for ordinal, source in enumerate(fenced_sources(query_path, {"riffq", "riffql"}), start=1):
+        examples.append({
+            "bytes": len(source.encode()),
+            "captures": capture_keywords(source, set(query)),
+            "language": "riffql",
+            "ordinal": ordinal,
+            "path": str(query_path.relative_to(ROOT)),
+            "sha256": sha256(source.encode()),
+        })
+    if not examples or len(examples) > MAX_EXAMPLES:
+        raise SystemExit("editor_grammar_generation_failed: snapshot corpus outside count bounds")
+    snapshot = {
+        "contract_lexer_sha256": sha256(contract_source.encode()),
+        "examples": examples,
+        "query_parser_sha256": sha256(query_source.encode()),
+        "schema": "riffdb.editor-highlight-snapshots/v1",
+    }
+    expected = {
+        CONTRACT_KEYWORDS: canonical(contract),
+        QUERY_KEYWORDS: canonical(query),
+        SNAPSHOT: canonical(snapshot),
+    }
+    expected[CLI_ASSET_ROOT / "highlights-v1.json"] = expected[SNAPSHOT]
+    for grammar_name, source_root, keyword_content in (
+        ("tree-sitter-riff", CONTRACT_KEYWORDS.parent, expected[CONTRACT_KEYWORDS]),
+        ("tree-sitter-riffql", QUERY_KEYWORDS.parent, expected[QUERY_KEYWORDS]),
+    ):
+        for relative in ("grammar.js", "package.json", "tree-sitter.json", "queries/highlights.scm"):
+            expected[CLI_ASSET_ROOT / grammar_name / relative] = (source_root / relative).read_bytes()
+        expected[CLI_ASSET_ROOT / grammar_name / "keywords.json"] = keyword_content
+    return expected
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--check", action="store_true")
+    arguments = parser.parse_args()
+    expected = build()
+    stale = []
+    for path, content in expected.items():
+        if arguments.check:
+            if not path.is_file() or path.read_bytes() != content:
+                stale.append(str(path.relative_to(ROOT)))
+        else:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(content)
+    if stale:
+        print("editor grammar artifacts are stale: " + ", ".join(stale), file=sys.stderr)
+        raise SystemExit(1)
+    print(f"editor grammar artifacts are current ({len(expected)} files)")
+
+
+if __name__ == "__main__":
+    main()

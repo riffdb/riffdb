@@ -28,6 +28,7 @@ QUICKSTART_PATH = ROOT / "fixtures/driver/quickstart-v1.json"
 VERSION = "0.1.0"
 MAX_ARTIFACT_BYTES = 256 * 1024 * 1024
 MAX_REPOSITORY_FILES = 16_384
+EDITOR_ASSET_ROOT = ROOT / "crates/riffdb-cli/assets/editor"
 
 
 def fail(message: str) -> None:
@@ -79,6 +80,17 @@ def write(path: Path, content: bytes, mode: int = 0o644) -> None:
 
 def canonical_json(value: object) -> bytes:
     return (json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n").encode()
+
+
+def editor_asset_files(prefix: str) -> dict[str, tuple[bytes, int]]:
+    files: dict[str, tuple[bytes, int]] = {}
+    sources = sorted(path for path in EDITOR_ASSET_ROOT.rglob("*") if path.is_file())
+    if len(sources) != 11 or any(path.is_symlink() for path in sources):
+        fail("editor grammar asset inventory is not the reviewed closed shape")
+    for source in sources:
+        relative = source.relative_to(EDITOR_ASSET_ROOT).as_posix()
+        files[f"{prefix}/{relative}"] = (source.read_bytes(), 0o644)
+    return files
 
 
 def npm_archive(path: Path, files: dict[str, tuple[bytes, int]], epoch: int) -> None:
@@ -148,7 +160,7 @@ process.exit(result.status ?? 1);
         "license": "MIT OR Apache-2.0",
         "type": "module",
         "bin": {"riffdb": "bin/riffdb.js"},
-        "files": ["bin/riffdb.js", "README.md"],
+        "files": ["bin/riffdb.js", "editor", "README.md"],
         "optionalDependencies": {
             "@riffdb/cli-linux-arm64": VERSION,
             "@riffdb/cli-linux-x64": VERSION,
@@ -163,6 +175,7 @@ process.exit(result.status ?? 1);
             "README.md": ((ROOT / "release/distribution/README.md").read_bytes(), 0o644),
             "LICENSE-MIT": ((ROOT / "LICENSE-MIT").read_bytes(), 0o644),
             "LICENSE-APACHE": ((ROOT / "LICENSE-APACHE").read_bytes(), 0o644),
+            **editor_asset_files("editor"),
         },
         epoch,
     )
@@ -255,6 +268,7 @@ Requires-Python: >=3.13
             f"{cli_dist}/entry_points.txt": (b"[console_scripts]\nriffdb = riffdb_cli:main\n", 0o644),
             f"{cli_dist}/licenses/LICENSE-MIT": ((ROOT / "LICENSE-MIT").read_bytes(), 0o644),
             f"{cli_dist}/licenses/LICENSE-APACHE": ((ROOT / "LICENSE-APACHE").read_bytes(), 0o644),
+            **editor_asset_files("riffdb_cli/editor"),
         },
         cli_dist,
     )
@@ -550,6 +564,8 @@ def main() -> int:
         write(staged / "COPYRIGHT", (ROOT / "COPYRIGHT").read_bytes())
         write(staged / "install/riffdb-install", (ROOT / "release/distribution/install-riffdb").read_bytes(), 0o755)
         write(staged / f"bin/{arguments.target}/riffdb", binary.read_bytes(), 0o755)
+        for relative, (content, mode) in editor_asset_files("share/riffdb/editor").items():
+            write(staged / relative, content, mode)
         npm_packages(staged, binary, platform, epoch)
         python_packages(staged, binary, arguments.python_wheel, platform)
         go_proxy(staged, epoch)

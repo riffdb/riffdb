@@ -27,6 +27,12 @@ and source-contained Rust SDK remain the explicit sealed/offline compatibility
 path. Normal project generation emits language bindings that pair with the
 registry packages; it does not copy transport code into the application.
 
+Every CLI package also carries the exact `tree-sitter-riff` and
+`tree-sitter-riffql` highlighting assets. The installed binary exposes the
+editor-agnostic `riffdb lsp` stdio launch contract. The grammars are
+non-authoritative highlighting inputs; compiler diagnostics remain owned by
+the Rust CLI in every ecosystem.
+
 ## Build, sign, and verify
 
 Build one platform cell from a clean release revision:

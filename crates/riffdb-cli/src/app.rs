@@ -382,6 +382,9 @@ async fn submit_normal_create_retry(
 /// Parses one process invocation and runs exactly one public CLI operation.
 pub async fn run() -> ExitCode {
     let mut cli = Cli::parse();
+    if matches!(cli.command, TopLevel::Lsp) {
+        return crate::lsp::run_stdio();
+    }
     if let TopLevel::Init {
         application,
         generators,
@@ -1358,6 +1361,11 @@ async fn dispatch(
     stdin: &mut dyn Read,
 ) -> Terminal {
     match command {
+        TopLevel::Lsp => local_error(
+            CommandIdentity::ServerHealth,
+            "lsp_dispatch_invalid",
+            "the local LSP service reached network dispatch",
+        ),
         TopLevel::Push { accept_lock } => {
             project_push(accept_lock.as_deref(), config, environment, stdin).await
         }
@@ -10834,6 +10842,7 @@ const fn restore_confirmation(confirmed: bool) -> OfflineMaintenanceReplacementC
 
 const fn command_identity(command: &TopLevel) -> CommandIdentity {
     match command {
+        TopLevel::Lsp => CommandIdentity::ServerHealth,
         TopLevel::Init { .. } => CommandIdentity::ProjectInit,
         TopLevel::Push { .. } => CommandIdentity::ProjectPush,
         TopLevel::Generate => CommandIdentity::ProjectGenerate,

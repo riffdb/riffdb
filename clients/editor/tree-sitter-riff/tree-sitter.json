@@ -1,0 +1,11 @@
+{
+  "grammars": [{
+    "name": "riff",
+    "camelcase": "Riff",
+    "scope": "source.riff",
+    "path": ".",
+    "file-types": ["riff"],
+    "highlights": "queries/highlights.scm"
+  }],
+  "metadata": {"version": "0.1.0", "license": "MIT OR Apache-2.0"}
+}

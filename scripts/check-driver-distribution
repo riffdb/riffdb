@@ -11,6 +11,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 PLAN = ROOT / "release/distribution/manifest-v1.json"
 QUICKSTART = ROOT / "fixtures/driver/quickstart-v1.json"
+EDITOR_ASSETS = ROOT / "crates/riffdb-cli/assets/editor"
 
 
 def sha256(path: Path) -> str:
@@ -105,6 +106,30 @@ def main() -> int:
     require(go.startswith("module riffdb.dev/application\n"), "Go module identity")
     rust = (ROOT / "crates/riffdb-client-rust/Cargo.toml").read_text(encoding="utf-8")
     require('name = "riffdb-client-rust"' in rust, "Rust crate identity")
+    editor_assets = sorted(
+        path.relative_to(EDITOR_ASSETS).as_posix()
+        for path in EDITOR_ASSETS.rglob("*")
+        if path.is_file() and not path.is_symlink()
+    )
+    require(
+        editor_assets
+        == [
+            "highlights-v1.json",
+            "tree-sitter-riff/grammar.js",
+            "tree-sitter-riff/keywords.json",
+            "tree-sitter-riff/package.json",
+            "tree-sitter-riff/queries/highlights.scm",
+            "tree-sitter-riff/tree-sitter.json",
+            "tree-sitter-riffql/grammar.js",
+            "tree-sitter-riffql/keywords.json",
+            "tree-sitter-riffql/package.json",
+            "tree-sitter-riffql/queries/highlights.scm",
+            "tree-sitter-riffql/tree-sitter.json",
+        ],
+        "CLI editor grammar asset inventory",
+    )
+    cli_source = (ROOT / "crates/riffdb-cli/src/cli.rs").read_text(encoding="utf-8")
+    require("Lsp," in cli_source, "compiler-backed LSP command")
 
     print("WP-601 driver distribution source contract: passed")
     return 0
