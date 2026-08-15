@@ -457,6 +457,8 @@ mod tests {
             max_attempts: 3,
             credential_file: file,
             tls: None,
+            config_file: None,
+            project_mode: false,
         }
     }
 

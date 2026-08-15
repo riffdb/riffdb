@@ -638,7 +638,7 @@ fn parse_query_modules(value: &Value) -> Result<Vec<ManifestQueryModule>, Manife
     let mut modules = Vec::with_capacity(values.len());
     for value in values {
         let module_object = object(value, &["module_hash", "name", "queries", "version"])?;
-        let query_values = array(required(module_object, "queries")?, 1, MAX_QUERY_SOURCES)?;
+        let query_values = array(required(module_object, "queries")?, 0, MAX_QUERY_SOURCES)?;
         let mut queries = Vec::with_capacity(query_values.len());
         for query in query_values {
             let query = object(query, &["name", "source"])?;
@@ -693,7 +693,7 @@ fn parse_roles(
     modules: &[ManifestQueryModule],
     schema: &str,
 ) -> Result<Vec<ManifestRole>, ManifestError> {
-    let values = array(value, 1, MAX_ROLES)?;
+    let values = array(value, 0, MAX_ROLES)?;
     let available_queries = modules
         .iter()
         .flat_map(|module| module.queries.iter().map(|query| query.name.as_str()))

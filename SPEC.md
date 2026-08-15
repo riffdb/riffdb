@@ -6,7 +6,7 @@
 **Tagline:** *Vibe fast. Commit safely.*  
 **Category:** Contract-first operational database for agent-built applications  
 
-**Version:** 0.93
+**Version:** 0.95
 **Status:** Deployable Application Alpha architecture accepted; implementation gated by work packages
 **Date:** 9 August 2026
 **Audience:** Coding agents, database engineers, compiler engineers, security reviewers, and technical product leads  
@@ -37,6 +37,7 @@
 
 | Version | Date | Summary |
 |---|---|---|
+| 0.95 | 2026-08-14 | Accepted ADR-0121 and registered DX-013 through DX-020 for the database-shaped project workflow: truthful domain-empty initialization, a zero-query structural module with no roles or authority, bounded `riffdb.toml`, selected local SDK materialization over one complete exact lock, ceremony only for changed compiler-owned identity, staged migration routing, and read-only installed-versus-local observation without changing existing application verbs or persistent encodings. |
 | 0.94 | 2026-08-14 | Amended ADR-0050 and registered END-011/WP-610 after the installed endurance rehearsal exposed unreceipted immutable-backup deletion: backup retention now uses one authorized public retirement operation whose V2 receipt binds the exact succeeded create receipt and manifest, permanently consumes the name, recovers every checked rename/delete crash state, and is the sole proof permitting an otherwise-published backup artifact to be absent. |
 | 0.93 | 2026-08-11 | Registered the SECF-* requirement family (SECF-001 through SECF-005) for ADR-0118 secret field classification: a contextual `secret` field modifier carried through versioned IR and bundle identity without rotating unclassified contracts; structural display-surface redaction through a wrapper whose only value escape is an architecture-enumerated reveal method; capability field-visibility default-deny with a dedicated explicit secret-naming surface and observed typed denial; predicates/uniqueness/index participation without read visibility; and full-fidelity durable storage, backup, export, and changelog carriage with an explicit no-cryptography non-promise. |
 | 0.92 | 2026-08-11 | Applied the maintainer-approved ADR-0107 correction: an indexed-restrict delete declares a distinct business outcome in grammar/executable/bundle IR v6; a stable inbound reference persists that zero-mutation outcome, while a racing reference causes bounded whole-command reevaluation rather than an infrastructure-error retry loop. Existing v5 no-inbound delete plans remain decodable. |
@@ -385,6 +386,59 @@ without exposing credentials or unrestricted configuration.
 name scopes, line-comment support, natural JSON shapes, fixed RiffQL page
 bounds, legacy-to-multi migration, locked deployment, and the two-credential
 MCP model from authoritative registries and tested examples.
+
+`DX-013` Project-aware commands MUST read one bounded, closed `riffdb.toml`
+whose project section names exactly one workspace-relative symbolic application
+source and one nonempty duplicate-free subset of the supported Rust, Go,
+TypeScript, and Python generator targets. A missing, unsafe, symlinked,
+over-bound, unknown, or ambiguous project selection MUST fail closed without
+falling through to another configuration source.
+
+`DX-014` `riffdb init` MUST idempotently add the minimal project configuration
+and a domain-empty schema package to a new or existing project without creating
+application source code, a language package manifest, a credential, a lock, or
+a generated artifact. It MUST preflight every target and MUST NOT overwrite or
+partially publish across a conflicting existing file.
+
+`DX-015` A domain-empty symbolic application MUST retain one exact structural
+query module with zero queries and MAY retain zero application roles. Empty
+collections MUST remain explicit, canonical, and bounded; the state grants no
+authority and exposes no operation. Existing nonempty source, manifest, module,
+lock, and generated-artifact identities MUST remain byte compatible.
+
+`DX-016` One exact compiler-owned application lock MUST continue to bind every
+supported language artifact and every internal artifact. `riffdb.toml` MAY
+select only which language artifacts are materialized locally: internal and
+selected artifacts, plus every already-present unselected artifact, MUST be
+exact. `riffdb generate` MUST write only selected language artifacts, MUST NOT
+delete an unselected artifact, and a target-only configuration change MUST NOT
+change database state or require push acceptance.
+
+`DX-017` `riffdb push` MUST compose the existing source check, parent-aware
+lock compilation, exact artifact publication, and resumable application deploy
+path. A fresh identity and a no-op exact identity MUST require no acceptance; a
+changed compiler-owned lock MUST cause no local or remote mutation until the
+caller supplies that exact proposed lower-hex lock hash. A missing or different
+acceptance MUST fail with a typed recovery pointer.
+
+`DX-018` A successor classified as requiring migration or incompatible MUST NOT
+be deployed by `riffdb push`. After the same exact change-acceptance boundary,
+the CLI MUST retain its exact candidate artifacts and point to `riffdb migrate`,
+which MUST compose the existing plan, read-only check, exact-hash apply, outcome
+uncertainty, and operation-observation gates without weakening any of them.
+
+`DX-019` `riffdb status` and `riffdb diff` MUST perform no local or remote
+mutation and MUST compare the exact checked local contract, structural query
+module, and lock identities with one authenticated observation of the selected
+database. Results MUST distinguish no active application, exact identity, and
+different identity using bounded symbolic and lower-hex fields without source
+contents, credentials, or unrestricted paths.
+
+`DX-020` The project verb set MUST be additive. Existing `riffdb application`,
+`riffdb migration`, transport, authorization, command runtime, commit,
+idempotency, provenance, MCP, and full-artifact checking behavior MUST remain
+unchanged; project configuration MUST affect only an explicitly selected
+project verb.
 
 ## 4.4 Additive contract evolution
 

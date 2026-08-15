@@ -8,6 +8,7 @@
 - [Why RiffDB Exists](VISION.md)
 - [Installation](installation.md)
 - [Your First Application](getting-started/FIRST-APPLICATION.md)
+- [Database-Shaped Project Workflow](getting-started/DATABASE-WORKFLOW.md)
 - [Agent Application Quickstart](getting-started/AGENT-APPLICATION-QUICKSTART.md)
 - [Build a Symbolic Application](getting-started/SYMBOLIC-APPLICATIONS.md)
 - [Inspect an Application](getting-started/INSPECTION.md)

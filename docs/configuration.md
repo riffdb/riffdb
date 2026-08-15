@@ -5,6 +5,30 @@ a literal loopback address, verified direct TLS on TCP, or a protected Unix
 socket. There is no insecure remote mode. Hosted MCP remains loopback-only.
 See [Remote and Local Application Ingress](operations/REMOTE-INGRESS.md).
 
+## Project `riffdb.toml`
+
+The database-shaped `init`, `push`, `generate`, `status`, `diff`, and `migrate`
+verbs use a closed project document. They select `riffdb.toml` in the current
+directory by default; explicit `--config` and then `RIFFDB_CONFIG` take
+precedence. Other CLI commands retain the existing no-discovery behavior.
+
+```toml
+[client]
+endpoint = "http://127.0.0.1:7443"
+database = "default"
+
+[project]
+schema = "riffdb.application.json"
+generators = ["rust"]
+```
+
+The schema path must be bounded, workspace-relative, and free of `.` or `..`
+components. `generators` contains one through four unique values from `rust`,
+`go`, `typescript`, and `python`. Unknown keys, duplicate targets, symlinked
+configuration files, absolute or escaping schema paths, and empty target lists
+reject without fallback. See the [Database-Shaped Project
+Workflow](getting-started/DATABASE-WORKFLOW.md) for command semantics.
+
 ## `riffdbd`
 
 Every server field resolves independently in this order:

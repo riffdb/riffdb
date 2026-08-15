@@ -9,6 +9,7 @@ mod config;
 mod credential;
 mod input;
 mod output;
+mod project;
 mod runner;
 mod scaffold;
 mod value;

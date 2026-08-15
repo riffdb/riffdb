@@ -25,6 +25,8 @@ pub(crate) struct EffectiveConfig {
     pub(crate) max_attempts: u32,
     pub(crate) credential_file: Option<PathBuf>,
     pub(crate) tls: Option<TlsClientConfig>,
+    pub(crate) config_file: Option<PathBuf>,
+    pub(crate) project_mode: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -59,6 +61,64 @@ impl Environment for ProcessEnvironment {
 #[serde(deny_unknown_fields)]
 struct ConfigDocument {
     client: Option<ClientDocument>,
+    project: Option<ProjectDocument>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProjectDocument {
+    schema: String,
+    generators: Vec<String>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub(crate) enum ProjectGenerator {
+    Rust,
+    Go,
+    Typescript,
+    Python,
+}
+
+impl ProjectGenerator {
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::Rust => "rust",
+            Self::Go => "go",
+            Self::Typescript => "typescript",
+            Self::Python => "python",
+        }
+    }
+
+    fn parse(value: &str) -> Option<Self> {
+        match value {
+            "rust" => Some(Self::Rust),
+            "go" => Some(Self::Go),
+            "typescript" => Some(Self::Typescript),
+            "python" => Some(Self::Python),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ProjectConfig {
+    root: PathBuf,
+    schema: PathBuf,
+    generators: Vec<ProjectGenerator>,
+}
+
+impl ProjectConfig {
+    pub(crate) fn root(&self) -> &Path {
+        &self.root
+    }
+
+    pub(crate) fn schema(&self) -> &Path {
+        &self.schema
+    }
+
+    pub(crate) fn generators(&self) -> &[ProjectGenerator] {
+        &self.generators
+    }
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -85,9 +145,9 @@ pub(crate) fn resolve(
         None,
     )
     .map_err(|_| resolution_error(explicit_output))?;
-    let document = match config_path {
+    let document = match config_path.as_ref() {
         Some(path) => {
-            read_document(Path::new(&path)).map_err(|_| resolution_error(explicit_output))?
+            read_document(Path::new(path)).map_err(|_| resolution_error(explicit_output))?
         }
         None => ConfigDocument::default(),
     };
@@ -185,6 +245,8 @@ pub(crate) fn resolve(
         max_attempts: attempts,
         credential_file,
         tls,
+        config_file: config_path.map(PathBuf::from),
+        project_mode: false,
     })
 }
 
@@ -206,6 +268,57 @@ fn read_document(path: &Path) -> Result<ConfigDocument, ConfigError> {
     let bytes = read_file(path, MAX_CONFIG_BYTES).map_err(|_| ConfigError::Invalid)?;
     let text = std::str::from_utf8(&bytes).map_err(|_| ConfigError::Invalid)?;
     toml::from_str(text).map_err(|_| ConfigError::Invalid)
+}
+
+pub(crate) fn load_project(path: &Path) -> Result<ProjectConfig, ConfigError> {
+    let metadata = std::fs::symlink_metadata(path).map_err(|_| ConfigError::Invalid)?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err(ConfigError::Invalid);
+    }
+    let document = read_document(path)?;
+    let project = document.project.ok_or(ConfigError::Invalid)?;
+    let schema = checked_project_path(&project.schema)?;
+    if project.generators.is_empty() || project.generators.len() > 4 {
+        return Err(ConfigError::Invalid);
+    }
+    let mut generators = project
+        .generators
+        .iter()
+        .map(|value| ProjectGenerator::parse(value).ok_or(ConfigError::Invalid))
+        .collect::<Result<Vec<_>, _>>()?;
+    generators.sort_unstable();
+    let before = generators.len();
+    generators.dedup();
+    if generators.len() != before {
+        return Err(ConfigError::Invalid);
+    }
+    let root = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let root = std::fs::canonicalize(root).map_err(|_| ConfigError::Invalid)?;
+    Ok(ProjectConfig {
+        schema: root.join(schema),
+        root,
+        generators,
+    })
+}
+
+fn checked_project_path(value: &str) -> Result<PathBuf, ConfigError> {
+    use std::path::Component;
+
+    if value.is_empty() || value.len() > crate::input::MAX_PATH_BYTES {
+        return Err(ConfigError::Invalid);
+    }
+    let path = Path::new(value);
+    if path.is_absolute()
+        || path
+            .components()
+            .any(|component| !matches!(component, Component::Normal(_)))
+    {
+        return Err(ConfigError::Invalid);
+    }
+    Ok(path.to_path_buf())
 }
 
 fn selected_string(
@@ -811,6 +924,46 @@ mod tests {
             OsString::from("x".repeat(crate::input::MAX_PATH_BYTES + 1)),
         );
         assert!(resolve(&health_cli(&[]), &environment).is_err());
+    }
+
+    #[test]
+    fn project_configuration_is_closed_bounded_and_workspace_relative() {
+        let (scratch, path) = temporary_file(
+            "riffdb.toml",
+            b"[client]\ndatabase = \"inventory\"\n\n[project]\nschema = \"riffdb.application.json\"\ngenerators = [\"rust\", \"typescript\"]\n",
+        );
+        let project = load_project(&path).expect("project config");
+        assert_eq!(project.root(), scratch.path());
+        assert_eq!(
+            project.schema(),
+            scratch.path().join("riffdb.application.json")
+        );
+        assert_eq!(
+            project.generators(),
+            &[ProjectGenerator::Rust, ProjectGenerator::Typescript]
+        );
+
+        for (label, document) in [
+            (
+                "escaping.toml",
+                "[project]\nschema = \"../schema.json\"\ngenerators = [\"rust\"]\n",
+            ),
+            (
+                "duplicate.toml",
+                "[project]\nschema = \"schema.json\"\ngenerators = [\"rust\", \"rust\"]\n",
+            ),
+            (
+                "unknown.toml",
+                "[project]\nschema = \"schema.json\"\ngenerators = [\"java\"]\n",
+            ),
+            (
+                "open.toml",
+                "[project]\nschema = \"schema.json\"\ngenerators = [\"rust\"]\nextra = true\n",
+            ),
+        ] {
+            let (_scratch, path) = temporary_file(label, document.as_bytes());
+            assert_eq!(load_project(&path), Err(ConfigError::Invalid), "{label}");
+        }
     }
 
     fn temporary_file(label: &str, bytes: &[u8]) -> (tempfile::TempDir, PathBuf) {

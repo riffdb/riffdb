@@ -23,6 +23,35 @@ pub(crate) struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub(crate) enum TopLevel {
+    /// Initializes RiffDB schema files in a new or existing project.
+    Init {
+        #[arg(value_name = "APPLICATION")]
+        application: Option<String>,
+        #[arg(
+            long = "generator",
+            value_enum,
+            default_value = "rust",
+            value_name = "rust|go|typescript|python"
+        )]
+        generators: Vec<ApplicationLanguage>,
+    },
+    /// Checks, locks, and installs the configured schema.
+    Push {
+        /// Accepts one exact compiler-owned successor lock identity.
+        #[arg(long, value_name = "64_LOWERCASE_HEX_HASH")]
+        accept_lock: Option<String>,
+    },
+    /// Regenerates configured SDK targets from the exact project lock.
+    Generate,
+    /// Reports the configured local and installed schema identities.
+    Status,
+    /// Reports the bounded installed-versus-local schema difference.
+    Diff,
+    /// Runs the existing staged migration path for the configured schema.
+    Migrate {
+        #[command(subcommand)]
+        command: ProjectMigrationCommand,
+    },
     /// Creates a deterministic application-first RiffDB repository.
     New {
         #[arg(value_name = "APPLICATION")]
@@ -139,6 +168,31 @@ pub(crate) enum TopLevel {
     Demo {
         #[command(subcommand)]
         command: DemoCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum ProjectMigrationCommand {
+    /// Prints the exact read-only migration plan for the project lock.
+    Plan,
+    /// Runs one read-only server preflight for the exact project migration.
+    Check {
+        #[arg(long, value_name = "UUIDV7")]
+        operation_id: String,
+        #[arg(long, value_name = "64_LOWERCASE_HEX_HASH")]
+        migration_hash: Option<String>,
+    },
+    /// Applies one exact project migration after hash confirmation.
+    Apply {
+        #[arg(long, value_name = "UUIDV7")]
+        operation_id: String,
+        #[arg(long, value_name = "64_LOWERCASE_HEX_HASH")]
+        confirm_apply: String,
+    },
+    /// Observes one caller-stable project migration operation.
+    Operation {
+        #[arg(value_name = "UUIDV7")]
+        operation_id: String,
     },
 }
 
@@ -1600,6 +1654,74 @@ mod tests {
             }
         ));
         assert!(Cli::try_parse_from(["riffdb", "new", "inventory", "--kernel"]).is_err());
+    }
+
+    #[test]
+    fn database_shaped_project_verbs_are_additive_and_exact() {
+        let init = Cli::try_parse_from([
+            "riffdb",
+            "init",
+            "inventory",
+            "--generator",
+            "rust",
+            "--generator",
+            "typescript",
+        ])
+        .expect("project init");
+        assert!(matches!(
+            init.command,
+            TopLevel::Init { application: Some(application), generators }
+                if application == "inventory"
+                    && generators == vec![ApplicationLanguage::Rust, ApplicationLanguage::Typescript]
+        ));
+
+        let accepted = "ab".repeat(32);
+        assert!(matches!(
+            Cli::try_parse_from(["riffdb", "push", "--accept-lock", &accepted])
+                .expect("accepted push")
+                .command,
+            TopLevel::Push { accept_lock: Some(hash) } if hash == accepted
+        ));
+        assert!(matches!(
+            Cli::try_parse_from(["riffdb", "generate"])
+                .expect("generate")
+                .command,
+            TopLevel::Generate
+        ));
+        assert!(matches!(
+            Cli::try_parse_from(["riffdb", "status"])
+                .expect("status")
+                .command,
+            TopLevel::Status
+        ));
+        assert!(matches!(
+            Cli::try_parse_from(["riffdb", "diff"])
+                .expect("diff")
+                .command,
+            TopLevel::Diff
+        ));
+
+        let operation = "018f2f85-3c20-7a31-8f11-112233445566";
+        assert!(matches!(
+            Cli::try_parse_from([
+                "riffdb",
+                "migrate",
+                "apply",
+                "--operation-id",
+                operation,
+                "--confirm-apply",
+                &accepted,
+            ])
+            .expect("project migration apply")
+            .command,
+            TopLevel::Migrate {
+                command: ProjectMigrationCommand::Apply {
+                    operation_id,
+                    confirm_apply,
+                }
+            } if operation_id == operation && confirm_apply == accepted
+        ));
+        assert!(Cli::try_parse_from(["riffdb", "migrate", "apply"]).is_err());
     }
 
     #[test]

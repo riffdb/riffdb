@@ -929,7 +929,7 @@ fn parse_modules(
     let mut modules = Vec::with_capacity(values.len());
     for value in values {
         let module_object = object(value, &["name", "queries", "version"])?;
-        let query_values = array(required(module_object, "queries")?, 1, MAX_QUERY_SOURCES)?;
+        let query_values = array(required(module_object, "queries")?, 0, MAX_QUERY_SOURCES)?;
         let mut queries = Vec::with_capacity(query_values.len());
         for query in query_values {
             let query = object(query, &["name", "source"])?;
@@ -982,7 +982,7 @@ fn parse_roles(
     modules: &[ApplicationSourceQueryModule],
     schema: &str,
 ) -> Result<Vec<ApplicationSourceRole>, ApplicationSourceError> {
-    let values = array(value, 1, MAX_ROLES)?;
+    let values = array(value, 0, MAX_ROLES)?;
     let available = modules
         .iter()
         .flat_map(|module| module.queries.iter().map(|query| query.name.as_str()))
@@ -1352,6 +1352,49 @@ mod tests {
         assert_eq!(
             ApplicationSourceManifest::decode_canonical(manifest.canonical_bytes()),
             Ok(manifest)
+        );
+    }
+
+    #[test]
+    fn domain_empty_source_retains_only_a_structural_query_module() {
+        let empty = SOURCE
+            .replace(
+                "\"queries\": [{\"name\": \"ItemPage\", \"source\": \"riffdb/queries/item_page.riffq\"}]",
+                "\"queries\": []",
+            )
+            .replace(
+                r#""roles": [{
+        "name": "SampleApplication",
+        "environment": "development",
+        "tenant_scope": "global",
+        "queries": ["ItemPage"],
+        "commands": ["CreateItem"]
+      }]"#,
+                r#""roles": []"#,
+            )
+            .replace(
+                r#""seed_inputs": ["riffdb/seed/01-CreateItem.jsonl"]"#,
+                r#""seed_inputs": []"#,
+            );
+        let source = ApplicationSourceManifest::parse(&empty).expect("domain-empty source");
+        assert_eq!(source.query_modules().len(), 1);
+        assert!(source.query_modules()[0].queries().is_empty());
+        assert!(source.roles().is_empty());
+        assert_eq!(
+            ApplicationSourceManifest::decode_canonical(source.canonical_bytes()),
+            Ok(source)
+        );
+    }
+
+    #[test]
+    fn domain_empty_compatibility_fixture_is_canonical_and_identity_stable() {
+        let fixture = include_str!("../../../fixtures/application-manifests/empty-project-v5.json");
+        let source = ApplicationSourceManifest::parse(fixture).expect("empty fixture");
+        assert_eq!(source.canonical_bytes(), fixture.as_bytes());
+        assert_eq!(
+            hex(source.identity().as_bytes()),
+            include_str!("../../../fixtures/application-manifests/empty-project-v5.identity")
+                .trim_end()
         );
     }
 

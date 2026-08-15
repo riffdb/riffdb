@@ -1,4 +1,4 @@
-spec_version: '0.93'
+spec_version: '0.95'
 product: RiffDB
 repository: riffdb
 status: deployable-application-alpha-architecture-accepted
@@ -12143,10 +12143,11 @@ work_packages:
     with the acceptance ceremony surfaced only on compiler-owned identity change; status and
     diff report installed-versus-local state; migrate surfaces the existing staged-migration
     machinery for incompatible successors. No existing verb changes; no gate weakens.
-  requirements: []
-  required_adrs: [ADR-0057, ADR-0110, ADR-0120]
+  requirements: [DX-013, DX-014, DX-015, DX-016, DX-017, DX-018, DX-019, DX-020]
+  required_adrs: [ADR-0057, ADR-0110, ADR-0120, ADR-0121]
   allowed_paths: [work_packages.yaml, SPEC.md, docs/**, fixtures/**, crates/riffdb-cli/**,
-    crates/riffdb-client-rust/**]
+    crates/riffdb-client-rust/**, crates/riffdb-query-module/**,
+    adr/0121-empty-project-schema-and-selected-binding-materialization.md]
   deliverables:
   - riffdb.toml (database alias or URL, schema path, generator targets) with typed
     diagnostics; init idempotent in existing projects
@@ -12155,8 +12156,11 @@ work_packages:
   - status/diff against the configured database; migrate wrapping the staged path with its
     existing gates
   - Ceremony boundary tests for all three push outcomes
+  - Domain-empty symbolic application support plus project-selected language artifact
+    materialization, without changing persistent lock or IR encodings
   acceptance_commands:
   - cargo test -p riffdb-cli --all-features
+  - cargo test -p riffdb-query-module --all-features
   - ./scripts/handbook check
   human_review_triggers: *id001
 - id: WP-603

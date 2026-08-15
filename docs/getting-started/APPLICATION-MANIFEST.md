@@ -208,6 +208,13 @@ query references, and unknown members are rejected. Versions are positive.
 Names and collections are bounded; the source document may not exceed one MiB.
 No hash field is valid in author source.
 
+ADR-0121 also permits the domain-empty bootstrap emitted by `riffdb init`: it
+contains one named structural query module whose `queries` array is empty and
+an empty `roles` array. The module still receives a canonical identity for
+generation and deployment, but it exposes no query, command, tool, or
+authority. Authors add explicit queries and roles as the domain grows; no
+placeholder operation is required.
+
 Each role declares an exact environment and either `global` scope or `tenant`
 scope. A tenant-scoped role must receive one concrete tenant at binding time;
 a global role rejects a tenant argument. The role author names only commands

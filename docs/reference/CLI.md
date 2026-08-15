@@ -12,6 +12,12 @@ This reference is generated from the checked-in `riffdb` command tree. See
 Usage: riffdb [OPTIONS] <COMMAND>
 
 Commands:
+  init         Initializes RiffDB schema files in a new or existing project
+  push         Checks, locks, and installs the configured schema
+  generate     Regenerates configured SDK targets from the exact project lock
+  status       Reports the configured local and installed schema identities
+  diff         Reports the bounded installed-versus-local schema difference
+  migrate      Runs the existing staged migration path for the configured schema
   new          Creates a deterministic application-first RiffDB repository
   application  Validates and regenerates an exact application package
   migration    Inspects exact local contract migration artifacts
@@ -33,6 +39,135 @@ Commands:
   storage      Inspects or upgrades one closed database's durable format
   retention    Offline exclusive retention maintenance on a closed database file
   demo
+
+Options:
+      --config <PATH>
+      --endpoint <HTTP_OR_HTTPS_ENDPOINT>
+      --database <DATABASE>
+      --output <human|json>                [possible values: human, json]
+      --max-attempts <1..10>
+      --credential-file <PATH>
+  -h, --help                               Print help
+```
+
+### `riffdb init`
+
+```text
+Initializes RiffDB schema files in a new or existing project
+
+Usage: riffdb init [OPTIONS] [APPLICATION]
+
+Arguments:
+  [APPLICATION]
+
+Options:
+      --config <PATH>
+
+      --generator <rust|go|typescript|python>
+          [default: rust] [possible values: rust, go, typescript, python]
+      --endpoint <HTTP_OR_HTTPS_ENDPOINT>
+
+      --database <DATABASE>
+
+      --output <human|json>
+          [possible values: human, json]
+      --max-attempts <1..10>
+
+      --credential-file <PATH>
+
+  -h, --help
+          Print help
+```
+
+### `riffdb push`
+
+```text
+Checks, locks, and installs the configured schema
+
+Usage: riffdb push [OPTIONS]
+
+Options:
+      --accept-lock <64_LOWERCASE_HEX_HASH>
+          Accepts one exact compiler-owned successor lock identity
+      --config <PATH>
+
+      --endpoint <HTTP_OR_HTTPS_ENDPOINT>
+
+      --database <DATABASE>
+
+      --output <human|json>
+          [possible values: human, json]
+      --max-attempts <1..10>
+
+      --credential-file <PATH>
+
+  -h, --help
+          Print help
+```
+
+### `riffdb generate`
+
+```text
+Regenerates configured SDK targets from the exact project lock
+
+Usage: riffdb generate [OPTIONS]
+
+Options:
+      --config <PATH>
+      --endpoint <HTTP_OR_HTTPS_ENDPOINT>
+      --database <DATABASE>
+      --output <human|json>                [possible values: human, json]
+      --max-attempts <1..10>
+      --credential-file <PATH>
+  -h, --help                               Print help
+```
+
+### `riffdb status`
+
+```text
+Reports the configured local and installed schema identities
+
+Usage: riffdb status [OPTIONS]
+
+Options:
+      --config <PATH>
+      --endpoint <HTTP_OR_HTTPS_ENDPOINT>
+      --database <DATABASE>
+      --output <human|json>                [possible values: human, json]
+      --max-attempts <1..10>
+      --credential-file <PATH>
+  -h, --help                               Print help
+```
+
+### `riffdb diff`
+
+```text
+Reports the bounded installed-versus-local schema difference
+
+Usage: riffdb diff [OPTIONS]
+
+Options:
+      --config <PATH>
+      --endpoint <HTTP_OR_HTTPS_ENDPOINT>
+      --database <DATABASE>
+      --output <human|json>                [possible values: human, json]
+      --max-attempts <1..10>
+      --credential-file <PATH>
+  -h, --help                               Print help
+```
+
+### `riffdb migrate`
+
+```text
+Runs the existing staged migration path for the configured schema
+
+Usage: riffdb migrate [OPTIONS] <COMMAND>
+
+Commands:
+  plan       Prints the exact read-only migration plan for the project lock
+  check      Runs one read-only server preflight for the exact project migration
+  apply      Applies one exact project migration after hash confirmation
+  operation  Observes one caller-stable project migration operation
 
 Options:
       --config <PATH>
@@ -516,6 +651,81 @@ Usage: riffdb demo [OPTIONS] <COMMAND>
 
 Commands:
   budget
+
+Options:
+      --config <PATH>
+      --endpoint <HTTP_OR_HTTPS_ENDPOINT>
+      --database <DATABASE>
+      --output <human|json>                [possible values: human, json]
+      --max-attempts <1..10>
+      --credential-file <PATH>
+  -h, --help                               Print help
+```
+
+#### `riffdb migrate plan`
+
+```text
+Prints the exact read-only migration plan for the project lock
+
+Usage: riffdb migrate plan [OPTIONS]
+
+Options:
+      --config <PATH>
+      --endpoint <HTTP_OR_HTTPS_ENDPOINT>
+      --database <DATABASE>
+      --output <human|json>                [possible values: human, json]
+      --max-attempts <1..10>
+      --credential-file <PATH>
+  -h, --help                               Print help
+```
+
+#### `riffdb migrate check`
+
+```text
+Runs one read-only server preflight for the exact project migration
+
+Usage: riffdb migrate check [OPTIONS] --operation-id <UUIDV7>
+
+Options:
+      --config <PATH>
+      --operation-id <UUIDV7>
+      --endpoint <HTTP_OR_HTTPS_ENDPOINT>
+      --migration-hash <64_LOWERCASE_HEX_HASH>
+      --database <DATABASE>
+      --output <human|json>                     [possible values: human, json]
+      --max-attempts <1..10>
+      --credential-file <PATH>
+  -h, --help                                    Print help
+```
+
+#### `riffdb migrate apply`
+
+```text
+Applies one exact project migration after hash confirmation
+
+Usage: riffdb migrate apply [OPTIONS] --operation-id <UUIDV7> --confirm-apply <64_LOWERCASE_HEX_HASH>
+
+Options:
+      --config <PATH>
+      --operation-id <UUIDV7>
+      --confirm-apply <64_LOWERCASE_HEX_HASH>
+      --endpoint <HTTP_OR_HTTPS_ENDPOINT>
+      --database <DATABASE>
+      --output <human|json>                    [possible values: human, json]
+      --max-attempts <1..10>
+      --credential-file <PATH>
+  -h, --help                                   Print help
+```
+
+#### `riffdb migrate operation`
+
+```text
+Observes one caller-stable project migration operation
+
+Usage: riffdb migrate operation [OPTIONS] <UUIDV7>
+
+Arguments:
+  <UUIDV7>
 
 Options:
       --config <PATH>

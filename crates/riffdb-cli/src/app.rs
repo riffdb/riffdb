@@ -56,9 +56,9 @@ use crate::cli::{
     ApplicationCommand, ApplicationLanguage, BackupCommand, CapabilityCommand, Cli, CommandCommand,
     CommitCommand, ContextualCommand, ContractCommand, ContractSelectionArgs, DemoCommand,
     EntityCommand, EventCommand, EventConsumerArgs, ExportCommand, ExportScope, MigrationCommand,
-    OutputMode, ProjectionCommand, QueryCommand, ReimportCommand, ReimportScope, RetentionCommand,
-    RetentionHoldCommand, RevocationReason, RoleActorKind, RoleCommand, ServerCommand,
-    StorageCommand, TopLevel,
+    OutputMode, ProjectMigrationCommand, ProjectionCommand, QueryCommand, ReimportCommand,
+    ReimportScope, RetentionCommand, RetentionHoldCommand, RevocationReason, RoleActorKind,
+    RoleCommand, ServerCommand, StorageCommand, TopLevel,
 };
 use crate::config::{EffectiveConfig, Environment, ProcessEnvironment, resolve};
 use crate::credential::{
@@ -77,6 +77,7 @@ use crate::output::{
     render_projection, render_restore_maintenance_start, render_retire_maintenance_start,
     render_revoke, success, take_normal_create_disposition, uncertain,
 };
+use crate::project::{DEFAULT_PROJECT_FILE, ProjectError, PushCeremony, push_ceremony};
 use crate::runner::{RunnerError, RunnerStream, run_budget};
 use crate::value::{CanonicalVectorComponents, format_uuid};
 
@@ -278,13 +279,18 @@ fn application_seed_guidance(seed_input_count: usize) -> String {
 }
 
 use crate::scaffold::{
-    ApplicationCheckStatus, LockedApplication, PinnedLockRefresh, ScaffoldLanguage,
-    application_contract_source, application_contract_version, check_application,
-    check_application_lock, check_application_sources, create_application, generate_application,
-    load_locked_application, load_locked_migration_submission, migrate_application_source_v2,
-    plan_application_migrations, preview_application_lock,
-    refresh_application_lock_from_pinned_bundle, write_application_lock,
-    write_application_lock_with_bundle,
+    ApplicationCheckStatus, ApplicationLockPreview, LockedApplication, PinnedLockPreview,
+    PinnedLockRefresh, ScaffoldLanguage, application_contract_source, application_contract_version,
+    application_lock_identity, check_application, check_application_lock,
+    check_application_sources, check_project_application_lock, create_application,
+    generate_application, generate_project_application, load_locked_application,
+    load_locked_migration_submission, load_locked_project_application,
+    load_locked_project_migration_submission, migrate_application_source_v2,
+    plan_application_migrations, plan_project_application_migrations, preview_application_lock,
+    preview_application_lock_from_pinned_bundle, preview_application_lock_with_bundle,
+    preview_genesis_application_lock, refresh_application_lock_from_pinned_bundle,
+    write_application_lock, write_application_lock_with_bundle,
+    write_project_application_lock_with_bundle,
 };
 use crate::value::{InputValue, RecordInput, ValueError, parse_uuid};
 
@@ -375,7 +381,166 @@ async fn submit_normal_create_retry(
 
 /// Parses one process invocation and runs exactly one public CLI operation.
 pub async fn run() -> ExitCode {
-    let cli = Cli::parse();
+    let mut cli = Cli::parse();
+    if let TopLevel::Init {
+        application,
+        generators,
+    } = &cli.command
+    {
+        let root = match std::env::current_dir() {
+            Ok(root) => root,
+            Err(_) => {
+                return local_error(
+                    CommandIdentity::ProjectInit,
+                    "project_directory_unavailable",
+                    "the project directory is unavailable",
+                )
+                .emit(
+                    cli.output.unwrap_or(OutputMode::Human),
+                    &mut io::stdout().lock(),
+                    &mut io::stderr().lock(),
+                );
+            }
+        };
+        let config_path = project_config_path(&cli);
+        return match crate::project::initialize(
+            &root,
+            &config_path,
+            application.as_deref(),
+            cli.endpoint.as_deref(),
+            cli.database.as_deref(),
+            generators,
+        ) {
+            Ok(project) => success(
+                CommandIdentity::ProjectInit,
+                "initialized",
+                &serde_json::json!({
+                    "status": "initialized",
+                    "config": config_path.file_name().and_then(OsStr::to_str),
+                    "schema": project.schema().strip_prefix(project.root()).ok().and_then(Path::to_str),
+                    "generators": project.generators().iter().map(|target| target.as_str()).collect::<Vec<_>>(),
+                }),
+            )
+            .emit(
+                cli.output.unwrap_or(OutputMode::Human),
+                &mut io::stdout().lock(),
+                &mut io::stderr().lock(),
+            ),
+            Err(error) => project_error(CommandIdentity::ProjectInit, &error).emit(
+                cli.output.unwrap_or(OutputMode::Human),
+                &mut io::stdout().lock(),
+                &mut io::stderr().lock(),
+            ),
+        };
+    }
+    let uses_project = matches!(
+        cli.command,
+        TopLevel::Push { .. }
+            | TopLevel::Generate
+            | TopLevel::Status
+            | TopLevel::Diff
+            | TopLevel::Migrate { .. }
+    );
+    if uses_project && cli.config.is_none() && std::env::var_os("RIFFDB_CONFIG").is_none() {
+        cli.config = Some(DEFAULT_PROJECT_FILE.into());
+    }
+    if matches!(cli.command, TopLevel::Generate) {
+        let path = project_config_path(&cli);
+        return match crate::project::load(&path).and_then(|project| {
+            generate_project_application(project.schema(), &project_artifact_selection(&project))
+                .map_err(ProjectError::Scaffold)?;
+            Ok(project)
+        }) {
+            Ok(project) => success(
+                CommandIdentity::ProjectGenerate,
+                "generated",
+                &serde_json::json!({
+                    "status": "generated",
+                    "generators": project.generators().iter().map(|target| target.as_str()).collect::<Vec<_>>(),
+                }),
+            )
+            .emit(
+                cli.output.unwrap_or(OutputMode::Human),
+                &mut io::stdout().lock(),
+                &mut io::stderr().lock(),
+            ),
+            Err(error) => project_error(CommandIdentity::ProjectGenerate, &error).emit(
+                cli.output.unwrap_or(OutputMode::Human),
+                &mut io::stdout().lock(),
+                &mut io::stderr().lock(),
+            ),
+        };
+    }
+    if let TopLevel::Migrate {
+        command: ProjectMigrationCommand::Plan,
+    } = &cli.command
+    {
+        let path = project_config_path(&cli);
+        return match crate::project::load(&path).and_then(|project| {
+            plan_project_application_migrations(
+                project.schema(),
+                &project_artifact_selection(&project),
+            )
+            .map_err(ProjectError::Scaffold)
+        }) {
+            Ok(plan) => success(CommandIdentity::MigrationPlan, "planned", &plan).emit(
+                cli.output.unwrap_or(OutputMode::Human),
+                &mut io::stdout().lock(),
+                &mut io::stderr().lock(),
+            ),
+            Err(error) => project_error(CommandIdentity::MigrationPlan, &error).emit(
+                cli.output.unwrap_or(OutputMode::Human),
+                &mut io::stdout().lock(),
+                &mut io::stderr().lock(),
+            ),
+        };
+    }
+    if matches!(cli.command, TopLevel::Migrate { .. }) {
+        let path = project_config_path(&cli);
+        let project = match crate::project::load(&path) {
+            Ok(project) => project,
+            Err(error) => {
+                return project_error(command_identity(&cli.command), &error).emit(
+                    cli.output.unwrap_or(OutputMode::Human),
+                    &mut io::stdout().lock(),
+                    &mut io::stderr().lock(),
+                );
+            }
+        };
+        let command = std::mem::replace(&mut cli.command, TopLevel::Generate);
+        let TopLevel::Migrate { command } = command else {
+            unreachable!("project migration was matched before replacement");
+        };
+        let application = project.schema().as_os_str().to_owned();
+        let lock = OsString::from("riffdb.application.lock.json");
+        let command = match command {
+            ProjectMigrationCommand::Plan => {
+                unreachable!("project migration plan returned before network dispatch")
+            }
+            ProjectMigrationCommand::Check {
+                operation_id,
+                migration_hash,
+            } => MigrationCommand::Check {
+                application,
+                lock,
+                operation_id,
+                migration_hash,
+            },
+            ProjectMigrationCommand::Apply {
+                operation_id,
+                confirm_apply,
+            } => MigrationCommand::Apply {
+                application,
+                lock,
+                operation_id,
+                confirm_apply,
+            },
+            ProjectMigrationCommand::Operation { operation_id } => {
+                MigrationCommand::Operation { operation_id }
+            }
+        };
+        cli.command = TopLevel::Migration { command };
+    }
     if let TopLevel::New {
         application,
         language,
@@ -617,7 +782,7 @@ pub async fn run() -> ExitCode {
     }
     let identity = command_identity(&cli.command);
     let environment = ProcessEnvironment;
-    let config = match resolve(&cli, &environment) {
+    let mut config = match resolve(&cli, &environment) {
         Ok(config) => config,
         Err(error) => {
             return local_error(
@@ -632,6 +797,7 @@ pub async fn run() -> ExitCode {
             );
         }
     };
+    config.project_mode = uses_project;
     let mut stdin = io::stdin().lock();
     let terminal = dispatch(cli.command, &config, &environment, &mut stdin).await;
     terminal.emit(
@@ -654,6 +820,412 @@ fn emit_scaffold_failure(
         return;
     }
     eprintln!("{prefix}: {error}");
+}
+
+fn project_config_path(cli: &Cli) -> PathBuf {
+    cli.config
+        .as_deref()
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("RIFFDB_CONFIG").map(PathBuf::from))
+        .unwrap_or_else(|| PathBuf::from(DEFAULT_PROJECT_FILE))
+}
+
+fn project_error(identity: CommandIdentity, error: &ProjectError) -> Terminal {
+    if let ProjectError::Scaffold(scaffold) = error
+        && let Some(diagnostics) = scaffold.diagnostics()
+    {
+        return authoring_error(identity, diagnostics);
+    }
+    local_error(identity, error.code(), error.message())
+}
+
+fn project_artifact_selection(
+    project: &crate::config::ProjectConfig,
+) -> Vec<GeneratedApplicationArtifactKind> {
+    project
+        .generators()
+        .iter()
+        .map(|target| match target {
+            crate::config::ProjectGenerator::Rust => GeneratedApplicationArtifactKind::Rust,
+            crate::config::ProjectGenerator::Go => GeneratedApplicationArtifactKind::Go,
+            crate::config::ProjectGenerator::Typescript => {
+                GeneratedApplicationArtifactKind::TypeScript
+            }
+            crate::config::ProjectGenerator::Python => GeneratedApplicationArtifactKind::Python,
+        })
+        .collect()
+}
+
+#[derive(Serialize)]
+struct ProjectPushReview<'a> {
+    code: &'static str,
+    message: &'static str,
+    proposed_lock_hash: &'a str,
+    recovery: &'static str,
+}
+
+async fn project_push(
+    accepted_lock: Option<&str>,
+    config: &EffectiveConfig,
+    environment: &dyn Environment,
+    stdin: &mut dyn Read,
+) -> Terminal {
+    let identity = CommandIdentity::ProjectPush;
+    let Some(project_path) = config.config_file.as_deref() else {
+        return local_error(
+            identity,
+            "project_configuration_invalid",
+            "riffdb.toml is missing or invalid",
+        );
+    };
+    let project = match crate::project::load(project_path) {
+        Ok(project) => project,
+        Err(error) => return project_error(identity, &error),
+    };
+    let source = project.schema();
+    let selected = project_artifact_selection(&project);
+    let current = match application_lock_identity(source, None) {
+        Ok(identity) => identity.map(|identity| hex(identity.as_bytes())),
+        Err(error) => return project_error(identity, &ProjectError::Scaffold(error)),
+    };
+
+    if check_project_application_lock(source, &selected).is_err() {
+        let (preview, compatibility) =
+            match preview_application_lock_from_pinned_bundle(source, None) {
+                Ok(PinnedLockPreview::Proposed(preview)) => (*preview, None),
+                Ok(PinnedLockPreview::ContractSourceChanged) => {
+                    match preview_project_successor(identity, source, config, environment).await {
+                        Ok(value) => value,
+                        Err(terminal) => return terminal,
+                    }
+                }
+                Ok(PinnedLockPreview::NotPinned) => {
+                    if application_contract_version(source).is_ok_and(|version| version == 1) {
+                        match preview_genesis_application_lock(source) {
+                            Ok(preview) => (preview, None),
+                            Err(error) => {
+                                return project_error(identity, &ProjectError::Scaffold(error));
+                            }
+                        }
+                    } else {
+                        match preview_project_successor(identity, source, config, environment).await
+                        {
+                            Ok(value) => value,
+                            Err(terminal) => return terminal,
+                        }
+                    }
+                }
+                Err(error) => return project_error(identity, &ProjectError::Scaffold(error)),
+            };
+        let proposed = hex(preview.identity().as_bytes());
+        match push_ceremony(current.as_deref(), &proposed, accepted_lock) {
+            PushCeremony::AcceptanceRequired => {
+                return local_error_with(
+                    identity,
+                    &ProjectPushReview {
+                        code: "project_push_acceptance_required",
+                        message: "the compiler-owned application identity changed and requires exact acceptance",
+                        proposed_lock_hash: &proposed,
+                        recovery: "riffdb push --accept-lock <proposed_lock_hash>",
+                    },
+                    "project_push_acceptance_required",
+                    "the compiler-owned application identity changed and requires exact acceptance",
+                    1,
+                );
+            }
+            PushCeremony::AcceptanceMismatch => {
+                return local_error_with(
+                    identity,
+                    &ProjectPushReview {
+                        code: "project_push_acceptance_mismatch",
+                        message: "the accepted application identity does not match the exact proposal",
+                        proposed_lock_hash: &proposed,
+                        recovery: "review the proposal and rerun riffdb push with its exact hash",
+                    },
+                    "project_push_acceptance_mismatch",
+                    "the accepted application identity does not match the exact proposal",
+                    1,
+                );
+            }
+            PushCeremony::Publish | PushCeremony::AlreadyExact => {}
+        }
+        let migration_required = matches!(
+            compatibility,
+            Some(
+                v1::ContractCompatibilityClass::RequiresMigration
+                    | v1::ContractCompatibilityClass::Incompatible
+            )
+        );
+        let explicit_version_required = matches!(
+            compatibility,
+            Some(v1::ContractCompatibilityClass::RequiresExplicitVersion)
+        );
+        if let Err(error) =
+            write_project_application_lock_with_bundle(source, preview.into_contract(), &selected)
+        {
+            return project_error(identity, &ProjectError::Scaffold(error));
+        }
+        if migration_required {
+            return local_error(
+                identity,
+                "project_migration_required",
+                "the accepted successor requires staged migration; run `riffdb migrate plan`",
+            );
+        }
+        if explicit_version_required {
+            return local_error(
+                identity,
+                "project_contract_version_required",
+                "the accepted successor requires an explicit contract version before push",
+            );
+        }
+    }
+
+    application_command(
+        ApplicationCommand::Deploy {
+            source: source.as_os_str().to_owned(),
+            lock: OsString::from("riffdb.application.lock.json"),
+            provision_role: None,
+            tenant: None,
+            lifetime_seconds: "28800".to_owned(),
+            seed: false,
+            seed_concurrency: "8".to_owned(),
+            replace_expired_credential: false,
+            installation_plan: None,
+            installation_campaign_id: None,
+        },
+        identity,
+        Some(&selected),
+        config,
+        environment,
+        stdin,
+    )
+    .await
+}
+
+async fn preview_project_successor(
+    identity: CommandIdentity,
+    source_path: &Path,
+    config: &EffectiveConfig,
+    environment: &dyn Environment,
+) -> Result<
+    (
+        ApplicationLockPreview,
+        Option<v1::ContractCompatibilityClass>,
+    ),
+    Terminal,
+> {
+    let source = application_contract_source(source_path).map_err(|_| {
+        local_error(
+            identity,
+            "project_schema_invalid",
+            "the configured schema is invalid",
+        )
+    })?;
+    let metadata = required_metadata(identity, config, environment)?;
+    let mut client = connect(config)
+        .await
+        .map_err(|error| client_error(identity, &error))?;
+    let response = client
+        .validate_contract(
+            v1::ValidateContractRequest {
+                request_id: request_id().map_err(|error| client_error(identity, &error))?,
+                source,
+                preview_active_successor: true,
+            },
+            &metadata,
+        )
+        .await
+        .map_err(|error| client_error(identity, &error))?;
+    let candidate = match response.result.as_ref() {
+        Some(v1::validate_contract_response::Result::Candidate(candidate)) => candidate,
+        Some(v1::validate_contract_response::Result::Invalid(diagnostics)) => {
+            return Err(render_compilation_diagnostics(identity, diagnostics));
+        }
+        _ => {
+            return Err(local_error(
+                identity,
+                "candidate_preview_invalid",
+                "the server did not return the requested parent-aware candidate",
+            ));
+        }
+    };
+    let contract = riffdb_contract_ir::ContractBundle::decode(&candidate.canonical_bundle)
+        .map_err(|_| {
+            local_error(
+                identity,
+                "candidate_bundle_invalid",
+                "the server returned an invalid canonical candidate bundle",
+            )
+        })?;
+    let Some(descriptor) = candidate.candidate.as_ref() else {
+        return Err(local_error(
+            identity,
+            "candidate_identity_mismatch",
+            "the server candidate descriptor is absent",
+        ));
+    };
+    let descriptor_matches = descriptor.contract_lineage == contract.lineage().as_str()
+        && descriptor.contract_version == contract.contract_version().get()
+        && descriptor.bundle_hash.as_slice() == contract.bundle_hash().as_bytes();
+    let parent_matches = contract
+        .parent()
+        .map(|parent| (parent.contract_version().get(), parent.bundle_hash()))
+        == candidate.parent_version.zip(
+            candidate
+                .parent_bundle_hash
+                .as_slice()
+                .try_into()
+                .ok()
+                .map(riffdb_types::ContractBundleHash::from_bytes),
+        );
+    if !descriptor_matches || !parent_matches || contract.parent().is_none() {
+        return Err(local_error(
+            identity,
+            "candidate_identity_mismatch",
+            "the server candidate descriptor, parent identity, and canonical bundle disagree",
+        ));
+    }
+    let compatibility = descriptor
+        .compatibility
+        .as_ref()
+        .and_then(|summary| v1::ContractCompatibilityClass::try_from(summary.overall).ok())
+        .filter(|class| *class != v1::ContractCompatibilityClass::Unspecified)
+        .ok_or_else(|| {
+            local_error(
+                identity,
+                "candidate_compatibility_invalid",
+                "the server candidate has no valid compatibility classification",
+            )
+        })?;
+    let preview = preview_application_lock_with_bundle(source_path, contract)
+        .map_err(|error| project_error(identity, &ProjectError::Scaffold(error)))?;
+    Ok((preview, Some(compatibility)))
+}
+
+async fn project_observation(
+    diff: bool,
+    config: &EffectiveConfig,
+    environment: &dyn Environment,
+) -> Terminal {
+    let identity = if diff {
+        CommandIdentity::ProjectDiff
+    } else {
+        CommandIdentity::ProjectStatus
+    };
+    let Some(project_path) = config.config_file.as_deref() else {
+        return local_error(
+            identity,
+            "project_configuration_invalid",
+            "riffdb.toml is missing or invalid",
+        );
+    };
+    let project = match crate::project::load(project_path) {
+        Ok(project) => project,
+        Err(error) => return project_error(identity, &error),
+    };
+    let selected = project_artifact_selection(&project);
+    let locked = match load_locked_project_application(project.schema(), &selected) {
+        Ok(locked) => locked,
+        Err(error) => {
+            return project_error(identity, &ProjectError::Scaffold(error));
+        }
+    };
+    let metadata = match required_metadata(identity, config, environment) {
+        Ok(metadata) => metadata,
+        Err(terminal) => return terminal,
+    };
+    let mut client = match connect(config).await {
+        Ok(client) => client,
+        Err(error) => return client_error(identity, &error),
+    };
+    let response = match client
+        .discover_resources(
+            v1::DiscoverResourcesRequest {
+                request_id: match request_id() {
+                    Ok(value) => value,
+                    Err(error) => return client_error(identity, &error),
+                },
+                page: Some(v1::PageRequest {
+                    limit: Some(1),
+                    cursor: None,
+                }),
+                prior_fence: None,
+                representation: v1::DiscoveryRepresentation::CompactObservation as i32,
+                kind: v1::ResourceDiscoveryKind::All as i32,
+            },
+            &metadata,
+        )
+        .await
+    {
+        Ok(response) => response,
+        Err(error) => return client_error(identity, &error),
+    };
+    let fence = match response.result {
+        Some(v1::discover_resources_response::Result::CompactPage(page)) => page.observed_fence,
+        _ => None,
+    };
+    let local_contract = locked.contract();
+    let local_query_hash = locked
+        .manifest()
+        .query_modules()
+        .first()
+        .map(|module| module.module_hash().as_bytes().to_vec())
+        .unwrap_or_default();
+    let installed = fence.and_then(|fence| fence.state);
+    let state = project_identity_state(
+        local_contract.lineage().as_str(),
+        local_contract.contract_version().get(),
+        local_contract.bundle_hash().as_bytes(),
+        &local_query_hash,
+        installed.as_ref(),
+    );
+    let installed = match installed {
+        Some(v1::discovery_catalog_fence::State::NoActiveContract(_)) | None => None,
+        Some(v1::discovery_catalog_fence::State::ActiveContract(active)) => Some(active),
+    };
+    success(
+        identity,
+        state,
+        &serde_json::json!({
+            "status": state,
+            "database": config.database.as_str(),
+            "local": {
+                "lock_hash": hex(locked.lock_identity().as_bytes()),
+                "contract_lineage": local_contract.lineage().as_str(),
+                "contract_version": local_contract.contract_version().get().to_string(),
+                "contract_bundle_hash": hex(local_contract.bundle_hash().as_bytes()),
+                "query_module_hash": hex(&local_query_hash),
+            },
+            "installed": installed.map(|active| serde_json::json!({
+                "contract_lineage": active.contract_lineage,
+                "contract_version": active.contract_version.to_string(),
+                "contract_bundle_hash": hex(&active.bundle_hash),
+                "query_module_hash": hex(&active.active_query_module_hash),
+            })),
+        }),
+    )
+}
+
+fn project_identity_state(
+    local_lineage: &str,
+    local_version: u64,
+    local_bundle_hash: &[u8],
+    local_query_hash: &[u8],
+    installed: Option<&v1::discovery_catalog_fence::State>,
+) -> &'static str {
+    match installed {
+        None | Some(v1::discovery_catalog_fence::State::NoActiveContract(_)) => "not_installed",
+        Some(v1::discovery_catalog_fence::State::ActiveContract(active))
+            if active.contract_lineage == local_lineage
+                && active.contract_version == local_version
+                && active.bundle_hash == local_bundle_hash
+                && active.active_query_module_hash == local_query_hash =>
+        {
+            "exact"
+        }
+        Some(v1::discovery_catalog_fence::State::ActiveContract(_)) => "different",
+    }
 }
 
 fn run_dev(
@@ -748,8 +1320,31 @@ async fn dispatch(
     stdin: &mut dyn Read,
 ) -> Terminal {
     match command {
+        TopLevel::Push { accept_lock } => {
+            project_push(accept_lock.as_deref(), config, environment, stdin).await
+        }
+        TopLevel::Status => project_observation(false, config, environment).await,
+        TopLevel::Diff => project_observation(true, config, environment).await,
+        TopLevel::Migrate { .. } => local_error(
+            CommandIdentity::MigrationPlan,
+            "project_migration_dispatch_invalid",
+            "project migration was not lowered to the staged migration path",
+        ),
+        TopLevel::Init { .. } | TopLevel::Generate => local_error(
+            CommandIdentity::ProjectInit,
+            "project_local_dispatch_invalid",
+            "a local project operation reached network dispatch",
+        ),
         TopLevel::Application { command } => {
-            application_command(command, config, environment, stdin).await
+            application_command(
+                command,
+                CommandIdentity::ApplicationDeploy,
+                None,
+                config,
+                environment,
+                stdin,
+            )
+            .await
         }
         TopLevel::Migration { command } => migration_command(command, config, environment).await,
         TopLevel::New { .. } => local_error(
@@ -801,6 +1396,21 @@ async fn migration_command(
         MigrationCommand::Apply { .. } => CommandIdentity::MigrationApply,
         MigrationCommand::Operation { .. } => CommandIdentity::MigrationOperation,
     };
+    let project_artifacts = if config.project_mode {
+        let Some(path) = config.config_file.as_deref() else {
+            return local_error(
+                identity,
+                "project_configuration_invalid",
+                "riffdb.toml is missing or invalid",
+            );
+        };
+        match crate::project::load(path) {
+            Ok(project) => Some(project_artifact_selection(&project)),
+            Err(error) => return project_error(identity, &error),
+        }
+    } else {
+        None
+    };
     let metadata = match required_metadata(identity, config, environment) {
         Ok(metadata) => metadata,
         Err(terminal) => return terminal,
@@ -829,11 +1439,19 @@ async fn migration_command(
                 Ok(value) => value.map(MigrationBundleHash::from_bytes),
                 Err(()) => return invalid_input(identity),
             };
-            let submission = match load_locked_migration_submission(
-                Path::new(&application),
-                Some(Path::new(&lock)),
-                migration_hash,
-            ) {
+            let submission_result = match project_artifacts.as_deref() {
+                Some(selected) => load_locked_project_migration_submission(
+                    Path::new(&application),
+                    selected,
+                    migration_hash,
+                ),
+                None => load_locked_migration_submission(
+                    Path::new(&application),
+                    Some(Path::new(&lock)),
+                    migration_hash,
+                ),
+            };
+            let submission = match submission_result {
                 Ok(value) => value,
                 Err(error) => {
                     emit_scaffold_failure(
@@ -883,11 +1501,19 @@ async fn migration_command(
                 Ok(value) => MigrationBundleHash::from_bytes(value),
                 Err(()) => return invalid_input(identity),
             };
-            let submission = match load_locked_migration_submission(
-                Path::new(&application),
-                Some(Path::new(&lock)),
-                Some(confirmed),
-            ) {
+            let submission_result = match project_artifacts.as_deref() {
+                Some(selected) => load_locked_project_migration_submission(
+                    Path::new(&application),
+                    selected,
+                    Some(confirmed),
+                ),
+                None => load_locked_migration_submission(
+                    Path::new(&application),
+                    Some(Path::new(&lock)),
+                    Some(confirmed),
+                ),
+            };
+            let submission = match submission_result {
                 Ok(value) => value,
                 Err(error) => {
                     emit_scaffold_failure(
@@ -959,6 +1585,8 @@ async fn migration_command(
 
 async fn application_command(
     command: ApplicationCommand,
+    deployment_identity: CommandIdentity,
+    project_artifacts: Option<&[GeneratedApplicationArtifactKind]>,
     config: &EffectiveConfig,
     environment: &dyn Environment,
     _stdin: &mut dyn Read,
@@ -1026,7 +1654,7 @@ async fn application_command(
             installation_plan,
             installation_campaign_id,
         } => (
-            CommandIdentity::ApplicationDeploy,
+            deployment_identity,
             source,
             lock,
             provision_role,
@@ -1081,7 +1709,11 @@ async fn application_command(
         Ok(value) if (1..=MAX_BATCH_CONCURRENCY).contains(&value) => value,
         _ => return invalid_input(identity),
     };
-    let locked = match load_locked_application(Path::new(&source), Some(Path::new(&lock))) {
+    let locked_result = match project_artifacts {
+        Some(selected) => load_locked_project_application(Path::new(&source), selected),
+        None => load_locked_application(Path::new(&source), Some(Path::new(&lock))),
+    };
+    let locked = match locked_result {
         Ok(locked) => locked,
         Err(error) => {
             return error.diagnostics().map_or_else(
@@ -10164,6 +10796,23 @@ const fn restore_confirmation(confirmed: bool) -> OfflineMaintenanceReplacementC
 
 const fn command_identity(command: &TopLevel) -> CommandIdentity {
     match command {
+        TopLevel::Init { .. } => CommandIdentity::ProjectInit,
+        TopLevel::Push { .. } => CommandIdentity::ProjectPush,
+        TopLevel::Generate => CommandIdentity::ProjectGenerate,
+        TopLevel::Status => CommandIdentity::ProjectStatus,
+        TopLevel::Diff => CommandIdentity::ProjectDiff,
+        TopLevel::Migrate {
+            command: ProjectMigrationCommand::Plan,
+        } => CommandIdentity::MigrationPlan,
+        TopLevel::Migrate {
+            command: ProjectMigrationCommand::Check { .. },
+        } => CommandIdentity::MigrationCheck,
+        TopLevel::Migrate {
+            command: ProjectMigrationCommand::Apply { .. },
+        } => CommandIdentity::MigrationApply,
+        TopLevel::Migrate {
+            command: ProjectMigrationCommand::Operation { .. },
+        } => CommandIdentity::MigrationOperation,
         TopLevel::Application {
             command: ApplicationCommand::Install { .. },
         } => CommandIdentity::ApplicationInstall,
@@ -11098,6 +11747,31 @@ mod tests {
         assert!(parse_lower_hash(&format!("{}g", "ab".repeat(31))).is_err());
     }
 
+    #[test]
+    fn project_observation_distinguishes_absent_exact_and_different_identity() {
+        let local_bundle = [7_u8; 32];
+        let local_module = [9_u8; 32];
+        assert_eq!(
+            project_identity_state("Inventory", 1, &local_bundle, &local_module, None),
+            "not_installed"
+        );
+        let active =
+            v1::discovery_catalog_fence::State::ActiveContract(v1::ActiveDiscoveryCatalogFence {
+                contract_lineage: "Inventory".to_owned(),
+                contract_version: 1,
+                bundle_hash: local_bundle.to_vec(),
+                active_query_module_hash: local_module.to_vec(),
+            });
+        assert_eq!(
+            project_identity_state("Inventory", 1, &local_bundle, &local_module, Some(&active)),
+            "exact"
+        );
+        assert_eq!(
+            project_identity_state("Inventory", 2, &local_bundle, &local_module, Some(&active)),
+            "different"
+        );
+    }
+
     #[derive(Default)]
     struct TestEnvironment(BTreeMap<String, OsString>);
 
@@ -11115,6 +11789,8 @@ mod tests {
             max_attempts: 3,
             credential_file: None,
             tls: None,
+            config_file: None,
+            project_mode: false,
         }
     }
 

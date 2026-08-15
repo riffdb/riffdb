@@ -150,7 +150,7 @@ impl QueryModuleCandidate {
         version: QueryModuleVersion,
         mut queries: Vec<NamedQuerySource>,
     ) -> Result<Self, QueryModuleError> {
-        if queries.is_empty() || queries.len() > MAX_MODULE_QUERIES {
+        if queries.len() > MAX_MODULE_QUERIES {
             return Err(QueryModuleError::new(QueryModuleErrorKind::LimitExceeded));
         }
         queries.sort_by(|left, right| left.name.cmp(&right.name));
