@@ -85,6 +85,7 @@ for root in "$@"; do
         esac
     done < <(
         rg --files -0 "$root" \
+            -g '!**/target/**' -g '!**/node_modules/**' -g '!**/.venv/**' \
             -g 'Cargo.toml' -g 'package.json' -g 'pyproject.toml' -g 'go.mod' \
             -g '*.rs' -g '*.ts' -g '*.tsx' -g '*.js' -g '*.jsx' -g '*.py' -g '*.go'
     )
