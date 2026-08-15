@@ -69,7 +69,7 @@ const WRITABLE_FORMAT_MARKER_VERSIONS: &[u16] = &[DURABLE_FORMAT_MARKER_VERSION]
 
 const COMPATIBILITY_FIXTURE_INVENTORY: &[u8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../fixtures/compatibility/durable-fixture-inventory-v1.txt"
+    "/fixtures/durable-fixture-inventory-v1.txt"
 ));
 
 /// A nonzero pre-1.0 physical-format epoch.

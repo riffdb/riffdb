@@ -1,4 +1,4 @@
-spec_version: '0.96'
+spec_version: '0.97'
 product: RiffDB
 repository: riffdb
 status: deployable-application-alpha-architecture-accepted
@@ -12134,10 +12134,12 @@ work_packages:
     machinery with checksums and signatures, and the durable-format compatibility statement
     surfaced at the package boundary. Rust remains the sole semantics implementation
     (ADR-0106); packages are distribution vessels.
-  requirements: []
+  requirements: [DX-026, DX-027, DX-028, DX-029, DX-030]
   required_adrs: [ADR-0106, ADR-0112, ADR-0120]
-  allowed_paths: [work_packages.yaml, SPEC.md, docs/**, clients/**, scripts/**,
-    crates/riffdb-cli/**, crates/riffdb-client-*/**, release/**]
+  allowed_paths: [.github/workflows/driver-distribution.yml, work_packages.yaml, SPEC.md,
+    docs/**, clients/**, fixtures/driver/**, scripts/**, crates/riffdb-api-grpc/**,
+    crates/riffdb-cli/**, crates/riffdb-client-*/**, crates/riffdb-proto/**,
+    crates/riffdb-storage-api/**, release/**]
   deliverables:
   - Platform-binary CLI packages for npm and PyPI plus install paths for Go and Rust, with a
     release build matrix, checksums, and signing
@@ -12145,8 +12147,20 @@ work_packages:
     with the vendored path retained for offline/sealed installs
   - Package READMEs carrying the four-step story; package-arrival smoke scripts per ecosystem
   acceptance_commands:
+  - ./scripts/check-driver-distribution
   - ./scripts/check-generated
   - cargo test -p riffdb-cli --all-features
+  - cargo test -p riffdb-proto -p riffdb-api-grpc -p riffdb-storage-api --all-features
+  - ./scripts/driver-distribution-acceptance
+  - ./scripts/handbook check
+  - ./scripts/check-requirement-coverage
+  standing_design_tests:
+    interface_safety: Packages carry only the existing generated application boundary and
+      compiler-owned CLI verbs; no target runtime or package manager receives a transaction,
+      numeric-ID, raw transport, authorization, or durability escape hatch.
+    scale: The platform, package, file, archive, output, and dependency inventories are closed
+      and bounded; package arrival uses one finite topologically ordered Rust closure and one
+      finite smoke per named ecosystem.
   human_review_triggers: *id001
 - id: WP-602
   name: Database-shaped verbs — init, push, status, diff, migrate over riffdb.toml
@@ -12212,7 +12226,7 @@ work_packages:
     an added onboarding step reds conformance; the ADR-0056 sealed agent campaign re-runs
     from package installation in an empty directory with time-to-first-committed-row,
     ceremony count, and rescue count recorded as standing evidence.
-  requirements: []
+  requirements: [DX-031, DX-032]
   required_adrs: [ADR-0056, ADR-0106, ADR-0120]
   allowed_paths: [work_packages.yaml, SPEC.md, docs/**, fixtures/**, tests/**, scripts/**,
     clients/**]
@@ -12224,6 +12238,12 @@ work_packages:
   acceptance_commands:
   - ./scripts/check-requirement-coverage
   - cargo test --workspace --all-features
+  standing_design_tests:
+    interface_safety: Conformance exercises only generated named operations and stable public
+      errors from package-arrival projects; any handwritten wire adapter, compiler ID, kernel
+      import, or source-tree dependency is a failing cell.
+    scale: The language matrix, application corpus, operation set, campaign contexts, event
+      count, and recorded metrics are finite and versioned.
   human_review_triggers: *id001
 - id: WP-605
   name: Contract-language editor tooling — tree-sitter grammar and compiler-backed LSP
@@ -12234,7 +12254,7 @@ work_packages:
     byte-identical to push diagnostics and can never drift from the authority; hover types,
     go-to-definition over entities/fields/commands/queries, and schema-fed completions.
     Serves agents equally — agent harnesses consume LSP diagnostics natively.
-  requirements: []
+  requirements: [DX-033, DX-034, DX-035, DX-036]
   required_adrs: [ADR-0002, ADR-0120]
   allowed_paths: [work_packages.yaml, SPEC.md, docs/**, fixtures/**, crates/riffdb-cli/**,
     crates/riffdb-contract-syntax/**, crates/riffdb-contract-compiler/**, clients/**,
@@ -12250,6 +12270,13 @@ work_packages:
   acceptance_commands:
   - cargo test -p riffdb-contract-syntax -p riffdb-cli --all-features
   - ./scripts/handbook check
+  - ./scripts/check-requirement-coverage
+  standing_design_tests:
+    interface_safety: The editor surface invokes the compiler-owned local check and exposes only
+      bounded schema navigation; it owns no database authority, mutation, alternative grammar,
+      or application transport.
+    scale: Grammar fixtures and every LSP document, request, traversal, diagnostic, completion,
+      and response are independently count- and byte-bounded.
   human_review_triggers: *id001
 - id: WP-606
   name: Commit-coordinator index-derivation audit — admit IR bundle versions V7 through V10

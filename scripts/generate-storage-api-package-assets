@@ -1,0 +1,46 @@
+#!/usr/bin/env python3
+"""Mirror the durable-format inventory into the publishable storage API crate."""
+
+from __future__ import annotations
+
+import argparse
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parent.parent
+SOURCE = ROOT / "fixtures/compatibility/durable-fixture-inventory-v1.txt"
+DESTINATION = ROOT / "crates/riffdb-storage-api/fixtures/durable-fixture-inventory-v1.txt"
+MAX_BYTES = 64 * 1024
+
+
+def fail(message: str) -> None:
+    raise SystemExit(f"storage_api_package_assets_invalid: {message}")
+
+
+def content(path: Path) -> bytes:
+    if not path.is_file() or path.is_symlink():
+        fail(f"asset is absent or unsafe: {path}")
+    value = path.read_bytes()
+    if not 1 <= len(value) <= MAX_BYTES:
+        fail("asset is outside the reviewed bound")
+    return value
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--check", action="store_true")
+    arguments = parser.parse_args()
+    expected = content(SOURCE)
+    if arguments.check:
+        if content(DESTINATION) != expected:
+            fail("publishable storage API asset is stale")
+        print("riffdb-storage-api package assets are current")
+        return 0
+    DESTINATION.parent.mkdir(parents=True, exist_ok=True)
+    DESTINATION.write_bytes(expected)
+    print("generated riffdb-storage-api package assets")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

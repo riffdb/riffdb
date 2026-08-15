@@ -66,19 +66,19 @@ const REACTIVE_CONSUMER_RECORDS: &[(&str, &str)] = &[
 
 const DURABLE_WIRE_VECTORS: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../fixtures/proto/durable-wire-vectors.txt"
+    "/fixtures/durable-wire-vectors.txt"
 ));
 const LEGACY_REGISTRY_FIXTURE: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../fixtures/proto/durable-registry.txt"
+    "/fixtures/durable-registry.txt"
 ));
 const READABLE_REGISTRY_FIXTURE: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../fixtures/proto/durable-readable-registry.txt"
+    "/fixtures/durable-readable-registry.txt"
 ));
 const WRITABLE_REGISTRY_FIXTURE: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../fixtures/proto/durable-writable-registry.txt"
+    "/fixtures/durable-writable-registry.txt"
 ));
 
 fn decode_lower_hex(value: &str) -> Vec<u8> {

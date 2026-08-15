@@ -1,0 +1,3410 @@
+riffdb-proto-schema-inventory-v1
+
+files
+  riffdb/app/v1/application.proto
+    import riffdb/v1/value.proto
+  riffdb/storage/v1/application.proto
+    import riffdb/storage/v1/common.proto
+  riffdb/storage/v1/audit.proto
+    import riffdb/storage/v1/common.proto
+  riffdb/storage/v1/capability.proto
+    import riffdb/storage/v1/common.proto
+  riffdb/storage/v1/capability_export.proto
+    import riffdb/storage/v1/capability.proto
+    import riffdb/storage/v1/capability_installation.proto
+    import riffdb/storage/v1/capability_migration.proto
+    import riffdb/storage/v1/capability_row_policy.proto
+  riffdb/storage/v1/capability_installation.proto
+    import riffdb/storage/v1/capability.proto
+    import riffdb/storage/v1/capability_migration.proto
+  riffdb/storage/v1/capability_migration.proto
+    import riffdb/storage/v1/capability.proto
+  riffdb/storage/v1/capability_reimport.proto
+    import riffdb/storage/v1/capability.proto
+    import riffdb/storage/v1/capability_export.proto
+    import riffdb/storage/v1/capability_installation.proto
+    import riffdb/storage/v1/capability_migration.proto
+    import riffdb/storage/v1/capability_row_policy.proto
+    import riffdb/storage/v1/capability_secret.proto
+  riffdb/storage/v1/capability_row_policy.proto
+    import riffdb/storage/v1/capability.proto
+    import riffdb/storage/v1/capability_installation.proto
+    import riffdb/storage/v1/capability_migration.proto
+  riffdb/storage/v1/capability_secret.proto
+    import riffdb/storage/v1/capability.proto
+    import riffdb/storage/v1/capability_export.proto
+    import riffdb/storage/v1/capability_installation.proto
+    import riffdb/storage/v1/capability_migration.proto
+    import riffdb/storage/v1/capability_row_policy.proto
+  riffdb/storage/v1/catalog.proto
+    import riffdb/storage/v1/common.proto
+  riffdb/storage/v1/command_capsule_v1.proto
+    import riffdb/storage/v1/application.proto
+    import riffdb/storage/v1/audit.proto
+    import riffdb/storage/v1/common.proto
+    import riffdb/storage/v1/contextual_causation_v2.proto
+    import riffdb/storage/v1/entity_references_v3.proto
+    import riffdb/storage/v1/event_references_v2.proto
+    import riffdb/storage/v1/service_audit_v2.proto
+  riffdb/storage/v1/command_segment_v1.proto
+    import riffdb/storage/v1/application.proto
+    import riffdb/storage/v1/command_capsule_v1.proto
+    import riffdb/storage/v1/index_generation_v2.proto
+  riffdb/storage/v1/common.proto
+  riffdb/storage/v1/consumer_v1.proto
+    import riffdb/storage/v1/common.proto
+  riffdb/storage/v1/contextual_causation_v2.proto
+    import riffdb/storage/v1/application.proto
+    import riffdb/storage/v1/common.proto
+  riffdb/storage/v1/entity_references_v3.proto
+    import riffdb/storage/v1/application.proto
+    import riffdb/storage/v1/common.proto
+    import riffdb/storage/v1/event_references_v2.proto
+  riffdb/storage/v1/entity_transitions_v4.proto
+    import riffdb/storage/v1/application.proto
+    import riffdb/storage/v1/command_segment_v1.proto
+    import riffdb/storage/v1/validated_prefix_checkpoint_v1.proto
+    import riffdb/storage/v1/workflow_service_values_v3.proto
+  riffdb/storage/v1/envelope.proto
+  riffdb/storage/v1/event_policy_anchor.proto
+    import riffdb/storage/v1/application.proto
+    import riffdb/storage/v1/common.proto
+  riffdb/storage/v1/event_policy_command_authority_v5.proto
+    import riffdb/storage/v1/application.proto
+    import riffdb/storage/v1/command_capsule_v1.proto
+    import riffdb/storage/v1/command_segment_v1.proto
+    import riffdb/storage/v1/entity_transitions_v4.proto
+    import riffdb/storage/v1/event_policy_anchor.proto
+  riffdb/storage/v1/event_references_v2.proto
+    import riffdb/storage/v1/application.proto
+    import riffdb/storage/v1/common.proto
+  riffdb/storage/v1/event_route_v1.proto
+    import riffdb/storage/v1/common.proto
+  riffdb/storage/v1/export_v1.proto
+  riffdb/storage/v1/history_incarnation_v1.proto
+  riffdb/storage/v1/index_generation_v2.proto
+    import riffdb/storage/v1/application.proto
+  riffdb/storage/v1/index_v2.proto
+    import riffdb/storage/v1/application.proto
+  riffdb/storage/v1/installation_v1.proto
+  riffdb/storage/v1/metadata.proto
+    import riffdb/storage/v1/common.proto
+  riffdb/storage/v1/migration_v1.proto
+    import riffdb/storage/v1/application.proto
+    import riffdb/storage/v1/common.proto
+  riffdb/storage/v1/outbox.proto
+    import riffdb/storage/v1/application.proto
+    import riffdb/storage/v1/common.proto
+  riffdb/storage/v1/projection.proto
+    import riffdb/storage/v1/common.proto
+  riffdb/storage/v1/reactive_module_v1.proto
+    import riffdb/storage/v1/common.proto
+  riffdb/storage/v1/registry_v2.proto
+  riffdb/storage/v1/retention_watermark_v1.proto
+    import riffdb/storage/v1/common.proto
+  riffdb/storage/v1/service_audit_request_index_v1.proto
+  riffdb/storage/v1/service_audit_v2.proto
+    import riffdb/storage/v1/audit.proto
+    import riffdb/storage/v1/common.proto
+  riffdb/storage/v1/validated_prefix_checkpoint_v1.proto
+  riffdb/storage/v1/workflow_service_values_v3.proto
+    import riffdb/storage/v1/application.proto
+    import riffdb/storage/v1/command_segment_v1.proto
+    import riffdb/storage/v1/contextual_causation_v2.proto
+  riffdb/v1/admin.proto
+    import riffdb/v1/common.proto
+    import riffdb/v1/value.proto
+    import riffdb/v1/commit.proto
+  riffdb/v1/command.proto
+    import riffdb/app/v1/application.proto
+    import riffdb/v1/common.proto
+    import riffdb/v1/value.proto
+  riffdb/v1/commit.proto
+    import riffdb/v1/common.proto
+    import riffdb/v1/value.proto
+  riffdb/v1/common.proto
+    import riffdb/v1/value.proto
+  riffdb/v1/contract.proto
+    import riffdb/v1/common.proto
+  riffdb/v1/discovery.proto
+    import riffdb/v1/common.proto
+    import riffdb/v1/contract.proto
+  riffdb/v1/error.proto
+  riffdb/v1/event.proto
+    import riffdb/v1/commit.proto
+    import riffdb/v1/command.proto
+    import riffdb/v1/common.proto
+    import riffdb/v1/value.proto
+  riffdb/v1/live_query.proto
+    import riffdb/v1/value.proto
+  riffdb/v1/projection.proto
+    import riffdb/v1/common.proto
+    import riffdb/v1/value.proto
+  riffdb/v1/query.proto
+    import riffdb/v1/common.proto
+    import riffdb/v1/value.proto
+  riffdb/v1/services.proto
+    import riffdb/v1/admin.proto
+    import riffdb/v1/command.proto
+    import riffdb/v1/commit.proto
+    import riffdb/v1/contract.proto
+    import riffdb/v1/discovery.proto
+    import riffdb/v1/event.proto
+    import riffdb/v1/live_query.proto
+    import riffdb/v1/projection.proto
+    import riffdb/v1/query.proto
+  riffdb/v1/value.proto
+
+messages
+  riffdb.app.v1.ApplicationCatalogFeatureView fields=2
+    1 feature optional .riffdb.app.v1.ApplicationCatalogFeature
+    2 state optional .riffdb.app.v1.ApplicationCatalogFeatureState
+  riffdb.app.v1.ApplicationCatalogSourceSpan fields=2
+    1 start optional uint32
+    2 end optional uint32
+  riffdb.app.v1.ApplicationCatalogSymbol fields=4
+    1 kind optional .riffdb.app.v1.ApplicationCatalogSymbolKind
+    2 path repeated string
+    3 public_type optional string proto3-optional oneof=_public_type
+    4 source_span optional .riffdb.app.v1.ApplicationCatalogSourceSpan proto3-optional oneof=_source_span
+  riffdb.app.v1.ApplicationError fields=13
+    1 envelope_version optional uint32
+    2 code optional .riffdb.app.v1.ApplicationErrorCode
+    3 category optional .riffdb.app.v1.ApplicationErrorCategory
+    4 recovery_action optional .riffdb.app.v1.ApplicationRecoveryAction
+    5 operation optional .riffdb.app.v1.ApplicationOperation
+    6 contract_lineage optional string proto3-optional oneof=_contract_lineage
+    7 contract_version optional uint64 proto3-optional oneof=_contract_version
+    8 operation_symbol optional string proto3-optional oneof=_operation_symbol
+    9 symbol_path repeated string
+    10 source_span optional .riffdb.app.v1.SourceSpan proto3-optional oneof=_source_span
+    11 fixes repeated .riffdb.app.v1.ApplicationFixCode
+    12 trace_id optional bytes proto3-optional oneof=_trace_id
+    13 incident_id optional bytes proto3-optional oneof=_incident_id
+  riffdb.app.v1.CheckQueryRequest fields=3
+    1 contract optional .riffdb.app.v1.ContractSelector proto3-optional oneof=_contract
+    2 source optional string
+    100 request_id optional bytes
+  riffdb.app.v1.CheckQueryResponse fields=3
+    1 identity optional .riffdb.app.v1.QueryIdentity proto3-optional oneof=_identity
+    2 schema optional .riffdb.app.v1.QuerySchema proto3-optional oneof=_schema
+    3 diagnostics repeated .riffdb.app.v1.Diagnostic
+  riffdb.app.v1.ContractSelector fields=3
+    1 lineage optional string
+    2 version optional uint64
+    3 bundle_hash optional bytes
+  riffdb.app.v1.DeployQueryModuleRequest fields=8
+    1 contract optional .riffdb.app.v1.ContractSelector
+    2 module_name optional string
+    3 module_version optional uint64
+    4 queries repeated .riffdb.app.v1.NamedQuerySource
+    5 any_active optional bool oneof=expected_active
+    6 absent_active optional bool oneof=expected_active
+    7 module_hash optional bytes oneof=expected_active
+    100 request_id optional bytes
+  riffdb.app.v1.DeployQueryModuleResponse fields=3
+    1 outcome optional .riffdb.app.v1.QueryModuleDeploymentOutcome
+    2 module optional .riffdb.app.v1.QueryModuleDescriptor
+    3 actual_active_module_hash optional bytes proto3-optional oneof=_actual_active_module_hash
+  riffdb.app.v1.DeployReactiveModuleRequest fields=4
+    1 contract optional .riffdb.app.v1.ContractSelector
+    2 source optional string
+    3 query_module_hashes repeated bytes
+    100 request_id optional bytes
+  riffdb.app.v1.DeployReactiveModuleResponse fields=3
+    1 outcome optional .riffdb.app.v1.ReactiveModuleDeploymentOutcome
+    2 module optional .riffdb.app.v1.ReactiveModuleDescriptor
+    3 unavailable_query_module_hash optional bytes proto3-optional oneof=_unavailable_query_module_hash
+  riffdb.app.v1.DescribeContractRequest fields=2
+    1 contract optional .riffdb.app.v1.ContractSelector proto3-optional oneof=_contract
+    100 request_id optional bytes
+  riffdb.app.v1.DescribeContractResponse fields=4
+    1 contract_lineage optional string
+    2 contract_version optional uint64
+    3 contract_bundle_hash optional bytes
+    4 symbolic_catalog optional string
+  riffdb.app.v1.Diagnostic fields=5
+    1 code optional string
+    2 summary optional string
+    3 span optional .riffdb.app.v1.SourceSpan
+    4 symbols repeated string
+    5 suggestion optional string proto3-optional oneof=_suggestion
+  riffdb.app.v1.ExecuteProjectedQueryRequest fields=6
+    1 contract optional .riffdb.app.v1.ContractSelector proto3-optional oneof=_contract
+    2 projection_name optional string
+    3 request optional .riffdb.app.v1.ProjectedQueryBody
+    4 freshness optional .riffdb.app.v1.FreshnessPolicyProto
+    5 response_encoding optional .riffdb.app.v1.ProjectedResponseEncoding proto3-optional oneof=_response_encoding
+    100 request_id optional bytes
+  riffdb.app.v1.ExecuteProjectedQueryResponse fields=8
+    1 ready optional .riffdb.app.v1.ProjectedQueryReady oneof=outcome
+    2 lagging optional .riffdb.app.v1.ProjectedQueryLagging oneof=outcome
+    3 building optional .riffdb.app.v1.ProjectedQueryBuilding oneof=outcome
+    4 rebuilding optional .riffdb.app.v1.ProjectedQueryRebuilding oneof=outcome
+    5 degraded optional .riffdb.app.v1.ProjectedQueryDegraded oneof=outcome
+    6 invalid optional .riffdb.app.v1.ProjectedQueryInvalid oneof=outcome
+    7 ready_packed optional .riffdb.app.v1.ProjectedReadyPacked oneof=outcome
+    8 ready_aggregates optional .riffdb.app.v1.ProjectedReadyAggregates oneof=outcome
+  riffdb.app.v1.ExecuteQueryRequest fields=8
+    1 contract optional .riffdb.app.v1.ContractSelector proto3-optional oneof=_contract
+    2 source optional string oneof=query
+    3 query_name optional string oneof=query
+    4 module_hash optional bytes proto3-optional oneof=_module_hash
+    5 parameters repeated .riffdb.app.v1.Parameter
+    6 cursor optional string proto3-optional oneof=_cursor
+    7 minimum_application_head optional uint64 proto3-optional oneof=_minimum_application_head
+    100 request_id optional bytes
+  riffdb.app.v1.ExecuteQueryResponse fields=5
+    1 identity optional .riffdb.app.v1.QueryIdentity
+    2 outcome optional string
+    3 application_head optional uint64
+    4 fields repeated .riffdb.app.v1.ResultField
+    5 next_cursor optional string proto3-optional oneof=_next_cursor
+  riffdb.app.v1.ExplainQueryRequest fields=5
+    1 contract optional .riffdb.app.v1.ContractSelector proto3-optional oneof=_contract
+    2 source optional string oneof=query
+    3 query_name optional string oneof=query
+    4 module_hash optional bytes proto3-optional oneof=_module_hash
+    100 request_id optional bytes
+  riffdb.app.v1.ExplainQueryResponse fields=4
+    1 identity optional .riffdb.app.v1.QueryIdentity proto3-optional oneof=_identity
+    2 schema optional .riffdb.app.v1.QuerySchema proto3-optional oneof=_schema
+    3 plan_lines repeated string
+    4 diagnostics repeated .riffdb.app.v1.Diagnostic
+  riffdb.app.v1.FreshnessAvailable fields=0
+  riffdb.app.v1.FreshnessBounded fields=1
+    1 max_lag_sequences optional uint64
+  riffdb.app.v1.FreshnessCausal fields=2
+    1 commit_token optional bytes
+    2 max_wait_nanos optional uint64
+  riffdb.app.v1.FreshnessPolicyProto fields=3
+    1 causal optional .riffdb.app.v1.FreshnessCausal oneof=policy
+    2 bounded optional .riffdb.app.v1.FreshnessBounded oneof=policy
+    3 available optional .riffdb.app.v1.FreshnessAvailable oneof=policy
+  riffdb.app.v1.GetApplicationCatalogRequest fields=4
+    1 contract optional .riffdb.app.v1.ContractSelector proto3-optional oneof=_contract
+    2 limit optional uint32
+    3 cursor optional string proto3-optional oneof=_cursor
+    100 request_id optional bytes
+  riffdb.app.v1.GetApplicationCatalogResponse fields=9
+    1 schema optional string
+    2 contract_lineage optional string
+    3 contract_version optional uint64
+    4 contract_bundle_hash optional bytes
+    5 query_module_hashes repeated bytes
+    6 symbols repeated .riffdb.app.v1.ApplicationCatalogSymbol
+    7 features repeated .riffdb.app.v1.ApplicationCatalogFeatureView
+    8 has_more optional bool
+    9 next_cursor optional string proto3-optional oneof=_next_cursor
+  riffdb.app.v1.GetQueryModuleRequest fields=3
+    1 contract optional .riffdb.app.v1.ContractSelector
+    2 module_hash optional bytes proto3-optional oneof=_module_hash
+    100 request_id optional bytes
+  riffdb.app.v1.GetQueryModuleResponse fields=2
+    1 module optional .riffdb.app.v1.QueryModuleDescriptor proto3-optional oneof=_module
+    2 queries repeated .riffdb.app.v1.NamedQuerySource
+  riffdb.app.v1.NamedQuerySource fields=2
+    1 name optional string
+    2 source optional string
+  riffdb.app.v1.PackedColumn fields=2
+    1 data optional bytes
+    2 offsets repeated uint32
+  riffdb.app.v1.Parameter fields=2
+    1 name optional string
+    2 value optional .riffdb.v1.Value
+  riffdb.app.v1.ProjectedAggregate fields=2
+    1 field optional string
+    2 op optional .riffdb.app.v1.ProjectedAggregateOp
+  riffdb.app.v1.ProjectedAggregateGroup fields=2
+    1 keys repeated .riffdb.v1.Value
+    2 values repeated .riffdb.app.v1.ProjectedAggregateValue
+  riffdb.app.v1.ProjectedAggregateScalar fields=1
+    1 value optional .riffdb.v1.Value proto3-optional oneof=_value
+  riffdb.app.v1.ProjectedAggregateValue fields=3
+    1 count optional uint64 oneof=value
+    2 sum optional .riffdb.v1.Decimal oneof=value
+    3 scalar optional .riffdb.app.v1.ProjectedAggregateScalar oneof=value
+  riffdb.app.v1.ProjectedOrder fields=2
+    1 field optional string
+    2 descending optional bool
+  riffdb.app.v1.ProjectedPredicate fields=3
+    1 field optional string
+    2 eq optional .riffdb.v1.Value oneof=kind
+    3 range optional .riffdb.app.v1.ProjectedRange oneof=kind
+  riffdb.app.v1.ProjectedQueryBody fields=7
+    1 select repeated string
+    2 org_scope optional .riffdb.v1.Value
+    3 predicates repeated .riffdb.app.v1.ProjectedPredicate
+    4 order repeated .riffdb.app.v1.ProjectedOrder
+    5 limit optional uint32 proto3-optional oneof=_limit
+    6 group_by repeated string
+    7 aggregates repeated .riffdb.app.v1.ProjectedAggregate
+  riffdb.app.v1.ProjectedQueryBuilding fields=2
+    1 applied_through optional bytes
+    2 head optional bytes
+  riffdb.app.v1.ProjectedQueryDegraded fields=2
+    1 reason optional .riffdb.app.v1.ProjectedDegradedReason
+    2 current optional bytes
+  riffdb.app.v1.ProjectedQueryInvalid fields=2
+    1 expected_fingerprint optional bytes
+    2 found_fingerprint optional bytes
+  riffdb.app.v1.ProjectedQueryLagging fields=5
+    1 required optional bytes
+    2 current optional bytes
+    3 head optional bytes
+    4 lag_sequences optional uint64 proto3-optional oneof=_lag_sequences
+    5 retry_after_nanos optional uint64 proto3-optional oneof=_retry_after_nanos
+  riffdb.app.v1.ProjectedQueryReady fields=5
+    1 fields repeated string
+    2 rows repeated .riffdb.app.v1.ResultRecord
+    3 frontier optional bytes
+    4 head optional bytes
+    5 commit_token optional bytes
+  riffdb.app.v1.ProjectedQueryRebuilding fields=3
+    1 reason optional .riffdb.app.v1.ProjectedRebuildingReason
+    2 progress_applied optional uint64
+    3 progress_total optional uint64
+  riffdb.app.v1.ProjectedRange fields=4
+    1 lower optional .riffdb.v1.Value proto3-optional oneof=_lower
+    2 upper optional .riffdb.v1.Value proto3-optional oneof=_upper
+    3 lower_inclusive optional bool
+    4 upper_inclusive optional bool
+  riffdb.app.v1.ProjectedReadyAggregates fields=6
+    1 group_key_fields repeated string
+    2 aggregates repeated .riffdb.app.v1.ProjectedAggregate
+    3 groups repeated .riffdb.app.v1.ProjectedAggregateGroup
+    4 frontier optional bytes
+    5 head optional bytes
+    6 commit_token optional bytes
+  riffdb.app.v1.ProjectedReadyPacked fields=7
+    1 fields repeated string
+    2 primary_key_fields repeated string
+    3 row_count optional uint32
+    4 columns repeated .riffdb.app.v1.PackedColumn
+    5 frontier optional bytes
+    6 head optional bytes
+    7 commit_token optional bytes
+  riffdb.app.v1.QueryIdentity fields=6
+    1 contract_lineage optional string
+    2 contract_version optional uint64
+    3 contract_bundle_hash optional bytes
+    4 query_name optional string proto3-optional oneof=_query_name
+    5 plan_hash optional bytes
+    6 module_hash optional bytes proto3-optional oneof=_module_hash
+  riffdb.app.v1.QueryModuleDescriptor fields=7
+    1 module_name optional string
+    2 module_version optional uint64
+    3 module_hash optional bytes
+    4 contract_lineage optional string
+    5 contract_version optional uint64
+    6 contract_bundle_hash optional bytes
+    7 query_names repeated string
+  riffdb.app.v1.QuerySchema fields=3
+    1 parameters repeated string
+    2 outcomes repeated string
+    3 result_fields repeated string
+  riffdb.app.v1.ReactiveModuleDescriptor fields=8
+    1 module_name optional string
+    2 module_version optional uint64
+    3 module_hash optional bytes
+    4 contract_lineage optional string
+    5 contract_version optional uint64
+    6 contract_bundle_hash optional bytes
+    7 query_module_hashes repeated bytes
+    8 operation_names repeated string
+  riffdb.app.v1.ResultField fields=3
+    1 name optional string
+    2 cardinality optional .riffdb.app.v1.ResultCardinality
+    3 records repeated .riffdb.app.v1.ResultRecord
+  riffdb.app.v1.ResultRecord fields=2
+    1 fields repeated .riffdb.app.v1.Parameter
+    2 entity optional string
+  riffdb.app.v1.SourceSpan fields=2
+    1 start optional uint64
+    2 end optional uint64
+  riffdb.storage.v1.ActiveCatalogPointerV1 fields=3
+    1 contract_lineage optional string
+    2 contract_version optional uint64
+    3 contract_bundle_hash optional bytes
+  riffdb.storage.v1.ActiveQueryModulePointerV1 fields=6
+    1 module_name optional string
+    2 module_version optional uint64
+    3 module_hash optional bytes
+    4 contract_lineage optional string
+    5 contract_version optional uint64
+    6 contract_bundle_hash optional bytes
+  riffdb.storage.v1.AdmittedActorContextV1 fields=4
+    1 principal_id optional string
+    2 actor_kind optional .riffdb.storage.v1.ActorKindV1
+    3 tenant_scope optional .riffdb.storage.v1.TenantScopeV1
+    4 agent_session_id optional bytes proto3-optional oneof=_agent_session_id
+  riffdb.storage.v1.AffectedEntityV1 fields=2
+    1 target optional .riffdb.storage.v1.EntityTargetV1
+    2 entity_version optional uint64
+  riffdb.storage.v1.AuditPrincipalV1 fields=4
+    1 principal_id optional string
+    2 actor_kind optional .riffdb.storage.v1.ActorKindV1
+    3 capability_id optional bytes
+    4 capability_revision optional uint64
+  riffdb.storage.v1.CapabilityAdministrationAuditV1 fields=9
+    1 administration_sequence optional uint64
+    2 request_id optional bytes
+    3 operation optional .riffdb.storage.v1.CapabilityAdministrationOperationV1
+    4 timestamp optional .riffdb.storage.v1.TimestampV1
+    5 initiator optional .riffdb.storage.v1.AuditPrincipalV1
+    6 target_capability_id optional bytes
+    7 resulting_revision optional uint64
+    8 approval_id optional string proto3-optional oneof=_approval_id
+    9 revocation_reason optional .riffdb.storage.v1.RevocationReasonCodeV1 proto3-optional oneof=_revocation_reason
+  riffdb.storage.v1.CapabilityApplicationExportGrantV1 fields=6
+    1 contract_lineage optional string
+    2 scope optional .riffdb.storage.v1.CapabilityApplicationExportScopeV1
+    3 entities optional bool
+    4 events optional bool
+    5 provenance optional bool
+    6 public_audit optional bool
+  riffdb.storage.v1.CapabilityApplicationReimportGrantV1 fields=4
+    1 contract_lineage optional string
+    2 campaign_id optional bytes
+    3 portability_manifest_hash optional bytes
+    4 scope optional .riffdb.storage.v1.CapabilityApplicationReimportScopeV1
+  riffdb.storage.v1.CapabilityBootstrapMarkerV1 fields=3
+    1 database_id optional bytes
+    2 capability_id optional bytes
+    3 administration_sequence optional uint64
+  riffdb.storage.v1.CapabilityExportGrantExtensionV1 fields=1
+    1 applications repeated .riffdb.storage.v1.CapabilityApplicationExportGrantV1
+  riffdb.storage.v1.CapabilityGrantV1 fields=6
+    1 tenant_scope optional .riffdb.storage.v1.TenantScopeV1
+    2 partition_scope optional .riffdb.storage.v1.PartitionScopeV1
+    3 permissions optional .riffdb.storage.v1.CapabilityPermissionsV1
+    4 field_visibility repeated .riffdb.storage.v1.EntityFieldVisibilityV1
+    5 max_scan_rows optional uint32
+    6 approval_required repeated .riffdb.storage.v1.CapabilityPermissionKindV1
+  riffdb.storage.v1.CapabilityInstallationGrantExtensionV1 fields=2
+    1 contract_lineages repeated string
+    2 approval_required optional bool
+  riffdb.storage.v1.CapabilityLifecycleV1 fields=2
+    1 active optional .riffdb.storage.v1.UnitV1 oneof=state
+    2 revoked optional .riffdb.storage.v1.RevokedCapabilityV1 oneof=state
+  riffdb.storage.v1.CapabilityMigrationGrantExtensionV1 fields=2
+    1 contract_lineages repeated string
+    2 approval_required optional bool
+  riffdb.storage.v1.CapabilityPermissionV1 fields=8
+    1 kind optional .riffdb.storage.v1.CapabilityPermissionKindV1
+    2 contract_lineage optional string proto3-optional oneof=_contract_lineage
+    3 stable_id optional uint32 proto3-optional oneof=_stable_id
+    4 query_module_hash optional bytes proto3-optional oneof=_query_module_hash
+    5 query_name optional string proto3-optional oneof=_query_name
+    6 application_role_hash optional bytes proto3-optional oneof=_application_role_hash
+    7 reactive_module_hash optional bytes proto3-optional oneof=_reactive_module_hash
+    8 reactive_operation_name optional string proto3-optional oneof=_reactive_operation_name
+  riffdb.storage.v1.CapabilityPermissionsV1 fields=1
+    1 values repeated .riffdb.storage.v1.CapabilityPermissionV1
+  riffdb.storage.v1.CapabilityRecordV1 fields=14
+    1 capability_id optional bytes
+    2 revision optional uint64
+    3 token_digest optional .riffdb.storage.v1.CapabilityTokenDigestV1
+    4 database_id optional bytes
+    5 environment optional string
+    6 principal_id optional string
+    7 actor_kind optional .riffdb.storage.v1.ActorKindV1
+    8 audiences repeated string
+    9 issued_at optional .riffdb.storage.v1.TimestampV1
+    10 expires_at optional .riffdb.storage.v1.TimestampV1
+    11 creation_sequence optional uint64
+    12 creation_request_id optional bytes
+    13 grant optional .riffdb.storage.v1.CapabilityGrantV1
+    14 lifecycle optional .riffdb.storage.v1.CapabilityLifecycleV1
+  riffdb.storage.v1.CapabilityRecordV2 fields=2
+    1 base optional .riffdb.storage.v1.CapabilityRecordV1
+    2 migration optional .riffdb.storage.v1.CapabilityMigrationGrantExtensionV1
+  riffdb.storage.v1.CapabilityRecordV3 fields=3
+    1 base optional .riffdb.storage.v1.CapabilityRecordV1
+    2 migration optional .riffdb.storage.v1.CapabilityMigrationGrantExtensionV1
+    3 installation optional .riffdb.storage.v1.CapabilityInstallationGrantExtensionV1
+  riffdb.storage.v1.CapabilityRecordV4 fields=4
+    1 base optional .riffdb.storage.v1.CapabilityRecordV1
+    2 migration optional .riffdb.storage.v1.CapabilityMigrationGrantExtensionV1
+    3 installation optional .riffdb.storage.v1.CapabilityInstallationGrantExtensionV1
+    4 row_policy optional .riffdb.storage.v1.CapabilityRowPolicyGrantExtensionV1
+  riffdb.storage.v1.CapabilityRecordV5 fields=5
+    1 base optional .riffdb.storage.v1.CapabilityRecordV1
+    2 migration optional .riffdb.storage.v1.CapabilityMigrationGrantExtensionV1
+    3 installation optional .riffdb.storage.v1.CapabilityInstallationGrantExtensionV1
+    4 row_policy optional .riffdb.storage.v1.CapabilityRowPolicyGrantExtensionV1
+    5 export optional .riffdb.storage.v1.CapabilityExportGrantExtensionV1
+  riffdb.storage.v1.CapabilityRecordV6 fields=6
+    1 base optional .riffdb.storage.v1.CapabilityRecordV1
+    2 migration optional .riffdb.storage.v1.CapabilityMigrationGrantExtensionV1
+    3 installation optional .riffdb.storage.v1.CapabilityInstallationGrantExtensionV1
+    4 row_policy optional .riffdb.storage.v1.CapabilityRowPolicyGrantExtensionV1
+    5 export optional .riffdb.storage.v1.CapabilityExportGrantExtensionV1
+    6 secret optional .riffdb.storage.v1.CapabilitySecretGrantExtensionV1
+  riffdb.storage.v1.CapabilityRecordV7 fields=7
+    1 base optional .riffdb.storage.v1.CapabilityRecordV1
+    2 migration optional .riffdb.storage.v1.CapabilityMigrationGrantExtensionV1
+    3 installation optional .riffdb.storage.v1.CapabilityInstallationGrantExtensionV1
+    4 row_policy optional .riffdb.storage.v1.CapabilityRowPolicyGrantExtensionV1
+    5 export optional .riffdb.storage.v1.CapabilityExportGrantExtensionV1
+    6 secret optional .riffdb.storage.v1.CapabilitySecretGrantExtensionV1
+    7 reimport optional .riffdb.storage.v1.CapabilityApplicationReimportGrantV1
+  riffdb.storage.v1.CapabilityRowPolicyBindingV1 fields=4
+    1 contract_lineage optional string
+    2 policy_name optional string
+    3 entity_type_id optional uint32
+    4 operations repeated .riffdb.storage.v1.CapabilityRowPolicyOperationV1
+  riffdb.storage.v1.CapabilityRowPolicyGrantExtensionV1 fields=3
+    1 application_role_hash optional bytes
+    2 canonical_principal_facts optional bytes
+    3 policies repeated .riffdb.storage.v1.CapabilityRowPolicyBindingV1
+  riffdb.storage.v1.CapabilitySecretGrantExtensionV1 fields=1
+    1 entries repeated .riffdb.storage.v1.CapabilitySecretVisibilityV1
+  riffdb.storage.v1.CapabilitySecretVisibilityV1 fields=3
+    1 contract_lineage optional string
+    2 entity_type_id optional uint32
+    3 secret_field_ids repeated uint32
+  riffdb.storage.v1.CapabilityTokenDigestV1 fields=3
+    1 digest_scheme optional uint32
+    2 digest_key_id optional uint32
+    3 digest optional bytes
+  riffdb.storage.v1.CapabilityTokenLookupV1 fields=1
+    1 capability_id optional bytes
+  riffdb.storage.v1.CommandAuditTargetV1 fields=2
+    1 contract_lineage optional string
+    2 command_id optional uint32
+  riffdb.storage.v1.CommandDerivedIndexManifestEntryV1 fields=6
+    1 kind optional .riffdb.storage.v1.CommandDerivedIndexKindV1
+    2 member optional .riffdb.storage.v1.CommandDerivedMemberV1
+    3 exact_key optional bytes
+    4 command_ordinal optional uint32
+    5 member_ordinal optional uint32
+    6 segment_first_commit_sequence optional uint64
+  riffdb.storage.v1.CommandSegmentManifestV1 fields=2
+    1 entries repeated .riffdb.storage.v1.CommandDerivedIndexManifestEntryV1
+    2 digest optional bytes
+  riffdb.storage.v1.CommandServiceAuditLinkV1 fields=2
+    1 commit_sequence optional uint64
+    2 provenance_id optional bytes
+  riffdb.storage.v1.CommittedEntityMutationV1 fields=2
+    1 expected optional .riffdb.storage.v1.ExpectedEntityStateV1
+    2 post_image optional .riffdb.storage.v1.StoredEntityRecordV1
+  riffdb.storage.v1.CommittedEntityReferenceV2 fields=3
+    1 target optional .riffdb.storage.v1.EntityTargetV1
+    2 entity_version optional uint64
+    3 post_image_hash optional bytes
+  riffdb.storage.v1.ContractMigrationArtifactIdentityV1 fields=3
+    1 parent_bundle_hash optional bytes
+    2 candidate_bundle_hash optional bytes
+    3 migration_bundle_hash optional bytes
+  riffdb.storage.v1.ContractMigrationOperationArtifactsV1 fields=4
+    1 candidate_bundle_length optional uint64
+    2 candidate_bundle_sha256 optional bytes
+    3 migration_bundle_length optional uint64
+    4 migration_bundle_sha256 optional bytes
+  riffdb.storage.v1.ContractVersionAuditTargetV1 fields=2
+    1 contract_lineage optional string
+    2 contract_version optional uint64
+  riffdb.storage.v1.ControlPlaneServiceAuditLinkV1 fields=1
+    1 administration_sequence optional uint64
+  riffdb.storage.v1.DeadLetteredConsumerDeliveryV1 fields=3
+    1 failed_attempts optional uint32
+    2 dead_lettered_at optional .riffdb.storage.v1.TimestampV1
+    3 reason optional uint32
+  riffdb.storage.v1.DeclaredOutcomeV1 fields=2
+    1 outcome_id optional uint32
+    2 canonical_value optional bytes
+  riffdb.storage.v1.DurableKeySchemaBindingV1 fields=3
+    1 contract_lineage optional string
+    2 contract_version optional uint64
+    3 contract_bundle_hash optional bytes
+  riffdb.storage.v1.EntityFieldVisibilityV1 fields=3
+    1 contract_lineage optional string
+    2 entity_type_id optional uint32
+    3 field_ids repeated uint32
+  riffdb.storage.v1.EntityReadDependencyV1 fields=2
+    1 target optional .riffdb.storage.v1.EntityTargetV1
+    2 expected optional .riffdb.storage.v1.ExpectedEntityStateV1
+  riffdb.storage.v1.EntityTargetV1 fields=2
+    1 entity_type_id optional uint32
+    2 entity_key optional bytes
+  riffdb.storage.v1.EntityTypeAuditTargetV1 fields=2
+    1 contract_lineage optional string
+    2 entity_type_id optional uint32
+  riffdb.storage.v1.EventConsumerAuditTargetV2 fields=4
+    1 contract_lineage optional string
+    2 reactive_module_hash optional bytes
+    3 operation_name optional string
+    4 consumer_identity_hash optional bytes
+  riffdb.storage.v1.EventConsumerIdentityV1 fields=5
+    1 database_id optional bytes
+    2 reactive_module_hash optional bytes
+    3 operation_name optional string
+    4 parameter_hash optional bytes
+    5 consumer_name optional string
+  riffdb.storage.v1.EventIdV1 fields=2
+    1 commit_sequence optional uint64
+    2 event_ordinal optional uint32
+  riffdb.storage.v1.EventReferenceV2 fields=2
+    1 event_id optional .riffdb.storage.v1.EventIdV1
+    2 event_hash optional bytes
+  riffdb.storage.v1.ExecutablePlanRefV1 fields=5
+    1 contract_lineage optional string
+    2 contract_version optional uint64
+    3 contract_bundle_hash optional bytes
+    4 command_id optional uint32
+    5 command_plan_hash optional bytes
+  riffdb.storage.v1.ExpectedEntityStateV1 fields=2
+    1 absent optional .riffdb.storage.v1.UnitV1 oneof=state
+    2 present_entity_version optional uint64 oneof=state
+  riffdb.storage.v1.ExplicitPartitionScopeV1 fields=1
+    1 partitions repeated .riffdb.storage.v1.ScopedPartitionV1
+  riffdb.storage.v1.FrontierPositionV1 fields=2
+    1 before_first optional .riffdb.storage.v1.UnitV1 oneof=position
+    2 applied_through optional uint64 oneof=position
+  riffdb.storage.v1.IdempotencyIdentityV1 fields=7
+    1 database_id optional bytes
+    2 environment optional string
+    3 tenant_scope optional .riffdb.storage.v1.TenantScopeV1
+    4 principal_id optional string
+    5 contract_lineage optional string
+    6 command_id optional uint32
+    7 caller_key_digest optional .riffdb.storage.v1.IdempotencyKeyDigestV1
+  riffdb.storage.v1.IdempotencyKeyDigestV1 fields=3
+    1 digest_scheme optional uint32
+    2 digest_key_id optional uint32
+    3 digest optional bytes
+  riffdb.storage.v1.IndexAuditTargetV1 fields=2
+    1 contract_lineage optional string
+    2 index_id optional uint32
+  riffdb.storage.v1.IndexEpochPositionV1 fields=2
+    1 before_first optional .riffdb.storage.v1.UnitV1 oneof=position
+    2 epoch optional uint64 oneof=position
+  riffdb.storage.v1.IndexRangeReadDependencyV1 fields=2
+    1 canonical_index_range_prefix optional bytes
+    2 expected optional .riffdb.storage.v1.IndexEpochPositionV1
+  riffdb.storage.v1.LeasedConsumerDeliveryV1 fields=3
+    1 attempt optional uint32
+    2 token optional bytes
+    3 expires_at optional .riffdb.storage.v1.TimestampV1
+  riffdb.storage.v1.OutboxDeadLetterV1 fields=4
+    1 attempts optional uint32
+    2 destination_id optional string
+    3 failed_at optional .riffdb.storage.v1.TimestampV1
+    4 last_safe_error optional string proto3-optional oneof=_last_safe_error
+  riffdb.storage.v1.OutboxDeliveredV1 fields=3
+    1 attempts optional uint32
+    2 destination_id optional string
+    3 delivered_at optional .riffdb.storage.v1.TimestampV1
+  riffdb.storage.v1.OutboxDeliveringV1 fields=4
+    1 attempt optional uint32
+    2 destination_id optional string
+    3 started_at optional .riffdb.storage.v1.TimestampV1
+    4 lease_deadline optional .riffdb.storage.v1.TimestampV1
+  riffdb.storage.v1.OutboxRetryMetadataV1 fields=5
+    1 attempts optional uint32
+    2 last_attempt_at optional .riffdb.storage.v1.TimestampV1
+    3 next_attempt_at optional .riffdb.storage.v1.TimestampV1
+    4 destination_id optional string
+    5 last_safe_error optional string proto3-optional oneof=_last_safe_error
+  riffdb.storage.v1.PartitionScopeV1 fields=2
+    1 all optional .riffdb.storage.v1.UnitV1 oneof=scope
+    2 explicit optional .riffdb.storage.v1.ExplicitPartitionScopeV1 oneof=scope
+  riffdb.storage.v1.ProjectionAuditTargetV1 fields=2
+    1 contract_lineage optional string
+    2 projection_id optional uint32
+  riffdb.storage.v1.ProjectionFailureV1 fields=3
+    1 generation optional uint64
+    2 code optional .riffdb.storage.v1.ProjectionFailureCodeV1
+    3 at_sequence optional uint64 proto3-optional oneof=_at_sequence
+  riffdb.storage.v1.ProjectionGenerationPositionV1 fields=2
+    1 generation optional uint64
+    2 frontier optional .riffdb.storage.v1.FrontierPositionV1
+  riffdb.storage.v1.ProjectionIdentityV1 fields=3
+    1 contract_lineage optional string
+    2 projection_id optional uint32
+    3 projection_plan_hash optional bytes
+  riffdb.storage.v1.RetentionHoldV1 fields=4
+    1 hold_id optional string
+    2 sequence optional uint64
+    3 reason optional string
+    4 kind optional .riffdb.storage.v1.RetentionHoldKindV1
+  riffdb.storage.v1.RetryConsumerDeliveryV1 fields=2
+    1 failed_attempts optional uint32
+    2 eligible_at optional .riffdb.storage.v1.TimestampV1
+  riffdb.storage.v1.RevokedCapabilityV1 fields=3
+    1 revoked_at optional .riffdb.storage.v1.TimestampV1
+    2 administration_sequence optional uint64
+    3 reason optional .riffdb.storage.v1.RevocationReasonCodeV1
+  riffdb.storage.v1.ScopedPartitionV1 fields=2
+    1 contract_lineage optional string
+    2 partition_key optional bytes
+  riffdb.storage.v1.ServiceAuditLinkV1 fields=3
+    1 none optional .riffdb.storage.v1.UnitV1 oneof=link
+    2 command optional .riffdb.storage.v1.CommandServiceAuditLinkV1 oneof=link
+    3 control_plane optional .riffdb.storage.v1.ControlPlaneServiceAuditLinkV1 oneof=link
+  riffdb.storage.v1.ServiceAuditRecordV1 fields=10
+    1 administration_sequence optional uint64
+    2 request_id optional bytes
+    3 timestamp optional .riffdb.storage.v1.TimestampV1
+    4 operation optional .riffdb.storage.v1.ServiceOperationV1
+    5 phase optional .riffdb.storage.v1.ServiceAuditPhaseV1
+    6 principal optional .riffdb.storage.v1.AuditPrincipalV1
+    7 ingress optional .riffdb.storage.v1.ServiceIngressKindV1
+    8 targets repeated .riffdb.storage.v1.ServiceAuditTargetV1
+    9 approval_id optional string proto3-optional oneof=_approval_id
+    10 link optional .riffdb.storage.v1.ServiceAuditLinkV1
+  riffdb.storage.v1.ServiceAuditRecordV2 fields=10
+    1 administration_sequence optional uint64
+    2 request_id optional bytes
+    3 timestamp optional .riffdb.storage.v1.TimestampV1
+    4 operation optional .riffdb.storage.v1.ServiceOperationV1
+    5 phase optional .riffdb.storage.v1.ServiceAuditPhaseV1
+    6 principal optional .riffdb.storage.v1.AuditPrincipalV1
+    7 ingress optional .riffdb.storage.v1.ServiceIngressKindV1
+    8 targets repeated .riffdb.storage.v1.ServiceAuditTargetV2
+    9 approval_id optional string proto3-optional oneof=_approval_id
+    10 link optional .riffdb.storage.v1.ServiceAuditLinkV1
+  riffdb.storage.v1.ServiceAuditTargetV1 fields=9
+    1 contract_lineage optional string oneof=target
+    2 contract_version optional .riffdb.storage.v1.ContractVersionAuditTargetV1 oneof=target
+    3 entity_type optional .riffdb.storage.v1.EntityTypeAuditTargetV1 oneof=target
+    4 command optional .riffdb.storage.v1.CommandAuditTargetV1 oneof=target
+    5 projection optional .riffdb.storage.v1.ProjectionAuditTargetV1 oneof=target
+    6 index optional .riffdb.storage.v1.IndexAuditTargetV1 oneof=target
+    7 commit_sequence optional uint64 oneof=target
+    8 provenance_id optional bytes oneof=target
+    9 capability_id optional bytes oneof=target
+  riffdb.storage.v1.ServiceAuditTargetV2 fields=10
+    1 contract_lineage optional string oneof=target
+    2 contract_version optional .riffdb.storage.v1.ContractVersionAuditTargetV1 oneof=target
+    3 entity_type optional .riffdb.storage.v1.EntityTypeAuditTargetV1 oneof=target
+    4 command optional .riffdb.storage.v1.CommandAuditTargetV1 oneof=target
+    5 projection optional .riffdb.storage.v1.ProjectionAuditTargetV1 oneof=target
+    6 index optional .riffdb.storage.v1.IndexAuditTargetV1 oneof=target
+    7 commit_sequence optional uint64 oneof=target
+    8 provenance_id optional bytes oneof=target
+    9 capability_id optional bytes oneof=target
+    10 event_consumer optional .riffdb.storage.v1.EventConsumerAuditTargetV2 oneof=target
+  riffdb.storage.v1.SparseConsumerResolutionV1 fields=2
+    1 event_id optional .riffdb.storage.v1.EventIdV1
+    2 kind optional uint32
+  riffdb.storage.v1.StoredAdministrationSequenceAllocatorV1 fields=2
+    1 next_administration_sequence optional uint64 oneof=state
+    2 exhausted optional .riffdb.storage.v1.UnitV1 oneof=state
+  riffdb.storage.v1.StoredAdmittedProvenanceClaimsV1 fields=4
+    1 source_repository optional string proto3-optional oneof=_source_repository
+    2 source_commit optional string proto3-optional oneof=_source_commit
+    3 reason optional string proto3-optional oneof=_reason
+    4 approval_id optional string proto3-optional oneof=_approval_id
+  riffdb.storage.v1.StoredApplicationExportOperationV1 fields=3
+    1 operation_id optional bytes
+    2 contract_lineage optional string
+    3 canonical_state optional bytes
+  riffdb.storage.v1.StoredApplicationInstallationCampaignV1 fields=4
+    1 campaign_id optional bytes
+    2 contract_lineage optional string
+    3 plan_hash optional bytes
+    4 canonical_state optional bytes
+  riffdb.storage.v1.StoredApplicationSequenceAllocatorV1 fields=2
+    1 next_commit_sequence optional uint64 oneof=state
+    2 exhausted optional .riffdb.storage.v1.UnitV1 oneof=state
+  riffdb.storage.v1.StoredCatalogAdministrationV1 fields=7
+    1 administration_sequence optional uint64
+    2 request_id optional bytes
+    3 timestamp optional .riffdb.storage.v1.TimestampV1
+    4 principal optional .riffdb.storage.v1.AuditPrincipalV1
+    5 previous_active optional .riffdb.storage.v1.ActiveCatalogPointerV1
+    6 activated optional .riffdb.storage.v1.ActiveCatalogPointerV1
+    7 approval_id optional string proto3-optional oneof=_approval_id
+  riffdb.storage.v1.StoredChangelogV2RotationReceiptV1 fields=7
+    1 database_id optional bytes
+    2 history_incarnation optional uint64
+    3 predecessor_application_frontier optional uint64 proto3-optional oneof=_predecessor_application_frontier
+    4 predecessor_administration_frontier optional uint64 proto3-optional oneof=_predecessor_administration_frontier
+    5 terminal_v1_frame_hash optional bytes
+    6 v2_chain_anchor optional bytes
+    7 receipt_hash optional bytes
+  riffdb.storage.v1.StoredCommandAuditInvocationV1 fields=10
+    1 request_id optional bytes
+    2 operation optional .riffdb.storage.v1.ServiceOperationV1
+    3 principal optional .riffdb.storage.v1.AuditPrincipalV1
+    4 ingress optional .riffdb.storage.v1.ServiceIngressKindV1
+    5 targets repeated .riffdb.storage.v1.ServiceAuditTargetV2
+    6 approval_id optional string proto3-optional oneof=_approval_id
+    7 started_administration_sequence optional uint64
+    8 started_at optional .riffdb.storage.v1.TimestampV1
+    9 terminal_administration_sequence optional uint64
+    10 terminal_at optional .riffdb.storage.v1.TimestampV1
+  riffdb.storage.v1.StoredCommandAuditLocatorV1 fields=2
+    1 commit_sequence optional uint64
+    2 member optional .riffdb.storage.v1.StoredCommandAuditMemberV1
+  riffdb.storage.v1.StoredCommandCapsuleV1 fields=20
+    1 identity optional .riffdb.storage.v1.IdempotencyIdentityV1
+    2 commit_sequence optional uint64
+    3 admission_request_id optional bytes
+    4 plan optional .riffdb.storage.v1.ExecutablePlanRefV1
+    5 canonical_input_hash optional bytes
+    6 actor optional .riffdb.storage.v1.AdmittedActorContextV1
+    7 logical_time optional .riffdb.storage.v1.TimestampV1
+    8 partition_hash optional bytes
+    9 conflict_hashes repeated bytes
+    10 declared_outcome optional .riffdb.storage.v1.DeclaredOutcomeV1
+    11 admitted_claims optional .riffdb.storage.v1.StoredAdmittedProvenanceClaimsV1
+    12 provenance_id optional bytes
+    13 durability_mode optional .riffdb.storage.v1.DurabilityModeV1
+    14 partition_key optional bytes
+    15 causation optional .riffdb.storage.v1.StoredCommandCausationV1
+    16 read_dependencies optional .riffdb.storage.v1.StoredReadDependenciesV1
+    17 entity_references repeated .riffdb.storage.v1.CommittedEntityReferenceV2
+    18 event_references repeated .riffdb.storage.v1.EventReferenceV2
+    19 outbox_event_ids repeated .riffdb.storage.v1.EventIdV1
+    20 audit optional .riffdb.storage.v1.StoredCommandAuditInvocationV1
+  riffdb.storage.v1.StoredCommandCapsuleV2 fields=3
+    1 base optional .riffdb.storage.v1.StoredCommandCapsuleV1
+    2 events repeated .riffdb.storage.v1.StoredDurableEventV1
+    3 index_generation_transitions repeated .riffdb.storage.v1.StoredIndexGenerationTransitionV1
+  riffdb.storage.v1.StoredCommandCapsuleV3 fields=2
+    1 base optional .riffdb.storage.v1.StoredCommandCapsuleV2
+    2 canonical_service_values optional bytes
+  riffdb.storage.v1.StoredCommandCapsuleV4 fields=2
+    1 base optional .riffdb.storage.v1.StoredCommandCapsuleV3
+    2 entity_transitions repeated .riffdb.storage.v1.StoredCommittedEntityTransitionV1
+  riffdb.storage.v1.StoredCommandCapsuleV5 fields=5
+    1 base optional .riffdb.storage.v1.StoredCommandCapsuleV1
+    2 events repeated .riffdb.storage.v1.StoredDurableEventVariantV1
+    3 index_generation_transitions repeated .riffdb.storage.v1.StoredIndexGenerationTransitionV1
+    4 canonical_service_values optional bytes
+    5 entity_transitions repeated .riffdb.storage.v1.StoredCommittedEntityTransitionV1
+  riffdb.storage.v1.StoredCommandCausationV1 fields=2
+    1 causing_event_id optional .riffdb.storage.v1.EventIdV1
+    2 root_request_id optional bytes
+  riffdb.storage.v1.StoredCommandDerivedIndexCheckpointV1 fields=7
+    1 database_id optional bytes
+    2 history_incarnation optional uint64
+    3 registry_digest optional bytes
+    4 segment_frontier optional uint64
+    5 segment_root_digest optional bytes
+    6 entries repeated .riffdb.storage.v1.CommandDerivedIndexManifestEntryV1
+    7 checkpoint_digest optional bytes
+  riffdb.storage.v1.StoredCommandLocatorV1 fields=1
+    1 commit_sequence optional uint64
+  riffdb.storage.v1.StoredCommandSegmentBodyV1 fields=9
+    1 database_id optional bytes
+    2 history_incarnation optional uint64
+    3 predecessor_segment_hash optional bytes
+    4 first_commit_sequence optional uint64
+    5 last_commit_sequence optional uint64
+    6 first_administration_sequence optional uint64
+    7 last_administration_sequence optional uint64
+    8 commands repeated .riffdb.storage.v1.StoredCommandCapsuleV2
+    9 manifest optional .riffdb.storage.v1.CommandSegmentManifestV1
+  riffdb.storage.v1.StoredCommandSegmentBodyV2 fields=9
+    1 database_id optional bytes
+    2 history_incarnation optional uint64
+    3 predecessor_segment_hash optional bytes
+    4 first_commit_sequence optional uint64
+    5 last_commit_sequence optional uint64
+    6 first_administration_sequence optional uint64
+    7 last_administration_sequence optional uint64
+    8 commands repeated .riffdb.storage.v1.StoredCommandCapsuleV3
+    9 manifest optional .riffdb.storage.v1.CommandSegmentManifestV1
+  riffdb.storage.v1.StoredCommandSegmentBodyV3 fields=9
+    1 database_id optional bytes
+    2 history_incarnation optional uint64
+    3 predecessor_segment_hash optional bytes
+    4 first_commit_sequence optional uint64
+    5 last_commit_sequence optional uint64
+    6 first_administration_sequence optional uint64
+    7 last_administration_sequence optional uint64
+    8 commands repeated .riffdb.storage.v1.StoredCommandCapsuleV4
+    9 manifest optional .riffdb.storage.v1.CommandSegmentManifestV1
+  riffdb.storage.v1.StoredCommandSegmentBodyV4 fields=9
+    1 database_id optional bytes
+    2 history_incarnation optional uint64
+    3 predecessor_segment_hash optional bytes
+    4 first_commit_sequence optional uint64
+    5 last_commit_sequence optional uint64
+    6 first_administration_sequence optional uint64
+    7 last_administration_sequence optional uint64
+    8 commands repeated .riffdb.storage.v1.StoredCommandCapsuleV5
+    9 manifest optional .riffdb.storage.v1.CommandSegmentManifestV1
+  riffdb.storage.v1.StoredCommandSegmentV1 fields=2
+    1 body optional .riffdb.storage.v1.StoredCommandSegmentBodyV1
+    2 segment_digest optional bytes
+  riffdb.storage.v1.StoredCommandSegmentV2 fields=2
+    1 body optional .riffdb.storage.v1.StoredCommandSegmentBodyV2
+    2 segment_digest optional bytes
+  riffdb.storage.v1.StoredCommandSegmentV3 fields=2
+    1 body optional .riffdb.storage.v1.StoredCommandSegmentBodyV3
+    2 segment_digest optional bytes
+  riffdb.storage.v1.StoredCommandSegmentV4 fields=2
+    1 body optional .riffdb.storage.v1.StoredCommandSegmentBodyV4
+    2 segment_digest optional bytes
+  riffdb.storage.v1.StoredCommitRecordV1 fields=15
+    1 commit_sequence optional uint64
+    2 admission_request_id optional bytes
+    3 plan optional .riffdb.storage.v1.ExecutablePlanRefV1
+    4 canonical_input_hash optional bytes
+    5 actor optional .riffdb.storage.v1.AdmittedActorContextV1
+    6 logical_time optional .riffdb.storage.v1.TimestampV1
+    7 partition_hash optional bytes
+    8 conflict_hashes repeated bytes
+    9 read_dependencies optional .riffdb.storage.v1.StoredReadDependenciesV1
+    10 mutations repeated .riffdb.storage.v1.CommittedEntityMutationV1
+    11 events repeated .riffdb.storage.v1.StoredDurableEventV1
+    12 declared_outcome optional .riffdb.storage.v1.DeclaredOutcomeV1
+    13 provenance_id optional bytes
+    14 outbox_event_ids repeated .riffdb.storage.v1.EventIdV1
+    15 durability_mode optional .riffdb.storage.v1.DurabilityModeV1
+  riffdb.storage.v1.StoredCommitRecordV2 fields=15
+    1 commit_sequence optional uint64
+    2 admission_request_id optional bytes
+    3 plan optional .riffdb.storage.v1.ExecutablePlanRefV1
+    4 canonical_input_hash optional bytes
+    5 actor optional .riffdb.storage.v1.AdmittedActorContextV1
+    6 logical_time optional .riffdb.storage.v1.TimestampV1
+    7 partition_hash optional bytes
+    8 conflict_hashes repeated bytes
+    9 read_dependencies optional .riffdb.storage.v1.StoredReadDependenciesV1
+    10 mutations repeated .riffdb.storage.v1.CommittedEntityMutationV1
+    11 event_references repeated .riffdb.storage.v1.EventReferenceV2
+    12 declared_outcome optional .riffdb.storage.v1.DeclaredOutcomeV1
+    13 provenance_id optional bytes
+    14 outbox_event_ids repeated .riffdb.storage.v1.EventIdV1
+    15 durability_mode optional .riffdb.storage.v1.DurabilityModeV1
+  riffdb.storage.v1.StoredCommitRecordV3 fields=15
+    1 commit_sequence optional uint64
+    2 admission_request_id optional bytes
+    3 plan optional .riffdb.storage.v1.ExecutablePlanRefV1
+    4 canonical_input_hash optional bytes
+    5 actor optional .riffdb.storage.v1.AdmittedActorContextV1
+    6 logical_time optional .riffdb.storage.v1.TimestampV1
+    7 partition_hash optional bytes
+    8 conflict_hashes repeated bytes
+    9 read_dependencies optional .riffdb.storage.v1.StoredReadDependenciesV1
+    10 entity_references repeated .riffdb.storage.v1.CommittedEntityReferenceV2
+    11 event_references repeated .riffdb.storage.v1.EventReferenceV2
+    12 declared_outcome optional .riffdb.storage.v1.DeclaredOutcomeV1
+    13 provenance_id optional bytes
+    14 outbox_event_ids repeated .riffdb.storage.v1.EventIdV1
+    15 durability_mode optional .riffdb.storage.v1.DurabilityModeV1
+  riffdb.storage.v1.StoredCommittedEntityTransitionV1 fields=8
+    1 command_sequence optional uint64
+    2 mutation_ordinal optional uint32
+    3 target optional .riffdb.storage.v1.EntityTargetV1
+    4 prior_state optional .riffdb.storage.v1.StoredEntityChainStateV1
+    5 prior_chain_revision optional uint64
+    6 prior_transition_hash optional bytes proto3-optional oneof=_prior_transition_hash
+    7 next_state optional .riffdb.storage.v1.StoredEntityChainStateV1
+    8 transition_hash optional bytes
+  riffdb.storage.v1.StoredContractBundleV1 fields=4
+    1 contract_lineage optional string
+    2 contract_version optional uint64
+    3 contract_bundle_hash optional bytes
+    4 canonical_bundle optional bytes
+  riffdb.storage.v1.StoredContractMigrationJournalV1 fields=13
+    1 database_id optional bytes
+    2 operation_id optional bytes
+    3 semantic_input_hash optional bytes
+    4 artifacts optional .riffdb.storage.v1.ContractMigrationArtifactIdentityV1
+    5 step optional .riffdb.storage.v1.ContractMigrationJournalStepV1
+    6 exclusive_cursor optional .riffdb.storage.v1.EntityTargetV1 proto3-optional oneof=_exclusive_cursor
+    7 checked_rows optional uint64
+    8 changed_rows optional uint64
+    9 batch_count optional uint64
+    10 frozen_application_frontier optional uint64 proto3-optional oneof=_frozen_application_frontier
+    11 required_projection_ids repeated uint32
+    12 previous_journal_hash optional bytes proto3-optional oneof=_previous_journal_hash
+    13 journal_hash optional bytes
+  riffdb.storage.v1.StoredContractMigrationRecordV1 fields=16
+    1 database_id optional bytes
+    2 operation_id optional bytes
+    3 semantic_input_hash optional bytes
+    4 artifacts optional .riffdb.storage.v1.ContractMigrationArtifactIdentityV1
+    5 operation_artifacts optional .riffdb.storage.v1.ContractMigrationOperationArtifactsV1
+    6 source_backup_name optional string
+    7 source_backup_manifest_checksum optional bytes
+    8 principal optional .riffdb.storage.v1.AuditPrincipalV1
+    9 approval_id optional string proto3-optional oneof=_approval_id
+    10 predecessor_application_frontier optional uint64 proto3-optional oneof=_predecessor_application_frontier
+    11 successor_application_frontier optional uint64 proto3-optional oneof=_successor_application_frontier
+    12 checked_rows optional uint64
+    13 changed_rows optional uint64
+    14 batch_count optional uint64
+    15 terminal_validation_digest optional bytes
+    16 administration_sequence optional uint64
+  riffdb.storage.v1.StoredContractWriteRetirementV1 fields=5
+    1 parent_bundle_hash optional bytes
+    2 candidate_bundle_hash optional bytes
+    3 migration_bundle_hash optional bytes
+    4 operation_id optional bytes
+    5 administration_sequence optional uint64
+  riffdb.storage.v1.StoredDatabaseIdentityV1 fields=1
+    1 database_id optional bytes
+  riffdb.storage.v1.StoredDurableEventV1 fields=4
+    1 event_id optional .riffdb.storage.v1.EventIdV1
+    2 event_type_id optional uint32
+    3 canonical_payload optional bytes
+    4 event_hash optional bytes
+  riffdb.storage.v1.StoredDurableEventV2 fields=5
+    1 event_id optional .riffdb.storage.v1.EventIdV1
+    2 event_type_id optional uint32
+    3 canonical_payload optional bytes
+    4 event_hash optional bytes
+    5 policy_anchor optional .riffdb.storage.v1.StoredEventPolicyAnchorV1
+  riffdb.storage.v1.StoredDurableEventVariantV1 fields=2
+    1 unanchored optional .riffdb.storage.v1.StoredDurableEventV1 oneof=value
+    2 anchored optional .riffdb.storage.v1.StoredDurableEventV2 oneof=value
+  riffdb.storage.v1.StoredEntityChainHeadV1 fields=5
+    1 target optional .riffdb.storage.v1.EntityTargetV1
+    2 chain_revision optional uint64
+    3 state optional .riffdb.storage.v1.StoredEntityChainStateV1
+    4 last_command_sequence optional uint64
+    5 last_transition_hash optional bytes
+  riffdb.storage.v1.StoredEntityChainStateV1 fields=3
+    1 kind optional .riffdb.storage.v1.EntityChainStateKindV1
+    2 entity_version optional uint64 proto3-optional oneof=_entity_version
+    3 value_hash optional bytes
+  riffdb.storage.v1.StoredEntityRecordV1 fields=5
+    1 target optional .riffdb.storage.v1.EntityTargetV1
+    2 entity_version optional uint64
+    3 written_by_contract optional uint64
+    4 schema_binding optional .riffdb.storage.v1.DurableKeySchemaBindingV1
+    5 canonical_fields optional bytes
+  riffdb.storage.v1.StoredEnvelope fields=5
+    1 storage_format_version optional uint32
+    2 record_type optional string
+    3 payload optional bytes
+    4 payload_crc32c optional fixed32
+    5 schema_hash optional bytes
+  riffdb.storage.v1.StoredEventConsumerDeliveryV1 fields=6
+    1 consumer_identity_hash optional bytes
+    2 event_id optional .riffdb.storage.v1.EventIdV1
+    3 history_incarnation optional uint64
+    4 leased optional .riffdb.storage.v1.LeasedConsumerDeliveryV1 oneof=state
+    5 retry optional .riffdb.storage.v1.RetryConsumerDeliveryV1 oneof=state
+    6 dead_lettered optional .riffdb.storage.v1.DeadLetteredConsumerDeliveryV1 oneof=state
+  riffdb.storage.v1.StoredEventConsumerV1 fields=6
+    1 identity optional .riffdb.storage.v1.EventConsumerIdentityV1
+    2 partition_hash optional bytes
+    3 history_incarnation optional uint64
+    4 revision optional uint64
+    5 checkpoint optional .riffdb.storage.v1.EventIdV1 proto3-optional oneof=_checkpoint
+    6 sparse_resolutions repeated .riffdb.storage.v1.SparseConsumerResolutionV1
+  riffdb.storage.v1.StoredEventPolicyAnchorV1 fields=4
+    1 contract optional .riffdb.storage.v1.DurableKeySchemaBindingV1
+    2 event_type_id optional uint32
+    3 source optional .riffdb.storage.v1.EntityTargetV1
+    4 read_policy optional string
+  riffdb.storage.v1.StoredEventRouteV1 fields=3
+    1 event_id optional .riffdb.storage.v1.EventIdV1
+    2 event_type_id optional uint32
+    3 event_hash optional bytes
+  riffdb.storage.v1.StoredExecutionFailedV1 fields=2
+    1 pending optional .riffdb.storage.v1.StoredPendingAdmissionV1
+    2 code optional .riffdb.storage.v1.ExecutionFailureCodeV1
+  riffdb.storage.v1.StoredExecutionFailedV2 fields=2
+    1 pending optional .riffdb.storage.v1.StoredPendingAdmissionV2
+    2 code optional .riffdb.storage.v1.ExecutionFailureCodeV1
+  riffdb.storage.v1.StoredExecutionFailedV3 fields=2
+    1 pending optional .riffdb.storage.v1.StoredPendingAdmissionV3
+    2 code optional .riffdb.storage.v1.ExecutionFailureCodeV1
+  riffdb.storage.v1.StoredHistoryIncarnationV1 fields=1
+    1 incarnation optional uint64
+  riffdb.storage.v1.StoredHistoryTombstoneV1 fields=10
+    1 first_sequence optional uint64
+    2 last_sequence optional uint64
+    3 commits_count optional uint64
+    4 events_count optional uint64
+    5 outbox_count optional uint64
+    6 outbox_status_count optional uint64
+    7 content_digest optional bytes
+    8 previous_tombstone_hash optional bytes proto3-optional oneof=_previous_tombstone_hash
+    9 tombstone_hash optional bytes
+    10 history_incarnation optional uint64
+  riffdb.storage.v1.StoredIndexEntryV1 fields=3
+    1 index_entry_key optional bytes
+    2 schema_binding optional .riffdb.storage.v1.DurableKeySchemaBindingV1
+    3 canonical_covered_values optional bytes
+  riffdb.storage.v1.StoredIndexEntryV2 fields=4
+    1 index_entry_key optional bytes
+    2 schema_binding optional .riffdb.storage.v1.DurableKeySchemaBindingV1
+    3 canonical_covered_values optional bytes
+    4 partition_key optional bytes
+  riffdb.storage.v1.StoredIndexEpochV1 fields=3
+    1 canonical_index_range_prefix optional bytes
+    2 schema_binding optional .riffdb.storage.v1.DurableKeySchemaBindingV1
+    3 epoch optional uint64
+  riffdb.storage.v1.StoredIndexGenerationTransitionV1 fields=2
+    1 post_image optional .riffdb.storage.v1.StoredIndexGenerationV2
+    2 prior_generation optional uint64 proto3-optional oneof=_prior_generation
+  riffdb.storage.v1.StoredIndexGenerationV2 fields=4
+    1 partition_key optional bytes
+    2 index_id optional uint32
+    3 schema_binding optional .riffdb.storage.v1.DurableKeySchemaBindingV1
+    4 generation optional uint64
+  riffdb.storage.v1.StoredOutboxIntentV1 fields=1
+    1 event optional .riffdb.storage.v1.StoredDurableEventV1
+  riffdb.storage.v1.StoredOutboxIntentV2 fields=1
+    1 event_reference optional .riffdb.storage.v1.EventReferenceV2
+  riffdb.storage.v1.StoredOutboxStatusV1 fields=5
+    1 event_id optional .riffdb.storage.v1.EventIdV1
+    2 pending optional .riffdb.storage.v1.OutboxRetryMetadataV1 oneof=state
+    3 delivering optional .riffdb.storage.v1.OutboxDeliveringV1 oneof=state
+    4 delivered optional .riffdb.storage.v1.OutboxDeliveredV1 oneof=state
+    5 dead_letter optional .riffdb.storage.v1.OutboxDeadLetterV1 oneof=state
+  riffdb.storage.v1.StoredOutcomeV1 fields=14
+    1 identity optional .riffdb.storage.v1.IdempotencyIdentityV1
+    2 commit_sequence optional uint64
+    3 admission_request_id optional bytes
+    4 plan optional .riffdb.storage.v1.ExecutablePlanRefV1
+    5 canonical_input_hash optional bytes
+    6 actor optional .riffdb.storage.v1.AdmittedActorContextV1
+    7 logical_time optional .riffdb.storage.v1.TimestampV1
+    8 partition_hash optional bytes
+    9 conflict_hashes repeated bytes
+    10 declared_outcome optional .riffdb.storage.v1.DeclaredOutcomeV1
+    11 admitted_claims optional .riffdb.storage.v1.StoredAdmittedProvenanceClaimsV1
+    12 provenance_id optional bytes
+    13 durability_mode optional .riffdb.storage.v1.DurabilityModeV1
+    14 partition_key optional bytes
+  riffdb.storage.v1.StoredOutcomeV2 fields=2
+    1 base optional .riffdb.storage.v1.StoredOutcomeV1
+    2 causation optional .riffdb.storage.v1.StoredCommandCausationV1
+  riffdb.storage.v1.StoredOutcomeV3 fields=2
+    1 base optional .riffdb.storage.v1.StoredOutcomeV2
+    2 canonical_service_values optional bytes
+  riffdb.storage.v1.StoredPendingAdmissionV1 fields=8
+    1 identity optional .riffdb.storage.v1.IdempotencyIdentityV1
+    2 canonical_input_hash optional bytes
+    3 admission_request_id optional bytes
+    4 plan optional .riffdb.storage.v1.ExecutablePlanRefV1
+    5 logical_time optional .riffdb.storage.v1.TimestampV1
+    6 actor optional .riffdb.storage.v1.AdmittedActorContextV1
+    7 partition_key optional bytes
+    8 provenance_claims optional .riffdb.storage.v1.StoredAdmittedProvenanceClaimsV1
+  riffdb.storage.v1.StoredPendingAdmissionV2 fields=2
+    1 base optional .riffdb.storage.v1.StoredPendingAdmissionV1
+    2 causation optional .riffdb.storage.v1.StoredCommandCausationV1
+  riffdb.storage.v1.StoredPendingAdmissionV3 fields=2
+    1 base optional .riffdb.storage.v1.StoredPendingAdmissionV2
+    2 canonical_service_values optional bytes
+  riffdb.storage.v1.StoredProjectionApplyV1 fields=4
+    1 identity optional .riffdb.storage.v1.ProjectionIdentityV1
+    2 generation optional uint64
+    3 commit_sequence optional uint64
+    4 projection_apply_hash optional bytes
+  riffdb.storage.v1.StoredProjectionControlV1 fields=7
+    1 identity optional .riffdb.storage.v1.ProjectionIdentityV1
+    2 highest_allocated_generation optional uint64
+    3 published optional .riffdb.storage.v1.ProjectionGenerationPositionV1
+    4 candidate optional .riffdb.storage.v1.ProjectionGenerationPositionV1
+    5 published_apply_mode optional .riffdb.storage.v1.PublishedApplyModeV1 proto3-optional oneof=_published_apply_mode
+    6 lifecycle optional .riffdb.storage.v1.ProjectionLifecycleV1
+    7 failure optional .riffdb.storage.v1.ProjectionFailureV1
+  riffdb.storage.v1.StoredProjectionStateV1 fields=5
+    1 identity optional .riffdb.storage.v1.ProjectionIdentityV1
+    2 generation optional uint64
+    3 canonical_group_values repeated bytes
+    4 canonical_measures optional bytes
+    5 last_changed_sequence optional uint64
+  riffdb.storage.v1.StoredProvenanceRecordV1 fields=14
+    1 provenance_id optional bytes
+    2 commit_sequence optional uint64
+    3 identity optional .riffdb.storage.v1.IdempotencyIdentityV1
+    4 admission_request_id optional bytes
+    5 plan optional .riffdb.storage.v1.ExecutablePlanRefV1
+    6 canonical_input_hash optional bytes
+    7 actor optional .riffdb.storage.v1.AdmittedActorContextV1
+    8 logical_time optional .riffdb.storage.v1.TimestampV1
+    9 partition_hash optional bytes
+    10 conflict_hashes repeated bytes
+    11 outcome_id optional uint32
+    12 affected_entities repeated .riffdb.storage.v1.AffectedEntityV1
+    13 event_ids repeated .riffdb.storage.v1.EventIdV1
+    14 admitted_claims optional .riffdb.storage.v1.StoredAdmittedProvenanceClaimsV1
+  riffdb.storage.v1.StoredProvenanceRecordV2 fields=2
+    1 base optional .riffdb.storage.v1.StoredProvenanceRecordV1
+    2 causation optional .riffdb.storage.v1.StoredCommandCausationV1
+  riffdb.storage.v1.StoredQueryModuleAdministrationV1 fields=7
+    1 administration_sequence optional uint64
+    2 request_id optional bytes
+    3 timestamp optional .riffdb.storage.v1.TimestampV1
+    4 principal optional .riffdb.storage.v1.AuditPrincipalV1
+    5 previous_active optional .riffdb.storage.v1.ActiveQueryModulePointerV1
+    6 activated optional .riffdb.storage.v1.ActiveQueryModulePointerV1
+    7 approval_id optional string proto3-optional oneof=_approval_id
+  riffdb.storage.v1.StoredQueryModuleV1 fields=7
+    1 module_name optional string
+    2 module_version optional uint64
+    3 module_hash optional bytes
+    4 contract_lineage optional string
+    5 contract_version optional uint64
+    6 contract_bundle_hash optional bytes
+    7 canonical_module optional bytes
+  riffdb.storage.v1.StoredReactiveModuleAdministrationV1 fields=6
+    1 administration_sequence optional uint64
+    2 request_id optional bytes
+    3 timestamp optional .riffdb.storage.v1.TimestampV1
+    4 principal optional .riffdb.storage.v1.AuditPrincipalV1
+    5 module_hash optional bytes
+    6 approval_id optional string proto3-optional oneof=_approval_id
+  riffdb.storage.v1.StoredReactiveModuleV1 fields=10
+    1 module_name optional string
+    2 module_version optional uint64
+    3 module_hash optional bytes
+    4 contract_lineage optional string
+    5 contract_version optional uint64
+    6 contract_bundle_hash optional bytes
+    7 source_hash optional bytes
+    8 query_module_hashes repeated bytes
+    9 canonical_source optional bytes
+    10 canonical_module optional bytes
+  riffdb.storage.v1.StoredReadDependenciesV1 fields=1
+    1 dependencies repeated .riffdb.storage.v1.StoredReadDependencyV1
+  riffdb.storage.v1.StoredReadDependencyV1 fields=2
+    1 entity_observation optional .riffdb.storage.v1.EntityReadDependencyV1 oneof=dependency
+    2 index_range_epoch optional .riffdb.storage.v1.IndexRangeReadDependencyV1 oneof=dependency
+  riffdb.storage.v1.StoredRecordRegistryV2 fields=1
+    1 registry_digest optional bytes
+  riffdb.storage.v1.StoredRetentionAdministrationV1 fields=5
+    1 administration_sequence optional uint64
+    2 action optional .riffdb.storage.v1.RetentionAdministrationActionV1
+    3 projection_id optional uint64
+    4 reason optional string
+    5 timestamp optional .riffdb.storage.v1.TimestampV1
+  riffdb.storage.v1.StoredRetentionHoldsV1 fields=1
+    1 holds repeated .riffdb.storage.v1.RetentionHoldV1
+  riffdb.storage.v1.StoredRetentionWatermarkV1 fields=4
+    1 watermark_sequence optional uint64
+    2 history_incarnation optional uint64
+    3 watermark_hash optional bytes
+    4 chain_root_registry_digest optional bytes proto3-optional oneof=_chain_root_registry_digest
+  riffdb.storage.v1.StoredRetiredEntityRecordV1 fields=4
+    1 operation_id optional bytes
+    2 migration_bundle_hash optional bytes
+    3 original_target optional .riffdb.storage.v1.EntityTargetV1
+    4 original_entity_envelope optional bytes
+  riffdb.storage.v1.StoredServiceAuditRequestIndexV1 fields=2
+    1 request_id optional bytes
+    2 administration_sequence optional uint64
+  riffdb.storage.v1.StoredStorageFormatVersionV1 fields=1
+    1 storage_format_version optional uint32
+  riffdb.storage.v1.StoredValidatedPrefixCheckpointV1 fields=21
+    1 database_id optional bytes
+    2 history_incarnation optional uint64
+    3 registry_digest optional bytes
+    4 checkpoint_commit_sequence optional uint64
+    5 audit_sequence_bound optional uint64
+    6 commits_count optional uint64
+    7 events_count optional uint64
+    8 event_routes_count optional uint64
+    9 outbox_count optional uint64
+    10 outbox_status_count optional uint64
+    11 idempotency_count optional uint64
+    12 audit_count optional uint64
+    13 audit_by_request_count optional uint64
+    14 entity_chain_fingerprint optional bytes
+    15 next_application_sequence optional uint64
+    16 application_sequence_exhausted optional bool
+    17 next_administration_sequence optional uint64
+    18 administration_sequence_exhausted optional bool
+    19 previous_checkpoint_hash optional bytes proto3-optional oneof=_previous_checkpoint_hash
+    20 checkpoint_hash optional bytes
+    21 retention_watermark_sequence optional uint64
+  riffdb.storage.v1.StoredValidatedPrefixCheckpointV2 fields=6
+    1 base optional .riffdb.storage.v1.StoredValidatedPrefixCheckpointV1
+    2 live_entity_count optional uint64
+    3 deleted_entity_count optional uint64
+    4 entity_transition_count optional uint64
+    5 entity_transition_fingerprint optional bytes
+    6 checkpoint_hash optional bytes
+  riffdb.storage.v1.TenantScopeV1 fields=2
+    1 global optional .riffdb.storage.v1.UnitV1 oneof=scope
+    2 tenant_id optional string oneof=scope
+  riffdb.storage.v1.TimestampV1 fields=2
+    1 seconds optional sint64
+    2 nanos optional uint32
+  riffdb.storage.v1.UnitV1 fields=0
+  riffdb.v1.AcknowledgeContextualSubscriptionRequest fields=5
+    1 request_id optional bytes
+    2 selection optional .riffdb.v1.EventConsumerSelection
+    3 event_id optional .riffdb.v1.EventId
+    4 lease_token optional bytes
+    5 history_incarnation optional uint64
+  riffdb.v1.AcknowledgeEventStreamRequest fields=5
+    1 request_id optional bytes
+    2 selection optional .riffdb.v1.EventConsumerSelection
+    3 event_id optional .riffdb.v1.EventId
+    4 lease_token optional bytes
+    5 history_incarnation optional uint64
+  riffdb.v1.ActiveDiscoveryCatalogFence fields=4
+    1 contract_lineage optional string
+    2 contract_version optional uint64
+    3 bundle_hash optional bytes
+    4 active_query_module_hash optional bytes
+  riffdb.v1.AdmittedActor fields=4
+    1 principal_id optional string
+    2 actor_kind optional .riffdb.v1.ActorKind
+    3 tenant_scope optional .riffdb.v1.TenantScope
+    4 agent_session_id optional bytes proto3-optional oneof=_agent_session_id
+  riffdb.v1.AffectedEntity fields=2
+    1 entity_key optional bytes
+    2 entity_version optional uint64
+  riffdb.v1.ApplicationExportOperation fields=13
+    1 operation_id optional bytes
+    2 selection optional .riffdb.v1.ApplicationExportSelection
+    3 snapshot optional .riffdb.v1.ApplicationExportSnapshotBinding
+    4 phase optional .riffdb.v1.ApplicationExportPhase
+    5 lease_expires_at optional .riffdb.v1.Timestamp
+    6 pages_released optional uint64
+    7 rows_released optional uint64
+    8 bytes_released optional uint64
+    9 failure optional .riffdb.v1.ApplicationExportFailure
+    10 canonical_manifest_json optional bytes
+    11 canonical_receipt_json optional bytes
+    12 manifest_hash optional bytes
+    13 receipt_hash optional bytes
+  riffdb.v1.ApplicationExportPage fields=8
+    1 operation_id optional bytes
+    2 page_number optional uint64
+    3 record_class optional .riffdb.v1.ApplicationExportRecordClass
+    4 canonical_json_lines repeated bytes
+    5 next_cursor optional bytes
+    6 class_complete optional bool
+    7 operation_complete optional bool
+    8 page_hash optional bytes
+  riffdb.v1.ApplicationExportSelection fields=6
+    1 contract_lineage optional string
+    2 scope optional .riffdb.v1.CapabilityApplicationExportScope
+    3 entities optional bool
+    4 events optional bool
+    5 provenance optional bool
+    6 public_audit optional bool
+  riffdb.v1.ApplicationExportSnapshotBinding fields=8
+    1 database_id optional bytes
+    2 history_incarnation optional uint64
+    3 application_frontier optional uint64
+    4 administration_frontier optional uint64
+    5 contract_version optional uint64
+    6 contract_bundle_hash optional bytes
+    7 query_module_hashes repeated bytes
+    8 reactive_module_hashes repeated bytes
+  riffdb.v1.ApplicationInstallationDriverProof fields=1
+    1 drivers repeated .riffdb.v1.ApplicationInstallationDriver
+  riffdb.v1.ApplicationInstallationExternalCompletion fields=2
+    1 driver_proof optional .riffdb.v1.ApplicationInstallationDriverProof oneof=completion
+    2 seed_receipts optional .riffdb.v1.ApplicationInstallationSeedReceipts oneof=completion
+  riffdb.v1.ApplicationInstallationFailure fields=3
+    1 stage optional .riffdb.v1.ApplicationInstallationStage
+    2 code optional .riffdb.v1.ApplicationInstallationFailureCode
+    3 next_action optional .riffdb.v1.ApplicationInstallationNextAction
+  riffdb.v1.ApplicationInstallationObservation fields=9
+    1 campaign_id optional bytes
+    2 plan_hash optional bytes
+    3 contract_lineage optional string
+    4 phase optional .riffdb.v1.ApplicationInstallationPhase
+    5 completed_stages repeated .riffdb.v1.ApplicationInstallationStage
+    6 next_stage optional .riffdb.v1.ApplicationInstallationStage
+    7 next_action optional .riffdb.v1.ApplicationInstallationNextAction
+    8 failure optional .riffdb.v1.ApplicationInstallationFailure
+    9 receipt_hash optional bytes
+  riffdb.v1.ApplicationInstallationSeedReceipt fields=4
+    1 name optional string
+    2 content_hash optional bytes
+    3 succeeded optional uint64
+    4 replayed optional uint64
+  riffdb.v1.ApplicationInstallationSeedReceipts fields=1
+    1 seeds repeated .riffdb.v1.ApplicationInstallationSeedReceipt
+  riffdb.v1.ApplicationReimportOperation fields=16
+    1 campaign_id optional bytes
+    2 contract_lineage optional string
+    3 scope optional .riffdb.v1.CapabilityApplicationReimportScope
+    4 portability_manifest_hash optional bytes
+    5 export_manifest_hash optional bytes
+    6 export_receipt_hash optional bytes
+    7 source_database_id optional bytes
+    8 target_database_id optional bytes
+    9 source_rows optional uint64
+    10 source_pages optional uint64
+    11 next_page optional uint64
+    12 rows_applied optional uint64
+    13 phase optional .riffdb.v1.ApplicationReimportPhase
+    14 failure optional .riffdb.v1.ApplicationReimportFailure
+    15 canonical_reimport_receipt_json optional bytes
+    16 reimport_receipt_hash optional bytes
+  riffdb.v1.ApplyApplicationReimportPageRequest fields=3
+    1 request_id optional bytes
+    2 campaign_id optional bytes
+    3 page optional .riffdb.v1.ApplicationExportPage
+  riffdb.v1.ApplyApplicationReimportPageResponse fields=1
+    1 operation optional .riffdb.v1.ApplicationReimportOperation
+  riffdb.v1.ApplyContractMigrationRequest fields=6
+    1 request_id optional bytes
+    2 operation_id optional bytes
+    3 candidate_bundle optional bytes
+    4 migration_bundle optional bytes
+    5 confirmation optional .riffdb.v1.ContractMigrationApplyConfirmation
+    6 confirmed_migration_hash optional bytes
+  riffdb.v1.ApplyContractMigrationResponse fields=2
+    1 disposition optional .riffdb.v1.ContractMigrationStartDisposition
+    2 operation optional .riffdb.v1.ContractMigrationOperation
+  riffdb.v1.AuthenticatedHealth fields=7
+    1 status optional .riffdb.v1.HealthStatus
+    2 active_contract_version optional uint64 proto3-optional oneof=_active_contract_version
+    3 last_commit_sequence optional uint64 proto3-optional oneof=_last_commit_sequence
+    4 components repeated .riffdb.v1.HealthComponent
+    5 started_at optional .riffdb.v1.Timestamp
+    6 build optional .riffdb.v1.BuildInfo
+    7 history_incarnation optional uint64
+  riffdb.v1.AvailableContextualReaction fields=4
+    1 name optional string
+    2 command_name optional string
+    3 command_id optional uint32
+    4 causation_token optional bytes
+  riffdb.v1.BindingFieldRef fields=2
+    1 binding_id optional uint32
+    2 field_id optional uint32
+  riffdb.v1.BootstrapCreateCapabilityResult fields=3
+    1 created optional .riffdb.v1.CapabilityTransition oneof=result
+    2 replayed optional .riffdb.v1.CapabilityTransition oneof=result
+    3 bootstrap_conflict optional .riffdb.v1.Unit oneof=result
+  riffdb.v1.BuildInfo fields=7
+    1 semantic_version optional string
+    2 git_revision optional string
+    3 rust_version optional string
+    4 enabled_features repeated string
+    5 storage_format_version optional uint32
+    6 contract_ir_version optional uint32
+    7 mcp_protocol_baseline optional string
+  riffdb.v1.CancelApplicationExportRequest fields=2
+    1 request_id optional bytes
+    2 operation_id optional bytes
+  riffdb.v1.CancelApplicationExportResponse fields=2
+    1 not_found optional .riffdb.v1.Unit oneof=result
+    2 found optional .riffdb.v1.ApplicationExportOperation oneof=result
+  riffdb.v1.CancelApplicationReimportRequest fields=2
+    1 request_id optional bytes
+    2 campaign_id optional bytes
+  riffdb.v1.CancelApplicationReimportResponse fields=2
+    1 not_found optional .riffdb.v1.Unit oneof=result
+    2 found optional .riffdb.v1.ApplicationReimportOperation oneof=result
+  riffdb.v1.CapabilityApplicationExportGrant fields=6
+    1 contract_lineage optional string
+    2 scope optional .riffdb.v1.CapabilityApplicationExportScope
+    3 entities optional bool
+    4 events optional bool
+    5 provenance optional bool
+    6 public_audit optional bool
+  riffdb.v1.CapabilityApplicationReimportGrant fields=4
+    1 contract_lineage optional string
+    2 campaign_id optional bytes
+    3 portability_manifest_hash optional bytes
+    4 scope optional .riffdb.v1.CapabilityApplicationReimportScope
+  riffdb.v1.CapabilityExportGrant fields=1
+    1 applications repeated .riffdb.v1.CapabilityApplicationExportGrant
+  riffdb.v1.CapabilityGrant fields=9
+    1 tenant_scope optional .riffdb.v1.TenantScope
+    2 partition_scope optional .riffdb.v1.PartitionScope
+    3 permissions repeated .riffdb.v1.CapabilityPermission
+    4 field_visibility repeated .riffdb.v1.EntityFieldVisibility
+    5 max_scan_rows optional uint32
+    6 approval_required repeated .riffdb.v1.CapabilityPermissionKind
+    7 row_policy optional .riffdb.v1.CapabilityRowPolicyGrant
+    8 export optional .riffdb.v1.CapabilityExportGrant
+    9 reimport optional .riffdb.v1.CapabilityApplicationReimportGrant
+  riffdb.v1.CapabilityIdentity fields=2
+    1 capability_id optional bytes
+    2 revision optional uint64
+  riffdb.v1.CapabilityPermission fields=31
+    1 validate_contract optional .riffdb.v1.Unit oneof=permission
+    2 read_contract optional .riffdb.v1.Unit oneof=permission
+    3 explain_command optional .riffdb.v1.LineageScopedStableId oneof=permission
+    4 deploy_contract optional .riffdb.v1.Unit oneof=permission
+    5 invoke_command optional .riffdb.v1.LineageScopedStableId oneof=permission
+    6 read_entity optional .riffdb.v1.LineageScopedStableId oneof=permission
+    7 scan_index optional .riffdb.v1.LineageScopedStableId oneof=permission
+    8 query_projection optional .riffdb.v1.LineageScopedStableId oneof=permission
+    9 read_projection_status optional .riffdb.v1.LineageScopedStableId oneof=permission
+    10 read_commit optional .riffdb.v1.Unit oneof=permission
+    11 scan_commits optional .riffdb.v1.Unit oneof=permission
+    12 subscribe_commits optional .riffdb.v1.Unit oneof=permission
+    13 read_provenance optional .riffdb.v1.Unit oneof=permission
+    14 inspect_outbox optional .riffdb.v1.Unit oneof=permission
+    15 read_health optional .riffdb.v1.Unit oneof=permission
+    16 read_statistics optional .riffdb.v1.Unit oneof=permission
+    17 create_capability optional .riffdb.v1.Unit oneof=permission
+    18 revoke_capability optional .riffdb.v1.Unit oneof=permission
+    19 administer_capabilities optional .riffdb.v1.Unit oneof=permission
+    20 check_ad_hoc_query optional .riffdb.v1.Unit oneof=permission
+    21 explain_ad_hoc_query optional .riffdb.v1.Unit oneof=permission
+    22 execute_ad_hoc_query optional .riffdb.v1.Unit oneof=permission
+    23 explain_named_query optional .riffdb.v1.NamedQueryPermission oneof=permission
+    24 execute_named_query optional .riffdb.v1.NamedQueryPermission oneof=permission
+    25 application_role_identity optional bytes oneof=permission
+    26 migrate_contract optional string oneof=permission
+    27 consume_event_stream optional .riffdb.v1.ReactiveOperationPermission oneof=permission
+    28 seek_event_stream_consumer optional .riffdb.v1.ReactiveOperationPermission oneof=permission
+    29 watch_named_query optional .riffdb.v1.ReactiveOperationPermission oneof=permission
+    30 consume_contextual_subscription optional .riffdb.v1.ReactiveOperationPermission oneof=permission
+    31 install_application optional string oneof=permission
+  riffdb.v1.CapabilityPrincipalFact fields=2
+    1 name optional string
+    2 value optional .riffdb.v1.Value
+  riffdb.v1.CapabilityRowPolicyBinding fields=4
+    1 contract_lineage optional string
+    2 policy_name optional string
+    3 entity_type_id optional uint32
+    4 operations repeated .riffdb.v1.CapabilityRowPolicyOperation
+  riffdb.v1.CapabilityRowPolicyGrant fields=3
+    1 application_role_hash optional bytes
+    2 principal_facts repeated .riffdb.v1.CapabilityPrincipalFact
+    3 policies repeated .riffdb.v1.CapabilityRowPolicyBinding
+  riffdb.v1.CapabilityTransition fields=2
+    1 identity optional .riffdb.v1.CapabilityIdentity
+    2 administration_sequence optional uint64
+  riffdb.v1.CheckContractMigrationRequest fields=4
+    1 request_id optional bytes
+    2 operation_id optional bytes
+    3 candidate_bundle optional bytes
+    4 migration_bundle optional bytes
+  riffdb.v1.CheckContractMigrationResponse fields=2
+    1 disposition optional .riffdb.v1.ContractMigrationStartDisposition
+    2 operation optional .riffdb.v1.ContractMigrationOperation
+  riffdb.v1.CommandExecutionFailureDetails fields=1
+    1 code optional .riffdb.v1.ExecutionFailureCode
+  riffdb.v1.CommandExplain fields=11
+    1 command_id optional uint32
+    2 execution_class optional .riffdb.v1.ExecutionClass
+    3 partition_component_count optional uint32
+    4 conflict_key_count optional uint32
+    5 binding_ids repeated uint32
+    6 read_fields repeated .riffdb.v1.BindingFieldRef
+    7 write_fields repeated .riffdb.v1.BindingFieldRef
+    8 invariant_ids repeated uint32
+    9 event_type_ids repeated uint32
+    10 outcome_ids repeated uint32
+    11 rendered_text optional string
+  riffdb.v1.CommandOutcomeResource fields=3
+    1 contract_lineage optional string
+    2 command_id optional uint32
+    3 tool_name optional string
+  riffdb.v1.CommandResource fields=4
+    1 contract_lineage optional string
+    2 command_id optional uint32
+    3 contract_version optional uint64
+    4 source_command optional string
+  riffdb.v1.CommandToolDescriptor fields=7
+    1 tool_name optional string
+    2 source_command optional string
+    3 contract_lineage optional string
+    4 contract_version optional uint64
+    5 command_id optional uint32
+    6 input_schema optional .riffdb.v1.GeneratedSchemaArtifact
+    7 outcome_schema optional .riffdb.v1.GeneratedSchemaArtifact
+  riffdb.v1.CommandToolDiscoveryItem fields=3
+    1 fixed_tool optional .riffdb.v1.FixedToolKind oneof=item
+    2 command_tool optional .riffdb.v1.CommandToolDescriptor oneof=item
+    3 named_query_tool optional .riffdb.v1.NamedQueryToolDescriptor oneof=item
+  riffdb.v1.CommandToolDiscoveryPage fields=4
+    1 items repeated .riffdb.v1.CommandToolDiscoveryItem
+    2 next_cursor optional bytes proto3-optional oneof=_next_cursor
+    3 observed_fence optional .riffdb.v1.DiscoveryCatalogFence
+    4 operation_schemas optional .riffdb.v1.OperationSchemaCatalog
+  riffdb.v1.Commit fields=16
+    1 commit_sequence optional uint64
+    2 admission_request_id optional bytes
+    3 contract_lineage optional string
+    4 contract_version optional uint64
+    5 command_id optional uint32
+    6 plan_hash optional bytes
+    7 canonical_input_hash optional bytes
+    8 actor optional .riffdb.v1.AdmittedActor
+    9 logical_time optional .riffdb.v1.Timestamp
+    10 partition_hash optional bytes
+    11 conflict_hashes repeated bytes
+    12 affected_entities repeated .riffdb.v1.AffectedEntity
+    13 events repeated .riffdb.v1.DurableEvent
+    14 outcome optional .riffdb.v1.DeclaredOutcome
+    15 provenance_uri optional string
+    16 durability optional .riffdb.v1.CommandDurability
+  riffdb.v1.CommitNotification fields=3
+    1 commit optional .riffdb.v1.Commit oneof=notification
+    2 terminal optional .riffdb.v1.CommitSubscriptionTerminal oneof=notification
+    3 history_incarnation optional uint64
+  riffdb.v1.CommitPage fields=4
+    1 items repeated .riffdb.v1.Commit
+    2 next_cursor optional bytes proto3-optional oneof=_next_cursor
+    3 observed_fence optional .riffdb.v1.FrontierPosition
+    4 history_incarnation optional uint64
+  riffdb.v1.CommitResource fields=2
+    1 class_template optional .riffdb.v1.Unit oneof=target
+    2 commit_sequence optional uint64 oneof=target
+  riffdb.v1.CommitSubscriptionTerminal fields=3
+    1 reason optional .riffdb.v1.CommitSubscriptionEndReason
+    2 resume_after optional .riffdb.v1.FrontierPosition
+    3 history_incarnation optional uint64
+  riffdb.v1.CompactCommandToolDescriptor fields=7
+    1 tool_name optional string
+    2 source_command optional string
+    3 contract_lineage optional string
+    4 contract_version optional uint64
+    5 command_id optional uint32
+    6 input_schema optional .riffdb.v1.GeneratedSchemaIdentity
+    7 outcome_schema optional .riffdb.v1.GeneratedSchemaIdentity
+  riffdb.v1.CompactCommandToolDiscoveryItem fields=3
+    1 fixed_tool optional .riffdb.v1.FixedToolKind oneof=item
+    2 command_tool optional .riffdb.v1.CompactCommandToolDescriptor oneof=item
+    3 named_query_tool optional .riffdb.v1.CompactNamedQueryToolDescriptor oneof=item
+  riffdb.v1.CompactCommandToolDiscoveryPage fields=3
+    1 items repeated .riffdb.v1.CompactCommandToolDiscoveryItem
+    2 next_cursor optional bytes proto3-optional oneof=_next_cursor
+    3 observed_fence optional .riffdb.v1.DiscoveryCatalogFence
+  riffdb.v1.CompactEntitySchemaResource fields=3
+    1 contract_lineage optional string
+    2 entity_type_id optional uint32
+    3 schema optional .riffdb.v1.GeneratedSchemaIdentity
+  riffdb.v1.CompactNamedQueryToolDescriptor fields=9
+    1 tool_name optional string
+    2 source_query optional string
+    3 contract_lineage optional string
+    4 contract_version optional uint64
+    5 query_module_name optional string
+    6 query_module_version optional uint64
+    7 query_module_hash optional bytes
+    8 input_schema_hash optional bytes
+    9 result_schema_hash optional bytes
+  riffdb.v1.CompactResourceDescriptor fields=11
+    1 active_contract optional .riffdb.v1.Unit oneof=resource
+    2 contract_version optional .riffdb.v1.ContractVersionResource oneof=resource
+    3 entity_schema optional .riffdb.v1.CompactEntitySchemaResource oneof=resource
+    4 command_plan optional .riffdb.v1.CommandResource oneof=resource
+    5 command_documentation optional .riffdb.v1.CommandResource oneof=resource
+    6 command_outcome optional .riffdb.v1.CommandOutcomeResource oneof=resource
+    7 commit optional .riffdb.v1.CommitResource oneof=resource
+    8 provenance optional .riffdb.v1.ProvenanceResource oneof=resource
+    9 projection_status optional .riffdb.v1.ProjectionStatusResource oneof=resource
+    10 server_health optional .riffdb.v1.Unit oneof=resource
+    11 reactive_wakeup optional .riffdb.v1.Unit oneof=resource
+  riffdb.v1.CompactResourceDiscoveryPage fields=3
+    1 items repeated .riffdb.v1.CompactResourceDescriptor
+    2 next_cursor optional bytes proto3-optional oneof=_next_cursor
+    3 observed_fence optional .riffdb.v1.DiscoveryCatalogFence
+  riffdb.v1.CompilationDiagnostics fields=2
+    1 syntax optional .riffdb.v1.SyntaxDiagnosticList oneof=diagnostics
+    2 semantic optional .riffdb.v1.SemanticDiagnosticList oneof=diagnostics
+  riffdb.v1.CompiledContractCandidate fields=4
+    1 parent_version optional uint64 proto3-optional oneof=_parent_version
+    2 parent_bundle_hash optional bytes
+    3 candidate optional .riffdb.v1.ContractDescriptor
+    4 canonical_bundle optional bytes
+  riffdb.v1.ConsumeContextualSubscriptionRequest fields=4
+    1 request_id optional bytes
+    2 selection optional .riffdb.v1.EventConsumerSelection
+    3 maximum_wait_nanos optional uint64
+    4 progress_cursor optional bytes
+  riffdb.v1.ConsumeContextualSubscriptionResponse fields=5
+    1 items repeated .riffdb.v1.ContextualWorkItem
+    2 status optional .riffdb.v1.EventConsumerStatus
+    3 wait_timed_out optional bool
+    4 protected_status optional .riffdb.v1.ProtectedEventConsumerStatus
+    5 disposition optional .riffdb.v1.EventConsumerPullDisposition
+  riffdb.v1.ConsumeEventStreamRequest fields=7
+    1 request_id optional bytes
+    2 selection optional .riffdb.v1.EventConsumerSelection
+    3 batch_limit optional uint32
+    4 in_flight_limit optional uint32
+    5 lease_seconds optional uint64
+    6 maximum_wait_nanos optional uint64
+    7 progress_cursor optional bytes
+  riffdb.v1.ConsumeEventStreamResponse fields=5
+    1 events repeated .riffdb.v1.ConsumedEvent
+    2 status optional .riffdb.v1.EventConsumerStatus
+    3 wait_timed_out optional bool
+    4 protected_status optional .riffdb.v1.ProtectedEventConsumerStatus
+    5 disposition optional .riffdb.v1.EventConsumerPullDisposition
+  riffdb.v1.ConsumedEvent fields=4
+    1 event optional .riffdb.v1.SymbolicEvent
+    2 attempt optional uint32
+    3 lease_token optional bytes
+    4 expires_at optional .riffdb.v1.Timestamp
+  riffdb.v1.ContextualHydration fields=3
+    1 name optional string
+    2 outcome optional string
+    3 fields repeated .riffdb.v1.ContextualQueryField
+  riffdb.v1.ContextualQueryField fields=3
+    1 name optional string
+    2 cardinality optional .riffdb.v1.ContextualQueryCardinality
+    3 rows repeated .riffdb.v1.ContextualQueryRow
+  riffdb.v1.ContextualQueryRow fields=2
+    1 entity optional string
+    2 fields repeated .riffdb.v1.EventConsumerParameter
+  riffdb.v1.ContextualWorkItem fields=4
+    1 delivery optional .riffdb.v1.ConsumedEvent
+    2 context_head optional uint64
+    3 hydrations repeated .riffdb.v1.ContextualHydration
+    4 available_reactions repeated .riffdb.v1.AvailableContextualReaction
+  riffdb.v1.ContractCompatibilityCodeCount fields=2
+    1 code optional string
+    2 count optional uint32
+  riffdb.v1.ContractCompatibilitySummary fields=4
+    1 parent_contract_version optional uint64 proto3-optional oneof=_parent_contract_version
+    2 parent_bundle_hash optional bytes proto3-optional oneof=_parent_bundle_hash
+    3 overall optional .riffdb.v1.ContractCompatibilityClass
+    4 code_counts repeated .riffdb.v1.ContractCompatibilityCodeCount
+  riffdb.v1.ContractDescriptor fields=6
+    1 contract_lineage optional string
+    2 contract_version optional uint64
+    3 bundle_hash optional bytes
+    4 source_hash optional bytes
+    5 plan_root_hash optional bytes
+    6 compatibility optional .riffdb.v1.ContractCompatibilitySummary
+  riffdb.v1.ContractMigrationOperation fields=11
+    1 operation_id optional bytes
+    2 kind optional .riffdb.v1.ContractMigrationOperationKind
+    3 contract_lineage optional string
+    4 input_hash optional bytes
+    5 parent_bundle_hash optional bytes
+    6 candidate_bundle_hash optional bytes
+    7 migration_bundle_hash optional bytes
+    8 phase optional .riffdb.v1.ContractMigrationPhase
+    9 failure optional .riffdb.v1.ContractMigrationFailureClass
+    10 backup_name optional string
+    11 backup_manifest_hash optional bytes
+  riffdb.v1.ContractMismatchDetails fields=1
+    1 active_contract_version optional uint64
+  riffdb.v1.ContractSelection fields=2
+    1 active optional .riffdb.v1.Unit oneof=selection
+    2 exact optional .riffdb.v1.ExactContractSelection oneof=selection
+  riffdb.v1.ContractVersionResource fields=2
+    1 contract_lineage optional string
+    2 contract_version optional uint64
+  riffdb.v1.CreateCapabilityRequest fields=8
+    1 request_id optional bytes
+    2 mode optional .riffdb.v1.CapabilityCreateMode
+    3 capability_id optional bytes
+    4 principal_id optional string
+    5 actor_kind optional .riffdb.v1.ActorKind
+    6 requested_lifetime_seconds optional uint32
+    7 audiences repeated string
+    8 grant optional .riffdb.v1.CapabilityGrant
+  riffdb.v1.CreateCapabilityResponse fields=2
+    1 normal optional .riffdb.v1.NormalCreateCapabilityResult oneof=result
+    2 bootstrap optional .riffdb.v1.BootstrapCreateCapabilityResult oneof=result
+  riffdb.v1.CreateOfflineBackupRequest fields=3
+    1 request_id optional bytes
+    2 operation_id optional bytes
+    3 backup_name optional string
+  riffdb.v1.CreateOfflineBackupResponse fields=2
+    1 disposition optional .riffdb.v1.OfflineMaintenanceStartDisposition
+    2 operation optional .riffdb.v1.OfflineMaintenanceOperation
+  riffdb.v1.Date fields=1
+    1 days_since_unix_epoch optional sint32
+  riffdb.v1.Decimal fields=3
+    1 coefficient_twos_complement optional bytes
+    2 scale optional uint32
+    3 precision optional uint32 proto3-optional oneof=_precision
+  riffdb.v1.DeclaredOutcome fields=3
+    1 outcome_id optional uint32
+    2 outcome_name optional string
+    3 value optional .riffdb.v1.ValueRecord
+  riffdb.v1.DeployContractRequest fields=5
+    1 request_id optional bytes
+    2 source optional string
+    3 expected_active_version optional uint64 proto3-optional oneof=_expected_active_version
+    4 expected_active_bundle_hash optional bytes
+    5 expected_candidate_bundle_hash optional bytes
+  riffdb.v1.DeployContractResponse fields=8
+    1 activated optional .riffdb.v1.ContractDescriptor oneof=result
+    2 already_active optional .riffdb.v1.ContractDescriptor oneof=result
+    3 expected_active_version_mismatch optional .riffdb.v1.ExpectedActiveVersionMismatch oneof=result
+    4 bundle_conflict optional .riffdb.v1.Unit oneof=result
+    5 invalid_source optional .riffdb.v1.CompilationDiagnostics oneof=result
+    6 incompatible_candidate optional .riffdb.v1.ContractDescriptor oneof=result
+    7 expected_application_identity_mismatch optional .riffdb.v1.ExpectedApplicationIdentityMismatch oneof=result
+    8 migration_required optional .riffdb.v1.ContractDescriptor oneof=result
+  riffdb.v1.DescribeEventRequest fields=2
+    1 request_id optional bytes
+    2 event_name optional string
+  riffdb.v1.DescribeEventResponse fields=2
+    1 not_found optional .riffdb.v1.Unit oneof=result
+    2 found optional .riffdb.v1.EventDescriptor oneof=result
+  riffdb.v1.DiscoverCommandToolsRequest fields=4
+    1 request_id optional bytes
+    2 page optional .riffdb.v1.PageRequest
+    3 prior_fence optional .riffdb.v1.DiscoveryCatalogFence
+    4 representation optional .riffdb.v1.DiscoveryRepresentation
+  riffdb.v1.DiscoverCommandToolsResponse fields=3
+    1 catalog_unchanged optional .riffdb.v1.DiscoveryCatalogFence oneof=result
+    2 page optional .riffdb.v1.CommandToolDiscoveryPage oneof=result
+    3 compact_page optional .riffdb.v1.CompactCommandToolDiscoveryPage oneof=result
+  riffdb.v1.DiscoverResourcesRequest fields=5
+    1 request_id optional bytes
+    2 page optional .riffdb.v1.PageRequest
+    3 prior_fence optional .riffdb.v1.DiscoveryCatalogFence
+    4 representation optional .riffdb.v1.DiscoveryRepresentation
+    5 kind optional .riffdb.v1.ResourceDiscoveryKind
+  riffdb.v1.DiscoverResourcesResponse fields=3
+    1 catalog_unchanged optional .riffdb.v1.DiscoveryCatalogFence oneof=result
+    2 page optional .riffdb.v1.ResourceDiscoveryPage oneof=result
+    3 compact_page optional .riffdb.v1.CompactResourceDiscoveryPage oneof=result
+  riffdb.v1.DiscoveryCatalogFence fields=5
+    1 no_active_contract optional .riffdb.v1.Unit oneof=state
+    2 active_contract optional .riffdb.v1.ActiveDiscoveryCatalogFence oneof=state
+    3 server_generation optional bytes
+    4 operation_schemas optional .riffdb.v1.OperationSchemaCatalogIdentity
+    5 history_incarnation optional uint64
+  riffdb.v1.DurableEvent fields=3
+    1 event_id optional .riffdb.v1.EventId
+    2 event_type_id optional uint32
+    3 payload optional .riffdb.v1.ValueRecord
+  riffdb.v1.Entity fields=4
+    1 entity_key optional bytes
+    2 entity_version optional uint64
+    3 written_by_contract_version optional uint64
+    4 fields optional .riffdb.v1.ValueRecord
+  riffdb.v1.EntityFieldVisibility fields=4
+    1 contract_lineage optional string
+    2 entity_type_id optional uint32
+    3 field_ids repeated uint32
+    4 secret_field_ids repeated uint32
+  riffdb.v1.EntitySchemaResource fields=3
+    1 contract_lineage optional string
+    2 entity_type_id optional uint32
+    3 schema optional .riffdb.v1.GeneratedSchemaArtifact
+  riffdb.v1.EnumValue fields=3
+    1 type_id optional uint32
+    2 variant_id optional uint32
+    3 name optional string
+  riffdb.v1.EventConsumerCheckpoint fields=2
+    1 before_first optional .riffdb.v1.Unit oneof=position
+    2 after_event_id optional .riffdb.v1.EventId oneof=position
+  riffdb.v1.EventConsumerMutationResponse fields=1
+    1 result optional .riffdb.v1.EventConsumerMutationResult
+  riffdb.v1.EventConsumerParameter fields=2
+    1 name optional string
+    2 value optional .riffdb.v1.Value
+  riffdb.v1.EventConsumerSelection fields=4
+    1 reactive_module_hash optional bytes
+    2 operation_name optional string
+    3 parameters repeated .riffdb.v1.EventConsumerParameter
+    4 consumer_name optional string
+  riffdb.v1.EventConsumerStatus fields=6
+    1 revision optional uint64
+    2 checkpoint optional .riffdb.v1.EventConsumerCheckpoint
+    3 history_incarnation optional uint64
+    4 live_leases optional uint32
+    5 retries optional uint32
+    6 dead_letters optional uint32
+  riffdb.v1.EventDescriptor fields=7
+    1 contract_lineage optional string
+    2 contract_version optional uint64
+    3 contract_bundle_hash optional bytes
+    4 event_name optional string
+    5 application_streamable optional bool
+    6 partition_fields repeated .riffdb.v1.EventFieldDescriptor
+    7 payload_fields repeated .riffdb.v1.EventFieldDescriptor
+  riffdb.v1.EventFieldDescriptor fields=2
+    1 name optional string
+    2 value_type optional string
+  riffdb.v1.EventId fields=2
+    1 commit_sequence optional uint64
+    2 event_ordinal optional uint32
+  riffdb.v1.EventPage fields=5
+    1 items repeated .riffdb.v1.SymbolicEvent
+    2 next_cursor optional bytes
+    3 observed_upper optional .riffdb.v1.EventId
+    4 history_incarnation optional uint64
+    5 disposition optional .riffdb.v1.EventPageDisposition
+  riffdb.v1.EventPartitionComponent fields=2
+    1 name optional string
+    2 value optional .riffdb.v1.Value
+  riffdb.v1.EventSelection fields=3
+    1 event_name optional string
+    2 partition repeated .riffdb.v1.EventPartitionComponent
+    3 selected_fields repeated string
+  riffdb.v1.ExactContractSelection fields=2
+    1 contract_lineage optional string
+    2 contract_version optional uint64
+  riffdb.v1.ExecuteCommandBatchItem fields=2
+    1 response optional .riffdb.v1.ExecuteCommandResponse oneof=result
+    2 error optional .riffdb.app.v1.ApplicationError oneof=result
+  riffdb.v1.ExecuteCommandBatchRequest fields=1
+    1 commands repeated .riffdb.v1.ExecuteCommandRequest
+  riffdb.v1.ExecuteCommandBatchResponse fields=2
+    1 responses repeated .riffdb.v1.ExecuteCommandResponse
+    2 items repeated .riffdb.v1.ExecuteCommandBatchItem
+  riffdb.v1.ExecuteCommandRequest fields=4
+    1 request_id optional bytes
+    2 command_name optional string
+    3 expected_contract_version optional uint64 proto3-optional oneof=_expected_contract_version
+    4 input optional .riffdb.v1.Value
+  riffdb.v1.ExecuteCommandResponse fields=10
+    1 status optional .riffdb.v1.ExecuteCommandResponse.CompletionStatus
+    2 commit_sequence optional uint64
+    3 contract_version optional uint64
+    4 plan_hash optional bytes
+    5 outcome_type optional string
+    6 outcome optional .riffdb.v1.Value
+    7 provenance_uri optional string
+    8 durability_mode optional string
+    9 outcome_uri optional string proto3-optional oneof=_outcome_uri
+    10 history_incarnation optional uint64
+  riffdb.v1.ExecuteContextualReactionRequest fields=5
+    1 request_id optional bytes
+    2 selection optional .riffdb.v1.EventConsumerSelection
+    3 causation_token optional bytes
+    4 reaction_name optional string
+    5 command optional .riffdb.v1.ExecuteCommandRequest
+  riffdb.v1.ExpectedActiveVersionMismatch fields=1
+    1 actual_active_version optional uint64 proto3-optional oneof=_actual_active_version
+  riffdb.v1.ExpectedApplicationIdentityMismatch fields=2
+    1 actual_active optional .riffdb.v1.ContractDescriptor
+    2 compiled_candidate optional .riffdb.v1.ContractDescriptor
+  riffdb.v1.ExplainCommandRequest fields=3
+    1 request_id optional bytes
+    2 contract optional .riffdb.v1.ContractSelection
+    3 command_name optional string
+  riffdb.v1.ExplainCommandResponse fields=2
+    1 not_found optional .riffdb.v1.Unit oneof=result
+    2 found optional .riffdb.v1.ExplainedCommand oneof=result
+  riffdb.v1.ExplainedCommand fields=7
+    1 contract optional .riffdb.v1.ContractDescriptor
+    2 command_id optional uint32
+    3 plan_hash optional bytes
+    4 explanation optional .riffdb.v1.CommandExplain
+    5 input_schema optional .riffdb.v1.GeneratedSchemaArtifact
+    6 outcome_schema optional .riffdb.v1.GeneratedSchemaArtifact
+    7 tool_name optional string
+  riffdb.v1.ExplicitPartitionScope fields=1
+    1 partitions repeated .riffdb.v1.ScopedPartition
+  riffdb.v1.FieldSelection fields=1
+    1 field_ids repeated uint32
+  riffdb.v1.FrontierPosition fields=2
+    1 before_first optional .riffdb.v1.Unit oneof=position
+    2 applied_through optional uint64 oneof=position
+  riffdb.v1.GeneratedSchemaArtifact fields=4
+    1 key optional .riffdb.v1.SchemaArtifactKey
+    2 dialect optional string
+    3 schema_hash optional bytes
+    4 canonical_json optional string
+  riffdb.v1.GeneratedSchemaIdentity fields=2
+    1 key optional .riffdb.v1.SchemaArtifactKey
+    2 schema_hash optional bytes
+  riffdb.v1.GetActiveContractRequest fields=1
+    1 request_id optional bytes
+  riffdb.v1.GetActiveContractResponse fields=3
+    1 absent optional .riffdb.v1.Unit oneof=result
+    2 present optional .riffdb.v1.ContractDescriptor oneof=result
+    3 database_alias optional string
+  riffdb.v1.GetApplicationExportPageRequest fields=4
+    1 request_id optional bytes
+    2 operation_id optional bytes
+    3 cursor optional bytes
+    4 max_rows optional uint32
+  riffdb.v1.GetApplicationExportPageResponse fields=1
+    1 page optional .riffdb.v1.ApplicationExportPage
+  riffdb.v1.GetApplicationExportRequest fields=2
+    1 request_id optional bytes
+    2 operation_id optional bytes
+  riffdb.v1.GetApplicationExportResponse fields=2
+    1 not_found optional .riffdb.v1.Unit oneof=result
+    2 found optional .riffdb.v1.ApplicationExportOperation oneof=result
+  riffdb.v1.GetApplicationInstallationRequest fields=2
+    1 request_id optional bytes
+    2 campaign_id optional bytes
+  riffdb.v1.GetApplicationInstallationResponse fields=2
+    1 not_found optional .riffdb.v1.Unit oneof=result
+    2 found optional .riffdb.v1.StartApplicationInstallationResponse oneof=result
+  riffdb.v1.GetApplicationReimportRequest fields=2
+    1 request_id optional bytes
+    2 campaign_id optional bytes
+  riffdb.v1.GetApplicationReimportResponse fields=2
+    1 not_found optional .riffdb.v1.Unit oneof=result
+    2 found optional .riffdb.v1.ApplicationReimportOperation oneof=result
+  riffdb.v1.GetCommitRequest fields=3
+    1 request_id optional bytes
+    2 commit_sequence optional uint64
+    3 observed_history_incarnation optional uint64 proto3-optional oneof=_observed_history_incarnation
+  riffdb.v1.GetCommitResponse fields=3
+    1 not_found optional .riffdb.v1.Unit oneof=result
+    2 found optional .riffdb.v1.Commit oneof=result
+    3 history_incarnation optional uint64
+  riffdb.v1.GetContextualSubscriptionStatusRequest fields=2
+    1 request_id optional bytes
+    2 selection optional .riffdb.v1.EventConsumerSelection
+  riffdb.v1.GetContractMigrationOperationRequest fields=2
+    1 request_id optional bytes
+    2 operation_id optional bytes
+  riffdb.v1.GetContractMigrationOperationResponse fields=2
+    1 not_found optional .riffdb.v1.Unit oneof=result
+    2 found optional .riffdb.v1.ContractMigrationOperation oneof=result
+  riffdb.v1.GetContractVersionRequest fields=3
+    1 request_id optional bytes
+    2 contract_lineage optional string
+    3 contract_version optional uint64
+  riffdb.v1.GetContractVersionResponse fields=2
+    1 not_found optional .riffdb.v1.Unit oneof=result
+    2 found optional .riffdb.v1.ContractDescriptor oneof=result
+  riffdb.v1.GetEntityRequest fields=5
+    1 request_id optional bytes
+    2 contract optional .riffdb.v1.ContractSelection
+    3 entity_type_id optional uint32
+    4 entity_key optional bytes
+    5 fields optional .riffdb.v1.FieldSelection
+  riffdb.v1.GetEntityResponse fields=2
+    1 not_found optional .riffdb.v1.Unit oneof=result
+    2 found optional .riffdb.v1.Entity oneof=result
+  riffdb.v1.GetEventStreamConsumerStatusRequest fields=2
+    1 request_id optional bytes
+    2 selection optional .riffdb.v1.EventConsumerSelection
+  riffdb.v1.GetEventStreamConsumerStatusResponse fields=3
+    1 not_found optional .riffdb.v1.Unit oneof=result
+    2 found optional .riffdb.v1.EventConsumerStatus oneof=result
+    3 protected optional .riffdb.v1.ProtectedEventConsumerStatus oneof=result
+  riffdb.v1.GetOfflineMaintenanceOperationRequest fields=2
+    1 request_id optional bytes
+    2 operation_id optional bytes
+  riffdb.v1.GetOfflineMaintenanceOperationResponse fields=2
+    1 not_found optional .riffdb.v1.Unit oneof=result
+    2 found optional .riffdb.v1.OfflineMaintenanceOperation oneof=result
+  riffdb.v1.GetOutcomeRequest fields=5
+    1 request_id optional bytes
+    2 contract_lineage optional string
+    3 command_name optional string
+    4 idempotency_key optional string
+    5 outcome_uri optional string proto3-optional oneof=_outcome_uri
+  riffdb.v1.GetOutcomeResponse fields=2
+    1 not_found optional .riffdb.v1.Unit oneof=result
+    2 found optional .riffdb.v1.ExecuteCommandResponse oneof=result
+  riffdb.v1.GetProjectionStatusRequest fields=3
+    1 request_id optional bytes
+    2 contract optional .riffdb.v1.ContractSelection
+    3 projection_id optional uint32
+  riffdb.v1.GetProjectionStatusResponse fields=2
+    1 not_found optional .riffdb.v1.Unit oneof=result
+    2 found optional .riffdb.v1.ProjectionStatus oneof=result
+  riffdb.v1.GetReactiveWakeupRequest fields=1
+    1 request_id optional bytes
+  riffdb.v1.GetReactiveWakeupResponse fields=1
+    1 generation optional bytes
+  riffdb.v1.HealthComponent fields=2
+    1 component optional .riffdb.v1.HealthComponentKind
+    2 status optional .riffdb.v1.HealthComponentStatus
+  riffdb.v1.HealthRequest fields=1
+    1 request_id optional bytes proto3-optional oneof=_request_id
+  riffdb.v1.HealthResponse fields=4
+    1 pre_bootstrap optional .riffdb.v1.PreBootstrapHealth oneof=result
+    2 authenticated optional .riffdb.v1.AuthenticatedHealth oneof=result
+    3 database_alias optional string
+    4 authentication_audience optional string
+  riffdb.v1.IndexPage fields=3
+    1 items repeated .riffdb.v1.IndexRow
+    2 next_cursor optional bytes proto3-optional oneof=_next_cursor
+    3 observed_fence optional .riffdb.v1.IndexScanFence
+  riffdb.v1.IndexRow fields=2
+    1 index_entry_key optional bytes
+    2 values optional .riffdb.v1.ValueRecord
+  riffdb.v1.IndexScanFence fields=2
+    2 before_first optional .riffdb.v1.Unit oneof=position
+    3 applied_epoch optional uint64 oneof=position
+  riffdb.v1.LineageScopedStableId fields=2
+    1 contract_lineage optional string
+    2 stable_id optional uint32
+  riffdb.v1.ListPendingOutboxDeliveriesRequest fields=2
+    1 request_id optional bytes
+    2 page optional .riffdb.v1.PageRequest
+  riffdb.v1.ListPendingOutboxDeliveriesResponse fields=1
+    1 page optional .riffdb.v1.OutboxDeliveryPage
+  riffdb.v1.LiveQueryCheckpoint fields=2
+    1 frontier optional .riffdb.v1.LiveQueryFrontier
+    2 cursor optional bytes
+  riffdb.v1.LiveQueryFrontier fields=2
+    1 history_incarnation optional uint64
+    2 application_head optional uint64
+  riffdb.v1.LiveQueryIdentity fields=6
+    1 contract_lineage optional string
+    2 contract_version optional uint64
+    3 contract_bundle_hash optional bytes
+    4 query_name optional string
+    5 query_module_hash optional bytes
+    6 query_plan_hash optional bytes
+  riffdb.v1.LiveQueryInsert fields=2
+    1 index optional uint32
+    2 record optional .riffdb.v1.LiveQueryResultRecord
+  riffdb.v1.LiveQueryMove fields=3
+    1 from optional uint32
+    2 to optional uint32
+    3 key optional .riffdb.v1.ValueRecord
+  riffdb.v1.LiveQueryParameter fields=2
+    1 name optional string
+    2 value optional .riffdb.v1.Value
+  riffdb.v1.LiveQueryPatch fields=4
+    1 result_field optional string
+    2 operations repeated .riffdb.v1.LiveQueryPatchOperation
+    3 frontier optional .riffdb.v1.LiveQueryFrontier
+    4 cursor optional bytes
+  riffdb.v1.LiveQueryPatchOperation fields=4
+    1 insert optional .riffdb.v1.LiveQueryInsert oneof=operation
+    2 remove optional .riffdb.v1.LiveQueryRemove oneof=operation
+    3 replace optional .riffdb.v1.LiveQueryReplace oneof=operation
+    4 move optional .riffdb.v1.LiveQueryMove oneof=operation
+  riffdb.v1.LiveQueryRemove fields=2
+    1 index optional uint32
+    2 key optional .riffdb.v1.ValueRecord
+  riffdb.v1.LiveQueryReplace fields=2
+    1 index optional uint32
+    2 record optional .riffdb.v1.LiveQueryResultRecord
+  riffdb.v1.LiveQueryReset fields=4
+    1 reason optional .riffdb.v1.LiveQueryResetReason
+    2 result optional .riffdb.v1.LiveQueryResult
+    3 frontier optional .riffdb.v1.LiveQueryFrontier
+    4 cursor optional bytes
+  riffdb.v1.LiveQueryResult fields=3
+    1 identity optional .riffdb.v1.LiveQueryIdentity
+    2 outcome optional string
+    3 fields repeated .riffdb.v1.LiveQueryResultField
+  riffdb.v1.LiveQueryResultField fields=3
+    1 name optional string
+    2 cardinality optional .riffdb.v1.LiveQueryResultCardinality
+    3 records repeated .riffdb.v1.LiveQueryResultRecord
+  riffdb.v1.LiveQueryResultRecord fields=2
+    1 entity optional string
+    2 fields optional .riffdb.v1.ValueRecord
+  riffdb.v1.LiveQuerySnapshot fields=3
+    1 result optional .riffdb.v1.LiveQueryResult
+    2 frontier optional .riffdb.v1.LiveQueryFrontier
+    3 cursor optional bytes
+  riffdb.v1.LiveQueryTerminal fields=2
+    1 reason optional .riffdb.v1.LiveQueryTerminalReason
+    2 last_frontier optional .riffdb.v1.LiveQueryFrontier
+  riffdb.v1.LiveQueryUpdate fields=5
+    1 snapshot optional .riffdb.v1.LiveQuerySnapshot oneof=update
+    2 patch optional .riffdb.v1.LiveQueryPatch oneof=update
+    3 reset optional .riffdb.v1.LiveQueryReset oneof=update
+    4 checkpoint optional .riffdb.v1.LiveQueryCheckpoint oneof=update
+    5 terminal optional .riffdb.v1.LiveQueryTerminal oneof=update
+  riffdb.v1.Money fields=2
+    1 currency optional string
+    2 amount optional .riffdb.v1.Decimal
+  riffdb.v1.NamedQueryPermission fields=3
+    1 contract_lineage optional string
+    2 query_module_hash optional bytes
+    3 query_name optional string
+  riffdb.v1.NamedQueryToolDescriptor fields=9
+    1 tool_name optional string
+    2 source_query optional string
+    3 contract_lineage optional string
+    4 contract_version optional uint64
+    5 query_module_name optional string
+    6 query_module_version optional uint64
+    7 query_module_hash optional bytes
+    8 input_schema optional .riffdb.v1.NamedQueryToolSchemaArtifact
+    9 result_schema optional .riffdb.v1.NamedQueryToolSchemaArtifact
+  riffdb.v1.NamedQueryToolSchemaArtifact fields=2
+    1 schema_hash optional bytes
+    2 canonical_json optional string
+  riffdb.v1.NegativeAcknowledgeContextualSubscriptionRequest fields=6
+    1 request_id optional bytes
+    2 selection optional .riffdb.v1.EventConsumerSelection
+    3 event_id optional .riffdb.v1.EventId
+    4 lease_token optional bytes
+    5 history_incarnation optional uint64
+    6 retry_delay_nanos optional uint64
+  riffdb.v1.NegativeAcknowledgeEventStreamRequest fields=6
+    1 request_id optional bytes
+    2 selection optional .riffdb.v1.EventConsumerSelection
+    3 event_id optional .riffdb.v1.EventId
+    4 lease_token optional bytes
+    5 history_incarnation optional uint64
+    6 retry_delay_nanos optional uint64
+  riffdb.v1.NormalCapabilityCreated fields=2
+    1 transition optional .riffdb.v1.CapabilityTransition
+    2 token optional string
+  riffdb.v1.NormalCreateCapabilityResult fields=3
+    1 created optional .riffdb.v1.NormalCapabilityCreated oneof=result
+    2 already_created_token_unavailable optional .riffdb.v1.CapabilityIdentity oneof=result
+    3 capability_id_conflict optional .riffdb.v1.Unit oneof=result
+  riffdb.v1.OfflineMaintenanceOperation fields=6
+    1 operation_id optional bytes
+    2 kind optional .riffdb.v1.OfflineMaintenanceOperationKind
+    3 backup_name optional string
+    4 input_hash optional bytes
+    5 phase optional .riffdb.v1.OfflineMaintenancePhase
+    6 failure optional .riffdb.v1.OfflineMaintenanceFailureClass
+  riffdb.v1.OperationSchemaArtifact fields=4
+    1 schema_id optional string
+    2 dialect optional string
+    3 schema_hash optional bytes
+    4 canonical_json optional string
+  riffdb.v1.OperationSchemaCatalog fields=2
+    1 command_operation_envelope optional .riffdb.v1.OperationSchemaArtifact
+    2 command_get_outcome_result optional .riffdb.v1.OperationSchemaArtifact
+  riffdb.v1.OperationSchemaCatalogIdentity fields=2
+    1 command_operation_envelope optional .riffdb.v1.OperationSchemaIdentity
+    2 command_get_outcome_result optional .riffdb.v1.OperationSchemaIdentity
+  riffdb.v1.OperationSchemaIdentity fields=2
+    1 schema_id optional string
+    2 schema_hash optional bytes
+  riffdb.v1.OutboxDeliveryPage fields=2
+    1 items repeated .riffdb.v1.OutboxDeliverySummary
+    2 next_cursor optional bytes proto3-optional oneof=_next_cursor
+  riffdb.v1.OutboxDeliverySummary fields=4
+    1 event_id optional .riffdb.v1.EventId
+    2 state optional .riffdb.v1.OutboxDeliveryState
+    3 attempts optional uint32
+    4 next_attempt_at optional .riffdb.v1.Timestamp
+  riffdb.v1.PageRequest fields=2
+    1 limit optional uint32 proto3-optional oneof=_limit
+    2 cursor optional bytes proto3-optional oneof=_cursor
+  riffdb.v1.PartitionScope fields=2
+    1 all optional .riffdb.v1.Unit oneof=scope
+    2 explicit optional .riffdb.v1.ExplicitPartitionScope oneof=scope
+  riffdb.v1.PreBootstrapHealth fields=3
+    1 lifecycle optional .riffdb.v1.PreBootstrapLifecycle
+    2 liveness optional bool
+    3 readiness optional bool
+  riffdb.v1.ProjectionFailure fields=3
+    1 generation optional uint64
+    2 code optional .riffdb.v1.ProjectionFailureCode
+    3 at_sequence optional uint64 proto3-optional oneof=_at_sequence
+  riffdb.v1.ProjectionGenerationFrontier fields=2
+    1 generation optional uint64
+    2 frontier optional .riffdb.v1.FrontierPosition
+  riffdb.v1.ProjectionIdentity fields=3
+    1 contract_lineage optional string
+    2 projection_id optional uint32
+    3 projection_plan_hash optional bytes
+  riffdb.v1.ProjectionPage fields=3
+    1 items repeated .riffdb.v1.ProjectionRow
+    2 next_cursor optional bytes proto3-optional oneof=_next_cursor
+    3 observed_fence optional .riffdb.v1.ProjectionPageFence
+  riffdb.v1.ProjectionPageFence fields=3
+    1 identity optional .riffdb.v1.ProjectionIdentity
+    2 generation optional uint64
+    3 frontier optional .riffdb.v1.FrontierPosition
+  riffdb.v1.ProjectionRow fields=2
+    1 group repeated .riffdb.v1.Value
+    2 values optional .riffdb.v1.ValueRecord
+  riffdb.v1.ProjectionStatus fields=7
+    1 identity optional .riffdb.v1.ProjectionIdentity
+    2 lifecycle optional .riffdb.v1.ProjectionLifecycle
+    3 published optional .riffdb.v1.ProjectionGenerationFrontier
+    4 candidate optional .riffdb.v1.ProjectionGenerationFrontier
+    5 published_apply_mode optional .riffdb.v1.PublishedApplyMode proto3-optional oneof=_published_apply_mode
+    6 failure optional .riffdb.v1.ProjectionFailure
+    7 authoritative_head optional .riffdb.v1.FrontierPosition
+  riffdb.v1.ProjectionStatusResource fields=2
+    1 contract_lineage optional string
+    2 projection_id optional uint32
+  riffdb.v1.ProjectionUnavailableReason fields=3
+    1 building optional .riffdb.v1.Unit oneof=reason
+    2 rebuilding optional .riffdb.v1.Unit oneof=reason
+    3 failure optional .riffdb.v1.ProjectionFailureCode oneof=reason
+  riffdb.v1.ProtectedEventConsumerStatus fields=2
+    1 history_incarnation optional uint64
+    2 progress_cursor optional bytes
+  riffdb.v1.Provenance fields=13
+    1 provenance_id optional bytes
+    2 commit_sequence optional uint64
+    3 admission_request_id optional bytes
+    4 contract_lineage optional string
+    5 contract_version optional uint64
+    6 command_id optional uint32
+    7 plan_hash optional bytes
+    8 actor optional .riffdb.v1.AdmittedActor
+    9 logical_time optional .riffdb.v1.Timestamp
+    10 outcome_id optional uint32
+    11 affected_entities repeated .riffdb.v1.AffectedEntity
+    12 event_ids repeated .riffdb.v1.EventId
+    13 claims optional .riffdb.v1.ProvenanceClaims
+  riffdb.v1.ProvenanceClaims fields=4
+    1 source_repository optional string proto3-optional oneof=_source_repository
+    2 source_commit optional string proto3-optional oneof=_source_commit
+    3 reason optional string proto3-optional oneof=_reason
+    4 approval_id optional string proto3-optional oneof=_approval_id
+  riffdb.v1.ProvenanceResource fields=2
+    1 class_template optional .riffdb.v1.Unit oneof=target
+    2 provenance_id optional bytes oneof=target
+  riffdb.v1.ProvenanceSelection fields=2
+    1 commit_sequence optional uint64 oneof=selection
+    2 provenance_id optional bytes oneof=selection
+  riffdb.v1.PublicError fields=8
+    1 kind optional .riffdb.v1.PublicErrorKind
+    2 code optional string
+    3 safe_message optional string
+    4 recovery_action optional .riffdb.v1.RecoveryAction
+    5 validation optional .riffdb.v1.ValidationIssues oneof=details
+    6 contract_mismatch optional .riffdb.v1.ContractMismatchDetails oneof=details
+    8 execution_failure optional .riffdb.v1.CommandExecutionFailureDetails oneof=details
+    7 incident_id optional bytes proto3-optional oneof=_incident_id
+  riffdb.v1.QueryProjectionDegraded fields=2
+    1 current optional .riffdb.v1.FrontierPosition
+    2 reason optional .riffdb.v1.ProjectionUnavailableReason
+  riffdb.v1.QueryProjectionInvalid fields=1
+    1 reason optional .riffdb.v1.ProjectionFailureCode
+  riffdb.v1.QueryProjectionReady fields=2
+    1 data optional .riffdb.v1.ProjectionPage
+    2 frontier optional .riffdb.v1.FrontierPosition
+  riffdb.v1.QueryProjectionRequest fields=7
+    1 request_id optional bytes
+    2 contract optional .riffdb.v1.ContractSelection
+    3 projection_id optional uint32
+    4 leading_components repeated .riffdb.v1.Value
+    5 required_sequence optional uint64 proto3-optional oneof=_required_sequence
+    6 wait_nanos optional uint64
+    7 page optional .riffdb.v1.PageRequest
+  riffdb.v1.QueryProjectionResponse fields=4
+    1 ready optional .riffdb.v1.QueryProjectionReady oneof=result
+    2 wait_timed_out optional .riffdb.v1.QueryProjectionWaitTimedOut oneof=result
+    3 degraded optional .riffdb.v1.QueryProjectionDegraded oneof=result
+    4 invalid optional .riffdb.v1.QueryProjectionInvalid oneof=result
+  riffdb.v1.QueryProjectionWaitTimedOut fields=2
+    1 required_sequence optional uint64
+    2 current optional .riffdb.v1.FrontierPosition
+  riffdb.v1.ReactiveOperationPermission fields=3
+    1 contract_lineage optional string
+    2 reactive_module_hash optional bytes
+    3 operation_name optional string
+  riffdb.v1.ReplayEventsRequest fields=5
+    1 request_id optional bytes
+    2 selection optional .riffdb.v1.EventSelection
+    3 after_event_id optional .riffdb.v1.EventId
+    4 page optional .riffdb.v1.PageRequest
+    5 observed_history_incarnation optional uint64
+  riffdb.v1.ReplayEventsResponse fields=1
+    1 page optional .riffdb.v1.EventPage
+  riffdb.v1.ResourceDescriptor fields=11
+    1 active_contract optional .riffdb.v1.Unit oneof=resource
+    2 contract_version optional .riffdb.v1.ContractVersionResource oneof=resource
+    3 entity_schema optional .riffdb.v1.EntitySchemaResource oneof=resource
+    4 command_plan optional .riffdb.v1.CommandResource oneof=resource
+    5 command_documentation optional .riffdb.v1.CommandResource oneof=resource
+    6 command_outcome optional .riffdb.v1.CommandOutcomeResource oneof=resource
+    7 commit optional .riffdb.v1.CommitResource oneof=resource
+    8 provenance optional .riffdb.v1.ProvenanceResource oneof=resource
+    9 projection_status optional .riffdb.v1.ProjectionStatusResource oneof=resource
+    10 server_health optional .riffdb.v1.Unit oneof=resource
+    11 reactive_wakeup optional .riffdb.v1.Unit oneof=resource
+  riffdb.v1.ResourceDiscoveryPage fields=3
+    1 items repeated .riffdb.v1.ResourceDescriptor
+    2 next_cursor optional bytes proto3-optional oneof=_next_cursor
+    3 observed_fence optional .riffdb.v1.DiscoveryCatalogFence
+  riffdb.v1.RestoreOfflineBackupRequest fields=4
+    1 request_id optional bytes
+    2 operation_id optional bytes
+    3 backup_name optional string
+    4 replacement_confirmation optional .riffdb.v1.OfflineMaintenanceReplacementConfirmation
+  riffdb.v1.RestoreOfflineBackupResponse fields=2
+    1 disposition optional .riffdb.v1.OfflineMaintenanceStartDisposition
+    2 operation optional .riffdb.v1.OfflineMaintenanceOperation
+  riffdb.v1.RetireEventStreamConsumerRequest fields=2
+    1 request_id optional bytes
+    2 selection optional .riffdb.v1.EventConsumerSelection
+  riffdb.v1.RetireOfflineBackupRequest fields=3
+    1 request_id optional bytes
+    2 operation_id optional bytes
+    3 backup_name optional string
+  riffdb.v1.RetireOfflineBackupResponse fields=2
+    1 disposition optional .riffdb.v1.OfflineMaintenanceStartDisposition
+    2 operation optional .riffdb.v1.OfflineMaintenanceOperation
+  riffdb.v1.RevokeCapabilityRequest fields=3
+    1 request_id optional bytes
+    2 capability_id optional bytes
+    3 reason optional .riffdb.v1.RevocationReason
+  riffdb.v1.RevokeCapabilityResponse fields=3
+    1 revoked optional .riffdb.v1.CapabilityTransition oneof=result
+    2 already_revoked optional .riffdb.v1.CapabilityTransition oneof=result
+    3 capability_not_found optional .riffdb.v1.Unit oneof=result
+  riffdb.v1.ScanCommitsRequest fields=3
+    1 request_id optional bytes
+    2 page optional .riffdb.v1.PageRequest
+    3 observed_history_incarnation optional uint64 proto3-optional oneof=_observed_history_incarnation
+  riffdb.v1.ScanCommitsResponse fields=1
+    1 page optional .riffdb.v1.CommitPage
+  riffdb.v1.ScanIndexRequest fields=6
+    1 request_id optional bytes
+    2 contract optional .riffdb.v1.ContractSelection
+    3 index_id optional uint32
+    4 leading_components repeated .riffdb.v1.Value
+    5 fields optional .riffdb.v1.FieldSelection
+    6 page optional .riffdb.v1.PageRequest
+  riffdb.v1.ScanIndexResponse fields=1
+    1 page optional .riffdb.v1.IndexPage
+  riffdb.v1.SchemaArtifactKey fields=5
+    1 entity_id optional uint32 oneof=artifact
+    2 event_type_id optional uint32 oneof=artifact
+    3 command_input_id optional uint32 oneof=artifact
+    4 command_outcome_union_id optional uint32 oneof=artifact
+    5 projection_result_id optional uint32 oneof=artifact
+  riffdb.v1.ScopedPartition fields=2
+    1 contract_lineage optional string
+    2 partition_key optional bytes
+  riffdb.v1.SeekEventStreamConsumerRequest fields=4
+    1 request_id optional bytes
+    2 selection optional .riffdb.v1.EventConsumerSelection
+    3 checkpoint optional .riffdb.v1.EventConsumerCheckpoint
+    4 progress_cursor optional bytes
+  riffdb.v1.SemanticDiagnostic fields=5
+    1 code optional string
+    2 summary optional string
+    3 help optional string proto3-optional oneof=_help
+    4 primary_span optional .riffdb.v1.SourceSpan
+    5 related_span optional .riffdb.v1.SourceSpan
+  riffdb.v1.SemanticDiagnosticList fields=1
+    1 diagnostics repeated .riffdb.v1.SemanticDiagnostic
+  riffdb.v1.SourceSpan fields=2
+    1 start optional uint32
+    2 end optional uint32
+  riffdb.v1.StartApplicationExportRequest fields=5
+    1 request_id optional bytes
+    2 operation_id optional bytes
+    3 selection optional .riffdb.v1.ApplicationExportSelection
+    4 lease_seconds optional uint32
+    5 canonical_portability_manifest_json optional bytes
+  riffdb.v1.StartApplicationExportResponse fields=3
+    1 disposition optional .riffdb.v1.ApplicationExportStartDisposition
+    2 operation optional .riffdb.v1.ApplicationExportOperation
+    3 cursor optional bytes
+  riffdb.v1.StartApplicationInstallationRequest fields=4
+    1 request_id optional bytes
+    2 campaign_id optional bytes
+    3 canonical_plan optional bytes
+    4 external_completion optional .riffdb.v1.ApplicationInstallationExternalCompletion
+  riffdb.v1.StartApplicationInstallationResponse fields=2
+    1 observation optional .riffdb.v1.ApplicationInstallationObservation
+    2 canonical_receipt optional bytes
+  riffdb.v1.StartApplicationReimportRequest fields=7
+    1 request_id optional bytes
+    2 campaign_id optional bytes
+    3 contract_lineage optional string
+    4 scope optional .riffdb.v1.CapabilityApplicationReimportScope
+    5 canonical_portability_manifest_json optional bytes
+    6 canonical_export_manifest_json optional bytes
+    7 canonical_export_receipt_json optional bytes
+  riffdb.v1.StartApplicationReimportResponse fields=1
+    1 operation optional .riffdb.v1.ApplicationReimportOperation
+  riffdb.v1.StatsRequest fields=1
+    1 request_id optional bytes
+  riffdb.v1.StatsResponse fields=6
+    1 active_cursors optional uint32
+    2 active_commit_subscribers optional uint32
+    3 last_commit_sequence optional uint64 proto3-optional oneof=_last_commit_sequence
+    4 pending_outbox_deliveries optional uint64 proto3-optional oneof=_pending_outbox_deliveries
+    5 known_projections optional uint32 proto3-optional oneof=_known_projections
+    6 history_incarnation optional uint64
+  riffdb.v1.SubscribeCommitsRequest fields=4
+    1 request_id optional bytes
+    2 after_sequence optional uint64 proto3-optional oneof=_after_sequence
+    3 maximum_lifetime_nanos optional uint64
+    4 observed_history_incarnation optional uint64 proto3-optional oneof=_observed_history_incarnation
+  riffdb.v1.SymbolicEvent fields=13
+    1 event_id optional .riffdb.v1.EventId
+    2 event_name optional string
+    3 writer_contract_version optional uint64
+    4 writer_plan_hash optional bytes
+    5 command_name optional string
+    6 request_id optional bytes
+    7 root_request_id optional bytes
+    8 causing_event_id optional .riffdb.v1.EventId
+    9 occurred_at optional .riffdb.v1.Timestamp
+    10 actor_kind optional .riffdb.v1.ActorKind
+    11 provenance_uri optional string
+    12 history_incarnation optional uint64
+    13 fields repeated .riffdb.v1.SymbolicEventField
+  riffdb.v1.SymbolicEventField fields=2
+    1 name optional string
+    2 value optional .riffdb.v1.Value
+  riffdb.v1.SyntaxDiagnostic fields=5
+    1 code optional string
+    2 summary optional string
+    3 help optional string proto3-optional oneof=_help
+    4 span optional .riffdb.v1.SourceSpan
+    5 expected repeated string
+  riffdb.v1.SyntaxDiagnosticList fields=1
+    1 diagnostics repeated .riffdb.v1.SyntaxDiagnostic
+  riffdb.v1.TailEventsRequest fields=6
+    1 request_id optional bytes
+    2 selection optional .riffdb.v1.EventSelection
+    3 after_event_id optional .riffdb.v1.EventId
+    4 page optional .riffdb.v1.PageRequest
+    5 maximum_wait_nanos optional uint64
+    6 observed_history_incarnation optional uint64
+  riffdb.v1.TailEventsResponse fields=2
+    1 page optional .riffdb.v1.EventPage
+    2 wait_timed_out optional bool
+  riffdb.v1.TenantScope fields=2
+    1 global optional .riffdb.v1.Unit oneof=scope
+    2 tenant_id optional string oneof=scope
+  riffdb.v1.Timestamp fields=2
+    1 seconds optional sint64
+    2 nanos optional uint32
+  riffdb.v1.TraceProvenanceRequest fields=2
+    1 request_id optional bytes
+    2 selector optional .riffdb.v1.ProvenanceSelection
+  riffdb.v1.TraceProvenanceResponse fields=2
+    1 not_found optional .riffdb.v1.Unit oneof=result
+    2 found optional .riffdb.v1.Provenance oneof=result
+  riffdb.v1.Unit fields=0
+  riffdb.v1.ValidateContractRequest fields=3
+    1 request_id optional bytes
+    2 source optional string
+    3 preview_active_successor optional bool
+  riffdb.v1.ValidateContractResponse fields=3
+    1 valid optional .riffdb.v1.Unit oneof=result
+    2 invalid optional .riffdb.v1.CompilationDiagnostics oneof=result
+    3 candidate optional .riffdb.v1.CompiledContractCandidate oneof=result
+  riffdb.v1.ValidationIssue fields=2
+    1 code optional .riffdb.v1.ValidationCode
+    2 path repeated .riffdb.v1.ValidationPathSegment
+  riffdb.v1.ValidationIssues fields=1
+    1 issues repeated .riffdb.v1.ValidationIssue
+  riffdb.v1.ValidationPathSegment fields=2
+    1 field_id optional uint32 oneof=segment
+    2 list_index optional uint32 oneof=segment
+  riffdb.v1.Value fields=15
+    1 null_value optional .riffdb.v1.NullValue oneof=kind
+    2 bool_value optional bool oneof=kind
+    3 i64_value optional sint64 oneof=kind
+    4 u64_value optional uint64 oneof=kind
+    5 decimal_value optional .riffdb.v1.Decimal oneof=kind
+    6 money_value optional .riffdb.v1.Money oneof=kind
+    7 string_value optional string oneof=kind
+    8 bytes_value optional bytes oneof=kind
+    9 uuid_value optional bytes oneof=kind
+    10 date_value optional .riffdb.v1.Date oneof=kind
+    11 timestamp_value optional .riffdb.v1.Timestamp oneof=kind
+    12 enum_value optional .riffdb.v1.EnumValue oneof=kind
+    13 list_value optional .riffdb.v1.ValueList oneof=kind
+    14 record_value optional .riffdb.v1.ValueRecord oneof=kind
+    15 vector_value optional .riffdb.v1.VectorValue oneof=kind
+  riffdb.v1.ValueField fields=3
+    1 field_id optional uint32 proto3-optional oneof=_field_id
+    2 name optional string
+    3 value optional .riffdb.v1.Value
+  riffdb.v1.ValueList fields=1
+    1 values repeated .riffdb.v1.Value
+  riffdb.v1.ValueRecord fields=1
+    1 fields repeated .riffdb.v1.ValueField
+  riffdb.v1.VectorValue fields=1
+    1 components repeated float
+  riffdb.v1.WatchNamedQueryRequest fields=5
+    1 request_id optional bytes
+    2 reactive_module_hash optional bytes
+    3 operation_name optional string
+    4 parameters repeated .riffdb.v1.LiveQueryParameter
+    5 cursor optional bytes proto3-optional oneof=_cursor
+
+enums
+  riffdb.app.v1.ApplicationCatalogFeature values=7
+    0 APPLICATION_CATALOG_FEATURE_UNSPECIFIED
+    1 APPLICATION_CATALOG_FEATURE_OPERATIONAL_OPTIONAL_PREDICATES
+    2 APPLICATION_CATALOG_FEATURE_STABLE_CURSOR_PAGES
+    3 APPLICATION_CATALOG_FEATURE_NULL_EXISTENCE_PREDICATES
+    4 APPLICATION_CATALOG_FEATURE_BINARY_TEXT_PREFIX
+    5 APPLICATION_CATALOG_FEATURE_UNICODE_FOLD_TEXT_PREFIX_V1
+    6 APPLICATION_CATALOG_FEATURE_EXACT_AGGREGATES
+  riffdb.app.v1.ApplicationCatalogFeatureState values=3
+    0 APPLICATION_CATALOG_FEATURE_STATE_UNSPECIFIED
+    1 APPLICATION_CATALOG_FEATURE_STATE_AVAILABLE
+    2 APPLICATION_CATALOG_FEATURE_STATE_UNAVAILABLE
+  riffdb.app.v1.ApplicationCatalogSymbolKind values=14
+    0 APPLICATION_CATALOG_SYMBOL_KIND_UNSPECIFIED
+    1 APPLICATION_CATALOG_SYMBOL_KIND_CONTRACT
+    2 APPLICATION_CATALOG_SYMBOL_KIND_ENUM
+    3 APPLICATION_CATALOG_SYMBOL_KIND_ENTITY
+    4 APPLICATION_CATALOG_SYMBOL_KIND_FIELD
+    5 APPLICATION_CATALOG_SYMBOL_KIND_RELATIONSHIP
+    6 APPLICATION_CATALOG_SYMBOL_KIND_INDEX
+    7 APPLICATION_CATALOG_SYMBOL_KIND_COMMAND
+    8 APPLICATION_CATALOG_SYMBOL_KIND_COMMAND_OUTCOME
+    9 APPLICATION_CATALOG_SYMBOL_KIND_EVENT
+    10 APPLICATION_CATALOG_SYMBOL_KIND_QUERY_MODULE
+    11 APPLICATION_CATALOG_SYMBOL_KIND_QUERY
+    12 APPLICATION_CATALOG_SYMBOL_KIND_ROLE
+    13 APPLICATION_CATALOG_SYMBOL_KIND_OPERATION
+  riffdb.app.v1.ApplicationErrorCategory values=16
+    0 APPLICATION_ERROR_CATEGORY_UNSPECIFIED
+    1 APPLICATION_ERROR_CATEGORY_INPUT
+    2 APPLICATION_ERROR_CATEGORY_AUTHORIZATION
+    3 APPLICATION_ERROR_CATEGORY_CONTRACT
+    4 APPLICATION_ERROR_CATEGORY_QUERY
+    5 APPLICATION_ERROR_CATEGORY_MODULE
+    6 APPLICATION_ERROR_CATEGORY_CURSOR
+    7 APPLICATION_ERROR_CATEGORY_RESOURCE
+    8 APPLICATION_ERROR_CATEGORY_STORAGE
+    9 APPLICATION_ERROR_CATEGORY_UNCERTAINTY
+    10 APPLICATION_ERROR_CATEGORY_INTERNAL
+    11 APPLICATION_ERROR_CATEGORY_PROTOCOL
+    12 APPLICATION_ERROR_CATEGORY_COMMAND
+    13 APPLICATION_ERROR_CATEGORY_CONTROL
+    14 APPLICATION_ERROR_CATEGORY_HISTORY
+    15 APPLICATION_ERROR_CATEGORY_CAPACITY
+  riffdb.app.v1.ApplicationErrorCode values=22
+    0 APPLICATION_ERROR_CODE_UNSPECIFIED
+    1 APPLICATION_ERROR_CODE_INVALID_REQUEST
+    2 APPLICATION_ERROR_CODE_INPUT_INVALID
+    3 APPLICATION_ERROR_CODE_AUTHORIZATION_DENIED
+    4 APPLICATION_ERROR_CODE_CONTRACT_MISMATCH
+    5 APPLICATION_ERROR_CODE_QUERY_INVALID
+    6 APPLICATION_ERROR_CODE_QUERY_UNAVAILABLE
+    7 APPLICATION_ERROR_CODE_MODULE_UNAVAILABLE
+    8 APPLICATION_ERROR_CODE_CURSOR_INVALID
+    9 APPLICATION_ERROR_CODE_RESPONSE_TOO_LARGE
+    10 APPLICATION_ERROR_CODE_STORAGE_UNAVAILABLE
+    11 APPLICATION_ERROR_CODE_OUTCOME_UNKNOWN
+    12 APPLICATION_ERROR_CODE_OPERATION_CANCELLED
+    13 APPLICATION_ERROR_CODE_DEADLINE_EXCEEDED
+    14 APPLICATION_ERROR_CODE_INTERNAL_DEFECT
+    15 APPLICATION_ERROR_CODE_IDEMPOTENCY_KEY_REUSE
+    16 APPLICATION_ERROR_CODE_COMMAND_EXECUTION_FAILED
+    17 APPLICATION_ERROR_CODE_CAPABILITY_REVOKED
+    18 APPLICATION_ERROR_CODE_PROTOCOL_INVALID
+    19 APPLICATION_ERROR_CODE_HISTORY_INCARNATION_MISMATCH
+    21 APPLICATION_ERROR_CODE_HISTORY_PRUNED
+    20 APPLICATION_ERROR_CODE_OVERLOADED
+  riffdb.app.v1.ApplicationFixCode values=11
+    0 APPLICATION_FIX_CODE_UNSPECIFIED
+    1 APPLICATION_FIX_CODE_CORRECT_INPUT
+    2 APPLICATION_FIX_CODE_REMOVE_FORBIDDEN_OUTPUT
+    3 APPLICATION_FIX_CODE_BIND_APPLICATION_ROLE
+    4 APPLICATION_FIX_CODE_REFRESH_CONTRACT
+    5 APPLICATION_FIX_CODE_PIN_ACTIVE_MODULE
+    6 APPLICATION_FIX_CODE_ADD_BOUNDED_INDEX
+    7 APPLICATION_FIX_CODE_RESTART_FROM_FIRST_PAGE
+    8 APPLICATION_FIX_CODE_RETRY_LATER
+    9 APPLICATION_FIX_CODE_RESOLVE_WITH_SAME_IDEMPOTENCY_KEY
+    10 APPLICATION_FIX_CODE_CONTACT_OPERATOR_WITH_INCIDENT
+  riffdb.app.v1.ApplicationOperation values=11
+    0 APPLICATION_OPERATION_UNSPECIFIED
+    1 APPLICATION_OPERATION_DESCRIBE_CONTRACT
+    2 APPLICATION_OPERATION_CHECK_QUERY
+    3 APPLICATION_OPERATION_EXPLAIN_QUERY
+    4 APPLICATION_OPERATION_EXECUTE_QUERY
+    5 APPLICATION_OPERATION_DEPLOY_QUERY_MODULE
+    6 APPLICATION_OPERATION_GET_QUERY_MODULE
+    7 APPLICATION_OPERATION_EXECUTE_COMMAND
+    8 APPLICATION_OPERATION_BATCH_COMMAND
+    9 APPLICATION_OPERATION_EXECUTE_PROJECTED_QUERY
+    10 APPLICATION_OPERATION_DEPLOY_REACTIVE_MODULE
+  riffdb.app.v1.ApplicationRecoveryAction values=8
+    0 APPLICATION_RECOVERY_ACTION_UNSPECIFIED
+    1 APPLICATION_RECOVERY_ACTION_CORRECT_REQUEST
+    2 APPLICATION_RECOVERY_ACTION_RETRY
+    3 APPLICATION_RECOVERY_ACTION_RESOLVE_WITH_SAME_IDEMPOTENCY_KEY
+    4 APPLICATION_RECOVERY_ACTION_OBTAIN_PERMISSION
+    5 APPLICATION_RECOVERY_ACTION_REFRESH_CONTRACT
+    6 APPLICATION_RECOVERY_ACTION_CONTACT_OPERATOR
+    7 APPLICATION_RECOVERY_ACTION_NONE
+  riffdb.app.v1.ProjectedAggregateOp values=5
+    0 PROJECTED_AGGREGATE_OP_UNSPECIFIED
+    1 PROJECTED_AGGREGATE_OP_COUNT
+    2 PROJECTED_AGGREGATE_OP_SUM
+    3 PROJECTED_AGGREGATE_OP_MIN
+    4 PROJECTED_AGGREGATE_OP_MAX
+  riffdb.app.v1.ProjectedDegradedReason values=4
+    0 PROJECTED_DEGRADED_REASON_UNSPECIFIED
+    1 PROJECTED_DEGRADED_REASON_APPLY_LAG_SLO
+    2 PROJECTED_DEGRADED_REASON_MAINTENANCE_BACKLOG
+    3 PROJECTED_DEGRADED_REASON_PARTIAL_INVENTORY
+  riffdb.app.v1.ProjectedRebuildingReason values=4
+    0 PROJECTED_REBUILDING_REASON_UNSPECIFIED
+    1 PROJECTED_REBUILDING_REASON_REPLAY_BUDGET_EXCEEDED
+    2 PROJECTED_REBUILDING_REASON_EXPLICIT_REBUILD
+    3 PROJECTED_REBUILDING_REASON_STATE_INTEGRITY_FAILURE
+  riffdb.app.v1.ProjectedResponseEncoding values=3
+    0 PROJECTED_RESPONSE_ENCODING_UNSPECIFIED
+    1 PROJECTED_RESPONSE_ENCODING_ROW
+    2 PROJECTED_RESPONSE_ENCODING_PACKED
+  riffdb.app.v1.QueryModuleDeploymentOutcome values=6
+    0 QUERY_MODULE_DEPLOYMENT_OUTCOME_UNSPECIFIED
+    1 QUERY_MODULE_DEPLOYMENT_OUTCOME_ACTIVATED
+    2 QUERY_MODULE_DEPLOYMENT_OUTCOME_ALREADY_ACTIVE
+    3 QUERY_MODULE_DEPLOYMENT_OUTCOME_EXPECTED_ACTIVE_MISMATCH
+    4 QUERY_MODULE_DEPLOYMENT_OUTCOME_VERSION_CONFLICT
+    5 QUERY_MODULE_DEPLOYMENT_OUTCOME_CONTRACT_UNAVAILABLE
+  riffdb.app.v1.ReactiveModuleDeploymentOutcome values=6
+    0 REACTIVE_MODULE_DEPLOYMENT_OUTCOME_UNSPECIFIED
+    1 REACTIVE_MODULE_DEPLOYMENT_OUTCOME_PUBLISHED
+    2 REACTIVE_MODULE_DEPLOYMENT_OUTCOME_ALREADY_PUBLISHED
+    3 REACTIVE_MODULE_DEPLOYMENT_OUTCOME_VERSION_CONFLICT
+    4 REACTIVE_MODULE_DEPLOYMENT_OUTCOME_CONTRACT_UNAVAILABLE
+    5 REACTIVE_MODULE_DEPLOYMENT_OUTCOME_QUERY_MODULE_UNAVAILABLE
+  riffdb.app.v1.ResultCardinality values=4
+    0 RESULT_CARDINALITY_UNSPECIFIED
+    1 RESULT_CARDINALITY_ONE
+    2 RESULT_CARDINALITY_MAYBE
+    3 RESULT_CARDINALITY_MANY
+  riffdb.storage.v1.ActorKindV1 values=4
+    0 ACTOR_KIND_UNSPECIFIED
+    1 ACTOR_KIND_HUMAN
+    2 ACTOR_KIND_AGENT
+    3 ACTOR_KIND_SERVICE
+  riffdb.storage.v1.CapabilityAdministrationOperationV1 values=4
+    0 CAPABILITY_ADMINISTRATION_OPERATION_UNSPECIFIED
+    1 CAPABILITY_ADMINISTRATION_OPERATION_BOOTSTRAP
+    2 CAPABILITY_ADMINISTRATION_OPERATION_CREATE
+    3 CAPABILITY_ADMINISTRATION_OPERATION_REVOKE
+  riffdb.storage.v1.CapabilityApplicationExportScopeV1 values=3
+    0 CAPABILITY_APPLICATION_EXPORT_SCOPE_UNSPECIFIED
+    1 CAPABILITY_APPLICATION_EXPORT_SCOPE_PRINCIPAL_FILTERED
+    2 CAPABILITY_APPLICATION_EXPORT_SCOPE_WHOLE_APPLICATION
+  riffdb.storage.v1.CapabilityApplicationReimportScopeV1 values=3
+    0 CAPABILITY_APPLICATION_REIMPORT_SCOPE_UNSPECIFIED
+    1 CAPABILITY_APPLICATION_REIMPORT_SCOPE_PRINCIPAL_FILTERED
+    2 CAPABILITY_APPLICATION_REIMPORT_SCOPE_WHOLE_APPLICATION
+  riffdb.storage.v1.CapabilityPermissionKindV1 values=30
+    0 CAPABILITY_PERMISSION_KIND_UNSPECIFIED
+    1 CAPABILITY_PERMISSION_KIND_VALIDATE_CONTRACT
+    2 CAPABILITY_PERMISSION_KIND_READ_CONTRACT
+    3 CAPABILITY_PERMISSION_KIND_EXPLAIN_COMMAND
+    4 CAPABILITY_PERMISSION_KIND_DEPLOY_CONTRACT
+    5 CAPABILITY_PERMISSION_KIND_INVOKE_COMMAND
+    6 CAPABILITY_PERMISSION_KIND_READ_ENTITY
+    7 CAPABILITY_PERMISSION_KIND_SCAN_INDEX
+    8 CAPABILITY_PERMISSION_KIND_QUERY_PROJECTION
+    9 CAPABILITY_PERMISSION_KIND_READ_PROJECTION_STATUS
+    10 CAPABILITY_PERMISSION_KIND_READ_COMMIT
+    11 CAPABILITY_PERMISSION_KIND_SCAN_COMMITS
+    12 CAPABILITY_PERMISSION_KIND_SUBSCRIBE_COMMITS
+    13 CAPABILITY_PERMISSION_KIND_READ_PROVENANCE
+    14 CAPABILITY_PERMISSION_KIND_INSPECT_OUTBOX
+    15 CAPABILITY_PERMISSION_KIND_READ_HEALTH
+    16 CAPABILITY_PERMISSION_KIND_READ_STATISTICS
+    17 CAPABILITY_PERMISSION_KIND_CREATE_CAPABILITY
+    18 CAPABILITY_PERMISSION_KIND_REVOKE_CAPABILITY
+    19 CAPABILITY_PERMISSION_KIND_ADMINISTER_CAPABILITIES
+    20 CAPABILITY_PERMISSION_KIND_CHECK_AD_HOC_QUERY
+    21 CAPABILITY_PERMISSION_KIND_EXPLAIN_AD_HOC_QUERY
+    22 CAPABILITY_PERMISSION_KIND_EXECUTE_AD_HOC_QUERY
+    23 CAPABILITY_PERMISSION_KIND_EXPLAIN_NAMED_QUERY
+    24 CAPABILITY_PERMISSION_KIND_EXECUTE_NAMED_QUERY
+    25 CAPABILITY_PERMISSION_KIND_APPLICATION_ROLE_IDENTITY
+    27 CAPABILITY_PERMISSION_KIND_CONSUME_EVENT_STREAM
+    28 CAPABILITY_PERMISSION_KIND_SEEK_EVENT_STREAM_CONSUMER
+    29 CAPABILITY_PERMISSION_KIND_WATCH_NAMED_QUERY
+    30 CAPABILITY_PERMISSION_KIND_CONSUME_CONTEXTUAL_SUBSCRIPTION
+  riffdb.storage.v1.CapabilityRowPolicyOperationV1 values=5
+    0 CAPABILITY_ROW_POLICY_OPERATION_UNSPECIFIED
+    1 CAPABILITY_ROW_POLICY_OPERATION_READ
+    2 CAPABILITY_ROW_POLICY_OPERATION_CREATE
+    3 CAPABILITY_ROW_POLICY_OPERATION_UPDATE
+    4 CAPABILITY_ROW_POLICY_OPERATION_DELETE
+  riffdb.storage.v1.CommandDerivedIndexKindV1 values=7
+    0 COMMAND_DERIVED_INDEX_KIND_UNSPECIFIED
+    1 COMMAND_DERIVED_INDEX_KIND_IDEMPOTENCY
+    2 COMMAND_DERIVED_INDEX_KIND_PROVENANCE
+    3 COMMAND_DERIVED_INDEX_KIND_AUDIT_SEQUENCE
+    4 COMMAND_DERIVED_INDEX_KIND_AUDIT_REQUEST
+    5 COMMAND_DERIVED_INDEX_KIND_EVENT_ROUTE
+    6 COMMAND_DERIVED_INDEX_KIND_PENDING_OUTBOX
+  riffdb.storage.v1.CommandDerivedMemberV1 values=5
+    0 COMMAND_DERIVED_MEMBER_UNSPECIFIED
+    1 COMMAND_DERIVED_MEMBER_COMMAND
+    2 COMMAND_DERIVED_MEMBER_AUDIT_STARTED
+    3 COMMAND_DERIVED_MEMBER_AUDIT_TERMINAL
+    4 COMMAND_DERIVED_MEMBER_EVENT
+  riffdb.storage.v1.ContractMigrationJournalStepV1 values=6
+    0 CONTRACT_MIGRATION_JOURNAL_STEP_UNSPECIFIED
+    1 CONTRACT_MIGRATION_JOURNAL_STEP_TRANSFORMING
+    2 CONTRACT_MIGRATION_JOURNAL_STEP_REBUILDING_PROJECTIONS
+    3 CONTRACT_MIGRATION_JOURNAL_STEP_VALIDATING
+    4 CONTRACT_MIGRATION_JOURNAL_STEP_READY_FOR_CUTOVER
+    5 CONTRACT_MIGRATION_JOURNAL_STEP_COMPLETE
+  riffdb.storage.v1.DurabilityModeV1 values=4
+    0 DURABILITY_MODE_UNSPECIFIED
+    1 DURABILITY_MODE_SYNC
+    2 DURABILITY_MODE_GROUP
+    3 DURABILITY_MODE_MEMORY
+  riffdb.storage.v1.EntityChainStateKindV1 values=4
+    0 ENTITY_CHAIN_STATE_KIND_UNSPECIFIED
+    1 ENTITY_CHAIN_STATE_KIND_NEVER_EXISTED
+    2 ENTITY_CHAIN_STATE_KIND_LIVE
+    3 ENTITY_CHAIN_STATE_KIND_DELETED
+  riffdb.storage.v1.ExecutionFailureCodeV1 values=4
+    0 EXECUTION_FAILURE_CODE_UNSPECIFIED
+    1 EXECUTION_FAILURE_CODE_ARITHMETIC_FAULT
+    2 EXECUTION_FAILURE_CODE_RESOURCE_LIMIT
+    3 EXECUTION_FAILURE_CODE_UNIQUE_CONFLICT
+  riffdb.storage.v1.ProjectionFailureCodeV1 values=7
+    0 PROJECTION_FAILURE_CODE_UNSPECIFIED
+    1 PROJECTION_FAILURE_CODE_ARITHMETIC_OVERFLOW
+    2 PROJECTION_FAILURE_CODE_MALFORMED_DURABLE_EVENT
+    3 PROJECTION_FAILURE_CODE_MISSING_COMMIT
+    4 PROJECTION_FAILURE_CODE_PLAN_OR_SCHEMA_UNAVAILABLE
+    5 PROJECTION_FAILURE_CODE_PROJECTION_STATE_INTEGRITY
+    6 PROJECTION_FAILURE_CODE_HARD_LIMIT_EXCEEDED
+  riffdb.storage.v1.ProjectionLifecycleV1 values=7
+    0 PROJECTION_LIFECYCLE_UNSPECIFIED
+    1 PROJECTION_LIFECYCLE_BUILDING
+    2 PROJECTION_LIFECYCLE_CATCHING_UP
+    3 PROJECTION_LIFECYCLE_READY
+    4 PROJECTION_LIFECYCLE_DEGRADED
+    5 PROJECTION_LIFECYCLE_REBUILDING
+    6 PROJECTION_LIFECYCLE_INVALID
+  riffdb.storage.v1.PublishedApplyModeV1 values=3
+    0 PUBLISHED_APPLY_MODE_UNSPECIFIED
+    1 PUBLISHED_APPLY_MODE_ENABLED
+    2 PUBLISHED_APPLY_MODE_SUSPENDED
+  riffdb.storage.v1.RetentionAdministrationActionV1 values=3
+    0 RETENTION_ADMINISTRATION_ACTION_V1_UNSPECIFIED
+    1 RETENTION_ADMINISTRATION_ACTION_V1_PROJECTION_DETACH
+    2 RETENTION_ADMINISTRATION_ACTION_V1_PROJECTION_REATTACH
+  riffdb.storage.v1.RetentionHoldKindV1 values=3
+    0 RETENTION_HOLD_KIND_V1_UNSPECIFIED
+    1 RETENTION_HOLD_KIND_V1_OPERATOR
+    2 RETENTION_HOLD_KIND_V1_PROJECTION_DETACH
+  riffdb.storage.v1.RevocationReasonCodeV1 values=5
+    0 REVOCATION_REASON_CODE_UNSPECIFIED
+    1 REVOCATION_REASON_CODE_REQUESTED
+    2 REVOCATION_REASON_CODE_REPLACED
+    3 REVOCATION_REASON_CODE_SUSPECTED_COMPROMISE
+    4 REVOCATION_REASON_CODE_POLICY_CHANGE
+  riffdb.storage.v1.ServiceAuditPhaseV1 values=7
+    0 SERVICE_AUDIT_PHASE_UNSPECIFIED
+    1 SERVICE_AUDIT_PHASE_STARTED
+    2 SERVICE_AUDIT_PHASE_SUCCEEDED
+    3 SERVICE_AUDIT_PHASE_DENIED
+    4 SERVICE_AUDIT_PHASE_CANCELLED
+    5 SERVICE_AUDIT_PHASE_FAILED
+    6 SERVICE_AUDIT_PHASE_OUTCOME_UNCERTAIN
+  riffdb.storage.v1.ServiceIngressKindV1 values=4
+    0 SERVICE_INGRESS_KIND_UNSPECIFIED
+    1 SERVICE_INGRESS_KIND_GRPC
+    2 SERVICE_INGRESS_KIND_MCP_HTTP
+    3 SERVICE_INGRESS_KIND_IN_PROCESS_TEST_COMPARISON
+  riffdb.storage.v1.ServiceOperationV1 values=28
+    0 SERVICE_OPERATION_UNSPECIFIED
+    1 SERVICE_OPERATION_VALIDATE_CONTRACT
+    2 SERVICE_OPERATION_EXPLAIN_COMMAND
+    3 SERVICE_OPERATION_DEPLOY_CONTRACT
+    4 SERVICE_OPERATION_GET_ACTIVE_CONTRACT
+    5 SERVICE_OPERATION_GET_CONTRACT_VERSION
+    6 SERVICE_OPERATION_EXECUTE_COMMAND
+    7 SERVICE_OPERATION_RESOLVE_COMMAND_OUTCOME
+    8 SERVICE_OPERATION_GET_ENTITY
+    9 SERVICE_OPERATION_SCAN_INDEX
+    10 SERVICE_OPERATION_QUERY_PROJECTION
+    11 SERVICE_OPERATION_GET_PROJECTION_STATUS
+    12 SERVICE_OPERATION_GET_COMMIT
+    13 SERVICE_OPERATION_SCAN_COMMITS
+    14 SERVICE_OPERATION_SUBSCRIBE_TO_COMMITS
+    15 SERVICE_OPERATION_TRACE_PROVENANCE
+    16 SERVICE_OPERATION_GET_HEALTH
+    17 SERVICE_OPERATION_GET_STATISTICS
+    18 SERVICE_OPERATION_CREATE_CAPABILITY
+    19 SERVICE_OPERATION_REVOKE_CAPABILITY
+    20 SERVICE_OPERATION_LIST_PENDING_OUTBOX_DELIVERIES
+    21 SERVICE_OPERATION_DISCOVER_COMMAND_TOOLS
+    22 SERVICE_OPERATION_DISCOVER_RESOURCES
+    23 SERVICE_OPERATION_DESCRIBE_CONTRACT
+    24 SERVICE_OPERATION_CHECK_QUERY
+    25 SERVICE_OPERATION_EXPLAIN_QUERY
+    26 SERVICE_OPERATION_EXECUTE_QUERY
+    27 SERVICE_OPERATION_DEPLOY_QUERY_MODULE
+  riffdb.storage.v1.StoredCommandAuditMemberV1 values=3
+    0 STORED_COMMAND_AUDIT_MEMBER_UNSPECIFIED
+    1 STORED_COMMAND_AUDIT_MEMBER_STARTED
+    2 STORED_COMMAND_AUDIT_MEMBER_TERMINAL
+  riffdb.v1.ActorKind values=4
+    0 ACTOR_KIND_UNSPECIFIED
+    1 ACTOR_KIND_HUMAN
+    2 ACTOR_KIND_AGENT
+    3 ACTOR_KIND_SERVICE
+  riffdb.v1.ApplicationExportFailure values=9
+    0 APPLICATION_EXPORT_FAILURE_UNSPECIFIED
+    1 APPLICATION_EXPORT_FAILURE_AUTHORITY_CHANGED
+    2 APPLICATION_EXPORT_FAILURE_SNAPSHOT_UNAVAILABLE
+    3 APPLICATION_EXPORT_FAILURE_SOURCE_INVALID
+    4 APPLICATION_EXPORT_FAILURE_LEASE_EXPIRED
+    5 APPLICATION_EXPORT_FAILURE_CANCELLED
+    6 APPLICATION_EXPORT_FAILURE_LIMIT_EXCEEDED
+    7 APPLICATION_EXPORT_FAILURE_INTERNAL
+    8 APPLICATION_EXPORT_FAILURE_WORKFLOW_NOT_QUIESCENT
+  riffdb.v1.ApplicationExportPhase values=7
+    0 APPLICATION_EXPORT_PHASE_UNSPECIFIED
+    1 APPLICATION_EXPORT_PHASE_ACCEPTED
+    2 APPLICATION_EXPORT_PHASE_EXPORTING
+    3 APPLICATION_EXPORT_PHASE_COMPLETED
+    4 APPLICATION_EXPORT_PHASE_CANCELLED
+    5 APPLICATION_EXPORT_PHASE_EXPIRED
+    6 APPLICATION_EXPORT_PHASE_FAILED_CLOSED
+  riffdb.v1.ApplicationExportRecordClass values=5
+    0 APPLICATION_EXPORT_RECORD_CLASS_UNSPECIFIED
+    1 APPLICATION_EXPORT_RECORD_CLASS_ENTITY
+    2 APPLICATION_EXPORT_RECORD_CLASS_EVENT
+    3 APPLICATION_EXPORT_RECORD_CLASS_PROVENANCE
+    4 APPLICATION_EXPORT_RECORD_CLASS_PUBLIC_AUDIT
+  riffdb.v1.ApplicationExportStartDisposition values=4
+    0 APPLICATION_EXPORT_START_DISPOSITION_UNSPECIFIED
+    1 APPLICATION_EXPORT_START_DISPOSITION_ACCEPTED
+    2 APPLICATION_EXPORT_START_DISPOSITION_ALREADY_ACCEPTED
+    3 APPLICATION_EXPORT_START_DISPOSITION_TERMINAL
+  riffdb.v1.ApplicationInstallationDriver values=5
+    0 APPLICATION_INSTALLATION_DRIVER_UNSPECIFIED
+    1 APPLICATION_INSTALLATION_DRIVER_RUST
+    2 APPLICATION_INSTALLATION_DRIVER_TYPESCRIPT
+    3 APPLICATION_INSTALLATION_DRIVER_GO
+    4 APPLICATION_INSTALLATION_DRIVER_PYTHON
+  riffdb.v1.ApplicationInstallationFailureCode values=11
+    0 APPLICATION_INSTALLATION_FAILURE_CODE_UNSPECIFIED
+    1 APPLICATION_INSTALLATION_FAILURE_CODE_LOCAL_ARTIFACT_MISMATCH
+    2 APPLICATION_INSTALLATION_FAILURE_CODE_REMOTE_IDENTITY_MISMATCH
+    3 APPLICATION_INSTALLATION_FAILURE_CODE_MIGRATION_GATE_REQUIRED
+    4 APPLICATION_INSTALLATION_FAILURE_CODE_ROLE_WIDENING_APPROVAL_REQUIRED
+    5 APPLICATION_INSTALLATION_FAILURE_CODE_CREDENTIAL_DESTINATION_OCCUPIED
+    6 APPLICATION_INSTALLATION_FAILURE_CODE_DRIVER_PROOF_FAILED
+    7 APPLICATION_INSTALLATION_FAILURE_CODE_SEED_PARTIAL
+    8 APPLICATION_INSTALLATION_FAILURE_CODE_AUTHORIZATION_DENIED
+    9 APPLICATION_INSTALLATION_FAILURE_CODE_SERVICE_UNAVAILABLE
+    10 APPLICATION_INSTALLATION_FAILURE_CODE_REIMPORT_PARTIAL
+  riffdb.v1.ApplicationInstallationNextAction values=13
+    0 APPLICATION_INSTALLATION_NEXT_ACTION_UNSPECIFIED
+    1 APPLICATION_INSTALLATION_NEXT_ACTION_VALIDATE_LOCAL_ARTIFACTS
+    2 APPLICATION_INSTALLATION_NEXT_ACTION_DEPLOY_CONTRACT
+    3 APPLICATION_INSTALLATION_NEXT_ACTION_APPLY_MIGRATION
+    4 APPLICATION_INSTALLATION_NEXT_ACTION_DEPLOY_QUERY_MODULES
+    5 APPLICATION_INSTALLATION_NEXT_ACTION_DEPLOY_REACTIVE_MODULES
+    6 APPLICATION_INSTALLATION_NEXT_ACTION_RECONCILE_ROLES
+    7 APPLICATION_INSTALLATION_NEXT_ACTION_ROTATE_CREDENTIALS
+    8 APPLICATION_INSTALLATION_NEXT_ACTION_PROVE_DRIVERS
+    9 APPLICATION_INSTALLATION_NEXT_ACTION_RUN_SEEDS
+    10 APPLICATION_INSTALLATION_NEXT_ACTION_SEAL_RECEIPT
+    11 APPLICATION_INSTALLATION_NEXT_ACTION_NONE
+    12 APPLICATION_INSTALLATION_NEXT_ACTION_REIMPORT_APPLICATION
+  riffdb.v1.ApplicationInstallationPhase values=4
+    0 APPLICATION_INSTALLATION_PHASE_UNSPECIFIED
+    1 APPLICATION_INSTALLATION_PHASE_RUNNING
+    2 APPLICATION_INSTALLATION_PHASE_PARTIAL
+    3 APPLICATION_INSTALLATION_PHASE_INSTALLED
+  riffdb.v1.ApplicationInstallationStage values=12
+    0 APPLICATION_INSTALLATION_STAGE_UNSPECIFIED
+    1 APPLICATION_INSTALLATION_STAGE_PREFLIGHT
+    2 APPLICATION_INSTALLATION_STAGE_CONTRACT
+    3 APPLICATION_INSTALLATION_STAGE_MIGRATION
+    4 APPLICATION_INSTALLATION_STAGE_QUERY_MODULES
+    5 APPLICATION_INSTALLATION_STAGE_REACTIVE_MODULES
+    6 APPLICATION_INSTALLATION_STAGE_ROLES
+    7 APPLICATION_INSTALLATION_STAGE_CREDENTIALS
+    8 APPLICATION_INSTALLATION_STAGE_DRIVER_PROOF
+    9 APPLICATION_INSTALLATION_STAGE_SEEDS
+    10 APPLICATION_INSTALLATION_STAGE_RECEIPT
+    11 APPLICATION_INSTALLATION_STAGE_REIMPORT
+  riffdb.v1.ApplicationReimportFailure values=6
+    0 APPLICATION_REIMPORT_FAILURE_UNSPECIFIED
+    1 APPLICATION_REIMPORT_FAILURE_AUTHORITY_CHANGED
+    2 APPLICATION_REIMPORT_FAILURE_SOURCE_MISMATCH
+    3 APPLICATION_REIMPORT_FAILURE_COMMAND_FAILED
+    4 APPLICATION_REIMPORT_FAILURE_OBSERVATION_MISMATCH
+    5 APPLICATION_REIMPORT_FAILURE_CANCELLED
+  riffdb.v1.ApplicationReimportPhase values=6
+    0 APPLICATION_REIMPORT_PHASE_UNSPECIFIED
+    1 APPLICATION_REIMPORT_PHASE_APPLYING
+    2 APPLICATION_REIMPORT_PHASE_RECONCILING
+    3 APPLICATION_REIMPORT_PHASE_RECONCILED
+    4 APPLICATION_REIMPORT_PHASE_CANCELLED
+    5 APPLICATION_REIMPORT_PHASE_FAILED
+  riffdb.v1.CapabilityApplicationExportScope values=3
+    0 CAPABILITY_APPLICATION_EXPORT_SCOPE_UNSPECIFIED
+    1 CAPABILITY_APPLICATION_EXPORT_SCOPE_PRINCIPAL_FILTERED
+    2 CAPABILITY_APPLICATION_EXPORT_SCOPE_WHOLE_APPLICATION
+  riffdb.v1.CapabilityApplicationReimportScope values=3
+    0 CAPABILITY_APPLICATION_REIMPORT_SCOPE_UNSPECIFIED
+    1 CAPABILITY_APPLICATION_REIMPORT_SCOPE_PRINCIPAL_FILTERED
+    2 CAPABILITY_APPLICATION_REIMPORT_SCOPE_WHOLE_APPLICATION
+  riffdb.v1.CapabilityCreateMode values=3
+    0 CAPABILITY_CREATE_MODE_UNSPECIFIED
+    1 CAPABILITY_CREATE_MODE_NORMAL
+    2 CAPABILITY_CREATE_MODE_BOOTSTRAP
+  riffdb.v1.CapabilityPermissionKind values=32
+    0 CAPABILITY_PERMISSION_KIND_UNSPECIFIED
+    1 CAPABILITY_PERMISSION_KIND_VALIDATE_CONTRACT
+    2 CAPABILITY_PERMISSION_KIND_READ_CONTRACT
+    3 CAPABILITY_PERMISSION_KIND_EXPLAIN_COMMAND
+    4 CAPABILITY_PERMISSION_KIND_DEPLOY_CONTRACT
+    5 CAPABILITY_PERMISSION_KIND_INVOKE_COMMAND
+    6 CAPABILITY_PERMISSION_KIND_READ_ENTITY
+    7 CAPABILITY_PERMISSION_KIND_SCAN_INDEX
+    8 CAPABILITY_PERMISSION_KIND_QUERY_PROJECTION
+    9 CAPABILITY_PERMISSION_KIND_READ_PROJECTION_STATUS
+    10 CAPABILITY_PERMISSION_KIND_READ_COMMIT
+    11 CAPABILITY_PERMISSION_KIND_SCAN_COMMITS
+    12 CAPABILITY_PERMISSION_KIND_SUBSCRIBE_COMMITS
+    13 CAPABILITY_PERMISSION_KIND_READ_PROVENANCE
+    14 CAPABILITY_PERMISSION_KIND_INSPECT_OUTBOX
+    15 CAPABILITY_PERMISSION_KIND_READ_HEALTH
+    16 CAPABILITY_PERMISSION_KIND_READ_STATISTICS
+    17 CAPABILITY_PERMISSION_KIND_CREATE_CAPABILITY
+    18 CAPABILITY_PERMISSION_KIND_REVOKE_CAPABILITY
+    19 CAPABILITY_PERMISSION_KIND_ADMINISTER_CAPABILITIES
+    20 CAPABILITY_PERMISSION_KIND_CHECK_AD_HOC_QUERY
+    21 CAPABILITY_PERMISSION_KIND_EXPLAIN_AD_HOC_QUERY
+    22 CAPABILITY_PERMISSION_KIND_EXECUTE_AD_HOC_QUERY
+    23 CAPABILITY_PERMISSION_KIND_EXPLAIN_NAMED_QUERY
+    24 CAPABILITY_PERMISSION_KIND_EXECUTE_NAMED_QUERY
+    25 CAPABILITY_PERMISSION_KIND_APPLICATION_ROLE_IDENTITY
+    26 CAPABILITY_PERMISSION_KIND_MIGRATE_CONTRACT
+    27 CAPABILITY_PERMISSION_KIND_CONSUME_EVENT_STREAM
+    28 CAPABILITY_PERMISSION_KIND_SEEK_EVENT_STREAM_CONSUMER
+    29 CAPABILITY_PERMISSION_KIND_WATCH_NAMED_QUERY
+    30 CAPABILITY_PERMISSION_KIND_CONSUME_CONTEXTUAL_SUBSCRIPTION
+    31 CAPABILITY_PERMISSION_KIND_INSTALL_APPLICATION
+  riffdb.v1.CapabilityRowPolicyOperation values=5
+    0 CAPABILITY_ROW_POLICY_OPERATION_UNSPECIFIED
+    1 CAPABILITY_ROW_POLICY_OPERATION_READ
+    2 CAPABILITY_ROW_POLICY_OPERATION_CREATE
+    3 CAPABILITY_ROW_POLICY_OPERATION_UPDATE
+    4 CAPABILITY_ROW_POLICY_OPERATION_DELETE
+  riffdb.v1.CommandDurability values=3
+    0 COMMAND_DURABILITY_UNSPECIFIED
+    1 COMMAND_DURABILITY_SYNCHRONOUS
+    2 COMMAND_DURABILITY_GROUP
+  riffdb.v1.CommitSubscriptionEndReason values=9
+    0 COMMIT_SUBSCRIPTION_END_REASON_UNSPECIFIED
+    1 COMMIT_SUBSCRIPTION_END_REASON_LIFETIME_ELAPSED
+    2 COMMIT_SUBSCRIPTION_END_REASON_LAGGED
+    3 COMMIT_SUBSCRIPTION_END_REASON_SCAN_GAP
+    4 COMMIT_SUBSCRIPTION_END_REASON_POLICY_DENIED
+    5 COMMIT_SUBSCRIPTION_END_REASON_CANCELLED
+    6 COMMIT_SUBSCRIPTION_END_REASON_DEADLINE_EXCEEDED
+    7 COMMIT_SUBSCRIPTION_END_REASON_SERVICE_SHUTDOWN
+    8 COMMIT_SUBSCRIPTION_END_REASON_UNAVAILABLE
+  riffdb.v1.ContextualQueryCardinality values=4
+    0 CONTEXTUAL_QUERY_CARDINALITY_UNSPECIFIED
+    1 CONTEXTUAL_QUERY_CARDINALITY_ONE
+    2 CONTEXTUAL_QUERY_CARDINALITY_MAYBE
+    3 CONTEXTUAL_QUERY_CARDINALITY_MANY
+  riffdb.v1.ContractCompatibilityClass values=5
+    0 CONTRACT_COMPATIBILITY_CLASS_UNSPECIFIED
+    1 CONTRACT_COMPATIBILITY_CLASS_COMPATIBLE
+    2 CONTRACT_COMPATIBILITY_CLASS_REQUIRES_EXPLICIT_VERSION
+    3 CONTRACT_COMPATIBILITY_CLASS_INCOMPATIBLE
+    4 CONTRACT_COMPATIBILITY_CLASS_REQUIRES_MIGRATION
+  riffdb.v1.ContractMigrationApplyConfirmation values=2
+    0 CONTRACT_MIGRATION_APPLY_CONFIRMATION_UNSPECIFIED
+    1 CONTRACT_MIGRATION_APPLY_CONFIRMATION_ALLOW_APPLY_CONTRACT_MIGRATION
+  riffdb.v1.ContractMigrationFailureClass values=10
+    0 CONTRACT_MIGRATION_FAILURE_CLASS_UNSPECIFIED
+    1 CONTRACT_MIGRATION_FAILURE_CLASS_ARTIFACT_MISMATCH
+    2 CONTRACT_MIGRATION_FAILURE_CLASS_INVALID_PREDECESSOR
+    3 CONTRACT_MIGRATION_FAILURE_CLASS_PENDING_ADMISSION
+    4 CONTRACT_MIGRATION_FAILURE_CLASS_CAPACITY_EXHAUSTED
+    5 CONTRACT_MIGRATION_FAILURE_CLASS_DISK_UNAVAILABLE
+    6 CONTRACT_MIGRATION_FAILURE_CLASS_STAGE_CORRUPT
+    7 CONTRACT_MIGRATION_FAILURE_CLASS_PUBLICATION_UNCERTAIN
+    8 CONTRACT_MIGRATION_FAILURE_CLASS_PUBLISHED_VALIDATION_FAILED
+    9 CONTRACT_MIGRATION_FAILURE_CLASS_ROLLBACK_FAILED
+  riffdb.v1.ContractMigrationOperationKind values=3
+    0 CONTRACT_MIGRATION_OPERATION_KIND_UNSPECIFIED
+    1 CONTRACT_MIGRATION_OPERATION_KIND_CHECK
+    2 CONTRACT_MIGRATION_OPERATION_KIND_APPLY
+  riffdb.v1.ContractMigrationPhase values=15
+    0 CONTRACT_MIGRATION_PHASE_UNSPECIFIED
+    1 CONTRACT_MIGRATION_PHASE_ACCEPTED
+    2 CONTRACT_MIGRATION_PHASE_DRAINING
+    3 CONTRACT_MIGRATION_PHASE_PREFLIGHT
+    4 CONTRACT_MIGRATION_PHASE_BACKUP_PUBLISHED
+    5 CONTRACT_MIGRATION_PHASE_STAGING
+    6 CONTRACT_MIGRATION_PHASE_TRANSFORMING
+    7 CONTRACT_MIGRATION_PHASE_REBUILDING_PROJECTIONS
+    8 CONTRACT_MIGRATION_PHASE_VALIDATING_STAGE
+    9 CONTRACT_MIGRATION_PHASE_PUBLISHING
+    10 CONTRACT_MIGRATION_PHASE_VALIDATING_PUBLISHED
+    11 CONTRACT_MIGRATION_PHASE_ROLLING_BACK
+    12 CONTRACT_MIGRATION_PHASE_SUCCEEDED
+    13 CONTRACT_MIGRATION_PHASE_FAILED_CLOSED
+    14 CONTRACT_MIGRATION_PHASE_FAILED_ROLLED_BACK
+  riffdb.v1.ContractMigrationStartDisposition values=5
+    0 CONTRACT_MIGRATION_START_DISPOSITION_UNSPECIFIED
+    1 CONTRACT_MIGRATION_START_DISPOSITION_ACCEPTED
+    2 CONTRACT_MIGRATION_START_DISPOSITION_ALREADY_ACCEPTED
+    3 CONTRACT_MIGRATION_START_DISPOSITION_TERMINAL
+    4 CONTRACT_MIGRATION_START_DISPOSITION_ALREADY_APPLIED
+  riffdb.v1.DiscoveryRepresentation values=3
+    0 DISCOVERY_REPRESENTATION_UNSPECIFIED
+    1 DISCOVERY_REPRESENTATION_FULL
+    2 DISCOVERY_REPRESENTATION_COMPACT_OBSERVATION
+  riffdb.v1.EventConsumerMutationResult values=7
+    0 EVENT_CONSUMER_MUTATION_RESULT_UNSPECIFIED
+    1 EVENT_CONSUMER_MUTATION_RESULT_APPLIED
+    2 EVENT_CONSUMER_MUTATION_RESULT_STATE_CHANGED
+    3 EVENT_CONSUMER_MUTATION_RESULT_NOT_FOUND
+    4 EVENT_CONSUMER_MUTATION_RESULT_OUTSTANDING_LEASE
+    5 EVENT_CONSUMER_MUTATION_RESULT_STALE_LEASE
+    6 EVENT_CONSUMER_MUTATION_RESULT_LEASE_EXPIRED
+  riffdb.v1.EventConsumerPullDisposition values=4
+    0 EVENT_CONSUMER_PULL_DISPOSITION_UNSPECIFIED
+    1 EVENT_CONSUMER_PULL_DISPOSITION_READY
+    2 EVENT_CONSUMER_PULL_DISPOSITION_WAIT_TIMED_OUT
+    3 EVENT_CONSUMER_PULL_DISPOSITION_BOUNDED_PROGRESS
+  riffdb.v1.EventPageDisposition values=3
+    0 EVENT_PAGE_DISPOSITION_UNSPECIFIED
+    1 EVENT_PAGE_DISPOSITION_PAGE
+    2 EVENT_PAGE_DISPOSITION_BOUNDED_PROGRESS
+  riffdb.v1.ExecuteCommandResponse.CompletionStatus values=4
+    0 COMPLETION_STATUS_UNSPECIFIED
+    1 COMMITTED
+    2 REPLAYED
+    3 EXECUTED_READ_ONLY
+  riffdb.v1.ExecutionClass values=3
+    0 EXECUTION_CLASS_UNSPECIFIED
+    1 EXECUTION_CLASS_READ_ONLY
+    2 EXECUTION_CLASS_IDEMPOTENT_MUTATION
+  riffdb.v1.ExecutionFailureCode values=4
+    0 EXECUTION_FAILURE_CODE_UNSPECIFIED
+    1 EXECUTION_FAILURE_CODE_ARITHMETIC_FAULT
+    2 EXECUTION_FAILURE_CODE_RESOURCE_LIMIT
+    3 EXECUTION_FAILURE_CODE_UNIQUE_CONFLICT
+  riffdb.v1.FixedToolKind values=31
+    0 FIXED_TOOL_KIND_UNSPECIFIED
+    1 FIXED_TOOL_KIND_VALIDATE_CONTRACT
+    2 FIXED_TOOL_KIND_GET_ACTIVE_CONTRACT
+    3 FIXED_TOOL_KIND_EXPLAIN_COMMAND
+    4 FIXED_TOOL_KIND_DEPLOY_CONTRACT
+    5 FIXED_TOOL_KIND_RESOLVE_COMMAND_OUTCOME
+    6 FIXED_TOOL_KIND_GET_ENTITY
+    7 FIXED_TOOL_KIND_SCAN_INDEX
+    8 FIXED_TOOL_KIND_GET_COMMIT
+    9 FIXED_TOOL_KIND_SCAN_COMMITS
+    10 FIXED_TOOL_KIND_TRACE_PROVENANCE
+    11 FIXED_TOOL_KIND_QUERY_PROJECTION
+    12 FIXED_TOOL_KIND_GET_PROJECTION_STATUS
+    13 FIXED_TOOL_KIND_LIST_PENDING_OUTBOX_DELIVERIES
+    14 FIXED_TOOL_KIND_GET_HEALTH
+    15 FIXED_TOOL_KIND_DESCRIBE_CONTRACT
+    16 FIXED_TOOL_KIND_CHECK_QUERY
+    17 FIXED_TOOL_KIND_EXPLAIN_QUERY
+    18 FIXED_TOOL_KIND_EXECUTE_QUERY
+    19 FIXED_TOOL_KIND_RUN_COMMAND
+    20 FIXED_TOOL_KIND_EVENT_NEXT
+    21 FIXED_TOOL_KIND_EVENT_ACK
+    22 FIXED_TOOL_KIND_EVENT_NACK
+    23 FIXED_TOOL_KIND_EVENT_SEEK
+    24 FIXED_TOOL_KIND_EVENT_STATUS
+    25 FIXED_TOOL_KIND_QUERY_WATCH
+    26 FIXED_TOOL_KIND_CONTEXTUAL_NEXT
+    27 FIXED_TOOL_KIND_CONTEXTUAL_ACK
+    28 FIXED_TOOL_KIND_CONTEXTUAL_NACK
+    29 FIXED_TOOL_KIND_CONTEXTUAL_STATUS
+    30 FIXED_TOOL_KIND_CONTEXTUAL_REACT
+  riffdb.v1.HealthComponentKind values=7
+    0 HEALTH_COMPONENT_KIND_UNSPECIFIED
+    1 HEALTH_COMPONENT_KIND_AUTHORITATIVE_STORAGE
+    2 HEALTH_COMPONENT_KIND_CATALOG
+    3 HEALTH_COMPONENT_KIND_COMMIT_COORDINATOR
+    4 HEALTH_COMPONENT_KIND_PROJECTION
+    5 HEALTH_COMPONENT_KIND_OUTBOX
+    6 HEALTH_COMPONENT_KIND_VECTOR_STALENESS
+  riffdb.v1.HealthComponentStatus values=4
+    0 HEALTH_COMPONENT_STATUS_UNSPECIFIED
+    1 HEALTH_COMPONENT_STATUS_HEALTHY
+    2 HEALTH_COMPONENT_STATUS_DEGRADED
+    3 HEALTH_COMPONENT_STATUS_UNAVAILABLE
+  riffdb.v1.HealthStatus values=4
+    0 HEALTH_STATUS_UNSPECIFIED
+    1 HEALTH_STATUS_READY
+    2 HEALTH_STATUS_NOT_READY
+    3 HEALTH_STATUS_DEGRADED
+  riffdb.v1.LiveQueryResetReason values=6
+    0 LIVE_QUERY_RESET_REASON_UNSPECIFIED
+    1 LIVE_QUERY_RESET_REASON_OUTCOME_CHANGED
+    2 LIVE_QUERY_RESET_REASON_DIFF_LIMIT_EXCEEDED
+    3 LIVE_QUERY_RESET_REASON_DEFINITION_CHANGED
+    4 LIVE_QUERY_RESET_REASON_HISTORY_CHANGED
+    5 LIVE_QUERY_RESET_REASON_CURSOR_EXPIRED
+  riffdb.v1.LiveQueryResultCardinality values=4
+    0 LIVE_QUERY_RESULT_CARDINALITY_UNSPECIFIED
+    1 LIVE_QUERY_RESULT_CARDINALITY_ONE
+    2 LIVE_QUERY_RESULT_CARDINALITY_MAYBE
+    3 LIVE_QUERY_RESULT_CARDINALITY_MANY
+  riffdb.v1.LiveQueryTerminalReason values=7
+    0 LIVE_QUERY_TERMINAL_REASON_UNSPECIFIED
+    1 LIVE_QUERY_TERMINAL_REASON_AUTHORIZATION_CHANGED
+    2 LIVE_QUERY_TERMINAL_REASON_BUFFER_PRESSURE
+    3 LIVE_QUERY_TERMINAL_REASON_LIFETIME_EXPIRED
+    4 LIVE_QUERY_TERMINAL_REASON_SERVICE_UNAVAILABLE
+    5 LIVE_QUERY_TERMINAL_REASON_INTEGRITY_FAILURE
+    6 LIVE_QUERY_TERMINAL_REASON_DEFINITION_CHANGED
+  riffdb.v1.NullValue values=1
+    0 NULL_VALUE
+  riffdb.v1.OfflineMaintenanceFailureClass values=9
+    0 OFFLINE_MAINTENANCE_FAILURE_CLASS_UNSPECIFIED
+    1 OFFLINE_MAINTENANCE_FAILURE_CLASS_QUIESCENCE_FAILED
+    2 OFFLINE_MAINTENANCE_FAILURE_CLASS_ARTIFACT_UNAVAILABLE
+    3 OFFLINE_MAINTENANCE_FAILURE_CLASS_ARTIFACT_INVALID
+    4 OFFLINE_MAINTENANCE_FAILURE_CLASS_STAGED_AUTHORIZATION_FAILED
+    5 OFFLINE_MAINTENANCE_FAILURE_CLASS_STORAGE_UNAVAILABLE
+    6 OFFLINE_MAINTENANCE_FAILURE_CLASS_VALIDATION_FAILED
+    7 OFFLINE_MAINTENANCE_FAILURE_CLASS_RECEIPT_UNAVAILABLE
+    8 OFFLINE_MAINTENANCE_FAILURE_CLASS_INTERNAL_FAILURE
+  riffdb.v1.OfflineMaintenanceOperationKind values=4
+    0 OFFLINE_MAINTENANCE_OPERATION_KIND_UNSPECIFIED
+    1 OFFLINE_MAINTENANCE_OPERATION_KIND_CREATE_BACKUP
+    2 OFFLINE_MAINTENANCE_OPERATION_KIND_RESTORE_BACKUP
+    3 OFFLINE_MAINTENANCE_OPERATION_KIND_RETIRE_BACKUP
+  riffdb.v1.OfflineMaintenancePhase values=8
+    0 OFFLINE_MAINTENANCE_PHASE_UNSPECIFIED
+    1 OFFLINE_MAINTENANCE_PHASE_ACCEPTED
+    2 OFFLINE_MAINTENANCE_PHASE_DRAINING
+    3 OFFLINE_MAINTENANCE_PHASE_OFFLINE
+    4 OFFLINE_MAINTENANCE_PHASE_ARTIFACT_PUBLISHED
+    5 OFFLINE_MAINTENANCE_PHASE_VALIDATING
+    6 OFFLINE_MAINTENANCE_PHASE_SUCCEEDED
+    7 OFFLINE_MAINTENANCE_PHASE_FAILED_CLOSED
+  riffdb.v1.OfflineMaintenanceReplacementConfirmation values=2
+    0 OFFLINE_MAINTENANCE_REPLACEMENT_CONFIRMATION_UNSPECIFIED
+    1 OFFLINE_MAINTENANCE_REPLACEMENT_CONFIRMATION_ALLOW_REPLACE_NONEMPTY_TARGET
+  riffdb.v1.OfflineMaintenanceStartDisposition values=4
+    0 OFFLINE_MAINTENANCE_START_DISPOSITION_UNSPECIFIED
+    1 OFFLINE_MAINTENANCE_START_DISPOSITION_ACCEPTED
+    2 OFFLINE_MAINTENANCE_START_DISPOSITION_ALREADY_ACCEPTED
+    3 OFFLINE_MAINTENANCE_START_DISPOSITION_TERMINAL
+  riffdb.v1.OutboxDeliveryState values=5
+    0 OUTBOX_DELIVERY_STATE_UNSPECIFIED
+    1 OUTBOX_DELIVERY_STATE_PENDING
+    2 OUTBOX_DELIVERY_STATE_RETRY_SCHEDULED
+    3 OUTBOX_DELIVERY_STATE_DELIVERING
+    4 OUTBOX_DELIVERY_STATE_DEAD_LETTER
+  riffdb.v1.PreBootstrapLifecycle values=3
+    0 PRE_BOOTSTRAP_LIFECYCLE_UNSPECIFIED
+    1 PRE_BOOTSTRAP_LIFECYCLE_INITIALIZING_VALIDATION
+    2 PRE_BOOTSTRAP_LIFECYCLE_INITIALIZING_BOOTSTRAP
+  riffdb.v1.ProjectionFailureCode values=7
+    0 PROJECTION_FAILURE_CODE_UNSPECIFIED
+    1 PROJECTION_FAILURE_CODE_ARITHMETIC_OVERFLOW
+    2 PROJECTION_FAILURE_CODE_MALFORMED_DURABLE_EVENT
+    3 PROJECTION_FAILURE_CODE_MISSING_COMMIT
+    4 PROJECTION_FAILURE_CODE_PLAN_OR_SCHEMA_UNAVAILABLE
+    5 PROJECTION_FAILURE_CODE_PROJECTION_STATE_INTEGRITY
+    6 PROJECTION_FAILURE_CODE_HARD_LIMIT_EXCEEDED
+  riffdb.v1.ProjectionLifecycle values=7
+    0 PROJECTION_LIFECYCLE_UNSPECIFIED
+    1 PROJECTION_LIFECYCLE_BUILDING
+    2 PROJECTION_LIFECYCLE_CATCHING_UP
+    3 PROJECTION_LIFECYCLE_READY
+    4 PROJECTION_LIFECYCLE_DEGRADED
+    5 PROJECTION_LIFECYCLE_REBUILDING
+    6 PROJECTION_LIFECYCLE_INVALID
+  riffdb.v1.PublicErrorKind values=13
+    0 PUBLIC_ERROR_KIND_UNSPECIFIED
+    1 PUBLIC_ERROR_KIND_VALIDATION
+    2 PUBLIC_ERROR_KIND_IDEMPOTENCY_KEY_REUSE
+    3 PUBLIC_ERROR_KIND_AUTHORIZATION_DENIED
+    4 PUBLIC_ERROR_KIND_CONCURRENCY_DEADLINE_EXCEEDED
+    5 PUBLIC_ERROR_KIND_CONTRACT_MISMATCH
+    6 PUBLIC_ERROR_KIND_STORAGE_UNAVAILABLE
+    7 PUBLIC_ERROR_KIND_OUTCOME_UNKNOWN
+    8 PUBLIC_ERROR_KIND_INTERNAL_DEFECT
+    9 PUBLIC_ERROR_KIND_COMMAND_EXECUTION_FAILED
+    10 PUBLIC_ERROR_KIND_HISTORY_INCARNATION_MISMATCH
+    12 PUBLIC_ERROR_KIND_HISTORY_PRUNED
+    11 PUBLIC_ERROR_KIND_OVERLOADED
+  riffdb.v1.PublishedApplyMode values=3
+    0 PUBLISHED_APPLY_MODE_UNSPECIFIED
+    1 PUBLISHED_APPLY_MODE_ENABLED
+    2 PUBLISHED_APPLY_MODE_SUSPENDED
+  riffdb.v1.RecoveryAction values=7
+    0 RECOVERY_ACTION_UNSPECIFIED
+    1 RECOVERY_ACTION_CORRECT_REQUEST
+    2 RECOVERY_ACTION_RETRY
+    3 RECOVERY_ACTION_RESOLVE_WITH_SAME_IDEMPOTENCY_KEY
+    4 RECOVERY_ACTION_OBTAIN_PERMISSION
+    5 RECOVERY_ACTION_REFRESH_CONTRACT
+    6 RECOVERY_ACTION_CONTACT_OPERATOR
+  riffdb.v1.ResourceDiscoveryKind values=4
+    0 RESOURCE_DISCOVERY_KIND_UNSPECIFIED
+    1 RESOURCE_DISCOVERY_KIND_ALL
+    2 RESOURCE_DISCOVERY_KIND_CONCRETE
+    3 RESOURCE_DISCOVERY_KIND_TEMPLATE
+  riffdb.v1.RevocationReason values=5
+    0 REVOCATION_REASON_UNSPECIFIED
+    1 REVOCATION_REASON_REQUESTED
+    2 REVOCATION_REASON_REPLACED
+    3 REVOCATION_REASON_SUSPECTED_COMPROMISE
+    4 REVOCATION_REASON_POLICY_CHANGE
+  riffdb.v1.ValidationCode values=9
+    0 VALIDATION_CODE_UNSPECIFIED
+    1 VALIDATION_CODE_MISSING_REQUIRED_VALUE
+    2 VALIDATION_CODE_TYPE_MISMATCH
+    3 VALIDATION_CODE_INVALID_VALUE
+    4 VALIDATION_CODE_OUT_OF_RANGE
+    5 VALIDATION_CODE_TOO_LONG
+    6 VALIDATION_CODE_TOO_MANY_ITEMS
+    7 VALIDATION_CODE_UNKNOWN_FIELD
+    8 VALIDATION_CODE_DUPLICATE_FIELD
+
+services
+  riffdb.app.v1.ApplicationQueryService
+    DescribeContract .riffdb.app.v1.DescribeContractRequest -> .riffdb.app.v1.DescribeContractResponse (unary)
+    GetApplicationCatalog .riffdb.app.v1.GetApplicationCatalogRequest -> .riffdb.app.v1.GetApplicationCatalogResponse (unary)
+    CheckQuery .riffdb.app.v1.CheckQueryRequest -> .riffdb.app.v1.CheckQueryResponse (unary)
+    ExplainQuery .riffdb.app.v1.ExplainQueryRequest -> .riffdb.app.v1.ExplainQueryResponse (unary)
+    ExecuteQuery .riffdb.app.v1.ExecuteQueryRequest -> .riffdb.app.v1.ExecuteQueryResponse (unary)
+    DeployQueryModule .riffdb.app.v1.DeployQueryModuleRequest -> .riffdb.app.v1.DeployQueryModuleResponse (unary)
+    DeployReactiveModule .riffdb.app.v1.DeployReactiveModuleRequest -> .riffdb.app.v1.DeployReactiveModuleResponse (unary)
+    GetQueryModule .riffdb.app.v1.GetQueryModuleRequest -> .riffdb.app.v1.GetQueryModuleResponse (unary)
+    ExecuteProjectedQuery .riffdb.app.v1.ExecuteProjectedQueryRequest -> .riffdb.app.v1.ExecuteProjectedQueryResponse (unary)
+  riffdb.v1.AdminService
+    Health .riffdb.v1.HealthRequest -> .riffdb.v1.HealthResponse (unary)
+    Stats .riffdb.v1.StatsRequest -> .riffdb.v1.StatsResponse (unary)
+    CreateCapability .riffdb.v1.CreateCapabilityRequest -> .riffdb.v1.CreateCapabilityResponse (unary)
+    RevokeCapability .riffdb.v1.RevokeCapabilityRequest -> .riffdb.v1.RevokeCapabilityResponse (unary)
+    ListPendingOutboxDeliveries .riffdb.v1.ListPendingOutboxDeliveriesRequest -> .riffdb.v1.ListPendingOutboxDeliveriesResponse (unary)
+    CreateOfflineBackup .riffdb.v1.CreateOfflineBackupRequest -> .riffdb.v1.CreateOfflineBackupResponse (unary)
+    RestoreOfflineBackup .riffdb.v1.RestoreOfflineBackupRequest -> .riffdb.v1.RestoreOfflineBackupResponse (unary)
+    RetireOfflineBackup .riffdb.v1.RetireOfflineBackupRequest -> .riffdb.v1.RetireOfflineBackupResponse (unary)
+    GetOfflineMaintenanceOperation .riffdb.v1.GetOfflineMaintenanceOperationRequest -> .riffdb.v1.GetOfflineMaintenanceOperationResponse (unary)
+    CheckContractMigration .riffdb.v1.CheckContractMigrationRequest -> .riffdb.v1.CheckContractMigrationResponse (unary)
+    ApplyContractMigration .riffdb.v1.ApplyContractMigrationRequest -> .riffdb.v1.ApplyContractMigrationResponse (unary)
+    GetContractMigrationOperation .riffdb.v1.GetContractMigrationOperationRequest -> .riffdb.v1.GetContractMigrationOperationResponse (unary)
+    StartApplicationInstallation .riffdb.v1.StartApplicationInstallationRequest -> .riffdb.v1.StartApplicationInstallationResponse (unary)
+    GetApplicationInstallation .riffdb.v1.GetApplicationInstallationRequest -> .riffdb.v1.GetApplicationInstallationResponse (unary)
+    StartApplicationExport .riffdb.v1.StartApplicationExportRequest -> .riffdb.v1.StartApplicationExportResponse (unary)
+    GetApplicationExportPage .riffdb.v1.GetApplicationExportPageRequest -> .riffdb.v1.GetApplicationExportPageResponse (unary)
+    GetApplicationExport .riffdb.v1.GetApplicationExportRequest -> .riffdb.v1.GetApplicationExportResponse (unary)
+    CancelApplicationExport .riffdb.v1.CancelApplicationExportRequest -> .riffdb.v1.CancelApplicationExportResponse (unary)
+    StartApplicationReimport .riffdb.v1.StartApplicationReimportRequest -> .riffdb.v1.StartApplicationReimportResponse (unary)
+    ApplyApplicationReimportPage .riffdb.v1.ApplyApplicationReimportPageRequest -> .riffdb.v1.ApplyApplicationReimportPageResponse (unary)
+    GetApplicationReimport .riffdb.v1.GetApplicationReimportRequest -> .riffdb.v1.GetApplicationReimportResponse (unary)
+    CancelApplicationReimport .riffdb.v1.CancelApplicationReimportRequest -> .riffdb.v1.CancelApplicationReimportResponse (unary)
+  riffdb.v1.CommandService
+    Execute .riffdb.v1.ExecuteCommandRequest -> .riffdb.v1.ExecuteCommandResponse (unary)
+    ExecuteBatch .riffdb.v1.ExecuteCommandBatchRequest -> .riffdb.v1.ExecuteCommandBatchResponse (unary)
+    GetOutcome .riffdb.v1.GetOutcomeRequest -> .riffdb.v1.GetOutcomeResponse (unary)
+  riffdb.v1.CommitService
+    GetCommit .riffdb.v1.GetCommitRequest -> .riffdb.v1.GetCommitResponse (unary)
+    ScanCommits .riffdb.v1.ScanCommitsRequest -> .riffdb.v1.ScanCommitsResponse (unary)
+    SubscribeCommits .riffdb.v1.SubscribeCommitsRequest -> .riffdb.v1.CommitNotification (server-streaming)
+    TraceProvenance .riffdb.v1.TraceProvenanceRequest -> .riffdb.v1.TraceProvenanceResponse (unary)
+  riffdb.v1.ContractService
+    ValidateContract .riffdb.v1.ValidateContractRequest -> .riffdb.v1.ValidateContractResponse (unary)
+    ExplainCommand .riffdb.v1.ExplainCommandRequest -> .riffdb.v1.ExplainCommandResponse (unary)
+    DeployContract .riffdb.v1.DeployContractRequest -> .riffdb.v1.DeployContractResponse (unary)
+    GetActiveContract .riffdb.v1.GetActiveContractRequest -> .riffdb.v1.GetActiveContractResponse (unary)
+    GetContractVersion .riffdb.v1.GetContractVersionRequest -> .riffdb.v1.GetContractVersionResponse (unary)
+    DiscoverCommandTools .riffdb.v1.DiscoverCommandToolsRequest -> .riffdb.v1.DiscoverCommandToolsResponse (unary)
+    DiscoverResources .riffdb.v1.DiscoverResourcesRequest -> .riffdb.v1.DiscoverResourcesResponse (unary)
+    GetReactiveWakeup .riffdb.v1.GetReactiveWakeupRequest -> .riffdb.v1.GetReactiveWakeupResponse (unary)
+  riffdb.v1.EventService
+    DescribeEvent .riffdb.v1.DescribeEventRequest -> .riffdb.v1.DescribeEventResponse (unary)
+    ReplayEvents .riffdb.v1.ReplayEventsRequest -> .riffdb.v1.ReplayEventsResponse (unary)
+    TailEvents .riffdb.v1.TailEventsRequest -> .riffdb.v1.TailEventsResponse (unary)
+    ConsumeEventStream .riffdb.v1.ConsumeEventStreamRequest -> .riffdb.v1.ConsumeEventStreamResponse (unary)
+    StreamEventConsumer .riffdb.v1.ConsumeEventStreamRequest -> .riffdb.v1.ConsumeEventStreamResponse (server-streaming)
+    AcknowledgeEventStream .riffdb.v1.AcknowledgeEventStreamRequest -> .riffdb.v1.EventConsumerMutationResponse (unary)
+    NegativeAcknowledgeEventStream .riffdb.v1.NegativeAcknowledgeEventStreamRequest -> .riffdb.v1.EventConsumerMutationResponse (unary)
+    SeekEventStreamConsumer .riffdb.v1.SeekEventStreamConsumerRequest -> .riffdb.v1.EventConsumerMutationResponse (unary)
+    RetireEventStreamConsumer .riffdb.v1.RetireEventStreamConsumerRequest -> .riffdb.v1.EventConsumerMutationResponse (unary)
+    GetEventStreamConsumerStatus .riffdb.v1.GetEventStreamConsumerStatusRequest -> .riffdb.v1.GetEventStreamConsumerStatusResponse (unary)
+    ConsumeContextualSubscription .riffdb.v1.ConsumeContextualSubscriptionRequest -> .riffdb.v1.ConsumeContextualSubscriptionResponse (unary)
+    AcknowledgeContextualSubscription .riffdb.v1.AcknowledgeContextualSubscriptionRequest -> .riffdb.v1.EventConsumerMutationResponse (unary)
+    NegativeAcknowledgeContextualSubscription .riffdb.v1.NegativeAcknowledgeContextualSubscriptionRequest -> .riffdb.v1.EventConsumerMutationResponse (unary)
+    GetContextualSubscriptionStatus .riffdb.v1.GetContextualSubscriptionStatusRequest -> .riffdb.v1.GetEventStreamConsumerStatusResponse (unary)
+    ExecuteContextualReaction .riffdb.v1.ExecuteContextualReactionRequest -> .riffdb.v1.ExecuteCommandResponse (unary)
+  riffdb.v1.QueryService
+    GetEntity .riffdb.v1.GetEntityRequest -> .riffdb.v1.GetEntityResponse (unary)
+    ScanIndex .riffdb.v1.ScanIndexRequest -> .riffdb.v1.ScanIndexResponse (unary)
+    QueryProjection .riffdb.v1.QueryProjectionRequest -> .riffdb.v1.QueryProjectionResponse (unary)
+    GetProjectionStatus .riffdb.v1.GetProjectionStatusRequest -> .riffdb.v1.GetProjectionStatusResponse (unary)
+    WatchNamedQuery .riffdb.v1.WatchNamedQueryRequest -> .riffdb.v1.LiveQueryUpdate (server-streaming)

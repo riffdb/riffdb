@@ -1,0 +1,8 @@
+syntax = "proto3";
+
+package riffdb.testing.v1;
+
+// Transitive test dependency used to freeze descriptor-closure ordering.
+message ProbeSource {
+  string name = 1;
+}

@@ -24,35 +24,35 @@ use riffdb_query_module::{
 use riffdb_types::{TenantId, hash_generated_artifact, hash_source};
 use serde_json::json;
 
-const CONTRACT_TEMPLATE: &str = include_str!("../../../templates/application/contract.riff");
-const QUERY_TEMPLATE: &str = include_str!("../../../templates/application/item_page.riffq");
-const SEED_TEMPLATE: &str = include_str!("../../../templates/application/seed.jsonl");
-const README_TEMPLATE: &str = include_str!("../../../templates/application/README.md");
-const AUTHORING_TEMPLATE: &str = include_str!("../../../templates/application/AUTHORING.md");
-const RUST_MAIN_TEMPLATE: &str = include_str!("../../../templates/application/rust-main.rs");
+const CONTRACT_TEMPLATE: &str = include_str!("../assets/scaffold/application/contract.riff");
+const QUERY_TEMPLATE: &str = include_str!("../assets/scaffold/application/item_page.riffq");
+const SEED_TEMPLATE: &str = include_str!("../assets/scaffold/application/seed.jsonl");
+const README_TEMPLATE: &str = include_str!("../assets/scaffold/application/README.md");
+const AUTHORING_TEMPLATE: &str = include_str!("../assets/scaffold/application/AUTHORING.md");
+const RUST_MAIN_TEMPLATE: &str = include_str!("../assets/scaffold/application/rust-main.rs");
 const TYPESCRIPT_MAIN_TEMPLATE: &str =
-    include_str!("../../../templates/application/typescript-main.ts");
-const GO_MAIN_TEMPLATE: &str = include_str!("../../../templates/application/go-main.go");
-const GO_MOD_TEMPLATE: &str = include_str!("../../../templates/application/go.mod");
-const GO_RUNTIME_SOURCE: &str = include_str!("../../../clients/go/runtime/runtime.go");
-const GO_RUNTIME_MOD: &str = include_str!("../../../clients/go/runtime/go.mod");
-const PYTHON_MAIN_TEMPLATE: &str = include_str!("../../../templates/application/python-main.py");
-const PYPROJECT_TEMPLATE: &str = include_str!("../../../templates/application/pyproject.toml");
-const CARGO_TEMPLATE: &str = include_str!("../../../templates/application/Cargo.toml");
-const CARGO_LOCK_TEMPLATE: &str = include_str!("../../../templates/application/Cargo.lock");
-const PACKAGE_TEMPLATE: &str = include_str!("../../../templates/application/package.json");
+    include_str!("../assets/scaffold/application/typescript-main.ts");
+const GO_MAIN_TEMPLATE: &str = include_str!("../assets/scaffold/application/go-main.go");
+const GO_MOD_TEMPLATE: &str = include_str!("../assets/scaffold/application/go.mod");
+const GO_RUNTIME_SOURCE: &str = include_str!("../assets/scaffold/go-runtime/runtime.go");
+const GO_RUNTIME_MOD: &str = include_str!("../assets/scaffold/go-runtime/go.mod");
+const PYTHON_MAIN_TEMPLATE: &str = include_str!("../assets/scaffold/application/python-main.py");
+const PYPROJECT_TEMPLATE: &str = include_str!("../assets/scaffold/application/pyproject.toml");
+const CARGO_TEMPLATE: &str = include_str!("../assets/scaffold/application/Cargo.toml.asset");
+const CARGO_LOCK_TEMPLATE: &str = include_str!("../assets/scaffold/application/Cargo.lock");
+const PACKAGE_TEMPLATE: &str = include_str!("../assets/scaffold/application/package.json");
 const PACKAGE_LOCK_BASE: &str =
-    include_str!("../../../clients/typescript/runtime/package-lock.json");
-const TSCONFIG_TEMPLATE: &str = include_str!("../../../templates/application/tsconfig.json");
-const GITIGNORE_TEMPLATE: &str = include_str!("../../../templates/application/gitignore");
+    include_str!("../assets/scaffold/typescript-runtime/package-lock.json");
+const TSCONFIG_TEMPLATE: &str = include_str!("../assets/scaffold/application/tsconfig.json");
+const GITIGNORE_TEMPLATE: &str = include_str!("../assets/scaffold/application/gitignore");
 const TYPESCRIPT_RUNTIME_JS: &str =
-    include_str!("../../../clients/typescript/runtime/dist/index.js");
+    include_str!("../assets/scaffold/typescript-runtime/dist/index.js");
 const TYPESCRIPT_RUNTIME_TYPES: &str =
-    include_str!("../../../clients/typescript/runtime/dist/index.d.ts");
+    include_str!("../assets/scaffold/typescript-runtime/dist/index.d.ts");
 const TYPESCRIPT_DRIVER_JS: &str =
-    include_str!("../../../clients/typescript/runtime/dist/driver.js");
+    include_str!("../assets/scaffold/typescript-runtime/dist/driver.js");
 const TYPESCRIPT_DRIVER_TYPES: &str =
-    include_str!("../../../clients/typescript/runtime/dist/driver.d.ts");
+    include_str!("../assets/scaffold/typescript-runtime/dist/driver.d.ts");
 const MAX_APPLICATION_NAME_BYTES: usize = 64;
 const MAX_SCAFFOLD_TOP_LEVEL_ENTRIES: usize = 16;
 const MAX_TYPESCRIPT_TOOLCHAIN_FILES: usize = 16_384;

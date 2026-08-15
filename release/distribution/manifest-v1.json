@@ -1,0 +1,53 @@
+{
+  "schema": "riffdb.driver-distribution-plan/v1",
+  "version": "0.1.0",
+  "status": "alpha",
+  "durable_format": {
+    "path": "release/durable-format-manifest-v1.json",
+    "sha256": "4179c92cf6bbb98e867ed23098a02c544fb1c6a7421010d7bf6cadee9cda863d"
+  },
+  "platforms": [
+    {
+      "target": "aarch64-unknown-linux-gnu",
+      "os": "linux",
+      "arch": "arm64",
+      "goarch": "arm64",
+      "python_tag": "manylinux_2_28_aarch64"
+    },
+    {
+      "target": "x86_64-unknown-linux-gnu",
+      "os": "linux",
+      "arch": "x64",
+      "goarch": "amd64",
+      "python_tag": "manylinux_2_28_x86_64"
+    }
+  ],
+  "packages": {
+    "cli": {
+      "npm": "@riffdb/cli",
+      "pypi": "riffdb-cli",
+      "go": "verified binary installer",
+      "rust": "riffdb-cli"
+    },
+    "runtime": {
+      "npm": "@riffdb/client",
+      "npm_offline_compatibility": "@riffdb/application",
+      "pypi": "riffdb",
+      "pypi_implementation": "riffdb-application",
+      "go": "riffdb.dev/application",
+      "rust": "riffdb-client-rust"
+    }
+  },
+  "signing": {
+    "algorithm": "ssh-ed25519",
+    "namespace": "riffdb-driver-distribution-v1",
+    "signed_file": "checksums.sha256"
+  },
+  "publication": {
+    "registries": ["crates.io", "npm", "proxy.golang.org", "pypi"],
+    "requires_clean_revision": true,
+    "requires_verified_signature": true,
+    "generated_default": "registry imports",
+    "offline_mode": "explicit sealed or offline bundle only"
+  }
+}

@@ -1,0 +1,12 @@
+riffdb-operation-schema-catalog-v1
+hash-scheme=1
+hash-domain=riffdb.schema/v1
+dialect=https://json-schema.org/draft/2020-12/schema
+artifacts=2
+full-catalog-bytes=7742
+identity-catalog-bytes=148
+field=1 name=command_operation_envelope source=crates/riffdb-service/schema/riffdb.command-operation-envelope-v1.schema.json schema_id=riffdb.command-operation-envelope/v1 canonical_bytes=2549 schema_hash=1f83b878c052f53c6eb733b67cd7926fb7ea3729f1d469e0fd9aa8a13f6b44d2
+field=2 name=command_get_outcome_result source=crates/riffdb-service/schema/riffdb.command-get-outcome-result-v1.schema.json schema_id=riffdb.command-get-outcome-result/v1 canonical_bytes=4945 schema_hash=1010f0f3a052aa18636739e2fb79fbaa8bf1911ec0338a3015814b8e3d5a6bc8
+composition_source=fixtures/compiler/schemas/04-00000002.json canonical_bytes=2393 schema_hash=f711c1596dee5a94f03d6b727cc47ebc9a35e6f9a35cd6a84b52cdebd3850f6c
+composition_output=fixtures/proto/operation-schema-composition-allocate-budget-v1.schema.json canonical_bytes=4880 schema_hash=0d8555e0be0947bf59c5b642d84606446b69fe5ec4690451c801321e5c0aaefd
+compiler_bundle_hash=c378308ef865886bb10b9da26515c715b5e9a9fcc9c8737584df6db5bd2e889a

@@ -1,0 +1,95 @@
+#!/usr/bin/env python3
+"""Generate the self-contained riffdb-cli package assets from canonical sources."""
+
+from __future__ import annotations
+
+import argparse
+from pathlib import Path
+import sys
+
+
+ROOT = Path(__file__).resolve().parent.parent
+DESTINATION = ROOT / "crates/riffdb-cli/assets/scaffold"
+APPLICATION_SOURCES = {
+    ("Cargo.toml.asset" if name == "Cargo.toml" else name): ROOT
+    / "templates/application"
+    / name
+    for name in (
+        "AUTHORING.md",
+        "Cargo.lock",
+        "Cargo.toml",
+        "README.md",
+        "contract.riff",
+        "gitignore",
+        "go-main.go",
+        "go.mod",
+        "item_page.riffq",
+        "package.json",
+        "pyproject.toml",
+        "python-main.py",
+        "rust-main.rs",
+        "seed.jsonl",
+        "tsconfig.json",
+        "typescript-main.ts",
+    )
+}
+SOURCES = {
+    **{f"application/{name}": source for name, source in APPLICATION_SOURCES.items()},
+    "go-runtime/go.mod": ROOT / "clients/go/runtime/go.mod",
+    "go-runtime/runtime.go": ROOT / "clients/go/runtime/runtime.go",
+    "typescript-runtime/package-lock.json": ROOT / "clients/typescript/runtime/package-lock.json",
+    "typescript-runtime/dist/index.js": ROOT / "clients/typescript/runtime/dist/index.js",
+    "typescript-runtime/dist/index.d.ts": ROOT / "clients/typescript/runtime/dist/index.d.ts",
+    "typescript-runtime/dist/driver.js": ROOT / "clients/typescript/runtime/dist/driver.js",
+    "typescript-runtime/dist/driver.d.ts": ROOT / "clients/typescript/runtime/dist/driver.d.ts",
+}
+
+
+def expected_files() -> dict[Path, bytes]:
+    return {DESTINATION / relative: source.read_bytes() for relative, source in SOURCES.items()}
+
+
+def check() -> int:
+    expected = expected_files()
+    actual = {
+        path
+        for path in DESTINATION.rglob("*")
+        if path.is_file() and not path.is_symlink()
+    } if DESTINATION.is_dir() else set()
+    if actual != set(expected):
+        print("riffdb-cli package asset inventory is stale", file=sys.stderr)
+        return 1
+    for path, content in expected.items():
+        if path.read_bytes() != content:
+            print(f"riffdb-cli package asset is stale: {path.relative_to(ROOT)}", file=sys.stderr)
+            return 1
+    print(f"riffdb-cli package assets are current ({len(expected)} files).")
+    return 0
+
+
+def write() -> int:
+    expected = expected_files()
+    DESTINATION.mkdir(parents=True, exist_ok=True)
+    for path in sorted(DESTINATION.rglob("*"), reverse=True):
+        if path.is_file() or path.is_symlink():
+            path.unlink()
+        elif path.is_dir():
+            path.rmdir()
+    for path, content in expected.items():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
+    print(f"generated {len(expected)} riffdb-cli package assets")
+    return 0
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    mode = parser.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--check", action="store_true")
+    mode.add_argument("--write", action="store_true")
+    arguments = parser.parse_args()
+    return check() if arguments.check else write()
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

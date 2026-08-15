@@ -1,0 +1,114 @@
+#!/usr/bin/env python3
+"""Validate the closed WP-601 distribution plan and package source identities."""
+
+from __future__ import annotations
+
+import hashlib
+import json
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parent.parent
+PLAN = ROOT / "release/distribution/manifest-v1.json"
+QUICKSTART = ROOT / "fixtures/driver/quickstart-v1.json"
+
+
+def sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def require(condition: bool, message: str) -> None:
+    if not condition:
+        raise SystemExit(f"driver_distribution_invalid: {message}")
+
+
+def main() -> int:
+    plan = json.loads(PLAN.read_text(encoding="utf-8"))
+    require(plan.get("schema") == "riffdb.driver-distribution-plan/v1", "plan schema")
+    require(plan.get("version") == "0.1.0" and plan.get("status") == "alpha", "release identity")
+    durable = plan.get("durable_format", {})
+    durable_path = ROOT / str(durable.get("path", ""))
+    require(durable_path.is_file() and not durable_path.is_symlink(), "durable format path")
+    require(sha256(durable_path) == durable.get("sha256"), "durable format digest")
+    platforms = plan.get("platforms", [])
+    require(
+        [entry.get("target") for entry in platforms]
+        == ["aarch64-unknown-linux-gnu", "x86_64-unknown-linux-gnu"],
+        "platform inventory",
+    )
+    require(len({entry.get("arch") for entry in platforms}) == 2, "platform aliases")
+    packages = plan.get("packages", {})
+    require(
+        packages.get("cli")
+        == {
+            "npm": "@riffdb/cli",
+            "pypi": "riffdb-cli",
+            "go": "verified binary installer",
+            "rust": "riffdb-cli",
+        },
+        "CLI package registry identities",
+    )
+    require(
+        packages.get("runtime")
+        == {
+            "npm": "@riffdb/client",
+            "npm_offline_compatibility": "@riffdb/application",
+            "pypi": "riffdb",
+            "pypi_implementation": "riffdb-application",
+            "go": "riffdb.dev/application",
+            "rust": "riffdb-client-rust",
+        },
+        "runtime package registry identities",
+    )
+    require(
+        plan.get("signing")
+        == {
+            "algorithm": "ssh-ed25519",
+            "namespace": "riffdb-driver-distribution-v1",
+            "signed_file": "checksums.sha256",
+        },
+        "signature contract",
+    )
+    publication = plan.get("publication", {})
+    require(
+        publication.get("registries") == ["crates.io", "npm", "proxy.golang.org", "pypi"]
+        and publication.get("requires_clean_revision") is True
+        and publication.get("requires_verified_signature") is True
+        and publication.get("generated_default") == "registry imports"
+        and publication.get("offline_mode") == "explicit sealed or offline bundle only",
+        "publication policy",
+    )
+
+    story = json.loads(QUICKSTART.read_text(encoding="utf-8"))
+    require(story.get("schema") == "riffdb.driver-quickstart/v1", "quickstart schema")
+    require(
+        story.get("workflow_step_count") == 4
+        and [step.get("id") for step in story.get("workflow", [])]
+        == ["schema", "install", "generate", "query"],
+        "four-step story",
+    )
+    require(
+        sorted(story.get("languages", {})) == ["go", "python", "rust", "typescript"],
+        "quickstart language inventory",
+    )
+
+    typescript = json.loads(
+        (ROOT / "clients/typescript/runtime/package.json").read_text(encoding="utf-8")
+    )
+    require(
+        typescript.get("name") == "@riffdb/application" and typescript.get("private") is True,
+        "sealed TypeScript compatibility package",
+    )
+    python = (ROOT / "clients/python/runtime/pyproject.toml").read_text(encoding="utf-8")
+    require('name = "riffdb-application"' in python, "normative Python implementation name")
+    go = (ROOT / "clients/go/runtime/go.mod").read_text(encoding="utf-8")
+    require(go.startswith("module riffdb.dev/application\n"), "Go module identity")
+    rust = (ROOT / "crates/riffdb-client-rust/Cargo.toml").read_text(encoding="utf-8")
+    require('name = "riffdb-client-rust"' in rust, "Rust crate identity")
+
+    print("WP-601 driver distribution source contract: passed")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

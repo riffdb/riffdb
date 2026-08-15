@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+set -euo pipefail
+umask 077
+
+repo_root="$(git rev-parse --show-toplevel)"
+cd "$repo_root"
+task_tmp_root="${RIFFDB_TMP_ROOT:-$HOME/tmp}"
+mkdir -p "$task_tmp_root"
+export RIFFDB_TMP_ROOT="$task_tmp_root"
+work_root="$(mktemp -d "$task_tmp_root/riffdb-driver-distribution-acceptance.XXXXXX")"
+trap 'rm -rf "$work_root"' EXIT
+
+case "$(uname -m)" in
+    x86_64) target=x86_64-unknown-linux-gnu ;;
+    aarch64) target=aarch64-unknown-linux-gnu ;;
+    *) echo 'driver distribution acceptance requires a supported Linux architecture' >&2; exit 1 ;;
+esac
+
+cargo +1.97.0 build --release --locked -p riffdb-cli
+
+python_wheel="${RIFFDB_APPLICATION_WHEEL:-}"
+if [[ -z "$python_wheel" ]]; then
+    RIFFDB_PYTHON_COMPATIBILITY=manylinux_2_28 \
+        ./scripts/build-python-distribution "$work_root/python"
+    python_wheel="$(find "$work_root/python" -maxdepth 1 -type f \
+        -name 'riffdb_application-0.1.0-cp313-abi3-*.whl' -print -quit)"
+fi
+[[ "$python_wheel" == /* && -f "$python_wheel" && ! -L "$python_wheel" ]] || {
+    echo 'driver distribution acceptance Python wheel is absent or unsafe' >&2
+    exit 1
+}
+
+./scripts/build-driver-distributions \
+    --output "$work_root/distribution" \
+    --binary-dir "$repo_root/target/release" \
+    --python-wheel "$python_wheel" \
+    --target "$target" \
+    --allow-dirty
+
+mkdir "$work_root/signing"
+ssh-keygen -q -t ed25519 -N '' -C wp601-acceptance -f "$work_root/signing/key"
+printf 'wp601-acceptance namespaces="riffdb-driver-distribution-v1" %s\n' \
+    "$(ssh-keygen -y -f "$work_root/signing/key")" \
+    >"$work_root/signing/allowed-signers"
+./scripts/sign-driver-distributions --key "$work_root/signing/key" "$work_root/distribution"
+./scripts/verify-driver-distributions \
+    --allowed-signers "$work_root/signing/allowed-signers" \
+    --identity wp601-acceptance \
+    "$work_root/distribution"
+RIFFDB_ARRIVAL_TARGET_DIR="${RIFFDB_ARRIVAL_TARGET_DIR:-$work_root/cargo-target}" \
+    ./scripts/driver-package-arrival \
+    --distribution "$work_root/distribution" \
+    --allowed-signers "$work_root/signing/allowed-signers" \
+    --identity wp601-acceptance \
+    --receipt "$work_root/package-arrival.json"
+
+printf '%s\n' 'WP-601 signed four-ecosystem package arrival: passed'

@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+set -euo pipefail
+umask 077
+
+usage() {
+    printf '%s\n' 'usage: sign-driver-distributions --key PRIVATE_KEY ABSOLUTE_DISTRIBUTION_DIRECTORY' >&2
+}
+
+key=
+if [[ "${1:-}" == --key && $# -eq 3 ]]; then
+    key="$2"
+    distribution="$3"
+else
+    usage
+    exit 2
+fi
+[[ "$key" == /* && -f "$key" && ! -L "$key" ]] || {
+    echo 'signing key must be an absolute regular file' >&2
+    exit 2
+}
+[[ "$distribution" == /* && -d "$distribution" && ! -L "$distribution" ]] || {
+    echo 'distribution must be an absolute real directory' >&2
+    exit 2
+}
+checksums="$distribution/checksums.sha256"
+[[ -f "$checksums" && ! -L "$checksums" ]] || {
+    echo 'distribution checksum inventory is absent or unsafe' >&2
+    exit 1
+}
+signature="$checksums.sig"
+[[ ! -e "$signature" ]] || {
+    echo 'distribution signature already exists' >&2
+    exit 1
+}
+ssh-keygen -Y sign -f "$key" -n riffdb-driver-distribution-v1 "$checksums" >/dev/null
+[[ -f "$signature" && ! -L "$signature" ]] || {
+    echo 'ssh-keygen did not publish the expected signature' >&2
+    exit 1
+}
+chmod 0644 "$signature"
+printf 'signed %s\n' "$checksums"

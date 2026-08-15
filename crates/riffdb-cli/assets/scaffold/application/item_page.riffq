@@ -1,0 +1,17 @@
+query ItemPage(
+    $item_id: Item.item_id,
+) {
+    one item from Item
+        where item_id == $item_id
+        else NotFound
+
+    return Found {
+        item: item {
+            item_id
+            title
+            created_at
+        }
+    }
+
+    outcomes Found | NotFound
+}

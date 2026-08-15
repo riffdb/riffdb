@@ -7,6 +7,7 @@
 - [What RiffDB Is](getting-started/WHAT-IS-RIFFDB.md)
 - [Why RiffDB Exists](VISION.md)
 - [Installation](installation.md)
+- [Driver and CLI Packages](getting-started/PACKAGE-INSTALLATION.md)
 - [Your First Application](getting-started/FIRST-APPLICATION.md)
 - [Database-Shaped Project Workflow](getting-started/DATABASE-WORKFLOW.md)
 - [Agent Database Quickstart](getting-started/AGENT-DATABASE-QUICKSTART.md)
@@ -93,6 +94,7 @@
 - [Deployable Application Alpha Plan](architecture/DEPLOYABLE-APPLICATION-ALPHA.md)
   - [Alpha Architecture Freeze](architecture/DEPLOYABLE-APPLICATION-ALPHA-FREEZE.md)
   - [WP-598 Framework Profile Verification](architecture/WP-598-FRAMEWORK-PROFILE-VERIFICATION.md)
+  - [WP-608 Mixed Command-History Audit](architecture/WP-608-MIXED-COMMAND-HISTORY-AUDIT.md)
 
 # Performance
 

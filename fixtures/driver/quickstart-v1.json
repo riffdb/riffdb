@@ -1,0 +1,50 @@
+{
+  "schema": "riffdb.driver-quickstart/v1",
+  "version": "0.1.0",
+  "workflow_step_count": 4,
+  "workflow": [
+    {
+      "id": "schema",
+      "command": "riffdb init inventory --generator {language}",
+      "description": "Declare the selected generated client and author the symbolic schema and bounded named operations."
+    },
+    {
+      "id": "install",
+      "command": "riffdb push",
+      "description": "Compile, lock, and install through the exact change-review ceremony only when compiler-owned identity changes."
+    },
+    {
+      "id": "generate",
+      "command": "riffdb generate",
+      "description": "Materialize the selected typed client from the exact lock."
+    },
+    {
+      "id": "query",
+      "command": "{language_query_command}",
+      "description": "Invoke only generated named operations through the first-party runtime."
+    }
+  ],
+  "languages": {
+    "go": {
+      "tools": "verified RiffDB binary installer",
+      "runtime": "go get riffdb.dev/application@v0.1.0",
+      "language_query_command": "go run ."
+    },
+    "python": {
+      "tools": "pip install riffdb-cli==0.1.0",
+      "runtime": "pip install riffdb==0.1.0",
+      "language_query_command": "python -m inventory"
+    },
+    "rust": {
+      "tools": "cargo install riffdb-cli --version 0.1.0 --locked",
+      "runtime": "cargo add riffdb-client-rust@0.1.0",
+      "language_query_command": "cargo run"
+    },
+    "typescript": {
+      "tools": "npm install --save-dev @riffdb/cli@0.1.0",
+      "runtime": "npm install @riffdb/client@0.1.0",
+      "language_query_command": "npm start"
+    }
+  },
+  "offline_compatibility": "Sealed and explicitly offline bundles retain vendored @riffdb/application, riffdb-application, riffdb.dev/application, and the source-contained Rust SDK."
+}

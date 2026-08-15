@@ -1,0 +1,8 @@
+riffdb-vector-wire-boundaries-v1
+packed-4096 packed 4096 accepted-vector
+unpacked-4096 unpacked 4096 accepted-vector
+packed-4097 packed 4097 preflight-limit
+unpacked-4097 unpacked 4097 preflight-limit
+malformed-packed literal 7a050a03000000 malformed
+duplicate-oneof literal 7a060a04000000000800 malformed
+field-16-unknown literal 0800820104ffffffff accepted-null

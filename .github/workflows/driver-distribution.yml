@@ -1,0 +1,104 @@
+name: Driver distribution
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: riffdb-driver-distribution-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_INCREMENTAL: "0"
+  SOURCE_DATE_EPOCH: "1735689600"
+  RIFFDB_TMP_ROOT: ${{ github.workspace }}/target/wp601-tmp
+  RIFFDB_ARRIVAL_TARGET_DIR: ${{ github.workspace }}/target/wp601-arrival
+
+jobs:
+  package-arrival:
+    name: signed package arrival (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.97.0 --profile minimal
+      - name: Install Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "26.7.0"
+      - name: Install Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.14"
+      - name: Verify runner Go toolchain
+        shell: bash
+        run: |
+          go version
+          [[ "$(go env GOVERSION)" =~ ^go1\.(2[4-9]|[3-9][0-9])([.].*)?$ ]]
+      - name: Build native CLI
+        run: cargo +1.97.0 build --release --locked -p riffdb-cli
+      - name: Build pinned manylinux Python runtime
+        uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1
+        with:
+          command: build
+          maturin-version: v1.14.1
+          rust-toolchain: 1.97.0
+          target: ${{ matrix.target }}
+          manylinux: 2_28
+          working-directory: clients/python/runtime
+          args: --release --locked --compatibility pypi --out ../../../target/wp601-python
+      - name: Build unsigned distribution
+        shell: bash
+        run: |
+          wheel="$(find target/wp601-python -maxdepth 1 -type f -name 'riffdb_application-0.1.0-*.whl' -print -quit)"
+          [[ -n "$wheel" ]]
+          ./scripts/build-driver-distributions \
+            --output "$GITHUB_WORKSPACE/target/wp601-distribution" \
+            --binary-dir "$GITHUB_WORKSPACE/target/release" \
+            --python-wheel "$GITHUB_WORKSPACE/$wheel" \
+            --target "${{ matrix.target }}"
+      - name: Exercise detached signing ceremony
+        shell: bash
+        run: |
+          mkdir -p "$RIFFDB_TMP_ROOT/signing"
+          ssh-keygen -q -t ed25519 -N '' -C wp601-ci -f "$RIFFDB_TMP_ROOT/signing/key"
+          printf 'wp601-ci namespaces="riffdb-driver-distribution-v1" %s\n' \
+            "$(ssh-keygen -y -f "$RIFFDB_TMP_ROOT/signing/key")" \
+            >"$RIFFDB_TMP_ROOT/signing/allowed-signers"
+          ./scripts/sign-driver-distributions \
+            --key "$RIFFDB_TMP_ROOT/signing/key" \
+            "$GITHUB_WORKSPACE/target/wp601-distribution"
+          ./scripts/verify-driver-distributions \
+            --allowed-signers "$RIFFDB_TMP_ROOT/signing/allowed-signers" \
+            --identity wp601-ci \
+            "$GITHUB_WORKSPACE/target/wp601-distribution"
+      - name: Prove clean package arrival
+        run: |
+          ./scripts/driver-package-arrival \
+            --distribution "$GITHUB_WORKSPACE/target/wp601-distribution" \
+            --allowed-signers "$RIFFDB_TMP_ROOT/signing/allowed-signers" \
+            --identity wp601-ci \
+            --receipt "$GITHUB_WORKSPACE/target/wp601-package-arrival.json"
+      - name: Upload checked distribution
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: riffdb-driver-distribution-${{ matrix.arch }}
+          path: |
+            target/wp601-distribution/**
+            target/wp601-package-arrival.json
+          if-no-files-found: error

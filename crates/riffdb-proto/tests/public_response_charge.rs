@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 
 const PUBLIC: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../fixtures/proto/public-response-charge-v1.tsv"
+    "/fixtures/public-response-charge-v1.tsv"
 ));
 const SERVICE: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),

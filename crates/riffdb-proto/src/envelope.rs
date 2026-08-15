@@ -778,15 +778,15 @@ mod tests {
     const OTHER_RECORD_TYPE: &str = "riffdb.testing.v1.OtherProbe";
     const DESCRIPTOR: &[u8] = include_bytes!(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../fixtures/proto/descriptors/compatibility-probe-descriptor-set.bin"
+        "/fixtures/descriptors/compatibility-probe-descriptor-set.bin"
     ));
     const PROBE_PAYLOAD: &[u8] = include_bytes!(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../fixtures/proto/compatibility-probe-payload.bin"
+        "/fixtures/compatibility-probe-payload.bin"
     ));
     const PROBE_ENVELOPE: &[u8] = include_bytes!(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../fixtures/proto/compatibility-probe-envelope.bin"
+        "/fixtures/compatibility-probe-envelope.bin"
     ));
     const EXPECTED_SCHEMA_HASH: [u8; 32] = [
         0xbd, 0x08, 0xb5, 0x3d, 0x75, 0xaa, 0xd9, 0xe6, 0x03, 0xc4, 0xa9, 0x38, 0x2d, 0x0f, 0x1a,

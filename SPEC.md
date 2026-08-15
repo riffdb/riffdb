@@ -6,7 +6,7 @@
 **Tagline:** *Vibe fast. Commit safely.*  
 **Category:** Contract-first operational database for agent-built applications  
 
-**Version:** 0.96
+**Version:** 0.97
 **Status:** Deployable Application Alpha architecture accepted; implementation gated by work packages
 **Date:** 9 August 2026
 **Audience:** Coding agents, database engineers, compiler engineers, security reviewers, and technical product leads  
@@ -37,6 +37,7 @@
 
 | Version | Date | Summary |
 |---|---|---|
+| 0.97 | 2026-08-14 | Applied accepted ADR-0120 and registered DX-026 through DX-036 for signed four-ecosystem package distribution, registry-first generated applications with an explicit sealed/offline path, one pinned four-step workflow, artifact-only package-arrival proof, cross-driver conformance and sealed campaign 03, and compiler-backed bounded editor tooling shipped with the CLI. |
 | 0.96 | 2026-08-14 | Applied ADR-0118 Amendment 1 and registered SECF-006: secret classification is sticky across compiler-visible contract flows, and every intentional disclosure into a non-secret entity field, durable event field, or command outcome field requires an exact source-naming `reveals` annotation carried through syntax, versioned executable IR, bundle identity, catalogs, diagnostics, and compatibility fixtures. Accepted ADR-0122 and registered DX-021 through DX-025 for repository-local agent rails, the additive authorization-filtered application guidance MCP resource, hosted/stdio parity, and single-source generated teaching artifacts. |
 | 0.95 | 2026-08-14 | Accepted ADR-0121 and registered DX-013 through DX-020 for the database-shaped project workflow: truthful domain-empty initialization, a zero-query structural module with no roles or authority, bounded `riffdb.toml`, selected local SDK materialization over one complete exact lock, ceremony only for changed compiler-owned identity, staged migration routing, and read-only installed-versus-local observation without changing existing application verbs or persistent encodings. |
 | 0.94 | 2026-08-14 | Amended ADR-0050 and registered END-011/WP-610 after the installed endurance rehearsal exposed unreceipted immutable-backup deletion: backup retention now uses one authorized public retirement operation whose V2 receipt binds the exact succeeded create receipt and manifest, permanently consumes the name, recovers every checked rename/delete crash state, and is the sole proof permitting an otherwise-published backup artifact to be absent. |
@@ -471,6 +472,68 @@ storage detail. Hosted and stdio transports MUST use the same renderer.
 agent quickstart MUST be generated from one bounded in-repository source and
 refereed by `scripts/check-generated`. WP-603 owns package-ready canonical
 assets; ecosystem package placement remains owned by WP-601.
+
+`DX-026` One pre-1.0 release identity MUST define a closed platform matrix and
+exact CLI/runtime package names for Rust, Go, TypeScript, and Python. Package
+resolution MUST refuse an unsupported target rather than select a nearby
+binary, and every package MUST remain a delivery vessel over the first-party
+Rust trust and semantics boundary.
+
+`DX-027` Every native release cell MUST publish one bounded artifact inventory,
+SHA-256 checksum inventory, and detached signature under a fixed namespace.
+Signing authority and registry credentials MUST remain outside build artifacts,
+package metadata, logs, and receipts; installation MUST verify the selected
+binary before atomic publication.
+
+`DX-028` Normal generated applications MUST pair with the exact registry runtime
+for their selected language and MUST NOT copy transport semantics into the
+application. Existing vendored TypeScript, Python, Go, and Rust runtimes MAY be
+retained only as an explicit sealed/offline compatibility mode with identical
+application identity, authorization, and execution semantics.
+
+`DX-029` All four ecosystems MUST publish one canonical four-step onboarding
+story: domain schema initialization, exact installation, selected binding
+generation, and one generated named operation. Its ordered step count, package
+commands, and language inventory MUST be generated from one bounded fixture and
+MUST be pinned by conformance tests.
+
+`DX-030` A release cell MUST NOT qualify from a source-tree build alone. One
+artifact-only package-arrival referee MUST verify its signature, install the
+native CLI, npm CLI/runtime, Python CLI/runtime, Go module, and Rust CLI/runtime
+from package artifacts or local registry mirrors, and compile or import each
+without a repository source path.
+
+`DX-031` The same exact application schema generated for Rust, Go, TypeScript,
+and Python MUST agree on operation identity, typed outcomes, idempotent replay,
+and stable public-error classification through the application boundary. A
+language-specific transport, numeric compiler identity, or handwritten wire
+adapter MUST fail conformance.
+
+`DX-032` Agent-application campaign 03 MUST begin in empty directories from the
+qualified package distribution rather than a repository checkout. Every sealed
+run MUST record time to first committed row, identity-change ceremony count,
+rescue count, kernel-boundary attempts, and the final rating in one verified
+campaign receipt.
+
+`DX-033` The checked-in `.riff` and `.riffq` tree-sitter grammars MUST be
+generated from or checked against the authoritative language sources and a
+bounded snapshot corpus. Highlighting grammar acceptance MUST NOT define or
+widen compiler acceptance.
+
+`DX-034` `riffdb lsp` diagnostics MUST invoke the compiler-owned check path and
+return the same primary code, safe message, and source span as the corresponding
+CLI check. Cancellation and malformed protocol input MUST remain bounded and
+MUST NOT publish files or database state.
+
+`DX-035` LSP hover, definition, and completion responses MUST derive only from
+the bounded local compiled schema, name exact visible symbols and types, and
+enforce finite request, response, file, traversal, and diagnostic limits. The
+LSP MUST expose no database authority or runtime mutation surface.
+
+`DX-036` The same signed CLI packages MUST carry `riffdb lsp`, the exact grammar
+assets, and an editor-agnostic launch contract. Any editor extension remains a
+thin client and MUST NOT contain a second parser, compiler, authorization path,
+or application transport implementation.
 
 ## 4.4 Additive contract evolution
 

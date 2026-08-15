@@ -46,11 +46,11 @@ pub use value::*;
 /// Source-info-stripped, path-sorted descriptors for all current production schemas.
 pub const PRODUCTION_FILE_DESCRIPTOR_SET: &[u8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../fixtures/proto/descriptors/riffdb-v1-descriptor-set.bin"
+    "/fixtures/descriptors/riffdb-v1-descriptor-set.bin"
 ));
 
 /// Source-info-stripped descriptors for the nine durable v1 schema sources.
 pub const STORAGE_FILE_DESCRIPTOR_SET: &[u8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../fixtures/proto/descriptors/riffdb-storage-v1-descriptor-set.bin"
+    "/fixtures/descriptors/riffdb-storage-v1-descriptor-set.bin"
 ));

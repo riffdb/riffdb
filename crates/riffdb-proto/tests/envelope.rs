@@ -7,7 +7,7 @@ use riffdb_proto::envelope::{
 
 const PROBE_ENVELOPE: &[u8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../fixtures/proto/compatibility-probe-envelope.bin"
+    "/fixtures/compatibility-probe-envelope.bin"
 ));
 
 #[test]

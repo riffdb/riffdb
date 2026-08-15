@@ -8,7 +8,7 @@ use riffdb_proto::{
 
 const VECTORS: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../fixtures/proto/wire-vectors.txt"
+    "/fixtures/wire-vectors.txt"
 ));
 
 fn decode_hex(value: &str) -> Vec<u8> {
