@@ -1,0 +1,20 @@
+{
+  "name": "riffdb",
+  "displayName": "RiffDB",
+  "description": "Thin client for the compiler-backed RiffDB language server",
+  "version": "0.1.0",
+  "license": "MIT OR Apache-2.0",
+  "engines": {"vscode": "^1.95.0"},
+  "categories": ["Programming Languages"],
+  "activationEvents": ["onLanguage:riff", "onLanguage:riffql"],
+  "main": "./dist/extension.js",
+  "scripts": {"compile": "tsc -p ."},
+  "contributes": {
+    "languages": [
+      {"id": "riff", "aliases": ["RiffDB Contract", "riff"], "extensions": [".riff"], "configuration": "./language-configuration.json"},
+      {"id": "riffql", "aliases": ["RiffQL", "riffql"], "extensions": [".riffq"], "configuration": "./language-configuration.json"}
+    ]
+  },
+  "dependencies": {"vscode-languageclient": "9.0.1"},
+  "devDependencies": {"@types/node": "22.15.3", "@types/vscode": "1.95.0", "typescript": "5.8.3"}
+}

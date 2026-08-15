@@ -1,0 +1,11 @@
+{
+  "grammars": [{
+    "name": "riffql",
+    "camelcase": "Riffql",
+    "scope": "source.riffql",
+    "path": ".",
+    "file-types": ["riffq"],
+    "highlights": "queries/highlights.scm"
+  }],
+  "metadata": {"version": "0.1.0", "license": "MIT OR Apache-2.0"}
+}

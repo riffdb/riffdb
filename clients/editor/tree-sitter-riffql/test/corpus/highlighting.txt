@@ -1,0 +1,21 @@
+==================
+RiffQL highlighting tokens
+==================
+
+query List() { return Found {} outcomes Found }
+
+---
+
+(source_file
+  (keyword)
+  (identifier)
+  (punctuation)
+  (punctuation)
+  (punctuation)
+  (keyword)
+  (identifier)
+  (punctuation)
+  (punctuation)
+  (keyword)
+  (identifier)
+  (punctuation))

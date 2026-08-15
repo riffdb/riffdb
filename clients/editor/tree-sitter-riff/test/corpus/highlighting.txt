@@ -1,0 +1,15 @@
+==================
+Contract highlighting tokens
+==================
+
+contract Desk version 1 {}
+
+---
+
+(source_file
+  (keyword)
+  (identifier)
+  (keyword)
+  (number)
+  (punctuation)
+  (punctuation))

@@ -23,6 +23,8 @@ pub(crate) struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub(crate) enum TopLevel {
+    /// Starts the bounded compiler-backed Language Server Protocol service on stdio.
+    Lsp,
     /// Initializes RiffDB schema files in a new or existing project.
     Init {
         #[arg(value_name = "APPLICATION")]

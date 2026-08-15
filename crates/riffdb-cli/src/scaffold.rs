@@ -1531,10 +1531,19 @@ fn contract_diagnostic(
     path: &str,
     error: &riffdb_contract_compiler::CompilationError,
 ) -> ScaffoldError {
+    contract_authoring_diagnostics(path, error)
+        .map_or(ScaffoldError::CompileContract, ScaffoldError::Authoring)
+}
+
+/// Converts one compiler-owned contract failure through the exact authoring
+/// diagnostic path shared by push/check and the local LSP surface.
+pub(crate) fn contract_authoring_diagnostics(
+    path: &str,
+    error: &riffdb_contract_compiler::CompilationError,
+) -> Option<AuthoringDiagnostics> {
     AuthoringSourcePath::new(path)
         .ok()
         .and_then(|path| AuthoringDiagnostics::from_contract(path, error).ok())
-        .map_or(ScaffoldError::CompileContract, ScaffoldError::Authoring)
 }
 
 fn query_diagnostic(path: &str, error: &riffdb_query_module::QueryModuleError) -> ScaffoldError {

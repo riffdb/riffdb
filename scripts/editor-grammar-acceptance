@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(git rev-parse --show-toplevel)"
+cd "$repo_root"
+task_tmp_root="${RIFFDB_TMP_ROOT:-$HOME/tmp}"
+mkdir -p "$task_tmp_root"
+export TMPDIR="$task_tmp_root"
+check_root="$(mktemp -d "$task_tmp_root/riffdb-editor-grammar.XXXXXX")"
+trap 'rm -rf "$check_root"' EXIT
+mkdir "$check_root/home" "$check_root/config" "$check_root/cache"
+export HOME="$check_root/home"
+export XDG_CONFIG_HOME="$check_root/config"
+export XDG_CACHE_HOME="$check_root/cache"
+
+cp -a clients/editor/tree-sitter-riff "$check_root/riff"
+cp -a clients/editor/tree-sitter-riffql "$check_root/riffql"
+cp -a clients/editor/vscode-riffdb "$check_root/vscode"
+
+run_tree_sitter() {
+    if [[ -n "${RIFFDB_TREE_SITTER_BIN:-}" ]]; then
+        "$RIFFDB_TREE_SITTER_BIN" "$@"
+    elif command -v tree-sitter >/dev/null 2>&1; then
+        tree-sitter "$@"
+    else
+        npm_config_cache="$task_tmp_root/npm-cache" \
+            npx --yes tree-sitter-cli@0.25.10 "$@"
+    fi
+}
+
+for grammar in riff riffql; do
+    (
+        cd "$check_root/$grammar"
+        run_tree_sitter generate
+        run_tree_sitter test
+    )
+done
+
+(
+    cd "$check_root/vscode"
+    npm_config_cache="$task_tmp_root/npm-cache" \
+        npm ci --silent --ignore-scripts --no-audit --no-fund
+    npm run --silent compile
+)
+
+./scripts/generate-editor-grammars --check
+printf '%s\n' 'WP-605 Tree-sitter grammars and highlight snapshots: passed'

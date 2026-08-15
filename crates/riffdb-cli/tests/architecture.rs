@@ -7,7 +7,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
 
-const DIRECT_DEPENDENCIES: [&str; 18] = [
+const DIRECT_DEPENDENCIES: [&str; 20] = [
     "base64",
     "clap",
     // WP-568 canonical installation plans are decoded at the operator boundary.
@@ -17,8 +17,11 @@ const DIRECT_DEPENDENCIES: [&str; 18] = [
     "riffdb-config",
     "riffdb-contract-compiler",
     "riffdb-contract-ir",
+    // ADR-0120 confines editor navigation to the authoritative local parsers.
+    "riffdb-contract-syntax",
     "riffdb-diagnostics",
     "riffdb-query-module",
+    "riffdb-riffql-syntax",
     // Offline exclusive retention verbs (ADR-0085 A2) bind a closed database file.
     "riffdb-storage-redb",
     "riffdb-types",
@@ -38,8 +41,10 @@ const EXACT_DEPENDENCY_ROWS: &str = concat!(
     "riffdb-config = { version = \"0.1.0\", path = \"../riffdb-config\", default-features = false }\n",
     "riffdb-contract-compiler = { version = \"0.1.0\", path = \"../riffdb-contract-compiler\", default-features = false }\n",
     "riffdb-contract-ir = { version = \"0.1.0\", path = \"../riffdb-contract-ir\", default-features = false }\n",
+    "riffdb-contract-syntax = { version = \"0.1.0\", path = \"../riffdb-contract-syntax\", default-features = false }\n",
     "riffdb-diagnostics = { version = \"0.1.0\", path = \"../riffdb-diagnostics\", default-features = false }\n",
     "riffdb-query-module = { version = \"0.1.0\", path = \"../riffdb-query-module\", default-features = false }\n",
+    "riffdb-riffql-syntax = { version = \"0.1.0\", path = \"../riffdb-riffql-syntax\", default-features = false }\n",
     "riffdb-storage-redb = { version = \"0.1.0\", path = \"../riffdb-storage-redb\", default-features = false }\n",
     "riffdb-types = { version = \"0.1.0\", path = \"../riffdb-types\", default-features = false }\n",
     "serde = { version = \"=1.0.229\", default-features = false, features = [\"derive\", \"std\"] }\n",

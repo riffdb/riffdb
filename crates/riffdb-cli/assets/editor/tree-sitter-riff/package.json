@@ -1,0 +1,8 @@
+{
+  "name": "tree-sitter-riff",
+  "version": "0.1.0",
+  "description": "Non-authoritative Tree-sitter highlighting grammar for RiffDB contracts",
+  "license": "MIT OR Apache-2.0",
+  "files": ["grammar.js", "keywords.json", "queries", "tree-sitter.json"],
+  "tree-sitter": [{"scope": "source.riff", "file-types": ["riff"], "highlights": "queries/highlights.scm"}]
+}

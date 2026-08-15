@@ -48,6 +48,84 @@ actual="$(sha256sum "$source_path" | awk '{print $1}')"
     exit 1
 }
 
+editor_files=(
+    highlights-v1.json
+    tree-sitter-riff/grammar.js
+    tree-sitter-riff/keywords.json
+    tree-sitter-riff/package.json
+    tree-sitter-riff/queries/highlights.scm
+    tree-sitter-riff/tree-sitter.json
+    tree-sitter-riffql/grammar.js
+    tree-sitter-riffql/keywords.json
+    tree-sitter-riffql/package.json
+    tree-sitter-riffql/queries/highlights.scm
+    tree-sitter-riffql/tree-sitter.json
+)
+editor_source="$distribution/share/riffdb/editor"
+for relative in "${editor_files[@]}"; do
+    asset="$editor_source/$relative"
+    checksum_path="share/riffdb/editor/$relative"
+    [[ -f "$asset" && ! -L "$asset" ]] || {
+        echo 'RiffDB editor grammar asset is absent or unsafe' >&2
+        exit 1
+    }
+    expected_asset="$(awk -v path="$checksum_path" '$2 == path { print $1 }' "$distribution/checksums.sha256")"
+    [[ "$expected_asset" =~ ^[0-9a-f]{64}$ ]] || {
+        echo 'RiffDB editor grammar asset is absent from the signed checksum inventory' >&2
+        exit 1
+    }
+    actual_asset="$(sha256sum "$asset" | awk '{print $1}')"
+    [[ "$actual_asset" == "$expected_asset" ]] || {
+        echo 'RiffDB editor grammar asset checksum does not match' >&2
+        exit 1
+    }
+done
+
+editor_destination="$prefix/share/riffdb/editor"
+if [[ -e "$editor_destination" ]]; then
+    [[ -d "$editor_destination" && ! -L "$editor_destination" ]] || {
+        echo 'destination editor asset path is unsafe' >&2
+        exit 1
+    }
+    [[ "$(find "$editor_destination" -type f | wc -l)" -eq "${#editor_files[@]}" ]] \
+        && [[ -z "$(find "$editor_destination" -type l -print -quit)" ]] || {
+        echo 'installed editor asset inventory is not exact' >&2
+        exit 1
+    }
+    for relative in "${editor_files[@]}"; do
+        [[ -f "$editor_destination/$relative" && ! -L "$editor_destination/$relative" ]] || {
+            echo 'installed editor asset inventory is incomplete' >&2
+            exit 1
+        }
+        cmp -s "$editor_source/$relative" "$editor_destination/$relative" || {
+            echo 'installed editor asset differs from the signed distribution' >&2
+            exit 1
+        }
+    done
+else
+    for directory in "$prefix/share" "$prefix/share/riffdb"; do
+        if [[ -e "$directory" ]]; then
+            [[ -d "$directory" && ! -L "$directory" ]] || {
+                echo 'destination share path is unsafe' >&2
+                exit 1
+            }
+        else
+            mkdir "$directory"
+        fi
+    done
+    editor_pending="$prefix/share/riffdb/.editor.$$.pending"
+    trap 'rm -rf "$editor_pending"' EXIT INT TERM
+    mkdir "$editor_pending"
+    for relative in "${editor_files[@]}"; do
+        mkdir -p "$editor_pending/$(dirname "$relative")"
+        install -m 0644 "$editor_source/$relative" "$editor_pending/$relative"
+    done
+    mv "$editor_pending" "$editor_destination"
+    trap - EXIT INT TERM
+fi
+
+# Publish the executable last. A malformed or conflicting editor destination
+# must fail before an existing CLI binary is replaced.
 mkdir -p "$prefix/bin"
 [[ -d "$prefix/bin" && ! -L "$prefix/bin" ]] || {
     echo 'destination bin path is unsafe' >&2
@@ -58,4 +136,6 @@ trap 'rm -f "$pending"' EXIT INT TERM
 install -m 0755 "$source_path" "$pending"
 mv -f "$pending" "$prefix/bin/riffdb"
 trap - EXIT INT TERM
-printf 'installed riffdb %s at %s\n' "$target" "$prefix/bin/riffdb"
+
+printf 'installed riffdb %s at %s with editor assets at %s\n' \
+    "$target" "$prefix/bin/riffdb" "$editor_destination"

@@ -12265,7 +12265,7 @@ work_packages:
   required_adrs: [ADR-0002, ADR-0120]
   allowed_paths: [work_packages.yaml, SPEC.md, docs/**, fixtures/**, crates/riffdb-cli/**,
     crates/riffdb-contract-syntax/**, crates/riffdb-contract-compiler/**, clients/**,
-    scripts/**]
+    scripts/**, release/distribution/**]
   deliverables:
   - Tree-sitter grammar with a snapshot corpus over the language reference's examples,
     regenerated with the grammar per house generated-artifact rules
@@ -12276,6 +12276,7 @@ work_packages:
     grammar published for forge highlighting
   acceptance_commands:
   - cargo test -p riffdb-contract-syntax -p riffdb-cli --all-features
+  - ./scripts/editor-grammar-acceptance
   - ./scripts/handbook check
   - ./scripts/check-requirement-coverage
   standing_design_tests:

@@ -44,6 +44,7 @@
 - [Safe Application Profiles](getting-started/SAFE-APPLICATION-PROFILES.md)
 - [Compiled Framework Profiles](integrations/COMPILED-FRAMEWORK-PROFILES.md)
 - [Authoring Diagnostics](getting-started/AUTHORING-DIAGNOSTICS.md)
+- [Contract and RiffQL Editor Tooling](getting-started/EDITOR-TOOLING.md)
 - [Application Errors](getting-started/APPLICATION-ERRORS.md)
 - [Resumable Command Batches](getting-started/COMMAND-BATCHES.md)
 - [Generated Operational Queries](getting-started/OPERATIONAL-QUERIES.md)

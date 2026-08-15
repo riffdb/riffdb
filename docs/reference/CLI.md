@@ -12,6 +12,7 @@ This reference is generated from the checked-in `riffdb` command tree. See
 Usage: riffdb [OPTIONS] <COMMAND>
 
 Commands:
+  lsp          Starts the bounded compiler-backed Language Server Protocol service on stdio
   init         Initializes RiffDB schema files in a new or existing project
   push         Checks, locks, and installs the configured schema
   generate     Regenerates configured SDK targets from the exact project lock
@@ -40,6 +41,23 @@ Commands:
   storage      Inspects or upgrades one closed database's durable format
   retention    Offline exclusive retention maintenance on a closed database file
   demo
+
+Options:
+      --config <PATH>
+      --endpoint <HTTP_OR_HTTPS_ENDPOINT>
+      --database <DATABASE>
+      --output <human|json>                [possible values: human, json]
+      --max-attempts <1..10>
+      --credential-file <PATH>
+  -h, --help                               Print help
+```
+
+### `riffdb lsp`
+
+```text
+Starts the bounded compiler-backed Language Server Protocol service on stdio
+
+Usage: riffdb lsp [OPTIONS]
 
 Options:
       --config <PATH>
