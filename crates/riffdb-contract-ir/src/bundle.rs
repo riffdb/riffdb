@@ -39,10 +39,10 @@ use crate::{
     McpCommandNameEntryV2, McpCommandNameRegistryV2, ObjectConstruction, OutcomeConstruction,
     OutcomeSchema, ProjectionFrontierPolicy, ProjectionGroupComponentSchema, ProjectionGroupSchema,
     ProjectionMeasurePlan, ProjectionPlan, RecordSchema, RecordTypeRef, RetryPolicy,
-    RowPolicyCatalogV1, RowPolicyOperationV1, SchemaIr, TextKeyProfileV1, UnaryOperator, ValueType,
-    ValueTypeTag, WorkflowCatalog, WorkflowLeaseFields, WorkflowLeaseOperation,
-    WorkflowLeaseSchema, WorkflowSchema, WorkflowTransitionSchema, checked_len,
-    validate_source_name,
+    RowPolicyCatalogV1, RowPolicyOperationV1, SchemaIr, SecretRevealDestinationV1,
+    SecretRevealSpecV1, TextKeyProfileV1, UnaryOperator, ValueType, ValueTypeTag, WorkflowCatalog,
+    WorkflowLeaseFields, WorkflowLeaseOperation, WorkflowLeaseSchema, WorkflowSchema,
+    WorkflowTransitionSchema, checked_len, validate_source_name,
 };
 
 /// Canonical bundle format version emitted and executed by the POC.
@@ -65,6 +65,8 @@ pub const BUNDLE_FORMAT_VERSION_V8: u32 = 8;
 pub const BUNDLE_FORMAT_VERSION_V9: u32 = 9;
 /// Bundle framing containing the operator-only reimport command class.
 pub const BUNDLE_FORMAT_VERSION_V10: u32 = 10;
+/// Bundle framing containing declared secret-to-non-secret disclosures.
+pub const BUNDLE_FORMAT_VERSION_V11: u32 = 11;
 /// Canonical grammar version represented by a bundle.
 pub const GRAMMAR_VERSION_V1: u32 = 1;
 /// Contract grammar containing compiled workflows and service-owned values.
@@ -85,6 +87,8 @@ pub const GRAMMAR_VERSION_V8: u32 = 8;
 pub const GRAMMAR_VERSION_V9: u32 = 9;
 /// Contract grammar containing closed compiler-owned reimport commands.
 pub const GRAMMAR_VERSION_V10: u32 = 10;
+/// Contract grammar containing explicit `reveals` flow annotations.
+pub const GRAMMAR_VERSION_V11: u32 = 11;
 /// Executable IR version represented by a bundle.
 pub const EXECUTABLE_IR_VERSION_V1: u32 = 1;
 /// Executable IR containing compiled workflow transitions and service values.
@@ -105,6 +109,8 @@ pub const EXECUTABLE_IR_VERSION_V8: u32 = 8;
 pub const EXECUTABLE_IR_VERSION_V9: u32 = 9;
 /// Executable IR containing a distinct command invocation class.
 pub const EXECUTABLE_IR_VERSION_V10: u32 = 10;
+/// Executable IR containing exact secret disclosure declarations.
+pub const EXECUTABLE_IR_VERSION_V11: u32 = 11;
 
 const RELATIONSHIP_SCHEMA_EXTENSION: u32 = 0xffff_fffe;
 const UNIQUE_KEY_SCHEMA_EXTENSION: u32 = 0xffff_fffd;
@@ -1029,7 +1035,9 @@ impl ContractBundle {
         mcp_command_names: McpCommandNameRegistryV2,
         compatibility: CompatibilityReport,
     ) -> Result<Self, IrValidationError> {
-        let version = if commands.iter().any(CommandPlan::requires_ir_v10) {
+        let version = if commands.iter().any(CommandPlan::requires_ir_v11) {
+            BUNDLE_FORMAT_VERSION_V11
+        } else if commands.iter().any(CommandPlan::requires_ir_v10) {
             BUNDLE_FORMAT_VERSION_V10
         } else if workflows.iter().any(WorkflowSchema::requires_ir_v9) {
             BUNDLE_FORMAT_VERSION_V9
@@ -1133,6 +1141,10 @@ impl ContractBundle {
                 BUNDLE_FORMAT_VERSION_V10,
                 GRAMMAR_VERSION_V10,
                 EXECUTABLE_IR_VERSION_V10
+            ) | (
+                BUNDLE_FORMAT_VERSION_V11,
+                GRAMMAR_VERSION_V11,
+                EXECUTABLE_IR_VERSION_V11
             )
         ) || (ir_version < EXECUTABLE_IR_VERSION_V2
             && (!workflows.is_empty() || commands.iter().any(CommandPlan::requires_ir_v2)))
@@ -1149,6 +1161,8 @@ impl ContractBundle {
                 && workflows.iter().any(WorkflowSchema::requires_ir_v9))
             || (ir_version < EXECUTABLE_IR_VERSION_V10
                 && commands.iter().any(CommandPlan::requires_ir_v10))
+            || (ir_version < EXECUTABLE_IR_VERSION_V11
+                && commands.iter().any(CommandPlan::requires_ir_v11))
             || (ir_version >= EXECUTABLE_IR_VERSION_V6
                 && commands
                     .iter()
@@ -1838,7 +1852,9 @@ pub(crate) fn compute_command_plan_hash(
 ) -> Result<PlanHash, IrValidationError> {
     let mut writer = Writer::new(MAX_BUNDLE_BYTES);
     writer.raw(COMMAND_PLAN_MAGIC)?;
-    let ir_version = if plan.requires_ir_v10() {
+    let ir_version = if plan.requires_ir_v11() {
+        EXECUTABLE_IR_VERSION_V11
+    } else if plan.requires_ir_v10() {
         EXECUTABLE_IR_VERSION_V10
     } else if plan.requires_ir_v6() {
         EXECUTABLE_IR_VERSION_V6
@@ -2914,7 +2930,9 @@ fn encode_command_bundle_entry(
     command: &CommandPlan,
     schema: &SchemaIr,
 ) -> Result<(), IrValidationError> {
-    let ir_version = if command.requires_ir_v10() {
+    let ir_version = if command.requires_ir_v11() {
+        EXECUTABLE_IR_VERSION_V11
+    } else if command.requires_ir_v10() {
         EXECUTABLE_IR_VERSION_V10
     } else if command.requires_ir_v6() {
         EXECUTABLE_IR_VERSION_V6
@@ -2950,7 +2968,9 @@ fn encode_command_semantics(
     schema: &SchemaIr,
     include_display_names: bool,
 ) -> Result<(), IrValidationError> {
-    let ir_version = if command.requires_ir_v10() {
+    let ir_version = if command.requires_ir_v11() {
+        EXECUTABLE_IR_VERSION_V11
+    } else if command.requires_ir_v10() {
         EXECUTABLE_IR_VERSION_V10
     } else if command.requires_ir_v6() {
         EXECUTABLE_IR_VERSION_V6
@@ -3080,6 +3100,31 @@ fn encode_command_semantics_versioned(
     writer.u32(command.instructions().len() as u32)?;
     for instruction in command.instructions() {
         encode_instruction(writer, instruction)?;
+    }
+    if ir_version >= EXECUTABLE_IR_VERSION_V11 {
+        writer.u32(command.secret_reveals().len() as u32)?;
+        for reveal in command.secret_reveals() {
+            writer.u32(reveal.source_binding().get())?;
+            writer.u32(reveal.source_field().get())?;
+            writer.u32(reveal.expression().get())?;
+            match reveal.destination() {
+                SecretRevealDestinationV1::EntityField { binding, field } => {
+                    writer.u8(crate::format_registry::secret_reveal_destination::ENTITY_FIELD)?;
+                    writer.u32(binding.get())?;
+                    writer.u32(field.get())?;
+                }
+                SecretRevealDestinationV1::EventField { event_type, field } => {
+                    writer.u8(crate::format_registry::secret_reveal_destination::EVENT_FIELD)?;
+                    writer.u32(event_type.get())?;
+                    writer.u32(field.get())?;
+                }
+                SecretRevealDestinationV1::OutcomeField { outcome, field } => {
+                    writer.u8(crate::format_registry::secret_reveal_destination::OUTCOME_FIELD)?;
+                    writer.u32(outcome.get())?;
+                    writer.u32(field.get())?;
+                }
+            }
+        }
     }
     if ir_version >= EXECUTABLE_IR_VERSION_V10 {
         writer.u8(command.invocation_class() as u8)?;
@@ -3569,6 +3614,10 @@ fn decode_bundle(bytes: &[u8]) -> Result<ContractBundle, IrValidationError> {
             BUNDLE_FORMAT_VERSION_V10,
             GRAMMAR_VERSION_V10,
             EXECUTABLE_IR_VERSION_V10
+        ) | (
+            BUNDLE_FORMAT_VERSION_V11,
+            GRAMMAR_VERSION_V11,
+            EXECUTABLE_IR_VERSION_V11
         )
     ) {
         return Err(IrValidationError::UnsupportedVersion {
@@ -5046,6 +5095,50 @@ fn decode_command_versioned(
             ir_version,
         )?);
     }
+    let secret_reveals = if ir_version >= EXECUTABLE_IR_VERSION_V11 {
+        let count = decode_len(reader, "command secret reveals", crate::MAX_COMMAND_ITEMS)?;
+        let mut reveals = Vec::with_capacity(count);
+        for _ in 0..count {
+            let source_binding = BindingId::new(reader.u32()?);
+            let source_field = decode_field_id(reader)?;
+            let expression = ExprId::new(reader.u32()?);
+            let destination = match reader.u8()? {
+                crate::format_registry::secret_reveal_destination::ENTITY_FIELD => {
+                    SecretRevealDestinationV1::EntityField {
+                        binding: BindingId::new(reader.u32()?),
+                        field: decode_field_id(reader)?,
+                    }
+                }
+                crate::format_registry::secret_reveal_destination::EVENT_FIELD => {
+                    SecretRevealDestinationV1::EventField {
+                        event_type: decode_event_id(reader)?,
+                        field: decode_field_id(reader)?,
+                    }
+                }
+                crate::format_registry::secret_reveal_destination::OUTCOME_FIELD => {
+                    SecretRevealDestinationV1::OutcomeField {
+                        outcome: decode_outcome_id(reader)?,
+                        field: decode_field_id(reader)?,
+                    }
+                }
+                tag => {
+                    return Err(IrValidationError::UnknownTag {
+                        kind: "secret reveal destination",
+                        tag,
+                    });
+                }
+            };
+            reveals.push(SecretRevealSpecV1::new(
+                source_binding,
+                source_field,
+                expression,
+                destination,
+            ));
+        }
+        reveals
+    } else {
+        Vec::new()
+    };
     let invocation_class = if ir_version >= EXECUTABLE_IR_VERSION_V10 {
         decode_command_invocation_class(reader.u8()?)?
     } else {
@@ -5072,54 +5165,13 @@ fn decode_command_versioned(
         locality.aggregate_id(),
         &instructions,
     )?;
-    let plan = match (invocation_class, collection_expansion) {
-        (crate::CommandInvocationClass::Reimport, Some(expansion)) => {
-            CommandPlan::new_reimport_collection(
-                command_id,
-                lineage.clone(),
-                name,
-                contract_version,
-                input,
-                outcomes,
-                success_outcome,
-                expressions,
-                bindings,
-                root_validation_reads,
-                locality,
-                commit_checks,
-                instructions,
-                expansion,
-                schema,
-            )?
-        }
-        (crate::CommandInvocationClass::Reimport, None) => {
-            return Err(IrValidationError::InvalidDependency {
-                reason: "reimport command requires one bounded collection expansion",
-            });
-        }
-        (crate::CommandInvocationClass::Application, Some(expansion)) => {
-            CommandPlan::new_collection(
-                command_id,
-                lineage.clone(),
-                name,
-                contract_version,
-                input,
-                service_values,
-                outcomes,
-                success_outcome,
-                idempotency_input,
-                expressions,
-                bindings,
-                root_validation_reads,
-                locality,
-                commit_checks,
-                instructions,
-                expansion,
-                execution_class,
-                schema,
-            )?
-        }
-        (crate::CommandInvocationClass::Application, None) => CommandPlan::new_with_service_values(
+    if invocation_class == crate::CommandInvocationClass::Reimport && !secret_reveals.is_empty() {
+        return Err(IrValidationError::InvalidDependency {
+            reason: "reimport command cannot declare secret reveals",
+        });
+    }
+    let plan = if ir_version < EXECUTABLE_IR_VERSION_V11 {
+        CommandPlan::new_decoded_pre_v11_without_secret_reveals(
             command_id,
             lineage.clone(),
             name,
@@ -5135,9 +5187,83 @@ fn decode_command_versioned(
             locality,
             commit_checks,
             instructions,
+            collection_expansion,
+            invocation_class,
             execution_class,
             schema,
-        )?,
+        )?
+    } else {
+        match (invocation_class, collection_expansion) {
+            (crate::CommandInvocationClass::Reimport, Some(expansion)) => {
+                CommandPlan::new_reimport_collection(
+                    command_id,
+                    lineage.clone(),
+                    name,
+                    contract_version,
+                    input,
+                    outcomes,
+                    success_outcome,
+                    expressions,
+                    bindings,
+                    root_validation_reads,
+                    locality,
+                    commit_checks,
+                    instructions,
+                    expansion,
+                    schema,
+                )?
+            }
+            (crate::CommandInvocationClass::Reimport, None) => {
+                return Err(IrValidationError::InvalidDependency {
+                    reason: "reimport command requires one bounded collection expansion",
+                });
+            }
+            (crate::CommandInvocationClass::Application, Some(expansion)) => {
+                CommandPlan::new_collection_with_secret_reveals(
+                    command_id,
+                    lineage.clone(),
+                    name,
+                    contract_version,
+                    input,
+                    service_values,
+                    outcomes,
+                    success_outcome,
+                    idempotency_input,
+                    expressions,
+                    bindings,
+                    root_validation_reads,
+                    locality,
+                    commit_checks,
+                    instructions,
+                    expansion,
+                    secret_reveals,
+                    execution_class,
+                    schema,
+                )?
+            }
+            (crate::CommandInvocationClass::Application, None) => {
+                CommandPlan::new_with_service_values_and_secret_reveals(
+                    command_id,
+                    lineage.clone(),
+                    name,
+                    contract_version,
+                    input,
+                    service_values,
+                    outcomes,
+                    success_outcome,
+                    idempotency_input,
+                    expressions,
+                    bindings,
+                    root_validation_reads,
+                    locality,
+                    commit_checks,
+                    instructions,
+                    secret_reveals,
+                    execution_class,
+                    schema,
+                )?
+            }
+        }
     };
     if encoded_relationship_checks
         != plan
@@ -5879,6 +6005,63 @@ mod conformance;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pre_v11_secret_flow_bundle_decodes_without_retroactive_reveal_metadata() {
+        let current = ContractBundle::decode(include_bytes!(
+            "../../../fixtures/compiler/secret-reveal/bundle.bin"
+        ))
+        .expect("V11 reveal fixture");
+        let command = current.commands().first().expect("fixture command");
+        let legacy_command = CommandPlan::new_decoded_pre_v11_without_secret_reveals(
+            command.command_id(),
+            current.lineage().clone(),
+            command.name(),
+            command.contract_version(),
+            command.input().clone(),
+            command.service_values().to_vec(),
+            command.outcomes().to_vec(),
+            command.success_outcome(),
+            command.idempotency_input(),
+            command.expressions().clone(),
+            command.bindings().to_vec(),
+            command.root_validation_reads().to_vec(),
+            command.locality().clone(),
+            command.commit_checks().to_vec(),
+            command.instructions().to_vec(),
+            command.collection_expansion().cloned(),
+            command.invocation_class(),
+            command.execution_class(),
+            current.schema(),
+        )
+        .expect("the authenticated pre-V11 decoder mode accepts absent reveal metadata");
+        assert!(legacy_command.secret_reveals().is_empty());
+
+        let legacy_bundle = ContractBundle::new_with_workflows_and_row_policies(
+            current.compiler_version(),
+            current.lineage().clone(),
+            current.contract_version(),
+            current.parent(),
+            current.source_hash(),
+            current.ledger().clone(),
+            current.schema().clone(),
+            current.workflows().workflows().to_vec(),
+            current.row_policies().clone(),
+            vec![legacy_command],
+            current.projections().to_vec(),
+            current.schema_artifacts().to_vec(),
+            current.mcp_command_names().clone(),
+            current.compatibility().clone(),
+        )
+        .expect("legacy bundle");
+        assert_eq!(legacy_bundle.format_version(), BUNDLE_FORMAT_VERSION_V8);
+
+        let decoded = ContractBundle::decode(legacy_bundle.canonical_bytes())
+            .expect("canonical pre-V11 bytes remain decodable");
+        assert_eq!(decoded.format_version(), BUNDLE_FORMAT_VERSION_V8);
+        assert!(decoded.commands()[0].secret_reveals().is_empty());
+        assert_eq!(decoded.canonical_bytes(), legacy_bundle.canonical_bytes());
+    }
 
     fn schema_with_no_inbound_delete_policy() -> SchemaIr {
         let entity_id = EntityTypeId::first();

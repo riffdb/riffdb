@@ -10,10 +10,10 @@ use riffdb_contract_ir::{
     BindingMode, DeleteCheckModeV1, EXECUTABLE_IR_VERSION_V1, EXECUTABLE_IR_VERSION_V2,
     EXECUTABLE_IR_VERSION_V3, EXECUTABLE_IR_VERSION_V4, EXECUTABLE_IR_VERSION_V5,
     EXECUTABLE_IR_VERSION_V6, EXECUTABLE_IR_VERSION_V7, EXECUTABLE_IR_VERSION_V8,
-    EXECUTABLE_IR_VERSION_V9, EXECUTABLE_IR_VERSION_V10, ExecutionClass, GRAMMAR_VERSION_V1,
-    GRAMMAR_VERSION_V2, GRAMMAR_VERSION_V3, GRAMMAR_VERSION_V4, GRAMMAR_VERSION_V5,
-    GRAMMAR_VERSION_V6, GRAMMAR_VERSION_V7, GRAMMAR_VERSION_V8, GRAMMAR_VERSION_V9,
-    GRAMMAR_VERSION_V10, IndexSchema,
+    EXECUTABLE_IR_VERSION_V9, EXECUTABLE_IR_VERSION_V10, EXECUTABLE_IR_VERSION_V11, ExecutionClass,
+    GRAMMAR_VERSION_V1, GRAMMAR_VERSION_V2, GRAMMAR_VERSION_V3, GRAMMAR_VERSION_V4,
+    GRAMMAR_VERSION_V5, GRAMMAR_VERSION_V6, GRAMMAR_VERSION_V7, GRAMMAR_VERSION_V8,
+    GRAMMAR_VERSION_V9, GRAMMAR_VERSION_V10, GRAMMAR_VERSION_V11, IndexSchema,
 };
 use riffdb_invariant::{InputDerivedCommandFacts, derive_input_command_facts};
 use riffdb_storage_api::{
@@ -904,6 +904,15 @@ impl IndexDerivationBuilder {
 //   The V10 evidence test additionally pins the reimport plan's structural
 //   guarantees (Reimport class, no idempotency input, create-only bindings)
 //   at this crate's boundary.
+//
+// (V11, V11) — explicit secret disclosure declarations (ADR-0118 Amendment
+//   1 / WP-600). `SecretRevealSpecV1` is checked plan metadata over expression
+//   and destination IDs already present in V10; it does not add, remove, or
+//   reinterpret bindings, set instructions, event constructions, entity
+//   schemas, index schemas, or mutation positions. Index derivation therefore
+//   remains byte-for-byte the V10 algorithm. The exhaustive boundary test and
+//   `secret_reveal_era_v11_application_commands_derive_ordinarily` fixture
+//   jointly prevent admission without this local audit.
 const fn index_derivation_version_supported(grammar: u32, ir: u32) -> bool {
     matches!(
         (grammar, ir),
@@ -917,6 +926,7 @@ const fn index_derivation_version_supported(grammar: u32, ir: u32) -> bool {
             | (GRAMMAR_VERSION_V8, EXECUTABLE_IR_VERSION_V8)
             | (GRAMMAR_VERSION_V9, EXECUTABLE_IR_VERSION_V9)
             | (GRAMMAR_VERSION_V10, EXECUTABLE_IR_VERSION_V10)
+            | (GRAMMAR_VERSION_V11, EXECUTABLE_IR_VERSION_V11)
     )
 }
 
@@ -1219,7 +1229,7 @@ mod tests {
         for grammar in 0..=16_u32 {
             for ir in 0..=16_u32 {
                 let audited_identity_pair =
-                    grammar == ir && (GRAMMAR_VERSION_V1..=GRAMMAR_VERSION_V10).contains(&grammar);
+                    grammar == ir && (GRAMMAR_VERSION_V1..=GRAMMAR_VERSION_V11).contains(&grammar);
                 assert_eq!(
                     index_derivation_version_supported(grammar, ir),
                     audited_identity_pair,
@@ -2230,7 +2240,7 @@ contract SecretIndexedRows version 1 {
     set row.tenant = tenant
     set row.category = category
     set row.score = score
-    return Created { row: row }
+    return Created {}
   }
 }
 "#;
@@ -2304,6 +2314,64 @@ contract SecretIndexedRows version 1 {
                 .any(|mutation| mutation.key().as_bytes() == expected_key.as_bytes()),
             "the secret component's exact bytes must be present in the entry key"
         );
+    }
+
+    const SECRET_REVEAL_INDEXED_SOURCE: &str = r#"
+contract SecretRevealIndexedRows version 1 {
+  entity Row {
+    key (id: uuid)
+    field tenant: uuid
+    field secret category: string<32>
+    field score: i64
+    index by_tenant_category (tenant, category)
+    index by_score (score)
+  }
+  aggregate Rows { root Row partition_by id conflict_key (id) }
+  command CreateRow {
+    input request_key: string<128>
+    input id: uuid
+    input tenant: uuid
+    input category: string<32>
+    input score: i64
+    idempotency_key request_key
+    create Row(id) as row else AlreadyExists {}
+    set row.tenant = tenant
+    set row.category = category
+    set row.score = score
+    return Created { row: row reveals row.category }
+  }
+}
+"#;
+
+    #[test]
+    fn secret_reveal_era_v11_application_commands_derive_ordinarily() {
+        let fixture = fixture_from_source(
+            SECRET_REVEAL_INDEXED_SOURCE,
+            "CreateRow",
+            "secret-reveal-create-1",
+            ([0x21; 16], "new", 10),
+            None,
+        );
+        assert_eq!(
+            fixture.resolved.bundle().bundle().grammar_version(),
+            GRAMMAR_VERSION_V11
+        );
+        assert_eq!(
+            fixture.resolved.bundle().bundle().ir_version(),
+            EXECUTABLE_IR_VERSION_V11
+        );
+        assert_eq!(fixture.resolved.plan().secret_reveals().len(), 1);
+        let derived = derive_grammar_v1_indexes(
+            &fixture.resolved,
+            &fixture.input,
+            &fixture.evaluated,
+            &fixture.current,
+            &[Some(0)],
+            &fixture.partition,
+        )
+        .expect("V11 reveal metadata cannot perturb index derivation");
+        assert_eq!(derived.entry_mutations.len(), 2);
+        assert_eq!(derived.affected_targets.as_slice().len(), 2);
     }
 
     // WP-606 V8 delete evidence: ADR-0107's delete-aware entry derivation on

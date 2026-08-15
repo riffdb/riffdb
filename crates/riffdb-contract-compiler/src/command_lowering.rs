@@ -8,8 +8,8 @@ use riffdb_contract_ir::{
     ConflictDerivationPlan, EventConstruction, EventSchema, ExecutionClass, ExprId, ExpressionKind,
     FieldExpression, FieldSchema, Instruction, IrValidationError, KeySchema, LocalityPlan,
     OutcomeConstruction, OutcomeSchema, RecordSchema, RecordTypeRef, RootValidationReadId,
-    RootValidationReadPlan, SchemaIr, ServiceValueKind, ServiceValueSchema, WorkflowLeaseFields,
-    WorkflowLeaseOperation,
+    RootValidationReadPlan, SchemaIr, SecretRevealDestinationV1, SecretRevealSpecV1,
+    ServiceValueKind, ServiceValueSchema, WorkflowLeaseFields, WorkflowLeaseOperation,
 };
 use riffdb_contract_syntax::Span;
 use riffdb_types::{CanonicalValue, ContractLineage, EntityTypeId, FieldId, InvariantId};
@@ -222,6 +222,7 @@ fn lower_command(
         HirEffect::Set { .. } | HirEffect::Emit { .. } => Vec::new(),
     }));
     occurrences.push(&command.success);
+    let secret_reveals = lower_secret_reveals(command, &occurrences);
     let (outcome_schemas, normalized_outcomes) = normalize_outcomes(
         command,
         &occurrences,
@@ -598,7 +599,7 @@ fn lower_command(
                 schema,
             )
         } else {
-            CommandPlan::new_collection(
+            CommandPlan::new_collection_with_secret_reveals(
                 command.id,
                 contract_lineage,
                 command.name.clone(),
@@ -615,12 +616,13 @@ fn lower_command(
                 commit_checks,
                 instructions,
                 expansion,
+                secret_reveals,
                 execution_class,
                 schema,
             )
         }
     } else {
-        CommandPlan::new_with_service_values(
+        CommandPlan::new_with_service_values_and_secret_reveals(
             command.id,
             contract_lineage,
             command.name.clone(),
@@ -636,11 +638,73 @@ fn lower_command(
             locality,
             commit_checks,
             instructions,
+            secret_reveals,
             execution_class,
             schema,
         )
     };
     result.map_err(|error| vec![ir_error_diagnostic(error, command.span)])
+}
+
+fn lower_secret_reveals(command: &HirCommand, outcomes: &[&HirOutcome]) -> Vec<SecretRevealSpecV1> {
+    let mut reveals = Vec::new();
+    for outcome in outcomes {
+        for field in &outcome.fields {
+            reveals.extend(field.reveals.iter().map(|source| {
+                SecretRevealSpecV1::new(
+                    source.binding,
+                    source.field,
+                    field.value.id,
+                    SecretRevealDestinationV1::OutcomeField {
+                        outcome: outcome.id,
+                        field: field.id,
+                    },
+                )
+            }));
+        }
+    }
+    for effect in &command.effects {
+        match effect {
+            HirEffect::Set {
+                binding,
+                field,
+                value,
+                reveals: sources,
+                ..
+            } => reveals.extend(sources.iter().map(|source| {
+                SecretRevealSpecV1::new(
+                    source.binding,
+                    source.field,
+                    value.id,
+                    SecretRevealDestinationV1::EntityField {
+                        binding: *binding,
+                        field: *field,
+                    },
+                )
+            })),
+            HirEffect::Emit {
+                event_id, fields, ..
+            } => {
+                for field in fields {
+                    reveals.extend(field.reveals.iter().map(|source| {
+                        SecretRevealSpecV1::new(
+                            source.binding,
+                            source.field,
+                            field.value.id,
+                            SecretRevealDestinationV1::EventField {
+                                event_type: *event_id,
+                                field: field.id,
+                            },
+                        )
+                    }));
+                }
+            }
+            HirEffect::WorkflowTransition { .. } | HirEffect::WorkflowLease { .. } => {}
+        }
+    }
+    reveals.sort_unstable();
+    reveals.dedup();
+    reveals
 }
 
 fn validate_event_partition_proofs(

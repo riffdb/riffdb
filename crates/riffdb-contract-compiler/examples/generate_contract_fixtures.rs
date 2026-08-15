@@ -27,6 +27,8 @@ use riffdb_types::{
 
 const BUDGET_SOURCE: &str = include_str!("../../../contracts/examples/budget.riff");
 const REIMPORT_SOURCE: &str = include_str!("../../../fixtures/compiler/reimport/contract.riff");
+const SECRET_REVEAL_SOURCE: &str =
+    include_str!("../../../fixtures/compiler/secret-reveal/contract.riff");
 const MIGRATION_FIXTURE_README: &str = include_str!("../../../fixtures/migrations/README.md");
 const RELATIONSHIP_FIXTURES: &[(&str, &str)] = &[
     (
@@ -231,6 +233,32 @@ fn main() -> Result<(), Box<dyn Error>> {
     fs::write(
         secret_root.join("bundle-hash.txt"),
         format!("{}\n", hex(secret_bundle.bundle_hash().as_bytes())),
+    )?;
+
+    let secret_reveal_bundle = compile_contract_source(SECRET_REVEAL_SOURCE)?;
+    let secret_reveal_root = fixture_root.join("secret-reveal");
+    fs::create_dir_all(&secret_reveal_root)?;
+    fs::write(
+        secret_reveal_root.join("contract.riff"),
+        SECRET_REVEAL_SOURCE,
+    )?;
+    fs::write(
+        secret_reveal_root.join("bundle.bin"),
+        secret_reveal_bundle.canonical_bytes(),
+    )?;
+    fs::write(
+        secret_reveal_root.join("bundle-hash.txt"),
+        format!("{}\n", hex(secret_reveal_bundle.bundle_hash().as_bytes())),
+    )?;
+    fs::write(
+        secret_reveal_root.join("command-explain.txt"),
+        CommandExplain::from_plan(
+            secret_reveal_bundle
+                .commands()
+                .first()
+                .ok_or("secret reveal fixture command is absent")?,
+        )
+        .render_text(),
     )?;
 
     let workflow_initial_bundle = compile_contract_source(WORKFLOW_INITIAL_SOURCE)?;
@@ -2860,6 +2888,19 @@ fn diagnostic_snapshots() -> Result<String, Box<dyn Error>> {
                 "entity Child { key (tenant_id: uuid, parent_id: uuid, child_id: uuid) ",
                 "reference parent (tenant_id, parent_id) -> Parent(tenant_id, parent_id) } ",
                 "aggregate Owned { root Parent child Child partition_by tenant_id conflict_key (tenant_id) } }",
+            )
+            .to_owned(),
+        ),
+        (
+            "RDB-C046-invalid-secret-reveal",
+            CompilerDiagnosticCode::InvalidSecretReveal,
+            concat!(
+                "contract InvalidSecretReveal version 1 { ",
+                "entity Row { key (tenant_id: uuid, row_id: uuid) field secret digest: string<128> } ",
+                "aggregate Rows { root Row partition_by tenant_id conflict_key (tenant_id, row_id) } ",
+                "command ReadDigest { input tenant_id: uuid input row_id: uuid ",
+                "read Row(tenant_id, row_id) as row else Missing {} ",
+                "return Found { digest: row.digest } } }",
             )
             .to_owned(),
         ),

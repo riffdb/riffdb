@@ -413,6 +413,7 @@ fn ordered_layout_registry_has_one_closed_witness_slot_per_layout() {
                 "locality",
                 "commit_checks",
                 "instructions",
+                "secret_reveals",
                 "invocation_class",
                 "execution_class",
                 "retry_policy",
@@ -420,6 +421,15 @@ fn ordered_layout_registry_has_one_closed_witness_slot_per_layout() {
                 "entity_closure",
                 "aggregate_closure",
                 "event_closure",
+            ],
+        ),
+        (
+            "SecretRevealSpecV1",
+            vec![
+                "source_binding",
+                "source_field",
+                "expression",
+                "destination",
             ],
         ),
         (
@@ -622,6 +632,7 @@ fn ordered_layout_registry_has_one_closed_witness_slot_per_layout() {
         ("WorkflowLeaseFields", "workflow lease instruction fixture"),
         ("CommandBundleEntry", "root-validation command fixture"),
         ("CommandSemantics", "root-validation command fixture"),
+        ("SecretRevealSpecV1", "secret reveal command fixture"),
         ("CollectionExpansionPlanV1", "collection command fixture"),
         ("OutcomeSchema", "root-validation command fixture"),
         ("BindingPlan", "root-validation command fixture"),

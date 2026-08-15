@@ -1,7 +1,7 @@
 format=riffdb-compiler-diagnostic-fixture-v1
 
 [semantic-code-registry]
-count=47
+count=48
 code.0.id=RDB-C001
 code.0.message=contract version must be a supported nonzero integer
 code.0.help=use a base-10 application version in 1..=u64::MAX
@@ -134,15 +134,18 @@ code.42.help=name one declared target index and provide its complete partition-r
 code.43.id=RDB-C045
 code.43.message=the deletion policy lacks a complete no-inbound or indexed-restrict proof
 code.43.help=declare no_inbound only with no inbound relation, or name one exact canonical reverse index covering every inbound relation
-code.44.id=RDB-C201
-code.44.message=an identifier cannot form a valid MCP command tool-name segment
-code.44.help=start contract and command identifiers with an ASCII letter
-code.45.id=RDB-C202
-code.45.message=the complete MCP command tool name exceeds 128 bytes
-code.45.help=shorten the source contract or command identifier
-code.46.id=RDB-C203
-code.46.message=two commands normalize to the same MCP command tool name
-code.46.help=rename one command so lowercase identifiers remain distinct
+code.44.id=RDB-C046
+code.44.message=a secret value crosses a non-secret destination without an exact reveals annotation
+code.44.help=add `reveals binding.secret_field` at the exact non-secret flow site, or keep the destination secret-classified
+code.45.id=RDB-C201
+code.45.message=an identifier cannot form a valid MCP command tool-name segment
+code.45.help=start contract and command identifiers with an ASCII letter
+code.46.id=RDB-C202
+code.46.message=the complete MCP command tool name exceeds 128 bytes
+code.46.help=shorten the source contract or command identifier
+code.47.id=RDB-C203
+code.47.message=two commands normalize to the same MCP command tool name
+code.47.help=rename one command so lowercase identifiers remain distinct
 
 [RDB-C001-invalid-contract-version]
 expected=RDB-C001
@@ -628,6 +631,16 @@ diagnostic.0.message=the deletion policy lacks a complete no-inbound or indexed-
 diagnostic.0.primary=96..120
 diagnostic.0.related=none
 diagnostic.0.help=declare no_inbound only with no inbound relation, or name one exact canonical reverse index covering every inbound relation
+
+[RDB-C046-invalid-secret-reveal]
+expected=RDB-C046
+kind=semantic
+count=1
+diagnostic.0.code=RDB-C046
+diagnostic.0.message=a secret value crosses a non-secret destination without an exact reveals annotation
+diagnostic.0.primary=337..343
+diagnostic.0.related=103..109
+diagnostic.0.help=add `reveals binding.secret_field` at the exact non-secret flow site, or keep the destination secret-classified
 
 [RDB-C201-invalid-command-tool-name]
 expected=RDB-C201

@@ -106,12 +106,10 @@ contract FrameworkProfileAcceptance version 1 {
       verification_token_id: verification_token_id,
       issuance_id: issuance_id,
       issued_at: issued_at,
-      // One-time handout of the secret-classified digest at issuance: this
-      // secret-to-non-secret flow is the exact site WP-600 (ADR-0118
-      // Amendment 1) turns into a compile error unless it carries an
-      // explicit `reveals token.token_digest` annotation. The annotation
-      // attaches to this outcome field; keep the flow a plain field read.
-      token_digest: token.token_digest
+      // One-time handout of the secret-classified digest at issuance. The
+      // explicit annotation is static reviewable disclosure authority; it is
+      // part of executable-plan identity and cannot be supplied at runtime.
+      token_digest: token.token_digest reveals token.token_digest
     }
   }
 
@@ -152,7 +150,7 @@ contract FrameworkProfileAcceptance version 1 {
       stale RefreshSessionStale {}
       illegal RefreshSessionRevoked {}
     set session.token_digest = successor_token_digest
-    return SessionRefreshed { session: session }
+    return SessionRefreshed { session: session reveals session.token_digest }
   }
 
   command RevokeSession {
@@ -167,6 +165,6 @@ contract FrameworkProfileAcceptance version 1 {
     transition Revoke on session revision expected_revision
       stale RevokeSessionStale {}
       illegal SessionAlreadyRevoked {}
-    return SessionRevoked { session: session }
+    return SessionRevoked { session: session reveals session.token_digest }
   }
 }

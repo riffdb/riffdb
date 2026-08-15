@@ -8,14 +8,14 @@ use riffdb_contract_ir::{
     BUNDLE_FORMAT_VERSION_V1, BUNDLE_FORMAT_VERSION_V2, BUNDLE_FORMAT_VERSION_V3,
     BUNDLE_FORMAT_VERSION_V4, BUNDLE_FORMAT_VERSION_V5, BUNDLE_FORMAT_VERSION_V6,
     BUNDLE_FORMAT_VERSION_V7, BUNDLE_FORMAT_VERSION_V8, BUNDLE_FORMAT_VERSION_V9,
-    BUNDLE_FORMAT_VERSION_V10, CommandPlan, ContractBundle, EXECUTABLE_IR_VERSION_V1,
-    EXECUTABLE_IR_VERSION_V2, EXECUTABLE_IR_VERSION_V3, EXECUTABLE_IR_VERSION_V4,
-    EXECUTABLE_IR_VERSION_V5, EXECUTABLE_IR_VERSION_V6, EXECUTABLE_IR_VERSION_V7,
-    EXECUTABLE_IR_VERSION_V8, EXECUTABLE_IR_VERSION_V9, EXECUTABLE_IR_VERSION_V10,
-    GRAMMAR_VERSION_V1, GRAMMAR_VERSION_V2, GRAMMAR_VERSION_V3, GRAMMAR_VERSION_V4,
-    GRAMMAR_VERSION_V5, GRAMMAR_VERSION_V6, GRAMMAR_VERSION_V7, GRAMMAR_VERSION_V8,
-    GRAMMAR_VERSION_V9, GRAMMAR_VERSION_V10, MCP_COMMAND_NAME_REGISTRY_VERSION_V2,
-    McpCommandToolNameV2,
+    BUNDLE_FORMAT_VERSION_V10, BUNDLE_FORMAT_VERSION_V11, CommandPlan, ContractBundle,
+    EXECUTABLE_IR_VERSION_V1, EXECUTABLE_IR_VERSION_V2, EXECUTABLE_IR_VERSION_V3,
+    EXECUTABLE_IR_VERSION_V4, EXECUTABLE_IR_VERSION_V5, EXECUTABLE_IR_VERSION_V6,
+    EXECUTABLE_IR_VERSION_V7, EXECUTABLE_IR_VERSION_V8, EXECUTABLE_IR_VERSION_V9,
+    EXECUTABLE_IR_VERSION_V10, EXECUTABLE_IR_VERSION_V11, GRAMMAR_VERSION_V1, GRAMMAR_VERSION_V2,
+    GRAMMAR_VERSION_V3, GRAMMAR_VERSION_V4, GRAMMAR_VERSION_V5, GRAMMAR_VERSION_V6,
+    GRAMMAR_VERSION_V7, GRAMMAR_VERSION_V8, GRAMMAR_VERSION_V9, GRAMMAR_VERSION_V10,
+    GRAMMAR_VERSION_V11, MCP_COMMAND_NAME_REGISTRY_VERSION_V2, McpCommandToolNameV2,
 };
 use riffdb_storage_api::{
     ActiveCatalogPointerV1, CatalogRepository, ExecutablePlanRef, StoredContractBundleV1,
@@ -451,6 +451,10 @@ fn validate_supported_versions(bundle: &ContractBundle) -> Result<(), CatalogErr
             BUNDLE_FORMAT_VERSION_V10,
             GRAMMAR_VERSION_V10,
             EXECUTABLE_IR_VERSION_V10
+        ) | (
+            BUNDLE_FORMAT_VERSION_V11,
+            GRAMMAR_VERSION_V11,
+            EXECUTABLE_IR_VERSION_V11
         )
     ) {
         return Err(CatalogError::new(
@@ -496,6 +500,19 @@ fn validate_command_registry(bundle: &ContractBundle) -> Result<(), CatalogError
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn secret_reveal_v11_bundle_is_catalog_validated_with_exact_plan_metadata() {
+        let validated = ValidatedContractBundle::decode(include_bytes!(
+            "../../../fixtures/compiler/secret-reveal/bundle.bin"
+        ))
+        .expect("the pinned V11 reveal bundle must cross the catalog trust boundary");
+        assert_eq!(
+            validated.bundle().format_version(),
+            BUNDLE_FORMAT_VERSION_V11
+        );
+        assert_eq!(validated.bundle().commands()[0].secret_reveals().len(), 1);
+    }
 
     #[test]
     fn startup_reclassifies_only_broken_or_over_limit_active_lineage() {

@@ -6,7 +6,7 @@
 **Tagline:** *Vibe fast. Commit safely.*  
 **Category:** Contract-first operational database for agent-built applications  
 
-**Version:** 0.95
+**Version:** 0.96
 **Status:** Deployable Application Alpha architecture accepted; implementation gated by work packages
 **Date:** 9 August 2026
 **Audience:** Coding agents, database engineers, compiler engineers, security reviewers, and technical product leads  
@@ -37,6 +37,7 @@
 
 | Version | Date | Summary |
 |---|---|---|
+| 0.96 | 2026-08-14 | Applied ADR-0118 Amendment 1 and registered SECF-006: secret classification is sticky across compiler-visible contract flows, and every intentional disclosure into a non-secret entity field, durable event field, or command outcome field requires an exact source-naming `reveals` annotation carried through syntax, versioned executable IR, bundle identity, catalogs, diagnostics, and compatibility fixtures. |
 | 0.95 | 2026-08-14 | Accepted ADR-0121 and registered DX-013 through DX-020 for the database-shaped project workflow: truthful domain-empty initialization, a zero-query structural module with no roles or authority, bounded `riffdb.toml`, selected local SDK materialization over one complete exact lock, ceremony only for changed compiler-owned identity, staged migration routing, and read-only installed-versus-local observation without changing existing application verbs or persistent encodings. |
 | 0.94 | 2026-08-14 | Amended ADR-0050 and registered END-011/WP-610 after the installed endurance rehearsal exposed unreceipted immutable-backup deletion: backup retention now uses one authorized public retirement operation whose V2 receipt binds the exact succeeded create receipt and manifest, permanently consumes the name, recovers every checked rename/delete crash state, and is the sole proof permitting an otherwise-published backup artifact to be absent. |
 | 0.93 | 2026-08-11 | Registered the SECF-* requirement family (SECF-001 through SECF-005) for ADR-0118 secret field classification: a contextual `secret` field modifier carried through versioned IR and bundle identity without rotating unclassified contracts; structural display-surface redaction through a wrapper whose only value escape is an architecture-enumerated reveal method; capability field-visibility default-deny with a dedicated explicit secret-naming surface and observed typed denial; predicates/uniqueness/index participation without read visibility; and full-fidelity durable storage, backup, export, and changelog carriage with an explicit no-cryptography non-promise. |
@@ -7742,10 +7743,19 @@ machine-checkable). Requirements trace to ADR-0118 §Proposed Decision items
   carry secret fields at full fidelity under their existing authority rules;
   receipts and diagnostics never echo the values; the classification is not
   a cryptographic promise and the handbook page MUST say so.
+- `SECF-006`: Secret classification MUST be sticky across every compiler-
+  visible flow into a non-secret stored entity field, durable event field, or
+  command outcome field. Such a flow MUST fail compilation unless its exact
+  flow site carries bounded static `reveals` annotations naming every secret-
+  classified source field and no other source. The compiler diagnostic MUST
+  identify both the source declaration and destination flow site; the
+  annotation MUST ride the AST, versioned executable IR, bundle hash,
+  generated catalogs, and compatibility fixtures; and it MUST NOT be
+  caller-supplied runtime authority or weaken capability field visibility.
 
 The Deployable Application Alpha milestone is complete only when WP-550 through
-WP-570 and WP-572 through WP-579 pass in dependency order, every accepted
-format/interface fixture and release artifact is current, and WP-579's
+WP-570, WP-572 through WP-579, and WP-597, WP-598, and WP-600 pass in dependency
+order, every accepted format/interface fixture and release artifact is current, and WP-579's
 installed remote four-adapter, four-language, policy, compatibility, export,
 restore, endurance, security, correctness, and performance matrix passes
 without a waiver that makes an unsafe pattern expressible.

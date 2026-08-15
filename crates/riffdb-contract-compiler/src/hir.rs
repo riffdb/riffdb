@@ -298,7 +298,27 @@ pub(crate) struct HirObjectField {
     pub(crate) name: String,
     pub(crate) name_span: Span,
     pub(crate) value: HirExpressionRoot,
+    pub(crate) reveals: Vec<HirSecretReveal>,
 }
+
+/// One statically declared disclosure of a secret-classified bound field.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct HirSecretReveal {
+    pub(crate) binding: BindingId,
+    pub(crate) entity: EntityTypeId,
+    pub(crate) field: FieldId,
+    pub(crate) annotation_span: Span,
+    pub(crate) source_span: Span,
+}
+
+#[derive(Clone, Debug)]
+struct SecretRevealScopeEntry {
+    binding: BindingId,
+    entity: EntityTypeId,
+    fields: BTreeMap<String, (FieldId, Span, bool)>,
+}
+
+type SecretRevealScope = BTreeMap<String, SecretRevealScopeEntry>;
 
 #[derive(Clone, Debug)]
 pub(crate) struct HirOutcome {
@@ -337,6 +357,7 @@ pub(crate) enum HirEffect {
         binding: BindingId,
         field: FieldId,
         value: HirExpressionRoot,
+        reveals: Vec<HirSecretReveal>,
     },
     Emit {
         event_id: EventTypeId,
@@ -1887,6 +1908,28 @@ fn lower_commands(
                 )
             })
             .collect();
+        let reveal_scope = binding_descriptors
+            .iter()
+            .map(|(source, id, _, entity, _)| {
+                (
+                    source.binding.value.clone(),
+                    SecretRevealScopeEntry {
+                        binding: *id,
+                        entity: entity.id,
+                        fields: entity
+                            .fields
+                            .iter()
+                            .map(|field| {
+                                (
+                                    field.name.clone(),
+                                    (field.id, field.name_span, field.secret_span.is_some()),
+                                )
+                            })
+                            .collect(),
+                    },
+                )
+            })
+            .collect::<SecretRevealScope>();
         let scope = ExpressionScope::Command {
             command_id,
             inputs: input_scope,
@@ -1941,6 +1984,7 @@ fn lower_commands(
                 &binding.failure,
                 symbols,
                 &mut resolver,
+                &reveal_scope,
                 true,
                 diagnostics,
             ) else {
@@ -1968,6 +2012,7 @@ fn lower_commands(
                         source,
                         symbols,
                         &mut resolver,
+                        &reveal_scope,
                         true,
                         diagnostics,
                     ) else {
@@ -2026,6 +2071,7 @@ fn lower_commands(
                 &requirement.value.rejection,
                 symbols,
                 &mut resolver,
+                &reveal_scope,
                 false,
                 diagnostics,
             ) else {
@@ -2114,11 +2160,13 @@ fn lower_commands(
                     ) else {
                         continue;
                     };
+                    let reveals = lower_secret_reveals(&set.reveals, &reveal_scope, diagnostics);
                     effects.push(HirEffect::Set {
                         target_span: set.target.span,
                         binding: binding.id,
                         field: field.id,
                         value,
+                        reveals,
                     });
                 }
                 Effect::Emit(emit) => {
@@ -2136,6 +2184,7 @@ fn lower_commands(
                         &emit.payload,
                         &event.fields,
                         &mut resolver,
+                        &reveal_scope,
                         CompilerDiagnosticCode::InvalidEvent,
                         diagnostics,
                     );
@@ -2212,6 +2261,7 @@ fn lower_commands(
                         &transition.stale,
                         symbols,
                         &mut resolver,
+                        &reveal_scope,
                         false,
                         diagnostics,
                     ) else {
@@ -2222,6 +2272,7 @@ fn lower_commands(
                         &transition.illegal,
                         symbols,
                         &mut resolver,
+                        &reveal_scope,
                         false,
                         diagnostics,
                     ) else {
@@ -2297,6 +2348,7 @@ fn lower_commands(
                                 $source,
                                 symbols,
                                 &mut resolver,
+                                &reveal_scope,
                                 false,
                                 diagnostics,
                             ) else {
@@ -2436,6 +2488,7 @@ fn lower_commands(
                     value_type,
                     span: binding.span,
                 },
+                reveals: Vec::new(),
             };
             if binding.collection_local {
                 collection_initializers.push(initializer);
@@ -2455,6 +2508,7 @@ fn lower_commands(
             &source.return_clause.value.outcome,
             symbols,
             &mut resolver,
+            &reveal_scope,
             false,
             diagnostics,
         ) else {
@@ -2726,6 +2780,7 @@ fn normalize_reimport_command(
                 Effect::Set(SetEffect {
                     target: Spanned::new(target, target_span),
                     value: path_expression(&record_name, record_span, field),
+                    reveals: Vec::new(),
                 }),
                 clause.span,
             )
@@ -2916,6 +2971,7 @@ fn lower_outcome(
     source: &Spanned<OutcomeExpression>,
     symbols: &GenesisSymbols,
     resolver: &mut ExpressionLowerer<'_>,
+    reveal_scope: &SecretRevealScope,
     input_only: bool,
     diagnostics: &mut Vec<CompilerDiagnostic>,
 ) -> Option<HirOutcome> {
@@ -2940,11 +2996,13 @@ fn lower_outcome(
                 .get(&(command_id, outcome_id, field.value.name.value.clone()))
                 .copied()?;
             let value = lower_root(resolver, &field.value.value, None, input_only, diagnostics)?;
+            let reveals = lower_secret_reveals(&field.value.reveals, reveal_scope, diagnostics);
             Some(HirObjectField {
                 id: field_id,
                 name: field.value.name.value.clone(),
                 name_span: field.value.name.span,
                 value,
+                reveals,
             })
         })
         .collect();
@@ -2960,6 +3018,7 @@ fn lower_declared_object(
     source: &Spanned<ObjectLiteral>,
     declared: &[HirField],
     resolver: &mut ExpressionLowerer<'_>,
+    reveal_scope: &SecretRevealScope,
     error_code: CompilerDiagnosticCode,
     diagnostics: &mut Vec<CompilerDiagnostic>,
 ) -> Vec<HirObjectField> {
@@ -3001,6 +3060,11 @@ fn lower_declared_object(
             None
         };
         if let Some(value) = value {
+            let reveals = supplied
+                .get(field.name.as_str())
+                .map_or_else(Vec::new, |field| {
+                    lower_secret_reveals(&field.value.reveals, reveal_scope, diagnostics)
+                });
             result.push(HirObjectField {
                 id: field.id,
                 name: field.name.clone(),
@@ -3008,6 +3072,7 @@ fn lower_declared_object(
                     .get(field.name.as_str())
                     .map_or(source.span, |field| field.value.name.span),
                 value,
+                reveals,
             });
         }
     }
@@ -3019,6 +3084,54 @@ fn lower_declared_object(
             ));
         }
     }
+    result
+}
+
+fn lower_secret_reveals(
+    sources: &[Spanned<Path>],
+    scope: &SecretRevealScope,
+    diagnostics: &mut Vec<CompilerDiagnostic>,
+) -> Vec<HirSecretReveal> {
+    let mut result = Vec::new();
+    let mut seen = BTreeSet::new();
+    for source in sources {
+        let Some((binding_name, field_name)) = path_pair(&source.value) else {
+            diagnostics.push(CompilerDiagnostic::new(
+                CompilerDiagnosticCode::InvalidSecretReveal,
+                source.span,
+            ));
+            continue;
+        };
+        let Some(binding) = scope.get(binding_name) else {
+            diagnostics.push(CompilerDiagnostic::new(
+                CompilerDiagnosticCode::UnknownName,
+                source.span,
+            ));
+            continue;
+        };
+        let Some((field, source_span, secret)) = binding.fields.get(field_name).copied() else {
+            diagnostics.push(CompilerDiagnostic::new(
+                CompilerDiagnosticCode::UnknownName,
+                source.span,
+            ));
+            continue;
+        };
+        if !secret || !seen.insert((binding.binding, field)) {
+            diagnostics.push(
+                CompilerDiagnostic::new(CompilerDiagnosticCode::InvalidSecretReveal, source.span)
+                    .with_related_span(source_span),
+            );
+            continue;
+        }
+        result.push(HirSecretReveal {
+            binding: binding.binding,
+            entity: binding.entity,
+            field,
+            annotation_span: source.span,
+            source_span,
+        });
+    }
+    result.sort_by_key(|reveal| (reveal.binding, reveal.field));
     result
 }
 

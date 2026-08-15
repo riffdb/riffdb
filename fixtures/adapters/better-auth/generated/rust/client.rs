@@ -5,11 +5,11 @@ use riffdb_client_rust::{ApplicationCardinality, ApplicationClientError, Applica
 pub use riffdb_client_rust::QueryOptions;
 use riffdb_client_rust::v1::value::Kind as WireKind;
 
-pub const QUERY_MODULE_HASH: [u8; 32] = [0x47, 0xb1, 0x5f, 0x86, 0xf8, 0xcf, 0xbb, 0xc1, 0x3a, 0x1c, 0x84, 0x52, 0xb2, 0xab, 0xd0, 0x7e, 0x79, 0x9f, 0xf4, 0x34, 0x6b, 0x1f, 0x08, 0x75, 0xb0, 0x0d, 0xcd, 0xf0, 0x26, 0xfb, 0x30, 0xb9];
+pub const QUERY_MODULE_HASH: [u8; 32] = [0x1e, 0xea, 0x54, 0xc2, 0x71, 0x3b, 0xd0, 0xae, 0x51, 0x08, 0xfd, 0xba, 0x01, 0x6a, 0x2c, 0xc5, 0xbe, 0x9b, 0xb5, 0x54, 0xf0, 0xd1, 0xd1, 0x02, 0xbe, 0x68, 0xa7, 0xb9, 0x15, 0xb8, 0x36, 0x13];
 pub const CONTRACT_LINEAGE: &str = "BetterAuthAcceptance";
 pub const CONTRACT_VERSION: u64 = 1;
 
-pub const CONTRACT_BUNDLE_HASH: [u8; 32] = [0x16, 0x8e, 0x60, 0xe3, 0xa7, 0xda, 0xd1, 0x98, 0x50, 0xf6, 0x3e, 0x82, 0x55, 0xfd, 0x20, 0x97, 0x73, 0xf6, 0x37, 0x3c, 0x70, 0x2a, 0x49, 0x31, 0x3f, 0x47, 0x62, 0xf3, 0xc3, 0x41, 0x1c, 0x77];
+pub const CONTRACT_BUNDLE_HASH: [u8; 32] = [0x02, 0xfc, 0xda, 0x36, 0x70, 0x78, 0xea, 0x53, 0x70, 0x39, 0x5c, 0x88, 0x45, 0x52, 0xb1, 0xa9, 0xd6, 0xe0, 0x5f, 0xfa, 0xd1, 0xa4, 0x33, 0xc6, 0xfd, 0x12, 0xc7, 0x91, 0x6d, 0xa6, 0xb2, 0xab];
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DecimalValue {
@@ -59,7 +59,7 @@ pub enum GetSessionResult {
     Missing(Box<GetSessionMissing>),
 }
 
-pub const GET_SESSION_QUERY_PLAN_HASH: [u8; 32] = [0xb6, 0xe9, 0x92, 0x9b, 0x3b, 0x4d, 0xfc, 0x23, 0xf1, 0x3b, 0xab, 0x69, 0x3a, 0x30, 0xdc, 0x3b, 0x7b, 0xef, 0x11, 0x4d, 0x6f, 0x06, 0xfa, 0xb3, 0x39, 0x50, 0x49, 0xd5, 0xb2, 0x62, 0xc6, 0x2a];
+pub const GET_SESSION_QUERY_PLAN_HASH: [u8; 32] = [0xb4, 0xa7, 0x42, 0x57, 0x59, 0x56, 0x4b, 0x52, 0xc7, 0x26, 0xa6, 0x50, 0xd4, 0x99, 0x3d, 0xf4, 0x52, 0x23, 0x0b, 0xc6, 0x33, 0x1d, 0x72, 0xe7, 0x78, 0x9c, 0x42, 0x4c, 0x0d, 0x26, 0xbc, 0x30];
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct GetSessionQuery(pub GetSessionParams);
 impl GeneratedQuery for GetSessionQuery {
@@ -513,7 +513,7 @@ pub enum RefreshSessionOutcome {
     RefreshSessionRevoked,
 }
 
-const REFRESH_SESSION_PLAN_HASH: [u8; 32] = [0x76, 0x2b, 0x91, 0x04, 0x3d, 0xd8, 0x32, 0xb9, 0x58, 0x5b, 0x7d, 0xd5, 0xf7, 0x05, 0xc2, 0x9b, 0x31, 0x63, 0xb2, 0x70, 0x84, 0x96, 0xf4, 0x24, 0xe8, 0x03, 0xe1, 0x44, 0x7a, 0xaf, 0xb7, 0xf4];
+const REFRESH_SESSION_PLAN_HASH: [u8; 32] = [0x1f, 0xc3, 0x6d, 0xf2, 0xcd, 0xda, 0x25, 0x81, 0xa7, 0x73, 0x6e, 0x5b, 0x49, 0x77, 0x4d, 0x6d, 0xac, 0xbd, 0x25, 0x75, 0x06, 0x11, 0x15, 0xab, 0xdf, 0x95, 0xcf, 0x53, 0xc8, 0x21, 0xa3, 0x97];
 impl GeneratedCommand for RefreshSessionInput {
     type Outcome = RefreshSessionOutcome;
 
@@ -589,7 +589,7 @@ pub enum RevokeSessionOutcome {
     SessionAlreadyRevoked,
 }
 
-const REVOKE_SESSION_PLAN_HASH: [u8; 32] = [0xfe, 0x75, 0x91, 0xcd, 0xb3, 0x8c, 0x90, 0xc3, 0xb6, 0x70, 0x41, 0x10, 0x45, 0xd1, 0x8e, 0x87, 0x9f, 0xc1, 0x08, 0x45, 0x61, 0xea, 0xfc, 0x74, 0x18, 0xdf, 0xbf, 0xcf, 0x63, 0x4b, 0x3c, 0x6e];
+const REVOKE_SESSION_PLAN_HASH: [u8; 32] = [0x5d, 0xbc, 0x02, 0x37, 0xea, 0x41, 0xa1, 0x12, 0xca, 0x34, 0x76, 0xf8, 0xa5, 0x91, 0x2e, 0x57, 0xfc, 0x4d, 0x3a, 0xcd, 0xfc, 0xc2, 0x1f, 0x29, 0x0e, 0x5a, 0x89, 0x57, 0xbd, 0x2a, 0x88, 0x07];
 impl GeneratedCommand for RevokeSessionInput {
     type Outcome = RevokeSessionOutcome;
 
@@ -784,6 +784,17 @@ fn wire_bytes(value: Vec<u8>) -> v1::Value { v1::Value { kind: Some(WireKind::By
 fn wire_date(value: i32) -> v1::Value { v1::Value { kind: Some(WireKind::DateValue(v1::Date { days_since_unix_epoch: value })) } }
 fn wire_timestamp(value: &TimestampValue) -> Result<v1::Value, GeneratedCommandError> { if value.nanos >= 1_000_000_000 { return Err(GeneratedCommandError::InvalidInputShape); } Ok(v1::Value { kind: Some(WireKind::TimestampValue(v1::Timestamp { seconds: value.seconds, nanos: value.nanos })) }) }
 fn wire_decimal(value: &DecimalValue) -> v1::Value { v1::Value { kind: Some(WireKind::DecimalValue(v1::Decimal { coefficient_twos_complement: value.coefficient_twos_complement.clone(), scale: value.scale, precision: value.precision })) } }
+fn wire_money(value: &MoneyValue, expected_currency: &str) -> Result<v1::Value, GeneratedCommandError> {
+    if value.currency != expected_currency || value.amount.scale != 2 || value.amount.precision != Some(38) { return Err(GeneratedCommandError::InvalidInputShape); }
+    Ok(v1::Value { kind: Some(WireKind::MoneyValue(v1::Money {
+        currency: value.currency.clone(),
+        amount: Some(v1::Decimal {
+            coefficient_twos_complement: value.amount.coefficient_twos_complement.clone(),
+            scale: value.amount.scale,
+            precision: value.amount.precision,
+        }),
+    })) })
+}
 fn wire_enum(value: String) -> v1::Value { v1::Value { kind: Some(WireKind::EnumValue(v1::EnumValue { type_id: 0, variant_id: 0, name: value })) } }
 fn wire_uuid(value: &str) -> Result<v1::Value, GeneratedCommandError> {
     if value.len() != 36 { return Err(GeneratedCommandError::InvalidInputShape); }
@@ -827,3 +838,9 @@ fn decode_wire_bytes(value: v1::Value) -> Result<Vec<u8>, GeneratedCommandError>
 fn decode_wire_date(value: v1::Value) -> Result<i32, GeneratedCommandError> { if let Some(WireKind::DateValue(value)) = value.kind { Ok(value.days_since_unix_epoch) } else { Err(GeneratedCommandError::InvalidOutcomeShape) } }
 fn decode_wire_timestamp(value: v1::Value) -> Result<TimestampValue, GeneratedCommandError> { if let Some(WireKind::TimestampValue(value)) = value.kind { if value.nanos < 1_000_000_000 { Ok(TimestampValue { seconds: value.seconds, nanos: value.nanos }) } else { Err(GeneratedCommandError::InvalidOutcomeShape) } } else { Err(GeneratedCommandError::InvalidOutcomeShape) } }
 fn decode_wire_decimal(value: v1::Value) -> Result<DecimalValue, GeneratedCommandError> { if let Some(WireKind::DecimalValue(value)) = value.kind { Ok(DecimalValue { coefficient_twos_complement: value.coefficient_twos_complement, scale: value.scale, precision: value.precision }) } else { Err(GeneratedCommandError::InvalidOutcomeShape) } }
+fn decode_wire_money(value: v1::Value, expected_currency: &str) -> Result<MoneyValue, GeneratedCommandError> {
+    let Some(WireKind::MoneyValue(value)) = value.kind else { return Err(GeneratedCommandError::InvalidOutcomeShape); };
+    let amount = value.amount.ok_or(GeneratedCommandError::InvalidOutcomeShape)?;
+    if value.currency != expected_currency || amount.scale != 2 || amount.precision != Some(38) { return Err(GeneratedCommandError::InvalidOutcomeShape); }
+    Ok(MoneyValue { currency: value.currency, amount: DecimalValue { coefficient_twos_complement: amount.coefficient_twos_complement, scale: amount.scale, precision: amount.precision } })
+}

@@ -185,6 +185,8 @@ pub(crate) enum Token {
     Emit,
     #[token("return")]
     Return,
+    #[token("reveals")]
+    Reveals,
     #[token("principal")]
     Principal,
     #[token("fact")]

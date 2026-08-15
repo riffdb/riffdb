@@ -4,7 +4,8 @@
 
 use riffdb_contract_compiler::{compile_contract_source, validate_contract_source};
 use riffdb_contract_ir::{
-    BUNDLE_FORMAT_VERSION_V9, BindingMode, ContractBundle, ExpressionKind, Instruction,
+    BUNDLE_FORMAT_VERSION_V9, BUNDLE_FORMAT_VERSION_V11, BindingMode, ContractBundle,
+    ExpressionKind, Instruction,
 };
 use riffdb_types::CanonicalValue;
 
@@ -44,9 +45,9 @@ contract OrdinaryWorkflowCreate version 1 {
 "#;
 
 #[test]
-fn workflow_initialization_and_self_transition_are_closed_v9_ir() {
+fn workflow_initialization_and_self_transition_survive_v11_reveal_ir() {
     let bundle = compile_contract_source(PROFILE).expect("generic framework profile compiles");
-    assert_eq!(bundle.format_version(), BUNDLE_FORMAT_VERSION_V9);
+    assert_eq!(bundle.format_version(), BUNDLE_FORMAT_VERSION_V11);
 
     let workflow = bundle
         .workflows()
@@ -185,12 +186,10 @@ fn unknown_initial_state_has_a_source_spanned_semantic_error() {
 }
 
 #[test]
-fn token_handout_flow_is_the_declared_secret_to_outcome_read_wp600_will_annotate() {
-    // ADR-0118 Amendment 1 / WP-600 anchor: the issuance outcome hands out
-    // the secret-classified digest exactly once, as a plain bound-field
-    // read. When WP-600's flow analysis lands, this is the site that must
-    // gain a `reveals token.token_digest` annotation; this pin fails if the
-    // flow disappears or stops being a direct field read.
+fn token_handout_flow_carries_the_exact_static_secret_reveal() {
+    // ADR-0118 Amendment 1 / WP-600: the issuance outcome hands out the
+    // secret-classified digest exactly once, with one compiler-checked reveal
+    // over the same direct bound-field expression.
     let bundle = compile_contract_source(PROFILE).expect("generic framework profile compiles");
     let token = bundle
         .schema()
@@ -255,6 +254,21 @@ fn token_handout_flow_is_the_declared_secret_to_outcome_read_wp600_will_annotate
         ),
         "the handout must stay one direct secret-field read"
     );
+    let reveal = issue
+        .secret_reveals()
+        .iter()
+        .find(|reveal| reveal.expression() == flow.expression())
+        .expect("one-time digest handout reveal");
+    assert_eq!(reveal.source_binding().get() as usize, token_binding);
+    assert_eq!(reveal.source_field(), digest_field);
+    assert_eq!(
+        reveal.destination(),
+        riffdb_contract_ir::SecretRevealDestinationV1::OutcomeField {
+            outcome: outcome.id(),
+            field: outcome_digest,
+        }
+    );
+    assert_eq!(bundle.ir_version(), 11);
 }
 
 #[test]

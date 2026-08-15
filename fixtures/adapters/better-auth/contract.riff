@@ -157,7 +157,7 @@ contract BetterAuthAcceptance version 1 {
     require refresh_unexpired: tx.time <= session.expires_at else RefreshSessionExpired {}
     transition Refresh on session revision expected_revision stale RefreshSessionStale {} illegal RefreshSessionRevoked {}
     set session.token_digest = successor_token_digest
-    return SessionRefreshed { session: session }
+    return SessionRefreshed { session: session reveals session.token_digest }
   }
 
   command RevokeSession {
@@ -169,7 +169,7 @@ contract BetterAuthAcceptance version 1 {
     idempotency_key request_id
     mutate Session(organization_id, user_id, session_id) as session else RevokeSessionMissing {}
     transition Revoke on session revision expected_revision stale RevokeSessionStale {} illegal SessionAlreadyRevoked {}
-    return SessionRevoked { session: session }
+    return SessionRevoked { session: session reveals session.token_digest }
   }
 
   reimport command ReconstituteUsers {

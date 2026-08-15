@@ -498,10 +498,11 @@ Requirement: Spanned<Requirement> = {
 };
 
 Effect: Spanned<Effect> = {
-    <lo:@L> "set" <target:Path> "=" <value:Expression> <hi:@R>
+    <lo:@L> "set" <target:Path> "=" <value:Expression> <reveals:RevealAnnotation*> <hi:@R>
         => parser::spanned(Effect::Set(SetEffect {
             target,
             value: value.into_syntax(),
+            reveals,
         }), lo, hi),
     <lo:@L> "emit" <event:Identifier> <payload:ObjectLiteral> <hi:@R>
         => parser::spanned(Effect::Emit(EmitEffect { event, payload }), lo, hi),
@@ -636,8 +637,12 @@ ObjectFieldList: Vec<Spanned<ObjectField>> = {
 };
 
 ObjectField: Spanned<ObjectField> = {
-    <lo:@L> <name:Identifier> ":" <value:Expression> <hi:@R>
-        => parser::spanned(ObjectField { name, value: value.into_syntax() }, lo, hi),
+    <lo:@L> <name:Identifier> ":" <value:Expression> <reveals:RevealAnnotation*> <hi:@R>
+        => parser::spanned(ObjectField { name, value: value.into_syntax(), reveals }, lo, hi),
+};
+
+RevealAnnotation: Spanned<Path> = {
+    "reveals" <source:Path> => source,
 };
 
 ProjectionDeclaration: ProjectionDeclaration = {
@@ -836,6 +841,7 @@ Identifier: Spanned<String> = {
     <lo:@L> "in" <hi:@R> => parser::spanned("in".to_owned(), lo, hi),
     <lo:@L> "is" <hi:@R> => parser::spanned("is".to_owned(), lo, hi),
     <lo:@L> "not" <hi:@R> => parser::spanned("not".to_owned(), lo, hi),
+    <lo:@L> "reveals" <hi:@R> => parser::spanned("reveals".to_owned(), lo, hi),
 };
 
 UnsignedInteger: Spanned<String> = {
@@ -928,6 +934,7 @@ extern {
         "set" => Token::Set,
         "emit" => Token::Emit,
         "return" => Token::Return,
+        "reveals" => Token::Reveals,
         "principal" => Token::Principal,
         "fact" => Token::Fact,
         "row" => Token::Row,
