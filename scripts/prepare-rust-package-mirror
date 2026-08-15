@@ -1,0 +1,115 @@
+#!/usr/bin/env python3
+"""Safely materialize signed Rust `.crate` artifacts as one Cargo directory source."""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+from pathlib import Path, PurePosixPath
+import tarfile
+
+
+MAX_PACKAGES = 128
+MAX_FILES = 16_384
+MAX_FILE_BYTES = 256 * 1024 * 1024
+VERSION = "0.1.0"
+RUNTIME_PACKAGES = {
+    "riffdb-api-grpc",
+    "riffdb-application",
+    "riffdb-client-rust",
+    "riffdb-config",
+    "riffdb-contract-ir",
+    "riffdb-errors",
+    "riffdb-proto",
+    "riffdb-types",
+}
+
+
+def fail(message: str) -> None:
+    raise SystemExit(f"rust_package_mirror_failed: {message}")
+
+
+def sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        while chunk := source.read(1024 * 1024):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--distribution", required=True, type=Path)
+    parser.add_argument("--destination", required=True, type=Path)
+    parser.add_argument("--runtime-only", action="store_true")
+    arguments = parser.parse_args()
+    distribution = arguments.distribution
+    destination = arguments.destination
+    if not distribution.is_absolute() or not distribution.is_dir() or distribution.is_symlink():
+        fail("distribution must be an absolute real directory")
+    if not destination.is_absolute() or not destination.is_dir() or destination.is_symlink():
+        fail("destination must be an absolute real directory")
+    order_path = distribution / "metadata/rust-publish-order-v1.txt"
+    if not order_path.is_file() or order_path.is_symlink():
+        fail("publication order is absent")
+    order = order_path.read_text(encoding="utf-8").splitlines()
+    if not 1 <= len(order) <= MAX_PACKAGES or len(order) != len(set(order)):
+        fail("publication order is outside the bound")
+    if arguments.runtime_only:
+        if not RUNTIME_PACKAGES.issubset(order):
+            fail("distribution omits a required Rust runtime package")
+        order = [package for package in order if package in RUNTIME_PACKAGES]
+    for package in order:
+        if not package.startswith("riffdb-") or not package.replace("-", "").isalnum():
+            fail("publication order contains an invalid package")
+        root_name = f"{package}-{VERSION}"
+        archive_path = distribution / "crates" / f"{root_name}.crate"
+        destination_root = destination / root_name
+        if not archive_path.is_file() or archive_path.is_symlink() or destination_root.exists():
+            fail(f"package is absent or already materialized: {package}")
+        with tarfile.open(archive_path, "r:gz") as archive:
+            members = archive.getmembers()
+            if not 1 <= len(members) <= MAX_FILES:
+                fail(f"package inventory is outside the bound: {package}")
+            for member in members:
+                pure = PurePosixPath(member.name)
+                if (
+                    pure.is_absolute()
+                    or not pure.parts
+                    or pure.parts[0] != root_name
+                    or any(part in {"", ".", ".."} for part in pure.parts)
+                    or member.issym()
+                    or member.islnk()
+                    or member.isdev()
+                    or (member.isfile() and member.size > MAX_FILE_BYTES)
+                ):
+                    fail(f"package contains an unsafe member: {package}")
+            archive.extractall(destination, filter="data")
+        if not (destination_root / "Cargo.toml").is_file():
+            fail(f"package omitted Cargo.toml: {package}")
+        checksum_path = destination_root / ".cargo-checksum.json"
+        if checksum_path.exists():
+            fail(f"package unexpectedly supplied a directory-source checksum: {package}")
+        files = sorted(path for path in destination_root.rglob("*") if path.is_file())
+        if not 1 <= len(files) <= MAX_FILES:
+            fail(f"materialized package inventory is outside the bound: {package}")
+        checksums = {
+            path.relative_to(destination_root).as_posix(): sha256(path) for path in files
+        }
+        checksum_path.write_text(
+            json.dumps(
+                {"files": checksums, "package": sha256(archive_path)},
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            + "\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+    print(f"materialized {len(order)} signed Rust packages")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

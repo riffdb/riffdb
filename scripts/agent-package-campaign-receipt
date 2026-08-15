@@ -1,0 +1,186 @@
+#!/usr/bin/env python3
+"""Build or verify the bounded package-first campaign-03 metrics receipt."""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parent.parent
+MAX_FILE_BYTES = 8 * 1024 * 1024
+PROFILES = [
+    "blog-go",
+    "blog-rust",
+    "blog-typescript",
+    "orders-python",
+    "orders-rust",
+    "orders-typescript",
+]
+
+
+def fail(message: str) -> None:
+    raise SystemExit(f"package_campaign_receipt_failed: {message}")
+
+
+def sha256(path: Path) -> str:
+    if not path.is_file() or path.is_symlink() or path.stat().st_size > MAX_FILE_BYTES:
+        fail(f"evidence file is absent or outside the bound: {path}")
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def evidence(entry: object) -> tuple[Path, str]:
+    if not isinstance(entry, dict) or sorted(entry) != ["path", "sha256"]:
+        fail("campaign evidence locator is malformed")
+    relative = entry.get("path")
+    expected = entry.get("sha256")
+    if (
+        not isinstance(relative, str)
+        or relative.startswith("/")
+        or ".." in Path(relative).parts
+        or not isinstance(expected, str)
+        or len(expected) != 64
+    ):
+        fail("campaign evidence locator is unsafe")
+    path = ROOT / relative
+    if sha256(path) != expected:
+        fail(f"campaign evidence digest changed: {relative}")
+    return path, expected
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--campaign", required=True)
+    destination = parser.add_mutually_exclusive_group(required=True)
+    destination.add_argument("--output", type=Path)
+    destination.add_argument("--check", type=Path)
+    arguments = parser.parse_args()
+    if arguments.campaign != "campaign-03":
+        fail("only the package-first campaign-03 receipt is defined")
+    manifest_path = (
+        ROOT / "evaluations/agent-application-alpha/campaigns" / f"{arguments.campaign}.json"
+    )
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if (
+        manifest.get("schema") != "riffdb-agent-application-alpha-campaign/v2"
+        or manifest.get("campaign_id") != arguments.campaign
+        or manifest.get("immutable") is not True
+        or manifest.get("status") != "passed"
+        or len(manifest.get("runs", [])) != 6
+    ):
+        fail("package-first campaign manifest is not a passed immutable six-run selection")
+    package = manifest.get("package_distribution", {})
+    package_hash = package.get("checksums_sha256")
+    if not isinstance(package_hash, str) or len(package_hash) != 64:
+        fail("campaign package identity is absent")
+    runs = []
+    agents: set[str] = set()
+    profiles: list[str] = []
+    for selected in manifest["runs"]:
+        report_path, report_hash = evidence(selected.get("report"))
+        events_path, events_hash = evidence(selected.get("events"))
+        qualified_path, qualified_hash = evidence(selected.get("qualified_events"))
+        lock_path, lock_hash = evidence(selected.get("application_lock"))
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+        if (
+            report.get("schema") != "riffdb-agent-application-alpha-run/v2"
+            or report.get("run_id") != selected.get("run_id")
+            or report.get("agent_identity") != selected.get("agent_identity")
+            or report.get("domain") != selected.get("domain")
+            or report.get("language") != selected.get("language")
+            or report.get("bundle_hash") != manifest.get("bundle_hash")
+            or report.get("package_distribution_checksums_sha256") != package_hash
+            or report.get("package_installation_verified") is not True
+            or report.get("time_to_first_committed_row_seconds")
+            != report.get("first_write_seconds")
+            or report.get("transcript_sha256") != events_hash
+        ):
+            fail(f"package-first report identity is inconsistent: {selected.get('run_id')}")
+        run_id = report["run_id"]
+        agent = report["agent_identity"]
+        profile = f"{report['domain']}-{report['language']}"
+        if agent in agents:
+            fail("campaign reused an agent identity")
+        agents.add(agent)
+        profiles.append(profile)
+        runs.append(
+            {
+                "run_id": run_id,
+                "agent_identity": agent,
+                "domain": report["domain"],
+                "language": report["language"],
+                "time_to_first_committed_row_seconds": report[
+                    "time_to_first_committed_row_seconds"
+                ],
+                "first_page_read_seconds": report["first_page_read_seconds"],
+                "time_to_complete_seconds": report["time_to_complete_seconds"],
+                "identity_change_ceremony_count": report[
+                    "identity_change_ceremony_count"
+                ],
+                "rescue_count": report["rescue_count"],
+                "kernel_attempts": report["kernel_attempts"],
+                "rating": report["rating"],
+                "evidence": {
+                    "report_sha256": report_hash,
+                    "events_sha256": events_hash,
+                    "qualified_events_sha256": qualified_hash,
+                    "application_lock_sha256": lock_hash,
+                },
+            }
+        )
+        # Force reads here so a zero-byte or oversized artifact cannot be hidden
+        # behind a manifest hash without being part of the receipt audit.
+        _ = qualified_path.read_bytes(), lock_path.read_bytes()
+    if sorted(profiles) != PROFILES:
+        fail("campaign profile matrix is incomplete")
+    runs.sort(key=lambda run: (run["domain"], run["language"]))
+    receipt = {
+        "schema": "riffdb-agent-application-alpha-package-campaign-receipt/v1",
+        "work_package": "WP-604",
+        "requirements": ["DX-031", "DX-032"],
+        "campaign_id": arguments.campaign,
+        "campaign_manifest": {
+            "path": str(manifest_path.relative_to(ROOT)),
+            "sha256": sha256(manifest_path),
+        },
+        "bundle_hash": manifest["bundle_hash"],
+        "package_distribution": package,
+        "runs": runs,
+        "aggregate": {
+            "run_count": 6,
+            "maximum_time_to_first_committed_row_seconds": max(
+                run["time_to_first_committed_row_seconds"] for run in runs
+            ),
+            "maximum_first_page_read_seconds": max(
+                run["first_page_read_seconds"] for run in runs
+            ),
+            "maximum_time_to_complete_seconds": max(
+                run["time_to_complete_seconds"] for run in runs
+            ),
+            "identity_change_ceremony_count": sum(
+                run["identity_change_ceremony_count"] for run in runs
+            ),
+            "rescue_count": sum(run["rescue_count"] for run in runs),
+            "kernel_attempts": sum(run["kernel_attempts"] for run in runs),
+            "minimum_rating": min(run["rating"] for run in runs),
+        },
+        "status": "passed",
+    }
+    encoded = (json.dumps(receipt, sort_keys=True, separators=(",", ":")) + "\n").encode()
+    if arguments.check is not None:
+        if not arguments.check.is_absolute() or arguments.check.read_bytes() != encoded:
+            fail("published package campaign receipt is absent or stale")
+        print("Package-first campaign-03 metrics receipt is current.")
+        return 0
+    assert arguments.output is not None
+    if not arguments.output.is_absolute() or arguments.output.exists() or not arguments.output.parent.is_dir():
+        fail("receipt output must be one new absolute path")
+    arguments.output.write_bytes(encoded)
+    print(f"wrote {arguments.output}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -49,6 +49,30 @@ an incompatible successor still routes to `riffdb migrate`.
 The exact four-step contract lives in
 `fixtures/driver/quickstart-v1.json` and is checked across all four languages.
 
+## Cross-driver qualification
+
+One generated conformance application is locked once and exercised from the
+signed runtime packages in all four languages against the same remote TLS
+service. Rust and Python carry native plan identities. TypeScript carries both
+the plan and retained-driver operation identity. Go carries the exact
+manifest, catalog, and operation identity through the retained Rust driver
+host. These are different transport representations of the same compiler-owned
+contract, not language-specific semantics.
+
+The package matrix pins the bundle, plan, generated-artifact, manifest,
+catalog, operation, input-schema, outcome, replay, freshness, and public-error
+observations. It also pins the onboarding story at four steps. Run:
+
+```bash
+./scripts/check-driver-package-matrix
+./scripts/driver-package-conformance-acceptance
+```
+
+The second command builds or accepts one signed distribution, installs every
+runtime from package artifacts, generates from the installed CLI, and runs the
+shared corpus. A source-tree runtime, handwritten wire adapter, numeric
+compiler identity, divergent outcome, or extra onboarding step fails.
+
 ## Verify a standalone binary bundle
 
 Release bundles contain `checksums.sha256` and its detached SSH signature. The

@@ -62,14 +62,19 @@ driverd="$script_dir/riffdb-driverd"
 boundary_check="$installation_root/libexec/check-application-boundary"
 bootstrap_request="$installation_root/share/riffdb/bootstrap-dev.json"
 dev_tls_root="$installation_root/share/riffdb/dev-tls"
-rust_sdk="${RIFFDB_RUST_SDK:-$installation_root/public/rust-sdk/crates/riffdb-client-rust}"
+if [[ -d "$installation_root/public/rust-sdk/vendor/riffdb-client-rust-0.1.0" ]]; then
+    default_rust_sdk="$installation_root/public/rust-sdk/vendor/riffdb-client-rust-0.1.0"
+else
+    default_rust_sdk="$installation_root/public/rust-sdk/crates/riffdb-client-rust"
+fi
+rust_sdk="${RIFFDB_RUST_SDK:-$default_rust_sdk}"
 for executable in "$riffdb" "$riffdbd" "$boundary_check"; do
     [[ -x "$executable" ]] || {
         echo "installed development component is unavailable" >&2
         exit 1
     }
 done
-[[ -f "$bootstrap_request" && -f "$rust_sdk/Cargo.toml" ]] || {
+[[ -f "$bootstrap_request" ]] || {
     echo "installed development data is unavailable" >&2
     exit 1
 }
@@ -116,7 +121,9 @@ else
     }
 fi
 
-work_root="$(mktemp -d "${TMPDIR:-/tmp}/riffdb-dev.XXXXXX")"
+task_tmp_root="${TMPDIR:-$HOME/tmp}"
+mkdir -p "$task_tmp_root"
+work_root="$(mktemp -d "$task_tmp_root/riffdb-dev.XXXXXX")"
 server_pid=
 driver_pid=
 cleanup() {
@@ -428,6 +435,10 @@ if ((run)); then
         exit 2
     fi
     if [[ -f "$application_root/Cargo.toml" ]]; then
+        [[ -f "$rust_sdk/Cargo.toml" ]] || {
+            echo "installed Rust package is unavailable" >&2
+            exit 1
+        }
         app_patch="patch.crates-io.riffdb-client-rust.path=\"$rust_sdk\""
         CARGO_TARGET_DIR="$work_root/application-target" \
             cargo run --quiet --offline \
@@ -483,6 +494,10 @@ fi
 
 if ((acceptance)); then
     if [[ -f "$application_root/Cargo.toml" ]]; then
+        [[ -f "$rust_sdk/Cargo.toml" ]] || {
+            echo "installed Rust package is unavailable" >&2
+            exit 1
+        }
         app_patch="patch.crates-io.riffdb-client-rust.path=\"$rust_sdk\""
         CARGO_TARGET_DIR="$work_root/application-target" \
             cargo run --quiet --offline \

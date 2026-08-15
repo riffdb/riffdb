@@ -38,6 +38,10 @@ done
 "$repo_root/scripts/agent-application-alpha-canary-acceptance" \
     --campaign "$campaign" --runs 6 --sealed --assert-gate
 
+"$repo_root/scripts/agent-package-campaign-receipt" \
+    --campaign "$campaign" \
+    --check "$repo_root/release/evidence/agent-application-alpha-package-campaign-v1.json"
+
 manifest="evaluations/agent-application-alpha/campaigns/$campaign.json"
 manifest_hash="$(sha256sum "$repo_root/$manifest" | cut -d' ' -f1)"
 gate="$repo_root/release/evidence/agent-application-alpha-gate-v3.json"

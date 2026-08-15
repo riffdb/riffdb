@@ -17,10 +17,12 @@ compiler/runtime failure or unsupported shape, not a reason to access source.
 
 Write these evidence files:
 
-- `events.jsonl`, conforming to `event-schema.json`;
+- `events.jsonl`, conforming to `event-schema.json` for predecessor campaigns
+  or `event-schema-v2.json` for package-first campaign 03;
 - `qualified-events.jsonl`, conforming to
   `qualified-event-schema.json`;
-- `report.json`, conforming to `report-schema.json`;
+- `report.json`, conforming to `report-schema.json` for predecessor campaigns
+  or `report-schema-v2.json` for package-first campaign 03;
 - `riffdb.application.lock.json`, copied byte-for-byte from the completed
   application.
 
@@ -62,6 +64,19 @@ For the final deployable-alpha campaign, evaluators run Blog/Go, Blog/Rust,
 Blog/TypeScript, Orders/Python, Orders/Rust, and Orders/TypeScript from one
 sealed bundle. This is a language-coverage extension, not a weakening or
 replacement of the immutable four-run campaign 02.
+
+Campaign 03 starts with an empty application directory and the signed package
+distribution identified by the v2 bundle. The evaluator may place the
+verified package CLI and server harness on `PATH`; every application runtime
+must come from the bundle's npm, PyPI, Go-proxy, or Cargo package mirror. A
+repository checkout or compatibility-vendored runtime fails the cell. Record
+one `package_install` event, every `identity_change_ceremony` event, and every
+`rescue` event. In the report, `time_to_first_committed_row_seconds` must equal
+the qualified first-write time, the ceremony and rescue counts must equal the
+corresponding transcript counts, and the package-distribution digest must
+equal `bundle.json`. Package installation itself is not an identity-change
+ceremony. Ordinary compiler diagnostics that the agent resolves without
+outside product guidance are not rescues.
 
 For a satisfaction campaign, evaluators follow this identical protocol; they
 are not told to manufacture a target score. After the Python, Rust, and

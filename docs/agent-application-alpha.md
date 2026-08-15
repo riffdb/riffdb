@@ -4,6 +4,14 @@ Status: campaign 02 passed; WP-579 extends the retained gate to all four alpha
 driver languages through a six-run campaign 03. The final alpha claim remains
 pending that successor campaign and the deployable-alpha gate.
 
+Campaign 03 is package-first. Its v2 sealed bundle is derived from one verified
+signed distribution and contains no repository runtime fallback. Each run
+starts in an empty application directory, installs the selected runtime from
+the local package mirror, and records time to first committed row, exact
+identity-change ceremony count, rescue count, kernel attempts, and rating.
+Campaign 02 remains immutable predecessor evidence and cannot satisfy this
+successor package-arrival requirement.
+
 ## Gate
 
 A fresh coding agent can build an unfamiliar application from an empty

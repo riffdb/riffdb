@@ -20,6 +20,19 @@ export GOPROXY=off
 export UV_CACHE_DIR="${UV_CACHE_DIR:-$task_tmp_root/riffdb-uv-cache}"
 mkdir -p "$GOCACHE" "$GOPATH" "$UV_CACHE_DIR"
 
+cli_bin="${RIFFDB_CONFORMANCE_CLI_BIN:-$repo_root/target/debug/riffdb}"
+application_source="${RIFFDB_CONFORMANCE_APPLICATION_SOURCE:-$repo_root/fixtures/driver/conformance-app}"
+rust_runner="${RIFFDB_CONFORMANCE_RUST_RUNNER:-}"
+typescript_runtime="${RIFFDB_CONFORMANCE_TYPESCRIPT_RUNTIME_PACKAGE:-}"
+typescript_tsc="${RIFFDB_CONFORMANCE_TYPESCRIPT_TSC:-$repo_root/clients/typescript/runtime/node_modules/.bin/tsc}"
+python_bin="${RIFFDB_CONFORMANCE_PYTHON_BIN:-}"
+for path in "$cli_bin" "$application_source"; do
+    [[ "$path" == /* ]] || {
+        echo "driver-conformance injected paths must be absolute" >&2
+        exit 1
+    }
+done
+
 for tool in cargo go jq mkfifo mktemp node npm python3 sha256sum uv; do
     command -v "$tool" >/dev/null 2>&1 || {
         echo "required driver-conformance tool is missing: $tool" >&2
@@ -50,21 +63,33 @@ trap cleanup EXIT INT TERM
 cd "$repo_root"
 cargo +1.97.0 build --quiet \
     -p riffdb-server --bin riffdbd \
-    -p riffdb-cli --bin riffdb \
     -p riffdb-driver-host --bin riffdb-driverd
-npm --prefix clients/typescript/runtime run build >/dev/null
+if [[ "$cli_bin" == "$repo_root/target/debug/riffdb" ]]; then
+    cargo +1.97.0 build --quiet -p riffdb-cli --bin riffdb
+fi
+if [[ -z "$typescript_runtime" ]]; then
+    npm --prefix clients/typescript/runtime run build >/dev/null
+    typescript_runtime="$repo_root/clients/typescript/runtime/dist/index.js"
+fi
 
-(
-    cd clients/python/runtime
-    python3 -m maturin build --quiet --interpreter python3 \
-        --compatibility linux --out "$work_root/dist"
-)
-python_wheel="$(find "$work_root/dist" -maxdepth 1 -type f -name '*.whl' -print -quit)"
-[[ -n "$python_wheel" ]] || { echo "Python conformance wheel was not built" >&2; exit 1; }
-uv venv "$work_root/python-venv" >/dev/null
-uv pip install --offline --python "$work_root/python-venv/bin/python" "$python_wheel" >/dev/null
+if [[ -z "$python_bin" ]]; then
+    (
+        cd clients/python/runtime
+        python3 -m maturin build --quiet --interpreter python3 \
+            --compatibility linux --out "$work_root/dist"
+    )
+    python_wheel="$(find "$work_root/dist" -maxdepth 1 -type f -name '*.whl' -print -quit)"
+    [[ -n "$python_wheel" ]] || { echo "Python conformance wheel was not built" >&2; exit 1; }
+    uv venv "$work_root/python-venv" >/dev/null
+    uv pip install --offline --python "$work_root/python-venv/bin/python" "$python_wheel" >/dev/null
+    python_bin="$work_root/python-venv/bin/python"
+fi
+[[ -x "$cli_bin" && -x "$python_bin" && -f "$typescript_runtime" && -x "$typescript_tsc" ]] || {
+    echo "driver-conformance runtime injection is incomplete" >&2
+    exit 1
+}
 
-port="$($work_root/python-venv/bin/python - <<'PY'
+port="$($python_bin - <<'PY'
 import socket
 with socket.socket() as listener:
     listener.bind(("127.0.0.1", 0))
@@ -138,7 +163,7 @@ max_attempts = 3
 tls_trust_root = "$work_root/ca.pem"
 tls_server_name = "127.0.0.1"
 EOF
-target/debug/riffdb --config "$work_root/bootstrap-client.toml" capability bootstrap \
+"$cli_bin" --config "$work_root/bootstrap-client.toml" capability bootstrap \
     --request "$work_root/bootstrap.json" --generate "$work_root/bootstrap.credential" \
     --bearer-output "$work_root/operator.credential" >/dev/null
 cat >"$work_root/operator-client.toml" <<EOF
@@ -152,10 +177,10 @@ tls_trust_root = "$work_root/ca.pem"
 tls_server_name = "127.0.0.1"
 EOF
 
-cp -R fixtures/driver/conformance-app "$work_root/application"
+cp -R "$application_source" "$work_root/application"
 (
     cd "$work_root/application"
-    "$repo_root/target/debug/riffdb" --config "$work_root/operator-client.toml" application deploy \
+    "$cli_bin" --config "$work_root/operator-client.toml" application deploy \
         riffdb.application.json --lock riffdb.application.lock.json \
         --provision-role DriverConformanceApplication --lifetime-seconds 3600 >/dev/null
 )
@@ -171,8 +196,12 @@ fi
 export RIFFDB_CONFORMANCE_ENDPOINT="https://127.0.0.1:$port"
 export RIFFDB_CONFORMANCE_TRUST_ROOT="$work_root/ca.pem"
 export RIFFDB_CONFORMANCE_CREDENTIAL="$credential"
-cargo +1.97.0 run --quiet -p riffdb-testkit --example driver_conformance_remote_client -- \
-    >"$work_root/rust.json"
+if [[ -n "$rust_runner" ]]; then
+    "$rust_runner" >"$work_root/rust.json"
+else
+    cargo +1.97.0 run --quiet -p riffdb-testkit --example driver_conformance_remote_client -- \
+        >"$work_root/rust.json"
+fi
 
 socket="$work_root/riffdb-driver.sock"
 cat >"$work_root/driver.toml" <<EOF
@@ -228,19 +257,20 @@ jq -n \
 export RIFFDB_CONFORMANCE_SOCKET="$socket"
 export RIFFDB_CONFORMANCE_IDENTITY="$work_root/identity.json"
 
-GOCACHE="$GOCACHE" GOPATH="$GOPATH" GOPROXY=off \
-    go -C fixtures/driver/conformance-app run ./runner/go >"$work_root/go.json"
+go_proxy="${RIFFDB_CONFORMANCE_GO_PROXY:-off}"
+GOCACHE="$GOCACHE" GOPATH="$GOPATH" GOPROXY="$go_proxy" \
+    go -C "$application_source" run ./runner/go >"$work_root/go.json"
 
-clients/typescript/runtime/node_modules/.bin/tsc \
+"$typescript_tsc" \
     "$work_root/application/generated/typescript/client.ts" \
     --target ES2022 --module NodeNext --moduleResolution NodeNext --strict --skipLibCheck \
     --outDir "$work_root/typescript"
-export RIFFDB_CONFORMANCE_TYPESCRIPT_RUNTIME="$repo_root/clients/typescript/runtime/dist/index.js"
+export RIFFDB_CONFORMANCE_TYPESCRIPT_RUNTIME="$typescript_runtime"
 export RIFFDB_CONFORMANCE_TYPESCRIPT_GENERATED="$work_root/typescript/client.js"
-node fixtures/driver/conformance-app/runner/typescript.mjs >"$work_root/typescript.json"
+node "$application_source/runner/typescript.mjs" >"$work_root/typescript.json"
 
 PYTHONPATH="$work_root/application/generated/python" \
-    "$work_root/python-venv/bin/python" fixtures/driver/conformance-app/runner/python.py \
+    "$python_bin" "$application_source/runner/python.py" \
     >"$work_root/python.json"
 
 expected='{"created":"Created","query":"Found","read_after_commit":true,"replayed":true,"reuse_error":"RDB-COMMAND-0101","schema":"riffdb.driver-conformance-observation/v1"}'
@@ -253,20 +283,25 @@ for language in rust go typescript python; do
 done
 
 capability_id="$(jq -r '.role.capability_id' "$deployment_root/deployment-state.json")"
-target/debug/riffdb --config "$work_root/operator-client.toml" role revoke \
+"$cli_bin" --config "$work_root/operator-client.toml" role revoke \
     "$capability_id" --reason policy_change >/dev/null
 RIFFDB_CONFORMANCE_EXPECT_REVOKED=1 \
-    GOCACHE="$GOCACHE" GOPATH="$GOPATH" GOPROXY=off \
-    go -C fixtures/driver/conformance-app run ./runner/go >"$work_root/go-revoked.json"
+    GOCACHE="$GOCACHE" GOPATH="$GOPATH" GOPROXY="$go_proxy" \
+    go -C "$application_source" run ./runner/go >"$work_root/go-revoked.json"
+if [[ -n "$rust_runner" ]]; then
+    RIFFDB_CONFORMANCE_EXPECT_REVOKED=1 \
+        "$rust_runner" >"$work_root/rust-revoked.json"
+else
+    RIFFDB_CONFORMANCE_EXPECT_REVOKED=1 \
+        cargo +1.97.0 run --quiet -p riffdb-testkit --example driver_conformance_remote_client -- \
+        >"$work_root/rust-revoked.json"
+fi
 RIFFDB_CONFORMANCE_EXPECT_REVOKED=1 \
-    cargo +1.97.0 run --quiet -p riffdb-testkit --example driver_conformance_remote_client -- \
-    >"$work_root/rust-revoked.json"
-RIFFDB_CONFORMANCE_EXPECT_REVOKED=1 \
-    node fixtures/driver/conformance-app/runner/typescript.mjs \
+    node "$application_source/runner/typescript.mjs" \
     >"$work_root/typescript-revoked.json"
 RIFFDB_CONFORMANCE_EXPECT_REVOKED=1 \
     PYTHONPATH="$work_root/application/generated/python" \
-    "$work_root/python-venv/bin/python" fixtures/driver/conformance-app/runner/python.py \
+    "$python_bin" "$application_source/runner/python.py" \
     >"$work_root/python-revoked.json"
 for language in rust go typescript python; do
     jq -e '.schema == "riffdb.driver-conformance-fault/v1"
@@ -288,12 +323,14 @@ server_pid=
 # queue bounds, cancellation/uncertainty, cursor/reactive resumption, and
 # clean host shutdown. They use the same frozen corpus digest and generated
 # value/error registries as the shared remote cells above.
-cargo +1.97.0 test --quiet -p riffdb-driver-host --all-features
-GOCACHE="$GOCACHE" GOPATH="$GOPATH" GOPROXY=off go -C clients/go/runtime test ./...
-GOCACHE="$GOCACHE" GOPATH="$GOPATH" GOPROXY=off go -C clients/go/operator test ./...
-npm --prefix clients/typescript/runtime test >/dev/null
-"$work_root/python-venv/bin/python" -m unittest discover \
-    -s clients/python/runtime/tests -q
-cargo +1.97.0 test --quiet -p riffdb-testkit --test reactive_ticketdesk_acceptance --all-features
+if [[ "${RIFFDB_CONFORMANCE_PACKAGE_MODE:-0}" != 1 ]]; then
+    cargo +1.97.0 test --quiet -p riffdb-driver-host --all-features
+    GOCACHE="$GOCACHE" GOPATH="$GOPATH" GOPROXY=off go -C clients/go/runtime test ./...
+    GOCACHE="$GOCACHE" GOPATH="$GOPATH" GOPROXY=off go -C clients/go/operator test ./...
+    npm --prefix clients/typescript/runtime test >/dev/null
+    "$python_bin" -m unittest discover \
+        -s clients/python/runtime/tests -q
+    cargo +1.97.0 test --quiet -p riffdb-testkit --test reactive_ticketdesk_acceptance --all-features
+fi
 
 echo "Rust, Go, TypeScript, and Python passed the shared remote driver corpus."

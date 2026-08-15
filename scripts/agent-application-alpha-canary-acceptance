@@ -34,7 +34,9 @@ for tool in jq mktemp sha256sum sort; do
     }
 done
 
-work_root="$(mktemp -d "${TMPDIR:-/tmp}/riffdb-agent-alpha-canary.XXXXXX")"
+task_tmp_root="${TMPDIR:-$HOME/tmp}"
+mkdir -p "$task_tmp_root"
+work_root="$(mktemp -d "$task_tmp_root/riffdb-agent-alpha-canary.XXXXXX")"
 cleanup() {
     rm -rf "$work_root"
 }
@@ -79,10 +81,25 @@ manifest="$repo_root/evaluations/agent-application-alpha/campaigns/$campaign.jso
     exit 1
 }
 jq -e --arg campaign "$campaign" --argjson expected_runs "$expected_runs" '
-  (keys | sort) == ([
-    "bundle_hash", "campaign_id", "immutable", "runs", "schema", "status"
-  ] | sort)
-  and .schema == "riffdb-agent-application-alpha-campaign/v1"
+  (
+    ($expected_runs == 6
+      and (keys | sort) == ([
+        "bundle_hash", "campaign_id", "immutable", "package_distribution",
+        "runs", "schema", "status"
+      ] | sort)
+      and .schema == "riffdb-agent-application-alpha-campaign/v2"
+      and (.package_distribution | keys | sort) == [
+        "checksums_sha256", "signing_identity"
+      ]
+      and (.package_distribution.checksums_sha256 | test("^[0-9a-f]{64}$"))
+      and (.package_distribution.signing_identity | test("^[A-Za-z0-9_.-]{1,128}$")))
+    or
+    ($expected_runs != 6
+      and (keys | sort) == ([
+        "bundle_hash", "campaign_id", "immutable", "runs", "schema", "status"
+      ] | sort)
+      and .schema == "riffdb-agent-application-alpha-campaign/v1")
+  )
   and .campaign_id == $campaign
   and .immutable == true
   and .status == "passed"
@@ -116,7 +133,31 @@ jq -e --arg campaign "$campaign" --argjson expected_runs "$expected_runs" '
 }
 
 bundle="$work_root/bundle"
-bundle_hash="$("$repo_root/scripts/agent-application-alpha-package" "$bundle")"
+if [[ "$expected_runs" == 6 ]]; then
+    package_first=true
+    package_distribution="${RIFFDB_AGENT_ALPHA_PACKAGE_DISTRIBUTION:-}"
+    package_signers="${RIFFDB_AGENT_ALPHA_PACKAGE_ALLOWED_SIGNERS:-}"
+    package_identity="$(jq -er '.package_distribution.signing_identity' "$manifest")"
+    package_hash="$(jq -er '.package_distribution.checksums_sha256' "$manifest")"
+    [[ "$package_distribution" == /* && -d "$package_distribution" && ! -L "$package_distribution" \
+        && "$package_signers" == /* && -f "$package_signers" && ! -L "$package_signers" ]] || {
+        echo "campaign 03 requires the exact signed package distribution and allowed signers" >&2
+        exit 1
+    }
+    [[ "$(sha256sum "$package_distribution/checksums.sha256" | cut -d' ' -f1)" == "$package_hash" ]] || {
+        echo "campaign 03 package distribution identity does not match its manifest" >&2
+        exit 1
+    }
+    bundle_hash="$("$repo_root/scripts/agent-application-alpha-package-first" \
+        --distribution "$package_distribution" \
+        --allowed-signers "$package_signers" \
+        --identity "$package_identity" \
+        --output "$bundle")"
+else
+    package_first=false
+    package_hash=
+    bundle_hash="$("$repo_root/scripts/agent-application-alpha-package" "$bundle")"
+fi
 [[ "$bundle_hash" == "$(jq -er '.bundle_hash' "$manifest")" ]] || {
     echo "canary campaign was not produced from the current sealed bundle" >&2
     exit 1
@@ -154,17 +195,45 @@ while IFS= read -r run; do
         --arg domain "$domain" \
         --arg language "$language" \
         --arg bundle "$bundle_hash" \
-        --arg transcript "$transcript_hash" '
-      (keys | sort) == ([
-        "agent_identity", "boundary_passed", "bundle_hash",
-        "compiler_failures", "domain", "explanation",
-        "first_page_read_seconds", "first_write_seconds", "fresh_context",
-        "golden_passed", "handwritten_glue_lines", "human_interventions",
-        "independent", "kernel_attempts", "kernel_successes", "language",
-        "rating", "run_id", "runtime_failures", "schema", "source_access",
-        "time_to_complete_seconds", "transcript_sha256", "unsupported_shapes"
-      ] | sort)
-      and .schema == "riffdb-agent-application-alpha-run/v1"
+        --arg transcript "$transcript_hash" \
+        --arg package_hash "$package_hash" \
+        --argjson package_first "$package_first" '
+      (
+        ($package_first
+          and (keys | sort) == ([
+            "agent_identity", "boundary_passed", "bundle_hash",
+            "compiler_failures", "domain", "explanation",
+            "first_page_read_seconds", "first_write_seconds", "fresh_context",
+            "golden_passed", "handwritten_glue_lines", "human_interventions",
+            "identity_change_ceremony_count", "independent", "kernel_attempts",
+            "kernel_successes", "language", "package_distribution_checksums_sha256",
+            "package_installation_verified", "rating", "rescue_count", "run_id",
+            "runtime_failures", "schema", "source_access", "time_to_complete_seconds",
+            "time_to_first_committed_row_seconds", "transcript_sha256", "unsupported_shapes"
+          ] | sort)
+          and .schema == "riffdb-agent-application-alpha-run/v2"
+          and .package_distribution_checksums_sha256 == $package_hash
+          and .package_installation_verified == true
+          and .time_to_first_committed_row_seconds == .first_write_seconds
+          and (.identity_change_ceremony_count | type) == "number"
+          and (.identity_change_ceremony_count | floor) == .identity_change_ceremony_count
+          and .identity_change_ceremony_count >= 0
+          and (.rescue_count | type) == "number"
+          and (.rescue_count | floor) == .rescue_count
+          and .rescue_count >= 0)
+        or
+        (($package_first | not)
+          and (keys | sort) == ([
+            "agent_identity", "boundary_passed", "bundle_hash",
+            "compiler_failures", "domain", "explanation",
+            "first_page_read_seconds", "first_write_seconds", "fresh_context",
+            "golden_passed", "handwritten_glue_lines", "human_interventions",
+            "independent", "kernel_attempts", "kernel_successes", "language",
+            "rating", "run_id", "runtime_failures", "schema", "source_access",
+            "time_to_complete_seconds", "transcript_sha256", "unsupported_shapes"
+          ] | sort)
+          and .schema == "riffdb-agent-application-alpha-run/v1")
+      )
       and .run_id == $run_id
       and .agent_identity == $agent
       and .domain == $domain
@@ -265,7 +334,7 @@ while IFS= read -r run; do
         exit 1
     }
 
-    jq -e -s --slurpfile report "$report" '
+    jq -e -s --slurpfile report "$report" --argjson package_first "$package_first" '
       length >= 4
       and .[0].kind == "start"
       and .[0].elapsed_ms == 0
@@ -293,20 +362,40 @@ while IFS= read -r run; do
         == $report[0].human_interventions
       and (map(select(.kind == "kernel_attempt")) | length)
         == $report[0].kernel_attempts
+      and (
+        ($package_first
+          and (map(select(.kind == "package_install")) | length) == 1
+          and (map(select(.kind == "identity_change_ceremony")) | length)
+            == $report[0].identity_change_ceremony_count
+          and (map(select(.kind == "rescue")) | length)
+            == $report[0].rescue_count)
+        or
+        (($package_first | not)
+          and (map(select(
+            .kind == "package_install"
+            or .kind == "identity_change_ceremony"
+            or .kind == "rescue"
+          )) | length) == 0)
+      )
       and all(.[];
           (keys - ["schema", "elapsed_ms", "kind", "code", "operation"]
             | length) == 0
-          and .schema == "riffdb-agent-application-alpha-event/v1"
+          and .schema == (if $package_first
+            then "riffdb-agent-application-alpha-event/v2"
+            else "riffdb-agent-application-alpha-event/v1"
+          end)
           and (.elapsed_ms | type) == "number"
           and .elapsed_ms >= 0
           and (
             .kind as $kind
-            | ([
-              "start", "tool", "compiler_failure", "runtime_failure",
-              "unsupported_shape", "intervention", "kernel_attempt",
-              "source_access", "first_write", "first_page_read", "complete",
-              "rating"
-            ] | index($kind)) != null)
+            | (([
+                "start", "tool", "compiler_failure", "runtime_failure",
+                "unsupported_shape", "intervention", "kernel_attempt",
+                "source_access", "first_write", "first_page_read", "complete",
+                "rating"
+              ] + (if $package_first then [
+                "package_install", "identity_change_ceremony", "rescue"
+              ] else [] end)) | index($kind)) != null)
           and (.code == null
             or ((.code | type) == "string"
               and (.code | test("^[A-Za-z0-9_.-]{1,128}$"))))
