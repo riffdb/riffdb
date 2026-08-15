@@ -269,6 +269,9 @@ application checks print the configured seed count and the exact next command:
 use `riffdb dev --seed --run` when the list is nonempty, or `riffdb dev --run`
 for an intentionally seedless application. Requesting `--seed` with an empty
 list fails before application startup and names any unreferenced JSONL files.
+Each JSONL row must include the command's declared symbolic idempotency input.
+The development runner reads that name from the compiled command; it does not
+require the field to be spelled `idempotency_key`.
 
 ## Use generated read-after-write helpers
 

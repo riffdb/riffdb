@@ -2741,6 +2741,10 @@ async fn application_command(
             else {
                 return invalid_input(identity);
             };
+            let Some(idempotency_field) = seed_idempotency_field(locked.contract(), command_name)
+            else {
+                return invalid_input(identity);
+            };
             let checkpoint = seed_checkpoint_path(
                 &deployment_root,
                 index,
@@ -2750,6 +2754,7 @@ async fn application_command(
                 &path,
                 command_name,
                 locked.manifest().contract().version(),
+                idempotency_field,
                 seed_concurrency,
                 checkpoint,
                 &application_config,
@@ -3103,11 +3108,13 @@ fn deployment_installation_artifacts(
             .map_err(|_| "installation_seed_input_invalid")?;
         let command_name =
             seed_command_name(Path::new(source)).ok_or("installation_seed_input_invalid")?;
+        let idempotency_field = seed_idempotency_field(locked.contract(), command_name)
+            .ok_or("installation_seed_input_invalid")?;
         let batch = parse_batch_source(
             &bytes,
             command_name,
             Some(locked.manifest().contract().version()),
-            "idempotency_key",
+            idempotency_field,
         )
         .map_err(|_| "installation_seed_input_invalid")?;
         let name = InstallationSymbol::new(format!("seed-{:03}", index + 1))
@@ -3144,6 +3151,18 @@ fn seed_command_name(path: &Path) -> Option<&str> {
         .and_then(|name| name.strip_suffix(".jsonl"))
         .and_then(|name| name.split_once('-').map(|(_, command)| command))
         .filter(|name| !name.is_empty())
+}
+
+fn seed_idempotency_field<'a>(
+    contract: &'a riffdb_contract_ir::ContractBundle,
+    command_name: &str,
+) -> Option<&'a str> {
+    let command = contract
+        .commands()
+        .iter()
+        .find(|candidate| candidate.name() == command_name)?;
+    let id = command.idempotency_input()?;
+    command.input().record().field(id).map(|field| field.name())
 }
 
 fn capability_id_text(capability_id: CapabilityId) -> String {
@@ -3402,6 +3421,7 @@ async fn execute_application_seed_batch(
     path: &Path,
     command_name: &str,
     contract_version: u64,
+    idempotency_field: &str,
     concurrency: usize,
     checkpoint: PathBuf,
     config: &EffectiveConfig,
@@ -3413,7 +3433,7 @@ async fn execute_application_seed_batch(
         &source,
         command_name,
         Some(contract_version),
-        "idempotency_key",
+        idempotency_field,
     )
     .map_err(batch_error_terminal)?;
     let metadata = required_metadata(CommandIdentity::CommandBatch, config, environment)?;
@@ -3427,7 +3447,7 @@ async fn execute_application_seed_batch(
             command_name: command_name.to_owned(),
             expected_contract_version: Some(contract_version),
             concurrency,
-            idempotency_field: "idempotency_key".to_owned(),
+            idempotency_field: idempotency_field.to_owned(),
             error_outcomes: BTreeSet::new(),
             checkpoint_path: Some(checkpoint),
             progress: true,
@@ -13486,6 +13506,33 @@ query GetDocument(
                 .expect("nearest exact workspace is unambiguous");
         assert_eq!(role.application_name(), "nested-app");
         assert_eq!(role.contract_lineage().as_str(), "NestedApp");
+    }
+
+    #[test]
+    fn application_seed_uses_the_compiled_symbolic_idempotency_field() {
+        let directory = tempfile::TempDir::with_prefix("riffdb-cli-seed-idempotency-")
+            .expect("scratch directory");
+        crate::scaffold::create_application(
+            "seed-app",
+            crate::scaffold::ScaffoldLanguage::Rust,
+            directory.path(),
+        )
+        .expect("scaffold application");
+        let source = fs::read_to_string(directory.path().join("riffdb/contract.riff"))
+            .expect("contract source")
+            .replace("input idempotency_key:", "input request_key:")
+            .replace(
+                "idempotency_key idempotency_key",
+                "idempotency_key request_key",
+            );
+        let contract = riffdb_contract_compiler::compile_contract_source(&source)
+            .expect("custom idempotency symbol remains valid");
+
+        assert_eq!(
+            seed_idempotency_field(&contract, "CreateItem"),
+            Some("request_key")
+        );
+        assert_eq!(seed_idempotency_field(&contract, "MissingCommand"), None);
     }
 
     #[test]
