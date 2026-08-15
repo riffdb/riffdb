@@ -290,13 +290,16 @@ if jq -e '(.reactive_modules | length) > 0' "$application_manifest" >/dev/null; 
         "$work_root/application.json" >/dev/null
 fi
 
-"${operator[@]}" role bind "$application_manifest" \
+if ! "${operator[@]}" role bind "$application_manifest" \
     --role "$role_symbol" \
     --principal "app:$(jq -er '.application' "$application_manifest")" \
     --actor-kind service \
     --lifetime-seconds 86400 \
     --audience riffdb-grpc-loopback \
-    --credential-output "$work_root/profile.credential" >"$work_root/role.json"
+    --credential-output "$work_root/profile.credential" >"$work_root/role.json"; then
+    cat "$work_root/role.json" >&2
+    exit 1
+fi
 jq -e '.ok == true and .command == "role.bind"' "$work_root/role.json" >/dev/null
 
 driver_socket=

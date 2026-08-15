@@ -8641,16 +8641,13 @@ fn find_application_workspace(
     } else {
         std::env::current_dir().map_err(|_| ())?.join(manifest_path)
     };
-    let mut matches = absolute
+    absolute
         .parent()
         .into_iter()
         .flat_map(Path::ancestors)
-        .filter(|ancestor| ancestor.join(contract_path).is_file());
-    let workspace = matches.next().ok_or(())?.to_path_buf();
-    if matches.next().is_some() {
-        return Err(());
-    }
-    Ok(workspace)
+        .find(|ancestor| ancestor.join(contract_path).is_file())
+        .map(Path::to_path_buf)
+        .ok_or(())
 }
 
 fn read_workspace_text(workspace: &Path, path: &str) -> Result<String, ()> {
@@ -13463,6 +13460,32 @@ query GetDocument(
         )
         .expect("standalone role paths discover the same successor lock");
         assert_eq!(exact_role.identity(), role.identity());
+    }
+
+    #[test]
+    fn exact_role_uses_the_nearest_identity_verified_nested_workspace() {
+        let parent = tempfile::TempDir::with_prefix("riffdb-cli-nested-workspace-")
+            .expect("scratch directory");
+        let directory = parent.path().join("nested-app");
+        crate::scaffold::create_application(
+            "nested-app",
+            crate::scaffold::ScaffoldLanguage::Rust,
+            &directory,
+        )
+        .expect("scaffold nested application");
+        fs::create_dir(parent.path().join("riffdb")).expect("outer contract directory");
+        fs::write(
+            parent.path().join("riffdb/contract.riff"),
+            b"contract Unrelated version 1 {}\n",
+        )
+        .expect("unrelated outer contract");
+
+        let exact_path = directory.join("generated/riffdb.application.exact.json");
+        let role =
+            compile_role_from_workspace(&exact_path.into_os_string(), "NestedAppApplication", None)
+                .expect("nearest exact workspace is unambiguous");
+        assert_eq!(role.application_name(), "nested-app");
+        assert_eq!(role.contract_lineage().as_str(), "NestedApp");
     }
 
     #[test]

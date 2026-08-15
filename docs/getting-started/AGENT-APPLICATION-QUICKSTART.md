@@ -79,6 +79,12 @@ query plans, role authority definitions, compiler formats, and generated
 artifact hashes. The compatible V1 exact manifest under `generated/` is also
 compiler-owned.
 
+Commands that receive a manifest or exact-manifest path discover its
+application workspace from the nearest ancestor containing the configured
+contract source. An unrelated outer repository or sibling application cannot
+make a nested application ambiguous. The nearest workspace still has to pass
+the ordinary exact identity checks; proximity never substitutes authority.
+
 The explicit authoring operations are:
 
 ```text
@@ -141,6 +147,9 @@ refreshes the lock only for its product-owned ephemeral database, regenerates
 all bindings, checks the application boundary, executes seed JSONL
 through ordinary idempotent commands, and shuts down its child on failure or
 interrupt. Credentials live only in a mode-protected temporary directory.
+If role compilation or binding fails, the installed runner prints the public
+`role bind` error before cleaning up its temporary service state. A failed
+development run must not collapse that diagnostic into a silent non-zero exit.
 
 With `--run`, the same product-owned workflow starts the repository's generated
 application after readiness. A repository must contain exactly one supported
