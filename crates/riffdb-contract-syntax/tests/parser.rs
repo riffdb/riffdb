@@ -1090,6 +1090,66 @@ contract Invalid version 1 {
     );
 }
 
+#[test]
+fn parses_atomic_vector_ann_clause_with_exact_values() {
+    let source = r#"
+contract Search version 1 {
+  entity Document {
+    key (id: uuid)
+    field title: string<256>
+    vector_field embedding(128, cosine, (title), staleness_slo 60, ann_threshold 256, recall_target_bps 9500)
+  }
+}
+"#;
+    let document = parse_contract(source).expect("ANN declaration parses");
+    let Declaration::Entity(entity) = &document.contract.value.declarations[0].value else {
+        panic!("entity declaration");
+    };
+    let ann = entity
+        .items
+        .iter()
+        .find_map(|item| match &item.value {
+            EntityItem::VectorField(field) => field.ann.as_ref(),
+            _ => None,
+        })
+        .expect("ANN clause retained in AST");
+    assert_eq!(ann.row_threshold.value, "256");
+    assert_eq!(ann.recall_target_bps.value, "9500");
+}
+
+#[test]
+fn wrong_ann_keyword_is_rejected_at_its_span() {
+    let source = r#"
+contract Invalid version 1 {
+  entity Document {
+    key (id: uuid)
+    field title: string<256>
+    vector_field embedding(128, cosine, (title), staleness_slo 60, approximate_at 256, recall_target_bps 9500)
+  }
+}
+"#;
+    let diagnostics = parse_contract(source).expect_err("wrong ANN keyword must fail");
+    let start = source.find("approximate_at").expect("keyword span");
+    assert_eq!(
+        diagnostics.as_slice()[0].span(),
+        Span::new(start, start + "approximate_at".len()).expect("span")
+    );
+}
+
+#[test]
+fn ann_threshold_without_recall_target_is_syntax_error() {
+    let source = r#"
+contract Invalid version 1 {
+  entity Document {
+    key (id: uuid)
+    field title: string<256>
+    vector_field embedding(128, cosine, (title), staleness_slo 60, ann_threshold 256)
+  }
+}
+"#;
+    parse_contract(source).expect_err("partial ANN authority must be unrepresentable");
+}
+
 // ─── Secret field classification is contextual (ADR-0118, WP-597) ───
 
 /// `field secret name: type` records the classification with the modifier's

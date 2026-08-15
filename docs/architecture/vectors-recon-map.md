@@ -43,10 +43,11 @@ the reported frontier.
 | Query-time org scope enforcement | `crates/riffdb-query-executor/src/lib.rs` | All queries require org scope in the plan |
 | Projection group keys carry org | `crates/riffdb-projection/src/evaluator.rs` — group key prefix | Keys are `0x47 0x01` + identity + generation + group values |
 
-**Vectors obligation:** VEC-008 requires per-organization index statistics. The
-`partition_by` field that already scopes entity queries will scope the vector
-projection's index segments. nearest() must require org scope (VEC-006) in the
-same mandatory way existing projections require it.
+**Vectors obligation:** VEC-008 requires per-organization index statistics.
+WP-594 constructs its deterministic HNSW graph only from the single requested
+organization after scalar predicates and principal admission. The graph entry
+point, links, and reported statistics therefore have no cross-organization or
+denied-row input. `nearest()` retains the mandatory org scope (VEC-006).
 
 ## 4. Freshness / read-after-commit
 

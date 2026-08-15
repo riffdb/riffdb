@@ -1193,6 +1193,7 @@ pub struct SchemaIr {
     unique_keys: Vec<UniqueKeySchema>,
     delete_policies: Vec<DeletePolicySchemaV1>,
     vector_field_specs: Vec<VectorFieldSpecV1>,
+    vector_ann_specs: Vec<VectorAnnSpecV1>,
     secret_field_specs: Vec<SecretFieldSpecV1>,
 }
 
@@ -1200,6 +1201,11 @@ pub struct SchemaIr {
 /// decoder's length preflight so the constructor and the durable decode path
 /// cannot drift (previously a bare `1_024` duplicated in both places).
 pub(crate) const MAX_VECTOR_SOURCE_FIELDS: usize = 1_024;
+
+/// Maximum declared per-organization row threshold for ANN routing.
+pub const MAX_VECTOR_ANN_THRESHOLD_ROWS_PER_ORG: u32 = 65_536;
+/// Integer denominator for declared ANN recall targets.
+pub const VECTOR_RECALL_BASIS_POINTS: u32 = 10_000;
 
 /// Search configuration for one contract-declared vector field
 /// (ADR-0091 / WP-591): the distance metric, the source fields whose edits
@@ -1293,6 +1299,84 @@ impl VectorFieldSpecV1 {
     #[must_use]
     pub const fn stale_entity_count_threshold(&self) -> u64 {
         self.stale_entity_count_threshold
+    }
+}
+
+/// Optional approximate-nearest-neighbor configuration for one vector field.
+///
+/// This is a distinct V1 record rather than an extension of
+/// [`VectorFieldSpecV1`], preserving every pre-V12 schema byte exactly.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct VectorAnnSpecV1 {
+    entity: EntityTypeId,
+    field: FieldId,
+    row_threshold: u32,
+    recall_target_bps: u32,
+}
+
+impl VectorAnnSpecV1 {
+    /// Constructs one bounded ANN declaration.
+    pub fn new(
+        entity: EntityTypeId,
+        field: FieldId,
+        row_threshold: u32,
+        recall_target_bps: u32,
+    ) -> Result<Self, IrValidationError> {
+        if row_threshold == 0 {
+            return Err(IrValidationError::BelowMinimum {
+                kind: "vector ANN row threshold",
+                actual: 0,
+                minimum: 1,
+            });
+        }
+        if row_threshold > MAX_VECTOR_ANN_THRESHOLD_ROWS_PER_ORG {
+            return Err(IrValidationError::LimitExceeded {
+                kind: "vector ANN row threshold",
+                actual: row_threshold as usize,
+                maximum: MAX_VECTOR_ANN_THRESHOLD_ROWS_PER_ORG as usize,
+            });
+        }
+        if recall_target_bps == 0 {
+            return Err(IrValidationError::BelowMinimum {
+                kind: "vector ANN recall target basis points",
+                actual: 0,
+                minimum: 1,
+            });
+        }
+        if recall_target_bps > VECTOR_RECALL_BASIS_POINTS {
+            return Err(IrValidationError::LimitExceeded {
+                kind: "vector ANN recall target basis points",
+                actual: recall_target_bps as usize,
+                maximum: VECTOR_RECALL_BASIS_POINTS as usize,
+            });
+        }
+        Ok(Self {
+            entity,
+            field,
+            row_threshold,
+            recall_target_bps,
+        })
+    }
+
+    /// Owning entity type.
+    #[must_use]
+    pub const fn entity(&self) -> EntityTypeId {
+        self.entity
+    }
+    /// Configured vector field.
+    #[must_use]
+    pub const fn field(&self) -> FieldId {
+        self.field
+    }
+    /// Per-organization row count above which ANN engages.
+    #[must_use]
+    pub const fn row_threshold(&self) -> u32 {
+        self.row_threshold
+    }
+    /// Declared minimum recall in integer basis points.
+    #[must_use]
+    pub const fn recall_target_bps(&self) -> u32 {
+        self.recall_target_bps
     }
 }
 
@@ -1551,6 +1635,7 @@ impl SchemaIr {
             unique_keys,
             delete_policies,
             vector_field_specs: Vec::new(),
+            vector_ann_specs: Vec::new(),
             secret_field_specs: Vec::new(),
         };
         result.validate_enum_references()?;
@@ -1630,6 +1715,52 @@ impl SchemaIr {
             })
             .ok()
             .map(|index| &self.vector_field_specs[index])
+    }
+
+    /// Attaches checked ANN configurations. Every ANN entry must name a
+    /// vector field spec already attached to this schema.
+    pub fn with_vector_ann_specs(
+        mut self,
+        mut specs: Vec<VectorAnnSpecV1>,
+    ) -> Result<Self, IrValidationError> {
+        checked_len("vector ANN specs", specs.len(), MAX_DECLARATIONS_PER_KIND)?;
+        specs.sort_unstable_by_key(|spec| (spec.entity, spec.field));
+        if specs
+            .windows(2)
+            .any(|pair| pair[0].entity == pair[1].entity && pair[0].field == pair[1].field)
+        {
+            return Err(IrValidationError::NonCanonicalOrder {
+                kind: "duplicate vector ANN spec",
+            });
+        }
+        for spec in &specs {
+            if self.vector_field_spec(spec.entity, spec.field).is_none() {
+                return Err(IrValidationError::InvalidReference {
+                    kind: "vector ANN spec field",
+                });
+            }
+        }
+        self.vector_ann_specs = specs;
+        Ok(self)
+    }
+
+    /// ANN configurations in canonical `(entity, field)` order.
+    #[must_use]
+    pub fn vector_ann_specs(&self) -> &[VectorAnnSpecV1] {
+        &self.vector_ann_specs
+    }
+
+    /// Resolves the optional ANN configuration for one vector field.
+    #[must_use]
+    pub fn vector_ann_spec(
+        &self,
+        entity: EntityTypeId,
+        field: FieldId,
+    ) -> Option<&VectorAnnSpecV1> {
+        self.vector_ann_specs
+            .binary_search_by_key(&(entity, field), |spec| (spec.entity, spec.field))
+            .ok()
+            .map(|index| &self.vector_ann_specs[index])
     }
 
     /// Attaches checked secret-field classifications (ADR-0118), validating
@@ -1773,6 +1904,11 @@ impl SchemaIr {
     #[must_use]
     pub fn requires_ir_v8(&self) -> bool {
         !self.secret_field_specs.is_empty()
+    }
+    /// Whether this schema requires IR v12 ANN declarations.
+    #[must_use]
+    pub fn requires_ir_v12(&self) -> bool {
+        !self.vector_ann_specs.is_empty()
     }
     /// Resolves an entity.
     #[must_use]

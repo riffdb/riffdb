@@ -180,6 +180,8 @@ pub(crate) struct HirVectorField {
     pub(crate) metric: riffdb_types::DistanceMetric,
     pub(crate) source_fields: Vec<FieldId>,
     pub(crate) stale_entity_count_threshold: u64,
+    pub(crate) ann_row_threshold: Option<u32>,
+    pub(crate) recall_target_bps: Option<u32>,
     pub(crate) span: Span,
 }
 
@@ -952,6 +954,45 @@ fn lower_entities(
                             0
                         }
                     };
+                let (ann_row_threshold, recall_target_bps) = match &vector_field.ann {
+                    None => (None, None),
+                    Some(ann) => {
+                        let threshold = match ann.row_threshold.value.parse::<u32>() {
+                            Ok(value)
+                                if (1
+                                    ..=riffdb_contract_ir::MAX_VECTOR_ANN_THRESHOLD_ROWS_PER_ORG)
+                                    .contains(&value) =>
+                            {
+                                Some(value)
+                            }
+                            _ => {
+                                valid = false;
+                                diagnostics.push(CompilerDiagnostic::new(
+                                    CompilerDiagnosticCode::BoundExceeded,
+                                    ann.row_threshold.span,
+                                ));
+                                None
+                            }
+                        };
+                        let recall = match ann.recall_target_bps.value.parse::<u32>() {
+                            Ok(value)
+                                if (1..=riffdb_contract_ir::VECTOR_RECALL_BASIS_POINTS)
+                                    .contains(&value) =>
+                            {
+                                Some(value)
+                            }
+                            _ => {
+                                valid = false;
+                                diagnostics.push(CompilerDiagnostic::new(
+                                    CompilerDiagnosticCode::BoundExceeded,
+                                    ann.recall_target_bps.span,
+                                ));
+                                None
+                            }
+                        };
+                        (threshold, recall)
+                    }
+                };
                 // Source fields must be non-empty and each must resolve to an entity field.
                 if vector_field.source_fields.is_empty() {
                     valid = false;
@@ -1020,6 +1061,8 @@ fn lower_entities(
                         },
                         source_fields,
                         stale_entity_count_threshold,
+                        ann_row_threshold,
+                        recall_target_bps,
                         span: item.span,
                     });
                 }

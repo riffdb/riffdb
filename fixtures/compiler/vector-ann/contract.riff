@@ -1,0 +1,13 @@
+
+contract VectorAnnShape version 1 {
+  entity Document {
+    key (org_id: uuid, doc_id: uuid)
+    field title: string<256>
+    vector_field embedding(128, cosine, (title), staleness_slo 60, ann_threshold 256, recall_target_bps 9500)
+  }
+  aggregate Documents {
+    root Document
+    partition_by org_id
+    conflict_key (org_id, doc_id)
+  }
+}

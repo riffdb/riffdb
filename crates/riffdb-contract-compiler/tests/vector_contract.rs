@@ -9,7 +9,10 @@
 //! and the dropped vector dimension previously broke every vector contract.
 
 use riffdb_contract_compiler::compile_contract_source;
-use riffdb_contract_ir::{ContractBundle, ValueTypeTag};
+use riffdb_contract_ir::{
+    BUNDLE_FORMAT_VERSION_V12, ContractBundle, EXECUTABLE_IR_VERSION_V12, GRAMMAR_VERSION_V12,
+    ValueTypeTag,
+};
 
 fn vector_contract(dimension: u32) -> String {
     format!(
@@ -24,6 +27,86 @@ contract Docs version 1 {{
 }}
 "#
     )
+}
+
+fn vector_ann_contract(threshold: u32, recall_target_bps: u32) -> String {
+    format!(
+        r#"
+contract Docs version 1 {{
+  entity Document {{
+    key (org_id: uuid, doc_id: uuid)
+    field title: string<256>
+    field body: string<65536>
+    vector_field embedding(128, cosine, (title, body), staleness_slo 60, ann_threshold {threshold}, recall_target_bps {recall_target_bps})
+  }}
+}}
+"#
+    )
+}
+
+#[test]
+fn ann_configuration_allocates_v12_and_round_trips() {
+    let bundle = compile_contract_source(&vector_ann_contract(256, 9500)).expect("compiles");
+    assert_eq!(bundle.format_version(), BUNDLE_FORMAT_VERSION_V12);
+    assert_eq!(bundle.grammar_version(), GRAMMAR_VERSION_V12);
+    assert_eq!(bundle.ir_version(), EXECUTABLE_IR_VERSION_V12);
+    let spec = bundle.schema().vector_ann_specs()[0];
+    assert_eq!(spec.row_threshold(), 256);
+    assert_eq!(spec.recall_target_bps(), 9500);
+    let decoded = ContractBundle::decode(bundle.canonical_bytes()).expect("V12 decodes");
+    assert_eq!(decoded.schema().vector_ann_specs(), [spec]);
+    assert_eq!(decoded.bundle_hash(), bundle.bundle_hash());
+}
+
+#[test]
+fn checked_in_ann_fixture_pins_v12_bytes_and_hash() {
+    let source = include_str!("../../../fixtures/compiler/vector-ann/contract.riff");
+    let expected_bytes = include_bytes!("../../../fixtures/compiler/vector-ann/bundle.bin");
+    let expected_hash =
+        include_str!("../../../fixtures/compiler/vector-ann/bundle-hash.txt").trim_end();
+    let compiled = compile_contract_source(source).expect("fixture compiles");
+    assert_eq!(compiled.canonical_bytes(), expected_bytes);
+    let rendered_hash: String = compiled
+        .bundle_hash()
+        .as_bytes()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    assert_eq!(rendered_hash, expected_hash);
+    let decoded = ContractBundle::decode(expected_bytes).expect("checked-in V12 fixture decodes");
+    assert_eq!(decoded.bundle_hash(), compiled.bundle_hash());
+    assert_eq!(decoded.schema().vector_ann_specs().len(), 1);
+}
+
+#[test]
+fn exact_only_vector_bundle_remains_pre_v12() {
+    let bundle = compile_contract_source(&vector_contract(128)).expect("compiles");
+    assert!(bundle.format_version() < BUNDLE_FORMAT_VERSION_V12);
+    assert!(bundle.schema().vector_ann_specs().is_empty());
+}
+
+#[test]
+fn ann_bounds_are_span_checked() {
+    for (threshold, recall, rejected) in [
+        (0, 9500, "0"),
+        (65_537, 9500, "65537"),
+        (256, 0, "0"),
+        (256, 10_001, "10001"),
+    ] {
+        let source = vector_ann_contract(threshold, recall);
+        let diagnostics = compile_contract_source(&source).expect_err("invalid ANN bound");
+        let diagnostic = &diagnostics
+            .semantic()
+            .expect("semantic diagnostic")
+            .as_slice()[0];
+        assert_eq!(diagnostic.code().as_str(), "RDB-C020");
+        let span = diagnostic.primary_span();
+        assert_eq!(
+            &source[span.start() as usize..span.end() as usize],
+            rejected,
+            "the invalid declaration value owns the primary span"
+        );
+    }
 }
 
 /// A contract declaring a `vector_field` MUST compile through the public

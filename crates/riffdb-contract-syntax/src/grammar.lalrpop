@@ -200,7 +200,8 @@ EntityItem: Spanned<EntityItem> = {
         }), lo, hi),
     <lo:@L> "vector_field" <name:Identifier> "(" <dimension:UnsignedInteger> ","
         <metric:VectorMetric> "," "(" <source_fields:IdentifierList> ")" ","
-        <slo_keyword:Identifier> <staleness_slo:UnsignedInteger> ")" <hi:@R>
+        <slo_keyword:Identifier> <staleness_slo:UnsignedInteger>
+        <ann:VectorAnnClause?> ")" <hi:@R>
         =>? parser::grammar_result(parser::vector_field_item(
             name,
             dimension,
@@ -208,6 +209,7 @@ EntityItem: Spanned<EntityItem> = {
             source_fields,
             slo_keyword,
             staleness_slo,
+            ann,
             lo,
             hi,
         )),
@@ -218,6 +220,17 @@ EntityItem: Spanned<EntityItem> = {
             source_entity,
             index,
         }), lo, hi),
+};
+
+VectorAnnClause: VectorAnnDeclaration = {
+    "," <threshold_keyword:Identifier> <row_threshold:UnsignedInteger>
+        "," <recall_keyword:Identifier> <recall_target_bps:UnsignedInteger>
+        =>? parser::grammar_result(parser::vector_ann_declaration(
+            threshold_keyword,
+            row_threshold,
+            recall_keyword,
+            recall_target_bps,
+        )),
 };
 
 IndexOption: Spanned<IndexOption> = {

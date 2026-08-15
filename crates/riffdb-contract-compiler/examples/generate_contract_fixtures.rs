@@ -217,6 +217,23 @@ contract WorkflowInitialShape version 1 {
 }
 "#;
 
+/// Vector ANN fixture (WP-594): pins the additive V12 schema extension while
+/// keeping the projection-only metadata separate from authoritative fields.
+const VECTOR_ANN_SOURCE: &str = r#"
+contract VectorAnnShape version 1 {
+  entity Document {
+    key (org_id: uuid, doc_id: uuid)
+    field title: string<256>
+    vector_field embedding(128, cosine, (title), staleness_slo 60, ann_threshold 256, recall_target_bps 9500)
+  }
+  aggregate Documents {
+    root Document
+    partition_by org_id
+    conflict_key (org_id, doc_id)
+  }
+}
+"#;
+
 fn main() -> Result<(), Box<dyn Error>> {
     let output_root = parse_output_root()?;
     let fixture_root = output_root.join("fixtures/compiler");
@@ -259,6 +276,19 @@ fn main() -> Result<(), Box<dyn Error>> {
                 .ok_or("secret reveal fixture command is absent")?,
         )
         .render_text(),
+    )?;
+
+    let vector_ann_bundle = compile_contract_source(VECTOR_ANN_SOURCE)?;
+    let vector_ann_root = fixture_root.join("vector-ann");
+    fs::create_dir_all(&vector_ann_root)?;
+    fs::write(vector_ann_root.join("contract.riff"), VECTOR_ANN_SOURCE)?;
+    fs::write(
+        vector_ann_root.join("bundle.bin"),
+        vector_ann_bundle.canonical_bytes(),
+    )?;
+    fs::write(
+        vector_ann_root.join("bundle-hash.txt"),
+        format!("{}\n", hex(vector_ann_bundle.bundle_hash().as_bytes())),
     )?;
 
     let workflow_initial_bundle = compile_contract_source(WORKFLOW_INITIAL_SOURCE)?;

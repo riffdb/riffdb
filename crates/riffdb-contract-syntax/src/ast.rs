@@ -337,6 +337,19 @@ pub struct VectorFieldDeclaration {
     pub source_fields: Vec<Spanned<String>>,
     /// Positive stale-entity count threshold lexeme.
     pub staleness_slo: Spanned<String>,
+    /// Optional approximate-nearest-neighbor configuration. Its two fields
+    /// are syntactically atomic: an ANN threshold can never exist without a
+    /// declared recall target.
+    pub ann: Option<VectorAnnDeclaration>,
+}
+
+/// Compiler-owned approximate-nearest-neighbor configuration (ADR-0091).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VectorAnnDeclaration {
+    /// Per-organization row count above which ANN engages.
+    pub row_threshold: Spanned<String>,
+    /// Required recall ratio in integer basis points (`1..=10_000`).
+    pub recall_target_bps: Spanned<String>,
 }
 
 /// The grammar's closed distance metric keywords.

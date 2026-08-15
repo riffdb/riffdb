@@ -121,7 +121,7 @@ pub(crate) fn exact_knn(
 /// large finite components deterministically seized rank 0 of every
 /// dot-product result.
 #[inline]
-fn compute_distance(a: &[f32], b: &[f32], metric: DistanceMetric) -> f32 {
+pub(crate) fn compute_distance(a: &[f32], b: &[f32], metric: DistanceMetric) -> f32 {
     let distance = match metric {
         DistanceMetric::Cosine => cosine_distance(a, b),
         DistanceMetric::Euclidean => euclidean_distance(a, b),

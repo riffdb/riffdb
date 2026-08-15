@@ -140,6 +140,35 @@ pub(crate) fn lower_schema(hir: &TypedContractHir) -> Result<SchemaIr, CompilerD
             })
         })
         .collect::<Result<Vec<_>, _>>()?;
+    let vector_ann_specs = hir
+        .entities
+        .iter()
+        .flat_map(|entity| {
+            entity.vector_fields.iter().filter_map(|vector_field| {
+                let (Some(row_threshold), Some(recall_target_bps)) = (
+                    vector_field.ann_row_threshold,
+                    vector_field.recall_target_bps,
+                ) else {
+                    return None;
+                };
+                Some(
+                    riffdb_contract_ir::VectorAnnSpecV1::new(
+                        entity.id,
+                        vector_field.field_id,
+                        row_threshold,
+                        recall_target_bps,
+                    )
+                    .map(|spec| (spec, vector_field.span))
+                    .map_err(|_| {
+                        CompilerDiagnostics::single(CompilerDiagnostic::new(
+                            CompilerDiagnosticCode::InvalidType,
+                            vector_field.span,
+                        ))
+                    }),
+                )
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
     // Probe each spec individually so a schema-validation failure carries the
     // offending `vector_field`'s span, not the whole-contract span (the same
     // per-item probe the delete-policy path above uses).
@@ -196,6 +225,10 @@ pub(crate) fn lower_schema(hir: &TypedContractHir) -> Result<SchemaIr, CompilerD
                 .collect(),
         )
         .and_then(|schema| schema.with_secret_field_specs(secret_field_specs))
+        .and_then(|schema| {
+            schema
+                .with_vector_ann_specs(vector_ann_specs.into_iter().map(|(spec, _)| spec).collect())
+        })
         .map_err(|_| CompilerDiagnostics::single(ir_diagnostic(hir.span)))
 }
 

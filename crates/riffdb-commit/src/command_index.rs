@@ -10,10 +10,11 @@ use riffdb_contract_ir::{
     BindingMode, DeleteCheckModeV1, EXECUTABLE_IR_VERSION_V1, EXECUTABLE_IR_VERSION_V2,
     EXECUTABLE_IR_VERSION_V3, EXECUTABLE_IR_VERSION_V4, EXECUTABLE_IR_VERSION_V5,
     EXECUTABLE_IR_VERSION_V6, EXECUTABLE_IR_VERSION_V7, EXECUTABLE_IR_VERSION_V8,
-    EXECUTABLE_IR_VERSION_V9, EXECUTABLE_IR_VERSION_V10, EXECUTABLE_IR_VERSION_V11, ExecutionClass,
-    GRAMMAR_VERSION_V1, GRAMMAR_VERSION_V2, GRAMMAR_VERSION_V3, GRAMMAR_VERSION_V4,
-    GRAMMAR_VERSION_V5, GRAMMAR_VERSION_V6, GRAMMAR_VERSION_V7, GRAMMAR_VERSION_V8,
-    GRAMMAR_VERSION_V9, GRAMMAR_VERSION_V10, GRAMMAR_VERSION_V11, IndexSchema,
+    EXECUTABLE_IR_VERSION_V9, EXECUTABLE_IR_VERSION_V10, EXECUTABLE_IR_VERSION_V11,
+    EXECUTABLE_IR_VERSION_V12, ExecutionClass, GRAMMAR_VERSION_V1, GRAMMAR_VERSION_V2,
+    GRAMMAR_VERSION_V3, GRAMMAR_VERSION_V4, GRAMMAR_VERSION_V5, GRAMMAR_VERSION_V6,
+    GRAMMAR_VERSION_V7, GRAMMAR_VERSION_V8, GRAMMAR_VERSION_V9, GRAMMAR_VERSION_V10,
+    GRAMMAR_VERSION_V11, GRAMMAR_VERSION_V12, IndexSchema,
 };
 use riffdb_invariant::{InputDerivedCommandFacts, derive_input_command_facts};
 use riffdb_storage_api::{
@@ -913,6 +914,14 @@ impl IndexDerivationBuilder {
 //   remains byte-for-byte the V10 algorithm. The exhaustive boundary test and
 //   `secret_reveal_era_v11_application_commands_derive_ordinarily` fixture
 //   jointly prevent admission without this local audit.
+//
+// (V12, V12) — optional vector ANN schema metadata (ADR-0091 / WP-594).
+//   `VectorAnnSpecV1` carries only a per-organization routing threshold and
+//   recall target for the derived projection plane. It changes no entity or
+//   index schema, binding, instruction, mutation position, or key codec.
+//   Authoritative index derivation is therefore byte-identical to V11. The
+//   boundary test and `vector_ann_era_v12_application_commands_derive_ordinarily`
+//   pin that conclusion locally rather than admitting the version broadly.
 const fn index_derivation_version_supported(grammar: u32, ir: u32) -> bool {
     matches!(
         (grammar, ir),
@@ -927,6 +936,7 @@ const fn index_derivation_version_supported(grammar: u32, ir: u32) -> bool {
             | (GRAMMAR_VERSION_V9, EXECUTABLE_IR_VERSION_V9)
             | (GRAMMAR_VERSION_V10, EXECUTABLE_IR_VERSION_V10)
             | (GRAMMAR_VERSION_V11, EXECUTABLE_IR_VERSION_V11)
+            | (GRAMMAR_VERSION_V12, EXECUTABLE_IR_VERSION_V12)
     )
 }
 
@@ -1217,7 +1227,7 @@ mod tests {
 
     use super::*;
 
-    // WP-606 boundary pin. A synthetic (V11, V11) bundle is not constructible
+    // WP-606/WP-594 boundary pin. A synthetic version tuple is not constructible
     // through any public path — `ContractIrBundle` construction validates the
     // version tuple against the same closed list — so the boundary is pinned
     // exhaustively on the audit gate itself: the supported set is EXACTLY the
@@ -1229,7 +1239,7 @@ mod tests {
         for grammar in 0..=16_u32 {
             for ir in 0..=16_u32 {
                 let audited_identity_pair =
-                    grammar == ir && (GRAMMAR_VERSION_V1..=GRAMMAR_VERSION_V11).contains(&grammar);
+                    grammar == ir && (GRAMMAR_VERSION_V1..=GRAMMAR_VERSION_V12).contains(&grammar);
                 assert_eq!(
                     index_derivation_version_supported(grammar, ir),
                     audited_identity_pair,
@@ -2371,6 +2381,78 @@ contract SecretRevealIndexedRows version 1 {
         )
         .expect("V11 reveal metadata cannot perturb index derivation");
         assert_eq!(derived.entry_mutations.len(), 2);
+        assert_eq!(derived.affected_targets.as_slice().len(), 2);
+    }
+
+    const VECTOR_ANN_INDEXED_SOURCE: &str = r#"
+contract VectorAnnIndexedRows version 1 {
+  entity Row {
+    key (id: uuid)
+    field tenant: uuid
+    field category: string<32>
+    field score: i64
+    index by_tenant_category (tenant, category)
+    index by_score (score)
+  }
+  entity VectorRow {
+    key (id: uuid)
+    field category: string<32>
+    vector_field embedding(3, cosine, (category), staleness_slo 60, ann_threshold 32, recall_target_bps 9500)
+  }
+  aggregate Rows { root Row partition_by id conflict_key (id) }
+  command UpdateRow {
+    input request_key: string<128>
+    input id: uuid
+    input tenant: uuid
+    input category: string<32>
+    input score: i64
+    idempotency_key request_key
+    mutate Row(id) as row else Missing {}
+    set row.tenant = tenant
+    set row.category = category
+    set row.score = score
+    return Updated { row: row }
+  }
+}
+"#;
+
+    #[test]
+    fn vector_ann_era_v12_application_commands_derive_ordinarily() {
+        let fixture = fixture_from_source(
+            VECTOR_ANN_INDEXED_SOURCE,
+            "UpdateRow",
+            "vector-ann-update-1",
+            ([0x21; 16], "new", 10),
+            Some(([0x20; 16], "old", 9)),
+        );
+        assert_eq!(
+            fixture.resolved.bundle().bundle().grammar_version(),
+            GRAMMAR_VERSION_V12
+        );
+        assert_eq!(
+            fixture.resolved.bundle().bundle().ir_version(),
+            EXECUTABLE_IR_VERSION_V12
+        );
+        assert_eq!(
+            fixture
+                .resolved
+                .bundle()
+                .bundle()
+                .schema()
+                .vector_ann_specs()
+                .len(),
+            1
+        );
+        let derived = derive_grammar_v1_indexes(
+            &fixture.resolved,
+            &fixture.input,
+            &fixture.evaluated,
+            &fixture.current,
+            &[Some(0)],
+            &fixture.partition,
+        )
+        .expect("V12 ANN metadata cannot perturb authoritative index derivation");
+        assert_eq!(derived.entry_mutations.len(), 4);
         assert_eq!(derived.affected_targets.as_slice().len(), 2);
     }
 

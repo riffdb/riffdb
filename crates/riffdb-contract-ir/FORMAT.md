@@ -564,6 +564,7 @@ Fields below are listed in exact byte order. A collection field includes its cou
 | 7 | `delete_policies` | IR v5+: optional u32 marker 0xfffffffc + u32 count + DeletePolicySchemaV1[]; omitted when empty |
 | 8 | `vector_field_specs` | IR v6+: optional u32 marker 0xfffffffb + u32 count + VectorFieldSpecV1[]; omitted when empty |
 | 9 | `secret_field_specs` | IR v8+: optional u32 marker 0xfffffff8 + u32 count + SecretFieldSpecV1[]; omitted when empty |
+| 10 | `vector_ann_specs` | IR v12+: optional u32 marker 0xfffffff7 + u32 count + VectorAnnSpecV1[]; omitted when empty |
 
 ### RelationshipSchema
 
@@ -608,6 +609,15 @@ Fields below are listed in exact byte order. A collection field includes its cou
 |---:|---|---|
 | 1 | `entity` | EntityTypeId |
 | 2 | `field` | FieldId |
+
+### VectorAnnSpecV1
+
+| # | Field | Encoding |
+|---:|---|---|
+| 1 | `entity` | EntityTypeId |
+| 2 | `field` | FieldId |
+| 3 | `row_threshold` | u32 rows per organization (1..=65536) |
+| 4 | `recall_target_bps` | u32 basis points (1..=10000) |
 
 ### EntitySchema
 

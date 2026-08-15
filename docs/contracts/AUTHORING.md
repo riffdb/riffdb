@@ -23,11 +23,12 @@ unicode_fold_v1 unique update uuid uuid_v7 vector_field version when where workf
 For example, use `origin`, `origin_label`, or `source_label` instead of the
 reserved field name `source`.
 
-The vector search words `cosine`, `euclidean`, `dot_product`, and
-`staleness_slo` are contextual, not reserved: they are meaningful only inside
-a `vector_field` declaration and remain usable as ordinary field and
-declaration identifiers everywhere else. The same is true of `nearest` in
-RiffQL — a contract field named `nearest` stays queryable.
+The vector search words `cosine`, `euclidean`, `dot_product`,
+`staleness_slo`, `ann_threshold`, and `recall_target_bps` are contextual, not
+reserved: they are meaningful only inside a `vector_field` declaration and
+remain usable as ordinary field and declaration identifiers everywhere else.
+The same is true of `nearest` in RiffQL — a contract field named `nearest`
+stays queryable.
 
 Names are unique in their semantic namespace, not globally across an entire
 contract. Enum variants belong to their enum, command outcomes belong to their
@@ -109,7 +110,8 @@ entity Document {
     key (org_id: uuid, doc_id: uuid)
     field title: string<256>
     field body: string<65536>
-    vector_field embedding(1536, cosine, (title, body), staleness_slo 60)
+    vector_field embedding(1536, cosine, (title, body), staleness_slo 60,
+        ann_threshold 256, recall_target_bps 9500)
 }
 ```
 
@@ -125,6 +127,21 @@ bundle, where it is part of the contract's durable identity:
   observer breaches the SLO only when `stale_count > staleness_slo`; equality
   does not breach it. Duration-based or clock-based staleness is a named future
   amendment, not a v1 interpretation of this declaration.
+- The optional ANN clause is atomic: `ann_threshold` and
+  `recall_target_bps` must appear together in that order. The threshold is
+  1 to 65,536 rows per organization. Search remains exact at or below the
+  threshold and engages the approximate graph only above it.
+- `recall_target_bps` is 1 to 10,000 basis points. For example, `9500`
+  declares recall@K of at least 0.95 against exact scan at the same projection
+  frontier. Application query inputs cannot lower or omit this projection-owned
+  target.
+
+The approximate graph is derived, bounded by the query's organization
+partition and scan budget, and rebuilt deterministically from the visible
+snapshot. Graph entry points and links are computed only after scalar filters
+and principal-policy admission, so another organization or a denied row cannot
+shape traversal or reported graph statistics. Exact KNN remains the reference
+path.
 
 Typed vector values now cross the low-level native, Protobuf, gRPC, hosted MCP,
 and CLI conversion boundaries with finite-component and exact-dimension checks.
