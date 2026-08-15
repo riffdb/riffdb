@@ -99,9 +99,11 @@ with tarfile.open(sys.argv[1], "r:gz") as archive:
     }
     assert crates == {
         "riffdb-api-grpc",
+        "riffdb-application",
         "riffdb-client-python-native",
         "riffdb-client-rust",
         "riffdb-config",
+        "riffdb-contract-ir",
         "riffdb-errors",
         "riffdb-proto",
         "riffdb-types",
