@@ -30,10 +30,11 @@ use riffdb_service::{
     AuthoritativeReactiveEventWindowRequest, AuthoritativeReadError, AuthoritativeReadPort,
     AuthoritativeSchemaBinding, BoxPortCapacityPermit, CapabilityRevokeTargetSnapshot,
     CatalogExecutablePlanRequest, CatalogReadPort, CommandDurability, CommitNotificationSource,
-    ContractVersionReadPermit, DeclaredOutcomeView, DurableEventView, OutcomeLocatorDigestEvidence,
-    PortAdmissionError, PortDriverStopped, PortFuture, PresentCapabilityRevokeTargetSnapshot,
-    ProvenanceClaimsView, QueryModuleReadError, QueryModuleReadPort, ReactiveModuleReadError,
-    ReactiveModuleReadPort, RequestControl,
+    ContractVersionReadPermit, DeclaredOutcomeView, DurableEventView, ExactNamedQueryRequest,
+    OutcomeLocatorDigestEvidence, PortAdmissionError, PortDriverStopped, PortFuture,
+    PresentCapabilityRevokeTargetSnapshot, ProvenanceClaimsView, QueryModuleReadError,
+    QueryModuleReadPort, ReactiveModuleReadError, ReactiveModuleReadPort, RequestControl,
+    ResolvedNamedQuery,
 };
 use riffdb_storage_api::{
     ActiveCatalogPointerV1, AdmissionLookupResultV1, AdmissionRepository, AuthoritativePointReader,
@@ -47,6 +48,8 @@ use riffdb_storage_api::{
     StorageErrorKind, StorageScanLimit, StoredAdmissionStateV1, StoredCommitRecordV1,
     StoredPendingAdmissionV1, StoredProvenanceRecordV1,
 };
+#[cfg(test)]
+use riffdb_types::QueryOperationName;
 use riffdb_types::{
     CanonicalValue, CapabilityId, CommitSequence, ContractLineage, ContractVersion, DatabaseId,
     Environment, FrontierPosition, QueryModuleHash, ReactiveModuleHash,
@@ -260,6 +263,61 @@ impl QueryModulePlanCache {
     }
 }
 
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+struct ExactNamedModuleKey {
+    lineage: ContractLineage,
+    version: ContractVersion,
+    contract_hash: riffdb_types::ContractBundleHash,
+    module_hash: QueryModuleHash,
+}
+
+/// One atomically published immutable view for complete generated-operation keys.
+#[derive(Clone, Default)]
+struct ExactNamedQueryView {
+    modules: BTreeMap<ExactNamedModuleKey, (ValidatedContractBundle, ValidatedQueryModule)>,
+}
+
+impl ExactNamedQueryView {
+    fn get(&self, request: &ExactNamedQueryRequest) -> Option<ResolvedNamedQuery> {
+        let key = ExactNamedModuleKey {
+            lineage: request.lineage().clone(),
+            version: request.version(),
+            contract_hash: request.contract_hash(),
+            module_hash: request.module_hash(),
+        };
+        let (contract, module) = self.modules.get(&key)?;
+        ResolvedNamedQuery::try_new(contract.clone(), module.clone(), request.query_name())
+    }
+
+    fn insert_module(&mut self, contract: &ValidatedContractBundle, module: &ValidatedQueryModule) {
+        let key = ExactNamedModuleKey {
+            lineage: contract.lineage().clone(),
+            version: contract.contract_version(),
+            contract_hash: contract.bundle_hash(),
+            module_hash: module.identity(),
+        };
+        if self.modules.len() == MAX_HOT_QUERY_MODULES
+            && !self.modules.contains_key(&key)
+            && let Some(oldest) = self.modules.keys().next().cloned()
+        {
+            self.modules.remove(&oldest);
+        }
+        self.modules.insert(key, (contract.clone(), module.clone()));
+    }
+}
+
+fn publish_exact_named_queries(
+    view: &RwLock<Arc<ExactNamedQueryView>>,
+    contract: &ValidatedContractBundle,
+    module: &ValidatedQueryModule,
+) -> Result<(), QueryModuleReadError> {
+    let mut published = view.write().map_err(|_| QueryModuleReadError::Integrity)?;
+    let mut successor = ExactNamedQueryView::clone(published.as_ref());
+    successor.insert_module(contract, module);
+    *published = Arc::new(successor);
+    Ok(())
+}
+
 /// Catalog-owned semantic reads driven on the retained blocking worker set.
 pub(crate) struct ServerCatalogReadPort {
     active_storage: SharedRedbOperationalPorts,
@@ -287,6 +345,7 @@ pub(crate) struct ServerCatalogReadPort {
     /// Shared with the blocking executor for non-blocking cache-hit inline lookup.
     module_storage: SharedRedbOperationalPorts,
     module_cache: Arc<RwLock<QueryModulePlanCache>>,
+    exact_named_queries: Arc<RwLock<Arc<ExactNamedQueryView>>>,
 }
 
 impl ServerCatalogReadPort {
@@ -362,12 +421,15 @@ impl ServerCatalogReadPort {
 
         let module_storage = storage.clone();
         let module_cache = Arc::new(RwLock::new(QueryModulePlanCache::default()));
+        let exact_named_queries = Arc::new(RwLock::new(Arc::new(ExactNamedQueryView::default())));
         let pool_module_storage = module_storage.clone();
         let pool_module_cache = Arc::clone(&module_cache);
+        let pool_exact_named_queries = Arc::clone(&exact_named_queries);
         let query_module = driver.executor(move |(contract, selected): QueryModuleReadRequest| {
             resolve_query_module_on_pool(
                 &pool_module_storage,
                 &pool_module_cache,
+                &pool_exact_named_queries,
                 contract,
                 selected,
             )
@@ -398,6 +460,7 @@ impl ServerCatalogReadPort {
             reactive_module,
             module_storage,
             module_cache,
+            exact_named_queries,
         }
     }
 }
@@ -474,6 +537,22 @@ impl CatalogReadPort for ServerCatalogReadPort {
 }
 
 impl QueryModuleReadPort for ServerCatalogReadPort {
+    fn prepare_exact_named_query<'a>(
+        &'a self,
+        control: &'a RequestControl,
+        request: ExactNamedQueryRequest,
+    ) -> PortFuture<'a, Option<ResolvedNamedQuery>, QueryModuleReadError> {
+        if self.query_module.precheck(control).is_err() {
+            return Box::pin(async { Err(QueryModuleReadError::Unavailable) });
+        }
+        let result = self
+            .exact_named_queries
+            .try_read()
+            .ok()
+            .and_then(|published| published.get(&request));
+        Box::pin(async move { Ok(result) })
+    }
+
     fn prepare_active_query_module<'a>(
         &'a self,
         control: &'a RequestControl,
@@ -570,6 +649,7 @@ fn try_cached_query_module(
 fn resolve_query_module_on_pool(
     storage: &SharedRedbOperationalPorts,
     cache: &RwLock<QueryModulePlanCache>,
+    exact_named_queries: &RwLock<Arc<ExactNamedQueryView>>,
     contract: ValidatedContractBundle,
     selected: Option<QueryModuleHash>,
 ) -> Result<Option<ValidatedQueryModule>, QueryModuleReadError> {
@@ -592,6 +672,7 @@ fn resolve_query_module_on_pool(
         .map_err(|_| QueryModuleReadError::Integrity)?
         .get(module_hash, &contract)
     {
+        publish_exact_named_queries(exact_named_queries, &contract, &module)?;
         return Ok(Some(module));
     }
     let module = QueryModuleRepository::read_query_module(storage, module_hash)
@@ -605,6 +686,7 @@ fn resolve_query_module_on_pool(
             .write()
             .map_err(|_| QueryModuleReadError::Integrity)?
             .insert(module.clone());
+        publish_exact_named_queries(exact_named_queries, &contract, module)?;
     }
     Ok(module)
 }
@@ -2863,6 +2945,33 @@ mod tests {
                 baseline + 1,
                 "an active-pointer cache hit must not enter the blocking pool"
             );
+
+            let exact = port
+                .prepare_exact_named_query(
+                    &control,
+                    ExactNamedQueryRequest::new(
+                        bundle.lineage().clone(),
+                        bundle.contract_version(),
+                        bundle.bundle_hash(),
+                        module_hash,
+                        QueryOperationName::new("ListTickets").expect("query name is valid"),
+                    ),
+                )
+                .await
+                .expect("exact named lookup succeeds")
+                .expect("warmed named operation resolves");
+            let (exact_contract, exact_module, exact_query_index) = exact.into_parts();
+            assert_eq!(exact_contract.bundle_hash(), bundle.bundle_hash());
+            assert_eq!(exact_module.identity(), module_hash);
+            assert_eq!(
+                exact_module.module().queries()[exact_query_index].name(),
+                "ListTickets"
+            );
+            assert_eq!(
+                query_module_pool_dispatch_count(),
+                baseline + 1,
+                "one complete exact named lookup must remain inline"
+            );
         });
 
         // Warm immutable plans fan out under shared cache reads. A mutex plus
@@ -2883,24 +2992,29 @@ mod tests {
                         RequestControl::new(Instant::now() + Duration::from_secs(30));
                     barrier.wait();
                     for _ in 0..64 {
-                        let exact = handle
-                            .block_on(port.prepare_contract_version(
-                                &control,
-                                bundle.lineage().clone(),
-                                bundle.contract_version(),
-                            ))
-                            .expect("concurrent exact lookup succeeds")
-                            .expect("concurrent exact contract is present");
-                        assert_eq!(exact.bundle_hash(), bundle.bundle_hash());
                         let resolved = handle
-                            .block_on(port.prepare_query_module(
-                                &control,
-                                bundle.clone(),
-                                module_hash,
-                            ))
+                            .block_on(
+                                port.prepare_exact_named_query(
+                                    &control,
+                                    ExactNamedQueryRequest::new(
+                                        bundle.lineage().clone(),
+                                        bundle.contract_version(),
+                                        bundle.bundle_hash(),
+                                        module_hash,
+                                        QueryOperationName::new("ListTickets")
+                                            .expect("query name is valid"),
+                                    ),
+                                ),
+                            )
                             .expect("concurrent warm lookup succeeds")
-                            .expect("concurrent module is present");
-                        assert_eq!(resolved.identity(), module_hash);
+                            .expect("concurrent operation is present");
+                        let (exact, resolved_module, query_index) = resolved.into_parts();
+                        assert_eq!(exact.bundle_hash(), bundle.bundle_hash());
+                        assert_eq!(resolved_module.identity(), module_hash);
+                        assert_eq!(
+                            resolved_module.module().queries()[query_index].name(),
+                            "ListTickets"
+                        );
                     }
                 });
             }
@@ -2921,7 +3035,16 @@ mod tests {
         routing.fail_authoritative_readiness(AuthoritativeReadinessFailure::Integrity);
         runtime.block_on(async {
             let refused = port
-                .prepare_query_module(&control, bundle.clone(), module_hash)
+                .prepare_exact_named_query(
+                    &control,
+                    ExactNamedQueryRequest::new(
+                        bundle.lineage().clone(),
+                        bundle.contract_version(),
+                        bundle.bundle_hash(),
+                        module_hash,
+                        QueryOperationName::new("ListTickets").expect("query name is valid"),
+                    ),
+                )
                 .await;
             assert!(
                 matches!(refused, Err(QueryModuleReadError::Unavailable)),
@@ -2929,8 +3052,8 @@ mod tests {
             );
             assert_eq!(
                 query_module_pool_dispatch_count(),
-                baseline + 2,
-                "a refused request must be routed to the pool, not answered inline"
+                baseline + 1,
+                "a refused exact request must not dispatch or bypass admission"
             );
         });
 
