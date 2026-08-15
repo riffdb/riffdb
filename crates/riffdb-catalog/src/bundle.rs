@@ -520,6 +520,15 @@ mod tests {
     }
 
     #[test]
+    fn cascade_v13_bundle_is_feature_sealed_before_runtime_activation() {
+        let error = ValidatedContractBundle::decode(include_bytes!(
+            "../../../fixtures/compiler/cascade/bundle.bin"
+        ))
+        .expect_err("WP-625 V13 must not activate before WP-626 runtime support");
+        assert_eq!(error.kind(), CatalogErrorKind::UnsupportedBundleVersion);
+    }
+
+    #[test]
     fn startup_reclassifies_only_broken_or_over_limit_active_lineage() {
         for kind in [
             CatalogErrorKind::ActiveCatalogMismatch,

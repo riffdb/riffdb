@@ -7,7 +7,7 @@ use riffdb_types::FieldId;
 
 use crate::diagnostic::{CompilerDiagnostic, CompilerDiagnosticCode, CompilerDiagnostics};
 use crate::hir::{
-    HirCommand, HirEffect, HirExpressionRoot, HirObjectField, HirOutcome,
+    HirBinding, HirCommand, HirEffect, HirExpressionRoot, HirObjectField, HirOutcome,
     HirWorkflowLeaseOperation, TypedContractHir,
 };
 use crate::locality::command_expression_fingerprint;
@@ -98,6 +98,26 @@ fn validate_command(
     command: &HirCommand,
     diagnostics: &mut Vec<CompilerDiagnostic>,
 ) {
+    let mut cascade_bindings = command.bindings.iter().filter(|binding| {
+        hir.entity(binding.entity_id).is_some_and(|entity| {
+            matches!(
+                entity.delete_policy.as_ref(),
+                Some(crate::hir::HirDeletePolicy::Cascade { .. })
+            )
+        })
+    });
+    if let Some(first) = cascade_bindings.next() {
+        validate_cascade_binding(hir, command, first, diagnostics);
+        for binding in cascade_bindings {
+            diagnostics.push(
+                CompilerDiagnostic::new(
+                    CompilerDiagnosticCode::InvalidDeletePolicy,
+                    binding.entity_span,
+                )
+                .with_related_span(first.entity_span),
+            );
+        }
+    }
     for binding in command
         .bindings
         .iter()
@@ -119,6 +139,17 @@ fn validate_command(
         .filter_map(|binding| binding.restriction_failure.as_ref());
     let _first_restrict_failure = restrict_failures.next();
     for failure in restrict_failures {
+        diagnostics.push(CompilerDiagnostic::new(
+            CompilerDiagnosticCode::InvalidDeletePolicy,
+            failure.span,
+        ));
+    }
+    let mut cascade_failures = command
+        .bindings
+        .iter()
+        .filter_map(|binding| binding.cascade_failure.as_ref());
+    let _first_cascade_failure = cascade_failures.next();
+    for failure in cascade_failures {
         diagnostics.push(CompilerDiagnostic::new(
             CompilerDiagnosticCode::InvalidDeletePolicy,
             failure.span,
@@ -177,12 +208,17 @@ fn validate_command(
         if let Some(failure) = &binding.restriction_failure {
             influential_roots.extend(failure.fields.iter().map(|field| &field.value));
         }
+        if let Some(failure) = &binding.cascade_failure {
+            influential_roots.extend(failure.fields.iter().map(|field| &field.value));
+        }
     }
     let mut outcomes = command
         .bindings
         .iter()
         .flat_map(|binding| {
-            std::iter::once(&binding.failure).chain(binding.restriction_failure.iter())
+            std::iter::once(&binding.failure)
+                .chain(binding.restriction_failure.iter())
+                .chain(binding.cascade_failure.iter())
         })
         .collect::<Vec<_>>();
     for requirement in &command.requirements {
@@ -373,6 +409,52 @@ fn validate_command(
     validate_outcome_shapes(&outcomes, diagnostics);
     validate_secret_flows(hir, command, &outcomes, diagnostics);
     validate_secret_taint(secret_input, command, &influential_roots, diagnostics);
+}
+
+fn validate_cascade_binding(
+    hir: &TypedContractHir,
+    command: &HirCommand,
+    binding: &HirBinding,
+    diagnostics: &mut Vec<CompilerDiagnostic>,
+) {
+    let Some(entity) = hir.entity(binding.entity_id) else {
+        return;
+    };
+    let Some(crate::hir::HirDeletePolicy::Cascade { relationships, .. }) =
+        entity.delete_policy.as_ref()
+    else {
+        return;
+    };
+    let Some(failure) = binding.cascade_failure.as_ref() else {
+        return;
+    };
+    if binding.mode != BindingMode::Delete
+        || !binding.collection_local
+        || command.collection_expansion.is_none()
+        || failure.id == binding.failure.id
+    {
+        diagnostics.push(CompilerDiagnostic::new(
+            CompilerDiagnosticCode::InvalidDeletePolicy,
+            failure.span,
+        ));
+        return;
+    }
+    let root_maximum = command
+        .collection_expansion
+        .as_ref()
+        .map_or(0, |expansion| expansion.maximum_elements);
+    let rows_per_root = relationships
+        .iter()
+        .try_fold(1usize, |count, relationship| {
+            count.checked_add(relationship.maximum)
+        });
+    let total = rows_per_root.and_then(|count| count.checked_mul(root_maximum));
+    if total.is_none_or(|total| total > riffdb_contract_ir::MAX_COLLECTION_COMMAND_ELEMENTS_V1) {
+        diagnostics.push(CompilerDiagnostic::new(
+            CompilerDiagnosticCode::BoundExceeded,
+            failure.span,
+        ));
+    }
 }
 
 fn validate_secret_flows(

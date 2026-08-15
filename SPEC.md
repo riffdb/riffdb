@@ -6,7 +6,7 @@
 **Tagline:** *Vibe fast. Commit safely.*  
 **Category:** Contract-first operational database for agent-built applications  
 
-**Version:** 0.99
+**Version:** 1.00
 **Status:** Deployable Application Alpha architecture accepted; implementation gated by work packages
 **Date:** 9 August 2026
 **Audience:** Coding agents, database engineers, compiler engineers, security reviewers, and technical product leads  
@@ -37,6 +37,7 @@
 
 | Version | Date | Summary |
 |---|---|---|
+| 1.00 | 2026-08-15 | Accepted ADR-0126 and registered DEL-001 through DEL-012 plus WP-625 through WP-627 for compiler-bounded one-hop cascade deletion, atomic runtime execution, and generated Better Auth lifecycle acceptance. |
 | 0.99 | 2026-08-15 | Accepted ADR-0124 and registered VER-001 through VER-008 plus WP-612 for one machine-readable topology over independently owned version domains, exact reader/writer windows and source pins, durable-manifest cross-checking, classified change review, and evidence-gated decoder retirement without a global runtime version. |
 | 0.98 | 2026-08-15 | Registered DX-037 through DX-040 and WP-611 for one immutable development publication identity materialized into loopback npm, Python Simple, Go module-proxy, and Cargo sparse registries, with fresh external-consumer acceptance and a hard boundary from signed production releases. |
 | 0.97 | 2026-08-14 | Applied accepted ADR-0120 and registered DX-026 through DX-036 for signed four-ecosystem package distribution, registry-first generated applications with an explicit sealed/offline path, one pinned four-step workflow, artifact-only package-arrival proof, cross-driver conformance and sealed campaign 03, and compiler-backed bounded editor tooling shipped with the CLI. |
@@ -7490,6 +7491,65 @@ does not create a kernel or storage escape hatch.
   and Woodpecker atomic collection shapes without handwritten transport or raw
   storage access.
 
+Compiler-bounded one-hop cascade deletion extends that closed bulk-command
+model without introducing recursive graph traversal or caller-selected delete
+behavior:
+
+- `DEL-001`: An entity with inbound relationships MAY declare `delete_policy
+  cascade` only by exhaustively naming every direct inbound relationship, its
+  exact compiler-known reverse index, and a compiler-fixed maximum. A cascade
+  delete binding MUST name a distinct declared overflow outcome; callers MUST
+  NOT choose a policy, index, maximum, or overflow behavior.
+- `DEL-002`: The compiler MUST prove that the cascade declaration covers every
+  direct inbound relationship exactly once and that every named source entity
+  has `delete_policy no_inbound`. Recursive, transitive, cyclic, set-null,
+  orphaning, unindexed, or indirectly discovered deletion MUST fail with a
+  source-spanned diagnostic.
+- `DEL-003`: The root and every possible cascaded source row MUST share the
+  same aggregate, exact partition derivation, and complete statically
+  enumerable conflict derivation. A cascade that would cross a partition or
+  require dynamic conflict ownership MUST be rejected at compilation.
+- `DEL-004`: One cascade policy MUST contain at most 32 relationship entries
+  and MAY be used by only one delete template in one bulk command. The compiler
+  MUST prove `root_count_maximum * (1 + sum(relationship maxima)) <= 256` and
+  charge the complete possible graph against the existing 16 MiB ceiling;
+  callers cannot raise either bound.
+- `DEL-005`: Runtime discovery keys MUST come only from the exact named reverse
+  index prefix derived for the current root. Command values, caller-supplied
+  identifiers, scans, arbitrary predicates, and runtime index substitution
+  MUST NOT contribute discovered delete keys.
+- `DEL-006`: Executable IR V13 MUST encode stable relationship and index
+  identities, per-relationship maxima, complete conflict and partition proof,
+  canonical ordering, and the overflow outcome. V1 through V12 remain readable,
+  least-sufficient writers retain their existing identity, and only a command
+  using cascade deletion may require V13.
+- `DEL-007`: After acquiring the common aggregate conflicts, runtime MUST
+  enumerate each relationship with a bounded `maximum + 1` exact-prefix read
+  in stable relationship-identity then canonical-key order. Overflow MUST
+  select the declared durable zero-mutation outcome, including after ordinary
+  bounded whole-command reevaluation.
+- `DEL-008`: Conflict acquisition MUST precede cascade enumeration and cover
+  both the root delete and every relationship create that could add a child.
+  A racing child create MUST serialize before enumeration or after the atomic
+  delete and MUST NOT survive as an unobserved inbound reference.
+- `DEL-009`: Authorization, capability revision, row policy, relationship,
+  revision, uniqueness, and transaction-current validation MUST run for the
+  root and every discovered row inside the same command. Cascade is not an
+  authority expansion and no discovered row may bypass an ordinary safe point.
+- `DEL-010`: A successful cascade MUST produce one canonical children-before-
+  parent mutation graph, one command identity, one input hash, one outcome, one
+  commit sequence, and atomic mutation, tombstone, changelog, audit, provenance,
+  and idempotency effects. Partial success and per-row outcomes are forbidden.
+- `DEL-011`: Cascade deletion MUST reuse the accepted command-time tombstone,
+  replication, checkpoint, backup, recovery, and symbolic changelog/export
+  paths. It MUST NOT physically erase history or emit implicit durable events
+  for deleted rows.
+- `DEL-012`: Generated Rust, Go, TypeScript, and Python surfaces MUST preserve
+  the same closed cascade input and overflow outcome without raw deletion or
+  transaction escape hatches, and a real Better Auth adapter lifecycle MUST
+  prove signup, lookup, session/account cleanup, bounded full-user deletion,
+  idempotent replay, overflow, authorization, and race behavior.
+
 ### 24.5.4 Bounded operational RiffQL
 
 - `OQ-001`: Operational RiffQL MAY select only from a finite compiler-enumerated
@@ -8102,6 +8162,7 @@ The implementation MUST prefer primary project documentation and pin reviewed ve
 | `NET-*` | Authenticated remote application ingress, endpoint identity, lifecycle, and rotation |
 | `DRV-*` | Rust-owned multilanguage driver host, generated bindings, pooling, and conformance |
 | `BLK-*` | Compiler-bounded atomic collection commands and checked deletion |
+| `DEL-*` | Compiler-bounded one-hop cascade deletion and adapter lifecycle |
 | `OQ-*` | Bounded operational RiffQL, text keys, cursors, aggregates, and catalog introspection |
 | `WF-*` | Revision transitions, service-owned values, fenced leases, and scheduler safety |
 | `APE-*` | Exact application installation, evolution campaigns, receipts, and adapter conformance |

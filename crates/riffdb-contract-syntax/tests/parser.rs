@@ -175,6 +175,88 @@ contract NestedBulk version 1 {
 }
 
 #[test]
+fn parses_exhaustive_bounded_cascade_policy_and_overflow_outcome() {
+    let source = r#"
+contract CascadePolicies version 1 {
+  entity User {
+    key (organization_id: uuid, user_id: uuid)
+    delete_policy cascade {
+      relationship Account.account_user using Account.by_user maximum 32
+      relationship Session.session_user using Session.by_user maximum 32
+    }
+  }
+  entity Account {
+    key (organization_id: uuid, user_id: uuid, account_id: uuid)
+    index by_user (organization_id, user_id)
+    reference account_user (organization_id, user_id) -> User(organization_id, user_id)
+  }
+  entity Session {
+    key (organization_id: uuid, user_id: uuid, session_id: uuid)
+    index by_user (organization_id, user_id)
+    reference session_user (organization_id, user_id) -> User(organization_id, user_id)
+  }
+  aggregate Users {
+    root User
+    child Account
+    child Session
+    partition_by organization_id
+    conflict_key (organization_id)
+  }
+  bulk command DeleteUsers {
+    input request_id: uuid
+    input organization_id: uuid
+    input user_ids: list<uuid, 1..3>
+    idempotency_key request_id
+    for user_id in user_ids {
+      delete User(organization_id, user_id) as user else UserMissing {}
+        cascade CascadeLimitExceeded {}
+    }
+    return Deleted {}
+  }
+}
+"#;
+    let document = parse_contract(source).expect("bounded cascade syntax parses");
+    let Declaration::Entity(user) = &document.contract.value.declarations[0].value else {
+        panic!("first declaration must be User");
+    };
+    let EntityItem::DeletePolicy(DeletePolicyDeclaration::Cascade { relationships }) =
+        &user.items[1].value
+    else {
+        panic!("User must carry a cascade policy");
+    };
+    assert_eq!(relationships.len(), 2);
+    assert_eq!(relationships[0].value.source_entity.value, "Account");
+    assert_eq!(relationships[0].value.relationship.value, "account_user");
+    assert_eq!(relationships[0].value.index.value, "by_user");
+    assert_eq!(relationships[0].value.maximum.value, "32");
+
+    let Declaration::Command(command) = &document.contract.value.declarations[4].value else {
+        panic!("fifth declaration must be DeleteUsers");
+    };
+    let Binding::Delete(binding) = &command
+        .bulk_iteration
+        .as_ref()
+        .expect("bulk iteration")
+        .value
+        .bindings[0]
+        .value
+    else {
+        panic!("bulk binding must be a delete");
+    };
+    assert!(binding.restriction_failure.is_none());
+    assert_eq!(
+        binding
+            .cascade_failure
+            .as_ref()
+            .expect("cascade overflow")
+            .value
+            .name
+            .value,
+        "CascadeLimitExceeded"
+    );
+}
+
+#[test]
 fn parses_principal_facts_and_closed_row_policy_rules_with_exact_spans() {
     let document = parse_contract(ROW_POLICY_SURFACE).expect("row-policy surface parses");
     let Declaration::PrincipalFact(fact) = &document.contract.value.declarations[1].value else {

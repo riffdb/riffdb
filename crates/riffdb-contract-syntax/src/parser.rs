@@ -992,13 +992,30 @@ impl NodeCounter {
                         }
                         EntityItem::DeletePolicy(policy) => {
                             self.add(1, item.span)?;
-                            if let DeletePolicyDeclaration::Restrict {
-                                source_entity,
-                                index,
-                            } = policy
-                            {
-                                self.name(source_entity)?;
-                                self.name(index)?;
+                            match policy {
+                                DeletePolicyDeclaration::NoInbound => {}
+                                DeletePolicyDeclaration::Restrict {
+                                    source_entity,
+                                    index,
+                                } => {
+                                    self.name(source_entity)?;
+                                    self.name(index)?;
+                                }
+                                DeletePolicyDeclaration::Cascade { relationships } => {
+                                    self.collection(
+                                        relationships.len(),
+                                        MAX_DECLARATION_ITEMS,
+                                        item.span,
+                                    )?;
+                                    for relationship in relationships {
+                                        self.add(2, relationship.span)?;
+                                        self.name(&relationship.value.source_entity)?;
+                                        self.name(&relationship.value.relationship)?;
+                                        self.name(&relationship.value.index_entity)?;
+                                        self.name(&relationship.value.index)?;
+                                        self.add(1, relationship.value.maximum.span)?;
+                                    }
+                                }
                             }
                         }
                     }
@@ -1346,6 +1363,9 @@ impl NodeCounter {
         self.name(&binding.binding)?;
         self.outcome(&binding.failure)?;
         if let Some(failure) = &binding.restriction_failure {
+            self.outcome(failure)?;
+        }
+        if let Some(failure) = &binding.cascade_failure {
             self.outcome(failure)?;
         }
         Ok(())

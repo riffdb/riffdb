@@ -200,12 +200,17 @@ fn lower_command(
     let mut hir_expressions = command.expressions.clone();
     let mut failure_occurrence = BTreeMap::new();
     let mut restriction_failure_occurrence = BTreeMap::new();
+    let mut cascade_failure_occurrence = BTreeMap::new();
     let mut occurrences = Vec::new();
     for binding in &command.bindings {
         failure_occurrence.insert(binding.id, occurrences.len());
         occurrences.push(&binding.failure);
         if let Some(failure) = &binding.restriction_failure {
             restriction_failure_occurrence.insert(binding.id, occurrences.len());
+            occurrences.push(failure);
+        }
+        if let Some(failure) = &binding.cascade_failure {
+            cascade_failure_occurrence.insert(binding.id, occurrences.len());
             occurrences.push(failure);
         }
     }
@@ -339,7 +344,7 @@ fn lower_command(
             let entity = schema
                 .entity(binding.entity_id)
                 .ok_or_else(|| ir_diagnostic(binding.entity_span))?;
-            BindingPlan::new_with_restriction_failure(
+            BindingPlan::new_with_delete_failures(
                 binding.id,
                 binding.name.clone(),
                 binding.mode,
@@ -357,6 +362,9 @@ fn lower_command(
                     .expect("binding occurrence")]
                 .clone(),
                 restriction_failure_occurrence
+                    .get(&binding.id)
+                    .map(|occurrence| constructions[*occurrence].clone()),
+                cascade_failure_occurrence
                     .get(&binding.id)
                     .map(|occurrence| constructions[*occurrence].clone()),
             )
@@ -1270,7 +1278,11 @@ fn command_instructions(
     let rejection_base: usize = command
         .bindings
         .iter()
-        .map(|binding| 1usize + usize::from(binding.restriction_failure.is_some()))
+        .map(|binding| {
+            1usize
+                + usize::from(binding.restriction_failure.is_some())
+                + usize::from(binding.cascade_failure.is_some())
+        })
         .sum();
     for (index, requirement) in command.requirements.iter().enumerate() {
         let Ok(requirement_index) = u32::try_from(index) else {

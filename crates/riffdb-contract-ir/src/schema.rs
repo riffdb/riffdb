@@ -1123,7 +1123,7 @@ impl UniqueKeySchema {
 }
 
 /// Closed compiler-proved policy for removing one entity's current state.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum DeletePolicyModeV1 {
     /// No declared relationship may target the entity.
     NoInbound,
@@ -1134,6 +1134,74 @@ pub enum DeletePolicyModeV1 {
         /// Authoritative index whose exact prefix covers every inbound reference.
         index_id: IndexId,
     },
+    /// Every direct inbound relationship is removed under a compiler-fixed maximum.
+    Cascade {
+        /// Exhaustive entries in canonical stable relationship identity order.
+        relationships: Vec<CascadeRelationshipSpecV1>,
+    },
+}
+
+/// One exact reverse-index family admitted by a compiler-bounded cascade policy.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CascadeRelationshipSpecV1 {
+    source_entity: EntityTypeId,
+    relationship_name: String,
+    index_id: IndexId,
+    maximum: u16,
+}
+
+impl CascadeRelationshipSpecV1 {
+    /// Creates one positive, compiler-owned cascade relationship bound.
+    pub fn new(
+        source_entity: EntityTypeId,
+        relationship_name: impl Into<String>,
+        index_id: IndexId,
+        maximum: u16,
+    ) -> Result<Self, IrValidationError> {
+        let relationship_name = relationship_name.into();
+        validate_source_name(&relationship_name, "cascade relationship")?;
+        if maximum == 0 {
+            return Err(IrValidationError::BelowMinimum {
+                kind: "cascade relationship maximum",
+                minimum: 1,
+                actual: 0,
+            });
+        }
+        if maximum > 255 {
+            return Err(IrValidationError::LimitExceeded {
+                kind: "cascade relationship maximum",
+                maximum: 255,
+                actual: usize::from(maximum),
+            });
+        }
+        Ok(Self {
+            source_entity,
+            relationship_name,
+            index_id,
+            maximum,
+        })
+    }
+
+    /// Referencing entity stable identity.
+    #[must_use]
+    pub const fn source_entity(&self) -> EntityTypeId {
+        self.source_entity
+    }
+    /// Relationship symbol completing the stable identity with `source_entity`.
+    #[must_use]
+    pub fn relationship_name(&self) -> &str {
+        &self.relationship_name
+    }
+    /// Exact reverse index identity.
+    #[must_use]
+    pub const fn index_id(&self) -> IndexId {
+        self.index_id
+    }
+    /// Maximum rows admitted for this relationship.
+    #[must_use]
+    pub const fn maximum(&self) -> u16 {
+        self.maximum
+    }
 }
 
 /// One checked entity deletion policy in canonical target-entity order.
@@ -1169,6 +1237,32 @@ impl DeletePolicySchemaV1 {
         }
     }
 
+    /// Declares one exhaustive compiler-proved one-hop cascade policy.
+    pub fn cascade(
+        target_entity: EntityTypeId,
+        relationships: Vec<CascadeRelationshipSpecV1>,
+    ) -> Result<Self, IrValidationError> {
+        if relationships.is_empty() || relationships.len() > 32 {
+            return Err(IrValidationError::LimitExceeded {
+                kind: "cascade relationship entries",
+                maximum: 32,
+                actual: relationships.len(),
+            });
+        }
+        if relationships.windows(2).any(|pair| {
+            (pair[0].source_entity(), pair[0].relationship_name())
+                >= (pair[1].source_entity(), pair[1].relationship_name())
+        }) {
+            return Err(IrValidationError::NonCanonicalOrder {
+                kind: "cascade relationship identities",
+            });
+        }
+        Ok(Self {
+            target_entity,
+            mode: DeletePolicyModeV1::Cascade { relationships },
+        })
+    }
+
     /// Entity whose current state may be deleted under this policy.
     #[must_use]
     pub const fn target_entity(&self) -> EntityTypeId {
@@ -1177,8 +1271,8 @@ impl DeletePolicySchemaV1 {
 
     /// Closed deletion policy mode.
     #[must_use]
-    pub const fn mode(&self) -> DeletePolicyModeV1 {
-        self.mode
+    pub fn mode(&self) -> DeletePolicyModeV1 {
+        self.mode.clone()
     }
 }
 
@@ -1602,7 +1696,13 @@ impl SchemaIr {
             validate_unique_key(unique, &entity_map, &aggregates, &ownership)?;
         }
         for policy in &delete_policies {
-            validate_delete_policy(policy, &entity_map, &relationships)?;
+            validate_delete_policy(
+                policy,
+                &delete_policies,
+                &entity_map,
+                &relationships,
+                &ownership,
+            )?;
         }
         for event in &events {
             let Some(partition) = event.partition() else {
@@ -1909,6 +2009,13 @@ impl SchemaIr {
     #[must_use]
     pub fn requires_ir_v12(&self) -> bool {
         !self.vector_ann_specs.is_empty()
+    }
+    /// Whether this schema requires V13 bounded cascade metadata.
+    #[must_use]
+    pub fn requires_ir_v13(&self) -> bool {
+        self.delete_policies
+            .iter()
+            .any(|policy| matches!(policy.mode(), DeletePolicyModeV1::Cascade { .. }))
     }
     /// Resolves an entity.
     #[must_use]
@@ -2341,8 +2448,10 @@ fn validate_relationship(
 
 fn validate_delete_policy(
     policy: &DeletePolicySchemaV1,
+    policies: &[DeletePolicySchemaV1],
     entities: &BTreeMap<EntityTypeId, &EntitySchema>,
     relationships: &[RelationshipSchema],
+    ownership: &BTreeMap<EntityTypeId, AggregateTypeId>,
 ) -> Result<(), IrValidationError> {
     let target =
         entities
@@ -2354,7 +2463,7 @@ fn validate_delete_policy(
         .iter()
         .filter(|relationship| relationship.target_entity() == target.id())
         .collect::<Vec<_>>();
-    match policy.mode {
+    match policy.mode() {
         DeletePolicyModeV1::NoInbound if inbound.is_empty() => Ok(()),
         DeletePolicyModeV1::NoInbound => Err(IrValidationError::InvalidDependency {
             reason: "delete no-inbound policy has a declared inbound relationship",
@@ -2397,6 +2506,74 @@ fn validate_delete_policy(
                 {
                     return Err(IrValidationError::InvalidDependency {
                         reason: "delete restrict index does not cover every inbound relationship",
+                    });
+                }
+            }
+            Ok(())
+        }
+        DeletePolicyModeV1::Cascade {
+            relationships: entries,
+        } => {
+            if entries.len() != inbound.len() {
+                return Err(IrValidationError::InvalidDependency {
+                    reason: "delete cascade policy is not exhaustive",
+                });
+            }
+            let target_owner =
+                ownership
+                    .get(&target.id())
+                    .ok_or(IrValidationError::InvalidReference {
+                        kind: "delete cascade target aggregate owner",
+                    })?;
+            for entry in &entries {
+                let relationship = inbound
+                    .iter()
+                    .find(|relationship| {
+                        relationship.source_entity() == entry.source_entity()
+                            && relationship.name() == entry.relationship_name()
+                    })
+                    .ok_or(IrValidationError::InvalidDependency {
+                        reason: "delete cascade entry does not name a direct inbound relationship",
+                    })?;
+                let source = entities.get(&entry.source_entity()).ok_or(
+                    IrValidationError::InvalidReference {
+                        kind: "delete cascade source entity",
+                    },
+                )?;
+                if ownership.get(&source.id()) != Some(target_owner) {
+                    return Err(IrValidationError::InvalidDependency {
+                        reason: "delete cascade source and target do not share one aggregate",
+                    });
+                }
+                if !policies.iter().any(|candidate| {
+                    candidate.target_entity() == source.id()
+                        && matches!(candidate.mode(), DeletePolicyModeV1::NoInbound)
+                }) {
+                    return Err(IrValidationError::InvalidDependency {
+                        reason: "delete cascade source lacks no-inbound policy",
+                    });
+                }
+                let index = source
+                    .indexes()
+                    .iter()
+                    .find(|index| index.id() == entry.index_id())
+                    .ok_or(IrValidationError::InvalidReference {
+                        kind: "delete cascade reverse index",
+                    })?;
+                if relationship.target_fields() != target.primary_key_fields()
+                    || index.fields().get(..relationship.source_fields().len())
+                        != Some(relationship.source_fields())
+                    || index
+                        .encodings()
+                        .get(..relationship.source_fields().len())
+                        .is_none_or(|encodings| {
+                            encodings
+                                .iter()
+                                .any(|encoding| *encoding != IndexFieldEncodingV1::Canonical)
+                        })
+                {
+                    return Err(IrValidationError::InvalidDependency {
+                        reason: "delete cascade index does not exactly cover its inbound relationship",
                     });
                 }
             }
