@@ -146,7 +146,15 @@ runner: `Cargo.toml` for Rust, `go.mod` for Go, `package.json` for TypeScript, o
 `pyproject.toml` for Python. Rust and Python receive the protected application
 endpoint, credential path, and database alias owned by their first-party
 runtime; Go and TypeScript receive only a private driver-host socket plus
-compiler-owned handshake identity. The
+compiler-owned handshake identity. The Go and TypeScript positional ABI is
+exactly:
+
+```text
+SOCKET MANIFEST_HASH CATALOG_HASH DATABASE ROLE ROLE_HASH REMOTE_HASH LINEAGE VERSION BUNDLE_HASH
+```
+
+Application code must copy the closed decoding in the generated starter rather
+than infer another ordering. The
 application does not need to parse the database-readiness line or keep a
 separate bootstrap process alive. Rust, Go, and Python one-shot runners exit
 normally. A TypeScript web runner stays in the foreground. Leave it running after the

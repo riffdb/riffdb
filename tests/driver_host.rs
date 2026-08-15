@@ -154,6 +154,23 @@ fn package_first_matrix_binds_four_facades_to_one_exact_story() {
 }
 
 #[test]
+fn package_first_driver_runner_abi_is_documented_in_exact_order() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let exact = "SOCKET MANIFEST_HASH CATALOG_HASH DATABASE ROLE ROLE_HASH REMOTE_HASH LINEAGE VERSION BUNDLE_HASH";
+    for relative in [
+        "docs/sdks/GO.md",
+        "docs/getting-started/AGENT-APPLICATION-QUICKSTART.md",
+        "templates/application/go-main.go",
+    ] {
+        let source = fs::read_to_string(root.join(relative)).expect("driver runner ABI source");
+        assert!(
+            source.contains(exact),
+            "{relative} must carry the exact development-runner argument order"
+        );
+    }
+}
+
+#[test]
 fn package_first_campaign_adds_metrics_without_rewriting_predecessor_schemas() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let evaluations = root.join("evaluations/agent-application-alpha");

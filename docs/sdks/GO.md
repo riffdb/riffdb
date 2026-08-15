@@ -62,11 +62,19 @@ riffdb dev --seed --run
 
 The development workflow starts `riffdb-driverd` and passes the private socket
 plus the exact compiler-owned handshake identity as the program's ten positional
-arguments. The generated `riffdb new --language go` starter demonstrates their
-closed decoding. Application code must not derive, persist, or replace those
-arguments; it uses them only to open the generated application session. The
-workflow supports `go.mod` as a first-class runner manifest and runs with the
-caller's selected offline module source.
+arguments. Their order is a closed development-runner ABI:
+
+```text
+SOCKET MANIFEST_HASH CATALOG_HASH DATABASE ROLE ROLE_HASH REMOTE_HASH LINEAGE VERSION BUNDLE_HASH
+```
+
+`VERSION` is the ninth value after the program name. The generated
+`riffdb new --language go` starter demonstrates the complete checked decoding;
+copy that connection prelude when authoring an application from `riffdb init`.
+Do not guess or reorder the values, and do not derive, persist, or replace them.
+They are substitution evidence used only to open the generated application
+session. The workflow supports `go.mod` as a first-class runner manifest and
+runs with the caller's selected offline module source.
 
 Current limitation: the Go/driver-host path is Linux-only in the alpha. The Go
 runtime has no pure-Go remote fallback.
