@@ -1,0 +1,16 @@
+{
+  "schema": "riffdb.adapter-export-reimport-receipt/v1",
+  "adapter": "mlflow",
+  "status": "passed",
+  "languages": [
+    "go",
+    "python",
+    "rust",
+    "typescript"
+  ],
+  "contract_bundle_hash": "5ac88d626905880c16ac48674dad8592719409bdca81fb9b4b22968ab06dfdf7",
+  "portability_manifest_sha256": "e89a9cb1218c86fd7c42d4eabdbaf731d96da96c32fa1de0ddf3f7f8e0dc00ee",
+  "reimport_receipt_sha256": "6b1ed2786426ee2c4074e7947ae11495ce730100fd78346d723660d068b11071",
+  "operation_observation_sha256": "c98160e070a7ae8d5c40115541e0f2ad2632f55fb7892ac3bb44bb6e2be0518c",
+  "secrets_included": false
+}

@@ -1,0 +1,16 @@
+{
+  "schema": "riffdb.adapter-export-reimport-receipt/v1",
+  "adapter": "better-auth",
+  "status": "passed",
+  "languages": [
+    "go",
+    "python",
+    "rust",
+    "typescript"
+  ],
+  "contract_bundle_hash": "02fcda367078ea5370395c884552b1a9d6e05ffad1a433c6fd12c7916da6b2ab",
+  "portability_manifest_sha256": "300a8290aed8f465b301798c1e5789412a3078d4b3dee02e8ea25574479cc552",
+  "reimport_receipt_sha256": "d58e8baa9cf59f6844bb2f75bfef1fb3e48bf301b1fd25b71d735b7b9ae1bdf4",
+  "operation_observation_sha256": "62a634186aec4435117dbb541b09854f3a5e2e4f825bd50772bb150b7886bc7c",
+  "secrets_included": false
+}

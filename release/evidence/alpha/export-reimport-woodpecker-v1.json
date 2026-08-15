@@ -1,0 +1,16 @@
+{
+  "schema": "riffdb.adapter-export-reimport-receipt/v1",
+  "adapter": "woodpecker",
+  "status": "passed",
+  "languages": [
+    "go",
+    "python",
+    "rust",
+    "typescript"
+  ],
+  "contract_bundle_hash": "b04d95a61cbce874231418078b4aae38005bc2621f7f10b0f0bc49c724b08ceb",
+  "portability_manifest_sha256": "94bd7ce8c03fbd17e99bee90da2daec4174d1a3ef7932d7d399087ab7604f849",
+  "reimport_receipt_sha256": "bae4f197e596e2da0a19ccec94c5dbacc1d49dee226aebbf593b972e9c126c23",
+  "operation_observation_sha256": "5cf9f0a24440a650f6cd5fceca14f3463272d6c89dc5743c747275c6a3c3400d",
+  "secrets_included": false
+}
