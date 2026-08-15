@@ -1,0 +1,9 @@
+{"schema":"riffdb-agent-application-alpha-event/v2","elapsed_ms":0,"kind":"start"}
+{"schema":"riffdb-agent-application-alpha-event/v2","elapsed_ms":50,"kind":"package_install","operation":"cargo-offline-locked"}
+{"schema":"riffdb-agent-application-alpha-event/v2","elapsed_ms":900,"kind":"compiler_failure","operation":"application-check","code":"RDB-S004"}
+{"schema":"riffdb-agent-application-alpha-event/v2","elapsed_ms":1400,"kind":"tool","operation":"application-check"}
+{"schema":"riffdb-agent-application-alpha-event/v2","elapsed_ms":11500,"kind":"tool","operation":"application-boundary-check"}
+{"schema":"riffdb-agent-application-alpha-event/v2","elapsed_ms":11600,"kind":"first_write","operation":"CreateOrder"}
+{"schema":"riffdb-agent-application-alpha-event/v2","elapsed_ms":11600,"kind":"first_page_read","operation":"OrderDetail"}
+{"schema":"riffdb-agent-application-alpha-event/v2","elapsed_ms":11700,"kind":"rating"}
+{"schema":"riffdb-agent-application-alpha-event/v2","elapsed_ms":11700,"kind":"complete"}
