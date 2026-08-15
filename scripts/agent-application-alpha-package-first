@@ -103,7 +103,7 @@ jq -n \
 "$distribution/install/riffdb-install" \
     --distribution "$distribution" \
     --target "$(jq -er '.target' "$distribution/metadata/artifacts-v1.json")" \
-    --prefix "$legacy"
+    --prefix "$legacy" >/dev/null
 
 target="$(jq -er '.target' "$distribution/metadata/artifacts-v1.json")"
 case "$target" in
