@@ -873,6 +873,7 @@ fn application_role_permission_to_proto(
             Permission::ApplicationRoleIdentity(role_hash.as_bytes().to_vec())
         }
         CapabilityPermissionV1::Unparameterized(kind) => match kind {
+            CapabilityPermissionKindV1::ReadContract => Permission::ReadContract(v1::Unit {}),
             CapabilityPermissionKindV1::ExecuteAdHocQuery => {
                 Permission::ExecuteAdHocQuery(v1::Unit {})
             }
@@ -1535,7 +1536,20 @@ mod tests {
 
     #[test]
     fn embedded_application_role_and_query_module_are_exact() {
-        compile_ticketdesk_application_role().expect("embedded TicketDesk role must compile");
+        let role =
+            compile_ticketdesk_application_role().expect("embedded TicketDesk role must compile");
+        let grant = application_role_grant_to_proto(role.internal_grant())
+            .expect("compiled role grant must lower to the public wire shape");
+        assert!(grant.permissions.iter().any(|permission| matches!(
+            permission.permission,
+            Some(v1::capability_permission::Permission::ReadContract(_))
+        )));
+        assert!(
+            grant
+                .field_visibility
+                .iter()
+                .all(|visibility| visibility.secret_field_ids.is_empty())
+        );
     }
 
     #[test]
