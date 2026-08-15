@@ -134,6 +134,7 @@
 - [WP-484 Proven Command-segment Framing](performance/wp-484-proven-command-segment-framing.md)
 - [WP-485 State-bearing Segment Mechanics](performance/wp-485-state-bearing-segment-mechanics.md)
 - [WP-486 Journal-authoritative State Overlay](performance/wp-486-journal-state-overlay.md)
+- [WP-620 Portable Writer Mechanics](performance/wp-620-portable-writer-mechanics.md)
 - [WP-413 Migration Evolution Evidence](performance/wp-413-migration-evolution.md)
 
 # Reference
