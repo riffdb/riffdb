@@ -8,7 +8,7 @@
     "contract_grammar_version": 4,
     "contract_ir_version": 4,
     "identities": {
-      "application_lock_hash": "72dcdb81e92f8cba8b38afc9a8f1dd4d266406308431c1a05d1db441c50c3a68",
+      "application_lock_hash": "7e74037122f4e59745995287623f0c07ae83d49ee8dd9f24795e71b18fb4da4c",
       "application_manifest_hash": "4f1aa96788e903c843ad609a06a10b450266fc24e5f0529d138ebcc7dd80d858",
       "application_role_hash": "1dc98a807ec17c2dd29d5ef94a7d022b47d9a05e98172884c50b33f82376886d",
       "contract_bundle_hash": "45d4bc3fc92e497994678d3de970b26b36645b582eeb153fb7b083991c40ab23",

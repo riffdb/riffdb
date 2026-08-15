@@ -629,7 +629,10 @@ fi
 if ((acceptance)) && ((generic_application)); then
     if [[ -f "$application_root/Cargo.toml" ]]; then
         app_patch="patch.crates-io.riffdb-client-rust.path=\"$repo_root/crates/riffdb-client-rust\""
-        CARGO_TARGET_DIR="$repo_root/target/application-alpha" \
+        RIFFDB_ENDPOINT="$endpoint" \
+            RIFFDB_CREDENTIAL_FILE="$work_root/profile.credential" \
+            RIFFDB_DATABASE=default \
+            CARGO_TARGET_DIR="$repo_root/target/application-alpha" \
             cargo run --quiet --offline \
             --manifest-path "$application_root/Cargo.toml" \
             --config "$app_patch" \
@@ -648,7 +651,10 @@ if ((acceptance)) && ((generic_application)); then
         (
             cd "$application_root"
             uv sync --locked >/dev/null
-            PYTHONPATH=src uv run --locked python -m "$python_package" \
+            RIFFDB_ENDPOINT="$endpoint" \
+                RIFFDB_CREDENTIAL_FILE="$work_root/profile.credential" \
+                RIFFDB_DATABASE=default \
+                PYTHONPATH=src uv run --locked python -m "$python_package" \
                 "$endpoint" "$work_root/profile.credential" default
         ) >"$work_root/generated-application-client.stdout"
         [[ -s "$work_root/generated-application-client.stdout" ]] || {
@@ -709,7 +715,10 @@ if ((run)); then
     fi
     if [[ -f "$application_root/Cargo.toml" ]]; then
         app_patch="patch.crates-io.riffdb-client-rust.path=\"$repo_root/crates/riffdb-client-rust\""
-        CARGO_TARGET_DIR="$repo_root/target/application-alpha" \
+        RIFFDB_ENDPOINT="$endpoint" \
+            RIFFDB_CREDENTIAL_FILE="$work_root/profile.credential" \
+            RIFFDB_DATABASE=default \
+            CARGO_TARGET_DIR="$repo_root/target/application-alpha" \
             cargo run --quiet --offline \
             --manifest-path "$application_root/Cargo.toml" \
             --config "$app_patch" \
@@ -745,7 +754,10 @@ if ((run)); then
         (
             cd "$application_root"
             uv sync --locked >/dev/null
-            PYTHONPATH=src uv run --locked python -m "$python_package" \
+            RIFFDB_ENDPOINT="$endpoint" \
+                RIFFDB_CREDENTIAL_FILE="$work_root/profile.credential" \
+                RIFFDB_DATABASE=default \
+                PYTHONPATH=src uv run --locked python -m "$python_package" \
                 "$endpoint" "$work_root/profile.credential" default
         )
     else

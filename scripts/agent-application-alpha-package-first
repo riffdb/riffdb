@@ -52,8 +52,18 @@ rm "$legacy/checksums.sha256" "$legacy/bundle.json" "$legacy/bin/riffdb"
 mkdir -p "$legacy/packages"
 cp -a "$distribution" "$legacy/packages/distribution"
 # The evaluator receives the verified application-runtime subset, not the
-# compiler/server crate inventory. The original signed checksum inventory and
-# detached signature remain as the qualification receipt.
+# compiler/server crate inventory. Preserve the complete signed inventory as a
+# qualification receipt, then give the intentionally pruned tree its own exact
+# bundle-bound inventory. Never present the subset as the signed whole.
+mkdir -p "$legacy/packages/qualification"
+cp "$distribution/checksums.sha256" \
+    "$legacy/packages/qualification/complete-distribution-checksums.sha256"
+cp "$distribution/checksums.sha256.sig" \
+    "$legacy/packages/qualification/complete-distribution-checksums.sha256.sig"
+cp "$distribution/metadata/artifacts-v1.json" \
+    "$legacy/packages/qualification/complete-distribution-artifacts-v1.json"
+rm "$legacy/packages/distribution/checksums.sha256" \
+    "$legacy/packages/distribution/checksums.sha256.sig"
 find "$legacy/packages/distribution/crates" -maxdepth 1 -type f -name '*.crate' \
     ! -name 'riffdb-api-grpc-0.1.0.crate' \
     ! -name 'riffdb-application-0.1.0.crate' \
@@ -64,8 +74,31 @@ find "$legacy/packages/distribution/crates" -maxdepth 1 -type f -name '*.crate' 
     ! -name 'riffdb-proto-0.1.0.crate' \
     ! -name 'riffdb-types-0.1.0.crate' \
     -delete
+(
+    cd "$legacy/packages/distribution"
+    find . \( -type f -o -type l \) -print0 | sort -z | xargs -0 sha256sum \
+        >"$legacy/packages/runtime-subset-checksums.sha256"
+)
+(
+    cd "$legacy/packages/distribution"
+    sha256sum --strict --check ../runtime-subset-checksums.sha256 >/dev/null
+)
 cp "$allowed_signers" "$legacy/packages/allowed-signers"
 printf '%s\n' "$identity" >"$legacy/packages/signing-identity"
+complete_distribution_digest="$(sha256sum "$distribution/checksums.sha256" | cut -d' ' -f1)"
+runtime_subset_digest="$(sha256sum "$legacy/packages/runtime-subset-checksums.sha256" | cut -d' ' -f1)"
+jq -n \
+    --arg identity "$identity" \
+    --arg complete "$complete_distribution_digest" \
+    --arg subset "$runtime_subset_digest" \
+    '{
+      schema: "riffdb-package-first-qualification/v1",
+      signing_identity: $identity,
+      complete_distribution_checksums_sha256: $complete,
+      complete_distribution_verified_before_pruning: true,
+      runtime_subset_checksums_sha256: $subset,
+      runtime_subset_intentionally_excludes_implementation_archives: true
+    }' >"$legacy/packages/qualification/receipt.json"
 "$distribution/install/riffdb-install" \
     --distribution "$distribution" \
     --target "$(jq -er '.target' "$distribution/metadata/artifacts-v1.json")" \
@@ -84,10 +117,26 @@ cp -a "$legacy/public/typescript/node_modules/typescript" \
     "$legacy/tooling/typescript/node_modules/"
 cp -a "$legacy/public/typescript/node_modules/@types/node" \
     "$legacy/tooling/typescript/node_modules/@types/"
+cp -a "$legacy/public/typescript/node_modules/undici-types" \
+    "$legacy/tooling/typescript/node_modules/"
 cp -a "$legacy/public/typescript/node_modules/@typescript/$typescript_platform" \
     "$legacy/tooling/typescript/node_modules/@typescript/"
-ln -s ../node_modules/typescript/bin/tsc "$legacy/tooling/typescript/bin/tsc"
+cat >"$legacy/tooling/typescript/bin/tsc" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+tooling_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+exec node "$tooling_root/node_modules/typescript/bin/tsc" \
+    --typeRoots "$tooling_root/node_modules/@types" "$@"
+EOF
+chmod 0755 "$legacy/tooling/typescript/bin/tsc"
 "$legacy/tooling/typescript/bin/tsc" --version >/dev/null
+mkdir -p "$work_root/typescript-tooling-smoke"
+cat >"$work_root/typescript-tooling-smoke/index.ts" <<'EOF'
+const timer: NodeJS.Timeout | undefined = undefined;
+void timer;
+EOF
+"$legacy/tooling/typescript/bin/tsc" --noEmit --types node \
+    "$work_root/typescript-tooling-smoke/index.ts"
 rm -rf "$legacy/public/python" "$legacy/public/typescript"
 
 rm -rf "$legacy/public/rust-sdk/crates" "$legacy/public/rust-sdk/proto" \
@@ -168,6 +217,7 @@ jq -n \
     --arg hash "$bundle_hash" \
     --arg revision "$(git -C "$repo_root" rev-parse HEAD)" \
     --arg distribution "$(sha256sum "$distribution/checksums.sha256" | cut -d' ' -f1)" \
+    --arg runtime_subset "$runtime_subset_digest" \
     --arg identity "$identity" \
     '{
       schema: "riffdb-agent-application-alpha-bundle/v2",
@@ -176,12 +226,15 @@ jq -n \
       sealed: true,
       package_first: true,
       package_distribution_checksums_sha256: $distribution,
+      package_runtime_subset_checksums_sha256: $runtime_subset,
       package_signing_identity: $identity,
       package_conformance: "passed",
       contains_ticketdesk: false,
       contains_riffdb_server_implementation_source: false,
       public_rust_package_source: true
     }' >"$legacy/bundle.json"
+
+"$repo_root/scripts/verify-agent-alpha-runtime-subset" "$legacy" >/dev/null
 
 mv "$legacy" "$destination"
 trap - EXIT INT TERM

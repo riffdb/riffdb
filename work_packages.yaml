@@ -12229,7 +12229,8 @@ work_packages:
   requirements: [DX-031, DX-032]
   required_adrs: [ADR-0056, ADR-0106, ADR-0120]
   allowed_paths: [work_packages.yaml, SPEC.md, docs/**, fixtures/**, tests/**, scripts/**,
-    clients/**, crates/riffdb-cli/**, templates/**, evaluations/agent-application-alpha/**,
+    clients/**, crates/riffdb-cli/**, crates/riffdb-query-module/**, templates/**,
+    evaluations/agent-application-alpha/**,
     release/agent-application-alpha/**, release/evidence/**, .github/**]
   deliverables:
   - The four-language matrix over one schema with identity/outcome/error agreement assertions

@@ -78,6 +78,16 @@ equal `bundle.json`. Package installation itself is not an identity-change
 ceremony. Ordinary compiler diagnostics that the agent resolves without
 outside product guidance are not rescues.
 
+The sealed bundle contains a source-pruned runtime subset, not a second copy of
+the complete signed distribution. Verify the outer bundle inventory and
+`packages/runtime-subset-checksums.sha256`. Treat
+`packages/qualification/receipt.json` and its retained original inventory and
+signature as evidence that the complete distribution was verified before
+pruning. A missing selected runtime file fails the cell; the absence of an
+unselected implementation archive does not. The runtime subset must not carry
+a stale `checksums.sha256` or detached signature claiming that the pruned tree
+is the complete distribution.
+
 For a satisfaction campaign, evaluators follow this identical protocol; they
 are not told to manufacture a target score. After the Python, Rust, and
 TypeScript reports are published, `scripts/agent-satisfaction-canary-acceptance`

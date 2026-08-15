@@ -171,6 +171,62 @@ fn package_first_driver_runner_abi_is_documented_in_exact_order() {
 }
 
 #[test]
+fn generated_go_results_carry_exact_compiler_owned_operation_identity() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let application = root.join("fixtures/driver/conformance-app");
+    let lock: Value = serde_json::from_slice(
+        &fs::read(application.join("riffdb.application.lock.json")).expect("lock"),
+    )
+    .expect("lock JSON");
+    let generated = fs::read_to_string(application.join("generated/go/client.go"))
+        .expect("generated Go client");
+    let query_hash = lock["modules"][0]["queries"][0]["plan_hash"]
+        .as_str()
+        .expect("query plan hash");
+    let command_hash = lock["roles"][0]["definition"]["commands"][0]["plan_hash"]
+        .as_str()
+        .expect("command plan hash");
+
+    assert!(generated.contains("type QueryIdentity struct"));
+    assert!(generated.contains("Identity QueryIdentity"));
+    assert!(generated.contains("ContractVersion uint64; PlanHash string"));
+    assert!(generated.contains(&format!("const ItemPageQueryPlanHash = \"{query_hash}\"")));
+    assert!(generated.contains(&format!("const CreateItemPlanHash = \"{command_hash}\"")));
+    assert!(generated.contains("PlanHash: ItemPageQueryPlanHash"));
+    assert!(generated.contains("PlanHash: CreateItemPlanHash"));
+}
+
+#[test]
+fn development_runners_bind_native_configuration_and_sealed_typescript_tooling() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    for relative in ["scripts/riffdb-dev", "scripts/riffdb-dev-installed"] {
+        let source = fs::read_to_string(root.join(relative)).expect("development runner");
+        for name in [
+            "RIFFDB_ENDPOINT",
+            "RIFFDB_CREDENTIAL_FILE",
+            "RIFFDB_DATABASE",
+        ] {
+            assert!(source.contains(name), "{relative} omits {name}");
+        }
+    }
+    let installed =
+        fs::read_to_string(root.join("scripts/riffdb-dev-installed")).expect("installed runner");
+    assert!(installed.contains("tooling/typescript/bin:$PATH"));
+    assert!(installed.contains("tooling/typescript/node_modules"));
+
+    let sealer = fs::read_to_string(root.join("scripts/agent-application-alpha-package-first"))
+        .expect("package-first sealer");
+    assert!(sealer.contains("node_modules/undici-types"));
+    assert!(sealer.contains("runtime-subset-checksums.sha256"));
+    assert!(sealer.contains("complete-distribution-checksums.sha256"));
+    assert!(sealer.contains("rm \"$legacy/packages/distribution/checksums.sha256\""));
+    let verifier = fs::read_to_string(root.join("scripts/verify-agent-alpha-runtime-subset"))
+        .expect("runtime subset verifier");
+    assert!(verifier.contains("sha256sum --strict --check \"$subset_inventory\""));
+    assert!(verifier.contains("runtime subset retains a misleading"));
+}
+
+#[test]
 fn package_first_campaign_adds_metrics_without_rewriting_predecessor_schemas() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let evaluations = root.join("evaluations/agent-application-alpha");
