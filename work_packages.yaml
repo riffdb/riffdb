@@ -1,4 +1,4 @@
-spec_version: '0.98'
+spec_version: '0.99'
 product: RiffDB
 repository: riffdb
 status: deployable-application-alpha-architecture-accepted
@@ -12533,4 +12533,50 @@ work_packages:
     scale: Publication visits one closed bounded artifact inventory, registry indices are generated
       deterministically, loopback services have explicit request and artifact-size limits, and
       acceptance uses one bounded consumer per ecosystem.
+  human_review_triggers: *id001
+- id: WP-612
+  name: Version topology and retirement governance
+  depends_on: [WP-574, WP-601]
+  objective: Replace scattered, implicitly coordinated version constants with one machine-readable
+    topology that records the distinct ownership, reader window, writer policy, compatibility
+    class, and retirement gate for every release-significant durable, executable-IR, wire,
+    protocol, application-artifact, generated-surface, and evidence format. Preserve domain-specific
+    versions rather than inventing a misleading global version, and make any unregistered version
+    change fail repository checks before the first alpha release.
+  requirements: [AFC-008, AFC-010, VER-001, VER-002, VER-003, VER-004, VER-005,
+    VER-006, VER-007, VER-008]
+  required_adrs: [ADR-0002, ADR-0006, ADR-0013, ADR-0057, ADR-0112, ADR-0120,
+    ADR-0123]
+  allowed_paths: [work_packages.yaml, SPEC.md, adr/README.md,
+    adr/0123-version-topology-and-retirement-governance.md, docs/**,
+    release/version-topology-v1.json, scripts/check-version-topology,
+    scripts/check-generated]
+  deliverables:
+  - Accepted ADR-0123 defining why version domains remain separate, the required registry fields,
+    reader/writer compatibility rules, breaking-change classification, and decoder retirement
+    ceremony without weakening ADR-0112's durable-format guarantees
+  - Canonical `release/version-topology-v1.json` inventory covering every release-significant
+    version family, with an owning source locator, explicit readable and writable identities,
+    writer-selection policy, supported-release posture, fixtures/checks, and current lifecycle state
+  - Repository checker that validates the registry schema and ordering, pins source constants and
+    external baselines, cross-checks durable entries against the generated durable-format manifest,
+    and rejects an unregistered or lifecycle-incomplete version change
+  - Public handbook guidance for additive changes, breaking changes, deprecation, decoder
+    retirement, reserved identifiers, release-note obligations, and the distinction between
+    application migration, physical format upgrade, and symbolic export/reimport
+  acceptance_commands:
+  - ./scripts/check-version-topology
+  - ./scripts/check-generated
+  - ./scripts/check-requirement-coverage
+  - ./scripts/handbook check
+  exit_gate: Every release-significant version domain is owned by the checked topology; a changed
+    version constant, reader/writer window, external baseline, or durable-manifest claim fails CI
+    until its compatibility classification and retirement evidence are updated; no decoder is
+    retired merely because a newer version exists.
+  standing_design_tests:
+    interface_safety: The registry grants no decoder, migration, downgrade, reset, raw import, or
+      compatibility bypass. Public and durable changes remain governed by their owning accepted ADRs,
+      and unsupported inputs continue to fail closed at the original boundary.
+    scale: The topology is a bounded release artifact over a fixed domain inventory; checks read only
+      declared source files and manifests and never scan database contents or retain runtime state.
   human_review_triggers: *id001
