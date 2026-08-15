@@ -220,10 +220,18 @@ fn development_runners_bind_native_configuration_and_sealed_typescript_tooling()
     assert!(sealer.contains("runtime-subset-checksums.sha256"));
     assert!(sealer.contains("complete-distribution-checksums.sha256"));
     assert!(sealer.contains("rm \"$legacy/packages/distribution/checksums.sha256\""));
+    assert!(
+        sealer.contains("$legacy/.cargo/.global-cache"),
+        "package-first sealer must remove Cargo's mutable global cache after its final package smoke"
+    );
     let verifier = fs::read_to_string(root.join("scripts/verify-agent-alpha-runtime-subset"))
         .expect("runtime subset verifier");
     assert!(verifier.contains("sha256sum --strict --check \"$subset_inventory\""));
     assert!(verifier.contains("runtime subset retains a misleading"));
+    assert!(
+        verifier.contains("sealed bundle contains mutable Cargo cache state"),
+        "bundle verifier must reject nondeterministic Cargo cache residue"
+    );
 }
 
 #[test]

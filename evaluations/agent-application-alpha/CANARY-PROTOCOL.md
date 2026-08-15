@@ -31,9 +31,11 @@ inputs, entity identifiers, fixture values, returned application records, or
 source text. Stable operation names and compiler/runtime identity hashes are
 required and are not application values.
 
-The ordinary event transcript records chronology. Record `first_write` and
-`first_page_read` only after runtime success. Each must have exactly one
-qualified event:
+The ordinary event transcript records chronology. Record `first_write` only
+from the original successful command response with `replayed: false`; a later
+idempotent replay proves recovery behavior but cannot substitute for the first
+committed row. Record `first_page_read` only after a read fenced by that exact
+commit. Each must have exactly one qualified event:
 
 - first write: elapsed time, generated command name, returned/replay-validated
   command plan hash, contract identity from the generated package, durable
@@ -47,8 +49,10 @@ by the qualified schema, do not infer it or read product source. Record no
 qualified success, report the public product defect, and leave the run failed.
 
 Before `complete`, run the bundled application-boundary checker against the
-application and the domain's complete workload. The rating is the agent's
-independent assessment; it must never be chosen to satisfy the gate.
+application and the domain's complete workload. `complete` is the final event
+in the transcript; nothing may retroactively alter a completed run. The rating
+is the agent's independent assessment; it must never be chosen to satisfy the
+gate.
 
 `handwritten_glue_lines` counts only application-authored RiffDB adaptation:
 transport or RPC wrappers, parameter/result maps, wire-value encoders or
