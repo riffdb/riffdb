@@ -40,10 +40,20 @@ disposable server:
 riffdb dev --seed --run
 ```
 
-The workflow accepts exactly one repository runner (`Cargo.toml` or
-`package.json`), passes it the scoped application connection directly, streams
-its stdout, and tears down the server when the runner exits or is interrupted.
-It does not grant the child operator or kernel authority.
+The workflow accepts exactly one repository runner (`Cargo.toml`, `go.mod`,
+`package.json`, or `pyproject.toml`), supplies only the protected
+language-appropriate application connection, streams its stdout, and tears
+down the server when the runner exits or is interrupted. Go and TypeScript use
+the private first-party driver-host socket; no runner receives operator or
+kernel authority.
+
+Current application command and RiffQL plans retain the accepted grammar-v1
+global tenant requirement. `riffdb dev` therefore accepts only an explicitly
+global development role. A tenant-scoped role is rejected before the
+disposable server starts because no reviewed contract-field-to-tenant mapping
+exists; development never invents that mapping or widens the role. Tenant
+binding remains available to interfaces whose operation target has a compiled
+tenant scope.
 
 Use `--role ticketdesk-agent` for the separately named agent allowlist. It
 still receives no ad-hoc query or kernel authority. Use

@@ -52,5 +52,21 @@ identity. Those hashes are substitution checks, not authority. Do not put a
 credential, remote endpoint, raw method name, numeric compiler ID, field mask,
 or Protobuf value in Go application code.
 
+For a repository created with `riffdb init --generator go`, author `main.go`
+against the generated client and `riffdb.dev/application`, then run the whole
+local stack with:
+
+```bash
+riffdb dev --seed --run
+```
+
+The development workflow starts `riffdb-driverd` and passes the private socket
+plus the exact compiler-owned handshake identity as the program's ten positional
+arguments. The generated `riffdb new --language go` starter demonstrates their
+closed decoding. Application code must not derive, persist, or replace those
+arguments; it uses them only to open the generated application session. The
+workflow supports `go.mod` as a first-class runner manifest and runs with the
+caller's selected offline module source.
+
 Current limitation: the Go/driver-host path is Linux-only in the alpha. The Go
 runtime has no pure-Go remote fallback.

@@ -23,8 +23,8 @@ Offline runtime installation sources are:
 - Rust: set `CARGO_HOME=<bundle>/.cargo`; the signed `.crate` packages are the
   `vendored-sources` directory
 - TypeScript: install the exact `riffdb-client-0.1.0.tgz` under
-  `<bundle>/packages/distribution/npm`; the evaluator compiler is available at
-  `<bundle>/tooling/typescript/bin/tsc`
+  `<bundle>/packages/distribution/npm`; the evaluator compiler and its exact
+  target platform binary are available at `<bundle>/tooling/typescript/bin/tsc`
 
 The distribution's `checksums.sha256` and detached signature were verified
 before the bundle was sealed. `bundle.json` records their exact digest. Package

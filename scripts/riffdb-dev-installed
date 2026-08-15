@@ -86,13 +86,13 @@ for tool in cargo date find jq mkfifo mktemp od rg sort stat timeout tr; do
 done
 
 driver_runner=0
-if ((run)) && [[ -f "$application_root/package.json" ]]; then
+if ((run)) && [[ -f "$application_root/package.json" || -f "$application_root/go.mod" ]]; then
     driver_runner=1
     [[ -x "$driverd" \
         && -f "$dev_tls_root/server.pem" \
         && -f "$dev_tls_root/server.key" \
         && -f "$dev_tls_root/ca.pem" ]] || {
-        echo "installed TypeScript driver components are unavailable" >&2
+        echo "installed application driver components are unavailable" >&2
         exit 1
     }
     command -v sha256sum >/dev/null 2>&1 || {
@@ -120,6 +120,13 @@ else
         exit 2
     }
 fi
+role_scope="$(jq -er --arg role "$role_symbol" \
+    '.roles[] | select(.name == $role) | .tenant_scope' \
+    "$application_manifest")"
+[[ "$role_scope" == global ]] || {
+    echo "application role $role_symbol is tenant-scoped, but current application plans have no reviewed tenant mapping; riffdb dev requires an explicit global development role" >&2
+    exit 2
+}
 
 task_tmp_root="${TMPDIR:-$HOME/tmp}"
 mkdir -p "$task_tmp_root"
@@ -324,7 +331,7 @@ EOF
     done
     [[ -S "$driver_socket" ]] || {
         cat "$work_root/driver.stderr" >&2
-        echo "development TypeScript driver host did not become ready" >&2
+        echo "development application driver host did not become ready" >&2
         exit 1
     }
 fi
@@ -427,12 +434,25 @@ printf 'riffdb-dev-ready-v1\t%s\t%s\t%s\n' \
 
 if ((run)); then
     runner_count=0
-    for runner_manifest in Cargo.toml package.json pyproject.toml; do
+    for runner_manifest in Cargo.toml go.mod package.json pyproject.toml; do
         [[ -f "$application_root/$runner_manifest" ]] && ((runner_count += 1))
     done
     if ((runner_count != 1)); then
         echo "application root must contain exactly one supported runner manifest" >&2
         exit 2
+    fi
+    driver_arguments=()
+    if ((driver_runner)); then
+        manifest_hash="$(jq -er '.exact_manifest_hash' "$application_root/riffdb.application.lock.json")"
+        catalog_hash="$(jq -er '.artifacts[] | select(.kind == "mcp") | .content_hash' "$application_root/riffdb.application.lock.json")"
+        role_hash="$(jq -er --arg role "$role_symbol" '.roles[] | select(.definition.name == $role) | .definition_hash' "$application_root/riffdb.application.lock.json")"
+        bundle_hash="$(jq -er '.contract.bundle_hash' "$application_root/riffdb.application.lock.json")"
+        remote_hash="$(printf '%s' "$endpoint|127.0.0.1" | sha256sum | cut -d' ' -f1)"
+        driver_arguments=(
+            "$driver_socket" "$manifest_hash" "$catalog_hash" default
+            "$role_symbol" "$role_hash" "$remote_hash" "$contract_lineage"
+            "$contract_version" "$bundle_hash"
+        )
     fi
     if [[ -f "$application_root/Cargo.toml" ]]; then
         [[ -f "$rust_sdk/Cargo.toml" ]] || {
@@ -444,7 +464,16 @@ if ((run)); then
             cargo run --quiet --offline \
             --manifest-path "$application_root/Cargo.toml" \
             --config "$app_patch" \
-            -- "$endpoint" "$work_root/profile.credential"
+            -- "$endpoint" "$work_root/profile.credential" default
+    elif [[ -f "$application_root/go.mod" ]]; then
+        command -v go >/dev/null 2>&1 || {
+            echo "required Go runner tool is missing: go" >&2
+            exit 1
+        }
+        (
+            cd "$application_root"
+            GOTOOLCHAIN=local go run . "${driver_arguments[@]}"
+        )
     elif [[ -f "$application_root/package.json" ]]; then
         for tool in node npm; do
             command -v "$tool" >/dev/null 2>&1 || {
@@ -456,22 +485,7 @@ if ((run)); then
             cd "$application_root"
             unset RIFFDB_TLS_TRUST_ROOT RIFFDB_TLS_SERVER_NAME
             npm run --silent build
-            manifest_hash="$(jq -er '.exact_manifest_hash' riffdb.application.lock.json)"
-            catalog_hash="$(jq -er '.artifacts[] | select(.kind == "mcp") | .content_hash' riffdb.application.lock.json)"
-            role_hash="$(jq -er --arg role "$role_symbol" '.roles[] | select(.definition.name == $role) | .definition_hash' riffdb.application.lock.json)"
-            bundle_hash="$(jq -er '.contract.bundle_hash' riffdb.application.lock.json)"
-            remote_hash="$(printf '%s' "$endpoint|127.0.0.1" | sha256sum | cut -d' ' -f1)"
-            npm run --silent start -- \
-                "$driver_socket" \
-                "$manifest_hash" \
-                "$catalog_hash" \
-                default \
-                "$role_symbol" \
-                "$role_hash" \
-                "$remote_hash" \
-                "$contract_lineage" \
-                "$contract_version" \
-                "$bundle_hash"
+            npm run --silent start -- "${driver_arguments[@]}"
         )
     elif [[ -f "$application_root/pyproject.toml" ]]; then
         command -v uv >/dev/null 2>&1 || {
@@ -503,7 +517,7 @@ if ((acceptance)); then
             cargo run --quiet --offline \
             --manifest-path "$application_root/Cargo.toml" \
             --config "$app_patch" \
-            -- "$endpoint" "$work_root/profile.credential" \
+            -- "$endpoint" "$work_root/profile.credential" default \
             >"$work_root/generated-application-client.stdout"
         [[ -s "$work_root/generated-application-client.stdout" ]] || {
             echo "generated Rust application client returned no typed page result" >&2

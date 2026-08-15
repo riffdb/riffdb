@@ -2,7 +2,9 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-work_root="$(mktemp -d "${TMPDIR:-/tmp}/riffdb-agent-alpha-package.XXXXXX")"
+task_tmp_root="${TMPDIR:-$HOME/tmp}"
+mkdir -p "$task_tmp_root"
+work_root="$(mktemp -d "$task_tmp_root/riffdb-agent-alpha-package.XXXXXX")"
 typescript_run_pid=
 cleanup() {
     if [[ -n "$typescript_run_pid" ]] && kill -0 "$typescript_run_pid" 2>/dev/null; then
@@ -110,6 +112,25 @@ grep -Fq 'Usage: check-application-boundary [APPLICATION_ROOT ...]' \
     <<<"$boundary_help"
 grep -Fq 'Checks generated-operation-only application boundary compliance.' \
     <<<"$boundary_help"
+
+tenant_role_root="$work_root/tenant-role-run"
+cp -R "$rust_run_root" "$tenant_role_root"
+jq -c '.roles[0].tenant_scope = "tenant"' \
+    "$tenant_role_root/riffdb.application.json" \
+    >"$tenant_role_root/riffdb.application.json.next"
+printf '\n' >>"$tenant_role_root/riffdb.application.json.next"
+mv "$tenant_role_root/riffdb.application.json.next" \
+    "$tenant_role_root/riffdb.application.json"
+if (
+    cd "$tenant_role_root"
+    "$bundle/bin/riffdb" dev --run
+) >"$work_root/tenant-role.stdout" 2>"$work_root/tenant-role.stderr"; then
+    echo "tenant-scoped application unexpectedly entered the global-plan development path" >&2
+    exit 1
+fi
+rg -Fq 'tenant-scoped, but current application plans have no reviewed tenant mapping' \
+    "$work_root/tenant-role.stderr"
+
 rust_source_check="$(
     cd "$rust_run_root"
     "$bundle/bin/riffdb" application check --source-only
@@ -132,7 +153,11 @@ go_run_output="$(
         "$bundle/bin/riffdb" dev --seed --run
 )"
 rg -q '^riffdb-dev-ready-v1' <<<"$go_run_output"
-rg -Fq '"schema":"riffdb.application-parity/v1"' <<<"$go_run_output"
+rg -Fq '"schema":"riffdb.application-parity/v1"' <<<"$go_run_output" || {
+    printf '%s\n' "$go_run_output" >&2
+    echo "installed Go application omitted its parity observation" >&2
+    exit 1
+}
 
 python_run_root="$work_root/python-run"
 "$bundle/bin/riffdb" new run-python --language python \
@@ -143,7 +168,11 @@ python_run_output="$(
         "$bundle/bin/riffdb" dev --seed --run
 )"
 rg -q '^riffdb-dev-ready-v1' <<<"$python_run_output"
-rg -Fq '"schema":"riffdb.application-parity/v1"' <<<"$python_run_output"
+rg -Fq '"schema":"riffdb.application-parity/v1"' <<<"$python_run_output" || {
+    printf '%s\n' "$python_run_output" >&2
+    echo "installed Python application omitted its parity observation" >&2
+    exit 1
+}
 
 typescript_run_root="$work_root/typescript-run"
 "$bundle/bin/riffdb" new run-typescript --language typescript \
