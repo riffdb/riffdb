@@ -1,0 +1,9 @@
+{"schema":"riffdb-agent-application-alpha-event/v2","elapsed_ms":0,"kind":"start","operation":"campaign03u-blog-rust"}
+{"schema":"riffdb-agent-application-alpha-event/v2","elapsed_ms":126000,"kind":"identity_change_ceremony","operation":"riffdb.application.lock.write"}
+{"schema":"riffdb-agent-application-alpha-event/v2","elapsed_ms":195000,"kind":"package_install","operation":"cargo-check-offline-locked-bundle"}
+{"schema":"riffdb-agent-application-alpha-event/v2","elapsed_ms":195000,"kind":"tool","operation":"cargo-check-offline-locked"}
+{"schema":"riffdb-agent-application-alpha-event/v2","elapsed_ms":316000,"kind":"first_write","operation":"AddComment"}
+{"schema":"riffdb-agent-application-alpha-event/v2","elapsed_ms":316001,"kind":"first_page_read","operation":"PostDetail"}
+{"schema":"riffdb-agent-application-alpha-event/v2","elapsed_ms":373000,"kind":"tool","operation":"check-application-boundary"}
+{"schema":"riffdb-agent-application-alpha-event/v2","elapsed_ms":373001,"kind":"rating","operation":"independent-rating"}
+{"schema":"riffdb-agent-application-alpha-event/v2","elapsed_ms":373002,"kind":"complete","operation":"campaign03u-blog-rust"}
