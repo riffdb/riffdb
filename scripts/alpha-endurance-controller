@@ -23,7 +23,7 @@ MAX_ACTION_RESULT_BYTES = 64 * 1024
 MAX_FAILURE_DIAGNOSTIC_BYTES = 4 * 1024
 CONFORMANCE_INITIAL_DELAY_SECONDS = 900
 ACTION_RESULT_SCHEMA = "riffdb.alpha-endurance-action-result/v1"
-CONFORMANCE_RESULT_SCHEMA = "riffdb.alpha-endurance-conformance-result/v1"
+CONFORMANCE_RESULT_SCHEMA = "riffdb.alpha-endurance-conformance-result/v2"
 REQUIRED_LANGUAGES = {"rust", "go", "typescript", "python"}
 REQUIRED_DOMAINS = {"openfga", "mlflow", "better-auth", "woodpecker"}
 REQUIRED_LIFECYCLES = {
@@ -182,6 +182,50 @@ def run_checked(argv: list[str], root: Path, environment: dict[str, str]) -> sub
     )
 
 
+def sha256_file(candidate: Path) -> str:
+    if candidate.is_symlink() or not candidate.is_file():
+        fail("installed conformance artifact is not a regular file")
+    digest = hashlib.sha256()
+    with candidate.open("rb") as source:
+        while chunk := source.read(64 * 1024):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def installed_conformance(
+    action_manifest: dict[str, Any], environment: dict[str, str]
+) -> tuple[list[str], Path, str, str, str]:
+    reviewed = command(action_manifest["conformance"]["command"], "conformance command")
+    if reviewed != ["scripts/endurance-conformance"]:
+        fail("reviewed conformance command cannot be materialized as an installed probe")
+    raw_root = environment.get("RIFFDB_ENDURANCE_ARTIFACT_ROOT", "")
+    artifact_root = Path(raw_root)
+    if not raw_root or not artifact_root.is_absolute() or artifact_root.is_symlink():
+        fail("endurance artifact root cannot bind installed conformance")
+    probe_root = artifact_root / "environment-v1/conformance"
+    runner = probe_root / "runner"
+    manifest_path = probe_root / "probe-manifest-v1.json"
+    if runner.is_symlink() or not runner.is_file() or not os.access(runner, os.X_OK):
+        fail("installed conformance runner is absent")
+    if manifest_path.is_symlink() or not manifest_path.is_file():
+        fail("installed conformance probe manifest is absent")
+    with manifest_path.open("rb") as source:
+        encoded = source.read(MAX_MANIFEST_BYTES + 1)
+    if not 0 < len(encoded) <= MAX_MANIFEST_BYTES:
+        fail("installed conformance probe manifest exceeds its byte bound")
+    value = json.loads(encoded)
+    release_artifact = value.get("release_artifact_sha256") if isinstance(value, dict) else None
+    if release_artifact != environment.get("RIFFDB_ENDURANCE_RELEASE_ARTIFACT_SHA256"):
+        fail("installed conformance probes differ from the release artifact identity")
+    return (
+        [str(runner)],
+        manifest_path,
+        sha256_file(manifest_path),
+        sha256_file(runner),
+        str(release_artifact),
+    )
+
+
 def parse_action_result(output: str, kind: str, name: str) -> dict[str, Any]:
     if not 0 < len(output.encode()) <= MAX_ACTION_RESULT_BYTES:
         fail(f"{kind} {name} result is absent or exceeds its byte bound")
@@ -227,7 +271,9 @@ def parse_action_result(output: str, kind: str, name: str) -> dict[str, Any]:
     return value
 
 
-def parse_conformance_result(output: str) -> dict[str, Any]:
+def parse_conformance_result(
+    output: str, expected_probe_bundle: str, expected_release_artifact: str
+) -> dict[str, Any]:
     if not 0 < len(output.encode()) <= MAX_ACTION_RESULT_BYTES:
         fail("conformance result is absent or exceeds its byte bound")
     try:
@@ -242,6 +288,8 @@ def parse_conformance_result(output: str) -> dict[str, Any]:
         "data_reconciliation_passed",
         "silent_loss",
         "evidence_sha256",
+        "probe_bundle_sha256",
+        "release_artifact_sha256",
     }
     if not isinstance(value, dict) or set(value) != expected:
         fail("conformance result has an invalid shape")
@@ -258,6 +306,8 @@ def parse_conformance_result(output: str) -> dict[str, Any]:
         or value.get("data_reconciliation_passed") is not True
         or value.get("silent_loss") != 0
         or not valid_digest
+        or value.get("probe_bundle_sha256") != expected_probe_bundle
+        or value.get("release_artifact_sha256") != expected_release_artifact
     ):
         fail("conformance result did not prove domain, policy, and data parity")
     return value
@@ -303,13 +353,15 @@ def self_test() -> None:
             "data_reconciliation_passed": True,
             "silent_loss": 0,
             "evidence_sha256": "b" * 64,
+            "probe_bundle_sha256": "c" * 64,
+            "release_artifact_sha256": "d" * 64,
         }
     )
-    parse_conformance_result(conformance)
+    parse_conformance_result(conformance, "c" * 64, "d" * 64)
     invalid_conformance = json.loads(conformance)
     invalid_conformance["silent_loss"] = 1
     try:
-        parse_conformance_result(json.dumps(invalid_conformance))
+        parse_conformance_result(json.dumps(invalid_conformance), "c" * 64, "d" * 64)
     except ValueError:
         print("silent_loss_conformance: rejected")
     else:
@@ -352,6 +404,13 @@ def main() -> int:
         fail(f"environment setup failed with status {setup.returncode}")
     try:
         environment_results.append(parse_action_result(setup.stdout, "environment", "setup"))
+        (
+            conformance_command,
+            conformance_manifest_path,
+            conformance_probe_sha256,
+            conformance_runner_sha256,
+            release_artifact_sha256,
+        ) = installed_conformance(action_manifest, environment)
     except ValueError:
         run_checked(
             command(action_manifest["environment"]["teardown"], "environment teardown"),
@@ -438,12 +497,23 @@ def main() -> int:
                 observations.append(sample)
                 next_sample = now + action_manifest["sampler"]["interval_seconds"]
             if now >= next_conformance:
-                result = run_checked(command(action_manifest["conformance"]["command"], "conformance command"), root, environment)
+                if (
+                    sha256_file(conformance_manifest_path) != conformance_probe_sha256
+                    or sha256_file(Path(conformance_command[0])) != conformance_runner_sha256
+                ):
+                    fail("installed conformance identity changed during the run")
+                result = run_checked(conformance_command, root, environment)
                 if result.returncode != 0:
                     report_subprocess_failure("conformance_failed", result)
                     errors.append({"code": "conformance_failed", "status": result.returncode})
                     break
-                conformance_results.append(parse_conformance_result(result.stdout))
+                conformance_results.append(
+                    parse_conformance_result(
+                        result.stdout,
+                        conformance_probe_sha256,
+                        release_artifact_sha256,
+                    )
+                )
                 conformance_checkpoints += 1
                 next_conformance = now + action_manifest["conformance"]["interval_seconds"]
             for item in action_manifest["lifecycles"]:

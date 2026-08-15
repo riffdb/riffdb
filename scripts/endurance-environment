@@ -78,7 +78,10 @@ if [[ -e "$environment_root" ]]; then
 fi
 mkdir -m 0700 "$environment_root" "$environment_root/data" "$environment_root/backups" \
     "$environment_root/application" "$environment_root/python-dist" \
-    "$environment_root/metrics" "$environment_root/bin"
+    "$environment_root/metrics" "$environment_root/bin" \
+    "$environment_root/conformance" "$environment_root/conformance/bin" \
+    "$environment_root/conformance/fixtures" \
+    "$environment_root/conformance/fixtures/adapters"
 export UV_CACHE_DIR="$environment_root/uv-cache"
 mkdir -m 0700 "$UV_CACHE_DIR"
 export GOCACHE="$environment_root/go-cache"
@@ -100,6 +103,16 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 cd "$repo_root"
+[[ -z "$(git status --porcelain=v1 --untracked-files=normal)" ]] || {
+    echo "endurance release probes require a clean source revision" >&2
+    exit 2
+}
+release_artifact_sha256="${RIFFDB_ENDURANCE_RELEASE_ARTIFACT_SHA256:-}"
+[[ "$release_artifact_sha256" =~ ^[0-9a-f]{64}$ ]] || {
+    echo "RIFFDB_ENDURANCE_RELEASE_ARTIFACT_SHA256 must bind the installed release bundle" >&2
+    exit 2
+}
+source_revision="$(git rev-parse --verify HEAD)"
 cargo +1.97.0 build --quiet --release \
     -p riffdb-server --bin riffdbd \
     -p riffdb-cli --bin riffdb \
@@ -111,6 +124,35 @@ cp target/release/riffdb "$environment_root/bin/riffdb"
 cp target/release/riffdb-driverd "$environment_root/bin/riffdb-driverd"
 cp target/release/endurance "$environment_root/bin/riffdb-ticketdesk-rust-endurance"
 cp target/release/examples/endurance_inspect "$environment_root/bin/riffdb-endurance-inspect"
+
+# Build the periodic semantic probes once from the clean release revision.
+# A running 72-hour qualification executes only these sealed binaries and the
+# copied fixture closure; later edits in the developer checkout cannot change
+# the meaning of an in-flight run.
+probe_build="$environment_root/conformance-build.jsonl"
+cargo +1.97.0 test --release -p riffdb-testkit \
+    --test adapter_conformance --test row_policy_conformance \
+    --all-features --no-run --message-format=json-render-diagnostics \
+    >"$probe_build"
+adapter_probe="$(jq -r 'select(.reason == "compiler-artifact" and .target.name == "adapter_conformance") | .executable // empty' "$probe_build" | tail -n 1)"
+row_policy_probe="$(jq -r 'select(.reason == "compiler-artifact" and .target.name == "row_policy_conformance") | .executable // empty' "$probe_build" | tail -n 1)"
+[[ -n "$adapter_probe" && -x "$adapter_probe" && -n "$row_policy_probe" && -x "$row_policy_probe" ]] || {
+    echo "endurance conformance probe binaries were not produced" >&2
+    exit 1
+}
+cp "$adapter_probe" "$environment_root/conformance/bin/adapter_conformance"
+cp "$row_policy_probe" "$environment_root/conformance/bin/row_policy_conformance"
+cp scripts/endurance-conformance "$environment_root/conformance/runner"
+cp -R fixtures/adapters/conformance "$environment_root/conformance/fixtures/adapters/"
+rm "$probe_build"
+"$environment_root/conformance/runner" --seal-probe-bundle \
+    "$environment_root/conformance" "$release_artifact_sha256" "$source_revision" \
+    >"$environment_root/conformance-seal.txt"
+conformance_bundle_sha256="$("$environment_root/conformance/runner" --verify-probe-bundle "$environment_root/conformance")"
+chmod 0500 "$environment_root/conformance/runner" "$environment_root/conformance/bin/"*
+find "$environment_root/conformance/fixtures" -type f -exec chmod 0400 {} +
+find "$environment_root/conformance/fixtures" -type d -exec chmod 0500 {} +
+chmod 0400 "$environment_root/conformance/probe-manifest-v1.json"
 (cd examples/ticketdesk && go build -o "$environment_root/bin/riffdb-ticketdesk-go-endurance" ./endurance/go)
 npm --prefix clients/typescript/runtime run build >/dev/null
 npm --prefix examples/ticketdesk/web run build >/dev/null
@@ -428,12 +470,16 @@ jq -nS \
     --arg typescript_runtime "$repo_root/clients/typescript/runtime/dist/index.js" \
     --arg typescript_generated "$environment_root/typescript/client.js" \
     --arg python "$environment_root/python-venv/bin/python" \
+    --arg conformance_runner "$environment_root/conformance/runner" \
+    --arg conformance_bundle_sha256 "$conformance_bundle_sha256" \
+    --arg source_revision "$source_revision" \
+    --arg release_artifact_sha256 "$release_artifact_sha256" \
     --argjson server_pid "$server_pid" \
     --argjson stdin_keeper_pid "$stdin_keeper_pid" \
     --argjson application_pid "${driver_pids[application]}" \
     --argjson seeder_pid "${driver_pids[seeder]}" \
     --argjson agent_pid "${driver_pids[agent]}" \
-    '{schema:$schema,root:$root,endpoint:$endpoint,trust_root:$trust_root,riffdb:$riffdb,typescript_runtime:$typescript_runtime,typescript_generated:$typescript_generated,python:$python,server_pid:$server_pid,stdin_keeper_pid:$stdin_keeper_pid,driver_pids:{application:$application_pid,seeder:$seeder_pid,agent:$agent_pid}}' \
+    '{schema:$schema,root:$root,endpoint:$endpoint,trust_root:$trust_root,riffdb:$riffdb,typescript_runtime:$typescript_runtime,typescript_generated:$typescript_generated,python:$python,conformance_runner:$conformance_runner,conformance_bundle_sha256:$conformance_bundle_sha256,source_revision:$source_revision,release_artifact_sha256:$release_artifact_sha256,server_pid:$server_pid,stdin_keeper_pid:$stdin_keeper_pid,driver_pids:{application:$application_pid,seeder:$seeder_pid,agent:$agent_pid}}' \
     >"$state_path"
 chmod 0600 "$state_path"
 
@@ -445,6 +491,9 @@ jq -nS \
     --arg schema riffdb.alpha-endurance-environment-start/v1 \
     --arg state_sha256 "$(sha256sum "$state_path" | cut -d' ' -f1)" \
     --arg application_manifest_sha256 "$(sha256sum "$environment_root/application/riffdb.application.lock.json" | cut -d' ' -f1)" \
-    '{schema:$schema,state_sha256:$state_sha256,application_manifest_sha256:$application_manifest_sha256,remote_tls:true,roles:["TicketDeskAgent","TicketDeskApplication","TicketDeskSeeder"]}' \
+    --arg conformance_bundle_sha256 "$conformance_bundle_sha256" \
+    --arg source_revision "$source_revision" \
+    --arg release_artifact_sha256 "$release_artifact_sha256" \
+    '{schema:$schema,state_sha256:$state_sha256,application_manifest_sha256:$application_manifest_sha256,conformance_bundle_sha256:$conformance_bundle_sha256,source_revision:$source_revision,release_artifact_sha256:$release_artifact_sha256,remote_tls:true,roles:["TicketDeskAgent","TicketDeskApplication","TicketDeskSeeder"]}' \
     >"$environment_root/setup-receipt.json"
 action_result setup "$(sha256sum "$environment_root/setup-receipt.json" | cut -d' ' -f1)"

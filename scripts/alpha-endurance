@@ -20,7 +20,7 @@ from typing import Any
 RECEIPT_SCHEMA = "riffdb.alpha-endurance-receipt/v1"
 MANIFEST_SCHEMA = "riffdb.alpha-endurance-manifest/v1"
 ACTION_RESULT_SCHEMA = "riffdb.alpha-endurance-action-result/v1"
-CONFORMANCE_RESULT_SCHEMA = "riffdb.alpha-endurance-conformance-result/v1"
+CONFORMANCE_RESULT_SCHEMA = "riffdb.alpha-endurance-conformance-result/v2"
 MAX_JSON_BYTES = 4 * 1024 * 1024
 REQUIRED_LANGUAGES = {"rust", "go", "typescript", "python"}
 REQUIRED_DOMAINS = {"openfga", "mlflow", "better-auth", "woodpecker"}
@@ -423,7 +423,8 @@ def validate_receipt(receipt: dict[str, Any], manifest: dict[str, Any], requeste
     require(conformance_count >= integer(manifest["bounds"]["minimum_conformance_checkpoints"], "invalid_manifest", "minimum_conformance_checkpoints"), "conformance_failed", "too few conformance checkpoints completed")
     conformance_results = conformance.get("results")
     require(isinstance(conformance_results, list) and len(conformance_results) == conformance_count and len(conformance_results) <= manifest["bounds"]["maximum_observations"], "conformance_failed", "conformance result inventory is absent or unbounded")
-    expected_conformance_fields = {"schema", "status", "domains", "policy_probes_passed", "data_reconciliation_passed", "silent_loss", "evidence_sha256"}
+    expected_conformance_fields = {"schema", "status", "domains", "policy_probes_passed", "data_reconciliation_passed", "silent_loss", "evidence_sha256", "probe_bundle_sha256", "release_artifact_sha256"}
+    conformance_probe_sha256: str | None = None
     for result in conformance_results:
         require(isinstance(result, dict) and set(result) == expected_conformance_fields, "conformance_failed", "conformance result has an invalid shape")
         require(result.get("schema") == CONFORMANCE_RESULT_SCHEMA and result.get("status") == "passed", "conformance_failed", "conformance result did not pass")
@@ -431,6 +432,13 @@ def validate_receipt(receipt: dict[str, Any], manifest: dict[str, Any], requeste
         require(result.get("policy_probes_passed") is True, "policy_mismatch", "conformance policy probes failed")
         require(result.get("data_reconciliation_passed") is True and integer(result.get("silent_loss"), "invalid_receipt", "silent_loss") == 0, "data_loss", "conformance reconciliation found loss")
         require(HEX_256.fullmatch(str(result.get("evidence_sha256", ""))) is not None, "conformance_failed", "conformance evidence digest is invalid")
+        current_probe = str(result.get("probe_bundle_sha256", ""))
+        require(HEX_256.fullmatch(current_probe) is not None, "conformance_failed", "conformance probe identity is invalid")
+        require(result.get("release_artifact_sha256") == receipt.get("release_artifact_sha256"), "artifact_mismatch", "periodic conformance used a different release identity")
+        if conformance_probe_sha256 is None:
+            conformance_probe_sha256 = current_probe
+        else:
+            require(current_probe == conformance_probe_sha256, "conformance_failed", "periodic conformance probe identity changed during the run")
     require(exact_names(receipt.get("domains_completed"), REQUIRED_DOMAINS), "missing_domain", "not every adapter domain completed")
     require(receipt.get("policy_probes", {}).get("all_passed") is True, "policy_mismatch", "periodic policy probes did not remain green")
     reconciliation = receipt.get("data_reconciliation", {})
@@ -739,6 +747,8 @@ def base_receipt(manifest: dict[str, Any], hours: int = 1) -> dict[str, Any]:
             "data_reconciliation_passed": True,
             "silent_loss": 0,
             "evidence_sha256": hashlib.sha256(f"conformance:{ordinal}".encode()).hexdigest(),
+            "probe_bundle_sha256": "c" * 64,
+            "release_artifact_sha256": "a" * 64,
         }
         for ordinal in range(4)
     ]

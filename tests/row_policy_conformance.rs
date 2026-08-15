@@ -819,8 +819,16 @@ fn protected_database_id() -> DatabaseId {
 fn empty_operational_database(
     database_id: DatabaseId,
 ) -> (ProtectedTestDatabase, RedbOperationalPorts) {
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../target/wp572-event-policy")
+    let test_root = std::env::var_os("RIFFDB_TEST_TMP_ROOT").map_or_else(
+        || PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target"),
+        PathBuf::from,
+    );
+    assert!(
+        test_root.is_absolute() && !test_root.is_symlink(),
+        "row-policy test root must be an absolute non-symlink path"
+    );
+    let root = test_root
+        .join("wp572-event-policy")
         .join(format!("reaction-safe-point-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(&root).expect("create test database directory");

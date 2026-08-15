@@ -230,6 +230,14 @@ fn decode_plan(root: &Path, name: &str) -> ApplicationInstallationPlan {
 }
 
 fn fixture_root() -> PathBuf {
+    if let Some(configured) = std::env::var_os("RIFFDB_ADAPTER_CONFORMANCE_FIXTURE_ROOT") {
+        let root = PathBuf::from(configured);
+        assert!(
+            root.is_absolute() && root.is_dir() && !root.is_symlink(),
+            "configured adapter conformance fixture root must be an absolute non-symlink directory"
+        );
+        return root;
+    }
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
         .join("fixtures/adapters/conformance")
