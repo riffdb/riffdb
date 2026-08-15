@@ -44,6 +44,7 @@ use crate::{
 
 /// Exact service discovery page size used by both public MCP list methods.
 pub const MCP_DISCOVERY_PAGE_LIMIT: u16 = 500;
+const MCP_CONCRETE_RESOURCE_DISCOVERY_PAGE_LIMIT: u16 = MCP_DISCOVERY_PAGE_LIMIT - 1;
 /// Maximum policy-visible items returned in one service page.
 pub const MAX_MCP_DISCOVERY_PAGE_ITEMS: usize = 500;
 /// Maximum bytes retained for one optional dynamic tool title.
@@ -168,8 +169,12 @@ pub struct McpResourceDiscoveryRequest {
 
 impl McpResourceDiscoveryRequest {
     fn new(cursor: Option<[u8; 16]>, surface: McpResourceDiscoverySurface) -> Self {
+        let limit = match surface {
+            McpResourceDiscoverySurface::Concrete => MCP_CONCRETE_RESOURCE_DISCOVERY_PAGE_LIMIT,
+            McpResourceDiscoverySurface::Template => MCP_DISCOVERY_PAGE_LIMIT,
+        };
         Self {
-            page: McpDiscoveryRequest::new(cursor),
+            page: McpDiscoveryRequest { cursor, limit },
             surface,
         }
     }
@@ -1563,7 +1568,15 @@ where
             return Err(internal_error());
         }
         let registry = resource_registry().map_err(|_| internal_error())?;
-        let mut resources = Vec::with_capacity(page.items.len());
+        let shows_active_contract = page
+            .items
+            .iter()
+            .any(|item| item.descriptor_branch == "active_contract");
+        if shows_active_contract && page.items.len() >= MAX_MCP_DISCOVERY_PAGE_ITEMS {
+            return Err(internal_error());
+        }
+        let mut resources =
+            Vec::with_capacity(page.items.len() + usize::from(shows_active_contract));
         for item in page.items {
             let definition = registry
                 .by_descriptor_branch(&item.descriptor_branch)
@@ -1573,6 +1586,16 @@ where
                     .to_mcp_resource(&item.uri)
                     .map_err(|_| internal_error())?,
             );
+            if item.descriptor_branch == "active_contract" {
+                let guidance = registry
+                    .by_descriptor_branch("application_guidance")
+                    .ok_or_else(internal_error)?;
+                resources.push(
+                    guidance
+                        .to_mcp_resource(crate::format_application_guidance_locator())
+                        .map_err(|_| internal_error())?,
+                );
+            }
         }
         let result = ListResourcesResult {
             meta: None,
@@ -2109,6 +2132,7 @@ fn locator_descriptor_branch(locator: &McpResourceLocator) -> &'static str {
         McpResourceLocator::ProjectionStatus { .. } => "projection_status",
         McpResourceLocator::ServerHealth => "server_health",
         McpResourceLocator::ReactiveWakeup => "reactive_wakeup",
+        McpResourceLocator::ApplicationGuidance => "application_guidance",
     }
 }
 
@@ -3367,8 +3391,9 @@ mod tests {
 
         let resources =
             block_on(server.handle_list_resources(None, &extensions, None)).expect("resources");
-        assert_eq!(resources.resources.len(), 2);
+        assert_eq!(resources.resources.len(), 3);
         assert_eq!(resources.resources[0].uri, "riffdb://contract/active");
+        assert_eq!(resources.resources[1].uri, "riffdb://application/guide");
         let templates = block_on(server.handle_list_resource_templates(None, &extensions, None))
             .expect("templates");
         assert_eq!(templates.resource_templates.len(), 2);
@@ -3427,6 +3452,22 @@ mod tests {
         assert_eq!(state.read_calls, 1);
         assert_eq!(state.subscription_calls, 5);
         assert_eq!(state.begin_ids.len(), 8);
+    }
+
+    #[test]
+    fn concrete_resource_discovery_reserves_one_page_slot_for_application_guidance() {
+        assert_eq!(
+            McpResourceDiscoveryRequest::new(None, McpResourceDiscoverySurface::Concrete)
+                .page()
+                .limit(),
+            499
+        );
+        assert_eq!(
+            McpResourceDiscoveryRequest::new(None, McpResourceDiscoverySurface::Template)
+                .page()
+                .limit(),
+            MCP_DISCOVERY_PAGE_LIMIT
+        );
     }
 
     #[test]

@@ -139,6 +139,8 @@ migration source and compatibility model.
 ## POC limitations
 
 The POC expects a running RiffDB service and an already provisioned ordinary
-capability credential for authenticated project operations. Public package
-installation and automatic agent-rail installation belong to later ADR-0120
-work packages; this page documents only the implemented WP-602 workflow.
+capability credential for authenticated project operations. Run
+`riffdb agent init` to install the generated repository skill, managed AGENTS
+section, and project MCP entry; the command deliberately does not provision or
+embed that credential. Public ecosystem package placement remains owned by
+WP-601.

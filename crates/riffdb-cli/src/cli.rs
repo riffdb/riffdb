@@ -43,6 +43,11 @@ pub(crate) enum TopLevel {
     },
     /// Regenerates configured SDK targets from the exact project lock.
     Generate,
+    /// Installs repository-local generated agent guidance and MCP configuration.
+    Agent {
+        #[command(subcommand)]
+        command: AgentCommand,
+    },
     /// Reports the configured local and installed schema identities.
     Status,
     /// Reports the bounded installed-versus-local schema difference.
@@ -169,6 +174,12 @@ pub(crate) enum TopLevel {
         #[command(subcommand)]
         command: DemoCommand,
     },
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum AgentCommand {
+    /// Installs or verifies the exact repository-local agent rails.
+    Init,
 }
 
 #[derive(Debug, Subcommand)]
@@ -1687,6 +1698,14 @@ mod tests {
                 .expect("generate")
                 .command,
             TopLevel::Generate
+        ));
+        assert!(matches!(
+            Cli::try_parse_from(["riffdb", "agent", "init"])
+                .expect("agent init")
+                .command,
+            TopLevel::Agent {
+                command: AgentCommand::Init
+            }
         ));
         assert!(matches!(
             Cli::try_parse_from(["riffdb", "status"])

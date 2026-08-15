@@ -121,6 +121,7 @@ impl McpObserverBackend for PublicGrpcMcpObserverBackend {
                             .map_err(|_| riffdb_api_mcp::McpBackendError::InvalidResponse)
                     }),
                 riffdb_api_mcp::McpResourceLocator::ContractVersion { .. }
+                | riffdb_api_mcp::McpResourceLocator::ApplicationGuidance
                 | riffdb_api_mcp::McpResourceLocator::EntitySchema { .. }
                 | riffdb_api_mcp::McpResourceLocator::CommandDocumentation { .. }
                 | riffdb_api_mcp::McpResourceLocator::Outcome { .. }

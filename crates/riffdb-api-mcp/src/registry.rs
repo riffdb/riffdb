@@ -11,12 +11,12 @@ use serde_json::{Map, Value};
 use crate::parse_resource_locator;
 
 const FIXED_TOOL_REGISTRY_SOURCE: &str = include_str!("../fixtures/fixed-tool-registry-v1.json");
-const RESOURCE_REGISTRY_SOURCE: &str = include_str!("../fixtures/resource-registry-v1.json");
+const RESOURCE_REGISTRY_SOURCE: &str = include_str!("../fixtures/resource-registry-v2.json");
 
 const FIXED_TOOL_REGISTRY_ID: &str = "riffdb.mcp.fixed-tool-registry/v1";
-const RESOURCE_REGISTRY_ID: &str = "riffdb.mcp.resource-registry/v1";
+const RESOURCE_REGISTRY_ID: &str = "riffdb.mcp.resource-registry/v2";
 const ACCEPTED_CHECKPOINT: &str = "accepted-by-human-maintainer-2026-07-30";
-const RESOURCE_ACCEPTED_CHECKPOINT: &str = "accepted-by-human-maintainer-2026-08-04";
+const RESOURCE_ACCEPTED_CHECKPOINT: &str = "accepted-by-human-maintainer-2026-08-14";
 const SCHEMA_DIALECT: &str = "https://json-schema.org/draft/2020-12/schema";
 const MAX_SCHEMA_BYTES: usize = 65_536;
 const MAX_DYNAMIC_SCHEMA_BYTES: usize = 1_048_576;
@@ -471,7 +471,7 @@ pub struct ResourceRegistry {
 }
 
 impl ResourceRegistry {
-    /// Returns all 13 mappings in structural registry order.
+    /// Returns all 14 mappings in structural registry order.
     #[must_use]
     pub fn entries(&self) -> &[ResourceDefinition] {
         &self.entries
@@ -1337,13 +1337,13 @@ fn load_resource_registry() -> Result<ResourceRegistry, RegistryError> {
         || wire.compatibility_checkpoint != RESOURCE_ACCEPTED_CHECKPOINT
         || wire.counts
             != (ResourceCountsWire {
-                concrete: 10,
-                content_goldens: 13,
-                entries: 13,
+                concrete: 11,
+                content_goldens: 14,
+                entries: 14,
                 subscribable: 5,
                 templates: 3,
             })
-        || wire.entries.len() != 13
+        || wire.entries.len() != 14
     {
         return Err(RegistryError);
     }
@@ -1362,6 +1362,7 @@ fn load_resource_registry() -> Result<ResourceRegistry, RegistryError> {
         "projection_status",
         "server_health",
         "reactive_wakeup",
+        "application_guidance",
     ];
     let expected_subscribable = [
         "active_contract",
@@ -1841,14 +1842,14 @@ mod tests {
     #[test]
     fn resource_registry_has_one_surface_and_exact_subscription_set() {
         let registry = resource_registry().expect("accepted resource registry loads");
-        assert_eq!(registry.entries().len(), 13);
+        assert_eq!(registry.entries().len(), 14);
         assert_eq!(
             registry
                 .entries()
                 .iter()
                 .filter(|entry| entry.surface() == ResourceSurface::Concrete)
                 .count(),
-            10
+            11
         );
         assert_eq!(
             registry

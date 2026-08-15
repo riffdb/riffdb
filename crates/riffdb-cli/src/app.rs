@@ -53,12 +53,12 @@ use crate::batch::{
     parse_source_with_constraint as parse_batch_source_with_constraint,
 };
 use crate::cli::{
-    ApplicationCommand, ApplicationLanguage, BackupCommand, CapabilityCommand, Cli, CommandCommand,
-    CommitCommand, ContextualCommand, ContractCommand, ContractSelectionArgs, DemoCommand,
-    EntityCommand, EventCommand, EventConsumerArgs, ExportCommand, ExportScope, MigrationCommand,
-    OutputMode, ProjectMigrationCommand, ProjectionCommand, QueryCommand, ReimportCommand,
-    ReimportScope, RetentionCommand, RetentionHoldCommand, RevocationReason, RoleActorKind,
-    RoleCommand, ServerCommand, StorageCommand, TopLevel,
+    AgentCommand, ApplicationCommand, ApplicationLanguage, BackupCommand, CapabilityCommand, Cli,
+    CommandCommand, CommitCommand, ContextualCommand, ContractCommand, ContractSelectionArgs,
+    DemoCommand, EntityCommand, EventCommand, EventConsumerArgs, ExportCommand, ExportScope,
+    MigrationCommand, OutputMode, ProjectMigrationCommand, ProjectionCommand, QueryCommand,
+    ReimportCommand, ReimportScope, RetentionCommand, RetentionHoldCommand, RevocationReason,
+    RoleActorKind, RoleCommand, ServerCommand, StorageCommand, TopLevel,
 };
 use crate::config::{EffectiveConfig, Environment, ProcessEnvironment, resolve};
 use crate::credential::{
@@ -440,6 +440,7 @@ pub async fn run() -> ExitCode {
             | TopLevel::Status
             | TopLevel::Diff
             | TopLevel::Migrate { .. }
+            | TopLevel::Agent { .. }
     );
     if uses_project && cli.config.is_none() && std::env::var_os("RIFFDB_CONFIG").is_none() {
         cli.config = Some(DEFAULT_PROJECT_FILE.into());
@@ -465,6 +466,43 @@ pub async fn run() -> ExitCode {
                 &mut io::stderr().lock(),
             ),
             Err(error) => project_error(CommandIdentity::ProjectGenerate, &error).emit(
+                cli.output.unwrap_or(OutputMode::Human),
+                &mut io::stdout().lock(),
+                &mut io::stderr().lock(),
+            ),
+        };
+    }
+    if let TopLevel::Agent {
+        command: AgentCommand::Init,
+    } = &cli.command
+    {
+        let path = project_config_path(&cli);
+        return match crate::project::load(&path) {
+            Ok(project) => match crate::agent::initialize(&project) {
+                Ok(()) => success(
+                    CommandIdentity::AgentInit,
+                    "initialized",
+                    &serde_json::json!({
+                        "status": "initialized",
+                        "skill": ".agents/skills/riffdb/SKILL.md",
+                        "agents": "AGENTS.md",
+                        "mcp": ".mcp.json",
+                    }),
+                )
+                .emit(
+                    cli.output.unwrap_or(OutputMode::Human),
+                    &mut io::stdout().lock(),
+                    &mut io::stderr().lock(),
+                ),
+                Err(error) => {
+                    local_error(CommandIdentity::AgentInit, error.code(), error.message()).emit(
+                        cli.output.unwrap_or(OutputMode::Human),
+                        &mut io::stdout().lock(),
+                        &mut io::stderr().lock(),
+                    )
+                }
+            },
+            Err(error) => project_error(CommandIdentity::AgentInit, &error).emit(
                 cli.output.unwrap_or(OutputMode::Human),
                 &mut io::stdout().lock(),
                 &mut io::stderr().lock(),
@@ -1330,7 +1368,7 @@ async fn dispatch(
             "project_migration_dispatch_invalid",
             "project migration was not lowered to the staged migration path",
         ),
-        TopLevel::Init { .. } | TopLevel::Generate => local_error(
+        TopLevel::Init { .. } | TopLevel::Generate | TopLevel::Agent { .. } => local_error(
             CommandIdentity::ProjectInit,
             "project_local_dispatch_invalid",
             "a local project operation reached network dispatch",
@@ -10799,6 +10837,7 @@ const fn command_identity(command: &TopLevel) -> CommandIdentity {
         TopLevel::Init { .. } => CommandIdentity::ProjectInit,
         TopLevel::Push { .. } => CommandIdentity::ProjectPush,
         TopLevel::Generate => CommandIdentity::ProjectGenerate,
+        TopLevel::Agent { .. } => CommandIdentity::AgentInit,
         TopLevel::Status => CommandIdentity::ProjectStatus,
         TopLevel::Diff => CommandIdentity::ProjectDiff,
         TopLevel::Migrate {

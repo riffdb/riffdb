@@ -232,7 +232,7 @@ fn observer_physical_calls_are_charged_before_every_stdio_dispatch() {
         ),
         (
             "McpResourceLocator::ReactiveWakeup =>",
-            "pub(crate) async fn observe_command_plan",
+            "async fn read_application_guidance",
             ".get_reactive_wakeup(",
         ),
     ] {
@@ -249,6 +249,21 @@ fn observer_physical_calls_are_charged_before_every_stdio_dispatch() {
             &["invocation.charge_observer_physical_call()?;", dispatch],
         );
     }
+
+    let guidance = section(
+        &backend,
+        "async fn read_application_guidance",
+        "pub(crate) async fn observe_command_plan",
+    );
+    assert_eq!(
+        guidance
+            .matches("invocation.charge_observer_physical_call()?;")
+            .count(),
+        3,
+        "application guidance charges each discovery dispatch site"
+    );
+    assert!(guidance.matches(".discover_resources(").count() >= 2);
+    assert!(guidance.contains(".discover_command_tools("));
 
     let command_plan = section(
         &backend,

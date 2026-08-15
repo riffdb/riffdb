@@ -6,7 +6,7 @@
 **Tagline:** *Vibe fast. Commit safely.*  
 **Category:** Contract-first operational database for agent-built applications  
 
-**Version:** 0.96
+**Version:** 0.97
 **Status:** Deployable Application Alpha architecture accepted; implementation gated by work packages
 **Date:** 9 August 2026
 **Audience:** Coding agents, database engineers, compiler engineers, security reviewers, and technical product leads  
@@ -37,6 +37,7 @@
 
 | Version | Date | Summary |
 |---|---|---|
+| 0.97 | 2026-08-14 | Accepted ADR-0122 and registered DX-021 through DX-025 for repository-local agent rails, the additive authorization-filtered application guidance MCP resource, hosted/stdio parity, and single-source generated teaching artifacts. |
 | 0.96 | 2026-08-14 | Applied ADR-0118 Amendment 1 and registered SECF-006: secret classification is sticky across compiler-visible contract flows, and every intentional disclosure into a non-secret entity field, durable event field, or command outcome field requires an exact source-naming `reveals` annotation carried through syntax, versioned executable IR, bundle identity, catalogs, diagnostics, and compatibility fixtures. |
 | 0.95 | 2026-08-14 | Accepted ADR-0121 and registered DX-013 through DX-020 for the database-shaped project workflow: truthful domain-empty initialization, a zero-query structural module with no roles or authority, bounded `riffdb.toml`, selected local SDK materialization over one complete exact lock, ceremony only for changed compiler-owned identity, staged migration routing, and read-only installed-versus-local observation without changing existing application verbs or persistent encodings. |
 | 0.94 | 2026-08-14 | Amended ADR-0050 and registered END-011/WP-610 after the installed endurance rehearsal exposed unreceipted immutable-backup deletion: backup retention now uses one authorized public retirement operation whose V2 receipt binds the exact succeeded create receipt and manifest, permanently consumes the name, recovers every checked rename/delete crash state, and is the sole proof permitting an otherwise-published backup artifact to be absent. |
@@ -440,6 +441,37 @@ contents, credentials, or unrestricted paths.
 idempotency, provenance, MCP, and full-artifact checking behavior MUST remain
 unchanged; project configuration MUST affect only an explicitly selected
 project verb.
+
+`DX-021` `riffdb agent init` MUST preflight and idempotently install the exact
+generated RiffDB skill, one marked root `AGENTS.md` section, and one
+`mcpServers.riffdb` project entry beneath the invoking repository. Conflicts,
+duplicates, invalid JSON, symlinks, unsafe paths, or any failed preflight MUST
+cause no write, while unrelated AGENTS bytes and MCP configuration semantics
+remain preserved.
+
+`DX-022` Agent initialization MUST derive endpoint and database arguments from
+the bounded project configuration and MUST NOT create, copy, serialize, log, or
+reference credential contents. Authentication MUST remain in the existing
+protected environment or configuration surface.
+
+`DX-023` MCP resource registry v2 MUST add the exact concrete,
+non-subscribable `riffdb://application/guide` Markdown resource while retaining
+the accepted v1 registry fixture. It MUST be listed exactly when the active
+contract resource is visible, without changing any existing resource URI,
+MIME type, membership, or subscription behavior.
+
+`DX-024` Reading application guidance MUST freshly authorize and consume one
+complete bounded same-fence view of the policy-visible resource and command
+catalogs. The rendered document MUST contain only exact active-contract
+identity, authorized compiler-owned operation names, authorized schema and
+command links, and visible consistency surfaces; it MUST reveal no source,
+credential, authorization encoding, hidden count, guessed permission, or
+storage detail. Hosted and stdio transports MUST use the same renderer.
+
+`DX-025` The embedded skill, managed AGENTS section, `docs/llms.txt`, and public
+agent quickstart MUST be generated from one bounded in-repository source and
+refereed by `scripts/check-generated`. WP-603 owns package-ready canonical
+assets; ecosystem package placement remains owned by WP-601.
 
 ## 4.4 Additive contract evolution
 

@@ -5,6 +5,16 @@ RiffDB exposes policy-filtered database operations through MCP. Use
 current credential and database. Tool names contain lowercase letters, digits,
 and underscores only.
 
+## Deployed Application Guide
+
+When an active contract is visible, `resources/list` also exposes
+`riffdb://application/guide`. Reading it performs fresh authorization and
+renders the exact same-fence application catalog: active contract identity,
+visible generated operation names, schema and command links, and visible
+consistency surfaces. It is non-subscribable and never contains credentials,
+source text, hidden-operation counts, or inferred permissions. Hosted HTTP and
+stdio use the same renderer.
+
 ## Values
 
 - Send signed or unsigned integers as ordinary JSON integers when the generated

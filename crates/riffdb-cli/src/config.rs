@@ -105,6 +105,8 @@ pub(crate) struct ProjectConfig {
     root: PathBuf,
     schema: PathBuf,
     generators: Vec<ProjectGenerator>,
+    endpoint: String,
+    database: String,
 }
 
 impl ProjectConfig {
@@ -118,6 +120,14 @@ impl ProjectConfig {
 
     pub(crate) fn generators(&self) -> &[ProjectGenerator] {
         &self.generators
+    }
+
+    pub(crate) fn endpoint(&self) -> &str {
+        &self.endpoint
+    }
+
+    pub(crate) fn database(&self) -> &str {
+        &self.database
     }
 }
 
@@ -276,6 +286,15 @@ pub(crate) fn load_project(path: &Path) -> Result<ProjectConfig, ConfigError> {
         return Err(ConfigError::Invalid);
     }
     let document = read_document(path)?;
+    let client = document.client.unwrap_or_default();
+    let endpoint = client
+        .endpoint
+        .unwrap_or_else(|| "http://127.0.0.1:7443".to_owned());
+    validate_endpoint(&endpoint)?;
+    let database = client
+        .database
+        .unwrap_or_else(|| riffdb_types::DEFAULT_DATABASE_ALIAS.to_owned());
+    riffdb_types::DatabaseAlias::new(&database).map_err(|_| ConfigError::Invalid)?;
     let project = document.project.ok_or(ConfigError::Invalid)?;
     let schema = checked_project_path(&project.schema)?;
     if project.generators.is_empty() || project.generators.len() > 4 {
@@ -301,6 +320,8 @@ pub(crate) fn load_project(path: &Path) -> Result<ProjectConfig, ConfigError> {
         schema: root.join(schema),
         root,
         generators,
+        endpoint,
+        database,
     })
 }
 

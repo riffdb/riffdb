@@ -15,6 +15,7 @@ Commands:
   init         Initializes RiffDB schema files in a new or existing project
   push         Checks, locks, and installs the configured schema
   generate     Regenerates configured SDK targets from the exact project lock
+  agent        Installs repository-local generated agent guidance and MCP configuration
   status       Reports the configured local and installed schema identities
   diff         Reports the bounded installed-versus-local schema difference
   migrate      Runs the existing staged migration path for the configured schema
@@ -111,6 +112,26 @@ Options:
 Regenerates configured SDK targets from the exact project lock
 
 Usage: riffdb generate [OPTIONS]
+
+Options:
+      --config <PATH>
+      --endpoint <HTTP_OR_HTTPS_ENDPOINT>
+      --database <DATABASE>
+      --output <human|json>                [possible values: human, json]
+      --max-attempts <1..10>
+      --credential-file <PATH>
+  -h, --help                               Print help
+```
+
+### `riffdb agent`
+
+```text
+Installs repository-local generated agent guidance and MCP configuration
+
+Usage: riffdb agent [OPTIONS] <COMMAND>
+
+Commands:
+  init  Installs or verifies the exact repository-local agent rails
 
 Options:
       --config <PATH>
@@ -651,6 +672,23 @@ Usage: riffdb demo [OPTIONS] <COMMAND>
 
 Commands:
   budget
+
+Options:
+      --config <PATH>
+      --endpoint <HTTP_OR_HTTPS_ENDPOINT>
+      --database <DATABASE>
+      --output <human|json>                [possible values: human, json]
+      --max-attempts <1..10>
+      --credential-file <PATH>
+  -h, --help                               Print help
+```
+
+#### `riffdb agent init`
+
+```text
+Installs or verifies the exact repository-local agent rails
+
+Usage: riffdb agent init [OPTIONS]
 
 Options:
       --config <PATH>
