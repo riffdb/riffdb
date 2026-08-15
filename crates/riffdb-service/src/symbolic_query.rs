@@ -2477,7 +2477,7 @@ async fn execute_named_query(
         request.module_hash,
     ) {
         (Some(modules), Some((lineage, version, contract_hash)), Some(module_hash)) => {
-            let future = modules.prepare_exact_named_query(
+            match modules.prepare_exact_named_query(
                 context.control(),
                 crate::ExactNamedQueryRequest::new(
                     lineage.clone(),
@@ -2486,22 +2486,14 @@ async fn execute_named_query(
                     module_hash,
                     query_name.clone(),
                 ),
-            );
-            match wait_with_control(
-                context.control(),
-                service.providers.deadline_scheduler.as_ref(),
-                future,
-            )
-            .await
-            {
-                Ok(Ok(resolution)) => resolution,
-                Ok(Err(crate::QueryModuleReadError::Unavailable)) => {
+            ) {
+                Ok(resolution) => resolution,
+                Err(crate::QueryModuleReadError::Unavailable) => {
                     return Err(PublicError::storage_unavailable().into());
                 }
-                Ok(Err(crate::QueryModuleReadError::Integrity)) => {
+                Err(crate::QueryModuleReadError::Integrity) => {
                     return Err(service.internal_failure(OPERATION, InternalDefect::ProofMismatch));
                 }
-                Err(error) => return Err(controlled_failure(error)),
             }
         }
         _ => None,
