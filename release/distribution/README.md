@@ -79,7 +79,9 @@ module proxy. A successful source-tree build is not a substitute.
 
 ## Four-step application story
 
-After installing the ecosystem CLI and runtime package:
+With a RiffDB service running and an ordinary application credential selected,
+the remote project workflow after installing the ecosystem CLI and runtime
+package is:
 
 1. `riffdb init inventory --generator <language>`
 2. `riffdb push`
@@ -88,3 +90,7 @@ After installing the ecosystem CLI and runtime package:
 
 `fixtures/driver/quickstart-v1.json` is the canonical machine-readable story;
 WP-604 pins its exact step count across all four language cells.
+
+For a disposable local application with no service or credential yet, use the
+generated repository's `riffdb dev --seed --run` path. `riffdb push` does not
+bootstrap authority or silently start a development daemon.

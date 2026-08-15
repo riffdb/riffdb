@@ -217,6 +217,14 @@ fn development_runners_bind_native_configuration_and_sealed_typescript_tooling()
     let sealer = fs::read_to_string(root.join("scripts/agent-application-alpha-package-first"))
         .expect("package-first sealer");
     assert!(sealer.contains("node_modules/undici-types"));
+    assert!(
+        sealer.contains("--typeRoots \"$tooling_root/node_modules/@types\" --types node \"$@\""),
+        "the sealed compiler must make its supplied Node declarations visible without application-owned type configuration"
+    );
+    assert!(
+        !sealer.contains("--noEmit --types node"),
+        "the tooling smoke must exercise the wrapper's default Node declaration visibility"
+    );
     assert!(sealer.contains("runtime-subset-checksums.sha256"));
     assert!(sealer.contains("complete-distribution-checksums.sha256"));
     assert!(sealer.contains("rm \"$legacy/packages/distribution/checksums.sha256\""));

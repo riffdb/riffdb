@@ -79,6 +79,12 @@ dependencies. The installed `riffdb dev --run` workflow places that tooling on
 the TypeScript child build path automatically; applications do not need an
 ambient global `tsc` or a hand-authored `typeRoots` override.
 
+For a local package-first repository that has no running service or ordinary
+credential yet, use `riffdb dev --seed --run` (or `riffdb dev --run` without
+seed inputs). The four-step `init` / `push` / `generate` / invoke workflow is
+the remote-service path: `push` deliberately requires both the service and its
+credential and does not bootstrap either one.
+
 ## Verify a standalone binary bundle
 
 Release bundles contain `checksums.sha256` and its detached SSH signature. The

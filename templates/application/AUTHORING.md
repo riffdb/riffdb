@@ -90,7 +90,8 @@ Grammar words cannot be identifiers. In particular, use `origin` or
 `source_label` instead of `source`, and use `PurchaseOrder` with a binding such
 as `purchase` instead of an `order` binding. The complete reserved-word list is
 in the installed contract authoring reference. Names are scoped: enum variants
-belong to their enum, outcomes to their command, and indexes to their entity.
+belong to their enum and references must use `OrderStatus.Open` rather than
+bare `Open`; outcomes belong to their command, and indexes to their entity.
 When a name is genuinely duplicated, the diagnostic identifies both source
 spans. Contract and query source support `//` line comments, not block comments.
 
