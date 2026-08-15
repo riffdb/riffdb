@@ -43,7 +43,7 @@ trap cleanup EXIT INT TERM
 "$repo_root/scripts/verify-driver-distributions" \
     --allowed-signers "$allowed_signers" \
     --identity "$identity" \
-    "$distribution"
+    "$distribution" >/dev/null
 
 legacy="$work_root/legacy"
 RIFFDB_PACKAGE_FIRST_BUILD=1 \
@@ -158,7 +158,7 @@ rm -f "$legacy/public/rust-sdk/Cargo.toml" "$legacy/public/rust-sdk/Cargo.lock"
 "$repo_root/scripts/prepare-rust-package-mirror" \
     --distribution "$distribution" \
     --destination "$legacy/public/rust-sdk/vendor" \
-    --runtime-only
+    --runtime-only >/dev/null
 cat >"$legacy/.cargo/config.toml" <<'EOF'
 [net]
 offline = true
