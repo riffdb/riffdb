@@ -174,16 +174,21 @@ CARGO_TARGET_DIR="$temporary/.sdk-check-target" cargo check --quiet \
     -p riffdb-client-rust
 app_patch="patch.crates-io.riffdb-client-rust.path=\"$temporary/public/rust-sdk/crates/riffdb-client-rust\""
 if [[ "${RIFFDB_PACKAGE_FIRST_BUILD:-0}" == 1 ]]; then
-    cargo vendor --quiet --locked --versioned-dirs \
-        --manifest-path "$temporary/public/rust-sdk/Cargo.toml" \
-        "$temporary/public/rust-sdk/vendor" >/dev/null
-else
-    cargo vendor --quiet --locked --versioned-dirs \
-        --manifest-path "$temporary/public/rust-sdk/Cargo.toml" \
-        --sync "$temporary/.application-smoke/Cargo.toml" \
-        --config "$app_patch" \
-        "$temporary/public/rust-sdk/vendor" >/dev/null
+    # The successor package-first sealer validates a fresh registry-shaped
+    # scaffold after installing its signed package mirror. This predecessor
+    # sync exists only to close the third-party vendor set, so do not ask Cargo
+    # to reconcile the package-shaped application lock with the predecessor's
+    # source-tree patch.
+    rm "$temporary/.application-smoke/Cargo.lock"
+    CARGO_NET_OFFLINE=true cargo generate-lockfile --quiet \
+        --manifest-path "$temporary/.application-smoke/Cargo.toml" \
+        --config "$app_patch"
 fi
+cargo vendor --quiet --locked --versioned-dirs \
+    --manifest-path "$temporary/public/rust-sdk/Cargo.toml" \
+    --sync "$temporary/.application-smoke/Cargo.toml" \
+    --config "$app_patch" \
+    "$temporary/public/rust-sdk/vendor" >/dev/null
 CARGO_HOME="$temporary/.cargo" CARGO_NET_OFFLINE=true \
     CARGO_TARGET_DIR="$temporary/.sdk-check-target" \
     cargo check --quiet --locked \
