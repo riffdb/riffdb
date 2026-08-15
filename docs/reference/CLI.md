@@ -1191,7 +1191,7 @@ Options:
       --database <DATABASE>
 
       --idempotency-field <FIELD>
-          [default: idempotency_key]
+          Symbolic idempotency input; derived from --application when omitted
       --checkpoint <PATH>
 
       --output <human|json>
