@@ -27,9 +27,11 @@ cp "$repo_root/LICENSE-MIT" "$temporary/source/LICENSE-MIT"
 cp "$repo_root/README.md" "$temporary/source/README.md"
 for crate in \
     riffdb-api-grpc \
+    riffdb-application \
     riffdb-client-python-native \
     riffdb-client-rust \
     riffdb-config \
+    riffdb-contract-ir \
     riffdb-errors \
     riffdb-proto \
     riffdb-types
@@ -38,6 +40,8 @@ do
 done
 cp "$repo_root/release/python/riffdb-api-grpc.Cargo.toml" \
     "$temporary/source/crates/riffdb-api-grpc/Cargo.toml"
+cp "$repo_root/release/python/riffdb-application.Cargo.toml" \
+    "$temporary/source/crates/riffdb-application/Cargo.toml"
 cp -R "$repo_root/clients/python/runtime/src" \
     "$temporary/source/clients/python/runtime/src"
 find "$repo_root/fixtures/proto" -maxdepth 1 -type f -name '*.bin' \

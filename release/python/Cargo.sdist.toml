@@ -2,9 +2,11 @@
 resolver = "3"
 members = [
     "crates/riffdb-api-grpc",
+    "crates/riffdb-application",
     "crates/riffdb-client-python-native",
     "crates/riffdb-client-rust",
     "crates/riffdb-config",
+    "crates/riffdb-contract-ir",
     "crates/riffdb-errors",
     "crates/riffdb-proto",
     "crates/riffdb-types",
@@ -30,3 +32,4 @@ await_holding_lock = "deny"
 [workspace.dependencies]
 pyo3 = { version = "=0.29.0", default-features = false, features = ["extension-module", "abi3-py313"] }
 pyo3-async-runtimes = { version = "=0.29.0", default-features = false, features = ["tokio-runtime"] }
+tempfile = { version = "=3.24.0", default-features = false }
