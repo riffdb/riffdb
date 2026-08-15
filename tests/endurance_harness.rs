@@ -64,6 +64,7 @@ fn self_test_rejects_incomplete_and_invalid_endurance_evidence() {
     assert!(stdout.contains("storage_unavailable: rejected"));
     assert!(stdout.contains("conformance_failure: rejected"));
     assert!(stdout.contains("release_evidence_omission: rejected"));
+    assert!(stdout.contains("malformed_release_evidence: rejected"));
     assert!(stdout.contains("forged_release_binding: rejected"));
     assert!(stdout.contains("bound_release_receipt: passed"));
     assert!(stdout.contains("valid_complete_run: passed"));

@@ -18,12 +18,13 @@ The release gate is:
 > installed and exercised through public symbolic surfaces from a separate
 > container, with encrypted authenticated transport, generated supported-
 > language bindings, bounded atomic application commands, indexed operational
-> RiffQL, compiler-owned per-row policy, fenced workflow concurrency, exact
+> RiffQL, compiler-owned per-row policy, compiled framework profiles,
+> structural secret-field redaction, fenced workflow concurrency, exact
 > upgrade/provisioning receipts, an honest durable-format and exit policy,
 > exercised disaster recovery, sustained endurance evidence, and no raw
 > kernel/storage access.
 
-The gate has twelve tracks. Prerequisite, compatibility, disaster, and
+The gate has thirteen tracks. Prerequisite, compatibility, disaster, and
 endurance work cannot be deferred into release day.
 
 | Track | Proposed ADR | Work packages | Required proof |
@@ -37,6 +38,7 @@ endurance work cannot be deferred into release day.
 | Workflow concurrency | ADR-0109 | WP-566–WP-567 | Revision checks, legal transitions, fenced leases, service time/IDs, and scheduler-through-commands only |
 | Provisioning/evolution | ADR-0110 | WP-568–WP-569 | Programmatic resumable install/upgrade, explicit authority diffs, migration integration, and adapter conformance manifests |
 | Per-row policy | ADR-0111 | WP-570, WP-572–WP-573 | Closed principal-aware predicates enforced before disclosure and transaction-current on writes; realistic Better Auth and MLflow policy proof |
+| Framework and secret safety | ADR-0117/0118 | WP-597–WP-598, WP-600 | Generic compiled framework profiles, structural display-surface redaction, explicit secret reveals, and no generic callback/store escape hatch |
 | Format compatibility and exit | ADR-0112/0119 | WP-574–WP-575, WP-599 | Release format manifest, refusal before mutation, snapshot-consistent symbolic export, and compiler-owned workflow-safe reimport |
 | Disaster recovery | ADR-0050/0112 | WP-576 | Remote backup, total database-volume loss, verified restore, and full adapter reconciliation |
 | Endurance | durability ADRs and ADR-0050 amendment | WP-577–WP-578, WP-609–WP-610 | Reproducible lifecycle harness, receipted bounded backup retirement, and retained 72-hour growth/recycling/recovery evidence |
@@ -48,6 +50,9 @@ gate. WP-579 runs the installed final gate after all tracks close. P10 owns
 WP-550 through WP-570, WP-572 through WP-579, and WP-599; WP-571 remains
 assigned to the independent repository-ownership program. Active replication
 packages must allocate outside those P10 ranges.
+The Better Auth rescope added the accepted gate-critical follow-ons WP-597,
+WP-598, and WP-600; WP-579 names them directly rather than relying on source
+history to imply their completion.
 
 As of 2026-08-09, `./scripts/check-application-bindings` exits nonzero at the
 agent-alpha manifest-versus-generated module-hash assertion, and no retained
@@ -124,18 +129,23 @@ framing or follower semantics.
    workflow, and export surfaces, then prove realistic Better Auth per-user
    row policies (a principal sees only its own sessions and accounts) and
    MLflow ACLs.
-8. **Compatibility and exit.** WP-574–WP-575 publish the exact durable-format
+8. **Framework and secret safety.** WP-597 carries secret classification and
+   structural redaction through every display surface, WP-598 proves a generic
+   compiled framework profile without framework-owned transactions or hooks,
+   and WP-600 requires an explicit source-naming reveal annotation for every
+   intentional one-time secret handout.
+9. **Compatibility and exit.** WP-574–WP-575 publish the exact durable-format
    promise, refuse unsupported data before mutation, and provide symbolic
    export plus ordinary compiled reimport. WP-599 closes the workflow-shaped
    reconstitution gap without admitting a normal workflow-state write, then
    proves all-domain export/reimport into an empty database.
-9. **Disaster and endurance.** WP-576 exercises remote backup, volume loss, and
+10. **Disaster and endurance.** WP-576 exercises remote backup, volume loss, and
    restore for every adapter. WP-577 builds the lifecycle harness; WP-609 closes
    the offline-retention/journal rebase boundary exposed by its installed
    rehearsal; WP-610 closes the unreceipted backup-retirement boundary exposed
    by the repeated-cycle rehearsal; WP-578 then banks the uninterrupted 72-hour
    release receipt. A 24-hour run is rehearsal only.
-10. **WP-579 — installed alpha gate.** Run every adapter shape across the
+11. **WP-579 — installed alpha gate.** Run every adapter shape across the
    supported language/platform matrix, recovery boundaries, and security
    negatives. No waiver may introduce a kernel import, handwritten transport,
    unencrypted remote listener, raw transaction, unbounded query, row-policy

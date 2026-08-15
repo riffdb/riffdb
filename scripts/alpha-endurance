@@ -97,6 +97,9 @@ REQUIRED_RESOURCES = {
     "process_count",
 }
 HEX_256 = re.compile(r"^[0-9a-f]{64}$")
+UUID_CANONICAL = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+)
 
 
 class EvidenceError(ValueError):
@@ -456,6 +459,89 @@ def resolve_release_candidate(relative: Any, root: Path, prefix: str) -> Path:
     return candidate
 
 
+def validate_adapter_release_document(document: dict[str, Any], expected_schema: str, required_domain: str) -> None:
+    if expected_schema == "riffdb.adapter-export-reimport-receipt/v1":
+        require(
+            set(document)
+            == {
+                "schema",
+                "adapter",
+                "status",
+                "languages",
+                "contract_bundle_hash",
+                "portability_manifest_sha256",
+                "reimport_receipt_sha256",
+                "operation_observation_sha256",
+                "secrets_included",
+            },
+            "release_binding_invalid",
+            f"export/reimport evidence has an invalid shape: {required_domain}",
+        )
+        require(document.get("adapter") == required_domain and document.get("status") == "passed", "release_binding_invalid", f"export/reimport evidence does not prove {required_domain}")
+        require(exact_names(document.get("languages"), REQUIRED_LANGUAGES), "release_binding_invalid", f"export/reimport evidence omits a language: {required_domain}")
+        for field in ("contract_bundle_hash", "portability_manifest_sha256", "reimport_receipt_sha256", "operation_observation_sha256"):
+            require(HEX_256.fullmatch(str(document.get(field, ""))) is not None, "release_binding_invalid", f"export/reimport evidence has an invalid digest: {required_domain}.{field}")
+        require(document.get("secrets_included") is False, "release_binding_invalid", f"export/reimport evidence contains secrets: {required_domain}")
+        return
+    if expected_schema == "riffdb.adapter-disaster-receipt/v1":
+        require(
+            set(document)
+            == {
+                "schema",
+                "adapters",
+                "regression_adapters",
+                "backup_operation_id",
+                "restore_operation_id",
+                "backup_input_hash",
+                "restore_input_hash",
+                "backup_manifest_sha256",
+                "frontier_binding",
+                "contract_bundle_hash",
+                "expected_destroyed_suffix",
+                "startup_validation",
+                "adapter_observation_sha256",
+                "secrets_included",
+            },
+            "release_binding_invalid",
+            "disaster-recovery evidence has an invalid shape",
+        )
+        require(exact_names(document.get("adapters"), REQUIRED_DOMAINS), "release_binding_invalid", "disaster-recovery evidence omits an adapter")
+        require(document.get("regression_adapters") == ["payload"], "release_binding_invalid", "disaster-recovery regression inventory is invalid")
+        require(document.get("startup_validation") == "succeeded" and document.get("secrets_included") is False, "release_binding_invalid", "disaster-recovery evidence is not a safe success")
+        require(
+            all(
+                UUID_CANONICAL.fullmatch(str(document.get(field, ""))) is not None
+                for field in ("backup_operation_id", "restore_operation_id")
+            ),
+            "release_binding_invalid",
+            "disaster-recovery operation identity is invalid",
+        )
+        for field in ("backup_input_hash", "restore_input_hash", "backup_manifest_sha256", "contract_bundle_hash", "adapter_observation_sha256"):
+            require(HEX_256.fullmatch(str(document.get(field, ""))) is not None, "release_binding_invalid", f"disaster-recovery evidence has an invalid digest: {field}")
+        frontier = document.get("frontier_binding")
+        require(isinstance(frontier, dict) and set(frontier) == {"kind", "sha256"} and frontier.get("kind") == "verified_backup_manifest" and frontier.get("sha256") == document.get("backup_manifest_sha256"), "release_binding_invalid", "disaster-recovery frontier binding is invalid")
+        destroyed = document.get("expected_destroyed_suffix")
+        require(
+            isinstance(destroyed, dict)
+            and set(destroyed) == {"capability_id"}
+            and UUID_CANONICAL.fullmatch(str(destroyed.get("capability_id", "")))
+            is not None,
+            "release_binding_invalid",
+            "disaster-recovery destroyed-authority evidence is invalid",
+        )
+        return
+    if expected_schema == "riffdb.adapter-conformance-observation/v1":
+        require(set(document) == {"schema", "adapter", "languages", "operations", "transport"}, "release_binding_invalid", f"adapter conformance evidence has an invalid shape: {required_domain}")
+        require(document.get("adapter") == required_domain and document.get("transport") == "public_tls", "release_binding_invalid", f"adapter conformance evidence does not prove public TLS: {required_domain}")
+        require(exact_names(document.get("languages"), REQUIRED_LANGUAGES), "release_binding_invalid", f"adapter conformance evidence omits a language: {required_domain}")
+        operations = document.get("operations")
+        require(isinstance(operations, list) and 1 <= len(operations) <= 64, "release_binding_invalid", f"adapter conformance operation evidence is absent or unbounded: {required_domain}")
+        for operation in operations:
+            require(isinstance(operation, dict) and set(operation) == {"maximum_items", "name", "operation", "result"} and operation.get("result") == "passed" and 1 <= integer(operation.get("maximum_items"), "release_binding_invalid", "maximum_items") <= 4096, "release_binding_invalid", f"adapter conformance operation evidence is invalid: {required_domain}")
+        return
+    raise EvidenceError("release_binding_invalid", f"unknown adapter release evidence schema: {expected_schema}")
+
+
 def validate_release_reference(reference: Any, root: Path, prefix: str, expected_schema: str, required_domain: str | None = None) -> None:
     require(isinstance(reference, dict) and set(reference) == {"path", "sha256"}, "release_binding_invalid", "release evidence reference has an invalid shape")
     relative = reference.get("path")
@@ -467,6 +553,7 @@ def validate_release_reference(reference: Any, root: Path, prefix: str, expected
     if required_domain is not None:
         adapters = document.get("adapters", [])
         require(document.get("adapter") == required_domain or (isinstance(adapters, list) and required_domain in adapters), "release_binding_invalid", f"release evidence does not cover {required_domain}: {relative}")
+        validate_adapter_release_document(document, expected_schema, required_domain)
 
 
 def materialize_release_reference(relative: Any, root: Path, prefix: str, expected_schema: str, required_domain: str | None = None) -> dict[str, str]:
@@ -477,6 +564,7 @@ def materialize_release_reference(relative: Any, root: Path, prefix: str, expect
     if required_domain is not None:
         adapters = document.get("adapters", [])
         require(document.get("adapter") == required_domain or (isinstance(adapters, list) and required_domain in adapters), "release_binding_invalid", f"release evidence does not cover {required_domain}: {relative}")
+        validate_adapter_release_document(document, expected_schema, required_domain)
     return reference
 
 
@@ -847,8 +935,46 @@ def self_test() -> None:
             candidate = release_root / relative
             candidate.parent.mkdir(parents=True, exist_ok=True)
             document = {"schema": schema}
-            if domain is not None:
-                document["adapter"] = domain
+            if schema == "riffdb.adapter-export-reimport-receipt/v1":
+                document.update(
+                    {
+                        "adapter": domain,
+                        "status": "passed",
+                        "languages": sorted(REQUIRED_LANGUAGES),
+                        "contract_bundle_hash": "1" * 64,
+                        "portability_manifest_sha256": "2" * 64,
+                        "reimport_receipt_sha256": "3" * 64,
+                        "operation_observation_sha256": "4" * 64,
+                        "secrets_included": False,
+                    }
+                )
+            elif schema == "riffdb.adapter-disaster-receipt/v1":
+                document.update(
+                    {
+                        "adapters": sorted(REQUIRED_DOMAINS),
+                        "regression_adapters": ["payload"],
+                        "backup_operation_id": "00000000-0000-7000-8000-000000000001",
+                        "restore_operation_id": "00000000-0000-7000-8000-000000000002",
+                        "backup_input_hash": "5" * 64,
+                        "restore_input_hash": "6" * 64,
+                        "backup_manifest_sha256": "7" * 64,
+                        "frontier_binding": {"kind": "verified_backup_manifest", "sha256": "7" * 64},
+                        "contract_bundle_hash": "8" * 64,
+                        "expected_destroyed_suffix": {"capability_id": "00000000-0000-7000-8000-000000000003"},
+                        "startup_validation": "succeeded",
+                        "adapter_observation_sha256": "9" * 64,
+                        "secrets_included": False,
+                    }
+                )
+            elif schema == "riffdb.adapter-conformance-observation/v1":
+                document.update(
+                    {
+                        "adapter": domain,
+                        "languages": sorted(REQUIRED_LANGUAGES),
+                        "operations": [{"maximum_items": 1, "name": "probe", "operation": "Probe", "result": "passed"}],
+                        "transport": "public_tls",
+                    }
+                )
             with candidate.open("w", encoding="utf-8") as destination:
                 json.dump(document, destination, sort_keys=True)
                 destination.write("\n")
@@ -874,6 +1000,25 @@ def self_test() -> None:
         }
         bound = bind_release_receipt(release_candidate, inventory, manifest, release_root)
         validate_release_receipt(bound, manifest, release_root)
+        malformed_export = release_root / inventory_adapters["better-auth"]["export_reimport"]
+        malformed_document = read_json(malformed_export)
+        del malformed_document["status"]
+        with malformed_export.open("w", encoding="utf-8") as destination:
+            json.dump(malformed_document, destination, sort_keys=True)
+            destination.write("\n")
+        try:
+            bind_release_receipt(release_candidate, inventory, manifest, release_root)
+        except EvidenceError as error:
+            if error.code != "release_binding_invalid":
+                raise
+            print("malformed_release_evidence: rejected")
+        else:
+            raise AssertionError("malformed adapter release evidence passed")
+        write_fixture(
+            inventory_adapters["better-auth"]["export_reimport"],
+            "riffdb.adapter-export-reimport-receipt/v1",
+            "better-auth",
+        )
         forged = copy.deepcopy(bound)
         forged["release_bindings"]["adapters"]["better-auth"]["conformance"]["sha256"] = "0" * 64
         try:

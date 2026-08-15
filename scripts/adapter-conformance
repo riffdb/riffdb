@@ -82,4 +82,15 @@ if rg -n \
     exit 1
 fi
 
+release_evidence_root="$repo_root/release/evidence/alpha"
+mkdir -p "$release_evidence_root"
+for domain in "${domains[@]}"; do
+    source="fixtures/adapters/conformance/$domain/operation-observation.json"
+    destination="$release_evidence_root/conformance-$domain-v1.json"
+    pending="$destination.$$.pending"
+    cp "$source" "$pending"
+    chmod 0600 "$pending"
+    mv -f "$pending" "$destination"
+done
+
 echo "OpenFGA, MLflow, Better Auth, and Woodpecker passed exact install/evolution and public Rust, Go, TypeScript, and Python conformance."
