@@ -28,7 +28,8 @@ fn final_gate_has_one_closed_phase_inventory() {
     );
     assert_eq!(
         String::from_utf8(output.stdout).expect("gate output must be UTF-8"),
-        "deployable alpha phase inventory: passed\n"
+        "deployable alpha phase inventory: passed\n\
+deployable alpha evidence binding: passed\n"
     );
 
     let gate = std::fs::read_to_string(root.join("scripts/deployable-alpha-acceptance"))
@@ -37,6 +38,10 @@ fn final_gate_has_one_closed_phase_inventory() {
     assert!(gate.contains("--bind-release-receipt"));
     assert!(gate.contains("alpha-endurance-inventory-v1.json"));
     assert!(gate.contains("\"--runs\", \"6\""));
+    assert!(gate.contains("EVIDENCE_PATHS"));
+    assert!(gate.contains("agent-application-alpha-gate-v3.json"));
+    assert!(gate.contains("evidence_inventory_sha256"));
+    assert!(gate.contains("adapter_woodpecker_export"));
     let driver =
         std::fs::read_to_string(root.join("scripts/driver-conformance")).expect("read driver gate");
     let row_policy = std::fs::read_to_string(root.join("scripts/adapter-row-policy-acceptance"))

@@ -92,6 +92,14 @@ implementation:
   --all-domains --all-languages --remote
 ```
 
+The passing receipt at
+`release/evidence/deployable-application-alpha-v1.json` binds the exact Git
+revision and command inventory plus SHA-256 references to the durable-format,
+WP-552 performance, bound 72-hour endurance, six-run agent campaign, and every
+adapter conformance/export/disaster-recovery artifact used by the run. A
+generated artifact that is absent, empty, oversized, or a symlink prevents the
+receipt from being published even when every phase exited successfully.
+
 It preflights the entire closed phase inventory before running anything, then
 executes application-binding and durable-format checks, retained performance
 verification, Compose and Kubernetes deployment checks, four-language driver
@@ -100,8 +108,9 @@ export/reimport, destructive recovery, retained 72-hour endurance evidence,
 installed bootstrap, and the sealed independent-agent evaluation. Missing
 component scripts or evidence fail before an expensive partial gate.
 
-Each phase receipt stores only its symbolic name, exit status, elapsed time,
-and a SHA-256 of the reviewed argument array. A failed run remains under
+Each phase result stores only its symbolic name, exit status, elapsed time,
+and a SHA-256 of the reviewed argument array; the outer passing receipt also
+stores the exact evidence references described above. A failed run remains under
 `target/deployable-alpha-gate/`; only a complete pass publishes
 `release/evidence/deployable-application-alpha-v1.json`. The coordinator cannot
 waive a phase, shorten endurance, substitute a diagnostic benchmark, or print
