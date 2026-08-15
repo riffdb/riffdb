@@ -13,6 +13,12 @@ file:
 {"idempotency_key":"seed:ticket:2","organization_id":{"$uuid":"01900000-0000-7000-8000-000000000001"},"status":{"$enum":"Closed"},"title":"Export is slow"}
 ```
 
+For `riffdb dev --seed`, RiffDB selects the command's compiler-declared
+idempotency input automatically. A command may call it `request_id`,
+`request_key`, or another valid symbolic name; seed files use that exact name.
+The standalone `riffdb command batch` operation retains its explicit
+`--idempotency-field` option and defaults that option to `idempotency_key`.
+
 Run or resume it with:
 
 ```bash
