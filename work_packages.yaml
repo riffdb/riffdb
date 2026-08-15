@@ -11929,7 +11929,7 @@ work_packages:
   human_review_triggers: *id001
 - id: WP-597
   name: Secret field classification with structural display-surface redaction
-  depends_on: []
+  depends_on: [WP-573]
   objective: Implement ADR-0118. A field may be declared secret; the classification rides
     AST, versioned IR, bundle hash, catalogs, and generated bindings; every display surface
     (tracing, typed public errors and diagnostics, MCP text, CLI rendering, provenance and
@@ -11963,6 +11963,13 @@ work_packages:
   - cargo test -p riffdb-contract-syntax -p riffdb-contract-ir -p riffdb-contract-compiler
   - cargo test -p riffdb-service -p riffdb-cli --all-features
   - ./scripts/handbook check
+  standing_design_tests:
+    interface_safety: Secret classification is compiler-carried and default-denied; no display
+      surface, wildcard grant, diagnostic, or generated example can reveal a secret value unless
+      the exact public read surface requires explicit field authority, while durable carriage stays
+      full-fidelity and cannot silently redact stored state.
+    scale: Classification and redaction are bounded static field metadata plus existing visibility
+      checks; no row scan, retained secret set, or whole-application runtime registry is introduced.
   human_review_triggers: *id001
 - id: WP-598
   name: Framework-profile prerequisite verification for the rescoped alpha gate
@@ -11994,6 +12001,13 @@ work_packages:
   acceptance_commands:
   - cargo test --workspace --all-features
   - ./scripts/check-requirement-coverage
+  standing_design_tests:
+    interface_safety: A framework profile can dispatch only to generated named operations and must
+      reject unsupported plugins, dynamic schemas, generic stores, and transaction callbacks at
+      generation time; sequential commands can never be reported as one atomic framework action.
+    scale: Profile generation and verification operate over bounded declared plugin schemas and
+      finite operation catalogs; runtime dispatch is a bounded symbolic lookup and adds no generic
+      query, callback, or whole-database mechanism.
   human_review_triggers: *id001
 - id: WP-599
   name: Compiler-owned workflow reconstitution and all-domain portability closure
@@ -12091,6 +12105,12 @@ work_packages:
   - cargo test -p riffdb-contract-syntax -p riffdb-contract-ir -p riffdb-contract-compiler
   - ./scripts/handbook check
   - ./scripts/check-requirement-coverage
+  standing_design_tests:
+    interface_safety: A secret-to-non-secret contract flow is unrepresentable without an exact
+      source-naming reveals annotation checked by the compiler; the annotation is reviewable static
+      authority and cannot be supplied dynamically or used to bypass read visibility.
+    scale: Secret-flow analysis is bounded by the finite compiled contract graph and emits bounded
+      two-ended diagnostics; it adds no per-row runtime traversal or retained value tracking.
   human_review_triggers: *id001
 - id: WP-601
   name: Driver distribution — platform binaries and published runtimes across four registries
