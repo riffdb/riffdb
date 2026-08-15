@@ -12546,13 +12546,13 @@ work_packages:
   requirements: [AFC-008, AFC-010, VER-001, VER-002, VER-003, VER-004, VER-005,
     VER-006, VER-007, VER-008]
   required_adrs: [ADR-0002, ADR-0006, ADR-0013, ADR-0057, ADR-0112, ADR-0120,
-    ADR-0123]
+    ADR-0124]
   allowed_paths: [work_packages.yaml, SPEC.md, adr/README.md,
-    adr/0123-version-topology-and-retirement-governance.md, docs/**,
+    adr/0124-version-topology-and-retirement-governance.md, docs/**,
     release/version-topology-v1.json, scripts/check-version-topology,
     scripts/check-generated]
   deliverables:
-  - Accepted ADR-0123 defining why version domains remain separate, the required registry fields,
+  - Accepted ADR-0124 defining why version domains remain separate, the required registry fields,
     reader/writer compatibility rules, breaking-change classification, and decoder retirement
     ceremony without weakening ADR-0112's durable-format guarantees
   - Canonical `release/version-topology-v1.json` inventory covering every release-significant

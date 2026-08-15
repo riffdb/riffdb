@@ -141,7 +141,7 @@ direction, merged draft, or implementation choice.
 | [0120](0120-driver-resident-developer-experience.md) | Driver-Resident Developer Experience | Accepted |
 | [0121](0121-empty-project-schema-and-selected-binding-materialization.md) | Empty Project Schema and Selected Binding Materialization | Accepted |
 | [0122](0122-agent-rails-and-application-guidance-resource.md) | Agent Rails and Application Guidance Resource | Accepted |
-| [0123](0123-version-topology-and-retirement-governance.md) | Version Topology and Retirement Governance | Accepted |
+| [0124](0124-version-topology-and-retirement-governance.md) | Version Topology and Retirement Governance | Accepted |
 
 The human architecture review on 2026-07-12 approved the direction represented
 by ADR-0001 through ADR-0012. The human maintainer accepted ADR-0001 through

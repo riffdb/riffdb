@@ -1,7 +1,7 @@
 {
   "schema": "riffdb.version-topology/v1",
   "release": "0.1.0",
-  "policy_adr": "ADR-0123",
+  "policy_adr": "ADR-0124",
   "supported_release_window": {
     "minimum": "0.1.0-pre-format-manifest",
     "maximum": "0.1.0"
@@ -24,7 +24,7 @@
       "reserved_identity_policy": "Published role codec numbers are never reused.",
       "evidence": ["fixtures/application-locks/policy-surface-v7.json"],
       "checks": ["./scripts/check-generated"],
-      "last_change": {"classification":"no_format_change","decision":"ADR-0123 baseline"}
+      "last_change": {"classification":"no_format_change","decision":"ADR-0124 baseline"}
     },
     {
       "id": "application.lock",
@@ -43,7 +43,7 @@
       "reserved_identity_policy": "Published lock schema names and fields remain reserved.",
       "evidence": ["fixtures/application-locks/policy-surface-v7.json"],
       "checks": ["./scripts/check-generated"],
-      "last_change": {"classification":"no_format_change","decision":"ADR-0123 baseline"}
+      "last_change": {"classification":"no_format_change","decision":"ADR-0124 baseline"}
     },
     {
       "id": "application.manifest",
@@ -62,7 +62,7 @@
       "reserved_identity_policy": "Published manifest schema names and fields remain reserved.",
       "evidence": ["fixtures/application-manifests/policy-surface-exact-v4.json"],
       "checks": ["./scripts/check-generated"],
-      "last_change": {"classification":"no_format_change","decision":"ADR-0123 baseline"}
+      "last_change": {"classification":"no_format_change","decision":"ADR-0124 baseline"}
     },
     {
       "id": "application.role_definition",
@@ -81,7 +81,7 @@
       "reserved_identity_policy": "Published role-definition numbers are never reused.",
       "evidence": ["fixtures/application-locks/policy-surface-v7.json"],
       "checks": ["./scripts/check-generated"],
-      "last_change": {"classification":"no_format_change","decision":"ADR-0123 baseline"}
+      "last_change": {"classification":"no_format_change","decision":"ADR-0124 baseline"}
     },
     {
       "id": "application.source",
@@ -100,7 +100,7 @@
       "reserved_identity_policy": "Published source schema names and fields remain reserved.",
       "evidence": ["fixtures/application-manifests/policy-surface-v6.json"],
       "checks": ["./scripts/check-generated"],
-      "last_change": {"classification":"no_format_change","decision":"ADR-0123 baseline"}
+      "last_change": {"classification":"no_format_change","decision":"ADR-0124 baseline"}
     },
     {
       "id": "durable.alpha_epoch_writer",
@@ -119,7 +119,7 @@
       "reserved_identity_policy": "Epoch/writer pairs are monotonic identities and are never reused.",
       "evidence": ["fixtures/compatibility/release-pairs-v1.json"],
       "checks": ["./scripts/check-durable-format-manifest"],
-      "last_change": {"classification":"no_format_change","decision":"ADR-0123 baseline"},
+      "last_change": {"classification":"no_format_change","decision":"ADR-0124 baseline"},
       "manifest_scalar_assertions": {"alpha_epoch":1,"writer":1,"minimum_supported_source_release":"0.1.0-pre-format-manifest","maximum_supported_source_release":"0.1.0"}
     },
     {
@@ -136,7 +136,7 @@
       "lifecycle": {"active":["1"],"read_only":[],"retirement_candidate":[],"retired":[]},
       "reserved_identity_policy": "Backup manifest versions and fields are never reused.",
       "evidence": ["fixtures/compatibility/physical-formats-v1.json"], "checks": ["./scripts/check-durable-format-manifest"],
-      "last_change": {"classification":"no_format_change","decision":"ADR-0123 baseline"},
+      "last_change": {"classification":"no_format_change","decision":"ADR-0124 baseline"},
       "durable_manifest": {"readable_key":"readable_backup_versions","writable_key":"writable_backup_versions"}
     },
     {
@@ -153,7 +153,7 @@
       "lifecycle": {"active":["2"],"read_only":[],"retirement_candidate":[],"retired":[]},
       "reserved_identity_policy": "Receipt versions are never reused.",
       "evidence": ["fixtures/compatibility/durable-fixture-inventory-v1.txt"], "checks": ["./scripts/check-durable-format-manifest"],
-      "last_change": {"classification":"no_format_change","decision":"ADR-0123 baseline"},
+      "last_change": {"classification":"no_format_change","decision":"ADR-0124 baseline"},
       "durable_manifest": {"readable_key":"readable_contract_migration_check_receipt_versions","writable_key":"writable_contract_migration_check_receipt_versions"}
     },
     {
@@ -170,7 +170,7 @@
       "lifecycle": {"active":["2"],"read_only":["1"],"retirement_candidate":[],"retired":[]},
       "reserved_identity_policy": "Envelope versions, tags, and field numbers are never reused.",
       "evidence": ["fixtures/proto/durable-wire-vectors-v2.txt"], "checks": ["./scripts/check-durable-format-manifest"],
-      "last_change": {"classification":"no_format_change","decision":"ADR-0123 baseline"},
+      "last_change": {"classification":"no_format_change","decision":"ADR-0124 baseline"},
       "durable_manifest": {"readable_key":"readable_storage_versions","writable_key":"writable_storage_versions"}
     },
     {
@@ -187,7 +187,7 @@
       "lifecycle": {"active":["1"],"read_only":[],"retirement_candidate":[],"retired":[]},
       "reserved_identity_policy": "Marker versions and magic values are never reused.",
       "evidence": ["fixtures/compatibility/physical-formats-v1.json"], "checks": ["./scripts/check-durable-format-manifest"],
-      "last_change": {"classification":"no_format_change","decision":"ADR-0123 baseline"},
+      "last_change": {"classification":"no_format_change","decision":"ADR-0124 baseline"},
       "durable_manifest": {"readable_key":"readable_format_marker_versions","writable_key":"writable_format_marker_versions"}
     },
     {
@@ -204,7 +204,7 @@
       "lifecycle": {"active":["1"],"read_only":[],"retirement_candidate":[],"retired":[]},
       "reserved_identity_policy": "Upgrade receipt versions are never reused.",
       "evidence": ["fixtures/compatibility/durable-fixture-inventory-v1.txt"], "checks": ["./scripts/check-durable-format-manifest"],
-      "last_change": {"classification":"no_format_change","decision":"ADR-0123 baseline"},
+      "last_change": {"classification":"no_format_change","decision":"ADR-0124 baseline"},
       "durable_manifest": {"readable_key":"readable_format_upgrade_receipt_versions","writable_key":"writable_format_upgrade_receipt_versions"}
     },
     {
@@ -221,7 +221,7 @@
       "lifecycle": {"active":["3"],"read_only":[],"retirement_candidate":[],"retired":[]},
       "reserved_identity_policy": "Journal extent versions are never reused.",
       "evidence": ["fixtures/compatibility/physical-formats-v1.json"], "checks": ["./scripts/check-durable-format-manifest"],
-      "last_change": {"classification":"no_format_change","decision":"ADR-0123 baseline"},
+      "last_change": {"classification":"no_format_change","decision":"ADR-0124 baseline"},
       "durable_manifest": {"readable_key":"readable_journal_extent_versions","writable_key":"writable_journal_extent_versions"}
     },
     {
@@ -238,7 +238,7 @@
       "lifecycle": {"active":["2"],"read_only":[],"retirement_candidate":[],"retired":[]},
       "reserved_identity_policy": "Journal frame versions are never reused.",
       "evidence": ["fixtures/compatibility/physical-formats-v1.json"], "checks": ["./scripts/check-durable-format-manifest"],
-      "last_change": {"classification":"no_format_change","decision":"ADR-0123 baseline"},
+      "last_change": {"classification":"no_format_change","decision":"ADR-0124 baseline"},
       "durable_manifest": {"readable_key":"readable_journal_frame_versions","writable_key":"writable_journal_frame_versions"}
     },
     {
@@ -255,7 +255,7 @@
       "lifecycle": {"active":["1","2"],"read_only":[],"retirement_candidate":[],"retired":[]},
       "reserved_identity_policy": "Maintenance receipt versions are never reused.",
       "evidence": ["fixtures/compatibility/offline-maintenance-retire-receipt-v2.hex"], "checks": ["./scripts/check-durable-format-manifest"],
-      "last_change": {"classification":"no_format_change","decision":"ADR-0123 baseline"},
+      "last_change": {"classification":"no_format_change","decision":"ADR-0124 baseline"},
       "durable_manifest": {"readable_key":"readable_offline_maintenance_receipt_versions","writable_key":"writable_offline_maintenance_receipt_versions"}
     },
     {
@@ -272,7 +272,7 @@
       "lifecycle": {"active":["1","2"],"read_only":[],"retirement_candidate":[],"retired":[]},
       "reserved_identity_policy": "Union members remain reserved even after a future retirement.",
       "evidence": ["fixtures/compatibility/durable-fixture-inventory-v1.txt"], "checks": ["./scripts/check-durable-format-manifest"],
-      "last_change": {"classification":"no_format_change","decision":"ADR-0123 baseline"},
+      "last_change": {"classification":"no_format_change","decision":"ADR-0124 baseline"},
       "durable_manifest": {"readable_key":"readable_receipt_versions","writable_key":"writable_receipt_versions"}
     },
     {
@@ -289,7 +289,7 @@
       "lifecycle": {"active":["2"],"read_only":[],"retirement_candidate":[],"retired":[]},
       "reserved_identity_policy": "Record tags, revisions, schema hashes, and symbolic types are never reused.",
       "evidence": ["fixtures/proto/durable-readable-registry.txt", "fixtures/proto/durable-writable-registry.txt"], "checks": ["./scripts/check-durable-format-manifest"],
-      "last_change": {"classification":"no_format_change","decision":"ADR-0123 baseline"},
+      "last_change": {"classification":"no_format_change","decision":"ADR-0124 baseline"},
       "durable_manifest": {"readable_key":"readable_registry_versions","writable_key":"writable_registry_versions"}
     },
     {
@@ -306,7 +306,7 @@
       "lifecycle": {"active":["1"],"read_only":[],"retirement_candidate":[],"retired":[]},
       "reserved_identity_policy": "Physical layout identities and keys are never reused.",
       "evidence": ["fixtures/compatibility/physical-formats-v1.json"], "checks": ["./scripts/check-durable-format-manifest"],
-      "last_change": {"classification":"no_format_change","decision":"ADR-0123 baseline"},
+      "last_change": {"classification":"no_format_change","decision":"ADR-0124 baseline"},
       "durable_manifest": {"readable_key":"readable_redb_layout_versions","writable_key":"writable_redb_layout_versions"}
     },
     {
@@ -323,7 +323,7 @@
       "lifecycle": {"active":["1"],"read_only":[],"retirement_candidate":[],"retired":[]},
       "reserved_identity_policy": "Published diagnostic identities and codes are never reused.",
       "evidence": ["fixtures/application-diagnostics/contract-unexpected-token-v1.json"], "checks": ["./scripts/check-generated"],
-      "last_change": {"classification":"no_format_change","decision":"ADR-0123 baseline"}
+      "last_change": {"classification":"no_format_change","decision":"ADR-0124 baseline"}
     },
     {
       "id": "evidence.sim_trace",
@@ -339,7 +339,7 @@
       "lifecycle": {"active":["3"],"read_only":[],"retirement_candidate":[],"retired":[]},
       "reserved_identity_policy": "Trace versions are never reused.",
       "evidence": ["crates/riffdb-sim/tests/trace_sensitivity.rs"], "checks": ["./scripts/check-generated"],
-      "last_change": {"classification":"no_format_change","decision":"ADR-0123 baseline"}
+      "last_change": {"classification":"no_format_change","decision":"ADR-0124 baseline"}
     },
     {
       "id": "executable_ir.columnar_layout",
@@ -355,7 +355,7 @@
       "lifecycle": {"active":["1"],"read_only":[],"retirement_candidate":[],"retired":[]},
       "reserved_identity_policy": "Layout versions are never reused.",
       "evidence": ["docs/architecture/OVERVIEW.md"], "checks": ["./scripts/check-generated"],
-      "last_change": {"classification":"no_format_change","decision":"ADR-0123 baseline"}
+      "last_change": {"classification":"no_format_change","decision":"ADR-0124 baseline"}
     },
     {
       "id": "executable_ir.contract_bundle",
@@ -373,7 +373,7 @@
       "lifecycle": {"active":["1","2","3","4","5","6","7","8","9","10","11","12"],"read_only":[],"retirement_candidate":[],"retired":[]},
       "reserved_identity_policy": "Bundle versions, tags, and stable IDs are never reused.",
       "evidence": ["fixtures/compiler/bundle.bin", "fixtures/compiler/vector-ann/bundle.bin"], "checks": ["./scripts/check-generated"],
-      "last_change": {"classification":"no_format_change","decision":"ADR-0123 baseline"}
+      "last_change": {"classification":"no_format_change","decision":"ADR-0124 baseline"}
     },
     {
       "id": "executable_ir.contract_grammar",
@@ -389,7 +389,7 @@
       "lifecycle": {"active":["1","2","3","4","5","6","7","8","9","10","11","12"],"read_only":[],"retirement_candidate":[],"retired":[]},
       "reserved_identity_policy": "Grammar identities and syntax meanings are never reused.",
       "evidence": ["fixtures/compiler/compatibility.txt"], "checks": ["./scripts/check-generated"],
-      "last_change": {"classification":"no_format_change","decision":"ADR-0123 baseline"}
+      "last_change": {"classification":"no_format_change","decision":"ADR-0124 baseline"}
     },
     {
       "id": "executable_ir.contract_ir",
@@ -405,7 +405,7 @@
       "lifecycle": {"active":["1","2","3","4","5","6","7","8","9","10","11","12"],"read_only":[],"retirement_candidate":[],"retired":[]},
       "reserved_identity_policy": "IR identities, tags, and stable IDs are never reused.",
       "evidence": ["fixtures/compiler/command-plans.txt"], "checks": ["./scripts/check-generated"],
-      "last_change": {"classification":"no_format_change","decision":"ADR-0123 baseline"}
+      "last_change": {"classification":"no_format_change","decision":"ADR-0124 baseline"}
     },
     {
       "id": "executable_ir.lineage_ledger",
@@ -421,7 +421,7 @@
       "lifecycle": {"active":["2"],"read_only":["1"],"retirement_candidate":[],"retired":[]},
       "reserved_identity_policy": "Allocated and tombstoned IDs remain reserved permanently.",
       "evidence": ["fixtures/compiler/lineage-ledger.txt"], "checks": ["./scripts/check-generated"],
-      "last_change": {"classification":"no_format_change","decision":"ADR-0123 baseline"}
+      "last_change": {"classification":"no_format_change","decision":"ADR-0124 baseline"}
     },
     {
       "id": "executable_ir.mcp_command_registry",
@@ -437,7 +437,7 @@
       "lifecycle": {"active":["2"],"read_only":[],"retirement_candidate":[],"retired":[]},
       "reserved_identity_policy": "Published tool names and registry identities are never silently reused.",
       "evidence": ["fixtures/compiler/mcp-command-evolution.txt"], "checks": ["./scripts/check-generated"],
-      "last_change": {"classification":"no_format_change","decision":"ADR-0123 baseline"}
+      "last_change": {"classification":"no_format_change","decision":"ADR-0124 baseline"}
     },
     {
       "id": "executable_ir.migration_bundle",
@@ -453,7 +453,7 @@
       "lifecycle": {"active":["1"],"read_only":[],"retirement_candidate":[],"retired":[]},
       "reserved_identity_policy": "Migration bundle identities and step tags are never reused.",
       "evidence": ["fixtures/compiler/reimport/bundle.bin"], "checks": ["./scripts/check-generated"],
-      "last_change": {"classification":"no_format_change","decision":"ADR-0123 baseline"}
+      "last_change": {"classification":"no_format_change","decision":"ADR-0124 baseline"}
     },
     {
       "id": "executable_ir.migration_grammar",
@@ -469,7 +469,7 @@
       "lifecycle": {"active":["1"],"read_only":[],"retirement_candidate":[],"retired":[]},
       "reserved_identity_policy": "Migration grammar identities and syntax meanings are never reused.",
       "evidence": ["fixtures/compiler/reimport/contract.riff"], "checks": ["./scripts/check-generated"],
-      "last_change": {"classification":"no_format_change","decision":"ADR-0123 baseline"}
+      "last_change": {"classification":"no_format_change","decision":"ADR-0124 baseline"}
     },
     {
       "id": "executable_ir.migration_ir",
@@ -485,7 +485,7 @@
       "lifecycle": {"active":["1"],"read_only":[],"retirement_candidate":[],"retired":[]},
       "reserved_identity_policy": "Migration IR identities and step tags are never reused.",
       "evidence": ["fixtures/compiler/reimport/bundle-hash.txt"], "checks": ["./scripts/check-generated"],
-      "last_change": {"classification":"no_format_change","decision":"ADR-0123 baseline"}
+      "last_change": {"classification":"no_format_change","decision":"ADR-0124 baseline"}
     },
     {
       "id": "executable_ir.query_ir",
@@ -501,7 +501,7 @@
       "lifecycle": {"active":["1","2","3"],"read_only":[],"retirement_candidate":[],"retired":[]},
       "reserved_identity_policy": "Query IR identities, node tags, and cost meanings are never reused.",
       "evidence": ["fixtures/riffql/list_tickets.plan"], "checks": ["./scripts/check-generated"],
-      "last_change": {"classification":"no_format_change","decision":"ADR-0123 baseline"}
+      "last_change": {"classification":"no_format_change","decision":"ADR-0124 baseline"}
     },
     {
       "id": "executable_ir.query_module",
@@ -517,7 +517,7 @@
       "lifecycle": {"active":["1","2","3"],"read_only":[],"retirement_candidate":[],"retired":[]},
       "reserved_identity_policy": "Module identities and query names are never silently reused.",
       "evidence": ["fixtures/query-modules/ticketdesk.rs"], "checks": ["./scripts/check-generated"],
-      "last_change": {"classification":"no_format_change","decision":"ADR-0123 baseline"}
+      "last_change": {"classification":"no_format_change","decision":"ADR-0124 baseline"}
     },
     {
       "id": "executable_ir.reactive_ir",
@@ -533,7 +533,7 @@
       "lifecycle": {"active":["1"],"read_only":[],"retirement_candidate":[],"retired":[]},
       "reserved_identity_policy": "Reactive IR identities and operation hashes are never reused.",
       "evidence": ["fixtures/application-parity/reactive-observation-v1.json"], "checks": ["./scripts/check-generated"],
-      "last_change": {"classification":"no_format_change","decision":"ADR-0123 baseline"}
+      "last_change": {"classification":"no_format_change","decision":"ADR-0124 baseline"}
     },
     {
       "id": "executable_ir.reactive_module",
@@ -549,7 +549,7 @@
       "lifecycle": {"active":["1"],"read_only":[],"retirement_candidate":[],"retired":[]},
       "reserved_identity_policy": "Reactive module identities are never reused.",
       "evidence": ["fixtures/reactive/FORMAT-FREEZE.md"], "checks": ["./scripts/check-generated"],
-      "last_change": {"classification":"no_format_change","decision":"ADR-0123 baseline"}
+      "last_change": {"classification":"no_format_change","decision":"ADR-0124 baseline"}
     },
     {
       "id": "executable_ir.riffql_language",
@@ -565,7 +565,7 @@
       "lifecycle": {"active":["1","2"],"read_only":[],"retirement_candidate":[],"retired":[]},
       "reserved_identity_policy": "Language identities and syntax meanings are never reused.",
       "evidence": ["fixtures/riffql/cardinality.snapshot"], "checks": ["./scripts/check-generated"],
-      "last_change": {"classification":"no_format_change","decision":"ADR-0123 baseline"}
+      "last_change": {"classification":"no_format_change","decision":"ADR-0124 baseline"}
     },
     {
       "id": "generated_surface.agent_guidance",
@@ -581,7 +581,7 @@
       "lifecycle": {"active":["riffdb.agent-guidance/v1"],"read_only":[],"retirement_candidate":[],"retired":[]},
       "reserved_identity_policy": "Guidance schema names are never reused.",
       "evidence": ["fixtures/agent-guidance/v1.json"], "checks": ["./scripts/check-generated"],
-      "last_change": {"classification":"no_format_change","decision":"ADR-0123 baseline"}
+      "last_change": {"classification":"no_format_change","decision":"ADR-0124 baseline"}
     },
     {
       "id": "generated_surface.application_operations",
@@ -597,7 +597,7 @@
       "lifecycle": {"active":["riffdb-generated-application-operations/v2"],"read_only":[],"retirement_candidate":[],"retired":[]},
       "reserved_identity_policy": "Generated schema and operation identities are never silently reused.",
       "evidence": ["fixtures/query-modules/ticketdesk.mcp.json"], "checks": ["./scripts/check-generated"],
-      "last_change": {"classification":"no_format_change","decision":"ADR-0123 baseline"}
+      "last_change": {"classification":"no_format_change","decision":"ADR-0124 baseline"}
     },
     {
       "id": "generated_surface.driver_conformance_manifest",
@@ -613,7 +613,7 @@
       "lifecycle": {"active":["riffdb.driver-conformance-manifest/v1"],"read_only":[],"retirement_candidate":[],"retired":[]},
       "reserved_identity_policy": "Conformance schema names and language identities are never reused.",
       "evidence": ["fixtures/driver/manifests/rust-v1.json", "fixtures/driver/manifests/typescript-v1.json"], "checks": ["./scripts/check-generated"],
-      "last_change": {"classification":"no_format_change","decision":"ADR-0123 baseline"}
+      "last_change": {"classification":"no_format_change","decision":"ADR-0124 baseline"}
     },
     {
       "id": "generated_surface.driver_development_registry",
@@ -629,7 +629,7 @@
       "lifecycle": {"active":["riffdb.driver-development-registry-plan/v1"],"read_only":[],"retirement_candidate":[],"retired":[]},
       "reserved_identity_policy": "Plan identities and published immutable coordinates are never reused for different bytes.",
       "evidence": ["release/distribution/development-registry-v1.json"], "checks": ["./scripts/check-driver-development-registry"],
-      "last_change": {"classification":"no_format_change","decision":"ADR-0123 baseline"}
+      "last_change": {"classification":"no_format_change","decision":"ADR-0124 baseline"}
     },
     {
       "id": "generated_surface.driver_distribution",
@@ -645,7 +645,7 @@
       "lifecycle": {"active":["riffdb.driver-distribution-plan/v1"],"read_only":[],"retirement_candidate":[],"retired":[]},
       "reserved_identity_policy": "Distribution schema names and published package coordinates are never reused for different bytes.",
       "evidence": ["release/distribution/manifest-v1.json"], "checks": ["./scripts/check-driver-distribution"],
-      "last_change": {"classification":"no_format_change","decision":"ADR-0123 baseline"}
+      "last_change": {"classification":"no_format_change","decision":"ADR-0124 baseline"}
     },
     {
       "id": "generated_surface.driver_package_matrix",
@@ -661,7 +661,7 @@
       "lifecycle": {"active":["riffdb.driver-package-matrix/v1"],"read_only":[],"retirement_candidate":[],"retired":[]},
       "reserved_identity_policy": "Matrix schema names and package roles are never reused.",
       "evidence": ["fixtures/driver/package-matrix-v1.json"], "checks": ["./scripts/check-driver-distribution"],
-      "last_change": {"classification":"no_format_change","decision":"ADR-0123 baseline"}
+      "last_change": {"classification":"no_format_change","decision":"ADR-0124 baseline"}
     },
     {
       "id": "protocol.cli_output",
@@ -677,7 +677,7 @@
       "lifecycle": {"active":["riffdb.cli.output/v1"],"read_only":[],"retirement_candidate":[],"retired":[]},
       "reserved_identity_policy": "CLI schema fields and typed error codes are never reused.",
       "evidence": ["docs/reference/CLI.md"], "checks": ["./scripts/check-generated"],
-      "last_change": {"classification":"no_format_change","decision":"ADR-0123 baseline"}
+      "last_change": {"classification":"no_format_change","decision":"ADR-0124 baseline"}
     },
     {
       "id": "protocol.driver",
@@ -693,7 +693,7 @@
       "lifecycle": {"active":["1"],"read_only":[],"retirement_candidate":[],"retired":[]},
       "reserved_identity_policy": "Protocol versions, opcodes, and fields are never reused.",
       "evidence": ["fixtures/driver/v1/handshake-request.json"], "checks": ["./scripts/check-generated"],
-      "last_change": {"classification":"no_format_change","decision":"ADR-0123 baseline"}
+      "last_change": {"classification":"no_format_change","decision":"ADR-0124 baseline"}
     },
     {
       "id": "protocol.mcp",
@@ -709,7 +709,7 @@
       "lifecycle": {"active":["2025-11-25"],"read_only":[],"retirement_candidate":[],"retired":[]},
       "reserved_identity_policy": "External baseline dates are never relabeled as another protocol.",
       "evidence": ["release/evidence/poc-requirements-v1.json"], "checks": ["./scripts/check-generated"],
-      "last_change": {"classification":"no_format_change","decision":"ADR-0123 baseline"}
+      "last_change": {"classification":"no_format_change","decision":"ADR-0124 baseline"}
     },
     {
       "id": "protocol.operator_driver",
@@ -725,7 +725,7 @@
       "lifecycle": {"active":["1"],"read_only":[],"retirement_candidate":[],"retired":[]},
       "reserved_identity_policy": "Operator protocol versions, opcodes, and fields are never reused.",
       "evidence": ["fixtures/driver/corpus-v1.json"], "checks": ["./scripts/check-generated"],
-      "last_change": {"classification":"no_format_change","decision":"ADR-0123 baseline"}
+      "last_change": {"classification":"no_format_change","decision":"ADR-0124 baseline"}
     },
     {
       "id": "wire.application_grpc",
@@ -741,7 +741,7 @@
       "lifecycle": {"active":["riffdb.app.v1"],"read_only":[],"retirement_candidate":[],"retired":[]},
       "reserved_identity_policy": "Published Protobuf fields, enum values, and method identities remain reserved.",
       "evidence": ["fixtures/proto/descriptors/riffdb-v1-descriptor-set.bin"], "checks": ["./scripts/check-generated"],
-      "last_change": {"classification":"no_format_change","decision":"ADR-0123 baseline"}
+      "last_change": {"classification":"no_format_change","decision":"ADR-0124 baseline"}
     },
     {
       "id": "wire.canonical_value",
@@ -757,7 +757,7 @@
       "lifecycle": {"active":["0x01"],"read_only":[],"retirement_candidate":[],"retired":[]},
       "reserved_identity_policy": "Value tags and codec identities are never reused.",
       "evidence": ["fixtures/proto/public-client-vectors.txt"], "checks": ["./scripts/check-generated"],
-      "last_change": {"classification":"no_format_change","decision":"ADR-0123 baseline"}
+      "last_change": {"classification":"no_format_change","decision":"ADR-0124 baseline"}
     },
     {
       "id": "wire.public_grpc",
@@ -773,7 +773,7 @@
       "lifecycle": {"active":["riffdb.v1"],"read_only":[],"retirement_candidate":[],"retired":[]},
       "reserved_identity_policy": "Published Protobuf fields, enum values, and method identities remain reserved.",
       "evidence": ["fixtures/proto/descriptors/riffdb-v1-descriptor-set.bin", "fixtures/proto/wire-vectors.txt"], "checks": ["./scripts/check-generated"],
-      "last_change": {"classification":"no_format_change","decision":"ADR-0123 baseline"}
+      "last_change": {"classification":"no_format_change","decision":"ADR-0124 baseline"}
     },
     {
       "id": "wire.storage_protobuf",
@@ -789,7 +789,7 @@
       "lifecycle": {"active":["riffdb.storage.v1"],"read_only":[],"retirement_candidate":[],"retired":[]},
       "reserved_identity_policy": "Published Protobuf fields, enum values, record tags, and package identities remain reserved.",
       "evidence": ["fixtures/proto/descriptors/riffdb-storage-v1-descriptor-set.bin"], "checks": ["./scripts/check-generated"],
-      "last_change": {"classification":"no_format_change","decision":"ADR-0123 baseline"}
+      "last_change": {"classification":"no_format_change","decision":"ADR-0124 baseline"}
     }
   ]
 }

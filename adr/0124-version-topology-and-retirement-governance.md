@@ -1,4 +1,4 @@
-# ADR-0123: Version Topology and Retirement Governance
+# ADR-0124: Version Topology and Retirement Governance
 
 - **Status:** Accepted
 - **Date:** 2026-08-15

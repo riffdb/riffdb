@@ -206,8 +206,8 @@ def validate(
         )
     if topology.get("schema") != "riffdb.version-topology/v1":
         errors.append("topology schema must be riffdb.version-topology/v1")
-    if topology.get("policy_adr") != "ADR-0123":
-        errors.append("topology policy_adr must be ADR-0123")
+    if topology.get("policy_adr") != "ADR-0124":
+        errors.append("topology policy_adr must be ADR-0124")
     if topology.get("release") != durable.get("release"):
         errors.append("topology release does not match durable manifest release")
     window = topology.get("supported_release_window")
