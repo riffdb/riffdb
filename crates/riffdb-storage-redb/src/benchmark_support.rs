@@ -45,6 +45,32 @@ const OUTCOME_VALUE_BYTES: usize = 768;
 const AUDIT_VALUE_BYTES: usize = 192;
 const AUDIT_REQUEST_VALUE_BYTES: usize = 96;
 
+/// Fixed-cardinality process-generation command-frame byte census.
+///
+/// Values aggregate only successfully fenced command frames. They contain no
+/// key, value, principal, symbol, or per-command label.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct WriterCommandFrameCensusV1 {
+    values: [u64; 6],
+}
+
+impl WriterCommandFrameCensusV1 {
+    /// Ordered wire values: frames, commands, selected complete frame bytes,
+    /// raw-equivalent complete frame bytes, selected segment bytes, raw segment bytes.
+    #[must_use]
+    pub const fn values(self) -> [u64; 6] {
+        self.values
+    }
+}
+
+/// Returns the current process-generation writer byte census.
+#[must_use]
+pub fn writer_command_frame_census_v1() -> WriterCommandFrameCensusV1 {
+    WriterCommandFrameCensusV1 {
+        values: crate::writer_command_frame_census_v1(),
+    }
+}
+
 /// Redb-owned bounded statistics for one authoritative command-path table.
 ///
 /// These values are diagnostic only. They neither enter authorization nor
@@ -1104,8 +1130,9 @@ fn build_overlay_frame(
     buffer
         .extend(before_segment.iter().cloned())
         .map_err(|_| EngineBenchmarkError::Engine)?;
+    let raw_segment_bytes = segment_value.len();
     buffer
-        .push_command_segment(segment_key, segment_value, commands)
+        .push_command_segment(segment_key, segment_value, commands, raw_segment_bytes)
         .map_err(|_| EngineBenchmarkError::Engine)?;
     buffer
         .extend([allocator_mutation.clone()])

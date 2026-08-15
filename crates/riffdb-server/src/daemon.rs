@@ -3084,6 +3084,7 @@ async fn supervise_ready_process(
     let read_stages = graph.read_stage_snapshot();
     let command_stages = graph.command_stage_snapshot();
     let writer_evidence = graph.writer_evidence_snapshot();
+    let writer_frame_census = riffdb_storage_redb::writer_command_frame_census_v1();
     let notification_stop_failed = graph.begin_transport_shutdown().is_err();
     let transport_result = match &trigger {
         ReadyProcessTrigger::Transport(completion) => classify_transport_completion(completion),
@@ -3138,6 +3139,15 @@ async fn supervise_ready_process(
         let writer_evidence_line =
             riffdb_observability::format_writer_evidence_v1_line(&writer_evidence);
         let _ = writeln!(stdout, "{writer_evidence_line}");
+        let writer_frame_census = writer_frame_census
+            .iter()
+            .map(u64::to_string)
+            .collect::<Vec<_>>()
+            .join(",");
+        let _ = writeln!(
+            stdout,
+            "riffdb-writer-frame-census-v1\t{writer_frame_census}"
+        );
         let _ = stdout.flush();
     }
     if maintenance_shutdown {

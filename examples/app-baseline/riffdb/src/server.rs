@@ -53,6 +53,7 @@ const DISPATCH_REASON_PREFIX: &str = "riffdb-dispatch-reasons-v1\t";
 const READ_STAGE_PREFIX: &str = "riffdb-read-stages-v1\t";
 const COMMAND_STAGE_PREFIX: &str = "riffdb-command-stages-v1\t";
 const WRITER_EVIDENCE_PREFIX: &str = "riffdb-writer-evidence-v1\t";
+const WRITER_FRAME_CENSUS_PREFIX: &str = "riffdb-writer-frame-census-v1\t";
 const PROCESS_START_TIMEOUT: Duration = Duration::from_secs(90);
 const PROCESS_STOP_TIMEOUT: Duration = Duration::from_secs(15);
 /// Keep the last N stderr lines for crash diagnosis (panic / OOM messages).
@@ -203,6 +204,8 @@ pub struct RiffDbShutdownEvidence {
     pub command_stages: Vec<RiffDbReadStageEvidence>,
     /// Commit, queue, grouping, and writer-utilization evidence.
     pub writer: RiffDbWriterEvidence,
+    /// Frames, commands, selected/raw-equivalent frame bytes, and selected/raw segment bytes.
+    pub writer_frame_census: Option<[u64; 6]>,
     /// Command-table inventory after seed and before the measured process.
     pub table_inventory_before_measurement:
         Option<Vec<riffdb_storage_redb::benchmark_support::AuthoritativeTableInventoryV1>>,
@@ -1287,6 +1290,7 @@ fn read_server_stdout(
     let mut read_stages = None;
     let mut command_stages = None;
     let mut writer = None;
+    let mut writer_frame_census = None;
     loop {
         line.clear();
         let Ok(read) = reader.read_line(&mut line) else {
@@ -1311,6 +1315,8 @@ fn read_server_stdout(
             command_stages = Some(parse_read_stages(encoded));
         } else if let Some(encoded) = line.trim_end().strip_prefix(WRITER_EVIDENCE_PREFIX) {
             writer = Some(parse_writer_evidence(encoded));
+        } else if let Some(encoded) = line.trim_end().strip_prefix(WRITER_FRAME_CENSUS_PREFIX) {
+            writer_frame_census = Some(parse_fixed_counts(encoded, "writer-frame-census", 6));
         }
     }
     let evidence = match (
@@ -1327,15 +1333,18 @@ fn read_server_stdout(
             Some(Ok(command_stages)),
             Some(Ok(writer)),
         ) => {
-            Ok(RiffDbShutdownEvidence {
-                write_completion_groups,
-                dispatch_reasons,
-                read_stages,
-                command_stages,
-                writer,
-                table_inventory_before_measurement: None,
-                table_inventory_after_measurement: Vec::new(),
-            })
+            writer_frame_census
+                .transpose()
+                .map(|writer_frame_census| RiffDbShutdownEvidence {
+                    write_completion_groups,
+                    dispatch_reasons,
+                    read_stages,
+                    command_stages,
+                    writer,
+                    writer_frame_census,
+                    table_inventory_before_measurement: None,
+                    table_inventory_after_measurement: Vec::new(),
+                })
         }
         (Some(Err(error)), _, _, _, _)
         | (_, Some(Err(error)), _, _, _)

@@ -68,6 +68,52 @@ pub(crate) const MAX_JOURNAL_FRAME_BYTES: usize = 16 * 1024 * 1024;
 pub(crate) const MAX_JOURNAL_SUFFIX_BYTES: usize = 32 * 1024 * 1024;
 const DELETE_VALUE_LENGTH: u32 = u32::MAX;
 
+static COMMAND_FRAME_COUNT: AtomicU64 = AtomicU64::new(0);
+static COMMAND_FRAME_COMMANDS: AtomicU64 = AtomicU64::new(0);
+static COMMAND_FRAME_SELECTED_BYTES: AtomicU64 = AtomicU64::new(0);
+static COMMAND_FRAME_RAW_EQUIVALENT_BYTES: AtomicU64 = AtomicU64::new(0);
+static COMMAND_SEGMENT_SELECTED_BYTES: AtomicU64 = AtomicU64::new(0);
+static COMMAND_SEGMENT_RAW_BYTES: AtomicU64 = AtomicU64::new(0);
+
+fn saturating_atomic_add(target: &AtomicU64, value: usize) {
+    let value = u64::try_from(value).unwrap_or(u64::MAX);
+    let _ = target.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+        Some(current.saturating_add(value))
+    });
+}
+
+fn record_command_frame_census(frame: &EncodedJournalFrame) {
+    if frame.command_count() == 0 {
+        return;
+    }
+    saturating_atomic_add(&COMMAND_FRAME_COUNT, 1);
+    saturating_atomic_add(&COMMAND_FRAME_COMMANDS, usize::from(frame.command_count()));
+    saturating_atomic_add(&COMMAND_FRAME_SELECTED_BYTES, frame.as_bytes().len());
+    saturating_atomic_add(
+        &COMMAND_FRAME_RAW_EQUIVALENT_BYTES,
+        frame.raw_equivalent_frame_bytes(),
+    );
+    saturating_atomic_add(
+        &COMMAND_SEGMENT_SELECTED_BYTES,
+        frame.selected_command_segment_bytes(),
+    );
+    saturating_atomic_add(
+        &COMMAND_SEGMENT_RAW_BYTES,
+        frame.raw_command_segment_bytes(),
+    );
+}
+
+pub(crate) fn command_frame_census() -> [u64; 6] {
+    [
+        COMMAND_FRAME_COUNT.load(Ordering::Relaxed),
+        COMMAND_FRAME_COMMANDS.load(Ordering::Relaxed),
+        COMMAND_FRAME_SELECTED_BYTES.load(Ordering::Relaxed),
+        COMMAND_FRAME_RAW_EQUIVALENT_BYTES.load(Ordering::Relaxed),
+        COMMAND_SEGMENT_SELECTED_BYTES.load(Ordering::Relaxed),
+        COMMAND_SEGMENT_RAW_BYTES.load(Ordering::Relaxed),
+    ]
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u8)]
 pub(crate) enum JournalTable {
@@ -319,6 +365,8 @@ pub(crate) struct JournalMutationBuffer {
     command_audit_count: u16,
     audit_put_count: u16,
     service_audit_closed: bool,
+    selected_command_segment_bytes: usize,
+    raw_command_segment_bytes: usize,
 }
 
 impl Default for JournalMutationBuffer {
@@ -332,6 +380,8 @@ impl Default for JournalMutationBuffer {
             command_audit_count: 0,
             audit_put_count: 0,
             service_audit_closed: true,
+            selected_command_segment_bytes: 0,
+            raw_command_segment_bytes: 0,
         }
     }
 }
@@ -373,6 +423,7 @@ impl JournalMutationBuffer {
         key: impl Into<Box<[u8]>>,
         value: impl Into<Box<[u8]>>,
         command_count: usize,
+        raw_envelope_bytes: usize,
     ) -> Result<(), JournalCodecError> {
         let command_count = u16::try_from(command_count)
             .ok()
@@ -382,7 +433,23 @@ impl JournalMutationBuffer {
             .checked_mul(2)
             .ok_or(JournalCodecError::LimitExceeded)?;
         let mutation = JournalMutation::put(JournalTable::Commits, key, value)?;
-        self.push_with_command_counts(&mutation, Some((command_count, audit_count)))
+        let selected_bytes = mutation
+            .value()
+            .map(<[u8]>::len)
+            .ok_or(JournalCodecError::InvalidValue)?;
+        if raw_envelope_bytes < selected_bytes {
+            return Err(JournalCodecError::InvalidValue);
+        }
+        self.push_with_command_counts(&mutation, Some((command_count, audit_count)))?;
+        self.selected_command_segment_bytes = self
+            .selected_command_segment_bytes
+            .checked_add(selected_bytes)
+            .ok_or(JournalCodecError::LimitExceeded)?;
+        self.raw_command_segment_bytes = self
+            .raw_command_segment_bytes
+            .checked_add(raw_envelope_bytes)
+            .ok_or(JournalCodecError::LimitExceeded)?;
+        Ok(())
     }
 
     fn push(&mut self, mutation: &JournalMutation) -> Result<(), JournalCodecError> {
@@ -565,6 +632,12 @@ impl JournalMutationBuffer {
             audit_count,
             covered_sequence,
             covered_administration_sequence,
+            selected_command_segment_bytes: self.selected_command_segment_bytes,
+            raw_command_segment_bytes: self.raw_command_segment_bytes,
+            raw_equivalent_frame_bytes: total_len
+                .checked_sub(self.selected_command_segment_bytes)
+                .and_then(|bytes| bytes.checked_add(self.raw_command_segment_bytes))
+                .ok_or(JournalCodecError::LimitExceeded)?,
         })
     }
 }
@@ -1196,6 +1269,9 @@ impl JournalFrame {
             audit_count: self.audit_count,
             covered_sequence: self.covered_sequence,
             covered_administration_sequence: self.covered_administration_sequence,
+            selected_command_segment_bytes: 0,
+            raw_command_segment_bytes: 0,
+            raw_equivalent_frame_bytes: total_len,
         })
     }
 
@@ -1419,6 +1495,9 @@ pub(crate) struct EncodedJournalFrame {
     audit_count: u16,
     covered_sequence: Option<CommitSequence>,
     covered_administration_sequence: Option<AdministrationSequence>,
+    selected_command_segment_bytes: usize,
+    raw_command_segment_bytes: usize,
+    raw_equivalent_frame_bytes: usize,
 }
 
 impl EncodedJournalFrame {
@@ -1436,6 +1515,18 @@ impl EncodedJournalFrame {
 
     fn command_count(&self) -> u16 {
         self.command_count
+    }
+
+    fn selected_command_segment_bytes(&self) -> usize {
+        self.selected_command_segment_bytes
+    }
+
+    fn raw_command_segment_bytes(&self) -> usize {
+        self.raw_command_segment_bytes
+    }
+
+    fn raw_equivalent_frame_bytes(&self) -> usize {
+        self.raw_equivalent_frame_bytes
     }
 
     pub(crate) fn audit_count(&self) -> u16 {
@@ -1793,6 +1884,9 @@ fn journal_worker(
         };
         if write.is_ok() {
             durable_flushes.fetch_add(1, Ordering::Relaxed);
+            for submission in &batch {
+                record_command_frame_census(&submission.frame);
+            }
         }
         for submission in batch {
             let result = if write.is_ok() {
@@ -3220,14 +3314,44 @@ mod tests {
             .expect("buffer ordinary put");
 
         let mut typed = JournalMutationBuffer::default();
+        let raw_envelope_bytes = value.len();
         typed
-            .push_command_segment(key, value, 2)
+            .push_command_segment(key, value, 2, raw_envelope_bytes)
             .expect("buffer typed segment put");
 
         assert_eq!(typed.bytes, ordinary.bytes);
         assert_eq!(typed.mutation_count, ordinary.mutation_count);
         assert_eq!(typed.logical_command_put_count, 2);
         assert_eq!(typed.command_audit_count, 4);
+    }
+
+    #[test]
+    fn typed_command_segment_carries_exact_raw_equivalent_frame_charge() {
+        let key = vec![0x31, 0x32];
+        let value = vec![0x41, 0x42, 0x43];
+        let selected = value.len();
+        let raw = selected + 101;
+        let mut buffer = JournalMutationBuffer::default();
+        buffer
+            .push_command_segment(key, value, 2, raw)
+            .expect("buffer compact segment");
+        let frame = JournalFrame::encode_buffered_command(
+            database_id(4),
+            None,
+            Some(sequence(2)),
+            None,
+            AdministrationSequence::new(4),
+            2,
+            [0x22; HASH_BYTES],
+            buffer,
+        )
+        .expect("encode compact frame");
+        assert_eq!(frame.selected_command_segment_bytes(), selected);
+        assert_eq!(frame.raw_command_segment_bytes(), raw);
+        assert_eq!(
+            frame.raw_equivalent_frame_bytes(),
+            frame.as_bytes().len() + raw - selected
+        );
     }
 
     #[test]
