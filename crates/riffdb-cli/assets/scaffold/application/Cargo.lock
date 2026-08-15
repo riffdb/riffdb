@@ -658,11 +658,12 @@ checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 [[package]]
 name = "riffdb-api-grpc"
 version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5034d6c20aad20c06cf029feb970be90d80e7ba78f7d0878be26d76e27d62cbf"
 dependencies = [
  "base64",
  "prost",
  "prost-types",
- "riffdb-errors",
  "riffdb-proto",
  "tonic",
  "tonic-prost",
@@ -672,6 +673,8 @@ dependencies = [
 [[package]]
 name = "riffdb-application"
 version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "59bb9bd92743ac55f652123e6915ac0236b7ef0d4d43ab6c3b33f6f96f5f3f75"
 dependencies = [
  "riffdb-contract-ir",
  "riffdb-types",
@@ -704,10 +707,14 @@ dependencies = [
 [[package]]
 name = "riffdb-config"
 version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "62b1975ebf52eb5407edee3a768b249830d3b4488cde88df5237a18f2cfd4dce"
 
 [[package]]
 name = "riffdb-contract-ir"
 version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "82e6f69cc389fa79541b306f5f523804ef899b5d538d4d00ac27d60dfbe8946c"
 dependencies = [
  "riffdb-types",
 ]
@@ -715,6 +722,8 @@ dependencies = [
 [[package]]
 name = "riffdb-errors"
 version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b5a15ba56c640807ab77ac00d4319ed7c7473b7c7efc1a98c9b470de70f0e79f"
 dependencies = [
  "riffdb-types",
 ]
@@ -722,6 +731,8 @@ dependencies = [
 [[package]]
 name = "riffdb-proto"
 version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "54bb7dd84e0200d8fb21c69233e4bc59a3dccf20cdc6c0bacff4670e99ddd08a"
 dependencies = [
  "base64",
  "crc",
@@ -733,6 +744,8 @@ dependencies = [
 [[package]]
 name = "riffdb-types"
 version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e9c9667588579329f3f0046125aefeba107fad6ee8c83f9a4eba692adfc0cca3"
 dependencies = [
  "hmac",
  "sha2",
