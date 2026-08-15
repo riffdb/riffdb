@@ -11236,8 +11236,9 @@ work_packages:
     accepted as substitutes
   - WP-576 remote destroy/restore drills pass every adapter, and WP-578 contributes the complete
     retained 72-hour lifecycle/resource-growth receipt; a 24-hour rehearsal cannot satisfy release
-  - Fresh independent public-only agent evaluation proving zero kernel imports, raw IDs, generic
-    writes, handwritten transport/query/transaction glue, or RiffDB implementation-source access
+  - Six fresh independent public-only agent evaluations covering Blog and Orders across Rust, Go,
+    TypeScript, and Python, proving zero kernel imports, raw IDs, generic writes, handwritten
+    transport/query/transaction glue, or RiffDB implementation-source access
   acceptance_commands:
   - cargo +1.97.0 test --workspace --all-features
   - ./scripts/deployable-alpha-acceptance --all-domains --all-languages --remote
@@ -11251,6 +11252,7 @@ work_packages:
   - ./benchmarks/run-app-baseline --full --load interactive --load-concurrency-sweep --postgres-comparator safe-app --reps 3 --require-stable
   - ./benchmarks/run-app-baseline --full --load write_only --load-concurrency-sweep --postgres-comparator safe-app --reps 3 --require-stable
   - ./scripts/release-source-bootstrap-smoke
+  - ./scripts/agent-application-alpha-acceptance --campaign campaign-03 --runs 6 --sealed --assert-gate
   - ./scripts/check-application-bindings
   - ./scripts/generate-proto --check
   - ./scripts/check-generated

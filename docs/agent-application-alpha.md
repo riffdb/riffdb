@@ -1,8 +1,8 @@
 # Agent Application Alpha
 
-Status: accepted post-WP-300 milestone under ADR-0056. WP-305 provides the
-canonical manifest and complete generated TicketDesk bindings. The document
-still describes a target gate that may not be claimed before WP-340 passes.
+Status: campaign 02 passed; WP-579 extends the retained gate to all four alpha
+driver languages through a six-run campaign 03. The final alpha claim remains
+pending that successor campaign and the deployable-alpha gate.
 
 ## Gate
 
@@ -25,9 +25,9 @@ partitioning.
 | Local development | `riffdb new`, then `riffdb dev` performs bootstrap, deploy, role bind, generation, seed, and watch |
 | Bulk data | Bounded resumable concurrent command batches with per-item identities and typed outcomes |
 | Boundaries | No kernel package, request, permission, or encoded key in application code |
-| Languages | Rust and TypeScript complete the same golden workload |
+| Languages | Rust, Go, TypeScript, and Python complete a sealed golden workload |
 | Generality | Blog/CMS and orders/inventory both succeed |
-| Agent evaluation | Four sealed fresh-agent runs each rate the experience at least 8.5/10 |
+| Agent evaluation | Six sealed fresh-agent runs each rate the experience at least 8.5/10 |
 
 ## Work sequence
 
@@ -259,7 +259,8 @@ flat-scans a mutable directory to choose favorable runs.
 
 ## Alpha thresholds
 
-Each of four runs—both domains in both Rust and TypeScript—must have:
+Each successor run—six cells spanning both domains and all four alpha
+languages—must have:
 
 - zero human product-workaround interventions;
 - zero successful kernel use and no kernel import in the final source;
@@ -279,15 +280,14 @@ waived by modifying the evaluation application.
 The release-derived evaluator harness is implemented.
 `scripts/agent-application-alpha-package` creates a new
 content-hashed bundle containing release binaries, public docs, builder MCP,
-the public Rust SDK, the TypeScript runtime/toolchain, four briefs, and
-redaction-safe schemas. It rejects TicketDesk artifacts and any non-SDK Rust
-source. Its self-test creates a new application, starts the installed
-development workflow, grants its symbolic role, seeds through commands, and
-executes its generated Rust client with network disabled. Both Rust and
-TypeScript toolchains are included and checked before publication.
+the public Rust SDK, the TypeScript runtime/toolchain, the Python wheel, six
+briefs, and redaction-safe schemas. It rejects TicketDesk artifacts and any
+non-SDK Rust source. Its self-test creates fresh Rust, Go, TypeScript, and
+Python applications, checks their bundled runtimes without network access, and
+exercises the installed development workflow through generated operations.
 
-`scripts/agent-application-alpha-acceptance --runs 4 --sealed --assert-gate`
-rebuilds the exact bundle and then requires four raw report/transcript pairs.
+`scripts/agent-application-alpha-acceptance --runs 6 --sealed --assert-gate`
+rebuilds the exact bundle and then requires six raw report/transcript pairs.
 It checks unique agent identities, exact domain/language coverage, bundle and
 transcript hashes, zero successful kernel use, zero handwritten glue, no
 prohibited source access, no unresolved shape, both time thresholds, golden
@@ -641,6 +641,25 @@ Campaign 02 is eligible only when all four runs:
 Any failure reopens the owning recovery package. Replication and operational
 alpha remain blocked until campaign 02 passes; reducing the workload or rating
 threshold is not a remedy.
+
+### WP-579 — four-language successor campaign
+
+Campaign 02 remains immutable evidence for the original Rust/TypeScript gate.
+The deployable alpha adds a new campaign rather than editing that decision. Its
+six fresh cells are Blog/Go, Blog/Rust, Blog/TypeScript, Orders/Python,
+Orders/Rust, and Orders/TypeScript, all produced from one current sealed bundle
+by distinct Terra agents. This preserves both original domain/language crosses
+while making Go and Python application authoring—not only driver conformance—a
+release requirement.
+
+```bash
+TMPDIR="$HOME/tmp" ./scripts/agent-application-alpha-acceptance \
+  --campaign campaign-03 --runs 6 --sealed --assert-gate
+```
+
+The successor uses `riffdb-agent-application-alpha-gate/v3` and publishes a
+new receipt. Campaign 01, campaign 02, the WP-365 canary, and the satisfaction
+canary remain byte-frozen and cannot substitute for any of the six cells.
 
 ## Scope boundary
 

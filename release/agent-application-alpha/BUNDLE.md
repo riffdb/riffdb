@@ -31,6 +31,12 @@ identity. `riffdb dev --seed --run` retains the credential and verified remote
 transport in that Rust host and gives the TypeScript process only its protected
 socket and public exact-handshake identity.
 
+For Go, `riffdb new --language go` materializes the generated application and
+the first-party `riffdb.dev/application` runtime as a local module replacement.
+It uses only the Go standard library and the bundled Rust driver host, so the
+scaffold builds and runs without a module proxy or language-owned TLS stack.
+Go 1.24 or newer is required.
+
 For Python, `riffdb new --language python` copies the architecture-matching
 `cp313-abi3` wheel from `public/python`, locks its SHA-256 in `uv.lock`, and
 creates a source-layout application that completes `uv sync --locked` without

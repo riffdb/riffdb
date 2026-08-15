@@ -17,6 +17,7 @@ Run one brief per isolated agent/context:
 
 - `briefs/blog-rust.md`
 - `briefs/blog-typescript.md`
+- `briefs/blog-go.md`
 - `briefs/orders-rust.md`
 - `briefs/orders-typescript.md`
 - `briefs/orders-python.md`
@@ -42,10 +43,11 @@ the evidence schema—decides whether a valid report passes. This distinction
 ensures a failed run remains publishable evidence instead of becoming an
 unrepresentable result.
 
-The gate is intentionally fail-closed:
+The final alpha gate is intentionally fail-closed and selects six fresh runs
+covering both domains plus every supported generated-driver language:
 
 ```bash
-./scripts/agent-application-alpha-acceptance --runs 4 --sealed --assert-gate
+./scripts/agent-application-alpha-acceptance --runs 6 --sealed --assert-gate
 ```
 
 Missing runs, duplicate agent identities, source access, a kernel escape,
@@ -73,18 +75,19 @@ checker enforces release thresholds. See
 `release/evidence/agent-application-alpha-gate-v1.json` for the aggregate
 `not_eligible` decision.
 
-The official successor command selects a campaign manifest rather than
-scanning all historical runs:
+Campaign 02 remains the immutable four-run Rust/TypeScript milestone. The final
+deployable-alpha successor selects campaign 03 rather than scanning historical
+runs and adds Blog/Go plus Orders/Python without rewriting campaign 02:
 
 ```bash
 TMPDIR="$HOME/tmp" ./scripts/agent-application-alpha-acceptance \
-  --campaign campaign-02 --runs 4 --sealed --assert-gate
+  --campaign campaign-03 --runs 6 --sealed --assert-gate
 ```
 
-Do not publish `campaign-02` until WP-379 has an eligible successor decision.
-The passing WP-365 and satisfaction canaries have different profile matrices
-and cannot substitute for the four official Blog/Orders by Rust/TypeScript
-runs.
+Do not publish `campaign-03` until all six reports come from one current sealed
+bundle. The passing campaign 02, WP-365, and satisfaction canaries have
+different profile matrices and cannot substitute for the final four-language
+matrix.
 
 The first WP-365 canary attempt is also retained under
 `runs/wp365-blog-rust-terra-02` and

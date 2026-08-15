@@ -58,6 +58,11 @@ When the boundary checker passes and none of the counted adaptation exists,
 record zero. Product-owned generated files and bundled runtimes never count as
 handwritten glue.
 
+For the final deployable-alpha campaign, evaluators run Blog/Go, Blog/Rust,
+Blog/TypeScript, Orders/Python, Orders/Rust, and Orders/TypeScript from one
+sealed bundle. This is a language-coverage extension, not a weakening or
+replacement of the immutable four-run campaign 02.
+
 For a satisfaction campaign, evaluators follow this identical protocol; they
 are not told to manufacture a target score. After the Python, Rust, and
 TypeScript reports are published, `scripts/agent-satisfaction-canary-acceptance`

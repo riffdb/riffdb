@@ -194,6 +194,11 @@ load run that forces retention, checkpoint, journal-recycle, backup, rotation,
 deployment, and restart cycles and asserts bounded memory, file, queue, and
 backlog growth.
 
+The independent authoring gate uses six fresh Terra contexts from one sealed
+release bundle: Blog in Go, Rust, and TypeScript, and Orders in Python, Rust,
+and TypeScript. This preserves campaign 02's original four cells while adding
+direct application-authoring evidence for both additional alpha drivers.
+
 ## Explicit deferrals
 
 This program does not add SQL, arbitrary transactions, callbacks, unbounded
