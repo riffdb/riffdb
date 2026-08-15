@@ -54,10 +54,12 @@ The Better Auth rescope added the accepted gate-critical follow-ons WP-597,
 WP-598, and WP-600; WP-579 names them directly rather than relying on source
 history to imply their completion.
 
-As of 2026-08-09, `./scripts/check-application-bindings` exits nonzero at the
-agent-alpha manifest-versus-generated module-hash assertion, and no retained
-idle-host 90-second comparator corpus exists. A successful short benchmark or
-an unrelated generated-artifact check does not clear either blocker.
+WP-551 repaired the agent-alpha manifest-versus-generated identity closure, and
+WP-552 banked the retained idle-host 90-second interactive and write-only
+comparator corpus under `release/evidence/wp-552/`. The final gate still reruns
+`check-application-bindings` and verifies that exact retained corpus; a short
+benchmark or an unrelated generated-artifact check cannot substitute for
+either prerequisite.
 
 ## Active replication coordination
 
