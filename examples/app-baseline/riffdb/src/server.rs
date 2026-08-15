@@ -832,6 +832,7 @@ fn application_role_grant_to_proto(
                     .iter()
                     .map(|field| field.get())
                     .collect(),
+                secret_field_ids: Vec::new(),
             })
             .collect(),
         max_scan_rows: u32::from(grant.max_scan_rows().get()),
