@@ -150,9 +150,13 @@ EOF
 cp -R fixtures/adapters/bulk-conformance "$work_root/application"
 (
     cd "$work_root/application"
-    "$repo_root/target/debug/riffdb" --config "$work_root/operator-client.toml" application deploy \
+    if ! "$repo_root/target/debug/riffdb" --config "$work_root/operator-client.toml" application deploy \
         riffdb.application.json --lock riffdb.application.lock.json \
-        --provision-role AdapterBulkApplication --lifetime-seconds 3600 >/dev/null
+        --provision-role AdapterBulkApplication --lifetime-seconds 3600 \
+        >"$work_root/application-deploy.json"; then
+        sed -n '1,200p' "$work_root/application-deploy.json" >&2
+        exit 1
+    fi
 )
 deployment_root="$work_root/application/.riffdb/deployments/default"
 credential_file="$(jq -r 'if (.role.credential_file // "") == "" then "application.credential" else .role.credential_file end' "$deployment_root/deployment-state.json")"
