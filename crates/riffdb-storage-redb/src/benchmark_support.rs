@@ -476,6 +476,7 @@ pub struct JournalOverlayMechanicsSample {
     overlay_process_write_bytes: u64,
     checkpoint_process_write_bytes: u64,
     encoded_journal_bytes: u64,
+    mutation_census: Vec<JournalMutationCensusV1>,
     overlay_bytes: u64,
     overlay_transition_count: usize,
     checkpointed_transition_count: usize,
@@ -589,6 +590,12 @@ impl JournalOverlayMechanicsSample {
         self.encoded_journal_bytes
     }
 
+    /// Closed per-table logical mutation-byte census before frame encoding.
+    #[must_use]
+    pub fn mutation_census(&self) -> &[JournalMutationCensusV1] {
+        &self.mutation_census
+    }
+
     /// Conservative keys, values, tombstones, and map-node charge.
     #[must_use]
     pub const fn overlay_bytes(&self) -> u64 {
@@ -636,6 +643,105 @@ impl JournalOverlayMechanicsSample {
     pub const fn control_page_read_checksum(&self) -> u64 {
         self.control_page_read_checksum
     }
+}
+
+/// Fixed-cardinality benchmark-only logical mutation census.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct JournalMutationCensusV1 {
+    table: &'static str,
+    mutations: u64,
+    key_bytes: u64,
+    value_bytes: u64,
+    expected_hash_bytes: u64,
+    v1_fixed_header_bytes: u64,
+}
+
+impl JournalMutationCensusV1 {
+    /// Closed journal table label.
+    #[must_use]
+    pub const fn table(&self) -> &'static str {
+        self.table
+    }
+
+    /// Logical mutation count.
+    #[must_use]
+    pub const fn mutations(&self) -> u64 {
+        self.mutations
+    }
+
+    /// Canonical key bytes carried by V1.
+    #[must_use]
+    pub const fn key_bytes(&self) -> u64 {
+        self.key_bytes
+    }
+
+    /// Canonical value bytes carried by V1.
+    #[must_use]
+    pub const fn value_bytes(&self) -> u64 {
+        self.value_bytes
+    }
+
+    /// Semantically required expected-prior hash bytes.
+    #[must_use]
+    pub const fn expected_hash_bytes(&self) -> u64 {
+        self.expected_hash_bytes
+    }
+
+    /// Current V1 fixed mutation-header bytes, including absent hash slots.
+    #[must_use]
+    pub const fn v1_fixed_header_bytes(&self) -> u64 {
+        self.v1_fixed_header_bytes
+    }
+}
+
+fn empty_journal_mutation_census() -> Vec<JournalMutationCensusV1> {
+    JournalTable::ALL
+        .into_iter()
+        .map(|table| JournalMutationCensusV1 {
+            table: table.label(),
+            mutations: 0,
+            key_bytes: 0,
+            value_bytes: 0,
+            expected_hash_bytes: 0,
+            v1_fixed_header_bytes: 0,
+        })
+        .collect()
+}
+
+fn observe_journal_mutations(
+    census: &mut [JournalMutationCensusV1],
+    mutations: &[JournalMutation],
+) -> Result<(), EngineBenchmarkError> {
+    const V1_FIXED_MUTATION_HEADER_BYTES: u64 = 44;
+    for mutation in mutations {
+        let (table, key, value_bytes, has_expected_hash) = match mutation {
+            JournalMutation::Put {
+                table,
+                key,
+                expected_hash,
+                value,
+            } => (*table, key.len(), value.len(), expected_hash.is_some()),
+            JournalMutation::Delete { table, key, .. } => (*table, key.len(), 0, true),
+        };
+        let entry = census
+            .get_mut(table as usize - 1)
+            .filter(|entry| entry.table == table.label())
+            .ok_or(EngineBenchmarkError::Engine)?;
+        entry.mutations = entry.mutations.saturating_add(1);
+        entry.key_bytes = entry
+            .key_bytes
+            .saturating_add(u64::try_from(key).unwrap_or(u64::MAX));
+        entry.value_bytes = entry
+            .value_bytes
+            .saturating_add(u64::try_from(value_bytes).unwrap_or(u64::MAX));
+        if has_expected_hash {
+            entry.expected_hash_bytes = entry.expected_hash_bytes.saturating_add(32);
+        }
+        entry.v1_fixed_header_bytes = entry
+            .v1_fixed_header_bytes
+            .saturating_add(V1_FIXED_MUTATION_HEADER_BYTES);
+    }
+    Ok(())
 }
 
 #[derive(Default)]
@@ -774,6 +880,7 @@ pub fn run_journal_overlay_mechanics_window(
     let mut overlay_apply = Duration::ZERO;
     let mut overlay_hash = [0_u8; 32];
     let mut encoded_journal_bytes = 0_u64;
+    let mut mutation_census = empty_journal_mutation_census();
     let writes_before_overlay = process_write_bytes();
     for start in (0..commands).step_by(group_commands) {
         let end = commands.min(start.saturating_add(group_commands));
@@ -790,6 +897,7 @@ pub fn run_journal_overlay_mechanics_window(
         overlay_hash = frame.frame_hash();
         encoded_journal_bytes = encoded_journal_bytes
             .saturating_add(u64::try_from(frame.as_bytes().len()).unwrap_or(u64::MAX));
+        observe_journal_mutations(&mut mutation_census, &mutations)?;
         overlay_frame_build = overlay_frame_build.saturating_add(frame_started.elapsed());
         let apply_started = Instant::now();
         for mutation in &mutations {
@@ -885,6 +993,7 @@ pub fn run_journal_overlay_mechanics_window(
         checkpoint_process_write_bytes: writes_after_checkpoint
             .saturating_sub(writes_before_checkpoint),
         encoded_journal_bytes,
+        mutation_census,
         overlay_bytes,
         overlay_transition_count: commands,
         checkpointed_transition_count: commands,
@@ -2701,13 +2810,14 @@ fn uuid_v7_bytes(tag: u8, sequence: u64) -> [u8; 16] {
 #[cfg(test)]
 mod tests {
     use super::{
-        EngineDurability, EngineMechanicsProfile, EngineStagingOrder, ServiceAuditGrowthHarness,
-        StateSegmentProjection, StateSegmentWorkload, authoritative_table_inventory_v1,
-        expected_evidence_page_capacity, initialize_engine_mechanics, measure_clean_startup,
-        measure_clean_startup_linear, run_engine_mechanics_window,
-        run_journal_overlay_mechanics_window, run_state_segment_projection_window,
-        split_half_page_durations,
+        EngineDurability, EngineMechanicsProfile, EngineStagingOrder, JournalMutationCensusV1,
+        ServiceAuditGrowthHarness, StateSegmentProjection, StateSegmentWorkload,
+        authoritative_table_inventory_v1, expected_evidence_page_capacity,
+        initialize_engine_mechanics, measure_clean_startup, measure_clean_startup_linear,
+        run_engine_mechanics_window, run_journal_overlay_mechanics_window,
+        run_state_segment_projection_window, split_half_page_durations,
     };
+    use crate::journal::JournalTable;
     use std::time::Duration;
 
     #[test]
@@ -2854,6 +2964,26 @@ mod tests {
         assert_eq!(sample.commands(), 128);
         assert_eq!(sample.group_commands(), 32);
         assert!(sample.encoded_journal_bytes() > 0);
+        assert_eq!(sample.mutation_census().len(), JournalTable::ALL.len());
+        assert_eq!(sample.mutation_census()[0].table(), "meta");
+        assert_eq!(
+            sample.mutation_census().last().map(|entry| entry.table()),
+            Some("entity_chain_heads")
+        );
+        let observed_mutations = sample
+            .mutation_census()
+            .iter()
+            .map(JournalMutationCensusV1::mutations)
+            .sum::<u64>();
+        assert!(observed_mutations > 0);
+        assert_eq!(
+            sample
+                .mutation_census()
+                .iter()
+                .map(JournalMutationCensusV1::v1_fixed_header_bytes)
+                .sum::<u64>(),
+            observed_mutations * 44
+        );
         assert_eq!(sample.overlay_transition_count(), 128);
         assert_eq!(sample.checkpointed_transition_count(), 128);
         assert_eq!(sample.overlay_rows_after_checkpoint(), 0);
