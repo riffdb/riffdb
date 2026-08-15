@@ -19,16 +19,36 @@ service and requires an ordinary application credential:
 
 The sealed Campaign-03 workspace intentionally starts with neither a remote
 service nor a credential. For that local evaluation, do not probe `riffdb
-push`: author from the initialized source shape, install the selected runtime,
-and use `riffdb dev --seed --run` (or `riffdb dev --run` without seed inputs).
-That command performs the local lock, generation, deployment, scoped role
-binding, and application launch against its disposable development service.
-It is the package-first local path, not a fallback or rescue.
+push`: run `riffdb new <name> --language <language> --directory .`, replace the
+sample domain, install the selected runtime, and use `riffdb dev --seed --run`
+(or `riffdb dev --run` without seed inputs). Unlike the remote-oriented `init`
+shape, `new` supplies the complete current application source, role arrays,
+runtime manifest, and generated-client scaffold. The development command
+performs the local lock, generation, deployment, scoped role binding, and
+application launch against its disposable development service. It is the
+package-first local path, not a fallback or rescue.
 
 Application source is closed JSON. Preserve the initialized generation members
 and the required role arrays even when they are empty. Source V6 additionally
 requires `row_policies: []` on every role. Contract expressions reference enum
 values as `EnumName.VariantName`, never as an unqualified variant.
+
+The common authoring shape is deliberately closed:
+
+- command clauses are ordered as inputs/service values, idempotency, all
+  `read`/`mutate`/`create` bindings, requirements, effects, then `return`;
+- every declared reference written by a create or mutation needs its own
+  dominating exact target read, even when another target in the same aggregate
+  was already read;
+- every bounded `many` query needs a declared index matching its equality
+  prefix and ordering; optional index fields use `presence(field)` rather than
+  an ordinary key component; and
+- multiple RiffQL outcomes are pipe-delimited, for example
+  `outcomes Found | NotFound | IntegrityFailure`.
+
+The bundled contract authoring and RiffQL references contain complete checked
+examples. Follow a compiler diagnostic at its source span; do not replace a
+rejected proof with application-side preflight logic.
 
 Offline runtime installation sources are:
 

@@ -35,6 +35,39 @@ command, and indexes belong to their owning entity. A duplicate diagnostic
 identifies the current declaration and includes the related span of the first
 declaration.
 
+## Command declaration order and relationship proofs
+
+Grammar-v1 command clauses follow one visible order: inputs and service values,
+the idempotency declaration, every `read`/`mutate`/`create` binding,
+requirements, effects such as `set` and `emit`, then `return`. Bind everything
+a requirement can observe before writing the requirement:
+
+```riff
+command AddComment {
+    input request_key: string<128>
+    input site_id: uuid
+    input post_id: uuid
+    input comment_id: uuid
+    service created_at: transaction_time
+    idempotency_key request_key
+
+    read Post(site_id, post_id) as post else PostMissing {}
+    create Comment(site_id, post_id, comment_id) as comment
+        else CommentExists {}
+    require PublishedPost: post.state == PostState.Published
+        else PostNotPublished {}
+    set comment.created_at = created_at
+    return Created { comment: comment }
+}
+```
+
+Every required relationship affected by a create or mutation needs a
+dominating exact read of that relationship's complete target key. Reading one
+aggregate root does not prove a separate author, route, project, or other
+target exists. This is intentional: the compiled command proves all reference
+integrity in the same transaction instead of relying on a racy application
+preflight.
+
 ## Operational query indexes
 
 Indexes used by null/existence and text-prefix RiffQL predicates declare their
@@ -61,6 +94,11 @@ bytes; it is case-sensitive and performs no Unicode normalization. The
 build. Adding or changing either encoding changes durable index identity and
 requires the contract migration/rebuild path; RiffDB never silently changes a
 text profile during a software upgrade.
+
+An optional field is not an ordinary index key. If a query filters or orders
+on an optional field, declare `presence(field)` as shown above so missing,
+explicit-null, and present values remain distinct and the compiler can prove
+the access shape.
 
 ## Vector fields (alpha)
 
