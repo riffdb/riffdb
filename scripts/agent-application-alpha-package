@@ -212,7 +212,7 @@ mkdir "$temporary/.go-smoke"
     cd "$temporary/.go-smoke"
     GOCACHE="$temporary/.go-cache" \
         GOMODCACHE="$temporary/.go-mod-cache" \
-        GOTOOLCHAIN=local \
+        GOEXPERIMENT= GOPROXY=off GOTOOLCHAIN=local \
         go test ./... >/dev/null
 )
 rm -rf "$temporary/.go-smoke" "$temporary/.go-cache" \

@@ -128,7 +128,7 @@ go_run_root="$work_root/go-run"
 go_run_output="$(
     cd "$go_run_root"
     GOCACHE="$work_root/go-cache" GOMODCACHE="$work_root/go-mod-cache" \
-        GOTOOLCHAIN=local \
+        GOEXPERIMENT= GOPROXY=off GOTOOLCHAIN=local \
         "$bundle/bin/riffdb" dev --seed --run
 )"
 rg -q '^riffdb-dev-ready-v1' <<<"$go_run_output"
