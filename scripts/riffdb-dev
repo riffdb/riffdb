@@ -147,6 +147,10 @@ else
     contract_lineage=TicketDesk
     contract_version=1
 fi
+batch_application_args=()
+if ((generic_application)); then
+    batch_application_args=(--application "$application_source")
+fi
 
 task_tmp_root="${TMPDIR:-$HOME/tmp}"
 mkdir -p "$task_tmp_root"
@@ -410,6 +414,7 @@ run_seed() {
         command_name="${command_name#*-}"
         seed_result="$work_root/seed-$namespace-$(basename "$seed_file").result"
         if ! "${profile_client[@]}" command batch "$command_name" "$seed_file" \
+            "${batch_application_args[@]}" \
             --concurrency "$seed_concurrency" \
             --checkpoint "$work_root/seed-$namespace-$(basename "$seed_file").checkpoint.json" \
             >"$seed_result"; then
@@ -448,6 +453,7 @@ run_seed_file() {
     }
     seed_result="$work_root/seed-$namespace-$(basename "$seed_file").result"
     if ! "${profile_client[@]}" command batch "$command_name" "$seed_file" \
+        "${batch_application_args[@]}" \
         --concurrency "$seed_concurrency" \
         --checkpoint "$work_root/seed-$namespace-$(basename "$seed_file").checkpoint.json" \
         >"$seed_result"; then

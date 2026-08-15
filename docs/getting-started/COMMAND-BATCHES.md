@@ -16,8 +16,10 @@ file:
 For `riffdb dev --seed`, RiffDB selects the command's compiler-declared
 idempotency input automatically. A command may call it `request_id`,
 `request_key`, or another valid symbolic name; seed files use that exact name.
-The standalone `riffdb command batch` operation retains its explicit
-`--idempotency-field` option and defaults that option to `idempotency_key`.
+`riffdb command batch --application <manifest>` uses the same compiled lookup,
+and rejects an explicit `--idempotency-field` that disagrees with the command.
+Without `--application`, the standalone operation retains its explicit option
+and defaults an omitted value to `idempotency_key` for compatibility.
 
 Run or resume it with:
 

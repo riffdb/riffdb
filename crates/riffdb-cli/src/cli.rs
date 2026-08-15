@@ -780,8 +780,9 @@ pub(crate) enum CommandCommand {
         expected_version: Option<String>,
         #[arg(long, default_value = "8", value_name = "1..32")]
         concurrency: String,
-        #[arg(long, default_value = "idempotency_key", value_name = "FIELD")]
-        idempotency_field: String,
+        /// Symbolic idempotency input; derived from --application when omitted.
+        #[arg(long, value_name = "FIELD")]
+        idempotency_field: Option<String>,
         #[arg(long, value_name = "PATH")]
         checkpoint: Option<OsString>,
         #[arg(long = "error-outcome", value_name = "OUTCOME")]
@@ -2094,6 +2095,7 @@ mod tests {
                 command: CommandCommand::Batch {
                     command_name,
                     concurrency,
+                    idempotency_field: None,
                     progress: true,
                     application: Some(application),
                     ..
@@ -2101,6 +2103,26 @@ mod tests {
             } if command_name == "CreateTicket"
                 && concurrency == "16"
                 && application == "riffdb.application.json"
+        ));
+        let explicit = Cli::try_parse_from([
+            "riffdb",
+            "command",
+            "batch",
+            "CreateTicket",
+            "tickets.jsonl",
+            "--idempotency-field",
+            "request_key",
+        ])
+        .expect("explicit standalone idempotency field");
+        assert!(matches!(
+            explicit.command,
+            TopLevel::Command {
+                command: CommandCommand::Batch {
+                    idempotency_field: Some(field),
+                    application: None,
+                    ..
+                }
+            } if field == "request_key"
         ));
         assert!(
             Cli::try_parse_from([

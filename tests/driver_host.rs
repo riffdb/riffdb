@@ -218,6 +218,10 @@ fn development_runners_bind_native_configuration_and_sealed_typescript_tooling()
         "the installed dev runner must not let set -e discard a role-bind failure"
     );
     assert!(installed.contains("cat \"$work_root/role.json\" >&2"));
+    assert!(
+        installed.contains("--application \"$application_source\""),
+        "installed development seeds must derive command metadata from the exact application"
+    );
 
     let sealer = fs::read_to_string(root.join("scripts/agent-application-alpha-package-first"))
         .expect("package-first sealer");

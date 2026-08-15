@@ -2751,12 +2751,14 @@ async fn application_command(
                 locked.manifest().contract().version(),
             );
             let report = match execute_application_seed_batch(
-                &path,
-                command_name,
-                locked.manifest().contract().version(),
-                idempotency_field,
-                seed_concurrency,
-                checkpoint,
+                ApplicationSeedBatch {
+                    path: &path,
+                    command_name,
+                    contract_version: locked.manifest().contract().version(),
+                    idempotency_field,
+                    concurrency: seed_concurrency,
+                    checkpoint,
+                },
                 &application_config,
                 environment,
             )
@@ -3417,23 +3419,27 @@ const fn contract_migration_phase_name(phase: v1::ContractMigrationPhase) -> &'s
     }
 }
 
-async fn execute_application_seed_batch(
-    path: &Path,
-    command_name: &str,
+struct ApplicationSeedBatch<'a> {
+    path: &'a Path,
+    command_name: &'a str,
     contract_version: u64,
-    idempotency_field: &str,
+    idempotency_field: &'a str,
     concurrency: usize,
     checkpoint: PathBuf,
+}
+
+async fn execute_application_seed_batch(
+    batch: ApplicationSeedBatch<'_>,
     config: &EffectiveConfig,
     environment: &dyn Environment,
 ) -> Result<BatchReport, Terminal> {
-    let source = read_file(path, MAX_BATCH_SOURCE_BYTES)
+    let source = read_file(batch.path, MAX_BATCH_SOURCE_BYTES)
         .map_err(|error| input_terminal(CommandIdentity::CommandBatch, error))?;
     let source = parse_batch_source(
         &source,
-        command_name,
-        Some(contract_version),
-        idempotency_field,
+        batch.command_name,
+        Some(batch.contract_version),
+        batch.idempotency_field,
     )
     .map_err(batch_error_terminal)?;
     let metadata = required_metadata(CommandIdentity::CommandBatch, config, environment)?;
@@ -3444,12 +3450,12 @@ async fn execute_application_seed_batch(
     execute_batch(
         source,
         BatchOptions {
-            command_name: command_name.to_owned(),
-            expected_contract_version: Some(contract_version),
-            concurrency,
-            idempotency_field: idempotency_field.to_owned(),
+            command_name: batch.command_name.to_owned(),
+            expected_contract_version: Some(batch.contract_version),
+            concurrency: batch.concurrency,
+            idempotency_field: batch.idempotency_field.to_owned(),
             error_outcomes: BTreeSet::new(),
-            checkpoint_path: Some(checkpoint),
+            checkpoint_path: Some(batch.checkpoint),
             progress: true,
         },
         client,
@@ -6236,11 +6242,16 @@ async fn contract_command(
     }
 }
 
-fn collection_input_constraint(
+struct ApplicationCommandMetadata {
+    collection_constraint: Option<CollectionInputConstraint>,
+    idempotency_field: String,
+}
+
+fn application_command_metadata(
     application: Option<&std::ffi::OsStr>,
     command_name: &str,
     identity: CommandIdentity,
-) -> Result<Option<CollectionInputConstraint>, Terminal> {
+) -> Result<Option<ApplicationCommandMetadata>, Terminal> {
     let Some(application) = application else {
         return Ok(None);
     };
@@ -6262,19 +6273,41 @@ fn collection_input_constraint(
         .iter()
         .find(|candidate| candidate.name() == command_name)
         .ok_or_else(|| invalid_input(identity))?;
-    let Some(expansion) = command.collection_expansion() else {
-        return Ok(None);
-    };
-    let field = command
-        .input()
-        .record()
-        .field(expansion.input_field())
+    let idempotency_field = command
+        .idempotency_input()
+        .and_then(|field_id| command.input().record().field(field_id))
+        .map(|field| field.name().to_owned())
         .ok_or_else(|| invalid_input(identity))?;
-    Ok(Some(CollectionInputConstraint {
-        field: field.name().to_owned(),
-        minimum: expansion.minimum_elements(),
-        maximum: expansion.maximum_elements(),
+    let collection_constraint = command
+        .collection_expansion()
+        .map(|expansion| {
+            let field = command
+                .input()
+                .record()
+                .field(expansion.input_field())
+                .ok_or_else(|| invalid_input(identity))?;
+            Ok(CollectionInputConstraint {
+                field: field.name().to_owned(),
+                minimum: expansion.minimum_elements(),
+                maximum: expansion.maximum_elements(),
+            })
+        })
+        .transpose()?;
+    Ok(Some(ApplicationCommandMetadata {
+        collection_constraint,
+        idempotency_field,
     }))
+}
+
+fn collection_input_constraint(
+    application: Option<&std::ffi::OsStr>,
+    command_name: &str,
+    identity: CommandIdentity,
+) -> Result<Option<CollectionInputConstraint>, Terminal> {
+    Ok(
+        application_command_metadata(application, command_name, identity)?
+            .and_then(|metadata| metadata.collection_constraint),
+    )
 }
 
 async fn command_command(
@@ -6311,7 +6344,7 @@ async fn command_command(
                 Ok(source) => source,
                 Err(error) => return input_terminal(CommandIdentity::CommandBatch, error),
             };
-            let collection_constraint = match collection_input_constraint(
+            let application_metadata = match application_command_metadata(
                 application.as_deref(),
                 &command_name,
                 CommandIdentity::CommandBatch,
@@ -6319,12 +6352,23 @@ async fn command_command(
                 Ok(value) => value,
                 Err(terminal) => return terminal,
             };
+            let idempotency_field = match (idempotency_field, application_metadata.as_ref()) {
+                (Some(explicit), Some(metadata)) if explicit != metadata.idempotency_field => {
+                    return invalid_input(CommandIdentity::CommandBatch);
+                }
+                (Some(explicit), _) => explicit,
+                (None, Some(metadata)) => metadata.idempotency_field.clone(),
+                (None, None) => "idempotency_key".to_owned(),
+            };
+            let collection_constraint = application_metadata
+                .as_ref()
+                .and_then(|metadata| metadata.collection_constraint.as_ref());
             let source = match parse_batch_source_with_constraint(
                 &source,
                 &command_name,
                 expected_version,
                 &idempotency_field,
-                collection_constraint.as_ref(),
+                collection_constraint,
             ) {
                 Ok(source) => source,
                 Err(error) => return batch_error_terminal(error),
@@ -13527,12 +13571,36 @@ query GetDocument(
             );
         let contract = riffdb_contract_compiler::compile_contract_source(&source)
             .expect("custom idempotency symbol remains valid");
+        fs::write(directory.path().join("riffdb/contract.riff"), &source)
+            .expect("custom contract source");
+        fs::write(
+            directory.path().join("riffdb/seed/01-CreateItem.jsonl"),
+            b"{\"request_key\":\"seed-item-welcome\",\"item_id\":{\"$uuid\":\"018f0f8b-7c6d-7e31-8a4f-2c2d37a52b10\"},\"title\":\"Welcome\"}\n",
+        )
+        .expect("custom seed input");
+        crate::scaffold::write_application_lock_with_bundle(
+            &directory.path().join("riffdb.application.json"),
+            None,
+            contract.clone(),
+        )
+        .expect("write exact application lock");
 
         assert_eq!(
             seed_idempotency_field(&contract, "CreateItem"),
             Some("request_key")
         );
         assert_eq!(seed_idempotency_field(&contract, "MissingCommand"), None);
+        let application = directory.path().join("riffdb.application.json");
+        let metadata = match application_command_metadata(
+            Some(application.as_os_str()),
+            "CreateItem",
+            CommandIdentity::CommandBatch,
+        ) {
+            Ok(Some(metadata)) => metadata,
+            Ok(None) => panic!("application metadata is absent"),
+            Err(_) => panic!("exact application metadata must load"),
+        };
+        assert_eq!(metadata.idempotency_field, "request_key");
     }
 
     #[test]

@@ -366,6 +366,7 @@ run_seed_file() {
     }
     seed_result="$work_root/seed-$namespace-$(basename "$seed_file").result"
     if ! "${profile_client[@]}" command batch "$command_name" "$seed_file" \
+        --application "$application_source" \
         --concurrency "$seed_concurrency" \
         --checkpoint "$work_root/seed-$namespace-$(basename "$seed_file").checkpoint.json" \
         >"$seed_result"; then
