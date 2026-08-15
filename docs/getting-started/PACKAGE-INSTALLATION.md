@@ -73,6 +73,12 @@ runtime from package artifacts, generates from the installed CLI, and runs the
 shared corpus. A source-tree runtime, handwritten wire adapter, numeric
 compiler identity, divergent outcome, or extra onboarding step fails.
 
+Sealed package-first evaluation bundles additionally include an exact
+TypeScript compiler, Node type declarations, and their closed transitive type
+dependencies. The installed `riffdb dev --run` workflow places that tooling on
+the TypeScript child build path automatically; applications do not need an
+ambient global `tsc` or a hand-authored `typeRoots` override.
+
 ## Verify a standalone binary bundle
 
 Release bundles contain `checksums.sha256` and its detached SSH signature. The

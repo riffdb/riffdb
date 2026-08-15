@@ -14,8 +14,17 @@ const ContractVersion uint64 = 1
 const ContractBundleHash = "cd221ebb44c57105da5bdb2682b473e4ce4cde4d7cac540e49097450df6ec7de"
 
 type QueryOptions = riffdb.Options
+type QueryIdentity struct {
+	ContractLineage    string
+	ContractVersion    uint64
+	ContractBundleHash string
+	ModuleHash         string
+	QueryName          string
+	PlanHash           string
+}
 type QueryResult[T any] struct {
 	Value           T
+	Identity        QueryIdentity
 	ApplicationHead uint64
 	NextCursor      string
 }
@@ -26,6 +35,8 @@ type WorkflowSuccessorRevision struct {
 type CommandResult[T any] struct {
 	Outcome           T
 	CommitSequence    *uint64
+	ContractVersion   uint64
+	PlanHash          string
 	Replayed          bool
 	OutcomeURI        string
 	WorkflowRevisions []WorkflowSuccessorRevision
@@ -1364,6 +1375,8 @@ func decodeProjectMember(value riffdb.Value) (ProjectMember, error) {
 	return result, nil
 }
 
+const BoardPage200QueryPlanHash = "d0a4294c1ce4e0fe8883f4a382d445a4addf346d1ee6a39989f18521788b355a"
+
 var BoardPage200Operation = riffdb.Operation{Name: "ticketdesk_board_page200", InputSchemaHash: "09bcdc1788d66641ac2def372383c69f620a3006fa4cd7763832752bf75b2c30"}
 
 func decodeBoardPage200Result(value riffdb.Value) (BoardPage200Result, error) {
@@ -1466,8 +1479,11 @@ func (client *Client) BoardPage200(ctx context.Context, parameters BoardPage200P
 	if err != nil {
 		return QueryResult[BoardPage200Result]{}, err
 	}
-	return QueryResult[BoardPage200Result]{Value: value, ApplicationHead: *response.ApplicationHead, NextCursor: response.Cursor}, nil
+	identity := QueryIdentity{ContractLineage: ContractLineage, ContractVersion: ContractVersion, ContractBundleHash: ContractBundleHash, ModuleHash: QueryModuleHash, QueryName: "BoardPage200", PlanHash: BoardPage200QueryPlanHash}
+	return QueryResult[BoardPage200Result]{Value: value, Identity: identity, ApplicationHead: *response.ApplicationHead, NextCursor: response.Cursor}, nil
 }
+
+const BoardPage450QueryPlanHash = "1047c13c0665d0c7e39e332dc766b64e690e5dd577e9864ba59dd8291ddf04d4"
 
 var BoardPage450Operation = riffdb.Operation{Name: "ticketdesk_board_page450", InputSchemaHash: "09bcdc1788d66641ac2def372383c69f620a3006fa4cd7763832752bf75b2c30"}
 
@@ -1571,8 +1587,11 @@ func (client *Client) BoardPage450(ctx context.Context, parameters BoardPage450P
 	if err != nil {
 		return QueryResult[BoardPage450Result]{}, err
 	}
-	return QueryResult[BoardPage450Result]{Value: value, ApplicationHead: *response.ApplicationHead, NextCursor: response.Cursor}, nil
+	identity := QueryIdentity{ContractLineage: ContractLineage, ContractVersion: ContractVersion, ContractBundleHash: ContractBundleHash, ModuleHash: QueryModuleHash, QueryName: "BoardPage450", PlanHash: BoardPage450QueryPlanHash}
+	return QueryResult[BoardPage450Result]{Value: value, Identity: identity, ApplicationHead: *response.ApplicationHead, NextCursor: response.Cursor}, nil
 }
+
+const BoardPage50QueryPlanHash = "35c9815474d34fbf61e5fa4d81375e9a89f1fb62ea2cccf70bd18db0aa83280e"
 
 var BoardPage50Operation = riffdb.Operation{Name: "ticketdesk_board_page50", InputSchemaHash: "09bcdc1788d66641ac2def372383c69f620a3006fa4cd7763832752bf75b2c30"}
 
@@ -1676,8 +1695,11 @@ func (client *Client) BoardPage50(ctx context.Context, parameters BoardPage50Par
 	if err != nil {
 		return QueryResult[BoardPage50Result]{}, err
 	}
-	return QueryResult[BoardPage50Result]{Value: value, ApplicationHead: *response.ApplicationHead, NextCursor: response.Cursor}, nil
+	identity := QueryIdentity{ContractLineage: ContractLineage, ContractVersion: ContractVersion, ContractBundleHash: ContractBundleHash, ModuleHash: QueryModuleHash, QueryName: "BoardPage50", PlanHash: BoardPage50QueryPlanHash}
+	return QueryResult[BoardPage50Result]{Value: value, Identity: identity, ApplicationHead: *response.ApplicationHead, NextCursor: response.Cursor}, nil
 }
+
+const GetTicketQueryPlanHash = "a3c62d90ae6fb48303631110c500933f3f06c20e141fdd1f681a484a7450ab0d"
 
 var GetTicketOperation = riffdb.Operation{Name: "ticketdesk_get_ticket", InputSchemaHash: "cd3d7f77ee75dee8d99ace0a2fc341057aeb943342378d0d22cd1fce32b9010b"}
 
@@ -1776,8 +1798,11 @@ func (client *Client) GetTicket(ctx context.Context, parameters GetTicketParams,
 	if err != nil {
 		return QueryResult[GetTicketResult]{}, err
 	}
-	return QueryResult[GetTicketResult]{Value: value, ApplicationHead: *response.ApplicationHead, NextCursor: response.Cursor}, nil
+	identity := QueryIdentity{ContractLineage: ContractLineage, ContractVersion: ContractVersion, ContractBundleHash: ContractBundleHash, ModuleHash: QueryModuleHash, QueryName: "GetTicket", PlanHash: GetTicketQueryPlanHash}
+	return QueryResult[GetTicketResult]{Value: value, Identity: identity, ApplicationHead: *response.ApplicationHead, NextCursor: response.Cursor}, nil
 }
+
+const GetUserQueryPlanHash = "13e3d239243777fe536c33a1f309fe8a17946de357a3745a1747d42b2f958930"
 
 var GetUserOperation = riffdb.Operation{Name: "ticketdesk_get_user", InputSchemaHash: "55fc1b8b0854edb2d5cffb1ed6f3ac0f4b562e81f48c8dac7cd955339ebb0a60"}
 
@@ -1855,8 +1880,11 @@ func (client *Client) GetUser(ctx context.Context, parameters GetUserParams, opt
 	if err != nil {
 		return QueryResult[GetUserResult]{}, err
 	}
-	return QueryResult[GetUserResult]{Value: value, ApplicationHead: *response.ApplicationHead, NextCursor: response.Cursor}, nil
+	identity := QueryIdentity{ContractLineage: ContractLineage, ContractVersion: ContractVersion, ContractBundleHash: ContractBundleHash, ModuleHash: QueryModuleHash, QueryName: "GetUser", PlanHash: GetUserQueryPlanHash}
+	return QueryResult[GetUserResult]{Value: value, Identity: identity, ApplicationHead: *response.ApplicationHead, NextCursor: response.Cursor}, nil
 }
+
+const ListCommentsQueryPlanHash = "a92d1ac5b4549fc66d4726e423f1da27959a02beda7f92254297402c666802c7"
 
 var ListCommentsOperation = riffdb.Operation{Name: "ticketdesk_list_comments", InputSchemaHash: "008e7247e2011c184634a1852a886aaf3d4b878d97e75f2b65749841638f53d7"}
 
@@ -1949,8 +1977,11 @@ func (client *Client) ListComments(ctx context.Context, parameters ListCommentsP
 	if err != nil {
 		return QueryResult[ListCommentsResult]{}, err
 	}
-	return QueryResult[ListCommentsResult]{Value: value, ApplicationHead: *response.ApplicationHead, NextCursor: response.Cursor}, nil
+	identity := QueryIdentity{ContractLineage: ContractLineage, ContractVersion: ContractVersion, ContractBundleHash: ContractBundleHash, ModuleHash: QueryModuleHash, QueryName: "ListComments", PlanHash: ListCommentsQueryPlanHash}
+	return QueryResult[ListCommentsResult]{Value: value, Identity: identity, ApplicationHead: *response.ApplicationHead, NextCursor: response.Cursor}, nil
 }
+
+const ListTicketsQueryPlanHash = "52bbabe150cd501efd4a007bf753a1116f42a1d7b6b3a94dd2e7455b5a98a366"
 
 var ListTicketsOperation = riffdb.Operation{Name: "ticketdesk_list_tickets", InputSchemaHash: "bf2fcb24cfb4f236db61aad07b9363d7b4a3702bf71ce94dc297f48cb64d6905"}
 
@@ -2068,8 +2099,11 @@ func (client *Client) ListTickets(ctx context.Context, parameters ListTicketsPar
 	if err != nil {
 		return QueryResult[ListTicketsResult]{}, err
 	}
-	return QueryResult[ListTicketsResult]{Value: value, ApplicationHead: *response.ApplicationHead, NextCursor: response.Cursor}, nil
+	identity := QueryIdentity{ContractLineage: ContractLineage, ContractVersion: ContractVersion, ContractBundleHash: ContractBundleHash, ModuleHash: QueryModuleHash, QueryName: "ListTickets", PlanHash: ListTicketsQueryPlanHash}
+	return QueryResult[ListTicketsResult]{Value: value, Identity: identity, ApplicationHead: *response.ApplicationHead, NextCursor: response.Cursor}, nil
 }
+
+const ListTicketsByAssigneeQueryPlanHash = "42dede464162450d9c0e5f50c54944d2a7517daaa6f1ac206168eede200c2718"
 
 var ListTicketsByAssigneeOperation = riffdb.Operation{Name: "ticketdesk_list_tickets_by_assignee", InputSchemaHash: "528863e9349e4b0b4861b4b0aa80385f3ef3216d04d7f762afa1d6f2c8d1a9a5"}
 
@@ -2187,8 +2221,11 @@ func (client *Client) ListTicketsByAssignee(ctx context.Context, parameters List
 	if err != nil {
 		return QueryResult[ListTicketsByAssigneeResult]{}, err
 	}
-	return QueryResult[ListTicketsByAssigneeResult]{Value: value, ApplicationHead: *response.ApplicationHead, NextCursor: response.Cursor}, nil
+	identity := QueryIdentity{ContractLineage: ContractLineage, ContractVersion: ContractVersion, ContractBundleHash: ContractBundleHash, ModuleHash: QueryModuleHash, QueryName: "ListTicketsByAssignee", PlanHash: ListTicketsByAssigneeQueryPlanHash}
+	return QueryResult[ListTicketsByAssigneeResult]{Value: value, Identity: identity, ApplicationHead: *response.ApplicationHead, NextCursor: response.Cursor}, nil
 }
+
+const ProjectMembersQueryPlanHash = "273e025bc51fcf488794f28c45746c0ff180a6955d414873feac581a22708f7b"
 
 var ProjectMembersOperation = riffdb.Operation{Name: "ticketdesk_project_members", InputSchemaHash: "b1314ded38cc8a3dc63a45ebecf93ca4eeda35986229127e2e4e0278ad330afc"}
 
@@ -2262,8 +2299,11 @@ func (client *Client) ProjectMembers(ctx context.Context, parameters ProjectMemb
 	if err != nil {
 		return QueryResult[ProjectMembersResult]{}, err
 	}
-	return QueryResult[ProjectMembersResult]{Value: value, ApplicationHead: *response.ApplicationHead, NextCursor: response.Cursor}, nil
+	identity := QueryIdentity{ContractLineage: ContractLineage, ContractVersion: ContractVersion, ContractBundleHash: ContractBundleHash, ModuleHash: QueryModuleHash, QueryName: "ProjectMembers", PlanHash: ProjectMembersQueryPlanHash}
+	return QueryResult[ProjectMembersResult]{Value: value, Identity: identity, ApplicationHead: *response.ApplicationHead, NextCursor: response.Cursor}, nil
 }
+
+const ProjectSummaryQueryPlanHash = "281b68867d9a37f1f3367fd4b63b14dd8533b60c385238cac774a3bcd5936d7e"
 
 var ProjectSummaryOperation = riffdb.Operation{Name: "ticketdesk_project_summary", InputSchemaHash: "09bcdc1788d66641ac2def372383c69f620a3006fa4cd7763832752bf75b2c30"}
 
@@ -2381,8 +2421,11 @@ func (client *Client) ProjectSummary(ctx context.Context, parameters ProjectSumm
 	if err != nil {
 		return QueryResult[ProjectSummaryResult]{}, err
 	}
-	return QueryResult[ProjectSummaryResult]{Value: value, ApplicationHead: *response.ApplicationHead, NextCursor: response.Cursor}, nil
+	identity := QueryIdentity{ContractLineage: ContractLineage, ContractVersion: ContractVersion, ContractBundleHash: ContractBundleHash, ModuleHash: QueryModuleHash, QueryName: "ProjectSummary", PlanHash: ProjectSummaryQueryPlanHash}
+	return QueryResult[ProjectSummaryResult]{Value: value, Identity: identity, ApplicationHead: *response.ApplicationHead, NextCursor: response.Cursor}, nil
 }
+
+const TicketPageQueryPlanHash = "ac390a2d26f0d6a9e2f0587fb2fed428910c6e6175fe47de9e40c47a29a979d5"
 
 var TicketPageOperation = riffdb.Operation{Name: "ticketdesk_ticket_page", InputSchemaHash: "cd3d7f77ee75dee8d99ace0a2fc341057aeb943342378d0d22cd1fce32b9010b"}
 
@@ -2671,8 +2714,11 @@ func (client *Client) TicketPage(ctx context.Context, parameters TicketPageParam
 	if err != nil {
 		return QueryResult[TicketPageResult]{}, err
 	}
-	return QueryResult[TicketPageResult]{Value: value, ApplicationHead: *response.ApplicationHead, NextCursor: response.Cursor}, nil
+	identity := QueryIdentity{ContractLineage: ContractLineage, ContractVersion: ContractVersion, ContractBundleHash: ContractBundleHash, ModuleHash: QueryModuleHash, QueryName: "TicketPage", PlanHash: TicketPageQueryPlanHash}
+	return QueryResult[TicketPageResult]{Value: value, Identity: identity, ApplicationHead: *response.ApplicationHead, NextCursor: response.Cursor}, nil
 }
+
+const TicketPagePagedQueryPlanHash = "9c70120d89323d7401b0225b82fd9f691da7e013b19f28f422f41f66ba45bd58"
 
 var TicketPagePagedOperation = riffdb.Operation{Name: "ticketdesk_ticket_page_paged", InputSchemaHash: "f4ef29944234e1bef0c0a46448589cd8f29f3666f133ac022e8f11443c4193b0"}
 
@@ -2964,8 +3010,11 @@ func (client *Client) TicketPagePaged(ctx context.Context, parameters TicketPage
 	if err != nil {
 		return QueryResult[TicketPagePagedResult]{}, err
 	}
-	return QueryResult[TicketPagePagedResult]{Value: value, ApplicationHead: *response.ApplicationHead, NextCursor: response.Cursor}, nil
+	identity := QueryIdentity{ContractLineage: ContractLineage, ContractVersion: ContractVersion, ContractBundleHash: ContractBundleHash, ModuleHash: QueryModuleHash, QueryName: "TicketPagePaged", PlanHash: TicketPagePagedQueryPlanHash}
+	return QueryResult[TicketPagePagedResult]{Value: value, Identity: identity, ApplicationHead: *response.ApplicationHead, NextCursor: response.Cursor}, nil
 }
+
+const TicketQueueQueryPlanHash = "9b6c3f914d4a2a7abff328b9a3750dcc9b0c904688a8aae8b2bd1276a1c27e3d"
 
 var TicketQueueOperation = riffdb.Operation{Name: "ticketdesk_ticket_queue", InputSchemaHash: "8bd9c7956b74fb8ae16b2e958f77daf2eae2c899b53171f3063d88a065440b68"}
 
@@ -3084,8 +3133,11 @@ func (client *Client) TicketQueue(ctx context.Context, parameters TicketQueuePar
 	if err != nil {
 		return QueryResult[TicketQueueResult]{}, err
 	}
-	return QueryResult[TicketQueueResult]{Value: value, ApplicationHead: *response.ApplicationHead, NextCursor: response.Cursor}, nil
+	identity := QueryIdentity{ContractLineage: ContractLineage, ContractVersion: ContractVersion, ContractBundleHash: ContractBundleHash, ModuleHash: QueryModuleHash, QueryName: "TicketQueue", PlanHash: TicketQueueQueryPlanHash}
+	return QueryResult[TicketQueueResult]{Value: value, Identity: identity, ApplicationHead: *response.ApplicationHead, NextCursor: response.Cursor}, nil
 }
+
+const AddProjectMemberPlanHash = "65a0a5eedbc1dd1704da23be83c989c564e106f555511ac9c8fd2e986241b644"
 
 var AddProjectMemberOperation = riffdb.Operation{Name: "ticketdesk_add_project_member", InputSchemaHash: "15c936e77569e9f6c20d7d435a77d16d7ca665ca7c25cae6968c57b967cad590"}
 
@@ -3178,7 +3230,7 @@ func (client *Client) AddProjectMember(ctx context.Context, input AddProjectMemb
 	if err != nil {
 		return CommandResult[AddProjectMemberOutcome]{}, err
 	}
-	return CommandResult[AddProjectMemberOutcome]{Outcome: outcome, CommitSequence: response.ApplicationHead, Replayed: response.Replayed, OutcomeURI: response.Cursor}, nil
+	return CommandResult[AddProjectMemberOutcome]{Outcome: outcome, CommitSequence: response.ApplicationHead, ContractVersion: ContractVersion, PlanHash: AddProjectMemberPlanHash, Replayed: response.Replayed, OutcomeURI: response.Cursor}, nil
 }
 func (client *Client) AddProjectMemberBatch(ctx context.Context, inputs []AddProjectMemberInput, concurrency, checkpoint uint32) (BatchResult[AddProjectMemberOutcome], error) {
 	encoded := make([]map[string]riffdb.Value, len(inputs))
@@ -3199,12 +3251,14 @@ func (client *Client) AddProjectMemberBatch(ctx context.Context, inputs []AddPro
 			if decodeErr != nil {
 				return BatchResult[AddProjectMemberOutcome]{}, decodeErr
 			}
-			converted.Result = &CommandResult[AddProjectMemberOutcome]{Outcome: outcome, CommitSequence: item.Result.CommitSequence, Replayed: item.Result.Replayed, OutcomeURI: item.Result.OutcomeURI}
+			converted.Result = &CommandResult[AddProjectMemberOutcome]{Outcome: outcome, CommitSequence: item.Result.CommitSequence, ContractVersion: ContractVersion, PlanHash: AddProjectMemberPlanHash, Replayed: item.Result.Replayed, OutcomeURI: item.Result.OutcomeURI}
 		}
 		result.Items = append(result.Items, converted)
 	}
 	return result, nil
 }
+
+const AttachLabelPlanHash = "c17660b5bd5160390772aac001925acc2017273fe03bf39723094ff769b73a43"
 
 var AttachLabelOperation = riffdb.Operation{Name: "ticketdesk_attach_label", InputSchemaHash: "5cb533fd1fef81af9490c6abe4eac4060b7ad172c14b065b180c7ab9dc3372de"}
 
@@ -3296,7 +3350,7 @@ func (client *Client) AttachLabel(ctx context.Context, input AttachLabelInput) (
 	if err != nil {
 		return CommandResult[AttachLabelOutcome]{}, err
 	}
-	return CommandResult[AttachLabelOutcome]{Outcome: outcome, CommitSequence: response.ApplicationHead, Replayed: response.Replayed, OutcomeURI: response.Cursor}, nil
+	return CommandResult[AttachLabelOutcome]{Outcome: outcome, CommitSequence: response.ApplicationHead, ContractVersion: ContractVersion, PlanHash: AttachLabelPlanHash, Replayed: response.Replayed, OutcomeURI: response.Cursor}, nil
 }
 func (client *Client) AttachLabelBatch(ctx context.Context, inputs []AttachLabelInput, concurrency, checkpoint uint32) (BatchResult[AttachLabelOutcome], error) {
 	encoded := make([]map[string]riffdb.Value, len(inputs))
@@ -3317,12 +3371,14 @@ func (client *Client) AttachLabelBatch(ctx context.Context, inputs []AttachLabel
 			if decodeErr != nil {
 				return BatchResult[AttachLabelOutcome]{}, decodeErr
 			}
-			converted.Result = &CommandResult[AttachLabelOutcome]{Outcome: outcome, CommitSequence: item.Result.CommitSequence, Replayed: item.Result.Replayed, OutcomeURI: item.Result.OutcomeURI}
+			converted.Result = &CommandResult[AttachLabelOutcome]{Outcome: outcome, CommitSequence: item.Result.CommitSequence, ContractVersion: ContractVersion, PlanHash: AttachLabelPlanHash, Replayed: item.Result.Replayed, OutcomeURI: item.Result.OutcomeURI}
 		}
 		result.Items = append(result.Items, converted)
 	}
 	return result, nil
 }
+
+const CloseTicketWithCommentPlanHash = "f126142eed87d07f3b8dd3b82e09ee48c430c23583d50196c2ad17ed59bf91d7"
 
 var CloseTicketWithCommentOperation = riffdb.Operation{Name: "ticketdesk_close_ticket_with_comment", InputSchemaHash: "93880522ce9a9d60d309d706ffda136a83bb9328e8ba1f3dc13f747a2ad4f4c3"}
 
@@ -3427,7 +3483,7 @@ func (client *Client) CloseTicketWithComment(ctx context.Context, input CloseTic
 	if err != nil {
 		return CommandResult[CloseTicketWithCommentOutcome]{}, err
 	}
-	return CommandResult[CloseTicketWithCommentOutcome]{Outcome: outcome, CommitSequence: response.ApplicationHead, Replayed: response.Replayed, OutcomeURI: response.Cursor}, nil
+	return CommandResult[CloseTicketWithCommentOutcome]{Outcome: outcome, CommitSequence: response.ApplicationHead, ContractVersion: ContractVersion, PlanHash: CloseTicketWithCommentPlanHash, Replayed: response.Replayed, OutcomeURI: response.Cursor}, nil
 }
 func (client *Client) CloseTicketWithCommentBatch(ctx context.Context, inputs []CloseTicketWithCommentInput, concurrency, checkpoint uint32) (BatchResult[CloseTicketWithCommentOutcome], error) {
 	encoded := make([]map[string]riffdb.Value, len(inputs))
@@ -3448,12 +3504,14 @@ func (client *Client) CloseTicketWithCommentBatch(ctx context.Context, inputs []
 			if decodeErr != nil {
 				return BatchResult[CloseTicketWithCommentOutcome]{}, decodeErr
 			}
-			converted.Result = &CommandResult[CloseTicketWithCommentOutcome]{Outcome: outcome, CommitSequence: item.Result.CommitSequence, Replayed: item.Result.Replayed, OutcomeURI: item.Result.OutcomeURI}
+			converted.Result = &CommandResult[CloseTicketWithCommentOutcome]{Outcome: outcome, CommitSequence: item.Result.CommitSequence, ContractVersion: ContractVersion, PlanHash: CloseTicketWithCommentPlanHash, Replayed: item.Result.Replayed, OutcomeURI: item.Result.OutcomeURI}
 		}
 		result.Items = append(result.Items, converted)
 	}
 	return result, nil
 }
+
+const CreateCommentPlanHash = "5456fbeb4b1781f6707104a3182c809fd3af7a0dbdfaf5d6498d1eee0a5a5529"
 
 var CreateCommentOperation = riffdb.Operation{Name: "ticketdesk_create_comment", InputSchemaHash: "93880522ce9a9d60d309d706ffda136a83bb9328e8ba1f3dc13f747a2ad4f4c3"}
 
@@ -3539,7 +3597,7 @@ func (client *Client) CreateComment(ctx context.Context, input CreateCommentInpu
 	if err != nil {
 		return CommandResult[CreateCommentOutcome]{}, err
 	}
-	return CommandResult[CreateCommentOutcome]{Outcome: outcome, CommitSequence: response.ApplicationHead, Replayed: response.Replayed, OutcomeURI: response.Cursor}, nil
+	return CommandResult[CreateCommentOutcome]{Outcome: outcome, CommitSequence: response.ApplicationHead, ContractVersion: ContractVersion, PlanHash: CreateCommentPlanHash, Replayed: response.Replayed, OutcomeURI: response.Cursor}, nil
 }
 func (client *Client) CreateCommentBatch(ctx context.Context, inputs []CreateCommentInput, concurrency, checkpoint uint32) (BatchResult[CreateCommentOutcome], error) {
 	encoded := make([]map[string]riffdb.Value, len(inputs))
@@ -3560,12 +3618,14 @@ func (client *Client) CreateCommentBatch(ctx context.Context, inputs []CreateCom
 			if decodeErr != nil {
 				return BatchResult[CreateCommentOutcome]{}, decodeErr
 			}
-			converted.Result = &CommandResult[CreateCommentOutcome]{Outcome: outcome, CommitSequence: item.Result.CommitSequence, Replayed: item.Result.Replayed, OutcomeURI: item.Result.OutcomeURI}
+			converted.Result = &CommandResult[CreateCommentOutcome]{Outcome: outcome, CommitSequence: item.Result.CommitSequence, ContractVersion: ContractVersion, PlanHash: CreateCommentPlanHash, Replayed: item.Result.Replayed, OutcomeURI: item.Result.OutcomeURI}
 		}
 		result.Items = append(result.Items, converted)
 	}
 	return result, nil
 }
+
+const CreateLabelPlanHash = "155f02767ffaf89274561414d96c1332faed06254e27e5f75e12ee2322849e75"
 
 var CreateLabelOperation = riffdb.Operation{Name: "ticketdesk_create_label", InputSchemaHash: "1d8bab0ca56d60caa4e5e60a9daf084c163a6983449480baf2a758106639b7c6"}
 
@@ -3638,7 +3698,7 @@ func (client *Client) CreateLabel(ctx context.Context, input CreateLabelInput) (
 	if err != nil {
 		return CommandResult[CreateLabelOutcome]{}, err
 	}
-	return CommandResult[CreateLabelOutcome]{Outcome: outcome, CommitSequence: response.ApplicationHead, Replayed: response.Replayed, OutcomeURI: response.Cursor}, nil
+	return CommandResult[CreateLabelOutcome]{Outcome: outcome, CommitSequence: response.ApplicationHead, ContractVersion: ContractVersion, PlanHash: CreateLabelPlanHash, Replayed: response.Replayed, OutcomeURI: response.Cursor}, nil
 }
 func (client *Client) CreateLabelBatch(ctx context.Context, inputs []CreateLabelInput, concurrency, checkpoint uint32) (BatchResult[CreateLabelOutcome], error) {
 	encoded := make([]map[string]riffdb.Value, len(inputs))
@@ -3659,12 +3719,14 @@ func (client *Client) CreateLabelBatch(ctx context.Context, inputs []CreateLabel
 			if decodeErr != nil {
 				return BatchResult[CreateLabelOutcome]{}, decodeErr
 			}
-			converted.Result = &CommandResult[CreateLabelOutcome]{Outcome: outcome, CommitSequence: item.Result.CommitSequence, Replayed: item.Result.Replayed, OutcomeURI: item.Result.OutcomeURI}
+			converted.Result = &CommandResult[CreateLabelOutcome]{Outcome: outcome, CommitSequence: item.Result.CommitSequence, ContractVersion: ContractVersion, PlanHash: CreateLabelPlanHash, Replayed: item.Result.Replayed, OutcomeURI: item.Result.OutcomeURI}
 		}
 		result.Items = append(result.Items, converted)
 	}
 	return result, nil
 }
+
+const CreateOrganizationPlanHash = "1dc12f73b47fac29c8159c7b0217357e1215edfc198282bd3bc5a3f6ee531205"
 
 var CreateOrganizationOperation = riffdb.Operation{Name: "ticketdesk_create_organization", InputSchemaHash: "69f2cdc9c78ac23d1873b1000dd63f872478d86347e1358ebd411e1e748fd3ce"}
 
@@ -3725,7 +3787,7 @@ func (client *Client) CreateOrganization(ctx context.Context, input CreateOrgani
 	if err != nil {
 		return CommandResult[CreateOrganizationOutcome]{}, err
 	}
-	return CommandResult[CreateOrganizationOutcome]{Outcome: outcome, CommitSequence: response.ApplicationHead, Replayed: response.Replayed, OutcomeURI: response.Cursor}, nil
+	return CommandResult[CreateOrganizationOutcome]{Outcome: outcome, CommitSequence: response.ApplicationHead, ContractVersion: ContractVersion, PlanHash: CreateOrganizationPlanHash, Replayed: response.Replayed, OutcomeURI: response.Cursor}, nil
 }
 func (client *Client) CreateOrganizationBatch(ctx context.Context, inputs []CreateOrganizationInput, concurrency, checkpoint uint32) (BatchResult[CreateOrganizationOutcome], error) {
 	encoded := make([]map[string]riffdb.Value, len(inputs))
@@ -3746,12 +3808,14 @@ func (client *Client) CreateOrganizationBatch(ctx context.Context, inputs []Crea
 			if decodeErr != nil {
 				return BatchResult[CreateOrganizationOutcome]{}, decodeErr
 			}
-			converted.Result = &CommandResult[CreateOrganizationOutcome]{Outcome: outcome, CommitSequence: item.Result.CommitSequence, Replayed: item.Result.Replayed, OutcomeURI: item.Result.OutcomeURI}
+			converted.Result = &CommandResult[CreateOrganizationOutcome]{Outcome: outcome, CommitSequence: item.Result.CommitSequence, ContractVersion: ContractVersion, PlanHash: CreateOrganizationPlanHash, Replayed: item.Result.Replayed, OutcomeURI: item.Result.OutcomeURI}
 		}
 		result.Items = append(result.Items, converted)
 	}
 	return result, nil
 }
+
+const CreateProjectPlanHash = "ad382ce1fb915985b0b0170fadc7b2e7313aa5446554be13773394a7f25a5124"
 
 var CreateProjectOperation = riffdb.Operation{Name: "ticketdesk_create_project", InputSchemaHash: "2273a55f78823250feabc303c50f66c5bf37cb986830de39af3875c9c53c8031"}
 
@@ -3824,7 +3888,7 @@ func (client *Client) CreateProject(ctx context.Context, input CreateProjectInpu
 	if err != nil {
 		return CommandResult[CreateProjectOutcome]{}, err
 	}
-	return CommandResult[CreateProjectOutcome]{Outcome: outcome, CommitSequence: response.ApplicationHead, Replayed: response.Replayed, OutcomeURI: response.Cursor}, nil
+	return CommandResult[CreateProjectOutcome]{Outcome: outcome, CommitSequence: response.ApplicationHead, ContractVersion: ContractVersion, PlanHash: CreateProjectPlanHash, Replayed: response.Replayed, OutcomeURI: response.Cursor}, nil
 }
 func (client *Client) CreateProjectBatch(ctx context.Context, inputs []CreateProjectInput, concurrency, checkpoint uint32) (BatchResult[CreateProjectOutcome], error) {
 	encoded := make([]map[string]riffdb.Value, len(inputs))
@@ -3845,12 +3909,14 @@ func (client *Client) CreateProjectBatch(ctx context.Context, inputs []CreatePro
 			if decodeErr != nil {
 				return BatchResult[CreateProjectOutcome]{}, decodeErr
 			}
-			converted.Result = &CommandResult[CreateProjectOutcome]{Outcome: outcome, CommitSequence: item.Result.CommitSequence, Replayed: item.Result.Replayed, OutcomeURI: item.Result.OutcomeURI}
+			converted.Result = &CommandResult[CreateProjectOutcome]{Outcome: outcome, CommitSequence: item.Result.CommitSequence, ContractVersion: ContractVersion, PlanHash: CreateProjectPlanHash, Replayed: item.Result.Replayed, OutcomeURI: item.Result.OutcomeURI}
 		}
 		result.Items = append(result.Items, converted)
 	}
 	return result, nil
 }
+
+const CreateTicketPlanHash = "cfaebe79ac6ac9288a0b5e7982d659eacb2aad088eb87c4496ae3d5cdbe9bfc6"
 
 var CreateTicketOperation = riffdb.Operation{Name: "ticketdesk_create_ticket", InputSchemaHash: "9380387289622fcd67129d9482cae8a4ed22f2d9d7b03fa2726e51bda7bb167b"}
 
@@ -3949,7 +4015,7 @@ func (client *Client) CreateTicket(ctx context.Context, input CreateTicketInput)
 	if err != nil {
 		return CommandResult[CreateTicketOutcome]{}, err
 	}
-	return CommandResult[CreateTicketOutcome]{Outcome: outcome, CommitSequence: response.ApplicationHead, Replayed: response.Replayed, OutcomeURI: response.Cursor}, nil
+	return CommandResult[CreateTicketOutcome]{Outcome: outcome, CommitSequence: response.ApplicationHead, ContractVersion: ContractVersion, PlanHash: CreateTicketPlanHash, Replayed: response.Replayed, OutcomeURI: response.Cursor}, nil
 }
 func (client *Client) CreateTicketBatch(ctx context.Context, inputs []CreateTicketInput, concurrency, checkpoint uint32) (BatchResult[CreateTicketOutcome], error) {
 	encoded := make([]map[string]riffdb.Value, len(inputs))
@@ -3970,12 +4036,14 @@ func (client *Client) CreateTicketBatch(ctx context.Context, inputs []CreateTick
 			if decodeErr != nil {
 				return BatchResult[CreateTicketOutcome]{}, decodeErr
 			}
-			converted.Result = &CommandResult[CreateTicketOutcome]{Outcome: outcome, CommitSequence: item.Result.CommitSequence, Replayed: item.Result.Replayed, OutcomeURI: item.Result.OutcomeURI}
+			converted.Result = &CommandResult[CreateTicketOutcome]{Outcome: outcome, CommitSequence: item.Result.CommitSequence, ContractVersion: ContractVersion, PlanHash: CreateTicketPlanHash, Replayed: item.Result.Replayed, OutcomeURI: item.Result.OutcomeURI}
 		}
 		result.Items = append(result.Items, converted)
 	}
 	return result, nil
 }
+
+const CreateUserPlanHash = "ec5c88b02cbf31705aef2d5224c363a883346623979dd0fb4e6403ec29f351fd"
 
 var CreateUserOperation = riffdb.Operation{Name: "ticketdesk_create_user", InputSchemaHash: "717ba5b4dee3764ef870d08fb230b97988ca5707a8510c270bfa8dd4b1eac9b4"}
 
@@ -4049,7 +4117,7 @@ func (client *Client) CreateUser(ctx context.Context, input CreateUserInput) (Co
 	if err != nil {
 		return CommandResult[CreateUserOutcome]{}, err
 	}
-	return CommandResult[CreateUserOutcome]{Outcome: outcome, CommitSequence: response.ApplicationHead, Replayed: response.Replayed, OutcomeURI: response.Cursor}, nil
+	return CommandResult[CreateUserOutcome]{Outcome: outcome, CommitSequence: response.ApplicationHead, ContractVersion: ContractVersion, PlanHash: CreateUserPlanHash, Replayed: response.Replayed, OutcomeURI: response.Cursor}, nil
 }
 func (client *Client) CreateUserBatch(ctx context.Context, inputs []CreateUserInput, concurrency, checkpoint uint32) (BatchResult[CreateUserOutcome], error) {
 	encoded := make([]map[string]riffdb.Value, len(inputs))
@@ -4070,12 +4138,14 @@ func (client *Client) CreateUserBatch(ctx context.Context, inputs []CreateUserIn
 			if decodeErr != nil {
 				return BatchResult[CreateUserOutcome]{}, decodeErr
 			}
-			converted.Result = &CommandResult[CreateUserOutcome]{Outcome: outcome, CommitSequence: item.Result.CommitSequence, Replayed: item.Result.Replayed, OutcomeURI: item.Result.OutcomeURI}
+			converted.Result = &CommandResult[CreateUserOutcome]{Outcome: outcome, CommitSequence: item.Result.CommitSequence, ContractVersion: ContractVersion, PlanHash: CreateUserPlanHash, Replayed: item.Result.Replayed, OutcomeURI: item.Result.OutcomeURI}
 		}
 		result.Items = append(result.Items, converted)
 	}
 	return result, nil
 }
+
+const OpenTicketWithLabelsPlanHash = "4000515b7b4b975c17ba6ff23c78478869cdd3f40ef2afeae80c88aefb452a48"
 
 var OpenTicketWithLabelsOperation = riffdb.Operation{Name: "ticketdesk_open_ticket_with_labels", InputSchemaHash: "d1d0030301bc0da64004cce8e02de6e9d70141cf196033547d854d03bc5f3d6f"}
 
@@ -4221,7 +4291,7 @@ func (client *Client) OpenTicketWithLabels(ctx context.Context, input OpenTicket
 	if err != nil {
 		return CommandResult[OpenTicketWithLabelsOutcome]{}, err
 	}
-	return CommandResult[OpenTicketWithLabelsOutcome]{Outcome: outcome, CommitSequence: response.ApplicationHead, Replayed: response.Replayed, OutcomeURI: response.Cursor}, nil
+	return CommandResult[OpenTicketWithLabelsOutcome]{Outcome: outcome, CommitSequence: response.ApplicationHead, ContractVersion: ContractVersion, PlanHash: OpenTicketWithLabelsPlanHash, Replayed: response.Replayed, OutcomeURI: response.Cursor}, nil
 }
 func (client *Client) OpenTicketWithLabelsBatch(ctx context.Context, inputs []OpenTicketWithLabelsInput, concurrency, checkpoint uint32) (BatchResult[OpenTicketWithLabelsOutcome], error) {
 	encoded := make([]map[string]riffdb.Value, len(inputs))
@@ -4242,12 +4312,14 @@ func (client *Client) OpenTicketWithLabelsBatch(ctx context.Context, inputs []Op
 			if decodeErr != nil {
 				return BatchResult[OpenTicketWithLabelsOutcome]{}, decodeErr
 			}
-			converted.Result = &CommandResult[OpenTicketWithLabelsOutcome]{Outcome: outcome, CommitSequence: item.Result.CommitSequence, Replayed: item.Result.Replayed, OutcomeURI: item.Result.OutcomeURI}
+			converted.Result = &CommandResult[OpenTicketWithLabelsOutcome]{Outcome: outcome, CommitSequence: item.Result.CommitSequence, ContractVersion: ContractVersion, PlanHash: OpenTicketWithLabelsPlanHash, Replayed: item.Result.Replayed, OutcomeURI: item.Result.OutcomeURI}
 		}
 		result.Items = append(result.Items, converted)
 	}
 	return result, nil
 }
+
+const SwapMemberRolesPlanHash = "0b4e799a310aeca5c4c62a7eaa584d6b45d15013eb4cbaa9265460045b2a9126"
 
 var SwapMemberRolesOperation = riffdb.Operation{Name: "ticketdesk_swap_member_roles", InputSchemaHash: "3a0f1689dcfe88e123654aff052f598439fc272e0c3ceab2dd728e67dc8bd445"}
 
@@ -4331,7 +4403,7 @@ func (client *Client) SwapMemberRoles(ctx context.Context, input SwapMemberRoles
 	if err != nil {
 		return CommandResult[SwapMemberRolesOutcome]{}, err
 	}
-	return CommandResult[SwapMemberRolesOutcome]{Outcome: outcome, CommitSequence: response.ApplicationHead, Replayed: response.Replayed, OutcomeURI: response.Cursor}, nil
+	return CommandResult[SwapMemberRolesOutcome]{Outcome: outcome, CommitSequence: response.ApplicationHead, ContractVersion: ContractVersion, PlanHash: SwapMemberRolesPlanHash, Replayed: response.Replayed, OutcomeURI: response.Cursor}, nil
 }
 func (client *Client) SwapMemberRolesBatch(ctx context.Context, inputs []SwapMemberRolesInput, concurrency, checkpoint uint32) (BatchResult[SwapMemberRolesOutcome], error) {
 	encoded := make([]map[string]riffdb.Value, len(inputs))
@@ -4352,7 +4424,7 @@ func (client *Client) SwapMemberRolesBatch(ctx context.Context, inputs []SwapMem
 			if decodeErr != nil {
 				return BatchResult[SwapMemberRolesOutcome]{}, decodeErr
 			}
-			converted.Result = &CommandResult[SwapMemberRolesOutcome]{Outcome: outcome, CommitSequence: item.Result.CommitSequence, Replayed: item.Result.Replayed, OutcomeURI: item.Result.OutcomeURI}
+			converted.Result = &CommandResult[SwapMemberRolesOutcome]{Outcome: outcome, CommitSequence: item.Result.CommitSequence, ContractVersion: ContractVersion, PlanHash: SwapMemberRolesPlanHash, Replayed: item.Result.Replayed, OutcomeURI: item.Result.OutcomeURI}
 		}
 		result.Items = append(result.Items, converted)
 	}

@@ -24,11 +24,29 @@ Offline runtime installation sources are:
   `vendored-sources` directory
 - TypeScript: install the exact `riffdb-client-0.1.0.tgz` under
   `<bundle>/packages/distribution/npm`; the evaluator compiler and its exact
-  target platform binary are available at `<bundle>/tooling/typescript/bin/tsc`
+  target platform binary are available at `<bundle>/tooling/typescript/bin/tsc`.
+  `riffdb dev --run` automatically places this compiler and its closed Node
+  type dependency set on the child build path
 
-The distribution's `checksums.sha256` and detached signature were verified
-before the bundle was sealed. `bundle.json` records their exact digest. Package
-installation is setup, not an identity-change ceremony. Count a ceremony only
-when RiffDB requires explicit review of changed compiler-owned application
-identity. Count a rescue when an operator or evaluator supplies product
-guidance or manually repairs product-generated state after the run starts.
+The complete distribution's signed inventory was verified before the bundle
+was sealed. The evaluator receives an intentionally source-pruned runtime
+subset, so that subset is not presented as the signed whole. Verify
+`<bundle>/checksums.sha256`, then verify the selected files with:
+
+```bash
+(cd <bundle>/packages/distribution && \
+  sha256sum --strict --check ../runtime-subset-checksums.sha256)
+```
+
+`packages/qualification/receipt.json` records the complete signed inventory
+digest, signer identity, and runtime-subset inventory digest. `bundle.json`
+binds both digests. The original signed whole inventory and signature are
+retained under `packages/qualification/` as evidence of pre-pruning
+qualification; they do not claim that omitted implementation archives are in
+the evaluator subset.
+
+Package installation is setup, not an identity-change ceremony. Count a
+ceremony only when RiffDB requires explicit review of changed compiler-owned
+application identity. Count a rescue when an operator or evaluator supplies
+product guidance or manually repairs product-generated state after the run
+starts.

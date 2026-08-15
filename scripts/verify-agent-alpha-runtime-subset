@@ -1,0 +1,95 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+bundle="${1:-}"
+[[ "$bundle" == /* && -d "$bundle" && ! -L "$bundle" && $# -eq 1 ]] || {
+    echo 'usage: verify-agent-alpha-runtime-subset ABSOLUTE_BUNDLE' >&2
+    exit 2
+}
+
+distribution="$bundle/packages/distribution"
+qualification="$bundle/packages/qualification"
+subset_inventory="$bundle/packages/runtime-subset-checksums.sha256"
+for path in \
+    "$bundle/bundle.json" \
+    "$bundle/checksums.sha256" \
+    "$bundle/packages/allowed-signers" \
+    "$bundle/packages/signing-identity" \
+    "$qualification/receipt.json" \
+    "$qualification/complete-distribution-checksums.sha256" \
+    "$qualification/complete-distribution-checksums.sha256.sig" \
+    "$qualification/complete-distribution-artifacts-v1.json" \
+    "$subset_inventory"; do
+    [[ -f "$path" && ! -L "$path" ]] || {
+        echo "package-first verification input is absent or unsafe: $path" >&2
+        exit 1
+    }
+done
+[[ -d "$distribution" && ! -L "$distribution" ]] || {
+    echo 'package-first runtime subset is absent or unsafe' >&2
+    exit 1
+}
+for stale in checksums.sha256 checksums.sha256.sig; do
+    [[ ! -e "$distribution/$stale" ]] || {
+        echo "runtime subset retains a misleading complete-distribution file: $stale" >&2
+        exit 1
+    }
+done
+
+identity="$(<"$bundle/packages/signing-identity")"
+[[ "$identity" =~ ^[A-Za-z0-9_.-]{1,128}$ ]] || {
+    echo 'package-first signing identity is invalid' >&2
+    exit 1
+}
+ssh-keygen -Y verify \
+    -f "$bundle/packages/allowed-signers" \
+    -I "$identity" \
+    -n riffdb-driver-distribution-v1 \
+    -s "$qualification/complete-distribution-checksums.sha256.sig" \
+    <"$qualification/complete-distribution-checksums.sha256" >/dev/null
+
+complete_digest="$(sha256sum "$qualification/complete-distribution-checksums.sha256" | cut -d' ' -f1)"
+subset_digest="$(sha256sum "$subset_inventory" | cut -d' ' -f1)"
+outer_digest="$(sha256sum "$bundle/checksums.sha256" | cut -d' ' -f1)"
+jq -e \
+    --arg identity "$identity" \
+    --arg complete "$complete_digest" \
+    --arg subset "$subset_digest" \
+    --arg outer "$outer_digest" '
+  .schema == "riffdb-agent-application-alpha-bundle/v2"
+  and .sealed == true
+  and .package_first == true
+  and .bundle_hash == $outer
+  and .package_signing_identity == $identity
+  and .package_distribution_checksums_sha256 == $complete
+  and .package_runtime_subset_checksums_sha256 == $subset
+' "$bundle/bundle.json" >/dev/null
+jq -e \
+    --arg identity "$identity" \
+    --arg complete "$complete_digest" \
+    --arg subset "$subset_digest" '
+  (keys | sort) == ([
+    "complete_distribution_checksums_sha256",
+    "complete_distribution_verified_before_pruning",
+    "runtime_subset_checksums_sha256",
+    "runtime_subset_intentionally_excludes_implementation_archives",
+    "schema",
+    "signing_identity"
+  ] | sort)
+  and .schema == "riffdb-package-first-qualification/v1"
+  and .signing_identity == $identity
+  and .complete_distribution_checksums_sha256 == $complete
+  and .complete_distribution_verified_before_pruning == true
+  and .runtime_subset_checksums_sha256 == $subset
+  and .runtime_subset_intentionally_excludes_implementation_archives == true
+' "$qualification/receipt.json" >/dev/null
+(
+    cd "$distribution"
+    sha256sum --strict --check "$subset_inventory" >/dev/null
+)
+(
+    cd "$bundle"
+    sha256sum --strict --check checksums.sha256 >/dev/null
+)
+
+printf '%s\n' 'verified package-first runtime subset and complete-distribution qualification'

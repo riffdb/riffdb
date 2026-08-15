@@ -106,10 +106,12 @@ application. The seeded form fails before startup when the list is empty and
 names up to eight unreferenced JSONL files as an actionable correction.
 
 Generated query calls pin the compiler-owned plan hash as well as the contract
-and module. Successful Rust and TypeScript results expose the exact
-server-returned contract, module, query, and plan identity after verifying the
-whole tuple. A missing or different identity rejects the response; application
-code never infers an identity from its request or lock.
+and module. Successful Rust, Go, TypeScript, and Python results expose the
+verified contract and operation identity. Native transports verify the server
+tuple directly; driver-host transports first bind the exact manifest and
+catalog handshake, then return the matching compiler-owned result identity. A
+missing or different identity rejects the response; application code never
+assembles an identity from numeric IDs or unreviewed server state.
 
 Complete public references:
 
@@ -145,7 +147,10 @@ application after readiness. A repository must contain exactly one supported
 runner: `Cargo.toml` for Rust, `go.mod` for Go, `package.json` for TypeScript, or
 `pyproject.toml` for Python. Rust and Python receive the protected application
 endpoint, credential path, and database alias owned by their first-party
-runtime; Go and TypeScript receive only a private driver-host socket plus
+runtime. They receive the values both as the existing three positional
+arguments and as `RIFFDB_ENDPOINT`, `RIFFDB_CREDENTIAL_FILE`, and
+`RIFFDB_DATABASE`; observing both forms with different values is an error. Go
+and TypeScript receive only a private driver-host socket plus
 compiler-owned handshake identity. The Go and TypeScript positional ABI is
 exactly:
 

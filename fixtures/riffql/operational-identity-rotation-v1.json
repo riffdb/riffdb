@@ -28,7 +28,7 @@
         "path": "generated/python/client.py"
       },
       {
-        "content_hash": "d0c4a55cc821ce18c3771bb8c3fe05fe28ad4ba71c00dae73699e04645991190",
+        "content_hash": "3872513838b1e30e89df25f7c0b1b3aeb2c4541cd51a4f193bf5027f43adc09a",
         "kind": "go",
         "path": "generated/go/client.go"
       },
@@ -39,7 +39,7 @@
       }
     ],
     "language_version": 2,
-    "lock_hash": "48f6fcff61ddfd94d80d2ff15ef3524fc9d98596f72f4095ede746c5e93970b6",
+    "lock_hash": "5a2e67cae191659abd0c5bacac49e7cd4e8f52156f851a99dbc9cb29fe9bc8d0",
     "manifest_hash": "056552dcab3671faa51024c1f4c2e5efca0e58abb4c65b3147a428f57e0c6038",
     "module_hash": "cab493c1344cfc048e031f6e1d9620f1250f8eafca128e7064c0c4bc9eaf4f86",
     "plan_or_family_hash": "8b9f18dca09bee268a7e1dbfe61b468165d27fcc0447a76e8e879a00f282d740",
@@ -77,7 +77,7 @@
         "path": "generated/python/client.py"
       },
       {
-        "content_hash": "8e11fdb0ea68d933cc6191c2c3970a6d4625779c553ad6d8e7067827caf9f28b",
+        "content_hash": "cd0f23aaa4c28648d2666d8b656249a98e6a1b9f8fad5dbea0b9b4b39bdf3037",
         "kind": "go",
         "path": "generated/go/client.go"
       },
@@ -88,7 +88,7 @@
       }
     ],
     "language_version": 2,
-    "lock_hash": "4f4c64ff2b56d3c3af966242cfdf91407089c43f41d60b095cd4ac3351e6ebca",
+    "lock_hash": "abfc1da445dd8a2e16b7c9ec5f1df17a5b93c30ce3bb7b7d95450ec585923ae3",
     "manifest_hash": "8b253be83f997b08c24c6b824940666c8c9b9fb485478df61439728ad28cfd8b",
     "module_hash": "43d4a0c523b923068a513e4be001bae315cc1c9bbd97ea00bdcab70fca164358",
     "plan_or_family_hash": "ccbdeae5d9c65a6ea89c4d38fc7f85c4df3aaebb35d5a0fc6860824314a4668d",
@@ -126,7 +126,7 @@
         "path": "generated/python/client.py"
       },
       {
-        "content_hash": "a4a50d3799056c000513dbdec238e45da5012c9b03e9c53d36432323fcf97080",
+        "content_hash": "c491a69861090b5c854c68d3692576a5075d1e435c310d5c502db55062b3faeb",
         "kind": "go",
         "path": "generated/go/client.go"
       },
@@ -137,7 +137,7 @@
       }
     ],
     "language_version": 1,
-    "lock_hash": "3ab0520b45be56c2b7abac09301f6705f7c89b571e0a65156eb50f1a1c28a461",
+    "lock_hash": "641273852cf58f0f112a4b1b61b70d975e136879ff6bac49a093ce8901f701ad",
     "manifest_hash": "305102c6bc5579ed66ba46faedf13cee8eb18a1f979f0f39861054766fd22805",
     "module_hash": "825131a339e1180e68cefaaa46d97f8f06d64211b65f2a14c3a29ebe0441ecae",
     "plan_or_family_hash": "90296b54d2b9635d2d15336d7a76d226fb3b49f1ac9047377c7338ff30658f7f",
@@ -234,7 +234,7 @@
     },
     {
       "artifact_hashes": [
-        "8ea857cb5c51663cc65c35aac1e2f4694bcc352575aae02703c06008471b0d87",
+        "4e20fcbf6d6de1872554630bedf5a3e3af69ecb72b0dd4bb8806a066fa8e2f49",
         "0d91255f3a579b7dd27e387ba74150cd5409491399604677354af0d17d38ab3e",
         "082cd3dfb238a59990b7ffaa814263cb7fac722fe9ffac42410a69e2f6dc1245",
         "2c5bacf92f8b1c2eaffa9d7ad76792c17f041ba114c8ebf60e7f9caa89d683a7",
@@ -244,7 +244,7 @@
         "34a0783f94423919eddd7510e58baee64dc2695a52622570fdc5245d1c1ae116"
       ],
       "contract_bundle_hash": "cd221ebb44c57105da5bdb2682b473e4ce4cde4d7cac540e49097450df6ec7de",
-      "lock_hash": "b53975376edb9cf75190f585e33f2b098bd437ab1d3f18aac13e183481da322f",
+      "lock_hash": "d5279c75a858f1cc849c209fe9b28e9c1989d452e0ad705bf40a432a705763ce",
       "manifest_hash": "93ee4a3e8ebb3acf2a02e3630c51a1bf8cc497410ab9872383e1c1782b5f2e55",
       "module_hashes": [
         "001679e8e2e2e29c46be0bf8e85674f874f3e255c30b6a34c40ed824f408964c"

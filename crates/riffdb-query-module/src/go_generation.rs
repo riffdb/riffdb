@@ -92,7 +92,7 @@ fn generate_go_client_inner(
         hex(module.contract_hash().as_bytes())
     )
     .unwrap();
-    output.push_str("type QueryOptions = riffdb.Options\ntype QueryResult[T any] struct { Value T; ApplicationHead uint64; NextCursor string }\ntype WorkflowSuccessorRevision struct { Binding string; Revision uint64 }\ntype CommandResult[T any] struct { Outcome T; CommitSequence *uint64; Replayed bool; OutcomeURI string; WorkflowRevisions []WorkflowSuccessorRevision }\ntype BatchItem[T any] struct { Index uint32; Result *CommandResult[T]; Error error }\ntype BatchResult[T any] struct { Items []BatchItem[T]; Checkpoint uint32; Total uint32 }\n\n");
+    output.push_str("type QueryOptions = riffdb.Options\ntype QueryIdentity struct { ContractLineage string; ContractVersion uint64; ContractBundleHash string; ModuleHash string; QueryName string; PlanHash string }\ntype QueryResult[T any] struct { Value T; Identity QueryIdentity; ApplicationHead uint64; NextCursor string }\ntype WorkflowSuccessorRevision struct { Binding string; Revision uint64 }\ntype CommandResult[T any] struct { Outcome T; CommitSequence *uint64; ContractVersion uint64; PlanHash string; Replayed bool; OutcomeURI string; WorkflowRevisions []WorkflowSuccessorRevision }\ntype BatchItem[T any] struct { Index uint32; Result *CommandResult[T]; Error error }\ntype BatchResult[T any] struct { Items []BatchItem[T]; Checkpoint uint32; Total uint32 }\n\n");
     if !reactive_modules.is_empty() {
         output.push_str("type ConsumerOptions struct { BatchLimit uint32; InFlightLimit uint32; LeaseSeconds uint64; MaximumWait time.Duration }\nfunc DefaultConsumerOptions() ConsumerOptions { return ConsumerOptions{BatchLimit: 1, InFlightLimit: 16, LeaseSeconds: 60, MaximumWait: 30 * time.Second} }\nfunc (options ConsumerOptions) validate() error { if options.BatchLimit < 1 || options.BatchLimit > 64 || options.InFlightLimit < 1 || options.InFlightLimit > 64 || options.LeaseSeconds < 5 || options.LeaseSeconds > 900 || options.MaximumWait < 0 || options.MaximumWait > 30*time.Second { return errors.New(\"invalid generated RiffDB consumer options\") }; return nil }\nfunc retryDelayNanos(delay time.Duration) (uint64, error) { if delay < 0 || delay > 5*time.Minute { return 0, errors.New(\"invalid generated RiffDB retry delay\") }; return uint64(delay), nil }\n\n");
     }
@@ -256,6 +256,12 @@ fn emit_query_methods(
         let source_name = query.name();
         let name = go_public(source_name);
         let (operation, schema_hash) = &operations[source_name];
+        writeln!(
+            output,
+            "const {name}QueryPlanHash = \"{}\"",
+            hex(query.plan().identity().as_bytes())
+        )
+        .unwrap();
         writeln!(output, "var {name}Operation = riffdb.Operation{{Name: \"{operation}\", InputSchemaHash: \"{schema_hash}\"}}").unwrap();
         writeln!(output, "func decode{name}Result(value riffdb.Value) ({name}Result, error) {{ fields, err := riffdb.RecordFields(value); if err != nil {{ return nil, err }}; outcomeValue, err := requiredField(fields, \"outcome\"); if err != nil {{ return nil, err }}; outcome, err := riffdb.EnumValue(outcomeValue); if err != nil {{ return nil, err }}; var raw riffdb.Value; switch outcome {{").unwrap();
         for branch in query.plan().schemas().results() {
@@ -308,7 +314,7 @@ fn emit_query_methods(
                 .unwrap();
             }
         }
-        writeln!(output, "response, err := client.session.Invoke(ctx, {name}Operation, input, options); if err != nil {{ return QueryResult[{name}Result]{{}}, err }}; if response.ApplicationHead == nil {{ return QueryResult[{name}Result]{{}}, errors.New(\"RiffDB driver omitted query frontier\") }}; value, err := decode{name}Result(response.Value); if err != nil {{ return QueryResult[{name}Result]{{}}, err }}; return QueryResult[{name}Result]{{Value: value, ApplicationHead: *response.ApplicationHead, NextCursor: response.Cursor}}, nil }}\n").unwrap();
+        writeln!(output, "response, err := client.session.Invoke(ctx, {name}Operation, input, options); if err != nil {{ return QueryResult[{name}Result]{{}}, err }}; if response.ApplicationHead == nil {{ return QueryResult[{name}Result]{{}}, errors.New(\"RiffDB driver omitted query frontier\") }}; value, err := decode{name}Result(response.Value); if err != nil {{ return QueryResult[{name}Result]{{}}, err }}; identity := QueryIdentity{{ContractLineage: ContractLineage, ContractVersion: ContractVersion, ContractBundleHash: ContractBundleHash, ModuleHash: QueryModuleHash, QueryName: {source_name:?}, PlanHash: {name}QueryPlanHash}}; return QueryResult[{name}Result]{{Value: value, Identity: identity, ApplicationHead: *response.ApplicationHead, NextCursor: response.Cursor}}, nil }}\n").unwrap();
     }
 }
 
@@ -329,6 +335,12 @@ fn emit_command_methods(
         let workflow_revisions = workflow_revision_bindings(command);
         let success_outcome = workflow_success_outcome_name(command);
         let (operation, schema_hash) = &operations[source_name];
+        writeln!(
+            output,
+            "const {name}PlanHash = \"{}\"",
+            hex(command.plan_hash().as_bytes())
+        )
+        .unwrap();
         writeln!(output, "var {name}Operation = riffdb.Operation{{Name: \"{operation}\", InputSchemaHash: \"{schema_hash}\"}}").unwrap();
         writeln!(output, "func encode{name}Input(input {name}Input) map[string]riffdb.Value {{ return map[string]riffdb.Value{{").unwrap();
         for field in command.input().record().fields() {
@@ -424,7 +436,7 @@ fn emit_command_methods(
         } else {
             ", WorkflowRevisions: workflowRevisions".to_owned()
         };
-        writeln!(output, "func (client *Client) {name}(ctx context.Context, input {name}Input) (CommandResult[{name}Outcome], error) {{ {collection_validation}response, err := client.session.Invoke(ctx, {name}Operation, encode{name}Input(input), riffdb.Options{{MaximumAttempts: client.commandAttempts}}); if err != nil {{ return CommandResult[{name}Outcome]{{}}, err }}; outcome, err := decode{name}Outcome(response.Value); if err != nil {{ return CommandResult[{name}Outcome]{{}}, err }}; {revision_call}return CommandResult[{name}Outcome]{{Outcome: outcome, CommitSequence: response.ApplicationHead, Replayed: response.Replayed, OutcomeURI: response.Cursor{revision_field}}}, nil }}").unwrap();
+        writeln!(output, "func (client *Client) {name}(ctx context.Context, input {name}Input) (CommandResult[{name}Outcome], error) {{ {collection_validation}response, err := client.session.Invoke(ctx, {name}Operation, encode{name}Input(input), riffdb.Options{{MaximumAttempts: client.commandAttempts}}); if err != nil {{ return CommandResult[{name}Outcome]{{}}, err }}; outcome, err := decode{name}Outcome(response.Value); if err != nil {{ return CommandResult[{name}Outcome]{{}}, err }}; {revision_call}return CommandResult[{name}Outcome]{{Outcome: outcome, CommitSequence: response.ApplicationHead, ContractVersion: ContractVersion, PlanHash: {name}PlanHash, Replayed: response.Replayed, OutcomeURI: response.Cursor{revision_field}}}, nil }}").unwrap();
         let batch_revision_call = if workflow_revisions.is_empty() {
             String::new()
         } else {
@@ -444,7 +456,7 @@ fn emit_command_methods(
         } else {
             String::new()
         };
-        writeln!(output, "func (client *Client) {name}Batch(ctx context.Context, inputs []{name}Input, concurrency, checkpoint uint32) (BatchResult[{name}Outcome], error) {{ encoded := make([]map[string]riffdb.Value, len(inputs)); for index, input := range inputs {{ {batch_collection_validation}encoded[index] = encode{name}Input(input) }}; response, err := client.session.Batch(ctx, {name}Operation, encoded, concurrency, checkpoint, riffdb.Options{{MaximumAttempts: client.commandAttempts}}); if err != nil {{ return BatchResult[{name}Outcome]{{}}, err }}; result := BatchResult[{name}Outcome]{{Checkpoint: response.Checkpoint, Total: response.Total, Items: make([]BatchItem[{name}Outcome], 0, len(response.Items))}}; for _, item := range response.Items {{ converted := BatchItem[{name}Outcome]{{Index: item.Index}}; if item.Error != nil {{ converted.Error = item.Error }} else if item.Result != nil {{ outcome, decodeErr := decode{name}Outcome(item.Result.Value); if decodeErr != nil {{ return BatchResult[{name}Outcome]{{}}, decodeErr }}; {batch_revision_call}converted.Result = &CommandResult[{name}Outcome]{{Outcome: outcome, CommitSequence: item.Result.CommitSequence, Replayed: item.Result.Replayed, OutcomeURI: item.Result.OutcomeURI{batch_revision_field}}} }}; result.Items = append(result.Items, converted) }}; return result, nil }}\n").unwrap();
+        writeln!(output, "func (client *Client) {name}Batch(ctx context.Context, inputs []{name}Input, concurrency, checkpoint uint32) (BatchResult[{name}Outcome], error) {{ encoded := make([]map[string]riffdb.Value, len(inputs)); for index, input := range inputs {{ {batch_collection_validation}encoded[index] = encode{name}Input(input) }}; response, err := client.session.Batch(ctx, {name}Operation, encoded, concurrency, checkpoint, riffdb.Options{{MaximumAttempts: client.commandAttempts}}); if err != nil {{ return BatchResult[{name}Outcome]{{}}, err }}; result := BatchResult[{name}Outcome]{{Checkpoint: response.Checkpoint, Total: response.Total, Items: make([]BatchItem[{name}Outcome], 0, len(response.Items))}}; for _, item := range response.Items {{ converted := BatchItem[{name}Outcome]{{Index: item.Index}}; if item.Error != nil {{ converted.Error = item.Error }} else if item.Result != nil {{ outcome, decodeErr := decode{name}Outcome(item.Result.Value); if decodeErr != nil {{ return BatchResult[{name}Outcome]{{}}, decodeErr }}; {batch_revision_call}converted.Result = &CommandResult[{name}Outcome]{{Outcome: outcome, CommitSequence: item.Result.CommitSequence, ContractVersion: ContractVersion, PlanHash: {name}PlanHash, Replayed: item.Result.Replayed, OutcomeURI: item.Result.OutcomeURI{batch_revision_field}}} }}; result.Items = append(result.Items, converted) }}; return result, nil }}\n").unwrap();
     }
 }
 
@@ -605,7 +617,7 @@ fn emit_go_reactive_module(
                     } else {
                         ", WorkflowRevisions: workflowRevisions".to_owned()
                     };
-                    writeln!(output, "var {name}React{reaction_method}Operation = riffdb.Operation{{Name: {driver_name:?}, InputSchemaHash: {schema_hash:?}}}\nfunc (consumer *{name}Consumer) React{reaction_method}(ctx context.Context, reaction ContextualReaction, input {command}Input) (CommandResult[{command}Outcome], error) {{ if reaction.Name != {:?} || reaction.CommandName != {:?} {{ return CommandResult[{command}Outcome]{{}}, errors.New(\"contextual reaction identity mismatch\") }}; request := map[string]riffdb.Value{{\"parameters\": riffdb.Record(encode{name}Params(consumer.parameters)), \"consumer_name\": riffdb.String(consumer.consumerName), \"causation_token\": riffdb.String(reaction.CausationToken), \"input\": riffdb.Record(encode{command}Input(input))}}; response, err := consumer.client.session.Invoke(ctx, {name}React{reaction_method}Operation, request, riffdb.Options{{MaximumAttempts: consumer.client.commandAttempts}}); if err != nil {{ return CommandResult[{command}Outcome]{{}}, err }}; outcome, err := decode{command}Outcome(response.Value); if err != nil {{ return CommandResult[{command}Outcome]{{}}, err }}; {revision_call}return CommandResult[{command}Outcome]{{Outcome: outcome, CommitSequence: response.ApplicationHead, Replayed: response.Replayed, OutcomeURI: response.Cursor{revision_field}}}, nil }}", reaction.reaction_name(), reaction.command_name()).unwrap();
+                    writeln!(output, "var {name}React{reaction_method}Operation = riffdb.Operation{{Name: {driver_name:?}, InputSchemaHash: {schema_hash:?}}}\nfunc (consumer *{name}Consumer) React{reaction_method}(ctx context.Context, reaction ContextualReaction, input {command}Input) (CommandResult[{command}Outcome], error) {{ if reaction.Name != {:?} || reaction.CommandName != {:?} {{ return CommandResult[{command}Outcome]{{}}, errors.New(\"contextual reaction identity mismatch\") }}; request := map[string]riffdb.Value{{\"parameters\": riffdb.Record(encode{name}Params(consumer.parameters)), \"consumer_name\": riffdb.String(consumer.consumerName), \"causation_token\": riffdb.String(reaction.CausationToken), \"input\": riffdb.Record(encode{command}Input(input))}}; response, err := consumer.client.session.Invoke(ctx, {name}React{reaction_method}Operation, request, riffdb.Options{{MaximumAttempts: consumer.client.commandAttempts}}); if err != nil {{ return CommandResult[{command}Outcome]{{}}, err }}; outcome, err := decode{command}Outcome(response.Value); if err != nil {{ return CommandResult[{command}Outcome]{{}}, err }}; {revision_call}return CommandResult[{command}Outcome]{{Outcome: outcome, CommitSequence: response.ApplicationHead, ContractVersion: ContractVersion, PlanHash: {command}PlanHash, Replayed: response.Replayed, OutcomeURI: response.Cursor{revision_field}}}, nil }}", reaction.reaction_name(), reaction.command_name()).unwrap();
                 }
                 output.push('\n');
             }

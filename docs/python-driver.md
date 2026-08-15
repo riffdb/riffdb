@@ -66,6 +66,12 @@ PYTHONPATH=src uv run --locked python -m my_app \
   my_database
 ```
 
+`riffdb dev --run` supplies those same three values as both positional
+arguments and the runner-owned `RIFFDB_ENDPOINT`, `RIFFDB_CREDENTIAL_FILE`, and
+`RIFFDB_DATABASE` environment. A runner that accepts both forms must reject a
+mismatch. Go and TypeScript do not receive these variables because their
+application process is confined to the private driver-host protocol.
+
 Credentials are Rust-owned, redacted, nonextractable, non-pickleable objects.
 Use `BearerCredential.from_protected_file()` for a mode-0600 Linux credential.
 Use `CallMetadata.with_database(DatabaseAlias("my_database"))` to select one

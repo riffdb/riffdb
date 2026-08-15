@@ -460,7 +460,10 @@ if ((run)); then
             exit 1
         }
         app_patch="patch.crates-io.riffdb-client-rust.path=\"$rust_sdk\""
-        CARGO_TARGET_DIR="$work_root/application-target" \
+        RIFFDB_ENDPOINT="$endpoint" \
+            RIFFDB_CREDENTIAL_FILE="$work_root/profile.credential" \
+            RIFFDB_DATABASE=default \
+            CARGO_TARGET_DIR="$work_root/application-target" \
             cargo run --quiet --offline \
             --manifest-path "$application_root/Cargo.toml" \
             --config "$app_patch" \
@@ -484,8 +487,12 @@ if ((run)); then
         (
             cd "$application_root"
             unset RIFFDB_TLS_TRUST_ROOT RIFFDB_TLS_SERVER_NAME
-            npm run --silent build
-            npm run --silent start -- "${driver_arguments[@]}"
+            PATH="$installation_root/tooling/typescript/bin:$PATH" \
+                NODE_PATH="$installation_root/tooling/typescript/node_modules" \
+                npm run --silent build
+            PATH="$installation_root/tooling/typescript/bin:$PATH" \
+                NODE_PATH="$installation_root/tooling/typescript/node_modules" \
+                npm run --silent start -- "${driver_arguments[@]}"
         )
     elif [[ -f "$application_root/pyproject.toml" ]]; then
         command -v uv >/dev/null 2>&1 || {
@@ -496,7 +503,10 @@ if ((run)); then
         (
             cd "$application_root"
             uv sync --locked >/dev/null
-            PYTHONPATH=src uv run --locked python -m "$python_package" \
+            RIFFDB_ENDPOINT="$endpoint" \
+                RIFFDB_CREDENTIAL_FILE="$work_root/profile.credential" \
+                RIFFDB_DATABASE=default \
+                PYTHONPATH=src uv run --locked python -m "$python_package" \
                 "$endpoint" "$work_root/profile.credential" default
         )
     else
@@ -513,7 +523,10 @@ if ((acceptance)); then
             exit 1
         }
         app_patch="patch.crates-io.riffdb-client-rust.path=\"$rust_sdk\""
-        CARGO_TARGET_DIR="$work_root/application-target" \
+        RIFFDB_ENDPOINT="$endpoint" \
+            RIFFDB_CREDENTIAL_FILE="$work_root/profile.credential" \
+            RIFFDB_DATABASE=default \
+            CARGO_TARGET_DIR="$work_root/application-target" \
             cargo run --quiet --offline \
             --manifest-path "$application_root/Cargo.toml" \
             --config "$app_patch" \

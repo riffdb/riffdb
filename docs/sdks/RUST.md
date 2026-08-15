@@ -4,6 +4,12 @@ Rust applications use the public `riffdb-client-rust` facade plus a generated
 module for the exact application lock. They do not depend on server, storage,
 policy, compiler, Tonic, Prost, or raw Protobuf crates.
 
+For `riffdb dev --run`, the runner supplies the protected local values as both
+`RIFFDB_ENDPOINT`, `RIFFDB_CREDENTIAL_FILE`, and `RIFFDB_DATABASE` and the
+legacy positional arguments `ENDPOINT CREDENTIAL_FILE DATABASE`. Generated
+starters accept either form and fail closed if both are present but disagree.
+Ambient values cannot redirect the runner-owned child process.
+
 For a remote daemon, construct the closed `riffdb_config::TlsClientConfig` and
 call `RiffDbClient::connect_verified_tls`. The client loads one protected CA
 root, verifies the exact DNS/IP identity, and has no native-root, trust-all,
