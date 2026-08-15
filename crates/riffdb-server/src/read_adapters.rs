@@ -278,6 +278,19 @@ struct ExactNamedQueryView {
 }
 
 impl ExactNamedQueryView {
+    fn contains_module(
+        &self,
+        contract: &ValidatedContractBundle,
+        module: &ValidatedQueryModule,
+    ) -> bool {
+        self.modules.contains_key(&ExactNamedModuleKey {
+            lineage: contract.lineage().clone(),
+            version: contract.contract_version(),
+            contract_hash: contract.bundle_hash(),
+            module_hash: module.identity(),
+        })
+    }
+
     fn get(&self, request: &ExactNamedQueryRequest) -> Option<ResolvedNamedQuery> {
         let key = ExactNamedModuleKey {
             lineage: request.lineage().clone(),
@@ -312,6 +325,9 @@ fn publish_exact_named_queries(
     module: &ValidatedQueryModule,
 ) -> Result<(), QueryModuleReadError> {
     let mut published = view.write().map_err(|_| QueryModuleReadError::Integrity)?;
+    if published.contains_module(contract, module) {
+        return Ok(());
+    }
     let mut successor = ExactNamedQueryView::clone(published.as_ref());
     successor.insert_module(contract, module);
     *published = Arc::new(successor);
@@ -566,7 +582,10 @@ impl QueryModuleReadPort for ServerCatalogReadPort {
             && let Some(module) =
                 try_cached_query_module(&self.module_storage, &self.module_cache, &contract, None)
         {
-            return Box::pin(async move { Ok(module) });
+            let publication = module.as_ref().map_or(Ok(()), |resolved| {
+                publish_exact_named_queries(&self.exact_named_queries, &contract, resolved)
+            });
+            return Box::pin(async move { publication.map(|()| module) });
         }
         note_query_module_pool_dispatch();
         submit_query_module(self.query_module.reserve_async(control), (contract, None))
@@ -586,7 +605,10 @@ impl QueryModuleReadPort for ServerCatalogReadPort {
                 Some(module_hash),
             )
         {
-            return Box::pin(async move { Ok(module) });
+            let publication = module.as_ref().map_or(Ok(()), |resolved| {
+                publish_exact_named_queries(&self.exact_named_queries, &contract, resolved)
+            });
+            return Box::pin(async move { publication.map(|()| module) });
         }
         note_query_module_pool_dispatch();
         submit_query_module(
