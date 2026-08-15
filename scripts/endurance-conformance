@@ -10,12 +10,13 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import tempfile
 import time
 from typing import Any
 from uuid import UUID
 
 
-RESULT_SCHEMA = "riffdb.alpha-endurance-conformance-result/v1"
+RESULT_SCHEMA = "riffdb.alpha-endurance-conformance-result/v2"
 WORKER_SCHEMA = "riffdb.alpha-endurance-worker/v1"
 DOMAINS = ("better-auth", "mlflow", "openfga", "woodpecker")
 LANGUAGES = ("go", "python", "rust", "typescript")
@@ -23,6 +24,16 @@ TENANTS = ("tenant_alpha", "tenant_beta", "tenant_gamma", "tenant_delta")
 WORKLOADS = ("events", "live_queries", "reads", "workflows", "writes")
 APPLICATION_NAMESPACES = (1001, 2003, 3005, 4007)
 MAX_BYTES = 1024 * 1024
+MAX_PROBE_FILES = 256
+MAX_PROBE_FILE_BYTES = 512 * 1024 * 1024
+MAX_PROBE_TOTAL_BYTES = 1024 * 1024 * 1024
+PROBE_BUNDLE_SCHEMA = "riffdb.alpha-endurance-conformance-probes/v1"
+PROBE_MANIFEST = "probe-manifest-v1.json"
+REQUIRED_PROBE_PATHS = {
+    "bin/adapter_conformance",
+    "bin/row_policy_conformance",
+    "runner",
+}
 
 
 def fail(message: str) -> "None":
@@ -65,6 +76,94 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def probe_bundle_root(raw: str | Path) -> Path:
+    candidate = Path(raw)
+    if not candidate.is_absolute() or candidate.is_symlink() or not candidate.is_dir():
+        fail("endurance conformance probe bundle must be an absolute non-symlink directory")
+    return candidate
+
+
+def probe_inventory(root: Path) -> list[dict[str, Any]]:
+    entries: list[dict[str, Any]] = []
+    total_bytes = 0
+    for candidate in sorted(root.rglob("*")):
+        if candidate == root / PROBE_MANIFEST:
+            continue
+        if candidate.is_symlink():
+            fail("endurance conformance probe bundle contains a symlink")
+        if candidate.is_dir():
+            continue
+        if not candidate.is_file():
+            fail("endurance conformance probe bundle contains a non-regular entry")
+        relative = candidate.relative_to(root).as_posix()
+        size = candidate.stat().st_size
+        if size <= 0 or size > MAX_PROBE_FILE_BYTES:
+            fail("endurance conformance probe file exceeds its byte bound")
+        total_bytes += size
+        if total_bytes > MAX_PROBE_TOTAL_BYTES:
+            fail("endurance conformance probe bundle exceeds its byte bound")
+        entries.append({"path": relative, "sha256": sha256_file(candidate), "size": size})
+        if len(entries) > MAX_PROBE_FILES:
+            fail("endurance conformance probe bundle exceeds its file bound")
+    paths = {entry["path"] for entry in entries}
+    if not REQUIRED_PROBE_PATHS <= paths:
+        fail("endurance conformance probe bundle omits a required executable")
+    if not any(path.startswith("fixtures/adapters/conformance/") for path in paths):
+        fail("endurance conformance probe bundle omits its adapter fixtures")
+    if any(not os.access(root / path, os.X_OK) for path in REQUIRED_PROBE_PATHS):
+        fail("endurance conformance probe executable is not executable")
+    return entries
+
+
+def seal_probe_bundle(root: Path, release_artifact_sha256: str, source_revision: str) -> str:
+    if len(release_artifact_sha256) != 64 or any(
+        character not in "0123456789abcdef" for character in release_artifact_sha256
+    ):
+        fail("endurance conformance release artifact digest is invalid")
+    if len(source_revision) != 40 or any(
+        character not in "0123456789abcdef" for character in source_revision
+    ):
+        fail("endurance conformance source revision is invalid")
+    manifest = root / PROBE_MANIFEST
+    if manifest.exists() or manifest.is_symlink():
+        fail("endurance conformance probe manifest already exists")
+    value = {
+        "schema": PROBE_BUNDLE_SCHEMA,
+        "release_artifact_sha256": release_artifact_sha256,
+        "source_revision": source_revision,
+        "files": probe_inventory(root),
+    }
+    return atomic_write(manifest, value)
+
+
+def verify_probe_bundle(root: Path) -> tuple[dict[str, Any], str]:
+    manifest_path = root / PROBE_MANIFEST
+    manifest = read_object(manifest_path)
+    if set(manifest) != {
+        "schema",
+        "release_artifact_sha256",
+        "source_revision",
+        "files",
+    } or manifest.get("schema") != PROBE_BUNDLE_SCHEMA:
+        fail("endurance conformance probe manifest has an invalid shape")
+    release_artifact_sha256 = manifest.get("release_artifact_sha256")
+    source_revision = manifest.get("source_revision")
+    if not isinstance(release_artifact_sha256, str) or len(release_artifact_sha256) != 64 or any(
+        character not in "0123456789abcdef" for character in release_artifact_sha256
+    ):
+        fail("endurance conformance probe manifest has an invalid release identity")
+    if not isinstance(source_revision, str) or len(source_revision) != 40 or any(
+        character not in "0123456789abcdef" for character in source_revision
+    ):
+        fail("endurance conformance probe manifest has an invalid source identity")
+    expected = manifest.get("files")
+    if not isinstance(expected, list) or not 1 <= len(expected) <= MAX_PROBE_FILES:
+        fail("endurance conformance probe manifest has an invalid inventory")
+    if expected != probe_inventory(root):
+        fail("endurance conformance probe bundle differs from its sealed inventory")
+    return manifest, sha256_file(manifest_path)
+
+
 def atomic_write(path: Path, value: dict[str, Any]) -> str:
     pending = path.with_name(f".{path.name}.{os.getpid()}.pending")
     encoded = (json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n").encode()
@@ -79,6 +178,53 @@ def atomic_write(path: Path, value: dict[str, Any]) -> str:
         if pending.exists():
             pending.unlink()
     return hashlib.sha256(encoded).hexdigest()
+
+
+def self_test() -> None:
+    task_tmp_root = Path(os.environ.get("RIFFDB_TMP_ROOT", Path.home() / "tmp"))
+    task_tmp_root.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(
+        prefix="riffdb-endurance-conformance-", dir=task_tmp_root
+    ) as temporary:
+        root = Path(temporary).resolve()
+        (root / "bin").mkdir()
+        fixture = root / "fixtures/adapters/conformance/example/fixture.json"
+        fixture.parent.mkdir(parents=True)
+        fixture.write_text("{}\n", encoding="utf-8")
+        runner = root / "runner"
+        runner.write_bytes(Path(__file__).read_bytes())
+        runner.chmod(0o700)
+        for name in ("adapter_conformance", "row_policy_conformance"):
+            executable = root / "bin" / name
+            executable.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            executable.chmod(0o700)
+        sealed = seal_probe_bundle(root, "a" * 64, "b" * 40)
+        _, verified = verify_probe_bundle(root)
+        if sealed != verified:
+            fail("endurance conformance probe manifest digest is unstable")
+
+        # A live-checkout mutation is deliberately outside the sealed bundle and
+        # therefore cannot alter the probe identity used by a running soak.
+        live_source = task_tmp_root / f"riffdb-live-source-{os.getpid()}"
+        try:
+            live_source.write_text("before\n", encoding="utf-8")
+            live_source.write_text("after\n", encoding="utf-8")
+            _, after_live_change = verify_probe_bundle(root)
+            if after_live_change != sealed:
+                fail("live source changed the sealed endurance conformance identity")
+        finally:
+            if live_source.exists():
+                live_source.unlink()
+
+        with (root / "bin/adapter_conformance").open("ab") as destination:
+            destination.write(b"tampered")
+        try:
+            verify_probe_bundle(root)
+        except ValueError:
+            pass
+        else:
+            fail("tampered endurance conformance probe bundle passed")
+    print("immutable_probe_bundle: passed")
 
 
 def reexecute_installed_python(environment: Path) -> None:
@@ -278,6 +424,19 @@ async def application_probes(environment: Path) -> int:
 
 
 def main() -> int:
+    if sys.argv[1:] == ["--self-test"]:
+        self_test()
+        return 0
+    if len(sys.argv) == 5 and sys.argv[1] == "--seal-probe-bundle":
+        root = probe_bundle_root(sys.argv[2])
+        print(seal_probe_bundle(root, sys.argv[3], sys.argv[4]))
+        return 0
+    if len(sys.argv) == 3 and sys.argv[1] == "--verify-probe-bundle":
+        _, digest = verify_probe_bundle(probe_bundle_root(sys.argv[2]))
+        print(digest)
+        return 0
+    if len(sys.argv) != 1:
+        fail("usage: endurance-conformance [--self-test|--verify-probe-bundle ROOT]")
     root = artifact_root()
     environment = root / "environment-v1"
     if not environment.is_dir() or environment.is_symlink():
@@ -288,40 +447,25 @@ def main() -> int:
     observations, worker_sha256 = worker_observations(environment)
     verified_hot_tickets = asyncio.run(application_probes(environment))
 
-    repository = Path(__file__).resolve().parent.parent
+    probe_root = probe_bundle_root(environment / "conformance")
+    probe_manifest, probe_bundle_sha256 = verify_probe_bundle(probe_root)
     command_environment = os.environ.copy()
     scratch = environment / "conformance-tmp"
     scratch.mkdir(mode=0o700, exist_ok=True)
     command_environment["RIFFDB_TMP_ROOT"] = str(scratch)
     command_environment["TMPDIR"] = str(scratch)
+    command_environment["RIFFDB_TEST_TMP_ROOT"] = str(scratch)
+    command_environment["RIFFDB_ADAPTER_CONFORMANCE_FIXTURE_ROOT"] = str(
+        probe_root / "fixtures/adapters/conformance"
+    )
     adapter_suite_sha256 = bounded_command(
-        [
-            "cargo",
-            "+1.97.0",
-            "test",
-            "-p",
-            "riffdb-testkit",
-            "--test",
-            "adapter_conformance",
-            "--all-features",
-            "--quiet",
-        ],
-        repository,
+        [str(probe_root / "bin/adapter_conformance"), "--quiet"],
+        scratch,
         command_environment,
     )
     row_policy_suite_sha256 = bounded_command(
-        [
-            "cargo",
-            "+1.97.0",
-            "test",
-            "-p",
-            "riffdb-testkit",
-            "--test",
-            "row_policy_conformance",
-            "--all-features",
-            "--quiet",
-        ],
-        repository,
+        [str(probe_root / "bin/row_policy_conformance"), "--quiet"],
+        scratch,
         command_environment,
     )
 
@@ -340,6 +484,9 @@ def main() -> int:
         "least_authority_policy_probe": "authorization_denied",
         "adapter_suite_sha256": adapter_suite_sha256,
         "row_policy_suite_sha256": row_policy_suite_sha256,
+        "probe_bundle_sha256": probe_bundle_sha256,
+        "probe_source_revision": probe_manifest["source_revision"],
+        "release_artifact_sha256": probe_manifest["release_artifact_sha256"],
         "domains": list(DOMAINS),
     }
     evidence_root = environment / "conformance-evidence"
@@ -359,6 +506,8 @@ def main() -> int:
         "data_reconciliation_passed": True,
         "silent_loss": 0,
         "evidence_sha256": evidence_sha256,
+        "probe_bundle_sha256": probe_bundle_sha256,
+        "release_artifact_sha256": probe_manifest["release_artifact_sha256"],
     }
     print(json.dumps(result, sort_keys=True, separators=(",", ":")))
     return 0

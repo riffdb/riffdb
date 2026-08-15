@@ -11103,6 +11103,7 @@ work_packages:
     early exit, missing generations, or incomplete observations from passing
   acceptance_commands:
   - ./scripts/alpha-endurance --self-test
+  - ./scripts/endurance-conformance --self-test
   - cargo +1.97.0 test -p riffdb-testkit --test endurance_harness --all-features
   - ./scripts/check-requirement-coverage
   - ./scripts/handbook check
@@ -11144,6 +11145,8 @@ work_packages:
   deliverables:
   - One retained 72-hour remote mixed-load receipt with all four adapter shapes/languages, periodic
     conformance and policy probes, zero silent loss/leak, and no unsupported storage-unavailable path
+  - Periodic semantic probes are built once from a clean release revision, sealed with their fixtures
+    and release identity, and remain unaffected by later live-checkout edits throughout the run
   - Forced journal recycling across many generations, repeated checkpoint/recovery, supported
     retention and backup cycles, capability/certificate rotation, deploy-under-load, and restarts
   - Bounded RSS/file/backlog/queue slopes after accounting for declared retained data; final full
@@ -11153,6 +11156,7 @@ work_packages:
   - A 24-hour rehearsal may qualify harness changes, but cannot satisfy alpha; interruption,
     interference, missing lifecycle coverage, or an invalid observation makes the 72-hour run fail
   acceptance_commands:
+  - ./scripts/endurance-conformance --self-test
   - ./scripts/alpha-endurance --duration-hours 72 --all-domains --all-languages --remote --require-idle-host --require-all-lifecycles
   - ./scripts/adapter-conformance --all-domains --all-languages
   - ./scripts/adapter-export-reimport-acceptance --all-domains --all-languages

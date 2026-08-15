@@ -109,10 +109,24 @@ fn endurance_receipts_use_the_accepted_four_alpha_domains() {
             "{script} does not bind the accepted alpha adapter inventory"
         );
         assert!(
-            !source.contains("\"payload\""),
+            !source.contains(
+                "REQUIRED_DOMAINS = {\"openfga\", \"mlflow\", \"better-auth\", \"woodpecker\", \"payload\"}"
+            ),
             "{script} incorrectly promotes the retained Payload regression into the alpha gate"
         );
+        if script == "scripts/alpha-endurance-controller" {
+            assert!(
+                !source.contains("\"payload\""),
+                "the runtime controller must not schedule the Payload regression"
+            );
+        }
     }
+    let validator = fs::read_to_string(root.join("scripts/alpha-endurance"))
+        .expect("endurance validator source is readable");
+    assert!(
+        validator.contains("regression_adapters\") == [\"payload\"]"),
+        "release disaster recovery must retain Payload only as a post-alpha regression"
+    );
 }
 
 #[test]
@@ -141,6 +155,10 @@ fn endurance_environment_is_tls_exact_and_least_authority() {
         "role bind",
         "riffdb.alpha-endurance-environment-start/v1",
         "riffdb.alpha-endurance-environment-stop/v1",
+        "--test adapter_conformance --test row_policy_conformance",
+        "--no-run --message-format=json-render-diagnostics",
+        "--seal-probe-bundle",
+        "conformance_bundle_sha256",
     ] {
         assert!(source.contains(required), "environment omits {required}");
     }
@@ -625,19 +643,62 @@ fn endurance_conformance_reconciles_public_state_and_policy() {
     let source = fs::read_to_string(root.join("scripts/endurance-conformance"))
         .expect("conformance source is readable");
     for required in [
-        "riffdb.alpha-endurance-conformance-result/v1",
+        "riffdb.alpha-endurance-conformance-result/v2",
         "riffdb.alpha-endurance-conformance-evidence/v1",
+        "riffdb.alpha-endurance-conformance-probes/v1",
         "TicketPageFound",
         "ApplicationErrorCode.AUTHORIZATION_DENIED",
         "adapter_conformance",
         "row_policy_conformance",
         "attempts != logical + retries",
         "application_lock_sha256",
+        "probe_bundle_sha256",
+        "RIFFDB_ADAPTER_CONFORMANCE_FIXTURE_ROOT",
     ] {
         assert!(source.contains(required), "conformance omits {required}");
     }
     assert!(
         !source.contains("GetEntity") && !source.contains("ScanIndex"),
         "conformance must remain on generated application operations"
+    );
+    assert!(
+        !source.contains("\"cargo\"") && !source.contains("cargo +1.97.0"),
+        "periodic conformance must execute sealed probes rather than the live checkout"
+    );
+
+    let controller = fs::read_to_string(root.join("scripts/alpha-endurance-controller"))
+        .expect("controller source is readable");
+    for required in [
+        "installed_conformance",
+        "environment-v1/conformance",
+        "probe-manifest-v1.json",
+        "conformance_probe_sha256",
+    ] {
+        assert!(
+            controller.contains(required),
+            "controller omits immutable conformance binding {required}"
+        );
+    }
+}
+
+#[test]
+fn endurance_conformance_probe_bundle_is_immutable_and_tamper_evident() {
+    let root = repository_root();
+    let output = Command::new(root.join("scripts/endurance-conformance"))
+        .arg("--self-test")
+        .current_dir(&root)
+        .env("RIFFDB_TMP_ROOT", task_temporary_root())
+        .output()
+        .expect("conformance self-test must launch");
+    assert!(
+        output.status.success(),
+        "conformance self-test failed:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    assert!(
+        String::from_utf8(output.stdout)
+            .expect("conformance self-test output is UTF-8")
+            .contains("immutable_probe_bundle: passed")
     );
 }

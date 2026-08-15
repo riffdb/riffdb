@@ -40,6 +40,7 @@ Run this during ordinary development:
 
 ```bash
 ./scripts/alpha-endurance --self-test
+./scripts/endurance-conformance --self-test
 cargo +1.97.0 test -p riffdb-testkit --test endurance_harness --all-features
 ```
 
@@ -103,6 +104,14 @@ inventory, observations, or receipt.
 The first-party environment action is `scripts/endurance-environment`. Setup
 creates a fresh, artifact-root-confined TicketDesk installation with a direct
 TLS listener and two named databases whose data and backup roots are siblings.
+Setup requires a clean source revision and builds the two periodic semantic
+test executables once in release mode. It copies those executables, the exact
+adapter fixture closure, and the conformance runner into the run root, then
+seals every file digest in
+`riffdb.alpha-endurance-conformance-probes/v1`. Later checkpoints execute only
+that installed bundle. Editing, regenerating, or temporarily breaking the live
+developer checkout after setup cannot change or fail an in-flight endurance
+run; changing any installed probe byte fails closed instead.
 The `default` alias carries the complete event-bearing four-language workload.
 The `retention` alias deploys the same exact application lock but receives only
 event-free history commands through its own `TicketDeskSeeder` binding, so the
@@ -267,19 +276,22 @@ controller retains these safe action results and derives the counters from
 them; a successful process exit alone is not lifecycle evidence.
 
 The periodic conformance command likewise prints one bounded
-`riffdb.alpha-endurance-conformance-result/v1` object. It must prove all four
+`riffdb.alpha-endurance-conformance-result/v2` object. It must prove all four
 adapter domains, current row-policy probes, exact data reconciliation, zero
-silent loss, and a content digest. The controller retains every result. Exit
-status alone cannot assert conformance or policy correctness.
+silent loss, a content digest, the immutable probe-bundle digest, and the
+installed release-artifact digest. Every checkpoint in a receipt must carry
+the same probe identity. The controller retains every result. Exit status
+alone cannot assert conformance or policy correctness.
 
 The first-party `scripts/endurance-conformance` checkpoint reconciles every
 worker's logical-operation, transport-attempt, workload, and tenant totals;
 reads all sixteen language/tenant hot tickets through the generated Python
 client over verified TLS; and proves the seeder role cannot read one. It also
-reruns the exact four-domain and row-policy semantic suites and binds their
-outputs to authenticated serving health, the application lock, and the four
-atomic worker snapshots. The retained evidence is content addressed; only its
-digest enters the controller result.
+runs the sealed four-domain and row-policy semantic binaries and binds their
+outputs to authenticated serving health, the application lock, the installed
+release identity, the probe-bundle identity, and the four atomic worker
+snapshots. The retained evidence is content addressed; only its digest enters
+the controller result.
 
 The controller writes an untrusted raw receipt. The outer harness adds separate
 preflight and postflight host inventories, binds the receipt to the canonical
