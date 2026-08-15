@@ -116,6 +116,14 @@ const QUERY_SOURCES: &[(&str, &str)] = &[
         "TicketPage",
         include_str!("../../../../queries/ticketdesk/ticket_page.riffq"),
     ),
+    (
+        "TicketPagePaged",
+        include_str!("../../../../queries/ticketdesk/ticket_page_paged.riffq"),
+    ),
+    (
+        "TicketQueue",
+        include_str!("../../../../queries/ticketdesk/ticket_queue.riffq"),
+    ),
 ];
 const CAPABILITY_KEY_DOCUMENT: &[u8] =
     b"riffdb-capability-digest-keys-v1\n7:000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f\n";
@@ -1524,6 +1532,11 @@ fn reap_child(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn embedded_application_role_and_query_module_are_exact() {
+        compile_ticketdesk_application_role().expect("embedded TicketDesk role must compile");
+    }
 
     #[test]
     fn database_root_prefers_explicit_override() {
