@@ -17,8 +17,8 @@ from riffdb_application._binding import decode_variant, encode_record
 
 CONTRACT_LINEAGE: Final[str] = "BetterAuthAcceptance"
 CONTRACT_VERSION: Final[int] = 1
-CONTRACT_BUNDLE_HASH: Final[str] = "168e60e3a7dad19850f63e8255fd209773f6373c702a49313f4762f3c3411c77"
-QUERY_MODULE_HASH: Final[str] = "47b15f86f8cfbbc13a1c8452b2abd07e799ff4346b1f0875b00dcdf026fb30b9"
+CONTRACT_BUNDLE_HASH: Final[str] = "02fcda367078ea5370395c884552b1a9d6e05ffad1a433c6fd12c7916da6b2ab"
+QUERY_MODULE_HASH: Final[str] = "1eea54c2713bd0ae5108fdba016a2cc5be9bb554f0d1d102be68a7b915b83613"
 
 class SessionState(StrEnum):
     ACTIVE = "Active"
@@ -69,7 +69,7 @@ class VerificationToken:
     organization_id: UUID
     verification_token_id: UUID
 
-GET_SESSION_QUERY_PLAN_HASH: Final[str] = "b6e9929b3b4dfc23f13bab693a30dc3b7bef114d6f06fab3395049d5b262c62a"
+GET_SESSION_QUERY_PLAN_HASH: Final[str] = "b4a7425759564b52c726a650d4993df452230bc6331d72e7789c424c0d26bc30"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class GetSessionParams:
@@ -184,7 +184,7 @@ class RefreshSessionInput:
     expected_revision: Annotated[int, "u64"]
     successor_token_digest: str
 
-REFRESH_SESSION_PLAN_HASH: Final[str] = "762b91043dd832b9585b7dd5f705c29b3163b2708496f424e803e1447aafb7f4"
+REFRESH_SESSION_PLAN_HASH: Final[str] = "1fc36df2cdda2581a7736e5b49774d6dacbd2575061115abdf95cf53c821a397"
 @dataclass(frozen=True, slots=True, kw_only=True)
 class RefreshSessionSessionRefreshed:
     session: Session
@@ -216,7 +216,7 @@ class RevokeSessionInput:
     organization_id: UUID
     expected_revision: Annotated[int, "u64"]
 
-REVOKE_SESSION_PLAN_HASH: Final[str] = "fe7591cdb38c90c3b670411045d18e879fc1084561eafc7418dfbfcf634b3c6e"
+REVOKE_SESSION_PLAN_HASH: Final[str] = "5dbc0237ea41a112ca3476f8a5912e57fc4d3acdfcc21f290e5a8957bd2a8807"
 @dataclass(frozen=True, slots=True, kw_only=True)
 class RevokeSessionSessionRevoked:
     session: Session

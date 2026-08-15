@@ -1,0 +1,21 @@
+contract SecretRevealFixture version 1 {
+  entity SecretRow {
+    key (organization_id: uuid, row_id: uuid)
+    field secret digest: string<128>
+  }
+
+  aggregate SecretRows {
+    root SecretRow
+    partition_by organization_id
+    conflict_key (organization_id, row_id)
+  }
+
+  command ReadDigest {
+    input organization_id: uuid
+    input row_id: uuid
+    read SecretRow(organization_id, row_id) as row else Missing {}
+    return Found {
+      digest: row.digest reveals row.digest
+    }
+  }
+}

@@ -8,7 +8,10 @@
 //! while contracts without the keyword keep their exact prior encoding.
 
 use riffdb_contract_compiler::compile_contract_source;
-use riffdb_contract_ir::{BUNDLE_FORMAT_VERSION_V8, ContractBundle, SchemaIr, SecretFieldSpecV1};
+use riffdb_contract_ir::{
+    BUNDLE_FORMAT_VERSION_V8, BUNDLE_FORMAT_VERSION_V11, CommandExplain, ContractBundle, SchemaIr,
+    SecretFieldSpecV1, SecretRevealDestinationV1,
+};
 
 const SECRET_CONTRACT: &str = r#"
 contract AuthShape version 1 {
@@ -221,5 +224,276 @@ fn secret_classification_rejects_primary_key_fields() {
     assert!(matches!(
         error,
         riffdb_contract_ir::IrValidationError::InvalidReference { .. }
+    ));
+}
+
+fn reveal_contract(flow: &str) -> String {
+    format!(
+        r#"
+contract SecretReveal version 1 {{
+  entity SecretRow {{
+    key (organization_id: uuid, row_id: uuid)
+    field secret digest: string<256>
+    field public_digest: string<256>
+  }}
+  aggregate SecretRows {{
+    root SecretRow
+    partition_by organization_id
+    conflict_key (organization_id, row_id)
+  }}
+  command ReadDigest {{
+    input organization_id: uuid
+    input row_id: uuid
+    read SecretRow(organization_id, row_id) as row else Missing {{}}
+    return Found {{ digest: {flow} }}
+  }}
+}}
+"#
+    )
+}
+
+#[test]
+fn secret_flow_without_reveal_fails_with_both_source_spans() {
+    let source = reveal_contract("row.digest");
+    let error = compile_contract_source(&source).expect_err("undeclared disclosure must fail");
+    let diagnostic = error
+        .semantic()
+        .expect("semantic diagnostics")
+        .as_slice()
+        .iter()
+        .find(|diagnostic| diagnostic.code().as_str() == "RDB-C046")
+        .expect("secret reveal diagnostic");
+    let destination = source.find("digest: row.digest").expect("destination");
+    let secret_source = source.find("digest: string<256>").expect("source field");
+    assert_eq!(diagnostic.primary_span().start() as usize, destination);
+    assert_eq!(
+        diagnostic.related_span().map(|span| span.start() as usize),
+        Some(secret_source)
+    );
+}
+
+#[test]
+fn exact_reveal_is_versioned_hashed_and_round_trips() {
+    let source = reveal_contract("row.digest reveals row.digest");
+    let bundle = compile_contract_source(&source).expect("declared disclosure compiles");
+    assert_eq!(bundle.format_version(), BUNDLE_FORMAT_VERSION_V11);
+    let command = bundle.commands().first().expect("command");
+    let reveal = command.secret_reveals().first().expect("reveal");
+    assert_eq!(command.secret_reveals().len(), 1);
+    assert!(matches!(
+        reveal.destination(),
+        SecretRevealDestinationV1::OutcomeField { .. }
+    ));
+    let decoded = ContractBundle::decode(bundle.canonical_bytes()).expect("v11 round trip");
+    assert_eq!(decoded, bundle);
+    assert_eq!(
+        decoded.commands()[0].secret_reveals(),
+        command.secret_reveals()
+    );
+}
+
+#[test]
+fn checked_in_secret_reveal_fixture_pins_v11_bytes_hash_and_explain() {
+    let bytes = include_bytes!("../../../fixtures/compiler/secret-reveal/bundle.bin");
+    let pinned_hash =
+        include_str!("../../../fixtures/compiler/secret-reveal/bundle-hash.txt").trim_end();
+    let pinned_explain =
+        include_str!("../../../fixtures/compiler/secret-reveal/command-explain.txt");
+    let decoded = ContractBundle::decode(bytes).expect("the pinned v11 fixture must decode");
+    assert_eq!(decoded.format_version(), BUNDLE_FORMAT_VERSION_V11);
+    let command = decoded.commands().first().expect("fixture command");
+    assert_eq!(command.secret_reveals().len(), 1);
+    let rendered_hash: String = decoded
+        .bundle_hash()
+        .as_bytes()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    assert_eq!(rendered_hash, pinned_hash);
+    assert_eq!(
+        CommandExplain::from_plan(command).render_text(),
+        pinned_explain
+    );
+}
+
+#[test]
+fn reveal_must_name_an_exact_secret_dependency() {
+    let source = reveal_contract("row.public_digest reveals row.digest");
+    let error = compile_contract_source(&source).expect_err("excess reveal must fail");
+    let diagnostic = error
+        .semantic()
+        .expect("semantic diagnostics")
+        .as_slice()
+        .iter()
+        .find(|diagnostic| diagnostic.code().as_str() == "RDB-C046")
+        .expect("secret reveal diagnostic");
+    let annotation = source.rfind("row.digest").expect("annotation");
+    assert_eq!(diagnostic.primary_span().start() as usize, annotation);
+    assert!(diagnostic.related_span().is_some());
+}
+
+#[test]
+fn derived_reveal_requires_every_secret_source_and_no_other_source() {
+    let base = r#"
+contract DerivedSecretReveal version 1 {
+  entity Row {
+    key (organization_id: uuid, row_id: uuid)
+    field secret secret_score: i64
+    field secret secret_offset: i64
+  }
+  aggregate Rows {
+    root Row
+    partition_by organization_id
+    conflict_key (organization_id, row_id)
+  }
+  command ReadScore {
+    input organization_id: uuid
+    input row_id: uuid
+    read Row(organization_id, row_id) as row else Missing {}
+    return Found { score: FLOW }
+  }
+}
+"#;
+    let missing = base.replace(
+        "FLOW",
+        "row.secret_score + row.secret_offset reveals row.secret_score",
+    );
+    let error = compile_contract_source(&missing).expect_err("one missing source must fail");
+    assert!(
+        error
+            .semantic()
+            .expect("semantic diagnostics")
+            .as_slice()
+            .iter()
+            .any(|diagnostic| diagnostic.code().as_str() == "RDB-C046")
+    );
+
+    let exact = base.replace(
+        "FLOW",
+        concat!(
+            "row.secret_score + row.secret_offset ",
+            "reveals row.secret_score reveals row.secret_offset"
+        ),
+    );
+    let bundle = compile_contract_source(&exact).expect("both exact sources compile");
+    assert_eq!(bundle.commands()[0].secret_reveals().len(), 2);
+    assert_eq!(bundle.format_version(), BUNDLE_FORMAT_VERSION_V11);
+}
+
+#[test]
+fn a_field_named_reveals_remains_source_compatible() {
+    let source = r#"
+contract RevealsIdentifier version 1 {
+  entity Row {
+    key (organization_id: uuid, row_id: uuid)
+    field reveals: string<32>
+  }
+  aggregate Rows {
+    root Row
+    partition_by organization_id
+    conflict_key (organization_id, row_id)
+  }
+}
+"#;
+    compile_contract_source(source).expect("reveals remains a valid identifier");
+}
+
+#[test]
+fn secret_classification_is_sticky_across_entity_assignments() {
+    let base = r#"
+contract StickySecret version 1 {
+  entity Row {
+    key (organization_id: uuid, row_id: uuid)
+    field secret secret_value: string<128>
+    field secret secret_copy: string<128>
+    field public_copy: string<128>
+  }
+  aggregate Rows {
+    root Row
+    partition_by organization_id
+    conflict_key (organization_id, row_id)
+  }
+  command CopySecret {
+    input request_id: uuid
+    input organization_id: uuid
+    input row_id: uuid
+    idempotency_key request_id
+    mutate Row(organization_id, row_id) as row else Missing {}
+    FLOW
+    return Copied {}
+  }
+}
+"#;
+    let sticky = base.replace("FLOW", "set row.secret_copy = row.secret_value");
+    let bundle = compile_contract_source(&sticky).expect("secret-to-secret flow stays classified");
+    assert!(bundle.commands()[0].secret_reveals().is_empty());
+    assert_eq!(bundle.format_version(), BUNDLE_FORMAT_VERSION_V8);
+
+    let leaked = base.replace("FLOW", "set row.public_copy = row.secret_value");
+    let error = compile_contract_source(&leaked).expect_err("public copy requires reveal");
+    assert!(
+        error
+            .semantic()
+            .expect("semantic")
+            .as_slice()
+            .iter()
+            .any(|diagnostic| {
+                diagnostic.code().as_str() == "RDB-C046" && diagnostic.related_span().is_some()
+            })
+    );
+
+    let declared = base.replace(
+        "FLOW",
+        "set row.public_copy = row.secret_value reveals row.secret_value",
+    );
+    let bundle = compile_contract_source(&declared).expect("declared entity disclosure compiles");
+    assert_eq!(bundle.format_version(), BUNDLE_FORMAT_VERSION_V11);
+    assert!(matches!(
+        bundle.commands()[0].secret_reveals()[0].destination(),
+        SecretRevealDestinationV1::EntityField { .. }
+    ));
+}
+
+#[test]
+fn durable_event_disclosure_requires_the_same_exact_annotation() {
+    let base = r#"
+contract SecretEvent version 1 {
+  entity Row {
+    key (organization_id: uuid, row_id: uuid)
+    field secret digest: string<128>
+  }
+  event DigestPublished { digest: string<128> }
+  aggregate Rows {
+    root Row
+    partition_by organization_id
+    conflict_key (organization_id, row_id)
+  }
+  command PublishDigest {
+    input request_id: uuid
+    input organization_id: uuid
+    input row_id: uuid
+    idempotency_key request_id
+    mutate Row(organization_id, row_id) as row else Missing {}
+    emit DigestPublished { digest: FLOW }
+    return Published {}
+  }
+}
+"#;
+    let missing = base.replace("FLOW", "row.digest");
+    let error = compile_contract_source(&missing).expect_err("event disclosure requires reveal");
+    assert!(
+        error
+            .semantic()
+            .expect("semantic")
+            .as_slice()
+            .iter()
+            .any(|diagnostic| { diagnostic.code().as_str() == "RDB-C046" })
+    );
+
+    let declared = base.replace("FLOW", "row.digest reveals row.digest");
+    let bundle = compile_contract_source(&declared).expect("declared event disclosure compiles");
+    assert!(matches!(
+        bundle.commands()[0].secret_reveals()[0].destination(),
+        SecretRevealDestinationV1::EventField { .. }
     ));
 }

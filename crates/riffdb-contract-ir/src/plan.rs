@@ -1188,6 +1188,89 @@ impl LocalityPlan {
     }
 }
 
+/// One closed contract destination that intentionally receives secret data.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum SecretRevealDestinationV1 {
+    /// A stored entity field assignment.
+    EntityField {
+        /// Mutable destination binding.
+        binding: BindingId,
+        /// Stable destination field.
+        field: FieldId,
+    },
+    /// A durable event payload field.
+    EventField {
+        /// Stable event type.
+        event_type: riffdb_types::EventTypeId,
+        /// Stable payload field.
+        field: FieldId,
+    },
+    /// A typed command outcome field.
+    OutcomeField {
+        /// Stable outcome.
+        outcome: riffdb_types::OutcomeId,
+        /// Stable payload field.
+        field: FieldId,
+    },
+}
+
+/// One compiler-checked intentional disclosure of a secret bound field.
+///
+/// The declaration is executable-plan identity, not runtime authority. The
+/// source must be a secret-classified entity field used by `expression`, and
+/// the destination must be the exact non-secret construction carrying that
+/// expression.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct SecretRevealSpecV1 {
+    source_binding: BindingId,
+    source_field: FieldId,
+    expression: ExprId,
+    destination: SecretRevealDestinationV1,
+}
+
+impl SecretRevealSpecV1 {
+    /// Constructs one reveal declaration. Full semantic validation occurs
+    /// when it is attached to a [`CommandPlan`].
+    #[must_use]
+    pub const fn new(
+        source_binding: BindingId,
+        source_field: FieldId,
+        expression: ExprId,
+        destination: SecretRevealDestinationV1,
+    ) -> Self {
+        Self {
+            source_binding,
+            source_field,
+            expression,
+            destination,
+        }
+    }
+
+    /// Bound entity carrying the secret source.
+    #[must_use]
+    pub const fn source_binding(&self) -> BindingId {
+        self.source_binding
+    }
+
+    /// Secret-classified source field.
+    #[must_use]
+    pub const fn source_field(&self) -> FieldId {
+        self.source_field
+    }
+
+    /// Exact data-flow expression at the destination.
+    #[must_use]
+    pub const fn expression(&self) -> ExprId {
+        self.expression
+    }
+
+    /// Closed contract destination receiving the disclosed value.
+    #[must_use]
+    pub const fn destination(&self) -> SecretRevealDestinationV1 {
+        self.destination
+    }
+}
+
 /// One immutable checked executable command plan.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CommandPlan {
@@ -1209,11 +1292,18 @@ pub struct CommandPlan {
     commit_checks: Vec<CommitCheckPlan>,
     instructions: Vec<Instruction>,
     collection_expansion: Option<CollectionExpansionPlanV1>,
+    secret_reveals: Vec<SecretRevealSpecV1>,
     invocation_class: CommandInvocationClass,
     execution_class: ExecutionClass,
     retry_policy: RetryPolicy,
     required_capability: CapabilityRequirement,
     plan_hash: PlanHash,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SecretRevealValidation {
+    Exact,
+    LegacyPreV11,
 }
 
 impl CommandPlan {
@@ -1279,6 +1369,50 @@ impl CommandPlan {
         execution_class: ExecutionClass,
         contract_schema: &SchemaIr,
     ) -> Result<Self, IrValidationError> {
+        Self::new_with_service_values_and_secret_reveals(
+            command_id,
+            contract_lineage,
+            name,
+            contract_version,
+            input,
+            service_values,
+            outcomes,
+            success_outcome,
+            idempotency_input,
+            expressions,
+            bindings,
+            root_validation_reads,
+            locality,
+            commit_checks,
+            instructions,
+            Vec::new(),
+            execution_class,
+            contract_schema,
+        )
+    }
+
+    /// Creates a command plan with exact compiler-declared secret disclosures.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_with_service_values_and_secret_reveals(
+        command_id: CommandId,
+        contract_lineage: ContractLineage,
+        name: impl Into<String>,
+        contract_version: ContractVersion,
+        input: CommandInputSchema,
+        service_values: Vec<ServiceValueSchema>,
+        outcomes: Vec<OutcomeSchema>,
+        success_outcome: OutcomeId,
+        idempotency_input: Option<FieldId>,
+        expressions: ExpressionArena,
+        bindings: Vec<BindingPlan>,
+        root_validation_reads: Vec<RootValidationReadPlan>,
+        locality: LocalityPlan,
+        commit_checks: Vec<CommitCheckPlan>,
+        instructions: Vec<Instruction>,
+        secret_reveals: Vec<SecretRevealSpecV1>,
+        execution_class: ExecutionClass,
+        contract_schema: &SchemaIr,
+    ) -> Result<Self, IrValidationError> {
         Self::new_internal(
             command_id,
             contract_lineage,
@@ -1296,6 +1430,8 @@ impl CommandPlan {
             commit_checks,
             instructions,
             None,
+            secret_reveals,
+            SecretRevealValidation::Exact,
             CommandInvocationClass::Application,
             execution_class,
             contract_schema,
@@ -1324,6 +1460,52 @@ impl CommandPlan {
         execution_class: ExecutionClass,
         contract_schema: &SchemaIr,
     ) -> Result<Self, IrValidationError> {
+        Self::new_collection_with_secret_reveals(
+            command_id,
+            contract_lineage,
+            name,
+            contract_version,
+            input,
+            service_values,
+            outcomes,
+            success_outcome,
+            idempotency_input,
+            expressions,
+            bindings,
+            root_validation_reads,
+            locality,
+            commit_checks,
+            instructions,
+            collection_expansion,
+            Vec::new(),
+            execution_class,
+            contract_schema,
+        )
+    }
+
+    /// Creates a bounded collection plan with exact secret disclosures.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_collection_with_secret_reveals(
+        command_id: CommandId,
+        contract_lineage: ContractLineage,
+        name: impl Into<String>,
+        contract_version: ContractVersion,
+        input: CommandInputSchema,
+        service_values: Vec<ServiceValueSchema>,
+        outcomes: Vec<OutcomeSchema>,
+        success_outcome: OutcomeId,
+        idempotency_input: Option<FieldId>,
+        expressions: ExpressionArena,
+        bindings: Vec<BindingPlan>,
+        root_validation_reads: Vec<RootValidationReadPlan>,
+        locality: LocalityPlan,
+        commit_checks: Vec<CommitCheckPlan>,
+        instructions: Vec<Instruction>,
+        collection_expansion: CollectionExpansionPlanV1,
+        secret_reveals: Vec<SecretRevealSpecV1>,
+        execution_class: ExecutionClass,
+        contract_schema: &SchemaIr,
+    ) -> Result<Self, IrValidationError> {
         Self::new_internal(
             command_id,
             contract_lineage,
@@ -1341,6 +1523,8 @@ impl CommandPlan {
             commit_checks,
             instructions,
             Some(collection_expansion),
+            secret_reveals,
+            SecretRevealValidation::Exact,
             CommandInvocationClass::Application,
             execution_class,
             contract_schema,
@@ -1383,8 +1567,63 @@ impl CommandPlan {
             commit_checks,
             instructions,
             Some(collection_expansion),
+            Vec::new(),
+            SecretRevealValidation::Exact,
             CommandInvocationClass::Reimport,
             ExecutionClass::IdempotentMutation,
+            contract_schema,
+        )
+    }
+
+    /// Reconstructs one canonical pre-V11 command whose format predates
+    /// source-naming secret reveal declarations.
+    ///
+    /// This is intentionally crate-private and used only after the bundle
+    /// decoder has authenticated an exact IR version below V11. New compiler
+    /// and programmatic plans always take the exact-validation constructors.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn new_decoded_pre_v11_without_secret_reveals(
+        command_id: CommandId,
+        contract_lineage: ContractLineage,
+        name: impl Into<String>,
+        contract_version: ContractVersion,
+        input: CommandInputSchema,
+        service_values: Vec<ServiceValueSchema>,
+        outcomes: Vec<OutcomeSchema>,
+        success_outcome: OutcomeId,
+        idempotency_input: Option<FieldId>,
+        expressions: ExpressionArena,
+        bindings: Vec<BindingPlan>,
+        root_validation_reads: Vec<RootValidationReadPlan>,
+        locality: LocalityPlan,
+        commit_checks: Vec<CommitCheckPlan>,
+        instructions: Vec<Instruction>,
+        collection_expansion: Option<CollectionExpansionPlanV1>,
+        invocation_class: CommandInvocationClass,
+        execution_class: ExecutionClass,
+        contract_schema: &SchemaIr,
+    ) -> Result<Self, IrValidationError> {
+        Self::new_internal(
+            command_id,
+            contract_lineage,
+            name,
+            contract_version,
+            input,
+            service_values,
+            outcomes,
+            success_outcome,
+            idempotency_input,
+            expressions,
+            bindings,
+            root_validation_reads,
+            locality,
+            commit_checks,
+            instructions,
+            collection_expansion,
+            Vec::new(),
+            SecretRevealValidation::LegacyPreV11,
+            invocation_class,
+            execution_class,
             contract_schema,
         )
     }
@@ -1407,6 +1646,8 @@ impl CommandPlan {
         mut commit_checks: Vec<CommitCheckPlan>,
         instructions: Vec<Instruction>,
         collection_expansion: Option<CollectionExpansionPlanV1>,
+        mut secret_reveals: Vec<SecretRevealSpecV1>,
+        secret_reveal_validation: SecretRevealValidation,
         invocation_class: CommandInvocationClass,
         execution_class: ExecutionClass,
         contract_schema: &SchemaIr,
@@ -1665,6 +1906,26 @@ impl CommandPlan {
             locality.partition_schema().maximum_encoded_bytes(),
             contract_schema,
         )?;
+        checked_len(
+            "command secret reveals",
+            secret_reveals.len(),
+            MAX_COMMAND_ITEMS,
+        )?;
+        secret_reveals.sort_unstable();
+        if secret_reveals.windows(2).any(|pair| pair[0] == pair[1]) {
+            return Err(IrValidationError::NonCanonicalOrder {
+                kind: "duplicate command secret reveal",
+            });
+        }
+        if secret_reveal_validation == SecretRevealValidation::Exact {
+            validate_secret_reveals(
+                &expressions,
+                &bindings,
+                &instructions,
+                &secret_reveals,
+                contract_schema,
+            )?;
+        }
         let relationship_checks =
             derive_relationship_checks(&expressions, &bindings, &instructions, contract_schema)?;
         let delete_checks = derive_delete_checks(&bindings, contract_schema)?;
@@ -1701,6 +1962,7 @@ impl CommandPlan {
             commit_checks,
             instructions,
             collection_expansion,
+            secret_reveals,
             invocation_class,
             execution_class,
             retry_policy: RetryPolicy::BoundedFullReevaluation,
@@ -1778,6 +2040,16 @@ impl CommandPlan {
     #[must_use]
     pub const fn requires_ir_v10(&self) -> bool {
         matches!(self.invocation_class, CommandInvocationClass::Reimport)
+    }
+    /// Whether this command carries declared secret disclosures in IR v11.
+    #[must_use]
+    pub const fn requires_ir_v11(&self) -> bool {
+        !self.secret_reveals.is_empty()
+    }
+    /// Canonical secret-disclosure declarations.
+    #[must_use]
+    pub fn secret_reveals(&self) -> &[SecretRevealSpecV1] {
+        &self.secret_reveals
     }
     pub(crate) fn delete_restriction_failures_are_complete(&self) -> bool {
         self.delete_checks.iter().all(|check| {
@@ -1936,6 +2208,134 @@ impl CommandPlan {
     pub const fn plan_hash(&self) -> PlanHash {
         self.plan_hash
     }
+}
+
+fn validate_secret_reveals(
+    expressions: &ExpressionArena,
+    bindings: &[BindingPlan],
+    instructions: &[Instruction],
+    declared: &[SecretRevealSpecV1],
+    schema: &SchemaIr,
+) -> Result<(), IrValidationError> {
+    let mut flows = Vec::<(SecretRevealDestinationV1, ExprId, bool)>::new();
+    for binding in bindings {
+        append_outcome_secret_flows(&mut flows, binding.failure());
+        if let Some(outcome) = binding.restriction_failure() {
+            append_outcome_secret_flows(&mut flows, outcome);
+        }
+    }
+    for instruction in instructions {
+        match instruction {
+            Instruction::Require { reject, .. } => {
+                append_outcome_secret_flows(&mut flows, reject);
+            }
+            Instruction::SetField {
+                binding,
+                field,
+                value,
+            } => {
+                let destination = bindings
+                    .iter()
+                    .find(|candidate| candidate.id() == *binding)
+                    .ok_or(IrValidationError::InvalidReference {
+                        kind: "secret reveal destination binding",
+                    })?;
+                flows.push((
+                    SecretRevealDestinationV1::EntityField {
+                        binding: *binding,
+                        field: *field,
+                    },
+                    *value,
+                    schema.is_secret_field(destination.entity_type(), *field),
+                ));
+            }
+            Instruction::WorkflowTransition { stale, illegal, .. } => {
+                append_outcome_secret_flows(&mut flows, stale);
+                append_outcome_secret_flows(&mut flows, illegal);
+            }
+            Instruction::WorkflowLease { operation, .. } => {
+                for outcome in operation.outcomes() {
+                    append_outcome_secret_flows(&mut flows, outcome);
+                }
+            }
+            Instruction::EmitEvent(event) => {
+                flows.extend(event.payload().fields().iter().map(|field| {
+                    (
+                        SecretRevealDestinationV1::EventField {
+                            event_type: event.event_type(),
+                            field: field.field_id(),
+                        },
+                        field.expression(),
+                        false,
+                    )
+                }));
+            }
+            Instruction::Return(outcome) => append_outcome_secret_flows(&mut flows, outcome),
+        }
+    }
+
+    let mut required = Vec::new();
+    for (destination, expression, destination_is_secret) in flows {
+        if destination_is_secret {
+            continue;
+        }
+        let dependencies = expressions.dependencies(expression)?;
+        let mut sources = dependencies.bound_fields().clone();
+        for binding in dependencies.complete_bindings() {
+            let binding = bindings
+                .iter()
+                .find(|candidate| candidate.id() == *binding)
+                .ok_or(IrValidationError::InvalidReference {
+                    kind: "secret reveal source binding",
+                })?;
+            sources.extend(
+                schema
+                    .secret_fields_for_entity(binding.entity_type())
+                    .into_iter()
+                    .map(|field| (binding.id(), field)),
+            );
+        }
+        for (source_binding, source_field) in sources {
+            let binding = bindings
+                .iter()
+                .find(|candidate| candidate.id() == source_binding)
+                .ok_or(IrValidationError::InvalidReference {
+                    kind: "secret reveal source binding",
+                })?;
+            if schema.is_secret_field(binding.entity_type(), source_field) {
+                required.push(SecretRevealSpecV1::new(
+                    source_binding,
+                    source_field,
+                    expression,
+                    destination,
+                ));
+            }
+        }
+    }
+    required.sort_unstable();
+    required.dedup();
+    if required != declared {
+        return Err(IrValidationError::InvalidDependency {
+            reason: "command secret reveals are not exact and complete",
+        });
+    }
+    Ok(())
+}
+
+fn append_outcome_secret_flows(
+    flows: &mut Vec<(SecretRevealDestinationV1, ExprId, bool)>,
+    outcome: &OutcomeConstruction,
+) {
+    flows.extend(outcome.payload().fields().iter().map(|field| {
+        (
+            SecretRevealDestinationV1::OutcomeField {
+                outcome: outcome.outcome_id(),
+                field: field.field_id(),
+            },
+            field.expression(),
+            false,
+        )
+    }));
 }
 
 fn validate_collection_expansion(

@@ -110,27 +110,48 @@ See the unsafe-pattern entry in
 [Unsafe Patterns and Corrections](../contracts/examples/NEGATIVE-EXAMPLES.md)
 for the misuse this non-promise guards against.
 
-## The classification is not sticky
+## The classification is sticky
 
-`secret` protects the **stored field's** read surfaces. It does not follow
-the value once your contract copies it somewhere else:
+The compiler follows a secret-classified value through expressions. Copying
+one into a non-secret stored field, durable event field, or command outcome
+is a compile error unless the exact flow site names every secret source with
+`reveals`:
 
 ```riff
-emit TokenIssued { t: session.token_hash }
+set session.public_token = session.token_hash reveals session.token_hash
+
+emit TokenIssued {
+  token: session.token_hash reveals session.token_hash
+}
+
+return Issued {
+  token: session.token_hash reveals session.token_hash
+}
 ```
 
-moves the secret's value into an event payload — and event payloads flow to
-consumer streams, projections built over the event, command outcomes, and
-their renderings with **no gate anywhere**, because the classification is
-attached to the declared entity field, not to the data. This is deliberate
-(the same reason backups and changelog frames carry secrets at full
-fidelity: the database faithfully executes the contract it was given, and a
-creation-time token handout is the core of every auth flow), but it means
-the copy is YOUR declaration. If a destination must stay unreadable, do not
-copy the secret into it — there is no way to re-declare an event or outcome
-field as secret today, so the copy is visible plaintext on those surfaces.
-Every such copy is visible in the contract source; review `emit` and
-`return` payloads for secret-field reads.
+A value derived from multiple secrets names each source separately:
+
+```riff
+return Issued {
+  score: row.secret_score + row.secret_offset
+    reveals row.secret_score
+    reveals row.secret_offset
+}
+```
+
+The annotation is static contract identity, not an application permission.
+It is checked into source, carried in the executable plan and bundle hash,
+shown by command explain/catalog surfaces, and cannot be supplied by a
+caller at runtime. It does not grant read visibility to either source field.
+Copying a secret into another secret-classified stored field remains sticky
+and requires no disclosure annotation.
+
+`RDB-C046` rejects missing, wrong, duplicate, or excess declarations. Its
+diagnostic identifies both the destination flow site and the secret source
+field declaration, so an author can either remove the copy or make the
+intentional disclosure reviewable. Once disclosed into an event or outcome,
+the destination is ordinary visible data; `reveals` does not encrypt it or
+redact it after delivery.
 
 ## Current alpha limitations
 
@@ -140,7 +161,3 @@ Every such copy is visible in the contract source; review `emit` and
   MCP surface, which renders in-process from the service's views. Wire-level
   marker carriage is follow-up work.
 - Generated language bindings do not yet mark secret fields in their types.
-- No compiler warning fires when a contract copies a secret field's value
-  into an event or outcome payload (see "not sticky" above); the compiler's
-  diagnostic channel is error-only today, and a hard error would forbid the
-  legitimate creation-time token handout.

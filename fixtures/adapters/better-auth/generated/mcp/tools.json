@@ -1,5 +1,5 @@
 {
-  "application_manifest_hash": "35702296ca451b031d61e4f39979676ce3c2860bf775441a3927f06c835ab98c",
+  "application_manifest_hash": "4ebb1a6a3676922a9cbb83d1cfca5c8939fe9c2a37e3951925bbcad573c8bcc5",
   "commands": [
     {
       "annotations": {
@@ -8,7 +8,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "contract_bundle_hash": "168e60e3a7dad19850f63e8255fd209773f6373c702a49313f4762f3c3411c77",
+      "contract_bundle_hash": "02fcda367078ea5370395c884552b1a9d6e05ffad1a433c6fd12c7916da6b2ab",
       "description": "Execute the exact ConsumeVerificationToken compiled command from contract BetterAuthAcceptance.",
       "input_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -112,7 +112,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "contract_bundle_hash": "168e60e3a7dad19850f63e8255fd209773f6373c702a49313f4762f3c3411c77",
+      "contract_bundle_hash": "02fcda367078ea5370395c884552b1a9d6e05ffad1a433c6fd12c7916da6b2ab",
       "description": "Execute the exact CreateUserAccountSessions compiled command from contract BetterAuthAcceptance.",
       "input_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -246,7 +246,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "contract_bundle_hash": "168e60e3a7dad19850f63e8255fd209773f6373c702a49313f4762f3c3411c77",
+      "contract_bundle_hash": "02fcda367078ea5370395c884552b1a9d6e05ffad1a433c6fd12c7916da6b2ab",
       "description": "Execute the exact IssueVerificationToken compiled command from contract BetterAuthAcceptance.",
       "input_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -349,7 +349,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "contract_bundle_hash": "168e60e3a7dad19850f63e8255fd209773f6373c702a49313f4762f3c3411c77",
+      "contract_bundle_hash": "02fcda367078ea5370395c884552b1a9d6e05ffad1a433c6fd12c7916da6b2ab",
       "description": "Execute the exact RefreshSession compiled command from contract BetterAuthAcceptance.",
       "input_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -386,7 +386,7 @@
       },
       "name": "better_auth_acceptance_refresh_session",
       "operation_name": "RefreshSession",
-      "plan_hash": "762b91043dd832b9585b7dd5f705c29b3163b2708496f424e803e1447aafb7f4",
+      "plan_hash": "1fc36df2cdda2581a7736e5b49774d6dacbd2575061115abdf95cf53c821a397",
       "result_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "oneOf": [
@@ -499,7 +499,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "contract_bundle_hash": "168e60e3a7dad19850f63e8255fd209773f6373c702a49313f4762f3c3411c77",
+      "contract_bundle_hash": "02fcda367078ea5370395c884552b1a9d6e05ffad1a433c6fd12c7916da6b2ab",
       "description": "Execute the exact RevokeSession compiled command from contract BetterAuthAcceptance.",
       "input_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -532,7 +532,7 @@
       },
       "name": "better_auth_acceptance_revoke_session",
       "operation_name": "RevokeSession",
-      "plan_hash": "fe7591cdb38c90c3b670411045d18e879fc1084561eafc7418dfbfcf634b3c6e",
+      "plan_hash": "5dbc0237ea41a112ca3476f8a5912e57fc4d3acdfcc21f290e5a8957bd2a8807",
       "result_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "oneOf": [
@@ -658,7 +658,7 @@
         ],
         "type": "object"
       },
-      "module_hash": "47b15f86f8cfbbc13a1c8452b2abd07e799ff4346b1f0875b00dcdf026fb30b9",
+      "module_hash": "1eea54c2713bd0ae5108fdba016a2cc5be9bb554f0d1d102be68a7b915b83613",
       "name": "better_auth_acceptance_get_session",
       "operation_name": "GetSession",
       "result_schema": {

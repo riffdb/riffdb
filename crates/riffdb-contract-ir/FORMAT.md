@@ -180,6 +180,14 @@ Expression constants use exactly `u32 canonical_document_byte_length || canonica
 | `0x01` | application |
 | `0x02` | operator-only reimport |
 
+### Secret reveal destination
+
+| Tag | Variant |
+|---:|---|
+| `0x01` | entity field |
+| `0x02` | event field |
+| `0x03` | outcome field |
+
 ### Retry policy
 
 | Tag | Variant |
@@ -795,13 +803,23 @@ Fields below are listed in exact byte order. A collection field includes its cou
 | 14 | `locality` | LocalityPlan |
 | 15 | `commit_checks` | u32 count + CommitCheckPlan[] |
 | 16 | `instructions` | u32 count + Instruction[] |
-| 17 | `invocation_class` | IR v10+: Command invocation class tag; application in v1-v9 |
-| 18 | `execution_class` | Execution class tag |
-| 19 | `retry_policy` | Retry policy tag |
-| 20 | `required_capability` | CapabilityRequirement tag plus exact selected payload |
-| 21 | `entity_closure` | u32 count + EntitySchema[] |
-| 22 | `aggregate_closure` | AggregateSchema |
-| 23 | `event_closure` | u32 count + EventSchema[] |
+| 17 | `secret_reveals` | IR v11+: u32 count + SecretRevealSpecV1[]; omitted in v1-v10 |
+| 18 | `invocation_class` | IR v10+: Command invocation class tag; application in v1-v9 |
+| 19 | `execution_class` | Execution class tag |
+| 20 | `retry_policy` | Retry policy tag |
+| 21 | `required_capability` | CapabilityRequirement tag plus exact selected payload |
+| 22 | `entity_closure` | u32 count + EntitySchema[] |
+| 23 | `aggregate_closure` | AggregateSchema |
+| 24 | `event_closure` | u32 count + EventSchema[] |
+
+### SecretRevealSpecV1
+
+| # | Field | Encoding |
+|---:|---|---|
+| 1 | `source_binding` | BindingId |
+| 2 | `source_field` | FieldId |
+| 3 | `expression` | ExprId |
+| 4 | `destination` | Secret reveal destination tag plus two u32 IDs |
 
 ### CollectionExpansionPlanV1
 

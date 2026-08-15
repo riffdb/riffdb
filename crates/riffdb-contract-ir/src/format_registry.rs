@@ -161,6 +161,11 @@ tag_registry!(command_invocation_class, "Command invocation class", {
     APPLICATION = 0x01 => "application",
     REIMPORT = 0x02 => "operator-only reimport",
 });
+tag_registry!(secret_reveal_destination, "Secret reveal destination", {
+    ENTITY_FIELD = 0x01 => "entity field",
+    EVENT_FIELD = 0x02 => "event field",
+    OUTCOME_FIELD = 0x03 => "outcome field",
+});
 tag_registry!(retry_policy, "Retry policy", {
     BOUNDED_FULL_REEVALUATION = 0x01 => "bounded full reevaluation",
 });
@@ -255,6 +260,7 @@ pub(crate) const TAG_REGISTRIES: &[TagRegistry] = &[
     service_value_kind::REGISTRY,
     execution_class::REGISTRY,
     command_invocation_class::REGISTRY,
+    secret_reveal_destination::REGISTRY,
     retry_policy::REGISTRY,
     capability_requirement::REGISTRY,
     projection_aggregation::REGISTRY,
@@ -1189,6 +1195,7 @@ layout!(COMMAND_SEMANTICS_LAYOUT, "CommandSemantics", {
     "locality" => "LocalityPlan",
     "commit_checks" => "u32 count + CommitCheckPlan[]",
     "instructions" => "u32 count + Instruction[]",
+    "secret_reveals" => "IR v11+: u32 count + SecretRevealSpecV1[]; omitted in v1-v10",
     "invocation_class" => "IR v10+: Command invocation class tag; application in v1-v9",
     "execution_class" => "Execution class tag",
     "retry_policy" => "Retry policy tag",
@@ -1196,6 +1203,12 @@ layout!(COMMAND_SEMANTICS_LAYOUT, "CommandSemantics", {
     "entity_closure" => "u32 count + EntitySchema[]",
     "aggregate_closure" => "AggregateSchema",
     "event_closure" => "u32 count + EventSchema[]",
+});
+layout!(SECRET_REVEAL_SPEC_LAYOUT, "SecretRevealSpecV1", {
+    "source_binding" => "BindingId",
+    "source_field" => "FieldId",
+    "expression" => "ExprId",
+    "destination" => "Secret reveal destination tag plus two u32 IDs",
 });
 layout!(COLLECTION_EXPANSION_LAYOUT, "CollectionExpansionPlanV1", {
     "input_field" => "FieldId of one bounded list command input",
@@ -1398,6 +1411,7 @@ pub(crate) const FORMAT_LAYOUTS: &[FormatLayout] = &[
     WORKFLOW_LEASE_FIELDS_LAYOUT,
     COMMAND_ENTRY_LAYOUT,
     COMMAND_SEMANTICS_LAYOUT,
+    SECRET_REVEAL_SPEC_LAYOUT,
     COLLECTION_EXPANSION_LAYOUT,
     OUTCOME_SCHEMA_LAYOUT,
     BINDING_LAYOUT,
@@ -2276,7 +2290,7 @@ mod tests {
         // (or a witness list both sides also append to) would make that
         // merge pass silently. Re-run this test after any merge touching the
         // registry.
-        assert_eq!(FORMAT_LAYOUTS.len(), 60);
+        assert_eq!(FORMAT_LAYOUTS.len(), 61);
         for layout in FORMAT_LAYOUTS {
             assert!(!layout.fields.is_empty(), "{}", layout.name);
             assert!(

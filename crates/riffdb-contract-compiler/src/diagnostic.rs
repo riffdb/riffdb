@@ -99,6 +99,8 @@ pub enum CompilerDiagnosticCode {
     InvalidRowPolicyRelationship,
     /// `RDB-C045`: a deletion policy lacks its complete compiler-owned safety proof.
     InvalidDeletePolicy,
+    /// `RDB-C046`: a secret value crosses a non-secret boundary without an exact reveal.
+    InvalidSecretReveal,
     /// `RDB-C201`: an identifier cannot form an ADR-0064 command tool-name segment.
     InvalidCommandToolName,
     /// `RDB-C202`: a complete ADR-0064 command tool name exceeds 128 bytes.
@@ -109,7 +111,7 @@ pub enum CompilerDiagnosticCode {
 
 impl CompilerDiagnosticCode {
     /// Complete pre-freeze public semantic diagnostic registry in code order.
-    pub const ALL: [Self; 47] = [
+    pub const ALL: [Self; 48] = [
         Self::InvalidContractVersion,
         Self::DuplicateName,
         Self::MissingDeclaration,
@@ -154,6 +156,7 @@ impl CompilerDiagnosticCode {
         Self::CrossPartitionRowPolicy,
         Self::InvalidRowPolicyRelationship,
         Self::InvalidDeletePolicy,
+        Self::InvalidSecretReveal,
         Self::InvalidCommandToolName,
         Self::CommandToolNameTooLong,
         Self::CommandToolNameCollision,
@@ -207,6 +210,7 @@ impl CompilerDiagnosticCode {
             Self::CrossPartitionRowPolicy => "RDB-C042",
             Self::InvalidRowPolicyRelationship => "RDB-C043",
             Self::InvalidDeletePolicy => "RDB-C045",
+            Self::InvalidSecretReveal => "RDB-C046",
             Self::InvalidCommandToolName => "RDB-C201",
             Self::CommandToolNameTooLong => "RDB-C202",
             Self::CommandToolNameCollision => "RDB-C203",
@@ -304,6 +308,9 @@ impl CompilerDiagnosticCode {
             }
             Self::InvalidDeletePolicy => {
                 "the deletion policy lacks a complete no-inbound or indexed-restrict proof"
+            }
+            Self::InvalidSecretReveal => {
+                "a secret value crosses a non-secret destination without an exact reveals annotation"
             }
             Self::InvalidCommandToolName => {
                 "an identifier cannot form a valid MCP command tool-name segment"
@@ -430,6 +437,9 @@ impl CompilerDiagnosticCode {
             }
             Self::InvalidDeletePolicy => Some(
                 "declare no_inbound only with no inbound relation, or name one exact canonical reverse index covering every inbound relation",
+            ),
+            Self::InvalidSecretReveal => Some(
+                "add `reveals binding.secret_field` at the exact non-secret flow site, or keep the destination secret-classified",
             ),
             Self::InvalidCommandToolName => {
                 Some("start contract and command identifiers with an ASCII letter")
@@ -605,7 +615,7 @@ mod tests {
 
     #[test]
     fn public_diagnostic_registry_is_complete_unique_and_code_ordered() {
-        assert_eq!(CompilerDiagnosticCode::ALL.len(), 47);
+        assert_eq!(CompilerDiagnosticCode::ALL.len(), 48);
         let codes = CompilerDiagnosticCode::ALL.map(CompilerDiagnosticCode::as_str);
         assert!(codes.windows(2).all(|pair| pair[0] < pair[1]));
         assert!(CompilerDiagnosticCode::ALL.iter().all(|code| {

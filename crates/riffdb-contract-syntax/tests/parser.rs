@@ -1192,6 +1192,7 @@ contract Invalid version 1 {
     key (secret id: uuid)
   }
 }
+
 "#,
             "id",
         ),
@@ -1236,4 +1237,45 @@ contract Invalid version 1 {
             "the diagnostic must land on the token following the misplaced modifier"
         );
     }
+}
+
+#[test]
+fn parses_bounded_secret_reveals_at_set_and_object_flow_sites() {
+    let source = r#"
+contract RevealSyntax version 1 {
+  entity Row {
+    key (organization_id: uuid, row_id: uuid)
+    field secret digest: string<128>
+    field copy: string<128>
+  }
+  command CopyDigest {
+    input organization_id: uuid
+    input row_id: uuid
+    mutate Row(organization_id, row_id) as row else Missing {}
+    set row.copy = row.digest reveals row.digest
+    return Copied { digest: row.digest reveals row.digest }
+  }
+}
+"#;
+    let document = parse_contract(source).expect("reveals syntax parses");
+    let Declaration::Command(command) = &document.contract.value.declarations[1].value else {
+        panic!("second declaration must be command");
+    };
+    let Effect::Set(set) = &command.effects[0].value else {
+        panic!("first effect must be set");
+    };
+    assert_eq!(set.reveals.len(), 1);
+    assert_eq!(set.reveals[0].value.segments[0].value, "row");
+    assert_eq!(set.reveals[0].value.segments[1].value, "digest");
+    let field = &command
+        .return_clause
+        .value
+        .outcome
+        .value
+        .payload
+        .value
+        .fields[0]
+        .value;
+    assert_eq!(field.reveals.len(), 1);
+    assert_eq!(field.reveals[0].value.segments[1].value, "digest");
 }

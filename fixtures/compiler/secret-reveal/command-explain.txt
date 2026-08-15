@@ -1,0 +1,10 @@
+command:1
+execution:ReadOnly
+expression:0 type=ValueType(Uuid) op=input-field:2
+expression:1 type=ValueType(Uuid) op=input-field:1
+expression:2 type=ValueType(String(128)) op=bound-field:0:1
+partition:expr=0 purpose=Partition(AggregateTypeId(1)) components=1
+binding:0 mode=Read entity=1 complete=false reads=[1]
+reveal:source=0:1 expression=2 destination=OutcomeField { outcome: OutcomeId(1), field: FieldId(1) }
+outcome:1 fields=[1:ValueType(String(128))]
+outcome:2 fields=[]

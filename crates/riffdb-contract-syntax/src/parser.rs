@@ -1179,6 +1179,11 @@ impl NodeCounter {
                 self.add(1, effect.span)?;
                 self.path(&set.target)?;
                 self.expression(&set.value)?;
+                self.collection(set.reveals.len(), MAX_LIST_ITEMS, effect.span)?;
+                for reveal in &set.reveals {
+                    self.add(1, reveal.span)?;
+                    self.path(reveal)?;
+                }
             }
             Effect::Emit(emit) => {
                 self.add(1, effect.span)?;
@@ -1332,6 +1337,11 @@ impl NodeCounter {
             self.add(2, field.span)?;
             self.name(&field.value.name)?;
             self.expression(&field.value.value)?;
+            self.collection(field.value.reveals.len(), MAX_LIST_ITEMS, field.span)?;
+            for reveal in &field.value.reveals {
+                self.add(1, reveal.span)?;
+                self.path(reveal)?;
+            }
         }
         Ok(())
     }

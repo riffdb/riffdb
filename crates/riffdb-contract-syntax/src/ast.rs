@@ -728,6 +728,11 @@ pub struct SetEffect {
     pub target: Spanned<Path>,
     /// The assigned value expression.
     pub value: Spanned<Expression>,
+    /// Explicit secret sources intentionally disclosed by this assignment.
+    ///
+    /// The compiler resolves each path to one secret-classified bound field;
+    /// callers cannot add these annotations dynamically at execution time.
+    pub reveals: Vec<Spanned<Path>>,
 }
 
 /// A source-level durable event emission.
@@ -769,6 +774,8 @@ pub struct ObjectField {
     pub name: Spanned<String>,
     /// The field value expression.
     pub value: Spanned<Expression>,
+    /// Explicit secret sources intentionally disclosed by this object field.
+    pub reveals: Vec<Spanned<Path>>,
 }
 
 /// A bounded event-derived projection declaration.

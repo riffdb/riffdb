@@ -8,7 +8,8 @@ use crate::{
     BindingId, BindingPlan, CommandPlan, CommitCheckPlan, ConflictDerivationPlan,
     DeleteCheckModeV1, DeleteCheckPlanV1, EventConstruction, ExecutionClass, ExprId,
     ExpressionArena, ExpressionKind, KeySchema, OutcomeSchema, RelationshipCheckPlan,
-    RootValidationReadPlan, UniqueConflictPlan, WorkflowLeaseFields, WorkflowLeaseOperation,
+    RootValidationReadPlan, SecretRevealSpecV1, UniqueConflictPlan, WorkflowLeaseFields,
+    WorkflowLeaseOperation,
 };
 
 /// Value-free structural explanation of one exact workflow transition.
@@ -139,6 +140,7 @@ pub struct CommandExplain {
     root_validation_reads: Vec<RootValidationReadPlan>,
     commit_checks: Vec<CommitCheckPlan>,
     event_constructions: Vec<EventConstruction>,
+    secret_reveals: Vec<SecretRevealSpecV1>,
     outcome_schemas: Vec<OutcomeSchema>,
     expressions: ExpressionArena,
 }
@@ -370,6 +372,7 @@ impl CommandExplain {
             root_validation_reads: plan.root_validation_reads().to_vec(),
             commit_checks: plan.commit_checks().to_vec(),
             event_constructions,
+            secret_reveals: plan.secret_reveals().to_vec(),
             outcome_schemas: plan.outcomes().to_vec(),
             expressions: plan.expressions().clone(),
         }
@@ -494,6 +497,12 @@ impl CommandExplain {
     #[must_use]
     pub fn event_constructions(&self) -> &[EventConstruction] {
         &self.event_constructions
+    }
+
+    /// Exact statically declared secret disclosures in canonical order.
+    #[must_use]
+    pub fn secret_reveals(&self) -> &[SecretRevealSpecV1] {
+        &self.secret_reveals
     }
 
     /// Complete declared outcome schemas in stable-ID order.
@@ -754,6 +763,16 @@ impl CommandExplain {
                 "event:{} fields=[{}]",
                 event.event_type().get(),
                 fields
+            );
+        }
+        for reveal in &self.secret_reveals {
+            let _ = writeln!(
+                output,
+                "reveal:source={}:{} expression={} destination={:?}",
+                reveal.source_binding().get(),
+                reveal.source_field().get(),
+                reveal.expression().get(),
+                reveal.destination(),
             );
         }
         for outcome in &self.outcome_schemas {

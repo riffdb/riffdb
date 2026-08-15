@@ -371,7 +371,171 @@ fn validate_command(
         }
     }
     validate_outcome_shapes(&outcomes, diagnostics);
+    validate_secret_flows(hir, command, &outcomes, diagnostics);
     validate_secret_taint(secret_input, command, &influential_roots, diagnostics);
+}
+
+fn validate_secret_flows(
+    hir: &TypedContractHir,
+    command: &HirCommand,
+    outcomes: &[&HirOutcome],
+    diagnostics: &mut Vec<CompilerDiagnostic>,
+) {
+    for effect in &command.effects {
+        match effect {
+            HirEffect::Set {
+                target_span,
+                binding,
+                field,
+                value,
+                reveals,
+            } => {
+                let destination_is_secret = command
+                    .bindings
+                    .iter()
+                    .find(|candidate| candidate.id == *binding)
+                    .and_then(|binding| hir.entity(binding.entity_id))
+                    .and_then(|entity| {
+                        entity
+                            .fields
+                            .iter()
+                            .find(|candidate| candidate.id == *field)
+                    })
+                    .is_some_and(|field| field.secret_span.is_some());
+                validate_secret_flow(
+                    hir,
+                    command,
+                    value,
+                    reveals,
+                    *target_span,
+                    destination_is_secret,
+                    diagnostics,
+                );
+            }
+            HirEffect::Emit { fields, .. } => {
+                for field in fields {
+                    validate_secret_flow(
+                        hir,
+                        command,
+                        &field.value,
+                        &field.reveals,
+                        field.name_span,
+                        false,
+                        diagnostics,
+                    );
+                }
+            }
+            HirEffect::WorkflowTransition { .. } | HirEffect::WorkflowLease { .. } => {}
+        }
+    }
+    for outcome in outcomes {
+        for field in &outcome.fields {
+            validate_secret_flow(
+                hir,
+                command,
+                &field.value,
+                &field.reveals,
+                field.name_span,
+                false,
+                diagnostics,
+            );
+        }
+    }
+}
+
+fn validate_secret_flow(
+    hir: &TypedContractHir,
+    command: &HirCommand,
+    value: &HirExpressionRoot,
+    reveals: &[crate::hir::HirSecretReveal],
+    destination_span: riffdb_contract_syntax::Span,
+    destination_is_secret: bool,
+    diagnostics: &mut Vec<CompilerDiagnostic>,
+) {
+    let Ok(dependencies) = command.expressions.dependencies(value.id, value.span) else {
+        diagnostics.push(CompilerDiagnostic::new(
+            CompilerDiagnosticCode::InvalidIr,
+            value.span,
+        ));
+        return;
+    };
+    let mut required = BTreeMap::new();
+    for (binding_id, field_id) in dependencies.bound_fields() {
+        let Some(binding) = command
+            .bindings
+            .iter()
+            .find(|binding| binding.id == *binding_id)
+        else {
+            continue;
+        };
+        let Some(field) = hir
+            .entity(binding.entity_id)
+            .and_then(|entity| entity.fields.iter().find(|field| field.id == *field_id))
+        else {
+            continue;
+        };
+        if field.secret_span.is_some() {
+            required.insert((*binding_id, *field_id), field.name_span);
+        }
+    }
+    for binding_id in dependencies.complete_bindings() {
+        let Some(binding) = command
+            .bindings
+            .iter()
+            .find(|binding| binding.id == *binding_id)
+        else {
+            continue;
+        };
+        let Some(entity) = hir.entity(binding.entity_id) else {
+            continue;
+        };
+        for field in entity
+            .fields
+            .iter()
+            .filter(|field| field.secret_span.is_some())
+        {
+            required.insert((*binding_id, field.id), field.name_span);
+        }
+    }
+
+    let declared = reveals
+        .iter()
+        .map(|reveal| ((reveal.binding, reveal.field), reveal))
+        .collect::<BTreeMap<_, _>>();
+    if destination_is_secret {
+        for reveal in reveals {
+            diagnostics.push(
+                CompilerDiagnostic::new(
+                    CompilerDiagnosticCode::InvalidSecretReveal,
+                    reveal.annotation_span,
+                )
+                .with_related_span(destination_span),
+            );
+        }
+        return;
+    }
+    for (source, source_span) in &required {
+        if !declared.contains_key(source) {
+            diagnostics.push(
+                CompilerDiagnostic::new(
+                    CompilerDiagnosticCode::InvalidSecretReveal,
+                    destination_span,
+                )
+                .with_related_span(*source_span),
+            );
+        }
+    }
+    for (source, reveal) in declared {
+        if !required.contains_key(&source) {
+            diagnostics.push(
+                CompilerDiagnostic::new(
+                    CompilerDiagnosticCode::InvalidSecretReveal,
+                    reveal.annotation_span,
+                )
+                .with_related_span(destination_span),
+            );
+        }
+    }
 }
 
 fn validate_unique_conflicts(
