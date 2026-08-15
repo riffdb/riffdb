@@ -6,7 +6,7 @@
 **Tagline:** *Vibe fast. Commit safely.*  
 **Category:** Contract-first operational database for agent-built applications  
 
-**Version:** 0.97
+**Version:** 0.98
 **Status:** Deployable Application Alpha architecture accepted; implementation gated by work packages
 **Date:** 9 August 2026
 **Audience:** Coding agents, database engineers, compiler engineers, security reviewers, and technical product leads  
@@ -37,6 +37,7 @@
 
 | Version | Date | Summary |
 |---|---|---|
+| 0.98 | 2026-08-15 | Registered DX-037 through DX-040 and WP-611 for one immutable development publication identity materialized into loopback npm, Python Simple, Go module-proxy, and Cargo sparse registries, with fresh external-consumer acceptance and a hard boundary from signed production releases. |
 | 0.97 | 2026-08-14 | Applied accepted ADR-0120 and registered DX-026 through DX-036 for signed four-ecosystem package distribution, registry-first generated applications with an explicit sealed/offline path, one pinned four-step workflow, artifact-only package-arrival proof, cross-driver conformance and sealed campaign 03, and compiler-backed bounded editor tooling shipped with the CLI. |
 | 0.96 | 2026-08-14 | Applied ADR-0118 Amendment 1 and registered SECF-006: secret classification is sticky across compiler-visible contract flows, and every intentional disclosure into a non-secret entity field, durable event field, or command outcome field requires an exact source-naming `reveals` annotation carried through syntax, versioned executable IR, bundle identity, catalogs, diagnostics, and compatibility fixtures. Accepted ADR-0122 and registered DX-021 through DX-025 for repository-local agent rails, the additive authorization-filtered application guidance MCP resource, hosted/stdio parity, and single-source generated teaching artifacts. |
 | 0.95 | 2026-08-14 | Accepted ADR-0121 and registered DX-013 through DX-020 for the database-shaped project workflow: truthful domain-empty initialization, a zero-query structural module with no roles or authority, bounded `riffdb.toml`, selected local SDK materialization over one complete exact lock, ceremony only for changed compiler-owned identity, staged migration routing, and read-only installed-versus-local observation without changing existing application verbs or persistent encodings. |
@@ -534,6 +535,30 @@ LSP MUST expose no database authority or runtime mutation surface.
 assets, and an editor-agnostic launch contract. Any editor extension remains a
 thin client and MUST NOT contain a second parser, compiler, authorization path,
 or application transport implementation.
+
+`DX-037` One bounded development-publication manifest MUST assign one immutable
+build identity to the npm, Python, Go, and Rust driver artifacts and MUST map it
+deterministically to valid prerelease versions in all four ecosystems. Reusing
+one mapped version for different bytes MUST be refused before publication.
+
+`DX-038` The development publication MUST be consumable through package-manager
+native loopback registries: an npm registry, a PEP 503/691 Python Simple index,
+a Go module proxy, and a Cargo sparse registry. Each view MUST contain the same
+manifest identity and the exact closed driver inventory; no public RiffDB API
+or runtime semantic MAY depend on a development registry.
+
+`DX-039` Acceptance MUST create fresh external consumer directories outside the
+repository, resolve and install every driver through its native registry
+configuration, and compile or import one consumer without a repository source
+path, path dependency, workspace inheritance, or unrecorded package-manager
+fallback. The resulting lockfiles and installed metadata MUST resolve the exact
+mapped development versions.
+
+`DX-040` Development registry credentials, endpoints, unsigned artifacts, and
+prerelease versions MUST remain mechanically separate from the signed release
+publication path. Production distribution qualification MUST reject a
+development manifest or development registry destination, and development
+publication MUST never invoke or impersonate the production signing workflow.
 
 ## 4.4 Additive contract evolution
 

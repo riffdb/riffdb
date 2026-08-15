@@ -1,0 +1,84 @@
+#!/usr/bin/env python3
+"""Validate the closed WP-611 development-registry source contract."""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parent.parent
+PLAN = ROOT / "release/distribution/development-registry-v1.json"
+
+
+def require(condition: bool, message: str) -> None:
+    if not condition:
+        raise SystemExit(f"driver_development_registry_invalid: {message}")
+
+
+def main() -> int:
+    require(PLAN.is_file() and not PLAN.is_symlink(), "development plan")
+    plan = json.loads(PLAN.read_text(encoding="utf-8"))
+    require(
+        plan.get("schema") == "riffdb.driver-development-registry-plan/v1",
+        "plan schema",
+    )
+    require(plan.get("base_version") == "0.1.0", "base version")
+    require(plan.get("build_identity_pattern") == "[1-9][0-9]{0,17}", "build identity")
+    require(
+        plan.get("versions")
+        == {
+            "npm": "0.1.0-dev.{build}",
+            "python": "0.1.0.dev{build}",
+            "go": "v0.1.0-dev.{build}",
+            "rust": "0.1.0-dev.{build}",
+        },
+        "version mapping",
+    )
+    require(
+        plan.get("registries")
+        == {
+            "npm": {"implementation": "verdaccio", "protocol": "npm"},
+            "python": {"implementation": "static", "protocol": "pep503"},
+            "go": {"implementation": "static", "protocol": "goproxy"},
+            "rust": {"implementation": "static", "protocol": "cargo-sparse"},
+        },
+        "registry protocols",
+    )
+    require(plan.get("loopback_only") is True, "loopback boundary")
+    require(plan.get("production_signing") == "forbidden", "signing boundary")
+    require(plan.get("max_artifacts") == 128, "artifact bound")
+    require(plan.get("max_artifact_bytes") == 268435456, "artifact byte bound")
+
+    distribution = json.loads(
+        (ROOT / "release/distribution/manifest-v1.json").read_text(encoding="utf-8")
+    )
+    require(plan.get("packages") == distribution.get("packages"), "package inventory")
+
+    for relative in (
+        "scripts/build-driver-development-publication",
+        "scripts/serve-driver-development-registries",
+        "scripts/driver-development-registry-acceptance",
+    ):
+        path = ROOT / relative
+        require(path.is_file() and not path.is_symlink(), relative)
+
+    publisher = (ROOT / "scripts/build-driver-development-publication").read_text(
+        encoding="utf-8"
+    )
+    require("sign-driver-distributions" not in publisher, "publisher invokes signing")
+    require("upload-release" not in publisher, "publisher invokes release upload")
+
+    production = (ROOT / "scripts/build-driver-distributions").read_text(encoding="utf-8")
+    require("dev.{build}" not in production, "production accepts development version")
+    handbook = (ROOT / "docs/getting-started/PACKAGE-INSTALLATION.md").read_text(
+        encoding="utf-8"
+    )
+    require("## Local development registries" in handbook, "handbook section")
+
+    print("WP-611 four-ecosystem development registry source contract: passed")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

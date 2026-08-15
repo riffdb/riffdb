@@ -1,0 +1,561 @@
+#!/usr/bin/env python3
+"""Materialize one immutable WP-611 publication from a WP-601 distribution."""
+
+from __future__ import annotations
+
+import argparse
+import base64
+import gzip
+import hashlib
+import html
+import io
+import json
+import os
+from pathlib import Path, PurePosixPath
+import re
+import shutil
+import stat
+import tarfile
+import tempfile
+import tomllib
+import zipfile
+
+
+ROOT = Path(__file__).resolve().parent.parent
+PLAN_PATH = ROOT / "release/distribution/development-registry-v1.json"
+PRODUCTION_SCHEMA = "riffdb.driver-distribution-plan/v1"
+PUBLICATION_SCHEMA = "riffdb.driver-development-publication/v1"
+BASE_VERSION = "0.1.0"
+
+
+def fail(message: str) -> None:
+    raise SystemExit(f"driver_development_publication_failed: {message}")
+
+
+def canonical_json(value: object) -> bytes:
+    return (json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n").encode()
+
+
+def sha256_bytes(content: bytes) -> str:
+    return hashlib.sha256(content).hexdigest()
+
+
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        while chunk := source.read(1024 * 1024):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def write(path: Path, content: bytes, mode: int = 0o644) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("xb") as destination:
+        destination.write(content)
+    path.chmod(mode)
+
+
+def safe_member(name: str) -> PurePosixPath:
+    pure = PurePosixPath(name)
+    if pure.is_absolute() or not pure.parts or any(part in {"", ".", ".."} for part in pure.parts):
+        fail("archive contains an unsafe path")
+    return pure
+
+
+def source_checksums(distribution: Path, limit: int, byte_limit: int) -> str:
+    checksum_file = distribution / "checksums.sha256"
+    if not checksum_file.is_file() or checksum_file.is_symlink():
+        fail("source distribution checksum inventory is absent")
+    entries: dict[str, str] = {}
+    for line in checksum_file.read_text(encoding="utf-8").splitlines():
+        match = re.fullmatch(r"([0-9a-f]{64})  ([^\0]+)", line)
+        if match is None:
+            fail("source distribution checksum inventory is malformed")
+        digest, relative = match.groups()
+        prior = entries.setdefault(relative, digest)
+        if prior != digest:
+            fail("source distribution checksum inventory conflicts")
+    if not 1 <= len(entries) <= limit:
+        fail("source artifact inventory is outside the bound")
+    for relative, expected in entries.items():
+        pure = safe_member(relative)
+        path = distribution.joinpath(*pure.parts)
+        if not path.is_file() or path.is_symlink() or path.stat().st_size > byte_limit:
+            fail(f"source artifact is absent or unsafe: {relative}")
+        if sha256_file(path) != expected:
+            fail(f"source artifact digest mismatch: {relative}")
+    return sha256_file(checksum_file)
+
+
+def read_tar(path: Path, expected_root: str | None = None) -> dict[str, tuple[bytes, int]]:
+    result: dict[str, tuple[bytes, int]] = {}
+    with tarfile.open(path, "r:gz") as archive:
+        members = archive.getmembers()
+        if not 1 <= len(members) <= 16_384:
+            fail("archive member inventory is outside the bound")
+        for member in members:
+            pure = safe_member(member.name)
+            if expected_root is not None and pure.parts[0] != expected_root:
+                fail("crate root does not match its package identity")
+            if member.isdir():
+                continue
+            if not member.isfile() or member.size > 268_435_456:
+                fail("archive contains a non-regular or oversized member")
+            source = archive.extractfile(member)
+            if source is None:
+                fail("archive member could not be read")
+            result[pure.as_posix()] = (source.read(), member.mode & 0o777)
+    return result
+
+
+def write_tar(path: Path, files: dict[str, tuple[bytes, int]], epoch: int) -> None:
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w", format=tarfile.PAX_FORMAT) as archive:
+        for relative, (content, mode) in sorted(files.items()):
+            safe_member(relative)
+            member = tarfile.TarInfo(relative)
+            member.size = len(content)
+            member.mode = mode
+            member.uid = member.gid = 0
+            member.uname = member.gname = ""
+            member.mtime = epoch
+            archive.addfile(member, io.BytesIO(content))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("xb") as raw:
+        with gzip.GzipFile(filename="", mode="wb", fileobj=raw, mtime=epoch) as compressed:
+            compressed.write(buffer.getvalue())
+
+
+def materialize_npm(distribution: Path, output: Path, version: str, epoch: int) -> list[str]:
+    packages: list[str] = []
+    sources = sorted((distribution / "npm").glob("*.tgz"))
+    if not 1 <= len(sources) <= 8:
+        fail("npm source inventory is outside the bound")
+    for source in sources:
+        files = read_tar(source, "package")
+        package_entry = files.get("package/package.json")
+        if package_entry is None:
+            fail("npm package metadata is absent")
+        metadata = json.loads(package_entry[0])
+        if metadata.get("version") != BASE_VERSION:
+            fail("npm source version is not the production base version")
+        name = metadata.get("name")
+        if not isinstance(name, str) or not re.fullmatch(r"@riffdb/[a-z0-9-]+", name):
+            fail("npm package identity is outside the closed RiffDB scope")
+        metadata["version"] = version
+        for key in ("dependencies", "optionalDependencies", "peerDependencies"):
+            dependencies = metadata.get(key, {})
+            if not isinstance(dependencies, dict):
+                fail("npm dependency metadata is malformed")
+            for dependency, requirement in list(dependencies.items()):
+                if dependency.startswith("@riffdb/") and requirement == BASE_VERSION:
+                    dependencies[dependency] = version
+        files["package/package.json"] = (canonical_json(metadata), package_entry[1])
+        leaf = source.name.replace(BASE_VERSION, version)
+        if leaf == source.name:
+            fail("npm archive name lacks the production base version")
+        write_tar(output / "npm/packages" / leaf, files, epoch)
+        packages.append(name)
+    return sorted(packages)
+
+
+def wheel_hash(content: bytes) -> str:
+    return base64.urlsafe_b64encode(hashlib.sha256(content).digest()).rstrip(b"=").decode()
+
+
+def write_wheel(path: Path, files: dict[str, tuple[bytes, int]], record_path: str) -> None:
+    records = [
+        f"{relative},sha256={wheel_hash(content)},{len(content)}"
+        for relative, (content, _) in sorted(files.items())
+        if relative != record_path
+    ]
+    records.append(f"{record_path},,")
+    files[record_path] = (("\n".join(records) + "\n").encode(), 0o644)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(path, "x", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
+        for relative, (content, mode) in sorted(files.items()):
+            safe_member(relative)
+            info = zipfile.ZipInfo(relative, (2025, 1, 1, 0, 0, 0))
+            info.compress_type = zipfile.ZIP_DEFLATED
+            info.create_system = 3
+            info.external_attr = (stat.S_IFREG | mode) << 16
+            archive.writestr(info, content)
+
+
+def normalize_python_name(value: str) -> str:
+    return re.sub(r"[-_.]+", "-", value).lower()
+
+
+def sanitize_python_sbom(content: bytes, rust_version: str) -> bytes:
+    document = json.loads(content)
+
+    def sanitize(value: object) -> object:
+        if isinstance(value, dict):
+            result = {key: sanitize(item) for key, item in value.items()}
+            name = result.get("name")
+            if (
+                isinstance(name, str)
+                and (name.startswith("riffdb-") or name == "_native")
+                and result.get("version") == BASE_VERSION
+            ):
+                result["version"] = rust_version
+            return result
+        if isinstance(value, list):
+            return [sanitize(item) for item in value]
+        if isinstance(value, str):
+            value = re.sub(
+                r"path\+file://[^#]+/(riffdb-[a-z0-9-]+)#0\.1\.0",
+                rf"pkg:cargo/\1@{rust_version}",
+                value,
+            )
+            value = re.sub(
+                r"pkg:cargo/(riffdb-[a-z0-9-]+)@0\.1\.0\?download_url=file://[^#\s]+",
+                rf"pkg:cargo/\1@{rust_version}",
+                value,
+            )
+            value = re.sub(
+                r"pkg:cargo/(riffdb-[a-z0-9-]+)@0\.1\.0",
+                rf"pkg:cargo/\1@{rust_version}",
+                value,
+            )
+            return value
+        return value
+
+    sanitized = canonical_json(sanitize(document))
+    if b"path+file://" in sanitized or str(ROOT).encode() in sanitized:
+        fail("Python SBOM retains a repository source path")
+    return sanitized
+
+
+def materialize_python(
+    distribution: Path, output: Path, version: str, rust_version: str
+) -> list[str]:
+    package_files: dict[str, list[tuple[str, str]]] = {}
+    sources = sorted((distribution / "pypi").glob("*.whl"))
+    if len(sources) != 3:
+        fail("Python source inventory is not the reviewed CLI/runtime/alias shape")
+    for source in sources:
+        files: dict[str, tuple[bytes, int]] = {}
+        project_name: str | None = None
+        record_path: str | None = None
+        with zipfile.ZipFile(source) as archive:
+            infos = archive.infolist()
+            if not 1 <= len(infos) <= 16_384:
+                fail("wheel member inventory is outside the bound")
+            for info in infos:
+                pure = safe_member(info.filename)
+                if info.is_dir():
+                    continue
+                mode = (info.external_attr >> 16) & 0o777 or 0o644
+                content = archive.read(info)
+                if len(content) > 268_435_456:
+                    fail("wheel member exceeds the size bound")
+                relative = pure.as_posix().replace(f"-{BASE_VERSION}.dist-info/", f"-{version}.dist-info/")
+                if relative.endswith("/RECORD"):
+                    record_path = relative
+                    continue
+                if relative.endswith("/METADATA"):
+                    text = content.decode("utf-8")
+                    if f"Version: {BASE_VERSION}\n" not in text:
+                        fail("wheel metadata lacks the production base version")
+                    text = text.replace(f"Version: {BASE_VERSION}\n", f"Version: {version}\n", 1)
+                    text = re.sub(
+                        rf"(Requires-Dist:\s*riffdb-application\s*==){re.escape(BASE_VERSION)}",
+                        rf"\g<1>{version}",
+                        text,
+                    )
+                    name_match = re.search(r"^Name:\s*([^\s]+)\s*$", text, re.MULTILINE)
+                    if name_match is None:
+                        fail("wheel project name is absent")
+                    project_name = normalize_python_name(name_match.group(1))
+                    content = text.encode()
+                elif "/sboms/" in relative and relative.endswith(".json"):
+                    content = sanitize_python_sbom(content, rust_version)
+                files[relative] = (content, mode)
+        if project_name is None or record_path is None:
+            fail("wheel metadata or RECORD is absent")
+        leaf = source.name.replace(BASE_VERSION, version)
+        if leaf == source.name:
+            fail("wheel name lacks the production base version")
+        destination = output / "python/packages" / leaf
+        write_wheel(destination, files, record_path)
+        package_files.setdefault(project_name, []).append((leaf, sha256_file(destination)))
+
+    simple = output / "python/simple"
+    project_links = []
+    for project, files in sorted(package_files.items()):
+        project_links.append(f'<a href="{html.escape(project)}/">{html.escape(project)}</a>')
+        links = [
+            f'<a href="../../packages/{html.escape(leaf)}#sha256={digest}">{html.escape(leaf)}</a>'
+            for leaf, digest in sorted(files)
+        ]
+        write(simple / project / "index.html", ("<!doctype html>\n" + "<br>\n".join(links) + "\n").encode())
+    write(simple / "index.html", ("<!doctype html>\n" + "<br>\n".join(project_links) + "\n").encode())
+    return sorted(package_files)
+
+
+def materialize_go(distribution: Path, output: Path, version: str) -> list[str]:
+    module = "riffdb.dev/application"
+    source_dir = distribution / "go-proxy" / module / "@v"
+    source_zip = source_dir / "v0.1.0.zip"
+    if not source_zip.is_file() or source_zip.is_symlink():
+        fail("Go source module is absent")
+    destination = output / "go" / module / "@v"
+    mod = (source_dir / "v0.1.0.mod").read_bytes()
+    write(destination / f"{version}.mod", mod)
+    source_info = json.loads((source_dir / "v0.1.0.info").read_text(encoding="utf-8"))
+    write(destination / f"{version}.info", canonical_json({"Version": version, "Time": source_info["Time"]}))
+    with zipfile.ZipFile(source_zip) as archive, zipfile.ZipFile(
+        destination / f"{version}.zip", "x", zipfile.ZIP_DEFLATED, compresslevel=9
+    ) as target:
+        infos = archive.infolist()
+        if not 1 <= len(infos) <= 128:
+            fail("Go module inventory is outside the bound")
+        for info in infos:
+            pure = safe_member(info.filename)
+            if info.is_dir():
+                continue
+            source_prefix = f"{module}@v0.1.0/"
+            if not info.filename.startswith(source_prefix):
+                fail("Go module archive root is invalid")
+            relative = f"{module}@{version}/{info.filename[len(source_prefix):]}"
+            content = archive.read(info)
+            target_info = zipfile.ZipInfo(relative, (2025, 1, 1, 0, 0, 0))
+            target_info.compress_type = zipfile.ZIP_DEFLATED
+            target_info.create_system = 3
+            target_info.external_attr = (stat.S_IFREG | 0o644) << 16
+            target.writestr(target_info, content)
+    write(destination / "list", f"{version}\n".encode())
+    return [module]
+
+
+def crate_index_path(name: str) -> Path:
+    lowered = name.lower()
+    if len(lowered) == 1:
+        return Path("1", lowered)
+    if len(lowered) == 2:
+        return Path("2", lowered)
+    if len(lowered) == 3:
+        return Path("3", lowered[0], lowered)
+    return Path(lowered[:2], lowered[2:4], lowered)
+
+
+def index_dependencies(
+    manifest: dict[str, object], registry_url: str, version: str
+) -> list[dict[str, object]]:
+    result: list[dict[str, object]] = []
+
+    def add(section: object, kind: str | None, target: str | None = None) -> None:
+        if not isinstance(section, dict):
+            return
+        for alias, raw in sorted(section.items()):
+            dependency = {"version": raw} if isinstance(raw, str) else raw
+            if not isinstance(alias, str) or not isinstance(dependency, dict):
+                fail("Cargo dependency metadata is malformed")
+            actual = dependency.get("package", alias)
+            requirement = dependency.get("version", "*")
+            if not isinstance(actual, str) or not isinstance(requirement, str):
+                fail("Cargo dependency identity is malformed")
+            internal = actual.startswith("riffdb-")
+            if internal and requirement in {BASE_VERSION, version}:
+                requirement = f"={version}"
+            result.append(
+                {
+                    "name": alias,
+                    "req": requirement,
+                    "features": dependency.get("features", []),
+                    "optional": dependency.get("optional", False),
+                    "default_features": dependency.get("default-features", True),
+                    "target": target,
+                    "kind": kind,
+                    "registry": (
+                        registry_url
+                        if internal
+                        else "https://github.com/rust-lang/crates.io-index"
+                    ),
+                    **({"package": actual} if actual != alias else {}),
+                }
+            )
+
+    add(manifest.get("dependencies"), None)
+    add(manifest.get("build-dependencies"), "build")
+    target_sections = manifest.get("target", {})
+    if isinstance(target_sections, dict):
+        for target, sections in sorted(target_sections.items()):
+            if isinstance(sections, dict):
+                add(sections.get("dependencies"), None, target)
+                add(sections.get("build-dependencies"), "build", target)
+    return result
+
+
+def materialize_rust(
+    distribution: Path, output: Path, version: str, epoch: int, registry_url: str
+) -> list[str]:
+    sources = sorted((distribution / "crates").glob(f"*-{BASE_VERSION}.crate"))
+    if not 1 <= len(sources) <= 64:
+        fail("Rust source inventory is outside the bound")
+    names: list[str] = []
+    index_entries: list[tuple[str, bytes]] = []
+    for source in sources:
+        name = source.name[: -len(f"-{BASE_VERSION}.crate")]
+        if not re.fullmatch(r"riffdb-[a-z0-9-]+", name):
+            fail("Rust crate identity is outside the closed RiffDB namespace")
+        old_root = f"{name}-{BASE_VERSION}"
+        new_root = f"{name}-{version}"
+        source_files = read_tar(source, old_root)
+        files: dict[str, tuple[bytes, int]] = {}
+        manifest_bytes: bytes | None = None
+        for relative, (content, mode) in source_files.items():
+            pure = PurePosixPath(relative)
+            destination = PurePosixPath(new_root, *pure.parts[1:]).as_posix()
+            if pure.name in {"Cargo.toml", "Cargo.toml.orig"}:
+                text = content.decode("utf-8")
+                text = text.replace(f'version = "{BASE_VERSION}"', f'version = "{version}"')
+                content = text.encode()
+                if pure.name == "Cargo.toml":
+                    manifest_bytes = content
+            files[destination] = (content, mode)
+        if manifest_bytes is None:
+            fail("normalized Cargo manifest is absent")
+        crate_path = output / "cargo/crates" / name / version / "download"
+        write_tar(crate_path, files, epoch)
+        manifest = tomllib.loads(manifest_bytes.decode("utf-8"))
+        package = manifest.get("package", {})
+        if not isinstance(package, dict) or package.get("name") != name or package.get("version") != version:
+            fail("rewritten Cargo package identity is invalid")
+        dependencies = index_dependencies(manifest, registry_url, version)
+        features = manifest.get("features", {})
+        if not isinstance(features, dict):
+            fail("Cargo features are malformed")
+        entry = {
+            "name": name,
+            "vers": version,
+            "deps": dependencies,
+            "cksum": sha256_file(crate_path),
+            "features": features,
+            "yanked": False,
+            "links": package.get("links"),
+            "rust_version": package.get("rust-version"),
+            "v": 2,
+        }
+        index_entries.append((name, canonical_json(entry)))
+        names.append(name)
+    write(
+        output / "cargo/index/config.json",
+        canonical_json({"dl": "http://127.0.0.1:4874/cargo/crates/{crate}/{version}/download", "api": None}),
+    )
+    for name, entry in index_entries:
+        write(output / "cargo/index" / crate_index_path(name), entry)
+    return sorted(names)
+
+
+def artifact_inventory(output: Path, maximum: int, byte_limit: int) -> list[dict[str, object]]:
+    artifacts = []
+    for path in sorted(output.rglob("*")):
+        if not path.is_file() or path.is_symlink():
+            continue
+        relative = path.relative_to(output).as_posix()
+        if relative == "manifest-v1.json":
+            continue
+        size = path.stat().st_size
+        if not 1 <= size <= byte_limit:
+            fail(f"development artifact size is outside the bound: {relative}")
+        artifacts.append({"path": relative, "sha256": sha256_file(path), "bytes": size})
+    if not 1 <= len(artifacts) <= maximum:
+        fail("development artifact inventory is outside the bound")
+    return artifacts
+
+
+def compare_existing(existing: Path, staged: Path) -> None:
+    expected = json.loads((staged / "manifest-v1.json").read_text(encoding="utf-8"))
+    manifest_path = existing / "manifest-v1.json"
+    if not manifest_path.is_file() or manifest_path.is_symlink():
+        fail("existing build identity has no valid manifest")
+    actual = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if actual != expected:
+        fail("build identity is already bound to different bytes")
+    for artifact in expected["artifacts"]:
+        path = existing / artifact["path"]
+        if not path.is_file() or path.is_symlink() or sha256_file(path) != artifact["sha256"]:
+            fail("existing immutable publication differs from the requested bytes")
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--distribution", required=True, type=Path)
+    parser.add_argument("--registry-root", required=True, type=Path)
+    parser.add_argument("--build-number", required=True)
+    arguments = parser.parse_args()
+    if not re.fullmatch(r"[1-9][0-9]{0,17}", arguments.build_number):
+        fail("build number must be a positive bounded decimal")
+    for path, label in ((arguments.distribution, "distribution"), (arguments.registry_root, "registry root")):
+        if not path.is_absolute() or not path.is_dir() or path.is_symlink():
+            fail(f"{label} must be an absolute real directory")
+
+    plan = json.loads(PLAN_PATH.read_text(encoding="utf-8"))
+    production = json.loads((arguments.distribution / "manifest-v1.json").read_text(encoding="utf-8"))
+    if production.get("schema") != PRODUCTION_SCHEMA or production.get("version") != BASE_VERSION:
+        fail("input is not the production distribution base")
+    maximum = int(plan["max_artifacts"])
+    byte_limit = int(plan["max_artifact_bytes"])
+    checksum_digest = source_checksums(arguments.distribution, maximum, byte_limit)
+    versions = {key: value.format(build=arguments.build_number) for key, value in plan["versions"].items()}
+    destination = arguments.registry_root / "builds" / arguments.build_number
+    temporary = Path(tempfile.mkdtemp(prefix=".riffdb-development-", dir=arguments.registry_root))
+    staged = temporary / "publication"
+    staged.mkdir()
+    epoch = int(os.environ.get("SOURCE_DATE_EPOCH", "1735689600"))
+    try:
+        inventories = {
+            "npm": materialize_npm(arguments.distribution, staged, versions["npm"], epoch),
+            "python": materialize_python(
+                arguments.distribution, staged, versions["python"], versions["rust"]
+            ),
+            "go": materialize_go(arguments.distribution, staged, versions["go"]),
+            "rust": materialize_rust(
+                arguments.distribution,
+                staged,
+                versions["rust"],
+                epoch,
+                "sparse+http://127.0.0.1:4874/cargo/index/",
+            ),
+        }
+        source_receipt = json.loads(
+            (arguments.distribution / "metadata/artifacts-v1.json").read_text(encoding="utf-8")
+        )
+        manifest = {
+            "schema": PUBLICATION_SCHEMA,
+            "build_identity": arguments.build_number,
+            "base_version": BASE_VERSION,
+            "versions": versions,
+            "source": {
+                "schema": source_receipt.get("schema"),
+                "revision": source_receipt.get("revision"),
+                "target": source_receipt.get("target"),
+                "checksums_sha256": checksum_digest,
+            },
+            "registries": {
+                "npm": "http://127.0.0.1:4873/",
+                "python": "http://127.0.0.1:4874/python/simple/",
+                "go": "http://127.0.0.1:4874/go",
+                "rust": "sparse+http://127.0.0.1:4874/cargo/index/",
+            },
+            "packages": inventories,
+            "production_signing": False,
+            "artifacts": artifact_inventory(staged, maximum, byte_limit),
+        }
+        write(staged / "manifest-v1.json", canonical_json(manifest))
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        if destination.exists():
+            compare_existing(destination, staged)
+            print(f"development publication already exists unchanged at {destination}")
+        else:
+            staged.rename(destination)
+            print(f"built immutable development publication at {destination}")
+    finally:
+        shutil.rmtree(temporary, ignore_errors=True)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

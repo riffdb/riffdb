@@ -1,4 +1,4 @@
-spec_version: '0.97'
+spec_version: '0.98'
 product: RiffDB
 repository: riffdb
 status: deployable-application-alpha-architecture-accepted
@@ -12480,4 +12480,48 @@ work_packages:
       and deletion visit only the fixed backup inventory, reconciliation is bounded by receipt and
       retired-stage ceilings, and retained backup count remains fixed without unbounded tombstones
       beyond the already bounded durable receipt registry.
+  human_review_triggers: *id001
+- id: WP-611
+  name: Four-ecosystem development package registries
+  depends_on: [WP-601]
+  objective: Materialize one immutable development build of the four supported driver ecosystems
+    into package-manager-native loopback registries so adapter and application packages can be
+    developed in separate repositories without source paths. Preserve the Rust-owned driver and
+    generated-facade boundary, keep all application-specific integrations outside RiffDB, and keep
+    development publication mechanically disjoint from signed production release qualification.
+  requirements: [DX-037, DX-038, DX-039, DX-040]
+  required_adrs: [ADR-0106, ADR-0112, ADR-0120]
+  allowed_paths: [.github/workflows/driver-development-registry.yml,
+    work_packages.yaml, SPEC.md, docs/**, clients/**, fixtures/driver/**,
+    scripts/**, release/distribution/**]
+  deliverables:
+  - Versioned development-publication schema and checked manifest mapping one caller-supplied build
+    identity to npm and Rust semver prereleases, a PEP 440 Python development version, and a Go
+    module prerelease; artifact digests and the complete package inventory are immutable
+  - Reproducible registry views for Verdaccio-compatible npm publication, a PEP 503/691 Python
+    Simple index, a Go module proxy, and a Cargo sparse registry, plus loopback-only lifecycle and
+    client configuration that never changes user-global package-manager state
+  - Fresh-directory acceptance consumers for TypeScript, Python, Go, and Rust proving exact native
+    registry resolution, lock/install metadata, compile or import success, and absence of source
+    paths, workspace inheritance, and fallback registries
+  - Production-boundary checks that reject development versions and manifests from the signed
+    release workflow and prevent the development publisher from invoking signing or release upload
+    machinery; handbook setup and teardown guidance for external adapter repositories
+  acceptance_commands:
+  - ./scripts/check-driver-development-registry
+  - ./scripts/driver-development-registry-acceptance --all-ecosystems
+  - ./scripts/check-driver-distribution
+  - ./scripts/check-requirement-coverage
+  - ./scripts/handbook check
+  exit_gate: One fresh build identity is published to all four loopback registries and consumed by
+    four source-independent external projects at the exact mapped versions; repeated identical
+    publication is harmless, different bytes at an existing identity fail closed, and no
+    development artifact or endpoint can enter signed release qualification.
+  standing_design_tests:
+    interface_safety: The development registries distribute only the existing safe generated-driver
+      surfaces. They add no SQL, transaction callback, raw transport, Better Auth, identity,
+      session, OAuth, or application-specific runtime API to RiffDB.
+    scale: Publication visits one closed bounded artifact inventory, registry indices are generated
+      deterministically, loopback services have explicit request and artifact-size limits, and
+      acceptance uses one bounded consumer per ecosystem.
   human_review_triggers: *id001
