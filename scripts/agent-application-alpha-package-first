@@ -187,6 +187,17 @@ rust_scaffold_smoke="$work_root/rust-scaffold-smoke"
     CARGO_HOME="$legacy/.cargo" CARGO_NET_OFFLINE=true RUSTC_WRAPPER= \
         cargo +1.97.0 metadata --offline --locked --format-version 1 >/dev/null
 )
+cp "$rust_scaffold_smoke/Cargo.lock" "$work_root/rust-scaffold.Cargo.lock.expected"
+CARGO_HOME="$legacy/.cargo" CARGO_NET_OFFLINE=true RUSTC_WRAPPER= \
+    "$legacy/bin/riffdb-dev" --application-root "$rust_scaffold_smoke" \
+    --seed --acceptance >/dev/null
+cmp "$work_root/rust-scaffold.Cargo.lock.expected" \
+    "$rust_scaffold_smoke/Cargo.lock" || {
+    diff -u "$work_root/rust-scaffold.Cargo.lock.expected" \
+        "$rust_scaffold_smoke/Cargo.lock" >&2 || true
+    echo 'installed Rust development run rewrote the exact scaffold lock' >&2
+    exit 1
+}
 
 cp "$repo_root/release/agent-application-alpha/PACKAGE-FIRST.md" \
     "$legacy/README.md"

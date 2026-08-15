@@ -57,7 +57,10 @@ Offline runtime installation sources are:
 - Rust: set `CARGO_HOME=<bundle>/.cargo`; the signed `.crate` packages are the
   `vendored-sources` directory. Do not copy an ambient Cargo configuration
   into the application. The generated `Cargo.lock` is already package-shaped
-  and must pass `cargo check --offline --locked` unchanged.
+  and must pass `cargo check --offline --locked` unchanged. The installed
+  development runner also executes Cargo with `--locked`; a development run
+  either preserves that lock byte-for-byte or fails before launching the
+  application.
 - TypeScript: install the exact `riffdb-client-0.1.0.tgz` under
   `<bundle>/packages/distribution/npm`; the evaluator compiler and its exact
   target platform binary are available at `<bundle>/tooling/typescript/bin/tsc`.

@@ -463,14 +463,12 @@ if ((run)); then
             echo "installed Rust package is unavailable" >&2
             exit 1
         }
-        app_patch="patch.crates-io.riffdb-client-rust.path=\"$rust_sdk\""
         RIFFDB_ENDPOINT="$endpoint" \
             RIFFDB_CREDENTIAL_FILE="$work_root/profile.credential" \
             RIFFDB_DATABASE=default \
             CARGO_TARGET_DIR="$work_root/application-target" \
-            cargo run --quiet --offline \
+            cargo run --quiet --offline --locked \
             --manifest-path "$application_root/Cargo.toml" \
-            --config "$app_patch" \
             -- "$endpoint" "$work_root/profile.credential" default
     elif [[ -f "$application_root/go.mod" ]]; then
         command -v go >/dev/null 2>&1 || {
@@ -526,14 +524,12 @@ if ((acceptance)); then
             echo "installed Rust package is unavailable" >&2
             exit 1
         }
-        app_patch="patch.crates-io.riffdb-client-rust.path=\"$rust_sdk\""
         RIFFDB_ENDPOINT="$endpoint" \
             RIFFDB_CREDENTIAL_FILE="$work_root/profile.credential" \
             RIFFDB_DATABASE=default \
             CARGO_TARGET_DIR="$work_root/application-target" \
-            cargo run --quiet --offline \
+            cargo run --quiet --offline --locked \
             --manifest-path "$application_root/Cargo.toml" \
-            --config "$app_patch" \
             -- "$endpoint" "$work_root/profile.credential" default \
             >"$work_root/generated-application-client.stdout"
         [[ -s "$work_root/generated-application-client.stdout" ]] || {
