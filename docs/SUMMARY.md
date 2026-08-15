@@ -86,6 +86,7 @@
 - [Security Posture](security.md)
 - [Known Limitations](known-limitations.md)
 - [Compatibility](compatibility.md)
+- [Versioning and Retirement](versioning-and-retirement.md)
 
 # Architecture
 

@@ -4,6 +4,8 @@ set -euo pipefail
 repo_root="$(git rev-parse --show-toplevel)"
 cd "$repo_root"
 
+./scripts/check-version-topology
+
 task_tmp_root="${RIFFDB_TMP_ROOT:-$HOME/tmp}"
 mkdir -p "$task_tmp_root"
 export TMPDIR="$task_tmp_root"

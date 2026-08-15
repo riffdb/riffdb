@@ -6,7 +6,7 @@
 **Tagline:** *Vibe fast. Commit safely.*  
 **Category:** Contract-first operational database for agent-built applications  
 
-**Version:** 0.98
+**Version:** 0.99
 **Status:** Deployable Application Alpha architecture accepted; implementation gated by work packages
 **Date:** 9 August 2026
 **Audience:** Coding agents, database engineers, compiler engineers, security reviewers, and technical product leads  
@@ -37,6 +37,7 @@
 
 | Version | Date | Summary |
 |---|---|---|
+| 0.99 | 2026-08-15 | Accepted ADR-0123 and registered VER-001 through VER-008 plus WP-612 for one machine-readable topology over independently owned version domains, exact reader/writer windows and source pins, durable-manifest cross-checking, classified change review, and evidence-gated decoder retirement without a global runtime version. |
 | 0.98 | 2026-08-15 | Registered DX-037 through DX-040 and WP-611 for one immutable development publication identity materialized into loopback npm, Python Simple, Go module-proxy, and Cargo sparse registries, with fresh external-consumer acceptance and a hard boundary from signed production releases. |
 | 0.97 | 2026-08-14 | Applied accepted ADR-0120 and registered DX-026 through DX-036 for signed four-ecosystem package distribution, registry-first generated applications with an explicit sealed/offline path, one pinned four-step workflow, artifact-only package-arrival proof, cross-driver conformance and sealed campaign 03, and compiler-backed bounded editor tooling shipped with the CLI. |
 | 0.96 | 2026-08-14 | Applied ADR-0118 Amendment 1 and registered SECF-006: secret classification is sticky across compiler-visible contract flows, and every intentional disclosure into a non-secret entity field, durable event field, or command outcome field requires an exact source-naming `reveals` annotation carried through syntax, versioned executable IR, bundle identity, catalogs, diagnostics, and compatibility fixtures. Accepted ADR-0122 and registered DX-021 through DX-025 for repository-local agent rails, the additive authorization-filtered application guidance MCP resource, hosted/stdio parity, and single-source generated teaching artifacts. |
@@ -7872,6 +7873,43 @@ machine-checkable). Requirements trace to ADR-0118 §Proposed Decision items
   generated catalogs, and compatibility fixtures; and it MUST NOT be
   caller-supplied runtime authority or weaken capability field visibility.
 
+### 24.5.12 Version topology and decoder retirement
+
+- `VER-001`: Every release-significant durable, executable-IR, wire,
+  protocol, application-artifact, generated-surface, and evidence identity
+  MUST be registered in one canonical version topology. The topology MUST
+  preserve independently owned domain identities and MUST NOT become a global
+  runtime version, decoder authority, or compatibility bypass.
+- `VER-002`: Every topology domain MUST name its owner, exact source
+  assertions, complete explicit readable, writable, and current identity
+  lists, writer-selection policy, compatibility and breaking rules, supported-
+  release posture, lifecycle state, permanent reservation policy, fixtures,
+  checks, and last classified change.
+- `VER-003`: Repository checks MUST pin source constants, schema identities,
+  and external protocol baselines, and MUST reject a changed or newly declared
+  identity in a tracked family until its topology record is updated.
+- `VER-004`: A version-affecting change MUST be classified as
+  `no_format_change`, `additive_same_identity`, `new_domain_identity`,
+  `writer_transition`, or `breaking_epoch`; additive reuse is permitted only
+  where the owning accepted compatibility contract and fixtures define it.
+- `VER-005`: Every durable reader/writer window in the exact release durable-
+  format manifest MUST be covered exactly once by a durable topology domain,
+  and its identities MUST agree mechanically with that manifest.
+- `VER-006`: Decoder lifecycle MUST use only `active`, `read_only`,
+  `retirement_candidate`, and `retired`. Retirement MUST require no supported
+  writer, prior-release notice, upgrade/export/refusal evidence, frozen last-
+  readable plus typed-refusal fixtures, complete release notes, permanent
+  identifier reservation, and an atomic topology/owner/generated/release
+  update; emergency notice omission requires a separate accepted security ADR.
+- `VER-007`: A retired decoder MUST fail closed and MUST NOT cause historical
+  fixtures, Protobuf fields, enum values, durable tags, hashes, symbolic
+  identities, or other published identifiers to be deleted or reused.
+- `VER-008`: Public compatibility guidance and every version-affecting release
+  note MUST distinguish application migration, same-epoch physical upgrade,
+  breaking-epoch symbolic export/reimport, source/API compatibility, and
+  decoder retirement, naming affected artifacts, last reader, replacement,
+  operator action, downtime, backup, and downgrade posture where applicable.
+
 The Deployable Application Alpha milestone is complete only when WP-550 through
 WP-570, WP-572 through WP-579, and WP-597, WP-598, and WP-600 pass in dependency
 order, every accepted format/interface fixture and release artifact is current, and WP-579's
@@ -8074,5 +8112,6 @@ The implementation MUST prefer primary project documentation and pin reviewed ve
 | `SIM-*` | Deterministic simulation of the durable engine under seeded fault schedules |
 | `VEC-*` | Native vector search projections, embedding writes, staleness, and recall contracts |
 | `SECF-*` | Secret-field classification and structural display-surface redaction (ADR-0118's SEC-F family) |
+| `VER-*` | Cross-domain version topology, change classification, and decoder retirement governance |
 
 Every normative requirement MUST be traceable to at least one automated test, review checklist item, or explicitly justified manual verification artifact before its stage can pass.

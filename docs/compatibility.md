@@ -21,6 +21,10 @@ Generated source, descriptors, schema inventories, wire vectors, contract
 fixtures, and interface checkpoints are compatibility evidence. The current
 source release also carries:
 
+- `release/version-topology-v1.json`, the cross-domain map of independently
+  owned reader/writer windows, writer policy, lifecycle, source assertions, and
+  evidence described in [Versioning and Retirement](versioning-and-retirement.md);
+
 - `release/durable-format-manifest-v1.json`, the exact epoch/writer and complete
   readable/writable record, redb-layout, journal, backup, marker, and named
   receipt-family inventory plus the minimum/maximum supported source release;
@@ -32,10 +36,12 @@ source release also carries:
 - `fixtures/compatibility/durable-fixture-inventory-v1.txt`, whose SHA-256 is
   bound into the release manifest.
 
-Run `./scripts/check-durable-format-manifest` to verify this boundary directly,
-or `./scripts/check-generated` to verify it with every generated artifact. A
-release bundle is rejected if the manifest, upgrade table, fixture digest,
-export posture, downgrade posture, or known limitations are absent or stale.
+Run `./scripts/check-version-topology` to verify all release-significant version
+domains, `./scripts/check-durable-format-manifest` to verify the physical
+boundary directly, or `./scripts/check-generated` to verify both with every
+generated artifact. A release bundle is rejected if the manifest, upgrade
+table, fixture digest, export posture, downgrade posture, or known limitations
+are absent or stale.
 
 The current pre-alpha identity is alpha epoch `1`, writer `1`. Downgrade is
 unsupported. A format marker from another epoch or writer is not evidence that

@@ -1,0 +1,441 @@
+#!/usr/bin/env python3
+"""Validate the release-significant version topology without third-party modules."""
+
+from __future__ import annotations
+
+import copy
+import json
+import re
+import sys
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parent.parent
+TOPOLOGY_PATH = ROOT / "release/version-topology-v1.json"
+DURABLE_MANIFEST_PATH = ROOT / "release/durable-format-manifest-v1.json"
+
+CLASSIFICATIONS = {
+    "durable",
+    "executable_ir",
+    "wire",
+    "protocol",
+    "application_artifact",
+    "generated_surface",
+    "evidence",
+}
+WRITER_POLICIES = {
+    "single_current",
+    "least_sufficient",
+    "multi_current",
+    "external_baseline",
+}
+CHANGE_CLASSES = {
+    "no_format_change",
+    "additive_same_identity",
+    "new_domain_identity",
+    "writer_transition",
+    "breaking_epoch",
+}
+LIFECYCLE_STATES = {"active", "read_only", "retirement_candidate", "retired"}
+RETIREMENT_GATES = {
+    "no_supported_writer",
+    "prior_release_notice",
+    "upgrade_export_or_refusal_evidence",
+    "frozen_and_refusal_fixtures",
+    "release_notes",
+    "identifiers_reserved",
+    "atomic_registry_update",
+}
+DURABLE_WINDOW_KEYS = {
+    "readable_storage_versions",
+    "writable_storage_versions",
+    "readable_redb_layout_versions",
+    "writable_redb_layout_versions",
+    "readable_registry_versions",
+    "writable_registry_versions",
+    "readable_journal_frame_versions",
+    "writable_journal_frame_versions",
+    "readable_journal_extent_versions",
+    "writable_journal_extent_versions",
+    "readable_backup_versions",
+    "writable_backup_versions",
+    "readable_receipt_versions",
+    "writable_receipt_versions",
+    "readable_offline_maintenance_receipt_versions",
+    "writable_offline_maintenance_receipt_versions",
+    "readable_contract_migration_check_receipt_versions",
+    "writable_contract_migration_check_receipt_versions",
+    "readable_format_upgrade_receipt_versions",
+    "writable_format_upgrade_receipt_versions",
+    "readable_format_marker_versions",
+    "writable_format_marker_versions",
+}
+DOMAIN_FIELDS = {
+    "id",
+    "title",
+    "classification",
+    "owner",
+    "source_assertions",
+    "readable_identities",
+    "writable_identities",
+    "current_identities",
+    "writer_policy",
+    "compatibility_rule",
+    "breaking_when",
+    "supported_release_posture",
+    "lifecycle",
+    "reserved_identity_policy",
+    "evidence",
+    "checks",
+    "last_change",
+    "durable_manifest",
+    "manifest_scalar_assertions",
+    "retirement_evidence",
+}
+TOP_LEVEL_FIELDS = {"schema", "release", "policy_adr", "supported_release_window", "domains"}
+
+
+def load_json(path: Path) -> dict:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise SystemExit(f"{path.relative_to(ROOT)}: {error}") from error
+    if not isinstance(value, dict):
+        raise SystemExit(f"{path.relative_to(ROOT)}: top level must be an object")
+    return value
+
+
+def strings(value: object) -> bool:
+    return isinstance(value, list) and all(isinstance(item, str) and item for item in value)
+
+
+def canonical_identity_list(value: object) -> bool:
+    return strings(value) and len(value) == len(set(value))
+
+
+def source_text(path: str, overrides: dict[str, str] | None, errors: list[str]) -> str | None:
+    if overrides and path in overrides:
+        return overrides[path]
+    source = ROOT / path
+    try:
+        return source.read_text(encoding="utf-8")
+    except OSError as error:
+        errors.append(f"source {path}: {error}")
+        return None
+
+
+def validate_source_assertion(
+    domain_id: str,
+    assertion: object,
+    overrides: dict[str, str] | None,
+    errors: list[str],
+) -> None:
+    if not isinstance(assertion, dict):
+        errors.append(f"{domain_id}: source assertion must be an object")
+        return
+    kind = assertion.get("kind")
+    if kind == "path_identity_regex":
+        glob = assertion.get("glob")
+        pattern = assertion.get("pattern")
+        identities = assertion.get("identities")
+        if not isinstance(glob, str) or not isinstance(pattern, str) or not canonical_identity_list(identities):
+            errors.append(f"{domain_id}: malformed path-identity assertion")
+            return
+        paths = [path.relative_to(ROOT).as_posix() for path in sorted(ROOT.glob(glob)) if path.is_file()]
+        try:
+            found = [match.group(1) for path in paths if (match := re.fullmatch(pattern, path))]
+        except re.error as error:
+            errors.append(f"{domain_id}: invalid path regex for {glob}: {error}")
+            return
+        if found != identities:
+            errors.append(
+                f"{domain_id}: source path identity drift for {glob}: expected {identities}, found {found}"
+            )
+        return
+    path = assertion.get("path")
+    if kind not in {"literal", "identity_regex"} or not isinstance(path, str):
+        errors.append(f"{domain_id}: malformed source assertion")
+        return
+    text = source_text(path, overrides, errors)
+    if text is None:
+        return
+    if kind == "literal":
+        literal = assertion.get("literal")
+        if not isinstance(literal, str) or not literal:
+            errors.append(f"{domain_id}: literal source assertion is empty")
+        elif text.count(literal) != assertion.get("matches", 1):
+            errors.append(f"{domain_id}: source literal drift in {path}: {literal!r}")
+        return
+    pattern = assertion.get("pattern")
+    identities = assertion.get("identities")
+    if not isinstance(pattern, str) or not canonical_identity_list(identities):
+        errors.append(f"{domain_id}: malformed identity-regex assertion")
+        return
+    try:
+        found = re.findall(pattern, text, flags=re.MULTILINE)
+    except re.error as error:
+        errors.append(f"{domain_id}: invalid source regex for {path}: {error}")
+        return
+    normalized: list[str] = []
+    for match in found:
+        if isinstance(match, tuple):
+            normalized.append(match[0])
+            if any(value != match[0] for value in match[1:]):
+                errors.append(
+                    f"{domain_id}: source declaration name/value mismatch in {path}: {match}"
+                )
+        else:
+            normalized.append(match)
+    if normalized != identities:
+        errors.append(
+            f"{domain_id}: source identity drift in {path}: expected {identities}, found {normalized}"
+        )
+
+
+def validate(
+    topology: dict,
+    durable: dict,
+    *,
+    check_sources: bool = True,
+    source_overrides: dict[str, str] | None = None,
+) -> list[str]:
+    errors: list[str] = []
+    if set(topology) != TOP_LEVEL_FIELDS:
+        errors.append(
+            f"topology fields must be the closed v1 schema: {sorted(TOP_LEVEL_FIELDS)}"
+        )
+    if topology.get("schema") != "riffdb.version-topology/v1":
+        errors.append("topology schema must be riffdb.version-topology/v1")
+    if topology.get("policy_adr") != "ADR-0123":
+        errors.append("topology policy_adr must be ADR-0123")
+    if topology.get("release") != durable.get("release"):
+        errors.append("topology release does not match durable manifest release")
+    window = topology.get("supported_release_window")
+    expected_window = {
+        "minimum": durable.get("minimum_supported_source_release"),
+        "maximum": durable.get("maximum_supported_source_release"),
+    }
+    if window != expected_window:
+        errors.append("supported release window does not match durable manifest")
+
+    domains = topology.get("domains")
+    if not isinstance(domains, list) or not domains:
+        return errors + ["domains must be a nonempty array"]
+    domain_ids = [domain.get("id") if isinstance(domain, dict) else None for domain in domains]
+    if not all(isinstance(domain_id, str) and domain_id for domain_id in domain_ids):
+        errors.append("every domain must have a nonempty string id")
+    elif domain_ids != sorted(domain_ids):
+        errors.append("domains must be sorted by id")
+    if len(domain_ids) != len(set(domain_ids)):
+        errors.append("domain ids must be unique")
+
+    durable_key_counts: dict[str, int] = {}
+    for domain in domains:
+        if not isinstance(domain, dict):
+            errors.append("domain entry must be an object")
+            continue
+        domain_id = str(domain.get("id", "<missing>"))
+        unknown = set(domain) - DOMAIN_FIELDS
+        if unknown:
+            errors.append(f"{domain_id}: unknown fields: {sorted(unknown)}")
+        for field in (
+            "title",
+            "owner",
+            "compatibility_rule",
+            "breaking_when",
+            "supported_release_posture",
+            "reserved_identity_policy",
+        ):
+            if not isinstance(domain.get(field), str) or not domain[field].strip():
+                errors.append(f"{domain_id}: {field} must be nonempty")
+        if domain.get("classification") not in CLASSIFICATIONS:
+            errors.append(f"{domain_id}: unknown classification")
+        if domain.get("writer_policy") not in WRITER_POLICIES:
+            errors.append(f"{domain_id}: unknown writer policy")
+        last_change = domain.get("last_change")
+        if not isinstance(last_change, dict) or last_change.get("classification") not in CHANGE_CLASSES:
+            errors.append(f"{domain_id}: invalid last_change classification")
+        elif not isinstance(last_change.get("decision"), str) or not last_change["decision"]:
+            errors.append(f"{domain_id}: last_change decision must be nonempty")
+
+        readable = domain.get("readable_identities")
+        writable = domain.get("writable_identities")
+        current = domain.get("current_identities")
+        if not canonical_identity_list(readable):
+            errors.append(f"{domain_id}: readable identities must be an explicit unique string list")
+            readable = []
+        if not canonical_identity_list(writable):
+            errors.append(f"{domain_id}: writable identities must be an explicit unique string list")
+            writable = []
+        if not canonical_identity_list(current):
+            errors.append(f"{domain_id}: current identities must be an explicit unique string list")
+            current = []
+        if not set(writable).issubset(readable):
+            errors.append(f"{domain_id}: writable identities must also be readable")
+        if not set(current).issubset(writable):
+            errors.append(f"{domain_id}: current identities must also be writable")
+        if not current:
+            errors.append(f"{domain_id}: at least one current identity is required")
+        if domain.get("writer_policy") in {"single_current", "external_baseline"} and len(current) != 1:
+            errors.append(f"{domain_id}: writer policy requires exactly one current identity")
+
+        lifecycle = domain.get("lifecycle")
+        lifecycle_sets: dict[str, list[str]] = {}
+        if not isinstance(lifecycle, dict) or set(lifecycle) != LIFECYCLE_STATES:
+            errors.append(f"{domain_id}: lifecycle must contain the closed state vocabulary")
+        else:
+            for state in sorted(LIFECYCLE_STATES):
+                values = lifecycle.get(state)
+                if not canonical_identity_list(values):
+                    errors.append(f"{domain_id}: lifecycle {state} must be a unique string list")
+                    values = []
+                lifecycle_sets[state] = values
+            flattened = [value for values in lifecycle_sets.values() for value in values]
+            if len(flattened) != len(set(flattened)):
+                errors.append(f"{domain_id}: an identity appears in more than one lifecycle state")
+            if set(flattened) != set(readable) | set(lifecycle_sets.get("retired", [])):
+                errors.append(f"{domain_id}: lifecycle does not cover readable and retired identities exactly")
+            if not set(writable).issubset(set(lifecycle_sets.get("active", []))):
+                errors.append(f"{domain_id}: every writable identity must be active")
+            if set(lifecycle_sets.get("retired", [])) & set(readable):
+                errors.append(f"{domain_id}: retired identities cannot remain readable")
+
+        candidates = set(lifecycle_sets.get("retirement_candidate", []))
+        retired = set(lifecycle_sets.get("retired", []))
+        retirement = domain.get("retirement_evidence")
+        if candidates or retired:
+            if not isinstance(retirement, dict):
+                errors.append(f"{domain_id}: retirement evidence is required")
+            else:
+                for identity in sorted(candidates | retired):
+                    gates = retirement.get(identity)
+                    if not isinstance(gates, dict) or set(gates) != RETIREMENT_GATES:
+                        errors.append(f"{domain_id}: {identity} lacks the complete retirement gate")
+                    elif not all(isinstance(value, str) and value for value in gates.values()):
+                        errors.append(f"{domain_id}: {identity} retirement evidence must be nonempty")
+        elif retirement not in (None, {}):
+            errors.append(f"{domain_id}: retirement evidence exists without a candidate or retired identity")
+
+        assertions = domain.get("source_assertions")
+        if not isinstance(assertions, list) or not assertions:
+            errors.append(f"{domain_id}: source assertions must be nonempty")
+        elif check_sources:
+            for assertion in assertions:
+                validate_source_assertion(domain_id, assertion, source_overrides, errors)
+
+        evidence = domain.get("evidence")
+        if not strings(evidence) or not evidence:
+            errors.append(f"{domain_id}: evidence must be nonempty")
+        else:
+            for path in evidence:
+                target = ROOT / path
+                if not target.is_file() or target.stat().st_size == 0:
+                    errors.append(f"{domain_id}: evidence is missing or empty: {path}")
+        checks = domain.get("checks")
+        if not strings(checks) or not checks:
+            errors.append(f"{domain_id}: checks must be nonempty")
+        else:
+            for check in checks:
+                if check.startswith("./") and not (ROOT / check[2:]).is_file():
+                    errors.append(f"{domain_id}: check path does not exist: {check}")
+
+        mapping = domain.get("durable_manifest")
+        if mapping is not None:
+            if domain.get("classification") != "durable" or not isinstance(mapping, dict):
+                errors.append(f"{domain_id}: durable manifest mapping requires a durable domain")
+            else:
+                readable_key = mapping.get("readable_key")
+                writable_key = mapping.get("writable_key")
+                for key, expected in ((readable_key, readable), (writable_key, writable)):
+                    if key not in DURABLE_WINDOW_KEYS:
+                        errors.append(f"{domain_id}: unknown durable manifest key {key!r}")
+                        continue
+                    durable_key_counts[key] = durable_key_counts.get(key, 0) + 1
+                    actual = [str(value) for value in durable.get(key, [])]
+                    if actual != expected:
+                        errors.append(f"{domain_id}: {key} disagrees with durable manifest")
+        scalar_assertions = domain.get("manifest_scalar_assertions")
+        if scalar_assertions is not None:
+            if not isinstance(scalar_assertions, dict) or not scalar_assertions:
+                errors.append(f"{domain_id}: manifest scalar assertions must be a nonempty object")
+            else:
+                for key, expected in scalar_assertions.items():
+                    if durable.get(key) != expected:
+                        errors.append(f"{domain_id}: manifest scalar {key} drifted")
+
+    used_durable_keys = set(durable_key_counts)
+    duplicate_keys = sorted(key for key, count in durable_key_counts.items() if count != 1)
+    if used_durable_keys != DURABLE_WINDOW_KEYS or duplicate_keys:
+        missing = sorted(DURABLE_WINDOW_KEYS - used_durable_keys)
+        extra = sorted(used_durable_keys - DURABLE_WINDOW_KEYS)
+        errors.append(
+            f"durable manifest window coverage is not exact; missing={missing}, "
+            f"extra={extra}, duplicates={duplicate_keys}"
+        )
+    return errors
+
+
+def run_negative_self_tests(topology: dict, durable: dict) -> list[str]:
+    failures: list[str] = []
+
+    reordered = copy.deepcopy(topology)
+    reordered["domains"][0], reordered["domains"][1] = reordered["domains"][1], reordered["domains"][0]
+    if not any("sorted by id" in error for error in validate(reordered, durable, check_sources=False)):
+        failures.append("negative self-test did not reject reordered domains")
+
+    bad_writer = copy.deepcopy(topology)
+    bad_writer["domains"][0]["writable_identities"].append("unreadable")
+    if not any("writable identities must also be readable" in error for error in validate(bad_writer, durable, check_sources=False)):
+        failures.append("negative self-test did not reject writer outside reader set")
+
+    missing_retirement = copy.deepcopy(topology)
+    target = missing_retirement["domains"][0]
+    identity = target["readable_identities"][0]
+    for state in LIFECYCLE_STATES:
+        if identity in target["lifecycle"][state]:
+            target["lifecycle"][state].remove(identity)
+    target["lifecycle"]["retirement_candidate"].append(identity)
+    if not any("retirement evidence is required" in error for error in validate(missing_retirement, durable, check_sources=False)):
+        failures.append("negative self-test did not reject an incomplete retirement gate")
+
+    durable_mismatch = copy.deepcopy(topology)
+    durable_domain = next(domain for domain in durable_mismatch["domains"] if "durable_manifest" in domain)
+    durable_domain["readable_identities"].append("999")
+    durable_domain["lifecycle"]["read_only"].append("999")
+    if not any("disagrees with durable manifest" in error for error in validate(durable_mismatch, durable, check_sources=False)):
+        failures.append("negative self-test did not reject durable-manifest drift")
+
+    family_domain = next(
+        domain for domain in topology["domains"] if domain["id"] == "executable_ir.contract_bundle"
+    )
+    assertion = next(item for item in family_domain["source_assertions"] if item["kind"] == "identity_regex")
+    source_path = assertion["path"]
+    original = (ROOT / source_path).read_text(encoding="utf-8")
+    injected = original + "\npub const BUNDLE_FORMAT_VERSION_V999: u32 = 999;\n"
+    if not any(
+        "source identity drift" in error
+        for error in validate(topology, durable, source_overrides={source_path: injected})
+    ):
+        failures.append("negative self-test did not reject an unregistered version declaration")
+    return failures
+
+
+def main() -> int:
+    topology = load_json(TOPOLOGY_PATH)
+    durable = load_json(DURABLE_MANIFEST_PATH)
+    errors = validate(topology, durable)
+    errors.extend(run_negative_self_tests(topology, durable))
+    if errors:
+        print("version topology validation failed:", file=sys.stderr)
+        for error in sorted(set(errors)):
+            print(f"- {error}", file=sys.stderr)
+        return 1
+    print(
+        f"Version topology is valid: {len(topology['domains'])} independently governed domains; "
+        f"{len(DURABLE_WINDOW_KEYS) // 2} durable reader/writer windows cross-checked."
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

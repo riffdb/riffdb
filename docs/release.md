@@ -11,6 +11,15 @@ Run from a clean checkout:
 ./scripts/release-poc --verify
 ```
 
+Before changing any release-significant identity, classify it and update the
+machine-readable topology described in [Versioning and
+Retirement](versioning-and-retirement.md). Release review runs
+`./scripts/check-version-topology`; it rejects source-identity drift, incomplete
+reader/writer or lifecycle metadata, and disagreement with the durable-format
+manifest. A retirement also requires the prior-notice, frozen-fixture,
+typed-refusal, operator-action, and permanent-reservation evidence in that
+policy. The current WP-612 baseline retires no decoder.
+
 `scripts/demo --assert` verifies the candidate requirement map and writes a
 revision-specific `demo_verified` report to `target/wp200/demo-report.json`
 only after its live and process-level suites pass. POC-010 remains
