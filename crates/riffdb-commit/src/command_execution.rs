@@ -125,6 +125,8 @@ pub(super) struct SubmittedCommandGroup {
 struct SubmittedCommandSubgroup {
     indices: Vec<usize>,
     fence: Box<dyn CheckedCommandGroupFence>,
+    commit_started_at: Instant,
+    batch_size: u16,
 }
 
 impl SubmittedCommandGroup {
@@ -137,10 +139,16 @@ impl SubmittedCommandGroup {
     pub(super) fn try_wait(
         &mut self,
         lifecycle: &dyn CommandExecutionLifecycle,
+        telemetry: &dyn CommitTelemetry,
     ) -> Option<Vec<Result<CommandExecutionResult, CommandExecutionError>>> {
         loop {
             let subgroup = self.subgroups.first_mut()?;
             let committed = subgroup.fence.try_wait()?;
+            telemetry.record(CommitTelemetryEvent::CommitCallCompleted {
+                terminal: group_commit_call_terminal(&committed),
+                elapsed: subgroup.commit_started_at.elapsed(),
+                batch_size: subgroup.batch_size,
+            });
             let subgroup = self.subgroups.remove(0);
             self.install_subgroup(subgroup.indices, committed, lifecycle);
             if self.subgroups.is_empty() {
@@ -152,9 +160,15 @@ impl SubmittedCommandGroup {
     pub(super) fn wait(
         mut self,
         lifecycle: &dyn CommandExecutionLifecycle,
+        telemetry: &dyn CommitTelemetry,
     ) -> Vec<Result<CommandExecutionResult, CommandExecutionError>> {
         for subgroup in std::mem::take(&mut self.subgroups) {
             let committed = subgroup.fence.wait();
+            telemetry.record(CommitTelemetryEvent::CommitCallCompleted {
+                terminal: group_commit_call_terminal(&committed),
+                elapsed: subgroup.commit_started_at.elapsed(),
+                batch_size: subgroup.batch_size,
+            });
             self.install_subgroup(subgroup.indices, committed, lifecycle);
         }
         self.take_results()
@@ -2358,6 +2372,8 @@ where
                             subgroup: SubmittedCommandSubgroup {
                                 indices: staged_indices,
                                 fence,
+                                commit_started_at,
+                                batch_size: u16::try_from(batch_size).expect("group cap fits u16"),
                             },
                         },
                         Err(result) => complete_indexed_group_commit(
@@ -3004,6 +3020,8 @@ where
                             subgroup: SubmittedCommandSubgroup {
                                 indices: staged_indices,
                                 fence,
+                                commit_started_at,
+                                batch_size: u16::try_from(batch_size).expect("group cap fits u16"),
                             },
                         },
                         Err(result) => {

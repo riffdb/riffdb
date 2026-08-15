@@ -230,24 +230,28 @@ impl AdministrationAuditInputView for StartedCommandAuditInput {
 }
 
 struct FixedPostEvaluationCommandAuthorizer {
-    authorization: Mutex<Option<AuthorizedCommandExecution>>,
+    plan: CommandPlan,
+    lineage: ContractLineage,
+    partition: PartitionKey,
 }
 
 impl FixedPostEvaluationCommandAuthorizer {
-    fn new(authorization: AuthorizedCommandExecution) -> Self {
+    fn new(plan: &CommandPlan, lineage: ContractLineage, partition: PartitionKey) -> Self {
         Self {
-            authorization: Mutex::new(Some(authorization)),
+            plan: plan.clone(),
+            lineage,
+            partition,
         }
     }
 }
 
 impl PostEvaluationCommandAuthorizer for FixedPostEvaluationCommandAuthorizer {
     fn authorize(&self) -> Result<AuthorizedCommandExecution, PostEvaluationAuthorizationError> {
-        self.authorization
-            .lock()
-            .map_err(|_| PostEvaluationAuthorizationError::Unavailable)?
-            .take()
-            .ok_or(PostEvaluationAuthorizationError::Integrity)
+        Ok(authorize_command(
+            &self.plan,
+            self.lineage.clone(),
+            self.partition.clone(),
+        ))
     }
 }
 
@@ -516,7 +520,7 @@ impl BulkRowsDatabase {
             self.checked_bundle.lineage().clone(),
             facts.partition_key().clone(),
         );
-        let post_evaluation_authorization = authorize_command(
+        let post_evaluation_authorization = FixedPostEvaluationCommandAuthorizer::new(
             plan,
             self.checked_bundle.lineage().clone(),
             facts.partition_key().clone(),
@@ -543,9 +547,7 @@ impl BulkRowsDatabase {
             admission_request_seed,
         ))))
         .expect("attach exact bulk audit lifecycle")
-        .with_post_evaluation_authorizer(Box::new(FixedPostEvaluationCommandAuthorizer::new(
-            post_evaluation_authorization,
-        )))
+        .with_post_evaluation_authorizer(Box::new(post_evaluation_authorization))
         .expect("attach exact bulk post-evaluation authorization")
     }
 
@@ -735,7 +737,7 @@ impl UniqueUserDatabase {
             caller_key,
             digest_seed,
             request_seed,
-            false,
+            true,
         )
     }
 
@@ -779,7 +781,7 @@ impl UniqueUserDatabase {
             caller_key,
             digest_seed,
             request_seed,
-            false,
+            true,
         )
     }
 
@@ -842,7 +844,7 @@ impl UniqueUserDatabase {
             caller_key,
             digest_seed,
             request_seed,
-            false,
+            true,
         )
     }
 
@@ -939,7 +941,7 @@ impl UniqueUserDatabase {
             facts.partition_key().clone(),
         );
         let post_evaluation_authorization = attempt.audited.then(|| {
-            authorize_command(
+            FixedPostEvaluationCommandAuthorizer::new(
                 plan,
                 self.checked_bundle.lineage().clone(),
                 facts.partition_key().clone(),
@@ -970,9 +972,7 @@ impl UniqueUserDatabase {
                     attempt.request_seed,
                 ))))
                 .expect("attach exact unique command audit lifecycle")
-                .with_post_evaluation_authorizer(Box::new(
-                    FixedPostEvaluationCommandAuthorizer::new(post_evaluation_authorization),
-                ))
+                .with_post_evaluation_authorizer(Box::new(post_evaluation_authorization))
                 .expect("attach exact unique command post-evaluation authorization")
         } else {
             preparation
@@ -1000,7 +1000,7 @@ impl UniqueUserDatabase {
             caller_key_text,
             digest_seed,
             request_seed,
-            false,
+            true,
         )
     }
 
@@ -1084,7 +1084,7 @@ impl UniqueUserDatabase {
             facts.partition_key().clone(),
         );
         let post_evaluation_authorization = audited.then(|| {
-            authorize_command(
+            FixedPostEvaluationCommandAuthorizer::new(
                 plan,
                 self.checked_bundle.lineage().clone(),
                 facts.partition_key().clone(),
@@ -1114,9 +1114,7 @@ impl UniqueUserDatabase {
                     request_seed,
                 ))))
                 .expect("attach matching checked Started audit lifecycle")
-                .with_post_evaluation_authorizer(Box::new(
-                    FixedPostEvaluationCommandAuthorizer::new(post_evaluation_authorization),
-                ))
+                .with_post_evaluation_authorizer(Box::new(post_evaluation_authorization))
                 .expect("attach exact post-evaluation authorization safe point")
         } else {
             preparation
@@ -1469,7 +1467,7 @@ impl FrameworkProfileDatabase {
                 .expect("representable profile command deadline"),
         );
         let post_evaluation_authorization = audited.then(|| {
-            authorize_command(
+            FixedPostEvaluationCommandAuthorizer::new(
                 plan,
                 self.checked_bundle.lineage().clone(),
                 facts.partition_key().clone(),
@@ -1494,9 +1492,7 @@ impl FrameworkProfileDatabase {
                     admission_request_seed,
                 ))))
                 .expect("attach exact profile audit lifecycle")
-                .with_post_evaluation_authorizer(Box::new(
-                    FixedPostEvaluationCommandAuthorizer::new(post_evaluation_authorization),
-                ))
+                .with_post_evaluation_authorizer(Box::new(post_evaluation_authorization))
                 .expect("attach exact profile post-evaluation authorization")
         } else {
             preparation
@@ -1711,6 +1707,11 @@ impl BudgetDatabase {
             self.checked_bundle.lineage().clone(),
             facts.partition_key().clone(),
         );
+        let post_evaluation_authorization = FixedPostEvaluationCommandAuthorizer::new(
+            plan,
+            self.checked_bundle.lineage().clone(),
+            facts.partition_key().clone(),
+        );
         let (control, _cancellation) = CommandRequestControl::new(
             Instant::now()
                 .checked_add(Duration::from_secs(30))
@@ -1730,6 +1731,12 @@ impl BudgetDatabase {
             control,
         )
         .expect("join exact command preparation proofs")
+        .with_audited_lifecycle(Box::new(StartedCommandAuditInput::new(request_id(
+            request_seed,
+        ))))
+        .expect("attach exact budget audit lifecycle")
+        .with_post_evaluation_authorizer(Box::new(post_evaluation_authorization))
+        .expect("attach exact budget post-evaluation authorization")
     }
 
     pub(crate) fn assert_one_budget_commit(

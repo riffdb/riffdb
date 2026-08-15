@@ -940,20 +940,22 @@ fn commit_command_fixture_with_audit(
     fixture: &CommandFixture,
     transition: riffdb_storage_api::CommandServiceAuditTransitionV1,
 ) {
+    try_commit_command_fixture_with_audit(ports, fixture, transition)
+        .expect("commit complete command graph and audit lifecycle");
+}
+
+fn try_commit_command_fixture_with_audit(
+    ports: &RedbOperationalPorts,
+    fixture: &CommandFixture,
+    transition: riffdb_storage_api::CommandServiceAuditTransitionV1,
+) -> Result<(), riffdb_storage_api::StorageError> {
     let candidate = ports
-        .begin_empty_batch()
-        .expect("begin command batch")
-        .begin_candidate(Box::new(fixture.intent.clone()))
-        .expect("begin command candidate");
-    let CandidateAdmissionResult::Proceed(candidate) = candidate
-        .recheck_admission()
-        .expect("recheck pending admission")
-    else {
+        .begin_empty_batch()?
+        .begin_candidate(Box::new(fixture.intent.clone()))?;
+    let CandidateAdmissionResult::Proceed(candidate) = candidate.recheck_admission()? else {
         panic!("the fixture's expected admission state must proceed");
     };
-    let (candidate, current) = candidate
-        .read_transaction_current()
-        .expect("read transaction-current state");
+    let (candidate, current) = candidate.read_transaction_current()?;
     assert_eq!(
         current.bindings()[0].expected_state(),
         fixture.records.entities()[0].expected(),
@@ -961,24 +963,59 @@ fn commit_command_fixture_with_audit(
     );
     let candidate = candidate
         .plan_validated(fixture.affected_targets.clone())
-        .read_affected_epoch_current()
-        .expect("read affected epoch state");
-    let CandidateCapacityResult::Reserved(candidate) = candidate
-        .reserve_capacity(fixture.write_plan.clone())
-        .expect("reserve complete command graph")
+        .read_affected_epoch_current()?;
+    let CandidateCapacityResult::Reserved(candidate) =
+        candidate.reserve_capacity(fixture.write_plan.clone())?
     else {
         panic!("small recovery fixture must reserve");
     };
-    let candidate = candidate.assign_sequence().expect("assign sequence");
+    let candidate = candidate.assign_sequence()?;
     assert_eq!(
         candidate.assignment().assigned(),
         fixture.records.commit().commit_sequence()
     );
     candidate
-        .stage(fixture.records.clone())
-        .expect("stage complete command graph")
+        .stage(fixture.records.clone())?
         .commit_with_service_audit_transitions(DurabilityMode::Sync, vec![transition])
-        .expect("commit complete command graph and audit lifecycle");
+        .map(|_| ())
+}
+
+/// Attempts the retained storage-only command completion path that carries no
+/// command service-audit transition and therefore cannot produce a canonical
+/// command capsule. Production command callers never select this path.
+fn try_commit_uncapsulated_command_fixture(
+    ports: &RedbOperationalPorts,
+    fixture: &CommandFixture,
+) -> Result<(), riffdb_storage_api::StorageError> {
+    let candidate = ports
+        .begin_empty_batch()?
+        .begin_candidate(Box::new(fixture.intent.clone()))?;
+    let CandidateAdmissionResult::Proceed(candidate) = candidate.recheck_admission()? else {
+        panic!("the fixture's expected admission state must proceed");
+    };
+    let (candidate, current) = candidate.read_transaction_current()?;
+    assert_eq!(
+        current.bindings()[0].expected_state(),
+        fixture.records.entities()[0].expected(),
+        "transaction-current state must match the fixture's committed expectation"
+    );
+    let candidate = candidate
+        .plan_validated(fixture.affected_targets.clone())
+        .read_affected_epoch_current()?;
+    let CandidateCapacityResult::Reserved(candidate) =
+        candidate.reserve_capacity(fixture.write_plan.clone())?
+    else {
+        panic!("small recovery fixture must reserve");
+    };
+    let candidate = candidate.assign_sequence()?;
+    assert_eq!(
+        candidate.assignment().assigned(),
+        fixture.records.commit().commit_sequence()
+    );
+    candidate
+        .stage(fixture.records.clone())?
+        .commit(DurabilityMode::Sync)
+        .map(|_| ())
 }
 
 fn apply_unpublished_command_fixture(
@@ -1773,6 +1810,68 @@ fn process_recovery_child() {
         _ => unreachable!("controller match rejects unknown modes"),
     }
     panic!("the armed failpoint did not terminate the child");
+}
+
+#[test]
+fn uncapsulated_then_audited_entity_history_refuses_before_mutation_and_reopens_clean() {
+    let path = TestDatabasePath::new("uncapsulated-then-audited");
+    prepare_command_database(&path.0);
+    let ports = open_operational(RedbStore::open(&path.0).expect("open command database"));
+    let fixture = command_fixture();
+
+    let error = try_commit_uncapsulated_command_fixture(&ports, &fixture)
+        .expect_err("an entity-bearing uncapsulated command must refuse");
+    assert_eq!(
+        error.kind(),
+        riffdb_storage_api::StorageErrorKind::InvariantViolation
+    );
+    assert_precommit_command_state(&ports, &fixture);
+
+    commit_command_fixture(&ports, &fixture);
+    assert_postcommit_command_state(&ports, &fixture);
+    drop(ports);
+
+    let reopened = open_operational(RedbStore::open(&path.0).expect("reopen audited history"));
+    assert_postcommit_command_state(&reopened, &fixture);
+}
+
+#[test]
+fn audited_then_uncapsulated_entity_history_refuses_before_mutation_and_reopens_clean() {
+    let path = TestDatabasePath::new("audited-then-uncapsulated");
+    prepare_command_database(&path.0);
+    let ports = open_operational(RedbStore::open(&path.0).expect("open command database"));
+    let first = command_fixture();
+    commit_command_fixture(&ports, &first);
+    let second = superseding_command_fixture_at(2, 1, &first);
+
+    let error = try_commit_uncapsulated_command_fixture(&ports, &second)
+        .expect_err("an entity-bearing uncapsulated successor must refuse");
+    assert_eq!(
+        error.kind(),
+        riffdb_storage_api::StorageErrorKind::InvariantViolation
+    );
+    assert_eq!(
+        ports
+            .read_entity(&first.target)
+            .expect("read entity after refused successor"),
+        Some(first.records.entities()[0].post_image().clone())
+    );
+    assert_eq!(
+        ports
+            .lookup_admission(second.candidates.clone())
+            .expect("read refused successor admission"),
+        AdmissionLookupResultV1::NotFound
+    );
+    drop(ports);
+
+    let reopened = open_operational(RedbStore::open(&path.0).expect("reopen audited history"));
+    assert_postcommit_command_state(&reopened, &first);
+    assert_eq!(
+        reopened
+            .lookup_admission(second.candidates.clone())
+            .expect("read refused successor admission after reopen"),
+        AdmissionLookupResultV1::NotFound
+    );
 }
 
 #[test]
