@@ -211,6 +211,15 @@ impl SymbolicContractSelector {
         &self.selection
     }
 
+    fn exact_identity(&self) -> Option<(&ContractLineage, ContractVersion, ContractBundleHash)> {
+        match (&self.selection, self.expected_hash) {
+            (ContractSelection::Exact { lineage, version }, Some(hash)) => {
+                Some((lineage, *version, hash))
+            }
+            _ => None,
+        }
+    }
+
     pub(crate) fn matches(&self, bundle: &riffdb_catalog::ValidatedContractBundle) -> bool {
         self.expected_hash
             .is_none_or(|expected| expected == bundle.bundle_hash())
@@ -2460,33 +2469,80 @@ async fn execute_named_query(
 ) -> ServiceResult<ExecuteSymbolicQueryResult> {
     const OPERATION: ServiceOperationV1 = ServiceOperationV1::ExecuteQuery;
     let plan_lookup_started = Instant::now();
-    let bundle =
-        prepare_selected_contract(&service, &context, request.contract.selection(), OPERATION)
-            .await?;
-    ensure_selected_hash(&request.contract, &bundle)?;
     let query_name = QueryOperationName::new(request.query_name.clone())
         .map_err(|_| validation_failure(ValidationCode::InvalidValue))?;
-    let module = load_query_module(
-        &service,
-        &context,
-        bundle.clone(),
+    let fast_resolution = match (
+        service.providers.query_modules.as_ref(),
+        request.contract.exact_identity(),
         request.module_hash,
-        OPERATION,
-    )
-    .await?
-    .ok_or_else(|| {
-        application_validation_failure(
-            ValidationCode::InvalidValue,
-            ApplicationErrorCode::ModuleUnavailable,
+    ) {
+        (Some(modules), Some((lineage, version, contract_hash)), Some(module_hash)) => {
+            let future = modules.prepare_exact_named_query(
+                context.control(),
+                crate::ExactNamedQueryRequest::new(
+                    lineage.clone(),
+                    version,
+                    contract_hash,
+                    module_hash,
+                    query_name.clone(),
+                ),
+            );
+            match wait_with_control(
+                context.control(),
+                service.providers.deadline_scheduler.as_ref(),
+                future,
+            )
+            .await
+            {
+                Ok(Ok(resolution)) => resolution,
+                Ok(Err(crate::QueryModuleReadError::Unavailable)) => {
+                    return Err(PublicError::storage_unavailable().into());
+                }
+                Ok(Err(crate::QueryModuleReadError::Integrity)) => {
+                    return Err(service.internal_failure(OPERATION, InternalDefect::ProofMismatch));
+                }
+                Err(error) => return Err(controlled_failure(error)),
+            }
+        }
+        _ => None,
+    };
+    let (bundle, module, query_index) = if let Some(resolution) = fast_resolution {
+        let (bundle, module, query_index) = resolution.into_parts();
+        ensure_selected_hash(&request.contract, &bundle)?;
+        (bundle, module, query_index)
+    } else {
+        let bundle =
+            prepare_selected_contract(&service, &context, request.contract.selection(), OPERATION)
+                .await?;
+        ensure_selected_hash(&request.contract, &bundle)?;
+        let module = load_query_module(
+            &service,
+            &context,
+            bundle.clone(),
+            request.module_hash,
+            OPERATION,
         )
-    })?;
+        .await?
+        .ok_or_else(|| {
+            application_validation_failure(
+                ValidationCode::InvalidValue,
+                ApplicationErrorCode::ModuleUnavailable,
+            )
+        })?;
+        let query_index = module
+            .module()
+            .queries()
+            .binary_search_by(|query| query.name().cmp(request.query_name.as_str()))
+            .map_err(|_| {
+                application_validation_failure(
+                    ValidationCode::InvalidValue,
+                    ApplicationErrorCode::QueryUnavailable,
+                )
+            })?;
+        (bundle, module, query_index)
+    };
     let module_hash = module.identity();
-    let query = module.module().query(&request.query_name).ok_or_else(|| {
-        application_validation_failure(
-            ValidationCode::InvalidValue,
-            ApplicationErrorCode::QueryUnavailable,
-        )
-    })?;
+    let query = &module.module().queries()[query_index];
     service
         .providers
         .telemetry
@@ -2525,7 +2581,7 @@ async fn execute_named_query(
         program,
         aggregates,
         query.shared_document(),
-        Some(module.identity()),
+        Some(module_hash),
         Some(query.plan().identity()),
         QueryAuthority::Named {
             module_hash,

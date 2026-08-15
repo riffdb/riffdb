@@ -26,7 +26,8 @@ use riffdb_policy::{
 };
 use riffdb_types::{
     CapabilityId, CommandId, ContractBundleHash, ContractLineage, ContractMigrationOperationId,
-    ContractVersion, FrontierPosition, PlanHash, QueryModuleHash, ReactiveModuleHash, RequestId,
+    ContractVersion, FrontierPosition, PlanHash, QueryModuleHash, QueryOperationName,
+    ReactiveModuleHash, RequestId,
 };
 
 use crate::{
@@ -494,8 +495,117 @@ pub enum QueryModuleReadError {
     Integrity,
 }
 
+/// Complete immutable identity for one generated exact named-query lookup.
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub struct ExactNamedQueryRequest {
+    lineage: ContractLineage,
+    version: ContractVersion,
+    contract_hash: ContractBundleHash,
+    module_hash: QueryModuleHash,
+    query_name: QueryOperationName,
+}
+
+impl ExactNamedQueryRequest {
+    /// Creates one complete exact lookup key.
+    #[must_use]
+    pub const fn new(
+        lineage: ContractLineage,
+        version: ContractVersion,
+        contract_hash: ContractBundleHash,
+        module_hash: QueryModuleHash,
+        query_name: QueryOperationName,
+    ) -> Self {
+        Self {
+            lineage,
+            version,
+            contract_hash,
+            module_hash,
+            query_name,
+        }
+    }
+
+    /// Exact contract lineage.
+    #[must_use]
+    pub const fn lineage(&self) -> &ContractLineage {
+        &self.lineage
+    }
+
+    /// Exact contract version.
+    #[must_use]
+    pub const fn version(&self) -> ContractVersion {
+        self.version
+    }
+
+    /// Exact contract bundle hash.
+    #[must_use]
+    pub const fn contract_hash(&self) -> ContractBundleHash {
+        self.contract_hash
+    }
+
+    /// Exact query-module hash.
+    #[must_use]
+    pub const fn module_hash(&self) -> QueryModuleHash {
+        self.module_hash
+    }
+
+    /// Exact public operation name.
+    #[must_use]
+    pub const fn query_name(&self) -> &QueryOperationName {
+        &self.query_name
+    }
+}
+
+/// Immutable contract and compiled operation selected by one exact lookup.
+#[derive(Clone)]
+pub struct ResolvedNamedQuery {
+    contract: ValidatedContractBundle,
+    module: ValidatedQueryModule,
+    query_index: usize,
+}
+
+impl ResolvedNamedQuery {
+    /// Creates one already-validated resolution artifact when the exact query exists.
+    #[must_use]
+    pub fn try_new(
+        contract: ValidatedContractBundle,
+        module: ValidatedQueryModule,
+        query_name: &QueryOperationName,
+    ) -> Option<Self> {
+        let query_index = module
+            .module()
+            .queries()
+            .binary_search_by(|query| query.name().cmp(query_name.as_str()))
+            .ok()?;
+        Some(Self {
+            contract,
+            module,
+            query_index,
+        })
+    }
+
+    /// Consumes the artifact into its exact shared parts.
+    #[must_use]
+    pub fn into_parts(self) -> (ValidatedContractBundle, ValidatedQueryModule, usize) {
+        (self.contract, self.module, self.query_index)
+    }
+}
+
 /// Exact query-module observations needed by named execution and inspection.
 pub trait QueryModuleReadPort: Send + Sync {
+    /// Resolves a warm generated operation through one complete immutable key.
+    ///
+    /// `None` means this optional fast path could not answer. The service then
+    /// executes the established authoritative contract/module lookup, retaining
+    /// its complete error taxonomy. Implementations MUST perform ordinary port
+    /// admission before returning a cache hit.
+    fn prepare_exact_named_query<'a>(
+        &'a self,
+        _control: &'a RequestControl,
+        _request: ExactNamedQueryRequest,
+    ) -> PortFuture<'a, Option<ResolvedNamedQuery>, QueryModuleReadError> {
+        Box::pin(async { Ok(None) })
+    }
+
     /// Reads and recompiles the active module for one exact retained contract.
     fn prepare_active_query_module<'a>(
         &'a self,
