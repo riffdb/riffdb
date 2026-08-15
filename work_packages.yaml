@@ -12631,7 +12631,7 @@ work_packages:
     checkpoint, backup, replication, or recovery semantics. Activate the successor only after its
     real-corpus cloud mechanics gates pass.
   requirements: [PERF-008, PERF-009, PERF-015, PERF-017, REC-001, REC-002, STO-001, STO-002]
-  required_adrs: [ADR-0101, ADR-0103, ADR-0104, ADR-0112, ADR-0123]
+  required_adrs: [ADR-0101, ADR-0103, ADR-0104, ADR-0112, ADR-0123, ADR-0125]
   allowed_paths: [work_packages.yaml, SPEC.md, adr/0123-portable-cloud-performance-and-compact-writer-frames.md,
     docs/**, fixtures/**, benchmarks/**, scripts/**,
     crates/riffdb-storage-api/**,
