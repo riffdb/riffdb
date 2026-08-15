@@ -48,11 +48,11 @@ fn run() -> Result<(), ()> {
     let _ = sweep_stale(&root);
     let session = BenchDir::create(&root, "wp-486-journal-overlay").map_err(|_| ())?;
     println!(
-        "{{\"schema\":\"riffdb.journal-state-overlay/v1\",\"record_type\":\"environment\",\"body\":{}}}",
+        "{{\"schema\":\"riffdb.journal-state-overlay/v2\",\"record_type\":\"environment\",\"body\":{}}}",
         root.environment_report_json()
     );
     println!(
-        "{{\"schema\":\"riffdb.journal-state-overlay/v1\",\"record_type\":\"configuration\",\"reps\":{},\"retained_entities\":{RETAINED_ENTITIES},\"apply_gate_basis_points\":{REQUIRED_MAX_OVERLAY_APPLY_BASIS_POINTS},\"read_gate_basis_points\":{REQUIRED_MAX_READ_BASIS_POINTS},\"production_semantics_changed\":false}}",
+        "{{\"schema\":\"riffdb.journal-state-overlay/v2\",\"record_type\":\"configuration\",\"reps\":{},\"retained_entities\":{RETAINED_ENTITIES},\"apply_gate_basis_points\":{REQUIRED_MAX_OVERLAY_APPLY_BASIS_POINTS},\"read_gate_basis_points\":{REQUIRED_MAX_READ_BASIS_POINTS},\"production_semantics_changed\":false}}",
         configuration.reps
     );
 
@@ -108,7 +108,7 @@ fn run() -> Result<(), ()> {
     let checkpoint_passed = maximum.checkpoint_ns > 0;
     let passed = apply_passed && read_passed && checkpoint_passed;
     println!(
-        "{{\"schema\":\"riffdb.journal-state-overlay/v1\",\"record_type\":\"decision_gate\",\"minimum_apply_speedup\":2.0,\"maximum_read_ratio\":1.25,\"apply_passed\":{apply_passed},\"read_passed\":{read_passed},\"checkpoint_passed\":{checkpoint_passed},\"passed\":{passed},\"authority_note\":\"benchmark_only_proposed_overlay\"}}"
+        "{{\"schema\":\"riffdb.journal-state-overlay/v2\",\"record_type\":\"decision_gate\",\"minimum_apply_speedup\":2.0,\"maximum_read_ratio\":1.25,\"apply_passed\":{apply_passed},\"read_passed\":{read_passed},\"checkpoint_passed\":{checkpoint_passed},\"passed\":{passed},\"authority_note\":\"benchmark_only_proposed_overlay\"}}"
     );
     Ok(())
 }
@@ -143,8 +143,24 @@ fn run_case(
 }
 
 fn print_sample(rep: usize, sample: &JournalOverlayMechanicsSample) {
+    let mutation_census = sample
+        .mutation_census()
+        .iter()
+        .map(|entry| {
+            format!(
+                "{{\"table\":\"{}\",\"mutations\":{},\"key_bytes\":{},\"value_bytes\":{},\"expected_hash_bytes\":{},\"v1_fixed_header_bytes\":{}}}",
+                entry.table(),
+                entry.mutations(),
+                entry.key_bytes(),
+                entry.value_bytes(),
+                entry.expected_hash_bytes(),
+                entry.v1_fixed_header_bytes(),
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",");
     println!(
-        "{{\"schema\":\"riffdb.journal-state-overlay/v1\",\"record_type\":\"sample\",\"rep\":{rep},\"workload\":\"{}\",\"commands\":{},\"group_commands\":{},\"current_frame_build_ns\":{},\"current_redb_apply_ns\":{},\"overlay_frame_build_ns\":{},\"overlay_apply_ns\":{},\"control_point_read_ns\":{},\"overlay_point_read_ns\":{},\"control_page_read_ns\":{},\"overlay_page_read_ns\":{},\"checkpoint_ns\":{},\"encoded_journal_bytes\":{},\"overlay_bytes\":{},\"current_process_write_bytes\":{},\"overlay_process_write_bytes\":{},\"checkpoint_process_write_bytes\":{},\"checksums_equal\":{},\"production_semantics_changed\":false}}",
+        "{{\"schema\":\"riffdb.journal-state-overlay/v2\",\"record_type\":\"sample\",\"rep\":{rep},\"workload\":\"{}\",\"commands\":{},\"group_commands\":{},\"current_frame_build_ns\":{},\"current_redb_apply_ns\":{},\"overlay_frame_build_ns\":{},\"overlay_apply_ns\":{},\"control_point_read_ns\":{},\"overlay_point_read_ns\":{},\"control_page_read_ns\":{},\"overlay_page_read_ns\":{},\"checkpoint_ns\":{},\"encoded_journal_bytes\":{},\"mutation_census\":[{mutation_census}],\"overlay_bytes\":{},\"current_process_write_bytes\":{},\"overlay_process_write_bytes\":{},\"checkpoint_process_write_bytes\":{},\"checksums_equal\":{},\"production_semantics_changed\":false}}",
         sample.workload().label(),
         sample.commands(),
         sample.group_commands(),
@@ -287,7 +303,7 @@ impl Summary {
 
     fn to_json(self, reps: usize) -> String {
         format!(
-            "{{\"schema\":\"riffdb.journal-state-overlay/v1\",\"record_type\":\"summary\",\"workload\":\"{}\",\"commands\":{},\"group_commands\":{},\"reps\":{reps},\"current_pre_ack_ns\":{},\"overlay_pre_ack_ns\":{},\"overlay_vs_current_pre_ack_basis_points\":{},\"apply_speedup\":{:.3},\"control_point_ns\":{},\"overlay_point_ns\":{},\"overlay_vs_control_point_basis_points\":{},\"control_page_ns\":{},\"overlay_page_ns\":{},\"overlay_vs_control_page_basis_points\":{},\"checkpoint_ns\":{},\"current_process_write_bytes\":{},\"overlay_process_write_bytes\":{},\"checkpoint_process_write_bytes\":{},\"apply_gate_applies\":{},\"apply_gate_passed\":{},\"authority_note\":\"benchmark_only_proposed_overlay\"}}",
+            "{{\"schema\":\"riffdb.journal-state-overlay/v2\",\"record_type\":\"summary\",\"workload\":\"{}\",\"commands\":{},\"group_commands\":{},\"reps\":{reps},\"current_pre_ack_ns\":{},\"overlay_pre_ack_ns\":{},\"overlay_vs_current_pre_ack_basis_points\":{},\"apply_speedup\":{:.3},\"control_point_ns\":{},\"overlay_point_ns\":{},\"overlay_vs_control_point_basis_points\":{},\"control_page_ns\":{},\"overlay_page_ns\":{},\"overlay_vs_control_page_basis_points\":{},\"checkpoint_ns\":{},\"current_process_write_bytes\":{},\"overlay_process_write_bytes\":{},\"checkpoint_process_write_bytes\":{},\"apply_gate_applies\":{},\"apply_gate_passed\":{},\"authority_note\":\"benchmark_only_proposed_overlay\"}}",
             self.workload.label(),
             self.commands,
             self.group_commands,

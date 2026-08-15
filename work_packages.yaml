@@ -12534,3 +12534,172 @@ work_packages:
       deterministically, loopback services have explicit request and artifact-size limits, and
       acceptance uses one bounded consumer per ecosystem.
   human_review_triggers: *id001
+- id: WP-620
+  name: Portable writer and checkpoint mechanics evidence
+  depends_on: [WP-486, WP-490]
+  objective: Make the isolated cloud performance failure mechanically attributable before changing
+    durable bytes. Split canonical mutation, logical frame, padded extent, positional write, fence,
+    publication, asynchronous checkpoint apply/commit/reclamation, and checkpoint-overlap costs;
+    extend the existing journal probes through maximum-frame sizes on both the workstation/NVMe and
+    general-purpose-cloud/persistent-disk profiles.
+  requirements: [PERF-007, PERF-008, PERF-015, PERF-017, PERF-018]
+  required_adrs: [ADR-0101, ADR-0103, ADR-0104]
+  allowed_paths: [work_packages.yaml, SPEC.md, docs/**, benchmarks/**, scripts/**,
+    crates/riffdb-storage-redb/src/journal.rs,
+    crates/riffdb-storage-redb/src/store.rs,
+    crates/riffdb-storage-redb/src/benchmark_support.rs,
+    crates/riffdb-storage-redb/tests/**,
+    crates/riffdb-commit/src/telemetry.rs,
+    crates/riffdb-observability/src/**,
+    examples/app-baseline/**]
+  deliverables:
+  - Fixed-cardinality redaction-safe counters for logical mutation bytes, encoded and padded frame
+    bytes, positional write versus fence, checkpoint apply/commit/reclamation, and overlap state
+  - Journal mechanics sweeps at 4 KiB, 64 KiB, 256 KiB, 1 MiB, 4 MiB, and the accepted maximum,
+    alone and during representative checkpoint materialization, with environment receipts
+  - Per-table mutation count/key/value/expected-hash byte census for the checked TicketDesk write
+    corpus so compact encoding targets measured redundancy rather than guessed structure
+  - A short repeatable cloud diagnostic that finishes in under ten minutes and detects regression
+    in the three dominant writer/read stages without replacing PERF-018 evidence
+  acceptance_commands:
+  - cargo +1.97.0 test -p riffdb-storage-redb --all-features
+  - cargo +1.97.0 test -p riffdb-observability --all-features
+  - cargo +1.97.0 test -p riffdb-commit --all-features
+  - cargo +1.97.0 run --release --manifest-path benchmarks/journal-mechanics/Cargo.toml
+  - ./scripts/check-requirement-coverage
+  exit_gate: Both inventoried profiles produce complete comparable stage/byte evidence; the short
+    regression cell identifies frame construction, physical fence, and checkpoint overlap
+    separately and contains no value-bearing or unbounded label.
+  standing_design_tests:
+    interface_safety: Adds internal observations and benchmark controls only. No application can
+      select durability, grouping, checkpoint, or measurement behavior, and no data-bearing label
+      crosses telemetry.
+    scale: Every counter is fixed-cardinality and every probe uses the existing frame/suffix bounds;
+      no per-command series, key, value, or unbounded histogram is retained.
+  human_review_triggers: *id001
+- id: WP-621
+  name: Compact exact command-segment successor
+  depends_on: [WP-620]
+  objective: Implement ADR-0123's bounded raw-or-LZ4 command-segment successor and encode-once
+    immutable byte ownership without changing command, authorization, ordering, publication,
+    checkpoint, backup, replication, or recovery semantics. Activate the successor only after its
+    real-corpus cloud mechanics gates pass.
+  requirements: [PERF-008, PERF-009, PERF-015, PERF-017, REC-001, REC-002, STO-001, STO-002]
+  required_adrs: [ADR-0101, ADR-0103, ADR-0104, ADR-0112, ADR-0123]
+  allowed_paths: [work_packages.yaml, SPEC.md, adr/0123-portable-cloud-performance-and-compact-writer-frames.md,
+    docs/**, fixtures/**, benchmarks/**, scripts/**,
+    crates/riffdb-storage-api/**,
+    crates/riffdb-storage-redb/src/journal.rs,
+    crates/riffdb-storage-redb/src/store.rs,
+    crates/riffdb-storage-redb/src/composite_view.rs,
+    crates/riffdb-storage-redb/src/benchmark_support.rs,
+    crates/riffdb-storage-redb/tests/**,
+    tests/storage_recovery/**,
+    tests/endurance_harness.rs,
+    release/**]
+  deliverables:
+  - Next-free registered command-segment record with closed Raw/Lz4Block tags, exact uncompressed
+    length and digest, bounded allocation/decompression, canonical 12.5-percent selection rule,
+    complete existing semantic validation, and unknown-version/codec refusal
+  - One live owned stored-value allocation shared by reservation, overlay, positional write, and
+    checkpoint; no acknowledgement-path decompression/decode of the just-sealed segment and no
+    duplicate semantic graph
+  - Exact-pinned safe-only checked-decode lz4_flex dependency confinement and deny/checksum review; durable
+    manifest writer/minimum-reader rotation; byte-frozen old fixtures; successor golden/property
+    fixtures; explicit old-reader typed refusal before mutation
+  - Process crash matrix across old/successor boundary, torn compact record, extent recycle, checkpoint,
+    reclamation, backup/restore, and clean/unclean startup
+  - Captured redacted real TicketDesk corpus mechanics proving at least 35 percent fewer complete
+    frame bytes, 25 percent fewer checkpointed segment bytes, 20 percent lower cloud c=32 combined
+    writer-stage time, and no greater than 1.10 times unary p50 or smallest-frame CPU
+  acceptance_commands:
+  - cargo +1.97.0 test -p riffdb-storage-redb --all-features
+  - cargo +1.97.0 test -p riffdb-storage-api --all-features
+  - cargo +1.97.0 test --test storage_recovery_matrix
+  - cargo +1.97.0 test -p riffdb-testkit --test endurance_harness --all-features
+  - ./scripts/check-generated
+  - ./scripts/check-requirement-coverage
+  - ./scripts/handbook check
+  exit_gate: Existing records remain readable and byte-frozen; the compact successor reconstructs
+    the identical segment and ordered checked mutation program, passes every crash/backup path, and
+    meets all activation thresholds on the inventoried cloud profile before becoming selected.
+  standing_design_tests:
+    interface_safety: Frame selection and compaction are storage-internal. Public commands retain
+      typed idempotent atomic acknowledgement and cannot select a weaker durability or recovery path.
+    scale: Uncompressed length is rejected against the existing segment/frame ceiling before
+      allocation, frame/suffix/overlay ceilings remain exact, mixed-version recovery is linear in
+      the already bounded suffix, and no full database rewrite is introduced.
+  human_review_triggers: *id001
+- id: WP-622
+  name: Immutable exact named-query resolution fast path
+  depends_on: [WP-442]
+  objective: Collapse a warm generated named-query's contract/module/operation resolution into one
+    immutable exact-identity process-local lookup while preserving admission, every current
+    authorization safe point, capability revision checks, row policy, freshness, and redaction.
+  requirements: [PERF-007, PERF-008, PERF-018, AAA-006, AAA-007]
+  required_adrs: [ADR-0052, ADR-0055, ADR-0070]
+  allowed_paths: [work_packages.yaml, SPEC.md, docs/**,
+    crates/riffdb-service/src/ports.rs,
+    crates/riffdb-service/src/symbolic_query.rs,
+    crates/riffdb-service/src/query_discovery_operations.rs,
+    crates/riffdb-server/src/read_adapters.rs,
+    crates/riffdb-server/src/storage.rs,
+    crates/riffdb-server/tests/**,
+    crates/riffdb-observability/src/**,
+    examples/app-baseline/**]
+  deliverables:
+  - One bounded immutable resolved named-operation view keyed by complete contract and module
+    identities plus operation name, published atomically on exact module activation
+  - Warm lookup after ordinary port admission without storage I/O, blocking-port dispatch, deep
+    clone, or multiple catalog/module cache locks; misses and races retain the authoritative path
+  - Concurrent deployment, module replacement, cache contention/poisoning, cancellation, deadline,
+    and capability-revocation tests proving exact fallback or fail-closed behavior
+  - Cloud 128-client evidence reducing named-query plan-lookup mean by at least 4 times without a
+    workstation p50 or authorization regression
+  acceptance_commands:
+  - cargo +1.97.0 test -p riffdb-service --all-features
+  - cargo +1.97.0 test -p riffdb-server --all-features
+  - cargo +1.97.0 test -p riffdb-observability --all-features
+  - ./scripts/check-requirement-coverage
+  exit_gate: Warm exact generated reads perform one immutable lookup after admission and retain all
+    per-request authentication, authorization, row-policy, freshness, and release checks; the cloud
+    stage gate passes and cold/error semantics are unchanged.
+  standing_design_tests:
+    interface_safety: The cache contains no principal-specific allow decision. Every authority and
+      redaction safe point remains per request, and a miss or identity race cannot select a nearby
+      contract, module, query, or plan.
+    scale: Entries are bounded by existing deployed contract/module/query cardinality limits and
+      replacement publishes one immutable view; no request or row result is retained.
+  human_review_triggers: *id001
+- id: WP-623
+  name: Dual-profile alpha performance qualification
+  depends_on: [WP-620, WP-621, WP-622]
+  objective: Qualify the optimized release candidate on both the workstation/NVMe and
+    general-purpose-cloud/persistent-disk profiles before restarting the 72-hour endurance gate.
+    Preserve exact safe-application PostgreSQL obligations and report minimal PostgreSQL separately.
+  requirements: [PERF-008, PERF-018, END-007, END-008, END-009, END-010]
+  required_adrs: [ADR-0056, ADR-0104, ADR-0123]
+  allowed_paths: [work_packages.yaml, SPEC.md, docs/**, benchmarks/**, scripts/**,
+    examples/app-baseline/**, tests/endurance_harness.rs, release/**]
+  deliverables:
+  - Three same-run 90-second post-warmup repetitions of interactive and write-only sweeps at the
+    frozen concurrency points on each inventoried idle hardware profile
+  - Same-run minimal and safe-application PostgreSQL plus public gRPC RiffDB evidence with complete
+    correctness reconciliation, stage/byte observations, and host-validity receipts
+  - Automated refusal of a qualification set missing either profile, containing interfered or
+    unstable points, changing durability/client/workload shape, or missing the PERF-008 ratios
+  - Final optimized artifact digest handed unchanged to WP-579; prior partial soak evidence is
+    retained as diagnostic and is never promoted
+  acceptance_commands:
+  - ./benchmarks/run-app-baseline --full
+  - ./scripts/check-requirement-coverage
+  - ./scripts/handbook check
+  exit_gate: The exact optimized artifact meets PERF-008 against safe-application PostgreSQL on
+    both profiles with clean correctness and complete PERF-018 evidence; only that artifact may
+    begin the final uninterrupted 72-hour run.
+  standing_design_tests:
+    interface_safety: Qualification changes no application surface and cannot waive correctness,
+      durability, authorization, idempotency, freshness, or boundedness to obtain a passing ratio.
+    scale: Evidence is a fixed matrix with bounded artifacts; the cloud profile exercises sustained
+      checkpointing so a pass cannot borrow unbounded suffix, overlay, memory, or deferred work.
+  human_review_triggers: *id001

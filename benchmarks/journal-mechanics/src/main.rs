@@ -10,12 +10,17 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Instant;
 
-const EXTENT_BYTES: usize = 32 * 1024 * 1024;
+const EXTENT_BYTES: usize = 40 * 1024 * 1024;
 const ZERO_CHUNK_BYTES: usize = 1024 * 1024;
 const ALIGNMENT: usize = 4096;
-const WARMUP_SAMPLES: usize = 8;
-const MEASURED_SAMPLES: usize = 96;
-const LOGICAL_FRAME_BYTES: [usize; 2] = [3000, 64 * 1024];
+const LOGICAL_FRAME_BYTES: [usize; 6] = [
+    3000,
+    64 * 1024,
+    256 * 1024,
+    1024 * 1024,
+    4 * 1024 * 1024,
+    16 * 1024 * 1024,
+];
 
 fn main() -> ExitCode {
     match run() {
@@ -34,8 +39,13 @@ fn run() -> Result<(), String> {
     fs::create_dir(&run_root).map_err(|error| format!("create run root: {error}"))?;
 
     println!(
-        "{{\"schema\":\"riffdb.journal-mechanics/v1\",\"record_type\":\"configuration\",\"root\":\"{}\",\"extent_bytes\":{EXTENT_BYTES},\"warmup_samples\":{WARMUP_SAMPLES},\"measured_samples\":{MEASURED_SAMPLES}}}",
-        json_escape(&run_root.display().to_string())
+        "{{\"schema\":\"riffdb.journal-mechanics/v2\",\"record_type\":\"configuration\",\"root\":\"{}\",\"extent_bytes\":{EXTENT_BYTES},\"frame_sizes\":[{}]}}",
+        json_escape(&run_root.display().to_string()),
+        LOGICAL_FRAME_BYTES
+            .iter()
+            .map(usize::to_string)
+            .collect::<Vec<_>>()
+            .join(",")
     );
 
     let mut append_best = u64::MAX;
@@ -59,8 +69,10 @@ fn run() -> Result<(), String> {
                     prezero_best = prezero_best.min(sample.p50_us);
                 }
                 println!(
-                    "{{\"schema\":\"riffdb.journal-mechanics/v1\",\"record_type\":\"sample\",\"mode\":\"{}\",\"logical_bytes\":{logical_bytes},\"physical_bytes\":{physical_bytes},\"padded_4k\":{padded},\"p50_us\":{},\"p95_us\":{},\"p99_us\":{},\"max_us\":{}}}",
+                    "{{\"schema\":\"riffdb.journal-mechanics/v2\",\"record_type\":\"sample\",\"mode\":\"{}\",\"logical_bytes\":{logical_bytes},\"physical_bytes\":{physical_bytes},\"padded_4k\":{padded},\"warmup_samples\":{},\"measured_samples\":{},\"p50_us\":{},\"p95_us\":{},\"p99_us\":{},\"max_us\":{}}}",
                     mode.label(),
+                    sample.warmup_samples,
+                    sample.measured_samples,
                     sample.p50_us,
                     sample.p95_us,
                     sample.p99_us,
@@ -76,7 +88,7 @@ fn run() -> Result<(), String> {
         / prezero_best.max(1);
     let threshold_met = improvement_basis_points >= 20_000;
     println!(
-        "{{\"schema\":\"riffdb.journal-mechanics/v1\",\"record_type\":\"summary\",\"best_append_fdatasync_p50_us\":{append_best},\"best_prezero_positional_p50_us\":{prezero_best},\"improvement_basis_points\":{improvement_basis_points},\"required_basis_points\":20000,\"format_threshold_met\":{threshold_met}}}"
+        "{{\"schema\":\"riffdb.journal-mechanics/v2\",\"record_type\":\"summary\",\"best_append_fdatasync_p50_us\":{append_best},\"best_prezero_positional_p50_us\":{prezero_best},\"improvement_basis_points\":{improvement_basis_points},\"required_basis_points\":20000,\"format_threshold_met\":{threshold_met}}}"
     );
 
     fs::remove_dir(&run_root).map_err(|error| format!("remove empty run root: {error}"))?;
@@ -114,6 +126,8 @@ impl Mode {
 }
 
 struct Sample {
+    warmup_samples: usize,
+    measured_samples: usize,
     p50_us: u64,
     p95_us: u64,
     p99_us: u64,
@@ -133,8 +147,9 @@ fn measure(
     let mut file = Some(prepare_file(&path, mode)?);
     let mut payload = vec![0xA5; physical_bytes];
     payload[..8].copy_from_slice(b"RDBPROBE");
-    let samples = WARMUP_SAMPLES + MEASURED_SAMPLES;
-    let mut measured = Vec::with_capacity(MEASURED_SAMPLES);
+    let (warmup_samples, measured_samples) = sample_counts(logical_bytes);
+    let samples = warmup_samples + measured_samples;
+    let mut measured = Vec::with_capacity(measured_samples);
     let mut append_file = matches!(mode, Mode::AppendFdatasync)
         .then(|| file.take())
         .flatten();
@@ -143,13 +158,19 @@ fn measure(
         .flatten();
 
     for index in 0..samples {
-        let offset = index
-            .checked_mul(align_up(physical_bytes, ALIGNMENT)?)
+        let aligned_bytes = align_up(physical_bytes, ALIGNMENT)?;
+        let extent_slots = EXTENT_BYTES
+            .checked_div(aligned_bytes)
+            .filter(|slots| *slots != 0)
+            .ok_or("frame does not fit probe extent")?;
+        let offset = (index % extent_slots)
+            .checked_mul(aligned_bytes)
             .ok_or("offset overflow")?;
-        if offset
-            .checked_add(physical_bytes)
-            .ok_or("extent overflow")?
-            > EXTENT_BYTES
+        if !matches!(mode, Mode::AppendFdatasync)
+            && offset
+                .checked_add(physical_bytes)
+                .ok_or("extent overflow")?
+                > EXTENT_BYTES
         {
             return Err("probe extent is too small for the configured sweep".to_owned());
         }
@@ -179,13 +200,15 @@ fn measure(
             }
         }
         let elapsed = started.elapsed().as_micros();
-        if index >= WARMUP_SAMPLES {
+        if index >= warmup_samples {
             measured.push(u64::try_from(elapsed).map_err(|_| "duration overflow")?);
         }
     }
 
     measured.sort_unstable();
     let sample = Sample {
+        warmup_samples,
+        measured_samples,
         p50_us: percentile(&measured, 50),
         p95_us: percentile(&measured, 95),
         p99_us: percentile(&measured, 99),
@@ -195,6 +218,18 @@ fn measure(
     drop(positional_file);
     fs::remove_file(&path).map_err(|error| format!("remove probe file: {error}"))?;
     Ok(sample)
+}
+
+const fn sample_counts(logical_bytes: usize) -> (usize, usize) {
+    if logical_bytes <= 64 * 1024 {
+        (8, 96)
+    } else if logical_bytes <= 1024 * 1024 {
+        (4, 32)
+    } else if logical_bytes <= 4 * 1024 * 1024 {
+        (2, 12)
+    } else {
+        (2, 4)
+    }
 }
 
 fn prepare_file(path: &Path, mode: Mode) -> Result<File, String> {
@@ -280,5 +315,9 @@ mod tests {
         assert_eq!(align_up(4096, 4096), Ok(4096));
         assert_eq!(percentile(&[1, 2, 3, 4], 50), 2);
         assert_eq!(percentile(&[1, 2, 3, 4], 99), 3);
+        assert_eq!(sample_counts(3000), (8, 96));
+        assert_eq!(sample_counts(256 * 1024), (4, 32));
+        assert_eq!(sample_counts(4 * 1024 * 1024), (2, 12));
+        assert_eq!(sample_counts(16 * 1024 * 1024), (2, 4));
     }
 }
