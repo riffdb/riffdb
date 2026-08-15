@@ -473,7 +473,7 @@ function decodeResult(response) {
     if (response.type !== "result")
         throw new Error("RiffDB driver returned an invalid result");
     const value = validateDriverValue(response.value, 0);
-    const head = optionalPositiveBigInt(response.application_head);
+    const head = optionalNonnegativeBigInt(response.application_head);
     const cursor = optionalBoundedString(response.cursor, 16_384);
     if (typeof response.replayed !== "boolean")
         throw new Error("RiffDB driver returned an invalid result");
@@ -689,6 +689,20 @@ function optionalPositiveBigInt(value) {
     if (typeof value === "number" && Number.isSafeInteger(value) && value > 0)
         parsed = BigInt(value);
     else if (typeof value === "string" && /^[1-9][0-9]{0,19}$/.test(value))
+        parsed = BigInt(value);
+    else
+        throw new Error("invalid RiffDB driver message");
+    if (parsed > MAX_U64)
+        throw new Error("invalid RiffDB driver message");
+    return parsed;
+}
+function optionalNonnegativeBigInt(value) {
+    if (value === null || value === undefined)
+        return undefined;
+    let parsed;
+    if (typeof value === "number" && Number.isSafeInteger(value) && value >= 0)
+        parsed = BigInt(value);
+    else if (typeof value === "string" && /^(?:0|[1-9][0-9]{0,19})$/.test(value))
         parsed = BigInt(value);
     else
         throw new Error("invalid RiffDB driver message");
