@@ -6,7 +6,7 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 expected_runs=
 sealed=false
 assert_gate=false
-campaign=campaign-02
+campaign=campaign-03
 while (($#)); do
     case "$1" in
         --campaign) campaign="${2:-}"; shift 2 ;;
@@ -14,13 +14,13 @@ while (($#)); do
         --sealed) sealed=true; shift ;;
         --assert-gate) assert_gate=true; shift ;;
         *)
-            echo "usage: scripts/agent-application-alpha-acceptance [--campaign ID] --runs 4 --sealed --assert-gate" >&2
+            echo "usage: scripts/agent-application-alpha-acceptance [--campaign ID] --runs 6 --sealed --assert-gate" >&2
             exit 2
             ;;
     esac
 done
-[[ "$expected_runs" == "4" && "$sealed" == true && "$assert_gate" == true ]] || {
-    echo "the alpha gate requires exactly four sealed asserted runs" >&2
+[[ "$expected_runs" == "6" && "$sealed" == true && "$assert_gate" == true ]] || {
+    echo "the alpha gate requires exactly six sealed asserted runs" >&2
     exit 2
 }
 [[ "$campaign" =~ ^[a-z0-9-]{1,64}$ ]] || {
@@ -36,11 +36,11 @@ for tool in jq sha256sum; do
 done
 
 "$repo_root/scripts/agent-application-alpha-canary-acceptance" \
-    --campaign "$campaign" --runs 4 --sealed --assert-gate
+    --campaign "$campaign" --runs 6 --sealed --assert-gate
 
 manifest="evaluations/agent-application-alpha/campaigns/$campaign.json"
 manifest_hash="$(sha256sum "$repo_root/$manifest" | cut -d' ' -f1)"
-gate="$repo_root/release/evidence/agent-application-alpha-gate-v2.json"
+gate="$repo_root/release/evidence/agent-application-alpha-gate-v3.json"
 jq -e \
     --arg campaign "$campaign" \
     --arg manifest "$manifest" \
@@ -52,16 +52,16 @@ jq -e \
     "requirement", "schema", "sealed_bundle_self_test", "thresholds",
     "work_package"
   ] | sort)
-  and .schema == "riffdb-agent-application-alpha-gate/v2"
-  and .work_package == "WP-370"
+  and .schema == "riffdb-agent-application-alpha-gate/v3"
+  and .work_package == "WP-579"
   and .requirement == "AAA-012"
   and .campaign_id == $campaign
   and .campaign_manifest == {path: $manifest, sha256: $manifest_hash}
   and .bundle_hash == $selected[0].bundle_hash
   and .decision == "eligible"
   and .sealed_bundle_self_test == "passed"
-  and .independent_runs_completed == 4
-  and .independent_runs_required == 4
+  and .independent_runs_completed == 6
+  and .independent_runs_required == 6
   and .thresholds == {
     handwritten_glue_lines: 0,
     human_interventions: 0,

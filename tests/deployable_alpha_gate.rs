@@ -36,6 +36,7 @@ fn final_gate_has_one_closed_phase_inventory() {
     assert!(gate.contains("\"endurance_binding\""));
     assert!(gate.contains("--bind-release-receipt"));
     assert!(gate.contains("alpha-endurance-inventory-v1.json"));
+    assert!(gate.contains("\"--runs\", \"6\""));
     let driver =
         std::fs::read_to_string(root.join("scripts/driver-conformance")).expect("read driver gate");
     let row_policy = std::fs::read_to_string(root.join("scripts/adapter-row-policy-acceptance"))
@@ -91,4 +92,6 @@ fn final_gate_metadata_closes_post_freeze_safety_extensions() {
             .expect("read deployable-alpha roadmap");
     assert!(roadmap.contains("Framework and secret safety"));
     assert!(roadmap.contains("WP-597–WP-598, WP-600"));
+    assert!(roadmap.contains("Blog in Go, Rust, and TypeScript"));
+    assert!(package.contains("campaign-03 --runs 6"));
 }

@@ -68,7 +68,7 @@ def phases() -> list[tuple[str, list[str]]]:
         ),
         ("endurance_evidence", ["scripts/alpha-endurance", "--verify-release-receipt", "release/evidence/alpha-endurance-v1.json"]),
         ("installed_bootstrap", ["scripts/release-source-bootstrap-smoke"]),
-        ("independent_agent_evaluation", ["scripts/agent-application-alpha-acceptance", "--runs", "4", "--sealed", "--assert-gate"]),
+        ("independent_agent_evaluation", ["scripts/agent-application-alpha-acceptance", "--runs", "6", "--sealed", "--assert-gate"]),
     ]
 
 

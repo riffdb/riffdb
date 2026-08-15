@@ -70,6 +70,7 @@ for required in \
     docs/getting-started/AUTHORING-DIAGNOSTICS.md \
     docs/getting-started/INSPECTION.md \
     evaluation/CANARY-PROTOCOL.md \
+    evaluation/briefs/blog-go.md \
     evaluation/briefs/orders-python.md \
     evaluation/qualified-event-schema.json \
     docs/riffql/LANGUAGE.md; do
@@ -100,7 +101,7 @@ jq -e '
   .properties.handwritten_glue_lines.description
   | contains("Ordinary domain logic")
 ' "$bundle/evaluation/report-schema.json" >/dev/null
-jq -e '.properties.language.enum == ["python", "rust", "typescript"]' \
+jq -e '.properties.language.enum == ["go", "python", "rust", "typescript"]' \
     "$bundle/evaluation/report-schema.json" >/dev/null
 boundary_help="$($bundle/libexec/check-application-boundary --help)"
 grep -Fq 'Usage: check-application-boundary [APPLICATION_ROOT ...]' \
@@ -119,6 +120,17 @@ rust_run_output="$(
 )"
 rg -q '^riffdb-dev-ready-v1' <<<"$rust_run_output"
 rg -q '^Welcome to run-rust$' <<<"$rust_run_output"
+
+go_run_root="$work_root/go-run"
+"$bundle/bin/riffdb" new run-go --language go --directory "$go_run_root" >/dev/null
+go_run_output="$(
+    cd "$go_run_root"
+    GOCACHE="$work_root/go-cache" GOMODCACHE="$work_root/go-mod-cache" \
+        GOTOOLCHAIN=local \
+        "$bundle/bin/riffdb" dev --seed --run
+)"
+rg -q '^riffdb-dev-ready-v1' <<<"$go_run_output"
+rg -Fq '"schema":"riffdb.application-parity/v1"' <<<"$go_run_output"
 
 python_run_root="$work_root/python-run"
 "$bundle/bin/riffdb" new run-python --language python \

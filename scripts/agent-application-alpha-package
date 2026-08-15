@@ -34,7 +34,7 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-for tool in cargo cmp find jq python3 rg sha256sum sort uv; do
+for tool in cargo cmp find go jq python3 rg sha256sum sort uv; do
     command -v "$tool" >/dev/null 2>&1 || {
         echo "required sealed-bundle tool is missing: $tool" >&2
         exit 1
@@ -201,6 +201,19 @@ CARGO_HOME="$temporary/.cargo" CARGO_NET_OFFLINE=true \
     --manifest-path "$temporary/.application-smoke/Cargo.toml" \
     --config "$app_patch"
 "$temporary/public/typescript/node_modules/.bin/tsc" --version >/dev/null
+
+mkdir "$temporary/.go-smoke"
+"$temporary/bin/riffdb" new go-alpha-smoke --language go \
+    --directory "$temporary/.go-smoke" >/dev/null
+(
+    cd "$temporary/.go-smoke"
+    GOCACHE="$temporary/.go-cache" \
+        GOMODCACHE="$temporary/.go-mod-cache" \
+        GOTOOLCHAIN=local \
+        go test ./... >/dev/null
+)
+rm -rf "$temporary/.go-smoke" "$temporary/.go-cache" \
+    "$temporary/.go-mod-cache"
 
 mkdir "$temporary/.python-smoke"
 "$temporary/bin/riffdb" new python-alpha-smoke --language python \
