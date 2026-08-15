@@ -1,0 +1,179 @@
+#!/usr/bin/env bash
+set -euo pipefail
+umask 077
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+distribution=
+allowed_signers=
+identity=
+destination=
+while (($#)); do
+    case "$1" in
+        --distribution) distribution="${2:-}"; shift 2 ;;
+        --allowed-signers) allowed_signers="${2:-}"; shift 2 ;;
+        --identity) identity="${2:-}"; shift 2 ;;
+        --output) destination="${2:-}"; shift 2 ;;
+        *)
+            echo 'usage: agent-application-alpha-package-first --distribution ABS --allowed-signers ABS --identity ID --output ABS' >&2
+            exit 2
+            ;;
+    esac
+done
+[[ "$distribution" == /* && -d "$distribution" && ! -L "$distribution" \
+    && "$allowed_signers" == /* && -f "$allowed_signers" && ! -L "$allowed_signers" \
+    && "$destination" == /* && ! -e "$destination" \
+    && "$identity" =~ ^[A-Za-z0-9_.-]{1,128}$ ]] || {
+    echo 'package-first bundle inputs must be absolute, real, bounded, and new' >&2
+    exit 2
+}
+parent="$(dirname "$destination")"
+[[ -d "$parent" ]] || { echo 'bundle parent is unavailable' >&2; exit 2; }
+task_tmp_root="${RIFFDB_TMP_ROOT:-$HOME/tmp}"
+mkdir -p "$task_tmp_root"
+work_root="$(mktemp -d "$task_tmp_root/riffdb-agent-alpha-package-first.XXXXXX")"
+cleanup() {
+    if [[ "${RIFFDB_AGENT_ALPHA_PACKAGE_KEEP_WORKSPACE:-false}" == true ]]; then
+        printf 'retained package-first workspace: %s\n' "$work_root" >&2
+    else
+        rm -rf "$work_root"
+    fi
+}
+trap cleanup EXIT INT TERM
+
+"$repo_root/scripts/verify-driver-distributions" \
+    --allowed-signers "$allowed_signers" \
+    --identity "$identity" \
+    "$distribution"
+
+legacy="$work_root/legacy"
+"$repo_root/scripts/agent-application-alpha-package" "$legacy" >/dev/null
+rm "$legacy/checksums.sha256" "$legacy/bundle.json" "$legacy/bin/riffdb"
+
+mkdir -p "$legacy/packages"
+cp -a "$distribution" "$legacy/packages/distribution"
+# The evaluator receives the verified application-runtime subset, not the
+# compiler/server crate inventory. The original signed checksum inventory and
+# detached signature remain as the qualification receipt.
+find "$legacy/packages/distribution/crates" -maxdepth 1 -type f -name '*.crate' \
+    ! -name 'riffdb-api-grpc-0.1.0.crate' \
+    ! -name 'riffdb-application-0.1.0.crate' \
+    ! -name 'riffdb-client-rust-0.1.0.crate' \
+    ! -name 'riffdb-config-0.1.0.crate' \
+    ! -name 'riffdb-contract-ir-0.1.0.crate' \
+    ! -name 'riffdb-errors-0.1.0.crate' \
+    ! -name 'riffdb-proto-0.1.0.crate' \
+    ! -name 'riffdb-types-0.1.0.crate' \
+    -delete
+cp "$allowed_signers" "$legacy/packages/allowed-signers"
+printf '%s\n' "$identity" >"$legacy/packages/signing-identity"
+"$distribution/install/riffdb-install" \
+    --distribution "$distribution" \
+    --target "$(jq -er '.target' "$distribution/metadata/artifacts-v1.json")" \
+    --prefix "$legacy"
+
+mkdir -p "$legacy/tooling/typescript/node_modules/@types" \
+    "$legacy/tooling/typescript/bin"
+cp -a "$legacy/public/typescript/node_modules/typescript" \
+    "$legacy/tooling/typescript/node_modules/"
+cp -a "$legacy/public/typescript/node_modules/@types/node" \
+    "$legacy/tooling/typescript/node_modules/@types/"
+ln -s ../node_modules/typescript/bin/tsc "$legacy/tooling/typescript/bin/tsc"
+rm -rf "$legacy/public/python" "$legacy/public/typescript"
+
+rm -rf "$legacy/public/rust-sdk/crates" "$legacy/public/rust-sdk/proto" \
+    "$legacy/public/rust-sdk/fixtures"
+rm -f "$legacy/public/rust-sdk/Cargo.toml" "$legacy/public/rust-sdk/Cargo.lock"
+"$repo_root/scripts/prepare-rust-package-mirror" \
+    --distribution "$distribution" \
+    --destination "$legacy/public/rust-sdk/vendor" \
+    --runtime-only
+cat >"$legacy/.cargo/config.toml" <<'EOF'
+[net]
+offline = true
+
+[source.crates-io]
+replace-with = "vendored-sources"
+
+[source.vendored-sources]
+directory = "public/rust-sdk/vendor"
+EOF
+
+mkdir -p "$work_root/rust-package-smoke/src"
+cat >"$work_root/rust-package-smoke/Cargo.toml" <<'EOF'
+[package]
+name = "riffdb-package-first-smoke"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+riffdb-client-rust = { version = "=0.1.0", default-features = false }
+EOF
+printf 'fn main() {}\n' >"$work_root/rust-package-smoke/src/main.rs"
+(
+    cd "$work_root/rust-package-smoke"
+    CARGO_HOME="$legacy/.cargo" CARGO_NET_OFFLINE=true \
+        cargo +1.97.0 metadata --offline --format-version 1 >/dev/null
+)
+
+cp "$repo_root/release/agent-application-alpha/PACKAGE-FIRST.md" \
+    "$legacy/README.md"
+cp "$repo_root/docs/getting-started/PACKAGE-INSTALLATION.md" \
+    "$legacy/docs/getting-started/"
+cp "$repo_root/evaluations/agent-application-alpha/event-schema-v2.json" \
+    "$legacy/evaluation/"
+cp "$repo_root/evaluations/agent-application-alpha/report-schema-v2.json" \
+    "$legacy/evaluation/"
+
+"$repo_root/scripts/driver-package-conformance" \
+    --distribution "$distribution" \
+    --allowed-signers "$allowed_signers" \
+    --identity "$identity" \
+    --receipt "$legacy/evaluation/package-conformance-receipt.json" >/dev/null
+
+prohibited="$(find "$legacy" -type f \
+    \( -name SPEC.md -o -name work_packages.yaml -o -iname '*ticketdesk*' \) \
+    -print)"
+if [[ -n "$prohibited" ]]; then
+    printf '%s\n' "$prohibited" >&2
+    echo 'package-first bundle contains prohibited product source' >&2
+    exit 1
+fi
+if find "$legacy" -type f -name '*.rs' \
+    ! -path "$legacy/public/rust-sdk/vendor/riffdb-*/*" \
+    ! -path "$legacy/public/rust-sdk/vendor/*" | grep -q .; then
+    echo 'package-first bundle contains non-package Rust implementation source' >&2
+    exit 1
+fi
+
+(
+    cd "$legacy"
+    find . \( -type f -o -type l \) \
+        ! -name bundle.json \
+        ! -name checksums.sha256 \
+        -print0 | sort -z | xargs -0 sha256sum >checksums.sha256
+)
+bundle_hash="$(sha256sum "$legacy/checksums.sha256" | cut -d' ' -f1)"
+jq -n \
+    --arg hash "$bundle_hash" \
+    --arg revision "$(git -C "$repo_root" rev-parse HEAD)" \
+    --arg distribution "$(sha256sum "$distribution/checksums.sha256" | cut -d' ' -f1)" \
+    --arg identity "$identity" \
+    '{
+      schema: "riffdb-agent-application-alpha-bundle/v2",
+      bundle_hash: $hash,
+      revision: $revision,
+      sealed: true,
+      package_first: true,
+      package_distribution_checksums_sha256: $distribution,
+      package_signing_identity: $identity,
+      package_conformance: "passed",
+      contains_ticketdesk: false,
+      contains_riffdb_server_implementation_source: false,
+      public_rust_package_source: true
+    }' >"$legacy/bundle.json"
+
+mv "$legacy" "$destination"
+trap - EXIT INT TERM
+rm -rf "$work_root"
+printf '%s\n' "$bundle_hash"

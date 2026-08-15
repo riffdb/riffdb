@@ -1,0 +1,34 @@
+# Campaign-03 package-first sealed environment
+
+This bundle is derived from one verified signed RiffDB distribution. The
+application repository starts empty. Do not use a repository checkout or a
+vendored compatibility runtime.
+
+The evaluator places `<bundle>/bin` on `PATH`. That directory contains the
+verified package CLI plus evaluator-owned `riffdbd`, `riffdb-driverd`, MCP, and
+development orchestration binaries. The signed distribution and local package
+mirrors are under `<bundle>/packages/distribution`.
+
+Use the same four database steps in every language:
+
+1. `riffdb init <name> --generator <language>`
+2. author the symbolic contract, named queries, and role, then `riffdb push`
+3. `riffdb generate`
+4. install the selected runtime package and invoke the generated operation
+
+Offline runtime installation sources are:
+
+- Go: `GOPROXY=file://<bundle>/packages/distribution/go-proxy GOSUMDB=off`
+- Python: `pip --no-index --find-links <bundle>/packages/distribution/pypi`
+- Rust: set `CARGO_HOME=<bundle>/.cargo`; the signed `.crate` packages are the
+  `vendored-sources` directory
+- TypeScript: install the exact `riffdb-client-0.1.0.tgz` under
+  `<bundle>/packages/distribution/npm`; the evaluator compiler is available at
+  `<bundle>/tooling/typescript/bin/tsc`
+
+The distribution's `checksums.sha256` and detached signature were verified
+before the bundle was sealed. `bundle.json` records their exact digest. Package
+installation is setup, not an identity-change ceremony. Count a ceremony only
+when RiffDB requires explicit review of changed compiler-owned application
+identity. Count a rescue when an operator or evaluator supplies product
+guidance or manually repairs product-generated state after the run starts.

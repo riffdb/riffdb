@@ -1,0 +1,165 @@
+#!/usr/bin/env python3
+"""Generate the exact WP-604 package-first cross-driver matrix."""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+from pathlib import Path
+import re
+
+
+ROOT = Path(__file__).resolve().parent.parent
+OUTPUT = ROOT / "fixtures/driver/package-matrix-v1.json"
+APPLICATION = ROOT / "fixtures/driver/conformance-app"
+LANGUAGES = ("go", "python", "rust", "typescript")
+HASH = r"[0-9a-f]{64}"
+
+
+def byte_array(identity: str) -> str:
+    return ", ".join(
+        f"0x{identity[index:index + 2]}" for index in range(0, len(identity), 2)
+    )
+
+
+def operation_identity(source: str, language: str, operation: str) -> dict[str, str]:
+    patterns = {
+        "go": (
+            rf'riffdb\.Operation\{{Name: "(?P<name>[a-z0-9_]+)", '
+            rf'InputSchemaHash: "(?P<schema>{HASH})"\}}'
+        ),
+        "typescript": (
+            rf'driverOperation: \{{ name: "(?P<name>[a-z0-9_]+)", '
+            rf'inputSchemaHash: "(?P<schema>{HASH})" \}}'
+        ),
+    }
+    matches = [match.groupdict() for match in re.finditer(patterns[language], source)]
+    selected = [match for match in matches if match["name"] == operation]
+    if len(selected) != 1:
+        raise SystemExit(
+            f"{language} generated client has no unique {operation} operation identity"
+        )
+    return {
+        "name": selected[0]["name"],
+        "input_schema_hash": selected[0]["schema"],
+    }
+
+
+def sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--check", action="store_true")
+    arguments = parser.parse_args()
+    lock = json.loads((APPLICATION / "riffdb.application.lock.json").read_text(encoding="utf-8"))
+    quickstart = json.loads(
+        (ROOT / "fixtures/driver/quickstart-v1.json").read_text(encoding="utf-8")
+    )
+    corpus = json.loads((ROOT / "fixtures/driver/corpus-v1.json").read_text(encoding="utf-8"))
+    distribution = json.loads(
+        (ROOT / "release/distribution/manifest-v1.json").read_text(encoding="utf-8")
+    )
+    artifacts = {entry["kind"]: entry for entry in lock["artifacts"]}
+    bundle_hash = lock["contract"]["bundle_hash"]
+    command = lock["roles"][0]["definition"]["commands"][0]
+    query = lock["modules"][0]["queries"][0]
+    identity_literals = [bundle_hash, command["plan_hash"], query["plan_hash"]]
+    generated_sources: dict[str, str] = {}
+    for language in LANGUAGES:
+        generated_path = APPLICATION / artifacts[language]["path"]
+        generated = generated_path.read_text(encoding="utf-8")
+        generated_sources[language] = generated
+        representations = {
+            "rust": [byte_array(identity) for identity in identity_literals],
+            "python": identity_literals,
+            "typescript": identity_literals,
+            # Go calls the retained Rust driver host. Its generated facade carries
+            # the exact bundle plus operation-catalog identities; the session
+            # handshake binds the exact manifest and catalog hashes.
+            "go": [bundle_hash],
+        }[language]
+        if any(identity not in generated for identity in representations):
+            raise SystemExit(f"{language} generated client lost an exact operation identity")
+    operation_names = {
+        "command": "driver_conformance_create_item",
+        "query": "driver_conformance_item_page",
+    }
+    driver_operations = {
+        kind: operation_identity(generated_sources["go"], "go", name)
+        for kind, name in operation_names.items()
+    }
+    for kind, expected in driver_operations.items():
+        observed = operation_identity(
+            generated_sources["typescript"], "typescript", expected["name"]
+        )
+        if observed != expected:
+            raise SystemExit(
+                f"Go and TypeScript disagree on the {kind} driver operation identity"
+            )
+    matrix = {
+        "schema": "riffdb.driver-package-matrix/v1",
+        "application": {
+            "lineage": lock["contract"]["lineage"],
+            "version": lock["contract"]["version"],
+            "bundle_hash": bundle_hash,
+            "lock_sha256": sha256(APPLICATION / "riffdb.application.lock.json"),
+            "exact_manifest_hash": lock["exact_manifest_hash"],
+            "operation_catalog_hash": artifacts["mcp"]["content_hash"],
+        },
+        "quickstart": {
+            "sha256": sha256(ROOT / "fixtures/driver/quickstart-v1.json"),
+            "step_count": quickstart["workflow_step_count"],
+            "ordered_steps": [step["id"] for step in quickstart["workflow"]],
+        },
+        "languages": [
+            {
+                "language": language,
+                "cli": quickstart["languages"][language]["tools"],
+                "runtime": quickstart["languages"][language]["runtime"],
+                "package": distribution["packages"]["runtime"][
+                    {"typescript": "npm", "python": "pypi"}.get(language, language)
+                ],
+                "workflow_step_count": quickstart["workflow_step_count"],
+                "generated_artifact": artifacts[language]["path"],
+                "generated_artifact_hash": artifacts[language]["content_hash"],
+                "generated_artifact_sha256": sha256(
+                    APPLICATION / artifacts[language]["path"]
+                ),
+                "identity_carriage": {
+                    "rust": "native_grpc_plan",
+                    "python": "native_grpc_plan",
+                    "typescript": "driver_host_plan_and_operation",
+                    "go": "driver_host_manifest_catalog_and_operation",
+                }[language],
+            }
+            for language in LANGUAGES
+        ],
+        "operations": {
+            "command": {**command, "driver_operation": driver_operations["command"]},
+            "query": {**query, "driver_operation": driver_operations["query"]},
+        },
+        "required_observation": corpus["required_observation"],
+        "forbidden": [
+            "handwritten_transport",
+            "kernel_import",
+            "numeric_compiler_identity",
+            "source_tree_runtime",
+        ],
+    }
+    encoded = (json.dumps(matrix, sort_keys=True, separators=(",", ":")) + "\n").encode()
+    if arguments.check:
+        if not OUTPUT.is_file() or OUTPUT.read_bytes() != encoded:
+            raise SystemExit("driver package matrix is stale; regenerate it")
+        print("Driver package matrix is current.")
+        return 0
+    OUTPUT.parent.mkdir(parents=True, exist_ok=True)
+    OUTPUT.write_bytes(encoded)
+    print(f"wrote {OUTPUT.relative_to(ROOT)}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

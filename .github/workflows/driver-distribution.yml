@@ -94,6 +94,15 @@ jobs:
             --allowed-signers "$RIFFDB_TMP_ROOT/signing/allowed-signers" \
             --identity wp601-ci \
             --receipt "$GITHUB_WORKSPACE/target/wp601-package-arrival.json"
+      - name: Prove one package-only four-driver story
+        if: matrix.arch == 'x86_64'
+        env:
+          RIFFDB_PACKAGE_CONFORMANCE_DISTRIBUTION: ${{ github.workspace }}/target/wp601-distribution
+          RIFFDB_PACKAGE_CONFORMANCE_ALLOWED_SIGNERS: ${{ env.RIFFDB_TMP_ROOT }}/signing/allowed-signers
+          RIFFDB_PACKAGE_CONFORMANCE_IDENTITY: wp601-ci
+        run: |
+          ./scripts/check-driver-package-matrix
+          ./scripts/driver-package-conformance-acceptance
       - name: Upload checked distribution
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:

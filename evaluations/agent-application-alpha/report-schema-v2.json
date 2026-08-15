@@ -1,0 +1,93 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "agent_identity": {"pattern": "^[A-Za-z0-9_.-]{1,128}$", "type": "string"},
+    "boundary_passed": {"type": "boolean"},
+    "bundle_hash": {"pattern": "^[0-9a-f]{64}$", "type": "string"},
+    "compiler_failures": {"maximum": 1000, "minimum": 0, "type": "integer"},
+    "domain": {"enum": ["blog", "orders"]},
+    "explanation": {"maxLength": 4096, "minLength": 1, "type": "string"},
+    "first_page_read_seconds": {"maximum": 7200, "minimum": 0, "type": ["integer", "null"]},
+    "first_write_seconds": {"maximum": 7200, "minimum": 0, "type": ["integer", "null"]},
+    "fresh_context": {"type": "boolean"},
+    "golden_passed": {"type": "boolean"},
+    "handwritten_glue_lines": {
+      "description": "Lines of application-authored RiffDB transport/RPC wrappers, parameter/result maps, wire encoders/decoders, capability/grant code, or response decoders replacing the generated application client.",
+      "maximum": 1000000,
+      "minimum": 0,
+      "type": "integer"
+    },
+    "human_interventions": {"maximum": 1000, "minimum": 0, "type": "integer"},
+    "identity_change_ceremony_count": {"maximum": 1000, "minimum": 0, "type": "integer"},
+    "independent": {"type": "boolean"},
+    "kernel_attempts": {"minimum": 0, "type": "integer"},
+    "kernel_successes": {"minimum": 0, "type": "integer"},
+    "language": {"enum": ["go", "python", "rust", "typescript"]},
+    "package_distribution_checksums_sha256": {"pattern": "^[0-9a-f]{64}$", "type": "string"},
+    "package_installation_verified": {"const": true},
+    "rating": {"maximum": 10, "minimum": 0, "type": "number"},
+    "rescue_count": {"maximum": 1000, "minimum": 0, "type": "integer"},
+    "run_id": {"pattern": "^[a-z0-9-]{1,64}$", "type": "string"},
+    "runtime_failures": {"maximum": 1000, "minimum": 0, "type": "integer"},
+    "schema": {"const": "riffdb-agent-application-alpha-run/v2"},
+    "source_access": {
+      "additionalProperties": false,
+      "properties": {
+        "riffdb_implementation": {"type": "boolean"},
+        "ticketdesk": {"type": "boolean"}
+      },
+      "required": ["riffdb_implementation", "ticketdesk"],
+      "type": "object"
+    },
+    "time_to_complete_seconds": {"maximum": 7200, "minimum": 0, "type": "integer"},
+    "time_to_first_committed_row_seconds": {"maximum": 7200, "minimum": 0, "type": ["integer", "null"]},
+    "transcript_sha256": {"pattern": "^[0-9a-f]{64}$", "type": "string"},
+    "unsupported_shapes": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {"pattern": "^[A-Za-z0-9_.-]{1,128}$", "type": "string"},
+          "operation": {"pattern": "^[A-Za-z0-9_.-]{1,256}$", "type": "string"},
+          "reason": {"maxLength": 1024, "minLength": 1, "type": "string"}
+        },
+        "required": ["code", "operation", "reason"],
+        "type": "object"
+      },
+      "maxItems": 128,
+      "type": "array"
+    }
+  },
+  "required": [
+    "schema",
+    "run_id",
+    "bundle_hash",
+    "package_distribution_checksums_sha256",
+    "package_installation_verified",
+    "agent_identity",
+    "domain",
+    "language",
+    "independent",
+    "fresh_context",
+    "human_interventions",
+    "identity_change_ceremony_count",
+    "rescue_count",
+    "kernel_attempts",
+    "kernel_successes",
+    "handwritten_glue_lines",
+    "compiler_failures",
+    "runtime_failures",
+    "unsupported_shapes",
+    "first_write_seconds",
+    "time_to_first_committed_row_seconds",
+    "first_page_read_seconds",
+    "time_to_complete_seconds",
+    "source_access",
+    "boundary_passed",
+    "golden_passed",
+    "rating",
+    "explanation",
+    "transcript_sha256"
+  ],
+  "type": "object"
+}

@@ -1,0 +1,93 @@
+#!/usr/bin/env bash
+set -euo pipefail
+umask 077
+
+repo_root="$(git rev-parse --show-toplevel)"
+cd "$repo_root"
+task_tmp_root="${RIFFDB_TMP_ROOT:-$HOME/tmp}"
+mkdir -p "$task_tmp_root"
+export RIFFDB_TMP_ROOT="$task_tmp_root"
+work_root="$(mktemp -d "$task_tmp_root/riffdb-driver-package-conformance-acceptance.XXXXXX")"
+cleanup() {
+    if [[ "${RIFFDB_KEEP_PACKAGE_CONFORMANCE:-0}" == 1 ]]; then
+        printf 'retained WP-604 acceptance root: %s\n' "$work_root" >&2
+    else
+        rm -rf "$work_root"
+    fi
+}
+trap cleanup EXIT INT TERM
+
+case "$(uname -m)" in
+    x86_64) target=x86_64-unknown-linux-gnu ;;
+    aarch64) target=aarch64-unknown-linux-gnu ;;
+    *) echo 'driver package conformance requires a supported Linux architecture' >&2; exit 1 ;;
+esac
+
+distribution="${RIFFDB_PACKAGE_CONFORMANCE_DISTRIBUTION:-}"
+allowed_signers="${RIFFDB_PACKAGE_CONFORMANCE_ALLOWED_SIGNERS:-}"
+identity="${RIFFDB_PACKAGE_CONFORMANCE_IDENTITY:-wp604-acceptance}"
+if [[ -z "$distribution" ]]; then
+    [[ -z "$allowed_signers" ]] || {
+        echo 'allowed signers require an injected signed distribution' >&2
+        exit 1
+    }
+    cargo +1.97.0 build --release --locked -p riffdb-cli
+    python_wheel="${RIFFDB_APPLICATION_WHEEL:-}"
+    if [[ -z "$python_wheel" ]]; then
+        RIFFDB_PYTHON_COMPATIBILITY=manylinux_2_28 \
+            ./scripts/build-python-distribution "$work_root/python"
+        python_wheel="$(find "$work_root/python" -maxdepth 1 -type f \
+            -name 'riffdb_application-0.1.0-cp313-abi3-*.whl' -print -quit)"
+    fi
+    [[ "$python_wheel" == /* && -f "$python_wheel" && ! -L "$python_wheel" ]] || {
+        echo 'driver package conformance Python wheel is absent or unsafe' >&2
+        exit 1
+    }
+    distribution="$work_root/distribution"
+    ./scripts/build-driver-distributions \
+        --output "$distribution" \
+        --binary-dir "$repo_root/target/release" \
+        --python-wheel "$python_wheel" \
+        --target "$target" \
+        --allow-dirty
+    mkdir "$work_root/signing"
+    ssh-keygen -q -t ed25519 -N '' -C wp604-acceptance \
+        -f "$work_root/signing/key"
+    printf '%s namespaces="riffdb-driver-distribution-v1" %s\n' \
+        "$identity" "$(ssh-keygen -y -f "$work_root/signing/key")" \
+        >"$work_root/signing/allowed-signers"
+    allowed_signers="$work_root/signing/allowed-signers"
+    ./scripts/sign-driver-distributions --key "$work_root/signing/key" "$distribution"
+else
+    [[ "$distribution" == /* && -d "$distribution" && ! -L "$distribution" \
+        && "$allowed_signers" == /* && -f "$allowed_signers" && ! -L "$allowed_signers" ]] || {
+        echo 'injected distribution and allowed signers must be absolute real paths' >&2
+        exit 1
+    }
+fi
+
+./scripts/driver-package-conformance \
+    --distribution "$distribution" \
+    --allowed-signers "$allowed_signers" \
+    --identity "$identity" \
+    --receipt "$work_root/receipt.json"
+
+jq -e --arg target "$target" \
+    '.schema == "riffdb.driver-package-conformance/v1"
+     and .status == "passed"
+     and .target == $target
+     and .workflow_step_count == 4
+     and .languages == ["go", "python", "rust", "typescript"]
+     and .generated_from_installed_cli == true
+     and .runtime_packages_only == true
+     and .handwritten_transport == false
+     and .numeric_compiler_ids == false
+     and .required_observation.schema == "riffdb.driver-conformance-observation/v1"
+     and .required_observation.created == "Created"
+     and .required_observation.replayed == true
+     and .required_observation.read_after_commit == true
+     and .required_observation.query == "Found"
+     and .required_observation.reuse_error == "RDB-COMMAND-0101"' \
+    "$work_root/receipt.json" >/dev/null
+
+printf '%s\n' 'WP-604 signed package-only four-driver conformance: passed'

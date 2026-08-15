@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "code": {"pattern": "^[A-Za-z0-9_.-]{1,128}$", "type": "string"},
+    "elapsed_ms": {"minimum": 0, "type": "integer"},
+    "kind": {
+      "enum": [
+        "start",
+        "package_install",
+        "tool",
+        "compiler_failure",
+        "runtime_failure",
+        "unsupported_shape",
+        "identity_change_ceremony",
+        "rescue",
+        "intervention",
+        "kernel_attempt",
+        "source_access",
+        "first_write",
+        "first_page_read",
+        "complete",
+        "rating"
+      ]
+    },
+    "operation": {"pattern": "^[A-Za-z0-9_.-]{1,256}$", "type": "string"},
+    "schema": {"const": "riffdb-agent-application-alpha-event/v2"}
+  },
+  "required": ["schema", "elapsed_ms", "kind"],
+  "type": "object"
+}

@@ -1,0 +1,378 @@
+#!/usr/bin/env python3
+"""Run the shared remote driver corpus from one signed package distribution."""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+from pathlib import Path, PurePosixPath
+import platform
+import shutil
+import subprocess
+import sys
+import tarfile
+import tempfile
+
+
+ROOT = Path(__file__).resolve().parent.parent
+VERSION = "0.1.0"
+MAX_OUTPUT_BYTES = 8 * 1024 * 1024
+MAX_ARCHIVE_FILES = 16_384
+MAX_ARCHIVE_FILE_BYTES = 256 * 1024 * 1024
+
+
+def fail(message: str) -> None:
+    raise SystemExit(f"driver_package_conformance_failed: {message}")
+
+
+def run(
+    command: list[str],
+    *,
+    cwd: Path,
+    environment: dict[str, str] | None = None,
+) -> str:
+    completed = subprocess.run(
+        command,
+        cwd=cwd,
+        env=environment,
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+    )
+    if len(completed.stdout) > MAX_OUTPUT_BYTES:
+        fail(f"command output exceeded the bound: {command[0]}")
+    output = completed.stdout.decode("utf-8", errors="replace")
+    if completed.returncode != 0:
+        sys.stderr.write(output)
+        fail("command failed: " + " ".join(command))
+    return output
+
+
+def regular(path: Path) -> bool:
+    return (
+        path.is_file()
+        and not path.is_symlink()
+        and 0 < path.stat().st_size <= MAX_ARCHIVE_FILE_BYTES
+    )
+
+
+def one(directory: Path, pattern: str) -> Path:
+    matches = sorted(path for path in directory.glob(pattern) if regular(path))
+    if len(matches) != 1:
+        fail(f"expected one package matching {pattern}")
+    return matches[0]
+
+
+def sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        while chunk := source.read(1024 * 1024):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def write(path: Path, content: str, mode: int = 0o644) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("x", encoding="utf-8", newline="\n") as destination:
+        destination.write(content)
+    path.chmod(mode)
+
+
+def extract_crate(archive_path: Path, destination: Path, expected_root: str) -> Path:
+    with tarfile.open(archive_path, "r:gz") as archive:
+        members = archive.getmembers()
+        if not 1 <= len(members) <= MAX_ARCHIVE_FILES:
+            fail(f"crate inventory is outside the bound: {archive_path.name}")
+        for member in members:
+            pure = PurePosixPath(member.name)
+            if (
+                pure.is_absolute()
+                or not pure.parts
+                or pure.parts[0] != expected_root
+                or any(part in {"", ".", ".."} for part in pure.parts)
+                or member.issym()
+                or member.islnk()
+                or member.isdev()
+                or (member.isfile() and member.size > MAX_ARCHIVE_FILE_BYTES)
+            ):
+                fail(f"crate contains an unsafe member: {archive_path.name}")
+        archive.extractall(destination, filter="data")
+    root = destination / expected_root
+    if not root.is_dir() or root.is_symlink() or not regular(root / "Cargo.toml"):
+        fail(f"crate did not contain its exact package root: {archive_path.name}")
+    return root
+
+
+def prepare_rust_runner(distribution: Path, application: Path, scratch: Path) -> Path:
+    crates = distribution / "crates"
+    order_path = distribution / "metadata/rust-publish-order-v1.txt"
+    if not regular(order_path):
+        fail("Rust publication order is absent")
+    order = order_path.read_text(encoding="utf-8").splitlines()
+    if not 1 <= len(order) <= 128 or len(order) != len(set(order)):
+        fail("Rust publication order is invalid")
+    unpacked = scratch / "rust-crates"
+    unpacked.mkdir()
+    roots: dict[str, Path] = {}
+    for name in order:
+        if not name.startswith("riffdb-") or not name.replace("-", "").isalnum():
+            fail("Rust publication order contains an invalid package name")
+        archive = crates / f"{name}-{VERSION}.crate"
+        if not regular(archive):
+            fail(f"Rust package is absent: {name}")
+        roots[name] = extract_crate(archive, unpacked, f"{name}-{VERSION}")
+    for required in ("riffdb-client-rust", "riffdb-config"):
+        if required not in roots:
+            fail(f"Rust package closure omits {required}")
+
+    project = scratch / "rust-runner"
+    project.mkdir()
+    write(
+        project / "Cargo.toml",
+        "[package]\n"
+        'name = "riffdb-package-conformance"\n'
+        'version = "0.0.0"\n'
+        'edition = "2024"\n'
+        'rust-version = "1.97.0"\n\n'
+        "[dependencies]\n"
+        f'riffdb-client-rust = "={VERSION}"\n'
+        f'riffdb-config = "={VERSION}"\n'
+        'serde_json = { version = "=1.0.150", default-features = false, features = ["std"] }\n'
+        'tokio = { version = "=1.52.0", default-features = false, features = ["rt-multi-thread", "time"] }\n',
+    )
+    source = (ROOT / "tests/driver_conformance_remote_client.rs").read_text(
+        encoding="utf-8"
+    )
+    old = '''mod generated {
+    include!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../fixtures/driver/conformance-app/generated/rust/client.rs"
+    ));
+}'''
+    new = '''mod generated {
+    include!("generated.rs");
+}'''
+    if source.count(old) != 1:
+        fail("Rust conformance runner include shape drifted")
+    write(project / "src/main.rs", source.replace(old, new))
+    shutil.copyfile(application / "generated/rust/client.rs", project / "src/generated.rs")
+    config = ["[patch.crates-io]"]
+    for name in order:
+        config.append(f'{name} = {{ path = "{roots[name]}" }}')
+    write(project / ".cargo/config.toml", "\n".join(config) + "\n")
+    environment = os.environ.copy()
+    environment.update(
+        {
+            "CARGO_NET_OFFLINE": "true",
+            "CARGO_TARGET_DIR": str(scratch / "rust-target"),
+        }
+    )
+    run(["cargo", "+1.97.0", "build", "--offline"], cwd=project, environment=environment)
+    binary = scratch / "rust-target/debug/riffdb-package-conformance"
+    if not regular(binary) or not os.access(binary, os.X_OK):
+        fail("Rust package conformance runner was not built")
+    return binary
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--distribution", required=True, type=Path)
+    parser.add_argument("--allowed-signers", required=True, type=Path)
+    parser.add_argument("--identity", required=True)
+    parser.add_argument("--receipt", required=True, type=Path)
+    arguments = parser.parse_args()
+    distribution = arguments.distribution
+    if not distribution.is_absolute() or not distribution.is_dir() or distribution.is_symlink():
+        fail("distribution must be an absolute real directory")
+    if not arguments.allowed_signers.is_absolute() or not regular(arguments.allowed_signers):
+        fail("allowed signers must be an absolute regular file")
+    if (
+        not arguments.receipt.is_absolute()
+        or arguments.receipt.exists()
+        or not arguments.receipt.parent.is_dir()
+    ):
+        fail("receipt must be a new absolute path under an existing directory")
+    run(
+        [
+            str(ROOT / "scripts/verify-driver-distributions"),
+            "--allowed-signers",
+            str(arguments.allowed_signers),
+            "--identity",
+            arguments.identity,
+            str(distribution),
+        ],
+        cwd=ROOT,
+    )
+    artifact_receipt = json.loads(
+        (distribution / "metadata/artifacts-v1.json").read_text(encoding="utf-8")
+    )
+    target = artifact_receipt.get("target")
+    host_target = {
+        "x86_64": "x86_64-unknown-linux-gnu",
+        "aarch64": "aarch64-unknown-linux-gnu",
+    }.get(platform.machine())
+    if sys.platform != "linux" or target != host_target:
+        fail("package conformance host does not match the distribution target")
+    quickstart = json.loads((distribution / "quickstart-v1.json").read_text(encoding="utf-8"))
+    if (
+        quickstart.get("workflow_step_count") != 4
+        or sorted(quickstart.get("languages", {})) != ["go", "python", "rust", "typescript"]
+    ):
+        fail("distribution quickstart is not the closed four-language story")
+
+    scratch_root = Path(os.environ.get("RIFFDB_TMP_ROOT", str(Path.home() / "tmp")))
+    scratch_root.mkdir(parents=True, exist_ok=True)
+    scratch = Path(tempfile.mkdtemp(prefix="riffdb-driver-package-conformance-", dir=scratch_root))
+    nested = Path(tempfile.mkdtemp(prefix="rdpc-", dir=scratch_root))
+    try:
+        prefix = scratch / "native"
+        prefix.mkdir()
+        run(
+            [
+                str(distribution / "install/riffdb-install"),
+                "--distribution",
+                str(distribution),
+                "--target",
+                str(target),
+                "--prefix",
+                str(prefix),
+            ],
+            cwd=scratch,
+        )
+        cli = prefix / "bin/riffdb"
+
+        application = scratch / "application"
+        shutil.copytree(ROOT / "fixtures/driver/conformance-app", application)
+        write_go = (
+            "module riffdb.dev/driver-conformance\n\n"
+            "go 1.24\n\n"
+            f"require riffdb.dev/application v{VERSION}\n"
+        )
+        (application / "go.mod").write_text(write_go, encoding="utf-8", newline="\n")
+        run([str(cli), "application", "lock", "--write"], cwd=application)
+        go_environment = os.environ.copy()
+        go_environment.update(
+            {
+                "GOPROXY": (distribution / "go-proxy").as_uri(),
+                "GOSUMDB": "off",
+                "GOCACHE": str(scratch / "go-cache"),
+                "GOPATH": str(scratch / "go-path"),
+            }
+        )
+        run(["go", "mod", "tidy"], cwd=application, environment=go_environment)
+
+        npm_root = scratch / "typescript-package"
+        npm_root.mkdir()
+        write(npm_root / "package.json", '{"name":"riffdb-package-conformance","private":true,"type":"module"}\n')
+        npm = distribution / "npm"
+        arch = "x64" if target == "x86_64-unknown-linux-gnu" else "arm64"
+        npm_environment = os.environ.copy()
+        npm_environment.update(
+            {
+                "HOME": str(scratch / "npm-home"),
+                "npm_config_cache": str(scratch / "npm-cache"),
+                "npm_config_update_notifier": "false",
+            }
+        )
+        run(
+            [
+                "npm",
+                "install",
+                "--offline",
+                "--ignore-scripts",
+                "--no-audit",
+                "--no-fund",
+                "--package-lock=false",
+                str(one(npm, f"riffdb-client-{VERSION}.tgz")),
+                str(one(npm, f"riffdb-cli-{VERSION}.tgz")),
+                str(one(npm, f"riffdb-cli-linux-{arch}-{VERSION}.tgz")),
+            ],
+            cwd=npm_root,
+            environment=npm_environment,
+        )
+        typescript_runtime = npm_root / "node_modules/@riffdb/client/dist/index.js"
+        if not regular(typescript_runtime):
+            fail("installed TypeScript runtime is absent")
+
+        python_root = scratch / "python"
+        run([sys.executable, "-m", "venv", str(python_root)], cwd=scratch)
+        python = python_root / "bin/python"
+        run(
+            [
+                str(python),
+                "-m",
+                "pip",
+                "install",
+                "--no-index",
+                "--find-links",
+                str(distribution / "pypi"),
+                f"riffdb=={VERSION}",
+            ],
+            cwd=scratch,
+        )
+
+        rust_runner = prepare_rust_runner(distribution, application, scratch)
+        tsc = ROOT / "clients/typescript/runtime/node_modules/.bin/tsc"
+        if not tsc.is_file() or not os.access(tsc, os.X_OK):
+            fail("bounded TypeScript test compiler is unavailable")
+        environment = os.environ.copy()
+        environment.update(
+            {
+                "RIFFDB_CONFORMANCE_PACKAGE_MODE": "1",
+                "RIFFDB_CONFORMANCE_CLI_BIN": str(cli),
+                "RIFFDB_CONFORMANCE_APPLICATION_SOURCE": str(application),
+                "RIFFDB_CONFORMANCE_RUST_RUNNER": str(rust_runner),
+                "RIFFDB_CONFORMANCE_TYPESCRIPT_RUNTIME_PACKAGE": str(typescript_runtime),
+                "RIFFDB_CONFORMANCE_TYPESCRIPT_TSC": str(tsc),
+                "RIFFDB_CONFORMANCE_PYTHON_BIN": str(python),
+                "RIFFDB_CONFORMANCE_GO_PROXY": (distribution / "go-proxy").as_uri(),
+                "GOSUMDB": "off",
+                "RIFFDB_TMP_ROOT": str(nested),
+                "TMPDIR": str(nested),
+            }
+        )
+        output = run(
+            [str(ROOT / "scripts/driver-conformance"), "--all-languages", "--remote"],
+            cwd=ROOT,
+            environment=environment,
+        )
+        if (
+            not output.strip().splitlines()
+            or output.strip().splitlines()[-1]
+            != "Rust, Go, TypeScript, and Python passed the shared remote driver corpus."
+        ):
+            fail("shared package conformance did not return its exact terminal result")
+
+        lock_hash = sha256(application / "riffdb.application.lock.json")
+        corpus = json.loads((ROOT / "fixtures/driver/corpus-v1.json").read_text(encoding="utf-8"))
+        receipt = {
+            "schema": "riffdb.driver-package-conformance/v1",
+            "version": VERSION,
+            "target": target,
+            "distribution_checksums_sha256": sha256(distribution / "checksums.sha256"),
+            "application_lock_sha256": lock_hash,
+            "quickstart_sha256": sha256(distribution / "quickstart-v1.json"),
+            "workflow_step_count": 4,
+            "languages": ["go", "python", "rust", "typescript"],
+            "required_observation": corpus["required_observation"],
+            "generated_from_installed_cli": True,
+            "runtime_packages_only": True,
+            "handwritten_transport": False,
+            "numeric_compiler_ids": False,
+            "status": "passed",
+        }
+        write(
+            arguments.receipt,
+            json.dumps(receipt, sort_keys=True, separators=(",", ":")) + "\n",
+        )
+        print(json.dumps(receipt, sort_keys=True, separators=(",", ":")))
+    finally:
+        shutil.rmtree(scratch, ignore_errors=True)
+        shutil.rmtree(nested, ignore_errors=True)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

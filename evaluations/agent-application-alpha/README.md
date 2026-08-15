@@ -13,6 +13,22 @@ Prepare a release-derived bundle:
 ./scripts/agent-application-alpha-package /absolute/empty/output
 ```
 
+Campaign 03 instead uses one already qualified signed package distribution:
+
+```bash
+./scripts/agent-application-alpha-package-first \
+  --distribution /absolute/signed/distribution \
+  --allowed-signers /absolute/trusted/allowed-signers \
+  --identity riffdb-release \
+  --output /absolute/empty/output
+```
+
+The v2 bundle excludes repository runtimes. It contains the verified package
+CLI, offline npm/PyPI/Go/Cargo mirrors, evaluator-owned server tooling, and a
+passing four-driver package-conformance receipt. Its six reports use the v2
+event/report schemas and record first committed row, identity-change ceremony
+count, rescue count, kernel attempts, and rating.
+
 Run one brief per isolated agent/context:
 
 - `briefs/blog-rust.md`
@@ -84,8 +100,9 @@ TMPDIR="$HOME/tmp" ./scripts/agent-application-alpha-acceptance \
   --campaign campaign-03 --runs 6 --sealed --assert-gate
 ```
 
-Do not publish `campaign-03` until all six reports come from one current sealed
-bundle. The passing campaign 02, WP-365, and satisfaction canaries have
+Do not publish `campaign-03` until all six reports come from one current
+package-first v2 sealed bundle and one exact signed distribution. The passing
+campaign 02, WP-365, and satisfaction canaries have
 different profile matrices and cannot substitute for the final four-language
 matrix.
 
