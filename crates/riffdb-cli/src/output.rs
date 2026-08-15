@@ -29,6 +29,7 @@ pub(crate) enum CommandIdentity {
     ProjectInit,
     ProjectPush,
     ProjectGenerate,
+    AgentInit,
     ProjectStatus,
     ProjectDiff,
     ApplicationConformance,
@@ -111,6 +112,7 @@ impl CommandIdentity {
             Self::ProjectInit => "project.init",
             Self::ProjectPush => "project.push",
             Self::ProjectGenerate => "project.generate",
+            Self::AgentInit => "agent.init",
             Self::ProjectStatus => "project.status",
             Self::ProjectDiff => "project.diff",
             Self::ApplicationConformance => "application.conformance",
@@ -2911,6 +2913,7 @@ mod tests {
             (CommandIdentity::ProjectInit, "project.init"),
             (CommandIdentity::ProjectPush, "project.push"),
             (CommandIdentity::ProjectGenerate, "project.generate"),
+            (CommandIdentity::AgentInit, "agent.init"),
             (CommandIdentity::ProjectStatus, "project.status"),
             (CommandIdentity::ProjectDiff, "project.diff"),
         ];

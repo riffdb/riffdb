@@ -12185,10 +12185,11 @@ work_packages:
     guidance as authorization-filtered MCP resources beside the existing catalog; the generic
     surface distillation (llms.txt convention) and quickstarts are generated from one in-repo
     source with a check-generated referee and shipped in packages and the docs site.
-  requirements: []
-  required_adrs: [ADR-0008, ADR-0046, ADR-0117, ADR-0120]
+  requirements: [DX-021, DX-022, DX-023, DX-024, DX-025]
+  required_adrs: [ADR-0008, ADR-0046, ADR-0117, ADR-0120, ADR-0122]
   allowed_paths: [work_packages.yaml, SPEC.md, docs/**, fixtures/**, crates/riffdb-cli/**,
-    crates/riffdb-api-mcp/**, crates/riffdb-service/**, scripts/**]
+    crates/riffdb-api-mcp/**, crates/riffdb-mcp-stdio/**, crates/riffdb-service/**, scripts/**,
+    adr/0122-agent-rails-and-application-guidance-resource.md]
   deliverables:
   - riffdb agent init writing skill, AGENTS.md section, and MCP config, idempotent and
     scoped to the invoking repository
@@ -12196,8 +12197,11 @@ work_packages:
     filtered, bounded, with registry/schema fixtures per house MCP rules
   - The single-source distillation generator with drift refereed by check-generated
   acceptance_commands:
+  - cargo test -p riffdb-cli --all-features
   - cargo test -p riffdb-api-mcp --all-features
+  - cargo test -p riffdb-mcp-stdio --all-features
   - ./scripts/check-generated
+  - ./scripts/handbook check
   human_review_triggers: *id001
 - id: WP-604
   name: One-story conformance — cross-driver matrix, pinned step counts, campaign-03

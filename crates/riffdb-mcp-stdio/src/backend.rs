@@ -11,15 +11,16 @@ use riffdb_api_mcp::{
     McpStdioClientActivity, McpSubscriptionRequest, McpToolDiscoveryItem, McpToolInvocation,
     McpToolPage, McpToolResult, McpTransportKind, RequestIdSourceError, SchemaDocument,
     decode_dynamic_command_input, decode_fixed_tool_request, fixed_tool_registry,
-    format_active_contract_locator, format_command_documentation_locator_from_public,
-    format_command_plan_locator_from_public, format_commit_locator,
-    format_commit_locator_from_public, format_commit_template_locator,
+    format_active_contract_locator, format_application_guidance_locator,
+    format_command_documentation_locator_from_public, format_command_plan_locator_from_public,
+    format_commit_locator, format_commit_locator_from_public, format_commit_template_locator,
     format_contract_version_locator, format_contract_version_locator_from_public,
     format_entity_schema_locator, format_entity_schema_locator_from_public, format_outcome_locator,
     format_outcome_template_locator_from_public, format_projection_status_locator,
     format_projection_status_locator_from_public, format_provenance_locator,
     format_provenance_locator_from_public, format_provenance_template_locator,
     format_reactive_wakeup_locator, format_server_health_locator, parse_resource_locator,
+    render_application_guidance,
 };
 use riffdb_client_rust::{
     ApplicationContract, ApplicationValue, CallMetadata, ClientError, DetailsFreeStatus,
@@ -32,6 +33,7 @@ use crate::wire::{self, FixedGrpcRequest};
 const MAX_INITIAL_DISCOVERY_PAGES: usize = 3;
 const MAX_INITIAL_DISCOVERY_ITEMS: usize = 1_024;
 const MAX_FULL_CONCRETE_RESOURCE_ITEMS: usize = 16_387;
+const MAX_GUIDANCE_DISCOVERY_PAGES: usize = 5;
 
 /// Public-client MCP backend with no local service or authorization authority.
 pub struct PublicGrpcMcpBackend {
@@ -155,6 +157,9 @@ impl PublicGrpcMcpBackend {
         reject_cancelled(invocation)?;
 
         match locator {
+            McpResourceLocator::ApplicationGuidance => {
+                self.read_application_guidance(invocation).await
+            }
             McpResourceLocator::ActiveContract => {
                 let mut client = self.client.clone();
                 invocation.charge_observer_physical_call()?;
@@ -455,6 +460,178 @@ impl PublicGrpcMcpBackend {
                 )
             }
         }
+    }
+
+    async fn read_application_guidance(
+        &self,
+        invocation: &PublicGrpcInvocation,
+    ) -> Result<McpResourceContent, McpBackendError> {
+        let mut cursor = None;
+        let mut fence: Option<v1::DiscoveryCatalogFence> = None;
+        let mut resource_uris = Vec::new();
+        let mut seen_resource_uris = BTreeSet::new();
+        let mut active_contract_visible = false;
+        let mut observed = 0_usize;
+        for page_index in 0..MAX_GUIDANCE_DISCOVERY_PAGES {
+            invocation.charge_observer_physical_call()?;
+            let mut client = self.client.clone();
+            let response = client
+                .discover_resources(
+                    compact_resource_discovery_request(
+                        invocation.request_id,
+                        cursor,
+                        None,
+                        v1::ResourceDiscoveryKind::Concrete,
+                    ),
+                    &self.metadata,
+                )
+                .await
+                .authenticated_client_result(&self.client_activity)?;
+            let page = match response.result {
+                Some(v1::discover_resources_response::Result::CompactPage(page)) => page,
+                _ => return Err(McpBackendError::InvalidResponse),
+            };
+            let observed_fence = page
+                .observed_fence
+                .as_ref()
+                .ok_or(McpBackendError::InvalidResponse)?;
+            validate_public_fence(observed_fence)?;
+            if fence
+                .as_ref()
+                .is_some_and(|expected| expected != observed_fence)
+            {
+                return Err(McpBackendError::InvalidResponse);
+            }
+            fence.get_or_insert_with(|| observed_fence.clone());
+            observed = observed
+                .checked_add(page.items.len())
+                .ok_or(McpBackendError::InvalidResponse)?;
+            if observed > MAX_FULL_CONCRETE_RESOURCE_ITEMS {
+                return Err(McpBackendError::InvalidResponse);
+            }
+            for item in page.items {
+                let descriptor = compact_resource_descriptor_from_public(item)?;
+                if !seen_resource_uris.insert(descriptor.uri().to_owned()) {
+                    return Err(McpBackendError::InvalidResponse);
+                }
+                active_contract_visible |= descriptor.descriptor_branch() == "active_contract";
+                if matches!(
+                    descriptor.descriptor_branch(),
+                    "entity_schema"
+                        | "command_plan"
+                        | "command_documentation"
+                        | "projection_status"
+                        | "server_health"
+                        | "reactive_wakeup"
+                ) {
+                    resource_uris.push(descriptor.uri().to_owned());
+                }
+            }
+            cursor = optional_public_cursor(page.next_cursor)?;
+            if cursor.is_none() {
+                break;
+            }
+            if page_index + 1 == MAX_GUIDANCE_DISCOVERY_PAGES {
+                return Err(McpBackendError::InvalidResponse);
+            }
+        }
+        if !active_contract_visible {
+            return Err(McpBackendError::TargetUnavailable);
+        }
+        let fence = fence.ok_or(McpBackendError::TargetUnavailable)?;
+        let active = match fence.state.as_ref() {
+            Some(v1::discovery_catalog_fence::State::ActiveContract(active)) => active,
+            Some(v1::discovery_catalog_fence::State::NoActiveContract(_)) | None => {
+                return Err(McpBackendError::TargetUnavailable);
+            }
+        };
+        let lineage = active.contract_lineage.clone();
+        let version = active.contract_version;
+        let bundle_hash = lower_hex(&active.bundle_hash);
+
+        let mut cursor = None;
+        let mut tool_names = Vec::new();
+        let mut seen_tool_items = BTreeSet::new();
+        for page_index in 0..MAX_INITIAL_DISCOVERY_PAGES {
+            invocation.charge_observer_physical_call()?;
+            let mut client = self.client.clone();
+            let response = client
+                .discover_command_tools(
+                    compact_tool_discovery_request(invocation.request_id, cursor),
+                    &self.metadata,
+                )
+                .await
+                .authenticated_client_result(&self.client_activity)?;
+            let page = match response.result {
+                Some(v1::discover_command_tools_response::Result::CompactPage(page)) => page,
+                _ => return Err(McpBackendError::InvalidResponse),
+            };
+            if page.observed_fence.as_ref() != Some(&fence) {
+                return Err(McpBackendError::InvalidResponse);
+            }
+            for item in page.items {
+                match item.item {
+                    Some(v1::compact_command_tool_discovery_item::Item::FixedTool(kind)) => {
+                        if !seen_tool_items.insert(format!("fixed:{kind}")) {
+                            return Err(McpBackendError::InvalidResponse);
+                        }
+                    }
+                    Some(v1::compact_command_tool_discovery_item::Item::CommandTool(tool)) => {
+                        if !seen_tool_items.insert(format!("dynamic:{}", tool.tool_name)) {
+                            return Err(McpBackendError::InvalidResponse);
+                        }
+                        tool_names.push(tool.tool_name);
+                    }
+                    Some(v1::compact_command_tool_discovery_item::Item::NamedQueryTool(tool)) => {
+                        if !seen_tool_items.insert(format!("dynamic:{}", tool.tool_name)) {
+                            return Err(McpBackendError::InvalidResponse);
+                        }
+                        tool_names.push(tool.tool_name);
+                    }
+                    None => return Err(McpBackendError::InvalidResponse),
+                }
+            }
+            cursor = optional_public_cursor(page.next_cursor)?;
+            if cursor.is_none() {
+                break;
+            }
+            if page_index + 1 == MAX_INITIAL_DISCOVERY_PAGES {
+                return Err(McpBackendError::InvalidResponse);
+            }
+        }
+
+        invocation.charge_observer_physical_call()?;
+        let mut client = self.client.clone();
+        let response = client
+            .discover_resources(
+                compact_resource_discovery_request(
+                    invocation.request_id,
+                    None,
+                    Some(fence.clone()),
+                    v1::ResourceDiscoveryKind::Concrete,
+                ),
+                &self.metadata,
+            )
+            .await
+            .authenticated_client_result(&self.client_activity)?;
+        if !matches!(response.result, Some(v1::discover_resources_response::Result::CatalogUnchanged(returned)) if returned == fence)
+        {
+            return Err(McpBackendError::InvalidResponse);
+        }
+        let document = render_application_guidance(
+            &lineage,
+            version,
+            &bundle_hash,
+            &tool_names,
+            &resource_uris,
+        )
+        .map_err(|_| McpBackendError::InvalidResponse)?;
+        McpResourceContent::new(
+            "application_guidance",
+            format_application_guidance_locator(),
+            McpResourceBody::Markdown(document),
+        )
+        .map_err(|_| McpBackendError::InvalidResponse)
     }
 
     pub(crate) async fn observe_command_plan(
@@ -1305,6 +1482,7 @@ impl McpBackend for PublicGrpcMcpBackend {
                     .visible_fingerprint()
                     .map_err(|_| McpBackendError::InvalidResponse),
                 McpResourceLocator::ContractVersion { .. }
+                | McpResourceLocator::ApplicationGuidance
                 | McpResourceLocator::EntitySchema { .. }
                 | McpResourceLocator::CommandDocumentation { .. }
                 | McpResourceLocator::Outcome { .. }
@@ -1646,6 +1824,21 @@ fn tool_discovery_request(
         }),
         prior_fence: None,
         representation: v1::DiscoveryRepresentation::Full as i32,
+    }
+}
+
+fn compact_tool_discovery_request(
+    request_id: [u8; 16],
+    cursor: Option<[u8; 16]>,
+) -> v1::DiscoverCommandToolsRequest {
+    v1::DiscoverCommandToolsRequest {
+        request_id: request_id.to_vec(),
+        page: Some(v1::PageRequest {
+            limit: Some(500),
+            cursor: cursor.map(|cursor| cursor.to_vec()),
+        }),
+        prior_fence: None,
+        representation: v1::DiscoveryRepresentation::CompactObservation as i32,
     }
 }
 

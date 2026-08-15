@@ -16,7 +16,7 @@ use riffdb_api_mcp::{
     McpVisibleFingerprint, RequestIdSourceError, SchemaDocument,
     format_command_documentation_locator, format_command_plan_locator,
     format_contract_version_locator, format_entity_schema_locator,
-    format_projection_status_locator,
+    format_projection_status_locator, render_application_guidance,
 };
 use riffdb_errors::PublicError;
 use riffdb_types::{RequestId, ServiceOperationV1, hash_schema};
@@ -582,6 +582,7 @@ fn resource_rate_target(locator: &McpResourceLocator) -> McpRateTarget {
         McpResourceLocator::ProjectionStatus { .. } => ServiceOperationV1::GetProjectionStatus,
         McpResourceLocator::ServerHealth => ServiceOperationV1::GetHealth,
         McpResourceLocator::ReactiveWakeup => ServiceOperationV1::GetReactiveWakeup,
+        McpResourceLocator::ApplicationGuidance => ServiceOperationV1::DiscoverResources,
         McpResourceLocator::Outcome { .. } => ServiceOperationV1::ResolveCommandOutcome,
         McpResourceLocator::Commit(_) => ServiceOperationV1::GetCommit,
         McpResourceLocator::Provenance(_) => ServiceOperationV1::TraceProvenance,
@@ -720,6 +721,25 @@ fn resource_content(
             json_body(json!({
                 "generation": "5555555555555555555555555555555555555555555555555555555555555555"
             }))?,
+        ),
+        McpResourceLocator::ApplicationGuidance => (
+            "application_guidance",
+            "riffdb://application/guide".to_owned(),
+            McpResourceBody::Markdown(
+                render_application_guidance(
+                    "LegalSpend",
+                    active_version
+                        .parse()
+                        .map_err(|_| McpBackendError::InvalidResponse)?,
+                    &"0".repeat(64),
+                    &[STABLE_TOOL.to_owned()],
+                    &[
+                        COMMAND_PLAN_URI.to_owned(),
+                        PROJECTION_STATUS_URI.to_owned(),
+                    ],
+                )
+                .map_err(|_| McpBackendError::InvalidResponse)?,
+            ),
         ),
         McpResourceLocator::Outcome { .. }
         | McpResourceLocator::Commit(_)

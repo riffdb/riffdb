@@ -19,18 +19,19 @@ use riffdb_service::{
     ContractSelection, ContractSource, CursorToken, DeployContractRequest, DeployContractResult,
     DescribeSymbolicContractResult, DiscoverCommandToolsRequest, DiscoverCommandToolsResult,
     DiscoverCommandToolsResultRef, DiscoverResourcesRequest, DiscoverResourcesResult,
-    DiscoverResourcesResultRef, DiscoveryCatalogFence, DiscoveryRepresentation,
-    EventConsumerCheckpoint, EventConsumerLeaseSelection, EventConsumerMutationResult,
-    EventConsumerProgressCursor, EventConsumerPublicStatus, EventConsumerPullDisposition,
-    EventConsumerSelection, EventConsumerStatus, ExecuteCommandRequest,
-    ExecuteContextualReactionRequest, ExecuteSymbolicQueryRequest, ExecuteSymbolicQueryResult,
-    ExplainCommandRequest, ExplainCommandResult, ExplainSymbolicQueryResult, ExplainedCommand,
-    FieldSelection, GetActiveContractRequest, GetActiveContractResult, GetCommitRequest,
-    GetContractVersionRequest, GetContractVersionResult, GetEntityRequest,
-    GetProjectionStatusRequest, GetProjectionStatusResult, GetReactiveWakeupResult, HealthContext,
-    HealthRequest, HealthResult, ListPendingOutboxDeliveriesRequest, LiveNamedQuerySelection,
-    LiveQueryCursor, LiveQueryFrontier, LiveQueryPatchOperation, LiveQueryResetReason,
-    LiveQueryTerminalReason, LiveQueryUpdate, NamedQueryToolDescriptor, NamedSymbolicQueryRequest,
+    DiscoverResourcesResultRef, DiscoveryCatalogFence, DiscoveryCatalogStateRef,
+    DiscoveryRepresentation, EventConsumerCheckpoint, EventConsumerLeaseSelection,
+    EventConsumerMutationResult, EventConsumerProgressCursor, EventConsumerPublicStatus,
+    EventConsumerPullDisposition, EventConsumerSelection, EventConsumerStatus,
+    ExecuteCommandRequest, ExecuteContextualReactionRequest, ExecuteSymbolicQueryRequest,
+    ExecuteSymbolicQueryResult, ExplainCommandRequest, ExplainCommandResult,
+    ExplainSymbolicQueryResult, ExplainedCommand, FieldSelection, GetActiveContractRequest,
+    GetActiveContractResult, GetCommitRequest, GetContractVersionRequest, GetContractVersionResult,
+    GetEntityRequest, GetProjectionStatusRequest, GetProjectionStatusResult,
+    GetReactiveWakeupResult, HealthContext, HealthRequest, HealthResult,
+    ListPendingOutboxDeliveriesRequest, LiveNamedQuerySelection, LiveQueryCursor,
+    LiveQueryFrontier, LiveQueryPatchOperation, LiveQueryResetReason, LiveQueryTerminalReason,
+    LiveQueryUpdate, NamedQueryToolDescriptor, NamedSymbolicQueryRequest,
     NegativeAcknowledgeEventStreamRequest, OperationSchemaCatalog, PageLimit, PageRequest,
     ProvenanceSelection, QueryParameters, QueryProjectionRequest, QueryResultValue,
     RequestCancellationHandle, RequestContext, RequestControl, ResolveCommandOutcomeRequest,
@@ -82,13 +83,14 @@ use crate::{
     format_contract_version_locator, format_entity_schema_locator, format_outcome_locator,
     format_outcome_template_locator_from_public, format_projection_status_locator,
     format_provenance_locator, format_provenance_template_locator, format_reactive_wakeup_locator,
-    format_server_health_locator,
+    format_server_health_locator, render_application_guidance,
 };
 
 const HOSTED_SERVICE_CALL_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_RESOLUTION_DISCOVERY_PAGES: usize = 3;
 const MAX_RESOLUTION_DISCOVERY_ITEMS: usize = 1_024;
 const MAX_FULL_CONCRETE_RESOURCE_ITEMS: usize = 16_387;
+const MAX_GUIDANCE_DISCOVERY_PAGES: usize = 5;
 
 enum ResolvedServiceApplicationTool {
     Command(CommandToolDescriptor),
@@ -571,6 +573,9 @@ impl HostedServiceMcpBackend {
         locator: McpResourceLocator,
     ) -> Result<McpResourceContent, McpBackendError> {
         match locator {
+            McpResourceLocator::ApplicationGuidance => {
+                self.read_application_guidance(invocation).await
+            }
             McpResourceLocator::ActiveContract => {
                 let mut call = self.prepare_call(
                     invocation,
@@ -799,6 +804,190 @@ impl HostedServiceMcpBackend {
                 reactive_wakeup_resource(result)
             }
         }
+    }
+
+    async fn read_application_guidance(
+        &self,
+        invocation: &HostedServiceInvocation,
+    ) -> Result<McpResourceContent, McpBackendError> {
+        let mut resource_cursor = None;
+        let mut fence: Option<DiscoveryCatalogFence> = None;
+        let mut resource_uris = Vec::new();
+        let mut seen_resource_uris = BTreeSet::new();
+        let mut active_contract_visible = false;
+        let mut observed_resources = 0_usize;
+        for page_index in 0..MAX_GUIDANCE_DISCOVERY_PAGES {
+            let request = DiscoverResourcesRequest::with_options(
+                page_request_parts(resource_cursor, 500)?,
+                DiscoveryRepresentation::CompactObservation,
+                None,
+                ResourceDiscoveryKind::Concrete,
+            )
+            .map_err(invalid_response)?;
+            let mut call = self.prepare_call(
+                invocation,
+                McpRateTarget::Service(ServiceOperationV1::DiscoverResources),
+            )?;
+            let result = self
+                .service
+                .discover_resources(call.take_context()?, request)
+                .await
+                .map_err(map_service_failure)?;
+            call.complete();
+            let DiscoverResourcesResultRef::CompactPage(page) = result.result() else {
+                return Err(McpBackendError::InvalidResponse);
+            };
+            if fence
+                .as_ref()
+                .is_some_and(|observed| observed != page.observed_fence())
+            {
+                return Err(McpBackendError::InvalidResponse);
+            }
+            fence.get_or_insert_with(|| page.observed_fence().clone());
+            observed_resources = observed_resources
+                .checked_add(page.items().len())
+                .ok_or(McpBackendError::InvalidResponse)?;
+            if observed_resources > MAX_FULL_CONCRETE_RESOURCE_ITEMS {
+                return Err(McpBackendError::InvalidResponse);
+            }
+            for item in page.items() {
+                let descriptor = compact_resource_descriptor_from_service(item)?;
+                if !seen_resource_uris.insert(descriptor.uri().to_owned()) {
+                    return Err(McpBackendError::InvalidResponse);
+                }
+                active_contract_visible |= descriptor.descriptor_branch() == "active_contract";
+                if matches!(
+                    descriptor.descriptor_branch(),
+                    "entity_schema"
+                        | "command_plan"
+                        | "command_documentation"
+                        | "projection_status"
+                        | "server_health"
+                        | "reactive_wakeup"
+                ) {
+                    resource_uris.push(descriptor.uri().to_owned());
+                }
+            }
+            resource_cursor = page.next_cursor().map(|cursor| *cursor.as_bytes());
+            if resource_cursor.is_none() {
+                break;
+            }
+            if page_index + 1 == MAX_GUIDANCE_DISCOVERY_PAGES {
+                return Err(McpBackendError::InvalidResponse);
+            }
+        }
+        if !active_contract_visible {
+            return Err(McpBackendError::TargetUnavailable);
+        }
+        let fence = fence.ok_or(McpBackendError::TargetUnavailable)?;
+        let (lineage, version, bundle_hash) = match fence.state() {
+            DiscoveryCatalogStateRef::ActiveContract {
+                lineage,
+                version,
+                bundle_hash,
+            } => (
+                lineage.as_str().to_owned(),
+                version.get(),
+                lower_hex(bundle_hash.as_bytes()),
+            ),
+            DiscoveryCatalogStateRef::NoActiveContract => {
+                return Err(McpBackendError::TargetUnavailable);
+            }
+        };
+
+        let mut tool_cursor = None;
+        let mut tool_names = Vec::new();
+        let mut seen_tool_items = BTreeSet::new();
+        for page_index in 0..MAX_RESOLUTION_DISCOVERY_PAGES {
+            let request = DiscoverCommandToolsRequest::with_options(
+                page_request_parts(tool_cursor, 500)?,
+                DiscoveryRepresentation::CompactObservation,
+                None,
+            )
+            .map_err(invalid_response)?;
+            let mut call = self.prepare_call(
+                invocation,
+                McpRateTarget::Service(ServiceOperationV1::DiscoverCommandTools),
+            )?;
+            let result = self
+                .service
+                .discover_command_tools(call.take_context()?, request)
+                .await
+                .map_err(map_service_failure)?;
+            call.complete();
+            let DiscoverCommandToolsResultRef::CompactPage(page) = result.result() else {
+                return Err(McpBackendError::InvalidResponse);
+            };
+            if page.observed_fence() != &fence {
+                return Err(McpBackendError::InvalidResponse);
+            }
+            for item in page.items() {
+                match item {
+                    CompactCommandToolDiscoveryItem::Fixed(kind) => {
+                        if !seen_tool_items.insert(format!("fixed:{}", kind.tag())) {
+                            return Err(McpBackendError::InvalidResponse);
+                        }
+                    }
+                    CompactCommandToolDiscoveryItem::Command(descriptor) => {
+                        let name = descriptor.name().as_str().to_owned();
+                        if !seen_tool_items.insert(format!("dynamic:{name}")) {
+                            return Err(McpBackendError::InvalidResponse);
+                        }
+                        tool_names.push(name);
+                    }
+                    CompactCommandToolDiscoveryItem::NamedQuery(descriptor) => {
+                        let name = descriptor.name().to_owned();
+                        if !seen_tool_items.insert(format!("dynamic:{name}")) {
+                            return Err(McpBackendError::InvalidResponse);
+                        }
+                        tool_names.push(name);
+                    }
+                }
+            }
+            tool_cursor = page.next_cursor().map(|cursor| *cursor.as_bytes());
+            if tool_cursor.is_none() {
+                break;
+            }
+            if page_index + 1 == MAX_RESOLUTION_DISCOVERY_PAGES {
+                return Err(McpBackendError::InvalidResponse);
+            }
+        }
+
+        let request = DiscoverResourcesRequest::with_options(
+            page_request_parts(None, 1)?,
+            DiscoveryRepresentation::CompactObservation,
+            Some(fence.clone()),
+            ResourceDiscoveryKind::Concrete,
+        )
+        .map_err(invalid_response)?;
+        let mut call = self.prepare_call(
+            invocation,
+            McpRateTarget::Service(ServiceOperationV1::DiscoverResources),
+        )?;
+        let result = self
+            .service
+            .discover_resources(call.take_context()?, request)
+            .await
+            .map_err(map_service_failure)?;
+        call.complete();
+        if !matches!(result.result(), DiscoverResourcesResultRef::CatalogUnchanged(returned) if returned == &fence)
+        {
+            return Err(McpBackendError::InvalidResponse);
+        }
+        let document = render_application_guidance(
+            &lineage,
+            version,
+            &bundle_hash,
+            &tool_names,
+            &resource_uris,
+        )
+        .map_err(invalid_response)?;
+        McpResourceContent::new(
+            "application_guidance",
+            crate::format_application_guidance_locator(),
+            McpResourceBody::Markdown(document),
+        )
+        .map_err(invalid_response)
     }
 
     async fn invoke_fixed(
@@ -2175,6 +2364,7 @@ impl McpBackend for HostedServiceMcpBackend {
                     .visible_fingerprint()
                     .map_err(|_| McpBackendError::InvalidResponse),
                 McpResourceLocator::ContractVersion { .. }
+                | McpResourceLocator::ApplicationGuidance
                 | McpResourceLocator::EntitySchema { .. }
                 | McpResourceLocator::CommandDocumentation { .. }
                 | McpResourceLocator::Outcome { .. }

@@ -145,6 +145,8 @@ pub enum McpResourceLocator {
     ServerHealth,
     /// Opaque reactive-change wakeup generation.
     ReactiveWakeup,
+    /// Authorization-filtered guidance for the active application.
+    ApplicationGuidance,
 }
 
 /// Returns the exact active-contract locator.
@@ -251,6 +253,12 @@ pub const fn format_server_health_locator() -> &'static str {
 #[must_use]
 pub const fn format_reactive_wakeup_locator() -> &'static str {
     "riffdb://reactive/wakeup"
+}
+
+/// Returns the exact application-guidance locator.
+#[must_use]
+pub const fn format_application_guidance_locator() -> &'static str {
+    "riffdb://application/guide"
 }
 
 /// Formats a contract-version locator from checked public-wire scalar parts.
@@ -438,6 +446,7 @@ pub fn parse_resource_locator(text: &str) -> Result<McpResourceLocator, Resource
         }
         ("server", ["health"]) => McpResourceLocator::ServerHealth,
         ("reactive", ["wakeup"]) => McpResourceLocator::ReactiveWakeup,
+        ("application", ["guide"]) => McpResourceLocator::ApplicationGuidance,
         _ => return Err(ResourceLocatorError),
     };
 
@@ -481,6 +490,9 @@ fn format_parsed_locator(locator: &McpResourceLocator) -> Result<String, Resourc
         } => Ok(format_projection_status_locator(lineage, *projection_id)),
         McpResourceLocator::ServerHealth => Ok(format_server_health_locator().to_owned()),
         McpResourceLocator::ReactiveWakeup => Ok(format_reactive_wakeup_locator().to_owned()),
+        McpResourceLocator::ApplicationGuidance => {
+            Ok(format_application_guidance_locator().to_owned())
+        }
     }
 }
 
@@ -709,6 +721,8 @@ mod tests {
                 ProjectionId::new(9).expect("projection ID is nonzero"),
             ),
             format_server_health_locator().to_owned(),
+            format_reactive_wakeup_locator().to_owned(),
+            format_application_guidance_locator().to_owned(),
         ];
 
         for locator in locators {

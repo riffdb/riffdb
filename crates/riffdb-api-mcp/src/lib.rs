@@ -7,6 +7,7 @@
 //! checked foundational values.
 
 mod admission;
+mod application_guidance;
 mod bounded_json;
 #[cfg(feature = "stdio")]
 mod builder;
@@ -38,6 +39,7 @@ mod stdio_transport;
 mod telemetry;
 
 pub use admission::*;
+pub use application_guidance::*;
 #[cfg(feature = "stdio")]
 pub use builder::{BuilderMcpConfiguration, BuilderMcpServer};
 pub use conversion::*;
@@ -58,8 +60,9 @@ pub use hosted_session::{McpMonotonicClock, McpMonotonicClockError, SystemMcpMon
 pub use locator::{
     MAX_MCP_RESOURCE_LOCATOR_BYTES, MAX_OUTCOME_RESOURCE_LOCATOR_BYTES, McpResourceLocator,
     OutcomeKeyHash, ResourceLocatorError, format_active_contract_locator,
-    format_command_documentation_locator, format_command_documentation_locator_from_public,
-    format_command_plan_locator, format_command_plan_locator_from_public, format_commit_locator,
+    format_application_guidance_locator, format_command_documentation_locator,
+    format_command_documentation_locator_from_public, format_command_plan_locator,
+    format_command_plan_locator_from_public, format_commit_locator,
     format_commit_locator_from_public, format_commit_template_locator,
     format_contract_version_locator, format_contract_version_locator_from_public,
     format_entity_schema_locator, format_entity_schema_locator_from_public, format_outcome_locator,

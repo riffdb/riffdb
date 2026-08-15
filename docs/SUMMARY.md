@@ -9,6 +9,7 @@
 - [Installation](installation.md)
 - [Your First Application](getting-started/FIRST-APPLICATION.md)
 - [Database-Shaped Project Workflow](getting-started/DATABASE-WORKFLOW.md)
+- [Agent Database Quickstart](getting-started/AGENT-DATABASE-QUICKSTART.md)
 - [Agent Application Quickstart](getting-started/AGENT-APPLICATION-QUICKSTART.md)
 - [Build a Symbolic Application](getting-started/SYMBOLIC-APPLICATIONS.md)
 - [Inspect an Application](getting-started/INSPECTION.md)

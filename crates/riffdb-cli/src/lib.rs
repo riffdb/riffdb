@@ -2,6 +2,7 @@
 
 //! Public-only command-line workflows for a standalone RiffDB server.
 
+mod agent;
 mod app;
 mod batch;
 mod cli;

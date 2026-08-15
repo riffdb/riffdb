@@ -1,0 +1,26 @@
+{
+  "schema": "riffdb.agent-guidance/v1",
+  "title": "RiffDB project agent guide",
+  "principles": [
+    "Treat riffdb.toml and symbolic RiffDB source as the author-owned database interface.",
+    "Use generated application operations; never hand-author protocol identities, storage access, or transaction machinery.",
+    "Resolve uncertain mutations with the same idempotency key before taking another action.",
+    "Use MCP discovery and riffdb://application/guide for the deployed, authorization-filtered application surface."
+  ],
+  "loop": [
+    "Edit the symbolic schema and bounded named queries.",
+    "Run riffdb push and review an exact proposed lock identity when one is reported.",
+    "Run riffdb generate to materialize the selected typed SDKs from that exact lock.",
+    "Call only generated operations and use explicit freshness or staleness surfaces.",
+    "Run riffdb status or riffdb diff to compare local and installed identities."
+  ],
+  "commands": [
+    "riffdb init <application> --generator <language>",
+    "riffdb agent init",
+    "riffdb push",
+    "riffdb generate",
+    "riffdb status",
+    "riffdb diff"
+  ],
+  "limitations": "The POC requires an already running RiffDB service and an ordinary authorized capability credential supplied through protected environment or configuration. Agent initialization never creates or embeds a credential."
+}
