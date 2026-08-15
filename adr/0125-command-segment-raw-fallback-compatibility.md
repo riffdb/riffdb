@@ -1,9 +1,9 @@
 # ADR-0125: Command-Segment Raw Fallback Compatibility
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-08-15
-- **Direction approved:** No
-- **Exact text accepted:** No
+- **Direction approved:** Yes
+- **Exact text accepted:** Yes — 2026-08-15
 - **Amends:** ADR-0123 section 3 only
 - **Defines or blocks:** WP-621
 
