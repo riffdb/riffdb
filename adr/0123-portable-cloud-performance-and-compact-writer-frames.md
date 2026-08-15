@@ -1,13 +1,14 @@
 # ADR-0123: Portable Cloud Performance and Compact Command Segments
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Direction approved:** 2026-08-15 (maintainer, optimize before the 72-hour soak)
-- **Exact text accepted:** No
+- **Exact text accepted:** Yes, 2026-08-15 (maintainer)
 - **Decision deadline:** Before WP-621 writes writer-frame format V2 or the final
   alpha endurance candidate is built
 
-Direction approval records planning consensus. This ADR is not authoritative
-until the maintainer accepts its exact text and changes the status to Accepted.
+The maintainer accepted this exact text on 2026-08-15. Any change to codec,
+selection, bounds, compatibility, activation thresholds, or authority requires
+an explicit accepted amendment.
 
 ## Context
 
