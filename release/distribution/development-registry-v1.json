@@ -1,0 +1,38 @@
+{
+  "schema": "riffdb.driver-development-registry-plan/v1",
+  "base_version": "0.1.0",
+  "build_identity_pattern": "[1-9][0-9]{0,17}",
+  "versions": {
+    "npm": "0.1.0-dev.{build}",
+    "python": "0.1.0.dev{build}",
+    "go": "v0.1.0-dev.{build}",
+    "rust": "0.1.0-dev.{build}"
+  },
+  "registries": {
+    "npm": {"implementation": "verdaccio", "protocol": "npm"},
+    "python": {"implementation": "static", "protocol": "pep503"},
+    "go": {"implementation": "static", "protocol": "goproxy"},
+    "rust": {"implementation": "static", "protocol": "cargo-sparse"}
+  },
+  "ports": {"npm": 4873, "static": 4874},
+  "loopback_only": true,
+  "production_signing": "forbidden",
+  "max_artifacts": 128,
+  "max_artifact_bytes": 268435456,
+  "packages": {
+    "cli": {
+      "npm": "@riffdb/cli",
+      "pypi": "riffdb-cli",
+      "go": "verified binary installer",
+      "rust": "riffdb-cli"
+    },
+    "runtime": {
+      "npm": "@riffdb/client",
+      "npm_offline_compatibility": "@riffdb/application",
+      "pypi": "riffdb",
+      "pypi_implementation": "riffdb-application",
+      "go": "riffdb.dev/application",
+      "rust": "riffdb-client-rust"
+    }
+  }
+}

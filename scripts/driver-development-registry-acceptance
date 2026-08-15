@@ -1,0 +1,243 @@
+#!/usr/bin/env bash
+set -euo pipefail
+umask 077
+
+if [[ $# -ne 1 || "$1" != "--all-ecosystems" ]]; then
+    echo 'usage: driver-development-registry-acceptance --all-ecosystems' >&2
+    exit 2
+fi
+
+repo_root="$(git rev-parse --show-toplevel)"
+cd "$repo_root"
+task_tmp_root="${RIFFDB_TMP_ROOT:-$HOME/tmp}"
+mkdir -p "$task_tmp_root"
+task_tmp_root="$(realpath "$task_tmp_root")"
+case "$task_tmp_root/" in
+    "$repo_root/"*)
+        echo 'RIFFDB_TMP_ROOT must place external consumers outside the repository' >&2
+        exit 1
+        ;;
+esac
+work_root="$(mktemp -d "$task_tmp_root/riffdb-driver-development-registry.XXXXXX")"
+server_pid=''
+cleanup() {
+    if [[ -n "$server_pid" ]]; then
+        kill "$server_pid" 2>/dev/null || true
+        wait "$server_pid" 2>/dev/null || true
+    fi
+    chmod -R u+w "$work_root" 2>/dev/null || true
+    rm -rf "$work_root"
+}
+trap cleanup EXIT
+
+distribution="${RIFFDB_DRIVER_DISTRIBUTION:-}"
+if [[ -z "$distribution" ]]; then
+    case "$(uname -m)" in
+        x86_64) target=x86_64-unknown-linux-gnu ;;
+        aarch64) target=aarch64-unknown-linux-gnu ;;
+        *) echo 'development registry acceptance requires a supported Linux architecture' >&2; exit 1 ;;
+    esac
+    cargo +1.97.0 build --release --locked -p riffdb-cli
+    RIFFDB_PYTHON_COMPATIBILITY=manylinux_2_28 \
+        ./scripts/build-python-distribution "$work_root/python"
+    python_wheel="$(find "$work_root/python" -maxdepth 1 -type f \
+        -name 'riffdb_application-0.1.0-cp313-abi3-*.whl' -print -quit)"
+    ./scripts/build-driver-distributions \
+        --output "$work_root/distribution" \
+        --binary-dir "$repo_root/target/release" \
+        --python-wheel "$python_wheel" \
+        --target "$target" \
+        --allow-dirty
+    distribution="$work_root/distribution"
+fi
+[[ "$distribution" == /* && -d "$distribution" && ! -L "$distribution" ]] || {
+    echo 'RIFFDB_DRIVER_DISTRIBUTION must name an absolute real directory' >&2
+    exit 1
+}
+
+build_number="${RIFFDB_DEVELOPMENT_BUILD_NUMBER:-61101}"
+mkdir "$work_root/registry"
+./scripts/build-driver-development-publication \
+    --distribution "$distribution" \
+    --registry-root "$work_root/registry" \
+    --build-number "$build_number"
+publication="$work_root/registry/builds/$build_number"
+
+# An identical retry is idempotent; the development manifest is never accepted
+# as a production distribution input.
+./scripts/build-driver-development-publication \
+    --distribution "$distribution" \
+    --registry-root "$work_root/registry" \
+    --build-number "$build_number"
+if ./scripts/build-driver-development-publication \
+    --distribution "$publication" \
+    --registry-root "$work_root/registry" \
+    --build-number 999999 2>"$work_root/production-boundary.err"; then
+    echo 'development publication was accepted as a production distribution' >&2
+    exit 1
+fi
+rg -q 'input is not the production distribution base' "$work_root/production-boundary.err"
+
+./scripts/serve-driver-development-registries \
+    --publication "$publication" \
+    --state "$work_root/state" \
+    >"$work_root/registry.log" 2>&1 &
+server_pid=$!
+python3 - "$server_pid" <<'PY'
+import json
+import os
+import sys
+import time
+import urllib.error
+import urllib.request
+
+pid = int(sys.argv[1])
+deadline = time.monotonic() + 60
+while time.monotonic() < deadline:
+    try:
+        with urllib.request.urlopen("http://127.0.0.1:4873/@riffdb%2Fclient", timeout=1) as response:
+            document = json.load(response)
+        if "0.1.0-dev.61101" in document.get("versions", {}) or any(
+            value.startswith("0.1.0-dev.") for value in document.get("versions", {})
+        ):
+            break
+    except (OSError, urllib.error.URLError):
+        pass
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        raise SystemExit("development registry process exited before readiness")
+    time.sleep(0.1)
+else:
+    raise SystemExit("development registries did not become ready")
+PY
+
+npm_version="0.1.0-dev.$build_number"
+python_version="0.1.0.dev$build_number"
+go_version="v0.1.0-dev.$build_number"
+rust_version="0.1.0-dev.$build_number"
+
+mkdir "$work_root/typescript"
+npm --cache "$work_root/npm-cache" --userconfig /dev/null install \
+    --prefix "$work_root/typescript" \
+    "@riffdb/client@$npm_version" \
+    --registry http://127.0.0.1:4873/ \
+    --ignore-scripts
+node --input-type=module -e \
+    "import { exactDecimal } from '$work_root/typescript/node_modules/@riffdb/client/dist/index.js'; if (exactDecimal('1.25', 10, 2).scale !== 2) process.exit(1)"
+node -e \
+    "const lock=require('$work_root/typescript/package-lock.json'); if(lock.packages['node_modules/@riffdb/client'].version !== '$npm_version') process.exit(1)"
+
+python3 -m venv "$work_root/python-consumer"
+"$work_root/python-consumer/bin/pip" install \
+    --index-url http://127.0.0.1:4874/python/simple/ \
+    --no-cache-dir \
+    "riffdb==$python_version"
+"$work_root/python-consumer/bin/python" - "$python_version" <<'PY'
+import importlib.metadata
+import pathlib
+import sys
+import riffdb_application
+
+expected = sys.argv[1]
+if importlib.metadata.version("riffdb") != expected:
+    raise SystemExit("Python alias resolved the wrong version")
+if importlib.metadata.version("riffdb-application") != expected:
+    raise SystemExit("Python runtime resolved the wrong version")
+for distribution in ("riffdb", "riffdb-application"):
+    if list(importlib.metadata.distribution(distribution).files or ()) == []:
+        raise SystemExit("Python installed metadata is absent")
+    root = pathlib.Path(importlib.metadata.distribution(distribution)._path)
+    for path in root.rglob("*"):
+        if path.is_file():
+            content = path.read_bytes()
+            if b"path+file://" in content or b"/riffdb/" in content:
+                raise SystemExit(f"Python installed metadata retains a source path: {path.name}")
+PY
+
+mkdir "$work_root/go-consumer" "$work_root/go-cache" "$work_root/go-build-cache"
+(
+    cd "$work_root/go-consumer"
+    go mod init example.invalid/riffdb-development-consumer
+    cat >main.go <<'GO'
+package main
+
+import application "riffdb.dev/application"
+
+func main() {
+	if application.String("registry").Type != "string" {
+		panic("unexpected RiffDB value")
+	}
+}
+GO
+    GOPATH="$work_root/go-cache" \
+        GOCACHE="$work_root/go-build-cache" \
+        GOPROXY=http://127.0.0.1:4874/go,off \
+        GOSUMDB=off \
+        go get "riffdb.dev/application@$go_version"
+    GOPATH="$work_root/go-cache" \
+        GOCACHE="$work_root/go-build-cache" \
+        GOPROXY=http://127.0.0.1:4874/go,off \
+        GOSUMDB=off \
+        go test ./...
+    [[ "$(GOPATH="$work_root/go-cache" GOCACHE="$work_root/go-build-cache" GOPROXY=http://127.0.0.1:4874/go,off GOSUMDB=off go list -m -f '{{.Version}}' riffdb.dev/application)" == "$go_version" ]]
+)
+
+cargo +1.97.0 new --quiet --bin "$work_root/rust-consumer"
+mkdir "$work_root/cargo-home"
+CARGO_HOME="$work_root/cargo-home" cargo +1.97.0 add \
+    --manifest-path "$work_root/rust-consumer/Cargo.toml" \
+    "riffdb-client-rust@=$rust_version" \
+    --registry riffdb-dev \
+    --config 'registries.riffdb-dev.index="sparse+http://127.0.0.1:4874/cargo/index/"'
+CARGO_HOME="$work_root/cargo-home" cargo +1.97.0 check \
+    --manifest-path "$work_root/rust-consumer/Cargo.toml" \
+    --locked \
+    --config 'registries.riffdb-dev.index="sparse+http://127.0.0.1:4874/cargo/index/"'
+python3 - "$work_root/rust-consumer/Cargo.lock" "$rust_version" <<'PY'
+import sys
+import tomllib
+
+lock = tomllib.loads(open(sys.argv[1], "rb").read().decode())
+versions = {
+    package["version"]
+    for package in lock["package"]
+    if package["name"].startswith("riffdb-")
+}
+if versions != {sys.argv[2]}:
+    raise SystemExit(f"Rust lock contains unexpected RiffDB versions: {sorted(versions)}")
+for package in lock["package"]:
+    source = package.get("source", "")
+    if package["name"].startswith("riffdb-") and "127.0.0.1:4874" not in source:
+        raise SystemExit(f"Rust package did not resolve through the development registry: {package['name']}")
+PY
+
+if rg -n -F "$repo_root" \
+    "$work_root/typescript/package-lock.json" \
+    "$work_root/go-consumer/go.mod" \
+    "$work_root/rust-consumer/Cargo.lock"; then
+    echo 'external consumer metadata contains a repository source path' >&2
+    exit 1
+fi
+if rg -n 'path\+' "$work_root/rust-consumer/Cargo.lock"; then
+    echo 'Rust consumer lock contains a path dependency' >&2
+    exit 1
+fi
+
+kill "$server_pid"
+wait "$server_pid" 2>/dev/null || true
+server_pid=''
+tampered="$(find "$publication/npm/packages" -maxdepth 1 -type f -name '*client*.tgz' -print -quit)"
+chmod u+w "$tampered"
+printf 'different-bytes' >>"$tampered"
+if ./scripts/build-driver-development-publication \
+    --distribution "$distribution" \
+    --registry-root "$work_root/registry" \
+    --build-number "$build_number" 2>"$work_root/immutable-boundary.err"; then
+    echo 'an existing development build identity accepted different bytes' >&2
+    exit 1
+fi
+rg -q 'existing immutable publication differs from the requested bytes' \
+    "$work_root/immutable-boundary.err"
+
+printf '%s\n' 'WP-611 native loopback registry acceptance: passed'

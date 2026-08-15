@@ -1,0 +1,322 @@
+#!/usr/bin/env python3
+"""Serve one WP-611 publication on fixed loopback development endpoints."""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+from http.server import HTTPServer, SimpleHTTPRequestHandler
+import json
+import os
+from pathlib import Path
+import secrets
+import signal
+import subprocess
+import sys
+import tarfile
+import threading
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+
+
+ROOT = Path(__file__).resolve().parent.parent
+PLAN_PATH = ROOT / "release/distribution/development-registry-v1.json"
+VERDACCIO_VERSION = "6.9.2"
+
+
+def fail(message: str) -> None:
+    raise SystemExit(f"driver_development_registry_serve_failed: {message}")
+
+
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        while chunk := source.read(1024 * 1024):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def validate_publication(path: Path) -> dict[str, object]:
+    manifest_path = path / "manifest-v1.json"
+    if not path.is_absolute() or not path.is_dir() or path.is_symlink():
+        fail("publication must be an absolute real directory")
+    if not manifest_path.is_file() or manifest_path.is_symlink():
+        fail("publication manifest is absent")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if manifest.get("schema") != "riffdb.driver-development-publication/v1":
+        fail("publication schema is invalid")
+    artifacts = manifest.get("artifacts")
+    if not isinstance(artifacts, list) or not 1 <= len(artifacts) <= 128:
+        fail("publication artifact inventory is outside the bound")
+    expected_paths: set[str] = set()
+    for artifact in artifacts:
+        relative = artifact.get("path") if isinstance(artifact, dict) else None
+        if not isinstance(relative, str) or relative.startswith("/") or ".." in Path(relative).parts:
+            fail("publication artifact path is unsafe")
+        target = path / relative
+        expected_paths.add(relative)
+        if (
+            not target.is_file()
+            or target.is_symlink()
+            or target.stat().st_size != artifact.get("bytes")
+            or sha256_file(target) != artifact.get("sha256")
+        ):
+            fail(f"publication artifact does not match its manifest: {relative}")
+    actual_paths: set[str] = set()
+    for target in path.rglob("*"):
+        if target.is_symlink():
+            fail("publication contains a symlink")
+        if target.is_file():
+            actual_paths.add(target.relative_to(path).as_posix())
+    if actual_paths != expected_paths | {"manifest-v1.json"}:
+        fail("publication contains an unmanifested or missing file")
+    return manifest
+
+
+def write_once(path: Path, content: str, mode: int = 0o600) -> None:
+    with path.open("x", encoding="utf-8") as destination:
+        destination.write(content)
+    path.chmod(mode)
+
+
+class QuietStaticHandler(SimpleHTTPRequestHandler):
+    def log_message(self, format: str, *args: object) -> None:
+        return
+
+    def do_POST(self) -> None:
+        self.send_error(405)
+
+    def do_PUT(self) -> None:
+        self.send_error(405)
+
+    def do_DELETE(self) -> None:
+        self.send_error(405)
+
+
+def verdaccio_command(config: Path, state: Path, endpoint: str) -> tuple[list[str], dict[str, str]]:
+    environment = os.environ.copy()
+    environment["npm_config_cache"] = str(state / "npm-cache")
+    configured = os.environ.get("RIFFDB_VERDACCIO_BIN")
+    if configured:
+        binary = Path(configured)
+        if not binary.is_absolute() or not binary.is_file() or binary.is_symlink() or not os.access(binary, os.X_OK):
+            fail("RIFFDB_VERDACCIO_BIN is not an absolute executable file")
+        command = [str(binary)]
+    else:
+        environment["npm_config_userconfig"] = os.devnull
+        environment["npm_config_registry"] = "https://registry.npmjs.org/"
+        command = ["npm", "exec", "--yes", f"--package=verdaccio@{VERDACCIO_VERSION}", "--", "verdaccio"]
+    return [*command, "--config", str(config), "--listen", endpoint], environment
+
+
+def wait_for(url: str, process: subprocess.Popen[str] | None = None) -> None:
+    deadline = time.monotonic() + 45
+    while time.monotonic() < deadline:
+        if process is not None and process.poll() is not None:
+            fail(f"Verdaccio exited before readiness with status {process.returncode}")
+        try:
+            with urllib.request.urlopen(url, timeout=1) as response:
+                if response.status == 200:
+                    return
+        except (OSError, urllib.error.URLError):
+            time.sleep(0.1)
+    fail(f"registry endpoint did not become ready: {url}")
+
+
+def npm_environment(state: Path) -> dict[str, str]:
+    environment = os.environ.copy()
+    environment["npm_config_cache"] = str(state / "npm-cache")
+    environment["npm_config_userconfig"] = str(state / "npmrc")
+    return environment
+
+
+def ensure_npm_user(state: Path, endpoint: str) -> None:
+    npmrc = state / "npmrc"
+    current = npmrc.read_text(encoding="utf-8")
+    if "_authToken=" in current:
+        return
+    password = secrets.token_urlsafe(24)
+    body = json.dumps(
+        {
+            "name": "riffdb-development",
+            "password": password,
+            "email": "development@loopback.invalid",
+            "type": "user",
+        }
+    ).encode()
+    request = urllib.request.Request(
+        endpoint + "-/user/org.couchdb.user:riffdb-development",
+        data=body,
+        method="PUT",
+        headers={"Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=10) as response:
+            token = json.load(response).get("token")
+    except urllib.error.HTTPError as error:
+        fail(f"could not create the loopback npm publisher: HTTP {error.code}")
+    if not isinstance(token, str) or not token:
+        fail("Verdaccio did not return a development publisher token")
+    with npmrc.open("a", encoding="utf-8") as destination:
+        destination.write(f"//127.0.0.1:4873/:_authToken={token}\n")
+
+
+def registry_digest(name: str, version: str, endpoint: str) -> str | None:
+    encoded = urllib.parse.quote(name, safe="@")
+    try:
+        with urllib.request.urlopen(endpoint + encoded, timeout=5) as response:
+            metadata = json.load(response)
+    except urllib.error.HTTPError as error:
+        if error.code == 404:
+            return None
+        raise
+    selected = metadata.get("versions", {}).get(version, {})
+    digest = selected.get("dist", {}).get("shasum")
+    return digest if isinstance(digest, str) else None
+
+
+def publish_npm(publication: Path, state: Path, manifest: dict[str, object], endpoint: str) -> None:
+    version = manifest["versions"]["npm"]
+    for package in sorted((publication / "npm/packages").glob("*.tgz")):
+        with tarfile.open(package, "r:gz") as archive:
+            metadata_file = archive.extractfile("package/package.json")
+            if metadata_file is None:
+                fail("npm package metadata is absent")
+            metadata = json.load(metadata_file)
+        name = metadata.get("name")
+        if not isinstance(name, str) or metadata.get("version") != version:
+            fail("npm package identity does not match the publication")
+        with subprocess.Popen(
+            [
+                "npm",
+                "publish",
+                str(package),
+                "--ignore-scripts",
+                "--tag",
+                "dev",
+                "--registry",
+                endpoint,
+            ],
+            env=npm_environment(state),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        ) as command:
+            stdout, stderr = command.communicate()
+        if command.returncode == 0:
+            continue
+        local_digest = hashlib.sha1(package.read_bytes(), usedforsecurity=False).hexdigest()
+        if registry_digest(name, version, endpoint) != local_digest:
+            sys.stderr.write(stdout + stderr)
+            fail("npm version is already bound to different bytes")
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--publication", required=True, type=Path)
+    parser.add_argument("--state", required=True, type=Path)
+    arguments = parser.parse_args()
+    manifest = validate_publication(arguments.publication)
+    plan = json.loads(PLAN_PATH.read_text(encoding="utf-8"))
+    npm_port = int(plan["ports"]["npm"])
+    static_port = int(plan["ports"]["static"])
+    if not arguments.state.is_absolute() or arguments.state.is_symlink():
+        fail("state must be an absolute non-symlink path")
+    arguments.state.mkdir(parents=True, exist_ok=True)
+    state_identity = {
+        "schema": "riffdb.driver-development-registry-state/v1",
+        "build_identity": manifest["build_identity"],
+        "manifest_sha256": sha256_file(arguments.publication / "manifest-v1.json"),
+    }
+    identity_path = arguments.state / "publication.json"
+    identity_bytes = json.dumps(state_identity, sort_keys=True, separators=(",", ":")) + "\n"
+    if identity_path.exists():
+        if identity_path.is_symlink() or identity_path.read_text(encoding="utf-8") != identity_bytes:
+            fail("registry state belongs to a different publication")
+    else:
+        write_once(identity_path, identity_bytes)
+    npmrc = arguments.state / "npmrc"
+    if not npmrc.exists():
+        write_once(npmrc, f"registry=http://127.0.0.1:{npm_port}/\nignore-scripts=true\n")
+    config = arguments.state / "verdaccio.yaml"
+    if not config.exists():
+        write_once(
+            config,
+            "\n".join(
+                [
+                    f"storage: {arguments.state / 'verdaccio-storage'}",
+                    "auth:",
+                    "  htpasswd:",
+                    f"    file: {arguments.state / 'htpasswd'}",
+                    "    max_users: 1",
+                    "uplinks: {}",
+                    "packages:",
+                    "  '@riffdb/*':",
+                    "    access: $all",
+                    "    publish: $all",
+                    "    unpublish: $all",
+                    "  '**':",
+                    "    access: $all",
+                    "    publish: $authenticated",
+                    "middlewares:",
+                    "  audit:",
+                    "    enabled: false",
+                    "max_body_size: 300mb",
+                    "log: {type: stdout, format: pretty, level: warn}",
+                    "",
+                ]
+            ),
+        )
+
+    static = HTTPServer(
+        ("127.0.0.1", static_port),
+        lambda *handler_args, **kwargs: QuietStaticHandler(
+            *handler_args, directory=str(arguments.publication), **kwargs
+        ),
+    )
+    static_thread = threading.Thread(target=static.serve_forever, daemon=True)
+    static_thread.start()
+    command, environment = verdaccio_command(config, arguments.state, f"127.0.0.1:{npm_port}")
+    verdaccio = subprocess.Popen(command, env=environment, text=True)
+    stopping = threading.Event()
+
+    def stop(_signum: int, _frame: object) -> None:
+        stopping.set()
+
+    signal.signal(signal.SIGINT, stop)
+    signal.signal(signal.SIGTERM, stop)
+    try:
+        wait_for(f"http://127.0.0.1:{static_port}/manifest-v1.json")
+        wait_for(f"http://127.0.0.1:{npm_port}/-/ping", verdaccio)
+        ensure_npm_user(arguments.state, f"http://127.0.0.1:{npm_port}/")
+        publish_npm(arguments.publication, arguments.state, manifest, f"http://127.0.0.1:{npm_port}/")
+        print(
+            json.dumps(
+                {
+                    "schema": "riffdb.driver-development-registry-ready/v1",
+                    "build_identity": manifest["build_identity"],
+                    "registries": manifest["registries"],
+                },
+                sort_keys=True,
+            ),
+            flush=True,
+        )
+        while not stopping.wait(0.25):
+            if verdaccio.poll() is not None:
+                fail(f"Verdaccio exited unexpectedly with status {verdaccio.returncode}")
+    finally:
+        static.shutdown()
+        static.server_close()
+        verdaccio.terminate()
+        try:
+            verdaccio.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            verdaccio.kill()
+            verdaccio.wait()
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
