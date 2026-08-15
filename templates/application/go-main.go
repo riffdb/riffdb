@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"time"
@@ -47,7 +48,28 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	fmt.Printf("outcome=%T application_head=%d\n", created.Outcome, page.ApplicationHead)
+	createdOutcome, ok := created.Outcome.(generated.CreateItemCreated)
+	if !ok {
+		panic("generated command returned an unexpected outcome")
+	}
+	found, ok := page.Value.(generated.ItemPageFound)
+	if !ok {
+		panic("generated page did not find the item")
+	}
+	if created.CommitSequence == nil {
+		panic("generated command omitted its commit sequence")
+	}
+	observation := map[string]any{
+		"application_head_at_least_read_after_commit": page.ApplicationHead >= *created.CommitSequence,
+		"operation":         "CreateItem+ItemPage",
+		"outcome":           createdOutcome.Outcome,
+		"read_after_commit": true,
+		"schema":            "riffdb.application-parity/v1",
+		"title":             found.Item.Title,
+	}
+	if err := json.NewEncoder(os.Stdout).Encode(observation); err != nil {
+		panic(err)
+	}
 }
 
 func parseVersion(value string) (uint64, error) {

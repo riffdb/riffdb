@@ -142,17 +142,28 @@ interrupt. Credentials live only in a mode-protected temporary directory.
 
 With `--run`, the same product-owned workflow starts the repository's generated
 application after readiness. A repository must contain exactly one supported
-runner: `Cargo.toml` for Rust or `package.json` for TypeScript. RiffDB passes
-the loopback endpoint and scoped application credential directly to that child;
-the application does not need to parse the database-readiness line or keep a
-separate bootstrap process alive. Rust one-shot runners exit normally. A
-TypeScript web runner stays in the foreground. Leave it running after the
+runner: `Cargo.toml` for Rust, `go.mod` for Go, `package.json` for TypeScript, or
+`pyproject.toml` for Python. Rust and Python receive the protected application
+endpoint, credential path, and database alias owned by their first-party
+runtime; Go and TypeScript receive only a private driver-host socket plus
+compiler-owned handshake identity. The
+application does not need to parse the database-readiness line or keep a
+separate bootstrap process alive. Rust, Go, and Python one-shot runners exit
+normally. A TypeScript web runner stays in the foreground. Leave it running after the
 application prints `riffdb-app-ready-v1<TAB>PORT`, then issue the application
 HTTP request from another terminal; the generated starter is exercised with
 `curl http://127.0.0.1:PORT/item`. The foreground command has not completed
 merely because the ready marker appeared. Stopping it shuts down the scoped
 driver and development daemon. Application stdout is caller-owned output and
 is streamed directly, not copied into RiffDB diagnostics or logs.
+
+Current application command and RiffQL plans retain the accepted grammar-v1
+global tenant requirement. Consequently, `riffdb dev` requires the selected
+local role to declare `"tenant_scope": "global"`. A tenant-scoped role is
+rejected before the disposable server starts with a diagnostic naming the
+missing reviewed tenant mapping; the workflow never widens it implicitly.
+Use an explicitly reviewed global development role for this POC. Tenant-mapped
+application plans remain deferred rather than inferred from field names.
 
 A release installation places the reviewed `riffdb-dev` workflow beside the
 `riffdb` and `riffdbd` binaries. That installed workflow takes precedence over

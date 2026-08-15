@@ -71,13 +71,23 @@ printf '%s\n' "$identity" >"$legacy/packages/signing-identity"
     --target "$(jq -er '.target' "$distribution/metadata/artifacts-v1.json")" \
     --prefix "$legacy"
 
+target="$(jq -er '.target' "$distribution/metadata/artifacts-v1.json")"
+case "$target" in
+    x86_64-unknown-linux-gnu) typescript_platform=typescript-linux-x64 ;;
+    aarch64-unknown-linux-gnu) typescript_platform=typescript-linux-arm64 ;;
+    *) echo 'package-first TypeScript tooling target is unsupported' >&2; exit 1 ;;
+esac
 mkdir -p "$legacy/tooling/typescript/node_modules/@types" \
+    "$legacy/tooling/typescript/node_modules/@typescript" \
     "$legacy/tooling/typescript/bin"
 cp -a "$legacy/public/typescript/node_modules/typescript" \
     "$legacy/tooling/typescript/node_modules/"
 cp -a "$legacy/public/typescript/node_modules/@types/node" \
     "$legacy/tooling/typescript/node_modules/@types/"
+cp -a "$legacy/public/typescript/node_modules/@typescript/$typescript_platform" \
+    "$legacy/tooling/typescript/node_modules/@typescript/"
 ln -s ../node_modules/typescript/bin/tsc "$legacy/tooling/typescript/bin/tsc"
+"$legacy/tooling/typescript/bin/tsc" --version >/dev/null
 rm -rf "$legacy/public/python" "$legacy/public/typescript"
 
 rm -rf "$legacy/public/rust-sdk/crates" "$legacy/public/rust-sdk/proto" \
