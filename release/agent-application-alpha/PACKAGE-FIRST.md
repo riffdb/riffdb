@@ -53,7 +53,9 @@ rejected proof with application-side preflight logic.
 Offline runtime installation sources are:
 
 - Go: `GOPROXY=file://<bundle>/packages/distribution/go-proxy GOSUMDB=off`
-- Python: `pip --no-index --find-links <bundle>/packages/distribution/pypi`
+- Python: `riffdb new --language python` automatically embeds the one verified
+  platform wheel installed beside the CLI. Manual package installation uses
+  `pip --no-index --find-links <bundle>/packages/distribution/pypi`.
 - Rust: set `CARGO_HOME=<bundle>/.cargo`; the signed `.crate` packages are the
   `vendored-sources` directory. Do not copy an ambient Cargo configuration
   into the application. The generated `Cargo.lock` is already package-shaped

@@ -90,6 +90,18 @@ def assert_editor_assets(installed: Path) -> None:
             fail("installed CLI editor grammar asset differs from the canonical package input")
 
 
+def assert_native_python_runtime(distribution: Path, prefix: Path) -> None:
+    source = select_one(
+        distribution / "pypi", f"riffdb_application-{VERSION}-cp313-abi3-*.whl"
+    )
+    destination = prefix / "public/python"
+    installed = sorted(destination.glob("riffdb_application-*.whl"))
+    if len(installed) != 1 or installed[0].is_symlink():
+        fail("installed native Python application runtime inventory is not exact")
+    if installed[0].read_bytes() != source.read_bytes():
+        fail("installed native Python application runtime differs from the signed package")
+
+
 def safe_extract_crate(archive_path: Path, destination: Path, expected_root: str) -> Path:
     with tarfile.open(archive_path, "r:gz") as archive:
         members = archive.getmembers()
@@ -132,6 +144,26 @@ def smoke_native(distribution: Path, target: str, scratch: Path) -> None:
     )
     run([str(prefix / "bin/riffdb"), "--help"], cwd=scratch)
     assert_editor_assets(prefix / "share/riffdb/editor")
+    assert_native_python_runtime(distribution, prefix)
+    python_project = scratch / "native-python-scaffold"
+    run(
+        [
+            str(prefix / "bin/riffdb"),
+            "new",
+            "native-python-scaffold",
+            "--language",
+            "python",
+            "--directory",
+            str(python_project),
+        ],
+        cwd=scratch,
+    )
+    source = select_one(
+        distribution / "pypi", f"riffdb_application-{VERSION}-cp313-abi3-*.whl"
+    )
+    embedded = sorted((python_project / "vendor").glob("riffdb_application-*.whl"))
+    if len(embedded) != 1 or embedded[0].read_bytes() != source.read_bytes():
+        fail("native CLI Python scaffold did not embed the signed runtime wheel")
 
 
 def smoke_typescript(distribution: Path, arch: str, scratch: Path) -> None:

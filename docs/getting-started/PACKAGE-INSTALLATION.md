@@ -29,6 +29,13 @@ The Python `riffdb` package is an exact install alias for the normative
 therefore continue to import `riffdb_application`. Go and TypeScript generated
 modules use their published runtimes; Rust uses `riffdb-client-rust`.
 
+The signed native binary installer also places the one architecture-matching
+`riffdb-application` wheel under its installation prefix at `public/python`.
+Consequently, the installed native CLI can run `riffdb new --language python`
+without `RIFFDB_APPLICATION_WHEEL`; the scaffold embeds that already verified
+wheel and pins it in `uv.lock`. A source-tree CLI still requires the explicit
+environment variable because it has no signed installation prefix.
+
 ## One four-step workflow
 
 With a RiffDB service running and an ordinary application credential available:
