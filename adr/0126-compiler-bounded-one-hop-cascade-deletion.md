@@ -1,8 +1,8 @@
 # ADR-0126: Compiler-Bounded One-Hop Cascade Deletion
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Direction approved:** 2026-08-15 (maintainer, in session)
-- **Exact text accepted:** No — pending maintainer review
+- **Exact text accepted:** Yes — 2026-08-15, maintainer acceptance as written
 - **Decision deadline:** Before WP-625 changes contract grammar, executable IR,
   deletion planning, conflict ownership, or command runtime semantics
 - **Requires:** ADR-0002, ADR-0003, ADR-0005, ADR-0012, ADR-0013,
@@ -11,9 +11,8 @@
   `BLK-005`, `BLK-010`, and `BLK-013` only as stated below
 - **Defines or blocks:** WP-625 through WP-627
 
-Direction approval records agreement to design a bounded cascade capability.
-This record remains planning input and does not authorize implementation until
-the maintainer accepts its exact text.
+The maintainer accepted this exact text on 2026-08-15 before implementation
+began.
 
 ## Context
 
