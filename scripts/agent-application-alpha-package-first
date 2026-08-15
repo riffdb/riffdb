@@ -46,7 +46,8 @@ trap cleanup EXIT INT TERM
     "$distribution"
 
 legacy="$work_root/legacy"
-"$repo_root/scripts/agent-application-alpha-package" "$legacy" >/dev/null
+RIFFDB_PACKAGE_FIRST_BUILD=1 \
+    "$repo_root/scripts/agent-application-alpha-package" "$legacy" >/dev/null
 rm "$legacy/checksums.sha256" "$legacy/bundle.json" "$legacy/bin/riffdb"
 
 mkdir -p "$legacy/packages"
