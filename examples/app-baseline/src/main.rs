@@ -675,6 +675,30 @@ fn riffdb_shutdown_evidence_json(evidence: &RiffDbShutdownEvidence) -> serde_jso
     });
     let physical_commits = evidence.writer.commit_duration.count;
     let logical_commands_committed = evidence.writer.batch_size.sum_us;
+    let writer_frame_census = evidence.writer_frame_census.map(
+        |[frame_count, frame_commands, selected_frame_bytes, raw_frame_bytes, selected_segment_bytes, raw_segment_bytes]| {
+            json!({
+                "frames": frame_count,
+                "commands": frame_commands,
+                "selected_complete_frame_bytes": selected_frame_bytes,
+                "raw_equivalent_complete_frame_bytes": raw_frame_bytes,
+                "selected_command_segment_bytes": selected_segment_bytes,
+                "raw_command_segment_bytes": raw_segment_bytes,
+                "complete_frame_reduction_ratio": if raw_frame_bytes == 0 {
+                    serde_json::Value::Null
+                } else {
+                    json!(1.0 - selected_frame_bytes as f64 / raw_frame_bytes as f64)
+                },
+                "checkpoint_segment_reduction_ratio": if raw_segment_bytes == 0 {
+                    serde_json::Value::Null
+                } else {
+                    json!(1.0 - selected_segment_bytes as f64 / raw_segment_bytes as f64)
+                },
+                "scope": "successfully_fenced_command_frames_in_process_generation",
+                "labels": "closed_fixed_cardinality",
+            })
+        },
+    );
     let table_inventory = evidence
         .table_inventory_after_measurement
         .iter()
@@ -750,6 +774,7 @@ fn riffdb_shutdown_evidence_json(evidence: &RiffDbShutdownEvidence) -> serde_jso
                 json!(logical_commands_committed as f64 / physical_commits as f64)
             },
         },
+        "writer_frame_census": writer_frame_census,
         "authoritative_table_inventory": table_inventory,
         "table_inventory_scope": if evidence.table_inventory_before_measurement.is_some() {
             "after_seed_before_measured_process_to_after_clean_shutdown"

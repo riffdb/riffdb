@@ -992,8 +992,13 @@ fn command_segment_write_path_is_byte_identical_for_large_bounded_manifest() {
     )
     .expect("maximum-manifest structural draft");
 
-    let (sealed, streamed) =
-        seal_and_encode_command_segment_v1(draft).expect("streaming seal accepts the bound");
+    let (sealed, streamed, metrics) = seal_and_encode_command_segment_with_metrics_v1(draft)
+        .expect("streaming seal accepts the bound");
+    assert_eq!(metrics.selected_envelope_bytes(), streamed.as_bytes().len());
+    assert_eq!(
+        metrics.raw_envelope_bytes(),
+        metrics.selected_envelope_bytes()
+    );
     assert_eq!(
         streamed,
         encode_command_segment_v1(&sealed).expect("independent encoder accepts the bound")

@@ -43,6 +43,16 @@ mod startup;
 mod store;
 #[cfg(test)]
 mod test_path;
+
+/// Fixed-cardinality, redaction-safe process-generation command-frame census.
+///
+/// This diagnostic surface is consumed by the release benchmark harness. It
+/// carries only aggregate counts and byte totals in a closed order.
+#[doc(hidden)]
+#[must_use]
+pub fn writer_command_frame_census_v1() -> [u64; 6] {
+    journal::command_frame_census()
+}
 mod transient;
 mod validated_prefix;
 

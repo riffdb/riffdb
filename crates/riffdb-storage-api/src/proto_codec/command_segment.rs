@@ -584,6 +584,102 @@ fn segment_body_v4_to_proto(value: &StoredCommandSegmentV1) -> wire::StoredComma
     }
 }
 
+fn segment_from_body_v3(
+    body: wire::StoredCommandSegmentBodyV3,
+    digest: CommandSegmentDigestV1,
+) -> Result<StoredCommandSegmentV1, DurableCodecError> {
+    if component_digest(SEGMENT_DIGEST_LABEL, &body.encode_to_vec()) != digest {
+        return Err(DurableCodecError::corrupt());
+    }
+    let first =
+        CommitSequence::new(body.first_commit_sequence).ok_or_else(DurableCodecError::corrupt)?;
+    let last =
+        CommitSequence::new(body.last_commit_sequence).ok_or_else(DurableCodecError::corrupt)?;
+    let first_administration =
+        riffdb_types::AdministrationSequence::new(body.first_administration_sequence)
+            .ok_or_else(DurableCodecError::corrupt)?;
+    let last_administration =
+        riffdb_types::AdministrationSequence::new(body.last_administration_sequence)
+            .ok_or_else(DurableCodecError::corrupt)?;
+    let predecessor = if body.predecessor_segment_hash.is_empty() {
+        None
+    } else {
+        Some(CommandSegmentDigestV1::from_bytes(fixed(
+            body.predecessor_segment_hash,
+        )?))
+    };
+    let commands = body
+        .commands
+        .into_iter()
+        .map(capsule_v4_from_proto)
+        .collect::<Result<Vec<_>, _>>()?;
+    let segment = storage_result(StoredCommandSegmentV1::new(
+        DatabaseId::from_bytes(fixed(body.database_id)?)
+            .map_err(|_| DurableCodecError::corrupt())?,
+        body.history_incarnation,
+        predecessor,
+        commands,
+        manifest_from_proto(require(body.manifest)?)?,
+        digest,
+    ))?;
+    if segment.first_commit_sequence() != first
+        || segment.last_commit_sequence() != last
+        || segment.first_administration_sequence() != first_administration
+        || segment.last_administration_sequence() != last_administration
+    {
+        return Err(DurableCodecError::corrupt());
+    }
+    Ok(segment)
+}
+
+fn segment_from_body_v4(
+    body: wire::StoredCommandSegmentBodyV4,
+    digest: CommandSegmentDigestV1,
+) -> Result<StoredCommandSegmentV1, DurableCodecError> {
+    if component_digest(SEGMENT_DIGEST_LABEL, &body.encode_to_vec()) != digest {
+        return Err(DurableCodecError::corrupt());
+    }
+    let first =
+        CommitSequence::new(body.first_commit_sequence).ok_or_else(DurableCodecError::corrupt)?;
+    let last =
+        CommitSequence::new(body.last_commit_sequence).ok_or_else(DurableCodecError::corrupt)?;
+    let first_administration =
+        riffdb_types::AdministrationSequence::new(body.first_administration_sequence)
+            .ok_or_else(DurableCodecError::corrupt)?;
+    let last_administration =
+        riffdb_types::AdministrationSequence::new(body.last_administration_sequence)
+            .ok_or_else(DurableCodecError::corrupt)?;
+    let predecessor = if body.predecessor_segment_hash.is_empty() {
+        None
+    } else {
+        Some(CommandSegmentDigestV1::from_bytes(fixed(
+            body.predecessor_segment_hash,
+        )?))
+    };
+    let commands = body
+        .commands
+        .into_iter()
+        .map(capsule_v5_from_proto)
+        .collect::<Result<Vec<_>, _>>()?;
+    let segment = storage_result(StoredCommandSegmentV1::new(
+        DatabaseId::from_bytes(fixed(body.database_id)?)
+            .map_err(|_| DurableCodecError::corrupt())?,
+        body.history_incarnation,
+        predecessor,
+        commands,
+        manifest_from_proto(require(body.manifest)?)?,
+        digest,
+    ))?;
+    if segment.first_commit_sequence() != first
+        || segment.last_commit_sequence() != last
+        || segment.first_administration_sequence() != first_administration
+        || segment.last_administration_sequence() != last_administration
+    {
+        return Err(DurableCodecError::corrupt());
+    }
+    Ok(segment)
+}
+
 fn append_length_delimited_field(
     output: &mut Vec<u8>,
     key: u8,
@@ -670,24 +766,11 @@ pub fn command_segment_digest_v1(value: &StoredCommandSegmentV1) -> CommandSegme
     component_digest(SEGMENT_DIGEST_LABEL, &body)
 }
 
-/// Seals one structurally checked segment and returns its canonical bytes from
-/// the same constructed wire body used to calculate the segment digest.
-///
-/// This is the authoritative write-path operation. It avoids rebuilding and
-/// re-encoding the complete command graph merely to verify a digest that this
-/// call has just calculated; [`encode_command_segment_v1`] remains the
-/// independent validation path for already sealed values.
-pub fn seal_and_encode_command_segment_v1(
-    value: StoredCommandSegmentV1,
-) -> Result<(StoredCommandSegmentV1, CanonicalStoredEnvelopeV1), DurableCodecError> {
-    let uses_v4 = segment_requires_v4(&value);
-    let body_bytes = if uses_v4 {
-        segment_body_v4_to_proto(&value).encode_to_vec()
-    } else {
-        segment_body_v3_bytes_for_seal(&value)?
-    };
-    let digest = component_digest(SEGMENT_DIGEST_LABEL, &body_bytes);
-    let value = value.with_segment_digest(digest);
+fn raw_segment_envelope(
+    body_bytes: &[u8],
+    digest: CommandSegmentDigestV1,
+    uses_v4: bool,
+) -> Result<CanonicalStoredEnvelopeV1, DurableCodecError> {
     let body_len = u64::try_from(body_bytes.len()).map_err(|_| DurableCodecError::invariant())?;
     let digest_len =
         u64::try_from(digest.as_bytes().len()).map_err(|_| DurableCodecError::invariant())?;
@@ -698,19 +781,98 @@ pub fn seal_and_encode_command_segment_v1(
             .saturating_add(prost::encoding::encoded_len_varint(digest_len))
             .saturating_add(digest.as_bytes().len()),
     );
-    append_length_delimited_field(&mut payload, 0x0a, &body_bytes)?;
+    append_length_delimited_field(&mut payload, 0x0a, body_bytes)?;
     append_length_delimited_field(&mut payload, 0x12, digest.as_bytes())?;
-    let encoded = if uses_v4 {
+    if uses_v4 {
         encode_structurally_proven_message::<wire::StoredCommandSegmentV4>(
             COMMAND_SEGMENT_V4,
             &payload,
-        )?
+        )
     } else {
         encode_structurally_proven_message::<wire::StoredCommandSegmentV3>(
             COMMAND_SEGMENT_V3,
             &payload,
-        )?
+        )
+    }
+}
+
+fn command_segment_envelope_with_metrics(
+    body_bytes: &[u8],
+    digest: CommandSegmentDigestV1,
+    uses_v4: bool,
+) -> Result<(CanonicalStoredEnvelopeV1, usize), DurableCodecError> {
+    let raw = raw_segment_envelope(body_bytes, digest, uses_v4)?;
+    let raw_bytes = raw.as_bytes().len();
+    Ok((raw, raw_bytes))
+}
+
+/// Fixed-cardinality byte evidence produced while sealing one command segment.
+///
+/// This contains no key, value, symbol, principal, or codec control. The live
+/// writer uses it only to account for the complete raw-equivalent frame and
+/// the selected immutable bytes without reconstructing the semantic graph.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CommandSegmentEncodingMetricsV1 {
+    raw_envelope_bytes: usize,
+    selected_envelope_bytes: usize,
+}
+
+impl CommandSegmentEncodingMetricsV1 {
+    /// Complete current-record bytes before the deterministic compact choice.
+    #[must_use]
+    pub const fn raw_envelope_bytes(self) -> usize {
+        self.raw_envelope_bytes
+    }
+
+    /// Complete selected current-or-successor record bytes.
+    #[must_use]
+    pub const fn selected_envelope_bytes(self) -> usize {
+        self.selected_envelope_bytes
+    }
+}
+
+/// Seals one segment and also returns bounded representation-size evidence.
+///
+/// The metric is derived from the same two complete envelopes used by the
+/// canonical selection rule; it does not trigger a second body construction.
+pub fn seal_and_encode_command_segment_with_metrics_v1(
+    value: StoredCommandSegmentV1,
+) -> Result<
+    (
+        StoredCommandSegmentV1,
+        CanonicalStoredEnvelopeV1,
+        CommandSegmentEncodingMetricsV1,
+    ),
+    DurableCodecError,
+> {
+    let uses_v4 = segment_requires_v4(&value);
+    let body_bytes = if uses_v4 {
+        segment_body_v4_to_proto(&value).encode_to_vec()
+    } else {
+        segment_body_v3_bytes_for_seal(&value)?
     };
+    let digest = component_digest(SEGMENT_DIGEST_LABEL, &body_bytes);
+    let value = value.with_segment_digest(digest);
+    let (encoded, raw_envelope_bytes) =
+        command_segment_envelope_with_metrics(&body_bytes, digest, uses_v4)?;
+    let metrics = CommandSegmentEncodingMetricsV1 {
+        raw_envelope_bytes,
+        selected_envelope_bytes: encoded.as_bytes().len(),
+    };
+    Ok((value, encoded, metrics))
+}
+
+/// Seals one structurally checked segment and returns its canonical bytes from
+/// the same constructed wire body used to calculate the segment digest.
+///
+/// This is the authoritative write-path operation. It avoids rebuilding and
+/// re-encoding the complete command graph merely to verify a digest that this
+/// call has just calculated; [`encode_command_segment_v1`] remains the
+/// independent validation path for already sealed values.
+pub fn seal_and_encode_command_segment_v1(
+    value: StoredCommandSegmentV1,
+) -> Result<(StoredCommandSegmentV1, CanonicalStoredEnvelopeV1), DurableCodecError> {
+    let (value, encoded, _) = seal_and_encode_command_segment_with_metrics_v1(value)?;
     Ok((value, encoded))
 }
 
@@ -766,48 +928,7 @@ pub fn decode_command_segment_v1(
             |value| {
                 let body = require(value.body)?;
                 let digest = CommandSegmentDigestV1::from_bytes(fixed(value.segment_digest)?);
-                if component_digest(SEGMENT_DIGEST_LABEL, &body.encode_to_vec()) != digest {
-                    return Err(DurableCodecError::corrupt());
-                }
-                let first = CommitSequence::new(body.first_commit_sequence)
-                    .ok_or_else(DurableCodecError::corrupt)?;
-                let last = CommitSequence::new(body.last_commit_sequence)
-                    .ok_or_else(DurableCodecError::corrupt)?;
-                let first_administration =
-                    riffdb_types::AdministrationSequence::new(body.first_administration_sequence)
-                        .ok_or_else(DurableCodecError::corrupt)?;
-                let last_administration =
-                    riffdb_types::AdministrationSequence::new(body.last_administration_sequence)
-                        .ok_or_else(DurableCodecError::corrupt)?;
-                let predecessor = if body.predecessor_segment_hash.is_empty() {
-                    None
-                } else {
-                    Some(CommandSegmentDigestV1::from_bytes(fixed(
-                        body.predecessor_segment_hash,
-                    )?))
-                };
-                let commands = body
-                    .commands
-                    .into_iter()
-                    .map(capsule_v5_from_proto)
-                    .collect::<Result<Vec<_>, _>>()?;
-                let segment = storage_result(StoredCommandSegmentV1::new(
-                    DatabaseId::from_bytes(fixed(body.database_id)?)
-                        .map_err(|_| DurableCodecError::corrupt())?,
-                    body.history_incarnation,
-                    predecessor,
-                    commands,
-                    manifest_from_proto(require(body.manifest)?)?,
-                    digest,
-                ))?;
-                if segment.first_commit_sequence() != first
-                    || segment.last_commit_sequence() != last
-                    || segment.first_administration_sequence() != first_administration
-                    || segment.last_administration_sequence() != last_administration
-                {
-                    return Err(DurableCodecError::corrupt());
-                }
-                Ok(segment)
+                segment_from_body_v4(body, digest)
             },
         ),
         1 => decode_message::<wire::StoredCommandSegmentV3, _, _>(
@@ -816,48 +937,7 @@ pub fn decode_command_segment_v1(
             |value| {
                 let body = require(value.body)?;
                 let digest = CommandSegmentDigestV1::from_bytes(fixed(value.segment_digest)?);
-                if component_digest(SEGMENT_DIGEST_LABEL, &body.encode_to_vec()) != digest {
-                    return Err(DurableCodecError::corrupt());
-                }
-                let first = CommitSequence::new(body.first_commit_sequence)
-                    .ok_or_else(DurableCodecError::corrupt)?;
-                let last = CommitSequence::new(body.last_commit_sequence)
-                    .ok_or_else(DurableCodecError::corrupt)?;
-                let first_administration =
-                    riffdb_types::AdministrationSequence::new(body.first_administration_sequence)
-                        .ok_or_else(DurableCodecError::corrupt)?;
-                let last_administration =
-                    riffdb_types::AdministrationSequence::new(body.last_administration_sequence)
-                        .ok_or_else(DurableCodecError::corrupt)?;
-                let predecessor = if body.predecessor_segment_hash.is_empty() {
-                    None
-                } else {
-                    Some(CommandSegmentDigestV1::from_bytes(fixed(
-                        body.predecessor_segment_hash,
-                    )?))
-                };
-                let commands = body
-                    .commands
-                    .into_iter()
-                    .map(capsule_v4_from_proto)
-                    .collect::<Result<Vec<_>, _>>()?;
-                let segment = storage_result(StoredCommandSegmentV1::new(
-                    DatabaseId::from_bytes(fixed(body.database_id)?)
-                        .map_err(|_| DurableCodecError::corrupt())?,
-                    body.history_incarnation,
-                    predecessor,
-                    commands,
-                    manifest_from_proto(require(body.manifest)?)?,
-                    digest,
-                ))?;
-                if segment.first_commit_sequence() != first
-                    || segment.last_commit_sequence() != last
-                    || segment.first_administration_sequence() != first_administration
-                    || segment.last_administration_sequence() != last_administration
-                {
-                    return Err(DurableCodecError::corrupt());
-                }
-                Ok(segment)
+                segment_from_body_v3(body, digest)
             },
         ),
         2 => decode_message::<wire::StoredCommandSegmentV2, _, _>(

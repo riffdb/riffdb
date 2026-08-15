@@ -171,12 +171,14 @@ fn capsulate_command_rows(
     let access = &core.access;
     let segment = build_command_segment(access, capsules)?;
     let commit_key = encode_application_sequence_key(segment.first_commit_sequence());
-    let (segment, encoded_segment) =
-        riffdb_storage_api::seal_and_encode_command_segment_v1(segment).map_err(codec_error)?;
+    let (segment, encoded_segment, encoding_metrics) =
+        riffdb_storage_api::seal_and_encode_command_segment_with_metrics_v1(segment)
+            .map_err(codec_error)?;
     if !access.put_command_segment_value(
         commit_key.to_vec(),
         encoded_segment.into_bytes(),
         segment.commands().len(),
+        encoding_metrics.raw_envelope_bytes(),
     )? {
         return Err(storage_error(StorageErrorKind::InvariantViolation));
     }

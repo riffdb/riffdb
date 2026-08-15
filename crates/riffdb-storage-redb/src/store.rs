@@ -3845,6 +3845,7 @@ impl RedbWriteAccess {
         key: Vec<u8>,
         value: Vec<u8>,
         command_count: usize,
+        raw_envelope_bytes: usize,
     ) -> Result<bool, StorageError> {
         if self
             .read_command_value(crate::journal::JournalTable::Commits, &key)?
@@ -3871,7 +3872,7 @@ impl RedbWriteAccess {
             retained
                 .try_borrow_mut()
                 .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?
-                .push_command_segment(key, value, command_count)
+                .push_command_segment(key, value, command_count, raw_envelope_bytes)
                 .map_err(journal_storage_error)?;
         }
         Ok(true)

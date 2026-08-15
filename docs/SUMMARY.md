@@ -135,6 +135,7 @@
 - [WP-485 State-bearing Segment Mechanics](performance/wp-485-state-bearing-segment-mechanics.md)
 - [WP-486 Journal-authoritative State Overlay](performance/wp-486-journal-state-overlay.md)
 - [WP-620 Portable Writer Mechanics](performance/wp-620-portable-writer-mechanics.md)
+- [WP-621 Compact Command-Segment Gate](performance/wp-621-compact-command-segment-gate.md)
 - [WP-622 Exact Named-Query Lookup](performance/wp-622-exact-named-query-lookup.md)
 - [WP-413 Migration Evolution Evidence](performance/wp-413-migration-evolution.md)
 
