@@ -72,6 +72,17 @@ query OpenTickets($tenant: TenantId, $limit: Limit = 25) {
 }
 ```
 
+Multiple declared outcomes use `|`, never commas or whitespace alone:
+
+```riffql
+outcomes Found | NotFound | IntegrityFailure
+```
+
+Every `many` binding must have a declared contract index whose equality prefix
+and ordering match the query. When one is absent, add the compiler-suggested
+bounded index to the contract rather than filtering or sorting in application
+code.
+
 The v1 expression set is `==`, `!=`, `<`, `<=`, `>`, `>=`, bounded `in`,
 `&&`, and `||`. It has no mutation, SQL escape, function call, recursion,
 loop, callback, clock, randomness, network, filesystem, group-by, unrestricted
