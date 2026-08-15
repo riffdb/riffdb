@@ -598,12 +598,12 @@ pub trait QueryModuleReadPort: Send + Sync {
     /// executes the established authoritative contract/module lookup, retaining
     /// its complete error taxonomy. Implementations MUST perform ordinary port
     /// admission before returning a cache hit.
-    fn prepare_exact_named_query<'a>(
-        &'a self,
-        _control: &'a RequestControl,
+    fn prepare_exact_named_query(
+        &self,
+        _control: &RequestControl,
         _request: ExactNamedQueryRequest,
-    ) -> PortFuture<'a, Option<ResolvedNamedQuery>, QueryModuleReadError> {
-        Box::pin(async { Ok(None) })
+    ) -> Result<Option<ResolvedNamedQuery>, QueryModuleReadError> {
+        Ok(None)
     }
 
     /// Reads and recompiles the active module for one exact retained contract.

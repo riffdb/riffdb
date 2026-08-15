@@ -553,20 +553,19 @@ impl CatalogReadPort for ServerCatalogReadPort {
 }
 
 impl QueryModuleReadPort for ServerCatalogReadPort {
-    fn prepare_exact_named_query<'a>(
-        &'a self,
-        control: &'a RequestControl,
+    fn prepare_exact_named_query(
+        &self,
+        control: &RequestControl,
         request: ExactNamedQueryRequest,
-    ) -> PortFuture<'a, Option<ResolvedNamedQuery>, QueryModuleReadError> {
+    ) -> Result<Option<ResolvedNamedQuery>, QueryModuleReadError> {
         if self.query_module.precheck(control).is_err() {
-            return Box::pin(async { Err(QueryModuleReadError::Unavailable) });
+            return Err(QueryModuleReadError::Unavailable);
         }
-        let result = self
+        Ok(self
             .exact_named_queries
             .try_read()
             .ok()
-            .and_then(|published| published.get(&request));
-        Box::pin(async move { Ok(result) })
+            .and_then(|published| published.get(&request)))
     }
 
     fn prepare_active_query_module<'a>(
@@ -2979,7 +2978,6 @@ mod tests {
                         QueryOperationName::new("ListTickets").expect("query name is valid"),
                     ),
                 )
-                .await
                 .expect("exact named lookup succeeds")
                 .expect("warmed named operation resolves");
             let (exact_contract, exact_module, exact_query_index) = exact.into_parts();
@@ -3006,7 +3004,6 @@ mod tests {
         thread::scope(|scope| {
             for _ in 0..readers {
                 let barrier = StdArc::clone(&barrier);
-                let handle = runtime.handle().clone();
                 let bundle = bundle.clone();
                 let port = &port;
                 scope.spawn(move || {
@@ -3014,18 +3011,16 @@ mod tests {
                         RequestControl::new(Instant::now() + Duration::from_secs(30));
                     barrier.wait();
                     for _ in 0..64 {
-                        let resolved = handle
-                            .block_on(
-                                port.prepare_exact_named_query(
-                                    &control,
-                                    ExactNamedQueryRequest::new(
-                                        bundle.lineage().clone(),
-                                        bundle.contract_version(),
-                                        bundle.bundle_hash(),
-                                        module_hash,
-                                        QueryOperationName::new("ListTickets")
-                                            .expect("query name is valid"),
-                                    ),
+                        let resolved = port
+                            .prepare_exact_named_query(
+                                &control,
+                                ExactNamedQueryRequest::new(
+                                    bundle.lineage().clone(),
+                                    bundle.contract_version(),
+                                    bundle.bundle_hash(),
+                                    module_hash,
+                                    QueryOperationName::new("ListTickets")
+                                        .expect("query name is valid"),
                                 ),
                             )
                             .expect("concurrent warm lookup succeeds")
@@ -3056,18 +3051,16 @@ mod tests {
         // bypass. The request has to reach the pool and be refused there.
         routing.fail_authoritative_readiness(AuthoritativeReadinessFailure::Integrity);
         runtime.block_on(async {
-            let refused = port
-                .prepare_exact_named_query(
-                    &control,
-                    ExactNamedQueryRequest::new(
-                        bundle.lineage().clone(),
-                        bundle.contract_version(),
-                        bundle.bundle_hash(),
-                        module_hash,
-                        QueryOperationName::new("ListTickets").expect("query name is valid"),
-                    ),
-                )
-                .await;
+            let refused = port.prepare_exact_named_query(
+                &control,
+                ExactNamedQueryRequest::new(
+                    bundle.lineage().clone(),
+                    bundle.contract_version(),
+                    bundle.bundle_hash(),
+                    module_hash,
+                    QueryOperationName::new("ListTickets").expect("query name is valid"),
+                ),
+            );
             assert!(
                 matches!(refused, Err(QueryModuleReadError::Unavailable)),
                 "a request refused by port admission must not be served from cache"
