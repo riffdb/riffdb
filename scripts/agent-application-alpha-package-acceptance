@@ -66,6 +66,8 @@ for required in \
     docs/contracts/examples/museum/collection_page.riffq \
     docs/contracts/examples/museum/riffdb.application.json \
     docs/contracts/examples/NEGATIVE-EXAMPLES.md \
+    docs/sdks/GO.md \
+    docs/sdks/DRIVER-HOST.md \
     docs/getting-started/application-source-v1.schema.json \
     docs/getting-started/AUTHORING-DIAGNOSTICS.md \
     docs/getting-started/INSPECTION.md \
