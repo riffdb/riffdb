@@ -3168,6 +3168,9 @@ mod tests {
         let cargo_lock = fs::read_to_string(first.join("Cargo.lock")).expect("Cargo lock");
         assert!(cargo_lock.contains("name = \"order-desk\""));
         assert!(!cargo_lock.contains("{{APPLICATION_NAME}}"));
+        assert!(cargo_lock.contains(
+            "checksum = \"d67f98a1f24828592f3103819ffc5572b77fd4996c493886e9877cb6d21ead92\""
+        ));
         let authoring = fs::read_to_string(first.join("AUTHORING.md")).expect("authoring guide");
         assert!(authoring.contains("exactMoney(\"USD\", \"25.00\")"));
         assert!(authoring.contains("application code never decodes transport JSON"));

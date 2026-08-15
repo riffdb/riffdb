@@ -35,7 +35,9 @@ Offline runtime installation sources are:
 - Go: `GOPROXY=file://<bundle>/packages/distribution/go-proxy GOSUMDB=off`
 - Python: `pip --no-index --find-links <bundle>/packages/distribution/pypi`
 - Rust: set `CARGO_HOME=<bundle>/.cargo`; the signed `.crate` packages are the
-  `vendored-sources` directory
+  `vendored-sources` directory. Do not copy an ambient Cargo configuration
+  into the application. The generated `Cargo.lock` is already package-shaped
+  and must pass `cargo check --offline --locked` unchanged.
 - TypeScript: install the exact `riffdb-client-0.1.0.tgz` under
   `<bundle>/packages/distribution/npm`; the evaluator compiler and its exact
   target platform binary are available at `<bundle>/tooling/typescript/bin/tsc`.
@@ -58,6 +60,15 @@ binds both digests. The original signed whole inventory and signature are
 retained under `packages/qualification/` as evidence of pre-pruning
 qualification; they do not claim that omitted implementation archives are in
 the evaluator subset.
+
+For Go and TypeScript web applications, `riffdb dev --seed --run` owns the
+local RiffDB and driver processes and then launches the application. A web
+runner is expected to remain alive. Wait for its public ready marker, exercise
+the HTTP page, then terminate the development command; remaining alive while
+serving is not a runtime failure. Invoke the bundle's `riffdb`/`riffdb-dev`
+path so its bundled TypeScript compiler and driver host remain on the child
+path. Use an application-owned writable cache when the host package-manager
+cache is read-only.
 
 The sealed Cargo home contains only its offline source configuration and
 immutable vendored sources. Cargo's mutable global, package, and registry

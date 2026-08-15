@@ -92,6 +92,17 @@ unselected implementation archive does not. The runtime subset must not carry
 a stale `checksums.sha256` or detached signature claiming that the pruned tree
 is the complete distribution.
 
+Use the bundle-owned package environment exactly. Rust sets
+`CARGO_HOME=<bundle>/.cargo` and never copies an ambient Cargo configuration
+into the application; its generated lock must pass offline `--locked` checks
+unchanged. Go/npm caches may be redirected to a new writable directory under
+the application root when the host default is read-only. For Go and TypeScript
+HTTP applications, the bundled `riffdb dev --seed --run` process is expected to
+remain alive while serving: wait for the public application-ready marker,
+exercise the required HTTP page, and then terminate it. A live server is not a
+runtime failure, and bypassing the bundle's development runner loses the
+qualified driver/compiler environment.
+
 For a satisfaction campaign, evaluators follow this identical protocol; they
 are not told to manufacture a target score. After the Python, Rust, and
 TypeScript reports are published, `scripts/agent-satisfaction-canary-acceptance`

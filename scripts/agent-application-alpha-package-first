@@ -175,6 +175,18 @@ printf 'fn main() {}\n' >"$work_root/rust-package-smoke/src/main.rs"
         cargo +1.97.0 metadata --offline --format-version 1 >/dev/null
 )
 
+# The generated Rust project is itself a package-arrival artifact. Prove its
+# checked-in lock resolves the signed client crate exactly without a lockfile
+# rewrite; a workspace-derived path-package lock is not equivalent.
+rust_scaffold_smoke="$work_root/rust-scaffold-smoke"
+"$legacy/bin/riffdb" new rust-package-smoke \
+    --language rust --directory "$rust_scaffold_smoke" >/dev/null
+(
+    cd "$rust_scaffold_smoke"
+    CARGO_HOME="$legacy/.cargo" CARGO_NET_OFFLINE=true RUSTC_WRAPPER= \
+        cargo +1.97.0 metadata --offline --locked --format-version 1 >/dev/null
+)
+
 cp "$repo_root/release/agent-application-alpha/PACKAGE-FIRST.md" \
     "$legacy/README.md"
 cp "$repo_root/docs/getting-started/PACKAGE-INSTALLATION.md" \
