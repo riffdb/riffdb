@@ -32,6 +32,63 @@ fn operator_container_has_authority_but_no_database_or_backup_mount() {
 }
 
 #[test]
+fn container_image_normalizes_release_binary_modes_before_dropping_privilege() {
+    let root = repository_root();
+    let dockerfile = fs::read_to_string(root.join("release/container/Dockerfile"))
+        .expect("container Dockerfile is readable");
+    let mode_normalization = dockerfile
+        .find("RUN chmod 0555 /usr/local/bin/riffdb /usr/local/bin/riffdbd")
+        .expect("container image normalizes both release binary modes");
+    let non_root_user = dockerfile
+        .find("USER 65532:65532")
+        .expect("container image drops to the fixed non-root user");
+    assert!(
+        mode_normalization < non_root_user,
+        "release binaries must become executable before privilege is dropped"
+    );
+}
+
+#[test]
+fn rootless_podman_rehearsal_preserves_the_non_root_owner_identity() {
+    let root = repository_root();
+    let script = fs::read_to_string(root.join("scripts/remote-compose-acceptance"))
+        .expect("remote acceptance source is readable");
+    for required in [
+        "docker --version 2>/dev/null || true",
+        "userns_mode: keep-id",
+        "compose_files+=(",
+        "compose_with_runtime logs --no-color riffdbd riffdb-proxy",
+    ] {
+        assert!(
+            script.contains(required),
+            "rootless acceptance is missing: {required}"
+        );
+    }
+    assert!(!script.contains("RIFFDB_CONTAINER_UID=0"));
+    assert!(!script.contains("RIFFDB_CONTAINER_GID=0"));
+}
+
+#[test]
+fn pass_through_proxy_reresolves_a_replaced_database_container() {
+    let root = repository_root();
+    let proxy = fs::read_to_string(root.join("release/container/haproxy.cfg"))
+        .expect("HAProxy configuration is readable");
+    for required in [
+        "resolvers container_dns",
+        "parse-resolv-conf",
+        "resolve_retries 3",
+        "timeout resolve 1s",
+        "timeout retry 1s",
+        "check resolvers container_dns init-addr last,libc,none",
+    ] {
+        assert!(
+            proxy.contains(required),
+            "replacement-safe proxy configuration is missing: {required}"
+        );
+    }
+}
+
+#[test]
 fn destructive_drill_uses_only_public_maintenance_and_proves_a_real_rewind() {
     let root = repository_root();
     let script = fs::read_to_string(root.join("scripts/remote-compose-acceptance"))
@@ -45,8 +102,13 @@ fn destructive_drill_uses_only_public_maintenance_and_proves_a_real_rewind() {
         "operator_cli backup create alpha-disaster",
         "operator_cli backup operation \"$operation_id\"",
         "operator_cli backup restore alpha-disaster",
+        "wait_for_tls_endpoint",
+        "TLS proxy did not reach the replacement database before restore",
+        ".error.type == \"public\"",
+        ".error.code != \"tls_connection_failed\"",
         "--confirm-replace-current-database",
         "poll_maintenance_operation",
+        "stop --timeout 25 riffdb-proxy riffdbd",
         "find \"$expected_data_root\" -mindepth 1 -delete",
         "post-backup authority survived destructive restore",
         "backups/alpha-disaster/manifest.riffdb",

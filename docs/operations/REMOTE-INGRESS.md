@@ -208,6 +208,15 @@ The checked release examples are:
   readiness, payload-free liveness, proxy Deployment, and separate application
   and operator Secrets.
 
+The release container normalizes the installed `riffdb` and `riffdbd` modes
+inside the image before switching to its fixed non-root identity. A restrictive
+host build umask therefore cannot produce an image whose runtime user cannot
+execute the installed binaries. The acceptance harness also detects a rootless
+Podman-backed `docker` command and applies `keep-id` only to the three RiffDB
+containers, preserving owner-only config and credential mounts without running
+the service as container root. Docker Engine uses the checked Compose file
+without that override.
+
 The application workloads mount no database, backup, digest key, TLS private
 key, or operator credential. Kubernetes Secret projections are copied by a
 bounded init container into a memory-backed owner-only directory because
@@ -226,5 +235,7 @@ Run `./scripts/remote-compose-acceptance` for the real container proof and
 Compose proof builds the release image, starts sibling containers, bootstraps
 through the TLS proxy, proves separate credentials, rotates certificate files
 and the application credential, rejects the revoked predecessor, and performs
-a bounded graceful stop. Neither example treats proxy headers or network
-placement as authority.
+a bounded graceful stop. The pass-through proxy uses the container runtime's
+resolver with bounded retries, so replacing or restarting the database
+container cannot leave it pinned to a stale backend address. Neither example
+treats proxy headers or network placement as authority.

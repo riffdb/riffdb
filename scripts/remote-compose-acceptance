@@ -36,7 +36,20 @@ chmod 0700 "$work_root" "$runtime_root" "$runtime_root/data" "$runtime_root/back
 image="riffdb:remote-alpha-acceptance"
 project="riffdb-remote-$PPID-$$"
 proxy_port="$(ruby -rsocket -e 's = TCPServer.new("127.0.0.1", 0); puts s.addr[1]; s.close')"
-compose=(docker compose --project-name "$project" -f "$workspace/release/container/compose.yaml")
+compose_files=(-f "$workspace/release/container/compose.yaml")
+if [[ "$(docker --version 2>/dev/null || true)" == podman\ version\ * ]]; then
+    cat >"$work_root/podman-keep-id.yaml" <<'EOF'
+services:
+  riffdbd:
+    userns_mode: keep-id
+  application-probe:
+    userns_mode: keep-id
+  operator-probe:
+    userns_mode: keep-id
+EOF
+    compose_files+=(-f "$work_root/podman-keep-id.yaml")
+fi
+compose=(docker compose --project-name "$project" "${compose_files[@]}")
 
 compose_with_runtime() {
     RIFFDB_CONTAINER_ROOT="$runtime_root" \
@@ -50,6 +63,27 @@ compose_with_runtime() {
 operator_cli() {
     compose_with_runtime --profile operator run --rm operator-probe \
         riffdb --config /etc/riffdb/operator.toml --max-attempts 1 "$@"
+}
+
+wait_for_tls_endpoint() {
+    local deadline=$((SECONDS + 30))
+    local observation="$work_root/replacement-health.json"
+    while (( SECONDS < deadline )); do
+        if "$cli" --config "$work_root/bootstrap-client.toml" \
+            server health >"$observation" 2>/dev/null; then
+            return 0
+        fi
+        if jq -e '
+            .schema == "riffdb.cli.output/v1"
+            and .ok == false
+            and .error.type == "public"
+            and .error.code != "tls_connection_failed"
+        ' "$observation" >/dev/null 2>&1; then
+            return 0
+        fi
+        sleep 0.25
+    done
+    return 1
 }
 
 wait_for_maintenance_success() {
@@ -82,7 +116,12 @@ wait_for_maintenance_success() {
 }
 
 cleanup() {
+    local status=$?
+    if (( status != 0 )); then
+        compose_with_runtime logs --no-color riffdbd riffdb-proxy >&2 || true
+    fi
     compose_with_runtime down --timeout 25 >/dev/null 2>&1 || true
+    return "$status"
 }
 trap cleanup EXIT
 
@@ -348,7 +387,11 @@ if [[ "$backup_restore" == true ]]; then
         || fail "post-backup authority was not active before volume loss"
 
     printf 'remote-compose phase=destroy-volume\n' >&2
-    compose_with_runtime stop --timeout 25 riffdbd >/dev/null
+    # Rootless engines may assign a new network address when the database
+    # container restarts. Stop the pass-through proxy as part of the disaster
+    # boundary so its backend identity is resolved against the replacement
+    # database rather than a stale pre-loss address.
+    compose_with_runtime stop --timeout 25 riffdb-proxy riffdbd >/dev/null
     expected_data_root="$work_root/runtime/data"
     [[ "$runtime_root/data" == "$expected_data_root" && -d "$expected_data_root" ]] \
         || fail "refusing to destroy an unexpected data root"
@@ -356,6 +399,8 @@ if [[ "$backup_restore" == true ]]; then
     [[ -z "$(find "$expected_data_root" -mindepth 1 -print -quit)" ]] \
         || fail "database volume was not emptied"
     compose_with_runtime up -d --wait riffdbd riffdb-proxy >/dev/null
+    wait_for_tls_endpoint \
+        || fail "TLS proxy did not reach the replacement database before restore"
 
     printf 'remote-compose phase=backup-restore\n' >&2
     if ! operator_cli backup restore alpha-disaster --confirm-replace-current-database \
