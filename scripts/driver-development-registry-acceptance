@@ -125,6 +125,9 @@ npm --cache "$work_root/npm-cache" --userconfig /dev/null install \
     --ignore-scripts
 node --input-type=module -e \
     "import { exactDecimal } from '$work_root/typescript/node_modules/@riffdb/client/dist/index.js'; if (exactDecimal('1.25', 10, 2).scale !== 2) process.exit(1)"
+cp fixtures/driver/development/typescript-empty-frontier-consumer.mjs \
+    "$work_root/typescript/empty-frontier-consumer.mjs"
+node "$work_root/typescript/empty-frontier-consumer.mjs"
 node -e \
     "const lock=require('$work_root/typescript/package-lock.json'); if(lock.packages['node_modules/@riffdb/client'].version !== '$npm_version') process.exit(1)"
 
