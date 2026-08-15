@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import tempfile
 import time
 from typing import Any
 
@@ -16,6 +17,7 @@ from typing import Any
 SCHEMA = "riffdb.deployable-application-alpha-gate/v1"
 MAX_PHASES = 32
 MAX_COMMAND_PARTS = 16
+MAX_EVIDENCE_BYTES = 16 * 1024 * 1024
 REQUIRED_PHASES = {
     "application_bindings",
     "durable_format",
@@ -35,6 +37,24 @@ REQUIRED_PHASES = {
     "endurance_evidence",
     "installed_bootstrap",
     "independent_agent_evaluation",
+}
+EVIDENCE_PATHS = {
+    "agent_campaign": "evaluations/agent-application-alpha/campaigns/campaign-03.json",
+    "agent_gate": "release/evidence/agent-application-alpha-gate-v3.json",
+    "durable_format": "release/durable-format-manifest-v1.json",
+    "endurance": "release/evidence/alpha-endurance-v1.json",
+    "performance_manifest": "release/evidence/wp-552/manifest-v1.json",
+    "performance_interactive": "release/evidence/wp-552/interactive-90s-reps3.json",
+    "performance_write_only": "release/evidence/wp-552/write-only-90s-reps3.json",
+    "adapter_disaster_recovery": "release/evidence/alpha/disaster-recovery-v1.json",
+    "adapter_better_auth_conformance": "release/evidence/alpha/conformance-better-auth-v1.json",
+    "adapter_better_auth_export": "release/evidence/alpha/export-reimport-better-auth-v1.json",
+    "adapter_mlflow_conformance": "release/evidence/alpha/conformance-mlflow-v1.json",
+    "adapter_mlflow_export": "release/evidence/alpha/export-reimport-mlflow-v1.json",
+    "adapter_openfga_conformance": "release/evidence/alpha/conformance-openfga-v1.json",
+    "adapter_openfga_export": "release/evidence/alpha/export-reimport-openfga-v1.json",
+    "adapter_woodpecker_conformance": "release/evidence/alpha/conformance-woodpecker-v1.json",
+    "adapter_woodpecker_export": "release/evidence/alpha/export-reimport-woodpecker-v1.json",
 }
 
 
@@ -90,6 +110,59 @@ def validate_inventory(items: list[tuple[str, list[str]]]) -> None:
             raise ValueError("alpha phase command is outside the reviewed script surface")
 
 
+def bind_evidence(root: Path) -> dict[str, dict[str, str]]:
+    references: dict[str, dict[str, str]] = {}
+    for name, relative in sorted(EVIDENCE_PATHS.items()):
+        candidate = root / relative
+        if candidate.is_symlink() or not candidate.is_file():
+            raise ValueError(f"alpha evidence is absent or unsafe: {relative}")
+        content = candidate.read_bytes()
+        if not 1 <= len(content) <= MAX_EVIDENCE_BYTES:
+            raise ValueError(f"alpha evidence has an invalid size: {relative}")
+        references[name] = {
+            "path": relative,
+            "sha256": hashlib.sha256(content).hexdigest(),
+        }
+    return references
+
+
+def self_test() -> None:
+    task_tmp_root = Path(os.environ.get("RIFFDB_TMP_ROOT", Path.home() / "tmp"))
+    task_tmp_root.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(
+        prefix="riffdb-deployable-alpha-self-test-", dir=task_tmp_root
+    ) as temporary:
+        root = Path(temporary)
+        for relative in EVIDENCE_PATHS.values():
+            candidate = root / relative
+            candidate.parent.mkdir(parents=True, exist_ok=True)
+            candidate.write_text("{}\n", encoding="utf-8")
+        references = bind_evidence(root)
+        if set(references) != set(EVIDENCE_PATHS):
+            raise ValueError("alpha evidence binding omitted a required artifact")
+        probe = root / EVIDENCE_PATHS["agent_gate"]
+        probe.write_bytes(b"")
+        try:
+            bind_evidence(root)
+        except ValueError:
+            pass
+        else:
+            raise ValueError("empty alpha evidence passed binding")
+        probe.write_text("{}\n", encoding="utf-8")
+        target = root / "safe-target.json"
+        target.write_text("{}\n", encoding="utf-8")
+        probe.unlink()
+        probe.symlink_to(target)
+        try:
+            bind_evidence(root)
+        except ValueError:
+            pass
+        else:
+            raise ValueError("symlink alpha evidence passed binding")
+    print("deployable alpha phase inventory: passed")
+    print("deployable alpha evidence binding: passed")
+
+
 def publish(path: Path, receipt: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     pending = path.with_name(f".{path.name}.{os.getpid()}.pending")
@@ -107,7 +180,7 @@ def main() -> int:
     items = phases()
     validate_inventory(items)
     if sys.argv[1:] == ["--self-test"]:
-        print("deployable alpha phase inventory: passed")
+        self_test()
         return 0
     if sys.argv[1:] != ["--all-domains", "--all-languages", "--remote"]:
         raise ValueError("usage: deployable-alpha-acceptance --all-domains --all-languages --remote")
@@ -164,11 +237,14 @@ def main() -> int:
             publish(root / "target/deployable-alpha-gate/failed-receipt-v1.json", receipt)
             return 3
 
+    evidence = bind_evidence(root)
     receipt = {
         "schema": SCHEMA,
         "status": "passed",
         "revision": revision,
         "phase_inventory_sha256": digest(items),
+        "evidence_inventory_sha256": digest(evidence),
+        "evidence": evidence,
         "elapsed_ms": (time.monotonic_ns() - started) // 1_000_000,
         "results": results,
         "failed_phase": None,
