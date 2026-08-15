@@ -339,6 +339,11 @@ cp -R examples/ticketdesk/generated "$environment_root/application/"
 mkdir -p "$environment_root/application/web/src/generated"
 cp examples/ticketdesk/web/src/generated/client.ts \
     "$environment_root/application/web/src/generated/client.ts"
+# Driver identity artifacts are intentionally immutable to group and other
+# users. Source checkouts commonly use a collaborative 0002 umask, so `cp`
+# can otherwise preserve group-writable modes that the fail-closed driver host
+# correctly rejects on a clean machine.
+chmod -R go-w "$environment_root/application"
 (
     cd "$environment_root/application"
     "$environment_root/bin/riffdb" --config "$environment_root/bootstrap-client.toml" \

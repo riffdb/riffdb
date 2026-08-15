@@ -159,6 +159,7 @@ fn endurance_environment_is_tls_exact_and_least_authority() {
         "--no-run --message-format=json-render-diagnostics",
         "--seal-probe-bundle",
         "conformance_bundle_sha256",
+        "chmod -R go-w \"$environment_root/application\"",
     ] {
         assert!(source.contains(required), "environment omits {required}");
     }
