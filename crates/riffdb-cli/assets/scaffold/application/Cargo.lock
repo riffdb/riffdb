@@ -682,6 +682,8 @@ dependencies = [
 [[package]]
 name = "riffdb-client-rust"
 version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d67f98a1f24828592f3103819ffc5572b77fd4996c493886e9877cb6d21ead92"
 dependencies = [
  "futures-util",
  "getrandom 0.3.4",

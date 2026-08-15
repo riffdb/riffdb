@@ -234,6 +234,10 @@ fn development_runners_bind_native_configuration_and_sealed_typescript_tooling()
         !sealer.contains("--noEmit --types node"),
         "the tooling smoke must exercise the wrapper's default Node declaration visibility"
     );
+    assert!(
+        sealer.contains("metadata --offline --locked --format-version 1"),
+        "the sealed package must reject a workspace-shaped generated Rust lock"
+    );
     assert!(sealer.contains("runtime-subset-checksums.sha256"));
     assert!(sealer.contains("complete-distribution-checksums.sha256"));
     assert!(sealer.contains("rm \"$legacy/packages/distribution/checksums.sha256\""));
