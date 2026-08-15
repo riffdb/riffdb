@@ -45,6 +45,12 @@ retained under `packages/qualification/` as evidence of pre-pruning
 qualification; they do not claim that omitted implementation archives are in
 the evaluator subset.
 
+The sealed Cargo home contains only its offline source configuration and
+immutable vendored sources. Cargo's mutable global, package, and registry
+cache markers are removed after package qualification and are rejected by the
+bundle verifier, so rebuilding from the same revision and signed distribution
+produces the same outer inventory.
+
 Package installation is setup, not an identity-change ceremony. Count a
 ceremony only when RiffDB requires explicit review of changed compiler-owned
 application identity. Count a rescue when an operator or evaluator supplies

@@ -35,6 +35,16 @@ for stale in checksums.sha256 checksums.sha256.sig; do
         exit 1
     }
 done
+for mutable in \
+    "$bundle/.cargo/.global-cache" \
+    "$bundle/.cargo/.package-cache" \
+    "$bundle/.cargo/.package-cache-mutate" \
+    "$bundle/.cargo/registry"; do
+    [[ ! -e "$mutable" && ! -L "$mutable" ]] || {
+        echo "sealed bundle contains mutable Cargo cache state: $mutable" >&2
+        exit 1
+    }
+done
 
 identity="$(<"$bundle/packages/signing-identity")"
 [[ "$identity" =~ ^[A-Za-z0-9_.-]{1,128}$ ]] || {

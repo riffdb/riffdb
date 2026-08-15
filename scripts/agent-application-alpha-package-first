@@ -190,6 +190,22 @@ cp "$repo_root/evaluations/agent-application-alpha/report-schema-v2.json" \
     --identity "$identity" \
     --receipt "$legacy/evaluation/package-conformance-receipt.json" >/dev/null
 
+# Cargo 1.97 updates these process-local cache markers while resolving the
+# package smoke, even though all sources come from the sealed vendor tree.
+# They are neither runtime inputs nor stable bundle content: retaining them
+# makes byte-identical package-first builds hash differently. Remove them only
+# after the final package consumer has run, then require the Cargo registry
+# scratch directory to be otherwise empty.
+rm -f \
+    "$legacy/.cargo/.global-cache" \
+    "$legacy/.cargo/.package-cache" \
+    "$legacy/.cargo/.package-cache-mutate" \
+    "$legacy/.cargo/registry/CACHEDIR.TAG"
+rmdir "$legacy/.cargo/registry" 2>/dev/null || {
+    echo 'package-first Cargo home retained unexpected mutable state' >&2
+    exit 1
+}
+
 prohibited="$(find "$legacy" -type f \
     \( -name SPEC.md -o -name work_packages.yaml -o -iname '*ticketdesk*' \) \
     -print)"
