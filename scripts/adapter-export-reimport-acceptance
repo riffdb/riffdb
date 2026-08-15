@@ -87,7 +87,12 @@ release_evidence_root="$repo_root/release/evidence/alpha"
 mkdir -p "$release_evidence_root"
 for domain in "${domains[@]}"; do
     root="fixtures/export/$domain"
-    exact="fixtures/adapters/$domain/generated/riffdb.application.exact.json"
+    case "$domain" in
+        openfga) application_root="fixtures/adapters/operational-conformance" ;;
+        mlflow|better-auth|woodpecker) application_root="fixtures/adapters/$domain" ;;
+        *) echo "unsupported portability evidence domain: $domain" >&2; exit 1 ;;
+    esac
+    exact="$application_root/generated/riffdb.application.exact.json"
     observation="fixtures/adapters/conformance/$domain/operation-observation.json"
     destination="$release_evidence_root/export-reimport-$domain-v1.json"
     pending="$destination.$$.pending"
@@ -108,6 +113,17 @@ for domain in "${domains[@]}"; do
             operation_observation_sha256: $operationObservationSha256,
             secrets_included: false
         }' >"$pending"
+    jq -e --arg adapter "$domain" '
+        .schema == "riffdb.adapter-export-reimport-receipt/v1"
+        and .adapter == $adapter
+        and .status == "passed"
+        and .languages == ["go", "python", "rust", "typescript"]
+        and (.contract_bundle_hash | test("^[0-9a-f]{64}$"))
+        and (.portability_manifest_sha256 | test("^[0-9a-f]{64}$"))
+        and (.reimport_receipt_sha256 | test("^[0-9a-f]{64}$"))
+        and (.operation_observation_sha256 | test("^[0-9a-f]{64}$"))
+        and .secrets_included == false
+    ' "$pending" >/dev/null
     chmod 0600 "$pending"
     mv -f "$pending" "$destination"
 done
