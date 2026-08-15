@@ -88,6 +88,42 @@ pub(crate) enum JournalTable {
 }
 
 impl JournalTable {
+    pub(crate) const ALL: [Self; 14] = [
+        Self::Meta,
+        Self::Entities,
+        Self::SecondaryIndexes,
+        Self::IndexEpochs,
+        Self::Idempotency,
+        Self::IdempotencyPending,
+        Self::Events,
+        Self::EventRoutes,
+        Self::Outbox,
+        Self::Provenance,
+        Self::Commits,
+        Self::Audit,
+        Self::AuditByRequest,
+        Self::EntityChainHeads,
+    ];
+
+    pub(crate) const fn label(self) -> &'static str {
+        match self {
+            Self::Meta => "meta",
+            Self::Entities => "entities",
+            Self::SecondaryIndexes => "secondary_indexes",
+            Self::IndexEpochs => "index_epochs",
+            Self::Idempotency => "idempotency",
+            Self::IdempotencyPending => "idempotency_pending",
+            Self::Events => "events",
+            Self::EventRoutes => "event_routes",
+            Self::Outbox => "outbox",
+            Self::Provenance => "provenance",
+            Self::Commits => "commits",
+            Self::Audit => "audit",
+            Self::AuditByRequest => "audit_by_request",
+            Self::EntityChainHeads => "entity_chain_heads",
+        }
+    }
+
     fn decode(value: u8) -> Result<Self, JournalCodecError> {
         match value {
             1 => Ok(Self::Meta),
