@@ -12231,7 +12231,8 @@ work_packages:
   allowed_paths: [work_packages.yaml, SPEC.md, docs/**, fixtures/**, tests/**, scripts/**,
     clients/**, crates/riffdb-cli/**, crates/riffdb-query-module/**, templates/**,
     evaluations/agent-application-alpha/**,
-    release/agent-application-alpha/**, release/evidence/**, release/python/**, .github/**]
+    release/agent-application-alpha/**, release/distribution/**, release/evidence/**,
+    release/python/**, .github/**]
   deliverables:
   - The four-language matrix over one schema with identity/outcome/error agreement assertions
   - Pinned per-driver quickstart step counts wired as a conformance assertion

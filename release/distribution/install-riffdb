@@ -124,8 +124,67 @@ else
     trap - EXIT INT TERM
 fi
 
+# Install the exact native Python application runtime beside the native CLI so
+# `riffdb new --language python` is package-complete without an environment
+# variable. The CLI deliberately accepts only one matching wheel from this
+# closed location.
+mapfile -t python_runtime_wheels < <(
+    find "$distribution/pypi" -maxdepth 1 -type f \
+        -name 'riffdb_application-0.1.0-cp313-abi3-*.whl' -print | sort
+)
+if ((${#python_runtime_wheels[@]} != 1)); then
+    echo 'RiffDB Python application runtime wheel is absent or ambiguous' >&2
+    exit 1
+fi
+python_runtime_source="${python_runtime_wheels[0]}"
+[[ ! -L "$python_runtime_source" ]] || {
+    echo 'RiffDB Python application runtime wheel is unsafe' >&2
+    exit 1
+}
+python_runtime_name="$(basename "$python_runtime_source")"
+python_runtime_path="pypi/$python_runtime_name"
+expected_python_runtime="$(awk -v path="$python_runtime_path" \
+    '$2 == path { print $1 }' "$distribution/checksums.sha256")"
+[[ "$expected_python_runtime" =~ ^[0-9a-f]{64}$ ]] || {
+    echo 'RiffDB Python application runtime wheel is absent from the signed checksum inventory' >&2
+    exit 1
+}
+actual_python_runtime="$(sha256sum "$python_runtime_source" | awk '{print $1}')"
+[[ "$actual_python_runtime" == "$expected_python_runtime" ]] || {
+    echo 'RiffDB Python application runtime wheel checksum does not match' >&2
+    exit 1
+}
+python_runtime_destination="$prefix/public/python"
+if [[ -e "$python_runtime_destination" ]]; then
+    [[ -d "$python_runtime_destination" && ! -L "$python_runtime_destination" \
+        && "$(find "$python_runtime_destination" -maxdepth 1 -type f | wc -l)" -eq 1 \
+        && -f "$python_runtime_destination/$python_runtime_name" \
+        && ! -L "$python_runtime_destination/$python_runtime_name" ]] || {
+        echo 'installed Python application runtime inventory is not exact' >&2
+        exit 1
+    }
+    cmp -s "$python_runtime_source" \
+        "$python_runtime_destination/$python_runtime_name" || {
+        echo 'installed Python application runtime differs from the signed distribution' >&2
+        exit 1
+    }
+else
+    [[ -e "$prefix/public" ]] || mkdir "$prefix/public"
+    [[ -d "$prefix/public" && ! -L "$prefix/public" ]] || {
+        echo 'destination public package path is unsafe' >&2
+        exit 1
+    }
+    python_runtime_pending="$prefix/public/.python.$$.pending"
+    trap 'rm -rf "$python_runtime_pending"' EXIT INT TERM
+    mkdir "$python_runtime_pending"
+    install -m 0644 "$python_runtime_source" \
+        "$python_runtime_pending/$python_runtime_name"
+    mv "$python_runtime_pending" "$python_runtime_destination"
+    trap - EXIT INT TERM
+fi
+
 # Publish the executable last. A malformed or conflicting editor destination
-# must fail before an existing CLI binary is replaced.
+# or Python runtime must fail before an existing CLI binary is replaced.
 mkdir -p "$prefix/bin"
 [[ -d "$prefix/bin" && ! -L "$prefix/bin" ]] || {
     echo 'destination bin path is unsafe' >&2
