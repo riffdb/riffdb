@@ -9,12 +9,26 @@ verified package CLI plus evaluator-owned `riffdbd`, `riffdb-driverd`, MCP, and
 development orchestration binaries. The signed distribution and local package
 mirrors are under `<bundle>/packages/distribution`.
 
-Use the same four database steps in every language:
+The four-step project workflow below targets an already running remote RiffDB
+service and requires an ordinary application credential:
 
 1. `riffdb init <name> --generator <language>`
 2. author the symbolic contract, named queries, and role, then `riffdb push`
 3. `riffdb generate`
 4. install the selected runtime package and invoke the generated operation
+
+The sealed Campaign-03 workspace intentionally starts with neither a remote
+service nor a credential. For that local evaluation, do not probe `riffdb
+push`: author from the initialized source shape, install the selected runtime,
+and use `riffdb dev --seed --run` (or `riffdb dev --run` without seed inputs).
+That command performs the local lock, generation, deployment, scoped role
+binding, and application launch against its disposable development service.
+It is the package-first local path, not a fallback or rescue.
+
+Application source is closed JSON. Preserve the initialized generation members
+and the required role arrays even when they are empty. Source V6 additionally
+requires `row_policies: []` on every role. Contract expressions reference enum
+values as `EnumName.VariantName`, never as an unqualified variant.
 
 Offline runtime installation sources are:
 

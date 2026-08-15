@@ -905,6 +905,30 @@ struct ProjectPushReview<'a> {
     recovery: &'static str,
 }
 
+#[derive(Serialize)]
+struct ProjectPushCredentialRequired {
+    code: &'static str,
+    message: &'static str,
+    recovery: &'static str,
+}
+
+fn project_push_credential_terminal(error: CredentialError) -> Terminal {
+    if matches!(error, CredentialError::Required) {
+        return local_error_with(
+            CommandIdentity::ProjectPush,
+            &ProjectPushCredentialRequired {
+                code: "credential_required",
+                message: "riffdb push targets an existing remote service and requires an ordinary capability credential",
+                recovery: "configure the remote credential, or for a disposable local application run `riffdb dev --seed --run` (`riffdb dev --run` without seed inputs)",
+            },
+            "credential_required",
+            "riffdb push targets an existing remote service and requires an ordinary capability credential",
+            1,
+        );
+    }
+    credential_terminal(CommandIdentity::ProjectPush, error)
+}
+
 async fn project_push(
     accepted_lock: Option<&str>,
     config: &EffectiveConfig,
@@ -923,6 +947,12 @@ async fn project_push(
         Ok(project) => project,
         Err(error) => return project_error(identity, &error),
     };
+    // `push` is the authenticated remote workflow. Refuse before publishing a
+    // local lock when no ordinary authority can possibly deploy it; the local
+    // development workflow owns its scoped bootstrap and role binding.
+    if let Err(error) = normal_credential(config, environment) {
+        return project_push_credential_terminal(error);
+    }
     let source = project.schema();
     let selected = project_artifact_selection(&project);
     let current = match application_lock_identity(source, None) {
@@ -11760,6 +11790,25 @@ mod tests {
         assert_eq!(
             application_seed_guidance(3),
             "application seed plan: 3 manifest input(s); run `riffdb dev --seed --run`"
+        );
+    }
+
+    #[test]
+    fn project_push_without_remote_authority_names_the_local_workflow() {
+        let terminal = project_push_credential_terminal(CredentialError::Required);
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        assert_eq!(
+            terminal.emit(OutputMode::Json, &mut stdout, &mut stderr),
+            ExitCode::from(1)
+        );
+        assert!(stderr.is_empty());
+        let value: serde_json::Value = serde_json::from_slice(&stdout).expect("CLI JSON");
+        assert_eq!(value["command"], "project.push");
+        assert_eq!(value["error"]["code"], "credential_required");
+        assert_eq!(
+            value["error"]["recovery"],
+            "configure the remote credential, or for a disposable local application run `riffdb dev --seed --run` (`riffdb dev --run` without seed inputs)"
         );
     }
 

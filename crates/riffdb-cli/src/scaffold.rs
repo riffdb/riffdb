@@ -176,7 +176,8 @@ pub(crate) fn generate_application(
             | "riffdb.application-source/v2"
             | "riffdb.application-source/v3"
             | "riffdb.application-source/v4"
-            | "riffdb.application-source/v5",
+            | "riffdb.application-source/v5"
+            | "riffdb.application-source/v6",
         ) if locked => generate_application_locked(
             manifest_path,
             lock_path.unwrap_or_else(|| Path::new(DEFAULT_LOCK_PATH)),
@@ -186,7 +187,8 @@ pub(crate) fn generate_application(
             | "riffdb.application-source/v2"
             | "riffdb.application-source/v3"
             | "riffdb.application-source/v4"
-            | "riffdb.application-source/v5",
+            | "riffdb.application-source/v5"
+            | "riffdb.application-source/v6",
         ) => Err(ScaffoldError::LockRequired),
         _ => Err(ScaffoldError::Manifest),
     }
@@ -2973,24 +2975,26 @@ mod tests {
     use super::*;
 
     #[test]
-    fn v4_application_generation_uses_the_symbolic_lock_rules() {
+    fn current_application_generation_uses_the_symbolic_lock_rules() {
         let base = tempfile::TempDir::with_prefix("riffdb-v4-generate-dispatch-test-")
             .expect("scratch directory");
         let source_path = base.path().join("riffdb.application.json");
-        fs::write(
-            &source_path,
-            br#"{"schema":"riffdb.application-source/v4"}"#,
-        )
-        .expect("source");
+        for schema in [
+            "riffdb.application-source/v4",
+            "riffdb.application-source/v5",
+            "riffdb.application-source/v6",
+        ] {
+            fs::write(&source_path, format!(r#"{{"schema":"{schema}"}}"#)).expect("source");
 
-        assert!(matches!(
-            generate_application(&source_path, false, None),
-            Err(ScaffoldError::LockRequired)
-        ));
-        assert!(matches!(
-            generate_application(&source_path, true, None),
-            Err(ScaffoldError::Io(error)) if error.kind() == io::ErrorKind::NotFound
-        ));
+            assert!(matches!(
+                generate_application(&source_path, false, None),
+                Err(ScaffoldError::LockRequired)
+            ));
+            assert!(matches!(
+                generate_application(&source_path, true, None),
+                Err(ScaffoldError::Io(error)) if error.kind() == io::ErrorKind::NotFound
+            ));
+        }
     }
 
     #[test]

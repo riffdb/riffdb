@@ -126,7 +126,7 @@ cat >"$legacy/tooling/typescript/bin/tsc" <<'EOF'
 set -euo pipefail
 tooling_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 exec node "$tooling_root/node_modules/typescript/bin/tsc" \
-    --typeRoots "$tooling_root/node_modules/@types" "$@"
+    --typeRoots "$tooling_root/node_modules/@types" --types node "$@"
 EOF
 chmod 0755 "$legacy/tooling/typescript/bin/tsc"
 "$legacy/tooling/typescript/bin/tsc" --version >/dev/null
@@ -135,7 +135,7 @@ cat >"$work_root/typescript-tooling-smoke/index.ts" <<'EOF'
 const timer: NodeJS.Timeout | undefined = undefined;
 void timer;
 EOF
-"$legacy/tooling/typescript/bin/tsc" --noEmit --types node \
+"$legacy/tooling/typescript/bin/tsc" --noEmit \
     "$work_root/typescript-tooling-smoke/index.ts"
 rm -rf "$legacy/public/python" "$legacy/public/typescript"
 
