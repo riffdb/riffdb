@@ -12761,3 +12761,154 @@ work_packages:
     scale: Evidence is a fixed matrix with bounded artifacts; the cloud profile exercises sustained
       checkpointing so a pass cannot borrow unbounded suffix, overlay, memory, or deferred work.
   human_review_triggers: *id001
+- id: WP-624
+  name: Portable contention-edge journal coalescing
+  depends_on: [WP-620, WP-621]
+  objective: Restore ADR-0098's bounded contention-only completion-edge collection for the
+    standard journal-authoritative profile when the cloud writer is fence-frequency limited.
+    Preserve immediate idle-unary dispatch, every FIFO/barrier boundary, independent command
+    semantics, the hardened oracle, and all journal, suffix, recovery, and publication bounds.
+  requirements: [PERF-004, PERF-005, PERF-008, PERF-015, PERF-017, PERF-018, REC-002,
+    TXN-040, TXN-041, TXN-042, TXN-043, TXN-044]
+  required_adrs: [ADR-0058, ADR-0060, ADR-0098, ADR-0103, ADR-0104, ADR-0123]
+  allowed_paths: [work_packages.yaml, SPEC.md, docs/**, benchmarks/**, scripts/**,
+    crates/riffdb-commit/src/audit_executor.rs,
+    crates/riffdb-commit/src/audit_executor/**,
+    crates/riffdb-commit/src/telemetry.rs,
+    crates/riffdb-observability/src/**,
+    examples/app-baseline/**]
+  deliverables:
+  - Standard-profile selection of the accepted at-most-two-millisecond completion-edge window only
+    after a prior writer unit leaves at least two FIFO commands queued; idle singletons, barriers,
+    full prefixes, and fresh 200-microsecond formation retain their existing immediate paths
+  - Fixed-cardinality observations proving selected command count, deferred count, dispatch reason,
+    elapsed collection time, frame count, commands per frame, and writer-stage time without keys,
+    values, identities, or per-command labels
+  - Deterministic actor tests for idle unary non-delay, queued contention coalescing, FIFO/barrier
+    preservation, bounded shutdown, cancellation, and hardened/standard selection
+  - Paired cloud c=1 and c=32 activation evidence plus workstation c=1/c=32 non-regression; retain
+    the candidate only if cloud c=32 throughput improves by at least 20 percent or combined
+    validation/encoding/staging plus durable-writer time falls by at least 20 percent, while unary
+    p50 remains no greater than 1.10 times baseline on either profile
+  - Value-free failed-activation receipt; when public c32 throughput regresses despite larger
+    frames or lower summed internal stage time, remove the standard-profile window and retain the
+    immediate completion edge
+  acceptance_commands:
+  - cargo +1.97.0 test -p riffdb-commit --all-features
+  - cargo +1.97.0 test -p riffdb-server --all-features
+  - cargo +1.97.0 test --manifest-path examples/app-baseline/Cargo.toml --all-features
+  - ./scripts/check-requirement-coverage
+  - ./scripts/handbook check
+  exit_gate: The activation threshold passes on the inventoried cloud profile without unary,
+    correctness, recovery, suffix, overlay, publication, or workstation regression; otherwise the
+    standard profile remains immediate at completion edges and the failed candidate is removed with
+    a value-free receipt.
+  standing_design_tests:
+    interface_safety: Collection is coordinator-internal and cannot be selected by applications.
+      It changes neither logical grouping nor command atomicity, idempotency, authorization,
+      acknowledgement durability, read visibility, typed freshness, or bounded failure outcomes.
+    scale: Collection retains the accepted two-millisecond oldest-command ceiling, 256-transition
+      and 16-MiB frame ceilings, bounded intake channel, FIFO barrier rules, and fixed-cardinality
+      observations; it creates no unbounded queue, series, or retained work.
+  human_review_triggers: *id001
+- id: WP-625
+  name: Streaming anchored command-authority encoding
+  depends_on: [WP-621, WP-624]
+  objective: Remove the complete generated-Prost graph construction still used by anchored-event
+    command segment V4. Stream its byte-frozen canonical body from already-checked command values,
+    using at most one bounded nested message at a time, without changing one durable byte, digest,
+    manifest, command graph, acknowledgement, checkpoint, recovery, or public semantic.
+  requirements: [PERF-007, PERF-008, PERF-009, PERF-015, PERF-017, PERF-018, REC-001,
+    REC-002, STO-001, STO-002]
+  required_adrs: [ADR-0101, ADR-0103, ADR-0104, ADR-0112, ADR-0123]
+  allowed_paths: [work_packages.yaml, SPEC.md, docs/**, benchmarks/**, scripts/**,
+    crates/riffdb-storage-api/src/proto_codec/command_segment.rs,
+    crates/riffdb-storage-api/src/proto_codec/tests/**,
+    crates/riffdb-storage-api/tests/**,
+    crates/riffdb-storage-redb/src/application.rs,
+    crates/riffdb-storage-redb/src/benchmark_support.rs,
+    crates/riffdb-storage-redb/tests/**,
+    examples/app-baseline/**]
+  deliverables:
+  - Canonical V4 segment body writer that appends the byte-frozen field sequence directly from
+    checked capsules and constructs at most one event, generation transition, entity transition,
+    audit, or other bounded nested message at a time
+  - One owned body buffer shared by digest calculation and final envelope assembly; the live seal
+    path never builds `StoredCommandSegmentBodyV4` or its complete nested generated message graph
+  - Golden, property, maximum-bound, anchored-event, mixed-event, and independent generated-Prost
+    oracle tests proving byte identity, digest identity, decode identity, bounded allocation, and
+    unchanged old-reader behavior
+  - Cloud c=32 command-stage evidence reducing validation/encoding/staging time by at least 20
+    percent or public throughput by at least 10 percent, with c=1 unary p50 no greater than 1.05
+    times baseline; otherwise remove the candidate and retain a failed-activation receipt
+  acceptance_commands:
+  - cargo +1.97.0 test -p riffdb-storage-api --all-features
+  - cargo +1.97.0 test -p riffdb-storage-redb --all-features
+  - cargo +1.97.0 test --manifest-path examples/app-baseline/Cargo.toml --all-features
+  - ./scripts/check-generated
+  - ./scripts/check-requirement-coverage
+  - ./scripts/handbook check
+  exit_gate: Every V4 writer byte and digest is identical to the frozen generated-Prost oracle and
+    the cloud activation threshold passes without unary, CPU, memory, correctness, recovery,
+    checkpoint, suffix, or workstation regression; no durable-format rotation is involved.
+  standing_design_tests:
+    interface_safety: This changes only construction of an already-fixed internal durable byte
+      sequence. Applications cannot select it, and command authorization, idempotency, atomicity,
+      publication, durability, recovery, freshness, and typed outcomes are unchanged.
+    scale: The encoder retains the existing 256-command, 16-MiB frame, field-visit, event,
+      transition, manifest, and envelope bounds; it owns one body buffer and at most one bounded
+      nested generated message, never an additional complete semantic graph.
+  human_review_triggers: *id001
+- id: WP-626
+  name: Retained compiler-fact command staging
+  depends_on: [WP-625]
+  objective: Carry the compiler-validated input-fact proof already owned by command preparation
+    through admission, evaluation, transaction-current validation, and index derivation. Remove
+    repeated normalized-input cloning and fact reconstruction from the sole writer without moving
+    a safe point, trusting caller data, changing transaction-current reads, or changing one
+    command, index, durable, recovery, acknowledgement, or public semantic.
+  requirements: [PERF-007, PERF-008, PERF-009, PERF-015, PERF-017, PERF-018, TXN-002,
+    TXN-012, TXN-013, TXN-030, TXN-031, TXN-040]
+  required_adrs: [ADR-0058, ADR-0060, ADR-0101, ADR-0104, ADR-0111, ADR-0123]
+  allowed_paths: [work_packages.yaml, SPEC.md, docs/**, benchmarks/**, scripts/**,
+    crates/riffdb-commit/src/command_preparation.rs,
+    crates/riffdb-commit/src/command_admission.rs,
+    crates/riffdb-commit/src/command_attempt.rs,
+    crates/riffdb-commit/src/command_validation.rs,
+    crates/riffdb-commit/src/command_index.rs,
+    crates/riffdb-commit/src/command_execution.rs,
+    crates/riffdb-commit/src/telemetry.rs,
+    crates/riffdb-commit/tests/**,
+    examples/app-baseline/**]
+  deliverables:
+  - Move-only retention of the exact `InputDerivedCommandFacts` accepted by
+    `CommandExecutionPreparation`; admission and attempt lowering verify its original plan/input
+    join and never reconstruct it from normalized input
+  - Transaction-current validation and secondary-index derivation consume the retained proof
+    while preserving every current-state, policy, uniqueness, epoch, capacity, sequence, and
+    storage recheck in its existing order
+  - Semantic and architecture tests proving mismatched facts fail before mutation, retries retain
+    the same proof, collection expansion remains exact, and no public or storage trait accepts
+    caller-supplied facts
+  - Cloud c=32 activation evidence reducing validation/encoding/staging time by at least 20
+    percent or increasing public throughput by at least 10 percent, with c=1 unary p50 no greater
+    than 1.05 times baseline; otherwise remove the candidate and retain a failed-activation receipt
+  acceptance_commands:
+  - cargo +1.97.0 test -p riffdb-commit --all-features
+  - cargo +1.97.0 test -p riffdb-server --all-features
+  - cargo +1.97.0 test --manifest-path examples/app-baseline/Cargo.toml --all-features
+  - ./scripts/check-requirement-coverage
+  - ./scripts/handbook check
+  exit_gate: The exact retained proof passes all semantic and architecture tests and materially
+    improves the inventoried cloud c=32 cell without unary, correctness, recovery, checkpoint,
+    suffix, publication, or workstation regression; otherwise the redundant derivation remains
+    and the failed candidate is documented.
+  standing_design_tests:
+    interface_safety: The proof originates only in compiler- and policy-checked preparation and is
+      move-only through private commit-owned states. Applications gain no input, escape hatch, or
+      control; fresh authorization, transaction-current validation, row policy, indexes, capacity,
+      durability, and typed outcomes remain mandatory.
+    scale: Retention replaces repeated bounded reconstructions with one already-bounded proof. It
+      adds no queue, task, cache, cardinality, recursion, scan, wait, or durable footprint and
+      remains charged inside the existing bounded command-preparation admission unit.
+  human_review_triggers: *id001
