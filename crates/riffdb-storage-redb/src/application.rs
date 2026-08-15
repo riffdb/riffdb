@@ -501,6 +501,16 @@ impl NonEmptyCommandBatch for RedbNonEmptyBatch {
                 .staged
                 .iter()
                 .any(|evidence| evidence.outcome().durability_mode() != durability)
+            // WP-608: ENTITY_CHAIN_HEADS are valid only when the corresponding
+            // transition is retained in a canonical command capsule. This
+            // storage-only completion path has no service-audit lifecycle from
+            // which such a capsule can be built, so every entity-bearing batch
+            // refuses while its transaction is still private.
+            || self
+                .core
+                .capsule_entity_transitions
+                .iter()
+                .any(|transitions| !transitions.is_empty())
         {
             return Err(storage_error(StorageErrorKind::InvariantViolation));
         }

@@ -3060,7 +3060,9 @@ impl SubmittedWriterUnit {
                 };
                 let results = match publication {
                     PendingCommandPublication::Fence(group) => {
-                        let Some(results) = group.try_wait(&writer.lifecycle) else {
+                        let Some(results) =
+                            group.try_wait(&writer.lifecycle, writer.telemetry.as_ref())
+                        else {
                             return false;
                         };
                         results
@@ -3100,7 +3102,7 @@ impl SubmittedWriterUnit {
                 };
                 let results = match publication {
                     PendingCommandPublication::Fence(submitted) => {
-                        submitted.wait(&writer.lifecycle)
+                        submitted.wait(&writer.lifecycle, writer.telemetry.as_ref())
                     }
                     PendingCommandPublication::AfterPredecessor(results) => results,
                 };

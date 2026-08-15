@@ -249,6 +249,29 @@ fn unpublished_epoch_state_has_no_committed_result_escape_hatch() {
 }
 
 #[test]
+fn entity_history_never_commits_without_walkable_transition_capsules() {
+    let application = production_source(crate_root().join("src/application.rs"));
+    let direct_commit = application
+        .split_once("impl NonEmptyCommandBatch for RedbNonEmptyBatch")
+        .expect("redb nonempty batch implementation")
+        .1
+        .split_once("fn commit_with_service_audit_transitions(")
+        .expect("storage-only commit implementation end")
+        .0;
+    let refusal = direct_commit
+        .find("capsule_entity_transitions")
+        .expect("WP-608 entity-transition refusal");
+    let materialization = direct_commit
+        .find("materialize_uncapsulated_command_rows")
+        .expect("retained uncapsulated row materialization");
+    assert!(
+        refusal < materialization,
+        "entity-bearing uncapsulated batches must refuse before durable row materialization"
+    );
+    assert!(direct_commit.contains("StorageErrorKind::InvariantViolation"));
+}
+
+#[test]
 fn terminal_staging_reuses_the_same_transaction_current_admission_proof() {
     let application = production_source(crate_root().join("src/application.rs"));
     let apply = application

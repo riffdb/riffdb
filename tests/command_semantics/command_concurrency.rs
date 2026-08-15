@@ -175,11 +175,12 @@ fn audited_standard_group_uses_one_unpublished_root_and_one_immediate_tail() {
     assert_eq!(
         transitions,
         vec![
-            RedbTestOperation::CommandBatch,
+            RedbTestOperation::DeferredCommandBatch,
+            RedbTestOperation::CommandEpochTail,
             RedbTestOperation::DeferredCommandBatch,
             RedbTestOperation::CommandEpochTail,
         ],
-        "the singleton stays direct and the audited non-singleton uses one private root plus tail"
+        "each audited group uses one private root plus one durable tail"
     );
 }
 

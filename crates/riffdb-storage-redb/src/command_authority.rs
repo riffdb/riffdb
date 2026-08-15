@@ -243,7 +243,7 @@ where
     match riffdb_storage_api::decode_command_segment_v1(row.value()) {
         Ok(segment) => {
             let segment = segment.into_parts().0;
-            segment_member(segment, physical_sequence, sequence).map(Some)
+            segment_member(segment, physical_sequence, sequence)
         }
         Err(error)
             if error.kind() == riffdb_storage_api::DurableCodecErrorKind::UnexpectedRecordType =>
@@ -301,9 +301,7 @@ pub(crate) fn command_member_at_access(
     let physical_sequence =
         decode_application_sequence_key(&physical_key).map_err(|_| corrupt())?;
     match riffdb_storage_api::decode_command_segment_v1(&encoded) {
-        Ok(segment) => {
-            segment_member(segment.into_parts().0, physical_sequence, sequence).map(Some)
-        }
+        Ok(segment) => segment_member(segment.into_parts().0, physical_sequence, sequence),
         Err(error)
             if error.kind() == riffdb_storage_api::DurableCodecErrorKind::UnexpectedRecordType =>
         {
@@ -399,12 +397,14 @@ fn segment_member(
     segment: StoredCommandSegmentV1,
     physical_sequence: CommitSequence,
     requested: CommitSequence,
-) -> Result<CommandAuthorityMember, StorageError> {
+) -> Result<Option<CommandAuthorityMember>, StorageError> {
     if segment.first_commit_sequence() != physical_sequence
         || requested < segment.first_commit_sequence()
-        || requested > segment.last_commit_sequence()
     {
         return Err(corrupt());
+    }
+    if requested > segment.last_commit_sequence() {
+        return Ok(None);
     }
     let ordinal = requested
         .get()
@@ -415,7 +415,7 @@ fn segment_member(
     if command.commit_sequence() != requested {
         return Err(corrupt());
     }
-    Ok(CommandAuthorityMember::CapsuleV2(command.clone()))
+    Ok(Some(CommandAuthorityMember::CapsuleV2(command.clone())))
 }
 
 const fn corrupt() -> StorageError {

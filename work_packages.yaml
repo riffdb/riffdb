@@ -12317,8 +12317,11 @@ work_packages:
   required_adrs: [ADR-0102, ADR-0104]
   allowed_paths: [work_packages.yaml, SPEC.md, docs/**,
     crates/riffdb-storage-redb/src/application.rs,
+    crates/riffdb-storage-redb/src/command_authority.rs,
     crates/riffdb-storage-redb/src/startup.rs,
     crates/riffdb-storage-redb/tests/architecture.rs,
+    crates/riffdb-commit/src/audit_executor.rs,
+    crates/riffdb-commit/src/command_execution.rs,
     crates/riffdb-sim/tests/**, tests/command_semantics/**,
     tests/storage_recovery/**]
   deliverables:
