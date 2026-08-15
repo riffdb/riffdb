@@ -144,6 +144,7 @@ direction, merged draft, or implementation choice.
 | [0123](0123-portable-cloud-performance-and-compact-writer-frames.md) | Portable Cloud Performance and Compact Command Segments | Accepted |
 | [0124](0124-version-topology-and-retirement-governance.md) | Version Topology and Retirement Governance | Accepted |
 | [0125](0125-command-segment-raw-fallback-compatibility.md) | Command-Segment Raw Fallback Compatibility | Accepted |
+| [0126](0126-compiler-bounded-one-hop-cascade-deletion.md) | Compiler-Bounded One-Hop Cascade Deletion | Proposed |
 
 The human architecture review on 2026-07-12 approved the direction represented
 by ADR-0001 through ADR-0012. The human maintainer accepted ADR-0001 through
