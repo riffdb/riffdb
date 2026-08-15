@@ -1,0 +1,96 @@
+#!/usr/bin/env python3
+"""Generate the four package quickstarts from the pinned driver story."""
+
+from __future__ import annotations
+
+import argparse
+import json
+from pathlib import Path
+import sys
+
+
+ROOT = Path(__file__).resolve().parent.parent
+SOURCE = ROOT / "fixtures/driver/quickstart-v1.json"
+
+
+def render(language: str, details: dict[str, str], story: dict[str, object]) -> str:
+    commands = []
+    for number, step in enumerate(story["workflow"], 1):
+        command = str(step["command"]).format(
+            language=language,
+            language_query_command=details["language_query_command"],
+        )
+        commands.append(
+            f"{number}. **{step['id']}** — {step['description']}\n\n"
+            f"   ```bash\n   {command}\n   ```"
+        )
+    return f"""# RiffDB {language.title()} application package
+
+RiffDB is a contract-first operational database. Application writes remain
+compiled commands; this package never exposes SQL, raw transactions, numeric
+compiler IDs, storage keys, or an authorization bypass.
+
+## Install
+
+```bash
+{details['tools']}
+{details['runtime']}
+```
+
+## Four-step application story
+
+{chr(10).join(commands)}
+
+The CLI requires an already running RiffDB service and an ordinary protected
+application credential. Acknowledged commands are durable; an uncertain
+response must be resolved with the same idempotency key.
+
+## Alpha compatibility
+
+This is a pre-1.0 alpha package. It carries the exact durable-format statement
+from `release/durable-format-manifest-v1.json`; downgrade is unsupported and a
+breaking epoch requires symbolic export/reimport. {story['offline_compatibility']}
+"""
+
+
+def outputs(story: dict[str, object]) -> dict[Path, str]:
+    languages = story["languages"]
+    return {
+        ROOT / "clients/go/runtime/README.md": render("go", languages["go"], story),
+        ROOT / "clients/python/runtime/README.md": render("python", languages["python"], story),
+        ROOT / "crates/riffdb-client-rust/README.md": render("rust", languages["rust"], story),
+        ROOT / "clients/typescript/runtime/README.md": render(
+            "typescript", languages["typescript"], story
+        ),
+    }
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--check", action="store_true")
+    arguments = parser.parse_args()
+    story = json.loads(SOURCE.read_text(encoding="utf-8"))
+    if (
+        story.get("schema") != "riffdb.driver-quickstart/v1"
+        or story.get("workflow_step_count") != 4
+        or len(story.get("workflow", [])) != 4
+        or sorted(story.get("languages", {})) != ["go", "python", "rust", "typescript"]
+    ):
+        raise SystemExit("invalid driver quickstart source")
+    stale = []
+    for path, content in outputs(story).items():
+        content = content.rstrip() + "\n"
+        if arguments.check:
+            if not path.is_file() or path.read_text(encoding="utf-8") != content:
+                stale.append(str(path.relative_to(ROOT)))
+        else:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(content, encoding="utf-8", newline="\n")
+    if stale:
+        print("stale driver package README: " + ", ".join(stale), file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

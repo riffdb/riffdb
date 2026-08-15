@@ -21,259 +21,259 @@ pub const CURRENT_RECORD_SCHEMA_COUNT: usize = WRITABLE_RECORD_SCHEMA_COUNT;
 const LEGACY_RECORD_SCHEMA_COUNT: usize = 29;
 const LEGACY_SCHEMA_HASH_BYTES: &[u8; LEGACY_RECORD_SCHEMA_COUNT * 32] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../fixtures/proto/durable-schema-hashes.bin"
+    "/fixtures/durable-schema-hashes.bin"
 ));
 const LEGACY_RECORD_BOUND_BYTES: &[u8; LEGACY_RECORD_SCHEMA_COUNT * 8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../fixtures/proto/durable-record-bounds.bin"
+    "/fixtures/durable-record-bounds.bin"
 ));
 const INDEX_V2_SCHEMA_HASH_BYTES: &[u8; 32] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../fixtures/proto/durable-index-v2-schema-hash.bin"
+    "/fixtures/durable-index-v2-schema-hash.bin"
 ));
 const INDEX_V2_RECORD_BOUND_BYTES: &[u8; 8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../fixtures/proto/durable-index-v2-record-bound.bin"
+    "/fixtures/durable-index-v2-record-bound.bin"
 ));
 const REGISTRY_V2_SCHEMA_HASH_BYTES: &[u8; 32] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../fixtures/proto/durable-registry-v2-schema-hash.bin"
+    "/fixtures/durable-registry-v2-schema-hash.bin"
 ));
 const REGISTRY_V2_RECORD_BOUND_BYTES: &[u8; 8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../fixtures/proto/durable-registry-v2-record-bound.bin"
+    "/fixtures/durable-registry-v2-record-bound.bin"
 ));
 const EVENT_REFERENCE_V2_SCHEMA_HASH_BYTES: &[u8; 64] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../fixtures/proto/durable-event-reference-v2-schema-hashes.bin"
+    "/fixtures/durable-event-reference-v2-schema-hashes.bin"
 ));
 const EVENT_REFERENCE_V2_RECORD_BOUND_BYTES: &[u8; 16] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../fixtures/proto/durable-event-reference-v2-record-bounds.bin"
+    "/fixtures/durable-event-reference-v2-record-bounds.bin"
 ));
 const INDEX_GENERATION_V2_SCHEMA_HASH_BYTES: &[u8; 32] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../fixtures/proto/durable-index-generation-v2-schema-hash.bin"
+    "/fixtures/durable-index-generation-v2-schema-hash.bin"
 ));
 const INDEX_GENERATION_V2_RECORD_BOUND_BYTES: &[u8; 8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../fixtures/proto/durable-index-generation-v2-record-bound.bin"
+    "/fixtures/durable-index-generation-v2-record-bound.bin"
 ));
 const HISTORY_INCARNATION_V1_SCHEMA_HASH_BYTES: &[u8; 32] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../fixtures/proto/durable-history-incarnation-v1-schema-hash.bin"
+    "/fixtures/durable-history-incarnation-v1-schema-hash.bin"
 ));
 const HISTORY_INCARNATION_V1_RECORD_BOUND_BYTES: &[u8; 8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../fixtures/proto/durable-history-incarnation-v1-record-bound.bin"
+    "/fixtures/durable-history-incarnation-v1-record-bound.bin"
 ));
 const SERVICE_AUDIT_REQUEST_INDEX_V1_SCHEMA_HASH_BYTES: &[u8; 32] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../fixtures/proto/durable-service-audit-request-index-v1-schema-hash.bin"
+    "/fixtures/durable-service-audit-request-index-v1-schema-hash.bin"
 ));
 const SERVICE_AUDIT_REQUEST_INDEX_V1_RECORD_BOUND_BYTES: &[u8; 8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../fixtures/proto/durable-service-audit-request-index-v1-record-bound.bin"
+    "/fixtures/durable-service-audit-request-index-v1-record-bound.bin"
 ));
 const EVENT_ROUTE_V1_SCHEMA_HASH_BYTES: &[u8; 32] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../fixtures/proto/durable-event-route-v1-schema-hash.bin"
+    "/fixtures/durable-event-route-v1-schema-hash.bin"
 ));
 const EVENT_ROUTE_V1_RECORD_BOUND_BYTES: &[u8; 8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../fixtures/proto/durable-event-route-v1-record-bound.bin"
+    "/fixtures/durable-event-route-v1-record-bound.bin"
 ));
 const ENTITY_REFERENCE_V3_SCHEMA_HASH_BYTES: &[u8; 32] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../fixtures/proto/durable-entity-reference-v3-schema-hash.bin"
+    "/fixtures/durable-entity-reference-v3-schema-hash.bin"
 ));
 const ENTITY_REFERENCE_V3_RECORD_BOUND_BYTES: &[u8; 8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../fixtures/proto/durable-entity-reference-v3-record-bound.bin"
+    "/fixtures/durable-entity-reference-v3-record-bound.bin"
 ));
 const MIGRATION_V1_SCHEMA_HASH_BYTES: &[u8; 128] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../fixtures/proto/durable-migration-v1-schema-hashes.bin"
+    "/fixtures/durable-migration-v1-schema-hashes.bin"
 ));
 const MIGRATION_V1_RECORD_BOUND_BYTES: &[u8; 32] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../fixtures/proto/durable-migration-v1-record-bounds.bin"
+    "/fixtures/durable-migration-v1-record-bounds.bin"
 ));
 const CAPABILITY_V2_SCHEMA_HASH_BYTES: &[u8; 32] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../fixtures/proto/durable-capability-v2-schema-hash.bin"
+    "/fixtures/durable-capability-v2-schema-hash.bin"
 ));
 const CAPABILITY_V2_RECORD_BOUND_BYTES: &[u8; 8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../fixtures/proto/durable-capability-v2-record-bound.bin"
+    "/fixtures/durable-capability-v2-record-bound.bin"
 ));
 const CAPABILITY_V3_SCHEMA_HASH_BYTES: &[u8; 32] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../fixtures/proto/durable-capability-v3-schema-hash.bin"
+    "/fixtures/durable-capability-v3-schema-hash.bin"
 ));
 const CAPABILITY_V3_RECORD_BOUND_BYTES: &[u8; 8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../fixtures/proto/durable-capability-v3-record-bound.bin"
+    "/fixtures/durable-capability-v3-record-bound.bin"
 ));
 const CAPABILITY_V4_SCHEMA_HASH_BYTES: &[u8; 32] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../fixtures/proto/durable-capability-v4-schema-hash.bin"
+    "/fixtures/durable-capability-v4-schema-hash.bin"
 ));
 const CAPABILITY_V4_RECORD_BOUND_BYTES: &[u8; 8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../fixtures/proto/durable-capability-v4-record-bound.bin"
+    "/fixtures/durable-capability-v4-record-bound.bin"
 ));
 const EVENT_V2_SCHEMA_HASH_BYTES: &[u8; 32] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../fixtures/proto/durable-event-v2-schema-hash.bin"
+    "/fixtures/durable-event-v2-schema-hash.bin"
 ));
 const EVENT_V2_RECORD_BOUND_BYTES: &[u8; 8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../fixtures/proto/durable-event-v2-record-bound.bin"
+    "/fixtures/durable-event-v2-record-bound.bin"
 ));
 const CAPABILITY_V5_SCHEMA_HASH_BYTES: &[u8; 32] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../fixtures/proto/durable-capability-v5-schema-hash.bin"
+    "/fixtures/durable-capability-v5-schema-hash.bin"
 ));
 const CAPABILITY_V5_RECORD_BOUND_BYTES: &[u8; 8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../fixtures/proto/durable-capability-v5-record-bound.bin"
+    "/fixtures/durable-capability-v5-record-bound.bin"
 ));
 const CAPABILITY_V6_SCHEMA_HASH_BYTES: &[u8; 32] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../fixtures/proto/durable-capability-v6-schema-hash.bin"
+    "/fixtures/durable-capability-v6-schema-hash.bin"
 ));
 const CAPABILITY_V6_RECORD_BOUND_BYTES: &[u8; 8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../fixtures/proto/durable-capability-v6-record-bound.bin"
+    "/fixtures/durable-capability-v6-record-bound.bin"
 ));
 const CAPABILITY_V7_SCHEMA_HASH_BYTES: &[u8; 32] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../fixtures/proto/durable-capability-v7-schema-hash.bin"
+    "/fixtures/durable-capability-v7-schema-hash.bin"
 ));
 const CAPABILITY_V7_RECORD_BOUND_BYTES: &[u8; 8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../fixtures/proto/durable-capability-v7-record-bound.bin"
+    "/fixtures/durable-capability-v7-record-bound.bin"
 ));
 const VALIDATED_PREFIX_CHECKPOINT_V1_SCHEMA_HASH_BYTES: &[u8; 32] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../fixtures/proto/durable-validated-prefix-checkpoint-v1-schema-hash.bin"
+    "/fixtures/durable-validated-prefix-checkpoint-v1-schema-hash.bin"
 ));
 const VALIDATED_PREFIX_CHECKPOINT_V1_RECORD_BOUND_BYTES: &[u8; 8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../fixtures/proto/durable-validated-prefix-checkpoint-v1-record-bound.bin"
+    "/fixtures/durable-validated-prefix-checkpoint-v1-record-bound.bin"
 ));
 const RETENTION_WATERMARK_V1_SCHEMA_HASH_BYTES: &[u8; 32] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../fixtures/proto/durable-retention-watermark-v1-schema-hash.bin"
+    "/fixtures/durable-retention-watermark-v1-schema-hash.bin"
 ));
 const RETENTION_WATERMARK_V1_RECORD_BOUND_BYTES: &[u8; 8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../fixtures/proto/durable-retention-watermark-v1-record-bound.bin"
+    "/fixtures/durable-retention-watermark-v1-record-bound.bin"
 ));
 const RETENTION_HOLDS_V1_SCHEMA_HASH_BYTES: &[u8; 32] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../fixtures/proto/durable-retention-holds-v1-schema-hash.bin"
+    "/fixtures/durable-retention-holds-v1-schema-hash.bin"
 ));
 const RETENTION_HOLDS_V1_RECORD_BOUND_BYTES: &[u8; 8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../fixtures/proto/durable-retention-holds-v1-record-bound.bin"
+    "/fixtures/durable-retention-holds-v1-record-bound.bin"
 ));
 const HISTORY_TOMBSTONE_V1_SCHEMA_HASH_BYTES: &[u8; 32] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../fixtures/proto/durable-history-tombstone-v1-schema-hash.bin"
+    "/fixtures/durable-history-tombstone-v1-schema-hash.bin"
 ));
 const HISTORY_TOMBSTONE_V1_RECORD_BOUND_BYTES: &[u8; 8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../fixtures/proto/durable-history-tombstone-v1-record-bound.bin"
+    "/fixtures/durable-history-tombstone-v1-record-bound.bin"
 ));
 const RETENTION_ADMINISTRATION_V1_SCHEMA_HASH_BYTES: &[u8; 32] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../fixtures/proto/durable-retention-administration-v1-schema-hash.bin"
+    "/fixtures/durable-retention-administration-v1-schema-hash.bin"
 ));
 const RETENTION_ADMINISTRATION_V1_RECORD_BOUND_BYTES: &[u8; 8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../fixtures/proto/durable-retention-administration-v1-record-bound.bin"
+    "/fixtures/durable-retention-administration-v1-record-bound.bin"
 ));
 const REACTIVE_CONSUMER_V1_SCHEMA_HASH_BYTES: &[u8; 128] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../fixtures/proto/durable-reactive-consumer-v1-schema-hashes.bin"
+    "/fixtures/durable-reactive-consumer-v1-schema-hashes.bin"
 ));
 const REACTIVE_CONSUMER_V1_RECORD_BOUND_BYTES: &[u8; 32] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../fixtures/proto/durable-reactive-consumer-v1-record-bounds.bin"
+    "/fixtures/durable-reactive-consumer-v1-record-bounds.bin"
 ));
 const SERVICE_AUDIT_V2_SCHEMA_HASH_BYTES: &[u8; 32] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../fixtures/proto/durable-service-audit-v2-schema-hash.bin"
+    "/fixtures/durable-service-audit-v2-schema-hash.bin"
 ));
 const SERVICE_AUDIT_V2_RECORD_BOUND_BYTES: &[u8; 8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../fixtures/proto/durable-service-audit-v2-record-bound.bin"
+    "/fixtures/durable-service-audit-v2-record-bound.bin"
 ));
 const CONTEXTUAL_CAUSATION_V2_SCHEMA_HASH_BYTES: &[u8; 128] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../fixtures/proto/durable-contextual-causation-v2-schema-hashes.bin"
+    "/fixtures/durable-contextual-causation-v2-schema-hashes.bin"
 ));
 const CONTEXTUAL_CAUSATION_V2_RECORD_BOUND_BYTES: &[u8; 32] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../fixtures/proto/durable-contextual-causation-v2-record-bounds.bin"
+    "/fixtures/durable-contextual-causation-v2-record-bounds.bin"
 ));
 const COMMAND_CAPSULE_V1_SCHEMA_HASH_BYTES: &[u8; 96] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../fixtures/proto/durable-command-capsule-v1-schema-hashes.bin"
+    "/fixtures/durable-command-capsule-v1-schema-hashes.bin"
 ));
 const COMMAND_CAPSULE_V1_RECORD_BOUND_BYTES: &[u8; 24] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../fixtures/proto/durable-command-capsule-v1-record-bounds.bin"
+    "/fixtures/durable-command-capsule-v1-record-bounds.bin"
 ));
 const COMMAND_SEGMENT_V1_SCHEMA_HASH_BYTES: &[u8; 96] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../fixtures/proto/durable-command-segment-v1-schema-hashes.bin"
+    "/fixtures/durable-command-segment-v1-schema-hashes.bin"
 ));
 const COMMAND_SEGMENT_V1_RECORD_BOUND_BYTES: &[u8; 24] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../fixtures/proto/durable-command-segment-v1-record-bounds.bin"
+    "/fixtures/durable-command-segment-v1-record-bounds.bin"
 ));
 const WORKFLOW_SERVICE_VALUES_V3_SCHEMA_HASH_BYTES: &[u8; 160] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../fixtures/proto/durable-workflow-service-values-v3-schema-hashes.bin"
+    "/fixtures/durable-workflow-service-values-v3-schema-hashes.bin"
 ));
 const WORKFLOW_SERVICE_VALUES_V3_RECORD_BOUND_BYTES: &[u8; 40] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../fixtures/proto/durable-workflow-service-values-v3-record-bounds.bin"
+    "/fixtures/durable-workflow-service-values-v3-record-bounds.bin"
 ));
 const INSTALLATION_V1_SCHEMA_HASH_BYTES: &[u8; 32] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../fixtures/proto/durable-installation-v1-schema-hash.bin"
+    "/fixtures/durable-installation-v1-schema-hash.bin"
 ));
 const INSTALLATION_V1_RECORD_BOUND_BYTES: &[u8; 8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../fixtures/proto/durable-installation-v1-record-bound.bin"
+    "/fixtures/durable-installation-v1-record-bound.bin"
 ));
 const EXPORT_V1_SCHEMA_HASH_BYTES: &[u8; 32] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../fixtures/proto/durable-export-v1-schema-hash.bin"
+    "/fixtures/durable-export-v1-schema-hash.bin"
 ));
 const EXPORT_V1_RECORD_BOUND_BYTES: &[u8; 8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../fixtures/proto/durable-export-v1-record-bound.bin"
+    "/fixtures/durable-export-v1-record-bound.bin"
 ));
 const EVENT_POLICY_COMMAND_AUTHORITY_V5_SCHEMA_HASH_BYTES: &[u8; 64] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../fixtures/proto/durable-event-policy-command-authority-v5-schema-hashes.bin"
+    "/fixtures/durable-event-policy-command-authority-v5-schema-hashes.bin"
 ));
 const EVENT_POLICY_COMMAND_AUTHORITY_V5_RECORD_BOUND_BYTES: &[u8; 16] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../fixtures/proto/durable-event-policy-command-authority-v5-record-bounds.bin"
+    "/fixtures/durable-event-policy-command-authority-v5-record-bounds.bin"
 ));
 const ENTITY_TRANSITIONS_V4_SCHEMA_HASH_BYTES: &[u8; 160] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../fixtures/proto/durable-entity-transitions-v4-schema-hashes.bin"
+    "/fixtures/durable-entity-transitions-v4-schema-hashes.bin"
 ));
 const ENTITY_TRANSITIONS_V4_RECORD_BOUND_BYTES: &[u8; 40] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../fixtures/proto/durable-entity-transitions-v4-record-bounds.bin"
+    "/fixtures/durable-entity-transitions-v4-record-bounds.bin"
 ));
 const PRE_WP280_CAPABILITY_SCHEMA_HASH: SchemaHash = SchemaHash::from_bytes([
     0xcb, 0x42, 0xc4, 0xeb, 0xbc, 0xe8, 0x28, 0x01, 0x23, 0xf8, 0xb3, 0x4d, 0x4d, 0xcd, 0xe7, 0x4c,

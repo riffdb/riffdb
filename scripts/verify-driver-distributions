@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+    printf '%s\n' 'usage: verify-driver-distributions --allowed-signers FILE --identity ID ABSOLUTE_DISTRIBUTION_DIRECTORY' >&2
+}
+
+if [[ "${1:-}" == --allowed-signers && "${3:-}" == --identity && $# -eq 5 ]]; then
+    allowed="$2"
+    identity="$4"
+    distribution="$5"
+else
+    usage
+    exit 2
+fi
+[[ "$allowed" == /* && -f "$allowed" && ! -L "$allowed" ]] || {
+    echo 'allowed signers must be an absolute regular file' >&2
+    exit 2
+}
+[[ "$identity" =~ ^[A-Za-z0-9_.@+-]{1,128}$ ]] || {
+    echo 'signing identity is invalid' >&2
+    exit 2
+}
+[[ "$distribution" == /* && -d "$distribution" && ! -L "$distribution" ]] || {
+    echo 'distribution must be an absolute real directory' >&2
+    exit 2
+}
+checksums="$distribution/checksums.sha256"
+signature="$checksums.sig"
+[[ -f "$checksums" && ! -L "$checksums" && -f "$signature" && ! -L "$signature" ]] || {
+    echo 'signed checksum inventory is absent or unsafe' >&2
+    exit 1
+}
+(
+    cd "$distribution"
+    sha256sum --strict --check checksums.sha256 >/dev/null
+)
+ssh-keygen -Y verify -f "$allowed" -I "$identity" \
+    -n riffdb-driver-distribution-v1 -s "$signature" <"$checksums" >/dev/null
+printf 'verified signed RiffDB driver distribution\n'

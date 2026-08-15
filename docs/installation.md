@@ -1,5 +1,8 @@
 # Installation
 
+For application-language package names and the common four-step workflow, see
+[Driver and CLI Packages](getting-started/PACKAGE-INSTALLATION.md).
+
 RiffDB's alpha deployment target is Linux. Protected key and bearer loaders
 depend on Linux `/proc/self/status` and exact owner/mode checks. The convenience
 installer retains its loopback development profile; controlled remote

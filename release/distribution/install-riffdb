@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+set -euo pipefail
+umask 077
+
+usage() {
+    printf '%s\n' 'usage: install-riffdb --distribution DIRECTORY --target TARGET --prefix DIRECTORY' >&2
+}
+
+distribution=
+target=
+prefix=
+while (($#)); do
+    case "$1" in
+        --distribution) distribution="${2:-}"; shift 2 ;;
+        --target) target="${2:-}"; shift 2 ;;
+        --prefix) prefix="${2:-}"; shift 2 ;;
+        *) usage; exit 2 ;;
+    esac
+done
+
+[[ "$distribution" == /* && -d "$distribution" && ! -L "$distribution" ]] || {
+    echo 'distribution must be an absolute real directory' >&2
+    exit 2
+}
+[[ "$prefix" == /* && -d "$prefix" && ! -L "$prefix" ]] || {
+    echo 'prefix must be an existing absolute real directory' >&2
+    exit 2
+}
+case "$target" in
+    x86_64-unknown-linux-gnu|aarch64-unknown-linux-gnu) ;;
+    *) echo 'unsupported RiffDB alpha distribution target' >&2; exit 2 ;;
+esac
+
+binary="bin/$target/riffdb"
+source_path="$distribution/$binary"
+[[ -f "$source_path" && ! -L "$source_path" && -x "$source_path" ]] || {
+    echo 'RiffDB CLI artifact is absent or unsafe' >&2
+    exit 1
+}
+expected="$(awk -v path="$binary" '$2 == path { print $1 }' "$distribution/checksums.sha256")"
+[[ "$expected" =~ ^[0-9a-f]{64}$ ]] || {
+    echo 'RiffDB CLI artifact is absent from the signed checksum inventory' >&2
+    exit 1
+}
+actual="$(sha256sum "$source_path" | awk '{print $1}')"
+[[ "$actual" == "$expected" ]] || {
+    echo 'RiffDB CLI artifact checksum does not match' >&2
+    exit 1
+}
+
+mkdir -p "$prefix/bin"
+[[ -d "$prefix/bin" && ! -L "$prefix/bin" ]] || {
+    echo 'destination bin path is unsafe' >&2
+    exit 1
+}
+pending="$prefix/bin/.riffdb.$$.pending"
+trap 'rm -f "$pending"' EXIT INT TERM
+install -m 0755 "$source_path" "$pending"
+mv -f "$pending" "$prefix/bin/riffdb"
+trap - EXIT INT TERM
+printf 'installed riffdb %s at %s\n' "$target" "$prefix/bin/riffdb"

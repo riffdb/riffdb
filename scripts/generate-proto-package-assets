@@ -1,0 +1,65 @@
+#!/usr/bin/env python3
+"""Mirror authoritative Proto fixtures into the publishable riffdb-proto crate."""
+
+from __future__ import annotations
+
+import argparse
+from pathlib import Path
+import shutil
+
+
+ROOT = Path(__file__).resolve().parent.parent
+SOURCE = ROOT / "fixtures/proto"
+DESTINATION = ROOT / "crates/riffdb-proto/fixtures"
+MAX_FILES = 256
+MAX_TOTAL_BYTES = 8 * 1024 * 1024
+
+
+def fail(message: str) -> None:
+    raise SystemExit(f"proto_package_assets_invalid: {message}")
+
+
+def inventory(root: Path) -> dict[Path, bytes]:
+    files: dict[Path, bytes] = {}
+    total = 0
+    if not root.is_dir() or root.is_symlink():
+        fail(f"asset root is absent or unsafe: {root}")
+    for path in sorted(root.rglob("*")):
+        if path.is_symlink():
+            fail(f"asset is a symlink: {path}")
+        if not path.is_file():
+            continue
+        relative = path.relative_to(root)
+        content = path.read_bytes()
+        total += len(content)
+        files[relative] = content
+    if not 1 <= len(files) <= MAX_FILES or total > MAX_TOTAL_BYTES:
+        fail("asset inventory is outside the reviewed bound")
+    return files
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--check", action="store_true")
+    arguments = parser.parse_args()
+    expected = inventory(SOURCE)
+    if arguments.check:
+        actual = inventory(DESTINATION)
+        if actual != expected:
+            fail("publishable crate assets are stale")
+        print(f"riffdb-proto package assets are current ({len(expected)} files)")
+        return 0
+    if DESTINATION.exists():
+        if not DESTINATION.is_dir() or DESTINATION.is_symlink():
+            fail("publishable asset destination is unsafe")
+        shutil.rmtree(DESTINATION)
+    for relative, content in expected.items():
+        target = DESTINATION / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(content)
+    print(f"generated riffdb-proto package assets ({len(expected)} files)")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

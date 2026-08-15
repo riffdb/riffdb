@@ -692,7 +692,7 @@ const EXPECTED_METHODS: &[(&str, &str, bool)] = &[
 const SERVICE_RESPONSE_CHARGE_FIXTURE: &str =
     include_str!("../../riffdb-service/fixtures/response-charge-v1.tsv");
 const PRE_WP137_PUBLIC_SCHEMA_HASHES: &str =
-    include_str!("../../../fixtures/proto/pre-wp137-public-schema-hashes.txt");
+    include_str!("../fixtures/pre-wp137-public-schema-hashes.txt");
 
 const DISCOVERY_PAGE_BOUNDARIES: [(&str, usize, bool, &str); 4] = [
     ("empty-exact-end", 0, false, "exact_end"),

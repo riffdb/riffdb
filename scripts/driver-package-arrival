@@ -1,0 +1,381 @@
+#!/usr/bin/env python3
+"""Verify and smoke-test a signed WP-601 distribution outside the source tree."""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+from pathlib import Path, PurePosixPath
+import platform
+import shutil
+import subprocess
+import sys
+import tarfile
+import tempfile
+import time
+
+
+ROOT = Path(__file__).resolve().parent.parent
+VERSION = "0.1.0"
+MAX_OUTPUT_BYTES = 4 * 1024 * 1024
+MAX_ARCHIVE_FILES = 16_384
+MAX_ARCHIVE_FILE_BYTES = 256 * 1024 * 1024
+
+
+def fail(message: str) -> None:
+    raise SystemExit(f"driver_package_arrival_failed: {message}")
+
+
+def run(
+    command: list[str],
+    *,
+    cwd: Path,
+    environment: dict[str, str] | None = None,
+) -> str:
+    completed = subprocess.run(
+        command,
+        cwd=cwd,
+        env=environment,
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+    )
+    output = completed.stdout
+    if len(output) > MAX_OUTPUT_BYTES:
+        fail(f"command output exceeded the bound: {command[0]}")
+    text = output.decode("utf-8", errors="replace")
+    if completed.returncode != 0:
+        sys.stderr.write(text)
+        fail("command failed: " + " ".join(command))
+    return text
+
+
+def write(path: Path, content: str, mode: int = 0o644) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("x", encoding="utf-8", newline="\n") as destination:
+        destination.write(content)
+    path.chmod(mode)
+
+
+def sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        while chunk := source.read(1024 * 1024):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def regular(path: Path) -> bool:
+    return path.is_file() and not path.is_symlink() and path.stat().st_size <= MAX_ARCHIVE_FILE_BYTES
+
+
+def select_one(directory: Path, pattern: str) -> Path:
+    matches = sorted(path for path in directory.glob(pattern) if regular(path))
+    if len(matches) != 1:
+        fail(f"expected one packaged artifact matching {pattern}")
+    return matches[0]
+
+
+def safe_extract_crate(archive_path: Path, destination: Path, expected_root: str) -> Path:
+    with tarfile.open(archive_path, "r:gz") as archive:
+        members = archive.getmembers()
+        if not 1 <= len(members) <= MAX_ARCHIVE_FILES:
+            fail(f"crate inventory is outside the bound: {archive_path.name}")
+        for member in members:
+            pure = PurePosixPath(member.name)
+            if (
+                pure.is_absolute()
+                or not pure.parts
+                or pure.parts[0] != expected_root
+                or any(part in {"", ".", ".."} for part in pure.parts)
+                or member.issym()
+                or member.islnk()
+                or member.isdev()
+                or (member.isfile() and member.size > MAX_ARCHIVE_FILE_BYTES)
+            ):
+                fail(f"crate contains an unsafe member: {archive_path.name}")
+        archive.extractall(destination, filter="data")
+    root = destination / expected_root
+    if not root.is_dir() or root.is_symlink() or not (root / "Cargo.toml").is_file():
+        fail(f"crate did not contain its exact package root: {archive_path.name}")
+    return root
+
+
+def smoke_native(distribution: Path, target: str, scratch: Path) -> None:
+    prefix = scratch / "native-prefix"
+    prefix.mkdir()
+    run(
+        [
+            str(distribution / "install/riffdb-install"),
+            "--distribution",
+            str(distribution),
+            "--target",
+            target,
+            "--prefix",
+            str(prefix),
+        ],
+        cwd=scratch,
+    )
+    run([str(prefix / "bin/riffdb"), "--help"], cwd=scratch)
+
+
+def smoke_typescript(distribution: Path, arch: str, scratch: Path) -> None:
+    npm = distribution / "npm"
+    cli = select_one(npm, f"riffdb-cli-{VERSION}.tgz")
+    platform_cli = select_one(npm, f"riffdb-cli-linux-{arch}-{VERSION}.tgz")
+    runtime = select_one(npm, f"riffdb-client-{VERSION}.tgz")
+    project = scratch / "typescript"
+    project.mkdir()
+    write(project / "package.json", '{"name":"riffdb-arrival","private":true,"type":"module"}\n')
+    environment = os.environ.copy()
+    environment.update(
+        {
+            "HOME": str(project / "home"),
+            "npm_config_cache": str(project / "npm-cache"),
+            "npm_config_update_notifier": "false",
+        }
+    )
+    run(
+        [
+            "npm",
+            "install",
+            "--offline",
+            "--ignore-scripts",
+            "--no-audit",
+            "--no-fund",
+            "--package-lock=false",
+            str(cli),
+            str(platform_cli),
+            str(runtime),
+        ],
+        cwd=project,
+        environment=environment,
+    )
+    run([str(project / "node_modules/.bin/riffdb"), "--help"], cwd=project, environment=environment)
+    run(
+        [
+            "node",
+            "--input-type=module",
+            "--eval",
+            'import { exactMoney } from "@riffdb/client"; '
+            'if (exactMoney("USD", "12.34").amount.scale !== 2) process.exit(1);',
+        ],
+        cwd=project,
+        environment=environment,
+    )
+
+
+def smoke_python(distribution: Path, scratch: Path) -> None:
+    pypi = distribution / "pypi"
+    select_one(pypi, f"riffdb_cli-{VERSION}-*.whl")
+    select_one(pypi, f"riffdb-{VERSION}-py3-none-any.whl")
+    select_one(pypi, f"riffdb_application-{VERSION}-cp313-abi3-*.whl")
+    environment = os.environ.copy()
+    environment.update({"HOME": str(scratch / "python-home"), "PIP_DISABLE_PIP_VERSION_CHECK": "1"})
+    virtual = scratch / "python-venv"
+    run([sys.executable, "-m", "venv", str(virtual)], cwd=scratch, environment=environment)
+    python = virtual / "bin/python"
+    run(
+        [
+            str(python),
+            "-m",
+            "pip",
+            "install",
+            "--no-index",
+            "--find-links",
+            str(pypi),
+            f"riffdb-cli=={VERSION}",
+            f"riffdb=={VERSION}",
+        ],
+        cwd=scratch,
+        environment=environment,
+    )
+    run([str(virtual / "bin/riffdb"), "--help"], cwd=scratch, environment=environment)
+    run(
+        [
+            str(python),
+            "-c",
+            'import riffdb_application; assert "SyncApplicationTransport" in riffdb_application.__all__',
+        ],
+        cwd=scratch,
+        environment=environment,
+    )
+
+
+def smoke_go(distribution: Path, scratch: Path) -> None:
+    proxy = distribution / "go-proxy"
+    module = proxy / "riffdb.dev/application/@v"
+    for suffix in ("info", "mod", "zip"):
+        if not regular(module / f"v{VERSION}.{suffix}"):
+            fail(f"Go proxy artifact is absent: {suffix}")
+    project = scratch / "go"
+    project.mkdir()
+    write(
+        project / "go.mod",
+        f"module riffdb.dev/arrival\n\ngo 1.24\n\nrequire riffdb.dev/application v{VERSION}\n",
+    )
+    write(
+        project / "arrival_test.go",
+        "package arrival\n\n"
+        'import (\n  "testing"\n  application "riffdb.dev/application"\n)\n\n'
+        "func TestPackageArrival(t *testing.T) {\n"
+        "  if application.ProtocolVersion != 1 { t.Fatal(\"unexpected protocol\") }\n"
+        "  if value := application.I64(7); value.Type != \"i64\" { t.Fatal(\"invalid value\") }\n"
+        "}\n",
+    )
+    environment = os.environ.copy()
+    environment.update(
+        {
+            "GOPROXY": proxy.as_uri(),
+            "GOSUMDB": "off",
+            "GOPATH": str(scratch / "go-path"),
+            "GOCACHE": str(scratch / "go-cache"),
+        }
+    )
+    run(["go", "mod", "tidy"], cwd=project, environment=environment)
+    run(["go", "test", "./..."], cwd=project, environment=environment)
+
+
+def smoke_rust(distribution: Path, scratch: Path) -> None:
+    crates = distribution / "crates"
+    order_path = distribution / "metadata/rust-publish-order-v1.txt"
+    if not regular(order_path):
+        fail("Rust publication order is absent")
+    order = order_path.read_text(encoding="utf-8").splitlines()
+    if not 1 <= len(order) <= 128 or len(order) != len(set(order)):
+        fail("Rust publication order is invalid")
+    unpacked = scratch / "rust-crates"
+    unpacked.mkdir()
+    roots: dict[str, Path] = {}
+    for name in order:
+        if not name.startswith("riffdb-") or not name.replace("-", "").isalnum():
+            fail("Rust publication order contains an invalid package name")
+        archive = crates / f"{name}-{VERSION}.crate"
+        if not regular(archive):
+            fail(f"Rust package artifact is absent: {name}")
+        roots[name] = safe_extract_crate(archive, unpacked, f"{name}-{VERSION}")
+    config = scratch / ".cargo/config.toml"
+    patches = ["[patch.crates-io]"]
+    for name in order:
+        patches.append(f'{name} = {{ path = "{roots[name]}" }}')
+    write(config, "\n".join(patches) + "\n")
+    project = scratch / "rust"
+    project.mkdir()
+    write(
+        project / "Cargo.toml",
+        "[package]\nname = \"riffdb-arrival\"\nversion = \"0.0.0\"\nedition = \"2024\"\n"
+        f"rust-version = \"1.97.0\"\n\n[dependencies]\nriffdb-client-rust = \"={VERSION}\"\n",
+    )
+    write(
+        project / "src/main.rs",
+        "fn main() {\n"
+        "    let attempts = riffdb_client_rust::AttemptBudget::new(1).expect(\"bounded\");\n"
+        "    assert_eq!(attempts.maximum_submissions(), 1);\n"
+        "}\n",
+    )
+    environment = os.environ.copy()
+    target_directory = Path(
+        environment.get("RIFFDB_ARRIVAL_TARGET_DIR", str(scratch / "rust-target"))
+    )
+    if not target_directory.is_absolute() or target_directory.is_symlink():
+        fail("Rust package-arrival target directory is unsafe")
+    target_directory.mkdir(parents=True, exist_ok=True)
+    environment.update(
+        {
+            "CARGO_NET_OFFLINE": "true",
+            "CARGO_TARGET_DIR": str(target_directory),
+        }
+    )
+    run(["cargo", "+1.97.0", "check", "--offline"], cwd=project, environment=environment)
+    install_root = scratch / "rust-install"
+    run(
+        [
+            "cargo",
+            "+1.97.0",
+            "install",
+            "--path",
+            str(roots["riffdb-cli"]),
+            "--root",
+            str(install_root),
+            "--offline",
+        ],
+        cwd=scratch,
+        environment=environment,
+    )
+    run([str(install_root / "bin/riffdb"), "--help"], cwd=scratch, environment=environment)
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--distribution", required=True, type=Path)
+    parser.add_argument("--allowed-signers", required=True, type=Path)
+    parser.add_argument("--identity", required=True)
+    parser.add_argument("--receipt", type=Path)
+    arguments = parser.parse_args()
+    distribution = arguments.distribution
+    if not distribution.is_absolute() or not distribution.is_dir() or distribution.is_symlink():
+        fail("distribution must be an absolute real directory")
+    if not arguments.allowed_signers.is_absolute() or not regular(arguments.allowed_signers):
+        fail("allowed signers must be an absolute regular file")
+    if arguments.receipt is not None and (
+        not arguments.receipt.is_absolute()
+        or arguments.receipt.exists()
+        or not arguments.receipt.parent.is_dir()
+    ):
+        fail("receipt must be a new absolute path under an existing directory")
+    run(
+        [
+            str(ROOT / "scripts/verify-driver-distributions"),
+            "--allowed-signers",
+            str(arguments.allowed_signers),
+            "--identity",
+            arguments.identity,
+            str(distribution),
+        ],
+        cwd=ROOT,
+    )
+    manifest = json.loads((distribution / "manifest-v1.json").read_text(encoding="utf-8"))
+    target = json.loads((distribution / "metadata/artifacts-v1.json").read_text(encoding="utf-8"))["target"]
+    selected = [item for item in manifest["platforms"] if item["target"] == target]
+    if len(selected) != 1:
+        fail("distribution target is outside its manifest")
+    expected_machine = {"x86_64": "x86_64-unknown-linux-gnu", "aarch64": "aarch64-unknown-linux-gnu"}.get(platform.machine())
+    if sys.platform != "linux" or expected_machine != target:
+        fail("package-arrival host does not match the distribution target")
+    scratch_root = Path(os.environ.get("RIFFDB_TMP_ROOT", str(Path.home() / "tmp")))
+    scratch_root.mkdir(parents=True, exist_ok=True)
+    scratch = Path(tempfile.mkdtemp(prefix="riffdb-driver-arrival-", dir=scratch_root))
+    checks: list[dict[str, object]] = []
+    try:
+        for name, operation in (
+            ("native", lambda: smoke_native(distribution, target, scratch)),
+            ("typescript", lambda: smoke_typescript(distribution, selected[0]["arch"], scratch)),
+            ("python", lambda: smoke_python(distribution, scratch)),
+            ("go", lambda: smoke_go(distribution, scratch)),
+            ("rust", lambda: smoke_rust(distribution, scratch)),
+        ):
+            started = time.monotonic_ns()
+            operation()
+            checks.append({"ecosystem": name, "status": "passed", "elapsed_ms": (time.monotonic_ns() - started) // 1_000_000})
+    finally:
+        shutil.rmtree(scratch, ignore_errors=True)
+    receipt = {
+        "schema": "riffdb.driver-package-arrival/v1",
+        "version": VERSION,
+        "target": target,
+        "checksums_sha256": sha256(distribution / "checksums.sha256"),
+        "signature_verified": True,
+        "repository_source_used": False,
+        "checks": checks,
+        "status": "passed",
+    }
+    if arguments.receipt is not None:
+        write(arguments.receipt, json.dumps(receipt, sort_keys=True, separators=(",", ":")) + "\n")
+    print(json.dumps(receipt, sort_keys=True, separators=(",", ":")))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

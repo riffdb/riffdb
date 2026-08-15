@@ -10,7 +10,7 @@ use riffdb_types::hash_event;
 
 const FIXTURE: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../fixtures/proto/durable-relationship-vectors.txt"
+    "/fixtures/durable-relationship-vectors.txt"
 ));
 
 #[test]

@@ -1,0 +1,566 @@
+#!/usr/bin/env python3
+"""Build the reproducible, unsigned WP-601 four-registry distribution set."""
+
+from __future__ import annotations
+
+import argparse
+import base64
+import gzip
+import hashlib
+import io
+import json
+import os
+from pathlib import Path, PurePosixPath
+import re
+import shutil
+import stat
+import subprocess
+import sys
+import tarfile
+import tempfile
+import time
+import zipfile
+
+
+ROOT = Path(__file__).resolve().parent.parent
+PLAN_PATH = ROOT / "release/distribution/manifest-v1.json"
+QUICKSTART_PATH = ROOT / "fixtures/driver/quickstart-v1.json"
+VERSION = "0.1.0"
+MAX_ARTIFACT_BYTES = 256 * 1024 * 1024
+MAX_REPOSITORY_FILES = 16_384
+
+
+def fail(message: str) -> None:
+    raise SystemExit(f"driver_distribution_build_failed: {message}")
+
+
+def run(command: list[str], *, cwd: Path = ROOT, env: dict[str, str] | None = None) -> str:
+    completed = subprocess.run(
+        command,
+        cwd=cwd,
+        env=env,
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    if completed.returncode != 0:
+        sys.stderr.write(completed.stdout)
+        sys.stderr.write(completed.stderr)
+        fail("command failed: " + " ".join(command))
+    return completed.stdout
+
+
+def sha256_bytes(content: bytes) -> str:
+    return hashlib.sha256(content).hexdigest()
+
+
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        while chunk := source.read(1024 * 1024):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def safe_relative(value: str) -> Path:
+    pure = PurePosixPath(value)
+    if pure.is_absolute() or not pure.parts or any(part in {"", ".", ".."} for part in pure.parts):
+        fail("unsafe repository path")
+    return Path(*pure.parts)
+
+
+def write(path: Path, content: bytes, mode: int = 0o644) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("xb") as destination:
+        destination.write(content)
+    path.chmod(mode)
+
+
+def canonical_json(value: object) -> bytes:
+    return (json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n").encode()
+
+
+def npm_archive(path: Path, files: dict[str, tuple[bytes, int]], epoch: int) -> None:
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w", format=tarfile.PAX_FORMAT) as archive:
+        for relative, (content, mode) in sorted(files.items()):
+            name = f"package/{relative}"
+            member = tarfile.TarInfo(name)
+            member.size = len(content)
+            member.mode = mode
+            member.uid = member.gid = 0
+            member.uname = member.gname = ""
+            member.mtime = epoch
+            archive.addfile(member, io.BytesIO(content))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("xb") as raw:
+        with gzip.GzipFile(filename="", mode="wb", fileobj=raw, mtime=epoch) as compressed:
+            compressed.write(buffer.getvalue())
+
+
+def npm_packages(output: Path, binary: Path, platform: dict[str, str], epoch: int) -> None:
+    arch = platform["arch"]
+    platform_name = f"@riffdb/cli-linux-{arch}"
+    platform_leaf = f"riffdb-cli-linux-{arch}-{VERSION}.tgz"
+    root_leaf = f"riffdb-cli-{VERSION}.tgz"
+    runtime_leaf = f"riffdb-client-{VERSION}.tgz"
+    binary_bytes = binary.read_bytes()
+    platform_package = {
+        "name": platform_name,
+        "version": VERSION,
+        "description": "Platform binary for the first-party RiffDB CLI",
+        "license": "MIT OR Apache-2.0",
+        "os": ["linux"],
+        "cpu": [arch],
+        "files": ["bin/riffdb", "README.md"],
+    }
+    npm_archive(
+        output / "npm" / platform_leaf,
+        {
+            "package.json": (canonical_json(platform_package), 0o644),
+            "bin/riffdb": (binary_bytes, 0o755),
+            "README.md": ((ROOT / "release/distribution/README.md").read_bytes(), 0o644),
+            "LICENSE-MIT": ((ROOT / "LICENSE-MIT").read_bytes(), 0o644),
+            "LICENSE-APACHE": ((ROOT / "LICENSE-APACHE").read_bytes(), 0o644),
+        },
+        epoch,
+    )
+    launcher = f"""#!/usr/bin/env node
+import {{ createRequire }} from "node:module";
+import {{ spawnSync }} from "node:child_process";
+const require = createRequire(import.meta.url);
+const key = `${{process.platform}}-${{process.arch}}`;
+const packages = {{ "linux-x64": "@riffdb/cli-linux-x64", "linux-arm64": "@riffdb/cli-linux-arm64" }};
+const selected = packages[key];
+if (selected === undefined) {{ console.error(`unsupported RiffDB alpha CLI platform: ${{key}}`); process.exit(1); }}
+let binary;
+try {{ binary = require.resolve(`${{selected}}/bin/riffdb`); }}
+catch {{ console.error(`missing RiffDB platform package ${{selected}}`); process.exit(1); }}
+const result = spawnSync(binary, process.argv.slice(2), {{ stdio: "inherit" }});
+if (result.error !== undefined) {{ console.error("failed to launch the RiffDB CLI"); process.exit(1); }}
+process.exit(result.status ?? 1);
+""".encode()
+    root_package = {
+        "name": "@riffdb/cli",
+        "version": VERSION,
+        "description": "Contract-first RiffDB application CLI",
+        "license": "MIT OR Apache-2.0",
+        "type": "module",
+        "bin": {"riffdb": "bin/riffdb.js"},
+        "files": ["bin/riffdb.js", "README.md"],
+        "optionalDependencies": {
+            "@riffdb/cli-linux-arm64": VERSION,
+            "@riffdb/cli-linux-x64": VERSION,
+        },
+        "engines": {"node": ">=22"},
+    }
+    npm_archive(
+        output / "npm" / root_leaf,
+        {
+            "package.json": (canonical_json(root_package), 0o644),
+            "bin/riffdb.js": (launcher, 0o755),
+            "README.md": ((ROOT / "release/distribution/README.md").read_bytes(), 0o644),
+            "LICENSE-MIT": ((ROOT / "LICENSE-MIT").read_bytes(), 0o644),
+            "LICENSE-APACHE": ((ROOT / "LICENSE-APACHE").read_bytes(), 0o644),
+        },
+        epoch,
+    )
+    runtime_package = {
+        "name": "@riffdb/client",
+        "version": VERSION,
+        "description": "First-party application runtime for the Rust-owned RiffDB driver host",
+        "license": "MIT OR Apache-2.0",
+        "type": "module",
+        "exports": {".": "./dist/index.js", "./operator": "./dist/operator.js"},
+        "types": "./dist/index.d.ts",
+        "files": ["dist", "README.md"],
+        "engines": {"node": ">=22"},
+    }
+    runtime_files: dict[str, tuple[bytes, int]] = {
+        "package.json": (canonical_json(runtime_package), 0o644),
+        "README.md": ((ROOT / "clients/typescript/runtime/README.md").read_bytes(), 0o644),
+        "LICENSE-MIT": ((ROOT / "LICENSE-MIT").read_bytes(), 0o644),
+        "LICENSE-APACHE": ((ROOT / "LICENSE-APACHE").read_bytes(), 0o644),
+    }
+    for source in sorted((ROOT / "clients/typescript/runtime/dist").iterdir()):
+        if source.is_file() and not source.is_symlink() and not source.name.endswith((".test.js", ".test.d.ts")):
+            runtime_files[f"dist/{source.name}"] = (source.read_bytes(), 0o644)
+    npm_archive(output / "npm" / runtime_leaf, runtime_files, epoch)
+
+
+def wheel_hash(content: bytes) -> str:
+    return base64.urlsafe_b64encode(hashlib.sha256(content).digest()).rstrip(b"=").decode()
+
+
+def wheel(path: Path, files: dict[str, tuple[bytes, int]], dist_info: str) -> None:
+    records = []
+    for relative, (content, _) in sorted(files.items()):
+        records.append(f"{relative},sha256={wheel_hash(content)},{len(content)}")
+    record_path = f"{dist_info}/RECORD"
+    records.append(f"{record_path},,")
+    files = {**files, record_path: (("\n".join(records) + "\n").encode(), 0o644)}
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(path, "x", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
+        for relative, (content, mode) in sorted(files.items()):
+            info = zipfile.ZipInfo(relative, (2025, 1, 1, 0, 0, 0))
+            info.compress_type = zipfile.ZIP_DEFLATED
+            info.create_system = 3
+            info.external_attr = (stat.S_IFREG | mode) << 16
+            archive.writestr(info, content)
+
+
+def python_packages(output: Path, binary: Path, runtime_wheel: Path, platform: dict[str, str]) -> None:
+    pypi = output / "pypi"
+    implementation = runtime_wheel.name
+    expected_arch = "x86_64" if platform["arch"] == "x64" else "aarch64"
+    if (
+        not implementation.startswith("riffdb_application-0.1.0-cp313-abi3-")
+        or not implementation.endswith(".whl")
+        or expected_arch not in implementation
+        or runtime_wheel.is_symlink()
+        or runtime_wheel.stat().st_size > MAX_ARTIFACT_BYTES
+    ):
+        fail("Python runtime wheel does not match the selected platform")
+    pypi.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(runtime_wheel, pypi / implementation)
+
+    cli_dist = "riffdb_cli-0.1.0.dist-info"
+    cli_name = f"riffdb_cli-0.1.0-py3-none-{platform['python_tag']}.whl"
+    wrapper = b"""from __future__ import annotations
+import os
+from pathlib import Path
+import sys
+
+def main() -> None:
+    binary = Path(__file__).resolve().parent / "bin" / "riffdb"
+    if not binary.is_file() or binary.is_symlink():
+        raise SystemExit("installed RiffDB CLI binary is absent or unsafe")
+    os.execv(binary, [str(binary), *sys.argv[1:]])
+"""
+    cli_metadata = f"""Metadata-Version: 2.3
+Name: riffdb-cli
+Version: {VERSION}
+Summary: Contract-first RiffDB application CLI
+License-Expression: MIT OR Apache-2.0
+Requires-Python: >=3.13
+""".encode()
+    wheel(
+        pypi / cli_name,
+        {
+            "riffdb_cli/__init__.py": (wrapper, 0o644),
+            "riffdb_cli/bin/riffdb": (binary.read_bytes(), 0o755),
+            f"{cli_dist}/METADATA": (cli_metadata, 0o644),
+            f"{cli_dist}/WHEEL": ((f"Wheel-Version: 1.0\nGenerator: riffdb-wp601\nRoot-Is-Purelib: false\nTag: py3-none-{platform['python_tag']}\n").encode(), 0o644),
+            f"{cli_dist}/entry_points.txt": (b"[console_scripts]\nriffdb = riffdb_cli:main\n", 0o644),
+            f"{cli_dist}/licenses/LICENSE-MIT": ((ROOT / "LICENSE-MIT").read_bytes(), 0o644),
+            f"{cli_dist}/licenses/LICENSE-APACHE": ((ROOT / "LICENSE-APACHE").read_bytes(), 0o644),
+        },
+        cli_dist,
+    )
+
+    meta_dist = "riffdb-0.1.0.dist-info"
+    meta_metadata = f"""Metadata-Version: 2.3
+Name: riffdb
+Version: {VERSION}
+Summary: Exact install alias for the first-party RiffDB Python application runtime
+License-Expression: MIT OR Apache-2.0
+Requires-Python: >=3.13
+Requires-Dist: riffdb-application =={VERSION}
+""".encode()
+    wheel(
+        pypi / "riffdb-0.1.0-py3-none-any.whl",
+        {
+            f"{meta_dist}/METADATA": (meta_metadata, 0o644),
+            f"{meta_dist}/WHEEL": (b"Wheel-Version: 1.0\nGenerator: riffdb-wp601\nRoot-Is-Purelib: true\nTag: py3-none-any\n", 0o644),
+            f"{meta_dist}/licenses/LICENSE-MIT": ((ROOT / "LICENSE-MIT").read_bytes(), 0o644),
+            f"{meta_dist}/licenses/LICENSE-APACHE": ((ROOT / "LICENSE-APACHE").read_bytes(), 0o644),
+        },
+        meta_dist,
+    )
+
+
+def go_proxy(output: Path, epoch: int) -> None:
+    module = "riffdb.dev/application"
+    version = "v0.1.0"
+    directory = output / "go-proxy" / module / "@v"
+    directory.mkdir(parents=True, exist_ok=True)
+    mod = (ROOT / "clients/go/runtime/go.mod").read_bytes()
+    write(directory / f"{version}.mod", mod)
+    timestamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(epoch))
+    write(directory / f"{version}.info", canonical_json({"Version": version, "Time": timestamp}))
+    with zipfile.ZipFile(directory / f"{version}.zip", "x", zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
+        files = {
+            "go.mod": mod,
+            "runtime.go": (ROOT / "clients/go/runtime/runtime.go").read_bytes(),
+            "README.md": (ROOT / "clients/go/runtime/README.md").read_bytes(),
+            "LICENSE-MIT": (ROOT / "LICENSE-MIT").read_bytes(),
+            "LICENSE-APACHE": (ROOT / "LICENSE-APACHE").read_bytes(),
+        }
+        for relative, content in sorted(files.items()):
+            info = zipfile.ZipInfo(f"{module}@{version}/{relative}", (2025, 1, 1, 0, 0, 0))
+            info.compress_type = zipfile.ZIP_DEFLATED
+            info.create_system = 3
+            info.external_attr = (stat.S_IFREG | 0o644) << 16
+            archive.writestr(info, content)
+    write(directory / "list", f"{version}\n".encode())
+
+
+def copy_repository(destination: Path) -> None:
+    output = run(["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard"])
+    names = output.split("\0")
+    if names and names[-1] == "":
+        names.pop()
+    if not 1 <= len(names) <= MAX_REPOSITORY_FILES:
+        fail("repository file inventory is outside the packaging bound")
+    for name in names:
+        relative = safe_relative(name)
+        source = ROOT / relative
+        if source.is_symlink() or not source.is_file():
+            fail(f"repository package input is not a regular file: {name}")
+        target = destination / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source, target)
+
+
+def rust_closure() -> tuple[list[str], dict[str, str]]:
+    metadata = json.loads(run(["cargo", "+1.97.0", "metadata", "--format-version", "1", "--locked"]))
+    packages = {package["id"]: package for package in metadata["packages"]}
+    by_name = {package["name"]: package["id"] for package in metadata["packages"] if package["source"] is None}
+    roots = [by_name["riffdb-cli"], by_name["riffdb-client-rust"]]
+    closure: set[str] = set()
+
+    def dependencies(package_id: str) -> list[str]:
+        result = []
+        for dependency in packages[package_id]["dependencies"]:
+            if dependency["kind"] == "dev" or dependency["source"] is not None:
+                continue
+            dependency_id = by_name.get(dependency["name"])
+            if dependency_id is None:
+                fail(f"first-party Rust dependency is absent from workspace metadata: {dependency['name']}")
+            result.append(dependency_id)
+        return sorted(set(result), key=lambda candidate: packages[candidate]["name"])
+
+    def visit(package_id: str) -> None:
+        if package_id in closure:
+            return
+        closure.add(package_id)
+        for dependency_id in dependencies(package_id):
+            visit(dependency_id)
+
+    for root in roots:
+        visit(root)
+    order: list[str] = []
+    temporary: set[str] = set()
+    permanent: set[str] = set()
+
+    def sort(package_id: str) -> None:
+        if package_id in permanent:
+            return
+        if package_id in temporary:
+            fail("workspace package dependency cycle")
+        temporary.add(package_id)
+        for dependency_id in dependencies(package_id):
+            if dependency_id in closure:
+                sort(dependency_id)
+        temporary.remove(package_id)
+        permanent.add(package_id)
+        order.append(packages[package_id]["name"])
+
+    for root in roots:
+        sort(root)
+    manifests = {packages[package_id]["name"]: packages[package_id]["manifest_path"] for package_id in closure}
+    return order, manifests
+
+
+def rust_packages(output: Path, scratch: Path) -> None:
+    order, manifests = rust_closure()
+    staged = scratch / "rust-workspace"
+    copy_repository(staged)
+    workspace = staged / "Cargo.toml"
+    content = workspace.read_text(encoding="utf-8")
+    marker = "publish = false"
+    if content.count(marker) != 1:
+        fail("workspace publish default is not the reviewed closed shape")
+    content = content.replace(marker, "publish = true", 1)
+    workspace.write_text(content, encoding="utf-8")
+    for name in order:
+        manifest = staged / Path(manifests[name]).relative_to(ROOT)
+        lines = manifest.read_text(encoding="utf-8").splitlines(keepends=True)
+        section = ""
+        normalized = []
+        for line in lines:
+            stripped = line.strip()
+            if stripped.startswith("[") and stripped.endswith("]"):
+                section = stripped
+            if section == "[dev-dependencies]" and re.match(r"^riffdb-[a-z0-9-]+\s*=", stripped):
+                line = re.sub(r'version\s*=\s*"0\.1\.0"\s*,\s*', "", line, count=1)
+                line = re.sub(r',\s*version\s*=\s*"0\.1\.0"', "", line, count=1)
+            normalized.append(line)
+        manifest.write_text("".join(normalized), encoding="utf-8")
+    environment = os.environ.copy()
+    environment["CARGO_NET_OFFLINE"] = "true"
+    environment["CARGO_TARGET_DIR"] = str(scratch / "cargo-target")
+    vendor = scratch / "cargo-vendor"
+    run(
+        [
+            "cargo",
+            "+1.97.0",
+            "vendor",
+            "--locked",
+            "--versioned-dirs",
+            str(vendor),
+        ],
+        cwd=staged,
+        env=environment,
+    )
+    source_arguments = [
+        "--config",
+        'source.crates-io.replace-with="wp601-vendored"',
+        "--config",
+        f'source.wp601-vendored.directory="{vendor}"',
+    ]
+    crates = output / "crates"
+    crates.mkdir(parents=True, exist_ok=True)
+    for name in order:
+        run(
+            [
+                "cargo",
+                "+1.97.0",
+                "package",
+                "-p",
+                name,
+                "--locked",
+                "--no-verify",
+                "--allow-dirty",
+                *source_arguments,
+            ],
+            cwd=staged,
+            env=environment,
+        )
+        packaged = scratch / "cargo-target" / "package" / f"{name}-{VERSION}.crate"
+        if not packaged.is_file() or packaged.is_symlink() or packaged.stat().st_size > MAX_ARTIFACT_BYTES:
+            fail(f"Rust package was not produced: {name}")
+        shutil.copyfile(packaged, crates / packaged.name)
+        package_directory = vendor / f"{name}-{VERSION}"
+        if package_directory.exists():
+            fail(f"Rust package unexpectedly already exists in local publication source: {name}")
+        with tarfile.open(packaged, "r:gz") as archive:
+            members = archive.getmembers()
+            expected_root = f"{name}-{VERSION}"
+            if not 1 <= len(members) <= MAX_REPOSITORY_FILES:
+                fail(f"Rust package file inventory is outside the bound: {name}")
+            for member in members:
+                pure = PurePosixPath(member.name)
+                if (
+                    pure.is_absolute()
+                    or not pure.parts
+                    or pure.parts[0] != expected_root
+                    or any(part in {"", ".", ".."} for part in pure.parts)
+                    or member.issym()
+                    or member.islnk()
+                    or member.isdev()
+                ):
+                    fail(f"Rust package contains an unsafe member: {name}")
+                if member.isfile() and member.size > MAX_ARTIFACT_BYTES:
+                    fail(f"Rust package member exceeds the size bound: {name}")
+            archive.extractall(vendor, filter="data")
+        checksums: dict[str, str] = {}
+        for source in sorted(package_directory.rglob("*")):
+            if source.is_symlink() or not source.is_file():
+                continue
+            relative = source.relative_to(package_directory).as_posix()
+            checksums[relative] = sha256_file(source)
+        write(
+            package_directory / ".cargo-checksum.json",
+            canonical_json({"files": checksums, "package": sha256_file(packaged)}),
+        )
+    write(output / "metadata/rust-publish-order-v1.txt", ("\n".join(order) + "\n").encode())
+
+
+def artifact_inventory(output: Path, revision: str, target: str, clean: bool) -> None:
+    artifacts = []
+    for path in sorted(output.rglob("*")):
+        if not path.is_file() or path.is_symlink():
+            continue
+        relative = path.relative_to(output).as_posix()
+        if relative in {"checksums.sha256", "checksums.sha256.sig", "metadata/artifacts-v1.json"}:
+            continue
+        size = path.stat().st_size
+        if size < 1 or size > MAX_ARTIFACT_BYTES:
+            fail(f"artifact size is outside the bound: {relative}")
+        artifacts.append({"path": relative, "sha256": sha256_file(path), "bytes": size})
+    receipt = {
+        "schema": "riffdb.driver-distribution-artifacts/v1",
+        "version": VERSION,
+        "revision": revision,
+        "target": target,
+        "source_clean": clean,
+        "artifacts": artifacts,
+        "secrets_included": False,
+    }
+    write(output / "metadata/artifacts-v1.json", canonical_json(receipt))
+    lines = []
+    for path in sorted(output.rglob("*")):
+        if path.is_file() and not path.is_symlink() and path.name not in {"checksums.sha256", "checksums.sha256.sig"}:
+            lines.append(f"{sha256_file(path)}  {path.relative_to(output).as_posix()}")
+    write(output / "checksums.sha256", ("\n".join(lines) + "\n").encode())
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--output", required=True, type=Path)
+    parser.add_argument("--binary-dir", required=True, type=Path)
+    parser.add_argument("--python-wheel", required=True, type=Path)
+    parser.add_argument("--target", required=True)
+    parser.add_argument("--allow-dirty", action="store_true")
+    arguments = parser.parse_args()
+    if not arguments.output.is_absolute() or arguments.output.exists() or not arguments.output.parent.is_dir():
+        fail("output must be a new absolute path under an existing parent")
+    if not arguments.binary_dir.is_absolute() or not arguments.binary_dir.is_dir() or arguments.binary_dir.is_symlink():
+        fail("binary directory must be an absolute real directory")
+    if not arguments.python_wheel.is_absolute() or not arguments.python_wheel.is_file() or arguments.python_wheel.is_symlink():
+        fail("Python wheel must be an absolute regular file")
+    plan = json.loads(PLAN_PATH.read_text(encoding="utf-8"))
+    selected = [entry for entry in plan["platforms"] if entry["target"] == arguments.target]
+    if len(selected) != 1:
+        fail("target is outside the reviewed alpha platform matrix")
+    platform = selected[0]
+    binary = arguments.binary_dir / "riffdb"
+    if not binary.is_file() or binary.is_symlink() or not os.access(binary, os.X_OK):
+        fail("riffdb release binary is absent or unsafe")
+    status = run(["git", "status", "--porcelain=v1", "--untracked-files=all"])
+    clean = status == ""
+    if not clean and not arguments.allow_dirty:
+        fail("release distribution requires a clean revision")
+    revision = run(["git", "rev-parse", "HEAD"]).strip()
+    epoch = int(os.environ.get("SOURCE_DATE_EPOCH", "1735689600"))
+    scratch_root = Path(os.environ.get("RIFFDB_TMP_ROOT", str(Path.home() / "tmp")))
+    scratch_root.mkdir(parents=True, exist_ok=True)
+    temporary = Path(tempfile.mkdtemp(prefix="riffdb-driver-distribution-", dir=scratch_root))
+    staged = temporary / "distribution"
+    staged.mkdir()
+    try:
+        write(staged / "manifest-v1.json", PLAN_PATH.read_bytes())
+        write(staged / "durable-format-manifest-v1.json", (ROOT / "release/durable-format-manifest-v1.json").read_bytes())
+        write(staged / "quickstart-v1.json", QUICKSTART_PATH.read_bytes())
+        write(staged / "README.md", (ROOT / "release/distribution/README.md").read_bytes())
+        write(staged / "LICENSE-MIT", (ROOT / "LICENSE-MIT").read_bytes())
+        write(staged / "LICENSE-APACHE", (ROOT / "LICENSE-APACHE").read_bytes())
+        write(staged / "COPYRIGHT", (ROOT / "COPYRIGHT").read_bytes())
+        write(staged / "install/riffdb-install", (ROOT / "release/distribution/install-riffdb").read_bytes(), 0o755)
+        write(staged / f"bin/{arguments.target}/riffdb", binary.read_bytes(), 0o755)
+        npm_packages(staged, binary, platform, epoch)
+        python_packages(staged, binary, arguments.python_wheel, platform)
+        go_proxy(staged, epoch)
+        rust_packages(staged, temporary)
+        artifact_inventory(staged, revision, arguments.target, clean)
+        staged.rename(arguments.output)
+    finally:
+        shutil.rmtree(temporary, ignore_errors=True)
+    print(f"built unsigned RiffDB driver distributions at {arguments.output}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

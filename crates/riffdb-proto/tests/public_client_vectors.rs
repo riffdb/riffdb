@@ -11,15 +11,15 @@ use riffdb_proto::{
 
 const VECTORS: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../fixtures/proto/public-client-vectors.txt"
+    "/fixtures/public-client-vectors.txt"
 ));
 const VECTOR_WIRE_BOUNDARIES: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../fixtures/proto/vector-wire-boundaries-v1.txt"
+    "/fixtures/vector-wire-boundaries-v1.txt"
 ));
 const PRE_WP137_PUBLIC_SCHEMA_HASHES: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../fixtures/proto/pre-wp137-public-schema-hashes.txt"
+    "/fixtures/pre-wp137-public-schema-hashes.txt"
 ));
 const REGISTRY_HEADER: &str = "riffdb-public-client-registry-v1";
 

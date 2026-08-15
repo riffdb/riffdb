@@ -13,11 +13,11 @@ use riffdb_types::hash_schema;
 
 const FULL_CATALOG: &[u8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../fixtures/proto/operation-schema-catalog-full-v1.bin"
+    "/fixtures/operation-schema-catalog-full-v1.bin"
 ));
 const IDENTITY_CATALOG: &[u8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../fixtures/proto/operation-schema-catalog-identity-v1.bin"
+    "/fixtures/operation-schema-catalog-identity-v1.bin"
 ));
 
 fn request_id() -> Vec<u8> {
@@ -656,7 +656,7 @@ fn trace_selector_must_match_the_found_provenance() {
     };
     let fixture_line = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../fixtures/proto/public-client-vectors.txt"
+        "/fixtures/public-client-vectors.txt"
     ))
     .lines()
     .find(|line| line.starts_with("CommitService.TraceProvenance response found "))

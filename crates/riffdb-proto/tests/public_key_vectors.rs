@@ -5,7 +5,7 @@ use riffdb_types::{EntityKey, IndexEntryKey, PartitionKey};
 
 const VECTORS: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../fixtures/proto/public-key-envelope-vectors.txt"
+    "/fixtures/public-key-envelope-vectors.txt"
 ));
 
 fn uuid_v7() -> Vec<u8> {

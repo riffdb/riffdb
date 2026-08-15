@@ -12,11 +12,11 @@ use riffdb_types::hash_schema;
 
 const PUBLIC_SCHEMA_HASHES: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../fixtures/proto/public-schema-hashes.txt"
+    "/fixtures/public-schema-hashes.txt"
 ));
 const PRE_WP137_PUBLIC_SCHEMA_HASHES: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../fixtures/proto/pre-wp137-public-schema-hashes.txt"
+    "/fixtures/pre-wp137-public-schema-hashes.txt"
 ));
 
 fn descriptors() -> FileDescriptorSet {
