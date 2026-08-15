@@ -1,0 +1,26 @@
+{
+  "schema": "riffdb-agent-application-alpha-gate/v3",
+  "work_package": "WP-579",
+  "requirement": "AAA-012",
+  "campaign_id": "campaign-03",
+  "campaign_manifest": {
+    "path": "evaluations/agent-application-alpha/campaigns/campaign-03.json",
+    "sha256": "eee40b2826e191acebb72012b02f3f791c103f010fc95f5edddae1fff5db4e53"
+  },
+  "bundle_hash": "18cacb2b44ce59fb4ff6c06ab0603c72a0cfba19829d6d2c4197e0c8ca123d71",
+  "decision": "eligible",
+  "sealed_bundle_self_test": "passed",
+  "independent_runs_completed": 6,
+  "independent_runs_required": 6,
+  "thresholds": {
+    "handwritten_glue_lines": 0,
+    "human_interventions": 0,
+    "kernel_successes": 0,
+    "maximum_first_page_read_seconds": 3600,
+    "maximum_first_write_seconds": 1800,
+    "minimum_rating": 8.5,
+    "prohibited_source_access": true,
+    "unresolved_required_shapes": 0
+  },
+  "reason": "Six fresh independent package-first evaluations covered Blog in Go, Rust, and TypeScript and Orders in Python, Rust, and TypeScript. Every run completed through generated application bindings from one signed sealed distribution, qualified a non-replayed command and an exactly fenced page read, passed its complete workload and application boundary, used no kernel or implementation source access, required no intervention or handwritten RiffDB transport glue, reported no unsupported shape, and independently rated the experience from 9.2 to 10 out of 10."
+}
