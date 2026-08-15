@@ -213,6 +213,11 @@ fn development_runners_bind_native_configuration_and_sealed_typescript_tooling()
         fs::read_to_string(root.join("scripts/riffdb-dev-installed")).expect("installed runner");
     assert!(installed.contains("tooling/typescript/bin:$PATH"));
     assert!(installed.contains("tooling/typescript/node_modules"));
+    assert!(
+        installed.contains("if ! \"${operator[@]}\" role bind"),
+        "the installed dev runner must not let set -e discard a role-bind failure"
+    );
+    assert!(installed.contains("cat \"$work_root/role.json\" >&2"));
 
     let sealer = fs::read_to_string(root.join("scripts/agent-application-alpha-package-first"))
         .expect("package-first sealer");
