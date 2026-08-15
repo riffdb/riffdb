@@ -26,6 +26,11 @@ const OUTPUT_RENDER_FAILED: &[u8] =
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum CommandIdentity {
+    ProjectInit,
+    ProjectPush,
+    ProjectGenerate,
+    ProjectStatus,
+    ProjectDiff,
     ApplicationConformance,
     ApplicationLock,
     ApplicationInstall,
@@ -103,6 +108,11 @@ pub(crate) enum CommandIdentity {
 impl CommandIdentity {
     pub(crate) const fn as_str(self) -> &'static str {
         match self {
+            Self::ProjectInit => "project.init",
+            Self::ProjectPush => "project.push",
+            Self::ProjectGenerate => "project.generate",
+            Self::ProjectStatus => "project.status",
+            Self::ProjectDiff => "project.diff",
             Self::ApplicationConformance => "application.conformance",
             Self::ApplicationLock => "application.lock",
             Self::ApplicationInstall => "application.install",
@@ -2893,6 +2903,28 @@ mod tests {
     #[derive(Serialize)]
     struct Status<'a> {
         status: &'a str,
+    }
+
+    #[test]
+    fn database_workflow_commands_have_stable_machine_identities() {
+        let cases = [
+            (CommandIdentity::ProjectInit, "project.init"),
+            (CommandIdentity::ProjectPush, "project.push"),
+            (CommandIdentity::ProjectGenerate, "project.generate"),
+            (CommandIdentity::ProjectStatus, "project.status"),
+            (CommandIdentity::ProjectDiff, "project.diff"),
+        ];
+
+        for (command, expected) in cases {
+            let terminal = success(command, "checked", &Status { status: "exact" });
+            let document: JsonValue = serde_json::from_slice(
+                terminal
+                    .json_bytes()
+                    .expect("database workflow output renders"),
+            )
+            .expect("database workflow output is JSON");
+            assert_eq!(document["command"], expected);
+        }
     }
 
     #[test]

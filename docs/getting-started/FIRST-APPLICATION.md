@@ -1,5 +1,10 @@
 # Your First Application
 
+This page documents the self-contained application scaffold. To add RiffDB to
+an existing project with `riffdb.toml`, an empty schema, database-shaped verbs,
+and selected SDK targets, use the [Database-Shaped Project
+Workflow](DATABASE-WORKFLOW.md).
+
 This walkthrough creates the small generated `Item` application, runs it on a
 disposable RiffDB database, and shows where source intent becomes an exact
 reviewed application.
