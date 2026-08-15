@@ -281,7 +281,12 @@ fn ordered_layout_registry_has_one_closed_witness_slot_per_layout() {
         ),
         (
             "DeletePolicySchemaV1",
-            vec!["target_entity", "mode", "restrict_payload"],
+            vec![
+                "target_entity",
+                "mode",
+                "restrict_payload",
+                "cascade_payload",
+            ],
         ),
         (
             "VectorFieldSpecV1",
@@ -465,6 +470,7 @@ fn ordered_layout_registry_has_one_closed_witness_slot_per_layout() {
                 "complete_record_access",
                 "failure",
                 "restriction_failure",
+                "cascade_failure",
             ],
         ),
         (
@@ -489,6 +495,7 @@ fn ordered_layout_registry_has_one_closed_witness_slot_per_layout() {
                 "mode",
                 "restrict_source_entity",
                 "restrict_index",
+                "cascade_payload",
             ],
         ),
         (

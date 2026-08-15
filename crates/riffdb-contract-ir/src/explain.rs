@@ -633,6 +633,19 @@ impl CommandExplain {
                         index_id.get()
                     );
                 }
+                DeleteCheckModeV1::Cascade { relationships } => {
+                    let maximum = relationships
+                        .iter()
+                        .map(|relationship| u32::from(relationship.maximum()))
+                        .sum::<u32>();
+                    let _ = writeln!(
+                        output,
+                        "delete:binding={} policy=cascade relationships={} child-maximum={} transaction-current-bounded:true canonical-order:true",
+                        check.binding().get(),
+                        relationships.len(),
+                        maximum
+                    );
+                }
             }
         }
         for unique in &self.unique_conflicts {

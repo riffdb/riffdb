@@ -219,6 +219,26 @@ pub enum DeletePolicyDeclaration {
         /// Exact declared reverse-reference index.
         index: Spanned<String>,
     },
+    /// Every direct inbound relationship is deleted under compiler-fixed bounds.
+    Cascade {
+        /// Exhaustive direct inbound relationships in source order.
+        relationships: Vec<Spanned<CascadeRelationshipDeclaration>>,
+    },
+}
+
+/// One exact direct inbound relationship admitted by a cascade policy.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CascadeRelationshipDeclaration {
+    /// Entity containing the inbound relationship.
+    pub source_entity: Spanned<String>,
+    /// Exact relationship declared on `source_entity`.
+    pub relationship: Spanned<String>,
+    /// Entity qualifying the exact reverse index.
+    pub index_entity: Spanned<String>,
+    /// Exact reverse index declared on `source_entity`.
+    pub index: Spanned<String>,
+    /// Compiler-fixed maximum rows discovered through this relationship.
+    pub maximum: Spanned<String>,
 }
 
 /// The typed fields forming an entity key.
@@ -604,6 +624,11 @@ pub struct EntityBinding {
     /// This clause is accepted only on a delete binding whose entity declares a
     /// `restrict` deletion policy. Semantic validation rejects it everywhere else.
     pub restriction_failure: Option<Spanned<OutcomeExpression>>,
+    /// The outcome returned when bounded cascade discovery observes `maximum + 1` rows.
+    ///
+    /// This clause is accepted only on a delete binding whose entity declares a
+    /// `cascade` deletion policy. Semantic validation rejects it everywhere else.
+    pub cascade_failure: Option<Spanned<OutcomeExpression>>,
 }
 
 /// A named business precondition and rejection outcome.
