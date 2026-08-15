@@ -39,6 +39,24 @@ diff -ru "$work_root/rust-one" "$work_root/rust-two"
     "$work_root/python" \
     "$repo_root/examples/agent-alpha"
 
+# Application-owned build and dependency trees contain generated transport
+# internals from the reviewed driver packages. They are outputs, not
+# handwritten application source, and must not create false boundary failures.
+mkdir -p "$work_root/rust-one/target/debug/build/riffdb-api-grpc-test/out"
+printf '%s\n' 'fn generated() { tonic::transport::Channel::from_static("http://unused"); }' \
+    >"$work_root/rust-one/target/debug/build/riffdb-api-grpc-test/out/riffdb.v1.rs"
+mkdir -p "$work_root/typescript/node_modules/@riffdb/client"
+printf '%s\n' 'const generated = "GetEntityRequest";' \
+    >"$work_root/typescript/node_modules/@riffdb/client/index.js"
+mkdir -p "$work_root/python/.venv/lib/python/site-packages"
+printf '%s\n' 'import grpc' \
+    >"$work_root/python/.venv/lib/python/site-packages/generated.py"
+"$repo_root/scripts/check-application-boundary" \
+    "$work_root/rust-one" \
+    "$work_root/typescript" \
+    "$work_root/python"
+rm -rf "$work_root/python/.venv"
+
 if "$riffdb" new order-desk --directory "$work_root/rust-one"; then
     echo "riffdb new unexpectedly overwrote an existing application" >&2
     exit 1
@@ -81,7 +99,7 @@ cp "$repo_root/docs/contracts/examples/museum/riffdb.application.json" \
     "$work_root/existing-empty/riffdb.application.json"
 (
     cd "$work_root/existing-empty"
-    "$riffdb" application check
+    "$riffdb" application check --source-only
     "$riffdb" application lock --write
     "$riffdb" application lock --check
 )

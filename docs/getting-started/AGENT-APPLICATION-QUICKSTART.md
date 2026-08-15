@@ -216,7 +216,11 @@ scripts/check-application-boundary .
 Generated bindings contain a compiler marker and are the only files allowed to
 contain protocol adaptation. That exception is narrow: application authors
 cannot obtain a trusted marker by moving handwritten code into the generated
-tree.
+tree. The check examines application manifests and source, while ignoring the
+standard package/build output trees `target/`, `node_modules/`, and `.venv/`.
+Those trees may contain generated transport internals supplied by reviewed
+driver packages; handwritten application source remains checked regardless of
+which supported language it uses.
 
 Administrative and kernel credentials remain separate from the generated
 application role. The normal scaffold has no kernel dependency, feature, role,
