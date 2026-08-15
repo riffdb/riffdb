@@ -33,6 +33,9 @@ fn final_gate_has_one_closed_phase_inventory() {
 
     let gate = std::fs::read_to_string(root.join("scripts/deployable-alpha-acceptance"))
         .expect("read final gate");
+    assert!(gate.contains("\"endurance_binding\""));
+    assert!(gate.contains("--bind-release-receipt"));
+    assert!(gate.contains("alpha-endurance-inventory-v1.json"));
     let driver =
         std::fs::read_to_string(root.join("scripts/driver-conformance")).expect("read driver gate");
     let row_policy = std::fs::read_to_string(root.join("scripts/adapter-row-policy-acceptance"))
@@ -47,4 +50,45 @@ fn final_gate_has_one_closed_phase_inventory() {
             "Payload must remain a post-alpha regression instead of an alpha row-policy domain",
         );
     }
+}
+
+#[test]
+fn final_gate_metadata_closes_post_freeze_safety_extensions() {
+    let root = repository_root();
+    let packages = std::fs::read_to_string(root.join("work_packages.yaml"))
+        .expect("read work-package registry");
+    let package = packages
+        .split_once("- id: WP-579\n")
+        .expect("WP-579 must remain registered")
+        .1
+        .split("\n- id: WP-")
+        .next()
+        .expect("WP-579 block must be bounded");
+
+    for dependency in ["WP-597", "WP-598", "WP-600"] {
+        assert!(
+            package.contains(dependency),
+            "WP-579 omits gate-critical dependency {dependency}"
+        );
+    }
+    for requirement in [
+        "SECF-001", "SECF-002", "SECF-003", "SECF-004", "SECF-005", "END-011",
+    ] {
+        assert!(
+            package.contains(requirement),
+            "WP-579 omits gate-critical requirement {requirement}"
+        );
+    }
+    for decision in ["ADR-0117", "ADR-0118", "ADR-0119"] {
+        assert!(
+            package.contains(decision),
+            "WP-579 omits gate-critical decision {decision}"
+        );
+    }
+
+    let roadmap =
+        std::fs::read_to_string(root.join("docs/architecture/DEPLOYABLE-APPLICATION-ALPHA.md"))
+            .expect("read deployable-alpha roadmap");
+    assert!(roadmap.contains("Framework and secret safety"));
+    assert!(roadmap.contains("WP-597–WP-598, WP-600"));
 }

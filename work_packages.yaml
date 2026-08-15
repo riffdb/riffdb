@@ -10987,7 +10987,8 @@ work_packages:
     EXP-001, EXP-002, EXP-003, EXP-004, EXP-005, EXP-006, EXP-007, EXP-008,
     EXP-009, EXP-010, EXP-011, EXP-012, EXP-013, EXP-014]
   required_adrs: [ADR-0007, ADR-0055, ADR-0057, ADR-0065, ADR-0072,
-    ADR-0080, ADR-0110, ADR-0111, ADR-0112, ADR-0114, ADR-0115, ADR-0116]
+    ADR-0080, ADR-0110, ADR-0111, ADR-0112, ADR-0114, ADR-0115, ADR-0116,
+    ADR-0118, ADR-0119]
   allowed_paths: [Cargo.lock, SPEC.md, work_packages.yaml, proto/**, fixtures/proto/**,
     fixtures/export/**, crates/riffdb-types/**, crates/riffdb-auth/**,
     crates/riffdb-policy/**, crates/riffdb-service/**, crates/riffdb-storage-api/**,
@@ -11125,7 +11126,8 @@ work_packages:
     SAFE-008, PERF-001, PERF-003, PERF-004, PERF-007, PERF-008, PERF-013,
     PERF-014, REC-001, REC-002, STO-001, STO-002, END-009, END-010, END-011]
   required_adrs: [ADR-0050, ADR-0080, ADR-0082, ADR-0085, ADR-0101,
-    ADR-0103, ADR-0104, ADR-0110, ADR-0111, ADR-0112, ADR-0115, ADR-0116]
+    ADR-0103, ADR-0104, ADR-0110, ADR-0111, ADR-0112, ADR-0115, ADR-0116,
+    ADR-0118, ADR-0119]
   allowed_paths: [SPEC.md, work_packages.yaml, fixtures/adapters/**,
     fixtures/endurance/**, examples/**, benchmarks/**, tests/**, scripts/**,
     docs/**, release/evidence/**, .github/**,
@@ -11152,8 +11154,11 @@ work_packages:
     interference, missing lifecycle coverage, or an invalid observation makes the 72-hour run fail
   acceptance_commands:
   - ./scripts/alpha-endurance --duration-hours 72 --all-domains --all-languages --remote --require-idle-host --require-all-lifecycles
+  - ./scripts/adapter-conformance --all-domains --all-languages
   - ./scripts/adapter-export-reimport-acceptance --all-domains --all-languages
   - ./scripts/adapter-disaster-recovery-acceptance --all-domains --remote
+  - ./scripts/alpha-endurance --bind-release-receipt release/evidence/alpha-endurance-v1.json --release-evidence-inventory release/evidence/alpha-endurance-inventory-v1.json --output release/evidence/alpha-endurance-v1.json
+  - ./scripts/alpha-endurance --verify-release-receipt release/evidence/alpha-endurance-v1.json
   - ./scripts/check-application-bindings
   - ./scripts/check-durable-format-manifest
   - ./scripts/check-generated
@@ -11171,7 +11176,8 @@ work_packages:
 - id: WP-579
   name: Deployable Application Alpha release gate
   depends_on: [WP-421, WP-490, WP-493, WP-494, WP-496, WP-551, WP-552, WP-558,
-    WP-562, WP-565, WP-567, WP-569, WP-573, WP-574, WP-575, WP-576, WP-578]
+    WP-562, WP-565, WP-567, WP-569, WP-573, WP-574, WP-575, WP-576, WP-578,
+    WP-597, WP-598, WP-600]
   objective: Close the first alpha release with installed, remote, multi-language, adapter-shaped,
     upgrade, rotation, correctness, recovery, security, performance, and documentation evidence
     over only generated and public symbolic application surfaces.
@@ -11198,12 +11204,13 @@ work_packages:
     AFC-009, AFC-010, AFC-011, AFC-012,
     EXP-001, EXP-002, EXP-003, EXP-004, EXP-005, EXP-006, EXP-007, EXP-008,
     EXP-009, EXP-010, EXP-011, EXP-012, EXP-013, EXP-014,
+    SECF-001, SECF-002, SECF-003, SECF-004, SECF-005,
     END-001, END-002, END-003, END-004, END-005, END-006, END-007, END-008,
-    END-009, END-010]
+    END-009, END-010, END-011]
   required_adrs: [ADR-0055, ADR-0056, ADR-0065, ADR-0074, ADR-0076, ADR-0079,
     ADR-0080, ADR-0101, ADR-0102, ADR-0103, ADR-0104, ADR-0105, ADR-0106,
     ADR-0107, ADR-0108, ADR-0109, ADR-0110, ADR-0111, ADR-0112, ADR-0114,
-    ADR-0115, ADR-0116]
+    ADR-0115, ADR-0116, ADR-0117, ADR-0118, ADR-0119]
   allowed_paths: [SPEC.md, PLAN.md, work_packages.yaml, Cargo.lock, crates/**, proto/**,
     clients/**, fixtures/**, fuzz/**, tests/**, examples/**, benchmarks/**, scripts/**,
     templates/**, docs/**, release/**, .github/**]
@@ -11238,6 +11245,7 @@ work_packages:
   - ./scripts/adapter-row-policy-acceptance --all-languages --domains better-auth,mlflow
   - ./scripts/adapter-export-reimport-acceptance --all-domains --all-languages
   - ./scripts/adapter-disaster-recovery-acceptance --all-domains --remote
+  - ./scripts/alpha-endurance --bind-release-receipt release/evidence/alpha-endurance-v1.json --release-evidence-inventory release/evidence/alpha-endurance-inventory-v1.json --output release/evidence/alpha-endurance-v1.json
   - ./scripts/alpha-endurance --verify-release-receipt release/evidence/alpha-endurance-v1.json
   - ./scripts/check-durable-format-manifest
   - ./benchmarks/run-app-baseline --full --load interactive --load-concurrency-sweep --postgres-comparator safe-app --reps 3 --require-stable

@@ -40,6 +40,32 @@ for domain in openfga mlflow better-auth woodpecker; do
     done
 done
 
-./scripts/remote-compose-acceptance --backup-restore
+receipt_root="$(mktemp -d "$task_tmp_root/riffdb-alpha-disaster-evidence.XXXXXX")"
+RIFFDB_DISASTER_RECEIPT_ROOT="$receipt_root" \
+    ./scripts/remote-compose-acceptance --backup-restore
+
+mapfile -t receipts < <(find "$receipt_root" -maxdepth 1 -type f -name '*.json' -print)
+if [[ "${#receipts[@]}" -ne 1 ]]; then
+    echo "adapter disaster recovery emitted an invalid receipt inventory" >&2
+    exit 1
+fi
+jq -e '
+    .schema == "riffdb.adapter-disaster-receipt/v1"
+    and (.adapters | sort) == (["better-auth", "mlflow", "openfga", "woodpecker"] | sort)
+    and .startup_validation == "succeeded"
+    and .secrets_included == false
+    and (.backup_operation_id | type) == "string"
+    and (.restore_operation_id | type) == "string"
+    and (.backup_manifest_sha256 | test("^[0-9a-f]{64}$"))
+    and (.adapter_observation_sha256 | test("^[0-9a-f]{64}$"))
+' "${receipts[0]}" >/dev/null
+
+release_evidence_root="$repo_root/release/evidence/alpha"
+mkdir -p "$release_evidence_root"
+destination="$release_evidence_root/disaster-recovery-v1.json"
+pending="$destination.$$.pending"
+cp "${receipts[0]}" "$pending"
+chmod 0600 "$pending"
+mv -f "$pending" "$destination"
 
 echo "OpenFGA, MLflow, Better Auth, and Woodpecker passed remote destructive backup/restore reconciliation."

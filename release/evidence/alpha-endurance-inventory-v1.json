@@ -1,0 +1,26 @@
+{
+  "schema": "riffdb.alpha-endurance-release-inventory/v1",
+  "durable_format": "release/durable-format-manifest-v1.json",
+  "adapters": {
+    "better-auth": {
+      "export_reimport": "release/evidence/alpha/export-reimport-better-auth-v1.json",
+      "disaster_recovery": "release/evidence/alpha/disaster-recovery-v1.json",
+      "conformance": "release/evidence/alpha/conformance-better-auth-v1.json"
+    },
+    "mlflow": {
+      "export_reimport": "release/evidence/alpha/export-reimport-mlflow-v1.json",
+      "disaster_recovery": "release/evidence/alpha/disaster-recovery-v1.json",
+      "conformance": "release/evidence/alpha/conformance-mlflow-v1.json"
+    },
+    "openfga": {
+      "export_reimport": "release/evidence/alpha/export-reimport-openfga-v1.json",
+      "disaster_recovery": "release/evidence/alpha/disaster-recovery-v1.json",
+      "conformance": "release/evidence/alpha/conformance-openfga-v1.json"
+    },
+    "woodpecker": {
+      "export_reimport": "release/evidence/alpha/export-reimport-woodpecker-v1.json",
+      "disaster_recovery": "release/evidence/alpha/disaster-recovery-v1.json",
+      "conformance": "release/evidence/alpha/conformance-woodpecker-v1.json"
+    }
+  }
+}

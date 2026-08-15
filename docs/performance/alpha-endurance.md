@@ -308,10 +308,15 @@ hand-editing the raw receipt:
 
 ```bash
 ./scripts/alpha-endurance \
-  --bind-release-receipt target/alpha-endurance/run/raw-receipt-v1.json \
+  --bind-release-receipt release/evidence/alpha-endurance-v1.json \
   --release-evidence-inventory release/evidence/alpha-endurance-inventory-v1.json \
   --output release/evidence/alpha-endurance-v1.json
 ```
+
+The input is the outer harness receipt, not the controller's diagnostic
+`raw-receipt-v1.json`: only the outer receipt carries the independently sampled
+preflight and postflight host-validity records. Binding may atomically replace
+that same outer receipt after the adapter evidence phases have passed.
 
 The inventory uses schema
 `riffdb.alpha-endurance-release-inventory/v1`, fixes the durable-format path to
