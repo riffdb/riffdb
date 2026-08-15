@@ -7,12 +7,19 @@ material in a private directory selected by `RIFFDB_CONTAINER_ROOT`. Set
 directory (the acceptance script uses the invoking user). The
 certificate must contain `riffdbd` as a DNS SAN. Copy the three TOML templates
 into that directory and keep credentials and private keys mode `0600`.
+The image normalizes the installed binary modes before switching to the
+non-root runtime identity, so the build host's umask does not affect startup.
+When `docker` is backed by rootless Podman, the acceptance harness adds a
+temporary `keep-id` override for the three RiffDB containers; the checked
+Compose file remains directly compatible with Docker Engine.
 
 `riffdbd` alone mounts the database, backup volume, digest keys, and TLS private
 key. `application-probe` mounts only its application credential, client
 configuration, and CA. `operator-probe` mounts a distinct operator credential.
 The HAProxy sibling performs TCP pass-through and cannot assert a RiffDB
-principal, database, or tenant.
+principal, database, or tenant. It re-resolves the database service through the
+container runtime's resolver so a replacement container cannot leave the proxy
+pinned to a stale address.
 
 Bring up the database and proxy, perform the one-time bootstrap from the
 database container's own loopback namespace into the protected `bootstrap/`
