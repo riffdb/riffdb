@@ -334,7 +334,8 @@ impl RiffDbServerSession {
         // Ticket entity on the next process open. Query module + runner capability
         // are issued after the projection-enabled restart (avoids MODULE_UNAVAILABLE
         // from a pre-restart module identity that is not re-bound on reopen).
-        let status_ids = bootstrap_and_deploy_contract(&mut client, &retained).await?;
+        let (status_ids, contract_bundle_hash) =
+            bootstrap_and_deploy_contract(&mut client, &retained).await?;
         // History incarnation for a fresh DB is 1; Causal tokens bind it.
         let history_incarnation = 1_u64;
         phase1
@@ -368,6 +369,7 @@ impl RiffDbServerSession {
             &endpoint,
             &token,
             status_ids,
+            contract_bundle_hash,
             module_hash,
             history_incarnation,
         )
@@ -525,7 +527,7 @@ impl RiffDbServerSession {
 async fn bootstrap_and_deploy_contract(
     client: &mut RiffDbClient,
     credential: &RetainedBootstrapCredential,
-) -> Result<TicketStatusEnumIds, RiffDbError> {
+) -> Result<(TicketStatusEnumIds, [u8; 32]), RiffDbError> {
     let token = std::str::from_utf8(credential.token().expose_secret())
         .map_err(|_| RiffDbError::Bootstrap)?;
     let bootstrap_metadata = BootstrapCallMetadata::new(
@@ -578,7 +580,12 @@ async fn bootstrap_and_deploy_contract(
             contract.contract_lineage, contract.contract_version
         )));
     }
-    ticket_status_enum_ids()
+    let bundle_hash = contract
+        .bundle_hash
+        .as_slice()
+        .try_into()
+        .map_err(|_| RiffDbError::Deploy)?;
+    Ok((ticket_status_enum_ids()?, bundle_hash))
 }
 
 /// Phase 2: deploy query module and issue the hybrid runner capability.

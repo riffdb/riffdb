@@ -73,6 +73,8 @@ pub struct RiffDbPublicBackend {
     runtime: tokio::runtime::Handle,
     /// TicketStatus enum ids for projected predicates/decoding.
     status_ids: TicketStatusEnumIds,
+    /// Exact deployed contract bundle hash used by generated-style named reads.
+    contract_bundle_hash: [u8; 32],
     /// Deployed query-module hash (must match NamedQuery requests; generated
     /// TicketDesk client embeds a stale hash that would yield RDB-MODULE-0101).
     query_module_hash: [u8; 32],
@@ -106,6 +108,7 @@ impl RiffDbPublicBackend {
         endpoint: &str,
         bearer_token: &str,
         status_ids: TicketStatusEnumIds,
+        contract_bundle_hash: [u8; 32],
         query_module_hash: [u8; 32],
         history_incarnation: u64,
     ) -> Result<Self, RiffDbError> {
@@ -131,6 +134,7 @@ impl RiffDbPublicBackend {
             command_attempts: AttemptBudget::new(3).expect("positive command attempt budget"),
             runtime,
             status_ids,
+            contract_bundle_hash,
             query_module_hash,
             last_seed_commit_sequence: None,
             history_incarnation,
@@ -158,6 +162,7 @@ impl RiffDbPublicBackend {
             command_attempts: self.command_attempts,
             runtime,
             status_ids: self.status_ids,
+            contract_bundle_hash: self.contract_bundle_hash,
             query_module_hash: self.query_module_hash,
             last_seed_commit_sequence: self.last_seed_commit_sequence,
             history_incarnation: self.history_incarnation,
@@ -171,6 +176,7 @@ impl RiffDbPublicBackend {
             endpoint,
             &self.bearer_token,
             self.status_ids,
+            self.contract_bundle_hash,
             self.query_module_hash,
             self.history_incarnation,
         )
@@ -190,7 +196,7 @@ impl RiffDbPublicBackend {
             ApplicationContract::Exact {
                 lineage: "TicketDesk".to_owned(),
                 version: 1,
-                bundle_hash: None,
+                bundle_hash: Some(self.contract_bundle_hash),
             },
             name.to_owned(),
             Some(self.query_module_hash),
