@@ -6,7 +6,7 @@
 **Tagline:** *Vibe fast. Commit safely.*  
 **Category:** Contract-first operational database for agent-built applications  
 
-**Version:** 0.97
+**Version:** 0.96
 **Status:** Deployable Application Alpha architecture accepted; implementation gated by work packages
 **Date:** 9 August 2026
 **Audience:** Coding agents, database engineers, compiler engineers, security reviewers, and technical product leads  
@@ -37,8 +37,7 @@
 
 | Version | Date | Summary |
 |---|---|---|
-| 0.97 | 2026-08-14 | Accepted ADR-0122 and registered DX-021 through DX-025 for repository-local agent rails, the additive authorization-filtered application guidance MCP resource, hosted/stdio parity, and single-source generated teaching artifacts. |
-| 0.96 | 2026-08-14 | Applied ADR-0118 Amendment 1 and registered SECF-006: secret classification is sticky across compiler-visible contract flows, and every intentional disclosure into a non-secret entity field, durable event field, or command outcome field requires an exact source-naming `reveals` annotation carried through syntax, versioned executable IR, bundle identity, catalogs, diagnostics, and compatibility fixtures. |
+| 0.96 | 2026-08-14 | Applied ADR-0118 Amendment 1 and registered SECF-006: secret classification is sticky across compiler-visible contract flows, and every intentional disclosure into a non-secret entity field, durable event field, or command outcome field requires an exact source-naming `reveals` annotation carried through syntax, versioned executable IR, bundle identity, catalogs, diagnostics, and compatibility fixtures. Accepted ADR-0122 and registered DX-021 through DX-025 for repository-local agent rails, the additive authorization-filtered application guidance MCP resource, hosted/stdio parity, and single-source generated teaching artifacts. |
 | 0.95 | 2026-08-14 | Accepted ADR-0121 and registered DX-013 through DX-020 for the database-shaped project workflow: truthful domain-empty initialization, a zero-query structural module with no roles or authority, bounded `riffdb.toml`, selected local SDK materialization over one complete exact lock, ceremony only for changed compiler-owned identity, staged migration routing, and read-only installed-versus-local observation without changing existing application verbs or persistent encodings. |
 | 0.94 | 2026-08-14 | Amended ADR-0050 and registered END-011/WP-610 after the installed endurance rehearsal exposed unreceipted immutable-backup deletion: backup retention now uses one authorized public retirement operation whose V2 receipt binds the exact succeeded create receipt and manifest, permanently consumes the name, recovers every checked rename/delete crash state, and is the sole proof permitting an otherwise-published backup artifact to be absent. |
 | 0.93 | 2026-08-11 | Registered the SECF-* requirement family (SECF-001 through SECF-005) for ADR-0118 secret field classification: a contextual `secret` field modifier carried through versioned IR and bundle identity without rotating unclassified contracts; structural display-surface redaction through a wrapper whose only value escape is an architecture-enumerated reveal method; capability field-visibility default-deny with a dedicated explicit secret-naming surface and observed typed denial; predicates/uniqueness/index participation without read visibility; and full-fidelity durable storage, backup, export, and changelog carriage with an explicit no-cryptography non-promise. |
