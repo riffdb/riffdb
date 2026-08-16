@@ -2554,6 +2554,18 @@ contract AttemptMaterialization version {version} {{
             panic!("unreachable assigned write plan")
         }
 
+        fn detach(
+            self,
+        ) -> Result<
+            (
+                Self::Prior,
+                riffdb_storage_api::DetachedCommandReservationV1,
+            ),
+            StorageError,
+        > {
+            panic!("unreachable assigned detachment")
+        }
+
         fn stage(self, _records: AtomicCommandRecordSet) -> Result<Self::Staged, StorageError> {
             panic!("unreachable record staging")
         }

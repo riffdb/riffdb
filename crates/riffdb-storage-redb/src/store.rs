@@ -651,6 +651,10 @@ pub struct RedbSubmittedCommandFence {
     predecessor_administration_sequence: Option<AdministrationSequence>,
     last_administration_sequence: Option<AdministrationSequence>,
     journaled: bool,
+    // A checkpoint may finish while this frame remains unpublished. Draining
+    // this fence makes the runtime quiescent so the next writer turn can
+    // install that checkpoint before consuming its reserved journal headroom.
+    pipeline_drain_required: bool,
     publication_ticket: Option<PublicationTicket>,
     completed: bool,
 }
@@ -4820,6 +4824,7 @@ impl RedbDurabilityEpoch {
         // Registration is part of sealing: releasing the sole-writer lease
         // first would let a later service-audit frame enter the publication
         // queue ahead of this already-submitted command frame.
+        let pipeline_drain_required = self.shared.async_checkpoint_in_flight()?;
         self.completed = true;
         drop(self.lease.take());
         Ok(RedbSubmittedCommandFence {
@@ -4833,6 +4838,7 @@ impl RedbDurabilityEpoch {
             predecessor_administration_sequence,
             last_administration_sequence,
             journaled,
+            pipeline_drain_required,
             publication_ticket,
             completed: false,
         })
@@ -6136,7 +6142,7 @@ fn recovery_journal_error(error: crate::journal::JournalIoError) -> StorageError
 
 impl DeferredCommandFence for RedbSubmittedCommandFence {
     fn requires_pipeline_drain(&self) -> bool {
-        !self.journaled
+        command_fence_requires_pipeline_drain(self.journaled, self.pipeline_drain_required)
     }
 
     fn try_wait(
@@ -6172,6 +6178,13 @@ impl DeferredCommandFence for RedbSubmittedCommandFence {
             .map_err(journal_io_error)?;
         self.publish_fenced(fenced)
     }
+}
+
+const fn command_fence_requires_pipeline_drain(
+    journaled: bool,
+    checkpoint_in_flight: bool,
+) -> bool {
+    !journaled || checkpoint_in_flight
 }
 
 impl RedbSubmittedCommandFence {
@@ -7043,6 +7056,14 @@ mod tests {
             start_physical.checked_add(maximum_frame),
             Some(crate::journal::EXTENT_DATA_BYTES)
         );
+    }
+
+    #[test]
+    fn command_fence_drains_for_direct_commits_and_in_flight_checkpoints() {
+        assert!(!command_fence_requires_pipeline_drain(true, false));
+        assert!(command_fence_requires_pipeline_drain(false, false));
+        assert!(command_fence_requires_pipeline_drain(true, true));
+        assert!(command_fence_requires_pipeline_drain(false, true));
     }
 
     #[test]

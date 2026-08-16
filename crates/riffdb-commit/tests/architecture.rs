@@ -2043,7 +2043,7 @@ fn evaluation_worker_count_is_an_explicit_input_with_one_ambient_default() {
 fn prepared_command_workers_carry_no_commit_or_storage_authority() {
     let execution = production_source(COMMAND_EXECUTION_SOURCE);
     let task = execution
-        .split_once("struct CommandEvaluationTask {")
+        .split_once("enum CommandEvaluationTask {")
         .expect("preparation task")
         .1
         .split_once("/// Fixed-size read/evaluation workers")
@@ -2051,11 +2051,12 @@ fn prepared_command_workers_carry_no_commit_or_storage_authority() {
         .0;
     for forbidden in [
         "CommandCandidate",
-        "AssignedCommandSequence",
         "DeferredCommandEpoch",
-        "CommandWriteSetPlanV1",
-        "AtomicCommandRecordSet",
         "StorageCandidate",
+        "DetachedCommandGroupBatch",
+        "DetachedCheckedCommitCandidate",
+        "RetainedDetachedCommand",
+        "DetachedCommandReservationV1",
     ] {
         assert!(
             !task.contains(forbidden),
@@ -2067,7 +2068,43 @@ fn prepared_command_workers_carry_no_commit_or_storage_authority() {
     );
     assert!(execution.contains("WriterPrivate(Vec<(AcquiredCommandAttempt, ReadSnapshot)>)"));
     assert!(task.contains("input: CommandEvaluationTaskInput"));
+    assert!(task.contains("preparations: Vec<DetachedRecordPreparation>"));
+    assert!(task.contains("Vec<Result<PreparedDetachedRecordGraph, ()>>"));
     assert!(execution.contains(".prepare_body()"));
+
+    let record_preparation = function_body(
+        production_source(COMMAND_RECORDS_SOURCE),
+        "pub(super) fn prepare_detached_record_graph(",
+    );
+    assert!(record_preparation.contains("build_atomic_command_record_set("));
+    for forbidden in [
+        "assign_sequence",
+        ".detach(",
+        ".stage(",
+        "stage_detached_group",
+        ".seal(",
+        ".fence(",
+    ] {
+        assert!(
+            !record_preparation.contains(forbidden),
+            "detached record preparation gained forbidden authority `{forbidden}`"
+        );
+    }
+
+    let detached_driver = function_body(
+        execution,
+        "async fn drive_detached_writer_private_group<P>(",
+    );
+    let detach = detached_driver
+        .find("detach_evaluated_command_on_empty(")
+        .expect("ordered detachment");
+    let prepare = detached_driver
+        .find("evaluation_pool.prepare_detached(")
+        .expect("bounded record preparation");
+    let stage = detached_driver
+        .find("empty.stage_detached_group(")
+        .expect("ordered storage apply");
+    assert!(detach < prepare && prepare < stage);
 
     let private_capture = function_body(
         execution,

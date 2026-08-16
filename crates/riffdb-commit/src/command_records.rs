@@ -19,7 +19,8 @@ use crate::{
     command_attempt::PendingCommandAttempts,
     command_index::{
         CheckedCandidateStage, CheckedCommitCandidate, CommandIndexError,
-        PostApplyCheckedCommitCandidate, RetainedCheckedCommitCandidate,
+        DetachedCheckedCommitCandidate, PostApplyCheckedCommitCandidate,
+        RetainedCheckedCommitCandidate,
     },
     outcome::CommittedOutcome,
 };
@@ -85,6 +86,18 @@ impl CheckedRecordGraphInput {
         })
     }
 
+    fn from_detached_candidate(
+        candidate: &mut DetachedCheckedCommitCandidate,
+    ) -> Result<Self, CommandRecordGraphError> {
+        let assignment = candidate.reservation().assignment();
+        let write_plan = candidate.write_plan().clone();
+        Ok(Self {
+            assignment,
+            write_plan,
+            prepared_capsule: candidate.take_prepared_capsule(),
+        })
+    }
+
     #[cfg(test)]
     fn new_for_test(
         candidate: &RetainedCheckedCommitCandidate,
@@ -109,6 +122,46 @@ impl CheckedRecordGraphInput {
 pub(super) enum CheckedCommandStageError {
     InternalDefect(CommandRecordGraphError),
     Storage(StorageError),
+}
+
+/// Pure immutable input that may cross to a bounded record-construction worker.
+pub(super) struct DetachedRecordPreparation {
+    input: CheckedRecordGraphInput,
+}
+
+/// Sequence reservation and live checked-attempt authority retained only by
+/// the ordered coordinator while record construction runs.
+pub(super) struct RetainedDetachedCommand {
+    reservation: riffdb_storage_api::DetachedCommandReservationV1,
+    retained: RetainedCheckedCommitCandidate,
+}
+
+/// Complete canonical graph returned by a pure preparation worker. It carries
+/// no storage reservation or live conflict capability.
+pub(super) struct PreparedDetachedRecordGraph {
+    records: AtomicCommandRecordSet,
+    expected_outcome: StoredOutcomeV1,
+}
+
+/// Complete canonical graph reunited with coordinator-retained authority after
+/// preparation. The storage reservation remains move-only and must be consumed
+/// by the exact writer-owned detached group.
+pub(super) struct PreparedDetachedCommand {
+    storage: riffdb_storage_api::DetachedCommandRecordV1,
+    retained: RetainedCheckedCommitCandidate,
+    expected_outcome: StoredOutcomeV1,
+}
+
+impl PreparedDetachedCommand {
+    pub(super) fn into_parts(
+        self,
+    ) -> (
+        riffdb_storage_api::DetachedCommandRecordV1,
+        RetainedCheckedCommitCandidate,
+        StoredOutcomeV1,
+    ) {
+        (self.storage, self.retained, self.expected_outcome)
+    }
 }
 
 /// Closed result of submitting one semantically checked command to engine commit.
@@ -414,6 +467,36 @@ where
         };
         finish_checked_group_commit(entries, durability_mode, committed)
     }
+}
+
+pub(super) fn checked_staged_detached_group<S>(
+    staged: S,
+    entries: Vec<(RetainedCheckedCommitCandidate, StoredOutcomeV1)>,
+    durability_mode: DurabilityMode,
+) -> Result<CheckedStagedCommand<S>, CommandRecordGraphError>
+where
+    S: NonEmptyCommandBatch,
+{
+    if entries.is_empty()
+        || entries.len() != usize::from(staged.metrics().command_count().get())
+        || entries.iter().any(|(candidate, outcome)| {
+            candidate.exact_intent().pending().identity() != outcome.identity()
+                || candidate.exact_intent().provenance_id() != outcome.provenance_id()
+        })
+    {
+        return Err(CommandRecordGraphError::internal_defect());
+    }
+    Ok(CheckedStagedCommand {
+        staged,
+        entries: entries
+            .into_iter()
+            .map(|(candidate, expected_outcome)| CheckedStagedCommandEntry {
+                candidate,
+                expected_outcome,
+            })
+            .collect(),
+        durability_mode,
+    })
 }
 
 impl<S> CheckedStagedCommand<S>
@@ -875,6 +958,52 @@ where
     S::Prior: NonEmptyCommandBatch,
 {
     stage_checked_candidate(candidate, durability_mode)
+}
+
+pub(super) fn split_detached_checked_candidate(
+    mut candidate: DetachedCheckedCommitCandidate,
+) -> Result<(DetachedRecordPreparation, RetainedDetachedCommand), CommandRecordGraphError> {
+    let input = CheckedRecordGraphInput::from_detached_candidate(&mut candidate)?;
+    let (reservation, retained) = candidate.into_parts();
+    if input.assignment != reservation.assignment() {
+        return Err(CommandRecordGraphError::internal_defect());
+    }
+    Ok((
+        DetachedRecordPreparation { input },
+        RetainedDetachedCommand {
+            reservation,
+            retained,
+        },
+    ))
+}
+
+pub(super) fn prepare_detached_record_graph(
+    preparation: DetachedRecordPreparation,
+    durability_mode: DurabilityMode,
+) -> Result<PreparedDetachedRecordGraph, CommandRecordGraphError> {
+    let records = build_atomic_command_record_set(preparation.input, durability_mode)?;
+    let expected_outcome = records.stored_outcome().clone();
+    Ok(PreparedDetachedRecordGraph {
+        records,
+        expected_outcome,
+    })
+}
+
+pub(super) fn join_prepared_detached_command(
+    prepared: PreparedDetachedRecordGraph,
+    retained: RetainedDetachedCommand,
+) -> Result<PreparedDetachedCommand, CommandRecordGraphError> {
+    if prepared.records.assignment() != retained.reservation.assignment() {
+        return Err(CommandRecordGraphError::internal_defect());
+    }
+    Ok(PreparedDetachedCommand {
+        storage: riffdb_storage_api::DetachedCommandRecordV1::new(
+            retained.reservation,
+            prepared.records,
+        ),
+        retained: retained.retained,
+        expected_outcome: prepared.expected_outcome,
+    })
 }
 
 fn stage_checked_candidate<S>(

@@ -39,8 +39,9 @@ use crate::command_attempt::{
 #[cfg(test)]
 use crate::command_validation::CheckedCandidateSeal;
 use crate::command_validation::{
-    CheckedAffectedEpochRead, CheckedCapacityReservation, CheckedSequenceAssignment,
-    CheckedStorageStage, CheckedValidatedCommand, StagedValidatedCommand,
+    CheckedAffectedEpochRead, CheckedCapacityReservation, CheckedDetachedStage,
+    CheckedSequenceAssignment, CheckedStorageStage, CheckedValidatedCommand,
+    StagedValidatedCommand,
 };
 
 const AFFECTED_CURRENT_STATE_FIXED_BYTES_V1: usize = 4;
@@ -773,6 +774,54 @@ pub(super) struct RetainedCheckedCommitCandidate {
     affected_targets: AffectedIndexEpochTargets,
 }
 
+/// Sequence-assigned semantic proof detached from its writer-owned batch.
+/// Record construction may consume this value on a pure worker, but only the
+/// separately retained storage reservation can authorize later group apply.
+pub(super) struct DetachedCheckedCommitCandidate {
+    reservation: riffdb_storage_api::DetachedCommandReservationV1,
+    write_plan: CommandWriteSetPlanV1,
+    prepared_capsule: Option<riffdb_storage_api::PreparedCapsuleCommandFragmentsV1>,
+    retained: RetainedCheckedCommitCandidate,
+}
+
+impl DetachedCheckedCommitCandidate {
+    pub(super) const fn reservation(&self) -> &riffdb_storage_api::DetachedCommandReservationV1 {
+        &self.reservation
+    }
+
+    pub(super) const fn write_plan(&self) -> &CommandWriteSetPlanV1 {
+        &self.write_plan
+    }
+
+    pub(super) fn take_prepared_capsule(
+        &mut self,
+    ) -> Option<riffdb_storage_api::PreparedCapsuleCommandFragmentsV1> {
+        self.prepared_capsule.take()
+    }
+
+    pub(super) fn into_parts(
+        self,
+    ) -> (
+        riffdb_storage_api::DetachedCommandReservationV1,
+        RetainedCheckedCommitCandidate,
+    ) {
+        (self.reservation, self.retained)
+    }
+
+    pub(super) fn into_pending_after_group_rollback(self) -> Result<PendingCommandAttempts, ()> {
+        self.retained.into_pending_after_group_rollback()
+    }
+}
+
+pub(super) enum CheckedCandidateDetach<P> {
+    Detached {
+        prior: P,
+        candidate: DetachedCheckedCommitCandidate,
+    },
+    StorageFailure(StorageError),
+    Integrity,
+}
+
 /// Checked same-attempt evidence after private storage apply has consumed the
 /// conflict capability.
 pub(super) struct PostApplyCheckedCommitCandidate {
@@ -960,6 +1009,45 @@ where
 
     pub(super) fn write_plan(&self) -> &CommandWriteSetPlanV1 {
         self.authority.0.sequence_assigned().write_plan()
+    }
+
+    pub(super) fn detach(mut self) -> CheckedCandidateDetach<S::Prior> {
+        let assignment = self.assignment();
+        let write_plan = self.write_plan().clone();
+        let prepared_capsule = self.take_prepared_capsule();
+        let Self {
+            authority,
+            entry_mutations,
+            affected_targets,
+        } = self;
+        let CheckedAttemptAuthority(checked) = authority;
+        match checked.detach() {
+            CheckedDetachedStage::Detached {
+                prior,
+                reservation,
+                evidence,
+            } if reservation.assignment() == assignment => CheckedCandidateDetach::Detached {
+                prior,
+                candidate: DetachedCheckedCommitCandidate {
+                    reservation,
+                    write_plan,
+                    prepared_capsule,
+                    retained: RetainedCheckedCommitCandidate {
+                        authority: RetainedCheckedAttemptAuthority::Validated(evidence),
+                        entry_mutations,
+                        affected_targets,
+                    },
+                },
+            },
+            CheckedDetachedStage::Detached { prior, .. } => {
+                drop(prior);
+                CheckedCandidateDetach::Integrity
+            }
+            CheckedDetachedStage::StorageFailure(error) => {
+                CheckedCandidateDetach::StorageFailure(error)
+            }
+            CheckedDetachedStage::Integrity => CheckedCandidateDetach::Integrity,
+        }
     }
 
     pub(super) fn stage(

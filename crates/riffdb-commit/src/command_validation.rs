@@ -847,6 +847,18 @@ pub(super) enum CheckedStorageStage<S> {
     Integrity,
 }
 
+/// Closed detachment result retaining semantic evidence while returning the
+/// exact writer batch and payload-free reservation separately.
+pub(super) enum CheckedDetachedStage<P> {
+    Detached {
+        prior: P,
+        reservation: riffdb_storage_api::DetachedCommandReservationV1,
+        evidence: Box<StagedValidatedCommand>,
+    },
+    StorageFailure(StorageError),
+    Integrity,
+}
+
 impl<C> CheckedValidatedCommand<C>
 where
     C: CommandCandidateSequenceAssigned,
@@ -890,6 +902,51 @@ where
                 drop(mutation_positions);
                 drop(attempt);
                 CheckedStorageStage::StorageFailure(error)
+            }
+        }
+    }
+
+    pub(super) fn detach(self) -> CheckedDetachedStage<C::Prior> {
+        let Self {
+            seal,
+            attempt,
+            candidate,
+            current,
+            mutation_positions,
+        } = self;
+        let expected_assignment = candidate.assignment();
+        if candidate.intent() != attempt.commit_intent() {
+            drop(candidate);
+            drop(current);
+            drop(mutation_positions);
+            drop(attempt);
+            return CheckedDetachedStage::Integrity;
+        }
+        match candidate.detach() {
+            Ok((prior, reservation)) if reservation.assignment() == expected_assignment => {
+                CheckedDetachedStage::Detached {
+                    prior,
+                    reservation,
+                    evidence: Box::new(StagedValidatedCommand {
+                        _seal: seal,
+                        attempt,
+                        _current: current,
+                        _mutation_positions: mutation_positions,
+                    }),
+                }
+            }
+            Ok((prior, _)) => {
+                drop(prior);
+                drop(current);
+                drop(mutation_positions);
+                drop(attempt);
+                CheckedDetachedStage::Integrity
+            }
+            Err(error) => {
+                drop(current);
+                drop(mutation_positions);
+                drop(attempt);
+                CheckedDetachedStage::StorageFailure(error)
             }
         }
     }

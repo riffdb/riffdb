@@ -13489,7 +13489,7 @@ work_packages:
     ADR-0098, ADR-0099, ADR-0101, ADR-0104, ADR-0123, ADR-0129]
   allowed_paths: [work_packages.yaml, SPEC.md, adr/**, crates/riffdb-application/**,
     crates/riffdb-runtime/**, crates/riffdb-commit/**, crates/riffdb-storage-api/**,
-    crates/riffdb-storage-redb/**, crates/riffdb-observability/**, crates/riffdb-service/**,
+    crates/riffdb-storage-redb/**, crates/riffdb-storage-memory/**, crates/riffdb-observability/**, crates/riffdb-service/**,
     crates/riffdb-server/**, examples/app-baseline/**, tests/**, scripts/**,
     docs/performance/**]
   deliverables:

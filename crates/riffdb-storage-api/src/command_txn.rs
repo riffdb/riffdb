@@ -911,6 +911,16 @@ pub trait CommandCandidateSequenceAssigned: Sized {
     /// Borrows the exact plan whose capacity remains reserved through staging.
     fn write_plan(&self) -> &CommandWriteSetPlanV1;
 
+    /// Separates an exact sequence reservation from its writer-owned batch so
+    /// deterministic record construction can run without storage authority.
+    ///
+    /// The returned reservation is not a commit or staging capability. The
+    /// backend retains the complete candidate identity inside `Prior`; only a
+    /// later [`DetachedCommandGroupBatch::stage_detached_group`] call on that
+    /// same batch can consume it, in original ordinal order, with an exactly
+    /// matching record graph.
+    fn detach(self) -> Result<(Self::Prior, DetachedCommandReservationV1), StorageError>;
+
     /// Stages the complete record graph after every pre-sequence invariant check.
     ///
     /// The record set's intent and exact write plan must equal the retained values,
@@ -930,6 +940,89 @@ pub trait CommandCandidateSequenceAssigned: Sized {
     /// later mismatch is an invariant failure that aborts the whole transaction,
     /// never a post-assignment collision result.
     fn stage(self, records: AtomicCommandRecordSet) -> Result<Self::Staged, StorageError>;
+}
+
+/// Payload-free ordinal proof for one sequence reservation retained by a
+/// writer-owned detached group batch.
+///
+/// Construction is public only because storage adapters are separate
+/// first-party crates. Application-facing crates never receive this type, and
+/// the batch must independently match it to the retained intent, plan, and
+/// assignment before applying any row.
+#[derive(Debug, Eq, PartialEq)]
+pub struct DetachedCommandReservationV1 {
+    ordinal: u16,
+    assignment: AssignedCommandSequence,
+}
+
+impl DetachedCommandReservationV1 {
+    /// Constructs the backend-returned ordinal proof.
+    pub fn new(
+        ordinal: u16,
+        assignment: AssignedCommandSequence,
+    ) -> Result<Self, StorageValueError> {
+        if usize::from(ordinal) >= MAX_STAGED_COMMANDS {
+            return Err(StorageValueError::LimitExceeded);
+        }
+        Ok(Self {
+            ordinal,
+            assignment,
+        })
+    }
+
+    /// Zero-based reservation ordinal inside this exact writer batch.
+    #[must_use]
+    pub const fn ordinal(&self) -> u16 {
+        self.ordinal
+    }
+
+    /// Exact invisible sequence assigned before detachment.
+    #[must_use]
+    pub const fn assignment(&self) -> AssignedCommandSequence {
+        self.assignment
+    }
+}
+
+/// One detached reservation reunited with the canonical record graph prepared
+/// from that same checked command.
+pub struct DetachedCommandRecordV1 {
+    reservation: DetachedCommandReservationV1,
+    records: AtomicCommandRecordSet,
+}
+
+impl DetachedCommandRecordV1 {
+    /// Joins move-only internal values; the backend still performs the
+    /// authoritative retained-candidate equality check.
+    #[must_use]
+    pub fn new(reservation: DetachedCommandReservationV1, records: AtomicCommandRecordSet) -> Self {
+        Self {
+            reservation,
+            records,
+        }
+    }
+
+    /// Consumes the internal join into its exact parts.
+    #[must_use]
+    pub fn into_parts(self) -> (DetachedCommandReservationV1, AtomicCommandRecordSet) {
+        (self.reservation, self.records)
+    }
+}
+
+/// Empty writer transaction carrying one or more detached, sequence-assigned
+/// reservations but no physically staged command graph.
+pub trait DetachedCommandGroupBatch: EmptyCommandBatch {
+    /// Nonempty transaction state returned only after the complete FIFO group
+    /// has been checked and staged atomically.
+    type Staged: NonEmptyCommandBatch;
+
+    /// Applies one complete admission-ordered group. The backend must reject
+    /// before publication if count, ordinal, assignment, intent, write plan,
+    /// capacity, or resulting private frontier differs from its retained
+    /// reservations. No prefix is independently committable.
+    fn stage_detached_group(
+        self,
+        commands: Vec<DetachedCommandRecordV1>,
+    ) -> Result<Self::Staged, StorageError>;
 }
 
 /// Fatal pre-sequence proof that an immutable provenance key already exists.
