@@ -676,12 +676,12 @@ fn durable_graph_construction_requires_checked_input_and_retains_attempt_through
     for required in [
         "struct CheckedRecordGraphInput",
         "fn from_assigned_candidate<S>(",
-        "candidate: &CheckedCommitCandidate<S>",
+        "candidate: &mut CheckedCommitCandidate<S>",
         "if !candidate.matches_intent(write_plan.intent())",
-        "fn build_atomic_command_record_set(\n    input: &CheckedRecordGraphInput,",
+        "fn build_atomic_command_record_set(\n    input: CheckedRecordGraphInput,",
         "pub(super) fn build_and_stage_checked_candidate<S>",
         "candidate: CheckedCommitCandidate<S>",
-        "let records = match build_atomic_command_record_set(&input, durability_mode)",
+        "let records = match build_atomic_command_record_set(input, durability_mode)",
         "drop(candidate)",
         "match candidate.stage(records)",
         "S::Prior: EmptyCommandBatch",
@@ -720,7 +720,7 @@ fn durable_graph_construction_requires_checked_input_and_retains_attempt_through
     let builder = production
         .split_once("fn build_atomic_command_record_set(")
         .and_then(|(_, rest)| {
-            rest.split_once("\nfn committed_entity(")
+            rest.split_once("\npub(super) fn prepare_sequence_free_capsule(")
                 .map(|(body, _)| body)
         })
         .expect("private record graph builder");
@@ -2037,4 +2037,64 @@ fn evaluation_worker_count_is_an_explicit_input_with_one_ambient_default() {
         AUDIT_EXECUTOR_SOURCE.contains("CommandEvaluationPool::production_worker_count()"),
         "coordinator start lost the explicit production worker-count default"
     );
+}
+
+#[test]
+fn prepared_command_workers_carry_no_commit_or_storage_authority() {
+    let execution = production_source(COMMAND_EXECUTION_SOURCE);
+    let task = execution
+        .split_once("struct CommandEvaluationTask {")
+        .expect("preparation task")
+        .1
+        .split_once("/// Fixed-size read/evaluation workers")
+        .expect("preparation task end")
+        .0;
+    for forbidden in [
+        "CommandCandidate",
+        "AssignedCommandSequence",
+        "DeferredCommandEpoch",
+        "CommandWriteSetPlanV1",
+        "AtomicCommandRecordSet",
+        "StorageCandidate",
+    ] {
+        assert!(
+            !task.contains(forbidden),
+            "preparation task gained forbidden authority `{forbidden}`"
+        );
+    }
+    assert!(
+        task.contains("Vec<(AcquiredCommandAttempt, AdmissionLookupResultV1)>")
+            || task.contains("attempts: Vec<")
+    );
+    assert!(execution.contains(".prepare_body()"));
+
+    let prepared = production_source(COMMAND_INDEX_SOURCE);
+    let body = function_body(
+        prepared,
+        "pub(super) fn prepare_command_body(\n    attempt: &crate::command_attempt::EvaluatedCommandAttempt,\n)",
+    );
+    for forbidden in [
+        "assign_sequence",
+        ".stage(",
+        ".seal(",
+        "commit_sequence",
+        "DeferredCommandEpoch",
+        "CommandCandidate",
+    ] {
+        assert!(
+            !body.contains(forbidden),
+            "deterministic preparation gained forbidden authority `{forbidden}`"
+        );
+    }
+    assert!(body.contains("validate_transaction_current_command_parts"));
+    assert!(body.contains("derive_grammar_v1_indexes"));
+
+    let validation = production_source(COMMAND_VALIDATION_SOURCE);
+    let consume = validation
+        .find("attempt.take_prepared_mutation_positions()")
+        .expect("prepared proof consumption");
+    let materialized = validation[..consume]
+        .rfind("MaterializedTransactionCurrentState")
+        .expect("fresh transaction-current proof precedes consumption");
+    assert!(materialized < consume);
 }

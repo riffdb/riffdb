@@ -229,7 +229,7 @@ fn derive_delete_range_target(
 }
 
 impl CommandIndexError {
-    const fn internal_defect() -> Self {
+    pub(super) const fn internal_defect() -> Self {
         Self { _private: () }
     }
 }
@@ -331,9 +331,120 @@ pub(super) fn derive_delete_ranges(
     Ok(ranges)
 }
 
-struct DerivedCommandIndexes {
+pub(super) struct DerivedCommandIndexes {
     entry_mutations: Vec<IndexEntryMutationV1>,
     affected_targets: AffectedIndexEpochTargets,
+}
+
+/// Move-only pure work produced from the exact normalized evaluation snapshot.
+///
+/// This value carries no storage candidate or commit authority.  The catalog's
+/// transaction-current materialization must still prove that the writer view is
+/// exactly the normalized snapshot before these positions and indexes may be
+/// consumed.
+pub(super) struct PreparedCommandBody {
+    plan: riffdb_storage_api::ExecutablePlanRef,
+    canonical_input_hash: riffdb_types::CanonicalInputHash,
+    mutation_positions: Option<Box<[Option<usize>]>>,
+    indexes: Option<DerivedCommandIndexes>,
+    capsule: Option<riffdb_storage_api::PreparedCapsuleCommandFragmentsV1>,
+}
+
+impl PreparedCommandBody {
+    pub(super) fn matches_attempt(
+        &self,
+        attempt: &crate::command_attempt::EvaluatedCommandAttempt,
+    ) -> bool {
+        self.plan == *attempt.resolved_plan().reference()
+            && self.canonical_input_hash
+                == attempt.commit_context().pending().canonical_input_hash()
+    }
+
+    pub(super) fn take_mutation_positions(&mut self) -> Option<Box<[Option<usize>]>> {
+        self.mutation_positions.take()
+    }
+
+    pub(super) fn take_indexes(&mut self) -> Option<DerivedCommandIndexes> {
+        self.indexes.take()
+    }
+
+    pub(super) fn take_capsule(
+        &mut self,
+    ) -> Option<riffdb_storage_api::PreparedCapsuleCommandFragmentsV1> {
+        self.capsule.take()
+    }
+}
+
+/// Performs only deterministic validation and index derivation against the
+/// already-normalized evaluation snapshot.  The returned body is an
+/// optimization hint until the sole writer freshly materializes an exact
+/// transaction-current state for the same attempt.
+pub(super) fn prepare_command_body(
+    attempt: &crate::command_attempt::EvaluatedCommandAttempt,
+) -> Result<Option<PreparedCommandBody>, CommandIndexError> {
+    let snapshot = attempt.materialized_snapshot().snapshot();
+    let request = snapshot.validation_request();
+    let current = TransactionCurrentState::new_with_cascade(
+        &request,
+        snapshot.bindings().to_vec(),
+        snapshot.root_validations().to_vec(),
+        snapshot.cascade_predecessors().to_vec(),
+        snapshot
+            .ranges()
+            .iter()
+            .map(|range| {
+                riffdb_storage_api::CurrentRangeObservation::new(
+                    range.target().clone(),
+                    range.epoch(),
+                )
+            })
+            .collect(),
+    )
+    .map_err(|_| CommandIndexError::internal_defect())?;
+    let decision = crate::command_validation::validate_transaction_current_command_parts(
+        attempt.resolved_plan(),
+        attempt.normalized_input(),
+        attempt.commit_context().pending().logical_time(),
+        attempt.evaluated(),
+        &current,
+    )
+    .map_err(|_| CommandIndexError::internal_defect())?;
+    let mutation_positions = match decision {
+        crate::command_validation::CheckedCommandDecision::ZeroMutation => {
+            vec![None; attempt.resolved_plan().plan().bindings().len()].into_boxed_slice()
+        }
+        crate::command_validation::CheckedCommandDecision::NonZero(positions) => positions,
+        crate::command_validation::CheckedCommandDecision::Rejected(_) => return Ok(None),
+    };
+    let indexes = if attempt.evaluated().mutations().is_empty() {
+        DerivedCommandIndexes {
+            entry_mutations: Vec::new(),
+            affected_targets: AffectedIndexEpochTargets::new(Vec::new())
+                .map_err(|_| CommandIndexError::internal_defect())?,
+        }
+    } else {
+        derive_grammar_v1_indexes(
+            attempt.resolved_plan(),
+            attempt.normalized_input(),
+            attempt.evaluated(),
+            &current,
+            &mutation_positions,
+            attempt.commit_context().pending().partition_key(),
+        )?
+    };
+    let capsule = crate::command_records::prepare_sequence_free_capsule(
+        attempt.resolved_plan(),
+        attempt.evaluated(),
+        &indexes.entry_mutations,
+    )
+    .map_err(|_| CommandIndexError::internal_defect())?;
+    Ok(Some(PreparedCommandBody {
+        plan: attempt.resolved_plan().reference().clone(),
+        canonical_input_hash: attempt.commit_context().pending().canonical_input_hash(),
+        mutation_positions: Some(mutation_positions),
+        indexes: Some(indexes),
+        capsule: Some(capsule),
+    }))
 }
 
 /// Exact semantically checked candidate retained after index derivation.
@@ -358,17 +469,25 @@ impl<S> CheckedCommitCandidate<S> {
         let attempt = self.authority.0.attempt();
         attempt.has_exact_semantic_join() && intent == attempt.commit_intent()
     }
+
+    pub(super) fn take_prepared_capsule(
+        &mut self,
+    ) -> Option<riffdb_storage_api::PreparedCapsuleCommandFragmentsV1> {
+        self.authority.0.take_prepared_capsule()
+    }
 }
 
 /// Consumes the sole post-validation authority and freezes the exact derived
 /// index values that later write-plan construction must preserve.
 pub(super) fn derive_checked_command_indexes<C>(
-    checked: CheckedValidatedCommand<C>,
+    mut checked: CheckedValidatedCommand<C>,
 ) -> Result<CheckedCommitCandidate<C::AffectedEpochRead>, CommandIndexError>
 where
     C: CommandCandidateAwaitingValidation,
 {
-    let derived = if checked.evaluated().mutations().is_empty() {
+    let derived = if let Some(prepared) = checked.take_prepared_indexes() {
+        prepared
+    } else if checked.evaluated().mutations().is_empty() {
         DerivedCommandIndexes {
             entry_mutations: Vec::new(),
             affected_targets: AffectedIndexEpochTargets::new(Vec::new())

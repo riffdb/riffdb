@@ -634,11 +634,55 @@ fn every_live_database_engine_commit_routes_through_the_epoch_boundary() {
 }
 
 #[test]
+fn deferred_epoch_proves_one_private_frontier_before_durability() {
+    let store = without_whitespace(&production_source(crate_root().join("src/store.rs")));
+    let record = store
+        .split_once("pub(crate)fnrecord_journal_mutations(")
+        .expect("journal mutation fanout")
+        .1
+        .split_once("pub(crate)fntransaction(")
+        .expect("journal mutation fanout end")
+        .0;
+    assert!(record.contains("formutationin&mutations{stage.apply(mutation)?;"));
+    assert!(record.contains(".extend(mutations)"));
+
+    let epoch = store
+        .split_once("implRedbDurabilityEpoch{")
+        .expect("durability epoch")
+        .1;
+    let equivalence = epoch
+        .split_once("fnprivate_frontier_is_equivalent(&self)->bool{")
+        .expect("frontier equivalence proof")
+        .1
+        .split_once("fnhas_unpublished_state(")
+        .expect("frontier equivalence proof end")
+        .0;
+    for required in [
+        "prior.checked_next()!=Some(batch.first_commit_sequence())",
+        "command_count==self.command_count",
+        "prior_last==self.last_sequence",
+        "self.journal_mutation_groups==self.applied.len()",
+        "Some(stage.mutation_count())",
+    ] {
+        assert!(equivalence.contains(required), "missing `{required}`");
+    }
+    let seal = epoch
+        .split_once("pub(crate)fnseal(mutself)")
+        .expect("epoch seal")
+        .1
+        .split_once("implDropforRedbDurabilityEpoch")
+        .expect("epoch seal end")
+        .0;
+    assert!(seal.contains("if!self.private_frontier_is_equivalent(){"));
+    assert!(seal.contains("self.shared.fence_writes();"));
+}
+
+#[test]
 fn sealed_command_audit_evidence_is_confined_to_post_staging_application_commits() {
     let source_dir = crate_root().join("src");
     let application = without_whitespace(&production_source(source_dir.join("application.rs")));
     let stage = application
-        .split_once("fnstage(self,records:AtomicCommandRecordSet)")
+        .split_once("fnstage(self,mutrecords:AtomicCommandRecordSet,)")
         .expect("command stage typestate")
         .1
         .split_once("impl_candidate_chain!(RedbEmptyBatch)")
@@ -1044,4 +1088,44 @@ fn offline_retention_mutations_require_the_journal_rebase_witness() {
         !prune.contains("Database::open(&self.database_path)"),
         "prune must not bypass ordinary journal recovery with a direct redb open"
     );
+}
+
+#[test]
+fn entity_cache_preserves_exact_observed_bytes_for_journal_before_images() {
+    let source = production_source(crate_root().join("src/application.rs"));
+    assert!(source.contains("entity_observation_bytes: BTreeMap<EntityTarget, Option<Vec<u8>>>"));
+    assert!(source.contains(
+        "let (observation, encoded) = entity_observation_from_access(&core.access, target)?;"
+    ));
+    assert!(
+        source.contains(".entity_observation_bytes\n        .insert(target.clone(), encoded);")
+    );
+    assert!(source.contains("let proven_current = observation_bytes\n            .get(target)"));
+    assert!(source.contains("observation_bytes.insert(target.clone(), next_bytes);"));
+    assert!(
+        !source.contains("encode_entity_record_v1(record).map_err(codec_error)?"),
+        "the before-image must remain the exact bytes observed from storage, including legacy envelopes"
+    );
+}
+
+#[test]
+fn proof_skipping_is_confined_to_typed_redb_command_staging() {
+    let application = production_source(crate_root().join("src/application.rs"));
+    let composite = production_source(crate_root().join("src/composite_view.rs"));
+    let store = production_source(crate_root().join("src/store.rs"));
+    assert!(application.contains("put_proven_command_value"));
+    assert!(application.contains("delete_proven_command_value"));
+    assert!(composite.contains("apply_with_proven_current"));
+    assert!(store.contains("apply_with_proven_current"));
+
+    for relative in ["src/recovery.rs", "src/startup.rs"] {
+        let path = crate_root().join(relative);
+        if path.exists() {
+            let candidate = production_source(path);
+            assert!(
+                !candidate.contains("apply_with_proven_current"),
+                "recovery and startup must retain the fully validating boundary"
+            );
+        }
+    }
 }

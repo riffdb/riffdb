@@ -356,6 +356,14 @@ impl CommandEvaluationPool {
                                         snapshot,
                                         repository.as_ref(),
                                     )
+                                    .and_then(|resolution| {
+                                        match resolution {
+                                            CommandAttemptResolution::Evaluated(attempt) => attempt
+                                                .prepare_body()
+                                                .map(CommandAttemptResolution::Evaluated),
+                                            other => Ok(other),
+                                        }
+                                    })
                                 })
                                 .collect(),
                             Ok(_) => task
@@ -1674,6 +1682,30 @@ where
         );
     }
 
+    let rollback_reason = if evaluated
+        .iter()
+        .any(|result| matches!(result, Err(CommandAttemptError::Integrity)))
+    {
+        Some(crate::PreparedEpochRollbackReason::ProofMismatch)
+    } else if evaluated
+        .iter()
+        .any(|result| matches!(result, Err(CommandAttemptError::EvaluationPanicked)))
+    {
+        Some(crate::PreparedEpochRollbackReason::WorkerFailure)
+    } else if evaluated.iter().any(|result| {
+        matches!(
+            result,
+            Err(CommandAttemptError::Cancelled | CommandAttemptError::DeadlineExceeded)
+        )
+    }) {
+        Some(crate::PreparedEpochRollbackReason::Cancelled)
+    } else {
+        None
+    };
+    if let Some(reason) = rollback_reason {
+        telemetry.record(CommitTelemetryEvent::PreparedEpochRolledBack { reason });
+    }
+
     let mut completed = Vec::new();
     let mut fallback = Vec::new();
     let mut terminal_state = None;
@@ -2426,7 +2458,7 @@ where
                 });
                 match applied {
                     CheckedCommandGroupApplyResult::Applied { epoch, batch } => {
-                        return match seal_checked_deferred_group(epoch, batch) {
+                        return match seal_checked_deferred_group(epoch, batch, telemetry) {
                             Ok(fence) => {
                                 let batch_size =
                                     u16::try_from(batch_size).expect("group cap fits u16");
@@ -3090,7 +3122,7 @@ where
                 });
                 match applied {
                     CheckedCommandGroupApplyResult::Applied { epoch, batch } => {
-                        return match seal_checked_deferred_group(epoch, batch) {
+                        return match seal_checked_deferred_group(epoch, batch, telemetry) {
                             Ok(fence) => {
                                 let batch_size =
                                     u16::try_from(batch_size).expect("group cap fits u16");

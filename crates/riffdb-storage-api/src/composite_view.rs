@@ -592,13 +592,54 @@ impl CompositeMutationStage {
         base: &impl CompositeViewBase,
     ) -> Result<(), StorageValueError> {
         base.validate_entry(mutation.table(), mutation.key(), mutation.value())?;
-        let table = &mut self.tables[mutation.table().index()];
-        let current = match table.get(mutation.key()) {
+        let current = match self.tables[mutation.table().index()].get(mutation.key()) {
             Some(OverlayValue::Value(value)) => Some(value.as_ref().to_vec()),
             Some(OverlayValue::Tombstone) => None,
             None => base.read_base(mutation.table(), mutation.key())?,
         };
-        validate_before_image(current.as_deref(), mutation.expected_hash())?;
+        self.apply_after_current_validation(mutation, current.as_deref())
+    }
+
+    /// Applies one mutation using the exact current bytes already read by the
+    /// sole storage writer immediately before constructing that mutation.
+    ///
+    /// This is an engine-internal pay-once boundary, not an application
+    /// transaction surface. The caller must retain exclusive mutation
+    /// ownership between the observation and this call. Canonical value
+    /// validation still runs here; only the duplicate point lookup is omitted.
+    pub fn apply_with_observed_current(
+        &mut self,
+        mutation: CompositeMutationV1,
+        observed_current: Option<&[u8]>,
+        base: &impl CompositeViewBase,
+    ) -> Result<(), StorageValueError> {
+        base.validate_entry(mutation.table(), mutation.key(), mutation.value())?;
+        self.apply_after_current_validation(mutation, observed_current)
+    }
+
+    /// Applies canonical bytes already proven by a typed in-process record
+    /// constructor, using transaction-current bytes already observed by the
+    /// sole storage writer.
+    ///
+    /// Both proofs are engine-internal and move-only at the caller. Recovery,
+    /// startup, external input, and retained-history reads must continue to use
+    /// the fully validating boundary. This method omits only the duplicate
+    /// envelope validation and duplicate point lookup.
+    pub fn apply_with_proven_current(
+        &mut self,
+        mutation: CompositeMutationV1,
+        proven_current: Option<&[u8]>,
+    ) -> Result<(), StorageValueError> {
+        self.apply_after_current_validation(mutation, proven_current)
+    }
+
+    fn apply_after_current_validation(
+        &mut self,
+        mutation: CompositeMutationV1,
+        current: Option<&[u8]>,
+    ) -> Result<(), StorageValueError> {
+        validate_before_image(current, mutation.expected_hash())?;
+        let table = &mut self.tables[mutation.table().index()];
         let key: Box<[u8]> = mutation.key().into();
         let replacement = mutation
             .value()
@@ -2048,6 +2089,80 @@ mod tests {
         assert_eq!(
             successor.resolve_point(&base, CompositeTableV1::Entities, b"ticket"),
             Ok(Some(b"closed".to_vec()))
+        );
+    }
+
+    #[test]
+    fn observed_current_is_consumed_once_and_still_checks_before_image() {
+        let mut base = Base::default();
+        base.insert(CompositeTableV1::Entities, b"ticket", b"open");
+        let predecessor = CompositeOverlayBuilder::new(checkpoint()).freeze();
+        let mutation = CompositeMutationV1::replace(
+            CompositeTableV1::Entities,
+            b"ticket".as_slice(),
+            b"open",
+            b"closed".as_slice(),
+        )
+        .expect("replace");
+        let mut stage = CompositeMutationStage::new(&predecessor);
+        stage
+            .apply_with_observed_current(mutation, Some(b"open"), &base)
+            .expect("exact observation applies");
+        assert_eq!(base.reads.get(), 0, "the exact observation is not reread");
+        assert_eq!(base.validations.get(), 1, "new bytes remain validated");
+
+        let mutation = CompositeMutationV1::replace(
+            CompositeTableV1::Entities,
+            b"other".as_slice(),
+            b"expected",
+            b"next".as_slice(),
+        )
+        .expect("replace");
+        assert_eq!(
+            CompositeMutationStage::new(&predecessor).apply_with_observed_current(
+                mutation,
+                Some(b"different"),
+                &base,
+            ),
+            Err(StorageValueError::IdentityMismatch)
+        );
+    }
+
+    #[test]
+    fn proven_current_is_consumed_without_lookup_or_duplicate_value_validation() {
+        let mut base = Base::default();
+        base.insert(CompositeTableV1::Entities, b"ticket", b"open");
+        let predecessor = CompositeOverlayBuilder::new(checkpoint()).freeze();
+        let mutation = CompositeMutationV1::replace(
+            CompositeTableV1::Entities,
+            b"ticket".as_slice(),
+            b"open",
+            b"closed".as_slice(),
+        )
+        .expect("replace");
+        let mut stage = CompositeMutationStage::new(&predecessor);
+        stage
+            .apply_with_proven_current(mutation, Some(b"open"))
+            .expect("exact proven observation applies");
+        assert_eq!(base.reads.get(), 0, "proven bytes are not reread");
+        assert_eq!(
+            base.validations.get(),
+            0,
+            "typed canonical output is not revalidated"
+        );
+
+        let mutation = CompositeMutationV1::replace(
+            CompositeTableV1::Entities,
+            b"other".as_slice(),
+            b"expected",
+            b"next".as_slice(),
+        )
+        .expect("replace");
+        assert_eq!(
+            CompositeMutationStage::new(&predecessor)
+                .apply_with_proven_current(mutation, Some(b"different")),
+            Err(StorageValueError::IdentityMismatch),
+            "pay-once must not weaken exact before-image checking"
         );
     }
 

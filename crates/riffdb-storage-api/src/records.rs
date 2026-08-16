@@ -2398,7 +2398,7 @@ impl CommandWriteSetPlanV1 {
 }
 
 /// The exact authoritative record graph staged for one command sequence.
-#[derive(Clone, Eq, PartialEq)]
+#[derive(Clone)]
 pub struct AtomicCommandRecordSet {
     assignment: AssignedCommandSequence,
     entities: Vec<CommittedEntityMutationV1>,
@@ -2408,7 +2408,26 @@ pub struct AtomicCommandRecordSet {
     provenance: StoredProvenanceRecordV1,
     commit: StoredCommitRecordV1,
     semantic_bytes: usize,
+    prepared_capsule: Option<crate::PreparedCapsuleEnvelopesV1>,
 }
+
+// `prepared_capsule` is an ephemeral pay-once encoding cache, not part of the
+// authoritative command graph.  Prepared and canonically re-encoded graphs
+// with identical semantic members must therefore compare equal.
+impl PartialEq for AtomicCommandRecordSet {
+    fn eq(&self, other: &Self) -> bool {
+        self.assignment == other.assignment
+            && self.entities == other.entities
+            && self.write_plan == other.write_plan
+            && self.stored_outcome == other.stored_outcome
+            && self.outbox_intents == other.outbox_intents
+            && self.provenance == other.provenance
+            && self.commit == other.commit
+            && self.semantic_bytes == other.semantic_bytes
+    }
+}
+
+impl Eq for AtomicCommandRecordSet {}
 
 /// Minimal immutable evidence retained after one complete graph is physically staged.
 ///
@@ -2533,6 +2552,52 @@ impl AtomicCommandRecordSet {
         stored_outcome: StoredOutcomeV1,
         provenance: StoredProvenanceRecordV1,
         commit: StoredCommitRecordV1,
+    ) -> Result<Self, StorageValueError> {
+        Self::new_inner(
+            assignment,
+            entities,
+            write_plan,
+            stored_outcome,
+            provenance,
+            commit,
+            None,
+        )
+    }
+
+    /// Joins worker-prepared canonical fragments to the exact reserved graph.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_with_prepared_capsule(
+        assignment: AssignedCommandSequence,
+        prepared: crate::PreparedCapsuleCommandFragmentsV1,
+        write_plan: CommandWriteSetPlanV1,
+        stored_outcome: StoredOutcomeV1,
+        provenance: StoredProvenanceRecordV1,
+        commit: StoredCommitRecordV1,
+    ) -> Result<Self, StorageValueError> {
+        let (entities, index_entries, encoded) = prepared.into_parts();
+        if index_entries != write_plan.index_entries() {
+            return Err(StorageValueError::IdentityMismatch);
+        }
+        Self::new_inner(
+            assignment,
+            entities,
+            write_plan,
+            stored_outcome,
+            provenance,
+            commit,
+            Some(encoded),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn new_inner(
+        assignment: AssignedCommandSequence,
+        entities: Vec<CommittedEntityMutationV1>,
+        write_plan: CommandWriteSetPlanV1,
+        stored_outcome: StoredOutcomeV1,
+        provenance: StoredProvenanceRecordV1,
+        commit: StoredCommitRecordV1,
+        prepared_capsule: Option<crate::PreparedCapsuleEnvelopesV1>,
     ) -> Result<Self, StorageValueError> {
         let expected_pending = write_plan.intent().pending();
         let evaluated = write_plan.intent().evaluated();
@@ -2682,7 +2747,14 @@ impl AtomicCommandRecordSet {
             provenance,
             commit,
             semantic_bytes,
+            prepared_capsule,
         })
+    }
+
+    pub(crate) fn take_prepared_capsule_envelopes(
+        &mut self,
+    ) -> Option<crate::PreparedCapsuleEnvelopesV1> {
+        self.prepared_capsule.take()
     }
 
     /// Returns allocator metadata after assigning this record set's sequence.

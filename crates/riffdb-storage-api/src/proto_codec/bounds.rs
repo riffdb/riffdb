@@ -145,6 +145,75 @@ pub struct EncodedCapsuleCommandRecordSetV1 {
     index_epochs: Vec<CanonicalStoredEnvelopeV1>,
 }
 
+/// Move-only canonical entity/index preparation produced before sequence assignment.
+///
+/// Semantic members travel with their encoded envelopes until the complete
+/// record graph constructor consumes them.  That constructor joins the index
+/// members to the exact reserved write plan before retaining only the canonical
+/// envelopes, preventing a caller from pairing equal-size bytes with another
+/// command.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PreparedCapsuleCommandFragmentsV1 {
+    entities: Vec<crate::CommittedEntityMutationV1>,
+    index_entries: Vec<crate::IndexEntryMutationV1>,
+    encoded: PreparedCapsuleEnvelopesV1,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct PreparedCapsuleEnvelopesV1 {
+    entities: Vec<Option<CanonicalStoredEnvelopeV1>>,
+    index_entries: Vec<Option<CanonicalStoredEnvelopeV1>>,
+}
+
+impl PreparedCapsuleCommandFragmentsV1 {
+    /// Borrows canonical entity mutations retained with their envelopes.
+    #[must_use]
+    pub fn entities(&self) -> &[crate::CommittedEntityMutationV1] {
+        &self.entities
+    }
+
+    pub(crate) fn into_parts(
+        self,
+    ) -> (
+        Vec<crate::CommittedEntityMutationV1>,
+        Vec<crate::IndexEntryMutationV1>,
+        PreparedCapsuleEnvelopesV1,
+    ) {
+        (self.entities, self.index_entries, self.encoded)
+    }
+}
+
+/// Canonically encodes sequence-free entity and secondary-index postimages once.
+pub fn prepare_capsule_command_fragments_v1(
+    entities: Vec<crate::CommittedEntityMutationV1>,
+    index_entries: Vec<crate::IndexEntryMutationV1>,
+) -> Result<PreparedCapsuleCommandFragmentsV1, DurableCodecError> {
+    let encoded_entities = entities
+        .iter()
+        .map(|value| {
+            value
+                .live_post_image()
+                .map(encode_entity_record_v1)
+                .transpose()
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let encoded_index_entries = index_entries
+        .iter()
+        .map(|value| match value {
+            crate::IndexEntryMutationV1::Delete(_) => Ok(None),
+            crate::IndexEntryMutationV1::Put(value) => encode_index_entry_v2(value).map(Some),
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(PreparedCapsuleCommandFragmentsV1 {
+        entities,
+        index_entries,
+        encoded: PreparedCapsuleEnvelopesV1 {
+            entities: encoded_entities,
+            index_entries: encoded_index_entries,
+        },
+    })
+}
+
 impl EncodedCapsuleCommandRecordSetV1 {
     /// Consumes the checked independently stored envelopes.
     #[allow(clippy::type_complexity)]
@@ -555,26 +624,20 @@ pub fn encode_atomic_command_record_set_v1(
 /// conservative bound; the final bounded segment encoder remains the exact
 /// canonical-byte gate before the transaction can commit.
 pub fn encode_capsule_command_record_set_v1(
-    records: &AtomicCommandRecordSet,
+    records: &mut AtomicCommandRecordSet,
 ) -> Result<EncodedCapsuleCommandRecordSetV1, DurableCodecError> {
-    let entities = records
-        .entities()
-        .iter()
-        .map(|value| {
-            value
-                .live_post_image()
-                .map(encode_entity_record_v1)
-                .transpose()
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    let index_entries = records
-        .index_entries()
-        .iter()
-        .map(|value| match value {
-            IndexEntryMutationV1::Delete(_) => Ok(None),
-            IndexEntryMutationV1::Put(value) => encode_index_entry_v2(value).map(Some),
-        })
-        .collect::<Result<Vec<_>, _>>()?;
+    let prepared = records.take_prepared_capsule_envelopes();
+    let (entities, index_entries) = match prepared {
+        Some(prepared) => (prepared.entities, prepared.index_entries),
+        None => {
+            let prepared = prepare_capsule_command_fragments_v1(
+                records.entities().to_vec(),
+                records.index_entries().to_vec(),
+            )?;
+            let (_, _, encoded) = prepared.into_parts();
+            (encoded.entities, encoded.index_entries)
+        }
+    };
     let index_epochs = records
         .index_epochs()
         .iter()
