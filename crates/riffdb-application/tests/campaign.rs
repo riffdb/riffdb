@@ -169,6 +169,48 @@ fn evidence(stage: InstallationStage) -> InstallationStageEvidence {
     }
 }
 
+fn secret_plan_evidence(stage: InstallationStage) -> InstallationStageEvidence {
+    if stage == InstallationStage::Roles {
+        InstallationStageEvidence::Roles(vec![InstalledRoleEvidence::new(
+            symbol("AppRole"),
+            ApplicationRoleHash::from_bytes(hash32(11)),
+        )])
+    } else {
+        evidence(stage)
+    }
+}
+
+#[test]
+fn v3_authority_plan_resumes_and_receipt_binds_exact_plan_and_role_hashes() {
+    let plan = ApplicationInstallationPlan::decode_canonical(include_bytes!(
+        "../../../fixtures/installation/application-installation-plan-v3.json"
+    ))
+    .expect("v3 plan");
+    let id = campaign_id(33);
+    let mut campaign = ApplicationInstallationCampaign::start(id, plan.identity());
+    for stage in &InstallationStage::ALL[..InstallationStage::ALL.len() - 1] {
+        campaign
+            .complete_stage(&plan, secret_plan_evidence(*stage))
+            .expect("stage");
+        let state = ApplicationInstallationCampaignState::capture(&campaign, &plan).expect("state");
+        let recovered =
+            ApplicationInstallationCampaignState::decode_canonical(state.canonical_bytes())
+                .expect("resume state");
+        assert_eq!(recovered.plan(), &plan);
+        campaign = recovered.campaign().clone();
+    }
+    let receipt = campaign.seal_receipt(&plan).expect("receipt");
+    let text = std::str::from_utf8(receipt.canonical_bytes()).expect("receipt UTF-8");
+    let plan_hash = plan
+        .identity()
+        .as_bytes()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    assert!(text.contains(&plan_hash));
+    assert!(text.contains(&"0b".repeat(32)));
+}
+
 #[test]
 fn every_interruption_resumes_after_revalidating_completed_identities() {
     let plan = plan(1);

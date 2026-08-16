@@ -255,7 +255,7 @@ fn generate_adapter(repository: &Path, output: &Path, spec: AdapterSpec, ordinal
         ContractVersion::new(manifest.contract().version()).expect("contract version"),
         manifest.contract().bundle_hash(),
     );
-    let feature_claims = InstallationFeature::ALL
+    let feature_claims = InstallationFeature::ADAPTER_CONFORMANCE
         .into_iter()
         .map(|feature| {
             if spec.required.contains(&feature) {

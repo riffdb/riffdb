@@ -8,8 +8,10 @@ use riffdb_query_ir::{NamedTypeSchema, ReactiveModulePlanV1, ReactiveOperationPl
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
-use crate::generation::{workflow_revision_bindings, workflow_success_outcome_name};
-use crate::{QueryModule, generate_mcp_commands, generate_mcp_reactive_tools, generate_mcp_tools};
+use crate::generation::{
+    generated_query_driver_operations, workflow_revision_bindings, workflow_success_outcome_name,
+};
+use crate::{QueryModule, generate_mcp_commands, generate_mcp_reactive_tools};
 
 /// Generates one dependency-light Go package for all named queries and commands.
 #[must_use]
@@ -32,16 +34,8 @@ fn generate_go_client_inner(
     contract: &ContractBundle,
     reactive_modules: &[ReactiveModulePlanV1],
 ) -> String {
-    let query_operations = generate_mcp_tools(module)
-        .expect("validated query operations")
-        .into_iter()
-        .map(|operation| {
-            (
-                operation.operation_name,
-                (operation.name, schema_hash(&operation.input_schema)),
-            )
-        })
-        .collect::<BTreeMap<_, _>>();
+    let query_operations =
+        generated_query_driver_operations(module).expect("validated query operations");
     let command_operations = generate_mcp_commands(module, contract)
         .expect("validated command operations")
         .into_iter()
@@ -92,6 +86,15 @@ fn generate_go_client_inner(
         hex(module.contract_hash().as_bytes())
     )
     .unwrap();
+    if module
+        .queries()
+        .iter()
+        .any(|query| !query.plan().secret_outputs().is_empty())
+    {
+        output.push_str(
+            "type QuerySecretOutput struct { Query string; Entity string; Field string }\n\n",
+        );
+    }
     output.push_str("type QueryOptions = riffdb.Options\ntype QueryIdentity struct { ContractLineage string; ContractVersion uint64; ContractBundleHash string; ModuleHash string; QueryName string; PlanHash string }\ntype QueryResult[T any] struct { Value T; Identity QueryIdentity; ApplicationHead uint64; NextCursor string }\ntype WorkflowSuccessorRevision struct { Binding string; Revision uint64 }\ntype CommandResult[T any] struct { Outcome T; CommitSequence *uint64; ContractVersion uint64; PlanHash string; Replayed bool; OutcomeURI string; WorkflowRevisions []WorkflowSuccessorRevision }\ntype BatchItem[T any] struct { Index uint32; Result *CommandResult[T]; Error error }\ntype BatchResult[T any] struct { Items []BatchItem[T]; Checkpoint uint32; Total uint32 }\n\n");
     if !reactive_modules.is_empty() {
         output.push_str("type ConsumerOptions struct { BatchLimit uint32; InFlightLimit uint32; LeaseSeconds uint64; MaximumWait time.Duration }\nfunc DefaultConsumerOptions() ConsumerOptions { return ConsumerOptions{BatchLimit: 1, InFlightLimit: 16, LeaseSeconds: 60, MaximumWait: 30 * time.Second} }\nfunc (options ConsumerOptions) validate() error { if options.BatchLimit < 1 || options.BatchLimit > 64 || options.InFlightLimit < 1 || options.InFlightLimit > 64 || options.LeaseSeconds < 5 || options.LeaseSeconds > 900 || options.MaximumWait < 0 || options.MaximumWait > 30*time.Second { return errors.New(\"invalid generated RiffDB consumer options\") }; return nil }\nfunc retryDelayNanos(delay time.Duration) (uint64, error) { if delay < 0 || delay > 5*time.Minute { return 0, errors.New(\"invalid generated RiffDB retry delay\") }; return uint64(delay), nil }\n\n");
@@ -145,6 +148,20 @@ fn emit_entities(output: &mut String, contract: &ContractBundle) {
 fn emit_query_types(output: &mut String, module: &QueryModule, contract: &ContractBundle) {
     for query in module.queries() {
         let name = go_public(query.name());
+        if !query.plan().secret_outputs().is_empty() {
+            writeln!(output, "var {name}SecretOutputs = []QuerySecretOutput{{").unwrap();
+            for secret in query.plan().secret_outputs() {
+                writeln!(
+                    output,
+                    "\t{{Query: {:?}, Entity: {:?}, Field: {:?}}},",
+                    query.name(),
+                    secret.entity(),
+                    secret.field()
+                )
+                .unwrap();
+            }
+            output.push_str("}\n\n");
+        }
         writeln!(output, "type {name}Params struct {{").unwrap();
         for parameter in query.plan().schemas().parameters() {
             let mut ty = go_named_type(parameter.value_type(), contract);
@@ -174,6 +191,9 @@ fn emit_query_types(output: &mut String, module: &QueryModule, contract: &Contra
                 .unwrap();
             }
             writeln!(output, "}}\nfunc ({branch_name}) is{name}Result() {{}}\n").unwrap();
+            if !query.plan().secret_outputs().is_empty() {
+                writeln!(output, "func ({branch_name}) String() string {{ return \"{branch_name}{{<secret outputs redacted>}}\" }}\nfunc ({branch_name}) GoString() string {{ return \"{branch_name}{{<secret outputs redacted>}}\" }}\n").unwrap();
+            }
         }
     }
 }

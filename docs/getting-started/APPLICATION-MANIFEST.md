@@ -1,7 +1,7 @@
 # Symbolic application source and exact lock
 
 The normal author-owned input is `riffdb.application.json`. New repositories
-use `riffdb.application-source/v5`; older V1 through V4 documents remain exact
+use `riffdb.application-source/v6`; older V1 through V5 documents remain exact
 compatibility inputs. The source names paths, operations, roles, and output
 targets. It never asks an author or agent to discover, copy, or maintain a
 compiler-derived identity.
@@ -219,7 +219,10 @@ Each role declares an exact environment and either `global` scope or `tenant`
 scope. A tenant-scoped role must receive one concrete tenant at binding time;
 a global role rejects a tenant argument. The role author names only commands
 and named queries. Field visibility, stable IDs, indexes, partitions, result
-shape, and scan ceilings are compiler-private consequences of those names.
+shape, and scan ceilings are compiler-private consequences of those names. If
+a selected `.riffq` named query declares an exact secret returned leaf, the
+compiler also derives its `query/entity/field` authority atom; application
+source has no field-authority list or wildcard.
 
 RiffDB sorts every set-like collection, serializes the validated source as
 compact canonical JSON with a final line feed, and hashes those bytes under the
@@ -257,7 +260,9 @@ the generated Go facade and requires all five targets. They own
 parameter serialization, response decoding,
 exact identity checks, opaque cursors, read-after-commit fences, typed command
 outcomes, and retry-safe uncertainty recovery. Generated MCP schemas come from
-the same operation registry. Application code uses these facades or RiffQL
+the same operation registry but omit secret-output queries. Application code
+uses the generated facades for those authorized reads; it does not turn the
+query into a reveal-shaped command.
 text; numeric IDs, field masks, protobuf records, and raw RPC wrappers remain
 generated or internal implementation details.
 

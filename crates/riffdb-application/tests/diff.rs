@@ -5,7 +5,8 @@ use riffdb_application::{
     InstallationArtifactAction, InstallationContract, InstallationContractAction,
     InstallationCredentialAction, InstallationFeature, InstallationLifecycleState,
     InstallationPlanErrorKind, InstallationRemoteState, ObservedCredentialDestination,
-    ObservedInstallationRole, RoleOperationKind,
+    ObservedInstallationRole, QuerySecretOutput, RoleAuthorityAtom, RoleAuthoritySet,
+    RoleOperation, RoleOperationKind,
 };
 use riffdb_types::{
     ApplicationRoleHash, CapabilityId, ContractBundleHash, ContractLineage, ContractVersion,
@@ -50,6 +51,122 @@ fn exact_remote(plan: &ApplicationInstallationPlan) -> InstallationRemoteState {
         input.required_features.clone(),
     )
     .expect("remote state")
+}
+
+fn symbol(value: &str) -> riffdb_application::InstallationSymbol {
+    riffdb_application::InstallationSymbol::new(value).expect("symbol")
+}
+
+#[test]
+fn initial_secret_role_diff_displays_the_complete_confirmed_authority() {
+    let mut input = plan().input().clone();
+    let query = RoleOperation::new(RoleOperationKind::Query, symbol("GetSession"));
+    let output = QuerySecretOutput::new(
+        symbol("GetSession"),
+        symbol("Session"),
+        symbol("token_hash"),
+    );
+    input.roles = vec![
+        riffdb_application::InstallationRole::new_with_authority(
+            symbol("SecretRole"),
+            ApplicationRoleHash::from_bytes(hash32(44)),
+            None,
+            RoleAuthoritySet::new(vec![query.clone()], vec![output.clone()]).expect("authority"),
+            RoleAuthoritySet::new(vec![], vec![]).expect("empty authority"),
+            None,
+        )
+        .expect("initial role"),
+    ];
+    input.credential_destinations.clear();
+    let plan = ApplicationInstallationPlan::compile(input).expect("plan");
+    let remote = InstallationRemoteState::new(
+        plan.input().target.clone(),
+        InstallationLifecycleState::Ready,
+        None,
+        vec![],
+        vec![],
+        vec![],
+        plan.input().required_features.clone(),
+    )
+    .expect("remote");
+    let diff = ApplicationInstallationDiff::compile(&plan, &remote).expect("diff");
+    assert_eq!(
+        diff.roles()[0].additions(),
+        &[
+            RoleAuthorityAtom::Operation(query),
+            RoleAuthorityAtom::QuerySecretOutput(output),
+        ]
+    );
+    assert!(
+        diff.executable(),
+        "initial authority is bound by plan confirmation"
+    );
+}
+
+#[test]
+fn approved_secret_successor_requires_feature_and_exact_credential_rotation() {
+    let plan = ApplicationInstallationPlan::decode_canonical(include_bytes!(
+        "../../../fixtures/installation/application-installation-plan-v3.json"
+    ))
+    .expect("v3 plan");
+    let input = plan.input();
+    let role = &input.roles[0];
+    let observed_role = ObservedInstallationRole::new_with_authority(
+        role.name().clone(),
+        role.previous_role_hash().expect("predecessor"),
+        role.previous_authority().clone(),
+    )
+    .expect("observed role");
+    let remote = InstallationRemoteState::new(
+        input.target.clone(),
+        InstallationLifecycleState::Ready,
+        Some(input.contract),
+        input.artifacts.clone(),
+        vec![observed_role.clone()],
+        vec![ObservedCredentialDestination::new(
+            input.credential_destinations[0].name().clone(),
+            input.credential_destinations[0]
+                .expected_current()
+                .expect("credential predecessor"),
+        )],
+        input.required_features.clone(),
+    )
+    .expect("remote");
+    let diff = ApplicationInstallationDiff::compile(&plan, &remote).expect("diff");
+    assert!(diff.executable());
+    assert!(diff.roles()[0].widening_approved());
+    assert_eq!(
+        diff.roles()[0].additions(),
+        &[RoleAuthorityAtom::QuerySecretOutput(
+            role.desired_secret_outputs()[0].clone()
+        )]
+    );
+    assert!(matches!(
+        diff.credentials(),
+        [InstallationCredentialAction::Rotate(_)]
+    ));
+
+    let unsupported = InstallationRemoteState::new(
+        input.target.clone(),
+        InstallationLifecycleState::Ready,
+        Some(input.contract),
+        input.artifacts.clone(),
+        vec![observed_role],
+        vec![ObservedCredentialDestination::new(
+            input.credential_destinations[0].name().clone(),
+            input.credential_destinations[0]
+                .expected_current()
+                .expect("credential predecessor"),
+        )],
+        vec![InstallationFeature::InstallationCampaigns],
+    )
+    .expect("unsupported remote");
+    let diff = ApplicationInstallationDiff::compile(&plan, &unsupported).expect("diff");
+    assert_eq!(
+        diff.missing_features(),
+        &[InstallationFeature::QuerySecretOutputs]
+    );
+    assert!(!diff.executable());
 }
 
 #[test]

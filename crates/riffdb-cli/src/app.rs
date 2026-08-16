@@ -3022,9 +3022,12 @@ fn validate_deployment_installation_plan(
         if planned.role_hash() != role.identity()
             || input.target.environment() != role.environment()
             || role.manifest_hash() != locked.manifest().identity()
+            || planned.desired_authority() != &installation_role_authority(role)?
         {
             return Err("installation_plan_role_identity_mismatch");
         }
+    } else if plan.schema() == riffdb_application::APPLICATION_INSTALLATION_PLAN_SCHEMA_V3 {
+        return Err("installation_plan_v3_role_authority_unavailable");
     }
     let (mut expected_artifacts, expected_seeds) =
         deployment_installation_artifacts(locked, input.migration)?;
@@ -3044,6 +3047,53 @@ fn validate_deployment_installation_plan(
         return Err("installation_plan_local_artifact_mismatch");
     }
     Ok(())
+}
+
+fn installation_role_authority(
+    role: &CompiledApplicationRole,
+) -> Result<riffdb_application::RoleAuthoritySet, &'static str> {
+    let operations = role
+        .operations()
+        .iter()
+        .map(|operation| {
+            let kind = match operation.kind() {
+                ApplicationRoleOperationKind::Query => riffdb_application::RoleOperationKind::Query,
+                ApplicationRoleOperationKind::Command => {
+                    riffdb_application::RoleOperationKind::Command
+                }
+                ApplicationRoleOperationKind::EventStream => {
+                    riffdb_application::RoleOperationKind::EventStream
+                }
+                ApplicationRoleOperationKind::QueryWatch => {
+                    riffdb_application::RoleOperationKind::QueryWatch
+                }
+                ApplicationRoleOperationKind::AgentSubscription => {
+                    riffdb_application::RoleOperationKind::AgentSubscription
+                }
+            };
+            Ok(riffdb_application::RoleOperation::new(
+                kind,
+                InstallationSymbol::new(operation.name())
+                    .map_err(|_| "installation_plan_role_authority_invalid")?,
+            ))
+        })
+        .collect::<Result<Vec<_>, &'static str>>()?;
+    let secret_outputs = role
+        .secret_outputs()
+        .iter()
+        .map(|output| {
+            Ok(riffdb_application::QuerySecretOutput::new(
+                InstallationSymbol::new(output.query())
+                    .map_err(|_| "installation_plan_role_authority_invalid")?,
+                InstallationSymbol::new(output.entity())
+                    .map_err(|_| "installation_plan_role_authority_invalid")?,
+                InstallationSymbol::new(output.field())
+                    .map_err(|_| "installation_plan_role_authority_invalid")?,
+            ))
+        })
+        .collect::<Result<Vec<_>, &'static str>>()?;
+    riffdb_application::RoleAuthoritySet::new(operations, secret_outputs)
+        .map_err(|_| "installation_plan_role_authority_invalid")
 }
 
 fn deployment_installation_artifacts(
@@ -8754,6 +8804,11 @@ fn role_description(role: &CompiledApplicationRole) -> serde_json::Value {
             },
             "name": operation.name(),
         })).collect::<Vec<_>>(),
+        "query_secret_outputs": role.secret_outputs().iter().map(|output| serde_json::json!({
+            "query": output.query(),
+            "entity": output.entity(),
+            "field": output.field(),
+        })).collect::<Vec<_>>(),
     })
 }
 
@@ -11971,39 +12026,14 @@ mod tests {
         let manifest_path = locked.manifest_path().as_os_str().to_owned();
         let role = compile_role_from_workspace(&manifest_path, manifest_role.name(), None)
             .expect("compiled application role");
-        let operations = role
-            .operations()
-            .iter()
-            .map(|operation| {
-                let kind = match operation.kind() {
-                    ApplicationRoleOperationKind::Query => {
-                        riffdb_application::RoleOperationKind::Query
-                    }
-                    ApplicationRoleOperationKind::Command => {
-                        riffdb_application::RoleOperationKind::Command
-                    }
-                    ApplicationRoleOperationKind::EventStream => {
-                        riffdb_application::RoleOperationKind::EventStream
-                    }
-                    ApplicationRoleOperationKind::QueryWatch => {
-                        riffdb_application::RoleOperationKind::QueryWatch
-                    }
-                    ApplicationRoleOperationKind::AgentSubscription => {
-                        riffdb_application::RoleOperationKind::AgentSubscription
-                    }
-                };
-                riffdb_application::RoleOperation::new(
-                    kind,
-                    InstallationSymbol::new(operation.name()).expect("operation symbol"),
-                )
-            })
-            .collect::<Vec<_>>();
-        let installation_role = riffdb_application::InstallationRole::new(
+        let authority = installation_role_authority(&role).expect("compiled authority");
+        let installation_role = riffdb_application::InstallationRole::new_with_authority(
             InstallationSymbol::new(role.role_name()).expect("role symbol"),
             role.identity(),
             None,
-            operations,
-            Vec::new(),
+            authority.clone(),
+            riffdb_application::RoleAuthoritySet::new(Vec::new(), Vec::new())
+                .expect("empty authority"),
             None,
         )
         .expect("initial role");
@@ -12049,6 +12079,34 @@ mod tests {
         let plan = ApplicationInstallationPlan::compile(input).expect("installation plan");
         validate_deployment_installation_plan(&plan, &locked, &config, Some(&role))
             .expect("exact plan matches local application");
+
+        let mut widened_input = plan.input().clone();
+        widened_input.roles = vec![
+            riffdb_application::InstallationRole::new_with_authority(
+                InstallationSymbol::new(role.role_name()).expect("role symbol"),
+                role.identity(),
+                None,
+                riffdb_application::RoleAuthoritySet::new(
+                    authority.operations().to_vec(),
+                    vec![riffdb_application::QuerySecretOutput::new(
+                        InstallationSymbol::new("ItemPage").expect("query"),
+                        InstallationSymbol::new("Item").expect("entity"),
+                        InstallationSymbol::new("title").expect("field"),
+                    )],
+                )
+                .expect("hostile widened authority"),
+                riffdb_application::RoleAuthoritySet::new(Vec::new(), Vec::new())
+                    .expect("empty authority"),
+                None,
+            )
+            .expect("initial hostile role"),
+        ];
+        let widened_plan = ApplicationInstallationPlan::compile(widened_input)
+            .expect("structurally valid v3 plan");
+        assert_eq!(
+            validate_deployment_installation_plan(&widened_plan, &locked, &config, Some(&role)),
+            Err("installation_plan_role_identity_mismatch")
+        );
 
         let adapter_hash = riffdb_types::AdapterConformanceManifestHash::from_bytes([0x5a; 32]);
         let mut adapter_input = plan.input().clone();

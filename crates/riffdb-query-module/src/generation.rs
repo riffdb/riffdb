@@ -548,15 +548,45 @@ fn reactive_type_schema(type_name: &str, contract: &ContractBundle) -> Value {
     tagged(kind, properties, required)
 }
 
-/// Generates deterministic read-only MCP tool artifacts for every named query.
+/// Generates deterministic read-only MCP tool artifacts for public named queries.
 pub fn generate_mcp_tools(
+    module: &QueryModule,
+) -> Result<Vec<GeneratedMcpTool>, McpToolGenerationError> {
+    generate_all_query_tools(module).map(|tools| {
+        tools
+            .into_iter()
+            .filter(|tool| {
+                module
+                    .query(&tool.operation_name)
+                    .is_some_and(|query| query.plan().secret_outputs().is_empty())
+            })
+            .collect()
+    })
+}
+
+/// Generates SDK-only query registry entries excluded from MCP invocation.
+pub fn generate_sdk_only_query_tools(
+    module: &QueryModule,
+) -> Result<Vec<GeneratedMcpTool>, McpToolGenerationError> {
+    generate_all_query_tools(module).map(|tools| {
+        tools
+            .into_iter()
+            .filter(|tool| {
+                module
+                    .query(&tool.operation_name)
+                    .is_some_and(|query| !query.plan().secret_outputs().is_empty())
+            })
+            .collect()
+    })
+}
+
+fn generate_all_query_tools(
     module: &QueryModule,
 ) -> Result<Vec<GeneratedMcpTool>, McpToolGenerationError> {
     let mut names = BTreeSet::new();
     module
         .queries()
         .iter()
-        .filter(|query| query.plan().secret_outputs().is_empty())
         .map(|query| {
             let name = format!("{}_{}", snake(module.name().as_str()), snake(query.name()));
             if !names.insert(name.clone()) {
@@ -625,6 +655,50 @@ pub fn generate_mcp_tools(
                     .map_err(|_| McpToolGenerationError::InvalidSchema)?,
                 module_hash: *module.identity().as_bytes(),
             })
+        })
+        .collect()
+}
+
+pub(crate) fn generated_query_driver_operations(
+    module: &QueryModule,
+) -> Result<BTreeMap<String, (String, String)>, McpToolGenerationError> {
+    let mut generated_names = BTreeSet::new();
+    module
+        .queries()
+        .iter()
+        .map(|query| {
+            let generated_name =
+                format!("{}_{}", snake(module.name().as_str()), snake(query.name()));
+            if !generated_names.insert(generated_name.clone()) {
+                return Err(McpToolGenerationError::NameCollision);
+            }
+            let schemas = query.plan().schemas();
+            let mut properties = Map::new();
+            let mut required = Vec::new();
+            for parameter in schemas.parameters() {
+                properties.insert(
+                    parameter.name().to_owned(),
+                    mcp_type_schema(parameter.value_type()),
+                );
+                if !parameter.has_default()
+                    && !is_cursor_type(parameter.value_type())
+                    && !is_optional_type(parameter.value_type())
+                {
+                    required.push(Value::String(parameter.name().to_owned()));
+                }
+            }
+            let input = serde_json::to_string(&json!({
+                "$schema": MCP_SCHEMA_DIALECT,
+                "type": "object",
+                "additionalProperties": false,
+                "properties": properties,
+                "required": required,
+            }))
+            .map_err(|_| McpToolGenerationError::InvalidSchema)?;
+            Ok((
+                query.name().to_owned(),
+                (generated_name, json_schema_hash(&input)),
+            ))
         })
         .collect()
 }
@@ -890,7 +964,28 @@ pub fn generate_rust_client(module: &QueryModule, contract: &ContractBundle) -> 
                 .parameters()
                 .iter()
                 .map(|parameter| (parameter.name(), parameter.value_type())),
+            false,
         );
+        let redacted_debug = !query.plan().secret_outputs().is_empty();
+        if redacted_debug {
+            writeln!(
+                output,
+                "pub const {}_SECRET_OUTPUTS: &[(&str, &str, &str)] = &[",
+                screaming_snake(name)
+            )
+            .expect("string");
+            for secret in query.plan().secret_outputs() {
+                writeln!(
+                    output,
+                    "    ({:?}, {:?}, {:?}),",
+                    name,
+                    secret.entity(),
+                    secret.field()
+                )
+                .expect("string");
+            }
+            writeln!(output, "];\n").expect("string");
+        }
         for branch in schemas.results() {
             let branch_name = format!("{name}{}", pascal(branch.name()));
             emit_rust_fields_struct(
@@ -900,6 +995,7 @@ pub fn generate_rust_client(module: &QueryModule, contract: &ContractBundle) -> 
                     .fields()
                     .iter()
                     .map(|field| (field.name(), field.value_type())),
+                redacted_debug,
             );
         }
         writeln!(
@@ -2232,16 +2328,8 @@ fn rust_decode_wire_result_expr(
 /// Generates a dependency-free TypeScript request model for every named query and command.
 #[must_use]
 pub fn generate_typescript_client(module: &QueryModule, contract: &ContractBundle) -> String {
-    let query_driver_operations = generate_mcp_tools(module)
-        .expect("validated query module has distinct generated operation names")
-        .into_iter()
-        .map(|operation| {
-            (
-                operation.operation_name,
-                (operation.name, json_schema_hash(&operation.input_schema)),
-            )
-        })
-        .collect::<BTreeMap<_, _>>();
+    let query_driver_operations = generated_query_driver_operations(module)
+        .expect("validated query module has distinct generated operation names");
     let command_driver_operations = generate_mcp_commands(module, contract)
         .expect("validated contract has distinct generated operation names")
         .into_iter()
@@ -2323,6 +2411,25 @@ pub fn generate_typescript_client(module: &QueryModule, contract: &ContractBundl
             "export const {constant} = \"{plan_hash}\" as const;"
         )
         .expect("string");
+        if !query.plan().secret_outputs().is_empty() {
+            writeln!(
+                output,
+                "export const {}_SECRET_OUTPUTS = [",
+                screaming_snake(name)
+            )
+            .expect("string");
+            for secret in query.plan().secret_outputs() {
+                writeln!(
+                    output,
+                    "  {{ query: {:?}, entity: {:?}, field: {:?} }},",
+                    name,
+                    secret.entity(),
+                    secret.field()
+                )
+                .expect("string");
+            }
+            writeln!(output, "] as const;").expect("string");
+        }
         writeln!(output, "export interface {name}Params {{").expect("string");
         for parameter in schemas.parameters() {
             let optional = if parameter.has_default()
@@ -2366,6 +2473,17 @@ pub fn generate_typescript_client(module: &QueryModule, contract: &ContractBundl
             write!(output, "{name}{}", pascal(branch.name())).expect("string");
         }
         writeln!(output, ";\n").expect("string");
+        if !query.plan().secret_outputs().is_empty() {
+            writeln!(
+                output,
+                "export function redact{}Result(value: {}Result): {{ readonly outcome: string; readonly redactedSecretOutputs: typeof {}_SECRET_OUTPUTS }} {{\n  return {{ outcome: value.outcome, redactedSecretOutputs: {}_SECRET_OUTPUTS }};\n}}\n",
+                pascal(name),
+                name,
+                screaming_snake(name),
+                screaming_snake(name),
+            )
+            .expect("string");
+        }
         let parameter_schema = ts_named_record_schema(
             schemas
                 .parameters()
@@ -3189,16 +3307,30 @@ fn emit_rust_fields_struct<'a>(
     output: &mut String,
     name: &str,
     fields: impl Iterator<Item = (&'a str, &'a NamedTypeSchema)>,
+    redacted_debug: bool,
 ) {
     let fields = fields.collect::<Vec<_>>();
     for (field, value_type) in &fields {
-        emit_rust_nested_type(output, &format!("{name}{}", pascal(field)), value_type);
+        emit_rust_nested_type(
+            output,
+            &format!("{name}{}", pascal(field)),
+            value_type,
+            redacted_debug,
+        );
     }
-    writeln!(
-        output,
-        "#[derive(Clone, Debug, Eq, PartialEq)]\npub struct {name} {{"
-    )
-    .expect("string");
+    if redacted_debug {
+        writeln!(
+            output,
+            "#[derive(Clone, Eq, PartialEq)]\npub struct {name} {{"
+        )
+        .expect("string");
+    } else {
+        writeln!(
+            output,
+            "#[derive(Clone, Debug, Eq, PartialEq)]\npub struct {name} {{"
+        )
+        .expect("string");
+    }
     for (field, value_type) in fields {
         writeln!(
             output,
@@ -3209,14 +3341,22 @@ fn emit_rust_fields_struct<'a>(
         .expect("string");
     }
     writeln!(output, "}}\n").expect("string");
+    if redacted_debug {
+        writeln!(output, "impl std::fmt::Debug for {name} {{\n    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {{\n        formatter.write_str(\"{name} {{ <secret outputs redacted> }}\")\n    }}\n}}\n").expect("string");
+    }
 }
 
-fn emit_rust_nested_type(output: &mut String, name: &str, value_type: &NamedTypeSchema) {
+fn emit_rust_nested_type(
+    output: &mut String,
+    name: &str,
+    value_type: &NamedTypeSchema,
+    redacted_debug: bool,
+) {
     match value_type {
         NamedTypeSchema::Optional(inner)
         | NamedTypeSchema::Set(inner)
         | NamedTypeSchema::List { element: inner, .. } => {
-            emit_rust_nested_type(output, name, inner);
+            emit_rust_nested_type(output, name, inner, redacted_debug);
         }
         NamedTypeSchema::Record(fields) => {
             for field in fields {
@@ -3224,13 +3364,22 @@ fn emit_rust_nested_type(output: &mut String, name: &str, value_type: &NamedType
                     output,
                     &format!("{name}{}", pascal(field.name())),
                     field.value_type(),
+                    redacted_debug,
                 );
             }
-            writeln!(
-                output,
-                "#[derive(Clone, Debug, Eq, PartialEq)]\npub struct {name} {{"
-            )
-            .expect("string");
+            if redacted_debug {
+                writeln!(
+                    output,
+                    "#[derive(Clone, Eq, PartialEq)]\npub struct {name} {{"
+                )
+                .expect("string");
+            } else {
+                writeln!(
+                    output,
+                    "#[derive(Clone, Debug, Eq, PartialEq)]\npub struct {name} {{"
+                )
+                .expect("string");
+            }
             for field in fields {
                 writeln!(
                     output,
@@ -3244,6 +3393,9 @@ fn emit_rust_nested_type(output: &mut String, name: &str, value_type: &NamedType
                 .expect("string");
             }
             writeln!(output, "}}\n").expect("string");
+            if redacted_debug {
+                writeln!(output, "impl std::fmt::Debug for {name} {{\n    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {{\n        formatter.write_str(\"{name} {{ <secret outputs redacted> }}\")\n    }}\n}}\n").expect("string");
+            }
         }
         NamedTypeSchema::Scalar(_) | NamedTypeSchema::Cursor | NamedTypeSchema::Limit => {}
     }

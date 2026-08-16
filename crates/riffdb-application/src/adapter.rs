@@ -855,7 +855,9 @@ fn validate_and_sort(
             AdapterConformanceErrorKind::LimitExceeded,
         ));
     }
-    if exhaustive_features && input.feature_claims.len() != InstallationFeature::ALL.len() {
+    if exhaustive_features
+        && input.feature_claims.len() != InstallationFeature::ADAPTER_CONFORMANCE.len()
+    {
         return Err(AdapterConformanceError::new(
             AdapterConformanceErrorKind::InvalidShape,
         ));
@@ -872,7 +874,7 @@ fn validate_and_sort(
             .feature_claims
             .iter()
             .map(|claim| claim.feature)
-            .ne(InstallationFeature::ALL)
+            .ne(InstallationFeature::ADAPTER_CONFORMANCE)
     {
         return Err(AdapterConformanceError::new(
             AdapterConformanceErrorKind::InvalidShape,

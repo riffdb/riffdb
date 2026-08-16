@@ -192,7 +192,14 @@ impl ApplicationCatalog {
                 | "riffdb.application-manifest/v2"
                 | "riffdb.application-manifest/v3"
                 | "riffdb.application-manifest/v4"
-        ) || tools.schema != "riffdb-generated-application-operations/v2"
+        ) || !matches!(
+            tools.schema.as_str(),
+            "riffdb-generated-application-operations/v2"
+                | "riffdb-generated-application-operations/v3"
+        ) || (tools.schema == "riffdb-generated-application-operations/v2"
+            && !tools.sdk_tools.is_empty())
+            || (tools.schema == "riffdb-generated-application-operations/v3"
+                && tools.sdk_tools.is_empty())
             || lock.exact_manifest_hash != tools.application_manifest_hash
             || manifest.contract.lineage != lock.contract.lineage
             || manifest.contract.version != lock.contract.version
@@ -300,9 +307,13 @@ impl ApplicationCatalog {
             )?;
         }
         let mut found_queries = BTreeSet::new();
-        for query in tools.tools {
+        let mut catalog_queries = BTreeSet::new();
+        for query in tools.tools.into_iter().chain(tools.sdk_tools) {
             let module_hash = parse_hash(&query.module_hash)?;
             let query_identity = (module_hash, query.operation_name.clone());
+            if !catalog_queries.insert(query_identity.clone()) {
+                return Err(CatalogError::DuplicateOperation);
+            }
             let Some(plan_hash) = queries.get(&query_identity).copied() else {
                 continue;
             };
@@ -576,6 +587,8 @@ struct GeneratedCatalog {
     schema: String,
     application_manifest_hash: String,
     tools: Vec<GeneratedTool>,
+    #[serde(default)]
+    sdk_tools: Vec<GeneratedTool>,
     commands: Vec<GeneratedCommand>,
     reactive_tools: Vec<GeneratedReactiveTool>,
 }

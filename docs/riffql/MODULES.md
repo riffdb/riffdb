@@ -49,8 +49,12 @@ ordinary query does not inherit another query's secret authority. Modules and
 roles without these declarations keep their previous V1 through V3 bytes.
 
 Secret-bearing queries are generated for typed Rust, Go, TypeScript, Python,
-and gRPC application execution. They are deliberately absent from generated
-MCP tool catalogs and every reactive query catalog.
+and gRPC application execution. Each language publishes the same exact
+symbolic secret-output metadata and a language-appropriate redacted diagnostic
+surface. SDK operation identities are generated directly from the complete
+named-query module; they are not inferred from the MCP inventory. Secret
+queries remain deliberately absent from generated MCP tool catalogs and every
+reactive query catalog.
 
 The additive identity transition is frozen in
 `fixtures/riffql/operational-identity-rotation-v1.json`. That generated receipt
@@ -66,6 +70,8 @@ The compiler emits:
 
 - Rust parameter, result-union, command-input, and operation types;
 - TypeScript equivalents;
+- exact per-query `query/entity/field` secret-output metadata and redacted
+  debug/string/representation helpers when required;
 - exact contract and module identity constants;
 - response-identity verification helpers; and
 - optional module-qualified MCP read tools with domain-shaped JSON Schemas for

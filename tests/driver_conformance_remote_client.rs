@@ -68,7 +68,7 @@ async fn run_async() -> TestResult<()> {
     );
     if std::env::var_os("RIFFDB_CONFORMANCE_EXPECT_REVOKED").is_some() {
         let error = client
-            .item_page(generated::ItemPageParams {
+            .item_secret(generated::ItemSecretParams {
                 item_id: "018f0f8b-7c6d-7e31-8a4f-000000000101".to_owned(),
             })
             .await
@@ -92,8 +92,10 @@ async fn run_async() -> TestResult<()> {
     }
     let item_id = "018f0f8b-7c6d-7e31-8a4f-000000000101".to_owned();
     let idempotency_key = "driver-conformance-rust-create-v1".to_owned();
+    let token_digest = "rust-secret-digest-must-not-log".to_owned();
     let input = generated::CreateItemInput {
         title: "Shared remote Rust".to_owned(),
+        token_digest: token_digest.clone(),
         item_id: item_id.clone(),
         idempotency_key: idempotency_key.clone(),
     };
@@ -101,7 +103,7 @@ async fn run_async() -> TestResult<()> {
     let commit = first
         .commit_sequence
         .ok_or("command omitted commit sequence")?;
-    if first.replayed || !matches!(first.outcome, generated::CreateItemOutcome::Created { .. }) {
+    if first.replayed || !matches!(first.outcome, generated::CreateItemOutcome::Created) {
         return Err("first Rust command did not create the item".into());
     }
     let replay = client.create_item(input).await?;
@@ -122,9 +124,26 @@ async fn run_async() -> TestResult<()> {
     if found.item.item_id != item_id || found.item.title != "Shared remote Rust" {
         return Err("Rust query returned the wrong item".into());
     }
+    let secret = client
+        .item_secret_after_commit(
+            generated::ItemSecretParams {
+                item_id: item_id.clone(),
+            },
+            commit,
+        )
+        .await?;
+    let generated::ItemSecretResult::Found(secret_found) = secret.value else {
+        return Err("Rust secret query did not find the item".into());
+    };
+    if secret_found.secret.token_digest != token_digest
+        || format!("{secret_found:?}").contains(&token_digest)
+    {
+        return Err("Rust secret query value or redacted Debug was incorrect".into());
+    }
     let reuse = client
         .create_item(generated::CreateItemInput {
             title: "Changed input".to_owned(),
+            token_digest,
             item_id,
             idempotency_key,
         })
@@ -147,6 +166,8 @@ async fn run_async() -> TestResult<()> {
             "query": "Found",
             "read_after_commit": true,
             "reuse_error": code,
+            "secret_query": "Found",
+            "secret_redacted": true,
         })
     );
     Ok(())

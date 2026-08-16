@@ -5,11 +5,11 @@ use riffdb_client_rust::{ApplicationCardinality, ApplicationClientError, Applica
 pub use riffdb_client_rust::QueryOptions;
 use riffdb_client_rust::v1::value::Kind as WireKind;
 
-pub const QUERY_MODULE_HASH: [u8; 32] = [0x0d, 0xb8, 0x67, 0xe8, 0xe3, 0x7a, 0xa3, 0xa7, 0x67, 0x1e, 0x10, 0x8a, 0x69, 0x60, 0x1e, 0x9c, 0x0f, 0xc3, 0x15, 0x40, 0x5e, 0xde, 0xc9, 0x18, 0xdc, 0xb8, 0xbc, 0xc2, 0xd6, 0x88, 0x83, 0xbb];
+pub const QUERY_MODULE_HASH: [u8; 32] = [0x4d, 0x91, 0xb0, 0x38, 0xb0, 0xf7, 0x27, 0x70, 0xec, 0xec, 0xae, 0x8f, 0x3f, 0x7c, 0x6b, 0xc1, 0x3b, 0xf8, 0x16, 0x2a, 0xbf, 0x65, 0x32, 0xfe, 0xde, 0x49, 0xf7, 0x62, 0xb7, 0x12, 0x86, 0x8d];
 pub const CONTRACT_LINEAGE: &str = "DriverConformance";
 pub const CONTRACT_VERSION: u64 = 1;
 
-pub const CONTRACT_BUNDLE_HASH: [u8; 32] = [0xd4, 0x18, 0x0d, 0x54, 0xfb, 0xe7, 0xa5, 0x5c, 0x4d, 0x88, 0xaf, 0xe0, 0x2b, 0xea, 0xcb, 0xb9, 0x9f, 0x58, 0x2a, 0x32, 0x3d, 0xa0, 0x2c, 0xd1, 0xe7, 0x2b, 0x2e, 0x9c, 0xcc, 0x1b, 0xf8, 0xde];
+pub const CONTRACT_BUNDLE_HASH: [u8; 32] = [0xd7, 0xc8, 0x67, 0x78, 0xe9, 0xad, 0xc0, 0xcb, 0xbf, 0x7c, 0x7a, 0x0b, 0x9a, 0x40, 0xe5, 0x23, 0xda, 0x30, 0xcc, 0x4c, 0x6b, 0x0a, 0xb5, 0x3b, 0x24, 0xd1, 0xed, 0x4d, 0x6b, 0x7e, 0x8d, 0xa8];
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DecimalValue {
@@ -55,7 +55,7 @@ pub enum ItemPageResult {
     NotFound(Box<ItemPageNotFound>),
 }
 
-pub const ITEM_PAGE_QUERY_PLAN_HASH: [u8; 32] = [0x10, 0x47, 0x29, 0xd9, 0x02, 0x82, 0x9d, 0xa2, 0x24, 0x85, 0xdc, 0xff, 0x8b, 0x5a, 0xd5, 0xd9, 0xf1, 0x71, 0x0d, 0x54, 0xb5, 0x14, 0xa2, 0x8b, 0x03, 0x05, 0x70, 0x66, 0x8e, 0x87, 0x65, 0x6b];
+pub const ITEM_PAGE_QUERY_PLAN_HASH: [u8; 32] = [0x9d, 0x05, 0x21, 0xd5, 0xcd, 0xbb, 0x52, 0x6b, 0xf1, 0x70, 0xd6, 0x93, 0x3d, 0x03, 0x26, 0x58, 0x40, 0xe6, 0x39, 0x76, 0x61, 0x64, 0x0a, 0x06, 0x4a, 0x3e, 0xb6, 0x60, 0xb3, 0x31, 0x0e, 0x4b];
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ItemPageQuery(pub ItemPageParams);
 impl GeneratedQuery for ItemPageQuery {
@@ -109,10 +109,109 @@ fn decode_item_page_found_item_record(mut record: ApplicationRecord) -> Result<I
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ItemSecretParams {
+    pub item_id: String,
+}
+
+pub const ITEM_SECRET_SECRET_OUTPUTS: &[(&str, &str, &str)] = &[
+    ("ItemSecret", "Item", "token_digest"),
+];
+
+#[derive(Clone, Eq, PartialEq)]
+pub struct ItemSecretFoundSecret {
+    pub token_digest: String,
+}
+
+impl std::fmt::Debug for ItemSecretFoundSecret {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("ItemSecretFoundSecret { <secret outputs redacted> }")
+    }
+}
+
+#[derive(Clone, Eq, PartialEq)]
+pub struct ItemSecretFound {
+    pub secret: ItemSecretFoundSecret,
+}
+
+impl std::fmt::Debug for ItemSecretFound {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("ItemSecretFound { <secret outputs redacted> }")
+    }
+}
+
+#[derive(Clone, Eq, PartialEq)]
+pub struct ItemSecretNotFound {
+}
+
+impl std::fmt::Debug for ItemSecretNotFound {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("ItemSecretNotFound { <secret outputs redacted> }")
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ItemSecretResult {
+    Found(Box<ItemSecretFound>),
+    NotFound(Box<ItemSecretNotFound>),
+}
+
+pub const ITEM_SECRET_QUERY_PLAN_HASH: [u8; 32] = [0xe6, 0x23, 0xa6, 0x98, 0x42, 0xd8, 0xa8, 0x83, 0x48, 0xab, 0x54, 0x49, 0xb2, 0xde, 0x4b, 0x47, 0x93, 0xa7, 0xcd, 0x81, 0x4f, 0x0d, 0x82, 0xd0, 0x90, 0xa0, 0xb1, 0x17, 0x1f, 0xf1, 0x9d, 0x5e];
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ItemSecretQuery(pub ItemSecretParams);
+impl GeneratedQuery for ItemSecretQuery {
+    type Output = ItemSecretResult;
+
+    fn named_query(self, options: QueryOptions) -> Result<NamedQuery, ApplicationClientError> {
+        let mut parameters = BTreeMap::new();
+        parameters.insert("item_id".to_owned(), ApplicationValue::Uuid(ApplicationUuid::from_text(self.0.item_id)?));
+        NamedQuery::new(
+            ApplicationContract::Exact {
+                lineage: CONTRACT_LINEAGE.to_owned(),
+                version: CONTRACT_VERSION,
+                bundle_hash: Some(CONTRACT_BUNDLE_HASH),
+            },
+            "ItemSecret",
+            Some(QUERY_MODULE_HASH),
+            parameters,
+            None,
+        )?.expect_plan_hash(ITEM_SECRET_QUERY_PLAN_HASH).with_options(options)
+    }
+
+    fn decode_result(mut response: NamedQueryResult) -> Result<Self::Output, ApplicationClientError> {
+        let outcome = response.outcome.clone();
+        match outcome.as_str() {
+            "Found" => {
+                let decoded = ItemSecretFound {
+                    secret: decode_item_secret_found_secret_record(one_result_record(take_result_field(&mut response.fields, "secret")?)?)?,
+                };
+                if !response.fields.is_empty() { return Err(ApplicationClientError::InvalidResponse); }
+                Ok(ItemSecretResult::Found(Box::new(decoded)))
+            },
+            "NotFound" => {
+                let decoded = ItemSecretNotFound {
+                };
+                if !response.fields.is_empty() { return Err(ApplicationClientError::InvalidResponse); }
+                Ok(ItemSecretResult::NotFound(Box::new(decoded)))
+            },
+            _ => Err(ApplicationClientError::InvalidResponse),
+        }
+    }
+}
+
+fn decode_item_secret_found_secret_record(mut record: ApplicationRecord) -> Result<ItemSecretFoundSecret, ApplicationClientError> {
+    let value = ItemSecretFoundSecret {
+        token_digest: application_string(take_application_value(&mut record.fields, "token_digest")?)?,
+    };
+    if !record.fields.is_empty() { return Err(ApplicationClientError::InvalidResponse); }
+    Ok(value)
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Item {
     pub title: String,
     pub item_id: String,
     pub created_at: TimestampValue,
+    pub token_digest: String,
 }
 
 fn encode_item_entity(value: &Item) -> Result<v1::Value, GeneratedCommandError> {
@@ -120,6 +219,7 @@ fn encode_item_entity(value: &Item) -> Result<v1::Value, GeneratedCommandError> 
         v1::ValueField { field_id: Some(1), name: String::new(), value: Some(wire_string(Clone::clone(&value.title))) },
         v1::ValueField { field_id: Some(2), name: String::new(), value: Some(wire_uuid(&value.item_id)?) },
         v1::ValueField { field_id: Some(3), name: String::new(), value: Some(wire_timestamp(&value.created_at)?) },
+        v1::ValueField { field_id: Some(4), name: String::new(), value: Some(wire_string(Clone::clone(&value.token_digest))) },
     ];
     Ok(v1::Value { kind: Some(WireKind::RecordValue(v1::ValueRecord { fields })) })
 }
@@ -130,6 +230,7 @@ fn decode_item_entity(value: v1::Value) -> Result<Item, GeneratedCommandError> {
         title: decode_wire_string(take_wire_field(&mut fields, 1)?)?,
         item_id: decode_wire_uuid(take_wire_field(&mut fields, 2)?)?,
         created_at: decode_wire_timestamp(take_wire_field(&mut fields, 3)?)?,
+        token_digest: decode_wire_string(take_wire_field(&mut fields, 4)?)?,
     };
     if !fields.is_empty() { return Err(GeneratedCommandError::InvalidOutcomeShape); }
     Ok(entity)
@@ -139,22 +240,21 @@ fn decode_item_entity(value: v1::Value) -> Result<Item, GeneratedCommandError> {
 pub struct CreateItemInput {
     pub title: String,
     pub item_id: String,
+    pub token_digest: String,
     pub idempotency_key: String,
 }
 
 #[allow(clippy::large_enum_variant)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CreateItemOutcome {
-    Created {
-        item: Item,
-    },
+    Created,
 
     ItemExists {
         item_id: String,
     },
 }
 
-const CREATE_ITEM_PLAN_HASH: [u8; 32] = [0x3c, 0x05, 0xf2, 0x9b, 0x5d, 0x12, 0x56, 0x2e, 0x0e, 0x1a, 0xbf, 0xcc, 0x6b, 0xdb, 0xe5, 0x9d, 0x56, 0x4f, 0x05, 0x93, 0x06, 0x1b, 0x87, 0x44, 0x85, 0x20, 0x47, 0x18, 0x35, 0x6f, 0x3b, 0x2e];
+const CREATE_ITEM_PLAN_HASH: [u8; 32] = [0x3f, 0x8a, 0x30, 0x41, 0xbd, 0x21, 0xb6, 0x4b, 0xfc, 0xe8, 0xbd, 0x8e, 0x6d, 0xf3, 0xab, 0x75, 0x5e, 0x05, 0x6e, 0x2f, 0x07, 0x53, 0xe6, 0xc4, 0x91, 0x17, 0xe1, 0x5f, 0xa0, 0x6f, 0x3d, 0x8c];
 impl GeneratedCommand for CreateItemInput {
     type Outcome = CreateItemOutcome;
 
@@ -163,6 +263,7 @@ impl GeneratedCommand for CreateItemInput {
         let fields = vec![
             wire_named_field("title", wire_string(Clone::clone(&self.title))),
             wire_named_field("item_id", wire_uuid(&self.item_id)?),
+            wire_named_field("token_digest", wire_string(Clone::clone(&self.token_digest))),
             wire_named_field("idempotency_key", wire_string(Clone::clone(&self.idempotency_key))),
         ];
         IdempotentCommand::new("CreateItem", Some(CONTRACT_VERSION), wire_record(fields)).map_err(Into::into)
@@ -181,13 +282,7 @@ impl GeneratedCommand for CreateItemInput {
     fn decode_outcome(&self, response: &v1::ExecuteCommandResponse) -> Result<Self::Outcome, GeneratedCommandError> {
         let mut fields = wire_outcome_fields(response, &CREATE_ITEM_PLAN_HASH)?;
         match response.outcome_type.as_str() {
-            "Created" => {
-                let outcome = Self::Outcome::Created {
-                    item: decode_item_entity(take_wire_field(&mut fields, 1)?)?,
-                };
-                if !fields.is_empty() { return Err(GeneratedCommandError::InvalidOutcomeShape); }
-                Ok(outcome)
-            },
+            "Created" => if fields.is_empty() { Ok(Self::Outcome::Created) } else { Err(GeneratedCommandError::InvalidOutcomeShape) },
             "ItemExists" => {
                 let outcome = Self::Outcome::ItemExists {
                     item_id: decode_wire_uuid(take_wire_field(&mut fields, 1)?)?,
@@ -221,6 +316,19 @@ impl DriverConformanceClient {
     /// Executes `ItemPage` with generated pagination or read-fence options.
     pub async fn item_page_with_options(&mut self, parameters: ItemPageParams, options: QueryOptions) -> Result<TypedQueryResult<ItemPageResult>, ApplicationClientError> {
         self.client.execute_generated_query(ItemPageQuery(parameters), options, &self.metadata).await
+    }
+
+    /// Executes the generated `ItemSecret` named query.
+    pub async fn item_secret(&mut self, parameters: ItemSecretParams) -> Result<ItemSecretResult, ApplicationClientError> {
+        Ok(self.item_secret_with_options(parameters, QueryOptions::new()).await?.value)
+    }
+    /// Executes `ItemSecret` against a snapshot at or after the supplied command commit.
+    pub async fn item_secret_after_commit(&mut self, parameters: ItemSecretParams, commit_sequence: u64) -> Result<TypedQueryResult<ItemSecretResult>, ApplicationClientError> {
+        self.item_secret_with_options(parameters, QueryOptions::new().read_after_commit(commit_sequence)).await
+    }
+    /// Executes `ItemSecret` with generated pagination or read-fence options.
+    pub async fn item_secret_with_options(&mut self, parameters: ItemSecretParams, options: QueryOptions) -> Result<TypedQueryResult<ItemSecretResult>, ApplicationClientError> {
+        self.client.execute_generated_query(ItemSecretQuery(parameters), options, &self.metadata).await
     }
 
     pub async fn create_item(&mut self, input: CreateItemInput) -> Result<TypedCommandResult<CreateItemOutcome>, ApplicationClientError> {

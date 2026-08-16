@@ -162,7 +162,12 @@ immutable named query. The compiler places the stable field ID in the grant's
 dedicated secret list; callers cannot add it through parameters or ad-hoc
 RiffQL. A missing or stale role returns `RDB-AUTH-0214` with no partial result.
 MCP and reactive catalogs omit the query entirely; typed application SDK and
-gRPC execution remain available under the exact role.
+gRPC execution remain available under the exact role. Generated Rust, Go,
+TypeScript, and Python clients publish the exact symbolic
+`query/entity/field` metadata. Their generated debug, string, representation,
+and redaction helpers do not print the returned secret value. Authorized
+application code can still read the typed value after release; metadata is for
+structural diagnostics and does not replace runtime authorization.
 
 `RDB-C046` rejects missing, wrong, duplicate, or excess declarations. Its
 diagnostic identifies both the destination flow site and the secret source
@@ -178,4 +183,6 @@ redact it after delivery.
   **absence, never the `[redacted:…]` marker**. The marker appears on the
   MCP surface, which renders in-process from the service's views. Wire-level
   marker carriage is follow-up work.
-- Generated language bindings do not yet mark secret fields in their types.
+- TypeScript values are ordinary structural objects after authorized release;
+  use the generated `redact<Query>Result` helper in diagnostics rather than
+  logging the result object directly.

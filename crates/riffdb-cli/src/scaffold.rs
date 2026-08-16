@@ -19,7 +19,8 @@ use riffdb_query_module::{
     compile_reactive_source, generate_go_application_client, generate_mcp_commands,
     generate_mcp_reactive_tools, generate_mcp_tools, generate_python_application_client,
     generate_python_client, generate_rust_application_client, generate_rust_client,
-    generate_typescript_application_client, generate_typescript_client,
+    generate_sdk_only_query_tools, generate_typescript_application_client,
+    generate_typescript_client,
 };
 use riffdb_types::{TenantId, hash_generated_artifact, hash_source};
 use serde_json::json;
@@ -261,9 +262,11 @@ fn generate_legacy_application(manifest_path: &Path) -> Result<(), ScaffoldError
         .map_err(|_| ScaffoldError::CompileRole)?;
     }
     let tools = generate_mcp_tools(&module).map_err(|_| ScaffoldError::GenerateMcp)?;
+    let sdk_tools =
+        generate_sdk_only_query_tools(&module).map_err(|_| ScaffoldError::GenerateMcp)?;
     let commands =
         generate_mcp_commands(&module, &contract).map_err(|_| ScaffoldError::GenerateMcp)?;
-    let generated_mcp = render_mcp_manifest(&manifest, &tools, &commands, &[])?;
+    let generated_mcp = render_mcp_manifest(&manifest, &tools, &sdk_tools, &commands, &[])?;
     write_file(
         root,
         manifest.generation().rust(),
@@ -1356,6 +1359,8 @@ fn compile_symbolic_application_mode(
         return Err(ScaffoldError::Manifest);
     };
     let tools = generate_mcp_tools(module).map_err(|_| ScaffoldError::GenerateMcp)?;
+    let sdk_tools =
+        generate_sdk_only_query_tools(module).map_err(|_| ScaffoldError::GenerateMcp)?;
     let commands =
         generate_mcp_commands(module, &contract).map_err(|_| ScaffoldError::GenerateMcp)?;
     let reactive_tools = reactive_modules
@@ -1366,7 +1371,8 @@ fn compile_symbolic_application_mode(
         .into_iter()
         .flatten()
         .collect::<Vec<_>>();
-    let generated_mcp = render_mcp_manifest(&exact, &tools, &commands, &reactive_tools)?;
+    let generated_mcp =
+        render_mcp_manifest(&exact, &tools, &sdk_tools, &commands, &reactive_tools)?;
     let mut outputs = vec![
         (
             EXACT_MANIFEST_PATH.to_owned(),
@@ -1721,9 +1727,11 @@ pub(crate) fn create_application(
     )
     .map_err(|_| ScaffoldError::CompileRole)?;
     let tools = generate_mcp_tools(&module).map_err(|_| ScaffoldError::GenerateMcp)?;
+    let sdk_tools =
+        generate_sdk_only_query_tools(&module).map_err(|_| ScaffoldError::GenerateMcp)?;
     let commands =
         generate_mcp_commands(&module, &contract).map_err(|_| ScaffoldError::GenerateMcp)?;
-    let generated_mcp = render_mcp_manifest(&manifest, &tools, &commands, &[])?;
+    let generated_mcp = render_mcp_manifest(&manifest, &tools, &sdk_tools, &commands, &[])?;
     let generated_rust = generate_rust_client(&module, &contract);
     let generated_typescript = generate_typescript_client(&module, &contract);
     let generated_go = generate_go_application_client(&module, &contract, &[]);
@@ -2618,30 +2626,17 @@ fn copy_typescript_tree(
 fn render_mcp_manifest(
     manifest: &ApplicationManifest,
     tools: &[GeneratedMcpTool],
+    sdk_tools: &[GeneratedMcpTool],
     commands: &[GeneratedMcpCommand],
     reactive_tools: &[GeneratedMcpReactiveTool],
 ) -> Result<String, ScaffoldError> {
     let tools = tools
         .iter()
-        .map(|tool| {
-            Ok(json!({
-                "name": tool.name,
-                "operation_name": tool.operation_name,
-                "title": tool.title,
-                "description": tool.description,
-                "module_hash": hex(&tool.module_hash),
-                "input_schema": serde_json::from_str::<serde_json::Value>(&tool.input_schema)
-                    .map_err(|_| ScaffoldError::GenerateMcp)?,
-                "result_schema": serde_json::from_str::<serde_json::Value>(&tool.result_schema)
-                    .map_err(|_| ScaffoldError::GenerateMcp)?,
-                "annotations": {
-                    "readOnlyHint": true,
-                    "destructiveHint": false,
-                    "idempotentHint": true,
-                    "openWorldHint": false,
-                },
-            }))
-        })
+        .map(render_query_registry_entry)
+        .collect::<Result<Vec<_>, ScaffoldError>>()?;
+    let sdk_tools = sdk_tools
+        .iter()
+        .map(render_query_registry_entry)
         .collect::<Result<Vec<_>, ScaffoldError>>()?;
     let commands = commands
         .iter()
@@ -2695,17 +2690,47 @@ fn render_mcp_manifest(
             }))
         })
         .collect::<Result<Vec<_>, ScaffoldError>>()?;
-    let value = json!({
+    let mut value = json!({
         "schema": "riffdb-generated-application-operations/v2",
         "application_manifest_hash": hex(manifest.identity().as_bytes()),
         "tools": tools,
         "commands": commands,
         "reactive_tools": reactive_tools,
     });
+    if !sdk_tools.is_empty() {
+        value["schema"] =
+            serde_json::Value::String("riffdb-generated-application-operations/v3".to_owned());
+        value
+            .as_object_mut()
+            .ok_or(ScaffoldError::GenerateMcp)?
+            .insert("sdk_tools".to_owned(), serde_json::Value::Array(sdk_tools));
+    }
     let mut output =
         serde_json::to_string_pretty(&value).map_err(|_| ScaffoldError::GenerateMcp)?;
     output.push('\n');
     Ok(output)
+}
+
+fn render_query_registry_entry(
+    tool: &GeneratedMcpTool,
+) -> Result<serde_json::Value, ScaffoldError> {
+    Ok(json!({
+        "name": tool.name,
+        "operation_name": tool.operation_name,
+        "title": tool.title,
+        "description": tool.description,
+        "module_hash": hex(&tool.module_hash),
+        "input_schema": serde_json::from_str::<serde_json::Value>(&tool.input_schema)
+            .map_err(|_| ScaffoldError::GenerateMcp)?,
+        "result_schema": serde_json::from_str::<serde_json::Value>(&tool.result_schema)
+            .map_err(|_| ScaffoldError::GenerateMcp)?,
+        "annotations": {
+            "readOnlyHint": true,
+            "destructiveHint": false,
+            "idempotentHint": true,
+            "openWorldHint": false,
+        },
+    }))
 }
 
 fn create_temporary_directory(parent: &Path, application: &str) -> Result<PathBuf, ScaffoldError> {
