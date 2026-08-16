@@ -1,18 +1,14 @@
 //! Owned authoritative reads over short redb read transactions.
 
-use redb::ReadOnlyTable;
-#[cfg(test)]
-use redb::{ReadTransaction, ReadableTableMetadata};
-#[cfg(test)]
-use riffdb_storage_api::ApplicationSequenceAllocator;
+use redb::{ReadOnlyTable, ReadTransaction, ReadableTableMetadata};
 use riffdb_storage_api::{
-    AuthoritativeIndexScanPage, AuthoritativeIndexScanRequest, AuthoritativePointReader,
-    AuthoritativeScanReader, CommandDerivedIndexKindV1, CommandDerivedMemberV1, CommitScanPageV1,
-    CommitScanRequest, EncodedContentCharge, EncodedPageItem, EntityObservation, EntityTarget,
-    EventRouteScanRequestV1, EventRouteScanV1, EventRouteUpperFenceV1,
-    FilteredAuthoritativeIndexScanPage, FilteredAuthoritativeIndexScanRequest,
-    FilteredAuthoritativeScanReader, IdempotencyIdentity, IndexEpochPosition,
-    IndexPartitionFilterScope, IndexRangeEntry, MAX_COMMIT_SCAN_PAGE_BYTES,
+    ApplicationSequenceAllocator, AuthoritativeIndexScanPage, AuthoritativeIndexScanRequest,
+    AuthoritativePointReader, AuthoritativeScanReader, CommandDerivedIndexKindV1,
+    CommandDerivedMemberV1, CommitScanPageV1, CommitScanRequest, EncodedContentCharge,
+    EncodedPageItem, EntityObservation, EntityTarget, EventRouteScanRequestV1, EventRouteScanV1,
+    EventRouteUpperFenceV1, FilteredAuthoritativeIndexScanPage,
+    FilteredAuthoritativeIndexScanRequest, FilteredAuthoritativeScanReader, IdempotencyIdentity,
+    IndexEpochPosition, IndexPartitionFilterScope, IndexRangeEntry, MAX_COMMIT_SCAN_PAGE_BYTES,
     MAX_INDEX_SCAN_INSPECTED_BYTES, MAX_INDEX_SCAN_INSPECTED_ENTRIES, MAX_SCAN_PAGE_BYTES,
     PartitionEventRouteReader, PartitionIndexTarget, ReadSnapshot, ReadSnapshotBuilder,
     SnapshotReader, SnapshotRequest, StorageError, StorageErrorKind, StorageValueError,
@@ -21,21 +17,18 @@ use riffdb_storage_api::{
 };
 use riffdb_types::{CommitSequence, EventId, FrontierPosition, ProvenanceId};
 
-#[cfg(test)]
-use crate::codec::decode_application_sequence_allocator_v1;
 use crate::codec::{
-    IdempotencyRecordV1, decode_command_locator_v1, decode_durable_event_v1,
-    decode_entity_record_v1, decode_idempotency_record_v1, decode_index_entry_v2,
-    decode_index_epoch_v1, decode_provenance_record_v1, encode_event_route_v1,
+    IdempotencyRecordV1, decode_application_sequence_allocator_v1, decode_command_locator_v1,
+    decode_durable_event_v1, decode_entity_record_v1, decode_idempotency_record_v1,
+    decode_index_entry_v2, decode_index_epoch_v1, decode_provenance_record_v1,
+    encode_event_route_v1,
 };
 #[cfg(test)]
 use crate::command_authority::command_authority_head;
 use crate::command_authority::{
     command_member_at_access, commit_at_access, commits_in_physical_row_access,
 };
-#[cfg(test)]
-use crate::error::table_error;
-use crate::error::{precommit_storage_error, storage_error};
+use crate::error::{precommit_storage_error, storage_error, table_error};
 use crate::journal::JournalTable;
 #[cfg(test)]
 use crate::keys::encode_event_route_key;
@@ -44,8 +37,9 @@ use crate::keys::{
     encode_entity_key, encode_event_key, encode_idempotency_key, encode_partition_index_key,
     encode_provenance_key,
 };
+use crate::layout::{COMMITS, META_APPLICATION_SEQUENCE};
 #[cfg(test)]
-use crate::layout::{EVENTS, META, META_APPLICATION_SEQUENCE};
+use crate::layout::{EVENTS, META};
 use crate::store::{RedbOperationalPorts, RedbReadAccess};
 
 type BytesTable = ReadOnlyTable<&'static [u8], &'static [u8]>;
@@ -726,25 +720,30 @@ pub(crate) fn read_commit_head(
 /// command history. The allocator is advanced in the same authoritative redb
 /// transaction as every entity/index post-image and command segment, so its
 /// predecessor is the exact frontier of this read transaction.
-#[cfg(test)]
 pub(crate) fn read_snapshot_head(
-    transaction: &ReadTransaction,
-    commits: &BytesTable,
+    access: &RedbReadAccess,
 ) -> Result<Option<CommitSequence>, StorageError> {
-    let meta = transaction.open_table(META).map_err(table_error)?;
-    let encoded = meta
-        .get(META_APPLICATION_SEQUENCE)
-        .map_err(precommit_storage_error)?
+    let encoded = access
+        .read_value(JournalTable::Meta, META_APPLICATION_SEQUENCE.as_bytes())?
         .ok_or_else(corrupt)?;
-    let allocator = *decode_application_sequence_allocator_v1(encoded.value())?.value();
+    let allocator = *decode_application_sequence_allocator_v1(&encoded)?.value();
     let head = snapshot_head_from_allocator(allocator);
-    if commits.is_empty().map_err(precommit_storage_error)? != head.is_none() {
-        return Err(corrupt());
+    match access {
+        RedbReadAccess::Composite(view) => {
+            if view.overlay().published_application() != head {
+                return Err(corrupt());
+            }
+        }
+        RedbReadAccess::Current(transaction) => {
+            verify_snapshot_authority_presence(transaction, head)?;
+        }
+        RedbReadAccess::Durable(transaction) => {
+            verify_snapshot_authority_presence(transaction, head)?;
+        }
     }
     Ok(head)
 }
 
-#[cfg(test)]
 const fn snapshot_head_from_allocator(
     allocator: ApplicationSequenceAllocator,
 ) -> Option<CommitSequence> {
@@ -752,6 +751,33 @@ const fn snapshot_head_from_allocator(
         ApplicationSequenceAllocator::Next(next) if next.get() == 1 => None,
         ApplicationSequenceAllocator::Next(next) => CommitSequence::new(next.get() - 1),
         ApplicationSequenceAllocator::Exhausted => CommitSequence::new(u64::MAX),
+    }
+}
+
+/// Checks only whether the same snapshot contains a physical command-authority
+/// witness. It deliberately does not read a retained segment value: complete
+/// segment validation belongs to startup, recovery, history, and retention.
+/// A fully pruned history is witnessed by its exact retention watermark.
+fn verify_snapshot_authority_presence(
+    transaction: &ReadTransaction,
+    head: Option<CommitSequence>,
+) -> Result<(), StorageError> {
+    let commits = transaction.open_table(COMMITS).map_err(table_error)?;
+    if !commits.is_empty().map_err(precommit_storage_error)? {
+        return if head.is_some() {
+            Ok(())
+        } else {
+            Err(corrupt())
+        };
+    }
+    drop(commits);
+
+    let watermark = crate::retention::load_watermark(transaction)?
+        .map(|watermark| watermark.watermark_sequence());
+    match (head, watermark) {
+        (None, None | Some(0)) => Ok(()),
+        (Some(head), Some(watermark)) if head.get() == watermark => Ok(()),
+        _ => Err(corrupt()),
     }
 }
 
@@ -788,14 +814,16 @@ mod tests {
         IdempotencyKeyDigest, IndexPartitionFilter, IndexPartitionFilterScope,
         IndexRangePrefixBuilder, IndexRangeTarget, PartitionIndexTarget, ReadDependencies,
         StorageScanLimit, StoredCommitRecordV1, StoredDurableEventV1, StoredEventRouteV1,
-        StoredIndexEntryV2, StoredIndexEpochV1, StoredReadDependenciesV1, derive_event_hash_v1,
+        StoredIndexEntryV2, StoredIndexEpochV1, StoredReadDependenciesV1,
+        StoredRetentionWatermarkV1, derive_event_hash_v1,
+        proto_codec::encode_retention_watermark_v1,
     };
     use riffdb_types::{
         ActorId, ActorKind, AdmittedActorContext, AggregateTypeId, CanonicalInputHash,
         CanonicalRecord, CommandId, ContractBundleHash, ContractLineage, ContractVersion,
         DatabaseId, DigestKeyId, EntityKeyBuilder, EntityTypeId, EntityVersion, Environment,
         EventTypeId, IndexEntryKeyBuilder, IndexEpoch, IndexId, LogicalTime, OutcomeId,
-        PartitionKeyBuilder, PlanHash, ProvenanceId, RequestId, TenantScope, Timestamp,
+        PartitionKeyBuilder, PlanHash, ProvenanceId, RequestId, SchemaHash, TenantScope, Timestamp,
         hash_partition_key,
     };
 
@@ -805,7 +833,10 @@ mod tests {
         encode_entity_record_v1, encode_event_route_v1, encode_index_entry_v2,
         encode_index_epoch_v1,
     };
-    use crate::layout::{COMMITS, ENTITIES, EVENT_ROUTES, EVENTS, INDEX_EPOCHS, SECONDARY_INDEXES};
+    use crate::layout::{
+        COMMITS, ENTITIES, EVENT_ROUTES, EVENTS, INDEX_EPOCHS, META_RETENTION_WATERMARK,
+        SECONDARY_INDEXES,
+    };
     use crate::store::RedbStore;
 
     /// Whole-directory scope: the database and every side file it grows live
@@ -1216,10 +1247,9 @@ mod tests {
         let (_path, ports) = operational("snapshot-frontier-presence");
         let second = CommitSequence::first().checked_next().expect("second");
         replace_application_allocator(&ports, ApplicationSequenceAllocator::Next(second));
-        let transaction = ports.begin_read().expect("read transaction");
-        let commits = transaction.open_table(COMMITS).expect("commit table");
+        let access = ports.begin_read().expect("read transaction");
         assert!(matches!(
-            read_snapshot_head(&transaction, &commits),
+            read_snapshot_head(&access),
             Err(error) if error.kind() == StorageErrorKind::CorruptData
         ));
     }
@@ -1251,16 +1281,55 @@ mod tests {
             ApplicationSequenceAllocator::Next(first.checked_next().expect("second")),
         );
 
-        let transaction = ports.begin_read().expect("read transaction");
-        let commits = transaction.open_table(COMMITS).expect("commit table");
+        let access = ports.begin_read().expect("read transaction");
         assert_eq!(
-            read_snapshot_head(&transaction, &commits).expect("constant-time frontier"),
+            read_snapshot_head(&access).expect("constant-time frontier"),
             Some(first)
         );
+        let transaction = match &access {
+            RedbReadAccess::Current(transaction) => transaction,
+            RedbReadAccess::Durable(transaction) => transaction,
+            RedbReadAccess::Composite(_) => panic!("test does not publish a composite view"),
+        };
+        let commits = transaction.open_table(COMMITS).expect("commit table");
         assert!(matches!(
-            read_commit_head(&transaction, &commits),
+            read_commit_head(transaction, &commits),
             Err(error) if error.kind() == StorageErrorKind::CorruptData
         ));
+    }
+
+    #[test]
+    fn snapshot_frontier_accepts_exact_fully_pruned_authority_witness() {
+        let (_path, ports) = operational("snapshot-frontier-pruned");
+        let first = CommitSequence::first();
+        replace_application_allocator(
+            &ports,
+            ApplicationSequenceAllocator::Next(first.checked_next().expect("second")),
+        );
+        let watermark = StoredRetentionWatermarkV1::new(
+            first.get(),
+            riffdb_storage_api::HISTORY_INCARNATION_INITIAL,
+            Some(SchemaHash::from_bytes([0x42; 32])),
+        )
+        .expect("watermark");
+        let encoded = encode_retention_watermark_v1(&watermark).expect("encode watermark");
+        let access = ports.begin_write().expect("begin watermark seed");
+        {
+            let mut meta = access
+                .transaction()
+                .expect("watermark transaction")
+                .open_table(META)
+                .expect("meta table");
+            meta.insert(META_RETENTION_WATERMARK, encoded.as_bytes())
+                .expect("insert watermark");
+        }
+        access.commit().expect("commit watermark seed");
+
+        let access = ports.begin_read().expect("read transaction");
+        assert_eq!(
+            read_snapshot_head(&access).expect("pruned frontier"),
+            Some(first)
+        );
     }
 
     #[test]
