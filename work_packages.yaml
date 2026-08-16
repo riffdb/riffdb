@@ -13514,8 +13514,8 @@ work_packages:
   acceptance_commands:
   - cargo +1.97.0 test -p riffdb-application -p riffdb-runtime -p riffdb-commit -p riffdb-storage-api -p riffdb-storage-redb -p riffdb-observability -p riffdb-service -p riffdb-server --all-features
   - cargo +1.97.0 test --manifest-path examples/app-baseline/Cargo.toml --workspace
-  - cargo +1.97.0 test --manifest-path tests/shuttle/Cargo.toml
-  - ./scripts/storage-recovery-matrix
+  - cargo +1.97.0 test -p riffdb-conflict --features shuttle --test shuttle_model
+  - ./scripts/recovery_full
   - ./scripts/check-workspace-policy
   - ./scripts/check-requirement-coverage
   - cargo +1.97.0 fmt --all -- --check

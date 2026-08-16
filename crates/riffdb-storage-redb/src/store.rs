@@ -490,12 +490,28 @@ struct JournalRuntime {
     suffix_audits: usize,
     suffix_bytes: usize,
     suffix_physical_bytes: usize,
-    suffix_frames: Vec<([u8; 32], crate::journal::EncodedJournalFrame)>,
+    suffix_frames: Vec<ValidatedCheckpointFrame>,
     unpublished_transitions: usize,
     unpublished_commands: usize,
     unpublished_audits: usize,
     unpublished_bytes: usize,
     reanchor_required: bool,
+}
+
+#[derive(Clone)]
+struct ValidatedCheckpointFrame {
+    database_id: DatabaseId,
+    predecessor_sequence: Option<CommitSequence>,
+    covered_sequence: Option<CommitSequence>,
+    predecessor_administration_sequence: Option<AdministrationSequence>,
+    covered_administration_sequence: Option<AdministrationSequence>,
+    previous_hash: [u8; 32],
+    frame_hash: [u8; 32],
+    transition_count: u16,
+    command_count: u16,
+    audit_count: u16,
+    encoded: crate::journal::EncodedJournalFrame,
+    mutations: Arc<[riffdb_storage_api::CompositeMutationV1]>,
 }
 
 #[derive(Default)]
@@ -621,7 +637,7 @@ struct JournalCheckpointBatch {
     command_count: usize,
     audit_count: usize,
     encoded_bytes: usize,
-    frames: Vec<([u8; 32], crate::journal::EncodedJournalFrame)>,
+    frames: Vec<ValidatedCheckpointFrame>,
 }
 
 struct AsyncJournalCheckpoint {
@@ -4442,18 +4458,21 @@ impl RedbWriteAccess {
                 return Err(storage_error(StorageErrorKind::LimitExceeded));
             }
             let frame_hash = frame.frame_hash();
-            let composite_successor = Arc::new(composite_stage.seal_encoded_frame(
-                riffdb_storage_api::CompositeFrameKindV1::ServiceAudit,
-                runtime.database_id,
-                predecessor_sequence,
-                predecessor_sequence,
-                predecessor_administration_sequence,
-                covered_administration_sequence,
-                audit_count,
-                encoded_bytes,
-                runtime.last_hash,
-                frame_hash,
-            )?);
+            let previous_hash = runtime.last_hash;
+            let (composite_successor, checkpoint_mutations) = composite_stage
+                .seal_encoded_frame_with_mutations(
+                    riffdb_storage_api::CompositeFrameKindV1::ServiceAudit,
+                    runtime.database_id,
+                    predecessor_sequence,
+                    predecessor_sequence,
+                    predecessor_administration_sequence,
+                    covered_administration_sequence,
+                    audit_count,
+                    encoded_bytes,
+                    previous_hash,
+                    frame_hash,
+                )?;
+            let composite_successor = Arc::new(composite_successor);
             let retained_frame = frame.clone();
             let receipt = runtime.lane.submit(frame).map_err(journal_io_error)?;
             runtime.last_administration_sequence = covered_administration_sequence;
@@ -4462,7 +4481,20 @@ impl RedbWriteAccess {
             runtime.suffix_audits = next_audits;
             runtime.suffix_bytes = next_bytes;
             runtime.suffix_physical_bytes = next_physical_bytes;
-            runtime.suffix_frames.push((frame_hash, retained_frame));
+            runtime.suffix_frames.push(ValidatedCheckpointFrame {
+                database_id: runtime.database_id,
+                predecessor_sequence,
+                covered_sequence: predecessor_sequence,
+                predecessor_administration_sequence,
+                covered_administration_sequence,
+                previous_hash,
+                frame_hash,
+                transition_count: audit_count,
+                command_count: 0,
+                audit_count,
+                encoded: retained_frame,
+                mutations: Arc::from(checkpoint_mutations),
+            });
             runtime.unpublished_transitions = next_unpublished_transitions;
             runtime.unpublished_audits = next_unpublished_audits;
             runtime.unpublished_bytes = next_unpublished_bytes;
@@ -4690,7 +4722,6 @@ impl RedbDurabilityEpoch {
             }
             let command_count = u16::try_from(self.command_count)
                 .map_err(|_| storage_error(StorageErrorKind::LimitExceeded))?;
-            let predecessor_administration_sequence = runtime.last_administration_sequence;
             let frame = crate::journal::JournalFrame::encode_buffered_command(
                 runtime.database_id,
                 runtime.last_sequence,
@@ -4762,18 +4793,23 @@ impl RedbDurabilityEpoch {
                 return Err(storage_error(StorageErrorKind::LimitExceeded));
             } else {
                 let frame_hash = frame.frame_hash();
-                let composite_successor = Arc::new(composite_stage.seal_encoded_frame(
-                    riffdb_storage_api::CompositeFrameKindV1::Command,
-                    runtime.database_id,
-                    runtime.last_sequence,
-                    Some(last_sequence),
-                    runtime.last_administration_sequence,
-                    last_administration_sequence,
-                    command_count,
-                    encoded_bytes,
-                    runtime.last_hash,
-                    frame_hash,
-                )?);
+                let predecessor_sequence = runtime.last_sequence;
+                let predecessor_administration_sequence = runtime.last_administration_sequence;
+                let previous_hash = runtime.last_hash;
+                let (composite_successor, checkpoint_mutations) = composite_stage
+                    .seal_encoded_frame_with_mutations(
+                        riffdb_storage_api::CompositeFrameKindV1::Command,
+                        runtime.database_id,
+                        predecessor_sequence,
+                        Some(last_sequence),
+                        predecessor_administration_sequence,
+                        last_administration_sequence,
+                        command_count,
+                        encoded_bytes,
+                        previous_hash,
+                        frame_hash,
+                    )?;
+                let composite_successor = Arc::new(composite_successor);
                 let retained_frame = frame.clone();
                 let receipt = runtime.lane.submit(frame).map_err(journal_io_error)?;
                 runtime.last_sequence = Some(last_sequence);
@@ -4784,7 +4820,21 @@ impl RedbDurabilityEpoch {
                 runtime.suffix_audits = next_audits;
                 runtime.suffix_bytes = next_bytes;
                 runtime.suffix_physical_bytes = next_physical_bytes;
-                runtime.suffix_frames.push((frame_hash, retained_frame));
+                runtime.suffix_frames.push(ValidatedCheckpointFrame {
+                    database_id: runtime.database_id,
+                    predecessor_sequence,
+                    covered_sequence: Some(last_sequence),
+                    predecessor_administration_sequence,
+                    covered_administration_sequence: last_administration_sequence,
+                    previous_hash,
+                    frame_hash,
+                    transition_count: command_count,
+                    command_count,
+                    audit_count: u16::try_from(audit_count)
+                        .map_err(|_| storage_error(StorageErrorKind::LimitExceeded))?,
+                    encoded: retained_frame,
+                    mutations: Arc::from(checkpoint_mutations),
+                });
                 runtime.unpublished_transitions = next_unpublished_transitions;
                 runtime.unpublished_commands = next_unpublished_commands;
                 runtime.unpublished_audits = next_unpublished_audits;
@@ -5723,36 +5773,42 @@ impl SharedRedb {
         let mut transition_count = 0_usize;
         let mut command_count = 0_usize;
         let mut audit_count = 0_usize;
-        for (frame_hash, encoded) in &batch.frames {
-            let (frame, decoded_hash) = crate::journal::JournalFrame::decode(encoded.as_bytes())
-                .map_err(journal_storage_error)?;
-            if decoded_hash != *frame_hash {
-                let _ = transaction.abort();
-                return Err(storage_error(StorageErrorKind::CorruptData));
-            }
-            if frame.database_id() != batch.database_id
-                || frame.predecessor_sequence() != last_sequence
-                || frame.predecessor_administration_sequence() != last_administration_sequence
-                || frame.previous_hash() != last_hash
+        let mut encoded_bytes = 0_usize;
+        for frame in &batch.frames {
+            if frame.database_id != batch.database_id
+                || frame.predecessor_sequence != last_sequence
+                || frame.predecessor_administration_sequence != last_administration_sequence
+                || frame.previous_hash != last_hash
+                || frame.encoded.frame_hash() != frame.frame_hash
+                || frame.encoded.transition_count() != frame.transition_count
+                || frame.encoded.command_count() != frame.command_count
+                || frame.encoded.audit_count() != frame.audit_count
+                || frame.encoded.covered_sequence() != frame.covered_sequence
+                || frame.encoded.covered_administration_sequence()
+                    != frame.covered_administration_sequence
             {
                 let _ = transaction.abort();
                 return Err(storage_error(StorageErrorKind::CorruptData));
             }
-            for mutation in frame.mutations() {
-                crate::journal::apply_mutation(&transaction, mutation).map_err(journal_io_error)?;
+            for mutation in frame.mutations.iter() {
+                crate::journal::apply_validated_composite_mutation(&transaction, mutation)
+                    .map_err(journal_io_error)?;
             }
             transition_count = transition_count
-                .checked_add(usize::from(frame.transition_count()))
+                .checked_add(usize::from(frame.transition_count))
                 .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
             command_count = command_count
-                .checked_add(usize::from(frame.command_count()))
+                .checked_add(usize::from(frame.command_count))
                 .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
             audit_count = audit_count
-                .checked_add(usize::from(frame.audit_count()))
+                .checked_add(usize::from(frame.audit_count))
                 .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
-            last_sequence = frame.covered_sequence();
-            last_administration_sequence = frame.covered_administration_sequence();
-            last_hash = *frame_hash;
+            encoded_bytes = encoded_bytes
+                .checked_add(frame.encoded.as_bytes().len())
+                .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
+            last_sequence = frame.covered_sequence;
+            last_administration_sequence = frame.covered_administration_sequence;
+            last_hash = frame.frame_hash;
         }
         if last_sequence != batch.last_sequence
             || last_administration_sequence != batch.last_administration_sequence
@@ -5760,6 +5816,7 @@ impl SharedRedb {
             || transition_count != batch.transition_count
             || command_count != batch.command_count
             || audit_count != batch.audit_count
+            || encoded_bytes != batch.encoded_bytes
         {
             let _ = transaction.abort();
             return Err(storage_error(StorageErrorKind::CorruptData));
