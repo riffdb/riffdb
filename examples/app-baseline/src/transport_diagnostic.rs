@@ -463,6 +463,12 @@ fn query_execute_json(evidence: Option<&RiffDbQueryExecuteEvidence>) -> Value {
             "overlay_bytes_mean": window.overlay_bytes_sum
                 .checked_div(window.count).unwrap_or(0),
             "overlay_bytes_max": window.overlay_bytes_max,
+            "authority_tail_bytes_mean": window.authority_tail_bytes_sum
+                .checked_div(window.count).unwrap_or(0),
+            "authority_tail_bytes_max": window.authority_tail_bytes_max,
+            "authority_tail_commands_mean": window.authority_tail_commands_sum
+                .checked_div(window.count).unwrap_or(0),
+            "authority_tail_commands_max": window.authority_tail_commands_max,
         })).collect::<Vec<_>>(),
     })
 }

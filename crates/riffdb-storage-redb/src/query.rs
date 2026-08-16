@@ -54,6 +54,8 @@ struct QueryExecuteProfile {
     stage_ns: [u64; crate::QUERY_EXECUTE_STAGE_LABELS_V1.len()],
     overlay_transitions: u64,
     overlay_bytes: u64,
+    authority_tail_bytes: u64,
+    authority_tail_commands: u64,
 }
 
 struct QueryExecuteWindowCounters {
@@ -63,6 +65,10 @@ struct QueryExecuteWindowCounters {
     overlay_transitions_max: AtomicU64,
     overlay_bytes_sum: AtomicU64,
     overlay_bytes_max: AtomicU64,
+    authority_tail_bytes_sum: AtomicU64,
+    authority_tail_bytes_max: AtomicU64,
+    authority_tail_commands_sum: AtomicU64,
+    authority_tail_commands_max: AtomicU64,
 }
 
 impl QueryExecuteWindowCounters {
@@ -74,6 +80,10 @@ impl QueryExecuteWindowCounters {
             overlay_transitions_max: AtomicU64::new(0),
             overlay_bytes_sum: AtomicU64::new(0),
             overlay_bytes_max: AtomicU64::new(0),
+            authority_tail_bytes_sum: AtomicU64::new(0),
+            authority_tail_bytes_max: AtomicU64::new(0),
+            authority_tail_commands_sum: AtomicU64::new(0),
+            authority_tail_commands_max: AtomicU64::new(0),
         }
     }
 }
@@ -117,6 +127,22 @@ fn record_query_execute_profile(profile: QueryExecuteProfile) {
     atomic_max(&window.overlay_transitions_max, profile.overlay_transitions);
     saturating_atomic_add(&window.overlay_bytes_sum, profile.overlay_bytes);
     atomic_max(&window.overlay_bytes_max, profile.overlay_bytes);
+    saturating_atomic_add(
+        &window.authority_tail_bytes_sum,
+        profile.authority_tail_bytes,
+    );
+    atomic_max(
+        &window.authority_tail_bytes_max,
+        profile.authority_tail_bytes,
+    );
+    saturating_atomic_add(
+        &window.authority_tail_commands_sum,
+        profile.authority_tail_commands,
+    );
+    atomic_max(
+        &window.authority_tail_commands_max,
+        profile.authority_tail_commands,
+    );
 }
 
 fn saturating_atomic_add(target: &AtomicU64, value: u64) {
@@ -149,6 +175,14 @@ pub(crate) fn query_execute_census_v1() -> crate::QueryExecuteCensusV1 {
                 overlay_transitions_max: window.overlay_transitions_max.load(Ordering::Relaxed),
                 overlay_bytes_sum: window.overlay_bytes_sum.load(Ordering::Relaxed),
                 overlay_bytes_max: window.overlay_bytes_max.load(Ordering::Relaxed),
+                authority_tail_bytes_sum: window.authority_tail_bytes_sum.load(Ordering::Relaxed),
+                authority_tail_bytes_max: window.authority_tail_bytes_max.load(Ordering::Relaxed),
+                authority_tail_commands_sum: window
+                    .authority_tail_commands_sum
+                    .load(Ordering::Relaxed),
+                authority_tail_commands_max: window
+                    .authority_tail_commands_max
+                    .load(Ordering::Relaxed),
             }
         }),
     }
@@ -243,10 +277,19 @@ impl QueryExecutionPort for RedbOperationalPorts {
         };
         note_query_table_open(QueryTableKind::Commits);
         let frontier_started = diagnostics.then(Instant::now);
-        let head = transaction
-            .application_frontier()
-            .map_err(map_storage_query_error)?
-            .map_or(0, riffdb_types::CommitSequence::get);
+        let (frontier, authority_profile) = if diagnostics {
+            transaction
+                .application_frontier_profiled()
+                .map_err(map_storage_query_error)?
+        } else {
+            (
+                transaction
+                    .application_frontier()
+                    .map_err(map_storage_query_error)?,
+                Default::default(),
+            )
+        };
+        let head = frontier.map_or(0, riffdb_types::CommitSequence::get);
         let mut profile = diagnostics.then(QueryExecuteProfile::default);
         if let Some(profile) = profile.as_mut() {
             profile.stage_ns[PUBLICATION_OUTER_LOCK] = acquire_profile.outer_lock_ns;
@@ -255,6 +298,8 @@ impl QueryExecutionPort for RedbOperationalPorts {
             let (transitions, bytes) = transaction.composite_overlay_diagnostic();
             profile.overlay_transitions = transitions;
             profile.overlay_bytes = bytes;
+            profile.authority_tail_bytes = authority_profile.physical_bytes;
+            profile.authority_tail_commands = authority_profile.logical_commands;
         }
         // Entities / index / epoch tables open on first touch only.
         let mut view = RedbQueryView {

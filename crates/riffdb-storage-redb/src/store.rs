@@ -822,6 +822,19 @@ impl RedbReadAccess {
         }
     }
 
+    pub(crate) fn application_frontier_profiled(
+        &self,
+    ) -> Result<(Option<CommitSequence>, CommitTailProfileV1), StorageError> {
+        match self {
+            Self::Current(transaction) => read_commit_tail_profiled(transaction),
+            Self::Durable(transaction) => read_commit_tail_profiled(transaction),
+            Self::Composite(view) => Ok((
+                view.overlay().published_application(),
+                CommitTailProfileV1::default(),
+            )),
+        }
+    }
+
     pub(crate) fn administration_frontier(
         &self,
     ) -> Result<Option<AdministrationSequence>, StorageError> {
@@ -5899,22 +5912,39 @@ impl SharedRedb {
 pub(crate) fn read_commit_tail(
     transaction: &ReadTransaction,
 ) -> Result<Option<CommitSequence>, StorageError> {
+    read_commit_tail_profiled(transaction).map(|(head, _)| head)
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct CommitTailProfileV1 {
+    pub(crate) physical_bytes: u64,
+    pub(crate) logical_commands: u64,
+}
+
+fn read_commit_tail_profiled(
+    transaction: &ReadTransaction,
+) -> Result<(Option<CommitSequence>, CommitTailProfileV1), StorageError> {
     let commits = transaction.open_table(COMMITS).map_err(table_error)?;
     let events = transaction.open_table(EVENTS).map_err(table_error)?;
-    let retained = crate::command_authority::command_authority_head(&commits, &events)?;
+    let retained = crate::command_authority::command_authority_head_profiled(&commits, &events)?;
+    let profile = CommitTailProfileV1 {
+        physical_bytes: retained.physical_bytes,
+        logical_commands: retained.logical_commands,
+    };
     let watermark = crate::retention::load_watermark(transaction)?
         .map(|watermark| watermark.watermark_sequence())
         .unwrap_or(0);
     if watermark == 0 {
-        return Ok(retained);
+        return Ok((retained.head, profile));
     }
     let pruned = CommitSequence::new(watermark)
         .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?;
-    match retained {
+    let head = match retained.head {
         Some(retained) if retained <= pruned => Err(storage_error(StorageErrorKind::CorruptData)),
         Some(retained) => Ok(Some(retained)),
         None => Ok(Some(pruned)),
-    }
+    }?;
+    Ok((head, profile))
 }
 
 pub(crate) fn read_administration_tail(
