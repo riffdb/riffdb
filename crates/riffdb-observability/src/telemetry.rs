@@ -256,6 +256,7 @@ impl Observability {
             storage_queue_duration_us: self
                 .metrics
                 .required_histogram(RequiredHistogram::StorageQueueLatencyMicroseconds),
+            command_application_duration_us: self.metrics.command_application_duration(),
             command_submission_duration_us: self.metrics.command_submission_duration(),
         }
     }
@@ -565,6 +566,8 @@ pub struct WriterEvidenceSnapshotV1 {
     pub commit_batch_size: HistogramSnapshot,
     /// Accepted command queue latency.
     pub storage_queue_duration_us: HistogramSnapshot,
+    /// Final apply to writer-private authoritative state.
+    pub command_application_duration_us: HistogramSnapshot,
     /// Final apply, frame encoding, and journal receipt creation duration.
     pub command_submission_duration_us: HistogramSnapshot,
 }
@@ -595,6 +598,7 @@ pub fn format_writer_evidence_v1_line(snapshot: &WriterEvidenceSnapshotV1) -> St
         ("flush_us", snapshot.durable_flush_duration_us),
         ("batch_size", snapshot.commit_batch_size),
         ("storage_queue_us", snapshot.storage_queue_duration_us),
+        ("final_apply_us", snapshot.command_application_duration_us),
         ("journal_submit_us", snapshot.command_submission_duration_us),
     ]
     .map(|(name, histogram)| {
@@ -865,6 +869,10 @@ impl CommitTelemetry for Observability {
                     self.metrics
                         .increment_required_counter(RequiredCounter::Commits);
                 }
+            }
+            CommitTelemetryEvent::CommitApplicationCompleted { elapsed, .. } => {
+                self.metrics
+                    .observe_command_application_duration(duration_micros(elapsed));
             }
             CommitTelemetryEvent::CommitSubmissionCompleted { elapsed, .. } => {
                 self.metrics

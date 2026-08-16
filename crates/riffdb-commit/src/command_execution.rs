@@ -2401,37 +2401,46 @@ where
     let commit_started_at = Instant::now();
     let commit_result = if use_deferred_tail {
         match audits {
-            Some(audits) => match staged.apply_group_deferred(audits) {
-                CheckedCommandGroupApplyResult::Applied { epoch, batch } => {
-                    return match seal_checked_deferred_group(epoch, batch) {
-                        Ok(fence) => {
-                            let batch_size = u16::try_from(batch_size).expect("group cap fits u16");
-                            telemetry.record(CommitTelemetryEvent::CommitSubmissionCompleted {
-                                elapsed: commit_started_at.elapsed(),
-                                batch_size,
-                            });
-                            IndexedCommandGroupDriveResult::Submitted {
-                                completed: Vec::new(),
-                                subgroup: SubmittedCommandSubgroup {
-                                    indices: staged_indices,
-                                    fence,
-                                    commit_started_at,
+            Some(audits) => {
+                let apply_started_at = Instant::now();
+                let applied = staged.apply_group_deferred(audits);
+                telemetry.record(CommitTelemetryEvent::CommitApplicationCompleted {
+                    elapsed: apply_started_at.elapsed(),
+                    batch_size: u16::try_from(batch_size).expect("group cap fits u16"),
+                });
+                match applied {
+                    CheckedCommandGroupApplyResult::Applied { epoch, batch } => {
+                        return match seal_checked_deferred_group(epoch, batch) {
+                            Ok(fence) => {
+                                let batch_size =
+                                    u16::try_from(batch_size).expect("group cap fits u16");
+                                telemetry.record(CommitTelemetryEvent::CommitSubmissionCompleted {
+                                    elapsed: commit_started_at.elapsed(),
                                     batch_size,
-                                },
+                                });
+                                IndexedCommandGroupDriveResult::Submitted {
+                                    completed: Vec::new(),
+                                    subgroup: SubmittedCommandSubgroup {
+                                        indices: staged_indices,
+                                        fence,
+                                        commit_started_at,
+                                        batch_size,
+                                    },
+                                }
                             }
-                        }
-                        Err(result) => complete_indexed_group_commit(
-                            port,
-                            lifecycle,
-                            telemetry,
-                            staged_indices,
-                            result,
-                        )
-                        .into(),
-                    };
+                            Err(result) => complete_indexed_group_commit(
+                                port,
+                                lifecycle,
+                                telemetry,
+                                staged_indices,
+                                result,
+                            )
+                            .into(),
+                        };
+                    }
+                    CheckedCommandGroupApplyResult::Failed(result) => result,
                 }
-                CheckedCommandGroupApplyResult::Failed(result) => result,
-            },
+            }
             None => CheckedCommandGroupCommitResult::Integrity,
         }
     } else {
@@ -3056,39 +3065,48 @@ where
     let commit_started_at = Instant::now();
     let commit_result = if use_deferred_tail {
         match audits {
-            Some(audits) => match staged.apply_group_deferred(audits) {
-                CheckedCommandGroupApplyResult::Applied { epoch, batch } => {
-                    return match seal_checked_deferred_group(epoch, batch) {
-                        Ok(fence) => {
-                            let batch_size = u16::try_from(batch_size).expect("group cap fits u16");
-                            telemetry.record(CommitTelemetryEvent::CommitSubmissionCompleted {
-                                elapsed: commit_started_at.elapsed(),
-                                batch_size,
-                            });
-                            IndexedCommandGroupDriveResult::Submitted {
-                                completed,
-                                subgroup: SubmittedCommandSubgroup {
-                                    indices: staged_indices,
-                                    fence,
-                                    commit_started_at,
+            Some(audits) => {
+                let apply_started_at = Instant::now();
+                let applied = staged.apply_group_deferred(audits);
+                telemetry.record(CommitTelemetryEvent::CommitApplicationCompleted {
+                    elapsed: apply_started_at.elapsed(),
+                    batch_size: u16::try_from(batch_size).expect("group cap fits u16"),
+                });
+                match applied {
+                    CheckedCommandGroupApplyResult::Applied { epoch, batch } => {
+                        return match seal_checked_deferred_group(epoch, batch) {
+                            Ok(fence) => {
+                                let batch_size =
+                                    u16::try_from(batch_size).expect("group cap fits u16");
+                                telemetry.record(CommitTelemetryEvent::CommitSubmissionCompleted {
+                                    elapsed: commit_started_at.elapsed(),
                                     batch_size,
-                                },
+                                });
+                                IndexedCommandGroupDriveResult::Submitted {
+                                    completed,
+                                    subgroup: SubmittedCommandSubgroup {
+                                        indices: staged_indices,
+                                        fence,
+                                        commit_started_at,
+                                        batch_size,
+                                    },
+                                }
                             }
-                        }
-                        Err(result) => {
-                            completed.extend(complete_indexed_group_commit(
-                                port,
-                                lifecycle,
-                                telemetry,
-                                staged_indices,
-                                result,
-                            ));
-                            completed.into()
-                        }
-                    };
+                            Err(result) => {
+                                completed.extend(complete_indexed_group_commit(
+                                    port,
+                                    lifecycle,
+                                    telemetry,
+                                    staged_indices,
+                                    result,
+                                ));
+                                completed.into()
+                            }
+                        };
+                    }
+                    CheckedCommandGroupApplyResult::Failed(result) => result,
                 }
-                CheckedCommandGroupApplyResult::Failed(result) => result,
-            },
+            }
             None => CheckedCommandGroupCommitResult::Integrity,
         }
     } else {

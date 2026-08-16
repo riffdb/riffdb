@@ -110,6 +110,7 @@ fn run() -> Result<(), String> {
     let mut rd_rep_seed_ns: Vec<u64> = Vec::new();
     let mut rd_rep_scenarios: Vec<Vec<riffdb_app_baseline_core::ScenarioResult>> = Vec::new();
     let mut rd_write_groups: Option<Vec<u64>> = None;
+    let mut rd_process_evidence = Vec::new();
     // Live order-sensitive board page cross-check (rep 0): all static sizes
     // the dense cell can fill (50/200/450 → BoardPage50/200/450 on RiffDB).
     let board_crosscheck_limits: Vec<u32> = [50_u32, 200, 450]
@@ -238,26 +239,11 @@ fn run() -> Result<(), String> {
                 return Err(error.to_string());
             }
             let seed_ns = u64::try_from(seed_started.elapsed().as_nanos()).unwrap_or(u64::MAX);
-            // Catch-up + compiled-vs-projected equivalence must pass before timing.
-            if let Err(error) = session.backend.prepare_projected_board_gates(&dataset) {
-                if let Ok(groups) = session.shutdown() {
-                    eprintln!(
-                        "riffdb write completion groups 1..={}: {groups:?}",
-                        groups.len()
-                    );
-                }
-                return Err(error.to_string());
-            }
-            let scenarios = run_scenarios_with_options(
-                &mut session.backend,
-                &dataset,
-                args.warmups,
-                args.samples,
-                true,
-            );
-            let scenarios = match scenarios {
-                Ok(scenarios) => scenarios,
-                Err(error) => {
+            let scenarios = if args.seed_only {
+                Vec::new()
+            } else {
+                // Catch-up + compiled-vs-projected equivalence must pass before timing.
+                if let Err(error) = session.backend.prepare_projected_board_gates(&dataset) {
                     if let Ok(groups) = session.shutdown() {
                         eprintln!(
                             "riffdb write completion groups 1..={}: {groups:?}",
@@ -265,6 +251,24 @@ fn run() -> Result<(), String> {
                         );
                     }
                     return Err(error.to_string());
+                }
+                match run_scenarios_with_options(
+                    &mut session.backend,
+                    &dataset,
+                    args.warmups,
+                    args.samples,
+                    true,
+                ) {
+                    Ok(scenarios) => scenarios,
+                    Err(error) => {
+                        if let Ok(groups) = session.shutdown() {
+                            eprintln!(
+                                "riffdb write completion groups 1..={}: {groups:?}",
+                                groups.len()
+                            );
+                        }
+                        return Err(error.to_string());
+                    }
                 }
             };
             if rep == 0
@@ -302,8 +306,11 @@ fn run() -> Result<(), String> {
                     move || Ok(prototype.clone()),
                 )?);
             }
-            let write_completion_groups = session.shutdown().map_err(|error| error.to_string())?;
-            rd_write_groups = Some(write_completion_groups.to_vec());
+            let process_evidence = session
+                .shutdown_with_evidence()
+                .map_err(|error| error.to_string())?;
+            rd_write_groups = Some(process_evidence.write_completion_groups.to_vec());
+            rd_process_evidence.push(riffdb_shutdown_evidence_json(&process_evidence));
             rd_rep_seed_ns.push(seed_ns);
             rd_rep_scenarios.push(scenarios);
         }
@@ -396,6 +403,7 @@ fn run() -> Result<(), String> {
     assert_board_last_row_counts_equal(&backends)?;
 
     let mut report = build_report(args.scale, args.warmups, args.samples, &backends);
+    report["riffdb_process_evidence"] = json!(rd_process_evidence);
     report["scale_shape"] = json!({
         "organizations": args.scale.organizations,
         "projects_per_org": args.scale.projects_per_org,
@@ -827,6 +835,7 @@ fn riffdb_shutdown_evidence_json(evidence: &RiffDbShutdownEvidence) -> serde_jso
             "durable_flush_duration_us": histogram(&evidence.writer.flush_duration),
             "commit_batch_size": histogram(&evidence.writer.batch_size),
             "storage_queue_duration_us": histogram(&evidence.writer.storage_queue_duration),
+            "final_apply_duration_us": evidence.writer.final_apply_duration.as_ref().map(histogram),
             "journal_submit_duration_us": histogram(&evidence.writer.journal_submit_duration),
             "physical_commits": physical_commits,
             "logical_commands_committed": logical_commands_committed,
@@ -2652,6 +2661,8 @@ struct Args {
     reps: usize,
     /// Exit nonzero when any gated metric is unstable (spread_ratio > 2.0).
     require_stable: bool,
+    /// Diagnostic mode that shuts down immediately after the full seed.
+    seed_only: bool,
 }
 
 impl Args {
@@ -2692,6 +2703,7 @@ impl Args {
         let mut allow_tmpfs = false;
         let mut reps: Option<usize> = None;
         let mut require_stable = false;
+        let mut seed_only = false;
         let mut full = false;
         let mut board_density: Option<u32> = None;
         let mut organizations: Option<u32> = None;
@@ -2869,6 +2881,7 @@ impl Args {
                     );
                 }
                 "--require-stable" => require_stable = true,
+                "--seed-only" => seed_only = true,
                 "--board-density" => {
                     let value = args
                         .next()
@@ -2939,6 +2952,7 @@ impl Args {
                          [--load-riffdb-transport per-session|shared] \
                          [--database-root PATH] [--postgres-data-host-path PATH] \
                          [--allow-tmpfs] [--reps N] [--require-stable] \
+                         [--seed-only] \
                          [--skip-postgres] [--skip-riffdb]"
                             .to_owned(),
                     );
@@ -3065,6 +3079,9 @@ impl Args {
         if assert_all_parity && load_profile.is_some() {
             return Err("--assert-all-parity is only for the parity suite, not --load".to_owned());
         }
+        if seed_only && load_profile.is_some() {
+            return Err("--seed-only is only for the parity seed path, not --load".to_owned());
+        }
         Ok(Self {
             scale,
             samples,
@@ -3100,6 +3117,7 @@ impl Args {
             allow_tmpfs,
             reps,
             require_stable,
+            seed_only,
         })
     }
 }

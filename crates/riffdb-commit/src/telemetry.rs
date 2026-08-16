@@ -171,6 +171,13 @@ pub enum CommitTelemetryEvent {
         /// Commands in the staged batch. The POC command path is exactly one.
         batch_size: u16,
     },
+    /// A deferred command group completed final authoritative apply.
+    CommitApplicationCompleted {
+        /// Time spent applying the already staged group to writer-private state.
+        elapsed: Duration,
+        /// Commands represented by the applied group.
+        batch_size: u16,
+    },
     /// A deferred command group completed final apply, encoding, and journal submission.
     CommitSubmissionCompleted {
         /// Time from final commit entry through receipt creation.
