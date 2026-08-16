@@ -13613,6 +13613,16 @@ work_packages:
   - cargo +1.97.0 fmt --all -- --check
   exit_gate: The original final-inventory failure is deterministic before the fix, every repaired
     process closes inventory and reopen evidence, and an unprovable epilogue still fails the cell.
+  closure:
+    status: complete
+    evidence: docs/performance/wp-642-authoritative-inventory.md
+    decision: The old epilogue inventoried only the raw redb checkpoint and therefore neither
+      proved the checkpoint-plus-journal durable unit nor identified its failing stage. The fixed
+      path performs one ordinary structural reopen and recovery, closes it, then reads all 13
+      fixed authoritative tables from one frozen transaction. It never retries or reports a
+      partial inventory. Deterministic tests prove both exclusive-reopen refusal and the former
+      false-green case where an invalid journal coexists with a readable raw redb inventory;
+      repeated workstation, E2, and N1 process receipts close the production boundary.
   standing_design_tests:
     interface_safety: The package changes only internal conformance evidence and cannot expose a
       storage handle or let an application waive integrity, shutdown, inventory, or reopen checks.

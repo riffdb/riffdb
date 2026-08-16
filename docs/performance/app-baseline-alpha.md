@@ -153,9 +153,12 @@ process and durable byte growth per command committed by the complete measured
 daemon generation (including warmup), a closed authoritative-table inventory,
 and a closed writer evidence block. The table inventory compares the
 post-seed/pre-warmup database with clean shutdown and reports row, stored-byte,
-tree, page, metadata, and fragmentation values. Those page values attribute
-retained footprint; the process counter remains the physical-I/O total. The
-writer block includes intake selection/defer counts,
+tree, page, metadata, and fragmentation values. After the measured daemon
+stops, the harness must reopen the complete checkpoint-plus-journal durable
+unit once before acquiring the frozen inventory view. Reopen or inventory
+failure fails the cell; neither is retried and no partial inventory is
+reported. Those page values attribute retained footprint; the process counter
+remains the physical-I/O total. The writer block includes intake selection/defer counts,
 compatibility splits, compiler-proved shared-conflict group count, queue delay,
 writer busy/idle time, physical commit and durable-flush histograms, and logical
 commands per physical commit. Labels are fixed and contain no contract, tenant,

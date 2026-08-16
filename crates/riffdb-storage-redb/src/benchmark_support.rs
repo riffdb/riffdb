@@ -150,14 +150,23 @@ impl AuthoritativeTableInventoryV1 {
 pub fn authoritative_table_inventory_v1(
     path: &Path,
 ) -> Result<Vec<AuthoritativeTableInventoryV1>, EngineBenchmarkError> {
-    let database = ReadOnlyDatabase::open(path).map_err(|_| EngineBenchmarkError::Engine)?;
+    let database = ReadOnlyDatabase::open(path).map_err(|_| EngineBenchmarkError::Inventory {
+        stage: InventoryStage::OpenDatabase,
+        table: None,
+    })?;
     let transaction = database
         .begin_read()
-        .map_err(|_| EngineBenchmarkError::Engine)?;
+        .map_err(|_| EngineBenchmarkError::Inventory {
+            stage: InventoryStage::BeginRead,
+            table: None,
+        })?;
     let mut inventory = Vec::with_capacity(13);
     let meta = transaction
         .open_table(META)
-        .map_err(|_| EngineBenchmarkError::Engine)?;
+        .map_err(|_| EngineBenchmarkError::Inventory {
+            stage: InventoryStage::OpenTable,
+            table: Some("meta"),
+        })?;
     inventory.push(table_inventory("meta", &meta)?);
     drop(meta);
     for (name, definition) in [
@@ -174,12 +183,35 @@ pub fn authoritative_table_inventory_v1(
         ("audit", AUDIT),
         ("audit_by_request", AUDIT_BY_REQUEST),
     ] {
-        let table = transaction
-            .open_table(definition)
-            .map_err(|_| EngineBenchmarkError::Engine)?;
+        let table =
+            transaction
+                .open_table(definition)
+                .map_err(|_| EngineBenchmarkError::Inventory {
+                    stage: InventoryStage::OpenTable,
+                    table: Some(name),
+                })?;
         inventory.push(table_inventory(name, &table)?);
     }
     Ok(inventory)
+}
+
+/// Reopens the complete RiffDB durable unit before reading its closed table
+/// inventory.
+///
+/// The ordinary store open reconciles the authoritative journal suffix with
+/// the redb checkpoint. Only after that handle closes does the benchmark open
+/// one mutation-free read view for inventory. A reopen or inventory failure is
+/// terminal evidence; this function never retries or reports a partial table
+/// set.
+pub fn authoritative_table_inventory_after_reopen_v1(
+    path: &Path,
+) -> Result<Vec<AuthoritativeTableInventoryV1>, EngineBenchmarkError> {
+    let reopened = RedbStore::open(path).map_err(|_| EngineBenchmarkError::Inventory {
+        stage: InventoryStage::ReopenDatabase,
+        table: None,
+    })?;
+    drop(reopened);
+    authoritative_table_inventory_v1(path)
 }
 
 fn table_inventory<K, V>(
@@ -190,10 +222,16 @@ where
     K: redb::Key + 'static,
     V: redb::Value + 'static,
 {
-    let stats = table.stats().map_err(|_| EngineBenchmarkError::Engine)?;
+    let stats = table.stats().map_err(|_| EngineBenchmarkError::Inventory {
+        stage: InventoryStage::Stats,
+        table: Some(name),
+    })?;
     Ok(AuthoritativeTableInventoryV1 {
         name,
-        rows: table.len().map_err(|_| EngineBenchmarkError::Engine)?,
+        rows: table.len().map_err(|_| EngineBenchmarkError::Inventory {
+            stage: InventoryStage::Count,
+            table: Some(name),
+        })?,
         tree_height: stats.tree_height(),
         leaf_pages: stats.leaf_pages(),
         branch_pages: stats.branch_pages(),
@@ -1308,6 +1346,43 @@ pub enum EngineBenchmarkError {
     InvalidConfiguration,
     /// The local database engine or filesystem operation failed.
     Engine,
+    /// A closed authoritative-inventory stage failed.
+    Inventory {
+        /// Fixed stage that failed.
+        stage: InventoryStage,
+        /// Fixed physical table name when the failure was table-scoped.
+        table: Option<&'static str>,
+    },
+}
+
+/// Closed stages of an authoritative-table inventory read.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum InventoryStage {
+    /// Reopen the complete checkpoint-plus-journal durable unit.
+    ReopenDatabase,
+    /// Open the stopped database without recovery or mutation.
+    OpenDatabase,
+    /// Acquire one frozen read transaction.
+    BeginRead,
+    /// Open one table from the fixed inventory.
+    OpenTable,
+    /// Read redb's bounded page statistics for one table.
+    Stats,
+    /// Count logical rows in one table.
+    Count,
+}
+
+impl InventoryStage {
+    const fn label(self) -> &'static str {
+        match self {
+            Self::ReopenDatabase => "reopen_database",
+            Self::OpenDatabase => "open_database",
+            Self::BeginRead => "begin_read",
+            Self::OpenTable => "open_table",
+            Self::Stats => "stats",
+            Self::Count => "count",
+        }
+    }
 }
 
 impl fmt::Display for EngineBenchmarkError {
@@ -1315,8 +1390,27 @@ impl fmt::Display for EngineBenchmarkError {
         formatter.write_str(match self {
             Self::InvalidConfiguration => "engine benchmark configuration is invalid",
             Self::Engine => "engine benchmark operation failed",
+            Self::Inventory { .. } => return write_inventory_error(formatter, *self),
         })
     }
+}
+
+fn write_inventory_error(
+    formatter: &mut fmt::Formatter<'_>,
+    error: EngineBenchmarkError,
+) -> fmt::Result {
+    let EngineBenchmarkError::Inventory { stage, table } = error else {
+        return formatter.write_str("authoritative inventory failed");
+    };
+    write!(
+        formatter,
+        "authoritative inventory failed at {}",
+        stage.label()
+    )?;
+    if let Some(table) = table {
+        write!(formatter, " for table {table}")?;
+    }
+    Ok(())
 }
 
 impl std::error::Error for EngineBenchmarkError {}
@@ -2845,14 +2939,17 @@ fn uuid_v7_bytes(tag: u8, sequence: u64) -> [u8; 16] {
 #[cfg(test)]
 mod tests {
     use super::{
-        EngineDurability, EngineMechanicsProfile, EngineStagingOrder, JournalMutationCensusV1,
-        ServiceAuditGrowthHarness, StateSegmentProjection, StateSegmentWorkload,
+        DatabaseId, DatabaseInitializationPort, DatabaseInitializationResult, EngineBenchmarkError,
+        EngineDurability, EngineMechanicsProfile, EngineStagingOrder, InventoryStage,
+        JournalMutationCensusV1, RedbStore, ServiceAuditGrowthHarness, StateSegmentProjection,
+        StateSegmentWorkload, authoritative_table_inventory_after_reopen_v1,
         authoritative_table_inventory_v1, expected_evidence_page_capacity,
         initialize_engine_mechanics, measure_clean_startup, measure_clean_startup_linear,
         run_engine_mechanics_window, run_journal_overlay_mechanics_window,
-        run_state_segment_projection_window, split_half_page_durations,
+        run_state_segment_projection_window, split_half_page_durations, uuid_v7_bytes,
     };
-    use crate::journal::JournalTable;
+    use crate::journal::{JournalTable, journal_path};
+    use std::fs;
     use std::time::Duration;
 
     #[test]
@@ -3081,6 +3178,67 @@ mod tests {
         assert_eq!(rows("audit"), 8);
         assert_eq!(rows("audit_by_request"), 8);
         assert!(after.iter().any(|table| table.leaf_pages() > 0));
+    }
+
+    #[test]
+    fn post_process_inventory_requires_an_exclusive_reopen_before_reporting_rows() {
+        let dir = tempfile_dir();
+        let path = dir.join("inventory-reopen.redb");
+        let mut competing_handle = RedbStore::open(&path).expect("open database");
+        let database_id = DatabaseId::from_bytes(uuid_v7_bytes(0x61, 1)).expect("database id");
+        assert!(matches!(
+            competing_handle
+                .initialize_database(database_id)
+                .expect("initialize database"),
+            DatabaseInitializationResult::Installed(_)
+        ));
+        let error = authoritative_table_inventory_after_reopen_v1(&path)
+            .expect_err("an unprovable reopen must fail the inventory");
+        assert_eq!(
+            error,
+            EngineBenchmarkError::Inventory {
+                stage: InventoryStage::ReopenDatabase,
+                table: None,
+            }
+        );
+        assert_eq!(
+            error.to_string(),
+            "authoritative inventory failed at reopen_database"
+        );
+        drop(competing_handle);
+
+        let inventory = authoritative_table_inventory_after_reopen_v1(&path)
+            .expect("exclusive reopen followed by frozen inventory");
+        assert_eq!(inventory.len(), 13);
+    }
+
+    #[test]
+    fn raw_redb_inventory_cannot_turn_an_unrecoverable_durable_unit_green() {
+        let dir = tempfile_dir();
+        let path = dir.join("inventory-invalid-journal.redb");
+        let mut store = RedbStore::open(&path).expect("open database");
+        let database_id = DatabaseId::from_bytes(uuid_v7_bytes(0x62, 1)).expect("database id");
+        store
+            .initialize_database(database_id)
+            .expect("initialize database");
+        drop(store);
+
+        fs::write(journal_path(&path), b"not-a-valid-riffdb-journal")
+            .expect("install invalid journal suffix");
+        assert_eq!(
+            authoritative_table_inventory_v1(&path)
+                .expect("raw redb inventory cannot see the journal")
+                .len(),
+            13
+        );
+        assert_eq!(
+            authoritative_table_inventory_after_reopen_v1(&path)
+                .expect_err("complete durable-unit reopen must fail closed"),
+            EngineBenchmarkError::Inventory {
+                stage: InventoryStage::ReopenDatabase,
+                table: None,
+            }
+        );
     }
 
     struct TestDirectory(std::path::PathBuf);
