@@ -13498,8 +13498,15 @@ work_packages:
     before the production dispatch path changes
   - Fixed bounded preparation pool, FIFO admission-order consumption, one-group reorder ceiling,
     private logical frontier, exact rollback, cancellation, shutdown, and worker-panic semantics
+  - Frontier-equivalence invariant proving after every epoch that the private logical frontier is
+    identical to the applied entity, index-generation, allocator, command-identity, and application-
+    frontier state, exercised under deterministic schedules and by a bounded debug assertion before
+    publication
   - Checked storage apply that consumes proven canonical material once and architecture tests proving
     no repeated normalization, semantic validation, decode, graph reconstruction, or hashing
+  - Fixed-cardinality production counters or histograms for preparation-pool depth, reorder-buffer
+    occupancy, proof mismatch, and epoch rollback, retained in shutdown evidence without application
+    values or command-, tenant-, entity-, or history-dependent labels
   - Deterministic schedules and process crash arms for every preparation, current-proof, sequence,
     ordered-apply, journal, fence, publication, uncertainty, and response boundary
   - Same-run workstation and N1 safe-application PostgreSQL receipts for seed, mixed c32, unary,
@@ -13515,7 +13522,9 @@ work_packages:
   - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
   exit_gate: Production activation occurs only if mechanics meet ADR-0129's preparation and ordered-
     lane thresholds, both hosts meet mixed c32 and seed ratios, unary/read/tail gates do not regress,
-    and every ordering, conflict, durability, crash, recovery, and uncertainty test remains exact;
+    the frontier-equivalence assertion holds after every explored epoch, new failure-mode telemetry
+    is present in shutdown evidence, and every ordering, conflict, durability, crash, recovery, and
+    uncertainty test remains exact;
     unary parity remains a separate release blocker when it is still above 1.10x.
   standing_design_tests:
     interface_safety: Applications continue to submit only compiled typed commands and cannot
