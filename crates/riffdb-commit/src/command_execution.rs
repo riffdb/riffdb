@@ -325,14 +325,10 @@ impl CommandEvaluationPool {
     /// the only ambient read; the pool itself takes the count as an explicit
     /// input so deterministic harnesses can fix it (ADR-0113 hygiene).
     pub(super) fn production_worker_count() -> usize {
-        let available = thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get);
-        if available <= 8 {
-            available.saturating_sub(1).clamp(1, 3)
-        } else {
-            available
-                .saturating_sub(1)
-                .min(MAX_PARALLEL_EVALUATION_WORKERS)
-        }
+        thread::available_parallelism()
+            .map_or(1, std::num::NonZeroUsize::get)
+            .saturating_sub(1)
+            .clamp(1, MAX_PARALLEL_EVALUATION_WORKERS)
     }
 
     pub(super) fn new<Repository>(repository: Repository, worker_count: usize) -> Result<Self, ()>
