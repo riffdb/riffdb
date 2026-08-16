@@ -8,8 +8,9 @@ use riffdb_types::{
 };
 
 use crate::{
-    AffectedEpochCurrentState, AffectedIndexEpochTargets, CommandWriteClassBreakdownV1,
-    CommandWriteSetPlanV1, EncodedWriteSetUpperBound, IndexEntryMutationV1, StoredIndexEntryV2,
+    AffectedEpochCurrentState, AffectedIndexEpochTargets, AtomicCommandRecordSet,
+    CommandWriteClassBreakdownV1, CommandWriteSetPlanV1, EncodedWriteSetUpperBound,
+    IndexEntryMutationV1, StoredIndexEntryV2,
 };
 
 use super::super::*;
@@ -118,6 +119,32 @@ fn encoded_atomic_graph_charges_exact_bytes_and_fits_its_reservation() {
     let reserved = records.presequence_charge().encoded_upper_bound();
     verify_actual_write_set_charge_v1(actual, reserved).expect("actual graph fits reservation");
     assert!(actual.total().expect("actual total") <= reserved.total());
+}
+
+#[test]
+fn prepared_capsule_is_semantically_invisible_and_consumed_pay_once() {
+    let ordinary = sample::atomic_record_set();
+    let prepared = prepare_capsule_command_fragments_v1(
+        ordinary.entities().to_vec(),
+        ordinary.index_entries().to_vec(),
+    )
+    .expect("sequence-free fragments encode");
+    let mut optimized = AtomicCommandRecordSet::new_with_prepared_capsule(
+        ordinary.assignment(),
+        prepared,
+        ordinary.write_plan().clone(),
+        ordinary.stored_outcome().clone(),
+        ordinary.provenance().clone(),
+        ordinary.commit().clone(),
+    )
+    .expect("prepared graph rejoins exact authority");
+
+    assert_eq!(optimized, ordinary);
+    let first = encode_capsule_command_record_set_v1(&mut optimized)
+        .expect("prepared envelopes are consumed");
+    let second = encode_capsule_command_record_set_v1(&mut optimized)
+        .expect("canonical fallback remains byte-identical");
+    assert_eq!(first.into_parts(), second.into_parts());
 }
 
 #[test]

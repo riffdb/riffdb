@@ -63,7 +63,7 @@ impl fmt::Display for CommandValidationError {
 
 impl Error for CommandValidationError {}
 
-enum CheckedCommandDecision {
+pub(super) enum CheckedCommandDecision {
     ZeroMutation,
     NonZero(Box<[Option<usize>]>),
     Rejected(CandidateValidationRejection),
@@ -385,6 +385,18 @@ impl<C> CheckedValidatedCommand<C> {
 
     pub(super) fn mutation_positions(&self) -> &[Option<usize>] {
         &self.mutation_positions
+    }
+
+    pub(super) fn take_prepared_indexes(
+        &mut self,
+    ) -> Option<crate::command_index::DerivedCommandIndexes> {
+        self.attempt.take_prepared_indexes()
+    }
+
+    pub(super) fn take_prepared_capsule(
+        &mut self,
+    ) -> Option<riffdb_storage_api::PreparedCapsuleCommandFragmentsV1> {
+        self.attempt.take_prepared_capsule()
     }
 }
 
@@ -891,7 +903,7 @@ where
     C: CommandCandidateAwaitingValidation,
 {
     let CheckedTransactionCurrentAttempt {
-        attempt,
+        mut attempt,
         candidate,
         current,
     } = checked_current;
@@ -900,6 +912,22 @@ where
         drop(current);
         drop(attempt);
         return Err(CommandValidationError::integrity());
+    }
+    // `MaterializedTransactionCurrentState` can be constructed only after the
+    // catalog proves the writer's raw current observations normalize to the
+    // exact snapshot retained by this attempt.  A worker-prepared semantic
+    // proof for that same attempt is therefore transaction-current here; the
+    // writer still owns the fresh materialization and storage candidate.
+    if let Some(mutation_positions) = attempt.take_prepared_mutation_positions() {
+        return Ok(CheckedCandidateDecision::Validated(
+            CheckedValidatedCommand {
+                seal: CheckedCandidateSeal::after_successful_validation(),
+                attempt,
+                candidate,
+                current,
+                mutation_positions,
+            },
+        ));
     }
     let pending = attempt.commit_context().pending();
     let decision = validate_transaction_current_command_parts(
@@ -953,7 +981,7 @@ where
 
 /// Pure semantic core, deliberately private until candidate identity can be
 /// preserved by construction across the full storage admission chain.
-fn validate_transaction_current_command_parts(
+pub(super) fn validate_transaction_current_command_parts(
     resolved: &ResolvedExecutablePlan,
     normalized_input: &CanonicalRecord,
     logical_time: LogicalTime,

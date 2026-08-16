@@ -3820,6 +3820,88 @@ impl RedbWriteAccess {
         Ok(())
     }
 
+    fn record_observed_journal_mutation(
+        &self,
+        mutation: crate::journal::JournalMutation,
+        observed_current: Option<&[u8]>,
+    ) -> Result<(), StorageError> {
+        let Some(retained) = self.journal_mutations.as_ref() else {
+            return Ok(());
+        };
+        if let Some(stage) = self.composite_stage.as_ref() {
+            stage
+                .try_borrow_mut()
+                .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?
+                .apply_with_observed_current(&mutation, observed_current)?;
+        }
+        retained
+            .try_borrow_mut()
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?
+            .extend([mutation])
+            .map_err(journal_storage_error)
+    }
+
+    pub(crate) fn put_proven_command_value(
+        &self,
+        table: crate::journal::JournalTable,
+        key: Vec<u8>,
+        proven_current: Option<Vec<u8>>,
+        value: riffdb_storage_api::CanonicalStoredEnvelopeV1,
+    ) -> Result<(), StorageError> {
+        let mutation = match proven_current.as_deref() {
+            Some(prior) => {
+                crate::journal::JournalMutation::replace(table, key, prior, value.into_bytes())
+            }
+            None => crate::journal::JournalMutation::put(table, key, value.into_bytes()),
+        }
+        .map_err(journal_storage_error)?;
+        if let Some(transaction) = self.transaction.as_ref() {
+            crate::journal::apply_mutation(transaction, &mutation).map_err(journal_io_error)?;
+        }
+        if let Some(stage) = self.composite_stage.as_ref() {
+            stage
+                .try_borrow_mut()
+                .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?
+                .apply_with_proven_current(&mutation, proven_current.as_deref())?;
+        }
+        if let Some(retained) = self.journal_mutations.as_ref() {
+            retained
+                .try_borrow_mut()
+                .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?
+                .extend([mutation])
+                .map_err(journal_storage_error)?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn delete_proven_command_value(
+        &self,
+        table: crate::journal::JournalTable,
+        key: Vec<u8>,
+        proven_current: Vec<u8>,
+    ) -> Result<(), StorageError> {
+        let mutation =
+            crate::journal::JournalMutation::delete_matching(table, key, &proven_current)
+                .map_err(journal_storage_error)?;
+        if let Some(transaction) = self.transaction.as_ref() {
+            crate::journal::apply_mutation(transaction, &mutation).map_err(journal_io_error)?;
+        }
+        if let Some(stage) = self.composite_stage.as_ref() {
+            stage
+                .try_borrow_mut()
+                .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?
+                .apply_with_proven_current(&mutation, Some(&proven_current))?;
+        }
+        if let Some(retained) = self.journal_mutations.as_ref() {
+            retained
+                .try_borrow_mut()
+                .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?
+                .extend([mutation])
+                .map_err(journal_storage_error)?;
+        }
+        Ok(())
+    }
+
     pub(crate) fn transaction(&self) -> Result<&WriteTransaction, StorageError> {
         self.transaction
             .as_ref()
@@ -3876,7 +3958,7 @@ impl RedbWriteAccess {
         if let Some(transaction) = self.transaction.as_ref() {
             crate::journal::apply_mutation(transaction, &mutation).map_err(journal_io_error)?;
         }
-        self.record_journal_mutations(vec![mutation])?;
+        self.record_observed_journal_mutation(mutation, prior.as_deref())?;
         Ok(prior)
     }
 
@@ -3893,14 +3975,14 @@ impl RedbWriteAccess {
         if let Some(transaction) = self.transaction.as_ref() {
             crate::journal::apply_mutation(transaction, &mutation).map_err(journal_io_error)?;
         }
-        self.record_journal_mutations(vec![mutation])?;
+        self.record_observed_journal_mutation(mutation, Some(&prior))?;
         Ok(Some(prior))
     }
 
     pub(crate) fn put_command_segment_value(
         &self,
         key: Vec<u8>,
-        value: Vec<u8>,
+        value: riffdb_storage_api::CanonicalStoredEnvelopeV1,
         command_count: usize,
         raw_envelope_bytes: usize,
     ) -> Result<bool, StorageError> {
@@ -3910,6 +3992,7 @@ impl RedbWriteAccess {
         {
             return Ok(false);
         }
+        let value = value.into_bytes();
         let mutation = crate::journal::JournalMutation::put(
             crate::journal::JournalTable::Commits,
             key.clone(),
@@ -3923,7 +4006,7 @@ impl RedbWriteAccess {
             stage
                 .try_borrow_mut()
                 .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?
-                .apply(&mutation)?;
+                .apply_with_proven_current(&mutation, None)?;
         }
         if let Some(retained) = self.journal_mutations.as_ref() {
             retained
@@ -4446,6 +4529,40 @@ fn checked_epoch_totals(
 }
 
 impl RedbDurabilityEpoch {
+    /// Proves that the private logical frontier accumulated by this epoch is
+    /// exactly the bounded command sequence that will be encoded and applied.
+    ///
+    /// This is deliberately a whole-epoch proof: commands are joined in
+    /// admission order, every adjacent subgroup must be contiguous, and the
+    /// independently retained command/mutation counts must agree before the
+    /// durability lane can observe the epoch.
+    fn private_frontier_is_equivalent(&self) -> bool {
+        let mut command_count = 0usize;
+        let mut prior_last = None;
+        for batch in &self.applied {
+            if batch.command_count() == 0
+                || prior_last.is_some_and(|prior: CommitSequence| {
+                    prior.checked_next() != Some(batch.first_commit_sequence())
+                })
+            {
+                return false;
+            }
+            let Some(next_count) = command_count.checked_add(batch.command_count()) else {
+                return false;
+            };
+            command_count = next_count;
+            prior_last = Some(batch.last_commit_sequence());
+        }
+        command_count == self.command_count
+            && prior_last == self.last_sequence
+            && self.journal_mutation_groups == self.applied.len()
+            && self.journal_mutations.mutation_count() != 0
+            && self.composite_stage.as_ref().is_some_and(|stage| {
+                usize::try_from(self.journal_mutations.mutation_count()).ok()
+                    == Some(stage.mutation_count())
+            })
+    }
+
     fn has_unpublished_state(&self) -> bool {
         !self.applied.is_empty()
             || !self.transient_deltas.is_empty()
@@ -4490,13 +4607,7 @@ impl RedbDurabilityEpoch {
         }
         self.shared
             .before_test_commit(RedbTestOperation::CommandEpochTail)?;
-        if self.journal_mutation_groups != self.applied.len()
-            || self.journal_mutations.mutation_count() == 0
-            || self.composite_stage.as_ref().is_none_or(|stage| {
-                usize::try_from(self.journal_mutations.mutation_count()).ok()
-                    != Some(stage.mutation_count())
-            })
-        {
+        if !self.private_frontier_is_equivalent() {
             self.shared.fence_writes();
             return Err(storage_error(StorageErrorKind::InvariantViolation));
         }

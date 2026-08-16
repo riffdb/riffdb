@@ -219,6 +219,7 @@ pub(crate) struct EvaluatedCommandAttempt {
     lease: CommandMutationAuthority,
     snapshot: MaterializedCommandSnapshot,
     evaluated: Arc<EvaluatedCommand>,
+    prepared_body: Option<crate::command_index::PreparedCommandBody>,
 }
 
 impl EvaluatedCommandAttempt {
@@ -240,7 +241,9 @@ impl EvaluatedCommandAttempt {
             lease,
             snapshot,
             evaluated,
+            prepared_body,
         } = self;
+        drop(prepared_body);
         drop(evaluated);
         drop(snapshot);
         drop(lease);
@@ -270,6 +273,44 @@ impl EvaluatedCommandAttempt {
 
     pub(super) fn evaluated(&self) -> &EvaluatedCommand {
         &self.evaluated
+    }
+
+    /// Installs deterministic worker preparation bound to this exact attempt.
+    pub(super) fn prepare_body(mut self) -> Result<Self, CommandAttemptError> {
+        if self.prepared_body.is_some() {
+            return Err(CommandAttemptError::Integrity);
+        }
+        let prepared = crate::command_index::prepare_command_body(&self)
+            .map_err(|_| CommandAttemptError::Integrity)?;
+        if let Some(prepared) = prepared {
+            if !prepared.matches_attempt(&self) {
+                return Err(CommandAttemptError::Integrity);
+            }
+            self.prepared_body = Some(prepared);
+        }
+        Ok(self)
+    }
+
+    pub(super) fn take_prepared_mutation_positions(&mut self) -> Option<Box<[Option<usize>]>> {
+        self.prepared_body
+            .as_mut()
+            .and_then(crate::command_index::PreparedCommandBody::take_mutation_positions)
+    }
+
+    pub(super) fn take_prepared_indexes(
+        &mut self,
+    ) -> Option<crate::command_index::DerivedCommandIndexes> {
+        self.prepared_body
+            .as_mut()
+            .and_then(crate::command_index::PreparedCommandBody::take_indexes)
+    }
+
+    pub(super) fn take_prepared_capsule(
+        &mut self,
+    ) -> Option<riffdb_storage_api::PreparedCapsuleCommandFragmentsV1> {
+        self.prepared_body
+            .as_mut()
+            .and_then(crate::command_index::PreparedCommandBody::take_capsule)
     }
 
     pub(super) fn audited_lifecycle(&self) -> Option<&AuditedCommandLifecycle> {
@@ -414,6 +455,22 @@ impl ProvenanceBoundCommandAttempt {
         self.attempt.evaluated()
     }
 
+    pub(super) fn take_prepared_mutation_positions(&mut self) -> Option<Box<[Option<usize>]>> {
+        self.attempt.take_prepared_mutation_positions()
+    }
+
+    pub(super) fn take_prepared_indexes(
+        &mut self,
+    ) -> Option<crate::command_index::DerivedCommandIndexes> {
+        self.attempt.take_prepared_indexes()
+    }
+
+    pub(super) fn take_prepared_capsule(
+        &mut self,
+    ) -> Option<riffdb_storage_api::PreparedCapsuleCommandFragmentsV1> {
+        self.attempt.take_prepared_capsule()
+    }
+
     pub(super) const fn lookup_candidates(&self) -> &IdempotencyLookupCandidatesV1 {
         &self.attempt.state.lookup_candidates
     }
@@ -489,7 +546,9 @@ impl ProvenanceBoundCommandAttempt {
             lease,
             snapshot,
             evaluated,
+            prepared_body,
         } = attempt;
+        drop(prepared_body);
         drop(evaluated);
         drop(snapshot);
         drop(lease);
@@ -509,7 +568,9 @@ impl ProvenanceBoundCommandAttempt {
             lease,
             snapshot,
             evaluated,
+            prepared_body,
         } = attempt;
+        drop(prepared_body);
         drop(evaluated);
         drop(snapshot);
         drop(lease);
@@ -537,7 +598,9 @@ impl ProvenanceBoundCommandAttempt {
             lease,
             snapshot,
             evaluated,
+            prepared_body,
         } = attempt;
+        drop(prepared_body);
         drop(evaluated);
 
         if !intent_matches {
@@ -1243,6 +1306,7 @@ fn finish_acquired_evaluation(
                 lease,
                 snapshot,
                 evaluated: Arc::new(evaluated),
+                prepared_body: None,
             })
         }
         Err(ExecutionFault::Arithmetic) => {

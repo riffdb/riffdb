@@ -22,17 +22,17 @@ use riffdb_storage_api::{
     EmptyCommandBatch, EntityChainHeadV1, EntityChainStateV1, EntityObservation, EntityTarget,
     ExecutionFailureAdmissionRechecked, ExecutionFailureAdmissionResult,
     ExecutionFailureAwaitingDecision, ExecutionFailureTransitionPort,
-    ExecutionFailureTransitionRequestV1, ExpectedEntityState, IdempotencyIdentity,
-    IdempotencyIdentityKey, IdempotencyLookupCandidatesV1, IndexEntryMutationV1,
-    IndexEpochPosition, IndexRangeEntry, MAX_INDEX_SCAN_INSPECTED_ENTRIES, NonEmptyCommandBatch,
-    PartitionIndexTarget, ProvenanceIdCollision, ReadDependencies, ReadDependency, ReadSnapshot,
-    ReadSnapshotBuilder, SnapshotRequest, StagedBatchMetrics, StagedCommandAuditLinkEvidenceV1,
-    StagedCommandEvidenceV1, StorageError, StorageErrorKind, StorageValueError,
-    StoredAdmissionStateV1, StoredCommandCapsuleV2, StoredCommandSegmentV1, StoredEventRouteV1,
-    StoredExecutionFailedV1, StoredIndexEpochV1, StoredOutboxIntentV1, StoredOutcomeV1,
-    StoredPendingAdmissionV1, TransactionCurrentPolicyRequestV1, TransactionCurrentPolicyStateV1,
-    TransactionCurrentState, TransactionCurrentStateBuilder, TransactionLocalCommandBatch,
-    UniqueIndexOccupancy, UniqueOccupancyKind, UnpublishedAuditedBatchV1, ValidationReadRequest,
+    ExecutionFailureTransitionRequestV1, IdempotencyIdentity, IdempotencyIdentityKey,
+    IdempotencyLookupCandidatesV1, IndexEntryMutationV1, IndexEpochPosition, IndexRangeEntry,
+    MAX_INDEX_SCAN_INSPECTED_ENTRIES, NonEmptyCommandBatch, PartitionIndexTarget,
+    ProvenanceIdCollision, ReadDependencies, ReadDependency, ReadSnapshot, ReadSnapshotBuilder,
+    SnapshotRequest, StagedBatchMetrics, StagedCommandAuditLinkEvidenceV1, StagedCommandEvidenceV1,
+    StorageError, StorageErrorKind, StorageValueError, StoredAdmissionStateV1,
+    StoredCommandCapsuleV2, StoredCommandSegmentV1, StoredEventRouteV1, StoredExecutionFailedV1,
+    StoredIndexEpochV1, StoredOutboxIntentV1, StoredOutcomeV1, StoredPendingAdmissionV1,
+    TransactionCurrentPolicyRequestV1, TransactionCurrentPolicyStateV1, TransactionCurrentState,
+    TransactionCurrentStateBuilder, TransactionLocalCommandBatch, UniqueIndexOccupancy,
+    UniqueOccupancyKind, UnpublishedAuditedBatchV1, ValidationReadRequest,
     encode_capsule_command_record_set_v1,
 };
 use riffdb_types::{CommitSequence, EventId, ProvenanceId};
@@ -77,6 +77,7 @@ struct BatchCore {
     /// cache hit is byte-for-byte equivalent to another redb transaction-local
     /// read without repeating its B-tree lookup and durable decode.
     entity_observations: BTreeMap<EntityTarget, EntityObservation>,
+    entity_observation_bytes: BTreeMap<EntityTarget, Option<Vec<u8>>>,
     index_generations: BTreeMap<PartitionIndexTarget, IndexEpochPosition>,
     pending_index_generations: BTreeMap<PartitionIndexTarget, PendingIndexGenerationPostImage>,
     reserved_provenance_ids: BTreeSet<ProvenanceId>,
@@ -103,6 +104,7 @@ impl BatchCore {
             staged: Vec::new(),
             metrics: None,
             entity_observations: BTreeMap::new(),
+            entity_observation_bytes: BTreeMap::new(),
             index_generations: BTreeMap::new(),
             pending_index_generations: BTreeMap::new(),
             reserved_provenance_ids: BTreeSet::new(),
@@ -176,7 +178,7 @@ fn capsulate_command_rows(
             .map_err(codec_error)?;
     if !access.put_command_segment_value(
         commit_key.to_vec(),
-        encoded_segment.into_bytes(),
+        encoded_segment,
         segment.commands().len(),
         encoding_metrics.raw_envelope_bytes(),
     )? {
@@ -793,17 +795,17 @@ fn read_transaction_local_snapshot(
 
     for target in request.binding_targets() {
         snapshot
-            .push_binding(entity_observation_from_access(&core.access, target)?)
+            .push_binding(entity_observation_from_access(&core.access, target)?.0)
             .map_err(materialization_value)?;
     }
     for target in request.root_validation_targets() {
         snapshot
-            .push_root_validation(entity_observation_from_access(&core.access, target)?)
+            .push_root_validation(entity_observation_from_access(&core.access, target)?.0)
             .map_err(materialization_value)?;
     }
     for target in request.cascade_targets() {
         snapshot
-            .push_cascade_predecessor(entity_observation_from_access(&core.access, target)?)
+            .push_cascade_predecessor(entity_observation_from_access(&core.access, target)?.0)
             .map_err(materialization_value)?;
     }
     for (position, target) in request.range_targets().iter().enumerate() {
@@ -1465,7 +1467,10 @@ macro_rules! impl_candidate_chain {
                 &self.write_plan
             }
 
-            fn stage(self, records: AtomicCommandRecordSet) -> Result<Self::Staged, StorageError> {
+            fn stage(
+                self,
+                mut records: AtomicCommandRecordSet,
+            ) -> Result<Self::Staged, StorageError> {
                 if !records.matches_reserved_candidate(
                     self.assignment,
                     &self.intent,
@@ -1477,7 +1482,7 @@ macro_rules! impl_candidate_chain {
                 // Canonical encoding and the complete reservation proof precede
                 // every physical write for this candidate.
                 let encoded =
-                    encode_capsule_command_record_set_v1(&records).map_err(codec_error)?;
+                    encode_capsule_command_record_set_v1(&mut records).map_err(codec_error)?;
                 let mut core = self.prior.core;
                 let entity_transitions = apply_record_set(&mut core, &records, encoded)?;
                 core.metrics = Some(metrics_after(core.metrics, &records)?);
@@ -1531,6 +1536,7 @@ fn apply_record_set(
     let BatchCore {
         access,
         entity_observations,
+        entity_observation_bytes,
         index_generations,
         ..
     } = core;
@@ -1544,7 +1550,13 @@ fn apply_record_set(
     // authoritative duplicate/vacancy assertion. Re-reading and decoding both
     // idempotency tables here supplied no newer evidence.
 
-    let entity_transitions = apply_entities(access, records, entities, entity_observations)?;
+    let entity_transitions = apply_entities(
+        access,
+        records,
+        entities,
+        entity_observations,
+        entity_observation_bytes,
+    )?;
     apply_index_entries(access, records, index_entries)?;
     apply_index_epochs(
         records,
@@ -1605,6 +1617,7 @@ fn apply_entities(
     records: &AtomicCommandRecordSet,
     encoded: Vec<Option<riffdb_storage_api::CanonicalStoredEnvelopeV1>>,
     observations: &mut BTreeMap<EntityTarget, EntityObservation>,
+    observation_bytes: &mut BTreeMap<EntityTarget, Option<Vec<u8>>>,
 ) -> Result<Vec<CommittedEntityTransitionV1>, StorageError> {
     if records.entities().is_empty() {
         return Ok(Vec::new());
@@ -1624,10 +1637,11 @@ fn apply_entities(
         {
             return Err(storage_error(StorageErrorKind::InvariantViolation));
         }
-        let stored_head = access
-            .read_command_value(JournalTable::EntityChainHeads, key)?
+        let stored_head_bytes = access.read_command_value(JournalTable::EntityChainHeads, key)?;
+        let stored_head = stored_head_bytes
+            .as_deref()
             .map(|bytes| {
-                riffdb_storage_api::decode_entity_chain_head_v1(&bytes)
+                riffdb_storage_api::decode_entity_chain_head_v1(bytes)
                     .map(|decoded| decoded.into_parts().0)
                     .map_err(codec_error)
             })
@@ -1685,31 +1699,38 @@ fn apply_entities(
         .map_err(invariant_value)?;
         let encoded_head =
             riffdb_storage_api::encode_entity_chain_head_v1(&next_head).map_err(codec_error)?;
-        let replaced_head = access.put_command_value(
+        access.put_proven_command_value(
             JournalTable::EntityChainHeads,
             key.to_vec(),
-            encoded_head.into_bytes(),
+            stored_head_bytes,
+            encoded_head,
         )?;
-        if replaced_head.is_some() != (prior_revision != 0) {
+        let proven_current = observation_bytes
+            .get(target)
+            .cloned()
+            .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
+        if proven_current.is_some() != matches!(observation, EntityObservation::Present(_)) {
             return Err(storage_error(StorageErrorKind::InvariantViolation));
         }
-        let prior = match bytes {
-            Some(bytes) => access.put_command_value(
+        let next_bytes = bytes.as_ref().map(|value| value.as_bytes().to_vec());
+        match (bytes, proven_current) {
+            (Some(bytes), current) => access.put_proven_command_value(
                 JournalTable::Entities,
                 key.to_vec(),
-                bytes.into_bytes(),
+                current,
+                bytes,
             )?,
-            None => access.delete_command_value(JournalTable::Entities, key.to_vec())?,
-        };
-        let expected_presence = matches!(mutation.expected(), ExpectedEntityState::Present(_));
-        if prior.is_some() != expected_presence {
-            return Err(storage_error(StorageErrorKind::InvariantViolation));
+            (None, Some(current)) => {
+                access.delete_proven_command_value(JournalTable::Entities, key.to_vec(), current)?
+            }
+            (None, None) => return Err(storage_error(StorageErrorKind::InvariantViolation)),
         }
         let next_observation = match mutation.live_post_image() {
             Some(post_image) => EntityObservation::Present(post_image.clone()),
             None => EntityObservation::Absent(target.clone()),
         };
         observations.insert(target.clone(), next_observation);
+        observation_bytes.insert(target.clone(), next_bytes);
         transitions.push(transition);
     }
     Ok(transitions)
@@ -1727,17 +1748,24 @@ fn apply_index_entries(
         let key = encode_index_entry_key(mutation.key());
         match (mutation, bytes) {
             (IndexEntryMutationV1::Delete(_), None) => {
-                let Some(_removed) =
-                    access.delete_command_value(JournalTable::SecondaryIndexes, key.to_vec())?
+                let Some(current) =
+                    access.read_command_value(JournalTable::SecondaryIndexes, &key)?
                 else {
                     return Err(storage_error(StorageErrorKind::InvariantViolation));
                 };
-            }
-            (IndexEntryMutationV1::Put(_), Some(bytes)) => {
-                access.put_command_value(
+                access.delete_proven_command_value(
                     JournalTable::SecondaryIndexes,
                     key.to_vec(),
-                    bytes.into_bytes(),
+                    current,
+                )?;
+            }
+            (IndexEntryMutationV1::Put(_), Some(bytes)) => {
+                let current = access.read_command_value(JournalTable::SecondaryIndexes, &key)?;
+                access.put_proven_command_value(
+                    JournalTable::SecondaryIndexes,
+                    key.to_vec(),
+                    current,
+                    bytes,
                 )?;
             }
             _ => return Err(storage_error(StorageErrorKind::InvariantViolation)),
@@ -1815,14 +1843,12 @@ fn flush_index_generation_post_images(core: &mut BatchCore) -> Result<(), Storag
         if physical != post_image.initial {
             return Err(storage_error(StorageErrorKind::InvariantViolation));
         }
-        let replaced = core.access.put_command_value(
+        core.access.put_proven_command_value(
             JournalTable::IndexEpochs,
             key.to_vec(),
-            post_image.final_bytes.into_bytes(),
+            prior_bytes,
+            post_image.final_bytes,
         )?;
-        if replaced.as_deref() != prior_bytes.as_deref() {
-            return Err(storage_error(StorageErrorKind::InvariantViolation));
-        }
     }
     Ok(())
 }
@@ -2383,11 +2409,16 @@ fn cached_entity_observation(
     target: &EntityTarget,
 ) -> Result<EntityObservation, StorageError> {
     if let Some(observation) = core.entity_observations.get(target) {
+        if !core.entity_observation_bytes.contains_key(target) {
+            return Err(storage_error(StorageErrorKind::InvariantViolation));
+        }
         return Ok(observation.clone());
     }
-    let observation = { entity_observation_from_access(&core.access, target)? };
+    let (observation, encoded) = entity_observation_from_access(&core.access, target)?;
     core.entity_observations
         .insert(target.clone(), observation.clone());
+    core.entity_observation_bytes
+        .insert(target.clone(), encoded);
     Ok(observation)
 }
 
@@ -2471,17 +2502,17 @@ fn entity_observation_from_table(
 fn entity_observation_from_access(
     access: &RedbWriteAccess,
     target: &EntityTarget,
-) -> Result<EntityObservation, StorageError> {
+) -> Result<(EntityObservation, Option<Vec<u8>>), StorageError> {
     let Some(value) =
         access.read_command_value(JournalTable::Entities, encode_entity_key(target.key()))?
     else {
-        return Ok(EntityObservation::Absent(target.clone()));
+        return Ok((EntityObservation::Absent(target.clone()), None));
     };
     let record = decoded_value(decode_entity_record_v1(&value)?);
     if record.target() != target {
         return Err(storage_error(StorageErrorKind::CorruptData));
     }
-    Ok(EntityObservation::Present(record))
+    Ok((EntityObservation::Present(record), Some(value)))
 }
 
 fn epoch_position_from_table(

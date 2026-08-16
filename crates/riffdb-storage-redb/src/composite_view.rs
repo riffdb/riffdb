@@ -128,6 +128,36 @@ impl RedbCompositeMutationStage {
             .map_err(corrupt_value)
     }
 
+    /// Applies a mutation against bytes read from this exact private stage by
+    /// the sole writer immediately before mutation construction.
+    pub(crate) fn apply_with_observed_current(
+        &mut self,
+        mutation: &crate::journal::JournalMutation,
+        observed_current: Option<&[u8]>,
+    ) -> Result<(), StorageError> {
+        let mutation = mutation.composite().map_err(corrupt_value)?;
+        self.stage
+            .apply_with_observed_current(
+                mutation,
+                observed_current,
+                &RedbCheckpointBase { root: &self.root },
+            )
+            .map_err(corrupt_value)
+    }
+
+    /// Consumes canonical record bytes and exact current bytes already proven
+    /// by the storage-owned typed staging path.
+    pub(crate) fn apply_with_proven_current(
+        &mut self,
+        mutation: &crate::journal::JournalMutation,
+        proven_current: Option<&[u8]>,
+    ) -> Result<(), StorageError> {
+        let mutation = mutation.composite().map_err(corrupt_value)?;
+        self.stage
+            .apply_with_proven_current(mutation, proven_current)
+            .map_err(corrupt_value)
+    }
+
     pub(crate) fn resolve_point(
         &self,
         table: CompositeTableV1,

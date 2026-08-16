@@ -18,8 +18,8 @@ use riffdb_types::{EntityVersion, EventId};
 use crate::{
     command_attempt::PendingCommandAttempts,
     command_index::{
-        CheckedCandidateStage, CheckedCommitCandidate, PostApplyCheckedCommitCandidate,
-        RetainedCheckedCommitCandidate,
+        CheckedCandidateStage, CheckedCommitCandidate, CommandIndexError,
+        PostApplyCheckedCommitCandidate, RetainedCheckedCommitCandidate,
     },
     outcome::CommittedOutcome,
 };
@@ -60,11 +60,12 @@ impl From<StorageValueError> for CommandRecordGraphError {
 struct CheckedRecordGraphInput {
     assignment: AssignedCommandSequence,
     write_plan: CommandWriteSetPlanV1,
+    prepared_capsule: Option<riffdb_storage_api::PreparedCapsuleCommandFragmentsV1>,
 }
 
 impl CheckedRecordGraphInput {
     fn from_assigned_candidate<S>(
-        candidate: &CheckedCommitCandidate<S>,
+        candidate: &mut CheckedCommitCandidate<S>,
     ) -> Result<Self, CommandRecordGraphError>
     where
         S: CommandCandidateSequenceAssigned,
@@ -80,6 +81,7 @@ impl CheckedRecordGraphInput {
         Ok(Self {
             assignment,
             write_plan,
+            prepared_capsule: candidate.take_prepared_capsule(),
         })
     }
 
@@ -98,6 +100,7 @@ impl CheckedRecordGraphInput {
         Ok(Self {
             assignment,
             write_plan,
+            prepared_capsule: None,
         })
     }
 }
@@ -558,24 +561,39 @@ where
 pub(super) fn seal_checked_deferred_group<E>(
     epoch: E,
     batch: CheckedDeferredCommandBatch,
+    telemetry: &dyn crate::CommitTelemetry,
 ) -> Result<Box<dyn CheckedCommandGroupFence>, CheckedCommandGroupCommitResult>
 where
     E: DeferredCommandEpoch,
     E::Fence: 'static,
 {
     match epoch.seal() {
-        Ok(fence) => Ok(Box::new(TypedCheckedCommandGroupFence {
-            fence: Some(fence),
-            batch: Some(batch),
-        })),
-        Err(error) => Err(finish_post_apply_group_commit(
-            batch.entries,
-            batch.durability_mode,
-            Err(StorageError::new(
-                StorageErrorKind::CommitStatusUnknown,
-                error.incident_id(),
-            )),
-        )),
+        Ok(fence) => {
+            telemetry.record(crate::CommitTelemetryEvent::FrontierEquivalenceChecked {
+                equivalent: true,
+            });
+            Ok(Box::new(TypedCheckedCommandGroupFence {
+                fence: Some(fence),
+                batch: Some(batch),
+            }))
+        }
+        Err(error) => {
+            // Redb's epoch seal is the production equivalence boundary.  A
+            // failed seal is conservatively visible as a failed equivalence
+            // observation even when the underlying storage incident prevents
+            // a more specific public classification.
+            telemetry.record(crate::CommitTelemetryEvent::FrontierEquivalenceChecked {
+                equivalent: false,
+            });
+            Err(finish_post_apply_group_commit(
+                batch.entries,
+                batch.durability_mode,
+                Err(StorageError::new(
+                    StorageErrorKind::CommitStatusUnknown,
+                    error.incident_id(),
+                )),
+            ))
+        }
     }
 }
 
@@ -860,20 +878,20 @@ where
 }
 
 fn stage_checked_candidate<S>(
-    candidate: CheckedCommitCandidate<S>,
+    mut candidate: CheckedCommitCandidate<S>,
     durability_mode: DurabilityMode,
 ) -> Result<(S::Staged, CheckedStagedCommandEntry), CheckedCommandStageError>
 where
     S: CommandCandidateSequenceAssigned,
 {
-    let input = match CheckedRecordGraphInput::from_assigned_candidate(&candidate) {
+    let input = match CheckedRecordGraphInput::from_assigned_candidate(&mut candidate) {
         Ok(input) => input,
         Err(error) => {
             drop(candidate);
             return Err(CheckedCommandStageError::InternalDefect(error));
         }
     };
-    let records = match build_atomic_command_record_set(&input, durability_mode) {
+    let records = match build_atomic_command_record_set(input, durability_mode) {
         Ok(records) => records,
         Err(error) => {
             drop(candidate);
@@ -915,7 +933,7 @@ where
 /// the immutable intent and write plan. The storage-owned final constructor
 /// rechecks all reciprocal links, canonical ordering, and aggregate bounds.
 fn build_atomic_command_record_set(
-    input: &CheckedRecordGraphInput,
+    input: CheckedRecordGraphInput,
     durability_mode: DurabilityMode,
 ) -> Result<AtomicCommandRecordSet, CommandRecordGraphError> {
     let assignment = input.assignment;
@@ -926,23 +944,20 @@ fn build_atomic_command_record_set(
     let sequence = assignment.assigned();
     let schema_binding = DurableKeySchemaBindingV1::from_plan(evaluated.plan());
 
-    let mut entities = evaluated
-        .mutations()
-        .iter()
-        .map(|mutation| committed_entity(mutation, &schema_binding))
-        .collect::<Result<Vec<_>, _>>()?;
-    // Runtime/validation retain the semantic cascade graph in children-before-
-    // parent order. The durable entity table graph remains in its established
-    // canonical physical target order; no encoding or recovery rule changes.
-    entities.sort_unstable_by_key(|mutation| {
-        let target = mutation.target();
-        let mut key = Vec::with_capacity(1 + 4 + 4 + target.key().as_bytes().len());
-        key.push(0x01);
-        key.extend_from_slice(&target.entity_type_id().to_be_bytes());
-        key.extend_from_slice(&(target.key().as_bytes().len() as u32).to_be_bytes());
-        key.extend_from_slice(target.key().as_bytes());
-        key
-    });
+    let mut unprepared_entities = None;
+    let entities = if let Some(prepared) = input.prepared_capsule.as_ref() {
+        prepared.entities()
+    } else {
+        let mut entities = evaluated
+            .mutations()
+            .iter()
+            .map(|mutation| committed_entity(mutation, &schema_binding))
+            .collect::<Result<Vec<_>, _>>()?;
+        // Runtime/validation retain the semantic cascade graph in children-before-
+        // parent order. Durable entity rows remain in canonical physical order.
+        sort_committed_entities(&mut entities);
+        unprepared_entities.insert(entities)
+    };
     let events = evaluated
         .event_intents()
         .iter()
@@ -1050,15 +1065,59 @@ fn build_atomic_command_record_set(
         event_ids,
         durability_mode,
     )?;
-    AtomicCommandRecordSet::new(
-        assignment,
-        entities,
-        write_plan,
-        stored_outcome,
-        provenance,
-        commit,
-    )
+    match input.prepared_capsule {
+        Some(prepared) => AtomicCommandRecordSet::new_with_prepared_capsule(
+            assignment,
+            prepared,
+            write_plan,
+            stored_outcome,
+            provenance,
+            commit,
+        ),
+        None => AtomicCommandRecordSet::new(
+            assignment,
+            unprepared_entities
+                .take()
+                .ok_or_else(CommandRecordGraphError::internal_defect)?,
+            write_plan,
+            stored_outcome,
+            provenance,
+            commit,
+        ),
+    }
     .map_err(CommandRecordGraphError::from)
+}
+
+pub(super) fn prepare_sequence_free_capsule(
+    resolved: &riffdb_catalog::ResolvedExecutablePlan,
+    evaluated: &riffdb_storage_api::EvaluatedCommand,
+    index_entries: &[riffdb_storage_api::IndexEntryMutationV1],
+) -> Result<riffdb_storage_api::PreparedCapsuleCommandFragmentsV1, CommandIndexError> {
+    if resolved.reference() != evaluated.plan() {
+        return Err(CommandIndexError::internal_defect());
+    }
+    let schema_binding = DurableKeySchemaBindingV1::from_plan(evaluated.plan());
+    let mut entities = evaluated
+        .mutations()
+        .iter()
+        .map(|mutation| committed_entity(mutation, &schema_binding))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| CommandIndexError::internal_defect())?;
+    sort_committed_entities(&mut entities);
+    riffdb_storage_api::prepare_capsule_command_fragments_v1(entities, index_entries.to_vec())
+        .map_err(|_| CommandIndexError::internal_defect())
+}
+
+fn sort_committed_entities(entities: &mut [CommittedEntityMutationV1]) {
+    entities.sort_unstable_by_key(|mutation| {
+        let target = mutation.target();
+        let mut key = Vec::with_capacity(1 + 4 + 4 + target.key().as_bytes().len());
+        key.push(0x01);
+        key.extend_from_slice(&target.entity_type_id().to_be_bytes());
+        key.extend_from_slice(&(target.key().as_bytes().len() as u32).to_be_bytes());
+        key.extend_from_slice(target.key().as_bytes());
+        key
+    });
 }
 
 fn committed_entity(
@@ -1140,7 +1199,7 @@ mod tests {
             write_plan.affected_targets().clone(),
         );
         let input = CheckedRecordGraphInput::new_for_test(&candidate, assignment, write_plan)?;
-        build_atomic_command_record_set(&input, durability_mode)
+        build_atomic_command_record_set(input, durability_mode)
     }
 
     fn uuid_bytes(fill: u8) -> [u8; 16] {
