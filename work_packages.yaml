@@ -12749,7 +12749,7 @@ work_packages:
     scale: Evidence is a fixed matrix with bounded artifacts; the cloud profile exercises sustained
       checkpointing so a pass cannot borrow unbounded suffix, overlay, memory, or deferred work.
   human_review_triggers: *id001
-- id: WP-624
+- id: WP-631
   name: TypeScript empty-frontier decoding and immutable development publication
   depends_on: [WP-611]
   objective: Correct the TypeScript driver boundary so a successful named query against a
