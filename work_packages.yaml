@@ -13387,3 +13387,48 @@ work_packages:
       presence lookups independent of retained history, segment width, entity count, or request count,
       and adds no cache, retained per-request state, scan, queue, or unbounded diagnostic surface.
   human_review_triggers: *id001
+- id: WP-638
+  name: Closed public write-lane baseline and serialized-service ledger
+  depends_on: [WP-627, WP-637]
+  objective: Re-baseline the post-WP-637 public application workload against the frozen safe-
+    application PostgreSQL comparator, then close the client-observed CreateComment write latency
+    into bounded admission, coordinator, journal, fence, publication, acknowledgement, and queue
+    components before authorizing any writer-pipeline redesign.
+  requirements: [PERF-001, PERF-004, PERF-005, PERF-008, PERF-018]
+  required_adrs: [ADR-0058, ADR-0059, ADR-0104, ADR-0123, ADR-0127]
+  allowed_paths: [work_packages.yaml, examples/app-baseline/**,
+    crates/riffdb-observability/**, crates/riffdb-service/**,
+    crates/riffdb-commit/**, crates/riffdb-storage-api/**,
+    crates/riffdb-storage-redb/**, crates/riffdb-server/**,
+    docs/performance/**, scripts/**]
+  deliverables:
+  - Post-WP-637 N1 and E2 frozen-protocol ratio tables for interactive c1, c8, and c32 plus every
+    representative unary scenario against same-run safe-application PostgreSQL, with durability,
+    transport, seed, workload, correctness, and environment identities retained
+  - One bounded redaction-safe CreateComment c1 ledger whose admission, coordinator validation and
+    apply, journal submit, durable fence, publication, acknowledgement, and residual components sum
+    to the client-observed mean within five percent on the workstation and one isolated cloud host
+  - Public c32 queue-wait versus serialized-service decomposition using the existing bounded writer
+    histograms, explicitly separating queueing from durability-fence and sequencing-essential work
+  - A measured classification of movable versus admission-ordered sequencing-essential work and a
+    report to the maintainer before any coordinator implementation, transport work, derived-consumer
+    work, comparator expansion, compression, batching-window, cache, or lazy-decode candidate begins
+  acceptance_commands:
+  - cargo +1.97.0 test --manifest-path examples/app-baseline/Cargo.toml --workspace
+  - cargo +1.97.0 test -p riffdb-observability -p riffdb-service -p riffdb-commit -p riffdb-storage-redb -p riffdb-server --all-features
+  - ./scripts/check-workspace-policy
+  - ./scripts/check-requirement-coverage
+  - cargo +1.97.0 fmt --all -- --check
+  exit_gate: The two-host comparator gap is current and reproducible, c1 write latency closes to
+    client mean within five percent, c32 queueing is separated from serialized service, and every
+    measured writer component is classified as movable or sequencing-essential before a candidate
+    design or implementation package is proposed.
+  standing_design_tests:
+    interface_safety: Instrumentation observes only closed stage identities, bounded aggregate
+      durations, queue counts, and public outcome classes; it cannot alter admission order,
+      authorization, conflict ownership, commit sequencing, durability, visibility, response
+      release, uncertainty handling, or the frozen comparator.
+    scale: Stage ledgers and queue evidence have fixed count and byte ceilings per process
+      generation, retain no application values or per-operation series, and perform no history,
+      entity, index, event, provenance, audit, or outbox scan.
+  human_review_triggers: *id001
