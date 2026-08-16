@@ -92,4 +92,5 @@ pub use telemetry::{
     CommandPipelineStage, CommitCallTerminal, CommitCommandTerminal, CommitGroupDispatchReason,
     CommitIdempotencyObservation, CommitTelemetry, CommitTelemetryEvent,
     CommitUncertaintyResolution, CommitUncertaintyStage, NoopCommitTelemetry,
+    PreparedEpochRollbackReason,
 };

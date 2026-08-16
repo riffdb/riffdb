@@ -837,6 +837,12 @@ fn riffdb_shutdown_evidence_json(evidence: &RiffDbShutdownEvidence) -> serde_jso
             "storage_queue_duration_us": histogram(&evidence.writer.storage_queue_duration),
             "final_apply_duration_us": evidence.writer.final_apply_duration.as_ref().map(histogram),
             "journal_submit_duration_us": histogram(&evidence.writer.journal_submit_duration),
+            "preparation_pool_depth": evidence.writer.preparation_pool_depth.as_ref().map(histogram),
+            "reorder_buffer_occupancy": evidence.writer.reorder_buffer_occupancy.as_ref().map(histogram),
+            "prepared_epoch_rollbacks": evidence.writer.prepared_epoch_rollbacks,
+            "prepared_epoch_proof_mismatches": evidence.writer.prepared_epoch_proof_mismatches,
+            "frontier_equivalence_checks": evidence.writer.frontier_equivalence_checks,
+            "frontier_equivalence_failures": evidence.writer.frontier_equivalence_failures,
             "physical_commits": physical_commits,
             "logical_commands_committed": logical_commands_committed,
             "mean_commands_per_physical_commit": if physical_commits == 0 {

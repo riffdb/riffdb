@@ -150,6 +150,10 @@ pub struct Observability {
     compatibility_conflict_key_split_total: AtomicU64,
     compatibility_exact_access_split_total: AtomicU64,
     compatibility_commutative_shared_group_total: AtomicU64,
+    prepared_epoch_rollbacks: AtomicU64,
+    prepared_epoch_proof_mismatches: AtomicU64,
+    frontier_equivalence_checks: AtomicU64,
+    frontier_equivalence_failures: AtomicU64,
     metrics: MetricRegistry,
     traces: TraceCollector,
     health: HealthRegistry,
@@ -179,6 +183,10 @@ impl Observability {
             compatibility_conflict_key_split_total: AtomicU64::new(0),
             compatibility_exact_access_split_total: AtomicU64::new(0),
             compatibility_commutative_shared_group_total: AtomicU64::new(0),
+            prepared_epoch_rollbacks: AtomicU64::new(0),
+            prepared_epoch_proof_mismatches: AtomicU64::new(0),
+            frontier_equivalence_checks: AtomicU64::new(0),
+            frontier_equivalence_failures: AtomicU64::new(0),
             metrics: MetricRegistry::new(),
             traces,
             health: HealthRegistry::new(),
@@ -258,6 +266,16 @@ impl Observability {
                 .required_histogram(RequiredHistogram::StorageQueueLatencyMicroseconds),
             command_application_duration_us: self.metrics.command_application_duration(),
             command_submission_duration_us: self.metrics.command_submission_duration(),
+            preparation_pool_depth: self.metrics.preparation_pool_depth(),
+            reorder_buffer_occupancy: self.metrics.reorder_buffer_occupancy(),
+            prepared_epoch_rollbacks: self.prepared_epoch_rollbacks.load(Ordering::Relaxed),
+            prepared_epoch_proof_mismatches: self
+                .prepared_epoch_proof_mismatches
+                .load(Ordering::Relaxed),
+            frontier_equivalence_checks: self.frontier_equivalence_checks.load(Ordering::Relaxed),
+            frontier_equivalence_failures: self
+                .frontier_equivalence_failures
+                .load(Ordering::Relaxed),
         }
     }
 
@@ -570,6 +588,18 @@ pub struct WriterEvidenceSnapshotV1 {
     pub command_application_duration_us: HistogramSnapshot,
     /// Final apply, frame encoding, and journal receipt creation duration.
     pub command_submission_duration_us: HistogramSnapshot,
+    /// Bounded tasks queued or executing in preparation workers.
+    pub preparation_pool_depth: HistogramSnapshot,
+    /// Completed preparations waiting for an earlier admission ordinal.
+    pub reorder_buffer_occupancy: HistogramSnapshot,
+    /// Complete unpublished prepared epochs rolled back.
+    pub prepared_epoch_rollbacks: u64,
+    /// Rollbacks caused by a proof mismatch.
+    pub prepared_epoch_proof_mismatches: u64,
+    /// Private-frontier/application equivalence checks completed.
+    pub frontier_equivalence_checks: u64,
+    /// Private-frontier/application equivalence failures.
+    pub frontier_equivalence_failures: u64,
 }
 
 /// Renders one process-generation writer evidence line.
@@ -578,7 +608,7 @@ pub struct WriterEvidenceSnapshotV1 {
 #[must_use]
 pub fn format_writer_evidence_v1_line(snapshot: &WriterEvidenceSnapshotV1) -> String {
     let scalar = format!(
-        "busy_us={};idle_us={};dispatch_selected={};dispatch_deferred={};dispatch_deferred_max={};compatibility_selected={};compatibility_groups={};compatibility_conflict_key_splits={};compatibility_exact_access_splits={};compatibility_commutative_shared_groups={};queue_delay_estimate_us={}",
+        "busy_us={};idle_us={};dispatch_selected={};dispatch_deferred={};dispatch_deferred_max={};compatibility_selected={};compatibility_groups={};compatibility_conflict_key_splits={};compatibility_exact_access_splits={};compatibility_commutative_shared_groups={};queue_delay_estimate_us={};prepared_epoch_rollbacks={};prepared_epoch_proof_mismatches={};frontier_equivalence_checks={};frontier_equivalence_failures={}",
         snapshot.writer_busy_us,
         snapshot.writer_idle_us,
         snapshot.dispatch_selected,
@@ -592,6 +622,10 @@ pub fn format_writer_evidence_v1_line(snapshot: &WriterEvidenceSnapshotV1) -> St
         snapshot
             .queue_delay_estimate_us
             .map_or_else(|| "none".to_owned(), |value| value.to_string()),
+        snapshot.prepared_epoch_rollbacks,
+        snapshot.prepared_epoch_proof_mismatches,
+        snapshot.frontier_equivalence_checks,
+        snapshot.frontier_equivalence_failures,
     );
     let histograms = [
         ("commit_us", snapshot.commit_duration_us),
@@ -600,6 +634,11 @@ pub fn format_writer_evidence_v1_line(snapshot: &WriterEvidenceSnapshotV1) -> St
         ("storage_queue_us", snapshot.storage_queue_duration_us),
         ("final_apply_us", snapshot.command_application_duration_us),
         ("journal_submit_us", snapshot.command_submission_duration_us),
+        ("preparation_pool_depth", snapshot.preparation_pool_depth),
+        (
+            "reorder_buffer_occupancy",
+            snapshot.reorder_buffer_occupancy,
+        ),
     ]
     .map(|(name, histogram)| {
         let buckets = histogram
@@ -755,6 +794,26 @@ impl ConflictObserver for Observability {
 impl CommitTelemetry for Observability {
     fn record(&self, event: CommitTelemetryEvent) {
         match event {
+            CommitTelemetryEvent::PreparationPoolDepthObserved { depth } => {
+                self.metrics
+                    .observe_preparation_pool_depth(u64::from(depth));
+            }
+            CommitTelemetryEvent::ReorderBufferOccupancyObserved { occupancy } => {
+                self.metrics
+                    .observe_reorder_buffer_occupancy(u64::from(occupancy));
+            }
+            CommitTelemetryEvent::PreparedEpochRolledBack { reason } => {
+                saturating_increment(&self.prepared_epoch_rollbacks);
+                if reason == riffdb_commit::PreparedEpochRollbackReason::ProofMismatch {
+                    saturating_increment(&self.prepared_epoch_proof_mismatches);
+                }
+            }
+            CommitTelemetryEvent::FrontierEquivalenceChecked { equivalent } => {
+                saturating_increment(&self.frontier_equivalence_checks);
+                if !equivalent {
+                    saturating_increment(&self.frontier_equivalence_failures);
+                }
+            }
             CommitTelemetryEvent::CommandPipelineStageCompleted { stage, elapsed, .. } => {
                 self.metrics
                     .observe_command_stage_duration(stage, duration_micros(elapsed));
