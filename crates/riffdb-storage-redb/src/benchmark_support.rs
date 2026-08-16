@@ -71,6 +71,14 @@ pub fn writer_command_frame_census_v1() -> WriterCommandFrameCensusV1 {
     }
 }
 
+/// Returns successful command-bearing physical flushes, covered frames,
+/// commands, complete frame bytes, maximum frames in one flush, cumulative
+/// write-plus-sync microseconds, and maximum write-plus-sync microseconds.
+#[must_use]
+pub fn writer_command_flush_census_v1() -> [u64; 7] {
+    crate::writer_command_flush_census_v1()
+}
+
 /// Redb-owned bounded statistics for one authoritative command-path table.
 ///
 /// These values are diagnostic only. They neither enter authorization nor

@@ -140,6 +140,7 @@
 - [WP-624 Contention-Edge Coalescing Gate](performance/wp-624-contention-edge-coalescing-gate.md)
 - [WP-625 Streaming Authority Encoding Gate](performance/wp-625-streaming-authority-encoding-gate.md)
 - [WP-626 Retained Compiler-Fact Gate](performance/wp-626-retained-compiler-fact-gate.md)
+- [WP-627 Cloud Writer Attribution](performance/wp-627-cloud-writer-attribution.md)
 - [WP-413 Migration Evolution Evidence](performance/wp-413-migration-evolution.md)
 
 # Reference

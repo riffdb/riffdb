@@ -15,6 +15,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, mpsc};
 use std::thread;
+use std::time::{Duration, Instant};
 
 use sha2::{Digest, Sha256};
 
@@ -74,6 +75,13 @@ static COMMAND_FRAME_SELECTED_BYTES: AtomicU64 = AtomicU64::new(0);
 static COMMAND_FRAME_RAW_EQUIVALENT_BYTES: AtomicU64 = AtomicU64::new(0);
 static COMMAND_SEGMENT_SELECTED_BYTES: AtomicU64 = AtomicU64::new(0);
 static COMMAND_SEGMENT_RAW_BYTES: AtomicU64 = AtomicU64::new(0);
+static COMMAND_FLUSH_COUNT: AtomicU64 = AtomicU64::new(0);
+static COMMAND_FLUSH_FRAMES: AtomicU64 = AtomicU64::new(0);
+static COMMAND_FLUSH_COMMANDS: AtomicU64 = AtomicU64::new(0);
+static COMMAND_FLUSH_BYTES: AtomicU64 = AtomicU64::new(0);
+static COMMAND_FLUSH_MAX_FRAMES: AtomicU64 = AtomicU64::new(0);
+static COMMAND_FLUSH_IO_MICROS: AtomicU64 = AtomicU64::new(0);
+static COMMAND_FLUSH_MAX_IO_MICROS: AtomicU64 = AtomicU64::new(0);
 
 fn saturating_atomic_add(target: &AtomicU64, value: usize) {
     let value = u64::try_from(value).unwrap_or(u64::MAX);
@@ -111,6 +119,53 @@ pub(crate) fn command_frame_census() -> [u64; 6] {
         COMMAND_FRAME_RAW_EQUIVALENT_BYTES.load(Ordering::Relaxed),
         COMMAND_SEGMENT_SELECTED_BYTES.load(Ordering::Relaxed),
         COMMAND_SEGMENT_RAW_BYTES.load(Ordering::Relaxed),
+    ]
+}
+
+fn record_command_flush_census(batch: &[JournalSubmission], io_elapsed: Duration) {
+    let mut frames = 0_usize;
+    let mut commands = 0_usize;
+    let mut bytes = 0_usize;
+    for submission in batch {
+        let command_count = usize::from(submission.frame.command_count());
+        if command_count == 0 {
+            continue;
+        }
+        frames = frames.saturating_add(1);
+        commands = commands.saturating_add(command_count);
+        bytes = bytes.saturating_add(submission.frame.as_bytes().len());
+    }
+    if frames == 0 {
+        return;
+    }
+    saturating_atomic_add(&COMMAND_FLUSH_COUNT, 1);
+    saturating_atomic_add(&COMMAND_FLUSH_FRAMES, frames);
+    saturating_atomic_add(&COMMAND_FLUSH_COMMANDS, commands);
+    saturating_atomic_add(&COMMAND_FLUSH_BYTES, bytes);
+    let frames = u64::try_from(frames).unwrap_or(u64::MAX);
+    let _ =
+        COMMAND_FLUSH_MAX_FRAMES.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+            Some(current.max(frames))
+        });
+    let io_micros = u64::try_from(io_elapsed.as_micros()).unwrap_or(u64::MAX);
+    let _ = COMMAND_FLUSH_IO_MICROS.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+        Some(current.saturating_add(io_micros))
+    });
+    let _ =
+        COMMAND_FLUSH_MAX_IO_MICROS.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+            Some(current.max(io_micros))
+        });
+}
+
+pub(crate) fn command_flush_census() -> [u64; 7] {
+    [
+        COMMAND_FLUSH_COUNT.load(Ordering::Relaxed),
+        COMMAND_FLUSH_FRAMES.load(Ordering::Relaxed),
+        COMMAND_FLUSH_COMMANDS.load(Ordering::Relaxed),
+        COMMAND_FLUSH_BYTES.load(Ordering::Relaxed),
+        COMMAND_FLUSH_MAX_FRAMES.load(Ordering::Relaxed),
+        COMMAND_FLUSH_IO_MICROS.load(Ordering::Relaxed),
+        COMMAND_FLUSH_MAX_IO_MICROS.load(Ordering::Relaxed),
     ]
 }
 
@@ -1859,6 +1914,7 @@ fn journal_worker(
             }
         }
         let tail_position = next_position;
+        let write_started = Instant::now();
         let write = if let Some(error) = encode_error {
             Err(error)
         } else {
@@ -1884,6 +1940,7 @@ fn journal_worker(
         };
         if write.is_ok() {
             durable_flushes.fetch_add(1, Ordering::Relaxed);
+            record_command_flush_census(&batch, write_started.elapsed());
             for submission in &batch {
                 record_command_frame_census(&submission.frame);
             }

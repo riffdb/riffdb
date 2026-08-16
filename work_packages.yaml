@@ -12912,3 +12912,46 @@ work_packages:
       adds no queue, task, cache, cardinality, recursion, scan, wait, or durable footprint and
       remains charged inside the existing bounded command-preparation admission unit.
   human_review_triggers: *id001
+- id: WP-627
+  name: Cloud journal flush and checkpoint attribution
+  depends_on: [WP-620, WP-621, WP-624, WP-625, WP-626]
+  objective: Attribute the remaining ordinary-persistent-disk write gap to actual journal
+    durability fences, frames co-fenced per physical flush, checkpoint overlap, or serialized CPU
+    before authorizing another production optimization. Preserve every current command,
+    durability, publication, checkpoint, recovery, and public semantic.
+  requirements: [PERF-007, PERF-008, PERF-009, PERF-015, PERF-017, PERF-018, REC-001,
+    REC-002, TXN-040]
+  required_adrs: [ADR-0058, ADR-0098, ADR-0101, ADR-0103, ADR-0104, ADR-0123]
+  allowed_paths: [work_packages.yaml, docs/**, benchmarks/**, scripts/**,
+    crates/riffdb-storage-redb/src/journal.rs,
+    crates/riffdb-storage-redb/src/lib.rs,
+    crates/riffdb-storage-redb/src/benchmark_support.rs,
+    crates/riffdb-storage-redb/tests/**,
+    crates/riffdb-server/src/daemon.rs,
+    examples/app-baseline/**]
+  deliverables:
+  - One fixed-cardinality process-generation census of successful command-bearing physical journal
+    flushes, command frames covered by them, logical commands, complete frame bytes, and maximum
+    frames covered by one flush; no key, value, identity, symbol, or per-command label
+  - Short workload-only cloud CPU profile separated by thread class and matched to one public c32
+    result, with startup recovery excluded from command-path attribution
+  - Cloud c=1 and c=32 diagnostic cells reporting logical commands per frame, command frames per
+    physical flush, physical flush latency, checkpoint overlap, and coordinator/service CPU shares
+  - A falsifiable recommendation naming the dominant remaining mechanism and rejecting candidates
+    whose maximum possible end-to-end benefit is below ten percent
+  acceptance_commands:
+  - cargo +1.97.0 test -p riffdb-storage-redb --all-features
+  - cargo +1.97.0 test -p riffdb-server --all-features
+  - cargo +1.97.0 test --manifest-path examples/app-baseline/Cargo.toml --all-features
+  - ./scripts/check-requirement-coverage
+  - ./scripts/handbook check
+  exit_gate: The cloud write gap is assigned to a measured physical-fence, checkpoint-interference,
+    service-pipeline, or serialized-coordinator mechanism with enough headroom to satisfy the next
+    activation gate; this diagnostic changes no public behavior or durable byte.
+  standing_design_tests:
+    interface_safety: This adds fixed-cardinality shutdown evidence only. Applications cannot read,
+      select, influence, or use it to weaken command authorization, idempotency, atomicity,
+      durability, publication, recovery, freshness, or bounded failure behavior.
+    scale: Seven saturating process-generation counters replace no bounded state and add no queue,
+      cache, task, scan, wait, retained record, metric label, or per-command observation.
+  human_review_triggers: *id001

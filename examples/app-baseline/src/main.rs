@@ -699,6 +699,36 @@ fn riffdb_shutdown_evidence_json(evidence: &RiffDbShutdownEvidence) -> serde_jso
             })
         },
     );
+    let writer_flush_census = evidence.writer_flush_census.map(
+        |[physical_flushes, command_frames, logical_commands, complete_frame_bytes, max_frames_per_flush, io_duration_us, max_io_duration_us]| {
+            json!({
+                "physical_flushes": physical_flushes,
+                "command_frames": command_frames,
+                "logical_commands": logical_commands,
+                "complete_frame_bytes": complete_frame_bytes,
+                "max_frames_per_flush": max_frames_per_flush,
+                "io_duration_us": io_duration_us,
+                "max_io_duration_us": max_io_duration_us,
+                "mean_io_duration_us": if physical_flushes == 0 {
+                    serde_json::Value::Null
+                } else {
+                    json!(io_duration_us as f64 / physical_flushes as f64)
+                },
+                "mean_command_frames_per_flush": if physical_flushes == 0 {
+                    serde_json::Value::Null
+                } else {
+                    json!(command_frames as f64 / physical_flushes as f64)
+                },
+                "mean_logical_commands_per_flush": if physical_flushes == 0 {
+                    serde_json::Value::Null
+                } else {
+                    json!(logical_commands as f64 / physical_flushes as f64)
+                },
+                "scope": "successful_command_bearing_physical_flushes_in_process_generation",
+                "labels": "closed_fixed_cardinality",
+            })
+        },
+    );
     let table_inventory = evidence
         .table_inventory_after_measurement
         .iter()
@@ -775,6 +805,7 @@ fn riffdb_shutdown_evidence_json(evidence: &RiffDbShutdownEvidence) -> serde_jso
             },
         },
         "writer_frame_census": writer_frame_census,
+        "writer_flush_census": writer_flush_census,
         "authoritative_table_inventory": table_inventory,
         "table_inventory_scope": if evidence.table_inventory_before_measurement.is_some() {
             "after_seed_before_measured_process_to_after_clean_shutdown"
