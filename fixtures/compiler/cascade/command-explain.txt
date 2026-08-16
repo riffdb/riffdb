@@ -1,0 +1,11 @@
+command:1
+execution:IdempotentMutation
+expression:0 type=ValueType(Uuid) op=input-field:3
+expression:1 type=ValueType(Uuid) op=collection-element
+partition:expr=0 purpose=Partition(AggregateTypeId(1)) components=1
+conflict:0 purpose=Conflict(AggregateTypeId(1)) expressions=[0]
+binding:0 mode=Delete entity=1 complete=false reads=[]
+delete:binding=0 policy=cascade relationships=2 child-maximum=64 transaction-current-bounded:true canonical-order:true
+outcome:1 fields=[]
+outcome:2 fields=[]
+outcome:3 fields=[]

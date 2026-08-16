@@ -10,8 +10,8 @@ use riffdb_catalog::{
     MaterializedTransactionCurrentState, ResolvedExecutablePlan, TransactionCurrentMaterialization,
 };
 use riffdb_contract_ir::{
-    BindingId, BindingMode, CommandPlan, ExecutionClass, Instruction, RecordSchema, RecordTypeRef,
-    RootValidationReadId, SchemaIr, ValueType,
+    BindingId, BindingMode, CommandPlan, DeleteCheckModeV1, ExecutionClass, Instruction,
+    RecordSchema, RecordTypeRef, RootValidationReadId, SchemaIr, ValueType,
 };
 use riffdb_invariant::{
     CommitCheckResult, EvaluationError, ExpressionValueSource, derive_input_command_facts,
@@ -527,6 +527,7 @@ fn mutation_policy_rows<'a>(
     let current_row = current
         .bindings()
         .iter()
+        .chain(current.cascade_predecessors())
         .find_map(|observation| match observation {
             EntityObservation::Present(record) if record.target() == mutation.target() => {
                 Some(record.fields())
@@ -1031,8 +1032,11 @@ fn validate_identity_positions_and_output(
     let request = evaluated.validation_request();
     let facts = derive_input_command_facts(plan, normalized_input.clone())
         .map_err(|_| CommandValidationError::integrity())?;
-    let expected_ranges = crate::command_index::derive_delete_restrict_ranges(resolved, &facts)
-        .map_err(|_| CommandValidationError::integrity())?;
+    let expected_ranges = crate::command_index::derive_delete_ranges(resolved, &facts)
+        .map_err(|_| CommandValidationError::integrity())?
+        .into_iter()
+        .map(|(target, _)| target)
+        .collect::<Vec<_>>();
     if reference != evaluated.plan()
         || request.plan() != evaluated.plan()
         || plan.execution_class() != ExecutionClass::IdempotentMutation
@@ -1043,6 +1047,7 @@ fn validate_identity_positions_and_output(
         || facts.binding_entity_keys().len() != current.bindings().len()
         || facts.root_validation_entity_keys().len() != request.root_validation_targets().len()
         || facts.root_validation_entity_keys().len() != current.root_validations().len()
+        || request.cascade_targets().len() != current.cascade_predecessors().len()
         || request.range_targets() != expected_ranges
         || current.ranges().len() != expected_ranges.len()
     {
@@ -1095,10 +1100,15 @@ fn validate_identity_positions_and_output(
         }
     }
     if request
-        .range_targets()
+        .cascade_targets()
         .iter()
-        .zip(current.ranges())
+        .zip(current.cascade_predecessors())
         .any(|(target, observation)| target != observation.target())
+        || request
+            .range_targets()
+            .iter()
+            .zip(current.ranges())
+            .any(|(target, observation)| target != observation.target())
     {
         return Err(CommandValidationError::integrity());
     }
@@ -1131,6 +1141,9 @@ fn validate_evaluated_output(
                 binding.failure().outcome_id() == outcome.outcome_id()
                     || binding
                         .restriction_failure()
+                        .is_some_and(|failure| failure.outcome_id() == outcome.outcome_id())
+                    || binding
+                        .cascade_failure()
                         .is_some_and(|failure| failure.outcome_id() == outcome.outcome_id())
             }) || plan
                 .instructions()
@@ -1269,6 +1282,7 @@ pub(super) fn dependencies_from_current(
             .bindings()
             .iter()
             .chain(current.root_validations())
+            .chain(current.cascade_predecessors())
             .map(ReadDependency::from_entity)
             .chain(
                 current
@@ -1301,7 +1315,9 @@ fn prove_mutation_coverage(
                 .get(**index as usize)
                 .is_some_and(|binding| binding.mode() != BindingMode::Read)
         })
-        .count();
+        .count()
+        .checked_add(request.cascade_targets().len())
+        .ok_or_else(CommandValidationError::integrity)?;
     if evaluated.mutations().len() != mutable_count {
         return Err(CommandValidationError::integrity());
     }
@@ -1314,6 +1330,53 @@ fn prove_mutation_coverage(
         {
             return Err(CommandValidationError::integrity());
         }
+    }
+
+    let mut cascade_mutations = Vec::with_capacity(request.cascade_targets().len());
+    for (target, observation) in request
+        .cascade_targets()
+        .iter()
+        .zip(current.cascade_predecessors())
+    {
+        let EntityObservation::Present(record) = observation else {
+            return Err(CommandValidationError::integrity());
+        };
+        let mutation_index = mutation_by_target
+            .remove(target)
+            .ok_or_else(CommandValidationError::integrity)?;
+        let mutation = evaluated
+            .mutations()
+            .get(mutation_index)
+            .ok_or_else(CommandValidationError::integrity)?;
+        let EntityMutation::Delete {
+            expected_version,
+            prior_image,
+        } = mutation
+        else {
+            return Err(CommandValidationError::integrity());
+        };
+        if *expected_version != record.entity_version()
+            || prior_image.target() != target
+            || prior_image.written_by_contract() != plan.contract_version()
+        {
+            return Err(CommandValidationError::integrity());
+        }
+        let entity = resolved
+            .bundle()
+            .bundle()
+            .schema()
+            .entity(target.entity_type_id())
+            .ok_or_else(CommandValidationError::integrity)?;
+        validate_post_image_and_project(
+            resolved.bundle().bundle().schema(),
+            entity,
+            target,
+            prior_image.fields(),
+            BindingMode::Delete,
+            observation,
+            resolved.reference(),
+        )?;
+        cascade_mutations.push((target, mutation_index, record));
     }
 
     let mut mutable_targets = BTreeMap::<EntityTarget, BindingId>::new();
@@ -1384,6 +1447,76 @@ fn prove_mutation_coverage(
             resolved.reference(),
         )?;
         mutation_index_by_binding[slot] = Some(mutation_index);
+    }
+    for (child_target, child_mutation_index, child_record) in cascade_mutations {
+        let mut parent_match = None;
+        for (slot, ((plan_index, parent_target), _parent_observation)) in facts
+            .binding_plan_indices()
+            .iter()
+            .zip(request.binding_targets())
+            .zip(current.bindings())
+            .enumerate()
+        {
+            let binding = plan
+                .bindings()
+                .get(*plan_index as usize)
+                .ok_or_else(CommandValidationError::integrity)?;
+            if binding.mode() != BindingMode::Delete {
+                continue;
+            }
+            let check = plan
+                .delete_checks()
+                .iter()
+                .find(|check| check.binding() == binding.id())
+                .ok_or_else(CommandValidationError::integrity)?;
+            let DeleteCheckModeV1::Cascade { relationships } = check.mode() else {
+                continue;
+            };
+            let parent_values = binding
+                .key_schema()
+                .decode_entity(parent_target.key())
+                .map_err(|_| CommandValidationError::integrity())?;
+            for specification in relationships {
+                if specification.source_entity() != child_target.entity_type_id() {
+                    continue;
+                }
+                let relationship = resolved
+                    .bundle()
+                    .bundle()
+                    .schema()
+                    .relationships()
+                    .iter()
+                    .find(|relationship| {
+                        relationship.source_entity() == specification.source_entity()
+                            && relationship.name() == specification.relationship_name()
+                            && relationship.target_entity() == binding.entity_type()
+                    })
+                    .ok_or_else(CommandValidationError::integrity)?;
+                let source_values = relationship
+                    .source_fields()
+                    .iter()
+                    .map(|field| {
+                        record_field(child_record.fields(), *field)
+                            .cloned()
+                            .ok_or_else(CommandValidationError::integrity)
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                if source_values == parent_values {
+                    let parent_mutation_index = mutation_index_by_binding
+                        .get(slot)
+                        .copied()
+                        .flatten()
+                        .ok_or_else(CommandValidationError::integrity)?;
+                    if child_mutation_index >= parent_mutation_index || parent_match.is_some() {
+                        return Err(CommandValidationError::integrity());
+                    }
+                    parent_match = Some(parent_mutation_index);
+                }
+            }
+        }
+        if parent_match.is_none() {
+            return Err(CommandValidationError::integrity());
+        }
     }
     if !mutation_by_target.is_empty() {
         return Err(CommandValidationError::integrity());

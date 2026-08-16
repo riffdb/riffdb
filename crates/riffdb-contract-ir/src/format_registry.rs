@@ -129,10 +129,12 @@ tag_registry!(binding_mode, "Binding mode", {
 tag_registry!(delete_policy_mode, "Delete policy mode", {
     NO_INBOUND = 0x01 => "no inbound relationship",
     RESTRICT = 0x02 => "indexed restrict",
+    CASCADE = 0x03 => "bounded one-hop cascade",
 });
 tag_registry!(delete_check_mode, "Delete check mode", {
     NO_INBOUND = 0x01 => "no inbound relationship",
     RESTRICT = 0x02 => "transaction-current indexed restrict",
+    CASCADE = 0x03 => "transaction-current bounded one-hop cascade",
 });
 tag_registry!(instruction, "Instruction", {
     REQUIRE = 0x01 => "require",
@@ -1050,6 +1052,7 @@ layout!(DELETE_POLICY_LAYOUT, "DeletePolicySchemaV1", {
     "target_entity" => "EntityTypeId",
     "mode" => "delete policy mode tag",
     "restrict_payload" => "for restrict only: source EntityTypeId + reverse IndexId",
+    "cascade_payload" => "for cascade only: u32 count + canonical (source EntityTypeId, relationship string, reverse IndexId, u32 maximum)[]",
 });
 layout!(VECTOR_FIELD_SPEC_LAYOUT, "VectorFieldSpecV1", {
     "entity" => "EntityTypeId",
@@ -1238,6 +1241,7 @@ layout!(DELETE_CHECK_LAYOUT, "DeleteCheckPlanV1", {
     "mode" => "Delete check mode tag",
     "restrict_source_entity" => "EntityTypeId only for indexed restrict",
     "restrict_index" => "IndexId only for indexed restrict",
+    "cascade_payload" => "for cascade only: u32 count + canonical (source EntityTypeId, relationship string, reverse IndexId, u32 maximum)[]",
 });
 layout!(OUTCOME_SCHEMA_LAYOUT, "OutcomeSchema", {
     "id" => "OutcomeId",
@@ -1255,6 +1259,7 @@ layout!(BINDING_LAYOUT, "BindingPlan", {
     "complete_record_access" => "Boolean",
     "failure" => "OutcomeConstruction",
     "restriction_failure" => "IR v6+: Boolean + optional OutcomeConstruction; omitted in v1-v5",
+    "cascade_failure" => "IR v13+: Boolean + optional OutcomeConstruction; omitted in v1-v12",
 });
 layout!(ROOT_READ_LAYOUT, "RootValidationReadPlan", {
     "id" => "RootValidationReadId",

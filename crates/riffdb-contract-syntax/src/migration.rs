@@ -777,6 +777,10 @@ fn token_identifier(token: &Token) -> Option<&str> {
         Token::Exhausted => Some("exhausted"),
         Token::Expired => Some("expired"),
         Token::Active => Some("active"),
+        Token::Cascade => Some("cascade"),
+        Token::Relationship => Some("relationship"),
+        Token::Using => Some("using"),
+        Token::Maximum => Some("maximum"),
         _ => None,
     }
 }

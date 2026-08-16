@@ -926,11 +926,23 @@ fn build_atomic_command_record_set(
     let sequence = assignment.assigned();
     let schema_binding = DurableKeySchemaBindingV1::from_plan(evaluated.plan());
 
-    let entities = evaluated
+    let mut entities = evaluated
         .mutations()
         .iter()
         .map(|mutation| committed_entity(mutation, &schema_binding))
         .collect::<Result<Vec<_>, _>>()?;
+    // Runtime/validation retain the semantic cascade graph in children-before-
+    // parent order. The durable entity table graph remains in its established
+    // canonical physical target order; no encoding or recovery rule changes.
+    entities.sort_unstable_by_key(|mutation| {
+        let target = mutation.target();
+        let mut key = Vec::with_capacity(1 + 4 + 4 + target.key().as_bytes().len());
+        key.push(0x01);
+        key.extend_from_slice(&target.entity_type_id().to_be_bytes());
+        key.extend_from_slice(&(target.key().as_bytes().len() as u32).to_be_bytes());
+        key.extend_from_slice(target.key().as_bytes());
+        key
+    });
     let events = evaluated
         .event_intents()
         .iter()

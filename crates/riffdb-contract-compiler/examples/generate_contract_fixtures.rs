@@ -29,6 +29,7 @@ const BUDGET_SOURCE: &str = include_str!("../../../contracts/examples/budget.rif
 const REIMPORT_SOURCE: &str = include_str!("../../../fixtures/compiler/reimport/contract.riff");
 const SECRET_REVEAL_SOURCE: &str =
     include_str!("../../../fixtures/compiler/secret-reveal/contract.riff");
+const CASCADE_SOURCE: &str = include_str!("../../../fixtures/compiler/cascade/contract.riff");
 const MIGRATION_FIXTURE_README: &str = include_str!("../../../fixtures/migrations/README.md");
 const RELATIONSHIP_FIXTURES: &[(&str, &str)] = &[
     (
@@ -289,6 +290,29 @@ fn main() -> Result<(), Box<dyn Error>> {
     fs::write(
         vector_ann_root.join("bundle-hash.txt"),
         format!("{}\n", hex(vector_ann_bundle.bundle_hash().as_bytes())),
+    )?;
+
+    let cascade_bundle = compile_contract_source(CASCADE_SOURCE)?;
+    let cascade_root = fixture_root.join("cascade");
+    fs::create_dir_all(&cascade_root)?;
+    fs::write(cascade_root.join("contract.riff"), CASCADE_SOURCE)?;
+    fs::write(
+        cascade_root.join("bundle.bin"),
+        cascade_bundle.canonical_bytes(),
+    )?;
+    fs::write(
+        cascade_root.join("bundle-hash.txt"),
+        format!("{}\n", hex(cascade_bundle.bundle_hash().as_bytes())),
+    )?;
+    fs::write(
+        cascade_root.join("command-explain.txt"),
+        CommandExplain::from_plan(
+            cascade_bundle
+                .commands()
+                .first()
+                .ok_or("cascade fixture command is absent")?,
+        )
+        .render_text(),
     )?;
 
     let workflow_initial_bundle = compile_contract_source(WORKFLOW_INITIAL_SOURCE)?;

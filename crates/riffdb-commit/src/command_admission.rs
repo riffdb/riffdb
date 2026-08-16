@@ -958,7 +958,7 @@ fn lower_snapshot(
                 .ok_or(CommandAdmissionError::Integrity)
         })
         .collect::<Result<Vec<_>, _>>()?;
-    let range_targets = crate::command_index::derive_delete_restrict_ranges(resolved_plan, facts)
+    let bounded_ranges = crate::command_index::derive_delete_ranges(resolved_plan, facts)
         .map_err(|_| CommandAdmissionError::Integrity)?;
     lower_snapshot_parts(
         resolved_plan.reference(),
@@ -966,7 +966,7 @@ fn lower_snapshot(
         facts.binding_entity_keys(),
         &root_types,
         facts.root_validation_entity_keys(),
-        range_targets,
+        bounded_ranges,
     )
 }
 
@@ -976,7 +976,7 @@ fn lower_snapshot_parts(
     binding_keys: &[EntityKey],
     root_types: &[EntityTypeId],
     root_keys: &[EntityKey],
-    range_targets: Vec<riffdb_storage_api::IndexRangeTarget>,
+    bounded_ranges: Vec<(riffdb_storage_api::IndexRangeTarget, u16)>,
 ) -> Result<CommandSnapshotRequestProof, CommandAdmissionError> {
     if binding_types.len() != binding_keys.len() || root_types.len() != root_keys.len() {
         return Err(CommandAdmissionError::Integrity);
@@ -995,11 +995,12 @@ fn lower_snapshot_parts(
         .map(|(entity_type, key)| EntityTarget::new(entity_type, key))
         .collect::<Result<Vec<_>, _>>()
         .map_err(|_| CommandAdmissionError::Integrity)?;
-    let request = SnapshotRequest::new(
+    let request = SnapshotRequest::new_with_cascade(
         plan.clone(),
         binding_targets,
         root_validation_targets,
-        range_targets,
+        Vec::new(),
+        bounded_ranges,
     )
     .map_err(|_| CommandAdmissionError::Integrity)?;
     Ok(CommandSnapshotRequestProof { request })

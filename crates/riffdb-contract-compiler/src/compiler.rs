@@ -490,6 +490,175 @@ contract DeleteNoInbound version 1 {
     }
 
     #[test]
+    fn cascade_delete_lowers_to_one_bounded_v13_plan_and_is_exhaustive() {
+        let source = r#"
+contract BetterAuthDelete version 1 {
+  entity User {
+    key (organization_id: uuid, user_id: uuid)
+    delete_policy cascade {
+      relationship Account.account_user using Account.by_user maximum 32
+      relationship Session.session_user using Session.by_user maximum 32
+    }
+  }
+  entity Account {
+    key (organization_id: uuid, user_id: uuid, account_id: uuid)
+    index by_user (organization_id, user_id)
+    reference account_user (organization_id, user_id) -> User(organization_id, user_id)
+    delete_policy no_inbound
+  }
+  entity Session {
+    key (organization_id: uuid, user_id: uuid, session_id: uuid)
+    index by_user (organization_id, user_id)
+    reference session_user (organization_id, user_id) -> User(organization_id, user_id)
+    delete_policy no_inbound
+  }
+  aggregate Users {
+    root User
+    child Account
+    child Session
+    partition_by organization_id
+    conflict_key (organization_id)
+  }
+  bulk command DeleteUsers {
+    input request_id: uuid
+    input organization_id: uuid
+    input user_ids: list<uuid, 1..3>
+    idempotency_key request_id
+    for user_id in user_ids {
+      delete User(organization_id, user_id) as user else UserMissing {}
+        cascade CascadeLimitExceeded {}
+    }
+    return UserDeleted {}
+  }
+}
+"#;
+        let bundle = compile_contract_source(source).expect("bounded cascade compiles");
+        assert_eq!(
+            bundle.format_version(),
+            riffdb_contract_ir::BUNDLE_FORMAT_VERSION_V13
+        );
+        assert_eq!(
+            bundle.grammar_version(),
+            riffdb_contract_ir::GRAMMAR_VERSION_V13
+        );
+        assert_eq!(
+            bundle.ir_version(),
+            riffdb_contract_ir::EXECUTABLE_IR_VERSION_V13
+        );
+        let user = bundle
+            .schema()
+            .entities()
+            .iter()
+            .find(|entity| entity.name() == "User")
+            .expect("User entity");
+        let policy = bundle
+            .schema()
+            .delete_policy(user.id())
+            .expect("cascade policy");
+        let riffdb_contract_ir::DeletePolicyModeV1::Cascade { relationships } = policy.mode()
+        else {
+            panic!("User policy must be cascade");
+        };
+        assert_eq!(relationships.len(), 2);
+        assert!(relationships.windows(2).all(|pair| {
+            (pair[0].source_entity(), pair[0].relationship_name())
+                < (pair[1].source_entity(), pair[1].relationship_name())
+        }));
+        assert_eq!(
+            relationships
+                .iter()
+                .map(|entry| entry.maximum())
+                .sum::<u16>(),
+            64
+        );
+
+        let delete = bundle.commands().first().expect("delete command");
+        assert!(matches!(
+            delete.delete_checks()[0].mode(),
+            riffdb_contract_ir::DeleteCheckModeV1::Cascade { relationships }
+                if relationships.len() == 2
+        ));
+        assert_eq!(
+            delete.bindings()[0]
+                .cascade_failure()
+                .expect("cascade overflow")
+                .outcome_id(),
+            delete
+                .outcomes()
+                .iter()
+                .find(|outcome| outcome.name() == "CascadeLimitExceeded")
+                .expect("overflow outcome")
+                .id()
+        );
+        assert!(
+            riffdb_contract_ir::CommandExplain::from_plan(delete)
+                .render_text()
+                .contains("policy=cascade relationships=2 child-maximum=64")
+        );
+        let decoded = riffdb_contract_ir::ContractBundle::decode(bundle.canonical_bytes())
+            .expect("V13 cascade round trip");
+        assert_eq!(decoded, bundle);
+
+        let non_exhaustive = source.replace(
+            "      relationship Session.session_user using Session.by_user maximum 32\n",
+            "",
+        );
+        assert_semantic_diagnostic_at(
+            &non_exhaustive,
+            CompilerDiagnosticCode::InvalidDeletePolicy,
+            "delete_policy cascade {\n      relationship Account.account_user using Account.by_user maximum 32\n    }",
+        );
+
+        let recursive = source.replace(
+            "    delete_policy no_inbound\n  }\n  entity Session",
+            "  }\n  entity Session",
+        );
+        assert_semantic_diagnostic_at(
+            &recursive,
+            CompilerDiagnosticCode::InvalidDeletePolicy,
+            "delete_policy cascade {\n      relationship Account.account_user using Account.by_user maximum 32\n      relationship Session.session_user using Session.by_user maximum 32\n    }",
+        );
+
+        let excessive = source.replace("maximum 32", "maximum 64");
+        assert_semantic_diagnostic_at(
+            &excessive,
+            CompilerDiagnosticCode::BoundExceeded,
+            "CascadeLimitExceeded {}",
+        );
+
+        let same_outcome = source.replace("CascadeLimitExceeded", "UserMissing");
+        let error = compile_contract_source(&same_outcome)
+            .expect_err("cascade overflow must differ from missing target");
+        let diagnostic = error
+            .semantic()
+            .expect("semantic diagnostic")
+            .as_slice()
+            .iter()
+            .find(|diagnostic| diagnostic.code() == CompilerDiagnosticCode::InvalidDeletePolicy)
+            .expect("invalid cascade outcome diagnostic");
+        let start = same_outcome
+            .rfind("UserMissing {}")
+            .expect("cascade outcome");
+        assert_eq!(diagnostic.primary_span().start() as usize, start);
+        assert_eq!(
+            diagnostic.primary_span().end() as usize,
+            start + "UserMissing {}".len()
+        );
+    }
+
+    #[test]
+    fn checked_cascade_fixture_compiles_at_v13() {
+        let bundle = compile_contract_source(include_str!(
+            "../../../fixtures/compiler/cascade/contract.riff"
+        ))
+        .expect("checked cascade fixture");
+        assert_eq!(
+            bundle.ir_version(),
+            riffdb_contract_ir::EXECUTABLE_IR_VERSION_V13
+        );
+    }
+
+    #[test]
     fn bounded_collection_create_lowers_to_one_v5_plan() {
         let source = r#"
 contract BulkCreate version 1 {

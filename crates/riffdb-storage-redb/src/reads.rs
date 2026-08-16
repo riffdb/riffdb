@@ -92,7 +92,12 @@ fn read_snapshot_from_access(
             .push_root_validation(read_entity_observation_access(access, target)?)
             .map_err(materialization_value)?;
     }
-    for target in request.range_targets() {
+    for target in request.cascade_targets() {
+        snapshot
+            .push_cascade_predecessor(read_entity_observation_access(access, target)?)
+            .map_err(materialization_value)?;
+    }
+    for (position, target) in request.range_targets().iter().enumerate() {
         let epoch = read_epoch_position_access(access, target.generation_target())?;
         let mut range = snapshot
             .begin_range(target.clone(), epoch)
@@ -105,6 +110,10 @@ fn read_snapshot_from_access(
             &upper,
             MAX_INDEX_SCAN_INSPECTED_ENTRIES.saturating_add(1),
         )?;
+        let entry_limit = request
+            .range_entry_limit(position)
+            .ok_or_else(|| materialization_value(StorageValueError::IdentityMismatch))?;
+        let mut retained = 0usize;
         for (physical_key, encoded) in entries {
             let key = decode_index_entry_key(&physical_key).map_err(|_| corrupt())?;
             let decoded = decode_index_entry_v2(&encoded)?;
@@ -114,6 +123,9 @@ fn read_snapshot_from_access(
             if decoded.value().partition_key() != target.generation_target().partition_key() {
                 continue;
             }
+            if retained == entry_limit {
+                break;
+            }
             let row = IndexRangeEntry::new(
                 key.index_id(),
                 key,
@@ -121,6 +133,7 @@ fn read_snapshot_from_access(
             )
             .map_err(corrupt_value)?;
             range.push_entry(row).map_err(materialization_value)?;
+            retained += 1;
         }
         range.finish().map_err(materialization_value)?;
     }

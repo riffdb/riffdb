@@ -378,6 +378,7 @@ pub struct BindingPlan {
     complete_record_access: bool,
     failure: OutcomeConstruction,
     restriction_failure: Option<OutcomeConstruction>,
+    cascade_failure: Option<OutcomeConstruction>,
 }
 
 impl BindingPlan {
@@ -418,10 +419,41 @@ impl BindingPlan {
         entity_type: EntityTypeId,
         key_schema: KeySchema,
         key_expressions: Vec<ExprId>,
+        accessed_fields: Vec<FieldId>,
+        complete_record_access: bool,
+        failure: OutcomeConstruction,
+        restriction_failure: Option<OutcomeConstruction>,
+    ) -> Result<Self, IrValidationError> {
+        Self::new_with_delete_failures(
+            id,
+            name,
+            mode,
+            entity_type,
+            key_schema,
+            key_expressions,
+            accessed_fields,
+            complete_record_access,
+            failure,
+            restriction_failure,
+            None,
+        )
+    }
+
+    /// Creates a checked binding with the mutually exclusive declared restrict
+    /// or bounded-cascade business failure.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_with_delete_failures(
+        id: BindingId,
+        name: impl Into<String>,
+        mode: BindingMode,
+        entity_type: EntityTypeId,
+        key_schema: KeySchema,
+        key_expressions: Vec<ExprId>,
         mut accessed_fields: Vec<FieldId>,
         complete_record_access: bool,
         failure: OutcomeConstruction,
         restriction_failure: Option<OutcomeConstruction>,
+        cascade_failure: Option<OutcomeConstruction>,
     ) -> Result<Self, IrValidationError> {
         let name = name.into();
         validate_source_name(&name, "binding")?;
@@ -443,6 +475,16 @@ impl BindingPlan {
                 reason: "only a delete binding may declare a restrict failure",
             });
         }
+        if cascade_failure.is_some() && mode != BindingMode::Delete {
+            return Err(IrValidationError::InvalidDependency {
+                reason: "only a delete binding may declare a cascade failure",
+            });
+        }
+        if restriction_failure.is_some() && cascade_failure.is_some() {
+            return Err(IrValidationError::InvalidDependency {
+                reason: "delete binding declares multiple policy failures",
+            });
+        }
         Ok(Self {
             id,
             name,
@@ -454,6 +496,7 @@ impl BindingPlan {
             complete_record_access,
             failure,
             restriction_failure,
+            cascade_failure,
         })
     }
 
@@ -507,6 +550,11 @@ impl BindingPlan {
     pub const fn restriction_failure(&self) -> Option<&OutcomeConstruction> {
         self.restriction_failure.as_ref()
     }
+    /// Declared failure when bounded cascade discovery observes an extra row.
+    #[must_use]
+    pub const fn cascade_failure(&self) -> Option<&OutcomeConstruction> {
+        self.cascade_failure.as_ref()
+    }
 }
 
 /// One compiler-proved relationship change backed by an earlier exact target binding.
@@ -525,7 +573,7 @@ pub struct DeleteCheckPlanV1 {
 }
 
 /// Exact transaction-current dependency for a checked delete.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum DeleteCheckModeV1 {
     /// The structural schema proves that no relationship targets this entity.
     NoInbound,
@@ -535,6 +583,11 @@ pub enum DeleteCheckModeV1 {
         source_entity: EntityTypeId,
         /// Exact canonical reverse index selected by the structural policy.
         index_id: IndexId,
+    },
+    /// Exhaustive one-hop exact-index cascade in canonical relationship order.
+    Cascade {
+        /// Compiler-sealed relationship families and maxima.
+        relationships: Vec<crate::CascadeRelationshipSpecV1>,
     },
 }
 
@@ -547,8 +600,8 @@ impl DeleteCheckPlanV1 {
 
     /// Compiler-sealed no-inbound or indexed-restrict proof.
     #[must_use]
-    pub const fn mode(&self) -> DeleteCheckModeV1 {
-        self.mode
+    pub fn mode(&self) -> DeleteCheckModeV1 {
+        self.mode.clone()
     }
 }
 
@@ -1699,7 +1752,13 @@ impl CommandPlan {
             });
         }
         if let Some(expansion) = &collection_expansion {
-            validate_collection_expansion(expansion, &input, &bindings, &instructions)?;
+            validate_collection_expansion(
+                expansion,
+                &input,
+                &bindings,
+                &instructions,
+                contract_schema,
+            )?;
             validate_collection_graph_bytes(
                 expansion,
                 &input,
@@ -2036,6 +2095,13 @@ impl CommandPlan {
             .iter()
             .any(|binding| binding.restriction_failure.is_some())
     }
+    /// Whether this command carries a bounded cascade overflow outcome.
+    #[must_use]
+    pub fn requires_ir_v13(&self) -> bool {
+        self.bindings
+            .iter()
+            .any(|binding| binding.cascade_failure.is_some())
+    }
     /// Whether this command requires the distinct reimport invocation class in IR v10.
     #[must_use]
     pub const fn requires_ir_v10(&self) -> bool {
@@ -2059,6 +2125,8 @@ impl CommandPlan {
                 .is_some_and(|binding| {
                     matches!(check.mode, DeleteCheckModeV1::Restrict { .. })
                         == binding.restriction_failure.is_some()
+                        && (matches!(check.mode, DeleteCheckModeV1::Cascade { .. })
+                            == binding.cascade_failure.is_some())
                 })
         })
     }
@@ -2223,6 +2291,9 @@ fn validate_secret_reveals(
         if let Some(outcome) = binding.restriction_failure() {
             append_outcome_secret_flows(&mut flows, outcome);
         }
+        if let Some(outcome) = binding.cascade_failure() {
+            append_outcome_secret_flows(&mut flows, outcome);
+        }
     }
     for instruction in instructions {
         match instruction {
@@ -2343,6 +2414,7 @@ fn validate_collection_expansion(
     input: &CommandInputSchema,
     bindings: &[BindingPlan],
     instructions: &[Instruction],
+    schema: &SchemaIr,
 ) -> Result<(), IrValidationError> {
     let field = input.record().field(expansion.input_field()).ok_or(
         IrValidationError::InvalidReference {
@@ -2383,16 +2455,47 @@ fn validate_collection_expansion(
             reason: "checked delete must be inside the collection template",
         });
     }
-    let mutable_bindings = bindings[first_binding..binding_end]
+    let cascade_bindings = bindings[first_binding..binding_end]
+        .iter()
+        .filter(|binding| binding.cascade_failure().is_some())
+        .count();
+    if cascade_bindings > 1 {
+        return Err(IrValidationError::LimitExceeded {
+            kind: "cascade delete templates",
+            actual: cascade_bindings,
+            maximum: 1,
+        });
+    }
+    let mutation_instances = bindings[first_binding..binding_end]
         .iter()
         .filter(|binding| binding.mode() != BindingMode::Read)
-        .count();
-    let aggregate_instances = mutable_bindings
+        .try_fold(0usize, |total, binding| {
+            let weight = match schema
+                .delete_policy(binding.entity_type())
+                .map(|policy| policy.mode())
+            {
+                Some(crate::DeletePolicyModeV1::Cascade { relationships }) => relationships
+                    .iter()
+                    .try_fold(1usize, |count, relationship| {
+                        count.checked_add(usize::from(relationship.maximum()))
+                    })
+                    .ok_or(IrValidationError::SizeOverflow {
+                        kind: "cascade mutation instances",
+                    })?,
+                _ => 1,
+            };
+            total
+                .checked_add(weight)
+                .ok_or(IrValidationError::SizeOverflow {
+                    kind: "collection mutation instances",
+                })
+        })?;
+    let aggregate_instances = mutation_instances
         .checked_mul(expansion.maximum_elements())
         .ok_or(IrValidationError::SizeOverflow {
             kind: "collection aggregate instances",
         })?;
-    if mutable_bindings == 0 || aggregate_instances > MAX_COLLECTION_COMMAND_ELEMENTS_V1 {
+    if mutation_instances == 0 || aggregate_instances > MAX_COLLECTION_COMMAND_ELEMENTS_V1 {
         return Err(IrValidationError::LimitExceeded {
             kind: "collection aggregate instances",
             actual: aggregate_instances,
@@ -2413,6 +2516,63 @@ fn validate_collection_graph_bytes(
     let first_binding = expansion.first_binding().get() as usize;
     let binding_end = first_binding + expansion.binding_count();
     for (position, binding) in bindings.iter().enumerate() {
+        if binding.mode() == BindingMode::Delete && binding.cascade_failure().is_some() {
+            let root = schema.entity(binding.entity_type()).ok_or(
+                IrValidationError::InvalidReference {
+                    kind: "cascade graph root entity",
+                },
+            )?;
+            let copies = if (first_binding..binding_end).contains(&position) {
+                expansion.maximum_elements()
+            } else {
+                1
+            };
+            total = total
+                .checked_add(
+                    maximum_record_value_bytes(root.record(), schema, 0)?
+                        .checked_mul(copies)
+                        .ok_or(IrValidationError::SizeOverflow {
+                            kind: "cascade root graph",
+                        })?,
+                )
+                .ok_or(IrValidationError::SizeOverflow {
+                    kind: "cascade root graph",
+                })?;
+            let policy = schema.delete_policy(binding.entity_type()).ok_or(
+                IrValidationError::InvalidDependency {
+                    reason: "cascade delete lacks structural policy",
+                },
+            )?;
+            let crate::DeletePolicyModeV1::Cascade { relationships } = policy.mode() else {
+                return Err(IrValidationError::InvalidDependency {
+                    reason: "cascade failure does not match structural policy",
+                });
+            };
+            for relationship in relationships {
+                let child = schema.entity(relationship.source_entity()).ok_or(
+                    IrValidationError::InvalidReference {
+                        kind: "cascade graph child entity",
+                    },
+                )?;
+                let child_copies = copies
+                    .checked_mul(usize::from(relationship.maximum()))
+                    .ok_or(IrValidationError::SizeOverflow {
+                        kind: "cascade child graph",
+                    })?;
+                total = total
+                    .checked_add(
+                        maximum_record_value_bytes(child.record(), schema, 0)?
+                            .checked_mul(child_copies)
+                            .ok_or(IrValidationError::SizeOverflow {
+                                kind: "cascade child graph",
+                            })?,
+                    )
+                    .ok_or(IrValidationError::SizeOverflow {
+                        kind: "cascade child graph",
+                    })?;
+            }
+            continue;
+        }
         if !matches!(binding.mode(), BindingMode::Create | BindingMode::Mutate) {
             continue;
         }
@@ -2680,6 +2840,9 @@ fn derive_delete_checks(
                 source_entity,
                 index_id,
             },
+            crate::DeletePolicyModeV1::Cascade { relationships } => {
+                DeleteCheckModeV1::Cascade { relationships }
+            }
         };
         checks.push(DeleteCheckPlanV1 {
             binding: binding.id(),

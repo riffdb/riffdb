@@ -1,4 +1,4 @@
-spec_version: '0.99'
+spec_version: '1.00'
 product: RiffDB
 repository: riffdb
 status: deployable-application-alpha-architecture-accepted
@@ -12954,4 +12954,140 @@ work_packages:
       durability, publication, recovery, freshness, or bounded failure behavior.
     scale: Seven saturating process-generation counters replace no bounded state and add no queue,
       cache, task, scan, wait, retained record, metric label, or per-command observation.
+  human_review_triggers: *id001
+- id: WP-628
+  name: Compiler-bounded one-hop cascade language and executable IR
+  depends_on: [WP-560]
+  objective: Implement ADR-0126's closed one-hop cascade declaration, static aggregate/conflict/
+    partition and capacity proofs, source-spanned diagnostics, and least-sufficient V13 executable
+    IR without activating runtime cascade execution.
+  requirements: [DEL-001, DEL-002, DEL-003, DEL-004, DEL-005, DEL-006]
+  required_adrs: [ADR-0002, ADR-0003, ADR-0005, ADR-0012, ADR-0013, ADR-0055,
+    ADR-0107, ADR-0111, ADR-0112, ADR-0124, ADR-0126]
+  allowed_paths: [SPEC.md, work_packages.yaml, adr/README.md,
+    adr/0126-compiler-bounded-one-hop-cascade-deletion.md,
+    release/version-topology-v1.json,
+    crates/riffdb-contract-syntax/**, crates/riffdb-contract-ir/**,
+    crates/riffdb-contract-compiler/**, crates/riffdb-diagnostics/**,
+    crates/riffdb-catalog/**, crates/riffdb-query-module/**,
+    crates/riffdb-cli/assets/editor/**,
+    clients/**, fixtures/compiler/**, fixtures/contracts/**, fixtures/application-parity/**,
+    fixtures/editor-grammar/**,
+    fuzz/**, tests/**, scripts/**, docs/**]
+  deliverables:
+  - Exact grammar, formatter, AST, spans, and diagnostics for exhaustive bounded cascade policies
+    and the distinct delete-binding overflow outcome, with recursive/dynamic forms unrepresentable
+  - Static proof of direct inbound coverage, source no-inbound policy, one aggregate/partition,
+    complete common conflicts, one delete template, 32 relationships, 256 rows, and 16 MiB
+  - V13 grammar/bundle/executable IR identities and canonical codec carrying stable relationship,
+    reverse-index, maximum, ordering, conflict, partition, and outcome metadata
+  - Compatibility fixtures proving V1 through V12 remain readable and byte-frozen and that the
+    least-sufficient writer selects V13 only for a contract containing cascade deletion
+  - Better-Auth-shaped positive compiler fixture and source-span negative corpus for missing,
+    duplicate, recursive, cross-aggregate, cross-partition, excessive, or dynamically keyed policy
+  acceptance_commands:
+  - cargo +1.97.0 test -p riffdb-contract-syntax -p riffdb-contract-ir -p riffdb-contract-compiler -p riffdb-diagnostics --all-features
+  - cargo +nightly-2026-07-12 fuzz run contract_parser -- -max_total_time=60
+  - ./scripts/check-version-topology
+  - ./scripts/check-generated
+  - ./scripts/check-requirement-coverage
+  - ./scripts/handbook check
+  - cargo +1.97.0 fmt --all -- --check
+  - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: Every accepted cascade shape compiles to one bounded complete V13 plan, every unsafe
+    or non-exhaustive shape fails at its source span, old contracts keep their prior writer
+    identity, and no runtime path claims cascade support before WP-629.
+  standing_design_tests:
+    interface_safety: Applications can select only a named compiled command and typed values; the
+      policy, index, bounds, conflicts, ordering, and overflow outcome remain compiler-owned, and
+      unsupported runtimes fail before deployment.
+    scale: Static maxima cap direct relationships at 32 and the whole possible graph at 256 rows
+      and 16 MiB; no recursive traversal, scan, dynamic index, or cross-partition discovery exists.
+  human_review_triggers: *id001
+- id: WP-629
+  name: Atomic one-hop cascade runtime, storage, and recovery
+  depends_on: [WP-561, WP-628]
+  objective: Execute accepted V13 cascade plans through the ordinary authorization, conflict,
+    command, commit, tombstone, replication, recovery, provenance, and idempotency paths with
+    bounded exact-prefix discovery and zero partial deletion.
+  requirements: [DEL-005, DEL-007, DEL-008, DEL-009, DEL-010, DEL-011]
+  required_adrs: [ADR-0003, ADR-0004, ADR-0005, ADR-0012, ADR-0058, ADR-0059,
+    ADR-0093, ADR-0100, ADR-0101, ADR-0102, ADR-0104, ADR-0107, ADR-0126]
+  allowed_paths: [SPEC.md, work_packages.yaml, proto/**, fixtures/proto/**,
+    crates/riffdb-types/**, crates/riffdb-contract-ir/**, crates/riffdb-invariant/**,
+    crates/riffdb-catalog/**, crates/riffdb-runtime/**, crates/riffdb-auth/**,
+    crates/riffdb-policy/**, crates/riffdb-idempotency/**, crates/riffdb-service/**,
+    crates/riffdb-storage-api/**, crates/riffdb-storage-memory/**,
+    crates/riffdb-storage-redb/**, crates/riffdb-commit/**, crates/riffdb-proto/**,
+    crates/riffdb-api-grpc/**, crates/riffdb-observability/**, crates/riffdb-testkit/**,
+    tests/**, scripts/**, docs/**]
+  deliverables:
+  - Sealed exact-prefix maximum-plus-one enumeration after common canonical conflict acquisition,
+    with stable relationship/key order and declared durable zero-mutation overflow
+  - Root and discovered-row authorization, row-policy, relationship, revision, uniqueness,
+    transaction-current, and capacity validation inside one ordinary command reevaluation loop
+  - One children-before-parent atomic graph sharing command identity, outcome, sequence, audit,
+    provenance, idempotency, tombstone, changelog, replication, checkpoint, and backup semantics
+  - Deterministic create-versus-cascade schedules plus memory/redb overflow, cancellation,
+    uncertainty, replay, crash, follower, bootstrap, recovery, and mixed-runtime refusal evidence
+  acceptance_commands:
+  - cargo +1.97.0 test -p riffdb-runtime -p riffdb-service -p riffdb-storage-api -p riffdb-storage-memory -p riffdb-storage-redb -p riffdb-commit --all-features
+  - cargo +1.97.0 test -p riffdb-testkit --all-features
+  - cargo +1.97.0 test --test storage_recovery_matrix --all-features
+  - ./scripts/generate-proto --check
+  - ./scripts/check-workspace-policy
+  - ./scripts/check-generated
+  - ./scripts/check-requirement-coverage
+  - ./scripts/handbook check
+  - cargo +1.97.0 fmt --all -- --check
+  - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: A cascade either persists its complete canonical graph and one declared outcome or no
+    mutation, a racing inbound create cannot escape the common conflict domain, and every crash or
+    retry resolves through the existing authoritative recovery and idempotency machinery.
+  standing_design_tests:
+    interface_safety: Runtime accepts only a sealed compiler plan and typed command values; no
+      storage iterator, policy choice, raw key, transaction, partial-success, or history-erasure
+      control crosses the public boundary.
+    scale: Each exact-prefix read stops at its compiled maximum plus one, the total possible graph
+      is precharged to 256 rows and 16 MiB, and reevaluation remains bounded with no recursive scan.
+  human_review_triggers: *id001
+- id: WP-630
+  name: Generated cascade clients and Better Auth lifecycle acceptance
+  depends_on: [WP-562, WP-611, WP-629]
+  objective: Publish the closed cascade command and overflow outcome through every generated
+    language and prove a real external Better Auth adapter can complete its bounded user lifecycle
+    without handwritten transaction, raw deletion, identity, session, or OAuth machinery in RiffDB.
+  requirements: [DEL-012]
+  required_adrs: [ADR-0055, ADR-0056, ADR-0074, ADR-0106, ADR-0107, ADR-0112,
+    ADR-0120, ADR-0126]
+  allowed_paths: [SPEC.md, work_packages.yaml, crates/riffdb-application/**,
+    crates/riffdb-client-rust/**, crates/riffdb-driver-host/**, crates/riffdb-cli/**,
+    crates/riffdb-api-mcp/**, crates/riffdb-query-module/**, clients/**, templates/**,
+    fixtures/application-parity/**, fixtures/adapters/**, fixtures/driver/**,
+    examples/**, tests/**, scripts/**, docs/**, release/distribution/**]
+  deliverables:
+  - Generated Rust, Go, TypeScript, and Python methods, typed inputs, overflow outcomes, errors, and
+    exact identities with no generic delete, transaction, raw transport, or kernel escape hatch
+  - Immutable development-registry publication and fresh external Better Auth consumer proving
+    signup, exact lookup, session/account cleanup, bounded full-user deletion, and idempotent replay
+  - Overflow, authorization, row-policy, revocation, racing account/session creation, uncertainty,
+    malformed-host, and mixed-version observations shared by the all-language conformance corpus
+  - Handbook adapter guidance that keeps end-user identity and session behavior application-owned
+    and states the one-hop, declared-relationship, row, byte, and runtime-version limits
+  acceptance_commands:
+  - ./scripts/adapter-cascade-acceptance --all-languages
+  - ./scripts/driver-development-registry-acceptance --all-ecosystems
+  - ./scripts/driver-conformance --all-languages --remote
+  - ./scripts/check-application-bindings
+  - ./scripts/check-generated
+  - ./scripts/check-requirement-coverage
+  - ./scripts/handbook check
+  exit_gate: Fresh external consumers in every supported language observe the same typed bounded
+    lifecycle and Better Auth completes full user deletion atomically without application-owned
+    transaction or raw storage glue; RiffDB remains independent of userland auth semantics.
+  standing_design_tests:
+    interface_safety: Generated surfaces expose only the compiler-owned named command and declared
+      outcomes. The adapter owns user/session meaning while RiffDB owns safe atomic data mutation.
+    scale: Clients preflight fixed input bounds, runtime discovery remains server-side and bounded,
+      and the adapter cannot request recursive traversal or split one claimed atomic deletion.
   human_review_triggers: *id001

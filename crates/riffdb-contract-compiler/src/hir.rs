@@ -137,7 +137,7 @@ pub(crate) struct HirRelationship {
     pub(crate) target_fields: Vec<(FieldId, Span)>,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub(crate) enum HirDeletePolicy {
     NoInbound {
         span: Span,
@@ -147,14 +147,28 @@ pub(crate) enum HirDeletePolicy {
         source_entity: EntityTypeId,
         index_id: IndexId,
     },
+    Cascade {
+        span: Span,
+        relationships: Vec<HirCascadeRelationship>,
+    },
 }
 
 impl HirDeletePolicy {
-    pub(crate) const fn span(self) -> Span {
+    pub(crate) const fn span(&self) -> Span {
         match self {
-            Self::NoInbound { span } | Self::Restrict { span, .. } => span,
+            Self::NoInbound { span } | Self::Restrict { span, .. } | Self::Cascade { span, .. } => {
+                *span
+            }
         }
     }
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct HirCascadeRelationship {
+    pub(crate) source_entity: EntityTypeId,
+    pub(crate) relationship_name: String,
+    pub(crate) index_id: IndexId,
+    pub(crate) maximum: usize,
 }
 
 #[derive(Clone, Debug)]
@@ -342,6 +356,7 @@ pub(crate) struct HirBinding {
     pub(crate) arguments: Vec<HirExpressionRoot>,
     pub(crate) failure: HirOutcome,
     pub(crate) restriction_failure: Option<HirOutcome>,
+    pub(crate) cascade_failure: Option<HirOutcome>,
     pub(crate) collection_local: bool,
 }
 
@@ -867,7 +882,7 @@ fn lower_entities(
                     });
                 }
                 EntityItem::DeletePolicy(policy) => {
-                    if let Some(previous) = delete_policy {
+                    if let Some(ref previous) = delete_policy {
                         diagnostics.push(
                             CompilerDiagnostic::new(
                                 CompilerDiagnosticCode::DuplicateName,
@@ -909,6 +924,75 @@ fn lower_entities(
                                 span: item.span,
                                 source_entity: source_entity_id,
                                 index_id,
+                            })
+                        }
+                        DeletePolicyDeclaration::Cascade { relationships } => {
+                            if relationships.is_empty() || relationships.len() > 32 {
+                                diagnostics.push(CompilerDiagnostic::new(
+                                    CompilerDiagnosticCode::BoundExceeded,
+                                    item.span,
+                                ));
+                                continue;
+                            }
+                            let mut lowered = Vec::with_capacity(relationships.len());
+                            for relationship in relationships {
+                                let source = &relationship.value.source_entity;
+                                let index_entity = &relationship.value.index_entity;
+                                if source.value != index_entity.value {
+                                    diagnostics.push(CompilerDiagnostic::new(
+                                        CompilerDiagnosticCode::InvalidDeletePolicy,
+                                        index_entity.span,
+                                    ));
+                                    continue;
+                                }
+                                let Some(source_entity) =
+                                    symbols.entities.get(&source.value).copied()
+                                else {
+                                    diagnostics.push(CompilerDiagnostic::new(
+                                        CompilerDiagnosticCode::UnknownName,
+                                        source.span,
+                                    ));
+                                    continue;
+                                };
+                                let Some(index_id) = symbols
+                                    .indexes
+                                    .get(&(source_entity, relationship.value.index.value.clone()))
+                                    .copied()
+                                else {
+                                    diagnostics.push(CompilerDiagnostic::new(
+                                        CompilerDiagnosticCode::UnknownName,
+                                        relationship.value.index.span,
+                                    ));
+                                    continue;
+                                };
+                                let Some(maximum) = relationship
+                                    .value
+                                    .maximum
+                                    .value
+                                    .parse::<usize>()
+                                    .ok()
+                                    .filter(|maximum| *maximum > 0 && *maximum <= 255)
+                                else {
+                                    diagnostics.push(CompilerDiagnostic::new(
+                                        CompilerDiagnosticCode::BoundExceeded,
+                                        relationship.value.maximum.span,
+                                    ));
+                                    continue;
+                                };
+                                lowered.push(HirCascadeRelationship {
+                                    source_entity,
+                                    relationship_name: relationship
+                                        .value
+                                        .relationship
+                                        .value
+                                        .clone(),
+                                    index_id,
+                                    maximum,
+                                });
+                            }
+                            Some(HirDeletePolicy::Cascade {
+                                span: item.span,
+                                relationships: lowered,
                             })
                         }
                     };
@@ -2065,6 +2149,38 @@ fn lower_commands(
                 }
                 None => None,
             };
+            let requires_cascade_failure = mode == BindingMode::Delete
+                && matches!(
+                    entity.delete_policy.as_ref(),
+                    Some(HirDeletePolicy::Cascade { .. })
+                );
+            if requires_cascade_failure != binding.cascade_failure.is_some() {
+                diagnostics.push(CompilerDiagnostic::new(
+                    CompilerDiagnosticCode::InvalidDeletePolicy,
+                    binding
+                        .cascade_failure
+                        .as_ref()
+                        .map_or(binding.entity.span, |outcome| outcome.span),
+                ));
+                continue;
+            }
+            let cascade_failure = match &binding.cascade_failure {
+                Some(source) => {
+                    let Some(outcome) = lower_outcome(
+                        command_id,
+                        source,
+                        symbols,
+                        &mut resolver,
+                        &reveal_scope,
+                        true,
+                        diagnostics,
+                    ) else {
+                        continue;
+                    };
+                    Some(outcome)
+                }
+                None => None,
+            };
             bindings.push(HirBinding {
                 id: binding_id,
                 mode,
@@ -2073,13 +2189,16 @@ fn lower_commands(
                 name: binding.binding.value.clone(),
                 name_span: binding.binding.span,
                 span: binding
-                    .restriction_failure
+                    .cascade_failure
+                    .as_ref()
+                    .or(binding.restriction_failure.as_ref())
                     .as_ref()
                     .map_or(binding.failure.span, |outcome| outcome.span)
                     .cover(binding.entity.span),
                 arguments,
                 failure,
                 restriction_failure,
+                cascade_failure,
                 collection_local,
             });
         }
@@ -2770,6 +2889,7 @@ fn normalize_reimport_command(
             binding: Spanned::new(binding_name.clone(), binding_span),
             failure: clause.value.failure.clone(),
             restriction_failure: None,
+            cascade_failure: None,
         }),
         clause.span,
     );
@@ -2801,6 +2921,7 @@ fn normalize_reimport_command(
                 ),
                 failure: clause.value.failure.clone(),
                 restriction_failure: None,
+                cascade_failure: None,
             }),
             relationship.name_span,
         ));
