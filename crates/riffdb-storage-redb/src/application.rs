@@ -18,9 +18,10 @@ use riffdb_storage_api::{
     CommandDerivedIndexManifestEntryV1, CommandDerivedMemberV1, CommandSegmentDigestV1,
     CommandSegmentManifestV1, CommandWriteSetPlanV1, CommitIntent, CommittedBatchV1,
     CommittedEntityTransitionV1, CurrentIndexGenerationObservation, CurrentRangeObservation,
-    DeferredCommandEpoch, DeferredCommandEpochPort, DeferredNonEmptyCommandBatch, DurabilityMode,
-    EmptyCommandBatch, EntityChainHeadV1, EntityChainStateV1, EntityObservation, EntityTarget,
-    ExecutionFailureAdmissionRechecked, ExecutionFailureAdmissionResult,
+    DeferredCommandEpoch, DeferredCommandEpochPort, DeferredNonEmptyCommandBatch,
+    DetachedCommandGroupBatch, DetachedCommandRecordV1, DetachedCommandReservationV1,
+    DurabilityMode, EmptyCommandBatch, EntityChainHeadV1, EntityChainStateV1, EntityObservation,
+    EntityTarget, ExecutionFailureAdmissionRechecked, ExecutionFailureAdmissionResult,
     ExecutionFailureAwaitingDecision, ExecutionFailureTransitionPort,
     ExecutionFailureTransitionRequestV1, IdempotencyIdentity, IdempotencyIdentityKey,
     IdempotencyLookupCandidatesV1, IndexEntryMutationV1, IndexEpochPosition, IndexRangeEntry,
@@ -83,12 +84,20 @@ struct BatchCore {
     reserved_provenance_ids: BTreeSet<ProvenanceId>,
     capsule_extensions: Vec<Vec<riffdb_storage_api::IndexEpochAdvanceV1>>,
     capsule_entity_transitions: Vec<Vec<CommittedEntityTransitionV1>>,
+    detached: Vec<DetachedRedbCandidate>,
+    detached_index_generation_base: Option<BTreeMap<PartitionIndexTarget, IndexEpochPosition>>,
 }
 
 struct PendingIndexGenerationPostImage {
     initial: IndexEpochPosition,
     final_record: StoredIndexEpochV1,
     final_bytes: riffdb_storage_api::CanonicalStoredEnvelopeV1,
+}
+
+struct DetachedRedbCandidate {
+    assignment: AssignedCommandSequence,
+    intent: Box<CommitIntent>,
+    write_plan: CommandWriteSetPlanV1,
 }
 
 impl BatchCore {
@@ -110,6 +119,8 @@ impl BatchCore {
             reserved_provenance_ids: BTreeSet::new(),
             capsule_extensions: Vec::new(),
             capsule_entity_transitions: Vec::new(),
+            detached: Vec::new(),
+            detached_index_generation_base: None,
         })
     }
 }
@@ -1467,6 +1478,37 @@ macro_rules! impl_candidate_chain {
                 &self.write_plan
             }
 
+            fn detach(
+                mut self,
+            ) -> Result<(Self::Prior, DetachedCommandReservationV1), StorageError> {
+                let ordinal = u16::try_from(self.prior.core.detached.len())
+                    .map_err(|_| storage_error(StorageErrorKind::LimitExceeded))?;
+                let reservation = DetachedCommandReservationV1::new(ordinal, self.assignment)
+                    .map_err(invariant_value)?;
+                for advance in self.write_plan.index_epochs() {
+                    retain_detached_index_generation_base(
+                        &mut self.prior.core.detached_index_generation_base,
+                        &self.prior.core.index_generations,
+                        advance.post_image().target(),
+                        advance.prior(),
+                    )?;
+                    self.prior.core.index_generations.insert(
+                        advance.post_image().target().clone(),
+                        IndexEpochPosition::Value(advance.next()),
+                    );
+                }
+                self.prior.core.metrics = Some(metrics_after_charge(
+                    self.prior.core.metrics,
+                    self.write_plan.charge(),
+                )?);
+                self.prior.core.detached.push(DetachedRedbCandidate {
+                    assignment: self.assignment,
+                    intent: self.intent,
+                    write_plan: self.write_plan,
+                });
+                Ok((self.prior, reservation))
+            }
+
             fn stage(
                 self,
                 mut records: AtomicCommandRecordSet,
@@ -1505,6 +1547,15 @@ fn read_candidate_admission(
         .iter()
         .find(|evidence| evidence.outcome().identity() == identity)
         .map(|evidence| StoredAdmissionStateV1::StoredOutcome(evidence.outcome().clone()));
+    let detached = core
+        .detached
+        .iter()
+        .find(|candidate| candidate.intent.pending().identity() == identity)
+        .map(|candidate| StoredAdmissionStateV1::Pending(candidate.intent.pending().clone()));
+    let staged = match (staged, detached) {
+        (None, value) | (value, None) => value,
+        (Some(_), Some(_)) => return Err(storage_error(StorageErrorKind::CorruptData)),
+    };
     let stored = read_admission(&core.access, identity)?;
     match (staged, stored) {
         (None, value) | (value, None) => Ok(value),
@@ -1527,6 +1578,73 @@ fn matching_candidate_admissions(
 
 impl_candidate_chain!(RedbEmptyBatch);
 impl_candidate_chain!(RedbNonEmptyBatch);
+
+fn retain_detached_index_generation_base(
+    base: &mut Option<BTreeMap<PartitionIndexTarget, IndexEpochPosition>>,
+    current: &BTreeMap<PartitionIndexTarget, IndexEpochPosition>,
+    target: &PartitionIndexTarget,
+    prior: IndexEpochPosition,
+) -> Result<(), StorageError> {
+    if current.get(target) != Some(&prior) {
+        return Err(storage_error(StorageErrorKind::InvariantViolation));
+    }
+    base.get_or_insert_with(|| current.clone())
+        .entry(target.clone())
+        .or_insert(prior);
+    Ok(())
+}
+
+impl DetachedCommandGroupBatch for RedbEmptyBatch {
+    type Staged = RedbNonEmptyBatch;
+
+    fn stage_detached_group(
+        self,
+        commands: Vec<DetachedCommandRecordV1>,
+    ) -> Result<Self::Staged, StorageError> {
+        let mut core = self.core;
+        if commands.is_empty() || commands.len() != core.detached.len() {
+            return Err(storage_error(StorageErrorKind::InvariantViolation));
+        }
+        let expected_generations = core.index_generations.clone();
+        core.index_generations = core
+            .detached_index_generation_base
+            .take()
+            .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
+        let retained = std::mem::take(&mut core.detached);
+        for (ordinal, (command, retained)) in commands.into_iter().zip(retained).enumerate() {
+            let (reservation, mut records) = command.into_parts();
+            if usize::from(reservation.ordinal()) != ordinal
+                || reservation.assignment() != retained.assignment
+                || !records.matches_reserved_candidate(
+                    retained.assignment,
+                    &retained.intent,
+                    &retained.write_plan,
+                )
+            {
+                return Err(storage_error(StorageErrorKind::InvariantViolation));
+            }
+            let encoded =
+                encode_capsule_command_record_set_v1(&mut records).map_err(codec_error)?;
+            let entity_transitions = apply_record_set(&mut core, &records, encoded)?;
+            core.capsule_extensions
+                .push(records.index_epochs().to_vec());
+            core.capsule_entity_transitions.push(entity_transitions);
+            core.staged.push(records.into_staged_evidence());
+        }
+        if core.index_generations != expected_generations
+            || core.staged.len()
+                != usize::from(
+                    core.metrics
+                        .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?
+                        .command_count()
+                        .get(),
+                )
+        {
+            return Err(storage_error(StorageErrorKind::InvariantViolation));
+        }
+        Ok(RedbNonEmptyBatch { core })
+    }
+}
 
 fn apply_record_set(
     core: &mut BatchCore,
@@ -2588,7 +2706,13 @@ fn metrics_after(
     current: Option<StagedBatchMetrics>,
     records: &AtomicCommandRecordSet,
 ) -> Result<StagedBatchMetrics, StorageError> {
-    let charge = records.presequence_charge();
+    metrics_after_charge(current, records.presequence_charge())
+}
+
+fn metrics_after_charge(
+    current: Option<StagedBatchMetrics>,
+    charge: riffdb_storage_api::CommandWriteSetChargeV1,
+) -> Result<StagedBatchMetrics, StorageError> {
     let (count, semantic, encoded) = match current {
         None => (
             1,
@@ -2662,6 +2786,47 @@ fn decoded_value<T>(item: riffdb_storage_api::EncodedPageItem<T>) -> T {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn generation_target(index: u32) -> PartitionIndexTarget {
+        let aggregate = riffdb_types::AggregateTypeId::new(1).expect("aggregate");
+        let mut partition = riffdb_types::PartitionKeyBuilder::new(aggregate);
+        partition.push_str("tenant").expect("partition component");
+        PartitionIndexTarget::new(
+            partition.finish().expect("partition"),
+            riffdb_types::IndexId::new(index).expect("index"),
+        )
+    }
+
+    #[test]
+    fn detached_generation_base_retains_targets_discovered_after_the_first_candidate() {
+        let first = generation_target(1);
+        let later = generation_target(2);
+        let first_prior =
+            IndexEpochPosition::Value(riffdb_types::IndexEpoch::new(3).expect("first prior epoch"));
+        let later_prior =
+            IndexEpochPosition::Value(riffdb_types::IndexEpoch::new(7).expect("later prior epoch"));
+        let mut current = BTreeMap::from([(first.clone(), first_prior)]);
+        let mut base = None;
+
+        retain_detached_index_generation_base(&mut base, &current, &first, first_prior)
+            .expect("capture first target");
+        current.insert(
+            first.clone(),
+            IndexEpochPosition::Value(
+                riffdb_types::IndexEpoch::new(4).expect("advanced first epoch"),
+            ),
+        );
+        current.insert(later.clone(), later_prior);
+        retain_detached_index_generation_base(&mut base, &current, &later, later_prior)
+            .expect("capture later target");
+
+        assert_eq!(
+            base,
+            Some(BTreeMap::from(
+                [(first, first_prior), (later, later_prior),]
+            ))
+        );
+    }
 
     #[test]
     fn derived_command_coverage_proves_absence_only_through_the_captured_frontier() {

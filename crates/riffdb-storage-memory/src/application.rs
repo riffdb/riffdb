@@ -16,15 +16,17 @@ use riffdb_storage_api::{
     CommandCandidateSequenceAssigned, CommandCandidateStateRead, CommandWriteSetPlanV1,
     CommitIntent, CommitScanPageV1, CommitScanRequest, CommittedBatchV1,
     CurrentIndexGenerationObservation, CurrentRangeObservation, DeferredCommandEpoch,
-    DeferredCommandEpochPort, DeferredCommandFence, DeferredNonEmptyCommandBatch, DurabilityMode,
-    EmptyCommandBatch, EncodedPageItem, EntityObservation, EntityTarget, EventRouteScanRequestV1,
-    EventRouteScanV1, EventRouteUpperFenceV1, ExecutionFailureAdmissionRechecked,
-    ExecutionFailureAdmissionResult, ExecutionFailureAwaitingDecision,
-    ExecutionFailureTransitionPort, ExecutionFailureTransitionRequestV1, ExpectedEntityState,
-    FilteredAuthoritativeIndexScanPage, FilteredAuthoritativeIndexScanRequest,
-    FilteredAuthoritativeScanReader, HistoricalPersistedKeyEvidenceV1, IdempotencyIdentity,
-    IdempotencyIdentityKey, IdempotencyLookupCandidatesV1, IndexEntryMutationV1,
-    IndexEpochPosition, IndexPartitionFilterScope, IndexRangeEntry, MAX_INDEX_SCAN_INSPECTED_BYTES,
+    DeferredCommandEpochPort, DeferredCommandFence, DeferredNonEmptyCommandBatch,
+    DetachedCommandGroupBatch, DetachedCommandRecordV1, DetachedCommandReservationV1,
+    DurabilityMode, EmptyCommandBatch, EncodedPageItem, EntityObservation, EntityTarget,
+    EventRouteScanRequestV1, EventRouteScanV1, EventRouteUpperFenceV1,
+    ExecutionFailureAdmissionRechecked, ExecutionFailureAdmissionResult,
+    ExecutionFailureAwaitingDecision, ExecutionFailureTransitionPort,
+    ExecutionFailureTransitionRequestV1, ExpectedEntityState, FilteredAuthoritativeIndexScanPage,
+    FilteredAuthoritativeIndexScanRequest, FilteredAuthoritativeScanReader,
+    HistoricalPersistedKeyEvidenceV1, IdempotencyIdentity, IdempotencyIdentityKey,
+    IdempotencyLookupCandidatesV1, IndexEntryMutationV1, IndexEpochPosition,
+    IndexPartitionFilterScope, IndexRangeEntry, MAX_INDEX_SCAN_INSPECTED_BYTES,
     MAX_INDEX_SCAN_INSPECTED_ENTRIES, MAX_SCAN_PAGE_BYTES, NonEmptyCommandBatch,
     PartitionEventRouteReader, PartitionIndexTarget, ProvenanceIdCollision, ReadDependencies,
     ReadDependency, ReadSnapshot, ReadSnapshotBuilder, RetainedMetadataV1, SnapshotReader,
@@ -125,6 +127,15 @@ struct BatchCore {
     staged: Vec<StagedCommandEvidenceV1>,
     metrics: Option<StagedBatchMetrics>,
     epoch: Option<MemoryEpochContext>,
+    detached: Vec<DetachedMemoryCandidate>,
+    detached_index_epoch_base: Option<(Vec<StoredIndexEpochV1>, Vec<HistoricalPersistedKeyRow>)>,
+}
+
+struct DetachedMemoryCandidate {
+    assignment: AssignedCommandSequence,
+    intent: Box<CommitIntent>,
+    write_plan: CommandWriteSetPlanV1,
+    charges: SyntheticCommandClassCharges,
 }
 
 struct MemoryEpochContext {
@@ -145,6 +156,8 @@ impl BatchCore {
             staged: Vec::new(),
             metrics: None,
             epoch: None,
+            detached: Vec::new(),
+            detached_index_epoch_base: None,
         })
     }
 }
@@ -274,6 +287,8 @@ impl DeferredCommandEpoch for MemoryDurabilityEpoch {
                 overlay,
                 staged: Vec::new(),
                 metrics: None,
+                detached: Vec::new(),
+                detached_index_epoch_base: None,
                 epoch: Some(MemoryEpochContext {
                     state: self.state,
                     applied: self.applied,
@@ -1284,7 +1299,13 @@ fn metrics_after(
     current: Option<StagedBatchMetrics>,
     records: &AtomicCommandRecordSet,
 ) -> Result<StagedBatchMetrics, StorageError> {
-    let charge = records.presequence_charge();
+    metrics_after_charge(current, records.presequence_charge())
+}
+
+fn metrics_after_charge(
+    current: Option<StagedBatchMetrics>,
+    charge: riffdb_storage_api::CommandWriteSetChargeV1,
+) -> Result<StagedBatchMetrics, StorageError> {
     let (count, semantic, encoded) = match current {
         None => (
             1,
@@ -1624,6 +1645,33 @@ macro_rules! impl_candidate_chain {
                 &self.write_plan
             }
 
+            fn detach(
+                mut self,
+            ) -> Result<(Self::Prior, DetachedCommandReservationV1), StorageError> {
+                let ordinal = u16::try_from(self.prior.core.detached.len())
+                    .map_err(|_| storage_error(StorageErrorKind::LimitExceeded))?;
+                let reservation = DetachedCommandReservationV1::new(ordinal, self.assignment)
+                    .map_err(invariant_value)?;
+                if self.prior.core.detached_index_epoch_base.is_none() {
+                    self.prior.core.detached_index_epoch_base = Some((
+                        self.prior.core.overlay.index_epochs.clone(),
+                        self.prior.core.overlay.historical_persisted_keys.clone(),
+                    ));
+                }
+                apply_index_epochs(&mut self.prior.core.overlay, self.write_plan.index_epochs())?;
+                self.prior.core.metrics = Some(metrics_after_charge(
+                    self.prior.core.metrics,
+                    self.write_plan.charge(),
+                )?);
+                self.prior.core.detached.push(DetachedMemoryCandidate {
+                    assignment: self.assignment,
+                    intent: self.intent,
+                    write_plan: self.write_plan,
+                    charges: self.charges,
+                });
+                Ok((self.prior, reservation))
+            }
+
             fn stage(self, records: AtomicCommandRecordSet) -> Result<Self::Staged, StorageError> {
                 if !records.matches_reserved_candidate(
                     self.assignment,
@@ -1658,6 +1706,68 @@ macro_rules! impl_candidate_chain {
 
 impl_candidate_chain!(MemoryEmptyBatch);
 impl_candidate_chain!(MemoryNonEmptyBatch);
+
+impl DetachedCommandGroupBatch for MemoryEmptyBatch {
+    type Staged = MemoryNonEmptyBatch;
+
+    fn stage_detached_group(
+        self,
+        commands: Vec<DetachedCommandRecordV1>,
+    ) -> Result<Self::Staged, StorageError> {
+        let mut core = self.core;
+        if commands.is_empty() || commands.len() != core.detached.len() {
+            return Err(storage_error(StorageErrorKind::InvariantViolation));
+        }
+        let final_allocator = core.overlay.metadata.application_sequence();
+        let (index_epochs, historical_persisted_keys) = core
+            .detached_index_epoch_base
+            .take()
+            .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
+        core.overlay.index_epochs = index_epochs;
+        core.overlay.historical_persisted_keys = historical_persisted_keys;
+        let retained = std::mem::take(&mut core.detached);
+        for (ordinal, (command, retained)) in commands.into_iter().zip(retained).enumerate() {
+            let (reservation, records) = command.into_parts();
+            if usize::from(reservation.ordinal()) != ordinal
+                || reservation.assignment() != retained.assignment
+                || !records.matches_reserved_candidate(
+                    retained.assignment,
+                    &retained.intent,
+                    &retained.write_plan,
+                )
+            {
+                return Err(storage_error(StorageErrorKind::InvariantViolation));
+            }
+            for event in records.events() {
+                if event.policy_anchor().is_none()
+                    && derive_event_hash_v1(
+                        event.event_id(),
+                        event.event_type_id(),
+                        event.payload(),
+                    )
+                    .map_err(invariant_value)?
+                        != event.event_hash()
+                {
+                    return Err(storage_error(StorageErrorKind::InvariantViolation));
+                }
+            }
+            apply_record_set(&mut core.overlay, &records, retained.charges)?;
+            core.staged.push(records.into_staged_evidence());
+        }
+        if core.overlay.metadata.application_sequence() != final_allocator
+            || core.staged.len()
+                != usize::from(
+                    core.metrics
+                        .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?
+                        .command_count()
+                        .get(),
+                )
+        {
+            return Err(storage_error(StorageErrorKind::InvariantViolation));
+        }
+        Ok(MemoryNonEmptyBatch { core })
+    }
+}
 
 fn remove_persisted_evidence(
     rows: &mut Vec<HistoricalPersistedKeyRow>,
