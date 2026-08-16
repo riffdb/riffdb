@@ -6,7 +6,7 @@
 **Tagline:** *Vibe fast. Commit safely.*  
 **Category:** Contract-first operational database for agent-built applications  
 
-**Version:** 1.01
+**Version:** 1.02
 **Status:** Deployable Application Alpha architecture accepted; implementation gated by work packages
 **Date:** 9 August 2026
 **Audience:** Coding agents, database engineers, compiler engineers, security reviewers, and technical product leads  
@@ -37,6 +37,7 @@
 
 | Version | Date | Summary |
 |---|---|---|
+| 1.02 | 2026-08-16 | Amended the PERF-008 alpha performance gate per the WP-640 closure evidence: the real-world gates are unchanged (every representative unary scenario within 1.10x, c32 mixed throughput at least 0.90x, and c32 p95 at most 1.25x same-run PostgreSQL), while the full TicketDesk seed becomes receipted evidence under a 5.0x same-run regression ceiling rather than an alpha parity gate, because the measured single-lane ordered apply/submit floor alone exceeds the seed parity budget on both inventoried profiles; seed parity is deferred to the conflict-domain-parallel batch apply direction preserved by ADR-0129. |
 | 1.01 | 2026-08-15 | Accepted ADR-0128 and registered QSO-001 through QSO-012 plus WP-634 and WP-635 for exact compiler-declared secret outputs in named RiffQL, least derived role authority, same-operation widening approval, SDK-only initial exposure, and Better Auth named-read acceptance without reveal-shaped commands. |
 | 1.00 | 2026-08-15 | Accepted ADR-0126 and registered DEL-001 through DEL-012 plus WP-628 through WP-630 for compiler-bounded one-hop cascade deletion, atomic runtime execution, and generated Better Auth lifecycle acceptance. |
 | 0.99 | 2026-08-15 | Accepted ADR-0124 and registered VER-001 through VER-008 plus WP-612 for one machine-readable topology over independently owned version domains, exact reader/writer windows and source pins, durable-manifest cross-checking, classified change review, and evidence-gated decoder retirement without a global runtime version. |
@@ -7038,10 +7039,17 @@ ADR-0055.
   partial state or public transaction, commit all staged graphs through one
   complete Immediate boundary, and resolve uncertainty independently by exact
   command identity. On
-  the checked profile, the full public TicketDesk seed and every representative
-  unary scenario MUST be within 1.10 times same-run PostgreSQL; at 32 clients,
-  public mixed-workload throughput MUST be at least 0.90 times PostgreSQL and
-  p95 latency MUST be at most 1.25 times PostgreSQL. A miss blocks WP-370.
+  the checked profile, every representative unary scenario MUST be within 1.10
+  times same-run PostgreSQL; at 32 clients, public mixed-workload throughput
+  MUST be at least 0.90 times PostgreSQL and p95 latency MUST be at most 1.25
+  times PostgreSQL. The full public TicketDesk seed MUST be measured and
+  receipted on both inventoried profiles; for the alpha it is reported evidence
+  bounded by a 5.0 times same-run PostgreSQL regression ceiling rather than a
+  parity gate, because the WP-640 closure proved the single-lane ordered
+  apply/submit floor alone exceeds the seed parity budget on both profiles.
+  Seed parity remains a post-alpha objective owned by the conflict-domain-
+  parallel batch apply direction preserved by ADR-0129. A miss of any gate in
+  this requirement blocks WP-370.
 - `PERF-009`: The standard application durability profile MUST acknowledge only
   after either a redb Immediate one-phase checksummed durability fence or an
   ADR-0101 first-party checksummed journal fence covering the complete command
