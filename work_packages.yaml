@@ -13090,4 +13090,47 @@ work_packages:
       outcomes. The adapter owns user/session meaning while RiffDB owns safe atomic data mutation.
     scale: Clients preflight fixed input bounds, runtime discovery remains server-side and bounded,
       and the adapter cannot request recursive traversal or split one claimed atomic deletion.
+- id: WP-631
+  name: TypeScript empty-frontier decoding and immutable development publication
+  depends_on: [WP-611]
+  objective: Correct the TypeScript driver boundary so a successful named query against a
+    domain-empty database preserves the valid application frontier zero, while commit sequences,
+    contract versions, and every other positive-only identity remain strictly positive. Publish
+    the correction under a fresh immutable development build and prove it through an installed
+    external npm consumer without changing the Rust-owned protocol or public command semantics.
+  requirements: [DRV-008, DRV-014, DX-037, DX-038, DX-039, DX-040]
+  required_adrs: [ADR-0106, ADR-0112, ADR-0120]
+  allowed_paths: [work_packages.yaml, clients/typescript/runtime/**, fixtures/driver/**,
+    crates/riffdb-cli/assets/scaffold/typescript-runtime/**,
+    scripts/driver-development-registry-acceptance, scripts/check-driver-development-registry,
+    scripts/build-driver-development-publication, release/distribution/**, docs/**]
+  deliverables:
+  - A dedicated checked non-negative u64 decoder used only for result application_head, preserving
+    exact bigint zero and maximum-u64 values and rejecting negative, fractional, malformed, and
+    out-of-range inputs before typed facade assembly
+  - Regression tests proving zero is accepted for a query frontier while zero remains rejected for
+    batch commit_sequence, handshake contract_version, and error contract_version fields
+  - Fresh-directory npm-registry acceptance that installs the exact immutable @riffdb/client
+    development build and exercises the zero-frontier transport path through the packaged runtime,
+    with no repository source path or registry fallback
+  - A fresh immutable development publication following WP-611; the bytes published as
+    0.1.0-dev.3 remain untouched and the corrected package receives the next unused build identity
+  acceptance_commands:
+  - npm --prefix clients/typescript/runtime test
+  - ./scripts/check-application-bindings
+  - ./scripts/check-driver-development-registry
+  - ./scripts/driver-development-registry-acceptance --all-ecosystems
+  - ./scripts/check-generated
+  - ./scripts/check-requirement-coverage
+  - ./scripts/handbook check
+  exit_gate: An external npm consumer installed from the loopback registry receives a successful
+    empty-database query with applicationHead equal to 0n; malformed frontiers still fail closed,
+    every positive-only identity still rejects zero, and the corrected bytes exist only under a
+    new immutable development version.
+  standing_design_tests:
+    interface_safety: The correction narrows one decoder to the protocol's existing non-negative
+      query-frontier domain. It adds no operation, transaction, credential, raw transport,
+      authorization bypass, or target-language runtime semantics.
+    scale: Decoding remains one bounded u64 parse with no collection, allocation, retry, scan, or
+      retained state; registry acceptance adds one finite installed-package transport exchange.
   human_review_triggers: *id001

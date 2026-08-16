@@ -96,6 +96,13 @@ sparse metadata; all `riffdb-*` transitive crates remain on `riffdb-dev`.
 Development publications are unsigned prereleases and cannot be passed back
 into the production distribution or signing workflow.
 
+For TypeScript consumers, a successful named query against a domain-empty
+database reports `applicationHead: 0n`. The application frontier is a
+non-negative u64; commit sequences, contract versions, and read-after-commit
+inputs remain strictly positive. The clean npm-consumer cell exercises this
+zero-frontier boundary through the installed package on every development
+publication.
+
 ## One four-step workflow
 
 With a RiffDB service running and an ordinary application credential available:

@@ -58,6 +58,22 @@ test("one retained session handshakes once and multiplexes exact operations", as
         await fixture.close();
     }
 });
+test("an empty-database query preserves application frontier zero", async () => {
+    const fixture = await DriverFixture.start((request) => request.type === "invoke" ? {
+        type: "result", request_id: request.request_id,
+        value: { type: "record", value: { outcome: { type: "enum", value: "NotFound" } } },
+        application_head: 0, cursor: null, replayed: false,
+    } : undefined);
+    try {
+        const transport = await DriverApplicationTransport.connect({ socketPath: fixture.path, identity });
+        const result = await transport.invoke({ name: "better_auth_find_user_by_email", inputSchemaHash: HASH }, { email: { type: "string", value: "first@example.test" } });
+        assert.equal(result.applicationHead, 0n);
+        await transport.shutdown();
+    }
+    finally {
+        await fixture.close();
+    }
+});
 test("concurrent sessions use distinct driver request identities", async () => {
     const requestIds = new Set();
     const fixture = await DriverFixture.start((request) => {
@@ -103,6 +119,78 @@ test("u64 frontiers remain exact across the JSON number protocol", async () => {
     finally {
         await fixture.close();
     }
+});
+test("query frontiers reject values outside the closed non-negative u64 domain", async (context) => {
+    for (const [name, applicationHead] of [
+        ["negative number", -1],
+        ["fractional number", 1.5],
+        ["negative string", "-1"],
+        ["non-canonical zero", "00"],
+        ["malformed string", "not-a-u64"],
+        ["above u64", "18446744073709551616"],
+    ]) {
+        await context.test(name, async () => {
+            const fixture = await DriverFixture.start((request) => request.type === "invoke" ? {
+                type: "result", request_id: request.request_id, value: { type: "null" },
+                application_head: applicationHead, cursor: null, replayed: false,
+            } : undefined);
+            const transport = await DriverApplicationTransport.connect({ socketPath: fixture.path, identity });
+            try {
+                await assert.rejects(transport.invoke({ name: "ticketdesk_invalid_frontier", inputSchemaHash: HASH }, {}), /invalid (?:RiffDB driver message|message)/u);
+            }
+            finally {
+                await transport.shutdown();
+                await fixture.close();
+            }
+        });
+    }
+});
+test("positive-only driver identities continue to reject zero", async (context) => {
+    await context.test("batch commit sequence", async () => {
+        const fixture = await DriverFixture.start((request) => request.type === "batch" ? {
+            type: "batch_result", request_id: request.request_id, checkpoint: 1, total: 1,
+            items: [{
+                    index: 0,
+                    outcome: {
+                        type: "result", value: { type: "null" }, commit_sequence: 0,
+                        outcome_uri: "riffdb://outcomes/create/zero", replayed: false,
+                    },
+                }],
+        } : undefined);
+        const transport = await DriverApplicationTransport.connect({ socketPath: fixture.path, identity });
+        try {
+            await assert.rejects(transport.batch({ name: "ticketdesk_create", inputSchemaHash: HASH }, [{}], 1, 0), /invalid RiffDB driver message/u);
+        }
+        finally {
+            await transport.shutdown();
+            await fixture.close();
+        }
+    });
+    await context.test("error contract version", async () => {
+        const fixture = await DriverFixture.start((request) => request.type === "invoke" ? {
+            type: "error", request_id: request.request_id, code: "RDB-APP-0001", category: "application",
+            operation: "ticketdesk_find", symbol_path: [], contract_lineage: "TicketDesk", contract_version: 0,
+            trace_id: null, incident_id: null, message: "safe error", retryability: "not_retryable",
+            recovery_action: "none", outcome_uncertain: false,
+        } : undefined);
+        const transport = await DriverApplicationTransport.connect({ socketPath: fixture.path, identity });
+        try {
+            await assert.rejects(transport.invoke({ name: "ticketdesk_find", inputSchemaHash: HASH }, {}), /invalid RiffDB driver message/u);
+        }
+        finally {
+            await transport.shutdown();
+            await fixture.close();
+        }
+    });
+    await context.test("handshake contract version", async () => {
+        const fixture = await DriverFixture.start(() => undefined, { contract_version: 0 });
+        try {
+            await assert.rejects(DriverApplicationTransport.connect({ socketPath: fixture.path, identity }), /invalid RiffDB driver message/u);
+        }
+        finally {
+            await fixture.close();
+        }
+    });
 });
 test("batch results preserve commit identity and durable outcome locator", async () => {
     const fixture = await DriverFixture.start((request) => request.type === "batch" ? {
@@ -366,7 +454,7 @@ class DriverFixture {
         this.root = root;
         this.server = server;
     }
-    static async start(handler) {
+    static async start(handler, handshakeOverrides = {}) {
         fixtureSequence += 1;
         const root = join(homedir(), "tmp", `riffdb-ts-driver-${process.pid}-${fixtureSequence}`);
         await mkdir(root, { recursive: true, mode: 0o700 });
@@ -397,6 +485,7 @@ class DriverFixture {
                             remote_identity_hash: identity.remoteIdentityHash,
                             value_registry_hash: DRIVER_VALUE_REGISTRY_HASH,
                             error_registry_hash: DRIVER_ERROR_REGISTRY_HASH,
+                            ...handshakeOverrides,
                         });
                         continue;
                     }
