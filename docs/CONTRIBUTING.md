@@ -24,7 +24,20 @@ Do not hand-edit `docs/reference/CLI.md` or `docs/assets/*.svg`. Regenerate with
 
 ## Local checks
 
-Install the versions in `scripts/tool-versions`, then run:
+Install and verify the pinned local tools before running the handbook check:
+
+```bash
+export PATH="${CARGO_HOME:-$HOME/.cargo}/bin:$PATH"
+./scripts/developer-tools install
+./scripts/developer-tools check
+```
+
+The check also verifies that `cargo +1.97.0` resolves through rustup. A
+configured `rustc-wrapper` such as `sccache` is optional, but if a Cargo config
+names one it must be installed or that stale setting must be removed. RiffDB
+does not silently change user Cargo configuration.
+
+Then run:
 
 ```bash
 ./scripts/handbook check
