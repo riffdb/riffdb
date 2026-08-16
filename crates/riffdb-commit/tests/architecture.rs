@@ -2063,10 +2063,34 @@ fn prepared_command_workers_carry_no_commit_or_storage_authority() {
         );
     }
     assert!(
-        task.contains("Vec<(AcquiredCommandAttempt, AdmissionLookupResultV1)>")
-            || task.contains("attempts: Vec<")
+        execution.contains("Published(Vec<(AcquiredCommandAttempt, AdmissionLookupResultV1)>)")
     );
+    assert!(execution.contains("WriterPrivate(Vec<(AcquiredCommandAttempt, ReadSnapshot)>)"));
+    assert!(task.contains("input: CommandEvaluationTaskInput"));
     assert!(execution.contains(".prepare_body()"));
+
+    let private_capture = function_body(
+        execution,
+        "fn capture_writer_private_snapshots<B>(\n    batch: &B,",
+    );
+    assert!(private_capture.contains("read_transaction_local_snapshot"));
+    assert!(private_capture.contains("complete_transaction_local_snapshot"));
+    for forbidden in [
+        "assign_sequence",
+        ".stage(",
+        ".seal(",
+        "commit_sequence",
+        "CheckedPreparedCommandGroup",
+    ] {
+        assert!(
+            !private_capture.contains(forbidden),
+            "writer-private snapshot capture gained forbidden authority `{forbidden}`"
+        );
+    }
+
+    let group_driver = function_body(execution, "async fn drive_command_execution_group<P>(");
+    assert!(group_driver.contains("groups.len() == 1"));
+    assert!(group_driver.contains("parallel_writer_private"));
 
     let prepared = production_source(COMMAND_INDEX_SOURCE);
     let body = function_body(

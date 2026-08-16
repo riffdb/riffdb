@@ -17,7 +17,7 @@ use riffdb_storage_api::{
     CommandCandidateCapacityReserved, CommandCandidateSequenceAssigned, CommandCandidateStateRead,
     DeferredCommandEpoch, DeferredCommandEpochPort, DeferredNonEmptyCommandBatch, DurabilityMode,
     EmptyCommandBatch, EntityTarget, ExecutionFailureTransitionPort, NonEmptyCommandBatch,
-    SnapshotReader, StorageError, StorageErrorKind, TransactionLocalCommandBatch,
+    ReadSnapshot, SnapshotReader, StorageError, StorageErrorKind, TransactionLocalCommandBatch,
 };
 use riffdb_types::ExecutionFailureCode;
 
@@ -284,9 +284,14 @@ impl<T> CommandEvaluationReadPort for T where
 {
 }
 
+enum CommandEvaluationTaskInput {
+    Published(Vec<(AcquiredCommandAttempt, AdmissionLookupResultV1)>),
+    WriterPrivate(Vec<(AcquiredCommandAttempt, ReadSnapshot)>),
+}
+
 struct CommandEvaluationTask {
     ordinal: usize,
-    attempts: Vec<(AcquiredCommandAttempt, AdmissionLookupResultV1)>,
+    input: CommandEvaluationTaskInput,
     completion: mpsc::Sender<(
         usize,
         Vec<Result<CommandAttemptResolution, CommandAttemptError>>,
@@ -339,47 +344,51 @@ impl CommandEvaluationPool {
                             };
                             task
                         };
-                        let requests = task
-                            .attempts
-                            .iter()
-                            .map(|(attempt, _)| attempt.transaction_local_snapshot_request())
-                            .collect();
-                        let results = match repository.read_snapshot_group(requests) {
-                            Ok(snapshots) if snapshots.len() == task.attempts.len() => task
-                                .attempts
-                                .into_iter()
-                                .zip(snapshots)
-                                .map(|((attempt, durable), snapshot)| {
-                                    evaluate_acquired_command_attempt_after_lookup_and_snapshot(
-                                        attempt,
-                                        durable,
-                                        snapshot,
-                                        repository.as_ref(),
-                                    )
-                                    .and_then(|resolution| {
-                                        match resolution {
-                                            CommandAttemptResolution::Evaluated(attempt) => attempt
-                                                .prepare_body()
-                                                .map(CommandAttemptResolution::Evaluated),
-                                            other => Ok(other),
-                                        }
+                        let results = match task.input {
+                            CommandEvaluationTaskInput::Published(attempts) => {
+                                let requests = attempts
+                                    .iter()
+                                    .map(|(attempt, _)| {
+                                        attempt.transaction_local_snapshot_request()
                                     })
-                                })
-                                .collect(),
-                            Ok(_) => task
-                                .attempts
+                                    .collect();
+                                match repository.read_snapshot_group(requests) {
+                                    Ok(snapshots) if snapshots.len() == attempts.len() => attempts
+                                        .into_iter()
+                                        .zip(snapshots)
+                                        .map(|((attempt, durable), snapshot)| {
+                                            evaluate_acquired_command_attempt_after_lookup_and_snapshot(
+                                                attempt,
+                                                durable,
+                                                snapshot,
+                                                repository.as_ref(),
+                                            )
+                                            .and_then(prepare_evaluated_resolution)
+                                        })
+                                        .collect(),
+                                    Ok(_) => attempts
+                                        .into_iter()
+                                        .map(|(attempt, _)| {
+                                            drop(attempt);
+                                            Err(CommandAttemptError::Integrity)
+                                        })
+                                        .collect(),
+                                    Err(error) => attempts
+                                        .into_iter()
+                                        .map(|(attempt, _)| {
+                                            drop(attempt);
+                                            Err(CommandAttemptError::SnapshotRead(error.clone()))
+                                        })
+                                        .collect(),
+                                }
+                            }
+                            CommandEvaluationTaskInput::WriterPrivate(attempts) => attempts
                                 .into_iter()
-                                .map(|(attempt, _)| {
-                                    drop(attempt);
-                                    Err(CommandAttemptError::Integrity)
-                                })
-                                .collect(),
-                            Err(error) => task
-                                .attempts
-                                .into_iter()
-                                .map(|(attempt, _)| {
-                                    drop(attempt);
-                                    Err(CommandAttemptError::SnapshotRead(error.clone()))
+                                .map(|(attempt, snapshot)| {
+                                    evaluate_transaction_local_acquired_command_attempt(
+                                        attempt, snapshot,
+                                    )
+                                    .and_then(prepare_evaluated_resolution)
                                 })
                                 .collect(),
                         };
@@ -447,7 +456,7 @@ impl CommandEvaluationPool {
             if sender
                 .send(CommandEvaluationTask {
                     ordinal,
-                    attempts,
+                    input: CommandEvaluationTaskInput::Published(attempts),
                     completion: completion.clone(),
                 })
                 .is_err()
@@ -487,6 +496,111 @@ impl CommandEvaluationPool {
             .map(|result| result.unwrap_or(Err(CommandAttemptError::Integrity)))
             .collect()
     }
+
+    fn evaluate_writer_private(
+        &self,
+        attempts: Vec<(AcquiredCommandAttempt, ReadSnapshot)>,
+        telemetry: &dyn CommitTelemetry,
+    ) -> Vec<Result<CommandAttemptResolution, CommandAttemptError>> {
+        let count = attempts.len();
+        self.dispatch_tasks(
+            attempts,
+            telemetry,
+            CommandEvaluationTaskInput::WriterPrivate,
+            count,
+        )
+    }
+
+    fn dispatch_tasks<T, F>(
+        &self,
+        mut attempts: Vec<T>,
+        telemetry: &dyn CommitTelemetry,
+        wrap: F,
+        count: usize,
+    ) -> Vec<Result<CommandAttemptResolution, CommandAttemptError>>
+    where
+        F: Fn(Vec<T>) -> CommandEvaluationTaskInput,
+    {
+        let (completion, receiver) = mpsc::channel();
+        let Some(sender) = self.sender.as_ref() else {
+            return (0..count)
+                .map(|_| Err(CommandAttemptError::Integrity))
+                .collect();
+        };
+        let chunk_size = count.div_ceil(self.worker_count).max(1);
+        let task_count = count.div_ceil(chunk_size);
+        telemetry.record(CommitTelemetryEvent::PreparationPoolDepthObserved {
+            depth: u16::try_from(task_count).unwrap_or(u16::MAX),
+        });
+        let mut ordinal = 0usize;
+        while !attempts.is_empty() {
+            let tail = attempts.split_off(attempts.len().min(chunk_size));
+            if sender
+                .send(CommandEvaluationTask {
+                    ordinal,
+                    input: wrap(attempts),
+                    completion: completion.clone(),
+                })
+                .is_err()
+            {
+                return (0..count)
+                    .map(|_| Err(CommandAttemptError::Integrity))
+                    .collect();
+            }
+            ordinal = ordinal.saturating_add(chunk_size);
+            attempts = tail;
+        }
+        drop(completion);
+        collect_ordered_evaluations(receiver, telemetry, count, task_count)
+    }
+}
+
+fn prepare_evaluated_resolution(
+    resolution: CommandAttemptResolution,
+) -> Result<CommandAttemptResolution, CommandAttemptError> {
+    match resolution {
+        CommandAttemptResolution::Evaluated(attempt) => attempt
+            .prepare_body()
+            .map(CommandAttemptResolution::Evaluated),
+        other => Ok(other),
+    }
+}
+
+fn collect_ordered_evaluations(
+    receiver: mpsc::Receiver<(
+        usize,
+        Vec<Result<CommandAttemptResolution, CommandAttemptError>>,
+    )>,
+    telemetry: &dyn CommitTelemetry,
+    count: usize,
+    task_count: usize,
+) -> Vec<Result<CommandAttemptResolution, CommandAttemptError>> {
+    let mut ordered = (0..count).map(|_| None).collect::<Vec<_>>();
+    let mut received_items = 0usize;
+    let mut contiguous_items = 0usize;
+    for _ in 0..task_count {
+        let Ok((ordinal, results)) = receiver.recv() else {
+            break;
+        };
+        received_items = received_items.saturating_add(results.len());
+        for (offset, result) in results.into_iter().enumerate() {
+            if let Some(slot) = ordered.get_mut(ordinal.saturating_add(offset)) {
+                *slot = Some(result);
+            }
+        }
+        while ordered.get(contiguous_items).is_some_and(Option::is_some) {
+            contiguous_items = contiguous_items.saturating_add(1);
+        }
+        telemetry.record(CommitTelemetryEvent::ReorderBufferOccupancyObserved {
+            occupancy: u16::try_from(received_items.saturating_sub(contiguous_items))
+                .unwrap_or(u16::MAX),
+        });
+    }
+    telemetry.record(CommitTelemetryEvent::PreparationPoolDepthObserved { depth: 0 });
+    ordered
+        .into_iter()
+        .map(|result| result.unwrap_or(Err(CommandAttemptError::Integrity)))
+        .collect()
 }
 
 impl Drop for CommandEvaluationPool {
@@ -1042,6 +1156,10 @@ where
         );
     }
     if serial_eligible {
+        let parallel_writer_private = evaluation_frontier
+            == CommandEvaluationFrontier::WriterPrivate
+            && groups.len() == 1
+            && evaluation_pool.is_some();
         let use_deferred_tail = durability == CoordinatorDurability::Group
             && groups.iter().all(|group| {
                 group
@@ -1061,6 +1179,8 @@ where
             durability,
             lifecycle,
             telemetry,
+            evaluation_pool,
+            parallel_writer_private,
             use_deferred_tail,
             evaluation_frontier,
             serial,
@@ -1559,6 +1679,61 @@ enum ParallelEvaluationPreparation {
     Complete(Vec<(usize, Result<CommandExecutionResult, CommandExecutionError>)>),
 }
 
+struct WriterPrivateSnapshotCaptureFailure {
+    failed_index: usize,
+    failed: AcquiredCommandAttempt,
+    error: CommandAttemptError,
+    fallback: Vec<(usize, AcquiredCommandAttempt)>,
+}
+
+fn capture_writer_private_snapshots<B>(
+    batch: &B,
+    mut attempts: std::collections::VecDeque<(usize, AcquiredCommandAttempt)>,
+) -> Result<Vec<(usize, AcquiredCommandAttempt, ReadSnapshot)>, WriterPrivateSnapshotCaptureFailure>
+where
+    B: TransactionLocalCommandBatch,
+{
+    let mut captured = Vec::with_capacity(attempts.len());
+    while let Some((index, mut attempt)) = attempts.pop_front() {
+        let discovery = match batch
+            .read_transaction_local_snapshot(attempt.transaction_local_snapshot_request())
+        {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                return Err(WriterPrivateSnapshotCaptureFailure {
+                    failed_index: index,
+                    failed: attempt,
+                    error: CommandAttemptError::SnapshotRead(error),
+                    fallback: captured
+                        .into_iter()
+                        .map(|(index, attempt, _)| (index, attempt))
+                        .chain(attempts)
+                        .collect(),
+                });
+            }
+        };
+        let snapshot = match attempt.complete_transaction_local_snapshot(discovery, |request| {
+            batch.read_transaction_local_snapshot(request)
+        }) {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                return Err(WriterPrivateSnapshotCaptureFailure {
+                    failed_index: index,
+                    failed: attempt,
+                    error,
+                    fallback: captured
+                        .into_iter()
+                        .map(|(index, attempt, _)| (index, attempt))
+                        .chain(attempts)
+                        .collect(),
+                });
+            }
+        };
+        captured.push((index, attempt, snapshot));
+    }
+    Ok(captured)
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn prepare_parallel_compatible_group<P>(
     port: &P,
@@ -1772,6 +1947,8 @@ async fn drive_transaction_local_serial_pending_group<P>(
     durability: CoordinatorDurability,
     lifecycle: &dyn CommandExecutionLifecycle,
     telemetry: &dyn CommitTelemetry,
+    evaluation_pool: Option<&CommandEvaluationPool>,
+    parallel_writer_private: bool,
     use_deferred_tail: bool,
     evaluation_frontier: CommandEvaluationFrontier,
     pending: Vec<(usize, PendingCommandAttempts)>,
@@ -1830,9 +2007,11 @@ where
     };
     let mut acquired =
         std::collections::VecDeque::from(indices.into_iter().zip(acquired).collect::<Vec<_>>());
-    let Some((first_index, mut first)) = acquired.pop_front() else {
+    let Some(first_pair) = acquired.pop_front() else {
         return Vec::new().into();
     };
+    let first_index_for_open = first_pair.0;
+    let mut first_slot = Some(first_pair);
 
     let serial_started = Instant::now();
     let mut evaluation_elapsed = Duration::ZERO;
@@ -1844,7 +2023,7 @@ where
     } {
         Ok(empty) => empty,
         Err(error) => {
-            let mut completed = vec![(first_index, Err(storage_error(error, lifecycle)))];
+            let mut completed = vec![(first_index_for_open, Err(storage_error(error, lifecycle)))];
             let fallback = acquired
                 .into_iter()
                 .map(|(index, attempt)| (index, attempt.into_pending_without_evaluation()))
@@ -1865,9 +2044,122 @@ where
             return completed.into();
         }
     };
-    let evaluation_started = Instant::now();
-    let first_snapshot =
-        match empty.read_transaction_local_snapshot(first.transaction_local_snapshot_request()) {
+    let mut pre_evaluated = std::collections::VecDeque::new();
+    if parallel_writer_private {
+        let pool = evaluation_pool.expect("parallel writer-private path requires pool");
+        let mut to_capture = std::collections::VecDeque::new();
+        to_capture.push_back(first_slot.take().expect("nonempty serial group"));
+        to_capture.append(&mut acquired);
+        let captured = match capture_writer_private_snapshots(&empty, to_capture) {
+            Ok(captured) => captured,
+            Err(failure) => {
+                empty.rollback();
+                drop(failure.failed);
+                let error = command_attempt_failure(failure.error, lifecycle);
+                let terminal = group_peer_terminal_error(&error);
+                let mut completed = vec![(failure.failed_index, Err(error))];
+                if let Some(terminal) = terminal {
+                    completed.extend(failure.fallback.into_iter().map(|(index, attempt)| {
+                        drop(attempt);
+                        (index, Err(group_peer_error(terminal)))
+                    }));
+                } else {
+                    let fallback = failure
+                        .fallback
+                        .into_iter()
+                        .map(|(index, attempt)| (index, attempt.into_pending_without_evaluation()))
+                        .collect();
+                    completed.extend(
+                        drive_pending_items(
+                            port,
+                            conflicts,
+                            administration_clock,
+                            provenance,
+                            durability,
+                            lifecycle,
+                            telemetry,
+                            fallback,
+                        )
+                        .await,
+                    );
+                }
+                return completed.into();
+            }
+        };
+        let indices = captured
+            .iter()
+            .map(|(index, _, _)| *index)
+            .collect::<Vec<_>>();
+        let inputs = captured
+            .into_iter()
+            .map(|(_, attempt, snapshot)| (attempt, snapshot))
+            .collect();
+        let evaluated = pool.evaluate_writer_private(inputs, telemetry);
+        let mut fallback = Vec::new();
+        let mut completed = Vec::new();
+        let mut terminal = None;
+        for (index, result) in indices.into_iter().zip(evaluated) {
+            match result {
+                Ok(CommandAttemptResolution::Evaluated(attempt)) => {
+                    pre_evaluated.push_back((index, attempt));
+                }
+                Ok(CommandAttemptResolution::ExecutionFault(fault)) => {
+                    fallback.push((index, fault.recover_pending_after_proven_rollback()));
+                }
+                Ok(
+                    CommandAttemptResolution::OutcomeReplay(_)
+                    | CommandAttemptResolution::ExecutionFailureReplay(_),
+                ) => {
+                    lifecycle.stop();
+                    terminal = Some(CommandExecutionErrorKind::CoordinatorStopped);
+                    completed.push((index, Err(internal_defect_error())));
+                }
+                Err(error) => {
+                    let error = command_attempt_failure(error, lifecycle);
+                    terminal = terminal.or_else(|| group_peer_terminal_error(&error));
+                    completed.push((index, Err(error)));
+                }
+            }
+        }
+        if !fallback.is_empty() || !completed.is_empty() {
+            empty.rollback();
+            fallback.extend(
+                pre_evaluated
+                    .drain(..)
+                    .map(|(index, attempt)| (index, attempt.into_pending_without_commit())),
+            );
+            if let Some(terminal) = terminal {
+                completed.extend(fallback.into_iter().map(|(index, state)| {
+                    drop(state);
+                    (index, Err(group_peer_error(terminal)))
+                }));
+            } else {
+                completed.extend(
+                    drive_pending_items(
+                        port,
+                        conflicts,
+                        administration_clock,
+                        provenance,
+                        durability,
+                        lifecycle,
+                        telemetry,
+                        fallback,
+                    )
+                    .await,
+                );
+            }
+            return completed.into();
+        }
+    }
+
+    let (first_index, first) = if let Some(first) = pre_evaluated.pop_front() {
+        first
+    } else {
+        let (first_index, mut first) = first_slot.take().expect("nonparallel serial group");
+        let evaluation_started = Instant::now();
+        let first_snapshot = match empty
+            .read_transaction_local_snapshot(first.transaction_local_snapshot_request())
+        {
             Ok(snapshot) => snapshot,
             Err(error) => {
                 empty.rollback();
@@ -1892,106 +2184,110 @@ where
                 return completed.into();
             }
         };
-    let first_snapshot = match first
-        .complete_transaction_local_snapshot(first_snapshot, |request| {
-            empty.read_transaction_local_snapshot(request)
-        }) {
-        Ok(snapshot) => snapshot,
-        Err(error) => {
-            empty.rollback();
-            drop(first);
-            let mut completed = vec![(first_index, Err(command_attempt_failure(error, lifecycle)))];
-            let fallback = acquired
-                .into_iter()
-                .map(|(index, attempt)| (index, attempt.into_pending_without_evaluation()))
-                .collect();
-            completed.extend(
-                drive_pending_items(
-                    port,
-                    conflicts,
-                    administration_clock,
-                    provenance,
-                    durability,
-                    lifecycle,
-                    telemetry,
-                    fallback,
-                )
-                .await,
-            );
-            return completed.into();
-        }
-    };
-    let first = match evaluate_transaction_local_acquired_command_attempt(first, first_snapshot) {
-        Ok(CommandAttemptResolution::Evaluated(attempt)) => attempt,
-        Ok(CommandAttemptResolution::ExecutionFault(fault)) => {
-            empty.rollback();
-            let mut fallback = vec![(first_index, fault.recover_pending_after_proven_rollback())];
-            fallback.extend(
-                acquired
+        let first_snapshot = match first
+            .complete_transaction_local_snapshot(first_snapshot, |request| {
+                empty.read_transaction_local_snapshot(request)
+            }) {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                empty.rollback();
+                drop(first);
+                let mut completed =
+                    vec![(first_index, Err(command_attempt_failure(error, lifecycle)))];
+                let fallback = acquired
                     .into_iter()
-                    .map(|(index, attempt)| (index, attempt.into_pending_without_evaluation())),
-            );
-            return drive_pending_items(
-                port,
-                conflicts,
-                administration_clock,
-                provenance,
-                durability,
-                lifecycle,
-                telemetry,
-                fallback,
-            )
-            .await
-            .into();
-        }
-        Ok(
-            CommandAttemptResolution::OutcomeReplay(_)
-            | CommandAttemptResolution::ExecutionFailureReplay(_),
-        ) => {
-            empty.rollback();
-            lifecycle.stop();
-            return std::iter::once((
-                first_index,
-                Err(CommandExecutionError::without_detail(
-                    CommandExecutionErrorKind::InternalDefect,
-                )),
-            ))
-            .chain(acquired.into_iter().map(|(index, attempt)| {
-                drop(attempt);
-                (
-                    index,
-                    Err(CommandExecutionError::without_detail(
-                        CommandExecutionErrorKind::CoordinatorStopped,
-                    )),
-                )
-            }))
-            .collect::<Vec<_>>()
-            .into();
-        }
-        Err(error) => {
-            empty.rollback();
-            let mut completed = vec![(first_index, Err(command_attempt_failure(error, lifecycle)))];
-            let fallback = acquired
-                .into_iter()
-                .map(|(index, attempt)| (index, attempt.into_pending_without_evaluation()))
-                .collect();
-            completed.extend(
-                drive_pending_items(
-                    port,
-                    conflicts,
-                    administration_clock,
-                    provenance,
-                    durability,
-                    lifecycle,
-                    telemetry,
-                    fallback,
-                )
-                .await,
-            );
-            return completed.into();
-        }
+                    .map(|(index, attempt)| (index, attempt.into_pending_without_evaluation()))
+                    .collect();
+                completed.extend(
+                    drive_pending_items(
+                        port,
+                        conflicts,
+                        administration_clock,
+                        provenance,
+                        durability,
+                        lifecycle,
+                        telemetry,
+                        fallback,
+                    )
+                    .await,
+                );
+                return completed.into();
+            }
+        };
+        let first =
+            match evaluate_transaction_local_acquired_command_attempt(first, first_snapshot) {
+                Ok(CommandAttemptResolution::Evaluated(attempt)) => attempt,
+                Ok(CommandAttemptResolution::ExecutionFault(fault)) => {
+                    empty.rollback();
+                    let mut fallback =
+                        vec![(first_index, fault.recover_pending_after_proven_rollback())];
+                    fallback.extend(acquired.into_iter().map(|(index, attempt)| {
+                        (index, attempt.into_pending_without_evaluation())
+                    }));
+                    return drive_pending_items(
+                        port,
+                        conflicts,
+                        administration_clock,
+                        provenance,
+                        durability,
+                        lifecycle,
+                        telemetry,
+                        fallback,
+                    )
+                    .await
+                    .into();
+                }
+                Ok(
+                    CommandAttemptResolution::OutcomeReplay(_)
+                    | CommandAttemptResolution::ExecutionFailureReplay(_),
+                ) => {
+                    empty.rollback();
+                    lifecycle.stop();
+                    return std::iter::once((
+                        first_index,
+                        Err(CommandExecutionError::without_detail(
+                            CommandExecutionErrorKind::InternalDefect,
+                        )),
+                    ))
+                    .chain(acquired.into_iter().map(|(index, attempt)| {
+                        drop(attempt);
+                        (
+                            index,
+                            Err(CommandExecutionError::without_detail(
+                                CommandExecutionErrorKind::CoordinatorStopped,
+                            )),
+                        )
+                    }))
+                    .collect::<Vec<_>>()
+                    .into();
+                }
+                Err(error) => {
+                    empty.rollback();
+                    let mut completed =
+                        vec![(first_index, Err(command_attempt_failure(error, lifecycle)))];
+                    let fallback = acquired
+                        .into_iter()
+                        .map(|(index, attempt)| (index, attempt.into_pending_without_evaluation()))
+                        .collect();
+                    completed.extend(
+                        drive_pending_items(
+                            port,
+                            conflicts,
+                            administration_clock,
+                            provenance,
+                            durability,
+                            lifecycle,
+                            telemetry,
+                            fallback,
+                        )
+                        .await,
+                    );
+                    return completed.into();
+                }
+            };
+        evaluation_elapsed = evaluation_elapsed.saturating_add(evaluation_started.elapsed());
+        (first_index, first)
     };
-    evaluation_elapsed = evaluation_elapsed.saturating_add(evaluation_started.elapsed());
 
     let mut staged = match stage_first_evaluated_command_on_empty(
         port,
@@ -2006,6 +2302,11 @@ where
         Ok(staged) => staged,
         Err(CommandDriverContinuation::Retry(retry)) => {
             let fallback = std::iter::once((first_index, *retry))
+                .chain(
+                    pre_evaluated
+                        .into_iter()
+                        .map(|(index, attempt)| (index, attempt.into_pending_without_commit())),
+                )
                 .chain(
                     acquired
                         .into_iter()
@@ -2027,9 +2328,14 @@ where
         }
         Err(continuation) => {
             let mut completed = vec![(first_index, terminal_continuation(continuation, lifecycle))];
-            let fallback = acquired
+            let fallback = pre_evaluated
                 .into_iter()
-                .map(|(index, attempt)| (index, attempt.into_pending_without_evaluation()))
+                .map(|(index, attempt)| (index, attempt.into_pending_without_commit()))
+                .chain(
+                    acquired
+                        .into_iter()
+                        .map(|(index, attempt)| (index, attempt.into_pending_without_evaluation())),
+                )
                 .collect();
             completed.extend(
                 drive_pending_items(
@@ -2049,10 +2355,15 @@ where
     };
     let mut staged_indices = vec![first_index];
 
-    while let Some((index, mut attempt)) = acquired.pop_front() {
-        let evaluation_started = Instant::now();
-        let snapshot =
-            match staged
+    loop {
+        let (index, evaluated) = if let Some(evaluated) = pre_evaluated.pop_front() {
+            evaluated
+        } else {
+            let Some((index, mut attempt)) = acquired.pop_front() else {
+                break;
+            };
+            let evaluation_started = Instant::now();
+            let snapshot = match staged
                 .read_transaction_local_snapshot(attempt.transaction_local_snapshot_request())
             {
                 Ok(snapshot) => snapshot,
@@ -2108,11 +2419,11 @@ where
                     return completed.into();
                 }
             };
-        let completed_snapshot = attempt.complete_transaction_local_snapshot(snapshot, |request| {
-            staged.read_transaction_local_snapshot(request)
-        });
-        let evaluated =
-            match completed_snapshot.and_then(|snapshot| {
+            let completed_snapshot = attempt
+                .complete_transaction_local_snapshot(snapshot, |request| {
+                    staged.read_transaction_local_snapshot(request)
+                });
+            let evaluated = match completed_snapshot.and_then(|snapshot| {
                 evaluate_transaction_local_acquired_command_attempt(attempt, snapshot)
             }) {
                 Ok(CommandAttemptResolution::Evaluated(attempt)) => attempt,
@@ -2227,7 +2538,9 @@ where
                     return completed.into();
                 }
             };
-        evaluation_elapsed = evaluation_elapsed.saturating_add(evaluation_started.elapsed());
+            evaluation_elapsed = evaluation_elapsed.saturating_add(evaluation_started.elapsed());
+            (index, evaluated)
+        };
 
         let (prior, entries, durability_mode) = staged.into_storage_and_entries();
         match append_evaluated_command(
@@ -2262,6 +2575,11 @@ where
                 };
                 fallback.push((index, *retry));
                 fallback.extend(
+                    pre_evaluated
+                        .into_iter()
+                        .map(|(index, attempt)| (index, attempt.into_pending_without_commit())),
+                );
+                fallback.extend(
                     acquired
                         .into_iter()
                         .map(|(index, attempt)| (index, attempt.into_pending_without_evaluation())),
@@ -2293,6 +2611,10 @@ where
                         return staged_indices
                             .into_iter()
                             .chain(std::iter::once(index))
+                            .chain(pre_evaluated.into_iter().map(|(index, attempt)| {
+                                drop(attempt);
+                                index
+                            }))
                             .chain(acquired.into_iter().map(|(index, attempt)| {
                                 drop(attempt);
                                 index
@@ -2308,6 +2630,11 @@ where
                             .collect();
                     }
                 };
+                previous.extend(
+                    pre_evaluated
+                        .into_iter()
+                        .map(|(index, attempt)| (index, attempt.into_pending_without_commit())),
+                );
                 previous.extend(
                     acquired
                         .into_iter()
