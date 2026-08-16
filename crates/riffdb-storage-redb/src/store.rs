@@ -3643,7 +3643,7 @@ impl RedbWriteAccess {
     ) -> Result<
         (
             Vec<riffdb_storage_api::StoredCommandCapsuleV2>,
-            Vec<riffdb_storage_api::PreparedCommandSegmentCapsuleV1>,
+            Option<Vec<riffdb_storage_api::PreparedCommandSegmentCapsuleV1>>,
         ),
         StorageError,
     > {

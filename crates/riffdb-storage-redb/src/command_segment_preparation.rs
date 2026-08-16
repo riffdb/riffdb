@@ -34,14 +34,25 @@ pub(crate) struct CommandSegmentPreparationPool {
 
 impl CommandSegmentPreparationPool {
     pub(crate) fn production_worker_count() -> usize {
-        thread::available_parallelism()
-            .map_or(1, std::num::NonZeroUsize::get)
-            .saturating_sub(1)
-            .clamp(1, MAX_COMMAND_SEGMENT_PREPARATION_WORKERS)
+        let available = thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get);
+        if available < 8 {
+            0
+        } else {
+            available
+                .saturating_sub(1)
+                .min(MAX_COMMAND_SEGMENT_PREPARATION_WORKERS)
+        }
     }
 
     pub(crate) fn new(worker_count: usize) -> Result<Self, ()> {
-        let worker_count = worker_count.clamp(1, MAX_COMMAND_SEGMENT_PREPARATION_WORKERS);
+        let worker_count = worker_count.min(MAX_COMMAND_SEGMENT_PREPARATION_WORKERS);
+        if worker_count == 0 {
+            return Ok(Self {
+                worker_count,
+                sender: None,
+                workers: Vec::new(),
+            });
+        }
         let (sender, receiver) = mpsc::sync_channel(worker_count);
         let receiver = Arc::new(Mutex::new(receiver));
         let mut workers = Vec::with_capacity(worker_count);
@@ -106,16 +117,12 @@ impl CommandSegmentPreparationPool {
     ) -> Result<
         (
             Vec<StoredCommandCapsuleV2>,
-            Vec<PreparedCommandSegmentCapsuleV1>,
+            Option<Vec<PreparedCommandSegmentCapsuleV1>>,
         ),
         (),
     > {
-        if capsules.len() <= 1 {
-            let prepared = capsules
-                .iter()
-                .map(|capsule| prepare_command_segment_capsule_v1(capsule, uses_v5).map_err(|_| ()))
-                .collect::<Result<Vec<_>, _>>()?;
-            return Ok((capsules, prepared));
+        if capsules.len() <= 1 || self.worker_count == 0 {
+            return Ok((capsules, None));
         }
         let task_count = capsules.len().min(self.worker_count);
         let chunk_size = capsules.len().div_ceil(task_count);
@@ -157,7 +164,7 @@ impl CommandSegmentPreparationPool {
         if !ordered.is_empty() || capsules.len() != prepared.len() {
             return Err(());
         }
-        Ok((capsules, prepared))
+        Ok((capsules, Some(prepared)))
     }
 }
 
@@ -177,8 +184,15 @@ mod tests {
     #[test]
     fn production_worker_count_is_bounded() {
         assert!(
-            (1..=MAX_COMMAND_SEGMENT_PREPARATION_WORKERS)
-                .contains(&CommandSegmentPreparationPool::production_worker_count())
+            CommandSegmentPreparationPool::production_worker_count()
+                <= MAX_COMMAND_SEGMENT_PREPARATION_WORKERS
         );
+    }
+
+    #[test]
+    fn zero_worker_pool_selects_the_inline_path() {
+        let pool = CommandSegmentPreparationPool::new(0).expect("zero-worker inline pool");
+        assert_eq!(pool.worker_count, 0);
+        assert!(pool.workers.is_empty());
     }
 }
