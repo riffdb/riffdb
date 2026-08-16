@@ -1016,6 +1016,7 @@ struct MetricRegistryInner {
     command_stage_durations: [FixedHistogram; COMMAND_PIPELINE_STAGE_COUNT],
     read_stage_durations: [FixedHistogram; READ_PIPELINE_STAGE_COUNT],
     write_service_stage_durations: [FixedHistogram; WRITE_SERVICE_STAGE_COUNT],
+    command_application_durations: FixedHistogram,
     command_submission_durations: FixedHistogram,
 }
 
@@ -1041,6 +1042,7 @@ impl MetricRegistry {
                 command_stage_durations: std::array::from_fn(|_| FixedHistogram::new()),
                 read_stage_durations: std::array::from_fn(|_| FixedHistogram::new()),
                 write_service_stage_durations: std::array::from_fn(|_| FixedHistogram::new()),
+                command_application_durations: FixedHistogram::new(),
                 command_submission_durations: FixedHistogram::new(),
             }),
         }
@@ -1232,6 +1234,17 @@ impl MetricRegistry {
     #[must_use]
     pub fn write_service_stage_duration(&self, stage: WriteServiceStage) -> HistogramSnapshot {
         self.inner.write_service_stage_durations[write_service_stage_index(stage)].snapshot()
+    }
+
+    /// Observes final apply to writer-private authoritative state.
+    pub fn observe_command_application_duration(&self, value: u64) {
+        self.inner.command_application_durations.observe(value);
+    }
+
+    /// Returns final-apply duration.
+    #[must_use]
+    pub fn command_application_duration(&self) -> HistogramSnapshot {
+        self.inner.command_application_durations.snapshot()
     }
 
     /// Observes final apply through deferred-journal receipt creation.

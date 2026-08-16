@@ -13432,3 +13432,49 @@ work_packages:
       generation, retain no application values or per-operation series, and perform no history,
       entity, index, event, provenance, audit, or outbox scan.
   human_review_triggers: *id001
+- id: WP-639
+  name: Batch writer ledger and admission-ordered coordinator proof split
+  depends_on: [WP-620, WP-638]
+  objective: Close the public seed path into disjoint per-command preparation, apply, journal,
+    fence, and pipeline costs on the workstation and isolated N1 host, reconcile the frozen
+    comparator history, and design a stronger coordinator candidate sized against every PERF-008
+    gate without changing command ordering or commit behavior.
+  requirements: [PERF-001, PERF-004, PERF-005, PERF-008, PERF-018]
+  required_adrs: [ADR-0058, ADR-0059, ADR-0104, ADR-0123, ADR-0127]
+  allowed_paths: [work_packages.yaml, examples/app-baseline/**,
+    crates/riffdb-observability/**, crates/riffdb-commit/**,
+    docs/performance/**, adr/**, scripts/**]
+  deliverables:
+  - Workstation and isolated N1 seed receipts whose writer wall closes to measured seed wall and
+    whose disjoint per-command ledger reports evaluation, validation/encoding/staging, final apply,
+    journal submission, fence latency and physical fence work, publication, idle, and residual cost
+  - A receipted explanation of the ADR-0123 workstation comparator-ratio drift identifying safe-
+    application code, PostgreSQL version/configuration, harness topology, and workload-shape changes
+    or proving each unchanged, without rewriting or relaxing the frozen PERF-018 comparator
+  - An explicit proof boundary separating deterministic preparation from current-state revalidation,
+    sequence assignment, conflict ownership, and final apply, with bounded-pool preparation consumed
+    in admission order and no global-order assumption beyond ADR-0059 conflict domains
+  - Predeclared workstation and N1 queueing and Amdahl predictions for mixed c32, seed, unary writes,
+    reads, correctness, durability, uncertainty, and tails; the coordinator candidate must be sized
+    against all three release gate families rather than the mixed-throughput gate alone
+  - A separate unary-latency ownership note retaining ADR-0127 and pre-fence work as deferred work,
+    plus c32 evidence preserving the relationship between group size, fence bytes, and write p95
+  acceptance_commands:
+  - cargo +1.97.0 test --manifest-path examples/app-baseline/Cargo.toml --workspace
+  - cargo +1.97.0 test -p riffdb-observability -p riffdb-commit --all-features
+  - ./scripts/check-workspace-policy
+  - ./scripts/check-requirement-coverage
+  - cargo +1.97.0 fmt --all -- --check
+  exit_gate: The workstation and N1 seed ledgers close, comparator history is traceable, and a
+    sequencing-safe coordinator proof plus all-gate predictions are ready for explicit maintainer
+    review; this package makes no coordinator, ordering, conflict, durability, or public-interface
+    behavior change.
+  standing_design_tests:
+    interface_safety: Evidence observes only fixed stage identities, bounded aggregate durations,
+      counts, and byte totals; the proposed split retains fresh authority, admission-order
+      revalidation, conflict ownership, commit sequencing, atomic publication, durable uncertainty,
+      and the frozen public comparator, and no caller can select the preparation path.
+    scale: Timers, stage identities, proof artifacts, and ratio receipts have fixed cardinality and
+      byte ceilings independent of command count, history, entity count, or database size; bounded
+      preparation capacity must apply backpressure without reordering or retaining unbounded work.
+  human_review_triggers: *id001

@@ -299,6 +299,9 @@ impl TraceRecord {
                 45 + commit_call_terminal_tag(terminal),
                 saturating_duration_microseconds(elapsed),
             ),
+            CommitTelemetryEvent::CommitApplicationCompleted { elapsed, .. } => {
+                (83, saturating_duration_microseconds(elapsed))
+            }
             CommitTelemetryEvent::CommitSubmissionCompleted { elapsed, .. } => {
                 (82, saturating_duration_microseconds(elapsed))
             }

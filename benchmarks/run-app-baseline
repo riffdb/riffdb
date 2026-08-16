@@ -21,6 +21,7 @@ usage() {
         '         [--load-accumulate-history]' \
         '         [--load-riffdb-transport per-session|shared]' \
         '         [--database-root PATH]' \
+        '         [--seed-only]' \
         '         [--postgres-comparator minimal|safe-app]' \
         '         [--reps N] [--require-stable]' \
         '         [--output PATH] [--assert-write-parity|--assert-all-parity]' \
@@ -368,6 +369,7 @@ postgres_comparator=minimal
 output=
 reps=
 require_stable=0
+seed_only=0
 while (($#)); do
     case "$1" in
         --self-test)
@@ -525,6 +527,7 @@ while (($#)); do
             require_stable=1
             shift
             ;;
+        --seed-only) seed_only=1; shift ;;
         --skip-postgres) skip_postgres=1; shift ;;
         --skip-riffdb) skip_riffdb=1; shift ;;
         --assert-write-parity) assert_write_parity=1; shift ;;
@@ -852,6 +855,7 @@ extra_args+=(--postgres-data-host-path "$postgres_database_root")
 extra_args+=(--postgres-comparator "$postgres_comparator")
 [[ -n "$reps" ]] && extra_args+=(--reps "$reps")
 ((require_stable)) && extra_args+=(--require-stable)
+((seed_only)) && extra_args+=(--seed-only)
 export RIFFDB_APP_BASELINE_POSTGRES_DATA_HOST="$postgres_database_root"
 ((assert_write_parity)) && extra_args+=(--assert-write-parity)
 ((assert_all_parity)) && extra_args+=(--assert-all-parity)

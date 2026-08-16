@@ -295,6 +295,8 @@ pub struct RiffDbWriterEvidence {
     pub batch_size: RiffDbReadStageEvidence,
     /// Accepted command queue-duration histogram.
     pub storage_queue_duration: RiffDbReadStageEvidence,
+    /// Final authoritative apply duration.
+    pub final_apply_duration: Option<RiffDbReadStageEvidence>,
     /// Final apply through deferred-journal receipt creation duration.
     pub journal_submit_duration: RiffDbReadStageEvidence,
 }
@@ -1597,7 +1599,7 @@ fn parse_writer_evidence(encoded: &str) -> io::Result<RiffDbWriterEvidence> {
         None => return Err(io::Error::other("missing writer queue estimate")),
     };
     let parsed = parse_read_stages(histograms)?;
-    if parsed.len() != 5 {
+    if !matches!(parsed.len(), 5 | 6) {
         return Err(io::Error::other("invalid writer histogram cardinality"));
     }
     let find = |name: &str| -> io::Result<RiffDbReadStageEvidence> {
@@ -1624,6 +1626,10 @@ fn parse_writer_evidence(encoded: &str) -> io::Result<RiffDbWriterEvidence> {
         flush_duration: find("flush_us")?,
         batch_size: find("batch_size")?,
         storage_queue_duration: find("storage_queue_us")?,
+        final_apply_duration: parsed
+            .iter()
+            .find(|entry| entry.name == "final_apply_us")
+            .cloned(),
         journal_submit_duration: find("journal_submit_us")?,
     })
 }
@@ -1819,6 +1825,7 @@ mod tests {
             "flush_us",
             "batch_size",
             "storage_queue_us",
+            "final_apply_us",
             "journal_submit_us",
         ]
             .map(|name| format!("{name}:2:9:{buckets}"))
@@ -1841,6 +1848,10 @@ mod tests {
         assert_eq!(writer.flush_duration.name, "flush_us");
         assert_eq!(writer.batch_size.name, "batch_size");
         assert_eq!(writer.storage_queue_duration.name, "storage_queue_us");
+        assert_eq!(
+            writer.final_apply_duration.as_ref().map(|stage| stage.name.as_str()),
+            Some("final_apply_us")
+        );
         assert_eq!(writer.journal_submit_duration.name, "journal_submit_us");
         assert!(parse_writer_evidence("busy_us=1\tcommit_us:1:1:1,2").is_err());
 
