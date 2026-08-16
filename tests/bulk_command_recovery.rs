@@ -13,12 +13,13 @@ use riffdb_commit::{
     CommandExecutionPreparation, CommandExecutionResult, CommittedOutcome,
     CommittedOutcomeDisposition,
 };
+use riffdb_storage_api::AuthoritativePointReader;
 use riffdb_storage_redb::{RedbTestController, RedbTestOperation};
 use riffdb_types::CommitSequence;
 
 use support::{
-    BulkRowsDatabase, CountingProvenanceSource, FixedAdmissionClock, command_timestamp, runtime,
-    start_coordinator,
+    BulkRowsDatabase, CountingProvenanceSource, FixedAdmissionClock, IncrementingProvenanceSource,
+    command_timestamp, runtime, start_coordinator,
 };
 
 const CHILD_MODE: &str = "RIFFDB_BULK_RECOVERY_CHILD_MODE";
@@ -120,6 +121,157 @@ fn healthy_collection_delete_can_be_recreated_through_the_same_entity_chain() {
     database.assert_commit_graph(&ports, put.stored_outcome(), ROW_IDS.len());
     database.assert_commit_graph(&ports, deleted.stored_outcome(), ROW_IDS.len());
     database.assert_commit_graph(&ports, recreated.stored_outcome(), ROW_IDS.len());
+}
+
+#[test]
+fn cascade_maximum_plus_one_commits_only_the_declared_zero_mutation_outcome() {
+    let database = BulkRowsDatabase::create("cascade-overflow");
+    let _put = execute_healthy(&database, Operation::Put, 0x96, 0xe6, 0xf6, 0x86);
+    let ports = database.open();
+    let extra_child = [0x72; 16];
+    let preparation =
+        database.prepare_extra_child(&ports, ROW_IDS[0], extra_child, 0x97, 0xe7, 0x87);
+    let coordinator = start_coordinator(
+        ports,
+        Arc::new(FixedAdmissionClock::new(command_timestamp())),
+        Arc::new(CountingProvenanceSource::new(0xf7)),
+    );
+    let executor = coordinator.command_executor();
+    let extra = runtime().block_on(async {
+        executor
+            .reserve_capacity()
+            .await
+            .expect("reserve extra child")
+            .submit(preparation)
+            .expect("submit extra child")
+            .completion()
+            .await
+            .expect("commit extra child")
+    });
+    assert!(matches!(extra, CommandExecutionResult::Committed(_)));
+    drop(executor);
+    coordinator
+        .shutdown()
+        .expect("drain extra-child coordinator");
+
+    let overflow = execute_healthy(&database, Operation::Delete, 0x98, 0xe8, 0xf8, 0x88);
+    assert_eq!(
+        overflow.stored_outcome().declared_outcome().outcome_id(),
+        database.outcome_id("DeleteRows", "CascadeLimitExceeded")
+    );
+    let ports = database.open();
+    database.assert_rows_present(&ports, &ROW_IDS, true);
+    database.assert_child_present(&ports, ROW_IDS[0], extra_child, true);
+    let commit = ports
+        .read_commit(overflow.stored_outcome().commit_sequence())
+        .expect("read overflow commit")
+        .expect("overflow commit exists");
+    assert!(commit.entity_references().is_empty());
+}
+
+#[test]
+fn child_create_and_cascade_serialize_in_both_submission_orders() {
+    for create_first in [false, true] {
+        let label = if create_first {
+            "child-create-before-cascade"
+        } else {
+            "cascade-before-child-create"
+        };
+        let database = BulkRowsDatabase::create(label);
+        let row_id = ROW_IDS[0];
+        let extra_child = [0x73; 16];
+        let ports = database.open();
+        let put = database.prepare_put(&ports, &[row_id], 0x99, 0xe9, 0x89);
+        let delete = database.prepare_delete(&ports, &[row_id], 0x9a, 0xea, 0x8a);
+        let create = database.prepare_extra_child(&ports, row_id, extra_child, 0x9b, 0xeb, 0x8b);
+        let coordinator = start_coordinator(
+            ports,
+            Arc::new(FixedAdmissionClock::new(command_timestamp())),
+            Arc::new(IncrementingProvenanceSource::new(0xf9)),
+        );
+        let executor = coordinator.command_executor();
+
+        let (first, second) = runtime().block_on(async {
+            let seeded = executor
+                .reserve_capacity()
+                .await
+                .expect("reserve cascade race seed")
+                .submit(put)
+                .expect("submit cascade race seed")
+                .completion()
+                .await
+                .expect("complete cascade race seed");
+            assert!(matches!(seeded, CommandExecutionResult::Committed(_)));
+
+            let (first, second) = if create_first {
+                (create, delete)
+            } else {
+                (delete, create)
+            };
+            let first = executor
+                .reserve_capacity()
+                .await
+                .expect("reserve first racing command")
+                .submit(first)
+                .expect("submit first racing command");
+            let second = executor
+                .reserve_capacity()
+                .await
+                .expect("reserve second racing command")
+                .submit(second)
+                .expect("submit second racing command");
+            let first = first.completion().await;
+            let second = second.completion().await;
+            (
+                first.unwrap_or_else(|error| {
+                    panic!("first racing command failed while second was {second:?}: {error:?}")
+                }),
+                second.expect("complete second racing command"),
+            )
+        });
+
+        let CommandExecutionResult::Committed(first) = first else {
+            panic!("first racing command must select a declared outcome");
+        };
+        let CommandExecutionResult::Committed(second) = second else {
+            panic!("second racing command must select a declared outcome");
+        };
+        let (create, delete) = if create_first {
+            (first, second)
+        } else {
+            (second, first)
+        };
+        assert_eq!(
+            create.stored_outcome().declared_outcome().outcome_id(),
+            database.outcome_id(
+                "PutExtraChild",
+                if create_first {
+                    "ExtraChildCreated"
+                } else {
+                    "Missing"
+                },
+            )
+        );
+        assert_eq!(
+            delete.stored_outcome().declared_outcome().outcome_id(),
+            database.outcome_id(
+                "DeleteRows",
+                if create_first {
+                    "CascadeLimitExceeded"
+                } else {
+                    "Deleted"
+                },
+            )
+        );
+
+        drop(executor);
+        coordinator
+            .shutdown()
+            .expect("drain cascade race coordinator");
+        let ports = database.open();
+        database.assert_rows_present(&ports, &[row_id], create_first);
+        database.assert_child_present(&ports, row_id, extra_child, create_first);
+    }
 }
 
 #[test]
@@ -266,7 +418,12 @@ fn execute_healthy(
             .expect("submit healthy collection command")
             .completion()
             .await
-            .expect("complete healthy collection command")
+            .unwrap_or_else(|error| {
+                panic!(
+                    "complete healthy {:?} collection command: {error:?}",
+                    operation
+                )
+            })
     });
     drop(executor);
     coordinator

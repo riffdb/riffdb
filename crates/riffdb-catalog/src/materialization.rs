@@ -284,9 +284,10 @@ impl ResolvedExecutablePlan {
 
     fn materialize_command_snapshot_with_positions(
         self,
-        positions: SnapshotPositionMap,
+        mut positions: SnapshotPositionMap,
         raw: ReadSnapshot,
     ) -> Result<CommandSnapshotMaterialization, CommandSnapshotMaterializationError> {
+        positions.retain_cascade_positions(&raw)?;
         validate_snapshot_shape(&self, &positions, &raw)?;
         match analyze_snapshot(&self, &positions, &raw)? {
             SnapshotAnalysis::Ready(masks) => {
@@ -374,6 +375,7 @@ impl fmt::Debug for InsertedNullMask {
 struct SnapshotMasks {
     bindings: Box<[Option<InsertedNullMask>]>,
     root_validations: Box<[Option<InsertedNullMask>]>,
+    cascade_predecessors: Box<[Option<InsertedNullMask>]>,
 }
 
 enum SnapshotAnalysis {
@@ -386,6 +388,8 @@ struct SnapshotPositionMap {
     binding_keys: Option<Box<[EntityKey]>>,
     root_plan_indices: Box<[usize]>,
     root_keys: Option<Box<[EntityKey]>>,
+    cascade_entity_types: Box<[riffdb_types::EntityTypeId]>,
+    cascade_keys: Box<[EntityKey]>,
     expected_ranges: usize,
 }
 
@@ -396,6 +400,8 @@ impl SnapshotPositionMap {
             binding_keys: None,
             root_plan_indices: (0..resolved.plan().root_validation_reads().len()).collect(),
             root_keys: None,
+            cascade_entity_types: Box::new([]),
+            cascade_keys: Box::new([]),
             expected_ranges: 0,
         }
     }
@@ -444,9 +450,14 @@ impl SnapshotPositionMap {
                 .iter()
                 .find(|check| check.binding() == binding.id())
                 .ok_or_else(CommandSnapshotMaterializationError::integrity)?;
-            if matches!(check.mode(), DeleteCheckModeV1::Restrict { .. }) {
+            let additional_ranges = match check.mode() {
+                DeleteCheckModeV1::Restrict { .. } => 1,
+                DeleteCheckModeV1::Cascade { relationships } => relationships.len(),
+                DeleteCheckModeV1::NoInbound => 0,
+            };
+            if additional_ranges != 0 {
                 expected_ranges = expected_ranges
-                    .checked_add(1)
+                    .checked_add(additional_ranges)
                     .ok_or_else(CommandSnapshotMaterializationError::integrity)?;
             }
         }
@@ -460,8 +471,30 @@ impl SnapshotPositionMap {
                     .to_vec()
                     .into_boxed_slice(),
             ),
+            cascade_entity_types: Box::new([]),
+            cascade_keys: Box::new([]),
             expected_ranges,
         })
+    }
+
+    fn retain_cascade_positions(
+        &mut self,
+        snapshot: &ReadSnapshot,
+    ) -> Result<(), CommandSnapshotMaterializationError> {
+        if !self.cascade_entity_types.is_empty() || !self.cascade_keys.is_empty() {
+            return Err(CommandSnapshotMaterializationError::integrity());
+        }
+        self.cascade_entity_types = snapshot
+            .cascade_predecessors()
+            .iter()
+            .map(|observation| observation.target().entity_type_id())
+            .collect();
+        self.cascade_keys = snapshot
+            .cascade_predecessors()
+            .iter()
+            .map(|observation| observation.target().key().clone())
+            .collect();
+        Ok(())
     }
 
     fn plan_index(
@@ -471,6 +504,7 @@ impl SnapshotPositionMap {
         match position {
             EntityObservationPosition::Binding(index) => self.binding_plan_indices.get(index),
             EntityObservationPosition::RootValidation(index) => self.root_plan_indices.get(index),
+            EntityObservationPosition::CascadePredecessor(_) => None,
         }
         .copied()
         .ok_or_else(CommandSnapshotMaterializationError::integrity)
@@ -484,6 +518,7 @@ impl SnapshotPositionMap {
             EntityObservationPosition::RootValidation(index) => {
                 self.root_keys.as_ref().and_then(|keys| keys.get(index))
             }
+            EntityObservationPosition::CascadePredecessor(index) => self.cascade_keys.get(index),
         }
     }
 }
@@ -508,6 +543,7 @@ fn validate_snapshot_shape(
     if snapshot.plan() != resolved.reference()
         || snapshot.bindings().len() != positions.binding_plan_indices.len()
         || snapshot.root_validations().len() != positions.root_plan_indices.len()
+        || snapshot.cascade_predecessors().len() != positions.cascade_entity_types.len()
         || snapshot.ranges().len() != positions.expected_ranges
     {
         return Err(CommandSnapshotMaterializationError::integrity());
@@ -545,12 +581,27 @@ fn validate_snapshot_shape(
             return Err(CommandSnapshotMaterializationError::integrity());
         }
     }
+    for (index, observation) in snapshot.cascade_predecessors().iter().enumerate() {
+        let position = EntityObservationPosition::CascadePredecessor(index);
+        let entity_type = positions
+            .cascade_entity_types
+            .get(index)
+            .copied()
+            .ok_or_else(CommandSnapshotMaterializationError::integrity)?;
+        if observation.target().entity_type_id() != entity_type
+            || positions.expected_key(position) != Some(observation.target().key())
+            || executing_schema(resolved, entity_type).is_err()
+        {
+            return Err(CommandSnapshotMaterializationError::integrity());
+        }
+    }
 
     let reconstructed = ReadDependencies::new(
         snapshot
             .bindings()
             .iter()
             .chain(snapshot.root_validations())
+            .chain(snapshot.cascade_predecessors())
             .map(ReadDependency::from_entity)
             .chain(snapshot.ranges().iter().map(ReadDependency::from_range)),
     )?;
@@ -562,6 +613,7 @@ fn validate_snapshot_shape(
         .bindings()
         .iter()
         .chain(snapshot.root_validations())
+        .chain(snapshot.cascade_predecessors())
     {
         if physical_by_target
             .insert(observation.target(), observation)
@@ -580,6 +632,7 @@ fn analyze_snapshot(
 ) -> Result<SnapshotAnalysis, CommandSnapshotMaterializationError> {
     let mut binding_masks = Vec::with_capacity(snapshot.bindings().len());
     let mut root_masks = Vec::with_capacity(snapshot.root_validations().len());
+    let mut cascade_masks = Vec::with_capacity(snapshot.cascade_predecessors().len());
     let mut combined_bytes = snapshot.semantic_bytes();
     let mut structural_mask_bytes = 0usize;
     let mut resource_limit = false;
@@ -595,6 +648,7 @@ fn analyze_snapshot(
             analysis,
             &mut binding_masks,
             &mut root_masks,
+            &mut cascade_masks,
             &mut combined_bytes,
             &mut structural_mask_bytes,
             &mut resource_limit,
@@ -611,6 +665,24 @@ fn analyze_snapshot(
             analysis,
             &mut root_masks,
             &mut binding_masks,
+            &mut cascade_masks,
+            &mut combined_bytes,
+            &mut structural_mask_bytes,
+            &mut resource_limit,
+        )?;
+    }
+    for (position, observation) in snapshot.cascade_predecessors().iter().enumerate() {
+        let analysis = analyze_observation(
+            resolved,
+            positions,
+            EntityObservationPosition::CascadePredecessor(position),
+            observation,
+        )?;
+        retain_analysis(
+            analysis,
+            &mut cascade_masks,
+            &mut binding_masks,
+            &mut root_masks,
             &mut combined_bytes,
             &mut structural_mask_bytes,
             &mut resource_limit,
@@ -624,10 +696,12 @@ fn analyze_snapshot(
         Ok(SnapshotAnalysis::ResourceLimit)
     } else if binding_masks.len() == snapshot.bindings().len()
         && root_masks.len() == snapshot.root_validations().len()
+        && cascade_masks.len() == snapshot.cascade_predecessors().len()
     {
         Ok(SnapshotAnalysis::Ready(SnapshotMasks {
             bindings: binding_masks.into_boxed_slice(),
             root_validations: root_masks.into_boxed_slice(),
+            cascade_predecessors: cascade_masks.into_boxed_slice(),
         }))
     } else {
         Err(CommandSnapshotMaterializationError::integrity())
@@ -639,6 +713,7 @@ fn retain_analysis(
     analysis: RecordAnalysis,
     destination: &mut Vec<Option<InsertedNullMask>>,
     other_destination: &mut Vec<Option<InsertedNullMask>>,
+    third_destination: &mut Vec<Option<InsertedNullMask>>,
     combined_bytes: &mut usize,
     structural_mask_bytes: &mut usize,
     resource_limit: &mut bool,
@@ -665,6 +740,7 @@ fn retain_analysis(
         *resource_limit = true;
         destination.clear();
         other_destination.clear();
+        third_destination.clear();
     } else if !*resource_limit {
         destination.push(analysis.mask);
     }
@@ -678,7 +754,11 @@ fn analyze_observation(
     observation: &EntityObservation,
 ) -> Result<RecordAnalysis, CommandSnapshotMaterializationError> {
     let EntityObservation::Present(record) = observation else {
-        if matches!(position, EntityObservationPosition::RootValidation(_)) {
+        if matches!(
+            position,
+            EntityObservationPosition::RootValidation(_)
+                | EntityObservationPosition::CascadePredecessor(_)
+        ) {
             return Err(CommandSnapshotMaterializationError::integrity());
         }
         return Ok(RecordAnalysis {
@@ -828,7 +908,12 @@ fn validate_record_key(
     entity: &EntitySchema,
     record: &StoredEntityRecordV1,
 ) -> Result<(), CommandSnapshotMaterializationError> {
-    let key_schema = key_schema_at_position(resolved, positions, position)?;
+    let key_schema = match position {
+        EntityObservationPosition::CascadePredecessor(_) => entity.primary_key(),
+        EntityObservationPosition::Binding(_) | EntityObservationPosition::RootValidation(_) => {
+            key_schema_at_position(resolved, positions, position)?
+        }
+    };
     if key_schema != entity.primary_key() {
         return Err(CommandSnapshotMaterializationError::integrity());
     }
@@ -970,6 +1055,7 @@ fn compare_current_dependencies(
             .bindings()
             .iter()
             .chain(current.root_validations())
+            .chain(current.cascade_predecessors())
             .map(ReadDependency::from_entity)
             .chain(
                 current
@@ -990,6 +1076,7 @@ fn validate_current_shape(
 ) -> Result<(), CommandSnapshotMaterializationError> {
     let entity_shape_matches = snapshot.bindings().len() == current.bindings().len()
         && snapshot.root_validations().len() == current.root_validations().len()
+        && snapshot.cascade_predecessors().len() == current.cascade_predecessors().len()
         && snapshot
             .bindings()
             .iter()
@@ -999,6 +1086,11 @@ fn validate_current_shape(
             .root_validations()
             .iter()
             .zip(current.root_validations())
+            .all(|(before, now)| before.target() == now.target())
+        && snapshot
+            .cascade_predecessors()
+            .iter()
+            .zip(current.cascade_predecessors())
             .all(|(before, now)| before.target() == now.target());
     let range_shape_matches = snapshot.ranges().len() == current.ranges().len()
         && snapshot
@@ -1032,6 +1124,22 @@ fn verify_current_against_normalized(
             EntityObservationPosition::Binding(position),
             retained,
             mask_at(masks, EntityObservationPosition::Binding(position))?,
+            raw,
+        )?;
+    }
+    for (position, (retained, raw)) in snapshot
+        .cascade_predecessors()
+        .iter()
+        .zip(current.cascade_predecessors())
+        .enumerate()
+    {
+        let observation_position = EntityObservationPosition::CascadePredecessor(position);
+        verify_raw_observation(
+            resolved,
+            positions,
+            observation_position,
+            retained,
+            mask_at(masks, observation_position)?,
             raw,
         )?;
     }
@@ -1085,6 +1193,7 @@ fn verify_current_against_raw(
 ) -> Result<(), CommandSnapshotMaterializationError> {
     if snapshot.bindings() == current.bindings()
         && snapshot.root_validations() == current.root_validations()
+        && snapshot.cascade_predecessors() == current.cascade_predecessors()
     {
         Ok(())
     } else {
@@ -1099,6 +1208,9 @@ fn mask_at(
     match position {
         EntityObservationPosition::Binding(index) => masks.bindings.get(index),
         EntityObservationPosition::RootValidation(index) => masks.root_validations.get(index),
+        EntityObservationPosition::CascadePredecessor(index) => {
+            masks.cascade_predecessors.get(index)
+        }
     }
     .map(Option::as_ref)
     .ok_or_else(CommandSnapshotMaterializationError::integrity)
@@ -1131,18 +1243,20 @@ fn entity_type_at_position(
     positions: &SnapshotPositionMap,
     position: EntityObservationPosition,
 ) -> Result<riffdb_types::EntityTypeId, CommandSnapshotMaterializationError> {
-    let plan_index = positions.plan_index(position)?;
     match position {
         EntityObservationPosition::Binding(_) => resolved
             .plan()
             .bindings()
-            .get(plan_index)
+            .get(positions.plan_index(position)?)
             .map(riffdb_contract_ir::BindingPlan::entity_type),
         EntityObservationPosition::RootValidation(_) => resolved
             .plan()
             .root_validation_reads()
-            .get(plan_index)
+            .get(positions.plan_index(position)?)
             .map(riffdb_contract_ir::RootValidationReadPlan::entity_type),
+        EntityObservationPosition::CascadePredecessor(index) => {
+            positions.cascade_entity_types.get(index).copied()
+        }
     }
     .ok_or_else(CommandSnapshotMaterializationError::integrity)
 }
@@ -1152,18 +1266,22 @@ fn key_schema_at_position<'a>(
     positions: &SnapshotPositionMap,
     position: EntityObservationPosition,
 ) -> Result<&'a KeySchema, CommandSnapshotMaterializationError> {
-    let plan_index = positions.plan_index(position)?;
     match position {
         EntityObservationPosition::Binding(_) => resolved
             .plan()
             .bindings()
-            .get(plan_index)
+            .get(positions.plan_index(position)?)
             .map(riffdb_contract_ir::BindingPlan::key_schema),
         EntityObservationPosition::RootValidation(_) => resolved
             .plan()
             .root_validation_reads()
-            .get(plan_index)
+            .get(positions.plan_index(position)?)
             .map(riffdb_contract_ir::RootValidationReadPlan::key_schema),
+        EntityObservationPosition::CascadePredecessor(index) => positions
+            .cascade_entity_types
+            .get(index)
+            .and_then(|entity_type| resolved.bundle().bundle().schema().entity(*entity_type))
+            .map(EntitySchema::primary_key),
     }
     .ok_or_else(CommandSnapshotMaterializationError::integrity)
 }
@@ -1929,6 +2047,7 @@ contract SnapshotMaterialization version {version} {{
         };
         let mut destination = Vec::new();
         let mut other = Vec::new();
+        let mut third = Vec::new();
         let mut combined_bytes = 0;
         let mut structural_mask_bytes = 0;
         let mut resource_limit = false;
@@ -1936,6 +2055,7 @@ contract SnapshotMaterialization version {version} {{
             analysis,
             &mut destination,
             &mut other,
+            &mut third,
             &mut combined_bytes,
             &mut structural_mask_bytes,
             &mut resource_limit,

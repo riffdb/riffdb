@@ -2860,7 +2860,11 @@ fn validate_intent_entity_derivation(
         return Err(StorageValueError::IdentityMismatch);
     }
 
-    for (intent_mutation, committed_mutation) in evaluated.mutations().iter().zip(committed) {
+    for intent_mutation in evaluated.mutations() {
+        let committed_mutation = committed
+            .iter()
+            .find(|mutation| mutation.target() == intent_mutation.target())
+            .ok_or(StorageValueError::IdentityMismatch)?;
         let expected = match intent_mutation {
             EntityMutation::Create(_) => ExpectedEntityState::Absent,
             EntityMutation::Replace {

@@ -948,7 +948,9 @@ pub struct SnapshotRequest {
     plan: ExecutablePlanRef,
     binding_targets: Vec<EntityTarget>,
     root_validation_targets: Vec<EntityTarget>,
+    cascade_targets: Vec<EntityTarget>,
     range_targets: Vec<IndexRangeTarget>,
+    range_entry_limits: Vec<usize>,
 }
 
 impl SnapshotRequest {
@@ -957,25 +959,84 @@ impl SnapshotRequest {
         plan: ExecutablePlanRef,
         binding_targets: Vec<EntityTarget>,
         root_validation_targets: Vec<EntityTarget>,
-        mut range_targets: Vec<IndexRangeTarget>,
+        range_targets: Vec<IndexRangeTarget>,
+    ) -> Result<Self, StorageValueError> {
+        let bounded_ranges = range_targets
+            .into_iter()
+            .map(|target| (target, MAX_SCAN_PAGE_ENTRIES))
+            .collect();
+        Self::new_bounded(
+            plan,
+            binding_targets,
+            root_validation_targets,
+            Vec::new(),
+            bounded_ranges,
+        )
+    }
+
+    /// Validates one cascade-discovery request with explicit predecessor
+    /// targets and compiler-declared per-range `maximum + 1` limits.
+    pub fn new_with_cascade(
+        plan: ExecutablePlanRef,
+        binding_targets: Vec<EntityTarget>,
+        root_validation_targets: Vec<EntityTarget>,
+        cascade_targets: Vec<EntityTarget>,
+        bounded_ranges: Vec<(IndexRangeTarget, u16)>,
+    ) -> Result<Self, StorageValueError> {
+        Self::new_bounded(
+            plan,
+            binding_targets,
+            root_validation_targets,
+            cascade_targets,
+            bounded_ranges
+                .into_iter()
+                .map(|(target, limit)| (target, usize::from(limit)))
+                .collect(),
+        )
+    }
+
+    fn new_bounded(
+        plan: ExecutablePlanRef,
+        binding_targets: Vec<EntityTarget>,
+        root_validation_targets: Vec<EntityTarget>,
+        cascade_targets: Vec<EntityTarget>,
+        mut bounded_ranges: Vec<(IndexRangeTarget, usize)>,
     ) -> Result<Self, StorageValueError> {
         let total = binding_targets
             .len()
             .checked_add(root_validation_targets.len())
-            .and_then(|value| value.checked_add(range_targets.len()))
+            .and_then(|value| value.checked_add(cascade_targets.len()))
+            .and_then(|value| value.checked_add(bounded_ranges.len()))
             .ok_or(StorageValueError::SizeOverflow)?;
         if total > MAX_COMMAND_READ_TARGETS {
             return Err(StorageValueError::LimitExceeded);
         }
-        range_targets.sort_unstable();
-        if range_targets.windows(2).any(|pair| pair[0] == pair[1]) {
+        let mut canonical_cascade_targets = cascade_targets.clone();
+        canonical_cascade_targets.sort_unstable();
+        if canonical_cascade_targets
+            .windows(2)
+            .any(|pair| pair[0] == pair[1])
+        {
             return Err(StorageValueError::Duplicate);
         }
+        if bounded_ranges
+            .iter()
+            .any(|(_, limit)| *limit == 0 || *limit > MAX_SCAN_PAGE_ENTRIES)
+        {
+            return Err(StorageValueError::LimitExceeded);
+        }
+        bounded_ranges.sort_unstable_by(|left, right| left.0.cmp(&right.0));
+        if bounded_ranges.windows(2).any(|pair| pair[0].0 == pair[1].0) {
+            return Err(StorageValueError::Duplicate);
+        }
+        let (range_targets, range_entry_limits) = bounded_ranges.into_iter().unzip();
         Ok(Self {
             plan,
             binding_targets,
             root_validation_targets,
+            cascade_targets,
             range_targets,
+            range_entry_limits,
         })
     }
 
@@ -997,10 +1058,22 @@ impl SnapshotRequest {
         &self.root_validation_targets
     }
 
+    /// Borrows discovered cascade predecessors in semantic graph order.
+    #[must_use]
+    pub fn cascade_targets(&self) -> &[EntityTarget] {
+        &self.cascade_targets
+    }
+
     /// Borrows ranges in canonical target-byte order.
     #[must_use]
     pub fn range_targets(&self) -> &[IndexRangeTarget] {
         &self.range_targets
+    }
+
+    /// Returns the maximum number of entries retained for one canonical range.
+    #[must_use]
+    pub fn range_entry_limit(&self, position: usize) -> Option<usize> {
+        self.range_entry_limits.get(position).copied()
     }
 }
 
@@ -1011,6 +1084,8 @@ pub enum EntityObservationPosition {
     Binding(usize),
     /// One internal root validation at its plan-local position.
     RootValidation(usize),
+    /// One discovered cascade predecessor in semantic graph order.
+    CascadePredecessor(usize),
 }
 
 /// A fully owned bounded snapshot with no live engine handle.
@@ -1020,6 +1095,7 @@ pub struct ReadSnapshot {
     observed_through: Option<CommitSequence>,
     bindings: Vec<EntityObservation>,
     root_validations: Vec<EntityObservation>,
+    cascade_predecessors: Vec<EntityObservation>,
     ranges: Vec<IndexRangeObservation>,
     read_dependencies: ReadDependencies,
     semantic_bytes: usize,
@@ -1036,6 +1112,7 @@ pub struct ReadSnapshotBuilder<'request> {
     observed_through: Option<CommitSequence>,
     bindings: Vec<EntityObservation>,
     root_validations: Vec<EntityObservation>,
+    cascade_predecessors: Vec<EntityObservation>,
     ranges: Vec<IndexRangeObservation>,
     dependencies: Vec<ReadDependency>,
     semantic_bytes: usize,
@@ -1054,6 +1131,7 @@ pub struct ReadSnapshotRangeBuilder<'builder, 'request> {
     observation_semantic_bytes: usize,
     dependency: ReadDependency,
     prepared_dependency: PreparedDependencyInsert,
+    entry_limit: usize,
 }
 
 #[derive(Clone, Copy)]
@@ -1079,6 +1157,7 @@ impl<'request> ReadSnapshotBuilder<'request> {
             observed_through,
             bindings: Vec::new(),
             root_validations: Vec::new(),
+            cascade_predecessors: Vec::new(),
             ranges: Vec::new(),
             dependencies: Vec::new(),
             semantic_bytes,
@@ -1120,6 +1199,27 @@ impl<'request> ReadSnapshotBuilder<'request> {
         self.retain_entity_observation(observation, false)
     }
 
+    /// Retains the next discovered cascade predecessor after charging it.
+    pub fn push_cascade_predecessor(
+        &mut self,
+        observation: EntityObservation,
+    ) -> Result<(), StorageValueError> {
+        if self.bindings.len() != self.request.binding_targets().len()
+            || self.root_validations.len() != self.request.root_validation_targets().len()
+        {
+            return Err(StorageValueError::IdentityMismatch);
+        }
+        let expected = self
+            .request
+            .cascade_targets()
+            .get(self.cascade_predecessors.len())
+            .ok_or(StorageValueError::IdentityMismatch)?;
+        if observation.target() != expected {
+            return Err(StorageValueError::IdentityMismatch);
+        }
+        self.retain_entity_observation(observation, false)
+    }
+
     /// Starts the next canonically ordered range observation.
     pub fn begin_range(
         &mut self,
@@ -1128,6 +1228,7 @@ impl<'request> ReadSnapshotBuilder<'request> {
     ) -> Result<ReadSnapshotRangeBuilder<'_, 'request>, StorageValueError> {
         if self.bindings.len() != self.request.binding_targets().len()
             || self.root_validations.len() != self.request.root_validation_targets().len()
+            || self.cascade_predecessors.len() != self.request.cascade_targets().len()
             || self.request.range_targets().get(self.ranges.len()) != Some(&target)
         {
             return Err(StorageValueError::IdentityMismatch);
@@ -1147,6 +1248,10 @@ impl<'request> ReadSnapshotBuilder<'request> {
             .checked_add(epoch_bytes + 4)
             .ok_or(StorageValueError::SizeOverflow)?;
         self.preview_charge(observation_bytes, prepared_dependency)?;
+        let entry_limit = self
+            .request
+            .range_entry_limit(self.ranges.len())
+            .ok_or(StorageValueError::IdentityMismatch)?;
 
         Ok(ReadSnapshotRangeBuilder {
             snapshot: self,
@@ -1157,6 +1262,7 @@ impl<'request> ReadSnapshotBuilder<'request> {
             observation_semantic_bytes: observation_bytes,
             dependency,
             prepared_dependency,
+            entry_limit,
         })
     }
 
@@ -1164,6 +1270,7 @@ impl<'request> ReadSnapshotBuilder<'request> {
     pub fn finish(self) -> Result<ReadSnapshot, StorageValueError> {
         if self.bindings.len() != self.request.binding_targets().len()
             || self.root_validations.len() != self.request.root_validation_targets().len()
+            || self.cascade_predecessors.len() != self.request.cascade_targets().len()
             || self.ranges.len() != self.request.range_targets().len()
         {
             return Err(StorageValueError::IdentityMismatch);
@@ -1173,6 +1280,7 @@ impl<'request> ReadSnapshotBuilder<'request> {
             observed_through: self.observed_through,
             bindings: self.bindings,
             root_validations: self.root_validations,
+            cascade_predecessors: self.cascade_predecessors,
             ranges: self.ranges,
             read_dependencies: ReadDependencies(self.dependencies),
             semantic_bytes: self.semantic_bytes,
@@ -1190,8 +1298,10 @@ impl<'request> ReadSnapshotBuilder<'request> {
         self.install_dependency(dependency, prepared_dependency);
         if binding {
             self.bindings.push(observation);
-        } else {
+        } else if self.root_validations.len() < self.request.root_validation_targets().len() {
             self.root_validations.push(observation);
+        } else {
+            self.cascade_predecessors.push(observation);
         }
         Ok(())
     }
@@ -1263,7 +1373,7 @@ impl<'request> ReadSnapshotBuilder<'request> {
 impl ReadSnapshotRangeBuilder<'_, '_> {
     /// Retains the next canonical range entry after both byte ceilings pass.
     pub fn push_entry(&mut self, entry: IndexRangeEntry) -> Result<(), StorageValueError> {
-        if self.entries.len() == MAX_SCAN_PAGE_ENTRIES {
+        if self.entries.len() == self.entry_limit {
             return Err(StorageValueError::LimitExceeded);
         }
         if entry.key.index_id() != self.target.prefix().index_id()
@@ -1365,14 +1475,40 @@ impl ReadSnapshot {
         root_validations: Vec<EntityObservation>,
         ranges: Vec<IndexRangeObservation>,
     ) -> Result<Self, StorageValueError> {
+        Self::new_with_cascade(
+            request,
+            observed_through,
+            bindings,
+            root_validations,
+            Vec::new(),
+            ranges,
+        )
+    }
+
+    /// Validates a complete cascade snapshot, including every discovered
+    /// predecessor and the reverse-index evidence used to discover it.
+    pub fn new_with_cascade(
+        request: &SnapshotRequest,
+        observed_through: Option<CommitSequence>,
+        bindings: Vec<EntityObservation>,
+        root_validations: Vec<EntityObservation>,
+        cascade_predecessors: Vec<EntityObservation>,
+        ranges: Vec<IndexRangeObservation>,
+    ) -> Result<Self, StorageValueError> {
         validate_entity_positions(request.binding_targets(), &bindings)?;
         validate_entity_positions(request.root_validation_targets(), &root_validations)?;
+        validate_entity_positions(request.cascade_targets(), &cascade_predecessors)?;
         if request.range_targets().len() != ranges.len()
             || request
                 .range_targets()
                 .iter()
                 .zip(&ranges)
                 .any(|(target, observation)| target != observation.target())
+            || ranges.iter().enumerate().any(|(position, observation)| {
+                request
+                    .range_entry_limit(position)
+                    .is_none_or(|limit| observation.entries().len() > limit)
+            })
         {
             return Err(StorageValueError::IdentityMismatch);
         }
@@ -1381,6 +1517,7 @@ impl ReadSnapshot {
             bindings
                 .iter()
                 .chain(&root_validations)
+                .chain(&cascade_predecessors)
                 .map(ReadDependency::from_entity)
                 .chain(ranges.iter().map(ReadDependency::from_range)),
         )?;
@@ -1389,6 +1526,7 @@ impl ReadSnapshot {
             observed_through,
             &bindings,
             &root_validations,
+            &cascade_predecessors,
             &ranges,
             &read_dependencies,
         )?;
@@ -1397,6 +1535,7 @@ impl ReadSnapshot {
             observed_through,
             bindings,
             root_validations,
+            cascade_predecessors,
             ranges,
             read_dependencies,
             semantic_bytes,
@@ -1425,6 +1564,12 @@ impl ReadSnapshot {
     #[must_use]
     pub fn root_validations(&self) -> &[EntityObservation] {
         &self.root_validations
+    }
+
+    /// Borrows cascade predecessors in semantic graph order.
+    #[must_use]
+    pub fn cascade_predecessors(&self) -> &[EntityObservation] {
+        &self.cascade_predecessors
     }
 
     /// Borrows canonical range observations.
@@ -1466,17 +1611,32 @@ impl ReadSnapshot {
             observed_through,
             bindings,
             root_validations,
+            cascade_predecessors,
             ranges,
             read_dependencies,
             semantic_bytes: _,
         } = self;
-        let bindings = try_map_present_observations(bindings, false, &mut mapper)?;
-        let root_validations = try_map_present_observations(root_validations, true, &mut mapper)?;
+        let bindings = try_map_present_observations(
+            bindings,
+            EntityObservationPosition::Binding,
+            &mut mapper,
+        )?;
+        let root_validations = try_map_present_observations(
+            root_validations,
+            EntityObservationPosition::RootValidation,
+            &mut mapper,
+        )?;
+        let cascade_predecessors = try_map_present_observations(
+            cascade_predecessors,
+            EntityObservationPosition::CascadePredecessor,
+            &mut mapper,
+        )?;
         let semantic_bytes = read_snapshot_semantic_bytes(
             &plan,
             observed_through,
             &bindings,
             &root_validations,
+            &cascade_predecessors,
             &ranges,
             &read_dependencies,
         )
@@ -1486,6 +1646,7 @@ impl ReadSnapshot {
             observed_through,
             bindings,
             root_validations,
+            cascade_predecessors,
             ranges,
             read_dependencies,
             semantic_bytes,
@@ -1504,6 +1665,11 @@ impl ReadSnapshot {
                 .collect(),
             root_validation_targets: self
                 .root_validations
+                .iter()
+                .map(|item| item.target().clone())
+                .collect(),
+            cascade_targets: self
+                .cascade_predecessors
                 .iter()
                 .map(|item| item.target().clone())
                 .collect(),
@@ -1532,7 +1698,7 @@ fn snapshot_fixed_semantic_bytes_for_plan(
         Some(_) => 1 + 8,
     };
     plan.semantic_bytes()
-        .and_then(|value| value.checked_add(observed_bytes + 4 + 4 + 4))
+        .and_then(|value| value.checked_add(observed_bytes + 4 + 4 + 4 + 4))
         .ok_or(StorageValueError::SizeOverflow)
 }
 
@@ -1541,17 +1707,18 @@ fn read_snapshot_semantic_bytes(
     observed_through: Option<CommitSequence>,
     bindings: &[EntityObservation],
     root_validations: &[EntityObservation],
+    cascade_predecessors: &[EntityObservation],
     ranges: &[IndexRangeObservation],
     read_dependencies: &ReadDependencies,
 ) -> Result<usize, StorageValueError> {
-    let observation_bytes =
-        bindings
-            .iter()
-            .chain(root_validations)
-            .try_fold(0usize, |sum, observation| {
-                sum.checked_add(observation.semantic_bytes()?)
-                    .ok_or(StorageValueError::SizeOverflow)
-            })?;
+    let observation_bytes = bindings
+        .iter()
+        .chain(root_validations)
+        .chain(cascade_predecessors)
+        .try_fold(0usize, |sum, observation| {
+            sum.checked_add(observation.semantic_bytes()?)
+                .ok_or(StorageValueError::SizeOverflow)
+        })?;
     let observation_bytes = ranges
         .iter()
         .try_fold(observation_bytes, |sum, observation| {
@@ -1575,6 +1742,7 @@ pub struct ValidationReadRequest {
     plan: ExecutablePlanRef,
     binding_targets: Vec<EntityTarget>,
     root_validation_targets: Vec<EntityTarget>,
+    cascade_targets: Vec<EntityTarget>,
     range_targets: Vec<IndexRangeTarget>,
 }
 
@@ -1597,6 +1765,12 @@ impl ValidationReadRequest {
         &self.root_validation_targets
     }
 
+    /// Borrows cascade predecessor targets in canonical target order.
+    #[must_use]
+    pub fn cascade_targets(&self) -> &[EntityTarget] {
+        &self.cascade_targets
+    }
+
     /// Borrows canonical range targets.
     #[must_use]
     pub fn range_targets(&self) -> &[IndexRangeTarget] {
@@ -1608,6 +1782,7 @@ impl ValidationReadRequest {
             &self.plan,
             &self.binding_targets,
             &self.root_validation_targets,
+            &self.cascade_targets,
             &self.range_targets,
         )
     }
@@ -1885,6 +2060,7 @@ const fn affected_epoch_current_fixed_semantic_bytes() -> usize {
 pub struct TransactionCurrentState {
     bindings: Vec<EntityObservation>,
     root_validations: Vec<EntityObservation>,
+    cascade_predecessors: Vec<EntityObservation>,
     ranges: Vec<CurrentRangeObservation>,
     semantic_bytes: usize,
 }
@@ -1898,6 +2074,7 @@ pub struct TransactionCurrentStateBuilder<'request> {
     request: &'request ValidationReadRequest,
     bindings: Vec<EntityObservation>,
     root_validations: Vec<EntityObservation>,
+    cascade_predecessors: Vec<EntityObservation>,
     ranges: Vec<CurrentRangeObservation>,
     semantic_bytes: usize,
 }
@@ -1910,6 +2087,7 @@ impl<'request> TransactionCurrentStateBuilder<'request> {
             request,
             bindings: Vec::new(),
             root_validations: Vec::new(),
+            cascade_predecessors: Vec::new(),
             ranges: Vec::new(),
             semantic_bytes: transaction_current_fixed_semantic_bytes(),
         }
@@ -1954,6 +2132,29 @@ impl<'request> TransactionCurrentStateBuilder<'request> {
         Ok(())
     }
 
+    /// Retains the next transaction-current cascade predecessor.
+    pub fn push_cascade_predecessor(
+        &mut self,
+        observation: EntityObservation,
+    ) -> Result<(), StorageValueError> {
+        if self.bindings.len() != self.request.binding_targets().len()
+            || self.root_validations.len() != self.request.root_validation_targets().len()
+        {
+            return Err(StorageValueError::IdentityMismatch);
+        }
+        let expected = self
+            .request
+            .cascade_targets()
+            .get(self.cascade_predecessors.len())
+            .ok_or(StorageValueError::IdentityMismatch)?;
+        if observation.target() != expected {
+            return Err(StorageValueError::IdentityMismatch);
+        }
+        self.retain_charge(observation.semantic_bytes()?)?;
+        self.cascade_predecessors.push(observation);
+        Ok(())
+    }
+
     /// Retains the next canonical range-epoch observation after charging it.
     pub fn push_range(
         &mut self,
@@ -1961,6 +2162,7 @@ impl<'request> TransactionCurrentStateBuilder<'request> {
     ) -> Result<(), StorageValueError> {
         if self.bindings.len() != self.request.binding_targets().len()
             || self.root_validations.len() != self.request.root_validation_targets().len()
+            || self.cascade_predecessors.len() != self.request.cascade_targets().len()
         {
             return Err(StorageValueError::IdentityMismatch);
         }
@@ -1981,6 +2183,7 @@ impl<'request> TransactionCurrentStateBuilder<'request> {
     pub fn finish(self) -> Result<TransactionCurrentState, StorageValueError> {
         if self.bindings.len() != self.request.binding_targets().len()
             || self.root_validations.len() != self.request.root_validation_targets().len()
+            || self.cascade_predecessors.len() != self.request.cascade_targets().len()
             || self.ranges.len() != self.request.range_targets().len()
         {
             return Err(StorageValueError::IdentityMismatch);
@@ -1988,6 +2191,7 @@ impl<'request> TransactionCurrentStateBuilder<'request> {
         Ok(TransactionCurrentState {
             bindings: self.bindings,
             root_validations: self.root_validations,
+            cascade_predecessors: self.cascade_predecessors,
             ranges: self.ranges,
             semantic_bytes: self.semantic_bytes,
         })
@@ -2014,8 +2218,20 @@ impl TransactionCurrentState {
         root_validations: Vec<EntityObservation>,
         ranges: Vec<CurrentRangeObservation>,
     ) -> Result<Self, StorageValueError> {
+        Self::new_with_cascade(request, bindings, root_validations, Vec::new(), ranges)
+    }
+
+    /// Validates exact positional coverage including cascade predecessors.
+    pub fn new_with_cascade(
+        request: &ValidationReadRequest,
+        bindings: Vec<EntityObservation>,
+        root_validations: Vec<EntityObservation>,
+        cascade_predecessors: Vec<EntityObservation>,
+        ranges: Vec<CurrentRangeObservation>,
+    ) -> Result<Self, StorageValueError> {
         validate_entity_positions(request.binding_targets(), &bindings)?;
         validate_entity_positions(request.root_validation_targets(), &root_validations)?;
+        validate_entity_positions(request.cascade_targets(), &cascade_predecessors)?;
         if request.range_targets().len() != ranges.len()
             || request
                 .range_targets()
@@ -2025,11 +2241,16 @@ impl TransactionCurrentState {
         {
             return Err(StorageValueError::IdentityMismatch);
         }
-        let semantic_bytes =
-            transaction_current_semantic_bytes(&bindings, &root_validations, &ranges)?;
+        let semantic_bytes = transaction_current_semantic_bytes(
+            &bindings,
+            &root_validations,
+            &cascade_predecessors,
+            &ranges,
+        )?;
         Ok(Self {
             bindings,
             root_validations,
+            cascade_predecessors,
             ranges,
             semantic_bytes,
         })
@@ -2045,6 +2266,12 @@ impl TransactionCurrentState {
     #[must_use]
     pub fn root_validations(&self) -> &[EntityObservation] {
         &self.root_validations
+    }
+
+    /// Borrows transaction-current cascade predecessors.
+    #[must_use]
+    pub fn cascade_predecessors(&self) -> &[EntityObservation] {
+        &self.cascade_predecessors
     }
 
     /// Borrows transaction-current range epochs.
@@ -2077,17 +2304,36 @@ impl TransactionCurrentState {
         let Self {
             bindings,
             root_validations,
+            cascade_predecessors,
             ranges,
             semantic_bytes: _,
         } = self;
-        let bindings = try_map_present_observations(bindings, false, &mut mapper)?;
-        let root_validations = try_map_present_observations(root_validations, true, &mut mapper)?;
-        let semantic_bytes =
-            transaction_current_semantic_bytes(&bindings, &root_validations, &ranges)
-                .map_err(E::from)?;
+        let bindings = try_map_present_observations(
+            bindings,
+            EntityObservationPosition::Binding,
+            &mut mapper,
+        )?;
+        let root_validations = try_map_present_observations(
+            root_validations,
+            EntityObservationPosition::RootValidation,
+            &mut mapper,
+        )?;
+        let cascade_predecessors = try_map_present_observations(
+            cascade_predecessors,
+            EntityObservationPosition::CascadePredecessor,
+            &mut mapper,
+        )?;
+        let semantic_bytes = transaction_current_semantic_bytes(
+            &bindings,
+            &root_validations,
+            &cascade_predecessors,
+            &ranges,
+        )
+        .map_err(E::from)?;
         Ok(Self {
             bindings,
             root_validations,
+            cascade_predecessors,
             ranges,
             semantic_bytes,
         })
@@ -2096,7 +2342,7 @@ impl TransactionCurrentState {
 
 fn try_map_present_observations<E, F>(
     observations: Vec<EntityObservation>,
-    root_validation: bool,
+    position: fn(usize) -> EntityObservationPosition,
     mapper: &mut F,
 ) -> Result<Vec<EntityObservation>, E>
 where
@@ -2113,12 +2359,7 @@ where
                 let entity_version = record.entity_version();
                 let written_by_contract = record.written_by_contract();
                 let schema_binding = record.schema_binding().clone();
-                let position = if root_validation {
-                    EntityObservationPosition::RootValidation(index)
-                } else {
-                    EntityObservationPosition::Binding(index)
-                };
-                let replacement = mapper(position, record)?;
+                let replacement = mapper(position(index), record)?;
                 if replacement.target() != &target
                     || replacement.entity_version() != entity_version
                     || replacement.written_by_contract() != written_by_contract
@@ -2135,16 +2376,21 @@ where
 fn transaction_current_semantic_bytes(
     bindings: &[EntityObservation],
     root_validations: &[EntityObservation],
+    cascade_predecessors: &[EntityObservation],
     ranges: &[CurrentRangeObservation],
 ) -> Result<usize, StorageValueError> {
-    let entity_bytes = bindings.iter().chain(root_validations).try_fold(
-        transaction_current_fixed_semantic_bytes(),
-        |total, observation| {
-            total
-                .checked_add(observation.semantic_bytes()?)
-                .ok_or(StorageValueError::SizeOverflow)
-        },
-    )?;
+    let entity_bytes = bindings
+        .iter()
+        .chain(root_validations)
+        .chain(cascade_predecessors)
+        .try_fold(
+            transaction_current_fixed_semantic_bytes(),
+            |total, observation| {
+                total
+                    .checked_add(observation.semantic_bytes()?)
+                    .ok_or(StorageValueError::SizeOverflow)
+            },
+        )?;
     let total = ranges.iter().try_fold(entity_bytes, |total, range| {
         total
             .checked_add(range.semantic_bytes()?)
@@ -2157,7 +2403,7 @@ fn transaction_current_semantic_bytes(
 }
 
 const fn transaction_current_fixed_semantic_bytes() -> usize {
-    4 + 4 + 4
+    4 + 4 + 4 + 4
 }
 
 /// Narrow synchronous command snapshot reader.
@@ -2202,15 +2448,17 @@ fn semantic_request_bytes(
     plan: &ExecutablePlanRef,
     binding_targets: &[EntityTarget],
     root_validation_targets: &[EntityTarget],
+    cascade_targets: &[EntityTarget],
     range_targets: &[IndexRangeTarget],
 ) -> Result<usize, StorageValueError> {
     let initial = plan
         .semantic_bytes()
-        .and_then(|value| value.checked_add(4 + 4 + 4))
+        .and_then(|value| value.checked_add(4 + 4 + 4 + 4))
         .ok_or(StorageValueError::SizeOverflow)?;
     let entities = binding_targets
         .iter()
         .chain(root_validation_targets)
+        .chain(cascade_targets)
         .try_fold(initial, |total, target| {
             total
                 .checked_add(target.semantic_bytes()?)
@@ -2402,6 +2650,110 @@ mod builder_tests {
         );
     }
 
+    #[test]
+    fn cascade_request_preserves_graph_order_and_canonicalizes_bounded_ranges() {
+        let plan = plan();
+        let first_child = target(1);
+        let second_child = target(2);
+        let first_range = range_target(IndexId::new(1).expect("first index"));
+        let second_range = range_target(IndexId::new(2).expect("second index"));
+
+        let request = SnapshotRequest::new_with_cascade(
+            plan.clone(),
+            Vec::new(),
+            Vec::new(),
+            vec![second_child.clone(), first_child.clone()],
+            vec![(second_range.clone(), 3), (first_range.clone(), 2)],
+        )
+        .expect("bounded cascade request");
+
+        assert_eq!(
+            request.cascade_targets(),
+            &[second_child.clone(), first_child.clone()]
+        );
+        assert_eq!(
+            request.range_targets(),
+            &[first_range.clone(), second_range.clone()]
+        );
+        assert_eq!(request.range_entry_limit(0), Some(2));
+        assert_eq!(request.range_entry_limit(1), Some(3));
+
+        assert_eq!(
+            SnapshotRequest::new_with_cascade(
+                plan.clone(),
+                Vec::new(),
+                Vec::new(),
+                vec![first_child.clone(), first_child],
+                Vec::new(),
+            ),
+            Err(StorageValueError::Duplicate)
+        );
+        assert_eq!(
+            SnapshotRequest::new_with_cascade(
+                plan.clone(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                vec![(first_range.clone(), 0)],
+            ),
+            Err(StorageValueError::LimitExceeded)
+        );
+        assert_eq!(
+            SnapshotRequest::new_with_cascade(
+                plan.clone(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                vec![(first_range.clone(), 1), (first_range, 2)],
+            ),
+            Err(StorageValueError::Duplicate)
+        );
+        assert_eq!(
+            SnapshotRequest::new_with_cascade(
+                plan,
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                vec![(
+                    second_range,
+                    u16::try_from(MAX_SCAN_PAGE_ENTRIES + 1).expect("limit fits u16"),
+                )],
+            ),
+            Err(StorageValueError::LimitExceeded)
+        );
+    }
+
+    #[test]
+    fn cascade_range_builder_rejects_maximum_plus_two_before_retention() {
+        let plan = plan();
+        let index = IndexId::first();
+        let range = range_target(index);
+        let request = SnapshotRequest::new_with_cascade(
+            plan,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            vec![(range.clone(), 2)],
+        )
+        .expect("maximum plus one request");
+        let mut snapshot = ReadSnapshotBuilder::new(&request, None).expect("snapshot builder");
+        let mut bounded = snapshot
+            .begin_range(range, IndexEpochPosition::BeforeFirst)
+            .expect("range builder");
+
+        bounded
+            .push_entry(range_entry(index, 1, 0))
+            .expect("first entry");
+        bounded
+            .push_entry(range_entry(index, 2, 0))
+            .expect("maximum plus one entry");
+        assert_eq!(
+            bounded.push_entry(range_entry(index, 3, 0)),
+            Err(StorageValueError::LimitExceeded)
+        );
+        assert_eq!(bounded.entries.len(), 2);
+    }
+
     fn range_entry(index: IndexId, order: u64, payload: usize) -> IndexRangeEntry {
         let mut key = IndexEntryKeyBuilder::new(index);
         key.push_u64(order).expect("index component");
@@ -2476,7 +2828,8 @@ mod builder_tests {
                         with_fields(source, record(final_payload + 1))
                     }
                     EntityObservationPosition::Binding(_)
-                    | EntityObservationPosition::RootValidation(_) => source,
+                    | EntityObservationPosition::RootValidation(_)
+                    | EntityObservationPosition::CascadePredecessor(_) => source,
                 })
             }),
             Err(StorageValueError::LimitExceeded)

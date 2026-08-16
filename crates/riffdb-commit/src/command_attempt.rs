@@ -155,8 +155,19 @@ impl PendingCommandAttempts {
 
     /// Returns whether this is a fresh synchronous terminal-admission attempt,
     /// the initial closed eligibility class for serial micro-batching.
-    pub(crate) const fn serial_micro_batch_eligible(&self) -> bool {
+    pub(crate) fn serial_micro_batch_eligible(&self) -> bool {
         self.terminal_admission
+            && !self
+                .resolved_plan
+                .plan()
+                .delete_checks()
+                .iter()
+                .any(|check| {
+                    matches!(
+                        check.mode(),
+                        riffdb_contract_ir::DeleteCheckModeV1::Cascade { .. }
+                    )
+                })
     }
 
     /// Returns whether the complete public service lifecycle is retained so a
@@ -980,6 +991,41 @@ impl AcquiredCommandAttempt {
     pub(crate) fn transaction_local_snapshot_request(&self) -> SnapshotRequest {
         self.state.snapshot_request.clone()
     }
+
+    /// Completes compiler-owned cascade discovery through the same private
+    /// transaction that produced the discovery snapshot.
+    pub(crate) fn complete_transaction_local_snapshot<F>(
+        &mut self,
+        discovery: ReadSnapshot,
+        read: F,
+    ) -> Result<ReadSnapshot, CommandAttemptError>
+    where
+        F: FnOnce(SnapshotRequest) -> Result<ReadSnapshot, StorageError>,
+    {
+        if !snapshot_matches_request(&self.state.snapshot_request, &discovery) {
+            return Err(CommandAttemptError::Integrity);
+        }
+        let facts = derive_input_command_facts(
+            self.state.resolved_plan.plan(),
+            self.state.normalized_input.clone(),
+        )
+        .map_err(|_| CommandAttemptError::Integrity)?;
+        match crate::command_index::lower_cascade_discovery(
+            &self.state.resolved_plan,
+            &facts,
+            &discovery,
+        )
+        .map_err(|_| CommandAttemptError::Integrity)?
+        {
+            crate::command_index::CascadeDiscoveryDecision::Complete => Ok(discovery),
+            crate::command_index::CascadeDiscoveryDecision::ReadPredecessors(request) => {
+                let request = *request;
+                let snapshot = read(request.clone()).map_err(CommandAttemptError::SnapshotRead)?;
+                self.state.snapshot_request = request;
+                Ok(snapshot)
+            }
+        }
+    }
 }
 
 /// Acquires the compiler-derived conflict capability without reading state.
@@ -1040,7 +1086,7 @@ pub(crate) fn evaluate_acquired_command_attempt_after_lookup(
     let raw_snapshot = snapshots
         .read_snapshot(state.snapshot_request.clone())
         .map_err(CommandAttemptError::SnapshotRead)?;
-    finish_acquired_evaluation(state, lease, raw_snapshot)
+    finish_acquired_discovery(state, lease, raw_snapshot, snapshots)
 }
 
 /// Finishes one acquired attempt from a snapshot materialized in the same
@@ -1049,13 +1095,44 @@ pub(crate) fn evaluate_acquired_command_attempt_after_lookup_and_snapshot(
     acquired: AcquiredCommandAttempt,
     durable: AdmissionLookupResultV1,
     raw_snapshot: ReadSnapshot,
+    snapshots: &dyn SnapshotReader,
 ) -> Result<CommandAttemptResolution, CommandAttemptError> {
     let (state, lease) = match lower_acquired_admission(acquired, durable)? {
         AcquiredAdmissionDecision::Continue { state, lease } => (state, lease),
         AcquiredAdmissionDecision::Complete(resolution) => return Ok(resolution),
     };
     check_request_control(state.deadline, &state.cancellation)?;
-    finish_acquired_evaluation(state, lease, raw_snapshot)
+    finish_acquired_discovery(state, lease, raw_snapshot, snapshots)
+}
+
+fn finish_acquired_discovery(
+    mut state: PendingCommandAttempts,
+    lease: CommandMutationAuthority,
+    discovery: ReadSnapshot,
+    snapshots: &dyn SnapshotReader,
+) -> Result<CommandAttemptResolution, CommandAttemptError> {
+    if !snapshot_matches_request(&state.snapshot_request, &discovery) {
+        return Err(CommandAttemptError::Integrity);
+    }
+    let facts =
+        derive_input_command_facts(state.resolved_plan.plan(), state.normalized_input.clone())
+            .map_err(|_| CommandAttemptError::Integrity)?;
+    match crate::command_index::lower_cascade_discovery(&state.resolved_plan, &facts, &discovery)
+        .map_err(|_| CommandAttemptError::Integrity)?
+    {
+        crate::command_index::CascadeDiscoveryDecision::Complete => {
+            finish_acquired_evaluation(state, lease, discovery)
+        }
+        crate::command_index::CascadeDiscoveryDecision::ReadPredecessors(request) => {
+            let request = *request;
+            check_request_control(state.deadline, &state.cancellation)?;
+            let snapshot = snapshots
+                .read_snapshot(request.clone())
+                .map_err(CommandAttemptError::SnapshotRead)?;
+            state.snapshot_request = request;
+            finish_acquired_evaluation(state, lease, snapshot)
+        }
+    }
 }
 
 #[allow(clippy::large_enum_variant)] // Move-only capability state stays inline on the hot path.
@@ -1369,6 +1446,12 @@ fn snapshot_matches_request(request: &SnapshotRequest, snapshot: &ReadSnapshot) 
             .root_validations()
             .iter()
             .zip(request.root_validation_targets())
+            .all(|(observation, target)| observation.target() == target)
+        && snapshot.cascade_predecessors().len() == request.cascade_targets().len()
+        && snapshot
+            .cascade_predecessors()
+            .iter()
+            .zip(request.cascade_targets())
             .all(|(observation, target)| observation.target() == target)
         && snapshot.ranges().len() == request.range_targets().len()
         && snapshot
