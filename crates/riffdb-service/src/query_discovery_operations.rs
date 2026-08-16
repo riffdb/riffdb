@@ -1569,11 +1569,17 @@ async fn discover_command_tools(
                 return Err(finish_failure(&service, &context, &begun, failure).await);
             }
         };
-        if generated.len() != module.module().queries().len() {
+        let tool_queries = module
+            .module()
+            .queries()
+            .iter()
+            .filter(|query| query.plan().secret_outputs().is_empty())
+            .collect::<Vec<_>>();
+        if generated.len() != tool_queries.len() {
             let failure = lower_integrity_failure(&service, OPERATION);
             return Err(finish_failure(&service, &context, &begun, failure).await);
         }
-        for (query, generated) in module.module().queries().iter().zip(generated) {
+        for (query, generated) in tool_queries.into_iter().zip(generated) {
             let query_name = match QueryOperationName::new(query.name().to_owned()) {
                 Ok(query_name) => query_name,
                 Err(_) => {

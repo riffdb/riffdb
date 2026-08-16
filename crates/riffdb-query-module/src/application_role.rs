@@ -24,6 +24,7 @@ const ROLE_MAGIC: &[u8] = b"RIFFDB-APPLICATION-ROLE\0";
 const ROLE_FORMAT_VERSION_V1: u32 = 1;
 const ROLE_FORMAT_VERSION_V2: u32 = 2;
 const ROLE_FORMAT_VERSION_V3: u32 = 3;
+const ROLE_FORMAT_VERSION_V4: u32 = 4;
 const MAX_ROLE_BYTES: usize = 1024 * 1024;
 
 /// Symbolic operation kind exposed by a compiled application role.
@@ -46,6 +47,50 @@ pub enum ApplicationRoleOperationKind {
 pub struct ApplicationRoleOperation {
     kind: ApplicationRoleOperationKind,
     name: String,
+}
+
+/// One symbolic secret-output authority atom derived from a selected query.
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub struct ApplicationRoleSecretOutput {
+    query: String,
+    entity: String,
+    entity_id: riffdb_types::EntityTypeId,
+    field: String,
+    field_id: riffdb_types::FieldId,
+}
+
+impl ApplicationRoleSecretOutput {
+    /// Selected named query.
+    #[must_use]
+    pub fn query(&self) -> &str {
+        &self.query
+    }
+
+    /// Exact contract entity symbol.
+    #[must_use]
+    pub fn entity(&self) -> &str {
+        &self.entity
+    }
+
+    /// Exact secret field symbol.
+    #[must_use]
+    pub fn field(&self) -> &str {
+        &self.field
+    }
+
+    /// Compiler-internal exact entity identity.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn internal_entity_id(&self) -> riffdb_types::EntityTypeId {
+        self.entity_id
+    }
+
+    /// Compiler-internal exact field identity.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn internal_field_id(&self) -> riffdb_types::FieldId {
+        self.field_id
+    }
 }
 
 /// One safe name-only row-policy description attached to a compiled role.
@@ -136,6 +181,7 @@ pub struct CompiledApplicationRole {
     module_hashes: Vec<QueryModuleHash>,
     reactive_module_hashes: Vec<ReactiveModuleHash>,
     operations: Vec<ApplicationRoleOperation>,
+    secret_outputs: Vec<ApplicationRoleSecretOutput>,
     row_policies: Vec<ApplicationRolePolicy>,
     principal_fact_schemas: Vec<ApplicationRoleFactSchema>,
     principal_fact_plans: Vec<PrincipalFactSchemaV1>,
@@ -210,6 +256,12 @@ impl CompiledApplicationRole {
     #[must_use]
     pub fn operations(&self) -> &[ApplicationRoleOperation] {
         &self.operations
+    }
+
+    /// Reviewed symbolic secret-output widenings derived from selected queries.
+    #[must_use]
+    pub fn secret_outputs(&self) -> &[ApplicationRoleSecretOutput] {
+        &self.secret_outputs
     }
 
     /// Safe symbolic row-policy catalog for this exact role.
@@ -450,6 +502,8 @@ fn compile_application_role_inner(
     permissions.push(read_contract.clone());
     let mut bound_permissions = vec![read_contract];
     let mut fields_by_entity = BTreeMap::<_, BTreeSet<_>>::new();
+    let mut secret_fields_by_entity = BTreeMap::<_, BTreeSet<_>>::new();
+    let mut secret_output_atoms = BTreeSet::new();
     let mut maximum_rows = 1_u64;
     let mut operations = Vec::with_capacity(role.queries().len() + role.commands().len());
 
@@ -496,6 +550,35 @@ fn compile_application_role_inner(
                     .map(|(_, field)| field)
                     .filter(|field| !primary.contains(field)),
             );
+        }
+        for requirement in query.plan().secret_outputs() {
+            if !contract.schema().is_secret_field(
+                requirement.internal_entity_id(),
+                requirement.internal_field_id(),
+            ) {
+                return Err(ApplicationRoleError::new(
+                    ApplicationRoleErrorKind::ContractMismatch,
+                ));
+            }
+            secret_fields_by_entity
+                .entry(requirement.internal_entity_id())
+                .or_default()
+                .insert(requirement.internal_field_id());
+            let atom = (
+                query_name.clone(),
+                requirement.entity().to_owned(),
+                requirement.internal_entity_id(),
+                requirement.field().to_owned(),
+                requirement.internal_field_id(),
+            );
+            if !secret_output_atoms.contains(&atom)
+                && secret_output_atoms.len() == riffdb_riffql_syntax::MAX_COLLECTION_ITEMS
+            {
+                return Err(ApplicationRoleError::new(
+                    ApplicationRoleErrorKind::RequirementLimit,
+                ));
+            }
+            secret_output_atoms.insert(atom);
         }
         // WP-570 freezes the symbolic policy proof and identities. Until
         // WP-572 installs the shared transaction-current evaluator, granting
@@ -641,14 +724,55 @@ fn compile_application_role_inner(
 
     let permissions = CapabilityPermissionsV1::new(permissions)
         .map_err(|_| ApplicationRoleError::new(ApplicationRoleErrorKind::RequirementLimit))?;
-    let field_visibility = fields_by_entity
+    let secret_outputs = secret_output_atoms
         .into_iter()
-        .filter_map(|(entity, fields)| {
-            (!fields.is_empty()).then_some(EntityFieldVisibilityV1::new(
+        .map(
+            |(query, entity, entity_id, field, field_id)| ApplicationRoleSecretOutput {
+                query,
+                entity,
+                entity_id,
+                field,
+                field_id,
+            },
+        )
+        .collect::<Vec<_>>();
+    for (entity, secret_fields) in &secret_fields_by_entity {
+        if let Some(ordinary_fields) = fields_by_entity.get_mut(entity) {
+            ordinary_fields.retain(|field| !secret_fields.contains(field));
+        }
+    }
+    let visibility_entities = fields_by_entity
+        .keys()
+        .chain(secret_fields_by_entity.keys())
+        .copied()
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .filter(|entity| {
+            fields_by_entity
+                .get(entity)
+                .is_some_and(|fields| !fields.is_empty())
+                || secret_fields_by_entity
+                    .get(entity)
+                    .is_some_and(|fields| !fields.is_empty())
+        })
+        .collect::<Vec<_>>();
+    let field_visibility = visibility_entities
+        .into_iter()
+        .map(|entity| {
+            EntityFieldVisibilityV1::with_secret_fields(
                 lineage.clone(),
                 entity,
-                fields.into_iter().collect(),
-            ))
+                fields_by_entity
+                    .remove(&entity)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .collect(),
+                secret_fields_by_entity
+                    .remove(&entity)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .collect(),
+            )
         })
         .collect::<Result<Vec<_>, _>>()
         .map_err(|_| ApplicationRoleError::new(ApplicationRoleErrorKind::RequirementLimit))?;
@@ -688,6 +812,7 @@ fn compile_application_role_inner(
         &operations,
         &row_policies,
         &principal_fact_schemas,
+        &secret_outputs,
         &base_grant,
     )?;
     let identity = hash_application_role(&canonical);
@@ -719,6 +844,7 @@ fn compile_application_role_inner(
         module_hashes,
         reactive_module_hashes,
         operations,
+        secret_outputs,
         row_policies,
         principal_fact_schemas,
         principal_fact_plans,
@@ -1095,12 +1221,15 @@ fn encode_role(
     operations: &[ApplicationRoleOperation],
     row_policies: &[ApplicationRolePolicy],
     principal_fact_schemas: &[ApplicationRoleFactSchema],
+    secret_outputs: &[ApplicationRoleSecretOutput],
     grant: &CapabilityGrantV1,
 ) -> Result<Vec<u8>, ApplicationRoleError> {
     let mut bytes = Vec::new();
     bytes.extend_from_slice(ROLE_MAGIC);
     bytes.extend_from_slice(
-        &(if manifest.schema() == crate::APPLICATION_MANIFEST_SCHEMA_V4 {
+        &(if !secret_outputs.is_empty() {
+            ROLE_FORMAT_VERSION_V4
+        } else if manifest.schema() == crate::APPLICATION_MANIFEST_SCHEMA_V4 {
             ROLE_FORMAT_VERSION_V3
         } else if reactive_module_hashes.is_empty() {
             ROLE_FORMAT_VERSION_V1
@@ -1151,10 +1280,33 @@ fn encode_role(
     for permission in grant.permissions().as_slice() {
         write_bytes(&mut bytes, &permission.canonical_key())?;
     }
-    for visibility in grant.field_visibility() {
-        bytes.extend_from_slice(&visibility.entity_type().to_be_bytes());
-        for field in visibility.fields() {
-            bytes.extend_from_slice(&field.to_be_bytes());
+    if secret_outputs.is_empty() {
+        for visibility in grant.field_visibility() {
+            bytes.extend_from_slice(&visibility.entity_type().to_be_bytes());
+            for field in visibility.fields() {
+                bytes.extend_from_slice(&field.to_be_bytes());
+            }
+        }
+    } else {
+        write_count(&mut bytes, grant.field_visibility().len())?;
+        for visibility in grant.field_visibility() {
+            bytes.extend_from_slice(&visibility.entity_type().to_be_bytes());
+            write_count(&mut bytes, visibility.fields().len())?;
+            for field in visibility.fields() {
+                bytes.extend_from_slice(&field.to_be_bytes());
+            }
+            write_count(&mut bytes, visibility.secret_fields().len())?;
+            for field in visibility.secret_fields() {
+                bytes.extend_from_slice(&field.to_be_bytes());
+            }
+        }
+        write_count(&mut bytes, secret_outputs.len())?;
+        for output in secret_outputs {
+            write_text(&mut bytes, output.query())?;
+            write_text(&mut bytes, output.entity())?;
+            bytes.extend_from_slice(&output.internal_entity_id().to_be_bytes());
+            write_text(&mut bytes, output.field())?;
+            bytes.extend_from_slice(&output.internal_field_id().to_be_bytes());
         }
     }
     bytes.extend_from_slice(&grant.max_scan_rows().get().to_be_bytes());

@@ -93,6 +93,36 @@ The parser accepts at most 1 MiB of UTF-8 source, 131,072 tokens/AST nodes,
 Diagnostics are value-free and use stable `RDB-QS001` through `RDB-QS009`
 codes.
 
+## Exact secret outputs (language V3)
+
+A newly compiled named query may return a stored `secret` field only when the
+result leaf declares the exact source once:
+
+```riffql
+return Found {
+    session: session {
+        token_hash reveals session.token_hash
+    }
+}
+```
+
+`reveals` is contextual; contracts, bindings, aliases, and fields may still be
+named `reveals`. The declaration is legal only on a direct stored scalar leaf,
+must match the projected binding and field exactly, and must name a
+secret-classified field. Missing, duplicate, ordinary-field, mismatched,
+record, aggregate, and excess declarations fail compilation with `RDB-QR007`.
+There is no wildcard, whole-record, expression, cursor, or parameter form, and
+one query is limited to 1,024 declared secret leaves.
+
+The declaration records review intent in RiffQL language V3 and query IR V4;
+it is not caller-supplied authority. Selecting the immutable query in an
+application role derives only its exact dedicated secret-field visibility.
+Without that current role authority, execution returns `RDB-AUTH-0214` before
+releasing any result. Secret-bearing named queries remain available through
+typed SDK and gRPC execution, but are omitted from MCP tool generation and
+cannot be referenced by reactive watches, live queries, hydrations, or
+contextual subscriptions.
+
 A `Limit` parameter is statically charged at its full 499-row page range,
 not at its default. The index-scan maxima of all bindings in one query are
 cumulative. Pages with multiple collections should use fixed `take` values

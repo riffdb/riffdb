@@ -301,6 +301,7 @@ impl OperationalQueryFamilyV1 {
         let authorization_union = authorization_union(&members)?;
         let maximum_cost = maximum_cost(&members)?;
         let canonical_bytes = encode_family(
+            surface.ir_version(),
             surface.canonical_bytes(),
             !surface.aggregates().is_empty(),
             &presence_parameters,
@@ -431,6 +432,7 @@ fn maximum_cost(members: &[OperationalPlanMemberV1]) -> Option<QueryCostVectorV1
 }
 
 fn encode_family(
+    ir_version: u32,
     surface: &[u8],
     has_aggregates: bool,
     parameters: &[String],
@@ -441,7 +443,9 @@ fn encode_family(
     let mut output = Vec::new();
     output.extend_from_slice(FAMILY_MAGIC);
     output.extend_from_slice(
-        &if has_aggregates {
+        &if ir_version == crate::QUERY_IR_VERSION_SECRET_OUTPUT_V1 {
+            crate::QUERY_IR_VERSION_SECRET_OUTPUT_V1
+        } else if has_aggregates {
             QUERY_IR_VERSION_OPERATIONAL_AGGREGATE_V1
         } else {
             QUERY_IR_VERSION_OPERATIONAL_V1

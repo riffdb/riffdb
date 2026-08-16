@@ -5,8 +5,8 @@ use crate::{
     MAX_AGGREGATE_BINDINGS, MAX_AGGREGATE_GROUP_KEYS, MAX_AGGREGATE_MEASURES, MAX_BINDINGS,
     MAX_COLLECTION_ITEMS, MAX_NESTING, MAX_SYNTAX_ITEMS, OrderTerm, Parameter, ParseDiagnostic,
     ParseDiagnostics, Path, QueryBody, RIFFQL_LANGUAGE_VERSION,
-    RIFFQL_LANGUAGE_VERSION_OPERATIONAL_V1, Selection, Span, Spanned, Take, TypeReference,
-    UnaryOperator,
+    RIFFQL_LANGUAGE_VERSION_OPERATIONAL_V1, RIFFQL_LANGUAGE_VERSION_SECRET_OUTPUT_V1, Selection,
+    Span, Spanned, Take, TypeReference, UnaryOperator,
 };
 
 /// Parses one UTF-8 RiffQL source document in a supported language version.
@@ -135,7 +135,9 @@ impl Parser {
             selection,
             outcomes,
         };
-        let language_version = if !body.aggregates.is_empty()
+        let language_version = if selection_uses_secret_output(&body.selection) {
+            RIFFQL_LANGUAGE_VERSION_SECRET_OUTPUT_V1
+        } else if !body.aggregates.is_empty()
             || body
                 .bindings
                 .iter()
@@ -476,6 +478,14 @@ impl Parser {
                     },
                 )
             };
+            let mut reveals = Vec::new();
+            while self.peek_secret_reveal_clause() {
+                if reveals.len() == MAX_COLLECTION_ITEMS {
+                    return Err(self.too_many());
+                }
+                self.expect_word("reveals")?;
+                reveals.push(self.spanned_path()?);
+            }
             let nested = if self.peek(TokenKind::LeftBrace) {
                 Some(self.selection()?)
             } else {
@@ -484,6 +494,7 @@ impl Parser {
             fields.push(FieldSelection {
                 alias,
                 source,
+                reveals,
                 nested,
             });
             let _ = self.take(TokenKind::Comma);
@@ -844,6 +855,22 @@ impl Parser {
         matches!(self.peek_kind(), Some(TokenKind::Ident(value)) if value == word)
     }
 
+    fn peek_secret_reveal_clause(&self) -> bool {
+        matches!(
+            self.tokens.get(self.index).map(|token| &token.kind),
+            Some(TokenKind::Ident(value)) if value == "reveals"
+        ) && matches!(
+            self.tokens.get(self.index + 1).map(|token| &token.kind),
+            Some(TokenKind::Ident(_))
+        ) && matches!(
+            self.tokens.get(self.index + 2).map(|token| &token.kind),
+            Some(TokenKind::Dot)
+        ) && matches!(
+            self.tokens.get(self.index + 3).map(|token| &token.kind),
+            Some(TokenKind::Ident(_))
+        )
+    }
+
     fn take_word(&mut self, word: &str) -> Option<Span> {
         if self.peek_word(word) {
             let span = self.tokens[self.index].span;
@@ -959,6 +986,16 @@ fn expression_uses_operational_syntax(expression: &Expression) -> bool {
         }
         Expression::Parameter(_) | Expression::Path(_) | Expression::Literal(_) => false,
     }
+}
+
+fn selection_uses_secret_output(selection: &Selection) -> bool {
+    selection.fields.iter().any(|field| {
+        !field.reveals.is_empty()
+            || field
+                .nested
+                .as_ref()
+                .is_some_and(selection_uses_secret_output)
+    })
 }
 
 // `nearest` is deliberately NOT reserved: the contract language does not

@@ -4,6 +4,24 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
 
+npm_cache="${RIFFDB_NPM_CACHE:-${TMPDIR:-/tmp}/riffdb-npm-cache}"
+ensure_typescript_dependencies() {
+    local project="$1"
+    if [[ ! -x "$project/node_modules/.bin/tsc" ]]; then
+        mkdir -p "$npm_cache"
+        npm --cache "$npm_cache" --prefix "$project" ci \
+            --ignore-scripts --no-audit --no-fund
+    fi
+}
+
+command -v npm >/dev/null 2>&1 || {
+    echo "application binding checks require npm" >&2
+    exit 1
+}
+ensure_typescript_dependencies "$repo_root/clients/typescript/runtime"
+ensure_typescript_dependencies "$repo_root/examples/agent-alpha/web"
+ensure_typescript_dependencies "$repo_root/examples/ticketdesk/web"
+
 ./scripts/check-generated
 ./scripts/check-application-boundary
 

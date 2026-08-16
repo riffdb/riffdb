@@ -173,6 +173,10 @@ fn format_field(output: &mut String, field: &FieldSelection, indentation: usize)
     } else {
         output.push_str(&format_path(&field.source.value));
     }
+    for reveals in &field.reveals {
+        output.push_str(" reveals ");
+        output.push_str(&format_path(&reveals.value));
+    }
     if let Some(nested) = &field.nested {
         output.push(' ');
         format_selection(output, nested, indentation);
