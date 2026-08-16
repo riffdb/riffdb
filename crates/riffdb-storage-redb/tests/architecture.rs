@@ -227,7 +227,7 @@ fn command_segment_preparation_workers_hold_no_authoritative_port() {
         );
     }
     assert!(source.contains("MAX_COMMAND_SEGMENT_PREPARATION_WORKERS: usize = 8"));
-    assert!(source.contains("capsules.len() <= 1"));
+    assert!(source.contains("capsules.len() <= 1 || self.worker_count == 0"));
 }
 
 #[test]
