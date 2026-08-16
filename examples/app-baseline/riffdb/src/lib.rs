@@ -12,8 +12,10 @@ mod server;
 use std::collections::{BTreeMap, VecDeque};
 use std::error::Error;
 use std::fmt;
+use std::future::Future;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::{Duration, Instant};
 
 use riffdb_app_baseline_core::{
     AppBackend, CloseTicketWithCommentSeed, CommentRow, CommentSeed, LabelRow,
@@ -30,7 +32,8 @@ use riffdb_client_rust::{
 use riffdb_ticketdesk::{
     AddProjectMemberInput, AttachLabelInput, CloseTicketWithCommentInput, CreateCommentInput,
     CreateLabelInput, CreateOrganizationInput, CreateProjectInput, CreateTicketInput,
-    CreateUserInput, OpenTicketWithLabelsInput, SwapMemberRolesInput, TicketDeskClient,
+    CreateUserInput, GetTicketParams, GetTicketResult, OpenTicketWithLabelsInput,
+    SwapMemberRolesInput, TicketDeskClient,
 };
 use tonic::transport::Endpoint;
 
@@ -84,6 +87,41 @@ pub struct RiffDbPublicBackend {
     history_incarnation: u64,
     /// Whether the projected catch-up + equivalence gates have passed.
     projected_gates_ready: bool,
+}
+
+/// One diagnostic-only timing tuple for a synchronous call into the real
+/// asynchronous generated client.
+///
+/// The tuple is produced by one call, so the bridge and asynchronous durations
+/// are paired rather than inferred by subtracting unrelated percentiles. It is
+/// not part of the frozen PERF-018 report or any application API.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PairedClientTiming {
+    /// Caller-observed duration around `Handle::block_on`.
+    pub outer: Duration,
+    /// Delay from entering `Handle::block_on` until the wrapper future begins.
+    pub runtime_entry: Duration,
+    /// Time awaiting the generated application-client future.
+    pub asynchronous_call: Duration,
+    /// Time after the wrapper future completes until `Handle::block_on` returns.
+    pub runtime_exit: Duration,
+}
+
+impl PairedClientTiming {
+    /// Complete synchronous bridge time outside the generated async future.
+    #[must_use]
+    pub fn bridge_only(self) -> Duration {
+        self.runtime_entry.saturating_add(self.runtime_exit)
+    }
+}
+
+/// One generated result accompanied by its diagnostic-only paired timing.
+#[derive(Debug)]
+pub struct PairedClientResult<T> {
+    /// Decoded generated operation result.
+    pub value: T,
+    /// Paired client timing for the same request.
+    pub timing: PairedClientTiming,
 }
 
 impl RiffDbPublicBackend {
@@ -170,6 +208,32 @@ impl RiffDbPublicBackend {
         })
     }
 
+    /// Opens an independent HTTP/2 connection without crossing the
+    /// synchronous benchmark bridge.
+    ///
+    /// This exists only for WP-632's non-evidentiary asynchronous shadow. The
+    /// frozen PERF-018 driver continues to use [`Self::fresh_session`].
+    pub async fn fresh_session_async(&self) -> Result<Self, RiffDbError> {
+        let transport = StableApplicationClient::connect(self.endpoint.clone())
+            .await
+            .map_err(|_| RiffDbError::Connection)?;
+        Ok(Self {
+            projected_channel: tokio::sync::OnceCell::new(),
+            endpoint: self.endpoint.clone(),
+            transport,
+            metadata: self.metadata.clone(),
+            bearer_token: self.bearer_token.clone(),
+            command_attempts: self.command_attempts,
+            runtime: self.runtime.clone(),
+            status_ids: self.status_ids,
+            contract_bundle_hash: self.contract_bundle_hash,
+            query_module_hash: self.query_module_hash,
+            last_seed_commit_sequence: self.last_seed_commit_sequence,
+            history_incarnation: self.history_incarnation,
+            projected_gates_ready: self.projected_gates_ready,
+        })
+    }
+
     /// Reconnects this logical application session to a restarted local daemon.
     async fn reconnect_endpoint(&self, endpoint: &str) -> Result<Self, RiffDbError> {
         let mut reconnected = Self::connect(
@@ -240,6 +304,73 @@ impl RiffDbPublicBackend {
         future: impl std::future::Future<Output = Result<T, RiffDbError>>,
     ) -> Result<T, RiffDbError> {
         self.runtime.clone().block_on(future)
+    }
+
+    fn block_on_paired<T>(
+        &self,
+        future: impl Future<Output = Result<T, RiffDbError>>,
+    ) -> Result<PairedClientResult<T>, RiffDbError> {
+        let outer_started = Instant::now();
+        let (runtime_entry, asynchronous_call, result) = self.runtime.clone().block_on(async {
+            let runtime_entry = outer_started.elapsed();
+            let async_started = Instant::now();
+            let result = future.await;
+            (runtime_entry, async_started.elapsed(), result)
+        });
+        let outer = outer_started.elapsed();
+        let runtime_exit = outer.saturating_sub(runtime_entry.saturating_add(asynchronous_call));
+        Ok(PairedClientResult {
+            value: result?,
+            timing: PairedClientTiming {
+                outer,
+                runtime_entry,
+                asynchronous_call,
+                runtime_exit,
+            },
+        })
+    }
+
+    /// Executes generated `GetTicket` directly on the asynchronous application
+    /// client used by real Rust applications.
+    ///
+    /// WP-632 uses this as a non-evidentiary shadow of the frozen synchronous
+    /// comparison. It invokes the same server operation and does not introduce
+    /// a transport or semantic fallback.
+    pub async fn get_ticket_generated_async(
+        &self,
+        organization_id: UuidBytes,
+        ticket_id: UuidBytes,
+    ) -> Result<Option<TicketRow>, RiffDbError> {
+        let result = self
+            .ticketdesk()
+            .get_ticket(GetTicketParams {
+                organization_id: uuid_text(organization_id),
+                ticket_id: uuid_text(ticket_id),
+            })
+            .await
+            .map_err(map_app)?;
+        match result {
+            GetTicketResult::Found(found) => Ok(Some(TicketRow {
+                organization_id,
+                ticket_id: parse_uuid_text(&found.ticket.ticket_id)?,
+                project_id: parse_uuid_text(&found.ticket.project_id)?,
+                reporter_id: parse_uuid_text(&found.ticket.reporter_id)?,
+                assignee_id: parse_uuid_text(&found.ticket.assignee_id)?,
+                status: parse_status_name(&found.ticket.status)?,
+                title: found.ticket.title,
+            })),
+            GetTicketResult::NotFound(_) => Ok(None),
+        }
+    }
+
+    /// Executes the same generated `GetTicket` through the frozen driver's
+    /// synchronous runtime bridge and returns paired diagnostic timing.
+    pub fn get_ticket_generated_paired(
+        &self,
+        organization_id: UuidBytes,
+        ticket_id: UuidBytes,
+    ) -> Result<PairedClientResult<Option<TicketRow>>, RiffDbError> {
+        self.block_on_paired(self.get_ticket_generated_async(organization_id, ticket_id))
     }
 }
 
@@ -1159,6 +1290,28 @@ impl SeedProgress {
 
 fn uuid_text(bytes: UuidBytes) -> String {
     format_uuid(bytes)
+}
+
+fn parse_uuid_text(text: &str) -> Result<UuidBytes, RiffDbError> {
+    if text.len() != 36 {
+        return Err(RiffDbError::Decode);
+    }
+    let mut out = [0_u8; 16];
+    let positions = [0, 2, 4, 6, 9, 11, 14, 16, 19, 21, 24, 26, 28, 30, 32, 34];
+    for (index, start) in positions.into_iter().enumerate() {
+        out[index] =
+            u8::from_str_radix(&text[start..start + 2], 16).map_err(|_| RiffDbError::Decode)?;
+    }
+    Ok(out)
+}
+
+fn parse_status_name(name: &str) -> Result<TicketStatus, RiffDbError> {
+    match name {
+        "Open" => Ok(TicketStatus::Open),
+        "Closed" => Ok(TicketStatus::Closed),
+        "InProgress" => Ok(TicketStatus::InProgress),
+        _ => Err(RiffDbError::Decode),
+    }
 }
 
 fn status_name(status: TicketStatus) -> &'static str {
