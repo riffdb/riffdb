@@ -1,8 +1,9 @@
 # ADR-0129: Bounded Prepared Command Finalization and Pay-Once Batch Apply
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Direction approved:** 2026-08-16 (maintainer)
-- **Exact text accepted:** No
+- **Exact text accepted:** 2026-08-16 (maintainer), including the PERF-008
+  reconciliation and WP-640 conditions below
 - **Decision deadline:** Before WP-640 changes command preparation, current-state
   validation, sequence assignment, or authoritative batch apply
 - **Requires:** ADR-0058, ADR-0059, ADR-0060, ADR-0094, ADR-0095, ADR-0096,
@@ -11,7 +12,8 @@
 
 Direction approval authorizes the WP-639 ledger and this draft. Because the
 decision changes where transaction-current proofs are constructed and consumed,
-AGENTS.md requires exact human acceptance before implementation.
+AGENTS.md required exact human acceptance before implementation; the maintainer
+accepted this revised text on 2026-08-16.
 
 ## Context
 
@@ -107,6 +109,22 @@ an optimization hint until the coordinator consumes it. Any mismatch rejects
 or retries under the existing semantics; there is no fallback that trusts a
 nearby body.
 
+This finalization is the transaction-current revalidation required by
+`PERF-008`, and it remains inside the sole writer transaction. In the
+journal-authoritative implementation, that transaction's exact current read
+view is the pinned applied base plus the sole writer's transaction-local,
+unpublished private frontier containing every earlier staged predecessor in
+the epoch. The frontier is neither a worker snapshot nor a previously accepted
+proof: it is mutable transaction-local state owned exclusively by the sole
+writer, and no other component can advance authoritative state concurrently.
+The writer reads and revalidates dependencies, absence, range/index epochs, row
+policy, idempotency, and conflict ownership from that exact view before it
+assigns a sequence or admits final apply. The later physical application
+materializes the same already-ordered transaction; it does not move or repeat
+transaction-current revalidation outside the writer transaction. Thus the
+private-frontier representation changes the transaction's physical staging,
+not `PERF-008`'s authority, freshness, or ordering boundary.
+
 ### 4. A private logical frontier permits bounded encoding overlap
 
 After finalization, the coordinator advances one unpublished logical frontier
@@ -131,6 +149,14 @@ once. It must not re-decode, re-normalize, re-hash, or reconstruct the mutation/
 event graph. Index-epoch compare-and-swap, allocator advancement, command rows,
 entities, indexes, outcomes, events, provenance, audit, outbox, and commit
 records remain one unpublished atomic application.
+
+After every epoch, the applied authoritative state must be identical to the
+private logical frontier that authorized it, including entity presence and
+postimages, index generations, allocator state, command identities, and the
+resulting application frontier. This frontier-equivalence invariant is checked
+under every deterministic schedule and by a bounded debug assertion at the
+epoch boundary. Any mismatch is an integrity failure before publication; it
+can never be repaired by trusting either side or releasing a partial prefix.
 
 ### 5. Ordering is exact but not accidentally global
 
@@ -176,6 +202,13 @@ requires all of these on both the workstation and N1:
   recovery, or write-p95 regression above five percent; and
 - exact group-size, frame-byte, physical-fence, and ordered-fence-latency
   evidence retained so a tail change cannot hide behind mean throughput.
+
+Production shutdown evidence also carries fixed-cardinality preparation-pool
+depth, reorder-buffer occupancy, and epoch-rollback count histograms/counters.
+Their dimensions and buckets are first-party constants independent of command
+count, history, tenant count, or database size. Proof mismatches, worker
+failures, and whole-epoch rollbacks therefore remain visible without exposing
+application values or creating unbounded labels.
 
 The candidate claims no unary c1 latency improvement. Pool handoff may not
 regress any unary command by more than five percent, and the release remains
@@ -250,6 +283,12 @@ policy, or transaction authority.
 - Deterministic schedules for every worker completion order, cancellation,
   panic, queue saturation, preparation mismatch, current dependency change,
   idempotency replay, row-policy change, conflict, group split, and shutdown.
+- Frontier-equivalence assertions after every scheduled epoch and a bounded
+  production debug assertion proving the private frontier equals the applied
+  state before publication.
+- Fixed-cardinality production telemetry tests for preparation-pool depth,
+  reorder-buffer occupancy, epoch rollbacks, and proof-mismatch storms, with
+  all aggregates retained in shutdown evidence and all values redacted.
 - Architecture tests proving workers cannot name storage, sequence assignment,
   durability, publication, clock, entropy, transport, or policy authority.
 - Production-port tests proving checked apply performs no second normalization,
@@ -273,4 +312,3 @@ policy, or transaction authority.
 Exact human acceptance is required before WP-640 changes transaction-current
 validation, command sequence assignment, writer-private state, or the storage
 apply port.
-
