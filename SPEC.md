@@ -7568,11 +7568,13 @@ behavior:
   partition route, authorization shape, explicit cost, bounded output, and a
   declared index/projection access path for every family member.
 - `OQ-003`: Operational predicates are limited to typed equality, range,
-  bounded membership, null/existence, prefix, conjunction, and compiler-capped
-  disjunction. An unindexed or excessive family MUST fail at compilation with
-  a source-spanned safe remedy.
+  bounded membership, null/existence, prefix, exact-profile suffix/substring,
+  conjunction, and compiler-capped disjunction. An unindexed or excessive
+  family MUST fail at compilation with a source-spanned safe remedy.
 - `OQ-004`: Every operational collection MUST be explicitly bounded and use a
-  snapshot-bound opaque cursor. Offset pagination remains unavailable.
+  snapshot-bound opaque cursor by default. Numeric offset is available only
+  through a compiler-declared indexed ordinal plan satisfying `OQ-028`; walking
+  and discarding rows or cursor pages is forbidden.
 - `OQ-005`: Top-N MUST use a total declared index/projection order or a fully
   charged compiler-bounded candidate set and MUST append a deterministic unique
   tie-breaker.
@@ -7585,9 +7587,11 @@ behavior:
 - `OQ-008`: Alpha text-key profiles are exact binary UTF-8 and one frozen
   Unicode normalization-plus-case-fold profile with checked tables. Changing a
   profile/table version MUST require index migration and identity rotation.
-- `OQ-009`: Operational text keys provide exact/leading-byte lookup only and
-  MUST NOT duplicate tokenization, stemming, scoring, corpus statistics,
-  snippets, or ranking from ADR-0092 full-text search.
+- `OQ-009`: Ordinary operational text keys provide exact/leading-byte lookup
+  only. A separately declared ADR-0131 exact-text profile MAY add suffix and
+  substring truth semantics, but MUST NOT duplicate tokenization, stemming,
+  scoring, corpus statistics, snippets, or ranking from ADR-0092 full-text
+  search.
 - `OQ-010`: Null/existence indexes MUST distinguish the contract's missing,
   null, and non-null states; the planner MUST NOT answer existence through an
   unbounded fetch-and-filter.
@@ -7609,6 +7613,83 @@ behavior:
 - `OQ-016`: Generated Rust, Go, TypeScript, Python, CLI, and MCP operational
   query methods MUST share one plan/schema/cursor/error corpus and prove all
   four adapter shapes without SQL, client filtering, or raw catalog access.
+- `OQ-017`: Every projection result provider MUST have one sealed canonical
+  versioned descriptor naming its exact/approximate posture, closed predicate,
+  rank/order, whole-result measure, facet, window, policy, freshness, bounds,
+  and provider-state capabilities. The compiler MUST pin the selected provider
+  and descriptor digest into the named module/plan; callers and runtime MUST
+  NOT select or substitute providers.
+- `OQ-018`: The provider descriptor and reference contract MUST be exercised by
+  the real columnar and per-organization exact/ANN vector engines before a new
+  provider consumes it. ADR-0092 BM25 MUST remain a compile-only descriptor
+  sketch in this package, with no runtime, durable artifact, adapter, or bridge.
+- `OQ-019`: A compiled result set MUST order candidate generation, policy and
+  filtering, optional ranking/total order, whole-result measures, windowing,
+  and typed output. Unsupported or inexact capability MUST fail compilation;
+  scan, N+1, materialize-all, client-filter, and silent precision/freshness
+  fallback are forbidden.
+- `OQ-020`: Each provider participant MUST publish one incarnation- and
+  generation-bound contiguous exact servable epoch interval plus declared
+  retention and catch-up obligations. A result set MUST select the newest epoch
+  in the complete interval intersection satisfying its freshness policy or
+  return a closed typed divergence, retired-snapshot, or freshness outcome.
+  Sustained breach under admitted load MUST degrade provider health rather than
+  be treated as normal typed refusal.
+- `OQ-021`: Partition-scoped provider state and statistics MUST be the primary
+  policy-enforcement mode, followed by compiler-proved policy-aligned
+  subpartitions. Per-row admission MAY refine only a statically bounded
+  candidate set before any count, facet, score, rank, offset, cursor, or work-
+  class choice; compilation MUST reject a plan whose policy mode cannot prevent
+  unauthorized influence.
+- `OQ-022`: Descriptor decoding and compatibility validation MUST be paid once
+  per deployment/catalog generation and provider-plan identity; epoch
+  negotiation MUST be paid once per opened result set and bound into its
+  continuation. Neither proof may be reconstructed per row, candidate,
+  measure, item, page, or provider call. Fresh authentication, authorization,
+  capability revision, and row/field policy checks remain mandatory per
+  request and safe point.
+- `OQ-023`: Cross-provider execution MUST require a later accepted real-
+  consumer plan with an explicit compiler-owned bounded bridge, policy and
+  epoch-transfer proof, cost and cardinality limits, version identity, and
+  independent evaluator. Compatible descriptors alone MUST NOT create bitmap,
+  ID, materialization, or other implicit transfer.
+- `OQ-024`: Every canonical descriptor, compiler artifact containing its
+  digest, and persisted rebuildable provider-state format MUST be registered
+  under ADR-0124 with exact readers, writers, fixtures, and transition rules
+  before merge. Runtime-only witnesses SHOULD remain unserialized and minimal.
+- `OQ-025`: A versioned exact-text profile MUST freeze bounded value and needle
+  types, normalization, equals/prefix/suffix/substring truth tables, empty/
+  null/missing behavior, provider-state identity, and write/storage/work
+  amplification. `binary_utf8_v1` MUST use valid canonical UTF-8 byte-sequence
+  semantics, reject an empty needle, and provide no regex, wildcard, locale,
+  tokenization, stemming, scoring, or corpus statistics.
+- `OQ-026`: Every exact-text field and finite predicate/order family MUST name
+  a declared exact provider profile whose partition, policy, operator, order,
+  measure, ordinal, field-size, and work bounds the compiler validates. Missing
+  or excessive support MUST produce a source-spanned diagnostic; entity scans,
+  page folds, cursor walks, remote row fetches, and materialize-all substitutes
+  are forbidden.
+- `OQ-027`: `exact_count` MUST measure the complete population admitted by the
+  named predicates and policy shape at the selected result-set epoch, without
+  materializing rows or folding an earlier `take`, page, candidate cap, or
+  approximate window. A combined page and total MUST share one plan, policy,
+  text profile, and epoch proof.
+- `OQ-028`: Numeric offset MUST be a bounded ordinal into a fully filtered total
+  order with a declared unique tie-breaker. Its provider MUST seek the ordinal
+  through indexed cardinality/order-statistic capability under static and
+  runtime work accounting; walking prior rows or pages is forbidden. Offset
+  stability is guaranteed only within the bound snapshot, and a new current-
+  snapshot request MAY observe intervening writes.
+- `OQ-029`: An exact operational search method MUST remain one finite compiler-
+  enumerated family of typed optional search, filter, total order, limit, and
+  offset inputs. No request may carry a field/index/provider name, arbitrary
+  operator, predicate/order/facet AST, cost hint, or consistency downgrade.
+- `OQ-030`: Rust, Go, TypeScript, Python, CLI, and MCP MUST share exact-text,
+  count, ordinal, snapshot, policy, error, and boundary fixtures. A real Better
+  Auth admin profile MUST prove contains/starts-with/ends-with, declared filters
+  and sorts, numeric offset, exact total, concurrent-write snapshot behavior,
+  and tenant/authorization isolation with no adapter-side filter, count, sort,
+  page walk, or query AST.
 
 ### 24.5.5 Compiled workflow concurrency
 
