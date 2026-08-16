@@ -855,10 +855,11 @@ fn riffdb_shutdown_evidence_json(evidence: &RiffDbShutdownEvidence) -> serde_jso
         "writer_flush_census": writer_flush_census,
         "authoritative_table_inventory": table_inventory,
         "table_inventory_scope": if evidence.table_inventory_before_measurement.is_some() {
-            "after_seed_before_measured_process_to_after_clean_shutdown"
+            "after_seed_before_measured_process_to_after_clean_shutdown_and_structural_reopen"
         } else {
-            "post_shutdown_inventory_only"
+            "post_shutdown_structural_reopen_inventory_only"
         },
+        "post_shutdown_structural_reopen": true,
         "table_page_note": "redb table pages attribute retained footprint; process_write_bytes attributes physical writes for the complete point",
         "labels": "closed_fixed_cardinality",
     })

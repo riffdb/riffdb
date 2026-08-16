@@ -533,11 +533,11 @@ impl RiffDbServerSession {
         evidence.table_inventory_before_measurement =
             self.table_inventory_before_measurement.take();
         evidence.table_inventory_after_measurement =
-            riffdb_storage_redb::benchmark_support::authoritative_table_inventory_v1(
+            riffdb_storage_redb::benchmark_support::authoritative_table_inventory_after_reopen_v1(
                 &database_path,
             )
             .map_err(|error| RiffDbError::Server {
-                detail: format!("read post-measurement table inventory: {error}"),
+                detail: format!("reopen and read post-measurement table inventory: {error}"),
             })?;
         Ok(evidence)
     }
