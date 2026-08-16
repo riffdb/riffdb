@@ -6,7 +6,7 @@
 **Tagline:** *Vibe fast. Commit safely.*  
 **Category:** Contract-first operational database for agent-built applications  
 
-**Version:** 1.00
+**Version:** 1.01
 **Status:** Deployable Application Alpha architecture accepted; implementation gated by work packages
 **Date:** 9 August 2026
 **Audience:** Coding agents, database engineers, compiler engineers, security reviewers, and technical product leads  
@@ -37,6 +37,7 @@
 
 | Version | Date | Summary |
 |---|---|---|
+| 1.01 | 2026-08-15 | Accepted ADR-0128 and registered QSO-001 through QSO-012 plus WP-634 and WP-635 for exact compiler-declared secret outputs in named RiffQL, least derived role authority, same-operation widening approval, SDK-only initial exposure, and Better Auth named-read acceptance without reveal-shaped commands. |
 | 1.00 | 2026-08-15 | Accepted ADR-0126 and registered DEL-001 through DEL-012 plus WP-628 through WP-630 for compiler-bounded one-hop cascade deletion, atomic runtime execution, and generated Better Auth lifecycle acceptance. |
 | 0.99 | 2026-08-15 | Accepted ADR-0124 and registered VER-001 through VER-008 plus WP-612 for one machine-readable topology over independently owned version domains, exact reader/writer windows and source pins, durable-manifest cross-checking, classified change review, and evidence-gated decoder retirement without a global runtime version. |
 | 0.98 | 2026-08-15 | Registered DX-037 through DX-040 and WP-611 for one immutable development publication identity materialized into loopback npm, Python Simple, Go module-proxy, and Cargo sparse registries, with fresh external-consumer acceptance and a hard boundary from signed production releases. |
@@ -7969,6 +7970,81 @@ machine-checkable). Requirements trace to ADR-0118 §Proposed Decision items
   breaking-epoch symbolic export/reimport, source/API compatibility, and
   decoder retirement, naming affected artifacts, last reader, replacement,
   operator action, downtime, backup, and downgrade posture where applicable.
+
+### 24.5.13 Compiler-declared secret outputs for named RiffQL
+
+The `QSO-*` prefix registers ADR-0128's named-query secret-output family.
+
+- `QSO-001`: A RiffQL leaf that directly returns one secret-classified stored
+  entity field MUST carry exactly one contextual `reveals` annotation naming
+  its exact resolved binding and field. Missing, duplicate, ordinary-field,
+  unresolved, differently bound, whole-record, aggregate, parameter, cursor,
+  excess, or more-than-1,024 declarations MUST fail at the relevant source
+  span; there is no wildcard, inferred, recursive, or whole-record form.
+- `QSO-002`: Every accepted declaration MUST produce a bounded canonical
+  secret-output requirement containing exact query/module, symbolic and
+  compiler-owned source identities, result path, source span, and contract
+  identity. Requirements MUST ride source maps, safe explain/catalog/schema
+  metadata, plan/module hashes, RiffQL language V3, query IR V4, and query-
+  module V4, while declaration-free sources retain least-sufficient V1 through
+  V3 bytes and identities.
+- `QSO-003`: A `reveals` annotation records disclosure intent only and MUST NOT
+  grant permission or field visibility. Submitted/ad-hoc source cannot mint
+  authority, and previously compiled V1 through V3 modules MUST NOT acquire
+  derived secret authority retroactively.
+- `QSO-004`: Application-role compilation MUST derive dedicated
+  `secret_fields` visibility solely from the exact declared returned leaves of
+  selected immutable named queries. Predicates, primary keys, indexes,
+  uniqueness, row-policy, cost, and other read dependencies MUST NOT become
+  secret outputs; application source and role configuration MUST expose no raw
+  or symbolic manual secret-field grant, wildcard, or escape.
+- `QSO-005`: Compiled-role codec V4 MUST canonically bind length-delimited
+  ordinary and secret visibility plus ordered per-query `(query, entity,
+  field)` secret-output authority atoms. Any atom change rotates role identity,
+  while roles without atoms retain their least-sufficient V1 through V3 bytes;
+  application source V6, manifest V4, lock V7, and role-definition V3 MUST NOT
+  advance merely because their existing exact hashes represent the new module.
+- `QSO-006`: Runtime MUST revalidate exact named-query/module/plan permission,
+  current capability, tenant/partition, row policy, ordinary visibility,
+  dedicated secret visibility, and budgets before release. Missing secret
+  authority MUST return `RDB-AUTH-0214` with no partial result or existence
+  signal; delegation only narrows, and unknown, incomplete, mismatched, or
+  unsupported V4 requirements fail closed before execution.
+- `QSO-007`: An accepted secret-revealing query MAY release its typed value
+  through the shared application service, gRPC, and generated Rust, Go,
+  TypeScript, and Python SDKs, whose schema metadata and diagnostic/debug/example
+  surfaces MUST remain structurally redacted. The initial feature MUST omit the
+  query from invocable MCP tools and reject its use by query watches, live
+  queries, contextual subscriptions, and other reactive outputs; CLI display
+  remains redacted absent its separately authorized explicit-reveal mode.
+- `QSO-008`: Installation authority diffs MUST use a closed symbolic vocabulary
+  of `Operation { kind, name }` and `QuerySecretOutput { query, entity, field }`
+  atoms, with no IDs, values, source text, or capability bytes. Each role MUST
+  cap operations and secret-output atoms at 1,024 each and 2,048 total, with
+  independently canonical desired and observed sets.
+- `QSO-009`: Every desired atom absent from an existing exact role MUST be a
+  widening addition requiring approval bound to the exact previous role hash
+  and complete canonical additions, including when the operation already exists
+  or another query already grants the same role-wide field. Missing, excess,
+  stale, renamed, or noncanonical approval MUST fail before capability creation;
+  removals narrow without approval.
+- `QSO-010`: Initial roles MUST display and bind their complete authority under
+  the installer's explicit confirmation. An identical-atom role-hash change is
+  identity rotation rather than widening but still requires exact successor
+  credential proof and predecessor revocation; no credential is widened or
+  overwritten in place.
+- `QSO-011`: Application installation-plan V3 MUST carry bounded authority
+  atoms plus optional reimport identity, while the least-sufficient writer
+  preserves V1/V2 bytes when no secret atom exists. Old readers and installers
+  that cannot observe atoms MUST refuse before mutation, the terminal receipt's
+  exact plan/role hashes MUST bind approval, and V1 through V3 plus all affected
+  query/role domains MUST be registered in the version topology with frozen
+  compatibility fixtures and cross-language conformance.
+- `QSO-012`: Better Auth acceptance MUST use named RiffQL for all reads,
+  including authorized secret outputs, and compiled commands for writes,
+  bounded cascades, and atomic verification consumption. It MUST NOT introduce
+  a read-only command solely to reveal stored secret query data; real state
+  transitions may retain declared one-time secret outcomes under SECF-006.
 
 The Deployable Application Alpha milestone is complete only when WP-550 through
 WP-570, WP-572 through WP-579, and WP-597, WP-598, and WP-600 pass in dependency

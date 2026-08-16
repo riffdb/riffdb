@@ -1,4 +1,4 @@
-spec_version: '1.00'
+spec_version: '1.01'
 product: RiffDB
 repository: riffdb
 status: deployable-application-alpha-architecture-accepted
@@ -13053,13 +13053,15 @@ work_packages:
   human_review_triggers: *id001
 - id: WP-630
   name: Generated cascade clients and Better Auth lifecycle acceptance
-  depends_on: [WP-562, WP-611, WP-629]
+  depends_on: [WP-562, WP-611, WP-629, WP-634, WP-635]
   objective: Publish the closed cascade command and overflow outcome through every generated
-    language and prove a real external Better Auth adapter can complete its bounded user lifecycle
-    without handwritten transaction, raw deletion, identity, session, or OAuth machinery in RiffDB.
-  requirements: [DEL-012]
+    language and prove a real external Better Auth adapter can use named RiffQL for every read,
+    including authorized secret output, while completing its bounded user lifecycle without a
+    reveal-shaped read command, handwritten transaction, raw deletion, identity, session, or
+    OAuth machinery in RiffDB.
+  requirements: [DEL-012, QSO-012]
   required_adrs: [ADR-0055, ADR-0056, ADR-0074, ADR-0106, ADR-0107, ADR-0112,
-    ADR-0120, ADR-0126]
+    ADR-0117, ADR-0118, ADR-0120, ADR-0126, ADR-0128]
   allowed_paths: [SPEC.md, work_packages.yaml, crates/riffdb-application/**,
     crates/riffdb-client-rust/**, crates/riffdb-driver-host/**, crates/riffdb-cli/**,
     crates/riffdb-api-mcp/**, crates/riffdb-query-module/**, clients/**, templates/**,
@@ -13069,7 +13071,8 @@ work_packages:
   - Generated Rust, Go, TypeScript, and Python methods, typed inputs, overflow outcomes, errors, and
     exact identities with no generic delete, transaction, raw transport, or kernel escape hatch
   - Immutable development-registry publication and fresh external Better Auth consumer proving
-    signup, exact lookup, session/account cleanup, bounded full-user deletion, and idempotent replay
+    signup, named exact and secret-bearing lookup, session/account cleanup, bounded full-user
+    deletion, atomic verification consumption, and idempotent replay with no reveal-only command
   - Overflow, authorization, row-policy, revocation, racing account/session creation, uncertainty,
     malformed-host, and mixed-version observations shared by the all-language conformance corpus
   - Handbook adapter guidance that keeps end-user identity and session behavior application-owned
@@ -13083,8 +13086,10 @@ work_packages:
   - ./scripts/check-requirement-coverage
   - ./scripts/handbook check
   exit_gate: Fresh external consumers in every supported language observe the same typed bounded
-    lifecycle and Better Auth completes full user deletion atomically without application-owned
-    transaction or raw storage glue; RiffDB remains independent of userland auth semantics.
+    lifecycle, Better Auth performs every read through named RiffQL including exact authorized
+    secret output, and full user deletion remains atomic without a reveal-only command,
+    application-owned transaction, or raw storage glue; RiffDB remains independent of userland
+    auth semantics.
   standing_design_tests:
     interface_safety: Generated surfaces expose only the compiler-owned named command and declared
       outcomes. The adapter owns user/session meaning while RiffDB owns safe atomic data mutation.
@@ -13178,4 +13183,115 @@ work_packages:
     scale: Diagnostic samples and histograms are fixed-cardinality and bounded; the shadow uses one
       existing persistent channel and retains no keys, values, credentials, or unbounded trace
       series. The proposed session ADR requires explicit finite in-flight, byte, and queue bounds.
+  human_review_triggers: *id001
+- id: WP-634
+  name: Compiler-declared RiffQL secret outputs and derived role authority
+  depends_on: [WP-565, WP-572, WP-600, WP-612]
+  objective: Implement ADR-0128's exact leaf-level RiffQL secret-output declaration, V4 query and
+    role identities, least compiler-derived dedicated field visibility, shared fail-closed runtime
+    release, and initial SDK-only surface boundary without activating installation reconciliation.
+  requirements: [QSO-001, QSO-002, QSO-003, QSO-004, QSO-005, QSO-006, QSO-007]
+  required_adrs: [ADR-0038, ADR-0055, ADR-0108, ADR-0111, ADR-0112, ADR-0118,
+    ADR-0124, ADR-0128]
+  allowed_paths: [SPEC.md, work_packages.yaml, adr/README.md,
+    adr/0128-compiler-declared-secret-outputs-for-named-riffql.md,
+    release/version-topology-v1.json,
+    crates/riffdb-riffql-syntax/**, crates/riffdb-query-ir/**,
+    crates/riffdb-query-compiler/**, crates/riffdb-query-module/**,
+    crates/riffdb-types/**, crates/riffdb-catalog/**, crates/riffdb-auth/**,
+    crates/riffdb-policy/**, crates/riffdb-service/**, crates/riffdb-api-grpc/**,
+    crates/riffdb-api-mcp/**, crates/riffdb-mcp-stdio/**,
+    fixtures/riffql/**, fixtures/query-modules/**, fixtures/application-locks/**,
+    fixtures/application-manifests/**, fixtures/application-parity/**,
+    fuzz/**, tests/**, scripts/**, docs/**]
+  deliverables:
+  - Contextual exact `reveals binding.secret_field` leaf grammar, formatter, AST, source maps, safe
+    explain/catalog/schema metadata, 1,024-leaf bound, and source-spanned negative corpus for every
+    missing, duplicate, ordinary, unresolved, mismatched, aggregate, record, or excess declaration
+  - Least-sufficient RiffQL language V3, query IR/module V4 envelope, and compiled-role codec V4
+    carrying canonical per-output requirements, dedicated secret field IDs, and ordered symbolic
+    query/entity/field atoms while freezing declaration-free V1 through V3 artifacts byte-for-byte
+  - Role compiler architecture proving no application source, ad-hoc query, dependency field,
+    wildcard, policy, index, primary key, or predicate can manufacture secret output authority
+  - Shared-service success/denial, delegation, revocation, row-policy, partial-release, mixed-runtime,
+    and identity-substitution tests retaining `RDB-AUTH-0214` whenever exact authority is absent
+  - Generated/catalog architecture checks that keep typed SDK/gRPC execution available while
+    omitting invocable MCP tools, redacting CLI/diagnostics, and rejecting watch/live/contextual or
+    other reactive references at compile time
+  acceptance_commands:
+  - cargo +1.97.0 test -p riffdb-riffql-syntax -p riffdb-query-ir -p riffdb-query-compiler -p riffdb-query-module --all-features
+  - cargo +1.97.0 test -p riffdb-types -p riffdb-auth -p riffdb-policy -p riffdb-service -p riffdb-api-mcp --all-features
+  - cargo +nightly-2026-07-12 fuzz run riffql_parser -- -max_total_time=60
+  - ./scripts/check-version-topology
+  - ./scripts/check-application-bindings
+  - ./scripts/check-generated
+  - ./scripts/check-requirement-coverage
+  - ./scripts/handbook check
+  - cargo +1.97.0 fmt --all -- --check
+  - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: Every newly compiled returned secret leaf has one exact declaration and V4 identity,
+    selected named roles derive only its least dedicated visibility, absent authority denies before
+    any release, old declaration-free artifacts remain exact, and no MCP/reactive path can expose it.
+  standing_design_tests:
+    interface_safety: Applications select only an immutable named query and typed values; they
+      cannot name field authority, convert annotations into grants, bypass current authorization,
+      or opt a secret-bearing query into an agent, stream, raw, kernel, or unredacted surface.
+    scale: Static result and role sets are count/byte bounded, and runtime reuses the existing exact
+      field-visibility release check without adding a scan, join, queue, retained row, or global lock.
+  human_review_triggers: *id001
+- id: WP-635
+  name: Exact secret-output widening approval and generated-client conformance
+  depends_on: [WP-568, WP-569, WP-611, WP-612, WP-634]
+  objective: Extend application installation to diff and approve exact symbolic secret-output
+    authority, publish least-sufficient V3 plans, and prove every generated language can perform an
+    authorized secret-bearing named read without silent widening or a reveal-shaped command.
+  requirements: [QSO-008, QSO-009, QSO-010, QSO-011]
+  required_adrs: [ADR-0055, ADR-0057, ADR-0106, ADR-0110, ADR-0112, ADR-0117,
+    ADR-0118, ADR-0120, ADR-0124, ADR-0128]
+  allowed_paths: [SPEC.md, work_packages.yaml, adr/README.md,
+    adr/0128-compiler-declared-secret-outputs-for-named-riffql.md,
+    release/version-topology-v1.json,
+    crates/riffdb-application/**, crates/riffdb-query-module/**,
+    crates/riffdb-client-rust/**, crates/riffdb-driver-host/**,
+    crates/riffdb-cli/**, crates/riffdb-api-grpc/**, crates/riffdb-api-mcp/**,
+    clients/**, templates/**, fixtures/installation/**,
+    fixtures/application-locks/**, fixtures/application-manifests/**,
+    fixtures/application-parity/**, fixtures/adapters/**, fixtures/driver/**,
+    examples/**, tests/**, scripts/**, docs/**, release/distribution/**]
+  deliverables:
+  - Closed symbolic `Operation` and `QuerySecretOutput` authority atoms with exact canonical desired
+    and observed sets capped at 1,024 of each and 2,048 total, containing no IDs, values, source
+    text, capability bytes, hidden schema, or unbounded diagnostic content
+  - Exact predecessor-bound widening approval for every added atom, including unchanged-operation
+    and already-role-visible field cases, plus narrowing, stale/excess/missing/noncanonical refusal,
+    identity-only rotation, successor proof, revocation, resume, and no-overwrite evidence
+  - Least-sufficient installation-plan V3 with optional reimport, frozen V1/V2 bytes and readers,
+    old-installer refusal, exact receipt binding, and complete installation-plan/query/role topology
+    registration and compatibility fixtures
+  - Generated Rust, Go, TypeScript, and Python result metadata, redaction, success, missing-authority,
+    revocation, malformed-host, mixed-version, and identical semantic observation conformance over
+    the shared named-query service path
+  - Handbook security, installation, compatibility, SDK, and adapter guidance distinguishing source
+    disclosure intent, derived runtime authority, reviewed widening, SDK release, and MCP/reactive
+    exclusion without documenting the deferred Better Auth external campaign as complete
+  acceptance_commands:
+  - cargo +1.97.0 test -p riffdb-application -p riffdb-query-module -p riffdb-client-rust -p riffdb-driver-host --all-features
+  - ./scripts/driver-conformance --all-languages --remote
+  - ./scripts/check-application-bindings
+  - ./scripts/check-driver-development-registry
+  - ./scripts/check-version-topology
+  - ./scripts/check-generated
+  - ./scripts/check-requirement-coverage
+  - ./scripts/handbook check
+  - cargo +1.97.0 fmt --all -- --check
+  - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: Every secret-output addition is visible and exactly approved before successor
+    capability creation, plans without the feature retain V1/V2 bytes, old installers refuse V3,
+    and all generated languages observe the same authorized named-query result and fail-closed denial.
+  standing_design_tests:
+    interface_safety: Installation exposes safe symbolic atoms only, cannot omit or broaden an
+      approval, and never mutates a credential in place; generated applications receive only the
+      named typed query method and no raw field, capability, transaction, transport, or MCP escape.
+    scale: Authority sets, plans, diffs, approvals, receipts, client values, and diagnostics are
+      count/byte bounded and add no database scan, retained stream, global state, or per-row metadata.
   human_review_triggers: *id001

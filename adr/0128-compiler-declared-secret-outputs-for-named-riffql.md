@@ -1,15 +1,15 @@
 # ADR-0128: Compiler-Declared Secret Outputs for Named RiffQL
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Direction approved:** 2026-08-15
-- **Exact text accepted:** No
+- **Exact text accepted:** Yes — 2026-08-15, maintainer acceptance as written
 - **Decision deadline:** Before WP-634 changes RiffQL grammar, query IR,
   compiled-role identity, installation authority diffs, or MCP query visibility
 - **Requires:** ADR-0055, ADR-0108, ADR-0110, ADR-0111, ADR-0112,
   ADR-0117, ADR-0118, and ADR-0124
-- **Amends if accepted:** ADR-0055's generated MCP presentation rule,
+- **Amends:** ADR-0055's generated MCP presentation rule,
   ADR-0110's role-widening diff, and ADR-0118's dedicated secret-field naming
-- **Defines or blocks if accepted:** WP-634 and WP-635; blocks WP-630's
+- **Defines or blocks:** WP-634 and WP-635; blocks WP-630's
   Better Auth lifecycle acceptance
 
 ## Context
