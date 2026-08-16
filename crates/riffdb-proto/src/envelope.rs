@@ -1,5 +1,6 @@
 //! Strict validation for versioned durable Protobuf envelopes.
 
+use std::time::Instant;
 use std::{error::Error, fmt};
 
 use crc::{CRC_32_ISCSI, Crc, Table};
@@ -310,6 +311,102 @@ impl<'a> RecordRegistry<'a> {
         Ok(message)
     }
 
+    /// Identical current-message decode with fixed-cardinality phase timing.
+    pub(crate) fn decode_current_message_profiled<M>(
+        &self,
+        encoded: &[u8],
+        expected_schema: &RecordSchema<'_>,
+    ) -> Result<(M, CurrentMessageDecodeProfileV1), EnvelopeError>
+    where
+        M: Message + Default,
+    {
+        let identity_started = Instant::now();
+        if encoded.len() > MAX_STORED_ENVELOPE_BYTES {
+            return Err(EnvelopeError::EnvelopeTooLarge);
+        }
+        if !encoded.starts_with(&COMPACT_RECORD_MAGIC_V2) {
+            let decoded = self.decode_v1(encoded)?;
+            if decoded.record_type() != expected_schema.record_type {
+                return Err(EnvelopeError::UnknownRecordType);
+            }
+            let identity_bounds_ns = elapsed_nanos(identity_started);
+            let prost_started = Instant::now();
+            let message = M::decode(decoded.payload())
+                .map_err(|_| EnvelopeError::InvalidPayload(PayloadValidationError::Malformed))?;
+            return Ok((
+                message,
+                CurrentMessageDecodeProfileV1 {
+                    identity_bounds_ns,
+                    prost_decode_ns: elapsed_nanos(prost_started),
+                    ..CurrentMessageDecodeProfileV1::default()
+                },
+            ));
+        }
+        if encoded.len() < COMPACT_RECORD_HEADER_V2_BYTES {
+            return Err(EnvelopeError::Malformed);
+        }
+        if encoded[4] != u8::try_from(STORAGE_FORMAT_VERSION_V2).expect("V2 fits u8") {
+            return Err(EnvelopeError::UnsupportedStorageFormatVersion);
+        }
+        let compact_tag = encoded[5];
+        let schema_revision = u16::from_be_bytes([encoded[6], encoded[7]]);
+        if compact_tag == 0 || schema_revision == 0 {
+            return Err(EnvelopeError::InvalidCompactIdentity);
+        }
+        let schema = self
+            .schemas
+            .iter()
+            .find(|schema| {
+                schema.compact_tag == compact_tag && schema.schema_revision == schema_revision
+            })
+            .ok_or(EnvelopeError::UnknownCompactIdentity)?;
+        if schema.record_type != expected_schema.record_type {
+            return Err(EnvelopeError::UnknownRecordType);
+        }
+        let payload_length =
+            u32::from_be_bytes([encoded[8], encoded[9], encoded[10], encoded[11]]) as usize;
+        let expected_length = COMPACT_RECORD_HEADER_V2_BYTES
+            .checked_add(payload_length)
+            .ok_or(EnvelopeError::EnvelopeTooLarge)?;
+        if expected_length != encoded.len() {
+            return Err(EnvelopeError::Malformed);
+        }
+        let payload = &encoded[COMPACT_RECORD_HEADER_V2_BYTES..];
+        if payload.len() > schema.max_payload_bytes {
+            return Err(EnvelopeError::PayloadTooLarge);
+        }
+        let identity_bounds_ns = elapsed_nanos(identity_started);
+        let checksum_started = Instant::now();
+        let checksum = u32::from_be_bytes([encoded[12], encoded[13], encoded[14], encoded[15]]);
+        if payload_crc32c(payload) != checksum {
+            return Err(EnvelopeError::ChecksumMismatch);
+        }
+        let checksum_ns = elapsed_nanos(checksum_started);
+        let preflight_started = Instant::now();
+        (schema.preflight_payload)(payload).map_err(EnvelopeError::InvalidPayload)?;
+        let wire_preflight_ns = elapsed_nanos(preflight_started);
+        let prost_started = Instant::now();
+        let message = M::decode(payload)
+            .map_err(|_| EnvelopeError::InvalidPayload(PayloadValidationError::Malformed))?;
+        let prost_decode_ns = elapsed_nanos(prost_started);
+        let canonical_started = Instant::now();
+        if message.encode_to_vec() != payload {
+            return Err(EnvelopeError::InvalidPayload(
+                PayloadValidationError::NonCanonical,
+            ));
+        }
+        Ok((
+            message,
+            CurrentMessageDecodeProfileV1 {
+                identity_bounds_ns,
+                checksum_ns,
+                wire_preflight_ns,
+                prost_decode_ns,
+                canonical_reencode_ns: elapsed_nanos(canonical_started),
+            },
+        ))
+    }
+
     /// Validates either readable framing and returns the canonical compact V2
     /// representation of the same exact semantic payload.
     pub fn transcode_to_v2(&self, encoded: &[u8]) -> Result<Vec<u8>, EnvelopeError> {
@@ -469,6 +566,20 @@ impl<'a> RecordRegistry<'a> {
             payload: payload.to_vec(),
         })
     }
+}
+
+/// Fixed-cardinality phase timing for one current generated-message decode.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct CurrentMessageDecodeProfileV1 {
+    pub(crate) identity_bounds_ns: u64,
+    pub(crate) checksum_ns: u64,
+    pub(crate) wire_preflight_ns: u64,
+    pub(crate) prost_decode_ns: u64,
+    pub(crate) canonical_reencode_ns: u64,
+}
+
+fn elapsed_nanos(started: Instant) -> u64 {
+    u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX)
 }
 
 /// Closed physical framing observed for one checked durable record.
@@ -942,6 +1053,32 @@ mod tests {
                 .expect_err("zero revision fails"),
             EnvelopeError::InvalidCompactIdentity
         );
+    }
+
+    #[test]
+    fn profiled_current_decode_preserves_exact_semantics() {
+        let schema = schema();
+        let schemas = [schema];
+        let registry = RecordRegistry::new(&schemas).expect("test registry is valid");
+        let encoded = encode(&schema, PROBE_PAYLOAD).expect("compact payload encodes");
+        let ordinary = registry
+            .decode_current_message::<CompatibilityProbe>(&encoded, &schema)
+            .expect("ordinary current decode succeeds");
+        let (profiled, _profile) = registry
+            .decode_current_message_profiled::<CompatibilityProbe>(&encoded, &schema)
+            .expect("profiled current decode succeeds");
+        assert_eq!(profiled, ordinary);
+
+        let mut corrupt = encoded;
+        corrupt[12] ^= 1;
+        let ordinary = registry
+            .decode_current_message::<CompatibilityProbe>(&corrupt, &schema)
+            .expect_err("ordinary checksum validation fails");
+        let profiled = registry
+            .decode_current_message_profiled::<CompatibilityProbe>(&corrupt, &schema)
+            .expect_err("profiled checksum validation fails");
+        assert_eq!(ordinary, profiled);
+        assert_eq!(ordinary, EnvelopeError::ChecksumMismatch);
     }
 
     #[test]

@@ -1388,6 +1388,7 @@ fn run_load(args: Args) -> Result<(), String> {
                 database_root: args.database_root.clone(),
                 allow_tmpfs: args.allow_tmpfs,
                 min_free_bytes: min_free_bytes_for_full(args.scale.name() == "full"),
+                query_execute_diagnostics: false,
             };
             let transport_topology = if args.load_saturate {
                 RiffDbTransport::PerSession

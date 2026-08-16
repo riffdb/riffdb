@@ -14,9 +14,10 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use riffdb_app_baseline_core::{AppBackend, LatencyHistogram, Scale, SeedDataset, TicketRow};
+use riffdb_app_baseline_postgres::{PostgresAppBackend, PostgresComparisonProfile};
 use riffdb_app_baseline_riffdb::{
-    PairedClientTiming, RiffDbPublicBackend, RiffDbReadStageEvidence, RiffDbServerSession,
-    RiffDbShutdownEvidence,
+    PairedClientTiming, RiffDbPublicBackend, RiffDbQueryExecuteEvidence, RiffDbReadStageEvidence,
+    RiffDbServerSession, RiffDbShutdownEvidence, ServerStartOptions,
 };
 use serde_json::{Value, json};
 
@@ -33,6 +34,8 @@ struct Args {
     scale: Scale,
     samples_per_client: usize,
     warmup_per_client: usize,
+    clients: Vec<usize>,
+    postgres_url: Option<String>,
 }
 
 #[derive(Debug, Default)]
@@ -96,7 +99,13 @@ fn main() -> Result<(), String> {
         .ok_or_else(|| "probe ticket absent from generated dataset".to_owned())?;
 
     let mut session = runtime
-        .block_on(RiffDbServerSession::start(&args.riffdbd_bin))
+        .block_on(RiffDbServerSession::start_with_options(
+            &args.riffdbd_bin,
+            ServerStartOptions {
+                query_execute_diagnostics: true,
+                ..ServerStartOptions::default()
+            },
+        ))
         .map_err(|error| error.to_string())?;
     session.backend.reset().map_err(|error| error.to_string())?;
     session
@@ -109,7 +118,8 @@ fn main() -> Result<(), String> {
     session = restarted;
 
     let mut cells = Vec::new();
-    for &clients in CLIENT_POINTS {
+    for &clients in &args.clients {
+        let synchronous_memory_before = process_memory_json(session.child_pid())?;
         let synchronous = run_synchronous_shape(
             &session.backend,
             &expected,
@@ -117,11 +127,13 @@ fn main() -> Result<(), String> {
             args.samples_per_client,
             args.warmup_per_client,
         )?;
+        let synchronous_memory_after = process_memory_json(session.child_pid())?;
         let (restarted, synchronous_server) = runtime
             .block_on(session.restart_for_measurement())
             .map_err(|error| error.to_string())?;
         session = restarted;
 
+        let asynchronous_memory_before = process_memory_json(session.child_pid())?;
         let asynchronous = runtime.block_on(run_asynchronous_shape(
             &session.backend,
             &expected,
@@ -129,6 +141,7 @@ fn main() -> Result<(), String> {
             args.samples_per_client,
             args.warmup_per_client,
         ))?;
+        let asynchronous_memory_after = process_memory_json(session.child_pid())?;
         let (restarted, asynchronous_server) = runtime
             .block_on(session.restart_for_measurement())
             .map_err(|error| error.to_string())?;
@@ -142,7 +155,21 @@ fn main() -> Result<(), String> {
             "frozen_synchronous_bridge": shape_json(&synchronous),
             "asynchronous_shadow": shape_json(&asynchronous),
             "synchronous_server_read_stages": read_stages_json(&synchronous_server),
+            "synchronous_server_query_execute_windows": query_execute_json(
+                synchronous_server.query_execute.as_ref(),
+            ),
+            "synchronous_server_memory_kib": {
+                "before": synchronous_memory_before,
+                "after": synchronous_memory_after,
+            },
             "asynchronous_server_read_stages": read_stages_json(&asynchronous_server),
+            "asynchronous_server_query_execute_windows": query_execute_json(
+                asynchronous_server.query_execute.as_ref(),
+            ),
+            "asynchronous_server_memory_kib": {
+                "before": asynchronous_memory_before,
+                "after": asynchronous_memory_after,
+            },
             "bookkeeping": {
                 "bridge_only_classification": "measurement_artifact_not_product_gain",
                 "asynchronous_call_classification": "customer_paid_product_path",
@@ -154,6 +181,19 @@ fn main() -> Result<(), String> {
     session
         .shutdown_with_evidence()
         .map_err(|error| error.to_string())?;
+    let postgres_safe_app_twin = args
+        .postgres_url
+        .as_deref()
+        .map(|url| {
+            run_postgres_safe_app_twin(
+                url,
+                &dataset,
+                &expected,
+                args.samples_per_client,
+                args.warmup_per_client,
+            )
+        })
+        .transpose()?;
 
     let report = json!({
         "schema": "riffdb.client-transport-attribution/v1",
@@ -180,6 +220,7 @@ fn main() -> Result<(), String> {
             "c32": "no_regression",
         },
         "cells": cells,
+        "postgres_safe_app_get_ticket_twin": postgres_safe_app_twin,
         "notes": [
             "The synchronous shape is observed but not modified; ordinary PERF-018 evidence remains frozen.",
             "Every paired tuple is captured around one generated GetTicket call; no p50-minus-mean attribution is used.",
@@ -196,6 +237,46 @@ fn main() -> Result<(), String> {
         println!("{encoded}");
     }
     Ok(())
+}
+
+fn run_postgres_safe_app_twin(
+    url: &str,
+    dataset: &SeedDataset,
+    expected: &TicketRow,
+    samples: usize,
+    warmup: usize,
+) -> Result<Value, String> {
+    let mut backend = PostgresAppBackend::new_with_profile(url, PostgresComparisonProfile::SafeApp)
+        .map_err(|error| error.to_string())?;
+    backend.reset().map_err(|error| error.to_string())?;
+    backend.seed(dataset).map_err(|error| error.to_string())?;
+    for _ in 0..warmup {
+        let observed = backend
+            .point_get_ticket(expected.organization_id, expected.ticket_id)
+            .map_err(|error| error.to_string())?;
+        require_expected(observed.as_ref(), expected)?;
+    }
+    let mut latency = LatencyHistogram::default();
+    let started = Instant::now();
+    for _ in 0..samples {
+        let call_started = Instant::now();
+        let observed = backend
+            .point_get_ticket(expected.organization_id, expected.ticket_id)
+            .map_err(|error| error.to_string())?;
+        require_expected(observed.as_ref(), expected)?;
+        latency.record(call_started.elapsed());
+    }
+    let elapsed = started.elapsed();
+    Ok(json!({
+        "profile": PostgresComparisonProfile::SafeApp.backend_id(),
+        "operation": "get_ticket",
+        "clients": 1,
+        "samples": samples,
+        "warmup": warmup,
+        "throughput_ops_s": throughput(1, samples, elapsed),
+        "elapsed_ns": u64::try_from(elapsed.as_nanos()).unwrap_or(u64::MAX),
+        "latency": latency.summary_json(),
+    }))
 }
 
 fn run_synchronous_shape(
@@ -359,12 +440,67 @@ fn read_stage_json(stage: &RiffDbReadStageEvidence) -> Value {
     })
 }
 
+fn query_execute_json(evidence: Option<&RiffDbQueryExecuteEvidence>) -> Value {
+    let Some(evidence) = evidence else {
+        return Value::Null;
+    };
+    json!({
+        "window_width": evidence.window_width,
+        "stage_names": evidence.stage_names,
+        "total_count": evidence.total_count,
+        "windows": evidence.windows.iter().enumerate().map(|(index, window)| json!({
+            "index": index,
+            "sample_start": u64::try_from(index).unwrap_or(u64::MAX)
+                .saturating_mul(evidence.window_width),
+            "count": window.count,
+            "stage_mean_ns": window.stage_ns.iter().map(|sum| {
+                sum.checked_div(window.count).unwrap_or(0)
+            }).collect::<Vec<_>>(),
+            "stage_sum_ns": window.stage_ns,
+            "overlay_transitions_mean": window.overlay_transitions_sum
+                .checked_div(window.count).unwrap_or(0),
+            "overlay_transitions_max": window.overlay_transitions_max,
+            "overlay_bytes_mean": window.overlay_bytes_sum
+                .checked_div(window.count).unwrap_or(0),
+            "overlay_bytes_max": window.overlay_bytes_max,
+        })).collect::<Vec<_>>(),
+    })
+}
+
+fn process_memory_json(pid: u32) -> Result<Value, String> {
+    let path = PathBuf::from(format!("/proc/{pid}/smaps_rollup"));
+    let encoded = fs::read_to_string(&path)
+        .map_err(|error| format!("read process memory snapshot: {error}"))?;
+    let mut values = serde_json::Map::new();
+    for line in encoded.lines() {
+        let Some((name, tail)) = line.split_once(':') else {
+            continue;
+        };
+        if !matches!(name, "Rss" | "Pss" | "Private_Dirty" | "Anonymous" | "Swap") {
+            continue;
+        }
+        let value = tail
+            .split_ascii_whitespace()
+            .next()
+            .ok_or_else(|| format!("missing process memory value for {name}"))?
+            .parse::<u64>()
+            .map_err(|_| format!("invalid process memory value for {name}"))?;
+        values.insert(name.to_owned(), Value::from(value));
+    }
+    if values.len() != 5 {
+        return Err("process memory snapshot omitted a required field".to_owned());
+    }
+    Ok(Value::Object(values))
+}
+
 fn parse_args() -> Result<Args, String> {
     let mut riffdbd_bin = None;
     let mut output = None;
     let mut scale = Scale::smoke();
     let mut samples_per_client = DEFAULT_SAMPLES_PER_CLIENT;
     let mut warmup_per_client = DEFAULT_WARMUP_PER_CLIENT;
+    let mut clients = CLIENT_POINTS.to_vec();
+    let mut postgres_url = None;
     let mut arguments = env::args_os().skip(1);
     while let Some(argument) = arguments.next() {
         let argument = argument
@@ -413,10 +549,42 @@ fn parse_args() -> Result<Args, String> {
                     MAX_WARMUP_PER_CLIENT,
                 )?;
             }
+            "--clients" => {
+                let value = arguments
+                    .next()
+                    .ok_or_else(|| "--clients requires comma-separated values".to_owned())?
+                    .into_string()
+                    .map_err(|_| "--clients must be UTF-8".to_owned())?;
+                clients = value
+                    .split(',')
+                    .map(|part| {
+                        part.parse::<usize>()
+                            .ok()
+                            .filter(|value| matches!(value, 1 | 8 | 32))
+                            .ok_or_else(|| "--clients values must be 1, 8, or 32".to_owned())
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                clients.sort_unstable();
+                clients.dedup();
+                if clients.is_empty() {
+                    return Err("--clients must select at least one cell".to_owned());
+                }
+            }
+            "--postgres-url" => {
+                postgres_url = Some(
+                    arguments
+                        .next()
+                        .ok_or_else(|| "--postgres-url requires a URL".to_owned())?
+                        .into_string()
+                        .map_err(|_| "--postgres-url must be UTF-8".to_owned())?,
+                );
+            }
             "--help" | "-h" => {
                 return Err(
                     "usage: riffdb-client-transport-diagnostic --riffdbd-bin PATH \
                      [--output PATH] [--scale smoke|full] \
+                     [--clients 1,8,32] \
+                     [--postgres-url URL] \
                      [--samples-per-client 1..10000] [--warmup-per-client 0..1000]"
                         .to_owned(),
                 );
@@ -437,6 +605,8 @@ fn parse_args() -> Result<Args, String> {
         scale,
         samples_per_client,
         warmup_per_client,
+        clients,
+        postgres_url,
     })
 }
 

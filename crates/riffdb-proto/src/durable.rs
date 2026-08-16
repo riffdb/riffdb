@@ -1427,6 +1427,41 @@ where
     readable_record_registry().decode_current_message(encoded, M::record_schema())
 }
 
+/// Fixed-cardinality phase timing for one exact current readable decode.
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct ReadableDecodeProfileV1 {
+    pub identity_bounds_ns: u64,
+    pub checksum_ns: u64,
+    pub wire_preflight_ns: u64,
+    pub prost_decode_ns: u64,
+    pub canonical_reencode_ns: u64,
+}
+
+/// Decodes through the identical readable path while returning phase timing.
+#[doc(hidden)]
+pub fn decode_readable_message_profiled<M>(
+    encoded: &[u8],
+) -> Result<(M, ReadableDecodeProfileV1), crate::envelope::EnvelopeError>
+where
+    M: ReadableRecordMessage + Default,
+{
+    readable_record_registry()
+        .decode_current_message_profiled(encoded, M::record_schema())
+        .map(|(message, profile)| {
+            (
+                message,
+                ReadableDecodeProfileV1 {
+                    identity_bounds_ns: profile.identity_bounds_ns,
+                    checksum_ns: profile.checksum_ns,
+                    wire_preflight_ns: profile.wire_preflight_ns,
+                    prost_decode_ns: profile.prost_decode_ns,
+                    canonical_reencode_ns: profile.canonical_reencode_ns,
+                },
+            )
+        })
+}
+
 macro_rules! readable_v1_message {
     ($index:literal, $message:ty) => {
         impl sealed::ReadableRecordMessage for $message {}

@@ -64,6 +64,59 @@ pub fn writer_command_frame_census_v1() -> [u64; 6] {
 pub fn writer_command_flush_census_v1() -> [u64; 7] {
     journal::command_flush_census()
 }
+
+/// Fixed execute-stage order for the bounded query-growth diagnostic.
+#[doc(hidden)]
+pub const QUERY_EXECUTE_STAGE_LABELS_V1: [&str; 14] = [
+    "publication_outer_lock",
+    "publication_view_capture",
+    "frontier_capture",
+    "point_lookup",
+    "envelope_identity_bounds",
+    "payload_checksum",
+    "wire_preflight",
+    "prost_decode",
+    "canonical_reencode",
+    "semantic_reconstruct",
+    "target_validate",
+    "row_policy",
+    "row_materialize",
+    "program_drive_exclusive",
+];
+
+/// Number of query-execute samples merged into one ordinal window.
+#[doc(hidden)]
+pub const QUERY_EXECUTE_WINDOW_WIDTH_V1: usize = 256;
+/// Maximum retained ordinal windows; the final window absorbs later samples.
+#[doc(hidden)]
+pub const QUERY_EXECUTE_WINDOW_COUNT_V1: usize = 64;
+
+/// One bounded query-execute ordinal window.
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct QueryExecuteWindowV1 {
+    pub count: u64,
+    pub stage_ns: [u64; QUERY_EXECUTE_STAGE_LABELS_V1.len()],
+    pub overlay_transitions_sum: u64,
+    pub overlay_transitions_max: u64,
+    pub overlay_bytes_sum: u64,
+    pub overlay_bytes_max: u64,
+}
+
+/// Complete fixed-cardinality process-generation query-execute census.
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct QueryExecuteCensusV1 {
+    pub total_count: u64,
+    pub windows: [QueryExecuteWindowV1; QUERY_EXECUTE_WINDOW_COUNT_V1],
+}
+
+/// Returns bounded operation-ordinal execute timing for this process.
+#[doc(hidden)]
+#[must_use]
+pub fn query_execute_census_v1() -> QueryExecuteCensusV1 {
+    query::query_execute_census_v1()
+}
 mod transient;
 mod validated_prefix;
 

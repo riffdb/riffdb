@@ -492,6 +492,24 @@ pub fn decode_entity_record_v1(
     decode_message::<wire::StoredEntityRecordV1, _, _>(ENTITY, encoded, entity_from_proto)
 }
 
+/// Decodes one authoritative entity row with fixed-cardinality phase timing.
+#[doc(hidden)]
+pub fn decode_entity_record_v1_profiled(
+    encoded: &[u8],
+) -> Result<
+    (
+        EncodedPageItem<StoredEntityRecordV1>,
+        super::DurableReadDecodeProfileV1,
+    ),
+    DurableCodecError,
+> {
+    super::decode_message_profiled::<wire::StoredEntityRecordV1, _, _>(
+        ENTITY,
+        encoded,
+        entity_from_proto,
+    )
+}
+
 /// Encodes one current authoritative index-entry post-image.
 pub fn encode_index_entry_v2(
     value: &StoredIndexEntryV2,

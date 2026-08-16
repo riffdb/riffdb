@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Mutex, RwLock};
+use std::time::Instant;
 
 use redb::{
     Builder, Database, Durability, MultimapTableHandle, ReadTransaction, ReadableDatabase,
@@ -369,6 +370,31 @@ impl SharedRedb {
         drop(composite);
         self.begin_operational_read()
     }
+
+    fn begin_composite_operational_read_profiled(
+        &self,
+    ) -> Result<(RedbReadAccess, CompositeReadAcquireProfileV1), StorageError> {
+        let outer_started = Instant::now();
+        let composite = self
+            .composite_publication
+            .read()
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+        let outer_lock_ns = elapsed_nanos(outer_started);
+        let view_started = Instant::now();
+        let access = if let Some(publication) = composite.as_ref() {
+            RedbReadAccess::Composite(publication.capture()?)
+        } else {
+            drop(composite);
+            self.begin_operational_read()?
+        };
+        Ok((
+            access,
+            CompositeReadAcquireProfileV1 {
+                outer_lock_ns,
+                view_capture_ns: elapsed_nanos(view_started),
+            },
+        ))
+    }
 }
 
 /// A dormant handle to one redb-backed RiffDB database.
@@ -604,6 +630,16 @@ struct AsyncJournalCheckpoint {
     result: Option<Result<(), StorageError>>,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct CompositeReadAcquireProfileV1 {
+    pub(crate) outer_lock_ns: u64,
+    pub(crate) view_capture_ns: u64,
+}
+
+fn elapsed_nanos(started: Instant) -> u64 {
+    u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX)
+}
+
 pub struct RedbSubmittedCommandFence {
     shared: Arc<SharedRedb>,
     receipt: Option<crate::journal::JournalFenceReceipt>,
@@ -636,6 +672,16 @@ pub(crate) enum RedbReadAccess {
 }
 
 impl RedbReadAccess {
+    pub(crate) fn composite_overlay_diagnostic(&self) -> (u64, u64) {
+        match self {
+            Self::Composite(view) => (
+                u64::try_from(view.overlay().transition_count()).unwrap_or(u64::MAX),
+                u64::try_from(view.overlay().charged_bytes()).unwrap_or(u64::MAX),
+            ),
+            Self::Current(_) | Self::Durable(_) => (0, 0),
+        }
+    }
+
     #[allow(
         dead_code,
         reason = "WP-487 introduces the composite root; WP-488 publishes it"
@@ -3346,6 +3392,12 @@ impl RedbOperationalPorts {
 
     pub(crate) fn begin_composite_read(&self) -> Result<RedbReadAccess, StorageError> {
         self.shared.begin_composite_operational_read()
+    }
+
+    pub(crate) fn begin_composite_read_profiled(
+        &self,
+    ) -> Result<(RedbReadAccess, CompositeReadAcquireProfileV1), StorageError> {
+        self.shared.begin_composite_operational_read_profiled()
     }
 
     pub(crate) fn begin_write(&self) -> Result<RedbWriteAccess, StorageError> {

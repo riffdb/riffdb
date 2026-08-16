@@ -3086,6 +3086,7 @@ async fn supervise_ready_process(
     let writer_evidence = graph.writer_evidence_snapshot();
     let writer_frame_census = riffdb_storage_redb::writer_command_frame_census_v1();
     let writer_flush_census = riffdb_storage_redb::writer_command_flush_census_v1();
+    let query_execute_census = riffdb_storage_redb::query_execute_census_v1();
     let notification_stop_failed = graph.begin_transport_shutdown().is_err();
     let transport_result = match &trigger {
         ReadyProcessTrigger::Transport(completion) => classify_transport_completion(completion),
@@ -3158,6 +3159,33 @@ async fn supervise_ready_process(
             stdout,
             "riffdb-writer-flush-census-v1\t{writer_flush_census}"
         );
+        if query_execute_census.total_count > 0 {
+            let stage_names = riffdb_storage_redb::QUERY_EXECUTE_STAGE_LABELS_V1.join(",");
+            let windows = query_execute_census
+                .windows
+                .iter()
+                .map(|window| {
+                    let mut values = Vec::with_capacity(
+                        riffdb_storage_redb::QUERY_EXECUTE_STAGE_LABELS_V1.len() + 5,
+                    );
+                    values.push(window.count.to_string());
+                    values.extend(window.stage_ns.iter().map(u64::to_string));
+                    values.push(window.overlay_transitions_sum.to_string());
+                    values.push(window.overlay_transitions_max.to_string());
+                    values.push(window.overlay_bytes_sum.to_string());
+                    values.push(window.overlay_bytes_max.to_string());
+                    values.join(",")
+                })
+                .collect::<Vec<_>>()
+                .join(";");
+            let _ = writeln!(
+                stdout,
+                "riffdb-query-execute-windows-v1\t{}\t{}\t{stage_names}\t{}\t{windows}",
+                riffdb_storage_redb::QUERY_EXECUTE_WINDOW_WIDTH_V1,
+                riffdb_storage_redb::QUERY_EXECUTE_WINDOW_COUNT_V1,
+                query_execute_census.total_count,
+            );
+        }
         let _ = stdout.flush();
     }
     if maintenance_shutdown {

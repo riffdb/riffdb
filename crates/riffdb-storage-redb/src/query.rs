@@ -1,11 +1,11 @@
 //! One-transaction owned composite-query snapshots for redb.
 
 use std::collections::BTreeMap;
-use std::sync::Arc;
 #[cfg(test)]
 use std::sync::Mutex;
-#[cfg(test)]
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, OnceLock};
+use std::time::Instant;
 
 use riffdb_policy::{
     AuthorizedIndexedRelationshipLookupV1, AuthorizedProjectedRowAdmissionV1,
@@ -25,11 +25,138 @@ use riffdb_query_ir::{
 use riffdb_storage_api::{EntityTarget, PartitionIndexTarget, StorageError, StorageErrorKind};
 use riffdb_types::{CanonicalValue, EntityKey, EntityTypeId, FieldId, IndexEntryKey};
 
-use crate::codec::{decode_entity_record_v1, decode_index_entry_v2, decode_index_epoch_v1};
+use crate::codec::{
+    decode_entity_record_v1, decode_entity_record_v1_profiled, decode_index_entry_v2,
+    decode_index_epoch_v1,
+};
 use crate::error::storage_error;
 use crate::journal::JournalTable;
 use crate::keys::{decode_index_entry_key, encode_entity_key, encode_partition_index_key};
 use crate::store::{RedbOperationalPorts, RedbReadAccess};
+
+const PUBLICATION_OUTER_LOCK: usize = 0;
+const PUBLICATION_VIEW_CAPTURE: usize = 1;
+const FRONTIER_CAPTURE: usize = 2;
+const POINT_LOOKUP: usize = 3;
+const ENVELOPE_IDENTITY_BOUNDS: usize = 4;
+const PAYLOAD_CHECKSUM: usize = 5;
+const WIRE_PREFLIGHT: usize = 6;
+const PROST_DECODE: usize = 7;
+const CANONICAL_REENCODE: usize = 8;
+const SEMANTIC_RECONSTRUCT: usize = 9;
+const TARGET_VALIDATE: usize = 10;
+const ROW_POLICY: usize = 11;
+const ROW_MATERIALIZE: usize = 12;
+const PROGRAM_DRIVE_EXCLUSIVE: usize = 13;
+
+#[derive(Clone, Copy, Default)]
+struct QueryExecuteProfile {
+    stage_ns: [u64; crate::QUERY_EXECUTE_STAGE_LABELS_V1.len()],
+    overlay_transitions: u64,
+    overlay_bytes: u64,
+}
+
+struct QueryExecuteWindowCounters {
+    count: AtomicU64,
+    stage_ns: [AtomicU64; crate::QUERY_EXECUTE_STAGE_LABELS_V1.len()],
+    overlay_transitions_sum: AtomicU64,
+    overlay_transitions_max: AtomicU64,
+    overlay_bytes_sum: AtomicU64,
+    overlay_bytes_max: AtomicU64,
+}
+
+impl QueryExecuteWindowCounters {
+    fn new() -> Self {
+        Self {
+            count: AtomicU64::new(0),
+            stage_ns: std::array::from_fn(|_| AtomicU64::new(0)),
+            overlay_transitions_sum: AtomicU64::new(0),
+            overlay_transitions_max: AtomicU64::new(0),
+            overlay_bytes_sum: AtomicU64::new(0),
+            overlay_bytes_max: AtomicU64::new(0),
+        }
+    }
+}
+
+struct QueryExecuteCensus {
+    total_count: AtomicU64,
+    windows: [QueryExecuteWindowCounters; crate::QUERY_EXECUTE_WINDOW_COUNT_V1],
+}
+
+impl QueryExecuteCensus {
+    fn new() -> Self {
+        Self {
+            total_count: AtomicU64::new(0),
+            windows: std::array::from_fn(|_| QueryExecuteWindowCounters::new()),
+        }
+    }
+}
+
+static QUERY_EXECUTE_DIAGNOSTICS: OnceLock<bool> = OnceLock::new();
+static QUERY_EXECUTE_CENSUS: OnceLock<QueryExecuteCensus> = OnceLock::new();
+
+fn query_execute_diagnostics_enabled() -> bool {
+    *QUERY_EXECUTE_DIAGNOSTICS.get_or_init(|| {
+        std::env::var_os("RIFFDB_QUERY_EXECUTE_DIAGNOSTICS").is_some_and(|value| value == "1")
+    })
+}
+
+fn record_query_execute_profile(profile: QueryExecuteProfile) {
+    let census = QUERY_EXECUTE_CENSUS.get_or_init(QueryExecuteCensus::new);
+    let ordinal = census.total_count.fetch_add(1, Ordering::Relaxed);
+    let unbounded_window = usize::try_from(ordinal)
+        .unwrap_or(usize::MAX)
+        .saturating_div(crate::QUERY_EXECUTE_WINDOW_WIDTH_V1);
+    let window_index = unbounded_window.min(crate::QUERY_EXECUTE_WINDOW_COUNT_V1 - 1);
+    let window = &census.windows[window_index];
+    window.count.fetch_add(1, Ordering::Relaxed);
+    for (counter, elapsed) in window.stage_ns.iter().zip(profile.stage_ns) {
+        saturating_atomic_add(counter, elapsed);
+    }
+    saturating_atomic_add(&window.overlay_transitions_sum, profile.overlay_transitions);
+    atomic_max(&window.overlay_transitions_max, profile.overlay_transitions);
+    saturating_atomic_add(&window.overlay_bytes_sum, profile.overlay_bytes);
+    atomic_max(&window.overlay_bytes_max, profile.overlay_bytes);
+}
+
+fn saturating_atomic_add(target: &AtomicU64, value: u64) {
+    let _ = target.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+        Some(current.saturating_add(value))
+    });
+}
+
+fn atomic_max(target: &AtomicU64, value: u64) {
+    let _ = target.fetch_max(value, Ordering::Relaxed);
+}
+
+pub(crate) fn query_execute_census_v1() -> crate::QueryExecuteCensusV1 {
+    let Some(census) = QUERY_EXECUTE_CENSUS.get() else {
+        return crate::QueryExecuteCensusV1 {
+            total_count: 0,
+            windows: [crate::QueryExecuteWindowV1::default(); crate::QUERY_EXECUTE_WINDOW_COUNT_V1],
+        };
+    };
+    crate::QueryExecuteCensusV1 {
+        total_count: census.total_count.load(Ordering::Relaxed),
+        windows: std::array::from_fn(|index| {
+            let window = &census.windows[index];
+            crate::QueryExecuteWindowV1 {
+                count: window.count.load(Ordering::Relaxed),
+                stage_ns: std::array::from_fn(|stage| {
+                    window.stage_ns[stage].load(Ordering::Relaxed)
+                }),
+                overlay_transitions_sum: window.overlay_transitions_sum.load(Ordering::Relaxed),
+                overlay_transitions_max: window.overlay_transitions_max.load(Ordering::Relaxed),
+                overlay_bytes_sum: window.overlay_bytes_sum.load(Ordering::Relaxed),
+                overlay_bytes_max: window.overlay_bytes_max.load(Ordering::Relaxed),
+            }
+        }),
+    }
+}
+
+fn elapsed_nanos(started: Instant) -> u64 {
+    u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX)
+}
 
 /// Per-table open counts for falsifying lazy opens (test-only).
 #[cfg(test)]
@@ -103,14 +230,32 @@ impl QueryExecutionPort for RedbOperationalPorts {
         parameters: &QueryParameters,
         prior: Option<&QueryContinuation>,
     ) -> Result<QueryOwnedSnapshot, QueryExecutionError> {
-        let transaction = self
-            .begin_composite_read()
-            .map_err(map_storage_query_error)?;
+        let diagnostics = query_execute_diagnostics_enabled();
+        let (transaction, acquire_profile) = if diagnostics {
+            self.begin_composite_read_profiled()
+                .map_err(map_storage_query_error)?
+        } else {
+            (
+                self.begin_composite_read()
+                    .map_err(map_storage_query_error)?,
+                Default::default(),
+            )
+        };
         note_query_table_open(QueryTableKind::Commits);
+        let frontier_started = diagnostics.then(Instant::now);
         let head = transaction
             .application_frontier()
             .map_err(map_storage_query_error)?
             .map_or(0, riffdb_types::CommitSequence::get);
+        let mut profile = diagnostics.then(QueryExecuteProfile::default);
+        if let Some(profile) = profile.as_mut() {
+            profile.stage_ns[PUBLICATION_OUTER_LOCK] = acquire_profile.outer_lock_ns;
+            profile.stage_ns[PUBLICATION_VIEW_CAPTURE] = acquire_profile.view_capture_ns;
+            profile.stage_ns[FRONTIER_CAPTURE] = frontier_started.map_or(0, elapsed_nanos);
+            let (transitions, bytes) = transaction.composite_overlay_diagnostic();
+            profile.overlay_transitions = transitions;
+            profile.overlay_bytes = bytes;
+        }
         // Entities / index / epoch tables open on first touch only.
         let mut view = RedbQueryView {
             transaction: &transaction,
@@ -120,8 +265,20 @@ impl QueryExecutionPort for RedbOperationalPorts {
             head,
             program,
             parameters,
+            profile,
         };
-        execute_page_in_snapshot(program, parameters, prior, &mut view)
+        let drive_started = diagnostics.then(Instant::now);
+        let result = execute_page_in_snapshot(program, parameters, prior, &mut view);
+        if let Some(mut profile) = view.profile.take() {
+            let drive_ns = drive_started.map_or(0, elapsed_nanos);
+            let nested_ns = profile.stage_ns[POINT_LOOKUP..PROGRAM_DRIVE_EXCLUSIVE]
+                .iter()
+                .copied()
+                .fold(0_u64, u64::saturating_add);
+            profile.stage_ns[PROGRAM_DRIVE_EXCLUSIVE] = drive_ns.saturating_sub(nested_ns);
+            record_query_execute_profile(profile);
+        }
+        result
     }
 
     fn execute_query_group(
@@ -148,6 +305,7 @@ impl QueryExecutionPort for RedbOperationalPorts {
                     head,
                     program: request.program(),
                     parameters: request.parameters(),
+                    profile: None,
                 };
                 execute_in_snapshot(request.program(), request.parameters(), &mut view)
             })
@@ -179,6 +337,7 @@ impl QueryExecutionPort for RedbOperationalPorts {
                     head,
                     program: request.program(),
                     parameters: request.parameters(),
+                    profile: None,
                 };
                 execute_policy_page_in_snapshot(
                     request.program(),
@@ -269,6 +428,7 @@ impl QueryExecutionPort for RedbOperationalPorts {
             head,
             program,
             parameters,
+            profile: None,
         };
         riffdb_query_executor::execute_operational_page_in_snapshot(
             program, aggregates, parameters, prior, &mut view,
@@ -298,6 +458,7 @@ impl QueryExecutionPort for RedbOperationalPorts {
             head,
             program,
             parameters,
+            profile: None,
         };
         execute_policy_page_in_snapshot(program, parameters, prior, &mut view, policy)
     }
@@ -326,6 +487,7 @@ impl QueryExecutionPort for RedbOperationalPorts {
             head,
             program,
             parameters,
+            profile: None,
         };
         execute_policy_operational_page_in_snapshot(
             program, aggregates, parameters, prior, &mut view, policy,
@@ -363,6 +525,7 @@ struct RedbQueryView<'a> {
     head: u64,
     program: &'a QueryAccessProgramV1,
     parameters: &'a QueryParameters,
+    profile: Option<QueryExecuteProfile>,
 }
 
 impl RedbQueryView<'_> {
@@ -393,12 +556,43 @@ impl RedbQueryView<'_> {
     ) -> Result<Option<riffdb_storage_api::StoredEntityRecordV1>, StorageError> {
         self.touch_entities();
         let key = encode_entity_key(target.key());
+        let lookup_started = self.profile.as_ref().map(|_| Instant::now());
         let Some(encoded) = self.transaction.read_value(JournalTable::Entities, key)? else {
+            if let (Some(profile), Some(started)) = (self.profile.as_mut(), lookup_started) {
+                profile.stage_ns[POINT_LOOKUP] =
+                    profile.stage_ns[POINT_LOOKUP].saturating_add(elapsed_nanos(started));
+            }
             return Ok(None);
         };
-        let decoded = decode_entity_record_v1(&encoded)?.into_parts().0;
+        if let (Some(profile), Some(started)) = (self.profile.as_mut(), lookup_started) {
+            profile.stage_ns[POINT_LOOKUP] =
+                profile.stage_ns[POINT_LOOKUP].saturating_add(elapsed_nanos(started));
+        }
+        let decoded = if let Some(profile) = self.profile.as_mut() {
+            let (decoded, decode) = decode_entity_record_v1_profiled(&encoded)?;
+            profile.stage_ns[ENVELOPE_IDENTITY_BOUNDS] = profile.stage_ns[ENVELOPE_IDENTITY_BOUNDS]
+                .saturating_add(decode.identity_bounds_ns);
+            profile.stage_ns[PAYLOAD_CHECKSUM] =
+                profile.stage_ns[PAYLOAD_CHECKSUM].saturating_add(decode.checksum_ns);
+            profile.stage_ns[WIRE_PREFLIGHT] =
+                profile.stage_ns[WIRE_PREFLIGHT].saturating_add(decode.wire_preflight_ns);
+            profile.stage_ns[PROST_DECODE] =
+                profile.stage_ns[PROST_DECODE].saturating_add(decode.prost_decode_ns);
+            profile.stage_ns[CANONICAL_REENCODE] =
+                profile.stage_ns[CANONICAL_REENCODE].saturating_add(decode.canonical_reencode_ns);
+            profile.stage_ns[SEMANTIC_RECONSTRUCT] = profile.stage_ns[SEMANTIC_RECONSTRUCT]
+                .saturating_add(decode.semantic_reconstruct_ns);
+            decoded.into_parts().0
+        } else {
+            decode_entity_record_v1(&encoded)?.into_parts().0
+        };
+        let validate_started = self.profile.as_ref().map(|_| Instant::now());
         if decoded.target() != target {
             return Err(corrupt());
+        }
+        if let (Some(profile), Some(started)) = (self.profile.as_mut(), validate_started) {
+            profile.stage_ns[TARGET_VALIDATE] =
+                profile.stage_ns[TARGET_VALIDATE].saturating_add(elapsed_nanos(started));
         }
         Ok(Some(decoded))
     }
@@ -642,10 +836,23 @@ impl RedbQueryView<'_> {
         let Some(record) = self.read_entity(&target)? else {
             return Ok(None);
         };
-        if !self.allows_policy_record(policy, step.internal_entity_id(), record.fields())? {
+        let policy_started = self.profile.as_ref().map(|_| Instant::now());
+        let allowed =
+            self.allows_policy_record(policy, step.internal_entity_id(), record.fields())?;
+        if let (Some(profile), Some(started)) = (self.profile.as_mut(), policy_started) {
+            profile.stage_ns[ROW_POLICY] =
+                profile.stage_ns[ROW_POLICY].saturating_add(elapsed_nanos(started));
+        }
+        if !allowed {
             return Ok(None);
         }
-        plan.materialize(&record).map(Some)
+        let materialize_started = self.profile.as_ref().map(|_| Instant::now());
+        let result = plan.materialize(&record).map(Some);
+        if let (Some(profile), Some(started)) = (self.profile.as_mut(), materialize_started) {
+            profile.stage_ns[ROW_MATERIALIZE] =
+                profile.stage_ns[ROW_MATERIALIZE].saturating_add(elapsed_nanos(started));
+        }
+        result
     }
 
     fn allows_policy_record(
