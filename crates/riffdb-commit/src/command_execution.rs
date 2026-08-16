@@ -274,7 +274,7 @@ fn checked_group_result_without_lookup(
     }
 }
 
-const MAX_PARALLEL_EVALUATION_WORKERS: usize = 16;
+const MAX_PARALLEL_EVALUATION_WORKERS: usize = 8;
 const MAX_QUEUED_EVALUATIONS: usize = riffdb_storage_api::MAX_GROUPED_WRITE_TRANSITIONS;
 
 trait CommandEvaluationReadPort: AdmissionRepository + SnapshotReader + Send + Sync + 'static {}
@@ -308,8 +308,9 @@ impl CommandEvaluationPool {
     /// input so deterministic harnesses can fix it (ADR-0113 hygiene).
     pub(super) fn production_worker_count() -> usize {
         thread::available_parallelism()
-            .map_or(2, std::num::NonZeroUsize::get)
-            .clamp(2, MAX_PARALLEL_EVALUATION_WORKERS)
+            .map_or(1, std::num::NonZeroUsize::get)
+            .saturating_sub(1)
+            .clamp(1, MAX_PARALLEL_EVALUATION_WORKERS)
     }
 
     pub(super) fn new<Repository>(repository: Repository, worker_count: usize) -> Result<Self, ()>
@@ -392,6 +393,7 @@ impl CommandEvaluationPool {
     fn evaluate(
         &self,
         acquired: Vec<AcquiredCommandAttempt>,
+        telemetry: &dyn CommitTelemetry,
     ) -> Vec<Result<CommandAttemptResolution, CommandAttemptError>> {
         let count = acquired.len();
         let candidates = acquired
@@ -426,6 +428,10 @@ impl CommandEvaluationPool {
                 .collect();
         };
         let chunk_size = count.div_ceil(self.worker_count).max(1);
+        let task_count = count.div_ceil(chunk_size);
+        telemetry.record(CommitTelemetryEvent::PreparationPoolDepthObserved {
+            depth: u16::try_from(task_count).unwrap_or(u16::MAX),
+        });
         let mut attempts = acquired.into_iter().zip(durable).collect::<Vec<_>>();
         let mut ordinal = 0usize;
         while !attempts.is_empty() {
@@ -447,17 +453,27 @@ impl CommandEvaluationPool {
         }
         drop(completion);
         let mut ordered = (0..count).map(|_| None).collect::<Vec<_>>();
-        let task_count = count.div_ceil(chunk_size);
+        let mut received_items = 0usize;
+        let mut contiguous_items = 0usize;
         for _ in 0..task_count {
             let Ok((ordinal, results)) = receiver.recv() else {
                 break;
             };
+            received_items = received_items.saturating_add(results.len());
             for (offset, result) in results.into_iter().enumerate() {
                 if let Some(slot) = ordered.get_mut(ordinal.saturating_add(offset)) {
                     *slot = Some(result);
                 }
             }
+            while ordered.get(contiguous_items).is_some_and(Option::is_some) {
+                contiguous_items = contiguous_items.saturating_add(1);
+            }
+            telemetry.record(CommitTelemetryEvent::ReorderBufferOccupancyObserved {
+                occupancy: u16::try_from(received_items.saturating_sub(contiguous_items))
+                    .unwrap_or(u16::MAX),
+            });
         }
+        telemetry.record(CommitTelemetryEvent::PreparationPoolDepthObserved { depth: 0 });
         ordered
             .into_iter()
             .map(|result| result.unwrap_or(Err(CommandAttemptError::Integrity)))
@@ -1641,7 +1657,7 @@ where
         }
     }
 
-    let evaluated = pool.evaluate(acquired);
+    let evaluated = pool.evaluate(acquired, telemetry);
     if evaluated
         .iter()
         .all(|result| matches!(result, Ok(CommandAttemptResolution::Evaluated(_))))
@@ -4709,9 +4725,8 @@ mod tests {
         assert_eq!(floored.worker_count, 1);
 
         let production = CommandEvaluationPool::production_worker_count();
-        assert!(
-            (2..=MAX_PARALLEL_EVALUATION_WORKERS).contains(&production),
-            "production default keeps the reviewed clamp"
-        );
+        assert!((1..=MAX_PARALLEL_EVALUATION_WORKERS).contains(&production));
+        let available = thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get);
+        assert!(production <= available.saturating_sub(1).max(1));
     }
 }

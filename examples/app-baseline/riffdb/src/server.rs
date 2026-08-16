@@ -299,6 +299,18 @@ pub struct RiffDbWriterEvidence {
     pub final_apply_duration: Option<RiffDbReadStageEvidence>,
     /// Final apply through deferred-journal receipt creation duration.
     pub journal_submit_duration: RiffDbReadStageEvidence,
+    /// Bounded preparation-pool depth observations, when emitted by the server.
+    pub preparation_pool_depth: Option<RiffDbReadStageEvidence>,
+    /// Bounded reorder-buffer occupancy observations, when emitted by the server.
+    pub reorder_buffer_occupancy: Option<RiffDbReadStageEvidence>,
+    /// Complete unpublished prepared epochs rolled back.
+    pub prepared_epoch_rollbacks: u64,
+    /// Prepared epochs rolled back for a proof mismatch.
+    pub prepared_epoch_proof_mismatches: u64,
+    /// Private-frontier equivalence checks completed.
+    pub frontier_equivalence_checks: u64,
+    /// Private-frontier equivalence checks that failed.
+    pub frontier_equivalence_failures: u64,
 }
 
 /// One fixed read-pipeline stage summary.
@@ -1599,7 +1611,7 @@ fn parse_writer_evidence(encoded: &str) -> io::Result<RiffDbWriterEvidence> {
         None => return Err(io::Error::other("missing writer queue estimate")),
     };
     let parsed = parse_read_stages(histograms)?;
-    if !matches!(parsed.len(), 5 | 6) {
+    if !matches!(parsed.len(), 5 | 6 | 8) {
         return Err(io::Error::other("invalid writer histogram cardinality"));
     }
     let find = |name: &str| -> io::Result<RiffDbReadStageEvidence> {
@@ -1631,6 +1643,42 @@ fn parse_writer_evidence(encoded: &str) -> io::Result<RiffDbWriterEvidence> {
             .find(|entry| entry.name == "final_apply_us")
             .cloned(),
         journal_submit_duration: find("journal_submit_us")?,
+        preparation_pool_depth: parsed
+            .iter()
+            .find(|entry| entry.name == "preparation_pool_depth")
+            .cloned(),
+        reorder_buffer_occupancy: parsed
+            .iter()
+            .find(|entry| entry.name == "reorder_buffer_occupancy")
+            .cloned(),
+        prepared_epoch_rollbacks: values
+            .get("prepared_epoch_rollbacks")
+            .map_or(Ok(0), |value| {
+                value
+                    .parse::<u64>()
+                    .map_err(|_| io::Error::other("invalid epoch rollback count"))
+            })?,
+        prepared_epoch_proof_mismatches: values
+            .get("prepared_epoch_proof_mismatches")
+            .map_or(Ok(0), |value| {
+                value
+                    .parse::<u64>()
+                    .map_err(|_| io::Error::other("invalid proof mismatch count"))
+            })?,
+        frontier_equivalence_checks: values
+            .get("frontier_equivalence_checks")
+            .map_or(Ok(0), |value| {
+                value
+                    .parse::<u64>()
+                    .map_err(|_| io::Error::other("invalid frontier check count"))
+            })?,
+        frontier_equivalence_failures: values
+            .get("frontier_equivalence_failures")
+            .map_or(Ok(0), |value| {
+                value
+                    .parse::<u64>()
+                    .map_err(|_| io::Error::other("invalid frontier failure count"))
+            })?,
     })
 }
 
@@ -1853,6 +1901,12 @@ mod tests {
             Some("final_apply_us")
         );
         assert_eq!(writer.journal_submit_duration.name, "journal_submit_us");
+        assert_eq!(writer.preparation_pool_depth, None);
+        assert_eq!(writer.reorder_buffer_occupancy, None);
+        assert_eq!(writer.prepared_epoch_rollbacks, 0);
+        assert_eq!(writer.prepared_epoch_proof_mismatches, 0);
+        assert_eq!(writer.frontier_equivalence_checks, 0);
+        assert_eq!(writer.frontier_equivalence_failures, 0);
         assert!(parse_writer_evidence("busy_us=1\tcommit_us:1:1:1,2").is_err());
 
         let query_stages = riffdb_storage_redb::QUERY_EXECUTE_STAGE_LABELS_V1.join(",");

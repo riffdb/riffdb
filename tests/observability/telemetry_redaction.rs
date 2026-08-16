@@ -14,7 +14,7 @@ use riffdb_auth::{AuthenticationRejection, AuthenticationTelemetry, Authenticati
 use riffdb_commit::{
     CommitCallTerminal, CommitCommandTerminal, CommitGroupDispatchReason,
     CommitIdempotencyObservation, CommitTelemetry, CommitTelemetryEvent,
-    CommitUncertaintyResolution, CommitUncertaintyStage,
+    CommitUncertaintyResolution, CommitUncertaintyStage, PreparedEpochRollbackReason,
 };
 use riffdb_errors::{IncidentIdSource, IncidentIdSourceError, InternalError};
 use riffdb_observability::{
@@ -929,12 +929,68 @@ fn command_group_dispatch_reasons_are_labeled_in_registry() {
     assert_eq!(writer.compatibility_commutative_shared_groups, 1);
     let line = format_writer_evidence_v1_line(&writer);
     assert!(line.starts_with(
-        "riffdb-writer-evidence-v1\tbusy_us=0;idle_us=0;dispatch_selected=4;dispatch_deferred=1;dispatch_deferred_max=1;compatibility_selected=4;compatibility_groups=2;compatibility_conflict_key_splits=1;compatibility_exact_access_splits=0;compatibility_commutative_shared_groups=1;queue_delay_estimate_us=none\t"
+        "riffdb-writer-evidence-v1\tbusy_us=0;idle_us=0;dispatch_selected=4;dispatch_deferred=1;dispatch_deferred_max=1;compatibility_selected=4;compatibility_groups=2;compatibility_conflict_key_splits=1;compatibility_exact_access_splits=0;compatibility_commutative_shared_groups=1;queue_delay_estimate_us=none;"
     ));
     assert!(line.contains("commit_us:0:0:"));
     assert!(line.contains("flush_us:0:0:"));
     assert!(line.contains("batch_size:0:0:"));
     assert!(line.contains("storage_queue_us:0:0:"));
+}
+
+#[test]
+fn prepared_epoch_failure_modes_are_fixed_cardinality_shutdown_evidence() {
+    let source = Arc::new(ScriptedIncidentIds::new([]));
+    let observability = Observability::new(source, 8).expect("bounded");
+    for depth in [1, 4, 0] {
+        CommitTelemetry::record(
+            &observability,
+            CommitTelemetryEvent::PreparationPoolDepthObserved { depth },
+        );
+    }
+    for occupancy in [0, 3, 0] {
+        CommitTelemetry::record(
+            &observability,
+            CommitTelemetryEvent::ReorderBufferOccupancyObserved { occupancy },
+        );
+    }
+    CommitTelemetry::record(
+        &observability,
+        CommitTelemetryEvent::PreparedEpochRolledBack {
+            reason: PreparedEpochRollbackReason::ProofMismatch,
+        },
+    );
+    CommitTelemetry::record(
+        &observability,
+        CommitTelemetryEvent::PreparedEpochRolledBack {
+            reason: PreparedEpochRollbackReason::WorkerFailure,
+        },
+    );
+    CommitTelemetry::record(
+        &observability,
+        CommitTelemetryEvent::FrontierEquivalenceChecked { equivalent: true },
+    );
+    CommitTelemetry::record(
+        &observability,
+        CommitTelemetryEvent::FrontierEquivalenceChecked { equivalent: false },
+    );
+
+    let writer = observability.writer_evidence_snapshot();
+    assert_eq!(writer.preparation_pool_depth.count, 3);
+    assert_eq!(writer.preparation_pool_depth.sum, 5);
+    assert_eq!(writer.reorder_buffer_occupancy.count, 3);
+    assert_eq!(writer.reorder_buffer_occupancy.sum, 3);
+    assert_eq!(writer.prepared_epoch_rollbacks, 2);
+    assert_eq!(writer.prepared_epoch_proof_mismatches, 1);
+    assert_eq!(writer.frontier_equivalence_checks, 2);
+    assert_eq!(writer.frontier_equivalence_failures, 1);
+
+    let line = format_writer_evidence_v1_line(&writer);
+    assert!(line.contains("prepared_epoch_rollbacks=2"));
+    assert!(line.contains("prepared_epoch_proof_mismatches=1"));
+    assert!(line.contains("frontier_equivalence_checks=2"));
+    assert!(line.contains("frontier_equivalence_failures=1"));
+    assert!(line.contains("preparation_pool_depth:3:5:"));
+    assert!(line.contains("reorder_buffer_occupancy:3:3:"));
 }
 
 #[test]

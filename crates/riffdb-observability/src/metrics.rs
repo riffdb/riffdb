@@ -1018,6 +1018,8 @@ struct MetricRegistryInner {
     write_service_stage_durations: [FixedHistogram; WRITE_SERVICE_STAGE_COUNT],
     command_application_durations: FixedHistogram,
     command_submission_durations: FixedHistogram,
+    preparation_pool_depths: FixedHistogram,
+    reorder_buffer_occupancies: FixedHistogram,
 }
 
 /// Cloneable fixed-cardinality counter registry.
@@ -1044,6 +1046,8 @@ impl MetricRegistry {
                 write_service_stage_durations: std::array::from_fn(|_| FixedHistogram::new()),
                 command_application_durations: FixedHistogram::new(),
                 command_submission_durations: FixedHistogram::new(),
+                preparation_pool_depths: FixedHistogram::new(),
+                reorder_buffer_occupancies: FixedHistogram::new(),
             }),
         }
     }
@@ -1256,6 +1260,28 @@ impl MetricRegistry {
     #[must_use]
     pub fn command_submission_duration(&self) -> HistogramSnapshot {
         self.inner.command_submission_durations.snapshot()
+    }
+
+    /// Observes bounded preparation-pool depth.
+    pub fn observe_preparation_pool_depth(&self, value: u64) {
+        self.inner.preparation_pool_depths.observe(value);
+    }
+
+    /// Returns bounded preparation-pool depth observations.
+    #[must_use]
+    pub fn preparation_pool_depth(&self) -> HistogramSnapshot {
+        self.inner.preparation_pool_depths.snapshot()
+    }
+
+    /// Observes bounded admission-ordinal reorder-buffer occupancy.
+    pub fn observe_reorder_buffer_occupancy(&self, value: u64) {
+        self.inner.reorder_buffer_occupancies.observe(value);
+    }
+
+    /// Returns bounded reorder-buffer occupancy observations.
+    #[must_use]
+    pub fn reorder_buffer_occupancy(&self) -> HistogramSnapshot {
+        self.inner.reorder_buffer_occupancies.snapshot()
     }
 
     /// Adds busy time spent on the pipelined writer thread.

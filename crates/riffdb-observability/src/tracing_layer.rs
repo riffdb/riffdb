@@ -15,7 +15,7 @@ use riffdb_catalog::CatalogTelemetryEvent;
 use riffdb_commit::{
     CommandExecutionErrorKind, CommandPipelineStage, CommitCallTerminal, CommitCommandTerminal,
     CommitGroupDispatchReason, CommitIdempotencyObservation, CommitTelemetryEvent,
-    CommitUncertaintyResolution, CommitUncertaintyStage,
+    CommitUncertaintyResolution, CommitUncertaintyStage, PreparedEpochRollbackReason,
 };
 use riffdb_conflict::ConflictEventKind;
 use riffdb_policy::{AuthorizationDefect, PolicyCode};
@@ -265,6 +265,16 @@ impl TraceRecord {
 
     pub(crate) const fn commit(event: CommitTelemetryEvent) -> Self {
         let (detail_tag, value) = match event {
+            CommitTelemetryEvent::PreparationPoolDepthObserved { depth } => (84, depth as u64),
+            CommitTelemetryEvent::ReorderBufferOccupancyObserved { occupancy } => {
+                (85, occupancy as u64)
+            }
+            CommitTelemetryEvent::PreparedEpochRolledBack { reason } => {
+                (85 + prepared_epoch_rollback_reason_tag(reason), 1)
+            }
+            CommitTelemetryEvent::FrontierEquivalenceChecked { equivalent } => {
+                (if equivalent { 90 } else { 91 }, 1)
+            }
             CommitTelemetryEvent::CommandPipelineStageCompleted { stage, elapsed, .. } => (
                 74 + command_pipeline_stage_tag(stage),
                 saturating_duration_microseconds(elapsed),
@@ -957,6 +967,15 @@ const fn commit_command_terminal_tag(terminal: CommitCommandTerminal) -> u8 {
         CommitCommandTerminal::PreparationChanged => 5,
         CommitCommandTerminal::InputMismatch => 6,
         CommitCommandTerminal::Failed(kind) => 6 + command_execution_error_tag(kind),
+    }
+}
+
+const fn prepared_epoch_rollback_reason_tag(reason: PreparedEpochRollbackReason) -> u8 {
+    match reason {
+        PreparedEpochRollbackReason::WorkerFailure => 1,
+        PreparedEpochRollbackReason::ProofMismatch => 2,
+        PreparedEpochRollbackReason::CurrentStateChanged => 3,
+        PreparedEpochRollbackReason::Cancelled => 4,
     }
 }
 

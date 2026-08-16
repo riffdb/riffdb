@@ -101,9 +101,42 @@ pub enum CommandPipelineStage {
     Publication,
 }
 
+/// Closed cause for rolling back one unpublished prepared-command epoch.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum PreparedEpochRollbackReason {
+    /// A preparation worker stopped or panicked before returning its result.
+    WorkerFailure,
+    /// A returned body's identity, ordinal, frontier, or digest did not join.
+    ProofMismatch,
+    /// Fresh transaction-current state invalidated prepared evidence.
+    CurrentStateChanged,
+    /// Request cancellation or deadline closed the epoch before apply.
+    Cancelled,
+}
+
 /// One closed semantic observation from the sole-writer command path.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CommitTelemetryEvent {
+    /// One bounded preparation-pool depth observation.
+    PreparationPoolDepthObserved {
+        /// Accepted tasks queued or executing under the fixed pool ceiling.
+        depth: u16,
+    },
+    /// One bounded admission-ordinal reorder-buffer occupancy observation.
+    ReorderBufferOccupancyObserved {
+        /// Completed bodies waiting for a missing earlier ordinal.
+        occupancy: u16,
+    },
+    /// One complete unpublished prepared epoch was rolled back.
+    PreparedEpochRolledBack {
+        /// Closed failure class; no command or application identity is retained.
+        reason: PreparedEpochRollbackReason,
+    },
+    /// The applied epoch was compared with its private logical frontier.
+    FrontierEquivalenceChecked {
+        /// True only when every bounded authoritative component matched.
+        equivalent: bool,
+    },
     /// One bounded command group completed a coordinator CPU stage.
     CommandPipelineStageCompleted {
         /// Closed stage identity; no application values are retained.
