@@ -1,0 +1,153 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(git rev-parse --show-toplevel)"
+cd "$repo_root"
+# shellcheck source=scripts/tool-versions
+source scripts/tool-versions
+
+usage() {
+    printf 'usage: %s {check|install}\n' "$0" >&2
+    exit 2
+}
+
+cargo_home="${CARGO_HOME:-${HOME:?HOME must be set}/.cargo}"
+rustup_cargo="$cargo_home/bin/cargo"
+
+rustup_cargo_works() {
+    "$1" +1.97.0 --version >/dev/null 2>&1
+}
+
+resolve_install_cargo() {
+    if command -v cargo >/dev/null 2>&1 && rustup_cargo_works "$(command -v cargo)"; then
+        command -v cargo
+        return
+    fi
+    if [[ -x "$rustup_cargo" ]] && rustup_cargo_works "$rustup_cargo"; then
+        printf '%s\n' "$rustup_cargo"
+        return
+    fi
+    printf '%s\n' \
+        'Rustup with the pinned 1.97.0 toolchain is required.' \
+        'Install rustup, run `rustup toolchain install 1.97.0`, and retry.' >&2
+    exit 1
+}
+
+check_cargo_path() {
+    local selected
+    if ! command -v cargo >/dev/null 2>&1; then
+        printf '%s\n' \
+            'cargo is not on PATH; install rustup and prepend its bin directory:' \
+            '  export PATH="${CARGO_HOME:-$HOME/.cargo}/bin:$PATH"' >&2
+        return 1
+    fi
+    selected="$(command -v cargo)"
+    if ! rustup_cargo_works "$selected"; then
+        printf 'cargo on PATH does not support the required +1.97.0 selector: %s\n' "$selected" >&2
+        if [[ -x "$rustup_cargo" ]] && rustup_cargo_works "$rustup_cargo"; then
+            printf '%s\n' \
+                'prepend the installed rustup proxies, then retry:' \
+                '  export PATH="${CARGO_HOME:-$HOME/.cargo}/bin:$PATH"' >&2
+        else
+            printf '%s\n' \
+                'install rustup and the pinned toolchain, then retry:' \
+                '  rustup toolchain install 1.97.0' >&2
+        fi
+        return 1
+    fi
+}
+
+configured_wrappers() {
+    local config wrapper
+    for config in \
+        "$repo_root/.cargo/config.toml" \
+        "$repo_root/.cargo/config" \
+        "$cargo_home/config.toml" \
+        "$cargo_home/config"
+    do
+        [[ -f "$config" ]] || continue
+        while IFS= read -r wrapper; do
+            [[ -n "$wrapper" ]] && printf '%s\t%s\n' "$config" "$wrapper"
+        done < <(
+            sed -nE \
+                's/^[[:space:]]*rustc-wrapper[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' \
+                "$config"
+        )
+    done
+}
+
+check_wrappers() {
+    local config wrapper executable failed=false
+    if [[ -n "${RUSTC_WRAPPER:-}" ]]; then
+        executable="${RUSTC_WRAPPER%% *}"
+        if ! command -v "$executable" >/dev/null 2>&1 && [[ ! -x "$executable" ]]; then
+            printf 'RUSTC_WRAPPER names an unavailable executable: %s\n' "$RUSTC_WRAPPER" >&2
+            failed=true
+        fi
+    fi
+    while IFS=$'\t' read -r config wrapper; do
+        [[ -n "$wrapper" ]] || continue
+        executable="${wrapper%% *}"
+        if ! command -v "$executable" >/dev/null 2>&1 && [[ ! -x "$executable" ]]; then
+            printf 'Cargo config %s names an unavailable optional rustc wrapper: %s\n' \
+                "$config" "$wrapper" >&2
+            printf '%s\n' \
+                'install that wrapper or remove its rustc-wrapper setting; RiffDB does not require it.' >&2
+            failed=true
+        fi
+    done < <(configured_wrappers)
+    [[ "$failed" == false ]]
+}
+
+check_version() {
+    local command_name="$1"
+    local expected="$2"
+    local actual
+    if ! command -v "$command_name" >/dev/null 2>&1; then
+        printf '%s %s is required; run `./scripts/developer-tools install`\n' \
+            "$command_name" "$expected" >&2
+        return 1
+    fi
+    actual="$("$command_name" --version 2>/dev/null \
+        | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -n 1)"
+    if [[ "$actual" != "$expected" ]]; then
+        printf '%s %s is required (found %s); run `./scripts/developer-tools install`\n' \
+            "$command_name" "$expected" "${actual:-unknown}" >&2
+        return 1
+    fi
+}
+
+check_all() {
+    local failed=false
+    check_cargo_path || failed=true
+    check_wrappers || failed=true
+    check_version mdbook "$RIFFDB_MDBOOK_VERSION" || failed=true
+    check_version lychee "$RIFFDB_LYCHEE_VERSION" || failed=true
+    if [[ "$failed" == true ]]; then
+        return 1
+    fi
+    printf 'Developer tools are ready: Rust 1.97.0, mdbook %s, lychee %s.\n' \
+        "$RIFFDB_MDBOOK_VERSION" "$RIFFDB_LYCHEE_VERSION"
+}
+
+install_all() {
+    local cargo_bin
+    cargo_bin="$(resolve_install_cargo)"
+    # A stale optional user wrapper must not prevent installation of the tools
+    # that diagnose it. This override is limited to these two cargo invocations.
+    RUSTC_WRAPPER= "$cargo_bin" +1.97.0 install --locked \
+        --version "$RIFFDB_MDBOOK_VERSION" mdbook
+    RUSTC_WRAPPER= "$cargo_bin" +1.97.0 install --locked \
+        --version "$RIFFDB_LYCHEE_VERSION" lychee
+    printf '%s\n' \
+        'Pinned developer tools are installed.' \
+        'Ensure the rustup proxies are first on PATH, then run:' \
+        '  export PATH="${CARGO_HOME:-$HOME/.cargo}/bin:$PATH"' \
+        '  ./scripts/developer-tools check'
+}
+
+case "${1:-}" in
+    check) check_all ;;
+    install) install_all ;;
+    *) usage ;;
+esac

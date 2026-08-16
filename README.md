@@ -160,12 +160,25 @@ bound to only its selected database.
 The workspace pins Rust 1.97.0. On Linux with rustup:
 
 ```bash
+export PATH="${CARGO_HOME:-$HOME/.cargo}/bin:$PATH"
 rustup show
 cargo build --locked --release \
   -p riffdb-server --bin riffdbd \
   -p riffdb-cli --bin riffdb \
   -p riffdb-mcp-stdio --bin riffdb-mcp
 ```
+
+Contributors running generated-artifact or handbook checks can install and
+verify the exact auxiliary tools with:
+
+```bash
+./scripts/developer-tools install
+./scripts/developer-tools check
+```
+
+The check reports a system `cargo` shadowing the rustup proxy and a Cargo
+configuration that names an unavailable optional `rustc-wrapper`. It never
+rewrites global Cargo configuration.
 
 The POC ships exactly three binaries:
 

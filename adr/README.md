@@ -146,6 +146,7 @@ direction, merged draft, or implementation choice.
 | [0125](0125-command-segment-raw-fallback-compatibility.md) | Command-Segment Raw Fallback Compatibility | Accepted |
 | [0126](0126-compiler-bounded-one-hop-cascade-deletion.md) | Compiler-Bounded One-Hop Cascade Deletion | Accepted |
 | [0127](0127-bounded-multiplexed-application-session.md) | Bounded Multiplexed Application Session | Proposed |
+| [0128](0128-compiler-declared-secret-outputs-for-named-riffql.md) | Compiler-Declared Secret Outputs for Named RiffQL | Accepted |
 
 The human architecture review on 2026-07-12 approved the direction represented
 by ADR-0001 through ADR-0012. The human maintainer accepted ADR-0001 through
