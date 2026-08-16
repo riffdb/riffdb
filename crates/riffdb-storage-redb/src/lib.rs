@@ -53,6 +53,17 @@ mod test_path;
 pub fn writer_command_frame_census_v1() -> [u64; 6] {
     journal::command_frame_census()
 }
+
+/// Fixed-cardinality command-bearing physical journal-flush census.
+///
+/// Values are physical flushes, command frames, logical commands, complete
+/// frame bytes, maximum command frames covered by one flush, cumulative
+/// write-plus-sync microseconds, and maximum write-plus-sync microseconds.
+#[doc(hidden)]
+#[must_use]
+pub fn writer_command_flush_census_v1() -> [u64; 7] {
+    journal::command_flush_census()
+}
 mod transient;
 mod validated_prefix;
 
