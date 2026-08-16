@@ -15,6 +15,8 @@ pub enum QueryDiagnosticCode {
     InvalidPath,
     /// A bounded schema, map, or artifact ceiling was exceeded.
     ArtifactLimit,
+    /// An exact secret output declaration is absent, duplicated, or invalid.
+    SecretOutputDeclaration,
 }
 
 impl QueryDiagnosticCode {
@@ -28,6 +30,7 @@ impl QueryDiagnosticCode {
             Self::InvalidType => "RDB-QR004",
             Self::InvalidPath => "RDB-QR005",
             Self::ArtifactLimit => "RDB-QR006",
+            Self::SecretOutputDeclaration => "RDB-QR007",
         }
     }
 }

@@ -556,6 +556,7 @@ pub fn generate_mcp_tools(
     module
         .queries()
         .iter()
+        .filter(|query| query.plan().secret_outputs().is_empty())
         .map(|query| {
             let name = format!("{}_{}", snake(module.name().as_str()), snake(query.name()));
             if !names.insert(name.clone()) {

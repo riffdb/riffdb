@@ -993,9 +993,21 @@ dependencies = [
 name = "riffdb-application"
 version = "0.1.0"
 dependencies = [
+ "riffdb-contract-ir",
  "riffdb-types",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "riffdb-auth"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "getrandom 0.3.4",
+ "riffdb-storage-api",
+ "riffdb-types",
+ "zeroize",
 ]
 
 [[package]]
@@ -1067,6 +1079,7 @@ name = "riffdb-driver-host"
 version = "0.1.0"
 dependencies = [
  "base64",
+ "riffdb-application",
  "riffdb-client-rust",
  "riffdb-config",
  "riffdb-errors",
@@ -1089,6 +1102,15 @@ dependencies = [
 name = "riffdb-invariant"
 version = "0.1.0"
 dependencies = [
+ "riffdb-contract-ir",
+ "riffdb-types",
+]
+
+[[package]]
+name = "riffdb-policy"
+version = "0.1.0"
+dependencies = [
+ "riffdb-auth",
  "riffdb-contract-ir",
  "riffdb-types",
 ]
@@ -1119,7 +1141,9 @@ dependencies = [
 name = "riffdb-query-executor"
 version = "0.1.0"
 dependencies = [
+ "riffdb-auth",
  "riffdb-contract-ir",
+ "riffdb-policy",
  "riffdb-query-ir",
  "riffdb-riffql-syntax",
  "riffdb-types",
@@ -1175,6 +1199,7 @@ dependencies = [
  "cap-std",
  "redb",
  "riffdb-catalog",
+ "riffdb-policy",
  "riffdb-query-executor",
  "riffdb-query-ir",
  "riffdb-storage-api",

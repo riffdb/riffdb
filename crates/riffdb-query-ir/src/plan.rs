@@ -6,8 +6,7 @@ use riffdb_types::{
 };
 
 use crate::{
-    ExactContractIdentity, MAX_QUERY_ARTIFACT_BYTES, QUERY_IR_VERSION_V1, ResolvedQueryV1,
-    max_query_page_take,
+    ExactContractIdentity, MAX_QUERY_ARTIFACT_BYTES, ResolvedQueryV1, max_query_page_take,
 };
 
 const PROGRAM_MAGIC: &[u8] = b"RIFFDB-QUERY-ACCESS-PROGRAM\0";
@@ -725,9 +724,12 @@ impl QueryAccessProgramV1 {
             return None;
         }
         let canonical_bytes = encode_program(
-            &contract,
-            surface.canonical_bytes(),
-            name.as_deref(),
+            ProgramSurface {
+                contract: &contract,
+                ir_version: surface.ir_version(),
+                canonical_bytes: surface.canonical_bytes(),
+                name: name.as_deref(),
+            },
             &partition_parameter,
             &steps,
             &authorization,
@@ -820,10 +822,15 @@ impl QueryAccessProgramV1 {
     }
 }
 
+struct ProgramSurface<'a> {
+    contract: &'a ExactContractIdentity,
+    ir_version: u32,
+    canonical_bytes: &'a [u8],
+    name: Option<&'a str>,
+}
+
 fn encode_program(
-    contract: &ExactContractIdentity,
-    surface_bytes: &[u8],
-    name: Option<&str>,
+    surface: ProgramSurface<'_>,
     partition_parameter: &str,
     steps: &[QueryAccessStep],
     authorization: &[AuthorizationEntityAccess],
@@ -831,16 +838,16 @@ fn encode_program(
 ) -> Option<Vec<u8>> {
     let mut out = Vec::new();
     out.extend_from_slice(PROGRAM_MAGIC);
-    out.extend_from_slice(&QUERY_IR_VERSION_V1.to_be_bytes());
+    out.extend_from_slice(&surface.ir_version.to_be_bytes());
     // Public cursor envelopes bind the plan hash. This reviewed marker makes
     // pre-WP-375 prefix-epoch cursors fail closed across the format cut.
     out.extend_from_slice(INDEX_GENERATION_MODEL_V2);
-    write_text(&mut out, contract.lineage().as_str())?;
-    out.extend_from_slice(&contract.version().get().to_be_bytes());
-    out.extend_from_slice(contract.bundle_hash().as_bytes());
-    write_count(&mut out, surface_bytes.len())?;
-    out.extend_from_slice(surface_bytes);
-    write_text(&mut out, name.unwrap_or(""))?;
+    write_text(&mut out, surface.contract.lineage().as_str())?;
+    out.extend_from_slice(&surface.contract.version().get().to_be_bytes());
+    out.extend_from_slice(surface.contract.bundle_hash().as_bytes());
+    write_count(&mut out, surface.canonical_bytes.len())?;
+    out.extend_from_slice(surface.canonical_bytes);
+    write_text(&mut out, surface.name.unwrap_or(""))?;
     write_text(&mut out, partition_parameter)?;
     write_count(&mut out, steps.len())?;
     for step in steps {

@@ -21,6 +21,13 @@ the symbolic source binding/entity, ordered group keys and result types,
 ordered measures and result types, and the compiler-proven maximum group
 count. Ordinary version-1 and non-aggregate version-2 bytes do not rotate.
 
+An exact secret-output declaration selects additive query-IR version 4. The
+surface records the immutable contract identity plus the query-local binding,
+symbolic and stable entity/field identities, result branch and nested slot,
+and declaration source span for every returned secret leaf. These ordered,
+bounded requirements participate in the surface, plan, module, and role
+hashes. A declaration-free query retains its earlier exact bytes.
+
 Parameter types are contract enums, `Entity.field` references, optional
 wrappers, bounded query sets, `Cursor`, or `Limit`. Result schemas contain only
 source names and closed scalar/optional/record/list shapes. A list repeats its
@@ -36,6 +43,7 @@ Resolution diagnostics are bounded and value-free:
 | `RDB-QR004` | invalid query type |
 | `RDB-QR005` | invalid symbolic path |
 | `RDB-QR006` | schema, source-map, or artifact limit |
+| `RDB-QR007` | missing, duplicate, or invalid exact secret-output declaration |
 
 Each diagnostic carries the closed compiler stage, primary UTF-8 byte span, a
 safe source-name path, static summary, and optional static help. It contains no

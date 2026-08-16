@@ -6,6 +6,8 @@ use crate::MAX_IDENTIFIER_BYTES;
 pub const RIFFQL_LANGUAGE_VERSION: u32 = 1;
 /// Operational-predicate language version.
 pub const RIFFQL_LANGUAGE_VERSION_OPERATIONAL_V1: u32 = 2;
+/// Exact secret-output declaration language version.
+pub const RIFFQL_LANGUAGE_VERSION_SECRET_OUTPUT_V1: u32 = 3;
 
 /// Checked half-open UTF-8 byte span.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -251,6 +253,8 @@ pub struct FieldSelection {
     pub alias: Option<Spanned<Identifier>>,
     /// Selected source path.
     pub source: Spanned<Path>,
+    /// Exact stored secret field intentionally returned by this leaf.
+    pub reveals: Vec<Spanned<Path>>,
     /// Optional nested projection.
     pub nested: Option<Selection>,
 }

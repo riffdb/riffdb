@@ -18,6 +18,7 @@ pub struct FieldSymbol {
     name: String,
     value_type: ValueType,
     key: bool,
+    secret: bool,
 }
 
 impl FieldSymbol {
@@ -37,6 +38,12 @@ impl FieldSymbol {
     #[must_use]
     pub const fn is_key(&self) -> bool {
         self.key
+    }
+
+    /// Whether the exact contract classifies this stored field as secret.
+    #[must_use]
+    pub const fn is_secret(&self) -> bool {
+        self.secret
     }
 
     /// Compiler-internal stable identity.
@@ -360,6 +367,7 @@ impl SymbolicCatalog {
                     name: field.name().to_owned(),
                     value_type: field.value_type().clone(),
                     key: key_ids.contains(&field.id()),
+                    secret: bundle.schema().is_secret_field(entity.id(), field.id()),
                 };
                 if fields.insert(symbol.name.clone(), symbol).is_some() {
                     return Err(invariant("duplicate exact-contract field"));

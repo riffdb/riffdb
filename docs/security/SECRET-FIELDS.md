@@ -146,6 +146,24 @@ caller at runtime. It does not grant read visibility to either source field.
 Copying a secret into another secret-classified stored field remains sticky
 and requires no disclosure annotation.
 
+Named RiffQL reads use the same explicit-review principle at a returned leaf:
+
+```riffql
+return Found {
+  session: session {
+    token_hash reveals session.token_hash
+  }
+}
+```
+
+Unlike a command-flow annotation, this declaration also becomes an exact
+application-role authority atom when—and only when—the role selects that
+immutable named query. The compiler places the stable field ID in the grant's
+dedicated secret list; callers cannot add it through parameters or ad-hoc
+RiffQL. A missing or stale role returns `RDB-AUTH-0214` with no partial result.
+MCP and reactive catalogs omit the query entirely; typed application SDK and
+gRPC execution remain available under the exact role.
+
 `RDB-C046` rejects missing, wrong, duplicate, or excess declarations. Its
 diagnostic identifies both the destination flow site and the secret source
 field declaration, so an author can either remove the copy or make the

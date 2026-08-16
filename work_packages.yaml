@@ -13201,6 +13201,7 @@ work_packages:
     crates/riffdb-types/**, crates/riffdb-catalog/**, crates/riffdb-auth/**,
     crates/riffdb-policy/**, crates/riffdb-service/**, crates/riffdb-api-grpc/**,
     crates/riffdb-api-mcp/**, crates/riffdb-mcp-stdio/**,
+    clients/editor/tree-sitter-riffql/**,
     fixtures/riffql/**, fixtures/query-modules/**, fixtures/application-locks/**,
     fixtures/application-manifests/**, fixtures/application-parity/**,
     fuzz/**, tests/**, scripts/**, docs/**]

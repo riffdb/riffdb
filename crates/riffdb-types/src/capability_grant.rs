@@ -525,15 +525,15 @@ impl EntityFieldVisibilityV1 {
     /// secret-classified fields for reveal (ADR-0118 item 3).
     ///
     /// The named secret fields count against the same bounds as ordinary
-    /// visibility. The ordinary list must stay nonempty; the secret list may
-    /// be empty.
+    /// visibility. At least one of the ordinary or secret lists must be
+    /// nonempty.
     pub fn with_secret_fields(
         lineage: ContractLineage,
         entity_type: EntityTypeId,
         mut fields: Vec<FieldId>,
         mut secret_fields: Vec<FieldId>,
     ) -> Result<Self, CapabilityGrantError> {
-        if fields.is_empty() {
+        if fields.is_empty() && secret_fields.is_empty() {
             return Err(CapabilityGrantError::Empty);
         }
         if fields.len().saturating_add(secret_fields.len()) > MAX_CAPABILITY_FIELD_VISIBILITY {

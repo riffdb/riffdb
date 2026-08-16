@@ -6,7 +6,8 @@ use riffdb_riffql_syntax::{
     Span, TypeReference, format_query,
 };
 use riffdb_types::{
-    ContractBundleHash, ContractLineage, ContractVersion, EntityTypeId, MAX_DECIMAL_PRECISION,
+    ContractBundleHash, ContractLineage, ContractVersion, EntityTypeId, FieldId,
+    MAX_DECIMAL_PRECISION,
 };
 
 use crate::{
@@ -14,8 +15,8 @@ use crate::{
     NamedParameterSchema, NamedQuerySchemas, NamedResultBranchSchema, NamedTypeSchema,
     OperationalAggregateFunctionV1, OperationalAggregateGroupKeyV1, OperationalAggregateMeasureV1,
     OperationalAggregateV1, PageBound, QUERY_IR_VERSION_OPERATIONAL_AGGREGATE_V1,
-    QUERY_IR_VERSION_V1, QueryDiagnostic, QueryDiagnosticCode, QueryDiagnosticStage,
-    QueryDiagnostics, SymbolicCatalog, page_take_within_scan_bound,
+    QUERY_IR_VERSION_SECRET_OUTPUT_V1, QUERY_IR_VERSION_V1, QueryDiagnostic, QueryDiagnosticCode,
+    QueryDiagnosticStage, QueryDiagnostics, SymbolicCatalog, page_take_within_scan_bound,
 };
 
 const IR_MAGIC: &[u8] = b"RIFFDB-QUERY-SURFACE\0";
@@ -131,6 +132,66 @@ pub enum SourceSymbolKind {
     AggregateMeasure,
     /// Returned field alias.
     ResultField,
+    /// Exact stored secret field intentionally returned by one result slot.
+    SecretOutput,
+}
+
+/// One compiler-derived exact secret output requirement.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SecretOutputRequirement {
+    binding: String,
+    entity: String,
+    entity_id: EntityTypeId,
+    field: String,
+    field_id: FieldId,
+    result_path: Vec<String>,
+    declaration_span: Span,
+}
+
+impl SecretOutputRequirement {
+    /// Query-local binding named by the declaration.
+    #[must_use]
+    pub fn binding(&self) -> &str {
+        &self.binding
+    }
+
+    /// Exact contract entity name.
+    #[must_use]
+    pub fn entity(&self) -> &str {
+        &self.entity
+    }
+
+    /// Exact contract field name.
+    #[must_use]
+    pub fn field(&self) -> &str {
+        &self.field
+    }
+
+    /// Output branch and nested result-slot path.
+    #[must_use]
+    pub fn result_path(&self) -> &[String] {
+        &self.result_path
+    }
+
+    /// Source span of the exact declared secret path.
+    #[must_use]
+    pub const fn declaration_span(&self) -> Span {
+        self.declaration_span
+    }
+
+    /// Compiler-internal exact entity identity.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn internal_entity_id(&self) -> EntityTypeId {
+        self.entity_id
+    }
+
+    /// Compiler-internal exact field identity.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn internal_field_id(&self) -> FieldId {
+        self.field_id
+    }
 }
 
 /// One safe source-to-symbol association.
@@ -180,6 +241,7 @@ pub struct ResolvedQueryV1 {
     name: Option<String>,
     bindings: Vec<BindingSymbol>,
     aggregates: Vec<OperationalAggregateV1>,
+    secret_outputs: Vec<SecretOutputRequirement>,
     schemas: NamedQuerySchemas,
     source_map: QuerySourceMap,
     canonical_bytes: Vec<u8>,
@@ -194,6 +256,7 @@ impl std::fmt::Debug for ResolvedQueryV1 {
             .field("name", &self.name)
             .field("bindings", &self.bindings)
             .field("aggregates", &self.aggregates)
+            .field("secret_outputs", &self.secret_outputs)
             .field("schemas", &self.schemas)
             .field("source_map_entries", &self.source_map.0.len())
             .field("canonical_length", &self.canonical_bytes.len())
@@ -204,8 +267,15 @@ impl std::fmt::Debug for ResolvedQueryV1 {
 impl ResolvedQueryV1 {
     /// Query IR version.
     #[must_use]
-    pub const fn ir_version(&self) -> u32 {
-        QUERY_IR_VERSION_V1
+    pub fn ir_version(&self) -> u32 {
+        if self.secret_outputs.is_empty() {
+            // Declaration-free member access programs retain their original
+            // V1 identity. Operational and aggregate versions belong to the
+            // enclosing family codec, not this member program.
+            QUERY_IR_VERSION_V1
+        } else {
+            QUERY_IR_VERSION_SECRET_OUTPUT_V1
+        }
     }
 
     /// Exact contract identity.
@@ -230,6 +300,12 @@ impl ResolvedQueryV1 {
     #[must_use]
     pub fn aggregates(&self) -> &[OperationalAggregateV1] {
         &self.aggregates
+    }
+
+    /// Compiler-derived exact secret outputs in result traversal order.
+    #[must_use]
+    pub fn secret_outputs(&self) -> &[SecretOutputRequirement] {
+        &self.secret_outputs
     }
 
     /// Name-addressed parameter/result schemas.
@@ -287,6 +363,7 @@ struct Resolver<'a> {
     bindings: BTreeMap<String, ResolvedBinding<'a>>,
     aggregates: BTreeMap<String, ResolvedAggregateSelection>,
     source_map: Vec<SourceMapEntry>,
+    secret_outputs: Vec<SecretOutputRequirement>,
 }
 
 impl<'a> Resolver<'a> {
@@ -297,10 +374,21 @@ impl<'a> Resolver<'a> {
             bindings: BTreeMap::new(),
             aggregates: BTreeMap::new(),
             source_map: Vec::new(),
+            secret_outputs: Vec::new(),
         }
     }
 
     fn resolve(mut self, document: &Document) -> Result<ResolvedQueryV1, QueryDiagnostics> {
+        if document.name.is_none()
+            && let Some(reveal) = first_secret_output_declaration(&document.body.selection)
+        {
+            return Err(self.diagnostic(
+                QueryDiagnosticCode::SecretOutputDeclaration,
+                reveal.span,
+                names(&reveal.value),
+                "secret outputs are available only in immutable named queries",
+            ));
+        }
         let mut parameter_schemas = Vec::with_capacity(document.parameters.len());
         for parameter in &document.parameters {
             let name = parameter.name.value.as_str();
@@ -607,13 +695,17 @@ impl<'a> Resolver<'a> {
             aggregate_symbols.push(resolved);
         }
 
-        let fields = self.resolve_selection(&document.body.selection, None)?;
         let branch_name = document
             .body
             .outcome
             .as_ref()
             .map_or("Result", |outcome| outcome.value.as_str())
             .to_owned();
+        let fields = self.resolve_selection(
+            &document.body.selection,
+            None,
+            std::slice::from_ref(&branch_name),
+        )?;
         let declared = document
             .body
             .outcomes
@@ -652,6 +744,7 @@ impl<'a> Resolver<'a> {
             &binding_symbols,
             &aggregate_symbols,
             &schemas,
+            &self.secret_outputs,
         )?;
         self.source_map
             .sort_by_key(|entry| (entry.span.start, entry.span.end));
@@ -663,6 +756,7 @@ impl<'a> Resolver<'a> {
                 .map(|name| name.value.as_str().to_owned()),
             bindings: binding_symbols,
             aggregates: aggregate_symbols,
+            secret_outputs: self.secret_outputs,
             schemas,
             source_map: QuerySourceMap(self.source_map),
             canonical_bytes,
@@ -946,6 +1040,7 @@ impl<'a> Resolver<'a> {
         &mut self,
         selection: &Selection,
         context: Option<&ResolvedBinding<'a>>,
+        parent_result_path: &[String],
     ) -> Result<Vec<NamedFieldSchema>, QueryDiagnostics> {
         let mut names_seen = BTreeSet::new();
         let mut fields = Vec::with_capacity(selection.fields.len());
@@ -974,7 +1069,9 @@ impl<'a> Resolver<'a> {
                     "duplicate result field name",
                 ));
             }
-            let value_type = self.resolve_selection_field(field, context)?;
+            let mut result_path = parent_result_path.to_vec();
+            result_path.push(output_name.to_owned());
+            let value_type = self.resolve_selection_field(field, context, &result_path)?;
             let output_span = field
                 .alias
                 .as_ref()
@@ -993,9 +1090,18 @@ impl<'a> Resolver<'a> {
         &mut self,
         field: &FieldSelection,
         context: Option<&ResolvedBinding<'a>>,
+        result_path: &[String],
     ) -> Result<NamedTypeSchema, QueryDiagnostics> {
         let segments = names(&field.source.value);
         if let Some(nested) = &field.nested {
+            if let Some(reveal) = field.reveals.first() {
+                return Err(self.diagnostic(
+                    QueryDiagnosticCode::SecretOutputDeclaration,
+                    reveal.span,
+                    names(&reveal.value),
+                    "secret output declarations apply only to direct stored scalar leaves",
+                ));
+            }
             let binding_name = match segments.as_slice() {
                 [name] => name,
                 _ => {
@@ -1043,7 +1149,7 @@ impl<'a> Resolver<'a> {
                     "unknown nested selection binding or aggregate",
                 )
             })?;
-            let nested_fields = self.resolve_selection(nested, Some(&binding))?;
+            let nested_fields = self.resolve_selection(nested, Some(&binding), result_path)?;
             let record = NamedTypeSchema::Record(nested_fields);
             self.push_map(
                 field.source.span,
@@ -1066,7 +1172,7 @@ impl<'a> Resolver<'a> {
                 },
             });
         }
-        let (entity, field_name, symbolic_path) = match segments.as_slice() {
+        let (binding_name, entity, field_name, symbolic_path) = match segments.as_slice() {
             [field_name] => {
                 let context = context.ok_or_else(|| {
                     self.diagnostic(
@@ -1077,6 +1183,7 @@ impl<'a> Resolver<'a> {
                     )
                 })?;
                 (
+                    context.symbol.name.clone(),
                     context.entity,
                     field_name.as_str(),
                     vec![context.symbol.entity_name.clone(), field_name.clone()],
@@ -1092,6 +1199,7 @@ impl<'a> Resolver<'a> {
                     )
                 })?;
                 (
+                    binding_name.clone(),
                     binding.entity,
                     field_name.as_str(),
                     vec![binding.symbol.entity_name.clone(), field_name.clone()],
@@ -1114,6 +1222,68 @@ impl<'a> Resolver<'a> {
                 "unknown selected contract field",
             )
         })?;
+        if field.reveals.len() > 1 {
+            let duplicate = &field.reveals[1];
+            return Err(self.diagnostic(
+                QueryDiagnosticCode::SecretOutputDeclaration,
+                duplicate.span,
+                names(&duplicate.value),
+                "secret output declaration is duplicated for one result leaf",
+            ));
+        }
+        match (symbol.is_secret(), field.reveals.first()) {
+            (true, None) => {
+                return Err(self.diagnostic(
+                    QueryDiagnosticCode::SecretOutputDeclaration,
+                    field.source.span,
+                    symbolic_path,
+                    "projected secret field requires an exact reveals declaration",
+                ));
+            }
+            (false, Some(reveal)) => {
+                return Err(self.diagnostic(
+                    QueryDiagnosticCode::SecretOutputDeclaration,
+                    reveal.span,
+                    names(&reveal.value),
+                    "reveals declaration must name a secret-classified stored field",
+                ));
+            }
+            (true, Some(reveal)) => {
+                let declared = names(&reveal.value);
+                let expected = vec![binding_name.clone(), field_name.to_owned()];
+                if declared != expected {
+                    return Err(self.diagnostic(
+                        QueryDiagnosticCode::SecretOutputDeclaration,
+                        reveal.span,
+                        declared,
+                        "reveals declaration must exactly match the projected binding field",
+                    ));
+                }
+                if self.secret_outputs.len() == riffdb_riffql_syntax::MAX_COLLECTION_ITEMS {
+                    return Err(self.diagnostic(
+                        QueryDiagnosticCode::ArtifactLimit,
+                        reveal.span,
+                        expected,
+                        "secret output requirement limit exceeded",
+                    ));
+                }
+                self.secret_outputs.push(SecretOutputRequirement {
+                    binding: binding_name,
+                    entity: entity.name().to_owned(),
+                    entity_id: entity.internal_id(),
+                    field: field_name.to_owned(),
+                    field_id: symbol.internal_id(),
+                    result_path: result_path.to_vec(),
+                    declaration_span: reveal.span,
+                });
+                self.push_map(
+                    reveal.span,
+                    SourceSymbolKind::SecretOutput,
+                    vec![entity.name().to_owned(), field_name.to_owned()],
+                )?;
+            }
+            (false, None) => {}
+        }
         self.push_map(field.source.span, SourceSymbolKind::Field, symbolic_path)?;
         self.named_type(symbol.value_type(), field.source.span)
     }
@@ -1127,6 +1297,14 @@ impl<'a> Resolver<'a> {
         let mut names_seen = BTreeSet::new();
         let mut fields = Vec::with_capacity(selection.fields.len());
         for field in &selection.fields {
+            if let Some(reveal) = field.reveals.first() {
+                return Err(self.diagnostic(
+                    QueryDiagnosticCode::SecretOutputDeclaration,
+                    reveal.span,
+                    names(&reveal.value),
+                    "aggregate results cannot declare secret stored-field outputs",
+                ));
+            }
             if let Some(alias) = &field.alias {
                 return Err(self.diagnostic(
                     QueryDiagnosticCode::InvalidPath,
@@ -1366,12 +1544,26 @@ fn names(path: &Path) -> Vec<String> {
         .collect()
 }
 
+fn first_secret_output_declaration(
+    selection: &Selection,
+) -> Option<&riffdb_riffql_syntax::Spanned<Path>> {
+    selection.fields.iter().find_map(|field| {
+        field.reveals.first().or_else(|| {
+            field
+                .nested
+                .as_ref()
+                .and_then(first_secret_output_declaration)
+        })
+    })
+}
+
 fn canonical_surface(
     document: &Document,
     identity: &ExactContractIdentity,
     bindings: &[BindingSymbol],
     aggregates: &[OperationalAggregateV1],
     schemas: &NamedQuerySchemas,
+    secret_outputs: &[SecretOutputRequirement],
 ) -> Result<Vec<u8>, QueryDiagnostics> {
     let source = format_query(document);
     let mut bytes = Vec::with_capacity(
@@ -1379,7 +1571,9 @@ fn canonical_surface(
     );
     bytes.extend_from_slice(IR_MAGIC);
     bytes.extend_from_slice(
-        &if aggregates.is_empty() {
+        &if !secret_outputs.is_empty() {
+            QUERY_IR_VERSION_SECRET_OUTPUT_V1
+        } else if aggregates.is_empty() {
             QUERY_IR_VERSION_V1
         } else {
             QUERY_IR_VERSION_OPERATIONAL_AGGREGATE_V1
@@ -1444,6 +1638,23 @@ fn canonical_surface(
     for branch in schemas.results() {
         push_bytes(&mut bytes, branch.name().as_bytes())?;
         encode_fields(&mut bytes, branch.fields())?;
+    }
+    if !secret_outputs.is_empty() {
+        bytes.extend_from_slice(b"SECRET-OUTPUT-REQUIREMENTS\0");
+        push_count(&mut bytes, secret_outputs.len())?;
+        for requirement in secret_outputs {
+            push_bytes(&mut bytes, requirement.binding.as_bytes())?;
+            push_bytes(&mut bytes, requirement.entity.as_bytes())?;
+            bytes.extend_from_slice(&requirement.entity_id.get().to_be_bytes());
+            push_bytes(&mut bytes, requirement.field.as_bytes())?;
+            bytes.extend_from_slice(&requirement.field_id.get().to_be_bytes());
+            push_count(&mut bytes, requirement.result_path.len())?;
+            for segment in &requirement.result_path {
+                push_bytes(&mut bytes, segment.as_bytes())?;
+            }
+            bytes.extend_from_slice(&requirement.declaration_span.start.to_be_bytes());
+            bytes.extend_from_slice(&requirement.declaration_span.end.to_be_bytes());
+        }
     }
     if bytes.len() > MAX_QUERY_ARTIFACT_BYTES {
         return Err(QueryDiagnostics::one(QueryDiagnostic::new(

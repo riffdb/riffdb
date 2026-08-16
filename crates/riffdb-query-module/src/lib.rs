@@ -23,7 +23,8 @@ pub use application_manifest::{
 pub use application_role::{
     ApplicationRoleError, ApplicationRoleErrorKind, ApplicationRoleFactSchema,
     ApplicationRoleOperation, ApplicationRoleOperationKind, ApplicationRolePolicy,
-    CompiledApplicationRole, compile_application_role, compile_application_role_v2,
+    ApplicationRoleSecretOutput, CompiledApplicationRole, compile_application_role,
+    compile_application_role_v2,
 };
 pub use application_source::{
     APPLICATION_SOURCE_SCHEMA_V1, APPLICATION_SOURCE_SCHEMA_V2, APPLICATION_SOURCE_SCHEMA_V3,
@@ -56,11 +57,13 @@ use riffdb_query_compiler::{compile_operational_query_family, compile_query};
 use riffdb_query_ir::{
     AuthorizationEntityAccess, NamedQuerySchemas, OperationalQueryFamilyV1,
     QUERY_IR_VERSION_OPERATIONAL_AGGREGATE_V1, QUERY_IR_VERSION_OPERATIONAL_V1,
-    QUERY_IR_VERSION_V1, QueryAccessProgramV1, QuerySourceMap, SourceSymbolKind, SymbolicCatalog,
+    QUERY_IR_VERSION_SECRET_OUTPUT_V1, QUERY_IR_VERSION_V1, QueryAccessProgramV1, QuerySourceMap,
+    SecretOutputRequirement, SourceSymbolKind, SymbolicCatalog,
 };
 use riffdb_riffql_syntax::{
     Document, MAX_IDENTIFIER_BYTES, MAX_SOURCE_BYTES, ParseDiagnostics, RIFFQL_LANGUAGE_VERSION,
-    RIFFQL_LANGUAGE_VERSION_OPERATIONAL_V1, format_query, parse_query,
+    RIFFQL_LANGUAGE_VERSION_OPERATIONAL_V1, RIFFQL_LANGUAGE_VERSION_SECRET_OUTPUT_V1, format_query,
+    parse_query,
 };
 use riffdb_types::{
     ContractBundleHash, ContractLineage, ContractVersion, QueryCostVectorV1, QueryModuleHash,
@@ -81,6 +84,8 @@ pub const QUERY_MODULE_FORMAT_VERSION_V1: u32 = 1;
 pub const QUERY_MODULE_FORMAT_VERSION_OPERATIONAL_V1: u32 = 2;
 /// Additive module codec for exact operational aggregate descriptors.
 pub const QUERY_MODULE_FORMAT_VERSION_OPERATIONAL_AGGREGATE_V1: u32 = 3;
+/// Additive module codec carrying exact secret-output requirements.
+pub const QUERY_MODULE_FORMAT_VERSION_SECRET_OUTPUT_V1: u32 = 4;
 /// Maximum queries retained in one immutable module.
 pub const MAX_MODULE_QUERIES: usize = 4_096;
 /// Maximum canonical bytes for one immutable module.
@@ -191,6 +196,15 @@ impl CompiledNamedQueryPlan {
         match self {
             Self::V1(program) => program.surface().schemas(),
             Self::OperationalV1(family) => family.surface().schemas(),
+        }
+    }
+
+    /// Exact compiler-derived secret outputs for the query.
+    #[must_use]
+    pub fn secret_outputs(&self) -> &[SecretOutputRequirement] {
+        match self {
+            Self::V1(program) => program.surface().secret_outputs(),
+            Self::OperationalV1(family) => family.surface().secret_outputs(),
         }
     }
 
@@ -520,7 +534,13 @@ impl QueryModule {
     /// Canonical module codec selected by its contained plan kinds.
     #[must_use]
     pub fn format_version(&self) -> u32 {
-        if self.queries.iter().any(|query| {
+        if self
+            .queries
+            .iter()
+            .any(|query| !query.plan().secret_outputs().is_empty())
+        {
+            QUERY_MODULE_FORMAT_VERSION_SECRET_OUTPUT_V1
+        } else if self.queries.iter().any(|query| {
             query
                 .operational_family()
                 .is_some_and(|family| !family.aggregates().is_empty())
@@ -681,7 +701,7 @@ fn query_source_map(query: &CompiledNamedQuery) -> &QuerySourceMap {
 }
 
 fn query_explain_lines(query: &CompiledNamedQuery) -> Vec<String> {
-    match query.plan() {
+    let mut lines = match query.plan() {
         CompiledNamedQueryPlan::V1(program) => program.explain().lines().to_vec(),
         CompiledNamedQueryPlan::OperationalV1(family) => {
             let mut lines = vec![
@@ -730,7 +750,16 @@ fn query_explain_lines(query: &CompiledNamedQuery) -> Vec<String> {
             }
             lines
         }
-    }
+    };
+    lines.extend(query.plan().secret_outputs().iter().map(|requirement| {
+        format!(
+            "secret_output.{}={}.{}",
+            requirement.result_path().join("."),
+            requirement.entity(),
+            requirement.field()
+        )
+    }));
+    lines
 }
 
 fn encode_module(
@@ -747,7 +776,12 @@ fn encode_module(
             .operational_family()
             .is_some_and(|family| !family.aggregates().is_empty())
     });
-    let format_version = if operational_aggregate {
+    let secret_output = queries
+        .iter()
+        .any(|query| !query.plan().secret_outputs().is_empty());
+    let format_version = if secret_output {
+        QUERY_MODULE_FORMAT_VERSION_SECRET_OUTPUT_V1
+    } else if operational_aggregate {
         QUERY_MODULE_FORMAT_VERSION_OPERATIONAL_AGGREGATE_V1
     } else if operational {
         QUERY_MODULE_FORMAT_VERSION_OPERATIONAL_V1
@@ -763,7 +797,9 @@ fn encode_module(
     output.extend_from_slice(&contract.contract_version().get().to_be_bytes());
     output.extend_from_slice(contract.bundle_hash().as_bytes());
     output.extend_from_slice(
-        &if operational {
+        &if secret_output {
+            RIFFQL_LANGUAGE_VERSION_SECRET_OUTPUT_V1
+        } else if operational {
             RIFFQL_LANGUAGE_VERSION_OPERATIONAL_V1
         } else {
             RIFFQL_LANGUAGE_VERSION
@@ -771,7 +807,9 @@ fn encode_module(
         .to_be_bytes(),
     );
     output.extend_from_slice(
-        &if operational_aggregate {
+        &if secret_output {
+            QUERY_IR_VERSION_SECRET_OUTPUT_V1
+        } else if operational_aggregate {
             QUERY_IR_VERSION_OPERATIONAL_AGGREGATE_V1
         } else if operational {
             QUERY_IR_VERSION_OPERATIONAL_V1
@@ -786,7 +824,7 @@ fn encode_module(
         write_text(&mut output, query.name())?;
         write_bytes(&mut output, query.canonical_source().as_bytes())?;
         output.extend_from_slice(query.source_hash().as_bytes());
-        if operational {
+        if operational || secret_output {
             output.push(match query.plan() {
                 CompiledNamedQueryPlan::V1(_) => 1,
                 CompiledNamedQueryPlan::OperationalV1(_) => 2,
@@ -834,6 +872,7 @@ fn decode_candidate(bytes: &[u8]) -> Result<DecodedCandidate, QueryModuleError> 
         QUERY_MODULE_FORMAT_VERSION_V1
             | QUERY_MODULE_FORMAT_VERSION_OPERATIONAL_V1
             | QUERY_MODULE_FORMAT_VERSION_OPERATIONAL_AGGREGATE_V1
+            | QUERY_MODULE_FORMAT_VERSION_SECRET_OUTPUT_V1
     ) {
         return Err(QueryModuleError::new(
             QueryModuleErrorKind::UnsupportedVersion,
@@ -861,6 +900,10 @@ fn decode_candidate(bytes: &[u8]) -> Result<DecodedCandidate, QueryModuleError> 
         QUERY_MODULE_FORMAT_VERSION_OPERATIONAL_AGGREGATE_V1 => {
             language_version == RIFFQL_LANGUAGE_VERSION_OPERATIONAL_V1
                 && ir_version == QUERY_IR_VERSION_OPERATIONAL_AGGREGATE_V1
+        }
+        QUERY_MODULE_FORMAT_VERSION_SECRET_OUTPUT_V1 => {
+            language_version == RIFFQL_LANGUAGE_VERSION_SECRET_OUTPUT_V1
+                && ir_version == QUERY_IR_VERSION_SECRET_OUTPUT_V1
         }
         _ => false,
     };
@@ -891,12 +934,11 @@ fn decode_candidate(bytes: &[u8]) -> Result<DecodedCandidate, QueryModuleError> 
             input.u32()?;
             input.u32()?;
             let tag = input.u8()?;
-            let maximum_tag =
-                if format_version == QUERY_MODULE_FORMAT_VERSION_OPERATIONAL_AGGREGATE_V1 {
-                    9
-                } else {
-                    7
-                };
+            let maximum_tag = match format_version {
+                QUERY_MODULE_FORMAT_VERSION_SECRET_OUTPUT_V1 => 10,
+                QUERY_MODULE_FORMAT_VERSION_OPERATIONAL_AGGREGATE_V1 => 9,
+                _ => 7,
+            };
             if !(1..=maximum_tag).contains(&tag) {
                 return Err(QueryModuleError::new(QueryModuleErrorKind::InvalidEncoding));
             }
@@ -928,6 +970,7 @@ fn source_kind_tag(kind: SourceSymbolKind) -> u8 {
         SourceSymbolKind::ResultField => 7,
         SourceSymbolKind::Aggregate => 8,
         SourceSymbolKind::AggregateMeasure => 9,
+        SourceSymbolKind::SecretOutput => 10,
     }
 }
 

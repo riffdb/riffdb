@@ -27,8 +27,8 @@ pub use plan::{
 };
 pub use reactive::*;
 pub use resolver::{
-    BindingSymbol, ExactContractIdentity, QuerySourceMap, ResolvedQueryV1, SourceMapEntry,
-    SourceSymbolKind, resolve_query_surface,
+    BindingSymbol, ExactContractIdentity, QuerySourceMap, ResolvedQueryV1, SecretOutputRequirement,
+    SourceMapEntry, SourceSymbolKind, resolve_query_surface,
 };
 pub use schema::{
     NamedFieldSchema, NamedParameterSchema, NamedQuerySchemas, NamedResultBranchSchema,
@@ -41,6 +41,8 @@ pub const QUERY_IR_VERSION_V1: u32 = 1;
 pub const QUERY_IR_VERSION_OPERATIONAL_V1: u32 = 2;
 /// Canonical finite operational plan-family IR with exact aggregate descriptors.
 pub const QUERY_IR_VERSION_OPERATIONAL_AGGREGATE_V1: u32 = 3;
+/// Canonical query IR carrying exact secret-output requirements.
+pub const QUERY_IR_VERSION_SECRET_OUTPUT_V1: u32 = 4;
 /// Maximum public query schema and canonical IR bytes.
 pub const MAX_QUERY_ARTIFACT_BYTES: usize = 4_194_304;
 /// Maximum source-map entries.

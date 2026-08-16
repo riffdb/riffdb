@@ -98,6 +98,12 @@ pub fn reactive_query_catalog(
             return Err(ReactiveModuleCompilationError::InvalidQueryCatalog);
         }
         for query in module.queries() {
+            // ADR-0128 excludes secret-output queries from every reactive
+            // watch and hydration surface. Omitting the dependency makes a
+            // source reference fail closed at its query-name span.
+            if !query.plan().secret_outputs().is_empty() {
+                continue;
+            }
             // Operational families require per-delivery presence selection.
             // Reactive V1 has no such identity, so it must not bind one by
             // accidentally treating a representative member as executable.

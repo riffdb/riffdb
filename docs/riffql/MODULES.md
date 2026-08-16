@@ -39,6 +39,19 @@ surface. Version-1 reactive/live-query modules do not substitute a representativ
 member: compilation excludes an operational family until a versioned reactive
 presence-selection surface exists.
 
+A module containing a compiler-checked secret output uses additive version 4.
+Its canonical query plan carries each exact query, entity, field, stable field
+identity, result slot, and declaration span. Strict decode recompiles those
+requirements against the exact contract. Selecting such a query in a symbolic
+application role derives a V4 role identity with ordered
+`query/entity/field` atoms and dedicated secret-field visibility; selecting an
+ordinary query does not inherit another query's secret authority. Modules and
+roles without these declarations keep their previous V1 through V3 bytes.
+
+Secret-bearing queries are generated for typed Rust, Go, TypeScript, Python,
+and gRPC application execution. They are deliberately absent from generated
+MCP tool catalogs and every reactive query catalog.
+
 The additive identity transition is frozen in
 `fixtures/riffql/operational-identity-rotation-v1.json`. That generated receipt
 records the v1/v2/v3 language, IR, plan/family, module, manifest, role,
@@ -55,7 +68,8 @@ The compiler emits:
 - TypeScript equivalents;
 - exact contract and module identity constants;
 - response-identity verification helpers; and
-- optional module-qualified MCP read tools with domain-shaped JSON Schemas.
+- optional module-qualified MCP read tools with domain-shaped JSON Schemas for
+  queries that do not return secret-classified fields.
 
 For TicketDesk, the generated MCP names are:
 
