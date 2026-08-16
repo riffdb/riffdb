@@ -87,6 +87,19 @@ cargo +1.97.0 test --manifest-path examples/app-baseline/Cargo.toml --workspace
 Use `--workspace` always: the manifest is both package and workspace root;
 without it member crates (and most T2 unit tests) are skipped.
 
+For writer-stage attribution only, `--seed-only` stops immediately after the
+generated full seed and retains the bounded process-generation writer evidence
+in the JSON report:
+
+```bash
+./benchmarks/run-app-baseline --full --skip-postgres --seed-only \
+  --samples 1 --warmup 0 --reps 1 --output "$HOME/tmp/riffdb-seed-ledger.json"
+```
+
+This is a diagnostic boundary, not a `PERF-018` comparator or release-evidence
+substitute. It exists so seed wall time and shutdown telemetry cover the same
+commands without page-query or projection-catch-up work.
+
 ## Statistical protocol
 
 | Mode | Measure | Warmup | Default reps |
