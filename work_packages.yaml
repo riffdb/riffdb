@@ -13577,6 +13577,15 @@ work_packages:
       no caller can bypass, defer, suppress, or retry around an audit failure.
     scale: The repair adds no history scan, unbounded retry, per-command retained label, or queue
       whose capacity depends on workload duration, tenant count, or audit history.
+  closure:
+    status: complete
+    evidence: docs/performance/wp-641-cold-start-audit.md
+    decision: Cold E2 evidence isolated the primary stop to redb detached staging treating a valid
+      index-free writer-private group as a missing generation-base invariant. Staging now accepts
+      absence only when every retained write plan has zero index-generation advances and preserves
+      the exact captured generation map; an advance still requires the retained base. Three cold
+      and one warm-host full-seed cells pass on each E2 and N1 with exact completion and inventory
+      counts, zero frontier-equivalence failures, and unchanged fail-closed audit behavior.
   human_review_triggers: *id001
 - id: WP-642
   name: Post-measurement authoritative inventory reliability

@@ -1622,10 +1622,15 @@ impl DetachedCommandGroupBatch for RedbEmptyBatch {
             return Err(storage_error(StorageErrorKind::InvariantViolation));
         }
         let expected_generations = core.index_generations.clone();
-        core.index_generations = core
-            .detached_index_generation_base
-            .take()
-            .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
+        let has_index_generation_advance = core
+            .detached
+            .iter()
+            .any(|candidate| !candidate.write_plan.index_epochs().is_empty());
+        core.index_generations = detached_index_generation_base(
+            core.detached_index_generation_base.take(),
+            &expected_generations,
+            has_index_generation_advance,
+        )?;
         let retained = std::mem::take(&mut core.detached);
         for (ordinal, (command, retained)) in commands.into_iter().zip(retained).enumerate() {
             let (reservation, mut records) = command.into_parts();
@@ -1659,6 +1664,18 @@ impl DetachedCommandGroupBatch for RedbEmptyBatch {
             return Err(storage_error(StorageErrorKind::InvariantViolation));
         }
         Ok(RedbNonEmptyBatch { core })
+    }
+}
+
+fn detached_index_generation_base(
+    retained: Option<BTreeMap<PartitionIndexTarget, IndexEpochPosition>>,
+    expected_generations: &BTreeMap<PartitionIndexTarget, IndexEpochPosition>,
+    has_index_generation_advance: bool,
+) -> Result<BTreeMap<PartitionIndexTarget, IndexEpochPosition>, StorageError> {
+    match (retained, has_index_generation_advance) {
+        (Some(base), _) => Ok(base),
+        (None, false) => Ok(expected_generations.clone()),
+        (None, true) => Err(storage_error(StorageErrorKind::InvariantViolation)),
     }
 }
 
@@ -2859,6 +2876,26 @@ mod tests {
                 [(first, first_prior), (later, later_prior),]
             ))
         );
+    }
+
+    #[test]
+    fn detached_index_free_group_preserves_the_exact_generation_map() {
+        let target = generation_target(1);
+        let position = IndexEpochPosition::Value(riffdb_types::IndexEpoch::new(3).expect("epoch"));
+        let expected = BTreeMap::from([(target, position)]);
+
+        let restored = detached_index_generation_base(None, &expected, false)
+            .expect("index-free detached group");
+
+        assert_eq!(restored, expected);
+    }
+
+    #[test]
+    fn missing_detached_generation_base_with_an_advance_is_integrity() {
+        let error = detached_index_generation_base(None, &BTreeMap::new(), true)
+            .expect_err("advanced group requires retained base");
+
+        assert_eq!(error.kind(), StorageErrorKind::InvariantViolation);
     }
 
     #[test]
