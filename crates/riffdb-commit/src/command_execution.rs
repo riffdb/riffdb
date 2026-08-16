@@ -350,7 +350,10 @@ impl CommandEvaluationPool {
                                 .zip(snapshots)
                                 .map(|((attempt, durable), snapshot)| {
                                     evaluate_acquired_command_attempt_after_lookup_and_snapshot(
-                                        attempt, durable, snapshot,
+                                        attempt,
+                                        durable,
+                                        snapshot,
+                                        repository.as_ref(),
                                     )
                                 })
                                 .collect(),
@@ -1779,7 +1782,7 @@ where
     };
     let mut acquired =
         std::collections::VecDeque::from(indices.into_iter().zip(acquired).collect::<Vec<_>>());
-    let Some((first_index, first)) = acquired.pop_front() else {
+    let Some((first_index, mut first)) = acquired.pop_front() else {
         return Vec::new().into();
     };
 
@@ -1841,6 +1844,35 @@ where
                 return completed.into();
             }
         };
+    let first_snapshot = match first
+        .complete_transaction_local_snapshot(first_snapshot, |request| {
+            empty.read_transaction_local_snapshot(request)
+        }) {
+        Ok(snapshot) => snapshot,
+        Err(error) => {
+            empty.rollback();
+            drop(first);
+            let mut completed = vec![(first_index, Err(command_attempt_failure(error, lifecycle)))];
+            let fallback = acquired
+                .into_iter()
+                .map(|(index, attempt)| (index, attempt.into_pending_without_evaluation()))
+                .collect();
+            completed.extend(
+                drive_pending_items(
+                    port,
+                    conflicts,
+                    administration_clock,
+                    provenance,
+                    durability,
+                    lifecycle,
+                    telemetry,
+                    fallback,
+                )
+                .await,
+            );
+            return completed.into();
+        }
+    };
     let first = match evaluate_transaction_local_acquired_command_attempt(first, first_snapshot) {
         Ok(CommandAttemptResolution::Evaluated(attempt)) => attempt,
         Ok(CommandAttemptResolution::ExecutionFault(fault)) => {
@@ -1969,7 +2001,7 @@ where
     };
     let mut staged_indices = vec![first_index];
 
-    while let Some((index, attempt)) = acquired.pop_front() {
+    while let Some((index, mut attempt)) = acquired.pop_front() {
         let evaluation_started = Instant::now();
         let snapshot =
             match staged
@@ -2028,8 +2060,13 @@ where
                     return completed.into();
                 }
             };
+        let completed_snapshot = attempt.complete_transaction_local_snapshot(snapshot, |request| {
+            staged.read_transaction_local_snapshot(request)
+        });
         let evaluated =
-            match evaluate_transaction_local_acquired_command_attempt(attempt, snapshot) {
+            match completed_snapshot.and_then(|snapshot| {
+                evaluate_transaction_local_acquired_command_attempt(attempt, snapshot)
+            }) {
                 Ok(CommandAttemptResolution::Evaluated(attempt)) => attempt,
                 Ok(CommandAttemptResolution::ExecutionFault(fault)) => {
                     let previous = match staged.rollback_into_retries() {

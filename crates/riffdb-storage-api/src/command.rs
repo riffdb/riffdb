@@ -858,6 +858,13 @@ impl<'snapshot> EvaluatedCommandBuilder<'snapshot> {
         if self.mutations.len() >= self.budget.maximum_mutations {
             return Err(StorageValueError::LimitExceeded);
         }
+        if self
+            .mutations
+            .iter()
+            .any(|existing| existing.target() == mutation.target())
+        {
+            return Err(StorageValueError::Duplicate);
+        }
         let key = validate_evaluated_mutation(
             self.snapshot,
             &mutation,
@@ -943,7 +950,11 @@ impl EvaluatedCommand {
         }
 
         let mut prior: Option<Vec<u8>> = None;
+        let mut mutation_targets = std::collections::BTreeSet::new();
         for mutation in &mutations {
+            if !mutation_targets.insert(mutation.target()) {
+                return Err(StorageValueError::Duplicate);
+            }
             let key = validate_evaluated_mutation(snapshot, mutation, prior.as_deref())?;
             prior = Some(key);
         }
@@ -1334,6 +1345,7 @@ fn validate_evaluated_snapshot_budget(
         .binding_targets()
         .len()
         .checked_add(validation_request.root_validation_targets().len())
+        .and_then(|value| value.checked_add(validation_request.cascade_targets().len()))
         .and_then(|value| value.checked_add(validation_request.range_targets().len()))
         .ok_or(StorageValueError::SizeOverflow)?;
     if target_count > budget.maximum_read_targets
@@ -1369,7 +1381,9 @@ fn validate_evaluated_mutation(
         return Err(StorageValueError::IdentityMismatch);
     }
     let key = mutation.target().canonical_target_key();
-    if prior_key.is_some_and(|prior_key| prior_key >= key.as_slice()) {
+    if snapshot.cascade_predecessors().is_empty()
+        && prior_key.is_some_and(|prior_key| prior_key >= key.as_slice())
+    {
         return Err(StorageValueError::NonCanonicalOrder);
     }
     Ok(key)

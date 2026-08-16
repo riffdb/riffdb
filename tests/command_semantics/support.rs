@@ -122,12 +122,21 @@ contract BulkRowsRecovery version 1 {
   entity Row {
     key (tenant_id: uuid, row_id: uuid)
     field value: i64
+    delete_policy cascade {
+      relationship Child.row using Child.by_row maximum 1
+    }
+  }
+  entity Child {
+    key (tenant_id: uuid, row_id: uuid, child_id: uuid)
+    index by_row (tenant_id, row_id)
+    reference row (tenant_id, row_id) -> Row(tenant_id, row_id)
     delete_policy no_inbound
   }
   event RowWritten { row_id: uuid value: i64 }
   event RowDeleted { row_id: uuid }
   aggregate Rows {
     root Row
+    child Child
     partition_by tenant_id
     conflict_key (tenant_id, row_id)
   }
@@ -137,6 +146,7 @@ contract BulkRowsRecovery version 1 {
     idempotency_key request_id
     for row in rows {
       create Row(row.tenant_id, row.row_id) as stored else Exists {}
+      create Child(row.tenant_id, row.row_id, row.row_id) as stored_child else Exists {}
       set stored.value = row.value
       emit RowWritten { row_id: row.row_id, value: stored.value }
     }
@@ -149,9 +159,20 @@ contract BulkRowsRecovery version 1 {
     idempotency_key request_id
     for row_id in row_ids {
       delete Row(tenant_id, row_id) as stored else Missing {}
+        cascade CascadeLimitExceeded {}
       emit RowDeleted { row_id: row_id }
     }
     return Deleted {}
+  }
+  command PutExtraChild {
+    input request_id: uuid
+    input tenant_id: uuid
+    input row_id: uuid
+    input child_id: uuid
+    idempotency_key request_id
+    read Row(tenant_id, row_id) as stored else Missing {}
+    create Child(tenant_id, row_id, child_id) as stored_child else Exists {}
+    return ExtraChildCreated {}
   }
 }
 "#;
@@ -291,6 +312,7 @@ pub(crate) struct BulkRowsDatabase {
     path: PathBuf,
     checked_bundle: ValidatedContractBundle,
     row_entity_type: EntityTypeId,
+    child_entity_type: EntityTypeId,
     _scratch: Option<ScratchDir>,
 }
 
@@ -345,10 +367,19 @@ impl BulkRowsDatabase {
             .find(|entity| entity.name() == "Row")
             .expect("Row entity schema")
             .id();
+        let child_entity_type = checked_bundle
+            .bundle()
+            .schema()
+            .entities()
+            .iter()
+            .find(|entity| entity.name() == "Child")
+            .expect("Child entity schema")
+            .id();
         Self {
             path,
             checked_bundle,
             row_entity_type,
+            child_entity_type,
             _scratch: scratch,
         }
     }
@@ -471,6 +502,53 @@ impl BulkRowsDatabase {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn prepare_extra_child(
+        &self,
+        ports: &RedbOperationalPorts,
+        row_id: [u8; 16],
+        child_id: [u8; 16],
+        input_request_seed: u8,
+        digest_seed: u8,
+        admission_request_seed: u8,
+    ) -> CommandExecutionPreparation {
+        let plan = self.command_plan("PutExtraChild");
+        let input = input_record(
+            plan.input().record(),
+            [
+                (
+                    "request_id",
+                    CanonicalValue::Uuid(uuid_bytes(input_request_seed)),
+                ),
+                ("tenant_id", CanonicalValue::Uuid(ORGANIZATION_ID)),
+                ("row_id", CanonicalValue::Uuid(row_id)),
+                ("child_id", CanonicalValue::Uuid(child_id)),
+            ],
+        );
+        let caller_key = canonical_uuid_text(input_request_seed);
+        self.prepare_command(
+            ports,
+            plan,
+            input,
+            &caller_key,
+            digest_seed,
+            admission_request_seed,
+        )
+    }
+
+    pub(crate) fn outcome_id(
+        &self,
+        command_name: &str,
+        outcome_name: &str,
+    ) -> riffdb_types::OutcomeId {
+        self.command_plan(command_name)
+            .outcomes()
+            .iter()
+            .find(|outcome| outcome.name() == outcome_name)
+            .unwrap_or_else(|| panic!("{outcome_name} outcome"))
+            .id()
+    }
+
     fn prepare_command(
         &self,
         ports: &RedbOperationalPorts,
@@ -566,7 +644,31 @@ impl BulkRowsDatabase {
                 expected,
                 "all collection elements must share one atomic visibility state"
             );
+            assert_eq!(
+                ports
+                    .read_entity(&self.child_target(*row_id, *row_id))
+                    .expect("read cascade child")
+                    .is_some(),
+                expected,
+                "each cascade child must share its root's atomic visibility state"
+            );
         }
+    }
+
+    pub(crate) fn assert_child_present(
+        &self,
+        ports: &RedbOperationalPorts,
+        row_id: [u8; 16],
+        child_id: [u8; 16],
+        expected: bool,
+    ) {
+        assert_eq!(
+            ports
+                .read_entity(&self.child_target(row_id, child_id))
+                .expect("read cascade child")
+                .is_some(),
+            expected
+        );
     }
 
     pub(crate) fn assert_commit_graph(
@@ -623,6 +725,23 @@ impl BulkRowsDatabase {
             key.finish().expect("row entity key"),
         )
         .expect("Row entity target")
+    }
+
+    fn child_target(
+        &self,
+        row_id: [u8; 16],
+        child_id: [u8; 16],
+    ) -> riffdb_storage_api::EntityTarget {
+        let mut key = EntityKeyBuilder::new(self.child_entity_type);
+        key.push_uuid(&ORGANIZATION_ID)
+            .expect("tenant key component");
+        key.push_uuid(&row_id).expect("row key component");
+        key.push_uuid(&child_id).expect("child key component");
+        riffdb_storage_api::EntityTarget::new(
+            self.child_entity_type,
+            key.finish().expect("child entity key"),
+        )
+        .expect("Child entity target")
     }
 }
 
@@ -1901,11 +2020,14 @@ impl ProvenanceIdSource for IncrementingProvenanceSource {
     }
 }
 
-pub(crate) fn start_coordinator(
+pub(crate) fn start_coordinator<P>(
     ports: RedbOperationalPorts,
     admission_clock: Arc<FixedAdmissionClock>,
-    provenance_source: Arc<CountingProvenanceSource>,
-) -> RunningCommandCoordinator {
+    provenance_source: Arc<P>,
+) -> RunningCommandCoordinator
+where
+    P: ProvenanceIdSource + 'static,
+{
     start_coordinator_with_notifications(
         ports,
         admission_clock,

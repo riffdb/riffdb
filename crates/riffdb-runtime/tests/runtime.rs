@@ -8,7 +8,8 @@ use riffdb_invariant::{ExpressionValueSource, derive_input_command_facts, evalua
 use riffdb_runtime::{ExecutionFault, ExecutionResult, TransactionContext, execute_command};
 use riffdb_storage_api::{
     DurableKeySchemaBindingV1, EntityObservation, EntityTarget, EvaluationBudget,
-    ExecutablePlanRef, ReadDependency, ReadSnapshot, SnapshotRequest, StoredEntityRecordV1,
+    ExecutablePlanRef, IndexRangeEntry, IndexRangeObservation, IndexRangePrefixBuilder,
+    IndexRangeTarget, ReadDependency, ReadSnapshot, SnapshotRequest, StoredEntityRecordV1,
 };
 use riffdb_types::{
     ActorId, ActorKind, AdmittedActorContext, CanonicalBytes, CanonicalList, CanonicalRecord,
@@ -43,6 +44,10 @@ contract BulkDeleteRuntime version 1 {
   }
 }
 "#;
+const CASCADE_DELETE_SOURCE: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../fixtures/compiler/cascade/contract.riff"
+));
 const FRAMEWORK_PROFILE_SOURCE: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../fixtures/adapters/framework-profile/riffdb/contract.riff"
@@ -415,6 +420,189 @@ fn bounded_collection_delete_retains_exact_predecessors_without_post_delete_rows
         );
         assert_eq!(mutation.post_image().fields(), predecessor.fields());
     }
+}
+
+#[test]
+fn bounded_cascade_deletes_children_before_parent_from_exact_reverse_index_evidence() {
+    let bundle = compile_contract_source(CASCADE_DELETE_SOURCE).expect("cascade fixture compiles");
+    let plan = command(&bundle, "DeleteUsers");
+    let organization_id = CanonicalValue::Uuid([0x91; 16]);
+    let user_id = CanonicalValue::Uuid([0x92; 16]);
+    let input = input_record(
+        plan.input().record(),
+        [
+            ("request_id", CanonicalValue::Uuid([0x93; 16])),
+            ("organization_id", organization_id.clone()),
+            (
+                "user_ids",
+                CanonicalValue::List(CanonicalList::new(vec![user_id.clone()]).expect("one user")),
+            ),
+        ],
+    );
+    let facts = derive_input_command_facts(plan, input.clone()).expect("cascade facts");
+    let root_target = EntityTarget::new(
+        plan.bindings()[facts.binding_plan_indices()[0] as usize].entity_type(),
+        facts.binding_entity_keys()[0].clone(),
+    )
+    .expect("user target");
+    let user = bundle
+        .schema()
+        .entities()
+        .iter()
+        .find(|entity| entity.name() == "User")
+        .expect("User entity");
+    let root = stored_record(
+        &bundle,
+        plan,
+        root_target.clone(),
+        input_record(
+            user.record(),
+            [
+                ("organization_id", organization_id.clone()),
+                ("user_id", user_id.clone()),
+            ],
+        ),
+    );
+
+    let mut discovered = Vec::new();
+    let mut ranges = Vec::new();
+    for (entity_name, child_field, child_id) in [
+        ("Account", "account_id", 0x94),
+        ("Session", "session_id", 0x95),
+    ] {
+        let entity = bundle
+            .schema()
+            .entities()
+            .iter()
+            .find(|entity| entity.name() == entity_name)
+            .expect("cascade child entity");
+        let child_key = entity
+            .primary_key()
+            .encode_entity(&[
+                organization_id.clone(),
+                user_id.clone(),
+                CanonicalValue::Uuid([child_id; 16]),
+            ])
+            .expect("child key");
+        let target = EntityTarget::new(entity.id(), child_key.clone()).expect("child target");
+        let predecessor = stored_record(
+            &bundle,
+            plan,
+            target.clone(),
+            input_record(
+                entity.record(),
+                [
+                    ("organization_id", organization_id.clone()),
+                    ("user_id", user_id.clone()),
+                    (child_field, CanonicalValue::Uuid([child_id; 16])),
+                ],
+            ),
+        );
+        let index = entity
+            .indexes()
+            .iter()
+            .find(|index| index.name() == "by_user")
+            .expect("reverse index");
+        let index_key = index
+            .key_schema()
+            .encode_index(&[organization_id.clone(), user_id.clone()], child_key)
+            .expect("reverse index key");
+        let mut prefix = IndexRangePrefixBuilder::new(index.id());
+        prefix.push_uuid(&[0x91; 16]).expect("organization prefix");
+        prefix.push_uuid(&[0x92; 16]).expect("user prefix");
+        let range_target = IndexRangeTarget::new(facts.partition_key().clone(), prefix.finish());
+        ranges.push((
+            range_target.clone(),
+            IndexRangeObservation::new(
+                range_target,
+                riffdb_storage_api::IndexEpochPosition::BeforeFirst,
+                vec![
+                    IndexRangeEntry::new(
+                        index.id(),
+                        index_key,
+                        CanonicalRecord::new(vec![]).expect("empty covered values"),
+                    )
+                    .expect("range entry"),
+                ],
+            )
+            .expect("range observation"),
+        ));
+        discovered.push((target, predecessor));
+    }
+    ranges.sort_unstable_by(|left, right| left.0.cmp(&right.0));
+    discovered.sort_unstable_by(|left, right| left.0.cmp(&right.0));
+
+    let request = SnapshotRequest::new_with_cascade(
+        plan_ref(&bundle, plan),
+        vec![root_target.clone()],
+        vec![],
+        discovered
+            .iter()
+            .map(|(target, _)| target.clone())
+            .collect(),
+        ranges
+            .iter()
+            .map(|(target, _)| (target.clone(), 33))
+            .collect(),
+    )
+    .expect("cascade snapshot request");
+    let snapshot = ReadSnapshot::new_with_cascade(
+        &request,
+        None,
+        vec![EntityObservation::Present(root)],
+        vec![],
+        discovered
+            .iter()
+            .map(|(_, record)| EntityObservation::Present(record.clone()))
+            .collect(),
+        ranges
+            .into_iter()
+            .map(|(_, observation)| observation)
+            .collect(),
+    )
+    .expect("cascade snapshot");
+    let context = TransactionContext::new(
+        RequestId::from_unix_milliseconds_and_random(1, [0x96; 10]).expect("request ID"),
+        AdmittedActorContext::new(
+            ActorId::new("cascade-runtime-test").expect("actor"),
+            ActorKind::Service,
+            TenantScope::Global,
+            None,
+        ),
+        plan_ref(&bundle, plan),
+        LogicalTime::new(Timestamp::new(1, 0).expect("time")),
+        facts.partition_key().clone(),
+    );
+
+    let ExecutionResult::CommitRequired(evaluated) =
+        execute_command(&bundle, &input, &snapshot, &context, EvaluationBudget::v1())
+            .expect("cascade evaluates")
+    else {
+        panic!("cascade requires one atomic commit");
+    };
+    assert_eq!(evaluated.mutations().len(), 3);
+    assert_eq!(
+        evaluated
+            .mutations()
+            .iter()
+            .map(|mutation| mutation.target().entity_type_id())
+            .collect::<Vec<_>>(),
+        vec![
+            discovered[0].0.entity_type_id(),
+            discovered[1].0.entity_type_id(),
+            root_target.entity_type_id(),
+        ]
+    );
+    assert!(
+        evaluated
+            .mutations()
+            .iter()
+            .all(|mutation| mutation.is_delete())
+    );
+    assert_eq!(
+        evaluated.outcome().outcome_id(),
+        outcome_id(plan, "UserDeleted")
+    );
 }
 
 #[test]

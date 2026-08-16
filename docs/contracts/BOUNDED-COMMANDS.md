@@ -3,8 +3,9 @@
 > Alpha surface: grammar, executable IR v5, atomic runtime execution, and generated Rust, Go,
 > TypeScript, Python, and MCP bindings are implemented. Collection commands use the ordinary
 > symbolic command service; they do not introduce a generic transaction API. Compiler-bounded
-> one-hop cascade grammar and executable IR V13 are implemented, but runtime activation and
-> generated-client support remain unavailable until WP-626 and WP-627 complete.
+> one-hop cascade grammar, executable IR V13, and the command/runtime/storage path are implemented.
+> Generated language-specific cascade facades remain unavailable until WP-627; callers can use
+> the ordinary symbolic command service in the meantime.
 
 RiffDB collection writes are compiled commands, not caller-defined transactions. A `bulk command`
 may expand exactly one bounded list, once, with no nesting or data-dependent iteration. The
@@ -109,9 +110,18 @@ they cannot choose relationships, indexes, maxima, child keys, or traversal dept
 
 Cascade contracts emit the least-sufficient bundle, grammar, and executable IR identity V13.
 Contracts without cascade continue to emit V1 through V12 as appropriate. This compiler package
-does not make V13 deployable: current runtimes must reject a cascade bundle before activation.
-WP-626 owns bounded `maximum + 1` enumeration, authorization of every discovered row, atomic
-children-before-parent execution, concurrency, tombstone, crash, replication, and recovery proof.
+is deployable by a V13-capable runtime. After acquiring the command's canonical aggregate conflict,
+the coordinator reads each named reverse-index prefix only through its compiler-declared
+`maximum + 1` bound. If any prefix returns the extra row, it durably records the declared cascade
+outcome with no entity mutation. Otherwise it rereads the roots, discovered predecessors, and
+range epochs in one consistent view, applies ordinary authorization and transaction-current checks
+to every row, and evaluates one children-before-parent graph.
+
+The persisted entity mutations remain canonically ordered in the existing command envelope. This
+is a physical encoding detail: the validated semantic graph proves every child precedes its parent
+before the commit coordinator derives the ordinary tombstones, index removals, provenance,
+changelog, and commit records. Crash recovery, idempotent replay, backup/restore, and follower
+application therefore use the same paths as any other bounded collection delete.
 
 Duplicate collection keys reject the whole command. All expanded effects, the typed outcome,
 events, provenance, idempotency record, and commit record are one atomic command result. A crash

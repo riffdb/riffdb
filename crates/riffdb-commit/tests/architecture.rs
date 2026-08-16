@@ -433,11 +433,11 @@ fn command_validation_seals_one_exact_attempt_before_index_or_record_authority()
 
     for required in [
         "plan.execution_class() != ExecutionClass::IdempotentMutation",
-        // ADR-0107 restricted deletes are the only command path allowed to
-        // carry range dependencies. Validation must independently re-derive
-        // their exact reverse-index prefixes from the sealed plan and input;
+        // ADR-0107/ADR-0126 checked deletes are the only command path allowed
+        // to carry range dependencies. Validation independently re-derives
+        // exact reverse-index prefixes and cascade bounds from plan and input;
         // accepting caller-selected ranges would create storage authority.
-        "derive_delete_restrict_ranges(resolved, &facts)",
+        "derive_delete_ranges(resolved, &facts)",
         "request.range_targets() != expected_ranges",
         "current.ranges().len() != expected_ranges.len()",
         "target != observation.target()",
@@ -955,7 +955,7 @@ fn command_admission_is_private_move_only_and_orders_external_calls_exactly() {
         "raw.is_empty() || raw.len() > MAX_COMMAND_CONFLICT_KEYS_V1",
         "hashes.sort_unstable()",
         "hashes.windows(2).any(|pair| pair[0] == pair[1])",
-        "SnapshotRequest::new(",
+        "SnapshotRequest::new_with_cascade(",
         "Vec::new()",
     ] {
         assert!(

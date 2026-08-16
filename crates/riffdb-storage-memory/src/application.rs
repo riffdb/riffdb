@@ -657,6 +657,11 @@ fn current_state(
             .push_root_validation(entity_observation(entities, target)?)
             .map_err(materialization_value)?;
     }
+    for target in request.cascade_targets() {
+        builder
+            .push_cascade_predecessor(entity_observation(entities, target)?)
+            .map_err(materialization_value)?;
+    }
     for target in request.range_targets() {
         builder
             .push_range(CurrentRangeObservation::new(
@@ -803,7 +808,12 @@ fn read_snapshot_from_parts(
             .push_root_validation(entity_observation(entities, target)?)
             .map_err(materialization_value)?;
     }
-    for target in request.range_targets() {
+    for target in request.cascade_targets() {
+        builder
+            .push_cascade_predecessor(entity_observation(entities, target)?)
+            .map_err(materialization_value)?;
+    }
+    for (position, target) in request.range_targets().iter().enumerate() {
         let prefix = target.prefix().as_bytes();
         let start = index_entries.partition_point(|row| row.key().as_bytes() < prefix);
         let mut range = builder
@@ -820,6 +830,11 @@ fn read_snapshot_from_parts(
                     current.partition_key() == target.generation_target().partition_key()
                 })
             })
+            .take(
+                request
+                    .range_entry_limit(position)
+                    .ok_or_else(|| materialization_value(StorageValueError::IdentityMismatch))?,
+            )
         {
             range
                 .push_entry(
@@ -4119,6 +4134,54 @@ mod tests {
             final_page,
             AuthoritativeIndexScanPage::ExactEnd { ref entries, .. } if entries.len() == 1
         ));
+    }
+
+    #[test]
+    fn cascade_snapshot_retains_only_the_declared_maximum_plus_one_rows() {
+        let ports = operational_ports(bundle());
+        let plan = plan();
+        let range = filtered_range();
+        let entries = (1_u64..=3)
+            .map(|value| {
+                MemoryIndexEntry::current(
+                    filtered_row(value, 1, "application-test"),
+                    memory_record_charge(),
+                )
+            })
+            .collect::<Result<Vec<_>, _>>()
+            .expect("bounded current index rows");
+        ports
+            .acquire()
+            .expect("seed access")
+            .write(move |state| {
+                state.index_entries = entries;
+                Ok(())
+            })
+            .expect("seed index entries");
+
+        let snapshot = ports
+            .read_snapshot(
+                SnapshotRequest::new_with_cascade(
+                    plan,
+                    Vec::new(),
+                    Vec::new(),
+                    Vec::new(),
+                    vec![(range, 2)],
+                )
+                .expect("bounded cascade request"),
+            )
+            .expect("bounded cascade snapshot");
+
+        assert_eq!(snapshot.ranges().len(), 1);
+        assert_eq!(snapshot.ranges()[0].entries().len(), 2);
+        assert_eq!(
+            snapshot.ranges()[0].entries()[0].key(),
+            &filtered_index_key(1)
+        );
+        assert_eq!(
+            snapshot.ranges()[0].entries()[1].key(),
+            &filtered_index_key(2)
+        );
     }
 
     #[test]

@@ -11,10 +11,11 @@ use riffdb_contract_ir::{
     EXECUTABLE_IR_VERSION_V3, EXECUTABLE_IR_VERSION_V4, EXECUTABLE_IR_VERSION_V5,
     EXECUTABLE_IR_VERSION_V6, EXECUTABLE_IR_VERSION_V7, EXECUTABLE_IR_VERSION_V8,
     EXECUTABLE_IR_VERSION_V9, EXECUTABLE_IR_VERSION_V10, EXECUTABLE_IR_VERSION_V11,
-    EXECUTABLE_IR_VERSION_V12, ExecutionClass, GRAMMAR_VERSION_V1, GRAMMAR_VERSION_V2,
-    GRAMMAR_VERSION_V3, GRAMMAR_VERSION_V4, GRAMMAR_VERSION_V5, GRAMMAR_VERSION_V6,
-    GRAMMAR_VERSION_V7, GRAMMAR_VERSION_V8, GRAMMAR_VERSION_V9, GRAMMAR_VERSION_V10,
-    GRAMMAR_VERSION_V11, GRAMMAR_VERSION_V12, IndexSchema,
+    EXECUTABLE_IR_VERSION_V12, EXECUTABLE_IR_VERSION_V13, ExecutionClass, GRAMMAR_VERSION_V1,
+    GRAMMAR_VERSION_V2, GRAMMAR_VERSION_V3, GRAMMAR_VERSION_V4, GRAMMAR_VERSION_V5,
+    GRAMMAR_VERSION_V6, GRAMMAR_VERSION_V7, GRAMMAR_VERSION_V8, GRAMMAR_VERSION_V9,
+    GRAMMAR_VERSION_V10, GRAMMAR_VERSION_V11, GRAMMAR_VERSION_V12, GRAMMAR_VERSION_V13,
+    IndexSchema,
 };
 use riffdb_invariant::{InputDerivedCommandFacts, derive_input_command_facts};
 use riffdb_storage_api::{
@@ -22,12 +23,12 @@ use riffdb_storage_api::{
     CommandCandidateAwaitingCapacity, CommandCandidateAwaitingValidation,
     CommandCandidateCapacityReserved, CommandCandidateSequenceAssigned, CommandWriteSetPlanV1,
     CommitIntent, DurableCodecError, DurableKeySchemaBindingV1, EncodedWriteSetUpperBound,
-    EncodedWriteSetUpperBoundResultV1, EntityObservation, EvaluatedCommand,
+    EncodedWriteSetUpperBoundResultV1, EntityObservation, EntityTarget, EvaluatedCommand,
     IdempotencyLookupCandidatesV1, IndexEntryMutationV1, IndexEpochAdvanceError,
     IndexEpochAdvanceV1, IndexRangePrefixBuilder, IndexRangeTarget,
     MAX_AFFECTED_INDEX_EPOCH_TARGETS, MAX_INDEX_DELTAS, MAX_READ_SNAPSHOT_BYTES,
-    MAX_VALIDATION_TARGETS, PartitionIndexTarget, StorageError, StoredIndexEntryV2,
-    TransactionCurrentState, UniqueIndexTarget, UniqueOccupancyKind,
+    MAX_VALIDATION_TARGETS, PartitionIndexTarget, ReadSnapshot, SnapshotRequest, StorageError,
+    StoredIndexEntryV2, TransactionCurrentState, UniqueIndexTarget, UniqueOccupancyKind,
     ValidatedCommandWriteSetShapeV1, command_write_set_upper_bound_v1,
 };
 use riffdb_types::{CanonicalRecord, CanonicalValue, IndexEntryKey, PartitionKey};
@@ -51,6 +52,182 @@ pub(super) struct CommandIndexError {
     _private: (),
 }
 
+/// Coordinator-owned outcome of the bounded reverse-index discovery read.
+pub(super) enum CascadeDiscoveryDecision {
+    /// The discovery snapshot is already complete (no children or a declared
+    /// restrict/cascade-limit failure).
+    Complete,
+    /// Exact child predecessors must be reread with the same range evidence in
+    /// one consistent storage view.
+    ReadPredecessors(Box<SnapshotRequest>),
+}
+
+pub(super) fn lower_cascade_discovery(
+    resolved: &ResolvedExecutablePlan,
+    facts: &InputDerivedCommandFacts,
+    discovery: &ReadSnapshot,
+) -> Result<CascadeDiscoveryDecision, CommandIndexError> {
+    let bounded_ranges = derive_delete_ranges(resolved, facts)?;
+    if !discovery.cascade_predecessors().is_empty()
+        || discovery.ranges().len() != bounded_ranges.len()
+        || discovery
+            .ranges()
+            .iter()
+            .zip(&bounded_ranges)
+            .any(|(observation, (target, limit))| {
+                observation.target() != target || observation.entries().len() > usize::from(*limit)
+            })
+    {
+        return Err(CommandIndexError::internal_defect());
+    }
+
+    let plan = resolved.plan();
+    let schema = resolved.bundle().bundle().schema();
+    let mut child_targets = Vec::new();
+    let mut terminal = false;
+    let mut has_cascade = false;
+    for (plan_index, key) in facts
+        .binding_plan_indices()
+        .iter()
+        .zip(facts.binding_entity_keys())
+    {
+        let binding = plan
+            .bindings()
+            .get(*plan_index as usize)
+            .ok_or_else(CommandIndexError::internal_defect)?;
+        if binding.mode() != BindingMode::Delete {
+            continue;
+        }
+        let check = plan
+            .delete_checks()
+            .iter()
+            .find(|check| check.binding() == binding.id())
+            .ok_or_else(CommandIndexError::internal_defect)?;
+        let values = binding
+            .key_schema()
+            .decode_entity(key)
+            .map_err(|_| CommandIndexError::internal_defect())?;
+        let specifications = match check.mode() {
+            DeleteCheckModeV1::NoInbound => Vec::new(),
+            DeleteCheckModeV1::Restrict {
+                source_entity,
+                index_id,
+            } => vec![(source_entity, index_id, 0, false)],
+            DeleteCheckModeV1::Cascade { relationships } => {
+                has_cascade = true;
+                relationships
+                    .into_iter()
+                    .map(|relationship| {
+                        (
+                            relationship.source_entity(),
+                            relationship.index_id(),
+                            relationship.maximum(),
+                            true,
+                        )
+                    })
+                    .collect()
+            }
+        };
+        for (source_entity, index_id, maximum, cascade) in specifications {
+            let expected = derive_delete_range_target(
+                schema,
+                facts.partition_key(),
+                source_entity,
+                index_id,
+                &values,
+            )?;
+            let position = bounded_ranges
+                .binary_search_by(|(target, _)| target.cmp(&expected))
+                .map_err(|_| CommandIndexError::internal_defect())?;
+            let range = discovery
+                .ranges()
+                .get(position)
+                .ok_or_else(CommandIndexError::internal_defect)?;
+            if !cascade {
+                terminal |= !range.entries().is_empty();
+                continue;
+            }
+            if range.entries().len() > usize::from(maximum) {
+                terminal = true;
+                continue;
+            }
+            let source = schema
+                .entity(source_entity)
+                .ok_or_else(CommandIndexError::internal_defect)?;
+            let index = source
+                .indexes()
+                .iter()
+                .find(|index| index.id() == index_id)
+                .ok_or_else(CommandIndexError::internal_defect)?;
+            for entry in range.entries() {
+                let decoded = index
+                    .key_schema()
+                    .decode_index(entry.key())
+                    .map_err(|_| CommandIndexError::internal_defect())?;
+                child_targets.push(
+                    EntityTarget::new(source_entity, decoded.entity_key().clone())
+                        .map_err(|_| CommandIndexError::internal_defect())?,
+                );
+            }
+        }
+    }
+    if terminal || !has_cascade || child_targets.is_empty() {
+        return Ok(CascadeDiscoveryDecision::Complete);
+    }
+    let request = SnapshotRequest::new_with_cascade(
+        discovery.plan().clone(),
+        discovery
+            .bindings()
+            .iter()
+            .map(|observation| observation.target().clone())
+            .collect(),
+        discovery
+            .root_validations()
+            .iter()
+            .map(|observation| observation.target().clone())
+            .collect(),
+        child_targets,
+        bounded_ranges,
+    )
+    .map_err(|_| CommandIndexError::internal_defect())?;
+    Ok(CascadeDiscoveryDecision::ReadPredecessors(Box::new(
+        request,
+    )))
+}
+
+fn derive_delete_range_target(
+    schema: &riffdb_contract_ir::SchemaIr,
+    partition_key: &PartitionKey,
+    source_entity: riffdb_types::EntityTypeId,
+    index_id: riffdb_types::IndexId,
+    values: &[CanonicalValue],
+) -> Result<IndexRangeTarget, CommandIndexError> {
+    let source = schema
+        .entity(source_entity)
+        .ok_or_else(CommandIndexError::internal_defect)?;
+    let index = source
+        .indexes()
+        .iter()
+        .find(|index| index.id() == index_id)
+        .ok_or_else(CommandIndexError::internal_defect)?;
+    if values.is_empty() || values.len() > index.key_schema().components().len() {
+        return Err(CommandIndexError::internal_defect());
+    }
+    let mut prefix = IndexRangePrefixBuilder::new(index_id);
+    for (component, value) in index.key_schema().components().iter().zip(values) {
+        push_storage_prefix_component(&mut prefix, component.codec(), value)?;
+    }
+    let prefix = prefix.finish();
+    let ir_prefix = index
+        .key_schema()
+        .encode_index_prefix(values)
+        .map_err(|_| CommandIndexError::internal_defect())?;
+    if prefix.as_bytes() != ir_prefix.as_bytes() {
+        return Err(CommandIndexError::internal_defect());
+    }
+    Ok(IndexRangeTarget::new(partition_key.clone(), prefix))
+}
+
 impl CommandIndexError {
     const fn internal_defect() -> Self {
         Self { _private: () }
@@ -69,10 +246,10 @@ impl std::fmt::Debug for CommandIndexError {
 /// component codecs, partition routing, and prefixes all come from the exact
 /// resolved plan and contract schema; no application range bytes cross this
 /// boundary.
-pub(super) fn derive_delete_restrict_ranges(
+pub(super) fn derive_delete_ranges(
     resolved: &ResolvedExecutablePlan,
     facts: &InputDerivedCommandFacts,
-) -> Result<Vec<IndexRangeTarget>, CommandIndexError> {
+) -> Result<Vec<(IndexRangeTarget, u16)>, CommandIndexError> {
     let plan = resolved.plan();
     if facts.binding_plan_indices().len() != facts.binding_entity_keys().len() {
         return Err(CommandIndexError::internal_defect());
@@ -96,47 +273,59 @@ pub(super) fn derive_delete_restrict_ranges(
             .iter()
             .find(|check| check.binding() == binding.id())
             .ok_or_else(CommandIndexError::internal_defect)?;
-        let DeleteCheckModeV1::Restrict {
-            source_entity,
-            index_id,
-        } = check.mode()
-        else {
-            continue;
+        let specifications = match check.mode() {
+            DeleteCheckModeV1::NoInbound => Vec::new(),
+            DeleteCheckModeV1::Restrict {
+                source_entity,
+                index_id,
+            } => vec![(source_entity, index_id, 1)],
+            DeleteCheckModeV1::Cascade { relationships } => relationships
+                .into_iter()
+                .map(|relationship| {
+                    relationship
+                        .maximum()
+                        .checked_add(1)
+                        .map(|limit| (relationship.source_entity(), relationship.index_id(), limit))
+                        .ok_or_else(CommandIndexError::internal_defect)
+                })
+                .collect::<Result<Vec<_>, _>>()?,
         };
-        let source = schema
-            .entity(source_entity)
-            .ok_or_else(CommandIndexError::internal_defect)?;
-        let index = source
-            .indexes()
-            .iter()
-            .find(|index| index.id() == index_id)
-            .ok_or_else(CommandIndexError::internal_defect)?;
         let values = binding
             .key_schema()
             .decode_entity(key)
             .map_err(|_| CommandIndexError::internal_defect())?;
-        if values.is_empty() || values.len() > index.key_schema().components().len() {
-            return Err(CommandIndexError::internal_defect());
+        for (source_entity, index_id, entry_limit) in specifications {
+            let source = schema
+                .entity(source_entity)
+                .ok_or_else(CommandIndexError::internal_defect)?;
+            let index = source
+                .indexes()
+                .iter()
+                .find(|index| index.id() == index_id)
+                .ok_or_else(CommandIndexError::internal_defect)?;
+            if values.is_empty() || values.len() > index.key_schema().components().len() {
+                return Err(CommandIndexError::internal_defect());
+            }
+            let mut storage_prefix = IndexRangePrefixBuilder::new(index_id);
+            for (component, value) in index.key_schema().components().iter().zip(&values) {
+                push_storage_prefix_component(&mut storage_prefix, component.codec(), value)?;
+            }
+            let storage_prefix = storage_prefix.finish();
+            let ir_prefix = index
+                .key_schema()
+                .encode_index_prefix(&values)
+                .map_err(|_| CommandIndexError::internal_defect())?;
+            if storage_prefix.as_bytes() != ir_prefix.as_bytes() {
+                return Err(CommandIndexError::internal_defect());
+            }
+            ranges.push((
+                IndexRangeTarget::new(facts.partition_key().clone(), storage_prefix),
+                entry_limit,
+            ));
         }
-        let mut storage_prefix = IndexRangePrefixBuilder::new(index_id);
-        for (component, value) in index.key_schema().components().iter().zip(&values) {
-            push_storage_prefix_component(&mut storage_prefix, component.codec(), value)?;
-        }
-        let storage_prefix = storage_prefix.finish();
-        let ir_prefix = index
-            .key_schema()
-            .encode_index_prefix(&values)
-            .map_err(|_| CommandIndexError::internal_defect())?;
-        if storage_prefix.as_bytes() != ir_prefix.as_bytes() {
-            return Err(CommandIndexError::internal_defect());
-        }
-        ranges.push(IndexRangeTarget::new(
-            facts.partition_key().clone(),
-            storage_prefix,
-        ));
     }
-    ranges.sort_unstable();
-    if ranges.windows(2).any(|pair| pair[0] == pair[1]) {
+    ranges.sort_unstable_by(|left, right| left.0.cmp(&right.0));
+    if ranges.windows(2).any(|pair| pair[0].0 == pair[1].0) {
         return Err(CommandIndexError::internal_defect());
     }
     Ok(ranges)
@@ -937,6 +1126,7 @@ const fn index_derivation_version_supported(grammar: u32, ir: u32) -> bool {
             | (GRAMMAR_VERSION_V10, EXECUTABLE_IR_VERSION_V10)
             | (GRAMMAR_VERSION_V11, EXECUTABLE_IR_VERSION_V11)
             | (GRAMMAR_VERSION_V12, EXECUTABLE_IR_VERSION_V12)
+            | (GRAMMAR_VERSION_V13, EXECUTABLE_IR_VERSION_V13)
     )
 }
 
@@ -988,7 +1178,11 @@ fn derive_grammar_v1_indexes(
     }
 
     let mut builder = IndexDerivationBuilder::new(
-        request.binding_targets().len(),
+        request
+            .binding_targets()
+            .len()
+            .checked_add(request.cascade_targets().len())
+            .ok_or_else(CommandIndexError::internal_defect)?,
         request.root_validation_targets().len(),
     )?;
     let schema_binding = DurableKeySchemaBindingV1::from_plan(resolved.reference());
@@ -1102,6 +1296,36 @@ fn derive_grammar_v1_indexes(
                     insert_generation(index, &new_values, command_partition, &mut builder)?;
                 }
             }
+        }
+    }
+    for (target, observation) in request
+        .cascade_targets()
+        .iter()
+        .zip(current.cascade_predecessors())
+    {
+        let EntityObservation::Present(record) = observation else {
+            return Err(CommandIndexError::internal_defect());
+        };
+        let mutation = evaluated
+            .mutations()
+            .iter()
+            .find(|mutation| mutation.target() == target)
+            .ok_or_else(CommandIndexError::internal_defect)?;
+        if !mutation.is_delete() {
+            return Err(CommandIndexError::internal_defect());
+        }
+        let entity = bundle
+            .schema()
+            .entity(target.entity_type_id())
+            .ok_or_else(CommandIndexError::internal_defect)?;
+        for index in entity.indexes() {
+            let old_values = index_values(index, record.fields())?;
+            let old_key = index
+                .key_schema()
+                .encode_index(&old_values, target.key().clone())
+                .map_err(|_| CommandIndexError::internal_defect())?;
+            builder.push_entry(IndexEntryMutationV1::Delete(old_key))?;
+            insert_generation(index, &old_values, command_partition, &mut builder)?;
         }
     }
     builder.finish()
@@ -1239,7 +1463,7 @@ mod tests {
         for grammar in 0..=16_u32 {
             for ir in 0..=16_u32 {
                 let audited_identity_pair =
-                    grammar == ir && (GRAMMAR_VERSION_V1..=GRAMMAR_VERSION_V12).contains(&grammar);
+                    grammar == ir && (GRAMMAR_VERSION_V1..=GRAMMAR_VERSION_V13).contains(&grammar);
                 assert_eq!(
                     index_derivation_version_supported(grammar, ir),
                     audited_identity_pair,
@@ -2959,8 +3183,8 @@ contract ReimportEraRows version 1 {
         let resolved = crate::test_support::resolve_genesis_plan(&bundle, &reference)
             .expect("resolved delete plan");
 
-        let ranges = derive_delete_restrict_ranges(&resolved, &facts)
-            .expect("compiler-sealed restrict ranges");
+        let ranges =
+            derive_delete_ranges(&resolved, &facts).expect("compiler-sealed restrict ranges");
 
         assert_eq!(ranges.len(), 2);
         let child = bundle
@@ -2975,7 +3199,8 @@ contract ReimportEraRows version 1 {
             .iter()
             .find(|index| index.name() == "by_parent")
             .expect("reverse index");
-        for (range, parent) in ranges.iter().zip(parents) {
+        for ((range, limit), parent) in ranges.iter().zip(parents) {
+            assert_eq!(*limit, 1);
             let expected = index
                 .key_schema()
                 .encode_index_prefix(&[tenant.clone(), parent])
