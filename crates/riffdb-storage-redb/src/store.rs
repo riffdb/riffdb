@@ -102,6 +102,7 @@ pub(crate) struct SharedRedb {
     next_publication_ticket: AtomicU64,
     journal_runtime: Mutex<Option<JournalRuntime>>,
     journal_checkpoint: Mutex<Option<AsyncJournalCheckpoint>>,
+    command_segment_preparation: crate::command_segment_preparation::CommandSegmentPreparationPool,
     test_controller: Option<RedbTestController>,
     transient_indexes: RwLock<TransientIndexState>,
     /// Exact identities in sealed command epochs that are not public yet.
@@ -1198,6 +1199,11 @@ impl RedbStore {
             None => builder.create(path),
         }
         .map_err(database_error)?;
+        let command_segment_preparation =
+            crate::command_segment_preparation::CommandSegmentPreparationPool::new(
+                crate::command_segment_preparation::CommandSegmentPreparationPool::production_worker_count(),
+            )
+            .map_err(|_| storage_error(StorageErrorKind::Unavailable))?;
         let store = Self {
             shared: Arc::new(SharedRedb {
                 database,
@@ -1214,6 +1220,7 @@ impl RedbStore {
                 next_publication_ticket: AtomicU64::new(1),
                 journal_runtime: Mutex::new(None),
                 journal_checkpoint: Mutex::new(None),
+                command_segment_preparation,
                 test_controller,
                 transient_indexes: RwLock::new(TransientIndexState::Dormant),
                 unpublished_command_indexes: Mutex::new(UnpublishedCommandIndexes::default()),
@@ -3629,6 +3636,23 @@ impl RedbOperationalPorts {
 }
 
 impl RedbWriteAccess {
+    pub(crate) fn prepare_command_segment_capsules(
+        &self,
+        capsules: Vec<riffdb_storage_api::StoredCommandCapsuleV2>,
+        uses_v5: bool,
+    ) -> Result<
+        (
+            Vec<riffdb_storage_api::StoredCommandCapsuleV2>,
+            Vec<riffdb_storage_api::PreparedCommandSegmentCapsuleV1>,
+        ),
+        StorageError,
+    > {
+        self.shared
+            .command_segment_preparation
+            .prepare(capsules, uses_v5)
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))
+    }
+
     pub(crate) fn command_segment_tail(
         &self,
     ) -> Result<Option<Option<(CommitSequence, CommandSegmentDigestV1)>>, StorageError> {

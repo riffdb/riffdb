@@ -882,8 +882,44 @@ fn command_segment_write_path_is_byte_identical_for_multi_command_nondefault_fie
     )
     .expect("rich structural draft");
 
+    let prepared = draft
+        .commands()
+        .iter()
+        .map(|command| prepare_command_segment_capsule_v1(command, false))
+        .collect::<Result<Vec<_>, _>>()
+        .expect("command members prepare");
     let (sealed, streamed) =
-        seal_and_encode_command_segment_v1(draft).expect("write-path sealing succeeds");
+        seal_and_encode_command_segment_v1(draft.clone()).expect("write-path sealing succeeds");
+    let (prepared_sealed, prepared_streamed, _) =
+        seal_and_encode_command_segment_with_prepared_capsules_v1(draft, prepared)
+            .expect("prepared write-path sealing succeeds");
+    assert_eq!(prepared_sealed, sealed);
+    assert_eq!(prepared_streamed, streamed);
+    let reordered = sealed
+        .commands()
+        .iter()
+        .rev()
+        .map(|command| prepare_command_segment_capsule_v1(command, false))
+        .collect::<Result<Vec<_>, _>>()
+        .expect("reordered members prepare");
+    assert_eq!(
+        seal_and_encode_command_segment_with_prepared_capsules_v1(sealed.clone(), reordered)
+            .expect_err("reordered preparation is rejected")
+            .kind(),
+        DurableCodecErrorKind::InvariantViolation
+    );
+    let wrong_variant = sealed
+        .commands()
+        .iter()
+        .map(|command| prepare_command_segment_capsule_v1(command, true))
+        .collect::<Result<Vec<_>, _>>()
+        .expect("wrong-variant members prepare");
+    assert_eq!(
+        seal_and_encode_command_segment_with_prepared_capsules_v1(sealed.clone(), wrong_variant)
+            .expect_err("wrong-variant preparation is rejected")
+            .kind(),
+        DurableCodecErrorKind::InvariantViolation
+    );
     let independent =
         encode_command_segment_v1(&sealed).expect("independent Prost encoding succeeds");
     assert_eq!(streamed, independent);
@@ -934,8 +970,19 @@ fn anchored_event_uses_successor_command_and_segment_authority() {
         crate::CommandSegmentDigestV1::from_bytes([0; 32]),
     )
     .expect("segment draft");
+    let prepared = draft
+        .commands()
+        .iter()
+        .map(|command| prepare_command_segment_capsule_v1(command, true))
+        .collect::<Result<Vec<_>, _>>()
+        .expect("anchored command members prepare");
     let (sealed, encoded) =
-        seal_and_encode_command_segment_v1(draft).expect("anchored segment seals");
+        seal_and_encode_command_segment_v1(draft.clone()).expect("anchored segment seals");
+    let (prepared_sealed, prepared_encoded, _) =
+        seal_and_encode_command_segment_with_prepared_capsules_v1(draft, prepared)
+            .expect("prepared anchored segment seals");
+    assert_eq!(prepared_sealed, sealed);
+    assert_eq!(prepared_encoded, encoded);
     assert_eq!(
         riffdb_proto::durable::readable_record_registry()
             .decode(encoded.as_bytes())
