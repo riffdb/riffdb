@@ -1757,6 +1757,7 @@ fn apply_entities(
         return Ok(Vec::new());
     }
     let mut transitions = Vec::with_capacity(records.entities().len());
+    let mut retained_references = records.commit().entity_references().iter();
     for (ordinal, (mutation, bytes)) in records.entities().iter().zip(encoded).enumerate() {
         let target = mutation.target();
         let key = encode_entity_key(target.key());
@@ -1809,11 +1810,24 @@ fn apply_entities(
             _ => return Err(storage_error(StorageErrorKind::CorruptData)),
         };
         let next_state = match mutation.live_post_image() {
-            Some(post_image) => EntityChainStateV1::Live {
-                version: post_image.entity_version(),
-                value_hash: riffdb_storage_api::derive_entity_record_hash_v1(post_image)
-                    .map_err(invariant_value)?,
-            },
+            Some(post_image) => {
+                let reference = retained_references
+                    .next()
+                    .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
+                if reference.target() != target
+                    || reference.entity_version() != post_image.entity_version()
+                {
+                    return Err(storage_error(StorageErrorKind::InvariantViolation));
+                }
+                EntityChainStateV1::Live {
+                    version: reference.entity_version(),
+                    // AtomicCommandRecordSet construction already proved this
+                    // retained reference against the exact post-image. Consume
+                    // that proof instead of rebuilding and hashing the same
+                    // canonical preimage on the authoritative apply lane.
+                    value_hash: reference.post_image_hash(),
+                }
+            }
             None => EntityChainStateV1::Deleted,
         };
         let transition = CommittedEntityTransitionV1::new(
@@ -1866,6 +1880,9 @@ fn apply_entities(
         observations.insert(target.clone(), next_observation);
         observation_bytes.insert(target.clone(), next_bytes);
         transitions.push(transition);
+    }
+    if retained_references.next().is_some() {
+        return Err(storage_error(StorageErrorKind::InvariantViolation));
     }
     Ok(transitions)
 }

@@ -2561,6 +2561,7 @@ impl AtomicCommandRecordSet {
             provenance,
             commit,
             None,
+            false,
         )
     }
 
@@ -2574,8 +2575,11 @@ impl AtomicCommandRecordSet {
         provenance: StoredProvenanceRecordV1,
         commit: StoredCommitRecordV1,
     ) -> Result<Self, StorageValueError> {
-        let (entities, index_entries, encoded) = prepared.into_parts();
+        let (entities, index_entries, entity_references, encoded) = prepared.into_parts();
         if index_entries != write_plan.index_entries() {
+            return Err(StorageValueError::IdentityMismatch);
+        }
+        if entity_references != commit.entity_references() {
             return Err(StorageValueError::IdentityMismatch);
         }
         Self::new_inner(
@@ -2586,6 +2590,7 @@ impl AtomicCommandRecordSet {
             provenance,
             commit,
             Some(encoded),
+            true,
         )
     }
 
@@ -2598,6 +2603,7 @@ impl AtomicCommandRecordSet {
         provenance: StoredProvenanceRecordV1,
         commit: StoredCommitRecordV1,
         prepared_capsule: Option<crate::PreparedCapsuleEnvelopesV1>,
+        entity_references_are_prechecked: bool,
     ) -> Result<Self, StorageValueError> {
         let expected_pending = write_plan.intent().pending();
         let evaluated = write_plan.intent().evaluated();
@@ -2606,16 +2612,20 @@ impl AtomicCommandRecordSet {
         let presequence_charge = write_plan.charge();
         let sequence = commit.commit_sequence();
         let events = commit.events();
-        let mut retained_references = commit.entity_references().iter();
-        let mut entity_references_match = true;
-        for mutation in &entities {
-            match CommittedEntityReferenceV2::from_live_mutation(mutation)? {
-                Some(reference) if retained_references.next() == Some(&reference) => {}
-                Some(_) => entity_references_match = false,
-                None => {}
+        let entity_references_match = if entity_references_are_prechecked {
+            true
+        } else {
+            let mut retained_references = commit.entity_references().iter();
+            let mut matches = true;
+            for mutation in &entities {
+                match CommittedEntityReferenceV2::from_live_mutation(mutation)? {
+                    Some(reference) if retained_references.next() == Some(&reference) => {}
+                    Some(_) => matches = false,
+                    None => {}
+                }
             }
-        }
-        entity_references_match &= retained_references.next().is_none();
+            matches && retained_references.next().is_none()
+        };
         if sequence != assignment.assigned()
             || assignment.next_allocator() != expected_next_allocator(sequence)
             || expected_pending.identity() != stored_outcome.identity()
