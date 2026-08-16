@@ -579,6 +579,12 @@ fn allocate_command_symbols(
                 .or_insert(restriction_failure.value.name.span);
             outcome_occurrences.push(&restriction_failure.value);
         }
+        if let Some(cascade_failure) = &entity_binding.cascade_failure {
+            rejection_names
+                .entry(cascade_failure.value.name.value.clone())
+                .or_insert(cascade_failure.value.name.span);
+            outcome_occurrences.push(&cascade_failure.value);
+        }
     }
     for requirement in command.requirements.iter().chain(collection_requirements) {
         let rejection = &requirement.value.rejection;

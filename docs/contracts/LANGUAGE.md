@@ -236,6 +236,23 @@ EntityItem: Spanned<EntityItem> = {
             source_entity,
             index,
         }), lo, hi),
+    <lo:@L> "delete_policy" "cascade" "{" <relationships:CascadeRelationship+> "}" <hi:@R>
+        => parser::spanned(EntityItem::DeletePolicy(DeletePolicyDeclaration::Cascade {
+            relationships,
+        }), lo, hi),
+};
+
+CascadeRelationship: Spanned<CascadeRelationshipDeclaration> = {
+    <lo:@L> "relationship" <source_entity:Identifier> "." <relationship:Identifier>
+        "using" <index_entity:Identifier> "." <index:Identifier>
+        "maximum" <maximum:UnsignedInteger> <hi:@R>
+        => parser::spanned(CascadeRelationshipDeclaration {
+            source_entity,
+            relationship,
+            index_entity,
+            index,
+            maximum,
+        }, lo, hi),
 };
 
 VectorAnnClause: VectorAnnDeclaration = {
@@ -500,6 +517,7 @@ EntityBinding: EntityBinding = {
             binding,
             failure,
             restriction_failure: None,
+            cascade_failure: None,
         },
 };
 
@@ -507,12 +525,14 @@ DeleteEntityBinding: EntityBinding = {
     <entity:Identifier> "(" <arguments:ExpressionList> ")"
         "as" <binding:Identifier> "else" <failure:OutcomeExpression>
         <restriction_failure:("restrict" <OutcomeExpression>)?>
+        <cascade_failure:("cascade" <OutcomeExpression>)?>
         => EntityBinding {
             entity,
             arguments,
             binding,
             failure,
             restriction_failure,
+            cascade_failure,
         },
 };
 
@@ -826,6 +846,11 @@ Identifier: Spanned<String> = {
         => parser::spanned("binary_utf8_v1".to_owned(), lo, hi),
     <lo:@L> "unicode_fold_v1" <hi:@R>
         => parser::spanned("unicode_fold_v1".to_owned(), lo, hi),
+    <lo:@L> "cascade" <hi:@R> => parser::spanned("cascade".to_owned(), lo, hi),
+    <lo:@L> "relationship" <hi:@R>
+        => parser::spanned("relationship".to_owned(), lo, hi),
+    <lo:@L> "using" <hi:@R> => parser::spanned("using".to_owned(), lo, hi),
+    <lo:@L> "maximum" <hi:@R> => parser::spanned("maximum".to_owned(), lo, hi),
     <lo:@L> "idempotency_key" <hi:@R>
         => parser::spanned("idempotency_key".to_owned(), lo, hi),
     <lo:@L> "workflow" <hi:@R> => parser::spanned("workflow".to_owned(), lo, hi),
@@ -902,6 +927,10 @@ extern {
         "delete_policy" => Token::DeletePolicy,
         "no_inbound" => Token::NoInbound,
         "restrict" => Token::Restrict,
+        "cascade" => Token::Cascade,
+        "relationship" => Token::Relationship,
+        "using" => Token::Using,
+        "maximum" => Token::Maximum,
         "event" => Token::Event,
         "enum" => Token::Enum,
         "aggregate" => Token::Aggregate,

@@ -801,7 +801,12 @@ fn read_transaction_local_snapshot(
             .push_root_validation(entity_observation_from_access(&core.access, target)?)
             .map_err(materialization_value)?;
     }
-    for target in request.range_targets() {
+    for target in request.cascade_targets() {
+        snapshot
+            .push_cascade_predecessor(entity_observation_from_access(&core.access, target)?)
+            .map_err(materialization_value)?;
+    }
+    for (position, target) in request.range_targets().iter().enumerate() {
         let epoch = core
             .index_generations
             .get(target.generation_target())
@@ -822,6 +827,10 @@ fn read_transaction_local_snapshot(
             upper.as_slice(),
             riffdb_storage_api::MAX_INDEX_SCAN_INSPECTED_ENTRIES,
         )?;
+        let entry_limit = request
+            .range_entry_limit(position)
+            .ok_or_else(|| materialization_value(StorageValueError::IdentityMismatch))?;
+        let mut retained = 0usize;
         for (physical_key, encoded) in entries {
             let key = decode_index_entry_key(&physical_key)
                 .map_err(|_| storage_error(StorageErrorKind::CorruptData))?;
@@ -831,6 +840,9 @@ fn read_transaction_local_snapshot(
             }
             if decoded.value().partition_key() != target.generation_target().partition_key() {
                 continue;
+            }
+            if retained == entry_limit {
+                break;
             }
             range
                 .push_entry(
@@ -842,6 +854,7 @@ fn read_transaction_local_snapshot(
                     .map_err(|_| storage_error(StorageErrorKind::CorruptData))?,
                 )
                 .map_err(materialization_value)?;
+            retained += 1;
         }
         range.finish().map_err(materialization_value)?;
     }
@@ -2250,7 +2263,10 @@ fn current_state_uncached(
     request: &ValidationReadRequest,
 ) -> Result<TransactionCurrentState, StorageError> {
     let mut builder = TransactionCurrentStateBuilder::new(request);
-    if !request.binding_targets().is_empty() || !request.root_validation_targets().is_empty() {
+    if !request.binding_targets().is_empty()
+        || !request.root_validation_targets().is_empty()
+        || !request.cascade_targets().is_empty()
+    {
         let entities = transaction.open_table(ENTITIES).map_err(table_error)?;
         for target in request.binding_targets() {
             builder
@@ -2260,6 +2276,11 @@ fn current_state_uncached(
         for target in request.root_validation_targets() {
             builder
                 .push_root_validation(entity_observation_from_table(&entities, target)?)
+                .map_err(materialization_value)?;
+        }
+        for target in request.cascade_targets() {
+            builder
+                .push_cascade_predecessor(entity_observation_from_table(&entities, target)?)
                 .map_err(materialization_value)?;
         }
     }
@@ -2290,6 +2311,11 @@ fn current_state_cached(
     for target in request.root_validation_targets() {
         builder
             .push_root_validation(cached_entity_observation(core, target)?)
+            .map_err(materialization_value)?;
+    }
+    for target in request.cascade_targets() {
+        builder
+            .push_cascade_predecessor(cached_entity_observation(core, target)?)
             .map_err(materialization_value)?;
     }
     for target in request.range_targets() {

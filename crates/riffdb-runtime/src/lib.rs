@@ -6,6 +6,7 @@
 //! perform pre-snapshot admission or capability acquisition and owns no I/O,
 //! clock, entropy, provenance, or durable commit authority.
 
+use std::collections::BTreeSet;
 use std::error::Error;
 use std::fmt;
 
@@ -814,7 +815,7 @@ fn execute_collection_command(
     if facts.partition_key() != context.partition_key()
         || facts.binding_entity_keys().len() != snapshot.bindings().len()
         || facts.root_validation_entity_keys().len() != snapshot.root_validations().len()
-        || snapshot.ranges().len() != delete_restrict_range_count(plan, &facts)?
+        || snapshot.ranges().len() != delete_range_count(plan, &facts)?
     {
         return Err(ExecutionFault::Integrity);
     }
@@ -875,18 +876,28 @@ fn execute_collection_command(
         return Err(ExecutionFault::Integrity);
     }
 
+    let delete_evidence = validate_collection_delete_evidence(
+        bundle,
+        plan,
+        &facts,
+        snapshot,
+        context.partition_key(),
+    )?;
     let mut evaluator = ExpressionEvaluator::new(plan.expressions());
     let mut mutations = Vec::new();
     let mut events = Vec::new();
-    if snapshot
-        .ranges()
-        .iter()
-        .any(|observation| !observation.entries().is_empty())
-    {
-        let failure = plan
+    if let Some(binding_slot) = delete_evidence.failure_binding_slot {
+        let binding_index = *facts
+            .binding_plan_indices()
+            .get(binding_slot)
+            .ok_or(ExecutionFault::Integrity)? as usize;
+        let binding = plan
             .bindings()
-            .iter()
-            .find_map(|binding| binding.restriction_failure())
+            .get(binding_index)
+            .ok_or(ExecutionFault::Integrity)?;
+        let failure = binding
+            .restriction_failure()
+            .or_else(|| binding.cascade_failure())
             .ok_or(ExecutionFault::Integrity)?;
         let empty_records = vec![None; plan.bindings().len()];
         let values = RuntimeValues {
@@ -1082,6 +1093,40 @@ fn execute_collection_command(
             if binding.mode() == BindingMode::Read {
                 continue;
             }
+            if binding.mode() == BindingMode::Delete {
+                for child_position in delete_evidence
+                    .child_positions_by_binding
+                    .get(slot)
+                    .ok_or(ExecutionFault::Integrity)?
+                {
+                    let EntityObservation::Present(child) = snapshot
+                        .cascade_predecessors()
+                        .get(*child_position)
+                        .ok_or(ExecutionFault::Integrity)?
+                    else {
+                        return Err(ExecutionFault::Integrity);
+                    };
+                    let child_entity = bundle
+                        .schema()
+                        .entity(child.target().entity_type_id())
+                        .ok_or(ExecutionFault::Integrity)?;
+                    validate_entity_post_image(
+                        bundle.schema(),
+                        child_entity.record(),
+                        child.fields(),
+                    )?;
+                    let prior_image = EntityPostImage::new(
+                        child.target().clone(),
+                        plan.contract_version(),
+                        child.fields().clone(),
+                    )
+                    .map_err(map_storage_value_error)?;
+                    mutations.push(EntityMutation::Delete {
+                        expected_version: child.entity_version(),
+                        prior_image,
+                    });
+                }
+            }
             let record = records[binding_index]
                 .as_ref()
                 .ok_or(ExecutionFault::Integrity)?;
@@ -1117,10 +1162,13 @@ fn execute_collection_command(
         }
     }
 
-    mutations.sort_unstable_by_key(|mutation| mutation_order_key(mutation.target()));
+    if !delete_evidence.has_cascade {
+        mutations.sort_unstable_by_key(|mutation| mutation_order_key(mutation.target()));
+    }
+    let mut mutation_targets = BTreeSet::new();
     if mutations
-        .windows(2)
-        .any(|pair| pair[0].target() == pair[1].target())
+        .iter()
+        .any(|mutation| !mutation_targets.insert(mutation.target()))
     {
         return Err(ExecutionFault::Integrity);
     }
@@ -1248,7 +1296,8 @@ fn validate_snapshot_targets(
         derive_input_command_facts(plan, input.clone()).map_err(map_prepared_evaluation_error)?;
     if snapshot.bindings().len() != plan.bindings().len()
         || snapshot.root_validations().len() != plan.root_validation_reads().len()
-        || snapshot.ranges().len() != delete_restrict_range_count(plan, &facts)?
+        || snapshot.ranges().len() != delete_range_count(plan, &facts)?
+        || !snapshot.cascade_predecessors().is_empty()
     {
         return Err(ExecutionFault::Integrity);
     }
@@ -1296,7 +1345,186 @@ fn validate_snapshot_targets(
     Ok(())
 }
 
-fn delete_restrict_range_count(
+struct CollectionDeleteEvidence {
+    child_positions_by_binding: Vec<Vec<usize>>,
+    failure_binding_slot: Option<usize>,
+    has_cascade: bool,
+}
+
+fn validate_collection_delete_evidence(
+    bundle: &ContractBundle,
+    plan: &CommandPlan,
+    facts: &InputDerivedCommandFacts,
+    snapshot: &ReadSnapshot,
+    partition_key: &PartitionKey,
+) -> Result<CollectionDeleteEvidence, ExecutionFault> {
+    let mut child_positions_by_binding = vec![Vec::new(); snapshot.bindings().len()];
+    let mut expected_children = Vec::new();
+    let mut used_ranges = BTreeSet::new();
+    let mut failure_binding_slot = None;
+    let mut has_cascade = false;
+
+    for (binding_slot, ((plan_index, key), _observation)) in facts
+        .binding_plan_indices()
+        .iter()
+        .zip(facts.binding_entity_keys())
+        .zip(snapshot.bindings())
+        .enumerate()
+    {
+        let binding = plan
+            .bindings()
+            .get(*plan_index as usize)
+            .ok_or(ExecutionFault::Integrity)?;
+        if binding.mode() != BindingMode::Delete {
+            continue;
+        }
+        let check = plan
+            .delete_checks()
+            .iter()
+            .find(|check| check.binding() == binding.id())
+            .ok_or(ExecutionFault::Integrity)?;
+        let key_values = binding
+            .key_schema()
+            .decode_entity(key)
+            .map_err(|_| ExecutionFault::Integrity)?;
+        match check.mode() {
+            DeleteCheckModeV1::NoInbound => {}
+            DeleteCheckModeV1::Restrict {
+                source_entity,
+                index_id,
+            } => {
+                let range_position = exact_delete_range_position(
+                    bundle.schema(),
+                    snapshot,
+                    partition_key,
+                    source_entity,
+                    index_id,
+                    &key_values,
+                )?;
+                if !used_ranges.insert(range_position) {
+                    return Err(ExecutionFault::Integrity);
+                }
+                if !snapshot.ranges()[range_position].entries().is_empty()
+                    && failure_binding_slot.is_none()
+                {
+                    failure_binding_slot = Some(binding_slot);
+                }
+            }
+            DeleteCheckModeV1::Cascade { relationships } => {
+                has_cascade = true;
+                for relationship in relationships {
+                    let range_position = exact_delete_range_position(
+                        bundle.schema(),
+                        snapshot,
+                        partition_key,
+                        relationship.source_entity(),
+                        relationship.index_id(),
+                        &key_values,
+                    )?;
+                    if !used_ranges.insert(range_position) {
+                        return Err(ExecutionFault::Integrity);
+                    }
+                    let range = &snapshot.ranges()[range_position];
+                    if range.entries().len() > usize::from(relationship.maximum()) {
+                        if failure_binding_slot.is_none() {
+                            failure_binding_slot = Some(binding_slot);
+                        }
+                        continue;
+                    }
+                    let source = bundle
+                        .schema()
+                        .entity(relationship.source_entity())
+                        .ok_or(ExecutionFault::Integrity)?;
+                    let index = source
+                        .indexes()
+                        .iter()
+                        .find(|index| index.id() == relationship.index_id())
+                        .ok_or(ExecutionFault::Integrity)?;
+                    for entry in range.entries() {
+                        let decoded = index
+                            .key_schema()
+                            .decode_index(entry.key())
+                            .map_err(|_| ExecutionFault::Integrity)?;
+                        let target = EntityTarget::new(
+                            relationship.source_entity(),
+                            decoded.entity_key().clone(),
+                        )
+                        .map_err(map_storage_value_error)?;
+                        child_positions_by_binding[binding_slot].push(expected_children.len());
+                        expected_children.push(target);
+                    }
+                }
+            }
+        }
+    }
+    if used_ranges.len() != snapshot.ranges().len() {
+        return Err(ExecutionFault::Integrity);
+    }
+    if failure_binding_slot.is_some() {
+        if !snapshot.cascade_predecessors().is_empty() {
+            return Err(ExecutionFault::Integrity);
+        }
+        for positions in &mut child_positions_by_binding {
+            positions.clear();
+        }
+    } else if expected_children.len() != snapshot.cascade_predecessors().len()
+        || expected_children
+            .iter()
+            .zip(snapshot.cascade_predecessors())
+            .any(|(target, observation)| target != observation.target())
+        || snapshot
+            .cascade_predecessors()
+            .iter()
+            .any(|observation| !matches!(observation, EntityObservation::Present(_)))
+    {
+        return Err(ExecutionFault::Integrity);
+    }
+
+    Ok(CollectionDeleteEvidence {
+        child_positions_by_binding,
+        failure_binding_slot,
+        has_cascade,
+    })
+}
+
+fn exact_delete_range_position(
+    schema: &SchemaIr,
+    snapshot: &ReadSnapshot,
+    partition_key: &PartitionKey,
+    source_entity: riffdb_types::EntityTypeId,
+    index_id: riffdb_types::IndexId,
+    target_key_values: &[CanonicalValue],
+) -> Result<usize, ExecutionFault> {
+    let source = schema
+        .entity(source_entity)
+        .ok_or(ExecutionFault::Integrity)?;
+    let index = source
+        .indexes()
+        .iter()
+        .find(|index| index.id() == index_id)
+        .ok_or(ExecutionFault::Integrity)?;
+    if target_key_values.is_empty()
+        || target_key_values.len() > index.key_schema().components().len()
+    {
+        return Err(ExecutionFault::Integrity);
+    }
+    let expected = index
+        .key_schema()
+        .encode_index_prefix(target_key_values)
+        .map_err(|_| ExecutionFault::Integrity)?;
+    let mut matches = snapshot.ranges().iter().enumerate().filter(|(_, range)| {
+        range.target().prefix().index_id() == index_id
+            && range.target().prefix().as_bytes() == expected.as_bytes()
+            && range.target().generation_target().partition_key() == partition_key
+    });
+    let (position, _) = matches.next().ok_or(ExecutionFault::Integrity)?;
+    if matches.next().is_some() {
+        return Err(ExecutionFault::Integrity);
+    }
+    Ok(position)
+}
+
+fn delete_range_count(
     plan: &CommandPlan,
     facts: &InputDerivedCommandFacts,
 ) -> Result<usize, ExecutionFault> {
@@ -1314,9 +1542,14 @@ fn delete_restrict_range_count(
             .iter()
             .find(|check| check.binding() == binding.id())
             .ok_or(ExecutionFault::Integrity)?;
-        if matches!(check.mode(), DeleteCheckModeV1::Restrict { .. }) {
-            count = count.checked_add(1).ok_or(ExecutionFault::ResourceLimit)?;
-        }
+        let additional = match check.mode() {
+            DeleteCheckModeV1::NoInbound => 0,
+            DeleteCheckModeV1::Restrict { .. } => 1,
+            DeleteCheckModeV1::Cascade { relationships } => relationships.len(),
+        };
+        count = count
+            .checked_add(additional)
+            .ok_or(ExecutionFault::ResourceLimit)?;
     }
     Ok(count)
 }

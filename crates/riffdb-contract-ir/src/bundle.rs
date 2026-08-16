@@ -69,6 +69,8 @@ pub const BUNDLE_FORMAT_VERSION_V10: u32 = 10;
 pub const BUNDLE_FORMAT_VERSION_V11: u32 = 11;
 /// Bundle framing containing declared vector ANN thresholds and recall targets.
 pub const BUNDLE_FORMAT_VERSION_V12: u32 = 12;
+/// Bundle framing containing compiler-bounded one-hop cascade deletion.
+pub const BUNDLE_FORMAT_VERSION_V13: u32 = 13;
 /// Canonical grammar version represented by a bundle.
 pub const GRAMMAR_VERSION_V1: u32 = 1;
 /// Contract grammar containing compiled workflows and service-owned values.
@@ -93,6 +95,8 @@ pub const GRAMMAR_VERSION_V10: u32 = 10;
 pub const GRAMMAR_VERSION_V11: u32 = 11;
 /// Contract grammar containing optional atomic vector ANN declarations.
 pub const GRAMMAR_VERSION_V12: u32 = 12;
+/// Contract grammar containing exhaustive bounded one-hop cascade policies.
+pub const GRAMMAR_VERSION_V13: u32 = 13;
 /// Executable IR version represented by a bundle.
 pub const EXECUTABLE_IR_VERSION_V1: u32 = 1;
 /// Executable IR containing compiled workflow transitions and service values.
@@ -117,6 +121,8 @@ pub const EXECUTABLE_IR_VERSION_V10: u32 = 10;
 pub const EXECUTABLE_IR_VERSION_V11: u32 = 11;
 /// Executable IR containing `VectorAnnSpecV1` schema metadata.
 pub const EXECUTABLE_IR_VERSION_V12: u32 = 12;
+/// Executable IR containing bounded one-hop cascade plans and overflow outcomes.
+pub const EXECUTABLE_IR_VERSION_V13: u32 = 13;
 
 const RELATIONSHIP_SCHEMA_EXTENSION: u32 = 0xffff_fffe;
 const UNIQUE_KEY_SCHEMA_EXTENSION: u32 = 0xffff_fffd;
@@ -1042,31 +1048,34 @@ impl ContractBundle {
         mcp_command_names: McpCommandNameRegistryV2,
         compatibility: CompatibilityReport,
     ) -> Result<Self, IrValidationError> {
-        let version = if schema.requires_ir_v12() {
-            BUNDLE_FORMAT_VERSION_V12
-        } else if commands.iter().any(CommandPlan::requires_ir_v11) {
-            BUNDLE_FORMAT_VERSION_V11
-        } else if commands.iter().any(CommandPlan::requires_ir_v10) {
-            BUNDLE_FORMAT_VERSION_V10
-        } else if workflows.iter().any(WorkflowSchema::requires_ir_v9) {
-            BUNDLE_FORMAT_VERSION_V9
-        } else if schema.requires_ir_v8() {
-            BUNDLE_FORMAT_VERSION_V8
-        } else if schema.requires_ir_v7() {
-            BUNDLE_FORMAT_VERSION_V7
-        } else if schema.requires_ir_v6() || commands.iter().any(CommandPlan::requires_ir_v6) {
-            BUNDLE_FORMAT_VERSION_V6
-        } else if schema.requires_ir_v5() || commands.iter().any(CommandPlan::requires_ir_v5) {
-            BUNDLE_FORMAT_VERSION_V5
-        } else if !row_policies.is_empty() {
-            BUNDLE_FORMAT_VERSION_V4
-        } else if commands.iter().any(CommandPlan::requires_ir_v3) {
-            BUNDLE_FORMAT_VERSION_V3
-        } else if !workflows.is_empty() || commands.iter().any(CommandPlan::requires_ir_v2) {
-            BUNDLE_FORMAT_VERSION_V2
-        } else {
-            BUNDLE_FORMAT_VERSION_V1
-        };
+        let version =
+            if schema.requires_ir_v13() || commands.iter().any(CommandPlan::requires_ir_v13) {
+                BUNDLE_FORMAT_VERSION_V13
+            } else if schema.requires_ir_v12() {
+                BUNDLE_FORMAT_VERSION_V12
+            } else if commands.iter().any(CommandPlan::requires_ir_v11) {
+                BUNDLE_FORMAT_VERSION_V11
+            } else if commands.iter().any(CommandPlan::requires_ir_v10) {
+                BUNDLE_FORMAT_VERSION_V10
+            } else if workflows.iter().any(WorkflowSchema::requires_ir_v9) {
+                BUNDLE_FORMAT_VERSION_V9
+            } else if schema.requires_ir_v8() {
+                BUNDLE_FORMAT_VERSION_V8
+            } else if schema.requires_ir_v7() {
+                BUNDLE_FORMAT_VERSION_V7
+            } else if schema.requires_ir_v6() || commands.iter().any(CommandPlan::requires_ir_v6) {
+                BUNDLE_FORMAT_VERSION_V6
+            } else if schema.requires_ir_v5() || commands.iter().any(CommandPlan::requires_ir_v5) {
+                BUNDLE_FORMAT_VERSION_V5
+            } else if !row_policies.is_empty() {
+                BUNDLE_FORMAT_VERSION_V4
+            } else if commands.iter().any(CommandPlan::requires_ir_v3) {
+                BUNDLE_FORMAT_VERSION_V3
+            } else if !workflows.is_empty() || commands.iter().any(CommandPlan::requires_ir_v2) {
+                BUNDLE_FORMAT_VERSION_V2
+            } else {
+                BUNDLE_FORMAT_VERSION_V1
+            };
         Self::new_with_versions(
             version,
             version,
@@ -1158,6 +1167,10 @@ impl ContractBundle {
                 BUNDLE_FORMAT_VERSION_V12,
                 GRAMMAR_VERSION_V12,
                 EXECUTABLE_IR_VERSION_V12
+            ) | (
+                BUNDLE_FORMAT_VERSION_V13,
+                GRAMMAR_VERSION_V13,
+                EXECUTABLE_IR_VERSION_V13
             )
         ) || (ir_version < EXECUTABLE_IR_VERSION_V2
             && (!workflows.is_empty() || commands.iter().any(CommandPlan::requires_ir_v2)))
@@ -1177,6 +1190,8 @@ impl ContractBundle {
             || (ir_version < EXECUTABLE_IR_VERSION_V11
                 && commands.iter().any(CommandPlan::requires_ir_v11))
             || (ir_version < EXECUTABLE_IR_VERSION_V12 && schema.requires_ir_v12())
+            || (ir_version < EXECUTABLE_IR_VERSION_V13
+                && (schema.requires_ir_v13() || commands.iter().any(CommandPlan::requires_ir_v13)))
             || (ir_version >= EXECUTABLE_IR_VERSION_V6
                 && commands
                     .iter()
@@ -2602,6 +2617,16 @@ fn encode_schema(writer: &mut Writer, schema: &SchemaIr) -> Result<(), IrValidat
                     writer.u32(source_entity.get())?;
                     writer.u32(index_id.get())?;
                 }
+                crate::DeletePolicyModeV1::Cascade { relationships } => {
+                    writer.u8(crate::format_registry::delete_policy_mode::CASCADE)?;
+                    writer.u32(relationships.len() as u32)?;
+                    for relationship in relationships {
+                        writer.u32(relationship.source_entity().get())?;
+                        writer.string(relationship.relationship_name())?;
+                        writer.u32(relationship.index_id().get())?;
+                        writer.u32(u32::from(relationship.maximum()))?;
+                    }
+                }
             }
         }
     }
@@ -3104,6 +3129,16 @@ fn encode_command_semantics_versioned(
                     writer.u32(source_entity.get())?;
                     writer.u32(index_id.get())?;
                 }
+                crate::DeleteCheckModeV1::Cascade { relationships } => {
+                    writer.u8(crate::format_registry::delete_check_mode::CASCADE)?;
+                    writer.u32(relationships.len() as u32)?;
+                    for relationship in relationships {
+                        writer.u32(relationship.source_entity().get())?;
+                        writer.string(relationship.relationship_name())?;
+                        writer.u32(relationship.index_id().get())?;
+                        writer.u32(u32::from(relationship.maximum()))?;
+                    }
+                }
             }
         }
     }
@@ -3276,6 +3311,12 @@ fn encode_binding(
     if ir_version >= EXECUTABLE_IR_VERSION_V6 {
         writer.bool(binding.restriction_failure().is_some())?;
         if let Some(failure) = binding.restriction_failure() {
+            encode_outcome_construction(writer, failure)?;
+        }
+    }
+    if ir_version >= EXECUTABLE_IR_VERSION_V13 {
+        writer.bool(binding.cascade_failure().is_some())?;
+        if let Some(failure) = binding.cascade_failure() {
             encode_outcome_construction(writer, failure)?;
         }
     }
@@ -3646,6 +3687,10 @@ fn decode_bundle(bytes: &[u8]) -> Result<ContractBundle, IrValidationError> {
             BUNDLE_FORMAT_VERSION_V12,
             GRAMMAR_VERSION_V12,
             EXECUTABLE_IR_VERSION_V12
+        ) | (
+            BUNDLE_FORMAT_VERSION_V13,
+            GRAMMAR_VERSION_V13,
+            EXECUTABLE_IR_VERSION_V13
         )
     ) {
         return Err(IrValidationError::UnsupportedVersion {
@@ -4137,6 +4182,30 @@ fn decode_schema(reader: &mut Reader<'_>) -> Result<SchemaIr, IrValidationError>
                         decode_entity_id(reader)?,
                         decode_index_id(reader)?,
                     )
+                }
+                crate::format_registry::delete_policy_mode::CASCADE => {
+                    let count = decode_len(reader, "cascade relationships", 32)?;
+                    let mut relationships = Vec::with_capacity(count);
+                    for _ in 0..count {
+                        let source_entity = decode_entity_id(reader)?;
+                        let relationship_name = reader.string(256)?;
+                        let index_id = decode_index_id(reader)?;
+                        let raw_maximum = reader.u32()?;
+                        let maximum = u16::try_from(raw_maximum).map_err(|_| {
+                            IrValidationError::LimitExceeded {
+                                kind: "cascade relationship maximum",
+                                actual: raw_maximum as usize,
+                                maximum: 255,
+                            }
+                        })?;
+                        relationships.push(crate::CascadeRelationshipSpecV1::new(
+                            source_entity,
+                            relationship_name,
+                            index_id,
+                            maximum,
+                        )?);
+                    }
+                    crate::DeletePolicySchemaV1::cascade(target_entity, relationships)?
                 }
                 tag => {
                     return Err(IrValidationError::UnknownTag {
@@ -5086,6 +5155,30 @@ fn decode_command_versioned(
                         index_id: decode_index_id(reader)?,
                     }
                 }
+                crate::format_registry::delete_check_mode::CASCADE => {
+                    let relationship_count = decode_len(reader, "cascade delete checks", 32)?;
+                    let mut relationships = Vec::with_capacity(relationship_count);
+                    for _ in 0..relationship_count {
+                        let source_entity = decode_entity_id(reader)?;
+                        let relationship_name = reader.string(256)?;
+                        let index_id = decode_index_id(reader)?;
+                        let raw_maximum = reader.u32()?;
+                        let maximum = u16::try_from(raw_maximum).map_err(|_| {
+                            IrValidationError::LimitExceeded {
+                                kind: "cascade relationship maximum",
+                                actual: raw_maximum as usize,
+                                maximum: 255,
+                            }
+                        })?;
+                        relationships.push(crate::CascadeRelationshipSpecV1::new(
+                            source_entity,
+                            relationship_name,
+                            index_id,
+                            maximum,
+                        )?);
+                    }
+                    crate::DeleteCheckModeV1::Cascade { relationships }
+                }
                 tag => {
                     return Err(IrValidationError::UnknownTag {
                         kind: "delete check mode",
@@ -5445,7 +5538,12 @@ fn decode_binding(
     } else {
         None
     };
-    BindingPlan::new_with_restriction_failure(
+    let cascade_failure = if ir_version >= EXECUTABLE_IR_VERSION_V13 && reader.bool()? {
+        Some(decode_outcome_construction(reader, outcomes, arena)?)
+    } else {
+        None
+    };
+    BindingPlan::new_with_delete_failures(
         id,
         name,
         mode,
@@ -5456,6 +5554,7 @@ fn decode_binding(
         complete_record_access,
         failure,
         restriction_failure,
+        cascade_failure,
     )
 }
 

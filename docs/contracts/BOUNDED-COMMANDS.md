@@ -2,7 +2,10 @@
 
 > Alpha surface: grammar, executable IR v5, atomic runtime execution, and generated Rust, Go,
 > TypeScript, Python, and MCP bindings are implemented. Collection commands use the ordinary
-> symbolic command service; they do not introduce a generic transaction API.
+> symbolic command service; they do not introduce a generic transaction API. Compiler-bounded
+> one-hop cascade grammar, executable IR V13, and the command/runtime/storage path are implemented.
+> Generated language-specific cascade facades remain unavailable until WP-627; callers can use
+> the ordinary symbolic command service in the meantime.
 
 RiffDB collection writes are compiled commands, not caller-defined transactions. A `bulk command`
 may expand exactly one bounded list, once, with no nesting or data-dependent iteration. The
@@ -57,8 +60,8 @@ outcome. If a reference races with the delete, transaction-current validation re
 whole bounded command and selects `Referenced`; it does not spin on an infrastructure retry.
 Grammar/IR v6 permits one indexed-restrict delete template per command.
 
-Cascade, set-null, orphaning, cross-partition deletion, physical history removal, nested loops,
-and caller-supplied callbacks are not part of this surface. A bounded delete may target an entity
+Set-null, orphaning, cross-partition deletion, physical history removal, nested loops, and
+caller-supplied callbacks are not part of this surface. A bounded delete may target an entity
 with declared unique keys. RiffDB derives and removes each exact old index entry from the checked
 predecessor inside the authoritative write transaction; application input does not supply or
 guess a release conflict for a value visible only in that predecessor. Ordered execution is
@@ -67,6 +70,58 @@ a create admitted after the committed delete may reuse the released value. `RDB-
 feature seal for this audited path, is retired; unsafe deletion policy remains the source-spanned
 `RDB-C045` refusal. Ordinary commands do not gain delete syntax—the accepted first delete format
 remains a compiler-bounded collection command.
+
+## Compiler-bounded one-hop cascade (V13)
+
+An exhaustive `cascade` policy may name direct inbound relationships whose source rows share the
+target aggregate, partition derivation, and aggregate conflict key. Every source entity must have
+`delete_policy no_inbound`; recursive and multi-level deletion remain unavailable.
+
+```riff
+entity User {
+    key (organization_id: uuid, user_id: uuid)
+    delete_policy cascade {
+        relationship Account.account_user using Account.by_user maximum 32
+        relationship Session.session_user using Session.by_user maximum 32
+    }
+}
+
+bulk command DeleteUsers {
+    input request_id: uuid
+    input organization_id: uuid
+    input user_ids: list<uuid, 1..3>
+    idempotency_key request_id
+
+    for user_id in user_ids {
+        delete User(organization_id, user_id) as user
+            else UserMissing {}
+            cascade CascadeLimitExceeded {}
+    }
+
+    return UserDeleted {}
+}
+```
+
+The compiler requires every direct inbound relationship exactly once, an exact canonical reverse
+index prefix, a positive maximum, at most 32 entries, and at most one cascade delete template per
+command. It proves `root maximum * (1 + sum(relationship maxima)) <= 256` and charges the complete
+possible predecessor graph against 16 MiB. Callers provide only root keys and ordinary inputs;
+they cannot choose relationships, indexes, maxima, child keys, or traversal depth.
+
+Cascade contracts emit the least-sufficient bundle, grammar, and executable IR identity V13.
+Contracts without cascade continue to emit V1 through V12 as appropriate. This compiler package
+is deployable by a V13-capable runtime. After acquiring the command's canonical aggregate conflict,
+the coordinator reads each named reverse-index prefix only through its compiler-declared
+`maximum + 1` bound. If any prefix returns the extra row, it durably records the declared cascade
+outcome with no entity mutation. Otherwise it rereads the roots, discovered predecessors, and
+range epochs in one consistent view, applies ordinary authorization and transaction-current checks
+to every row, and evaluates one children-before-parent graph.
+
+The persisted entity mutations remain canonically ordered in the existing command envelope. This
+is a physical encoding detail: the validated semantic graph proves every child precedes its parent
+before the commit coordinator derives the ordinary tombstones, index removals, provenance,
+changelog, and commit records. Crash recovery, idempotent replay, backup/restore, and follower
+application therefore use the same paths as any other bounded collection delete.
 
 Duplicate collection keys reject the whole command. All expanded effects, the typed outcome,
 events, provenance, idempotency record, and commit record are one atomic command result. A crash

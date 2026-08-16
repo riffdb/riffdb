@@ -8,15 +8,16 @@ use riffdb_contract_ir::{
     BUNDLE_FORMAT_VERSION_V1, BUNDLE_FORMAT_VERSION_V2, BUNDLE_FORMAT_VERSION_V3,
     BUNDLE_FORMAT_VERSION_V4, BUNDLE_FORMAT_VERSION_V5, BUNDLE_FORMAT_VERSION_V6,
     BUNDLE_FORMAT_VERSION_V7, BUNDLE_FORMAT_VERSION_V8, BUNDLE_FORMAT_VERSION_V9,
-    BUNDLE_FORMAT_VERSION_V10, BUNDLE_FORMAT_VERSION_V11, BUNDLE_FORMAT_VERSION_V12, CommandPlan,
-    ContractBundle, EXECUTABLE_IR_VERSION_V1, EXECUTABLE_IR_VERSION_V2, EXECUTABLE_IR_VERSION_V3,
-    EXECUTABLE_IR_VERSION_V4, EXECUTABLE_IR_VERSION_V5, EXECUTABLE_IR_VERSION_V6,
-    EXECUTABLE_IR_VERSION_V7, EXECUTABLE_IR_VERSION_V8, EXECUTABLE_IR_VERSION_V9,
-    EXECUTABLE_IR_VERSION_V10, EXECUTABLE_IR_VERSION_V11, EXECUTABLE_IR_VERSION_V12,
+    BUNDLE_FORMAT_VERSION_V10, BUNDLE_FORMAT_VERSION_V11, BUNDLE_FORMAT_VERSION_V12,
+    BUNDLE_FORMAT_VERSION_V13, CommandPlan, ContractBundle, EXECUTABLE_IR_VERSION_V1,
+    EXECUTABLE_IR_VERSION_V2, EXECUTABLE_IR_VERSION_V3, EXECUTABLE_IR_VERSION_V4,
+    EXECUTABLE_IR_VERSION_V5, EXECUTABLE_IR_VERSION_V6, EXECUTABLE_IR_VERSION_V7,
+    EXECUTABLE_IR_VERSION_V8, EXECUTABLE_IR_VERSION_V9, EXECUTABLE_IR_VERSION_V10,
+    EXECUTABLE_IR_VERSION_V11, EXECUTABLE_IR_VERSION_V12, EXECUTABLE_IR_VERSION_V13,
     GRAMMAR_VERSION_V1, GRAMMAR_VERSION_V2, GRAMMAR_VERSION_V3, GRAMMAR_VERSION_V4,
     GRAMMAR_VERSION_V5, GRAMMAR_VERSION_V6, GRAMMAR_VERSION_V7, GRAMMAR_VERSION_V8,
     GRAMMAR_VERSION_V9, GRAMMAR_VERSION_V10, GRAMMAR_VERSION_V11, GRAMMAR_VERSION_V12,
-    MCP_COMMAND_NAME_REGISTRY_VERSION_V2, McpCommandToolNameV2,
+    GRAMMAR_VERSION_V13, MCP_COMMAND_NAME_REGISTRY_VERSION_V2, McpCommandToolNameV2,
 };
 use riffdb_storage_api::{
     ActiveCatalogPointerV1, CatalogRepository, ExecutablePlanRef, StoredContractBundleV1,
@@ -460,6 +461,10 @@ fn validate_supported_versions(bundle: &ContractBundle) -> Result<(), CatalogErr
             BUNDLE_FORMAT_VERSION_V12,
             GRAMMAR_VERSION_V12,
             EXECUTABLE_IR_VERSION_V12
+        ) | (
+            BUNDLE_FORMAT_VERSION_V13,
+            GRAMMAR_VERSION_V13,
+            EXECUTABLE_IR_VERSION_V13
         )
     ) {
         return Err(CatalogError::new(
@@ -517,6 +522,18 @@ mod tests {
             BUNDLE_FORMAT_VERSION_V11
         );
         assert_eq!(validated.bundle().commands()[0].secret_reveals().len(), 1);
+    }
+
+    #[test]
+    fn cascade_v13_bundle_activates_with_runtime_support() {
+        let validated = ValidatedContractBundle::decode(include_bytes!(
+            "../../../fixtures/compiler/cascade/bundle.bin"
+        ))
+        .expect("WP-626 activates the accepted V13 cascade runtime");
+        assert_eq!(
+            validated.bundle().format_version(),
+            BUNDLE_FORMAT_VERSION_V13
+        );
     }
 
     #[test]

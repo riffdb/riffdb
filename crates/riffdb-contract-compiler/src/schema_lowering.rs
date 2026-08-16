@@ -1,11 +1,11 @@
 //! Checked executable schema lowering from compiler-private typed HIR.
 
 use riffdb_contract_ir::{
-    AggregateKeyPlan, AggregateSchema, DeletePolicySchemaV1, EntitySchema, EnumSchema,
-    EnumVariantSchema, EventPartitionSchema, EventPolicyAnchorFieldV1, EventPolicyAnchorV1,
-    EventSchema, FieldSchema, IndexSchema, InvariantPlan, KeyComponentSchema, KeyPurpose,
-    KeySchema, RecordSchema, RecordTypeRef, RelationshipSchema, SchemaIr, UniqueKeySchema,
-    ValueType, WorkflowLeaseSchema, WorkflowSchema, WorkflowTransitionSchema,
+    AggregateKeyPlan, AggregateSchema, CascadeRelationshipSpecV1, DeletePolicySchemaV1,
+    EntitySchema, EnumSchema, EnumVariantSchema, EventPartitionSchema, EventPolicyAnchorFieldV1,
+    EventPolicyAnchorV1, EventSchema, FieldSchema, IndexSchema, InvariantPlan, KeyComponentSchema,
+    KeyPurpose, KeySchema, RecordSchema, RecordTypeRef, RelationshipSchema, SchemaIr,
+    UniqueKeySchema, ValueType, WorkflowLeaseSchema, WorkflowSchema, WorkflowTransitionSchema,
 };
 use riffdb_contract_syntax::Span;
 use riffdb_types::{EnumTypeId, EnumVariantId};
@@ -88,7 +88,7 @@ pub(crate) fn lower_schema(hir: &TypedContractHir) -> Result<SchemaIr, CompilerD
     let events = lower_events(hir, &entities, &aggregates, &mut diagnostics);
     let relationships = lower_relationships(hir, &mut diagnostics);
     let unique_keys = lower_unique_keys(hir, &mut diagnostics);
-    let delete_policies = lower_delete_policies(hir);
+    let delete_policies = lower_delete_policies(hir)?;
     if !diagnostics.is_empty() {
         return Err(CompilerDiagnostics::new(diagnostics).expect("nonempty diagnostics"));
     }
@@ -102,6 +102,12 @@ pub(crate) fn lower_schema(hir: &TypedContractHir) -> Result<SchemaIr, CompilerD
     )
     .map_err(|_| CompilerDiagnostics::single(ir_diagnostic(hir.span)))?;
     for (policy, span) in &delete_policies {
+        if matches!(
+            policy.mode(),
+            riffdb_contract_ir::DeletePolicyModeV1::Cascade { .. }
+        ) {
+            continue;
+        }
         SchemaIr::with_integrity_and_delete_policies(
             entities.clone(),
             events.clone(),
@@ -115,6 +121,31 @@ pub(crate) fn lower_schema(hir: &TypedContractHir) -> Result<SchemaIr, CompilerD
             CompilerDiagnostics::single(CompilerDiagnostic::new(
                 CompilerDiagnosticCode::InvalidDeletePolicy,
                 *span,
+            ))
+        })?;
+    }
+    if let Some((_, cascade_span)) = delete_policies.iter().find(|(policy, _)| {
+        matches!(
+            policy.mode(),
+            riffdb_contract_ir::DeletePolicyModeV1::Cascade { .. }
+        )
+    }) {
+        SchemaIr::with_integrity_and_delete_policies(
+            entities.clone(),
+            events.clone(),
+            enums.clone(),
+            aggregates.clone(),
+            relationships.clone(),
+            unique_keys.clone(),
+            delete_policies
+                .iter()
+                .map(|(policy, _)| policy.clone())
+                .collect(),
+        )
+        .map_err(|_| {
+            CompilerDiagnostics::single(CompilerDiagnostic::new(
+                CompilerDiagnosticCode::InvalidDeletePolicy,
+                *cascade_span,
             ))
         })?;
     }
@@ -232,21 +263,60 @@ pub(crate) fn lower_schema(hir: &TypedContractHir) -> Result<SchemaIr, CompilerD
         .map_err(|_| CompilerDiagnostics::single(ir_diagnostic(hir.span)))
 }
 
-fn lower_delete_policies(hir: &TypedContractHir) -> Vec<(DeletePolicySchemaV1, Span)> {
+fn lower_delete_policies(
+    hir: &TypedContractHir,
+) -> Result<Vec<(DeletePolicySchemaV1, Span)>, CompilerDiagnostics> {
     hir.entities
         .iter()
-        .filter_map(|entity| match entity.delete_policy? {
+        .filter_map(|entity| match entity.delete_policy.as_ref()? {
             HirDeletePolicy::NoInbound { span } => {
-                Some((DeletePolicySchemaV1::no_inbound(entity.id), span))
+                Some(Ok((DeletePolicySchemaV1::no_inbound(entity.id), *span)))
             }
             HirDeletePolicy::Restrict {
                 span,
                 source_entity,
                 index_id,
-            } => Some((
-                DeletePolicySchemaV1::restrict(entity.id, source_entity, index_id),
+            } => Some(Ok((
+                DeletePolicySchemaV1::restrict(entity.id, *source_entity, *index_id),
+                *span,
+            ))),
+            HirDeletePolicy::Cascade {
                 span,
-            )),
+                relationships,
+            } => {
+                let entries = relationships
+                    .iter()
+                    .map(|relationship| {
+                        CascadeRelationshipSpecV1::new(
+                            relationship.source_entity,
+                            relationship.relationship_name.clone(),
+                            relationship.index_id,
+                            relationship.maximum as u16,
+                        )
+                    })
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(|_| {
+                        CompilerDiagnostics::single(CompilerDiagnostic::new(
+                            CompilerDiagnosticCode::InvalidDeletePolicy,
+                            *span,
+                        ))
+                    });
+                Some(entries.and_then(|mut entries| {
+                    entries.sort_by(|left, right| {
+                        left.source_entity()
+                            .cmp(&right.source_entity())
+                            .then_with(|| left.relationship_name().cmp(right.relationship_name()))
+                    });
+                    DeletePolicySchemaV1::cascade(entity.id, entries)
+                        .map(|policy| (policy, *span))
+                        .map_err(|_| {
+                            CompilerDiagnostics::single(CompilerDiagnostic::new(
+                                CompilerDiagnosticCode::InvalidDeletePolicy,
+                                *span,
+                            ))
+                        })
+                }))
+            }
         })
         .collect()
 }

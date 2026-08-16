@@ -63,6 +63,14 @@ pub(crate) enum Token {
     NoInbound,
     #[token("restrict")]
     Restrict,
+    #[token("cascade")]
+    Cascade,
+    #[token("relationship")]
+    Relationship,
+    #[token("using")]
+    Using,
+    #[token("maximum")]
+    Maximum,
     #[token("event")]
     Event,
     #[token("enum")]

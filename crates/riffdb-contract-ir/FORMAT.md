@@ -140,6 +140,7 @@ Expression constants use exactly `u32 canonical_document_byte_length || canonica
 |---:|---|
 | `0x01` | no inbound relationship |
 | `0x02` | indexed restrict |
+| `0x03` | bounded one-hop cascade |
 
 ### Delete check mode
 
@@ -147,6 +148,7 @@ Expression constants use exactly `u32 canonical_document_byte_length || canonica
 |---:|---|
 | `0x01` | no inbound relationship |
 | `0x02` | transaction-current indexed restrict |
+| `0x03` | transaction-current bounded one-hop cascade |
 
 ### Instruction
 
@@ -592,6 +594,7 @@ Fields below are listed in exact byte order. A collection field includes its cou
 | 1 | `target_entity` | EntityTypeId |
 | 2 | `mode` | delete policy mode tag |
 | 3 | `restrict_payload` | for restrict only: source EntityTypeId + reverse IndexId |
+| 4 | `cascade_payload` | for cascade only: u32 count + canonical (source EntityTypeId, relationship string, reverse IndexId, u32 maximum)[] |
 
 ### VectorFieldSpecV1
 
@@ -867,6 +870,7 @@ Fields below are listed in exact byte order. A collection field includes its cou
 | 8 | `complete_record_access` | Boolean |
 | 9 | `failure` | OutcomeConstruction |
 | 10 | `restriction_failure` | IR v6+: Boolean + optional OutcomeConstruction; omitted in v1-v5 |
+| 11 | `cascade_failure` | IR v13+: Boolean + optional OutcomeConstruction; omitted in v1-v12 |
 
 ### RootValidationReadPlan
 
@@ -895,6 +899,7 @@ Fields below are listed in exact byte order. A collection field includes its cou
 | 2 | `mode` | Delete check mode tag |
 | 3 | `restrict_source_entity` | EntityTypeId only for indexed restrict |
 | 4 | `restrict_index` | IndexId only for indexed restrict |
+| 5 | `cascade_payload` | for cascade only: u32 count + canonical (source EntityTypeId, relationship string, reverse IndexId, u32 maximum)[] |
 
 ### LocalityPlan
 
