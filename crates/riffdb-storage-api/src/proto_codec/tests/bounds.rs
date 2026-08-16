@@ -148,6 +148,24 @@ fn prepared_capsule_is_semantically_invisible_and_consumed_pay_once() {
 }
 
 #[test]
+fn prepared_capsule_rejects_a_commit_with_different_entity_references() {
+    let ordinary = sample::atomic_record_set();
+    let prepared =
+        prepare_capsule_command_fragments_v1(Vec::new(), ordinary.index_entries().to_vec())
+            .expect("empty entity preparation is structurally valid");
+    let error = AtomicCommandRecordSet::new_with_prepared_capsule(
+        ordinary.assignment(),
+        prepared,
+        ordinary.write_plan().clone(),
+        ordinary.stored_outcome().clone(),
+        ordinary.provenance().clone(),
+        ordinary.commit().clone(),
+    )
+    .expect_err("prepared references must match the retained commit exactly");
+    assert_eq!(error, crate::StorageValueError::IdentityMismatch);
+}
+
+#[test]
 fn exact_write_set_reservation_accepts_equal_and_rejects_one_byte_over() {
     let actual = encode_atomic_command_record_set_v1(&sample::atomic_record_set())
         .expect("atomic graph encodes")

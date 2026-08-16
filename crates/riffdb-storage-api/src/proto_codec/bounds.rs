@@ -156,6 +156,7 @@ pub struct EncodedCapsuleCommandRecordSetV1 {
 pub struct PreparedCapsuleCommandFragmentsV1 {
     entities: Vec<crate::CommittedEntityMutationV1>,
     index_entries: Vec<crate::IndexEntryMutationV1>,
+    entity_references: Vec<crate::CommittedEntityReferenceV2>,
     encoded: PreparedCapsuleEnvelopesV1,
 }
 
@@ -172,14 +173,26 @@ impl PreparedCapsuleCommandFragmentsV1 {
         &self.entities
     }
 
+    /// Borrows exact post-image references proven by this preparation.
+    #[must_use]
+    pub fn entity_references(&self) -> &[crate::CommittedEntityReferenceV2] {
+        &self.entity_references
+    }
+
     pub(crate) fn into_parts(
         self,
     ) -> (
         Vec<crate::CommittedEntityMutationV1>,
         Vec<crate::IndexEntryMutationV1>,
+        Vec<crate::CommittedEntityReferenceV2>,
         PreparedCapsuleEnvelopesV1,
     ) {
-        (self.entities, self.index_entries, self.encoded)
+        (
+            self.entities,
+            self.index_entries,
+            self.entity_references,
+            self.encoded,
+        )
     }
 }
 
@@ -204,9 +217,18 @@ pub fn prepare_capsule_command_fragments_v1(
             crate::IndexEntryMutationV1::Put(value) => encode_index_entry_v2(value).map(Some),
         })
         .collect::<Result<Vec<_>, _>>()?;
+    let entity_references = entities
+        .iter()
+        .map(crate::CommittedEntityReferenceV2::from_live_mutation)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(DurableCodecError::from_storage_value)?
+        .into_iter()
+        .flatten()
+        .collect();
     Ok(PreparedCapsuleCommandFragmentsV1 {
         entities,
         index_entries,
+        entity_references,
         encoded: PreparedCapsuleEnvelopesV1 {
             entities: encoded_entities,
             index_entries: encoded_index_entries,
@@ -634,7 +656,7 @@ pub fn encode_capsule_command_record_set_v1(
                 records.entities().to_vec(),
                 records.index_entries().to_vec(),
             )?;
-            let (_, _, encoded) = prepared.into_parts();
+            let (_, _, _, encoded) = prepared.into_parts();
             (encoded.entities, encoded.index_entries)
         }
     };

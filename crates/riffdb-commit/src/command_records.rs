@@ -1170,13 +1170,16 @@ fn build_atomic_command_record_set(
         pending.provenance_claims().clone(),
         pending.causation(),
     )?;
-    let entity_references = entities
-        .iter()
-        .map(CommittedEntityReferenceV2::from_live_mutation)
-        .collect::<Result<Vec<_>, _>>()?
-        .into_iter()
-        .flatten()
-        .collect();
+    let entity_references = match input.prepared_capsule.as_ref() {
+        Some(prepared) => prepared.entity_references().to_vec(),
+        None => entities
+            .iter()
+            .map(CommittedEntityReferenceV2::from_live_mutation)
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .flatten()
+            .collect(),
+    };
     let commit = StoredCommitRecordV1::new(
         sequence,
         pending.admission_request_id(),
