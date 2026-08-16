@@ -36,7 +36,7 @@ impl CommandSegmentPreparationPool {
     pub(crate) fn production_worker_count() -> usize {
         let available = thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get);
         if available <= 8 {
-            0
+            available.saturating_sub(1).min(3)
         } else {
             available
                 .saturating_sub(1)
