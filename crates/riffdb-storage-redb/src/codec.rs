@@ -293,6 +293,18 @@ borrowed_codec!(
     encode_entity_record_v1,
     decode_entity_record_v1
 );
+
+pub(crate) fn decode_entity_record_v1_profiled(
+    encoded: &[u8],
+) -> Result<
+    (
+        storage::EncodedPageItem<storage::StoredEntityRecordV1>,
+        storage::DurableReadDecodeProfileV1,
+    ),
+    storage::StorageError,
+> {
+    storage::decode_entity_record_v1_profiled(encoded).map_err(codec_error)
+}
 borrowed_codec!(
     encode_index_entry_v2,
     decode_index_entry_v2,

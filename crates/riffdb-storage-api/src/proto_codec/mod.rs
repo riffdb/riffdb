@@ -21,6 +21,7 @@ mod retention;
 mod validated_prefix_checkpoint;
 
 use std::fmt;
+use std::time::Instant;
 
 use prost::Message;
 use riffdb_proto::durable::{current_record_schema, readable_record_registry};
@@ -53,6 +54,18 @@ pub use validated_prefix_checkpoint::*;
 pub struct CanonicalStoredEnvelopeV1 {
     bytes: Vec<u8>,
     charge: EncodedContentCharge,
+}
+
+/// Fixed-cardinality timing for one exact readable record decode.
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct DurableReadDecodeProfileV1 {
+    pub identity_bounds_ns: u64,
+    pub checksum_ns: u64,
+    pub wire_preflight_ns: u64,
+    pub prost_decode_ns: u64,
+    pub canonical_reencode_ns: u64,
+    pub semantic_reconstruct_ns: u64,
 }
 
 impl CanonicalStoredEnvelopeV1 {
@@ -207,6 +220,65 @@ where
     let value = reconstruct(message)?;
     let charge = EncodedContentCharge::new(encoded.len()).ok_or_else(DurableCodecError::corrupt)?;
     Ok(EncodedPageItem::new(value, charge))
+}
+
+pub(super) fn decode_message_profiled<M, T, F>(
+    record_type: &'static str,
+    encoded: &[u8],
+    reconstruct: F,
+) -> Result<(EncodedPageItem<T>, DurableReadDecodeProfileV1), DurableCodecError>
+where
+    M: Message + Default + riffdb_proto::durable::ReadableRecordMessage,
+    F: FnOnce(M) -> Result<T, DurableCodecError>,
+{
+    if M::record_schema().record_type() != record_type {
+        return Err(DurableCodecError::new(
+            DurableCodecErrorKind::UnexpectedRecordType,
+        ));
+    }
+    let (message, profile) =
+        match riffdb_proto::durable::decode_readable_message_profiled::<M>(encoded) {
+            Ok(profiled) => profiled,
+            Err(_) => {
+                let fallback_started = Instant::now();
+                let decoded = readable_record_registry()
+                    .decode(encoded)
+                    .map_err(DurableCodecError::from_decode_envelope)?;
+                if decoded.record_type() != record_type {
+                    return Err(DurableCodecError::new(
+                        DurableCodecErrorKind::UnexpectedRecordType,
+                    ));
+                }
+                let message =
+                    M::decode(decoded.payload()).map_err(|_| DurableCodecError::corrupt())?;
+                (
+                    message,
+                    riffdb_proto::durable::ReadableDecodeProfileV1 {
+                        identity_bounds_ns: elapsed_nanos(fallback_started),
+                        ..riffdb_proto::durable::ReadableDecodeProfileV1::default()
+                    },
+                )
+            }
+        };
+    let semantic_started = Instant::now();
+    let value = reconstruct(message)?;
+    let semantic_reconstruct_ns = elapsed_nanos(semantic_started);
+    let charge = EncodedContentCharge::new(encoded.len()).ok_or_else(DurableCodecError::corrupt)?;
+    Ok((
+        EncodedPageItem::new(value, charge),
+        DurableReadDecodeProfileV1 {
+            identity_bounds_ns: profile.identity_bounds_ns,
+            checksum_ns: profile.checksum_ns,
+            wire_preflight_ns: profile.wire_preflight_ns,
+            prost_decode_ns: profile.prost_decode_ns,
+            canonical_reencode_ns: profile.canonical_reencode_ns,
+            semantic_reconstruct_ns,
+        },
+    ))
+}
+
+fn elapsed_nanos(started: Instant) -> u64 {
+    u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX)
 }
 
 pub(super) fn decode_record_variant(

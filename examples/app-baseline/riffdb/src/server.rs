@@ -55,6 +55,7 @@ const COMMAND_STAGE_PREFIX: &str = "riffdb-command-stages-v1\t";
 const WRITER_EVIDENCE_PREFIX: &str = "riffdb-writer-evidence-v1\t";
 const WRITER_FRAME_CENSUS_PREFIX: &str = "riffdb-writer-frame-census-v1\t";
 const WRITER_FLUSH_CENSUS_PREFIX: &str = "riffdb-writer-flush-census-v1\t";
+const QUERY_EXECUTE_WINDOWS_PREFIX: &str = "riffdb-query-execute-windows-v1\t";
 const PROCESS_START_TIMEOUT: Duration = Duration::from_secs(90);
 const PROCESS_STOP_TIMEOUT: Duration = Duration::from_secs(15);
 /// Keep the last N stderr lines for crash diagnosis (panic / OOM messages).
@@ -176,6 +177,8 @@ pub struct ServerStartOptions {
     ///
     /// `0` means use [`MIN_FREE_BYTES_SMOKE`].
     pub min_free_bytes: u64,
+    /// Enable fixed-cardinality query-execute attribution in the child only.
+    pub query_execute_diagnostics: bool,
 }
 
 /// Owns one live `riffdbd` process and a ready public client backend.
@@ -184,6 +187,7 @@ pub struct RiffDbServerSession {
     process: ServerProcess,
     riffdbd_bin: PathBuf,
     coordinator_workload_capacity: Option<u16>,
+    query_execute_diagnostics: bool,
     table_inventory_before_measurement:
         Option<Vec<riffdb_storage_redb::benchmark_support::AuthoritativeTableInventoryV1>>,
     /// Resolved real-disk root used for this session.
@@ -209,12 +213,44 @@ pub struct RiffDbShutdownEvidence {
     pub writer_frame_census: Option<[u64; 6]>,
     /// Physical flushes, frames, commands, bytes, maximum grouping, and I/O time.
     pub writer_flush_census: Option<[u64; 7]>,
+    /// Optional fixed-cardinality query-execute ordinal windows.
+    pub query_execute: Option<RiffDbQueryExecuteEvidence>,
     /// Command-table inventory after seed and before the measured process.
     pub table_inventory_before_measurement:
         Option<Vec<riffdb_storage_redb::benchmark_support::AuthoritativeTableInventoryV1>>,
     /// Command-table inventory after the measured process stopped cleanly.
     pub table_inventory_after_measurement:
         Vec<riffdb_storage_redb::benchmark_support::AuthoritativeTableInventoryV1>,
+}
+
+/// One bounded process-generation exact-query execute census.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RiffDbQueryExecuteEvidence {
+    /// Operations merged into each ordinal window before the terminal bucket.
+    pub window_width: u64,
+    /// Closed stage names in `stage_ns` order.
+    pub stage_names: Vec<String>,
+    /// Complete observed operation count.
+    pub total_count: u64,
+    /// Fixed bounded windows; trailing empty windows are retained.
+    pub windows: Vec<RiffDbQueryExecuteWindowEvidence>,
+}
+
+/// One query-execute ordinal window.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RiffDbQueryExecuteWindowEvidence {
+    /// Observations merged into this window.
+    pub count: u64,
+    /// Nanosecond sums in the closed stage order.
+    pub stage_ns: Vec<u64>,
+    /// Sum of captured composite-overlay transitions.
+    pub overlay_transitions_sum: u64,
+    /// Maximum captured composite-overlay transitions.
+    pub overlay_transitions_max: u64,
+    /// Sum of captured composite-overlay charged bytes.
+    pub overlay_bytes_sum: u64,
+    /// Maximum captured composite-overlay charged bytes.
+    pub overlay_bytes_max: u64,
 }
 
 /// Closed process-generation writer evidence emitted by `riffdbd`.
@@ -324,6 +360,7 @@ impl RiffDbServerSession {
             &capability_keys_path,
             &idempotency_keys_path,
             options.coordinator_workload_capacity,
+            options.query_execute_diagnostics,
             None,
             None,
         )
@@ -358,6 +395,7 @@ impl RiffDbServerSession {
             &capability_keys_path,
             &idempotency_keys_path,
             options.coordinator_workload_capacity,
+            options.query_execute_diagnostics,
             Some(projections_root.as_path()),
             Some(projections_config_path.as_path()),
         )
@@ -385,6 +423,7 @@ impl RiffDbServerSession {
             process,
             riffdbd_bin: riffdbd_bin.to_path_buf(),
             coordinator_workload_capacity: options.coordinator_workload_capacity,
+            query_execute_diagnostics: options.query_execute_diagnostics,
             table_inventory_before_measurement: None,
             bench_root,
             backend,
@@ -426,6 +465,7 @@ impl RiffDbServerSession {
             &capability_keys_path,
             &idempotency_keys_path,
             self.coordinator_workload_capacity,
+            self.query_execute_diagnostics,
             Some(projections_root.as_path()),
             Some(projections_config_path.as_path()),
         )
@@ -1055,6 +1095,7 @@ impl ServerProcess {
         capability_keys_path: &Path,
         idempotency_keys_path: &Path,
         coordinator_workload_capacity: Option<u16>,
+        query_execute_diagnostics: bool,
         projections_root: Option<&Path>,
         projections_config: Option<&Path>,
     ) -> io::Result<Self> {
@@ -1090,6 +1131,9 @@ impl ServerProcess {
                 "RIFFDB_P1_COORDINATOR_WORKLOAD_CAPACITY",
                 capacity.to_string(),
             );
+        }
+        if query_execute_diagnostics {
+            command.env("RIFFDB_QUERY_EXECUTE_DIAGNOSTICS", "1");
         }
         let mut child = command.spawn()?;
         let child_id = child.id();
@@ -1295,6 +1339,7 @@ fn read_server_stdout(
     let mut writer = None;
     let mut writer_frame_census = None;
     let mut writer_flush_census = None;
+    let mut query_execute = None;
     loop {
         line.clear();
         let Ok(read) = reader.read_line(&mut line) else {
@@ -1323,6 +1368,8 @@ fn read_server_stdout(
             writer_frame_census = Some(parse_fixed_counts(encoded, "writer-frame-census", 6));
         } else if let Some(encoded) = line.trim_end().strip_prefix(WRITER_FLUSH_CENSUS_PREFIX) {
             writer_flush_census = Some(parse_fixed_counts(encoded, "writer-flush-census", 7));
+        } else if let Some(encoded) = line.trim_end().strip_prefix(QUERY_EXECUTE_WINDOWS_PREFIX) {
+            query_execute = Some(parse_query_execute_windows(encoded));
         }
     }
     let evidence = match (
@@ -1343,16 +1390,21 @@ fn read_server_stdout(
             .and_then(|writer_frame_census| {
                 writer_flush_census
                     .transpose()
-                    .map(|writer_flush_census| RiffDbShutdownEvidence {
-                        write_completion_groups,
-                        dispatch_reasons,
-                        read_stages,
-                        command_stages,
-                        writer,
-                        writer_frame_census,
-                        writer_flush_census,
-                        table_inventory_before_measurement: None,
-                        table_inventory_after_measurement: Vec::new(),
+                    .and_then(|writer_flush_census| {
+                        query_execute
+                            .transpose()
+                            .map(|query_execute| RiffDbShutdownEvidence {
+                                write_completion_groups,
+                                dispatch_reasons,
+                                read_stages,
+                                command_stages,
+                                writer,
+                                writer_frame_census,
+                                writer_flush_census,
+                                query_execute,
+                                table_inventory_before_measurement: None,
+                                table_inventory_after_measurement: Vec::new(),
+                            })
                     })
             }),
         (Some(Err(error)), _, _, _, _)
@@ -1364,6 +1416,69 @@ fn read_server_stdout(
     };
     let _ = shutdown_sender.send(evidence);
     total
+}
+
+fn parse_query_execute_windows(encoded: &str) -> io::Result<RiffDbQueryExecuteEvidence> {
+    let mut fields = encoded.splitn(5, '\t');
+    let parse_scalar = |value: Option<&str>, label: &'static str| {
+        value
+            .ok_or_else(|| io::Error::other(format!("missing {label}")))?
+            .parse::<u64>()
+            .map_err(|_| io::Error::other(format!("invalid {label}")))
+    };
+    let window_width = parse_scalar(fields.next(), "query window width")?;
+    let window_count = usize::try_from(parse_scalar(fields.next(), "query window count")?)
+        .map_err(|_| io::Error::other("query window count overflow"))?;
+    let stage_names = fields
+        .next()
+        .ok_or_else(|| io::Error::other("missing query stage names"))?
+        .split(',')
+        .map(|name| {
+            (!name.is_empty() && name.len() <= 64)
+                .then(|| name.to_owned())
+                .ok_or_else(|| io::Error::other("invalid query stage name"))
+        })
+        .collect::<io::Result<Vec<_>>>()?;
+    let total_count = parse_scalar(fields.next(), "query total count")?;
+    if window_width == 0 || window_count == 0 || window_count > 64 || stage_names.len() != 14 {
+        return Err(io::Error::other("invalid query execute shape"));
+    }
+    let encoded_windows = fields
+        .next()
+        .ok_or_else(|| io::Error::other("missing query windows"))?;
+    let windows = encoded_windows
+        .split(';')
+        .map(|window| {
+            let values = window
+                .split(',')
+                .map(|value| {
+                    value
+                        .parse::<u64>()
+                        .map_err(|_| io::Error::other("invalid query window value"))
+                })
+                .collect::<io::Result<Vec<_>>>()?;
+            if values.len() != stage_names.len() + 5 {
+                return Err(io::Error::other("invalid query window cardinality"));
+            }
+            Ok(RiffDbQueryExecuteWindowEvidence {
+                count: values[0],
+                stage_ns: values[1..1 + stage_names.len()].to_vec(),
+                overlay_transitions_sum: values[1 + stage_names.len()],
+                overlay_transitions_max: values[2 + stage_names.len()],
+                overlay_bytes_sum: values[3 + stage_names.len()],
+                overlay_bytes_max: values[4 + stage_names.len()],
+            })
+        })
+        .collect::<io::Result<Vec<_>>>()?;
+    if windows.len() != window_count {
+        return Err(io::Error::other("invalid query window count"));
+    }
+    Ok(RiffDbQueryExecuteEvidence {
+        window_width,
+        stage_names,
+        total_count,
+        windows,
+    })
 }
 
 fn parse_fixed_counts<const N: usize>(

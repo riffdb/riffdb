@@ -13295,3 +13295,53 @@ work_packages:
     scale: Authority sets, plans, diffs, approvals, receipts, client values, and diagnostics are
       count/byte bounded and add no database scan, retained stream, global state, or per-row metadata.
   human_review_triggers: *id001
+- id: WP-636
+  name: Operation-count growth and exact named-query execute attribution
+  depends_on: [WP-377, WP-487, WP-488, WP-627, WP-632]
+  objective: Reproduce and attribute the super-linear cloud dilation and operation-count growth of
+    the exact generated GetTicket read path before authorizing caching, validation, decoding,
+    storage, or transport changes.
+  requirements: [PERF-007, PERF-008, PERF-018]
+  required_adrs: [ADR-0055, ADR-0056, ADR-0104, ADR-0106, ADR-0123]
+  allowed_paths: [work_packages.yaml, examples/app-baseline/**,
+    crates/riffdb-observability/**, crates/riffdb-service/**,
+    crates/riffdb-query-executor/**, crates/riffdb-storage-api/**,
+    crates/riffdb-proto/**, crates/riffdb-storage-redb/**, crates/riffdb-server/**,
+    docs/performance/**, scripts/**]
+  deliverables:
+  - A distinct non-evidentiary fixed-GetTicket diagnostic that records bounded sequential windows
+    at 500 and 10,000 c=1 samples, process smaps-rollup deltas at the same boundaries, exact server
+    execute windows by operation ordinal, and no caller values, keys, credentials, or unbounded
+    sample series
+  - Closed execute-stage timing for snapshot acquisition/frontier capture, overlay or checkpoint
+    point lookup, structural preflight and checksum, canonical decode/verification, query row and
+    policy materialization, query-program assembly, and owned-result release, with every existing
+    integrity and authorization check still executed
+  - Workstation and one isolated cloud-host receipts for 500 and 10,000 c=1 samples plus the
+    safe-application PostgreSQL GetTicket twin, reporting absolute dilation and per-window slope
+    rather than hiding growth in one histogram
+  - A workstation c=32 off-CPU and lock-wait capture with full symbols that distinguishes HTTP2 or
+    runtime queueing, storage/read-view contention, allocator pressure, and executor CPU without
+    changing the frozen PERF-018 comparator
+  - Predeclared mixed-workload Amdahl bounds for the observed growing structure and for
+    validate-once, decoded-entity cache, and lazy partial-decode candidates; no candidate may be
+    implemented in this package or counted as a product gain
+  acceptance_commands:
+  - cargo +1.97.0 test --manifest-path examples/app-baseline/Cargo.toml --workspace
+  - cargo +1.97.0 test -p riffdb-observability -p riffdb-query-executor -p riffdb-storage-redb -p riffdb-service -p riffdb-server --all-features
+  - ./scripts/check-workspace-policy
+  - ./scripts/check-requirement-coverage
+  - cargo +1.97.0 fmt --all -- --check
+  exit_gate: The 500-to-10,000 operation growth is either reproduced with one bounded named
+    retaining structure and sub-stage slope or falsified on both workstation and cloud; exact
+    GetTicket costs have a safe-PostgreSQL target; c=32 waiting is classified; and optimization
+    work remains blocked on predeclared mixed-workload arithmetic and a separate work package.
+  standing_design_tests:
+    interface_safety: Instrumentation observes only closed stage identities, operation ordinals,
+      aggregate durations, and process resource totals. It neither changes nor bypasses the named
+      query, authorization safe points, snapshot, integrity verification, row policy, result
+      release, transport, freshness, or frozen comparator.
+    scale: Execute windows, memory samples, stage identities, and lock-wait classes have fixed
+      count and byte ceilings independent of database size and request count; excess samples merge
+      into one terminal bounded window rather than retaining per-request state.
+  human_review_triggers: *id001
