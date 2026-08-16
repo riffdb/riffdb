@@ -1073,7 +1073,7 @@ fn assert_replayed_allocate(
     if response.status != v1::execute_command_response::CompletionStatus::Replayed as i32
         || response.commit_sequence != 2
         || response.contract_version != CONTRACT_VERSION
-        || response.durability_mode != "sync"
+        || response.durability_mode != "group"
         || response.provenance_uri.is_empty()
         || response.outcome_uri.is_none()
     {

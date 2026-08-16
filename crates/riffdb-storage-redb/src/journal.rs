@@ -1564,11 +1564,11 @@ impl EncodedJournalFrame {
         self.frame_hash
     }
 
-    fn transition_count(&self) -> u16 {
+    pub(crate) fn transition_count(&self) -> u16 {
         self.transition_count
     }
 
-    fn command_count(&self) -> u16 {
+    pub(crate) fn command_count(&self) -> u16 {
         self.command_count
     }
 
@@ -1588,11 +1588,11 @@ impl EncodedJournalFrame {
         self.audit_count
     }
 
-    fn covered_sequence(&self) -> Option<CommitSequence> {
+    pub(crate) fn covered_sequence(&self) -> Option<CommitSequence> {
         self.covered_sequence
     }
 
-    fn covered_administration_sequence(&self) -> Option<AdministrationSequence> {
+    pub(crate) fn covered_administration_sequence(&self) -> Option<AdministrationSequence> {
         self.covered_administration_sequence
     }
 }
@@ -2748,11 +2748,138 @@ pub(crate) fn apply_mutation(
     }
 }
 
+/// Applies one mutation already validated by the live composite staging path.
+///
+/// This is a same-process checkpoint materialization boundary. It preserves
+/// the transaction-current before-image check, but deliberately does not
+/// decode or hash the durable journal frame again. Recovery and startup never
+/// call this function.
+pub(crate) fn apply_validated_composite_mutation(
+    transaction: &redb::WriteTransaction,
+    mutation: &riffdb_storage_api::CompositeMutationV1,
+) -> Result<(), JournalIoError> {
+    use riffdb_storage_api::CompositeTableV1;
+
+    match mutation.table() {
+        CompositeTableV1::Meta => apply_meta_mutation_parts(
+            transaction,
+            mutation.key(),
+            mutation.value(),
+            mutation.expected_hash(),
+        ),
+        CompositeTableV1::Entities => apply_byte_mutation_parts(
+            transaction,
+            ENTITIES,
+            mutation.key(),
+            mutation.value(),
+            mutation.expected_hash(),
+        ),
+        CompositeTableV1::SecondaryIndexes => apply_byte_mutation_parts(
+            transaction,
+            SECONDARY_INDEXES,
+            mutation.key(),
+            mutation.value(),
+            mutation.expected_hash(),
+        ),
+        CompositeTableV1::IndexEpochs => apply_byte_mutation_parts(
+            transaction,
+            INDEX_EPOCHS,
+            mutation.key(),
+            mutation.value(),
+            mutation.expected_hash(),
+        ),
+        CompositeTableV1::Idempotency => apply_byte_mutation_parts(
+            transaction,
+            IDEMPOTENCY,
+            mutation.key(),
+            mutation.value(),
+            mutation.expected_hash(),
+        ),
+        CompositeTableV1::IdempotencyPending => apply_byte_mutation_parts(
+            transaction,
+            IDEMPOTENCY_PENDING,
+            mutation.key(),
+            mutation.value(),
+            mutation.expected_hash(),
+        ),
+        CompositeTableV1::Events => apply_byte_mutation_parts(
+            transaction,
+            EVENTS,
+            mutation.key(),
+            mutation.value(),
+            mutation.expected_hash(),
+        ),
+        CompositeTableV1::EventRoutes => apply_byte_mutation_parts(
+            transaction,
+            EVENT_ROUTES,
+            mutation.key(),
+            mutation.value(),
+            mutation.expected_hash(),
+        ),
+        CompositeTableV1::Outbox => apply_byte_mutation_parts(
+            transaction,
+            crate::layout::OUTBOX,
+            mutation.key(),
+            mutation.value(),
+            mutation.expected_hash(),
+        ),
+        CompositeTableV1::Provenance => apply_byte_mutation_parts(
+            transaction,
+            PROVENANCE,
+            mutation.key(),
+            mutation.value(),
+            mutation.expected_hash(),
+        ),
+        CompositeTableV1::Commits => apply_byte_mutation_parts(
+            transaction,
+            COMMITS,
+            mutation.key(),
+            mutation.value(),
+            mutation.expected_hash(),
+        ),
+        CompositeTableV1::Audit => apply_byte_mutation_parts(
+            transaction,
+            AUDIT,
+            mutation.key(),
+            mutation.value(),
+            mutation.expected_hash(),
+        ),
+        CompositeTableV1::AuditByRequest => apply_byte_mutation_parts(
+            transaction,
+            AUDIT_BY_REQUEST,
+            mutation.key(),
+            mutation.value(),
+            mutation.expected_hash(),
+        ),
+        CompositeTableV1::EntityChainHeads => apply_byte_mutation_parts(
+            transaction,
+            ENTITY_CHAIN_HEADS,
+            mutation.key(),
+            mutation.value(),
+            mutation.expected_hash(),
+        ),
+    }
+}
+
 fn apply_meta_mutation(
     transaction: &redb::WriteTransaction,
     mutation: &JournalMutation,
 ) -> Result<(), JournalIoError> {
-    let key = std::str::from_utf8(mutation.key()).map_err(|_| JournalIoError::Corrupt)?;
+    apply_meta_mutation_parts(
+        transaction,
+        mutation.key(),
+        mutation.value(),
+        mutation.expected_hash(),
+    )
+}
+
+fn apply_meta_mutation_parts(
+    transaction: &redb::WriteTransaction,
+    key: &[u8],
+    value: Option<&[u8]>,
+    expected_hash: Option<[u8; 32]>,
+) -> Result<(), JournalIoError> {
+    let key = std::str::from_utf8(key).map_err(|_| JournalIoError::Corrupt)?;
     if !matches!(
         key,
         crate::layout::META_APPLICATION_SEQUENCE | crate::layout::META_ADMINISTRATION_SEQUENCE
@@ -2766,14 +2893,14 @@ fn apply_meta_mutation(
         .get(key)
         .map_err(|_| JournalIoError::Corrupt)?
         .map(|value| value.value().to_vec());
-    validate_before_image(current.as_deref(), mutation)?;
-    match mutation {
-        JournalMutation::Put { value, .. } => {
+    validate_before_image_parts(current.as_deref(), expected_hash)?;
+    match value {
+        Some(value) => {
             table
-                .insert(key, value.as_ref())
+                .insert(key, value)
                 .map_err(|_| JournalIoError::Corrupt)?;
         }
-        JournalMutation::Delete { .. } => {
+        None => {
             table.remove(key).map_err(|_| JournalIoError::Corrupt)?;
         }
     }
@@ -2785,24 +2912,38 @@ fn apply_byte_mutation(
     definition: TableDefinition<&[u8], &[u8]>,
     mutation: &JournalMutation,
 ) -> Result<(), JournalIoError> {
+    apply_byte_mutation_parts(
+        transaction,
+        definition,
+        mutation.key(),
+        mutation.value(),
+        mutation.expected_hash(),
+    )
+}
+
+fn apply_byte_mutation_parts(
+    transaction: &redb::WriteTransaction,
+    definition: TableDefinition<&[u8], &[u8]>,
+    key: &[u8],
+    value: Option<&[u8]>,
+    expected_hash: Option<[u8; 32]>,
+) -> Result<(), JournalIoError> {
     let mut table = transaction
         .open_table(definition)
         .map_err(|_| JournalIoError::Corrupt)?;
     let current = table
-        .get(mutation.key())
+        .get(key)
         .map_err(|_| JournalIoError::Corrupt)?
         .map(|value| value.value().to_vec());
-    validate_before_image(current.as_deref(), mutation)?;
-    match mutation {
-        JournalMutation::Put { value, .. } => {
+    validate_before_image_parts(current.as_deref(), expected_hash)?;
+    match value {
+        Some(value) => {
             table
-                .insert(mutation.key(), value.as_ref())
+                .insert(key, value)
                 .map_err(|_| JournalIoError::Corrupt)?;
         }
-        JournalMutation::Delete { .. } => {
-            table
-                .remove(mutation.key())
-                .map_err(|_| JournalIoError::Corrupt)?;
+        None => {
+            table.remove(key).map_err(|_| JournalIoError::Corrupt)?;
         }
     }
     Ok(())
@@ -2812,7 +2953,14 @@ fn validate_before_image(
     current: Option<&[u8]>,
     mutation: &JournalMutation,
 ) -> Result<(), JournalIoError> {
-    match (current, mutation.expected_hash()) {
+    validate_before_image_parts(current, mutation.expected_hash())
+}
+
+fn validate_before_image_parts(
+    current: Option<&[u8]>,
+    expected_hash: Option<[u8; 32]>,
+) -> Result<(), JournalIoError> {
+    match (current, expected_hash) {
         (None, None) => Ok(()),
         (Some(value), Some(expected)) if digest(value) == expected => Ok(()),
         _ => Err(JournalIoError::Corrupt),
@@ -3167,6 +3315,59 @@ mod tests {
             ],
         )
         .expect("frame")
+    }
+
+    #[test]
+    fn validated_checkpoint_handoff_preserves_transaction_current_checks() {
+        let database_path = TestPath::new("validated-checkpoint-handoff");
+        let database = create_database(&database_path.0);
+        let insert = riffdb_storage_api::CompositeMutationV1::put(
+            riffdb_storage_api::CompositeTableV1::Entities,
+            [0x10].as_slice(),
+            [0x20].as_slice(),
+        )
+        .expect("validated insert");
+        let transaction = database.begin_write().expect("begin checkpoint apply");
+        apply_validated_composite_mutation(&transaction, &insert).expect("apply validated insert");
+        transaction.commit().expect("commit validated insert");
+
+        let replace = riffdb_storage_api::CompositeMutationV1::replace(
+            riffdb_storage_api::CompositeTableV1::Entities,
+            [0x10].as_slice(),
+            [0x20].as_slice(),
+            [0x30].as_slice(),
+        )
+        .expect("validated replacement");
+        let transaction = database.begin_write().expect("begin replacement");
+        apply_validated_composite_mutation(&transaction, &replace)
+            .expect("apply validated replacement");
+        transaction.commit().expect("commit replacement");
+
+        let stale = riffdb_storage_api::CompositeMutationV1::replace(
+            riffdb_storage_api::CompositeTableV1::Entities,
+            [0x10].as_slice(),
+            [0x20].as_slice(),
+            [0x40].as_slice(),
+        )
+        .expect("stale replacement");
+        let transaction = database.begin_write().expect("begin stale replacement");
+        assert_eq!(
+            apply_validated_composite_mutation(&transaction, &stale),
+            Err(JournalIoError::Corrupt),
+            "the handoff never bypasses the redb before-image check"
+        );
+        transaction.abort().expect("abort stale replacement");
+
+        let transaction = database.begin_read().expect("read final value");
+        assert_eq!(
+            transaction
+                .open_table(ENTITIES)
+                .expect("entities")
+                .get([0x10].as_slice())
+                .expect("read entity")
+                .map(|value| value.value().to_vec()),
+            Some(vec![0x30])
+        );
     }
 
     #[test]

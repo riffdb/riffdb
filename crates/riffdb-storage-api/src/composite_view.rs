@@ -730,8 +730,9 @@ impl CompositeMutationStage {
     /// This boundary is for a storage adapter whose typed staging path feeds
     /// the same ordered mutations to this stage and to its canonical frame
     /// encoder. The constructor rechecks all frontier, predecessor, bound, and
-    /// frame-shape facts; startup and checkpoint materialization still decode
-    /// the durable bytes independently before applying them.
+    /// frame-shape facts. Startup, recovery, and externally sourced bytes still
+    /// decode independently; a same-process checkpoint may consume the exact
+    /// typed mutations returned by [`Self::seal_encoded_frame_with_mutations`].
     #[allow(clippy::too_many_arguments)]
     pub fn seal_encoded_frame(
         self,
@@ -746,6 +747,42 @@ impl CompositeMutationStage {
         previous_hash: [u8; 32],
         frame_hash: [u8; 32],
     ) -> Result<FrozenCompositeOverlay, StorageValueError> {
+        self.seal_encoded_frame_with_mutations(
+            kind,
+            database_id,
+            predecessor_application,
+            covered_application,
+            predecessor_administration,
+            covered_administration,
+            transition_count,
+            encoded_bytes,
+            previous_hash,
+            frame_hash,
+        )
+        .map(|(overlay, _mutations)| overlay)
+    }
+
+    /// Seals a live frame and returns the exact already-validated ordered
+    /// mutations for a same-process checkpoint handoff.
+    ///
+    /// The returned values carry no durability or publication authority. They
+    /// are useful only while paired with the encoded frame identity proven by
+    /// this call; startup, recovery, and externally sourced bytes must decode
+    /// and validate the durable frame independently.
+    #[allow(clippy::too_many_arguments)]
+    pub fn seal_encoded_frame_with_mutations(
+        self,
+        kind: CompositeFrameKindV1,
+        database_id: DatabaseId,
+        predecessor_application: Option<CommitSequence>,
+        covered_application: Option<CommitSequence>,
+        predecessor_administration: Option<AdministrationSequence>,
+        covered_administration: Option<AdministrationSequence>,
+        transition_count: u16,
+        encoded_bytes: usize,
+        previous_hash: [u8; 32],
+        frame_hash: [u8; 32],
+    ) -> Result<(FrozenCompositeOverlay, Vec<CompositeMutationV1>), StorageValueError> {
         let Self {
             checkpoint,
             predecessor_application: staged_predecessor_application,
@@ -799,18 +836,22 @@ impl CompositeMutationStage {
         {
             return Err(StorageValueError::LimitExceeded);
         }
-        Ok(FrozenCompositeOverlay {
-            checkpoint,
-            published_application: frame.covered_application,
-            published_administration: frame.covered_administration,
-            terminal_frame_hash: frame.frame_hash,
-            transition_count,
-            encoded_frame_bytes,
-            charged_bytes,
-            tables,
-            lineage,
-            lineage_bytes,
-        })
+        let mutations = frame.mutations;
+        Ok((
+            FrozenCompositeOverlay {
+                checkpoint,
+                published_application: frame.covered_application,
+                published_administration: frame.covered_administration,
+                terminal_frame_hash: frame.frame_hash,
+                transition_count,
+                encoded_frame_bytes,
+                charged_bytes,
+                tables,
+                lineage,
+                lineage_bytes,
+            },
+            mutations,
+        ))
     }
 
     /// Resolves a private point through staged state and then the checkpoint.
@@ -2186,10 +2227,10 @@ mod tests {
             .expect("live stage mutation");
 
         let decoded = decoded_stage
-            .seal_frame(&frame(vec![mutation]))
+            .seal_frame(&frame(vec![mutation.clone()]))
             .expect("decoded seal");
-        let live = live_stage
-            .seal_encoded_frame(
+        let (live, checkpoint_mutations) = live_stage
+            .seal_encoded_frame_with_mutations(
                 CompositeFrameKindV1::Command,
                 database_id(),
                 Some(CommitSequence::first()),
@@ -2202,6 +2243,7 @@ mod tests {
                 [6; 32],
             )
             .expect("live encoded seal");
+        assert_eq!(checkpoint_mutations, vec![mutation]);
         assert_eq!(live.checkpoint(), decoded.checkpoint());
         assert_eq!(
             live.published_application(),

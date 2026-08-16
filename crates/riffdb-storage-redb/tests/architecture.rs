@@ -1155,3 +1155,50 @@ fn proof_skipping_is_confined_to_typed_redb_command_staging() {
         }
     }
 }
+
+#[test]
+fn checkpoint_pay_once_apply_is_confined_to_live_same_process_materialization() {
+    let journal = production_source(crate_root().join("src/journal.rs"));
+    let store = production_source(crate_root().join("src/store.rs"));
+    assert!(journal.contains("fn apply_validated_composite_mutation("));
+    assert_eq!(
+        store
+            .matches("apply_validated_composite_mutation(&transaction, mutation)")
+            .count(),
+        1,
+        "only the live checkpoint materializer may consume retained mutation proofs"
+    );
+
+    let materializer = store
+        .split_once("fn materialize_checkpoint_batch(")
+        .expect("checkpoint materializer")
+        .1
+        .split_once("fn poll_async_checkpoint_locked(")
+        .expect("checkpoint materializer end")
+        .0;
+    assert!(materializer.contains("apply_validated_composite_mutation"));
+    assert!(materializer.contains("encoded.frame_hash()"));
+    assert!(
+        !materializer.contains("JournalFrame::decode"),
+        "the live checkpoint must not re-prove an already validated frame per operation"
+    );
+    let pay_once_apply = journal
+        .split_once("fn apply_validated_composite_mutation(")
+        .expect("pay-once apply")
+        .1
+        .split_once("fn apply_meta_mutation(")
+        .expect("pay-once apply end")
+        .0;
+    assert!(pay_once_apply.contains("mutation.expected_hash()"));
+
+    for relative in ["src/recovery.rs", "src/startup.rs"] {
+        let path = crate_root().join(relative);
+        if path.exists() {
+            let candidate = production_source(path);
+            assert!(
+                !candidate.contains("apply_validated_composite_mutation"),
+                "recovery and startup must independently validate durable bytes"
+            );
+        }
+    }
+}

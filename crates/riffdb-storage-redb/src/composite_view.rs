@@ -237,6 +237,50 @@ impl RedbCompositeMutationStage {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn seal_encoded_frame_with_mutations(
+        self,
+        kind: riffdb_storage_api::CompositeFrameKindV1,
+        database_id: DatabaseId,
+        predecessor_application: Option<CommitSequence>,
+        covered_application: Option<CommitSequence>,
+        predecessor_administration: Option<AdministrationSequence>,
+        covered_administration: Option<AdministrationSequence>,
+        transition_count: u16,
+        encoded_bytes: usize,
+        previous_hash: [u8; 32],
+        frame_hash: [u8; 32],
+    ) -> Result<
+        (
+            RedbCompositeReadView,
+            Vec<riffdb_storage_api::CompositeMutationV1>,
+        ),
+        StorageError,
+    > {
+        let (overlay, mutations) = self
+            .stage
+            .seal_encoded_frame_with_mutations(
+                kind,
+                database_id,
+                predecessor_application,
+                covered_application,
+                predecessor_administration,
+                covered_administration,
+                transition_count,
+                encoded_bytes,
+                previous_hash,
+                frame_hash,
+            )
+            .map_err(corrupt_value)?;
+        Ok((
+            RedbCompositeReadView {
+                root: self.root,
+                overlay,
+            },
+            mutations,
+        ))
+    }
+
     pub(crate) fn read_checkpoint_bytes(
         &self,
         definition: TableDefinition<'static, &'static [u8], &'static [u8]>,
