@@ -1,5 +1,9 @@
 # WP-640 checkpoint pay-once apply
 
+> Final package disposition and the current-HEAD closed seed ledger are in
+> [WP-640 honest closure](wp-640-closure.md). This increment remains retained,
+> but WP-640 did not pass its complete ADR-0129 release-activation gate.
+
 ## Scope
 
 This increment removes a repeated proof from the live checkpoint path. The

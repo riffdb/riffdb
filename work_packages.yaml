@@ -13534,4 +13534,113 @@ work_packages:
     scale: Worker count, preparation capacity, reorder state, logical frontier, proof material, and
       prepared groups are capped by existing process, command, group, and byte ceilings and require
       neither co-located full state nor global preparation ordering across conflict domains.
+  closure:
+    status: closed_without_release_activation
+    evidence: docs/performance/wp-640-closure.md
+    decision: The bounded evaluation and pay-once proof work remains because it improved both
+      workstation and cloud results without weakening semantics, but the ordered-lane mechanics,
+      seed, mixed-c32, unary, and complete recovery gates did not all pass. The independent command-
+      segment preparation pool is disabled on cloud-sized hosts, and WP-640 makes no release-pass
+      claim.
+    reliability_owners: [WP-641, WP-642, WP-643]
+  human_review_triggers: *id001
+- id: WP-641
+  name: Cold-start service-audit availability reliability
+  depends_on: [WP-640]
+  objective: Reproduce and repair the fail-closed AuditUnavailable stop observed in both the exact
+    WP-640 baseline and candidate during the first commands of a cold E2/N1 seed, before checkpoint
+    activation, without weakening authoritative readiness or allowing unaudited application work.
+  requirements: [PERF-008, REC-001, REC-002, STO-001]
+  required_adrs: [ADR-0007, ADR-0049, ADR-0058, ADR-0104]
+  allowed_paths: [work_packages.yaml, crates/riffdb-observability/**, crates/riffdb-service/**,
+    crates/riffdb-server/**, crates/riffdb-commit/**, crates/riffdb-storage-api/**,
+    crates/riffdb-storage-redb/**, examples/app-baseline/**, tests/**, scripts/**,
+    docs/performance/**]
+  deliverables:
+  - A deterministic or explicitly hooked reproduction that reaches AuditUnavailable before the
+    checkpoint-start threshold on both the current implementation and the exact retained baseline
+  - Root-cause evidence covering service-audit append, readiness failure, actor stop, and any storage
+    dependency, plus a fail-closed repair with no sequence, graph, response, or audit omission
+  - Cold and warm N1/E2 seed repetitions proving no recurrence, no hidden retry, and exact audit,
+    command, outcome, and readiness counts
+  acceptance_commands:
+  - cargo +1.97.0 test -p riffdb-observability -p riffdb-service -p riffdb-server -p riffdb-commit -p riffdb-storage-redb --all-features
+  - cargo +1.97.0 test --manifest-path examples/app-baseline/Cargo.toml --workspace
+  - ./scripts/check-workspace-policy
+  - ./scripts/check-requirement-coverage
+  - cargo +1.97.0 fmt --all -- --check
+  exit_gate: The cold-start stop is reproducible before the fix and absent after it on both cloud
+    profiles, while every service audit remains authoritative, readiness remains fail-closed, and
+    no committed or uncertain command is reclassified.
+  standing_design_tests:
+    interface_safety: The repair preserves mandatory service auditing and authoritative readiness;
+      no caller can bypass, defer, suppress, or retry around an audit failure.
+    scale: The repair adds no history scan, unbounded retry, per-command retained label, or queue
+      whose capacity depends on workload duration, tenant count, or audit history.
+  human_review_triggers: *id001
+- id: WP-642
+  name: Post-measurement authoritative inventory reliability
+  depends_on: [WP-640]
+  objective: Reproduce and repair the WP-640 case where every measured operation succeeded but the
+    final process could not return the authoritative table inventory, so benchmark correctness and
+    shutdown evidence remain a mandatory closed boundary rather than a best-effort epilogue.
+  requirements: [PERF-018, REC-001, STO-001, STO-002]
+  required_adrs: [ADR-0004, ADR-0104, ADR-0123]
+  allowed_paths: [work_packages.yaml, crates/riffdb-storage-api/**,
+    crates/riffdb-storage-redb/**, crates/riffdb-server/**, examples/app-baseline/**, tests/**,
+    scripts/**, docs/performance/**]
+  deliverables:
+  - A process-level reproduction that separates operation success, shutdown, final frozen read view,
+    table inventory, and database reopen so the failing boundary is unambiguous
+  - A storage or harness repair that never reports a benchmark cell correct when its mandatory
+    inventory cannot be proven, with typed bounded diagnostics and no value disclosure
+  - Repeated workstation and cloud post-measurement inventory/reopen receipts with exact table,
+    frontier, journal, and checkpoint closure
+  acceptance_commands:
+  - cargo +1.97.0 test -p riffdb-storage-api -p riffdb-storage-redb -p riffdb-server --all-features
+  - cargo +1.97.0 test --manifest-path examples/app-baseline/Cargo.toml --workspace
+  - ./scripts/check-workspace-policy
+  - ./scripts/check-requirement-coverage
+  - cargo +1.97.0 fmt --all -- --check
+  exit_gate: The original final-inventory failure is deterministic before the fix, every repaired
+    process closes inventory and reopen evidence, and an unprovable epilogue still fails the cell.
+  standing_design_tests:
+    interface_safety: The package changes only internal conformance evidence and cannot expose a
+      storage handle or let an application waive integrity, shutdown, inventory, or reopen checks.
+    scale: Inventory remains a bounded gate operation over the fixed authoritative table catalog and
+      retains neither application values nor an operation-count-dependent history.
+  human_review_triggers: *id001
+- id: WP-643
+  name: Process recovery ready-shutdown ordering reliability
+  depends_on: [WP-640]
+  objective: Repair the recovery_full process launcher and server lifecycle contract where shutdown
+    evidence can arrive before the harness's required ready line, while preserving every crash,
+    maintenance, durability, and recovery assertion and without converting the package-level green
+    matrix into a substitute for the process boundary.
+  requirements: [REC-001, REC-002, STO-001, STO-002]
+  required_adrs: [ADR-0004, ADR-0049, ADR-0050, ADR-0104]
+  allowed_paths: [work_packages.yaml, crates/riffdb-server/**, crates/riffdb-storage-api/**,
+    crates/riffdb-storage-redb/**, tests/recovery/**, scripts/recovery_full, scripts/**,
+    docs/performance/**]
+  deliverables:
+  - An exact-baseline and current-HEAD process reproduction naming the lifecycle state that emits
+    shutdown evidence before readiness
+  - One explicit ready, maintenance, stop, and evidence protocol with bounded diagnostics and no
+    sleeps, ignored output, reordered crash arm, or relaxed expected result
+  - A complete green process recovery matrix plus the unchanged package-level storage recovery cases
+  acceptance_commands:
+  - ./scripts/recovery_full
+  - cargo +1.97.0 test -p riffdb-storage-redb -p riffdb-server --all-features
+  - ./scripts/check-workspace-policy
+  - ./scripts/check-requirement-coverage
+  - cargo +1.97.0 fmt --all -- --check
+  exit_gate: The exact baseline demonstrates the old ordering failure, current HEAD completes every
+    process crash and maintenance arm, and no readiness, shutdown, recovery, or durability assertion
+    is removed or weakened.
+  standing_design_tests:
+    interface_safety: The repair is confined to server lifecycle and recovery evidence; it cannot
+      make an unhealthy database ready or let any caller skip recovery, maintenance authority, or
+      durable validation.
+    scale: The protocol uses fixed lifecycle states, bounded output, and fixed deadlines and adds no
+      polling history, unbounded log retention, or sleep-based synchronization.
   human_review_triggers: *id001
