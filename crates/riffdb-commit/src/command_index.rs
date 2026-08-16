@@ -816,7 +816,7 @@ impl DetachedCheckedCommitCandidate {
 pub(super) enum CheckedCandidateDetach<P> {
     Detached {
         prior: P,
-        candidate: DetachedCheckedCommitCandidate,
+        candidate: Box<DetachedCheckedCommitCandidate>,
     },
     StorageFailure(StorageError),
     Integrity,
@@ -1028,7 +1028,7 @@ where
                 evidence,
             } if reservation.assignment() == assignment => CheckedCandidateDetach::Detached {
                 prior,
-                candidate: DetachedCheckedCommitCandidate {
+                candidate: Box::new(DetachedCheckedCommitCandidate {
                     reservation,
                     write_plan,
                     prepared_capsule,
@@ -1037,7 +1037,7 @@ where
                         entry_mutations,
                         affected_targets,
                     },
-                },
+                }),
             },
             CheckedDetachedStage::Detached { prior, .. } => {
                 drop(prior);

@@ -325,10 +325,14 @@ impl CommandEvaluationPool {
     /// the only ambient read; the pool itself takes the count as an explicit
     /// input so deterministic harnesses can fix it (ADR-0113 hygiene).
     pub(super) fn production_worker_count() -> usize {
-        thread::available_parallelism()
-            .map_or(1, std::num::NonZeroUsize::get)
-            .saturating_sub(1)
-            .clamp(1, MAX_PARALLEL_EVALUATION_WORKERS)
+        let available = thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get);
+        if available <= 8 {
+            available.saturating_sub(1).clamp(1, 3)
+        } else {
+            available
+                .saturating_sub(1)
+                .min(MAX_PARALLEL_EVALUATION_WORKERS)
+        }
     }
 
     pub(super) fn new<Repository>(repository: Repository, worker_count: usize) -> Result<Self, ()>
@@ -1794,7 +1798,10 @@ struct WriterPrivateSnapshotCaptureFailure {
 fn capture_writer_private_snapshots<B>(
     batch: &B,
     mut attempts: std::collections::VecDeque<(usize, AcquiredCommandAttempt)>,
-) -> Result<Vec<(usize, AcquiredCommandAttempt, ReadSnapshot)>, WriterPrivateSnapshotCaptureFailure>
+) -> Result<
+    Vec<(usize, AcquiredCommandAttempt, ReadSnapshot)>,
+    Box<WriterPrivateSnapshotCaptureFailure>,
+>
 where
     B: TransactionLocalCommandBatch,
 {
@@ -1805,7 +1812,7 @@ where
         {
             Ok(snapshot) => snapshot,
             Err(error) => {
-                return Err(WriterPrivateSnapshotCaptureFailure {
+                return Err(Box::new(WriterPrivateSnapshotCaptureFailure {
                     failed_index: index,
                     failed: attempt,
                     error: CommandAttemptError::SnapshotRead(error),
@@ -1814,7 +1821,7 @@ where
                         .map(|(index, attempt, _)| (index, attempt))
                         .chain(attempts)
                         .collect(),
-                });
+                }));
             }
         };
         let snapshot = match attempt.complete_transaction_local_snapshot(discovery, |request| {
@@ -1822,7 +1829,7 @@ where
         }) {
             Ok(snapshot) => snapshot,
             Err(error) => {
-                return Err(WriterPrivateSnapshotCaptureFailure {
+                return Err(Box::new(WriterPrivateSnapshotCaptureFailure {
                     failed_index: index,
                     failed: attempt,
                     error,
@@ -1831,7 +1838,7 @@ where
                         .map(|(index, attempt, _)| (index, attempt))
                         .chain(attempts)
                         .collect(),
-                });
+                }));
             }
         };
         captured.push((index, attempt, snapshot));
@@ -4553,7 +4560,7 @@ where
         CheckedAssignDecision::Integrity => return Err(internal_defect(lifecycle)),
     };
     match assigned.detach() {
-        CheckedCandidateDetach::Detached { prior, candidate } => Ok((prior, candidate)),
+        CheckedCandidateDetach::Detached { prior, candidate } => Ok((prior, *candidate)),
         CheckedCandidateDetach::StorageFailure(error) => {
             Err(proven_storage_failure(error, lifecycle))
         }

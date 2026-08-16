@@ -35,7 +35,7 @@ pub(crate) struct CommandSegmentPreparationPool {
 impl CommandSegmentPreparationPool {
     pub(crate) fn production_worker_count() -> usize {
         let available = thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get);
-        if available < 8 {
+        if available <= 8 {
             0
         } else {
             available
