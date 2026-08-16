@@ -205,6 +205,32 @@ fn public_root_exports_no_migration_intermediate_or_apply_surface() {
 }
 
 #[test]
+fn command_segment_preparation_workers_hold_no_authoritative_port() {
+    let source = production_source(crate_root().join("src/command_segment_preparation.rs"));
+    for forbidden in [
+        "redb::",
+        "RedbWriteAccess",
+        "WriteTransaction",
+        "ReadTransaction",
+        "ApplicationSequenceAllocator",
+        "DeferredCommandFence",
+        "ExclusiveGate",
+        "JournalRuntime",
+        "StorageError",
+        "assign_commit",
+        "put_command",
+        "publish",
+    ] {
+        assert!(
+            !source.contains(forbidden),
+            "command-segment preparation gained forbidden authority through {forbidden}"
+        );
+    }
+    assert!(source.contains("MAX_COMMAND_SEGMENT_PREPARATION_WORKERS: usize = 8"));
+    assert!(source.contains("capsules.len() <= 1"));
+}
+
+#[test]
 fn only_operational_ports_implement_semantic_runtime_traits() {
     let sources = rust_sources();
     for forbidden in [

@@ -17,6 +17,7 @@ pub mod benchmark_support;
 mod changelog;
 mod codec;
 mod command_authority;
+mod command_segment_preparation;
 mod composite_view;
 mod consumer;
 mod derived;

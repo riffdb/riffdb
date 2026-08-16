@@ -417,6 +417,50 @@ fn capsule_v5_to_proto(value: &StoredCommandCapsuleV2) -> wire::StoredCommandCap
     }
 }
 
+/// Move-only canonical command member prepared before ordered segment sealing.
+///
+/// Construction is limited to [`prepare_command_segment_capsule_v1`]. The
+/// ordered writer joins the retained semantic capsule to this exact sequence
+/// identity and wire variant, so crossing a pure encoding lane never requires
+/// rebuilding or hashing the immutable member graph.
+pub struct PreparedCommandSegmentCapsuleV1 {
+    commit_sequence: CommitSequence,
+    uses_v5: bool,
+    bytes: Vec<u8>,
+}
+
+impl PreparedCommandSegmentCapsuleV1 {
+    /// Returns the authoritative command sequence bound into these bytes.
+    #[must_use]
+    pub const fn commit_sequence(&self) -> CommitSequence {
+        self.commit_sequence
+    }
+}
+
+/// Canonically encodes one immutable command-segment member exactly once.
+///
+/// The returned value contains no storage, ordering, durability, or
+/// publication authority. It is suitable for a bounded pure worker and can be
+/// consumed only by the checked complete-segment seal below.
+pub fn prepare_command_segment_capsule_v1(
+    value: &StoredCommandCapsuleV2,
+    uses_v5: bool,
+) -> Result<PreparedCommandSegmentCapsuleV1, DurableCodecError> {
+    if capsule_requires_v5(value) && !uses_v5 {
+        return Err(DurableCodecError::invariant());
+    }
+    let bytes = if uses_v5 {
+        capsule_v5_to_proto(value).encode_to_vec()
+    } else {
+        capsule_v4_bytes_for_seal(value)?
+    };
+    Ok(PreparedCommandSegmentCapsuleV1 {
+        commit_sequence: value.commit_sequence(),
+        uses_v5,
+        bytes,
+    })
+}
+
 fn capsule_v5_from_proto(
     value: wire::StoredCommandCapsuleV5,
 ) -> Result<StoredCommandCapsuleV2, DurableCodecError> {
@@ -755,6 +799,38 @@ fn segment_body_v3_bytes_for_seal(
     Ok(body)
 }
 
+fn segment_body_bytes_with_prepared_capsules(
+    value: &StoredCommandSegmentV1,
+    prepared: &[PreparedCommandSegmentCapsuleV1],
+) -> Result<(Vec<u8>, bool), DurableCodecError> {
+    let uses_v4 = segment_requires_v4(value);
+    if prepared.len() != value.commands().len() {
+        return Err(DurableCodecError::invariant());
+    }
+    for (command, prepared) in value.commands().iter().zip(prepared) {
+        if prepared.commit_sequence != command.commit_sequence() || prepared.uses_v5 != uses_v4 {
+            return Err(DurableCodecError::invariant());
+        }
+    }
+
+    let manifest = manifest_bytes_for_seal(value.manifest())?;
+    let mut body = Vec::new();
+    append_length_delimited_field(&mut body, 0x0a, value.database_id().as_bytes())?;
+    append_varint_field(&mut body, 0x10, value.history_incarnation());
+    if let Some(predecessor) = value.predecessor_segment_digest() {
+        append_length_delimited_field(&mut body, 0x1a, predecessor.as_bytes())?;
+    }
+    append_varint_field(&mut body, 0x20, value.first_commit_sequence().get());
+    append_varint_field(&mut body, 0x28, value.last_commit_sequence().get());
+    append_varint_field(&mut body, 0x30, value.first_administration_sequence().get());
+    append_varint_field(&mut body, 0x38, value.last_administration_sequence().get());
+    for command in prepared {
+        append_length_delimited_field(&mut body, 0x42, &command.bytes)?;
+    }
+    append_length_delimited_field(&mut body, 0x4a, &manifest)?;
+    Ok((body, uses_v4))
+}
+
 /// Computes the canonical digest for a structurally checked segment.
 #[must_use]
 pub fn command_segment_digest_v1(value: &StoredCommandSegmentV1) -> CommandSegmentDigestV1 {
@@ -851,6 +927,35 @@ pub fn seal_and_encode_command_segment_with_metrics_v1(
     } else {
         segment_body_v3_bytes_for_seal(&value)?
     };
+    let digest = component_digest(SEGMENT_DIGEST_LABEL, &body_bytes);
+    let value = value.with_segment_digest(digest);
+    let (encoded, raw_envelope_bytes) =
+        command_segment_envelope_with_metrics(&body_bytes, digest, uses_v4)?;
+    let metrics = CommandSegmentEncodingMetricsV1 {
+        raw_envelope_bytes,
+        selected_envelope_bytes: encoded.as_bytes().len(),
+    };
+    Ok((value, encoded, metrics))
+}
+
+/// Seals a segment from checked, already canonical command-member bytes.
+///
+/// Each prepared member is joined to the retained semantic graph by exact
+/// ordinal, commit sequence, and the segment-wide durable variant. A stale,
+/// reordered, incomplete, or wrong-variant preparation therefore fails before
+/// any durable bytes can escape.
+pub fn seal_and_encode_command_segment_with_prepared_capsules_v1(
+    value: StoredCommandSegmentV1,
+    prepared: Vec<PreparedCommandSegmentCapsuleV1>,
+) -> Result<
+    (
+        StoredCommandSegmentV1,
+        CanonicalStoredEnvelopeV1,
+        CommandSegmentEncodingMetricsV1,
+    ),
+    DurableCodecError,
+> {
+    let (body_bytes, uses_v4) = segment_body_bytes_with_prepared_capsules(&value, &prepared)?;
     let digest = component_digest(SEGMENT_DIGEST_LABEL, &body_bytes);
     let value = value.with_segment_digest(digest);
     let (encoded, raw_envelope_bytes) =

@@ -181,12 +181,23 @@ fn capsulate_command_rows(
         capsules.push(capsule);
         terminals.push(terminal);
     }
+    let uses_v5 = capsules.iter().any(|capsule| {
+        capsule
+            .events()
+            .iter()
+            .any(|event| event.policy_anchor().is_some())
+    });
     let access = &core.access;
+    let (capsules, prepared_capsules) =
+        access.prepare_command_segment_capsules(capsules, uses_v5)?;
     let segment = build_command_segment(access, capsules)?;
     let commit_key = encode_application_sequence_key(segment.first_commit_sequence());
     let (segment, encoded_segment, encoding_metrics) =
-        riffdb_storage_api::seal_and_encode_command_segment_with_metrics_v1(segment)
-            .map_err(codec_error)?;
+        riffdb_storage_api::seal_and_encode_command_segment_with_prepared_capsules_v1(
+            segment,
+            prepared_capsules,
+        )
+        .map_err(codec_error)?;
     if !access.put_command_segment_value(
         commit_key.to_vec(),
         encoded_segment,
@@ -1867,7 +1878,7 @@ fn apply_index_entries(
         match (mutation, bytes) {
             (IndexEntryMutationV1::Delete(_), None) => {
                 let Some(current) =
-                    access.read_command_value(JournalTable::SecondaryIndexes, &key)?
+                    access.read_command_value(JournalTable::SecondaryIndexes, key)?
                 else {
                     return Err(storage_error(StorageErrorKind::InvariantViolation));
                 };
@@ -1878,7 +1889,7 @@ fn apply_index_entries(
                 )?;
             }
             (IndexEntryMutationV1::Put(_), Some(bytes)) => {
-                let current = access.read_command_value(JournalTable::SecondaryIndexes, &key)?;
+                let current = access.read_command_value(JournalTable::SecondaryIndexes, key)?;
                 access.put_proven_command_value(
                     JournalTable::SecondaryIndexes,
                     key.to_vec(),
