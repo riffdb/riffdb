@@ -815,24 +815,16 @@ impl RedbReadAccess {
     }
 
     pub(crate) fn application_frontier(&self) -> Result<Option<CommitSequence>, StorageError> {
-        match self {
-            Self::Current(transaction) => read_commit_tail(transaction),
-            Self::Durable(transaction) => read_commit_tail(transaction),
-            Self::Composite(view) => Ok(view.overlay().published_application()),
-        }
+        crate::reads::read_snapshot_head(self)
     }
 
     pub(crate) fn application_frontier_profiled(
         &self,
     ) -> Result<(Option<CommitSequence>, CommitTailProfileV1), StorageError> {
-        match self {
-            Self::Current(transaction) => read_commit_tail_profiled(transaction),
-            Self::Durable(transaction) => read_commit_tail_profiled(transaction),
-            Self::Composite(view) => Ok((
-                view.overlay().published_application(),
-                CommitTailProfileV1::default(),
-            )),
-        }
+        Ok((
+            crate::reads::read_snapshot_head(self)?,
+            CommitTailProfileV1::default(),
+        ))
     }
 
     pub(crate) fn administration_frontier(

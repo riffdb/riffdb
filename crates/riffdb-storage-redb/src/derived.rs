@@ -1732,10 +1732,13 @@ mod tests {
 
     use super::*;
     use crate::codec::{
-        encode_commit_record_v1, encode_durable_event_v1, encode_outbox_intent_v1,
-        encode_projection_control_v1,
+        encode_application_sequence_allocator_v1, encode_commit_record_v1, encode_durable_event_v1,
+        encode_outbox_intent_v1, encode_projection_control_v1,
     };
-    use crate::layout::{COMMITS, EVENTS, OUTBOX, OUTBOX_STATUS, PROJECTION_FRONTIER};
+    use crate::layout::{
+        COMMITS, EVENTS, META, META_APPLICATION_SEQUENCE, OUTBOX, OUTBOX_STATUS,
+        PROJECTION_FRONTIER,
+    };
     use crate::store::RedbStore;
 
     /// Whole-directory scope: the database and every side file it grows live
@@ -1921,6 +1924,17 @@ contract Recovery version 1 {
                     .expect("insert commit")
                     .is_none()
             );
+        }
+        {
+            let next = sequence.checked_next().map_or(
+                riffdb_storage_api::ApplicationSequenceAllocator::Exhausted,
+                riffdb_storage_api::ApplicationSequenceAllocator::Next,
+            );
+            let encoded = encode_application_sequence_allocator_v1(next)
+                .expect("encode application allocator");
+            let mut meta = transaction.open_table(META).expect("meta table");
+            meta.insert(META_APPLICATION_SEQUENCE, encoded.as_bytes())
+                .expect("advance application allocator");
         }
         {
             let mut event_table = transaction.open_table(EVENTS).expect("event table");

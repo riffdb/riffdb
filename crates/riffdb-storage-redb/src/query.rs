@@ -1081,18 +1081,20 @@ mod tests {
     use riffdb_query_ir::SymbolicCatalog;
     use riffdb_riffql_syntax::parse_query;
     use riffdb_storage_api::{
-        DatabaseInitializationPort, DurableKeySchemaBindingV1, EntityTarget, StoredEntityRecordV1,
-        StoredIndexEntryV2,
+        ApplicationSequenceAllocator, DatabaseInitializationPort, DurableKeySchemaBindingV1,
+        EntityTarget, StoredEntityRecordV1, StoredIndexEntryV2,
     };
     use riffdb_types::{
-        AggregateTypeId, CanonicalRecord, CanonicalValue, DatabaseId, EntityVersion,
-        PartitionKeyBuilder,
+        AggregateTypeId, CanonicalRecord, CanonicalValue, CommitSequence, DatabaseId,
+        EntityVersion, PartitionKeyBuilder,
     };
 
     use super::*;
-    use crate::codec::{encode_entity_record_v1, encode_index_entry_v2};
-    use crate::keys::encode_entity_key;
-    use crate::layout::{ENTITIES, SECONDARY_INDEXES};
+    use crate::codec::{
+        encode_application_sequence_allocator_v1, encode_entity_record_v1, encode_index_entry_v2,
+    };
+    use crate::keys::{encode_application_sequence_key, encode_entity_key};
+    use crate::layout::{COMMITS, ENTITIES, META, META_APPLICATION_SEQUENCE, SECONDARY_INDEXES};
     use crate::store::RedbStore;
 
     const CONTRACT: &str = include_str!("../../../examples/app-baseline/contracts/ticketdesk.riff");
@@ -1139,7 +1141,7 @@ query ProjectMembers(
     }
 
     #[test]
-    fn point_query_executes_inside_one_redb_read_transaction() {
+    fn point_query_frontier_does_not_decode_retained_command_history() {
         let bundle = compile_contract_source(CONTRACT).expect("contract");
         let catalog = SymbolicCatalog::from_bundle(&bundle).expect("catalog");
         let program =
@@ -1206,7 +1208,51 @@ query ProjectMembers(
                 .insert(encode_entity_key(record.target().key()), encoded.as_bytes())
                 .expect("insert");
         }
-        access_write.commit().expect("commit");
+        access_write.commit().expect("commit entity seed");
+        drop(ports);
+        drop(store);
+
+        let reopened = RedbStore::open(&path.0).expect("reopen store");
+        let ports = crate::store::RedbDormantPorts {
+            shared: reopened.shared,
+        }
+        .into_operational_after_catalog_validation()
+        .expect("activate restarted ports");
+
+        // The restarted operational query must derive its frontier from the
+        // allocator, not repeat the command-segment validation owned by
+        // startup and recovery. An opaque post-activation row makes any
+        // accidental decode fail this real QueryExecutionPort regression.
+        let first = CommitSequence::first();
+        let access_write = ports.begin_write().expect("write opaque authority");
+        {
+            let mut table = access_write
+                .transaction()
+                .expect("transaction")
+                .open_table(COMMITS)
+                .expect("commits");
+            table
+                .insert(
+                    encode_application_sequence_key(first).as_slice(),
+                    &[0x5a_u8; 4096][..],
+                )
+                .expect("insert opaque retained command history");
+        }
+        {
+            let allocator = encode_application_sequence_allocator_v1(
+                ApplicationSequenceAllocator::Next(first.checked_next().expect("second")),
+            )
+            .expect("allocator");
+            let mut table = access_write
+                .transaction()
+                .expect("transaction")
+                .open_table(META)
+                .expect("meta");
+            table
+                .insert(META_APPLICATION_SEQUENCE, allocator.as_bytes())
+                .expect("advance allocator");
+        }
+        access_write.commit().expect("commit opaque authority");
 
         let parameters = QueryParameters::checked(BTreeMap::from([
             ("organization_id".to_owned(), organization),
