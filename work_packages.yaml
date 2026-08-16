@@ -13478,3 +13478,51 @@ work_packages:
       byte ceilings independent of command count, history, entity count, or database size; bounded
       preparation capacity must apply backpressure without reordering or retaining unbounded work.
   human_review_triggers: *id001
+- id: WP-640
+  name: Bounded prepared command finalization and pay-once batch apply
+  depends_on: [WP-639]
+  objective: Implement ADR-0129's bounded pure-preparation, admission-order finalization, private
+    logical frontier, and checked pay-once group apply only after the mechanics prove that the
+    candidate can satisfy mixed c32 and seed gates without weakening unary, durability, or safety.
+  requirements: [PERF-001, PERF-004, PERF-005, PERF-008, PERF-018]
+  required_adrs: [ADR-0058, ADR-0059, ADR-0060, ADR-0094, ADR-0095, ADR-0096, ADR-0097,
+    ADR-0098, ADR-0099, ADR-0101, ADR-0104, ADR-0123, ADR-0129]
+  allowed_paths: [work_packages.yaml, SPEC.md, adr/**, crates/riffdb-application/**,
+    crates/riffdb-runtime/**, crates/riffdb-commit/**, crates/riffdb-storage-api/**,
+    crates/riffdb-storage-redb/**, crates/riffdb-observability/**, crates/riffdb-service/**,
+    crates/riffdb-server/**, examples/app-baseline/**, tests/**, scripts/**,
+    docs/performance/**]
+  deliverables:
+  - Reject-first mechanics for pure prepared bodies, ordered finalization proofs, prepared canonical
+    fragments, and checked group apply demonstrating ADR-0129's workstation and N1 CPU thresholds
+    before the production dispatch path changes
+  - Fixed bounded preparation pool, FIFO admission-order consumption, one-group reorder ceiling,
+    private logical frontier, exact rollback, cancellation, shutdown, and worker-panic semantics
+  - Checked storage apply that consumes proven canonical material once and architecture tests proving
+    no repeated normalization, semantic validation, decode, graph reconstruction, or hashing
+  - Deterministic schedules and process crash arms for every preparation, current-proof, sequence,
+    ordered-apply, journal, fence, publication, uncertainty, and response boundary
+  - Same-run workstation and N1 safe-application PostgreSQL receipts for seed, mixed c32, unary,
+    reads, write p50/p95, group size, frame bytes, physical fence, and ordered fence latency
+  acceptance_commands:
+  - cargo +1.97.0 test -p riffdb-application -p riffdb-runtime -p riffdb-commit -p riffdb-storage-api -p riffdb-storage-redb -p riffdb-observability -p riffdb-service -p riffdb-server --all-features
+  - cargo +1.97.0 test --manifest-path examples/app-baseline/Cargo.toml --workspace
+  - cargo +1.97.0 test --manifest-path tests/shuttle/Cargo.toml
+  - ./scripts/storage-recovery-matrix
+  - ./scripts/check-workspace-policy
+  - ./scripts/check-requirement-coverage
+  - cargo +1.97.0 fmt --all -- --check
+  - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: Production activation occurs only if mechanics meet ADR-0129's preparation and ordered-
+    lane thresholds, both hosts meet mixed c32 and seed ratios, unary/read/tail gates do not regress,
+    and every ordering, conflict, durability, crash, recovery, and uncertainty test remains exact;
+    unary parity remains a separate release blocker when it is still above 1.10x.
+  standing_design_tests:
+    interface_safety: Applications continue to submit only compiled typed commands and cannot
+      select workers, proofs, grouping, ordering, storage apply, transactions, durability, or
+      fallback; every command retains current authorization, dependencies, row policy, conflict
+      ownership, idempotency, atomic graph, and typed uncertainty.
+    scale: Worker count, preparation capacity, reorder state, logical frontier, proof material, and
+      prepared groups are capped by existing process, command, group, and byte ceilings and require
+      neither co-located full state nor global preparation ordering across conflict domains.
+  human_review_triggers: *id001

@@ -68,3 +68,12 @@ Claims here are meant to be checked, not believed: the decision records in
 `adr/`, the requirement inventory in `SPEC.md`, and the crash, recovery, and
 falsifiability evidence attached to each work package are the primary
 documents. This page is only the argument that connects them.
+
+The same discipline applies inside the engine: a guarantee may be proven per
+datum or per process generation, never paid again per operation unless the
+operation itself is what is being guaranteed. Internal lanes pass bounded
+move-only proofs of already-validated material; the receiving lane rechecks
+only facts that can have changed, such as current authority, dependencies,
+conflicts, sequence, and durability. Architecture tests reject hot paths that
+decode, normalize, hash, or validate already-proven bytes a second time merely
+because ownership crossed an internal boundary.

@@ -3256,6 +3256,22 @@ mod tests {
     }
 
     #[test]
+    fn seed_only_is_diagnostic_parity_mode_only() {
+        let args = Args::parse(["--full", "--seed-only"].into_iter().map(str::to_owned))
+            .expect("seed-only parity diagnostic");
+        assert!(args.seed_only);
+
+        let error = Args::parse(
+            ["--load", "interactive", "--seed-only"]
+                .into_iter()
+                .map(str::to_owned),
+        )
+        .err()
+        .expect("load must reject seed-only");
+        assert!(error.contains("--seed-only"));
+    }
+
+    #[test]
     fn tenant_and_open_loop_flags_require_seeded_partitions() {
         let args = Args::parse(
             [
