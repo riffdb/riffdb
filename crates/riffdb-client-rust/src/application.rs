@@ -1946,6 +1946,15 @@ mod tests {
     use riffdb_errors::ApplicationErrorCode;
 
     #[test]
+    fn exact_tonic_endpoint_defaults_tcp_nodelay_on() {
+        // tonic is exact-pinned at 0.14.6 by the workspace. This executable
+        // assertion accompanies WP-632's source receipt so a dependency
+        // change cannot silently reintroduce Nagle delay into the diagnosis.
+        let endpoint = Endpoint::from_static("http://127.0.0.1:7443");
+        assert!(endpoint.get_tcp_nodelay());
+    }
+
+    #[test]
     fn named_query_builder_is_name_addressed_and_module_pinned() {
         let mut parameters = BTreeMap::new();
         parameters.insert(

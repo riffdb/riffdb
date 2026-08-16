@@ -13134,3 +13134,48 @@ work_packages:
     scale: Decoding remains one bounded u64 parse with no collection, allocation, retry, scan, or
       retained state; registry acceptance adds one finite installed-package transport exchange.
   human_review_triggers: *id001
+- id: WP-632
+  name: Frozen-client transport attribution and asynchronous shadow diagnostic
+  depends_on: [WP-627]
+  objective: Attribute the low-concurrency cloud gap across the frozen PERF-018 synchronous
+    benchmark bridge, the real asynchronous application client, Tonic/Protobuf transport, and
+    server orchestration without changing the release comparator or counting measurement-artifact
+    removal as a RiffDB product gain.
+  requirements: [PERF-007, PERF-008, PERF-018]
+  required_adrs: [ADR-0055, ADR-0056, ADR-0106, ADR-0123]
+  allowed_paths: [work_packages.yaml, adr/README.md,
+    adr/0127-bounded-multiplexed-application-session.md, examples/app-baseline/**,
+    crates/riffdb-client-rust/**, docs/performance/**, scripts/**]
+  deliverables:
+  - A distinct non-evidentiary attribution report that preserves the frozen synchronous
+    comparator byte-for-byte, pairs each sampled call's outer synchronous duration with its
+    runtime-entry and asynchronous-future duration, and labels bridge-only time as measurement
+    artifact rather than product improvement
+  - An asynchronous shadow probe over the same generated named operation and persistent channel,
+    excluded structurally from PERF-018 qualification and incapable of emitting a release-pass
+    receipt
+  - Source-pinned and executable assertions that the exact Tonic client version defaults
+    TCP_NODELAY on, plus bounded client/server timing comparison using matched operation samples
+    rather than subtracting unlike aggregate statistics
+  - Short N1 and E2 c=1/c=8/c=32 diagnostic receipts with predeclared Amdahl bounds, preserving the
+    existing PostgreSQL durability and comparator-shape receipts and making no PERF-008 pass claim
+  - Proposed ADR-0127 defining the optional bounded long-lived multiplexed application session;
+    no protocol implementation, PERF-018 amendment, or release-evidence substitution is permitted
+    until the ADR's exact text is separately accepted
+  acceptance_commands:
+  - cargo +1.97.0 test --manifest-path examples/app-baseline/Cargo.toml --workspace
+  - cargo +1.97.0 test -p riffdb-client-rust --all-features
+  - ./scripts/check-workspace-policy
+  - ./scripts/check-requirement-coverage
+  - cargo +1.97.0 fmt --all -- --check
+  exit_gate: The frozen and shadow paths report separately; paired evidence determines how much
+    latency is benchmark bridging versus customer-paid transport/orchestration; TCP_NODELAY is
+    proven; and any multiplexed-session implementation remains blocked on exact ADR acceptance.
+  standing_design_tests:
+    interface_safety: The shadow probe invokes the same generated named operations, values,
+      credentials, authorization, bounds, and service path as the frozen driver. It adds no
+      operation, transaction, retry, durability, policy, or transport choice to an application.
+    scale: Diagnostic samples and histograms are fixed-cardinality and bounded; the shadow uses one
+      existing persistent channel and retains no keys, values, credentials, or unbounded trace
+      series. The proposed session ADR requires explicit finite in-flight, byte, and queue bounds.
+  human_review_triggers: *id001

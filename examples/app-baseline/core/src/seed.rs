@@ -663,8 +663,18 @@ mod tests {
         scale.payload_bytes = 200;
         let dataset = SeedDataset::generate(scale);
 
-        assert!(dataset.tickets.iter().all(|ticket| ticket.title.len() == 128));
-        assert!(dataset.comments.iter().all(|comment| comment.body.len() == 200));
+        assert!(
+            dataset
+                .tickets
+                .iter()
+                .all(|ticket| ticket.title.len() == 128)
+        );
+        assert!(
+            dataset
+                .comments
+                .iter()
+                .all(|comment| comment.body.len() == 200)
+        );
     }
 
     #[test]

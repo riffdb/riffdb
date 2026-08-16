@@ -230,7 +230,10 @@ fn run() -> Result<(), String> {
             let seed_started = Instant::now();
             if let Err(error) = session.backend.seed(&dataset) {
                 if let Ok(groups) = session.shutdown() {
-                    eprintln!("riffdb write completion groups 1..={}: {groups:?}", groups.len());
+                    eprintln!(
+                        "riffdb write completion groups 1..={}: {groups:?}",
+                        groups.len()
+                    );
                 }
                 return Err(error.to_string());
             }
@@ -238,7 +241,10 @@ fn run() -> Result<(), String> {
             // Catch-up + compiled-vs-projected equivalence must pass before timing.
             if let Err(error) = session.backend.prepare_projected_board_gates(&dataset) {
                 if let Ok(groups) = session.shutdown() {
-                    eprintln!("riffdb write completion groups 1..={}: {groups:?}", groups.len());
+                    eprintln!(
+                        "riffdb write completion groups 1..={}: {groups:?}",
+                        groups.len()
+                    );
                 }
                 return Err(error.to_string());
             }
@@ -253,7 +259,10 @@ fn run() -> Result<(), String> {
                 Ok(scenarios) => scenarios,
                 Err(error) => {
                     if let Ok(groups) = session.shutdown() {
-                        eprintln!("riffdb write completion groups 1..={}: {groups:?}", groups.len());
+                        eprintln!(
+                            "riffdb write completion groups 1..={}: {groups:?}",
+                            groups.len()
+                        );
                     }
                     return Err(error.to_string());
                 }
@@ -568,8 +577,7 @@ fn add_riffdb_process_scope_resource_rates(
         checked_per_operation(process_write_bytes, process_scope_committed_commands);
     delta["durable_bytes_growth_per_process_scope_committed_command"] =
         checked_per_operation(durable_bytes_growth, process_scope_committed_commands);
-    delta["normalization_scope"] =
-        json!("complete measured process generation including warmup");
+    delta["normalization_scope"] = json!("complete measured process generation including warmup");
 }
 
 fn process_resource_snapshot(
@@ -668,15 +676,24 @@ fn postgres_resource_delta_json(
 }
 
 fn riffdb_shutdown_evidence_json(evidence: &RiffDbShutdownEvidence) -> serde_json::Value {
-    let histogram = |stage: &riffdb_app_baseline_riffdb::RiffDbReadStageEvidence| json!({
-        "count": stage.count,
-        "sum": stage.sum_us,
-        "cumulative_buckets": stage.buckets,
-    });
+    let histogram = |stage: &riffdb_app_baseline_riffdb::RiffDbReadStageEvidence| {
+        json!({
+            "count": stage.count,
+            "sum": stage.sum_us,
+            "cumulative_buckets": stage.buckets,
+        })
+    };
     let physical_commits = evidence.writer.commit_duration.count;
     let logical_commands_committed = evidence.writer.batch_size.sum_us;
     let writer_frame_census = evidence.writer_frame_census.map(
-        |[frame_count, frame_commands, selected_frame_bytes, raw_frame_bytes, selected_segment_bytes, raw_segment_bytes]| {
+        |[
+            frame_count,
+            frame_commands,
+            selected_frame_bytes,
+            raw_frame_bytes,
+            selected_segment_bytes,
+            raw_segment_bytes,
+        ]| {
             json!({
                 "frames": frame_count,
                 "commands": frame_commands,
@@ -700,7 +717,15 @@ fn riffdb_shutdown_evidence_json(evidence: &RiffDbShutdownEvidence) -> serde_jso
         },
     );
     let writer_flush_census = evidence.writer_flush_census.map(
-        |[physical_flushes, command_frames, logical_commands, complete_frame_bytes, max_frames_per_flush, io_duration_us, max_io_duration_us]| {
+        |[
+            physical_flushes,
+            command_frames,
+            logical_commands,
+            complete_frame_bytes,
+            max_frames_per_flush,
+            io_duration_us,
+            max_io_duration_us,
+        ]| {
             json!({
                 "physical_flushes": physical_flushes,
                 "command_frames": command_frames,
@@ -1303,23 +1328,21 @@ fn run_load(args: Args) -> Result<(), String> {
                 point["rep"] = json!(rep);
                 point["postgres_quiesced"] = json!(true);
                 point["sweep_isolation"] = json!(sweep_isolation);
-                point["resource_delta"] =
-                    postgres_resource_delta_json(
-                        &resources_before,
-                        &resources_after,
-                        successful_mutations,
-                    );
+                point["resource_delta"] = postgres_resource_delta_json(
+                    &resources_before,
+                    &resources_after,
+                    successful_mutations,
+                );
                 curve.push(point);
                 let mut json_report = report.to_json();
                 json_report["rep"] = json!(rep);
                 json_report["postgres_quiesced"] = json!(true);
                 json_report["sweep_isolation"] = json!(sweep_isolation);
-                json_report["resource_delta"] =
-                    postgres_resource_delta_json(
-                        &resources_before,
-                        &resources_after,
-                        successful_mutations,
-                    );
+                json_report["resource_delta"] = postgres_resource_delta_json(
+                    &resources_before,
+                    &resources_after,
+                    successful_mutations,
+                );
                 reports.push(json_report);
             }
         }
@@ -1517,8 +1540,8 @@ fn run_load(args: Args) -> Result<(), String> {
                             let mut point = concurrency_curve_point(&report);
                             point["rep"] = json!(rep);
                             point["sweep_isolation"] = json!(sweep_isolation);
-                            point["resource_delta"] = resources_after
-                                .delta_json(resources_before, successful_mutations);
+                            point["resource_delta"] =
+                                resources_after.delta_json(resources_before, successful_mutations);
                             let mut json_report = report.to_json();
                             json_report["rep"] = json!(rep);
                             json_report["sweep_isolation"] = json!(sweep_isolation);
@@ -1701,8 +1724,8 @@ fn run_load(args: Args) -> Result<(), String> {
                             let mut point = concurrency_curve_point(&report);
                             point["rep"] = json!(rep);
                             point["sweep_isolation"] = json!(sweep_isolation);
-                            point["resource_delta"] = resources_after
-                                .delta_json(resources_before, successful_mutations);
+                            point["resource_delta"] =
+                                resources_after.delta_json(resources_before, successful_mutations);
                             curve.push(point);
                             let mut json_report = report.to_json();
                             json_report["rep"] = json!(rep);
@@ -3079,16 +3102,14 @@ mod tests {
 
     use super::{
         Args, RiffDbTransport, Scale, SeedDataset, WorkloadProfile, assert_all_parity,
-        assert_write_parity, comparator_contract, gated_ratio, load_rep_summaries, median_scenarios,
-        require_load_stable, require_stable, scalar_summary,
+        assert_write_parity, comparator_contract, gated_ratio, load_rep_summaries,
+        median_scenarios, require_load_stable, require_stable, scalar_summary,
     };
 
     #[test]
     fn safe_app_comparator_contract_freezes_obligations_and_calculations() {
-        let config = riffdb_app_baseline_core::LoadConfig::standard(
-            WorkloadProfile::Interactive,
-            32,
-        );
+        let config =
+            riffdb_app_baseline_core::LoadConfig::standard(WorkloadProfile::Interactive, 32);
         let contract = comparator_contract(
             riffdb_app_baseline_postgres::PostgresComparisonProfile::SafeApp,
             &config,
@@ -3100,9 +3121,15 @@ mod tests {
             "riffdb.app-baseline-comparator-contract/v1"
         );
         assert_eq!(contract["postgres_backend_id"], "postgres_safe_app");
-        assert_eq!(contract["postgres_obligations"].as_array().unwrap().len(), 7);
         assert_eq!(
-            contract["workload"]["operation_weights"].as_array().unwrap().len(),
+            contract["postgres_obligations"].as_array().unwrap().len(),
+            7
+        );
+        assert_eq!(
+            contract["workload"]["operation_weights"]
+                .as_array()
+                .unwrap()
+                .len(),
             WorkloadProfile::Interactive.weights().len()
         );
         assert_eq!(

@@ -400,12 +400,12 @@ impl RiffDbServerSession {
     pub async fn restart_for_measurement(
         mut self,
     ) -> Result<(Self, RiffDbShutdownEvidence), RiffDbError> {
-        let setup_evidence = self
-            .process
-            .shutdown_cleanly()
-            .map_err(|error| RiffDbError::Server {
-                detail: error.to_string(),
-            })?;
+        let setup_evidence =
+            self.process
+                .shutdown_cleanly()
+                .map_err(|error| RiffDbError::Server {
+                    detail: error.to_string(),
+                })?;
         let database_path = self._temporary.path().join("riffdb.redb");
         let table_inventory_before_measurement =
             riffdb_storage_redb::benchmark_support::authoritative_table_inventory_v1(
@@ -457,12 +457,12 @@ impl RiffDbServerSession {
     /// Stops cleanly and returns bounded stage/scheduler evidence.
     pub fn shutdown_with_evidence(mut self) -> Result<RiffDbShutdownEvidence, RiffDbError> {
         let database_path = self._temporary.path().join("riffdb.redb");
-        let mut evidence = self
-            .process
-            .shutdown_cleanly()
-            .map_err(|error| RiffDbError::Server {
-                detail: error.to_string(),
-            })?;
+        let mut evidence =
+            self.process
+                .shutdown_cleanly()
+                .map_err(|error| RiffDbError::Server {
+                    detail: error.to_string(),
+                })?;
         evidence.table_inventory_before_measurement =
             self.table_inventory_before_measurement.take();
         evidence.table_inventory_after_measurement =
@@ -1338,25 +1338,23 @@ fn read_server_stdout(
             Some(Ok(read_stages)),
             Some(Ok(command_stages)),
             Some(Ok(writer)),
-        ) => {
-            writer_frame_census
-                .transpose()
-                .and_then(|writer_frame_census| {
-                    writer_flush_census
-                        .transpose()
-                        .map(|writer_flush_census| RiffDbShutdownEvidence {
-                            write_completion_groups,
-                            dispatch_reasons,
-                            read_stages,
-                            command_stages,
-                            writer,
-                            writer_frame_census,
-                            writer_flush_census,
-                            table_inventory_before_measurement: None,
-                            table_inventory_after_measurement: Vec::new(),
-                        })
-                })
-        }
+        ) => writer_frame_census
+            .transpose()
+            .and_then(|writer_frame_census| {
+                writer_flush_census
+                    .transpose()
+                    .map(|writer_flush_census| RiffDbShutdownEvidence {
+                        write_completion_groups,
+                        dispatch_reasons,
+                        read_stages,
+                        command_stages,
+                        writer,
+                        writer_frame_census,
+                        writer_flush_census,
+                        table_inventory_before_measurement: None,
+                        table_inventory_after_measurement: Vec::new(),
+                    })
+            }),
         (Some(Err(error)), _, _, _, _)
         | (_, Some(Err(error)), _, _, _)
         | (_, _, Some(Err(error)), _, _)
@@ -1659,12 +1657,9 @@ mod tests {
             .map(|value| value.to_string())
             .collect::<Vec<_>>()
             .join(",");
-        let parsed = parse_fixed_counts::<WRITE_GROUP_BUCKETS>(
-            &groups,
-            "write-group",
-            WRITE_GROUP_BUCKETS,
-        )
-        .expect("groups");
+        let parsed =
+            parse_fixed_counts::<WRITE_GROUP_BUCKETS>(&groups, "write-group", WRITE_GROUP_BUCKETS)
+                .expect("groups");
         assert_eq!(parsed[WRITE_GROUP_BUCKETS - 1], 255);
         assert!(parse_fixed_counts::<4>("1,2,3", "dispatch", 4).is_err());
 
@@ -1672,8 +1667,8 @@ mod tests {
             .map(|value| value.to_string())
             .collect::<Vec<_>>()
             .join(",");
-        let stages = parse_read_stages(&format!("authorize:2:9:{buckets}"))
-            .expect("read stage evidence");
+        let stages =
+            parse_read_stages(&format!("authorize:2:9:{buckets}")).expect("read stage evidence");
         assert_eq!(stages[0].name, "authorize");
         assert_eq!(stages[0].count, 2);
         assert_eq!(stages[0].buckets.len(), 16);
