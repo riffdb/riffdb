@@ -37,6 +37,17 @@ long-lived multiplexed application session is a legitimate product option, not
 a benchmark-only shortcut: it gives the RiffDB application protocol the
 persistent request stream shape already present in the comparator.
 
+WP-632 subsequently measured the synchronous bridge at only 6--9 microseconds
+per generated `GetTicket`. Native asynchronous execution improved c=1 by only
+3.0% on N1 and 7.6% on E2, and c=8 by 6.8% and 3.7% respectively, missing the
+predeclared 15% and 10% activation thresholds. The bridge is therefore an
+immaterial measurement artifact. The customer-paid call still contains a
+0.7--1.5 ms low-concurrency client/transport residual, while exact server query
+execution is the larger 2.1--4.3 ms cost. At c=32, 11.6--15.9 ms lies outside
+the instrumented handler stages. A session has a demonstrated orchestration
+target, especially under concurrency, but is not expected to close the cloud
+gate without a separate server-execution campaign.
+
 The session must not become a transaction, authorization cache, raw protocol
 escape hatch, or source of hidden ordering semantics. Every operation must
 continue through the same API-neutral application service, authorization,
