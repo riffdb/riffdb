@@ -2094,7 +2094,9 @@ where
             .into_iter()
             .map(|(_, attempt, snapshot)| (attempt, snapshot))
             .collect();
+        let evaluation_started = Instant::now();
         let evaluated = pool.evaluate_writer_private(inputs, telemetry);
+        evaluation_elapsed = evaluation_elapsed.saturating_add(evaluation_started.elapsed());
         let mut fallback = Vec::new();
         let mut completed = Vec::new();
         let mut terminal = None;
