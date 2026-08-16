@@ -7,6 +7,16 @@ meet its ordered-lane mechanics threshold, seed target, mixed-c32 target,
 unary target, or complete recovery gate. This report does not reinterpret a
 partial implementation as an exit-gate pass.
 
+After this closure, the maintainer amended `PERF-008` in SPEC revision 1.02.
+The 1.10x seed row below remains the historical ADR-0129/WP-640 activation
+criterion and explains why the complete candidate was rejected; it is not the
+current alpha seed gate. Current alpha evidence must instead receipt the full
+seed on both inventoried profiles under the 5.0x same-run regression ceiling.
+The measured 3.65x workstation and 4.46x N1 results pass that new ceiling, but
+do not retroactively activate WP-640 or waive its ordered-lane, mixed-c32,
+unary, and recovery failures. Seed parity remains deferred to ADR-0129 section
+5's conflict-domain-parallel batch-apply direction.
+
 The exact runtime revision measured here is `02dbce7e` (runtime-identical to
 `84c93a18`; the later commit documents a rejected sibling candidate). Seed
 receipts use the full 19,220-command TicketDesk corpus, standard durability,
@@ -165,4 +175,3 @@ The three disclosed reliability findings now have explicit packages:
 | N1 | `/home/kevin/tmp/wp640-current-head-seed-n1.json` | `b1400f374401d2ffc9c2dfab3ec57c2eadb6e878b22edfee2de3a67ab21c2e1a` |
 
 Requirement coverage: PERF-001, PERF-004, PERF-005, PERF-008, PERF-018.
-
