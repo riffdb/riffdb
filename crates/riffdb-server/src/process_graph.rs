@@ -741,6 +741,17 @@ impl RunningProductionGraph {
         self.observability.read_stage_snapshot()
     }
 
+    /// Per-stage mutating-command service histograms for shutdown evidence.
+    pub(crate) fn write_service_stage_snapshot(
+        &self,
+    ) -> [(
+        u64,
+        u64,
+        [u64; riffdb_observability::HISTOGRAM_UPPER_BOUNDS.len()],
+    ); riffdb_observability::WRITE_SERVICE_STAGE_COUNT] {
+        self.observability.write_service_stage_snapshot()
+    }
+
     /// Per-stage coordinator command histograms for shutdown evidence.
     pub(crate) fn command_stage_snapshot(
         &self,

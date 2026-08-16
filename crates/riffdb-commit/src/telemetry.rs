@@ -171,6 +171,13 @@ pub enum CommitTelemetryEvent {
         /// Commands in the staged batch. The POC command path is exactly one.
         batch_size: u16,
     },
+    /// A deferred command group completed final apply, encoding, and journal submission.
+    CommitSubmissionCompleted {
+        /// Time from final commit entry through receipt creation.
+        elapsed: Duration,
+        /// Commands represented by the submitted journal frame.
+        batch_size: u16,
+    },
     /// A mandatory same-key uncertainty lookup returned.
     UncertaintyResolved {
         /// Durable phase that reported unknown status.

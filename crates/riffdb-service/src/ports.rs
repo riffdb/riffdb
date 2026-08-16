@@ -1684,6 +1684,49 @@ impl ReadPipelineStage {
     }
 }
 
+/// Closed non-overlapping stages around one successful mutating command.
+///
+/// These stages account for API-neutral preparation and completion plus the
+/// public gRPC adapter. Coordinator queue, execution, journal, fence, and
+/// publication remain owned by commit telemetry and are not duplicated here.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum WriteServiceStage {
+    /// gRPC request split, bounded conversion, authentication, and context assembly.
+    TransportAdapt,
+    /// API-neutral command selection, inspection, normalization, audit, authorization,
+    /// preparation construction, and bounded coordinator submission.
+    ServicePrepare,
+    /// Awaiting the submitted coordinator receipt through authoritative completion.
+    CoordinatorAwait,
+    /// Outcome verification and API-neutral response assembly after completion.
+    ServiceFinish,
+    /// Domain result to bounded protobuf response conversion.
+    EncodeConvert,
+}
+
+impl WriteServiceStage {
+    /// Every stage in stable shutdown-evidence order.
+    pub const ALL: [Self; 5] = [
+        Self::TransportAdapt,
+        Self::ServicePrepare,
+        Self::CoordinatorAwait,
+        Self::ServiceFinish,
+        Self::EncodeConvert,
+    ];
+
+    /// Stable snake-case evidence label.
+    #[must_use]
+    pub const fn metric_label(self) -> &'static str {
+        match self {
+            Self::TransportAdapt => "transport_adapt",
+            Self::ServicePrepare => "service_prepare",
+            Self::CoordinatorAwait => "coordinator_await",
+            Self::ServiceFinish => "service_finish",
+            Self::EncodeConvert => "encode_convert",
+        }
+    }
+}
+
 /// Redaction-safe service orchestration telemetry.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ServiceTelemetryEvent {
@@ -1739,6 +1782,13 @@ pub enum ServiceTelemetryEvent {
     ReadPipelineStageCompleted {
         /// Closed stage identity; no application values are retained.
         stage: ReadPipelineStage,
+        /// Wall duration of this service stage.
+        elapsed: std::time::Duration,
+    },
+    /// One bounded non-overlapping mutating-command service stage completed.
+    WriteServiceStageCompleted {
+        /// Closed stage identity; no command input or application identity is retained.
+        stage: WriteServiceStage,
         /// Wall duration of this service stage.
         elapsed: std::time::Duration,
     },

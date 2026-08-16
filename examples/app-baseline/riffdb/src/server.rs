@@ -51,6 +51,7 @@ const WRITE_GROUP_PREFIX: &str = "riffdb-write-completion-groups-v1\t";
 const WRITE_GROUP_BUCKETS: usize = riffdb_storage_redb::benchmark_support::MAX_GROUP_COMMANDS;
 const DISPATCH_REASON_PREFIX: &str = "riffdb-dispatch-reasons-v1\t";
 const READ_STAGE_PREFIX: &str = "riffdb-read-stages-v1\t";
+const WRITE_SERVICE_STAGE_PREFIX: &str = "riffdb-write-service-stages-v1\t";
 const COMMAND_STAGE_PREFIX: &str = "riffdb-command-stages-v1\t";
 const WRITER_EVIDENCE_PREFIX: &str = "riffdb-writer-evidence-v1\t";
 const WRITER_FRAME_CENSUS_PREFIX: &str = "riffdb-writer-frame-census-v1\t";
@@ -205,6 +206,8 @@ pub struct RiffDbShutdownEvidence {
     pub dispatch_reasons: [u64; 4],
     /// Per-stage public read pipeline summaries.
     pub read_stages: Vec<RiffDbReadStageEvidence>,
+    /// Per-stage mutating-command service summaries.
+    pub write_service_stages: Vec<RiffDbReadStageEvidence>,
     /// Per-stage coordinator command pipeline summaries.
     pub command_stages: Vec<RiffDbReadStageEvidence>,
     /// Commit, queue, grouping, and writer-utilization evidence.
@@ -292,6 +295,8 @@ pub struct RiffDbWriterEvidence {
     pub batch_size: RiffDbReadStageEvidence,
     /// Accepted command queue-duration histogram.
     pub storage_queue_duration: RiffDbReadStageEvidence,
+    /// Final apply through deferred-journal receipt creation duration.
+    pub journal_submit_duration: RiffDbReadStageEvidence,
 }
 
 /// One fixed read-pipeline stage summary.
@@ -1343,6 +1348,7 @@ fn read_server_stdout(
     let mut write_completion_groups = None;
     let mut dispatch_reasons = None;
     let mut read_stages = None;
+    let mut write_service_stages = None;
     let mut command_stages = None;
     let mut writer = None;
     let mut writer_frame_census = None;
@@ -1368,6 +1374,8 @@ fn read_server_stdout(
             dispatch_reasons = Some(parse_fixed_counts(encoded, "dispatch-reason", 4));
         } else if let Some(encoded) = line.trim_end().strip_prefix(READ_STAGE_PREFIX) {
             read_stages = Some(parse_read_stages(encoded));
+        } else if let Some(encoded) = line.trim_end().strip_prefix(WRITE_SERVICE_STAGE_PREFIX) {
+            write_service_stages = Some(parse_read_stages(encoded));
         } else if let Some(encoded) = line.trim_end().strip_prefix(COMMAND_STAGE_PREFIX) {
             command_stages = Some(parse_read_stages(encoded));
         } else if let Some(encoded) = line.trim_end().strip_prefix(WRITER_EVIDENCE_PREFIX) {
@@ -1384,6 +1392,7 @@ fn read_server_stdout(
         write_completion_groups,
         dispatch_reasons,
         read_stages,
+        write_service_stages,
         command_stages,
         writer,
     ) {
@@ -1391,6 +1400,7 @@ fn read_server_stdout(
             Some(Ok(write_completion_groups)),
             Some(Ok(dispatch_reasons)),
             Some(Ok(read_stages)),
+            Some(Ok(write_service_stages)),
             Some(Ok(command_stages)),
             Some(Ok(writer)),
         ) => writer_frame_census
@@ -1405,6 +1415,7 @@ fn read_server_stdout(
                                 write_completion_groups,
                                 dispatch_reasons,
                                 read_stages,
+                                write_service_stages,
                                 command_stages,
                                 writer,
                                 writer_frame_census,
@@ -1415,11 +1426,12 @@ fn read_server_stdout(
                             })
                     })
             }),
-        (Some(Err(error)), _, _, _, _)
-        | (_, Some(Err(error)), _, _, _)
-        | (_, _, Some(Err(error)), _, _)
-        | (_, _, _, Some(Err(error)), _)
-        | (_, _, _, _, Some(Err(error))) => Err(error),
+        (Some(Err(error)), _, _, _, _, _)
+        | (_, Some(Err(error)), _, _, _, _)
+        | (_, _, Some(Err(error)), _, _, _)
+        | (_, _, _, Some(Err(error)), _, _)
+        | (_, _, _, _, Some(Err(error)), _)
+        | (_, _, _, _, _, Some(Err(error))) => Err(error),
         _ => Err(io::Error::other("incomplete riffdb shutdown telemetry")),
     };
     let _ = shutdown_sender.send(evidence);
@@ -1585,7 +1597,7 @@ fn parse_writer_evidence(encoded: &str) -> io::Result<RiffDbWriterEvidence> {
         None => return Err(io::Error::other("missing writer queue estimate")),
     };
     let parsed = parse_read_stages(histograms)?;
-    if parsed.len() != 4 {
+    if parsed.len() != 5 {
         return Err(io::Error::other("invalid writer histogram cardinality"));
     }
     let find = |name: &str| -> io::Result<RiffDbReadStageEvidence> {
@@ -1612,6 +1624,7 @@ fn parse_writer_evidence(encoded: &str) -> io::Result<RiffDbWriterEvidence> {
         flush_duration: find("flush_us")?,
         batch_size: find("batch_size")?,
         storage_queue_duration: find("storage_queue_us")?,
+        journal_submit_duration: find("journal_submit_us")?,
     })
 }
 
@@ -1801,7 +1814,13 @@ mod tests {
         assert_eq!(stages[0].buckets.len(), 16);
         assert!(parse_read_stages("authorize:2:9:1,2").is_err());
 
-        let writer_histograms = ["commit_us", "flush_us", "batch_size", "storage_queue_us"]
+        let writer_histograms = [
+            "commit_us",
+            "flush_us",
+            "batch_size",
+            "storage_queue_us",
+            "journal_submit_us",
+        ]
             .map(|name| format!("{name}:2:9:{buckets}"))
             .join(";");
         let writer = parse_writer_evidence(&format!(
@@ -1822,6 +1841,7 @@ mod tests {
         assert_eq!(writer.flush_duration.name, "flush_us");
         assert_eq!(writer.batch_size.name, "batch_size");
         assert_eq!(writer.storage_queue_duration.name, "storage_queue_us");
+        assert_eq!(writer.journal_submit_duration.name, "journal_submit_us");
         assert!(parse_writer_evidence("busy_us=1\tcommit_us:1:1:1,2").is_err());
 
         let query_stages = riffdb_storage_redb::QUERY_EXECUTE_STAGE_LABELS_V1.join(",");
