@@ -21,14 +21,15 @@ use riffdb_errors::{IncidentIdSource, InternalError};
 use riffdb_policy::{AuthorizationTelemetry, AuthorizationTelemetryEvent};
 use riffdb_service::{
     AuthoritativeReadinessFailure, ReadPipelineStage, ServiceDiagnostics, ServiceHealthHooks,
-    ServiceTelemetry, ServiceTelemetryEvent,
+    ServiceTelemetry, ServiceTelemetryEvent, WriteServiceStage,
 };
 use riffdb_types::{ConflictKeyHash, IncidentId};
 
 use crate::{
     HISTOGRAM_UPPER_BOUNDS, HealthRegistry, HistogramSnapshot, MetricKey, MetricLabel,
     MetricRegistry, READ_PIPELINE_STAGE_COUNT, RequiredCounter, RequiredGauge, RequiredHistogram,
-    TraceCollector, TraceRecord, read_pipeline_stage_index,
+    TraceCollector, TraceRecord, WRITE_SERVICE_STAGE_COUNT, read_pipeline_stage_index,
+    write_service_stage_index,
 };
 
 /// Maximum redacted incidents retained for operator correlation.
@@ -255,6 +256,7 @@ impl Observability {
             storage_queue_duration_us: self
                 .metrics
                 .required_histogram(RequiredHistogram::StorageQueueLatencyMicroseconds),
+            command_submission_duration_us: self.metrics.command_submission_duration(),
         }
     }
 
@@ -269,6 +271,19 @@ impl Observability {
             let stage = ReadPipelineStage::ALL[index];
             debug_assert_eq!(read_pipeline_stage_index(stage), index);
             let snapshot = self.metrics.read_stage_duration(stage);
+            (snapshot.count, snapshot.sum, snapshot.cumulative_buckets)
+        })
+    }
+
+    /// Returns per-stage mutating-command service histograms in stable order.
+    #[must_use]
+    pub fn write_service_stage_snapshot(
+        &self,
+    ) -> [(u64, u64, [u64; HISTOGRAM_UPPER_BOUNDS.len()]); WRITE_SERVICE_STAGE_COUNT] {
+        std::array::from_fn(|index| {
+            let stage = WriteServiceStage::ALL[index];
+            debug_assert_eq!(write_service_stage_index(stage), index);
+            let snapshot = self.metrics.write_service_stage_duration(stage);
             (snapshot.count, snapshot.sum, snapshot.cumulative_buckets)
         })
     }
@@ -440,6 +455,11 @@ impl ServiceTelemetry for Observability {
                     .observe_read_stage_duration(stage, duration_micros(elapsed));
                 return;
             }
+            ServiceTelemetryEvent::WriteServiceStageCompleted { stage, elapsed } => {
+                self.metrics
+                    .observe_write_service_stage_duration(stage, duration_micros(elapsed));
+                return;
+            }
         };
         self.metrics.increment(metric);
         self.record_trace(trace);
@@ -468,6 +488,28 @@ pub fn format_read_stages_v1_line(
         ));
     }
     format!("riffdb-read-stages-v1\t{}", parts.join(";"))
+}
+
+/// Renders fixed-cardinality mutating-command service-stage shutdown evidence.
+///
+/// Format mirrors read-stage evidence and carries no command identity or value.
+#[must_use]
+pub fn format_write_service_stages_v1_line(
+    snapshot: &[(u64, u64, [u64; HISTOGRAM_UPPER_BOUNDS.len()]); WRITE_SERVICE_STAGE_COUNT],
+) -> String {
+    let mut parts = Vec::with_capacity(WRITE_SERVICE_STAGE_COUNT);
+    for (index, (count, sum_us, buckets)) in snapshot.iter().enumerate() {
+        let bucket_text = buckets
+            .iter()
+            .map(u64::to_string)
+            .collect::<Vec<_>>()
+            .join(",");
+        parts.push(format!(
+            "{}:{count}:{sum_us}:{bucket_text}",
+            WriteServiceStage::ALL[index].metric_label()
+        ));
+    }
+    format!("riffdb-write-service-stages-v1\t{}", parts.join(";"))
 }
 
 /// Renders the process-shutdown evidence line for coordinator command stages.
@@ -523,6 +565,8 @@ pub struct WriterEvidenceSnapshotV1 {
     pub commit_batch_size: HistogramSnapshot,
     /// Accepted command queue latency.
     pub storage_queue_duration_us: HistogramSnapshot,
+    /// Final apply, frame encoding, and journal receipt creation duration.
+    pub command_submission_duration_us: HistogramSnapshot,
 }
 
 /// Renders one process-generation writer evidence line.
@@ -551,6 +595,7 @@ pub fn format_writer_evidence_v1_line(snapshot: &WriterEvidenceSnapshotV1) -> St
         ("flush_us", snapshot.durable_flush_duration_us),
         ("batch_size", snapshot.commit_batch_size),
         ("storage_queue_us", snapshot.storage_queue_duration_us),
+        ("journal_submit_us", snapshot.command_submission_duration_us),
     ]
     .map(|(name, histogram)| {
         let buckets = histogram
@@ -820,6 +865,10 @@ impl CommitTelemetry for Observability {
                     self.metrics
                         .increment_required_counter(RequiredCounter::Commits);
                 }
+            }
+            CommitTelemetryEvent::CommitSubmissionCompleted { elapsed, .. } => {
+                self.metrics
+                    .observe_command_submission_duration(duration_micros(elapsed));
             }
             CommitTelemetryEvent::UncertaintyResolved { stage, resolution } => {
                 self.metrics

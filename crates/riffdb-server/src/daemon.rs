@@ -3082,6 +3082,7 @@ async fn supervise_ready_process(
     let write_completion_groups = graph.write_completion_group_snapshot();
     let dispatch_reasons = graph.command_group_dispatch_snapshot();
     let read_stages = graph.read_stage_snapshot();
+    let write_service_stages = graph.write_service_stage_snapshot();
     let command_stages = graph.command_stage_snapshot();
     let writer_evidence = graph.writer_evidence_snapshot();
     let writer_frame_census = riffdb_storage_redb::writer_command_frame_census_v1();
@@ -3135,6 +3136,9 @@ async fn supervise_ready_process(
         let _ = writeln!(stdout, "riffdb-dispatch-reasons-v1\t{reasons}");
         let read_stages_line = riffdb_observability::format_read_stages_v1_line(&read_stages);
         let _ = writeln!(stdout, "{read_stages_line}");
+        let write_service_stages_line =
+            riffdb_observability::format_write_service_stages_v1_line(&write_service_stages);
+        let _ = writeln!(stdout, "{write_service_stages_line}");
         let command_stages_line =
             riffdb_observability::format_command_stages_v1_line(&command_stages);
         let _ = writeln!(stdout, "{command_stages_line}");

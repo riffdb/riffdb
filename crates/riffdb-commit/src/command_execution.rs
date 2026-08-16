@@ -2404,15 +2404,22 @@ where
             Some(audits) => match staged.apply_group_deferred(audits) {
                 CheckedCommandGroupApplyResult::Applied { epoch, batch } => {
                     return match seal_checked_deferred_group(epoch, batch) {
-                        Ok(fence) => IndexedCommandGroupDriveResult::Submitted {
-                            completed: Vec::new(),
-                            subgroup: SubmittedCommandSubgroup {
-                                indices: staged_indices,
-                                fence,
-                                commit_started_at,
-                                batch_size: u16::try_from(batch_size).expect("group cap fits u16"),
-                            },
-                        },
+                        Ok(fence) => {
+                            let batch_size = u16::try_from(batch_size).expect("group cap fits u16");
+                            telemetry.record(CommitTelemetryEvent::CommitSubmissionCompleted {
+                                elapsed: commit_started_at.elapsed(),
+                                batch_size,
+                            });
+                            IndexedCommandGroupDriveResult::Submitted {
+                                completed: Vec::new(),
+                                subgroup: SubmittedCommandSubgroup {
+                                    indices: staged_indices,
+                                    fence,
+                                    commit_started_at,
+                                    batch_size,
+                                },
+                            }
+                        }
                         Err(result) => complete_indexed_group_commit(
                             port,
                             lifecycle,
@@ -3052,15 +3059,22 @@ where
             Some(audits) => match staged.apply_group_deferred(audits) {
                 CheckedCommandGroupApplyResult::Applied { epoch, batch } => {
                     return match seal_checked_deferred_group(epoch, batch) {
-                        Ok(fence) => IndexedCommandGroupDriveResult::Submitted {
-                            completed,
-                            subgroup: SubmittedCommandSubgroup {
-                                indices: staged_indices,
-                                fence,
-                                commit_started_at,
-                                batch_size: u16::try_from(batch_size).expect("group cap fits u16"),
-                            },
-                        },
+                        Ok(fence) => {
+                            let batch_size = u16::try_from(batch_size).expect("group cap fits u16");
+                            telemetry.record(CommitTelemetryEvent::CommitSubmissionCompleted {
+                                elapsed: commit_started_at.elapsed(),
+                                batch_size,
+                            });
+                            IndexedCommandGroupDriveResult::Submitted {
+                                completed,
+                                subgroup: SubmittedCommandSubgroup {
+                                    indices: staged_indices,
+                                    fence,
+                                    commit_started_at,
+                                    batch_size,
+                                },
+                            }
+                        }
                         Err(result) => {
                             completed.extend(complete_indexed_group_commit(
                                 port,

@@ -53,7 +53,7 @@ use crate::{
     ResolveCommandOutcomeResult, ResolveCommandOutcomeSelectorRef, RiffDbService,
     RiffDbServiceInner, ServiceAuditTargetMap, ServiceFailure, ServiceFuture, ServiceResult,
     ServiceTelemetryEvent, SubmittedFieldIdentity, SubmittedRecord, SubmittedValue,
-    ensure_response_budget,
+    WriteServiceStage, ensure_response_budget,
 };
 
 /// Absolute closed admission wait across queue-depth and retained-byte stages
@@ -335,6 +335,7 @@ pub(crate) async fn execute_command(
     request: &ExecuteCommandRequest,
     mode: CommandInvocationMode,
 ) -> ServiceResult<ExecuteCommandResult> {
+    let service_started = Instant::now();
     let active = prepare_active_command(service, context, request).await?;
     let targets = ServiceAuditTargetMap::execute_command(
         active.catalog_request.lineage().clone(),
@@ -357,7 +358,16 @@ pub(crate) async fn execute_command(
             }
         }
         ExecutionClass::IdempotentMutation => {
-            execute_mutation(service, context, request, active, targets, mode).await
+            execute_mutation(
+                service,
+                context,
+                request,
+                active,
+                targets,
+                mode,
+                service_started,
+            )
+            .await
         }
     }
 }
@@ -621,6 +631,7 @@ async fn execute_mutation(
     active: ActiveCommand,
     targets: ServiceAuditTargetsV1,
     mode: CommandInvocationMode,
+    service_started: Instant,
 ) -> ServiceResult<ExecuteCommandResult> {
     service.classify_intrinsic_prestart(
         context,
@@ -983,8 +994,25 @@ async fn execute_mutation(
                 .await);
             }
         };
-        match receipt.completion().await {
+        service
+            .providers
+            .telemetry
+            .record(ServiceTelemetryEvent::WriteServiceStageCompleted {
+                stage: WriteServiceStage::ServicePrepare,
+                elapsed: service_started.elapsed(),
+            });
+        let coordinator_started = Instant::now();
+        let completion = receipt.completion().await;
+        service
+            .providers
+            .telemetry
+            .record(ServiceTelemetryEvent::WriteServiceStageCompleted {
+                stage: WriteServiceStage::CoordinatorAwait,
+                elapsed: coordinator_started.elapsed(),
+            });
+        match completion {
             Ok(CoordinatorCommandResult::Committed(outcome)) => {
+                let finish_started = Instant::now();
                 let (result, link) = match map_committed_outcome(
                     outcome,
                     &selected_request,
@@ -1027,7 +1055,14 @@ async fn execute_mutation(
                 } else {
                     finish_success(service, context, invocation, pending.terminal(), true).await?;
                 }
-                return pending.into_response();
+                let response = pending.into_response();
+                service.providers.telemetry.record(
+                    ServiceTelemetryEvent::WriteServiceStageCompleted {
+                        stage: WriteServiceStage::ServiceFinish,
+                        elapsed: finish_started.elapsed(),
+                    },
+                );
+                return response;
             }
             Ok(CoordinatorCommandResult::ExecutionFailed(outcome)) => {
                 let failure = PublicError::command_execution_failed(outcome.code()).into();

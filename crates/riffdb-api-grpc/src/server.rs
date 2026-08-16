@@ -29,7 +29,7 @@ use riffdb_service::{
     RecoveryOfflineMaintenanceApplication, RecoveryRestoreOfflineBackupInvocation,
     RequestCancellationHandle, RequestContext, RequestControl, RestoreOfflineBackupInvocation,
     RestoreRetryOfflineMaintenanceApplication, ServiceFailure, ServiceFuture, ServiceResult,
-    ServiceTelemetry, ServiceTelemetryEvent,
+    ServiceTelemetry, ServiceTelemetryEvent, WriteServiceStage,
 };
 use riffdb_types::{
     Audience, ContractLineage, ContractVersion, DatabaseAlias, MAX_DATABASES_PER_PROCESS,
@@ -1341,6 +1341,7 @@ impl CommandService for GrpcApplication {
         &self,
         request: Request<v1::ExecuteCommandRequest>,
     ) -> Result<Response<v1::ExecuteCommandResponse>, Status> {
+        let transport_started = Instant::now();
         let (metadata, _peer, message) = split_request(request);
         let (request_id, request) = execute_command_request_from_proto(message)?;
         let lifecycle = self.select_lifecycle(&metadata)?;
@@ -1353,11 +1354,23 @@ impl CommandService for GrpcApplication {
             &metadata,
             request_id,
         )?;
+        let telemetry = lifecycle.read_stage_telemetry();
+        if let Some(telemetry) = &telemetry {
+            telemetry.record(ServiceTelemetryEvent::WriteServiceStageCompleted {
+                stage: WriteServiceStage::TransportAdapt,
+                elapsed: transport_started.elapsed(),
+            });
+        }
         let result = map_service(service.execute_command(context, request).await)?;
-        Ok(Response::new(execute_command_result_to_proto(
-            &result,
-            history_incarnation,
-        )?))
+        let encode_started = Instant::now();
+        let response = execute_command_result_to_proto(&result, history_incarnation)?;
+        if let Some(telemetry) = &telemetry {
+            telemetry.record(ServiceTelemetryEvent::WriteServiceStageCompleted {
+                stage: WriteServiceStage::EncodeConvert,
+                elapsed: encode_started.elapsed(),
+            });
+        }
+        Ok(Response::new(response))
     }
 
     async fn execute_batch(

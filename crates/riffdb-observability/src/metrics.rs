@@ -13,6 +13,7 @@ use riffdb_conflict::ConflictEventKind;
 use riffdb_policy::{AuthorizationDefect, PolicyCode};
 use riffdb_service::{
     AuthoritativeReadinessFailure, CapacityRejectionStage, ReadPipelineStage, ServiceTerminalClass,
+    WriteServiceStage,
 };
 use riffdb_types::{CommandId, ServiceIngressKindV1, ServiceOperationV1};
 
@@ -1001,6 +1002,8 @@ const COMMAND_GROUP_DISPATCH_REASON_COUNT: usize = 4;
 const COMMAND_PIPELINE_STAGE_COUNT: usize = 5;
 /// Closed end-to-end symbolic read pipeline stage cardinality.
 pub const READ_PIPELINE_STAGE_COUNT: usize = 12;
+/// Closed mutating-command service-stage cardinality.
+pub const WRITE_SERVICE_STAGE_COUNT: usize = 5;
 
 struct MetricRegistryInner {
     counters: [AtomicU64; MAX_METRIC_SERIES],
@@ -1012,6 +1015,8 @@ struct MetricRegistryInner {
     command_group_dispatch_reasons: [AtomicU64; COMMAND_GROUP_DISPATCH_REASON_COUNT],
     command_stage_durations: [FixedHistogram; COMMAND_PIPELINE_STAGE_COUNT],
     read_stage_durations: [FixedHistogram; READ_PIPELINE_STAGE_COUNT],
+    write_service_stage_durations: [FixedHistogram; WRITE_SERVICE_STAGE_COUNT],
+    command_submission_durations: FixedHistogram,
 }
 
 /// Cloneable fixed-cardinality counter registry.
@@ -1035,6 +1040,8 @@ impl MetricRegistry {
                 command_group_dispatch_reasons: std::array::from_fn(|_| AtomicU64::new(0)),
                 command_stage_durations: std::array::from_fn(|_| FixedHistogram::new()),
                 read_stage_durations: std::array::from_fn(|_| FixedHistogram::new()),
+                write_service_stage_durations: std::array::from_fn(|_| FixedHistogram::new()),
+                command_submission_durations: FixedHistogram::new(),
             }),
         }
     }
@@ -1216,6 +1223,28 @@ impl MetricRegistry {
         self.inner.read_stage_durations[read_pipeline_stage_index(stage)].snapshot()
     }
 
+    /// Observes one non-overlapping mutating-command service stage.
+    pub fn observe_write_service_stage_duration(&self, stage: WriteServiceStage, value: u64) {
+        self.inner.write_service_stage_durations[write_service_stage_index(stage)].observe(value);
+    }
+
+    /// Returns the fixed histogram for one mutating-command service stage.
+    #[must_use]
+    pub fn write_service_stage_duration(&self, stage: WriteServiceStage) -> HistogramSnapshot {
+        self.inner.write_service_stage_durations[write_service_stage_index(stage)].snapshot()
+    }
+
+    /// Observes final apply through deferred-journal receipt creation.
+    pub fn observe_command_submission_duration(&self, value: u64) {
+        self.inner.command_submission_durations.observe(value);
+    }
+
+    /// Returns final apply through deferred-journal receipt duration.
+    #[must_use]
+    pub fn command_submission_duration(&self) -> HistogramSnapshot {
+        self.inner.command_submission_durations.snapshot()
+    }
+
     /// Adds busy time spent on the pipelined writer thread.
     pub fn add_writer_busy_microseconds(&self, micros: u64) {
         saturating_add(
@@ -1303,6 +1332,18 @@ pub const fn read_pipeline_stage_index(stage: ReadPipelineStage) -> usize {
         ReadPipelineStage::AuthorizePost => 9,
         ReadPipelineStage::ResponseBuild => 10,
         ReadPipelineStage::EncodeConvert => 11,
+    }
+}
+
+/// Stable registry index for one closed mutating-command service stage.
+#[must_use]
+pub const fn write_service_stage_index(stage: WriteServiceStage) -> usize {
+    match stage {
+        WriteServiceStage::TransportAdapt => 0,
+        WriteServiceStage::ServicePrepare => 1,
+        WriteServiceStage::CoordinatorAwait => 2,
+        WriteServiceStage::ServiceFinish => 3,
+        WriteServiceStage::EncodeConvert => 4,
     }
 }
 

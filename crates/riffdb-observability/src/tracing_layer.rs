@@ -299,6 +299,9 @@ impl TraceRecord {
                 45 + commit_call_terminal_tag(terminal),
                 saturating_duration_microseconds(elapsed),
             ),
+            CommitTelemetryEvent::CommitSubmissionCompleted { elapsed, .. } => {
+                (82, saturating_duration_microseconds(elapsed))
+            }
             CommitTelemetryEvent::UncertaintyResolved { stage, resolution } => (
                 53 + (commit_uncertainty_stage_tag(stage) - 1) * 5
                     + commit_uncertainty_resolution_tag(resolution),

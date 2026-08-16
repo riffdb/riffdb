@@ -525,7 +525,8 @@ impl ServiceTelemetry for ProductionServiceTelemetry {
             ServiceTelemetryEvent::CapacityRejected { .. } => &self.capacity_rejected,
             // Stage histograms are retained on Observability; this aggregate
             // counter surface does not expose stage labels.
-            ServiceTelemetryEvent::ReadPipelineStageCompleted { .. } => return,
+            ServiceTelemetryEvent::ReadPipelineStageCompleted { .. }
+            | ServiceTelemetryEvent::WriteServiceStageCompleted { .. } => return,
         };
         saturating_increment(counter);
     }

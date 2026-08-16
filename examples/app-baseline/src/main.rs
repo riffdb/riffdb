@@ -800,6 +800,12 @@ fn riffdb_shutdown_evidence_json(evidence: &RiffDbShutdownEvidence) -> serde_jso
             "sum_us": stage.sum_us,
             "cumulative_buckets": stage.buckets,
         })).collect::<Vec<_>>(),
+        "write_service_stages": evidence.write_service_stages.iter().map(|stage| json!({
+            "stage": stage.name,
+            "count": stage.count,
+            "sum_us": stage.sum_us,
+            "cumulative_buckets": stage.buckets,
+        })).collect::<Vec<_>>(),
         "command_pipeline_stages": evidence.command_stages.iter().map(|stage| json!({
             "stage": stage.name,
             "count": stage.count,
@@ -821,6 +827,7 @@ fn riffdb_shutdown_evidence_json(evidence: &RiffDbShutdownEvidence) -> serde_jso
             "durable_flush_duration_us": histogram(&evidence.writer.flush_duration),
             "commit_batch_size": histogram(&evidence.writer.batch_size),
             "storage_queue_duration_us": histogram(&evidence.writer.storage_queue_duration),
+            "journal_submit_duration_us": histogram(&evidence.writer.journal_submit_duration),
             "physical_commits": physical_commits,
             "logical_commands_committed": logical_commands_committed,
             "mean_commands_per_physical_commit": if physical_commits == 0 {
