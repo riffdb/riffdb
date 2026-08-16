@@ -113,6 +113,14 @@ about 7.23 s to 7.477 s and produced no independently credible cloud win. It
 was removed. This increment retains only the checkpoint handoff subject to the
 exact paired cloud comparison above.
 
+A second candidate shared the live mutation graph with overlay-lineage
+tracking instead of cloning every mutation key at frame seal. The exact
+three-repetition workstation seed was 1.797 s versus 1.792 s for this committed
+checkpoint baseline. Cumulative journal-submit and final-apply time remained
+within run noise, so the candidate was removed rather than retaining another
+lineage representation without a critical-path gain. Diagnostic receipt:
+`/home/kevin/tmp/wp640-shared-lineage-seed.json`.
+
 ## Acceptance plumbing note
 
 The repository's recovery entry point is `./scripts/recovery_full`; the former
