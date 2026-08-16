@@ -205,18 +205,43 @@ where
     C: ReadableTable<&'static [u8], &'static [u8]>,
     E: ReadableTable<&'static [u8], &'static [u8]>,
 {
+    command_authority_head_profiled(commits, events).map(|profile| profile.head)
+}
+
+/// Diagnostic-only physical shape of the authority row used to resolve the
+/// logical application head. The values are redaction-safe cardinalities; the
+/// authority bytes themselves never cross the storage boundary.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct CommandAuthorityHeadProfileV1 {
+    pub(crate) head: Option<CommitSequence>,
+    pub(crate) physical_bytes: u64,
+    pub(crate) logical_commands: u64,
+}
+
+pub(crate) fn command_authority_head_profiled<C, E>(
+    commits: &C,
+    events: &E,
+) -> Result<CommandAuthorityHeadProfileV1, StorageError>
+where
+    C: ReadableTable<&'static [u8], &'static [u8]>,
+    E: ReadableTable<&'static [u8], &'static [u8]>,
+{
     let Some((key, encoded)) = commits.last().map_err(precommit_storage_error)? else {
-        return Ok(None);
+        return Ok(CommandAuthorityHeadProfileV1::default());
     };
     let physical_sequence = decode_application_sequence_key(key.value()).map_err(|_| corrupt())?;
+    let physical_bytes = u64::try_from(encoded.value().len()).unwrap_or(u64::MAX);
     let logical = commits_in_physical_row(encoded.value(), events, physical_sequence)?;
-    Ok(Some(
-        logical
-            .last()
-            .ok_or_else(corrupt)?
-            .value()
-            .commit_sequence(),
-    ))
+    let head = logical
+        .last()
+        .ok_or_else(corrupt)?
+        .value()
+        .commit_sequence();
+    Ok(CommandAuthorityHeadProfileV1 {
+        head: Some(head),
+        physical_bytes,
+        logical_commands: u64::try_from(logical.len()).unwrap_or(u64::MAX),
+    })
 }
 
 /// Resolves a command by logical sequence. Segments use one predecessor range

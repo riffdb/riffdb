@@ -101,6 +101,10 @@ pub struct QueryExecuteWindowV1 {
     pub overlay_transitions_max: u64,
     pub overlay_bytes_sum: u64,
     pub overlay_bytes_max: u64,
+    pub authority_tail_bytes_sum: u64,
+    pub authority_tail_bytes_max: u64,
+    pub authority_tail_commands_sum: u64,
+    pub authority_tail_commands_max: u64,
 }
 
 /// Complete fixed-cardinality process-generation query-execute census.

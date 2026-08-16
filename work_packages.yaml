@@ -13345,3 +13345,44 @@ work_packages:
       count and byte ceilings independent of database size and request count; excess samples merge
       into one terminal bounded window rather than retaining per-request state.
   human_review_triggers: *id001
+- id: WP-637
+  name: Restore constant-time named-query application frontiers
+  depends_on: [WP-481, WP-488, WP-636]
+  objective: Restore the allocator-backed constant-time application frontier on every restarted,
+    current, durable, and composite named-query path without weakening command-authority,
+    retention, snapshot, recovery, or corruption guarantees.
+  requirements: [PERF-007, PERF-008, PERF-018]
+  required_adrs: [ADR-0055, ADR-0056, ADR-0104, ADR-0106, ADR-0123]
+  allowed_paths: [work_packages.yaml, examples/app-baseline/**,
+    crates/riffdb-query-executor/**, crates/riffdb-storage-api/**,
+    crates/riffdb-storage-redb/**, crates/riffdb-server/**,
+    docs/performance/**, scripts/**]
+  deliverables:
+  - One same-snapshot allocator-to-application-head mapping for empty, next, exhausted, retained,
+    and pruned states, with a constant-time command-authority presence check and fail-closed gross
+    disagreement handling on current, durable, and composite reads
+  - Actual `QueryExecutionPort` regression coverage proving a restarted named query does not decode,
+    checksum, hash, re-encode, or allocate from retained command segments while startup, recovery,
+    retention, explicit history reads, backup, and replication retain their complete validation
+  - Pre/post workstation and isolated N1/E2 fixed-GetTicket plus public interactive c32 receipts,
+    evaluated against WP-636's predeclared +100% c1, +35% c32, and no-regression gates without
+    changing the PERF-018 client, transport, PostgreSQL, seed, or workload shapes
+  - Updated performance note linking the production regression to commit `53d73087`, reporting
+    absolute core-seconds and cloud dilation, and preserving the safe-application PostgreSQL target
+  acceptance_commands:
+  - cargo +1.97.0 test --manifest-path examples/app-baseline/Cargo.toml --workspace
+  - cargo +1.97.0 test -p riffdb-query-executor -p riffdb-storage-redb -p riffdb-server --all-features
+  - ./scripts/check-workspace-policy
+  - ./scripts/check-requirement-coverage
+  - cargo +1.97.0 fmt --all -- --check
+  exit_gate: Restarted exact named queries recover WP-481's constant-time frontier without decoding
+    retained command payloads, all corruption and recovery tests remain green, c1 and c32 meet the
+    predeclared public gains on workstation and cloud, and no frozen comparator shape changes.
+  standing_design_tests:
+    interface_safety: The application continues to select only a named typed query and receives the
+      exact same authorized snapshot and freshness frontier; no caller can select the fast path,
+      suppress integrity validation, provide a frontier, or bypass retention and authority checks.
+    scale: Frontier resolution performs a fixed number of same-transaction metadata and authority-
+      presence lookups independent of retained history, segment width, entity count, or request count,
+      and adds no cache, retained per-request state, scan, queue, or unbounded diagnostic surface.
+  human_review_triggers: *id001
