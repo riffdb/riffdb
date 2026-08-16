@@ -3,7 +3,7 @@ use riffdb_types::{ApplicationRoleHash, CapabilityId};
 use crate::{
     ApplicationInstallationPlan, CredentialDestination, InstallationArtifact, InstallationFeature,
     InstallationPlanError, InstallationPlanErrorKind, InstallationRole, InstallationSymbol,
-    InstallationTarget, RoleOperation,
+    InstallationTarget, QuerySecretOutput, RoleAuthorityAtom, RoleAuthoritySet, RoleOperation,
 };
 
 /// Exact lifecycle observation required before any installation mutation.
@@ -20,7 +20,7 @@ pub enum InstallationLifecycleState {
 pub struct ObservedInstallationRole {
     name: InstallationSymbol,
     role_hash: ApplicationRoleHash,
-    operations: Vec<RoleOperation>,
+    authority: RoleAuthoritySet,
 }
 
 impl ObservedInstallationRole {
@@ -28,18 +28,21 @@ impl ObservedInstallationRole {
     pub fn new(
         name: InstallationSymbol,
         role_hash: ApplicationRoleHash,
-        mut operations: Vec<RoleOperation>,
+        operations: Vec<RoleOperation>,
     ) -> Result<Self, InstallationPlanError> {
-        operations.sort();
-        if operations.windows(2).any(|pair| pair[0] == pair[1]) {
-            return Err(InstallationPlanError::from_kind_for_diff(
-                InstallationPlanErrorKind::Duplicate,
-            ));
-        }
+        Self::new_with_authority(name, role_hash, RoleAuthoritySet::new(operations, vec![])?)
+    }
+
+    /// Creates one exact role observation over the complete closed authority vocabulary.
+    pub fn new_with_authority(
+        name: InstallationSymbol,
+        role_hash: ApplicationRoleHash,
+        authority: RoleAuthoritySet,
+    ) -> Result<Self, InstallationPlanError> {
         Ok(Self {
             name,
             role_hash,
-            operations,
+            authority,
         })
     }
 
@@ -58,7 +61,19 @@ impl ObservedInstallationRole {
     /// Current symbolic operation surface.
     #[must_use]
     pub fn operations(&self) -> &[RoleOperation] {
-        &self.operations
+        self.authority.operations()
+    }
+
+    /// Current symbolic named-query secret-output surface.
+    #[must_use]
+    pub fn secret_outputs(&self) -> &[QuerySecretOutput] {
+        self.authority.secret_outputs()
+    }
+
+    /// Complete current symbolic authority.
+    #[must_use]
+    pub const fn authority(&self) -> &RoleAuthoritySet {
+        &self.authority
     }
 }
 
@@ -198,8 +213,8 @@ pub struct InstallationRoleDiff {
     name: InstallationSymbol,
     current_hash: Option<ApplicationRoleHash>,
     desired_hash: ApplicationRoleHash,
-    additions: Vec<RoleOperation>,
-    removals: Vec<RoleOperation>,
+    additions: Vec<RoleAuthorityAtom>,
+    removals: Vec<RoleAuthorityAtom>,
     widening_approved: bool,
 }
 
@@ -224,13 +239,13 @@ impl InstallationRoleDiff {
 
     /// New symbolic authority.
     #[must_use]
-    pub fn additions(&self) -> &[RoleOperation] {
+    pub fn additions(&self) -> &[RoleAuthorityAtom] {
         &self.additions
     }
 
     /// Removed symbolic authority.
     #[must_use]
-    pub fn removals(&self) -> &[RoleOperation] {
+    pub fn removals(&self) -> &[RoleAuthorityAtom] {
         &self.removals
     }
 
@@ -403,21 +418,16 @@ fn role_diff(
     let observed = observed_roles
         .iter()
         .find(|observed| observed.name == *desired.name());
-    let existing = observed.map_or(&[][..], |role| role.operations.as_slice());
-    let additions = desired
-        .desired_operations()
+    let existing = observed.map_or_else(Vec::new, |role| role.authority.atoms());
+    let desired_atoms = desired.desired_authority().atoms();
+    let additions = desired_atoms
         .iter()
-        .filter(|operation| existing.binary_search(operation).is_err())
+        .filter(|atom| existing.binary_search(atom).is_err())
         .cloned()
         .collect::<Vec<_>>();
     let removals = existing
         .iter()
-        .filter(|operation| {
-            desired
-                .desired_operations()
-                .binary_search(operation)
-                .is_err()
-        })
+        .filter(|atom| desired_atoms.binary_search(atom).is_err())
         .cloned()
         .collect::<Vec<_>>();
     let widening_approved = additions.is_empty()

@@ -32,7 +32,7 @@ fn four_domain_manifests_bind_empty_and_populated_evolution_receipts() {
         assert_eq!(manifest.schema(), ADAPTER_CONFORMANCE_MANIFEST_SCHEMA_V2);
         assert_eq!(
             manifest.input().feature_claims.len(),
-            InstallationFeature::ALL.len()
+            InstallationFeature::ADAPTER_CONFORMANCE.len()
         );
         assert!(empty.input().roles.iter().all(|role| {
             role.previous_role_hash().is_none() && role.widening_approval().is_none()

@@ -16,7 +16,27 @@ The plan must be canonical installation-plan bytes and the campaign ID must be
 a caller-retained UUIDv7. Ordinary installations continue to use
 `riffdb.application-installation-plan/v1`. A portability reimport uses v2,
 which additionally binds the exact export manifest, completed export receipt,
-and portability manifest hashes:
+and portability manifest hashes. A role selecting a named query with a
+compiler-declared secret output uses v3. V3 carries optional reimport identity
+and complete canonical role authority as closed `Operation { kind, name }` and
+`QuerySecretOutput { query, entity, field }` atoms.
+
+The compiler remains the least-sufficient writer: secret-free plans retain
+their frozen v1 or v2 bytes. An installer that does not understand v3 refuses
+before remote mutation. For an existing role, every desired atom absent from
+the observed role is widening and requires one approval bound to the exact
+predecessor role hash and complete ordered additions. This includes adding a
+secret output while its query operation is unchanged, or while another query
+already reveals the same field. Initial roles show their complete authority in
+the plan; starting that exact plan is the explicit confirmation, and the
+terminal receipt binds its plan hash and installed role hashes.
+
+The atom sets contain names only—never field IDs, values, query source,
+capability bytes, or bearer credentials. Each role is limited to 1,024
+operations, 1,024 secret outputs, and 2,048 atoms total. Missing, excess,
+reordered, stale, or renamed approval data fails before capability creation.
+
+Start or resume the exact plan with:
 
 ```bash
 riffdb --config operator.toml application install \
@@ -104,7 +124,7 @@ also stops the invocation before the existing deploy executor runs.
 Campaign stage order is preflight, contract, migration, query modules,
 reactive modules, roles, reimport, credentials, driver proof, seeds, and the
 terminal receipt. A v1 plan records `reimport_not_required` at the reimport
-stage. A v2 reimport plan stops there until the server's reimport coordinator
+stage. A v2 or v3 reimport plan stops there until the server's reimport coordinator
 has verified the exact plan-bound source documents and published a completed
 reimport receipt. Caller-supplied stage evidence cannot skip that boundary, and
 credentials are not published while reimport is incomplete.
@@ -130,7 +150,7 @@ The final deploy output includes `installation_campaign_id`,
 `installation_next_action`. A running campaign is never labeled installed.
 Only the server-sealed receipt yields `installation_phase: installed`.
 
-The v1 local artifact inventory uses fixed symbolic singleton names
+The local artifact inventory uses fixed symbolic singleton names
 `manifest`, `contract`, `rust`, `typescript`, `go`, `python`, `mcp`, and
 `migration`; query and reactive artifacts use their declared module names.
 Manifest seed inputs use `seed-001`, `seed-002`, and so on in manifest order,

@@ -1,5 +1,5 @@
 {
-  "application_manifest_hash": "f749b8c8bcefdef8fa25db1f604e01a5f70fe06cf9c6f90da01c4ea66b2902d3",
+  "application_manifest_hash": "9f074967056a76eab90e2901c9eb0d65cc2b339d579fd5aa8a7c7ecd5ce15b6f",
   "commands": [
     {
       "annotations": {
@@ -8,7 +8,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "contract_bundle_hash": "d4180d54fbe7a55c4d88afe02beacbb99f582a323da02cd1e72b2e9ccc1bf8de",
+      "contract_bundle_hash": "d7c86778e9adc0cbbf7c7a0b9a40e523da30cc4c6b0ab53b24d1ed4d6b7e8da8",
       "description": "Execute the exact CreateItem compiled command from contract DriverConformance.",
       "input_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -22,51 +22,34 @@
           },
           "title": {
             "type": "string"
+          },
+          "token_digest": {
+            "type": "string"
           }
         },
         "required": [
           "title",
           "item_id",
+          "token_digest",
           "idempotency_key"
         ],
         "type": "object"
       },
       "name": "driver_conformance_create_item",
       "operation_name": "CreateItem",
-      "plan_hash": "3c05f29b5d12562e0e1abfcc6bdbe59d564f0593061b874485204718356f3b2e",
+      "plan_hash": "3f8a3041bd21b64bfce8bd8e6df3ab755e056e2f0753e6c49117e15fa06f3d8c",
       "result_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "oneOf": [
           {
             "additionalProperties": false,
             "properties": {
-              "item": {
-                "additionalProperties": false,
-                "properties": {
-                  "created_at": {
-                    "type": "string"
-                  },
-                  "item_id": {
-                    "type": "string"
-                  },
-                  "title": {
-                    "type": "string"
-                  }
-                },
-                "required": [
-                  "title",
-                  "item_id",
-                  "created_at"
-                ],
-                "type": "object"
-              },
               "outcome": {
                 "const": "Created",
                 "type": "string"
               }
             },
             "required": [
-              "item",
               "outcome"
             ],
             "type": "object"
@@ -94,7 +77,79 @@
     }
   ],
   "reactive_tools": [],
-  "schema": "riffdb-generated-application-operations/v2",
+  "schema": "riffdb-generated-application-operations/v3",
+  "sdk_tools": [
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "Execute the exact ItemSecret named query from immutable module driver_conformance.",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "item_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "item_id"
+        ],
+        "type": "object"
+      },
+      "module_hash": "4d91b038b0f72770ececae8f3f7c6bc13bf8162abf6532fede49f762b712868d",
+      "name": "driver_conformance_item_secret",
+      "operation_name": "ItemSecret",
+      "result_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "Found",
+                "type": "string"
+              },
+              "secret": {
+                "additionalProperties": false,
+                "properties": {
+                  "token_digest": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "token_digest"
+                ],
+                "type": "object"
+              }
+            },
+            "required": [
+              "outcome",
+              "secret"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "NotFound",
+                "type": "string"
+              }
+            },
+            "required": [
+              "outcome"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "title": "Run ItemSecret"
+    }
+  ],
   "tools": [
     {
       "annotations": {
@@ -117,7 +172,7 @@
         ],
         "type": "object"
       },
-      "module_hash": "0db867e8e37aa3a7671e108a69601e9c0fc315405edec918dcb8bcc2d68883bb",
+      "module_hash": "4d91b038b0f72770ececae8f3f7c6bc13bf8162abf6532fede49f762b712868d",
       "name": "driver_conformance_item_page",
       "operation_name": "ItemPage",
       "result_schema": {

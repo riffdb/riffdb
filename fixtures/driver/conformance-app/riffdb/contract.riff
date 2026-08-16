@@ -2,6 +2,7 @@ contract DriverConformance version 1 {
   entity Item {
     key (item_id: uuid)
     field title: string<128>
+    field secret token_digest: string<128>
     field created_at: timestamp
   }
 
@@ -15,11 +16,13 @@ contract DriverConformance version 1 {
     input idempotency_key: string<128>
     input item_id: uuid
     input title: string<128>
+    input token_digest: string<128>
     idempotency_key idempotency_key
     create Item(item_id) as item
       else ItemExists { item_id: item_id }
     set item.title = title
+    set item.token_digest = token_digest
     set item.created_at = tx.time
-    return Created { item: item }
+    return Created {}
   }
 }

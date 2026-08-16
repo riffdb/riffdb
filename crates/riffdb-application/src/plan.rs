@@ -15,6 +15,8 @@ use serde::{Deserialize, Serialize};
 pub const APPLICATION_INSTALLATION_PLAN_SCHEMA_V1: &str = "riffdb.application-installation-plan/v1";
 /// Canonical schema version for plans carrying exact reimport authority.
 pub const APPLICATION_INSTALLATION_PLAN_SCHEMA_V2: &str = "riffdb.application-installation-plan/v2";
+/// Canonical schema version for plans carrying secret-output authority atoms.
+pub const APPLICATION_INSTALLATION_PLAN_SCHEMA_V3: &str = "riffdb.application-installation-plan/v3";
 /// Maximum canonical bytes in one installation plan.
 pub const MAX_INSTALLATION_PLAN_BYTES: usize = 4 * 1_024 * 1_024;
 /// Maximum exact artifacts in one plan.
@@ -29,6 +31,10 @@ pub const MAX_INSTALLATION_SEEDS: usize = 256;
 pub const MAX_SEED_BATCH_ITEMS: u64 = 1_000_000;
 /// Maximum symbolic operations in one application role.
 pub const MAX_ROLE_OPERATIONS: usize = 1_024;
+/// Maximum symbolic secret-output atoms in one application role.
+pub const MAX_ROLE_SECRET_OUTPUTS: usize = 1_024;
+/// Maximum total authority atoms in one application role.
+pub const MAX_ROLE_AUTHORITY_ATOMS: usize = 2_048;
 /// Maximum bytes in one installation-local symbolic name.
 pub const MAX_INSTALLATION_SYMBOL_BYTES: usize = 256;
 
@@ -302,6 +308,119 @@ pub struct RoleOperation {
     name: InstallationSymbol,
 }
 
+/// One symbolic secret output granted to one exact named query.
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub struct QuerySecretOutput {
+    query: InstallationSymbol,
+    entity: InstallationSymbol,
+    field: InstallationSymbol,
+}
+
+impl QuerySecretOutput {
+    /// Creates a value-free secret-output authority atom.
+    #[must_use]
+    pub const fn new(
+        query: InstallationSymbol,
+        entity: InstallationSymbol,
+        field: InstallationSymbol,
+    ) -> Self {
+        Self {
+            query,
+            entity,
+            field,
+        }
+    }
+
+    /// Exact named-query symbol.
+    #[must_use]
+    pub const fn query(&self) -> &InstallationSymbol {
+        &self.query
+    }
+
+    /// Exact entity symbol.
+    #[must_use]
+    pub const fn entity(&self) -> &InstallationSymbol {
+        &self.entity
+    }
+
+    /// Exact secret field symbol.
+    #[must_use]
+    pub const fn field(&self) -> &InstallationSymbol {
+        &self.field
+    }
+}
+
+/// Closed symbolic vocabulary used by installation authority diffs.
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub enum RoleAuthorityAtom {
+    /// One invocable application operation.
+    Operation(RoleOperation),
+    /// One exact secret output of one exact named query.
+    QuerySecretOutput(QuerySecretOutput),
+}
+
+/// Independently canonical bounded authority for one application role.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RoleAuthoritySet {
+    operations: Vec<RoleOperation>,
+    secret_outputs: Vec<QuerySecretOutput>,
+}
+
+impl RoleAuthoritySet {
+    /// Validates and canonicalizes one complete symbolic authority set.
+    pub fn new(
+        mut operations: Vec<RoleOperation>,
+        mut secret_outputs: Vec<QuerySecretOutput>,
+    ) -> Result<Self, InstallationPlanError> {
+        sort_unique(&mut operations)?;
+        sort_unique(&mut secret_outputs)?;
+        if operations.len() > MAX_ROLE_OPERATIONS
+            || secret_outputs.len() > MAX_ROLE_SECRET_OUTPUTS
+            || operations.len() + secret_outputs.len() > MAX_ROLE_AUTHORITY_ATOMS
+        {
+            return Err(InstallationPlanError::new(
+                InstallationPlanErrorKind::LimitExceeded,
+            ));
+        }
+        Ok(Self {
+            operations,
+            secret_outputs,
+        })
+    }
+
+    /// Canonical operation atoms.
+    #[must_use]
+    pub fn operations(&self) -> &[RoleOperation] {
+        &self.operations
+    }
+
+    /// Canonical named-query secret-output atoms.
+    #[must_use]
+    pub fn secret_outputs(&self) -> &[QuerySecretOutput] {
+        &self.secret_outputs
+    }
+
+    /// Complete canonical closed authority vocabulary.
+    #[must_use]
+    pub fn atoms(&self) -> Vec<RoleAuthorityAtom> {
+        self.operations
+            .iter()
+            .cloned()
+            .map(RoleAuthorityAtom::Operation)
+            .chain(
+                self.secret_outputs
+                    .iter()
+                    .cloned()
+                    .map(RoleAuthorityAtom::QuerySecretOutput),
+            )
+            .collect()
+    }
+
+    const fn is_empty(&self) -> bool {
+        self.operations.is_empty() && self.secret_outputs.is_empty()
+    }
+}
+
 impl RoleOperation {
     /// Creates one symbolic operation.
     #[must_use]
@@ -326,7 +445,7 @@ impl RoleOperation {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RoleWideningApproval {
     expected_previous_role: ApplicationRoleHash,
-    additions: Vec<RoleOperation>,
+    additions: Vec<RoleAuthorityAtom>,
 }
 
 impl RoleWideningApproval {
@@ -337,6 +456,35 @@ impl RoleWideningApproval {
     ) -> Result<Self, InstallationPlanError> {
         sort_unique(&mut additions)?;
         if additions.is_empty() || additions.len() > MAX_ROLE_OPERATIONS {
+            return Err(InstallationPlanError::new(
+                InstallationPlanErrorKind::InvalidApproval,
+            ));
+        }
+        Ok(Self {
+            expected_previous_role,
+            additions: additions
+                .into_iter()
+                .map(RoleAuthorityAtom::Operation)
+                .collect(),
+        })
+    }
+
+    /// Creates an exact, already-canonical approval over the closed authority vocabulary.
+    pub fn new_authority(
+        expected_previous_role: ApplicationRoleHash,
+        additions: Vec<RoleAuthorityAtom>,
+    ) -> Result<Self, InstallationPlanError> {
+        let operation_count = additions
+            .iter()
+            .filter(|atom| matches!(atom, RoleAuthorityAtom::Operation(_)))
+            .count();
+        let secret_output_count = additions.len() - operation_count;
+        if additions.is_empty()
+            || operation_count > MAX_ROLE_OPERATIONS
+            || secret_output_count > MAX_ROLE_SECRET_OUTPUTS
+            || additions.len() > MAX_ROLE_AUTHORITY_ATOMS
+            || additions.windows(2).any(|pair| pair[0] >= pair[1])
+        {
             return Err(InstallationPlanError::new(
                 InstallationPlanErrorKind::InvalidApproval,
             ));
@@ -355,7 +503,7 @@ impl RoleWideningApproval {
 
     /// Exact symbolic additions approved by the operator.
     #[must_use]
-    pub fn additions(&self) -> &[RoleOperation] {
+    pub fn additions(&self) -> &[RoleAuthorityAtom] {
         &self.additions
     }
 }
@@ -366,8 +514,8 @@ pub struct InstallationRole {
     name: InstallationSymbol,
     role_hash: ApplicationRoleHash,
     previous_role_hash: Option<ApplicationRoleHash>,
-    desired_operations: Vec<RoleOperation>,
-    previous_operations: Vec<RoleOperation>,
+    desired_authority: RoleAuthoritySet,
+    previous_authority: RoleAuthoritySet,
     widening_approval: Option<RoleWideningApproval>,
 }
 
@@ -377,24 +525,41 @@ impl InstallationRole {
         name: InstallationSymbol,
         role_hash: ApplicationRoleHash,
         previous_role_hash: Option<ApplicationRoleHash>,
-        mut desired_operations: Vec<RoleOperation>,
-        mut previous_operations: Vec<RoleOperation>,
+        desired_operations: Vec<RoleOperation>,
+        previous_operations: Vec<RoleOperation>,
         widening_approval: Option<RoleWideningApproval>,
     ) -> Result<Self, InstallationPlanError> {
-        sort_unique(&mut desired_operations)?;
-        sort_unique(&mut previous_operations)?;
-        if desired_operations.is_empty()
-            || desired_operations.len() > MAX_ROLE_OPERATIONS
-            || previous_operations.len() > MAX_ROLE_OPERATIONS
-            || (previous_role_hash.is_none() && !previous_operations.is_empty())
+        Self::new_with_authority(
+            name,
+            role_hash,
+            previous_role_hash,
+            RoleAuthoritySet::new(desired_operations, vec![])?,
+            RoleAuthoritySet::new(previous_operations, vec![])?,
+            widening_approval,
+        )
+    }
+
+    /// Creates one exact initial or successor role over the complete closed authority vocabulary.
+    pub fn new_with_authority(
+        name: InstallationSymbol,
+        role_hash: ApplicationRoleHash,
+        previous_role_hash: Option<ApplicationRoleHash>,
+        desired_authority: RoleAuthoritySet,
+        previous_authority: RoleAuthoritySet,
+        widening_approval: Option<RoleWideningApproval>,
+    ) -> Result<Self, InstallationPlanError> {
+        if desired_authority.is_empty()
+            || (previous_role_hash.is_none() && !previous_authority.is_empty())
         {
             return Err(InstallationPlanError::new(
                 InstallationPlanErrorKind::InvalidShape,
             ));
         }
-        let additions = desired_operations
+        let desired_atoms = desired_authority.atoms();
+        let previous_atoms = previous_authority.atoms();
+        let additions = desired_atoms
             .iter()
-            .filter(|operation| previous_operations.binary_search(operation).is_err())
+            .filter(|atom| previous_atoms.binary_search(atom).is_err())
             .cloned()
             .collect::<Vec<_>>();
         match (
@@ -421,8 +586,8 @@ impl InstallationRole {
             name,
             role_hash,
             previous_role_hash,
-            desired_operations,
-            previous_operations,
+            desired_authority,
+            previous_authority,
             widening_approval,
         })
     }
@@ -448,13 +613,37 @@ impl InstallationRole {
     /// Desired symbolic operation surface.
     #[must_use]
     pub fn desired_operations(&self) -> &[RoleOperation] {
-        &self.desired_operations
+        self.desired_authority.operations()
     }
 
     /// Existing symbolic operation surface used to compute the diff.
     #[must_use]
     pub fn previous_operations(&self) -> &[RoleOperation] {
-        &self.previous_operations
+        self.previous_authority.operations()
+    }
+
+    /// Desired named-query secret-output authority.
+    #[must_use]
+    pub fn desired_secret_outputs(&self) -> &[QuerySecretOutput] {
+        self.desired_authority.secret_outputs()
+    }
+
+    /// Previously observed named-query secret-output authority.
+    #[must_use]
+    pub fn previous_secret_outputs(&self) -> &[QuerySecretOutput] {
+        self.previous_authority.secret_outputs()
+    }
+
+    /// Complete desired authority set.
+    #[must_use]
+    pub const fn desired_authority(&self) -> &RoleAuthoritySet {
+        &self.desired_authority
+    }
+
+    /// Complete predecessor authority set.
+    #[must_use]
+    pub const fn previous_authority(&self) -> &RoleAuthoritySet {
+        &self.previous_authority
     }
 
     /// Exact role-widening approval, present only when additions exist.
@@ -715,11 +904,25 @@ pub enum InstallationFeature {
     InstallationCampaigns,
     /// Public export and compatibility lifecycle.
     DataLifecycle,
+    /// Exact reviewed secret outputs from named RiffQL queries.
+    QuerySecretOutputs,
 }
 
 impl InstallationFeature {
     /// Complete closed alpha feature catalog in canonical order.
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 8] = [
+        Self::RemoteTls,
+        Self::BulkCommands,
+        Self::OperationalQueries,
+        Self::WorkflowConcurrency,
+        Self::RowPolicies,
+        Self::InstallationCampaigns,
+        Self::DataLifecycle,
+        Self::QuerySecretOutputs,
+    ];
+
+    /// Adapter-owned alpha features in canonical conformance order.
+    pub const ADAPTER_CONFORMANCE: [Self; 7] = [
         Self::RemoteTls,
         Self::BulkCommands,
         Self::OperationalQueries,
@@ -738,6 +941,7 @@ impl InstallationFeature {
             Self::RowPolicies => "row_policies",
             Self::InstallationCampaigns => "installation_campaigns",
             Self::DataLifecycle => "data_lifecycle",
+            Self::QuerySecretOutputs => "query_secret_outputs",
         }
     }
 
@@ -750,6 +954,7 @@ impl InstallationFeature {
             "row_policies" => Self::RowPolicies,
             "installation_campaigns" => Self::InstallationCampaigns,
             "data_lifecycle" => Self::DataLifecycle,
+            "query_secret_outputs" => Self::QuerySecretOutputs,
             _ => return None,
         })
     }
@@ -849,11 +1054,14 @@ pub struct ApplicationInstallationPlan {
 enum ApplicationInstallationPlanSchema {
     V1,
     V2,
+    V3,
 }
 
 impl ApplicationInstallationPlanSchema {
-    const fn for_input(input: &ApplicationInstallationPlanInput) -> Self {
-        if input.reimport.is_some() {
+    fn for_input(input: &ApplicationInstallationPlanInput) -> Self {
+        if has_secret_output_authority(input) {
+            Self::V3
+        } else if input.reimport.is_some() {
             Self::V2
         } else {
             Self::V1
@@ -864,6 +1072,7 @@ impl ApplicationInstallationPlanSchema {
         match self {
             Self::V1 => APPLICATION_INSTALLATION_PLAN_SCHEMA_V1,
             Self::V2 => APPLICATION_INSTALLATION_PLAN_SCHEMA_V2,
+            Self::V3 => APPLICATION_INSTALLATION_PLAN_SCHEMA_V3,
         }
     }
 }
@@ -933,6 +1142,12 @@ impl ApplicationInstallationPlan {
     #[must_use]
     pub fn canonical_bytes(&self) -> &[u8] {
         &self.canonical_bytes
+    }
+
+    /// Canonical installation-plan schema selected by the least-sufficient writer.
+    #[must_use]
+    pub const fn schema(&self) -> &'static str {
+        self.schema.name()
     }
 }
 
@@ -1098,19 +1313,41 @@ fn validate_and_sort(
             .map(|destination| &destination.name),
     )?;
     for destination in &input.credential_destinations {
-        if input
+        let role = input
             .roles
             .binary_search_by(|role| role.name.cmp(&destination.role))
-            .is_err()
-        {
+            .ok()
+            .map(|index| &input.roles[index])
+            .ok_or_else(|| {
+                InstallationPlanError::new(InstallationPlanErrorKind::IdentityMismatch)
+            })?;
+        if role.previous_role_hash().is_some() != destination.expected_current().is_some() {
             return Err(InstallationPlanError::new(
-                InstallationPlanErrorKind::IdentityMismatch,
+                InstallationPlanErrorKind::CredentialConflict,
             ));
         }
     }
     input.seeds.sort();
     ensure_unique_by(input.seeds.iter().map(|seed| &seed.name))?;
     sort_unique(&mut input.drivers)?;
+    let has_secret_outputs = has_secret_output_authority(input);
+    if has_secret_outputs
+        && !input
+            .required_features
+            .contains(&InstallationFeature::QuerySecretOutputs)
+    {
+        input
+            .required_features
+            .push(InstallationFeature::QuerySecretOutputs);
+    } else if !has_secret_outputs
+        && input
+            .required_features
+            .contains(&InstallationFeature::QuerySecretOutputs)
+    {
+        return Err(InstallationPlanError::new(
+            InstallationPlanErrorKind::InvalidShape,
+        ));
+    }
     sort_unique(&mut input.required_features)?;
     if input.drivers.is_empty()
         || !input
@@ -1149,6 +1386,12 @@ fn validate_and_sort(
         ));
     }
     Ok(())
+}
+
+fn has_secret_output_authority(input: &ApplicationInstallationPlanInput) -> bool {
+    input.roles.iter().any(|role| {
+        !role.desired_secret_outputs().is_empty() || !role.previous_secret_outputs().is_empty()
+    })
 }
 
 fn sort_unique<T: Ord>(values: &mut [T]) -> Result<(), InstallationPlanError> {
@@ -1229,7 +1472,7 @@ struct OperationDto {
 #[serde(deny_unknown_fields)]
 struct ApprovalDto {
     expected_previous_role: String,
-    additions: Vec<OperationDto>,
+    additions: Vec<AuthorityAtomDto>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -1238,9 +1481,30 @@ struct RoleDto {
     name: String,
     role_hash: String,
     previous_role_hash: Option<String>,
-    desired_operations: Vec<OperationDto>,
-    previous_operations: Vec<OperationDto>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    desired_operations: Option<Vec<OperationDto>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    previous_operations: Option<Vec<OperationDto>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    desired_authority: Option<Vec<AuthorityAtomDto>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    previous_authority: Option<Vec<AuthorityAtomDto>>,
     widening_approval: Option<ApprovalDto>,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(untagged)]
+enum AuthorityAtomDto {
+    Operation(OperationDto),
+    QuerySecretOutput(SecretOutputDto),
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SecretOutputDto {
+    query: String,
+    entity: String,
+    field: String,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -1320,7 +1584,11 @@ impl PlanDto {
                 backup_policy: "required_verified".to_owned(),
                 downtime: "offline_exclusive".to_owned(),
             }),
-            roles: input.roles.iter().map(RoleDto::from_role).collect(),
+            roles: input
+                .roles
+                .iter()
+                .map(|role| RoleDto::from_role(role, schema))
+                .collect(),
             reimport: input.reimport.map(|reimport| ReimportDto {
                 export_manifest_hash: hex32(reimport.export_manifest_hash.as_bytes()),
                 export_receipt_hash: hex32(reimport.export_receipt_hash.as_bytes()),
@@ -1367,6 +1635,7 @@ impl PlanDto {
         match self.schema.as_str() {
             APPLICATION_INSTALLATION_PLAN_SCHEMA_V1 => Ok(ApplicationInstallationPlanSchema::V1),
             APPLICATION_INSTALLATION_PLAN_SCHEMA_V2 => Ok(ApplicationInstallationPlanSchema::V2),
+            APPLICATION_INSTALLATION_PLAN_SCHEMA_V3 => Ok(ApplicationInstallationPlanSchema::V3),
             _ => Err(InstallationPlanError::new(
                 InstallationPlanErrorKind::UnsupportedVersion,
             )),
@@ -1377,7 +1646,9 @@ impl PlanDto {
         self,
         schema: ApplicationInstallationPlanSchema,
     ) -> Result<ApplicationInstallationPlanInput, InstallationPlanError> {
-        if (schema == ApplicationInstallationPlanSchema::V1) != self.reimport.is_none() {
+        if matches!(schema, ApplicationInstallationPlanSchema::V1) && self.reimport.is_some()
+            || matches!(schema, ApplicationInstallationPlanSchema::V2) && self.reimport.is_none()
+        {
             return Err(InstallationPlanError::new(
                 InstallationPlanErrorKind::InvalidShape,
             ));
@@ -1416,7 +1687,7 @@ impl PlanDto {
             roles: self
                 .roles
                 .into_iter()
-                .map(RoleDto::into_role)
+                .map(|role| role.into_role(schema))
                 .collect::<Result<Vec<_>, _>>()?,
             reimport: self.reimport.map(ReimportDto::into_reimport).transpose()?,
             credential_destinations: self
@@ -1497,61 +1768,165 @@ impl OperationDto {
     }
 }
 
+impl AuthorityAtomDto {
+    fn from_atom(atom: &RoleAuthorityAtom) -> Self {
+        match atom {
+            RoleAuthorityAtom::Operation(operation) => {
+                Self::Operation(OperationDto::from_operation(operation))
+            }
+            RoleAuthorityAtom::QuerySecretOutput(output) => {
+                Self::QuerySecretOutput(SecretOutputDto {
+                    query: output.query.as_str().to_owned(),
+                    entity: output.entity.as_str().to_owned(),
+                    field: output.field.as_str().to_owned(),
+                })
+            }
+        }
+    }
+
+    fn into_atom(self) -> Result<RoleAuthorityAtom, InstallationPlanError> {
+        Ok(match self {
+            Self::Operation(operation) => RoleAuthorityAtom::Operation(operation.into_operation()?),
+            Self::QuerySecretOutput(output) => {
+                RoleAuthorityAtom::QuerySecretOutput(QuerySecretOutput::new(
+                    InstallationSymbol::new(output.query)?,
+                    InstallationSymbol::new(output.entity)?,
+                    InstallationSymbol::new(output.field)?,
+                ))
+            }
+        })
+    }
+}
+
 impl RoleDto {
-    fn from_role(role: &InstallationRole) -> Self {
+    fn from_role(role: &InstallationRole, schema: ApplicationInstallationPlanSchema) -> Self {
+        let uses_authority = schema == ApplicationInstallationPlanSchema::V3;
         Self {
             name: role.name.as_str().to_owned(),
             role_hash: hex32(role.role_hash.as_bytes()),
             previous_role_hash: role.previous_role_hash.map(|hash| hex32(hash.as_bytes())),
-            desired_operations: role
-                .desired_operations
-                .iter()
-                .map(OperationDto::from_operation)
-                .collect(),
-            previous_operations: role
-                .previous_operations
-                .iter()
-                .map(OperationDto::from_operation)
-                .collect(),
+            desired_operations: (!uses_authority).then(|| {
+                role.desired_operations()
+                    .iter()
+                    .map(OperationDto::from_operation)
+                    .collect()
+            }),
+            previous_operations: (!uses_authority).then(|| {
+                role.previous_operations()
+                    .iter()
+                    .map(OperationDto::from_operation)
+                    .collect()
+            }),
+            desired_authority: uses_authority.then(|| {
+                role.desired_authority()
+                    .atoms()
+                    .iter()
+                    .map(AuthorityAtomDto::from_atom)
+                    .collect()
+            }),
+            previous_authority: uses_authority.then(|| {
+                role.previous_authority()
+                    .atoms()
+                    .iter()
+                    .map(AuthorityAtomDto::from_atom)
+                    .collect()
+            }),
             widening_approval: role.widening_approval.as_ref().map(|approval| ApprovalDto {
                 expected_previous_role: hex32(approval.expected_previous_role.as_bytes()),
                 additions: approval
                     .additions
                     .iter()
-                    .map(OperationDto::from_operation)
+                    .map(AuthorityAtomDto::from_atom)
                     .collect(),
             }),
         }
     }
 
-    fn into_role(self) -> Result<InstallationRole, InstallationPlanError> {
+    fn into_role(
+        self,
+        schema: ApplicationInstallationPlanSchema,
+    ) -> Result<InstallationRole, InstallationPlanError> {
+        let uses_authority = schema == ApplicationInstallationPlanSchema::V3;
+        let shape_is_exact = if uses_authority {
+            self.desired_authority.is_some()
+                && self.previous_authority.is_some()
+                && self.desired_operations.is_none()
+                && self.previous_operations.is_none()
+        } else {
+            self.desired_authority.is_none()
+                && self.previous_authority.is_none()
+                && self.desired_operations.is_some()
+                && self.previous_operations.is_some()
+        };
+        if !shape_is_exact {
+            return Err(InstallationPlanError::new(
+                InstallationPlanErrorKind::InvalidShape,
+            ));
+        }
         let approval = self
             .widening_approval
             .map(|approval| {
-                RoleWideningApproval::new(
+                RoleWideningApproval::new_authority(
                     ApplicationRoleHash::from_bytes(parse_hex32(&approval.expected_previous_role)?),
                     approval
                         .additions
                         .into_iter()
-                        .map(OperationDto::into_operation)
+                        .map(AuthorityAtomDto::into_atom)
                         .collect::<Result<Vec<_>, _>>()?,
                 )
             })
             .transpose()?;
-        InstallationRole::new(
+        let authority = |atoms: Vec<AuthorityAtomDto>| {
+            let mut operations = Vec::new();
+            let mut secret_outputs = Vec::new();
+            for atom in atoms {
+                match atom.into_atom()? {
+                    RoleAuthorityAtom::Operation(operation) => operations.push(operation),
+                    RoleAuthorityAtom::QuerySecretOutput(output) => secret_outputs.push(output),
+                }
+            }
+            RoleAuthoritySet::new(operations, secret_outputs)
+        };
+        let desired_authority = if uses_authority {
+            authority(self.desired_authority.ok_or_else(|| {
+                InstallationPlanError::new(InstallationPlanErrorKind::InvalidShape)
+            })?)?
+        } else {
+            RoleAuthoritySet::new(
+                self.desired_operations
+                    .ok_or_else(|| {
+                        InstallationPlanError::new(InstallationPlanErrorKind::InvalidShape)
+                    })?
+                    .into_iter()
+                    .map(OperationDto::into_operation)
+                    .collect::<Result<Vec<_>, _>>()?,
+                vec![],
+            )?
+        };
+        let previous_authority = if uses_authority {
+            authority(self.previous_authority.ok_or_else(|| {
+                InstallationPlanError::new(InstallationPlanErrorKind::InvalidShape)
+            })?)?
+        } else {
+            RoleAuthoritySet::new(
+                self.previous_operations
+                    .ok_or_else(|| {
+                        InstallationPlanError::new(InstallationPlanErrorKind::InvalidShape)
+                    })?
+                    .into_iter()
+                    .map(OperationDto::into_operation)
+                    .collect::<Result<Vec<_>, _>>()?,
+                vec![],
+            )?
+        };
+        InstallationRole::new_with_authority(
             InstallationSymbol::new(self.name)?,
             ApplicationRoleHash::from_bytes(parse_hex32(&self.role_hash)?),
             self.previous_role_hash
                 .map(|hash| parse_hex32(&hash).map(ApplicationRoleHash::from_bytes))
                 .transpose()?,
-            self.desired_operations
-                .into_iter()
-                .map(OperationDto::into_operation)
-                .collect::<Result<Vec<_>, _>>()?,
-            self.previous_operations
-                .into_iter()
-                .map(OperationDto::into_operation)
-                .collect::<Result<Vec<_>, _>>()?,
+            desired_authority,
+            previous_authority,
             approval,
         )
     }

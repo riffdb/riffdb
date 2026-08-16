@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	riffdb "riffdb.dev/application"
@@ -20,6 +21,8 @@ type observation struct {
 	Query           string `json:"query"`
 	ReadAfterCommit bool   `json:"read_after_commit"`
 	ReuseError      string `json:"reuse_error"`
+	SecretQuery     string `json:"secret_query"`
+	SecretRedacted  bool   `json:"secret_redacted"`
 }
 
 func main() {
@@ -72,20 +75,21 @@ func run() error {
 		return err
 	}
 	if os.Getenv("RIFFDB_CONFORMANCE_EXPECT_REVOKED") == "1" {
-		_, err = client.ItemPage(ctx, generated.ItemPageParams{ItemId: "018f0f8b-7c6d-7e31-8a4f-000000000102"}, riffdb.Options{})
+		_, err = client.ItemSecret(ctx, generated.ItemSecretParams{ItemId: "018f0f8b-7c6d-7e31-8a4f-000000000102"}, riffdb.Options{})
 		var applicationError *riffdb.ApplicationError
 		if !errors.As(err, &applicationError) || applicationError.Details.Code != "RDB-AUTH-0215" {
 			return fmt.Errorf("Go revocation error lost semantic details: %w", err)
 		}
 		return json.NewEncoder(os.Stdout).Encode(map[string]string{
 			"schema": "riffdb.driver-conformance-fault/v1",
-			"fault": "revocation",
-			"code": applicationError.Details.Code,
+			"fault":  "revocation",
+			"code":   applicationError.Details.Code,
 		})
 	}
 	itemID := "018f0f8b-7c6d-7e31-8a4f-000000000102"
 	idempotency := "driver-conformance-go-create-v1"
-	input := generated.CreateItemInput{Title: "Shared remote Go", ItemId: itemID, IdempotencyKey: idempotency}
+	tokenDigest := "go-secret-digest-must-not-log"
+	input := generated.CreateItemInput{Title: "Shared remote Go", TokenDigest: tokenDigest, ItemId: itemID, IdempotencyKey: idempotency}
 	first, err := client.CreateItem(ctx, input)
 	if err != nil || first.Replayed || first.CommitSequence == nil {
 		return errors.New("first Go command did not create the item")
@@ -105,7 +109,15 @@ func run() error {
 	if !ok || found.Item.ItemId != itemID || found.Item.Title != "Shared remote Go" {
 		return errors.New("Go read-after-commit returned the wrong item")
 	}
-	_, err = client.CreateItem(ctx, generated.CreateItemInput{Title: "Changed input", ItemId: itemID, IdempotencyKey: idempotency})
+	secret, err := client.ItemSecret(ctx, generated.ItemSecretParams{ItemId: itemID}, riffdb.Options{ReadAfterCommit: first.CommitSequence})
+	if err != nil {
+		return err
+	}
+	secretFound, ok := secret.Value.(generated.ItemSecretFound)
+	if !ok || secretFound.Secret.TokenDigest != tokenDigest || strings.Contains(fmt.Sprintf("%#v", secretFound), tokenDigest) {
+		return errors.New("Go secret query value or redacted diagnostic was incorrect")
+	}
+	_, err = client.CreateItem(ctx, generated.CreateItemInput{Title: "Changed input", TokenDigest: tokenDigest, ItemId: itemID, IdempotencyKey: idempotency})
 	var applicationError *riffdb.ApplicationError
 	if !errors.As(err, &applicationError) || applicationError.Details.Code != "RDB-COMMAND-0101" {
 		return errors.New("Go reuse error lost semantic details")
@@ -113,5 +125,6 @@ func run() error {
 	return json.NewEncoder(os.Stdout).Encode(observation{
 		Schema: "riffdb.driver-conformance-observation/v1", Language: "go", Created: "Created",
 		Replayed: true, Query: "Found", ReadAfterCommit: true, ReuseError: applicationError.Details.Code,
+		SecretQuery: "Found", SecretRedacted: true,
 	})
 }

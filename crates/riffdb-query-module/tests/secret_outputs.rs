@@ -7,7 +7,8 @@ use riffdb_query_module::{
     ApplicationSourceManifest, NamedQuerySource, QUERY_MODULE_FORMAT_VERSION_SECRET_OUTPUT_V1,
     QueryModule, QueryModuleCandidate, QueryModuleName, QueryModuleVersion,
     ReactiveModuleCompilationError, compile_application_role, compile_reactive_source,
-    generate_mcp_tools,
+    generate_go_client, generate_mcp_tools, generate_python_client, generate_rust_client,
+    generate_typescript_client,
 };
 
 const CONTRACT: &str = r#"
@@ -177,4 +178,30 @@ fn reactive_watch_cannot_reference_a_secret_output_query() {
     let query_start = source.find("GetSession").expect("query reference");
     assert!(diagnostics[0].span().start() <= query_start);
     assert!(diagnostics[0].span().end() >= query_start + "GetSession".len());
+}
+
+#[test]
+fn generated_languages_publish_secret_metadata_and_redacted_debug_surfaces() {
+    let contract = compile_contract_source(CONTRACT).expect("contract");
+    let module = module(&contract);
+    let rust = generate_rust_client(&module, &contract);
+    let go = generate_go_client(&module, &contract);
+    let typescript = generate_typescript_client(&module, &contract);
+    let python = generate_python_client(&module, &contract).expect("Python client");
+
+    assert!(rust.contains("GET_SESSION_SECRET_OUTPUTS"));
+    assert!(rust.contains("<secret outputs redacted>"));
+    assert!(!rust.contains("derive(Clone, Debug, Eq, PartialEq)]\npub struct GetSessionFound"));
+
+    assert!(go.contains("GetSessionSecretOutputs"));
+    assert!(go.contains("func (GetSessionFound) GoString() string"));
+    assert!(go.contains("<secret outputs redacted>"));
+
+    assert!(typescript.contains("GET_SESSION_SECRET_OUTPUTS"));
+    assert!(typescript.contains("redactGetSessionResult"));
+    assert!(typescript.contains("redactedSecretOutputs"));
+
+    assert!(python.contains("GET_SESSION_SECRET_OUTPUTS"));
+    assert!(python.contains("token_hash"));
+    assert!(python.contains("session: GetSessionFoundSession = field(repr=False)"));
 }

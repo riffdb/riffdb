@@ -405,13 +405,38 @@ pub fn generate_python_client(
                 &format!("{name}Params{}", pascal(parameter.name())),
                 parameter.value_type(),
                 contract,
+                false,
             );
         }
         writeln!(
             output,
-            "{}_QUERY_PLAN_HASH: Final[str] = {:?}\n\n@dataclass(frozen=True, slots=True, kw_only=True)\nclass {name}Params:",
+            "{}_QUERY_PLAN_HASH: Final[str] = {:?}",
             screaming_snake(wire_name),
             hex(query.plan().identity().as_bytes())
+        )
+        .expect("String writes cannot fail");
+        if !query.plan().secret_outputs().is_empty() {
+            writeln!(
+                output,
+                "{}_SECRET_OUTPUTS: Final[tuple[tuple[str, str, str], ...]] = (",
+                screaming_snake(wire_name)
+            )
+            .expect("String writes cannot fail");
+            for secret in query.plan().secret_outputs() {
+                writeln!(
+                    output,
+                    "    ({:?}, {:?}, {:?}),",
+                    wire_name,
+                    secret.entity(),
+                    secret.field()
+                )
+                .expect("String writes cannot fail");
+            }
+            output.push_str(")\n\n");
+        }
+        writeln!(
+            output,
+            "\n@dataclass(frozen=True, slots=True, kw_only=True)\nclass {name}Params:"
         )
         .expect("String writes cannot fail");
         if schemas.parameters().is_empty() {
@@ -447,6 +472,7 @@ pub fn generate_python_client(
                     &format!("{branch_name}{}", pascal(result_field.name())),
                     result_field.value_type(),
                     contract,
+                    !query.plan().secret_outputs().is_empty(),
                 );
             }
             writeln!(
@@ -458,9 +484,14 @@ pub fn generate_python_client(
                 let nested = format!("{branch_name}{}", pascal(result_field.name()));
                 writeln!(
                     output,
-                    "    {}: {}",
+                    "    {}: {}{}",
                     python_identifier(result_field.name()),
-                    python_named_type(result_field.value_type(), &nested, contract)
+                    python_named_type(result_field.value_type(), &nested, contract),
+                    if query.plan().secret_outputs().is_empty() {
+                        ""
+                    } else {
+                        " = field(repr=False)"
+                    }
                 )
                 .expect("String writes cannot fail");
             }
@@ -1135,12 +1166,13 @@ fn emit_named_nested(
     name: &str,
     value_type: &NamedTypeSchema,
     contract: &ContractBundle,
+    redacted_debug: bool,
 ) {
     match value_type {
         NamedTypeSchema::Optional(inner)
         | NamedTypeSchema::Set(inner)
         | NamedTypeSchema::List { element: inner, .. } => {
-            emit_named_nested(output, name, inner, contract);
+            emit_named_nested(output, name, inner, contract, redacted_debug);
         }
         NamedTypeSchema::Record(fields) => {
             for field in fields {
@@ -1149,6 +1181,7 @@ fn emit_named_nested(
                     &format!("{name}{}", pascal(field.name())),
                     field.value_type(),
                     contract,
+                    redacted_debug,
                 );
             }
             writeln!(
@@ -1162,13 +1195,18 @@ fn emit_named_nested(
             for field in fields {
                 writeln!(
                     output,
-                    "    {}: {}",
+                    "    {}: {}{}",
                     python_identifier(field.name()),
                     python_named_type(
                         field.value_type(),
                         &format!("{name}{}", pascal(field.name())),
                         contract
-                    )
+                    ),
+                    if redacted_debug {
+                        " = field(repr=False)"
+                    } else {
+                        ""
+                    }
                 )
                 .expect("String writes cannot fail");
             }

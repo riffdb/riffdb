@@ -17,16 +17,17 @@ from riffdb_application._binding import decode_variant, encode_record
 
 CONTRACT_LINEAGE: Final[str] = "DriverConformance"
 CONTRACT_VERSION: Final[int] = 1
-CONTRACT_BUNDLE_HASH: Final[str] = "d4180d54fbe7a55c4d88afe02beacbb99f582a323da02cd1e72b2e9ccc1bf8de"
-QUERY_MODULE_HASH: Final[str] = "0db867e8e37aa3a7671e108a69601e9c0fc315405edec918dcb8bcc2d68883bb"
+CONTRACT_BUNDLE_HASH: Final[str] = "d7c86778e9adc0cbbf7c7a0b9a40e523da30cc4c6b0ab53b24d1ed4d6b7e8da8"
+QUERY_MODULE_HASH: Final[str] = "4d91b038b0f72770ececae8f3f7c6bc13bf8162abf6532fede49f762b712868d"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class Item:
     title: str
     item_id: UUID
     created_at: Timestamp
+    token_digest: str
 
-ITEM_PAGE_QUERY_PLAN_HASH: Final[str] = "104729d902829da22485dcff8b5ad5d9f1710d54b514a28b030570668e87656b"
+ITEM_PAGE_QUERY_PLAN_HASH: Final[str] = "9d0521d5cdbb526bf170d6933d03265840e6397661640a064a3eb660b3310e4b"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ItemPageParams:
@@ -49,16 +50,41 @@ class ItemPageNotFound:
 
 ItemPageResult: TypeAlias = ItemPageFound | ItemPageNotFound
 
+ITEM_SECRET_QUERY_PLAN_HASH: Final[str] = "e623a69842d8a88348ab5449b2de4b4793a7cd814f0d82d090a0b1171ff19d5e"
+ITEM_SECRET_SECRET_OUTPUTS: Final[tuple[tuple[str, str, str], ...]] = (
+    ("ItemSecret", "Item", "token_digest"),
+)
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ItemSecretParams:
+    item_id: UUID
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ItemSecretFoundSecret:
+    token_digest: str = field(repr=False)
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ItemSecretFound:
+    secret: ItemSecretFoundSecret = field(repr=False)
+    outcome: Literal["Found"] = field(default="Found", init=False)
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ItemSecretNotFound:
+    outcome: Literal["NotFound"] = field(default="NotFound", init=False)
+
+ItemSecretResult: TypeAlias = ItemSecretFound | ItemSecretNotFound
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class CreateItemInput:
     title: str
     item_id: UUID
+    token_digest: str
     idempotency_key: str
 
-CREATE_ITEM_PLAN_HASH: Final[str] = "3c05f29b5d12562e0e1abfcc6bdbe59d564f0593061b874485204718356f3b2e"
+CREATE_ITEM_PLAN_HASH: Final[str] = "3f8a3041bd21b64bfce8bd8e6df3ab755e056e2f0753e6c49117e15fa06f3d8c"
 @dataclass(frozen=True, slots=True, kw_only=True)
 class CreateItemCreated:
-    item: Item
     outcome: Literal["Created"] = field(default="Created", init=False)
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -83,6 +109,19 @@ class DriverConformanceClient:
         outcomes = {
             "Found": ItemPageFound,
             "NotFound": ItemPageNotFound,
+        }
+        return raw._map_value(lambda value: decode_variant(outcomes, value))
+
+    def item_secret(self, parameters: ItemSecretParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ItemSecretResult]:
+        raw = self._transport._execute_named_query(
+            contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
+            contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
+            query_name="ItemSecret", plan_hash=ITEM_SECRET_QUERY_PLAN_HASH,
+            parameters=encode_record(parameters), options=options,
+        )
+        outcomes = {
+            "Found": ItemSecretFound,
+            "NotFound": ItemSecretNotFound,
         }
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
@@ -119,6 +158,19 @@ class AsyncDriverConformanceClient:
         outcomes = {
             "Found": ItemPageFound,
             "NotFound": ItemPageNotFound,
+        }
+        return raw._map_value(lambda value: decode_variant(outcomes, value))
+
+    async def item_secret(self, parameters: ItemSecretParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ItemSecretResult]:
+        raw = await self._transport._execute_named_query(
+            contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
+            contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
+            query_name="ItemSecret", plan_hash=ITEM_SECRET_QUERY_PLAN_HASH,
+            parameters=encode_record(parameters), options=options,
+        )
+        outcomes = {
+            "Found": ItemSecretFound,
+            "NotFound": ItemSecretNotFound,
         }
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 

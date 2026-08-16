@@ -1,11 +1,12 @@
 //! Exact installation-plan semantic corpus.
 
 use riffdb_application::{
-    ApplicationInstallationPlan, ApplicationInstallationPlanInput, CredentialDestination,
-    InstallationArtifact, InstallationArtifactKind, InstallationContract, InstallationDriver,
-    InstallationFeature, InstallationMigration, InstallationPlanErrorKind, InstallationReimport,
-    InstallationRole, InstallationSeed, InstallationSymbol, InstallationTarget, RoleOperation,
-    RoleOperationKind, RoleWideningApproval,
+    APPLICATION_INSTALLATION_PLAN_SCHEMA_V3, ApplicationInstallationPlan,
+    ApplicationInstallationPlanInput, CredentialDestination, InstallationArtifact,
+    InstallationArtifactKind, InstallationContract, InstallationDriver, InstallationFeature,
+    InstallationMigration, InstallationPlanErrorKind, InstallationReimport, InstallationRole,
+    InstallationSeed, InstallationSymbol, InstallationTarget, QuerySecretOutput, RoleAuthorityAtom,
+    RoleAuthoritySet, RoleOperation, RoleOperationKind, RoleWideningApproval,
 };
 use riffdb_types::{
     ApplicationExportManifestHash, ApplicationExportReceiptHash, ApplicationLockHash,
@@ -29,6 +30,10 @@ fn symbol(value: &str) -> InstallationSymbol {
 
 fn operation(kind: RoleOperationKind, name: &str) -> RoleOperation {
     RoleOperation::new(kind, symbol(name))
+}
+
+fn secret_output(query: &str, entity: &str, field: &str) -> QuerySecretOutput {
+    QuerySecretOutput::new(symbol(query), symbol(entity), symbol(field))
 }
 
 fn base_input() -> ApplicationInstallationPlanInput {
@@ -140,6 +145,10 @@ fn reimport_plan_rotates_to_v2_and_binds_all_source_authority() {
         ApplicationPortabilityManifestHash::from_bytes(hash32(42)),
     ));
     let plan = ApplicationInstallationPlan::compile(input).expect("reimport plan");
+    assert_eq!(
+        plan.canonical_bytes(),
+        include_bytes!("../../../fixtures/installation/application-installation-plan-v2.json")
+    );
     let json = std::str::from_utf8(plan.canonical_bytes()).expect("UTF-8");
     assert!(json.contains("riffdb.application-installation-plan/v2"));
     assert!(json.contains(&"28".repeat(32)));
@@ -219,6 +228,214 @@ fn successor_role_widening_requires_the_exact_symbolic_diff() {
         Some(exact),
     )
     .expect("explicit exact widening");
+}
+
+#[test]
+fn secret_output_is_an_independent_exact_widening_atom_and_rotates_plan_to_v3() {
+    let previous_hash = ApplicationRoleHash::from_bytes(hash32(10));
+    let desired_hash = ApplicationRoleHash::from_bytes(hash32(11));
+    let operation = operation(RoleOperationKind::Query, "GetSession");
+    let output = secret_output("GetSession", "Session", "token_hash");
+    let previous = RoleAuthoritySet::new(vec![operation.clone()], vec![]).expect("authority");
+    let desired = RoleAuthoritySet::new(vec![operation], vec![output.clone()]).expect("authority");
+
+    assert_eq!(
+        InstallationRole::new_with_authority(
+            symbol("AppRole"),
+            desired_hash,
+            Some(previous_hash),
+            desired.clone(),
+            previous.clone(),
+            None,
+        )
+        .expect_err("a new secret-output atom is widening")
+        .kind(),
+        InstallationPlanErrorKind::ApprovalRequired
+    );
+
+    let approval = RoleWideningApproval::new_authority(
+        previous_hash,
+        vec![RoleAuthorityAtom::QuerySecretOutput(output)],
+    )
+    .expect("exact approval");
+    let role = InstallationRole::new_with_authority(
+        symbol("AppRole"),
+        desired_hash,
+        Some(previous_hash),
+        desired,
+        previous,
+        Some(approval),
+    )
+    .expect("approved role");
+    let mut input = base_input();
+    input.roles = vec![role];
+    input.credential_destinations = vec![
+        CredentialDestination::new(
+            symbol("app-runtime"),
+            symbol("AppRole"),
+            Some(capability(2)),
+            capability(1),
+        )
+        .expect("credential rotation"),
+    ];
+    let plan = ApplicationInstallationPlan::compile(input).expect("v3 plan");
+    assert_eq!(
+        plan.canonical_bytes(),
+        include_bytes!("../../../fixtures/installation/application-installation-plan-v3.json")
+    );
+    assert_eq!(plan.schema(), APPLICATION_INSTALLATION_PLAN_SCHEMA_V3);
+    assert!(
+        plan.input()
+            .required_features
+            .contains(&InstallationFeature::QuerySecretOutputs)
+    );
+    let value = serde_json::from_slice::<serde_json::Value>(plan.canonical_bytes()).expect("json");
+    assert!(value["roles"][0].get("desired_operations").is_none());
+    assert_eq!(
+        value["roles"][0]["desired_authority"][1],
+        serde_json::json!({
+            "query": "GetSession",
+            "entity": "Session",
+            "field": "token_hash"
+        })
+    );
+    assert_eq!(
+        ApplicationInstallationPlan::decode_canonical(plan.canonical_bytes()).expect("v3 decode"),
+        plan
+    );
+}
+
+#[test]
+fn secret_output_query_identity_is_distinct_and_approval_order_is_not_normalized() {
+    let first =
+        RoleAuthorityAtom::QuerySecretOutput(secret_output("FindSession", "Session", "token_hash"));
+    let second =
+        RoleAuthorityAtom::QuerySecretOutput(secret_output("GetSession", "Session", "token_hash"));
+    assert_ne!(first, second);
+    assert_eq!(
+        RoleWideningApproval::new_authority(
+            ApplicationRoleHash::from_bytes(hash32(10)),
+            vec![second, first],
+        )
+        .expect_err("approval order is security-significant")
+        .kind(),
+        InstallationPlanErrorKind::InvalidApproval
+    );
+}
+
+#[test]
+fn secret_authority_narrowing_identity_rotation_and_approval_failures_are_exact() {
+    let previous_hash = ApplicationRoleHash::from_bytes(hash32(10));
+    let desired_hash = ApplicationRoleHash::from_bytes(hash32(11));
+    let query = operation(RoleOperationKind::Query, "GetSession");
+    let secret = secret_output("GetSession", "Session", "token_hash");
+    let previous = RoleAuthoritySet::new(vec![query.clone()], vec![secret.clone()])
+        .expect("previous authority");
+    let narrowed = RoleAuthoritySet::new(vec![query.clone()], vec![]).expect("narrowed");
+    InstallationRole::new_with_authority(
+        symbol("AppRole"),
+        desired_hash,
+        Some(previous_hash),
+        narrowed,
+        previous.clone(),
+        None,
+    )
+    .expect("removal narrows without approval");
+    InstallationRole::new_with_authority(
+        symbol("AppRole"),
+        desired_hash,
+        Some(previous_hash),
+        previous.clone(),
+        previous.clone(),
+        None,
+    )
+    .expect("same atoms rotate identity without widening");
+
+    let desired = RoleAuthoritySet::new(
+        vec![query],
+        vec![
+            secret.clone(),
+            secret_output("LookupSession", "Session", "token_hash"),
+        ],
+    )
+    .expect("desired authority");
+    let stale = RoleWideningApproval::new_authority(
+        ApplicationRoleHash::from_bytes(hash32(9)),
+        vec![RoleAuthorityAtom::QuerySecretOutput(secret_output(
+            "LookupSession",
+            "Session",
+            "token_hash",
+        ))],
+    )
+    .expect("stale approval shape");
+    assert_eq!(
+        InstallationRole::new_with_authority(
+            symbol("AppRole"),
+            desired_hash,
+            Some(previous_hash),
+            desired.clone(),
+            previous.clone(),
+            Some(stale),
+        )
+        .expect_err("stale predecessor")
+        .kind(),
+        InstallationPlanErrorKind::InvalidApproval
+    );
+    let excess = RoleWideningApproval::new_authority(
+        previous_hash,
+        vec![
+            RoleAuthorityAtom::Operation(operation(RoleOperationKind::Command, "DeleteSession")),
+            RoleAuthorityAtom::QuerySecretOutput(secret_output(
+                "LookupSession",
+                "Session",
+                "token_hash",
+            )),
+        ],
+    )
+    .expect("canonical excess approval");
+    assert_eq!(
+        InstallationRole::new_with_authority(
+            symbol("AppRole"),
+            desired_hash,
+            Some(previous_hash),
+            desired,
+            previous,
+            Some(excess),
+        )
+        .expect_err("excess atom")
+        .kind(),
+        InstallationPlanErrorKind::InvalidApproval
+    );
+}
+
+#[test]
+fn authority_bounds_and_v3_old_reader_refusal_are_closed() {
+    let operations = (0..=riffdb_application::MAX_ROLE_OPERATIONS)
+        .map(|index| operation(RoleOperationKind::Query, &format!("Q{index:04}")))
+        .collect();
+    assert_eq!(
+        RoleAuthoritySet::new(operations, vec![])
+            .expect_err("operation ceiling")
+            .kind(),
+        InstallationPlanErrorKind::LimitExceeded
+    );
+
+    let plan = ApplicationInstallationPlan::decode_canonical(include_bytes!(
+        "../../../fixtures/installation/application-installation-plan-v3.json"
+    ))
+    .expect("v3 fixture");
+    let mut value =
+        serde_json::from_slice::<serde_json::Value>(plan.canonical_bytes()).expect("json");
+    value["schema"] =
+        serde_json::Value::String("riffdb.application-installation-plan/v2".to_owned());
+    let mut bytes = serde_json::to_vec(&value).expect("old schema bytes");
+    bytes.push(b'\n');
+    assert_eq!(
+        ApplicationInstallationPlan::decode_canonical(&bytes)
+            .expect_err("old reader identity cannot ignore authority atoms")
+            .kind(),
+        InstallationPlanErrorKind::InvalidShape
+    );
 }
 
 #[test]

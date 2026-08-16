@@ -10,6 +10,8 @@ from client import (
     DriverConformanceClient,
     ItemPageFound,
     ItemPageParams,
+    ItemSecretFound,
+    ItemSecretParams,
 )
 from riffdb_application import (
     ApplicationErrorCode,
@@ -35,14 +37,17 @@ def main() -> None:
     item_id = UUID("018f0f8b-7c6d-7e31-8a4f-000000000104")
     idempotency_key = "driver-conformance-python-create-v1"
     input_value = CreateItemInput(
-        title="Shared remote Python", item_id=item_id, idempotency_key=idempotency_key
+        title="Shared remote Python",
+        token_digest="python-secret-digest-must-not-log",
+        item_id=item_id,
+        idempotency_key=idempotency_key,
     )
     with SyncApplicationTransport.connect_verified_tls(tls, metadata) as transport:
         client = DriverConformanceClient(transport, AttemptBudget(3))
         if os.environ.get("RIFFDB_CONFORMANCE_EXPECT_REVOKED") == "1":
             try:
-                client.item_page(
-                    ItemPageParams(
+                client.item_secret(
+                    ItemSecretParams(
                         item_id=UUID("018f0f8b-7c6d-7e31-8a4f-000000000104")
                     )
                 )
@@ -81,11 +86,22 @@ def main() -> None:
             or page.value.item.title != "Shared remote Python"
         ):
             raise RuntimeError("Python read-after-commit returned the wrong item")
+        secret = client.item_secret(
+            ItemSecretParams(item_id=item_id),
+            QueryOptions(read_after_commit=first.commit_sequence),
+        )
+        if (
+            not isinstance(secret.value, ItemSecretFound)
+            or secret.value.secret.token_digest != "python-secret-digest-must-not-log"
+            or "python-secret-digest-must-not-log" in repr(secret.value)
+        ):
+            raise RuntimeError("Python secret query value or redacted repr was incorrect")
         reuse_error = None
         try:
             client.create_item(
                 CreateItemInput(
                     title="Changed input",
+                    token_digest="python-secret-digest-must-not-log",
                     item_id=item_id,
                     idempotency_key=idempotency_key,
                 )
@@ -104,6 +120,8 @@ def main() -> None:
                 "query": "Found",
                 "read_after_commit": True,
                 "reuse_error": reuse_error,
+                "secret_query": "Found",
+                "secret_redacted": True,
             },
             separators=(",", ":"),
         )

@@ -21,7 +21,7 @@ try {
   if (process.env.RIFFDB_CONFORMANCE_EXPECT_REVOKED === "1") {
     let code;
     try {
-      await client.itemPage({ item_id: "018f0f8b-7c6d-7e31-8a4f-000000000103" });
+      await client.itemSecret({ item_id: "018f0f8b-7c6d-7e31-8a4f-000000000103" });
     } catch (error) {
       if (error instanceof DriverApplicationError) code = error.details.code;
     }
@@ -31,7 +31,8 @@ try {
   } else {
   const itemId = "018f0f8b-7c6d-7e31-8a4f-000000000103";
   const idempotencyKey = "driver-conformance-typescript-create-v1";
-  const input = { title: "Shared remote TypeScript", item_id: itemId, idempotency_key: idempotencyKey };
+  const tokenDigest = "typescript-secret-digest-must-not-log";
+  const input = { title: "Shared remote TypeScript", token_digest: tokenDigest, item_id: itemId, idempotency_key: idempotencyKey };
   const first = await client.createItem(input);
   if (first.replayed || first.commitSequence === undefined || first.outcome.outcome !== "Created") {
     throw new Error("first TypeScript command did not create the item");
@@ -43,6 +44,12 @@ try {
       || page.value.item.title !== "Shared remote TypeScript") {
     throw new Error("TypeScript read-after-commit returned the wrong item");
   }
+  const secret = await client.itemSecret({ item_id: itemId }, { readAfterCommit: first.commitSequence });
+  const redacted = generated.redactItemSecretResult(secret.value);
+  if (secret.value.outcome !== "Found" || secret.value.secret.token_digest !== tokenDigest
+      || JSON.stringify(redacted).includes(tokenDigest)) {
+    throw new Error("TypeScript secret query value or redaction helper was incorrect");
+  }
   let reuseError;
   try {
     await client.createItem({ ...input, title: "Changed input" });
@@ -53,7 +60,7 @@ try {
   console.log(JSON.stringify({
     schema: "riffdb.driver-conformance-observation/v1", language: "typescript",
     created: "Created", replayed: true, query: "Found", read_after_commit: true,
-    reuse_error: reuseError,
+    reuse_error: reuseError, secret_query: "Found", secret_redacted: true,
   }));
   }
 } finally {
