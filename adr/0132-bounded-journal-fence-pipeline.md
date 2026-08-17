@@ -41,6 +41,26 @@ fences, changelog observations, and the public application frontier form one
 gap-free prefix. An acknowledged command must be both durably recoverable and
 immediately visible to an authorized read using the returned commit sequence.
 
+WP-649's current-HEAD ledger localizes the cloud tail. At interactive c32 the
+N1 mean group residence is 4.82 ms, journal queue is 0.16 ms, `fdatasync` is
+1.30 ms, durable-receipt-to-publication is 4.04 ms, and actual ordered
+publication work is 0.16 ms. E2 measures 3.20/0.15/1.16/2.61/0.12 ms for the
+same stages. Group residence is oldest-selected-command age at dispatch: it
+mostly means waiting behind the busy writer, not time spent inside a batching
+timer. The durable-to-publication wait occurs because the same writer that
+submitted an earlier fence is performing deterministic work for a successor
+when the earlier receipt becomes ready; it polls and publishes the predecessor
+only after returning to its loop edge.
+
+The same-filesystem mechanics gate rejected concurrent same-file durability
+and append/fence worker overlap. Their closest cloud result improved p95 by
+13% while losing 15% throughput, short of the predeclared 20%/5% thresholds.
+An isolated diagnostic also disabled the existing completion-edge collection
+window: N1 throughput fell 1.9% while p95 rose 5.0%, and E2 throughput fell
+3.4% while p95 rose 3.2%. Therefore neither more fence syscalls nor removal of
+the collection window is the accepted candidate. The remaining evidence-sized
+candidate is separating ordered completion from authoritative apply work.
+
 ## Proposed Decision
 
 ### 1. Durability and publication remain monotonic prefixes
@@ -109,46 +129,73 @@ groups per second by more than five percent. A filesystem that serializes or
 merely coalesces the calls is recorded as a falsification, not hidden by an
 interactive benchmark.
 
-### 3. Group residence is bounded without adding an idle wait
+### 3. Existing collection semantics remain unchanged
 
-The journal lane adds no fixed batching sleep. A ready submission is eligible
-for immediate append, as it is today. If evidence shows that pre-submit group
-formation contributes materially to the failing tail, the sequencer may seal a
-physical prefix when the oldest selected command reaches a first-party latency
-budget no greater than `PERF-015`'s existing two-millisecond unpublished-epoch
-budget. The budget begins at command enqueue, not when a timer happens to be
-armed, and therefore caps residence rather than adding a collection window.
+The journal lane adds no new batching sleep. A ready submission remains
+eligible for immediate append. The existing completion-edge collection window
+remains enabled because the isolated no-coalescing diagnostic made throughput,
+aggregate p95, and CreateComment p50 worse on both cloud profiles while leaving
+oldest-command residence effectively unchanged.
 
-The budget, maximum transitions, maximum logical bytes, maximum physical bytes,
-and maximum in-flight prefixes are closed process constants. Applications and
-operators cannot select them. Queue pressure may cause smaller prefixes; it may
-not defer an idle command merely to seek a sibling. If smaller prefixes make
-the public throughput, seed, or fence-byte tail gates worse, this branch is not
-activated.
+The accepted candidate does not tune a duration, expose a knob, shrink groups,
+or reinterpret the existing two-millisecond bound. Group-residence telemetry is
+retained as queueing evidence and is named as residence, not formation time.
+Any later change to collection policy requires a separate predeclared A/B and
+exact amendment.
 
-### 4. Append preparation may overlap a bounded durability operation
+### 4. Ordered completion is separated from authoritative apply work
 
-After the append sequencer has written a complete generation- and position-
-bound prefix and captured its exact tail, a durability worker may fence that
-prefix while the sequencer encodes and writes the next bounded prefix at later
-positions. Later bytes are writer-private and receive no durability credit from
-an earlier receipt even if the device incidentally flushes them. They require a
-subsequent successful durability operation whose captured tail covers them.
+The sole apply writer retains command evaluation, transaction-current
+revalidation, conflict ownership, sequence assignment, mutation application,
+journal-frame submission, and the private successor frontier. After submission
+it transfers one `SubmittedWriterUnit` into a bounded FIFO completion lane. The
+transfer contains an opaque checked fence, exact FIFO metadata, fixed telemetry
+facts, and response senders; it confers no storage transaction, sequence,
+conflict, policy, or mutation authority.
 
-At most four durability operations or the existing unpublished transition and
-byte ceilings may be in flight, whichever is reached first. The sequencer,
-durability workers, completion buffer, and publication queue apply bounded
-backpressure before retaining additional frames. Extent recycle, checkpoint
-rebase, backup, maintenance, administration, migration, shutdown, and hardened-
-profile barriers drain all in-flight operations before proceeding.
+The completion lane owns only these ordered actions:
 
-Multiple simultaneous same-file durability calls are an optional mechanics-
-gated implementation of this pipeline, not a required mechanism. A single
-durability worker with append preparation overlap is valid if it produces the
-winning evidence. If neither overlap shape meets the predeclared public gates,
-the current worker remains active.
+1. wait for or poll the oldest submitted unit's durability result;
+2. validate that result against its exact covered frame and captured tail;
+3. publish through the existing storage publication queue, which itself drains
+   every predecessor and advances only a contiguous durable prefix;
+4. publish first-commit notifications after storage publication;
+5. record terminal telemetry; and
+6. release the corresponding application or administration responses.
 
-### 5. Errors remain prefix-wide and fail closed
+It never evaluates a command, chooses a group, assigns a sequence, opens a
+write transaction, changes a mutation, skips a predecessor, or publishes a
+later unit first. Replay/no-write `AfterPredecessor` units and submitted service
+audit units use the same FIFO so the shared application/administration order is
+unchanged. The apply writer may prepare a successor while completion publishes
+the predecessor, but it cannot observe completion facts as private-frontier
+authority or reuse them to admit work.
+
+The FIFO is bounded by the existing unpublished transition, logical-byte,
+physical-byte, read-root, journal-suffix, and channel ceilings. A full lane
+backpressures the apply writer before accepting another private successor. A
+unit that requires pipeline drain inserts an ordered barrier and blocks new
+apply work until completion acknowledges the drained prefix. Checkpoint rebase,
+extent recycle, backup, maintenance, migration, hardened-profile barriers,
+shutdown, and cancellation use the same drain protocol.
+
+Before production activation, the mechanics build must prove that every opaque
+command and audit fence crossing the lane is `Send` without unsafe code or
+duplicating its read root, and that the completion owner holds no authoritative
+operational port. If the existing checked-fence interface cannot meet that
+bound, the candidate is rejected; the implementation may not replace it with
+raw receipts or an unchecked publication callback.
+
+### 5. Physical journal scheduling remains unchanged
+
+The accepted candidate retains one ordered append sequencer, current ready-
+drain coalescing, one same-file durability call at a time, exact generation and
+position binding, and the existing captured-tail proof. The rejected concurrent
+same-file and append/fence mechanics remain documented evidence only. No later
+bytes receive durability credit from an earlier fence, and no additional dirty-
+byte or uncertain-syscall budget is introduced.
+
+### 6. Errors remain prefix-wide and fail closed
 
 Any positional-write, durability, completion-channel, prefix-proof,
 publication-order, composite-view, or frontier mismatch fences authoritative
@@ -163,7 +210,7 @@ completion, out-of-range tail, stale generation, and reordered completion are
 explicit closed states. No timeout fabricates failure or success for a syscall
 whose durable outcome is unknown.
 
-### 6. Activation is sized against all remaining alpha gates
+### 7. Activation is sized against all remaining alpha gates
 
 Before production dispatch changes, WP-649 freezes per-host queueing arithmetic
 from the closed ledger. The candidate must predict and then demonstrate on both
@@ -195,19 +242,26 @@ the generated-client default, or accept the session comparator.
    prefix.
 4. **Unbounded asynchronous fsync workers:** rejected. It converts latency into
    unbounded memory, dirty pages, uncertainty, and shutdown work.
-5. **Bounded append/fence overlap with ordered durable-prefix publication:**
-   proposed because it attacks the measured queueing tail while retaining the
-   existing semantic frontier.
+5. **Bounded append/fence overlap:** rejected by the workstation/N1/E2 mechanics
+   gate. The closest cloud cell traded 15% throughput for only 11--13% p95
+   improvement.
+6. **Remove completion-edge coalescing:** rejected by the N1/E2 public A/B. It
+   reduced throughput and worsened both aggregate and write tails.
+7. **Separate ordered completion from authoritative apply:** proposed because
+   it attacks the measured 2.49--3.88 ms receipt-ready wait above actual
+   publication work while preserving the same physical journal and one public
+   frontier.
 
 ## Consequences
 
-- The journal runtime may gain separate append-sequencing, durability, and
-  ordered-publication states with bounded channels and explicit prefix proofs.
-- More than one unpublished physical prefix may exist, but the existing
-  transition, logical-byte, physical-byte, overlay-memory, and extent-capacity
-  ceilings continue to dominate the sum.
-- Concurrent fence calls are not promised; the mechanics probe may reject them
-  while retaining append/fence overlap or the current implementation.
+- The commit runtime may gain separate authoritative-apply and ordered-
+  completion owners with one bounded FIFO and explicit prefix proofs.
+- More than one unpublished physical prefix may already exist under the current
+  writer pipeline; the existing transition, logical-byte, physical-byte, read-
+  root, overlay-memory, and extent-capacity ceilings continue to dominate the
+  sum.
+- Concurrent fence calls, append/fence overlap, and removal of completion-edge
+  coalescing are rejected by evidence and are not part of the implementation.
 - Tail latency becomes a first-class production invariant and evidence field,
   not a batching heuristic.
 - Read fast paths and projection result-set work remain separate packages.

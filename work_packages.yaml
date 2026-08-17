@@ -13975,9 +13975,9 @@ work_packages:
 - id: WP-649
   name: Bounded journal fence pipeline and ordered durable-prefix publication
   depends_on: [WP-641, WP-642, WP-643, WP-644]
-  objective: Close the journal completion tail, reject or prove bounded same-file fence overlap,
-    and implement ADR-0132's append/fence/publication pipeline only after exact acceptance and
-    mechanics demonstrate that it can satisfy unary, mixed-c32, tail, and seed gates together.
+  objective: Close the journal completion tail, reject unsafe or losing physical-fence shapes,
+    and implement ADR-0132's separate ordered-completion lane only after exact acceptance and the
+    closed ledger demonstrates that it can satisfy unary, mixed-c32, tail, and seed gates together.
   requirements: [PERF-004, PERF-005, PERF-008, PERF-009, PERF-015, PERF-017, PERF-018,
     REC-001, REC-002, STO-001, STO-002]
   required_adrs: [ADR-0058, ADR-0098, ADR-0101, ADR-0103, ADR-0104, ADR-0123,
@@ -13997,10 +13997,10 @@ work_packages:
     depths two and four, and a separate-file control across the production frame-size range
   - A reject-first mechanics table applying ADR-0132's twenty-percent cloud p95 improvement and
     five-percent throughput non-regression thresholds before any production journal worker changes
-  - After exact ADR acceptance only, a sole ordered append sequencer, bounded durability operations,
-    exact captured-tail proofs, finite completion buffer, and contiguous ordered publisher with no
-    public hole, authority cache, application-selectable setting, or acknowledgement before
-    immediate read-after-commit visibility
+  - After exact ADR acceptance only, a sole authoritative apply writer and separate bounded FIFO
+    completion owner that waits checked command and audit fences, publishes one contiguous durable
+    prefix, emits notifications, and releases responses, with no public hole, authority cache,
+    application-selectable setting, or acknowledgement before immediate read-after-commit visibility
   - Fixed-cardinality production evidence for queue residence, in-flight depth, completion reorder,
     durable-prefix advancement, publication drain, and shutdown, with no tenant, command, path,
     identity, value, or history-dependent label
@@ -14019,12 +14019,12 @@ work_packages:
   - ./scripts/check-requirement-coverage
   - cargo +1.97.0 fmt --all -- --check
   - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
-  exit_gate: Production activation occurs only after exact ADR-0132 acceptance, a mechanics branch
-    passes its reject-first thresholds on both cloud profiles, every representative unary scenario
-    is at most 1.10x safe-application PostgreSQL, mixed c32 throughput is at least 0.90x and p95 at
-    most 1.25x, seed remains at most 5.0x, reads do not regress more than five percent, and every
-    ordering, durability, read-after-commit, crash, recovery, uncertainty, and shutdown proof is
-    exact; otherwise current journal dispatch and unary defaults remain active.
+  exit_gate: Production activation occurs only after exact ADR-0132 acceptance, the completion lane
+    removes the ledgered receipt-ready wait without changing physical journal scheduling, every
+    representative unary scenario is at most 1.10x safe-application PostgreSQL, mixed c32 throughput
+    is at least 0.90x and p95 at most 1.25x, seed remains at most 5.0x, reads do not regress more than
+    five percent, and every ordering, durability, read-after-commit, crash, recovery, uncertainty,
+    and shutdown proof is exact; otherwise current journal dispatch and unary defaults remain active.
   standing_design_tests:
     interface_safety: Applications continue to submit only compiled commands and cannot select or
       observe grouping, residence budgets, durability depth, completion order, publication order,

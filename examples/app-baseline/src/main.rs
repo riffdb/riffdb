@@ -905,7 +905,7 @@ fn riffdb_shutdown_evidence_json(evidence: &RiffDbShutdownEvidence) -> serde_jso
             "durable_flush_duration_us": histogram(&evidence.writer.flush_duration),
             "commit_batch_size": histogram(&evidence.writer.batch_size),
             "storage_queue_duration_us": histogram(&evidence.writer.storage_queue_duration),
-            "group_formation_duration_us": evidence.writer.group_formation_duration.as_ref().map(histogram),
+            "group_residence_duration_us": evidence.writer.group_residence_duration.as_ref().map(histogram),
             "final_apply_duration_us": evidence.writer.final_apply_duration.as_ref().map(histogram),
             "journal_submit_duration_us": histogram(&evidence.writer.journal_submit_duration),
             "preparation_pool_depth": evidence.writer.preparation_pool_depth.as_ref().map(histogram),
