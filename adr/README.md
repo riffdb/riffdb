@@ -148,8 +148,8 @@ direction, merged draft, or implementation choice.
 | [0127](0127-bounded-multiplexed-application-session.md) | Bounded Multiplexed Application Session | Proposed |
 | [0128](0128-compiler-declared-secret-outputs-for-named-riffql.md) | Compiler-Declared Secret Outputs for Named RiffQL | Accepted |
 | [0129](0129-bounded-prepared-command-finalization.md) | Bounded Prepared Command Finalization and Pay-Once Batch Apply | Accepted |
-| [0130](0130-compiler-planned-projection-result-sets.md) | Compiler-Planned Projection Result Sets and Snapshot-Aligned Composition | Proposed |
-| [0131](0131-exact-indexed-text-cardinality-and-ordinal-windowing.md) | Exact Indexed Text Matching, Cardinality, and Ordinal Windowing | Proposed |
+| [0130](0130-compiler-planned-projection-result-sets.md) | Compiler-Planned Projection Result Sets and Snapshot-Aligned Composition | Accepted |
+| [0131](0131-exact-indexed-text-cardinality-and-ordinal-windowing.md) | Exact Indexed Text Matching, Cardinality, and Ordinal Windowing | Accepted |
 
 The human architecture review on 2026-07-12 approved the direction represented
 by ADR-0001 through ADR-0012. The human maintainer accepted ADR-0001 through
