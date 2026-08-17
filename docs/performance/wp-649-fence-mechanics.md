@@ -2,7 +2,8 @@
 
 Date: 2026-08-17
 
-Status: reject-first mechanics complete; production dispatch unchanged.
+Status: ADR-0132 accepted; bounded ordered-completion lane implemented and
+under acceptance evaluation.
 
 ## Question
 
@@ -179,3 +180,28 @@ checked `riffdb-storage-api`, `riffdb-storage-redb`, and `riffdb-commit` with al
 features and no unsafe code or representation change. This proves the existing
 typed redb fence and captured read root can cross the proposed bounded lane; it
 does not authorize the scheduling change.
+
+## Accepted implementation checkpoint
+
+The maintainer accepted the exact ADR-0132 text on 2026-08-17. The production
+coordinator now retains all storage, conflict, sequence, mutation, and journal
+submission authority on the sole apply writer and transfers only an opaque
+submitted unit to a separate bounded FIFO completion owner. The owner waits the
+oldest checked command or audit fence, publishes the contiguous prefix, emits
+notifications and terminal telemetry, and releases responses. A bounded
+apply-side shadow queue retains only transition counts and compiler-proved
+private-frontier eligibility; it carries no result or durability authority.
+
+The channel and shadow queue are capped at 256 units and the pre-existing
+256-transition journal-suffix ceiling remains authoritative. A full lane or a
+barrier drains the oldest completion; no timer, caller setting, or public
+protocol shape was added. Fixed-cardinality `riffdb-completion-lane-v1`
+shutdown evidence reports submitted/published/drained/shutdown counts and
+durations, maximum depth, and the FIFO reorder occupancy (zero by
+construction).
+
+The first local public-gRPC smoke cell (32 interactive clients, one-second
+warmup, five measured seconds) completed with zero errors at 33,189 ops/s,
+aggregate p95 5.24 ms, and CreateComment p50/p99 4.72/19.92 ms. This is a
+directional checkpoint only, not paired release evidence. The paired N1/E2
+safe-application comparisons and full crash/recovery gates remain outstanding.

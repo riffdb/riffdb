@@ -91,6 +91,6 @@ pub use service_values::{ServiceUuidV7Source, ServiceUuidV7SourceError};
 pub use telemetry::{
     CommandPipelineStage, CommitCallTerminal, CommitCommandTerminal, CommitGroupDispatchReason,
     CommitIdempotencyObservation, CommitTelemetry, CommitTelemetryEvent,
-    CommitUncertaintyResolution, CommitUncertaintyStage, NoopCommitTelemetry,
+    CommitUncertaintyResolution, CommitUncertaintyStage, CompletionLanePhase, NoopCommitTelemetry,
     PreparedEpochRollbackReason,
 };

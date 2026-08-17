@@ -263,7 +263,7 @@ pub trait DeferredCommandEpoch: Sized {
 }
 
 /// Submitted durability work whose results remain unpublished and unobservable.
-pub trait DeferredCommandFence: Sized {
+pub trait DeferredCommandFence: Sized + Send {
     /// Whether this fence used the bounded synchronous tail fallback and the
     /// coordinator must publish every earlier fence before opening another
     /// private epoch. This is storage scheduling evidence only; it never

@@ -114,9 +114,34 @@ pub enum PreparedEpochRollbackReason {
     Cancelled,
 }
 
+/// Closed phase of the bounded ordered-completion lane.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum CompletionLanePhase {
+    /// One unpublished unit entered the bounded FIFO lane.
+    Submitted,
+    /// The oldest unit's checked fence and publication completed.
+    Published,
+    /// The apply writer waited for the complete submitted prefix.
+    Drained,
+    /// Shutdown joined the empty completion owner.
+    Shutdown,
+}
+
 /// One closed semantic observation from the sole-writer command path.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CommitTelemetryEvent {
+    /// One fixed-cardinality completion-lane state observation.
+    CompletionLaneObserved {
+        /// Closed lifecycle phase.
+        phase: CompletionLanePhase,
+        /// Submitted units not yet acknowledged by the apply writer.
+        depth: u16,
+        /// Ready units held behind an older FIFO predecessor. The selected
+        /// one-owner design keeps this at zero by construction.
+        reorder_occupancy: u16,
+        /// Residence or drain duration for this phase.
+        elapsed: Duration,
+    },
     /// One bounded preparation-pool depth observation.
     PreparationPoolDepthObserved {
         /// Accepted tasks queued or executing under the fixed pool ceiling.

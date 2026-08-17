@@ -570,9 +570,8 @@ pub(super) enum CheckedCommandGroupApplyResult<E> {
     Failed(CheckedCommandGroupCommitResult),
 }
 
-pub(super) trait CheckedCommandGroupFence {
+pub(super) trait CheckedCommandGroupFence: Send {
     fn requires_pipeline_drain(&self) -> bool;
-    fn try_wait(&mut self) -> Option<CheckedCommandGroupCommitResult>;
     fn wait(self: Box<Self>) -> CheckedCommandGroupCommitResult;
 }
 
@@ -589,33 +588,6 @@ where
         self.fence
             .as_ref()
             .is_some_and(riffdb_storage_api::DeferredCommandFence::requires_pipeline_drain)
-    }
-
-    fn try_wait(&mut self) -> Option<CheckedCommandGroupCommitResult> {
-        let fenced = match self.fence.as_mut()?.try_wait() {
-            Ok(Some(mut batches)) => {
-                if batches.len() != 1 {
-                    Err(StorageError::new(
-                        StorageErrorKind::InvariantViolation,
-                        None,
-                    ))
-                } else {
-                    Ok(batches.remove(0).into_parts().0)
-                }
-            }
-            Ok(None) => return None,
-            Err(error) => Err(error),
-        }
-        .map_err(|error| {
-            StorageError::new(StorageErrorKind::CommitStatusUnknown, error.incident_id())
-        });
-        self.fence.take();
-        let batch = self.batch.take()?;
-        Some(finish_post_apply_group_commit(
-            batch.entries,
-            batch.durability_mode,
-            fenced,
-        ))
     }
 
     fn wait(self: Box<Self>) -> CheckedCommandGroupCommitResult {

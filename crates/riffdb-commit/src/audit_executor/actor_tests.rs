@@ -1,7 +1,7 @@
 use std::future::Future;
 use std::num::NonZeroU64;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, mpsc as std_mpsc};
 use std::task::{Context, Poll, Waker};
 
@@ -1134,6 +1134,78 @@ struct LatchedGroupRepository {
     next_sequence: AtomicUsize,
 }
 
+struct ControlledAuditFence {
+    entered: Option<std_mpsc::SyncSender<()>>,
+    release: std_mpsc::Receiver<()>,
+    results: Option<Vec<ServiceAuditAppendResult>>,
+}
+
+impl riffdb_storage_api::DeferredServiceAuditFence for ControlledAuditFence {
+    fn try_wait(
+        &mut self,
+    ) -> Result<Option<Vec<ServiceAuditAppendResult>>, riffdb_storage_api::StorageError> {
+        match self.release.try_recv() {
+            Ok(()) => Ok(self.results.take()),
+            Err(std_mpsc::TryRecvError::Empty) => Ok(None),
+            Err(std_mpsc::TryRecvError::Disconnected) => Err(StorageError::new(
+                StorageErrorKind::CommitStatusUnknown,
+                None,
+            )),
+        }
+    }
+
+    fn wait(
+        mut self: Box<Self>,
+    ) -> Result<Vec<ServiceAuditAppendResult>, riffdb_storage_api::StorageError> {
+        if let Some(entered) = self.entered.take() {
+            entered.send(()).expect("completion owner reports wait");
+        }
+        self.release
+            .recv()
+            .map_err(|_| StorageError::new(StorageErrorKind::CommitStatusUnknown, None))?;
+        self.results
+            .take()
+            .ok_or_else(|| StorageError::new(StorageErrorKind::InvariantViolation, None))
+    }
+}
+
+fn completion_test_lifecycle() -> ActorLifecyclePublisher {
+    ActorLifecyclePublisher {
+        lifecycle: Arc::new(AtomicU8::new(LIFECYCLE_ACCEPTING)),
+        submission_gate: Arc::new(SubmissionGate::new()),
+    }
+}
+
+fn appended_audit_result(fill: u8, sequence: u64) -> ServiceAuditAppendResult {
+    let checked = checked_input(fill);
+    let intent = prepare_administration_audit(&TestClock::fixed(fixed_timestamp()), &checked)
+        .expect("checked audit intent");
+    ServiceAuditAppendResult::Appended(StoredServiceAuditRecordV1::from_intent(
+        AdministrationSequence::try_from(sequence).expect("nonzero sequence"),
+        &intent,
+    ))
+}
+
+fn submitted_audit_unit(
+    fence: ControlledAuditFence,
+) -> (
+    SubmittedWriterUnit,
+    oneshot::Receiver<Result<(), AdministrationAuditExecutionError>>,
+) {
+    let (completion, receiver) = oneshot::channel();
+    (
+        SubmittedWriterUnit::Audit {
+            submitted: Some(SubmittedAuditGroup {
+                outputs: vec![None],
+                prepared_indices: vec![0],
+                fence: Some(Box::new(fence)),
+            }),
+            completions: vec![completion],
+        },
+        receiver,
+    )
+}
+
 impl ServiceAuditAppendRepository for LatchedGroupRepository {
     fn append_service_audit(
         &mut self,
@@ -1218,6 +1290,79 @@ fn pipelined_writer_forms_the_next_group_while_the_prior_unit_commits() {
         "exactly two dispatches sized [1, k]: {dispatches:?}"
     );
     assert_eq!(group_sizes.lock().expect("sizes").as_slice(), &[1, 3]);
+}
+
+#[test]
+fn completion_owner_waits_independently_and_publishes_only_the_fifo_prefix() {
+    fn assert_send<T: Send>() {}
+    assert_send::<SubmittedWriterUnit>();
+
+    let lifecycle = completion_test_lifecycle();
+    let owner = CompletionOwner {
+        notifications: Arc::new(DiscardApplicationCommitNotifications),
+        telemetry: Arc::new(NoopCommitTelemetry),
+        lifecycle: lifecycle.clone(),
+    };
+    let (submitted_tx, submitted_rx) = std_mpsc::sync_channel(2);
+    let (published_tx, published_rx) = std_mpsc::sync_channel(2);
+    let owner_thread = thread::spawn(move || owner.run(submitted_rx, published_tx));
+
+    let (first_entered_tx, first_entered_rx) = std_mpsc::sync_channel(1);
+    let (first_release_tx, first_release_rx) = std_mpsc::sync_channel(0);
+    let (second_release_tx, second_release_rx) = std_mpsc::sync_channel(1);
+    let (first, first_result) = submitted_audit_unit(ControlledAuditFence {
+        entered: Some(first_entered_tx),
+        release: first_release_rx,
+        results: Some(vec![appended_audit_result(0x61, 1)]),
+    });
+    let (second, second_result) = submitted_audit_unit(ControlledAuditFence {
+        entered: None,
+        release: second_release_rx,
+        results: Some(vec![appended_audit_result(0x62, 2)]),
+    });
+
+    submitted_tx
+        .send(SubmittedCompletionUnit {
+            unit: first,
+            submitted_at: Instant::now(),
+            submitted_depth: 1,
+        })
+        .expect("submit first fence");
+    first_entered_rx
+        .recv()
+        .expect("completion owner waits first");
+    submitted_tx
+        .send(SubmittedCompletionUnit {
+            unit: second,
+            submitted_at: Instant::now(),
+            submitted_depth: 2,
+        })
+        .expect("apply owner remains free to submit successor");
+    second_release_tx
+        .send(())
+        .expect("make successor durable first");
+
+    let mut first_result = Box::pin(first_result);
+    let mut second_result = Box::pin(second_result);
+    assert!(matches!(poll_once(first_result.as_mut()), Poll::Pending));
+    assert!(matches!(poll_once(second_result.as_mut()), Poll::Pending));
+    assert!(matches!(
+        published_rx.try_recv(),
+        Err(std_mpsc::TryRecvError::Empty)
+    ));
+
+    first_release_tx.send(()).expect("release oldest fence");
+    assert_eq!(block_on(first_result), Ok(Ok(())));
+    assert_eq!(block_on(second_result), Ok(Ok(())));
+    assert!(matches!(published_rx.recv(), Ok(CompletionPublished)));
+    assert!(matches!(published_rx.recv(), Ok(CompletionPublished)));
+
+    drop(submitted_tx);
+    owner_thread.join().expect("completion owner joins");
+    assert_eq!(
+        lifecycle_state(&lifecycle.lifecycle),
+        CoordinatorLifecycleState::Accepting
+    );
 }
 
 #[test]

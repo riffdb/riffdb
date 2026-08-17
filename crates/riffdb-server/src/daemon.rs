@@ -1565,6 +1565,11 @@ async fn run_multi_database_server(
         .filter_map(|graph| graph.graph.as_ref())
         .map(RunningProductionGraph::writer_evidence_snapshot)
         .collect::<Vec<_>>();
+    let completion_lane_evidence = graphs
+        .iter()
+        .filter_map(|graph| graph.graph.as_ref())
+        .map(RunningProductionGraph::completion_lane_evidence_snapshot)
+        .collect::<Vec<_>>();
     if !matches!(stop, MultiDatabaseStop::TransportEnded) {
         transport.drain_after_signal().await?;
     }
@@ -1584,6 +1589,10 @@ async fn run_multi_database_server(
         let mut stdout = stdout.lock();
         for snapshot in &writer_evidence {
             let line = riffdb_observability::format_writer_evidence_v1_line(snapshot);
+            let _ = writeln!(stdout, "{line}");
+        }
+        for snapshot in &completion_lane_evidence {
+            let line = riffdb_observability::format_completion_lane_evidence_v1_line(snapshot);
             let _ = writeln!(stdout, "{line}");
         }
         let _ = stdout.flush();
@@ -3085,6 +3094,7 @@ async fn supervise_ready_process(
     let write_service_stages = graph.write_service_stage_snapshot();
     let command_stages = graph.command_stage_snapshot();
     let writer_evidence = graph.writer_evidence_snapshot();
+    let completion_lane_evidence = graph.completion_lane_evidence_snapshot();
     let writer_frame_census = riffdb_storage_redb::writer_command_frame_census_v1();
     let writer_flush_census = riffdb_storage_redb::writer_command_flush_census_v1();
     let writer_journal_stage_census = riffdb_storage_redb::writer_journal_stage_census_v1();
@@ -3147,6 +3157,11 @@ async fn supervise_ready_process(
         let writer_evidence_line =
             riffdb_observability::format_writer_evidence_v1_line(&writer_evidence);
         let _ = writeln!(stdout, "{writer_evidence_line}");
+        let completion_lane_evidence_line =
+            riffdb_observability::format_completion_lane_evidence_v1_line(
+                &completion_lane_evidence,
+            );
+        let _ = writeln!(stdout, "{completion_lane_evidence_line}");
         let writer_frame_census = writer_frame_census
             .iter()
             .map(u64::to_string)

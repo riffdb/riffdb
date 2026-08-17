@@ -141,27 +141,6 @@ impl SubmittedCommandGroup {
             .any(|subgroup| subgroup.fence.requires_pipeline_drain())
     }
 
-    pub(super) fn try_wait(
-        &mut self,
-        lifecycle: &dyn CommandExecutionLifecycle,
-        telemetry: &dyn CommitTelemetry,
-    ) -> Option<Vec<Result<CommandExecutionResult, CommandExecutionError>>> {
-        loop {
-            let subgroup = self.subgroups.first_mut()?;
-            let committed = subgroup.fence.try_wait()?;
-            telemetry.record(CommitTelemetryEvent::CommitCallCompleted {
-                terminal: group_commit_call_terminal(&committed),
-                elapsed: subgroup.commit_started_at.elapsed(),
-                batch_size: subgroup.batch_size,
-            });
-            let subgroup = self.subgroups.remove(0);
-            self.install_subgroup(subgroup.indices, committed, lifecycle);
-            if self.subgroups.is_empty() {
-                return Some(self.take_results());
-            }
-        }
-    }
-
     pub(super) fn wait(
         mut self,
         lifecycle: &dyn CommandExecutionLifecycle,

@@ -14,7 +14,8 @@ use riffdb_auth::{AuthenticationRejection, AuthenticationTelemetry, Authenticati
 use riffdb_commit::{
     CommitCallTerminal, CommitCommandTerminal, CommitGroupDispatchReason,
     CommitIdempotencyObservation, CommitTelemetry, CommitTelemetryEvent,
-    CommitUncertaintyResolution, CommitUncertaintyStage, PreparedEpochRollbackReason,
+    CommitUncertaintyResolution, CommitUncertaintyStage, CompletionLanePhase,
+    PreparedEpochRollbackReason,
 };
 use riffdb_errors::{IncidentIdSource, IncidentIdSourceError, InternalError};
 use riffdb_observability::{
@@ -25,9 +26,9 @@ use riffdb_observability::{
     MAX_METRIC_SERIES, MAX_TRACE_RECORDS, MAX_WRITE_GROUP_SIZE, MetricKey, MetricRegistry,
     MetricSemantics, Observability, PrincipalIdTelemetryHash, READ_PIPELINE_STAGE_COUNT,
     REQUIRED_COMMAND_SPAN_FIELDS, REQUIRED_METRIC_INVENTORY, RequiredCounter, RequiredGauge,
-    RequiredHistogram, SafeTraceLayer, TraceKind, format_read_stages_v1_line,
-    format_writer_evidence_v1_line, parse_read_stages_v1_payload, read_pipeline_stage_index,
-    request_span,
+    RequiredHistogram, SafeTraceLayer, TraceKind, format_completion_lane_evidence_v1_line,
+    format_read_stages_v1_line, format_writer_evidence_v1_line, parse_read_stages_v1_payload,
+    read_pipeline_stage_index, request_span,
 };
 use riffdb_policy::{AuthorizationTelemetry, AuthorizationTelemetryEvent, PolicyCode};
 use riffdb_service::{
@@ -991,6 +992,39 @@ fn prepared_epoch_failure_modes_are_fixed_cardinality_shutdown_evidence() {
     assert!(line.contains("frontier_equivalence_failures=1"));
     assert!(line.contains("preparation_pool_depth:3:5:"));
     assert!(line.contains("reorder_buffer_occupancy:3:3:"));
+}
+
+#[test]
+fn completion_lane_evidence_is_fixed_cardinality_and_payload_free() {
+    let source = Arc::new(ScriptedIncidentIds::new([]));
+    let observability = Observability::new(source, 8).expect("bounded");
+    for (phase, depth, elapsed) in [
+        (CompletionLanePhase::Submitted, 1, 0),
+        (CompletionLanePhase::Submitted, 3, 0),
+        (CompletionLanePhase::Published, 3, 17),
+        (CompletionLanePhase::Drained, 0, 5),
+        (CompletionLanePhase::Shutdown, 0, 2),
+    ] {
+        CommitTelemetry::record(
+            &observability,
+            CommitTelemetryEvent::CompletionLaneObserved {
+                phase,
+                depth,
+                reorder_occupancy: 0,
+                elapsed: Duration::from_micros(elapsed),
+            },
+        );
+    }
+
+    let snapshot = observability.completion_lane_evidence_snapshot();
+    assert_eq!(snapshot.phase_counts, [2, 1, 1, 1]);
+    assert_eq!(snapshot.phase_elapsed_us, [0, 17, 5, 2]);
+    assert_eq!(snapshot.max_depth, 3);
+    assert_eq!(snapshot.max_reorder_occupancy, 0);
+    assert_eq!(
+        format_completion_lane_evidence_v1_line(&snapshot),
+        "riffdb-completion-lane-v1\tcounts=2,1,1,1;elapsed_us=0,17,5,2;max_depth=3;max_reorder=0"
+    );
 }
 
 #[test]

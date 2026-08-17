@@ -15,7 +15,8 @@ use riffdb_catalog::CatalogTelemetryEvent;
 use riffdb_commit::{
     CommandExecutionErrorKind, CommandPipelineStage, CommitCallTerminal, CommitCommandTerminal,
     CommitGroupDispatchReason, CommitIdempotencyObservation, CommitTelemetryEvent,
-    CommitUncertaintyResolution, CommitUncertaintyStage, PreparedEpochRollbackReason,
+    CommitUncertaintyResolution, CommitUncertaintyStage, CompletionLanePhase,
+    PreparedEpochRollbackReason,
 };
 use riffdb_conflict::ConflictEventKind;
 use riffdb_policy::{AuthorizationDefect, PolicyCode};
@@ -265,6 +266,10 @@ impl TraceRecord {
 
     pub(crate) const fn commit(event: CommitTelemetryEvent) -> Self {
         let (detail_tag, value) = match event {
+            CommitTelemetryEvent::CompletionLaneObserved { phase, elapsed, .. } => (
+                92 + completion_lane_phase_tag(phase),
+                saturating_duration_microseconds(elapsed),
+            ),
             CommitTelemetryEvent::PreparationPoolDepthObserved { depth } => (84, depth as u64),
             CommitTelemetryEvent::ReorderBufferOccupancyObserved { occupancy } => {
                 (85, occupancy as u64)
@@ -1016,6 +1021,15 @@ const fn command_pipeline_stage_tag(stage: CommandPipelineStage) -> u8 {
         CommandPipelineStage::Evaluation => 3,
         CommandPipelineStage::ValidationEncodingStaging => 4,
         CommandPipelineStage::Publication => 5,
+    }
+}
+
+const fn completion_lane_phase_tag(phase: CompletionLanePhase) -> u8 {
+    match phase {
+        CompletionLanePhase::Submitted => 0,
+        CompletionLanePhase::Published => 1,
+        CompletionLanePhase::Drained => 2,
+        CompletionLanePhase::Shutdown => 3,
     }
 }
 
