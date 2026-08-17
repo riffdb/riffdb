@@ -56,6 +56,16 @@ const CHILD_CLI_RPC_MARKER: &str = "RIFFDB_WP190_CLI_RPC_MARKER";
 const AUDIENCE: &str = "riffdb-grpc-loopback";
 const ENVIRONMENT: &str = "wp190-command-recovery";
 const READY_PREFIX: &str = "riffdbd-ready-v1\t";
+const SINGLE_DATABASE_SHUTDOWN_EVIDENCE_PREFIXES: [&str; 8] = [
+    "riffdb-write-completion-groups-v1\t",
+    "riffdb-dispatch-reasons-v1\t",
+    "riffdb-read-stages-v1\t",
+    "riffdb-write-service-stages-v1\t",
+    "riffdb-command-stages-v1\t",
+    "riffdb-writer-evidence-v1\t",
+    "riffdb-writer-frame-census-v1\t",
+    "riffdb-writer-flush-census-v1\t",
+];
 const SHUTDOWN_COMMAND: &[u8] = b"shutdown\n";
 const PROCESS_START_TIMEOUT: Duration = Duration::from_secs(30);
 const PROCESS_STOP_TIMEOUT: Duration = Duration::from_secs(20);
@@ -574,11 +584,30 @@ async fn create_backup_to_terminal(
     .await?;
     assert_maintenance_accepted(&started, operation.operation_id())?;
     drop(client);
-    let rebound =
-        parse_ready_address(&process.wait_for_readiness(READY_PREFIX, PROCESS_START_TIMEOUT)?)?;
+    let rebound = wait_for_maintenance_rebound(
+        process,
+        &SINGLE_DATABASE_SHUTDOWN_EVIDENCE_PREFIXES,
+        "single-database source backup rebound",
+    )?;
     let mut client = connect(rebound).await?;
     poll_terminal_maintenance(&mut client, operation.operation_id(), metadata).await?;
     Ok(client)
+}
+
+fn wait_for_maintenance_rebound(
+    process: &ChildProcessController,
+    evidence_prefixes: &[&str],
+    label: &'static str,
+) -> TestResult<SocketAddr> {
+    let transition = process
+        .wait_for_evidence_then_readiness(evidence_prefixes, READY_PREFIX, PROCESS_START_TIMEOUT)
+        .map_err(|error| test_failure(format!("{label}: {error}")))?;
+    if transition.evidence_lines != evidence_prefixes.len() {
+        return Err(test_failure(
+            "maintenance rebound omitted shutdown evidence",
+        ));
+    }
+    parse_ready_address(&transition.readiness)
 }
 
 fn assert_maintenance_accepted(

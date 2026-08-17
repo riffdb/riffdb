@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, ExitStatus, Stdio};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender};
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// Maximum process arguments accepted by the test controller.
 pub const MAX_CHILD_ARGUMENTS: usize = 64;
@@ -18,6 +18,8 @@ pub const MAX_CHILD_ENVIRONMENT_ENTRIES: usize = 32;
 pub const MAX_CHILD_COMPONENT_BYTES: usize = 4_096;
 /// Maximum readiness lines buffered while the parent is inspecting state.
 pub const MAX_BUFFERED_READINESS_LINES: usize = 16;
+/// Maximum shutdown-evidence lines in one checked lifecycle transition.
+pub const MAX_LIFECYCLE_EVIDENCE_LINES: usize = 16;
 
 const REAPER_POLL: Duration = Duration::from_millis(10);
 const DROP_KILL_TIMEOUT: Duration = Duration::from_secs(5);
@@ -164,6 +166,15 @@ pub struct ChildExit {
     pub output: ChildOutputCounts,
 }
 
+/// One checked shutdown-evidence block followed by rebound readiness.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ChildLifecycleTransition {
+    /// The exact bounded readiness line following the evidence block.
+    pub readiness: String,
+    /// Number of evidence lines consumed in the caller-declared order.
+    pub evidence_lines: usize,
+}
+
 enum ReaperCommand {
     Kill,
 }
@@ -242,6 +253,26 @@ impl ChildProcessController {
             Err(RecvTimeoutError::Timeout) => Err(ChildProcessError::ReadinessTimeout),
             Err(RecvTimeoutError::Disconnected) => Err(ChildProcessError::ReadinessDisconnected),
         }
+    }
+
+    /// Requires one ordered shutdown-evidence block followed by readiness.
+    ///
+    /// The supplied deadline covers the complete transition, not each line.
+    /// No output is skipped: an omitted, reordered, additional, or malformed
+    /// line fails the transition before the rebound readiness is accepted.
+    pub fn wait_for_evidence_then_readiness(
+        &self,
+        evidence_prefixes: &[&str],
+        readiness_prefix: &str,
+        deadline: Duration,
+    ) -> Result<ChildLifecycleTransition, ChildProcessError> {
+        validate_lifecycle_protocol(evidence_prefixes, readiness_prefix)?;
+        wait_for_lifecycle_transition(
+            &self.readiness,
+            evidence_prefixes,
+            readiness_prefix,
+            deadline,
+        )
     }
 
     /// Sends one exact shutdown command and requires a successful bounded exit.
@@ -453,6 +484,14 @@ pub enum ChildProcessError {
     InvalidReadinessPrefix,
     /// A complete readiness line did not carry the expected prefix.
     UnexpectedReadiness,
+    /// The declared lifecycle-evidence protocol was empty or exceeded a bound.
+    InvalidLifecycleEvidenceProtocol,
+    /// A lifecycle-evidence line was omitted, reordered, or had the wrong kind.
+    UnexpectedLifecycleEvidence,
+    /// The named one-based lifecycle-evidence ordinal did not arrive in time.
+    LifecycleEvidenceTimeout(u8),
+    /// Rebound readiness did not arrive after the complete evidence block.
+    LifecycleReboundReadinessTimeout,
     /// No readiness line arrived before the explicit deadline.
     ReadinessTimeout,
     /// The readiness reader ended before yielding another line.
@@ -482,6 +521,19 @@ impl fmt::Display for ChildProcessError {
             Self::MissingPipe => "child process pipe was missing",
             Self::InvalidReadinessPrefix => "child readiness prefix is invalid",
             Self::UnexpectedReadiness => "child emitted an unexpected readiness line",
+            Self::InvalidLifecycleEvidenceProtocol => {
+                "child lifecycle evidence protocol is invalid"
+            }
+            Self::UnexpectedLifecycleEvidence => "child emitted unexpected lifecycle evidence",
+            Self::LifecycleEvidenceTimeout(ordinal) => {
+                return write!(
+                    formatter,
+                    "child lifecycle evidence line {ordinal} timed out"
+                );
+            }
+            Self::LifecycleReboundReadinessTimeout => {
+                "child rebound readiness timed out after lifecycle evidence"
+            }
             Self::ReadinessTimeout => "child readiness timed out",
             Self::ReadinessDisconnected => "child readiness reader disconnected",
             Self::InvalidShutdownCommand => "child shutdown command is invalid",
@@ -494,6 +546,78 @@ impl fmt::Display for ChildProcessError {
             Self::UnsuccessfulExit(_) => "child clean shutdown returned failure",
         })
     }
+}
+
+fn validate_lifecycle_protocol(
+    evidence_prefixes: &[&str],
+    readiness_prefix: &str,
+) -> Result<(), ChildProcessError> {
+    if evidence_prefixes.is_empty()
+        || evidence_prefixes.len() > MAX_LIFECYCLE_EVIDENCE_LINES
+        || readiness_prefix.is_empty()
+        || readiness_prefix.len() > MAX_CHILD_COMPONENT_BYTES
+        || evidence_prefixes.iter().any(|prefix| {
+            prefix.is_empty()
+                || prefix.len() > MAX_CHILD_COMPONENT_BYTES
+                || *prefix == readiness_prefix
+        })
+    {
+        return Err(ChildProcessError::InvalidLifecycleEvidenceProtocol);
+    }
+    Ok(())
+}
+
+fn wait_for_lifecycle_transition(
+    receiver: &Receiver<io::Result<String>>,
+    evidence_prefixes: &[&str],
+    readiness_prefix: &str,
+    deadline: Duration,
+) -> Result<ChildLifecycleTransition, ChildProcessError> {
+    let started = Instant::now();
+    for (index, prefix) in evidence_prefixes.iter().enumerate() {
+        let ordinal = u8::try_from(index.saturating_add(1))
+            .map_err(|_| ChildProcessError::InvalidLifecycleEvidenceProtocol)?;
+        let remaining = remaining_transition_time(started, deadline)
+            .map_err(|_| ChildProcessError::LifecycleEvidenceTimeout(ordinal))?;
+        match receiver.recv_timeout(remaining) {
+            Ok(Ok(line)) if line.starts_with(prefix) => {}
+            Ok(Ok(_)) => return Err(ChildProcessError::UnexpectedLifecycleEvidence),
+            Ok(Err(error)) => return Err(ChildProcessError::Io(error)),
+            Err(RecvTimeoutError::Timeout) => {
+                return Err(ChildProcessError::LifecycleEvidenceTimeout(ordinal));
+            }
+            Err(RecvTimeoutError::Disconnected) => {
+                return Err(ChildProcessError::ReadinessDisconnected);
+            }
+        }
+    }
+    let remaining = remaining_transition_time(started, deadline)
+        .map_err(|_| ChildProcessError::LifecycleReboundReadinessTimeout)?;
+    let readiness = match receiver.recv_timeout(remaining) {
+        Ok(Ok(line)) if line.starts_with(readiness_prefix) => line,
+        Ok(Ok(_)) => return Err(ChildProcessError::UnexpectedReadiness),
+        Ok(Err(error)) => return Err(ChildProcessError::Io(error)),
+        Err(RecvTimeoutError::Timeout) => {
+            return Err(ChildProcessError::LifecycleReboundReadinessTimeout);
+        }
+        Err(RecvTimeoutError::Disconnected) => {
+            return Err(ChildProcessError::ReadinessDisconnected);
+        }
+    };
+    Ok(ChildLifecycleTransition {
+        readiness,
+        evidence_lines: evidence_prefixes.len(),
+    })
+}
+
+fn remaining_transition_time(
+    started: Instant,
+    deadline: Duration,
+) -> Result<Duration, ChildProcessError> {
+    deadline
+        .checked_sub(started.elapsed())
+        .filter(|remaining| !remaining.is_zero())
+        .ok_or(ChildProcessError::ReadinessTimeout)
 }
 
 impl Error for ChildProcessError {
@@ -552,5 +676,36 @@ mod tests {
                 .kind(),
             io::ErrorKind::InvalidData
         );
+    }
+
+    #[test]
+    fn lifecycle_transition_requires_every_evidence_line_in_order() {
+        let (sender, receiver) = mpsc::sync_channel(4);
+        sender.send(Ok("evidence-a\t1".to_owned())).expect("a");
+        sender.send(Ok("evidence-b\t2".to_owned())).expect("b");
+        sender
+            .send(Ok("riffdbd-ready-v1\t127.0.0.1:1".to_owned()))
+            .expect("ready");
+        let transition = wait_for_lifecycle_transition(
+            &receiver,
+            &["evidence-a\t", "evidence-b\t"],
+            "riffdbd-ready-v1\t",
+            Duration::from_secs(1),
+        )
+        .expect("complete transition");
+        assert_eq!(transition.evidence_lines, 2);
+        assert_eq!(transition.readiness, "riffdbd-ready-v1\t127.0.0.1:1");
+
+        let (sender, receiver) = mpsc::sync_channel(2);
+        sender.send(Ok("evidence-b\t2".to_owned())).expect("b");
+        assert!(matches!(
+            wait_for_lifecycle_transition(
+                &receiver,
+                &["evidence-a\t"],
+                "riffdbd-ready-v1\t",
+                Duration::from_secs(1),
+            ),
+            Err(ChildProcessError::UnexpectedLifecycleEvidence)
+        ));
     }
 }
