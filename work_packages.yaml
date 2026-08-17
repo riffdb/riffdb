@@ -14033,4 +14033,15 @@ work_packages:
     scale: Append, fence, completion, publication, dirty-byte, overlay, queue, telemetry, and
       shutdown state are bounded by fixed process and existing journal ceilings independent of
       history, tenant count, command count, database size, or workload duration.
+  closure:
+    status: complete_without_release_activation
+    evidence: docs/performance/wp-649-fence-mechanics.md
+    decision: The separate bounded FIFO completion owner preserves sole-writer mutation and
+      sequencing authority, exact ordered durability/publication, read-after-commit visibility,
+      uncertainty, crash recovery, and fixed resource bounds. It closes the cloud mixed-tail
+      mechanism and lets the unchanged bounded session pass c32 throughput and p95 on both hosts,
+      while seed remains below 5.0x. The conjunctive dedicated unary gate still fails on both CPU
+      families, so unary remains the generated-client default, PERF-018 is not amended, and no alpha
+      release activation is claimed. Remaining small-read/service costs and BoardPage450 result
+      assembly are assigned to follow-on packages; physical journal dispatch remains unchanged.
   human_review_triggers: *id001
