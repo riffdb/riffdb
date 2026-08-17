@@ -13639,8 +13639,8 @@ work_packages:
   requirements: [REC-001, REC-002, STO-001, STO-002]
   required_adrs: [ADR-0004, ADR-0049, ADR-0050, ADR-0104]
   allowed_paths: [work_packages.yaml, crates/riffdb-server/**, crates/riffdb-storage-api/**,
-    crates/riffdb-storage-redb/**, tests/recovery/**, scripts/recovery_full, scripts/**,
-    docs/performance/**]
+    crates/riffdb-storage-redb/**, crates/riffdb-testkit/**, tests/recovery/**,
+    scripts/recovery_full, scripts/**, docs/performance/**]
   deliverables:
   - An exact-baseline and current-HEAD process reproduction naming the lifecycle state that emits
     shutdown evidence before readiness
@@ -13656,6 +13656,16 @@ work_packages:
   exit_gate: The exact baseline demonstrates the old ordering failure, current HEAD completes every
     process crash and maintenance arm, and no readiness, shutdown, recovery, or durability assertion
     is removed or weakened.
+  closure:
+    status: complete
+    evidence: docs/performance/wp-643-recovery-lifecycle.md
+    decision: The failure was the successful single-database offline-maintenance rebound state,
+      where the graph correctly emitted eight shutdown-evidence lines before the replacement graph
+      published readiness but the process controller required every next stdout line to be ready.
+      The recovery gate now consumes the exact ordered evidence block and following ready line as
+      one bounded transition under one deadline. Missing, extra, reordered, disconnected, or timed
+      out evidence fails with a closed diagnostic; no output, crash arm, or durability assertion is
+      skipped. The nine-arm process matrix and unchanged storage recovery cases pass.
   standing_design_tests:
     interface_safety: The repair is confined to server lifecycle and recovery evidence; it cannot
       make an unhealthy database ready or let any caller skip recovery, maintenance authority, or
