@@ -302,7 +302,7 @@ pub struct RiffDbWriterEvidence {
     /// Accepted command queue-duration histogram.
     pub storage_queue_duration: RiffDbReadStageEvidence,
     /// Bounded command-group formation duration.
-    pub group_formation_duration: Option<RiffDbReadStageEvidence>,
+    pub group_residence_duration: Option<RiffDbReadStageEvidence>,
     /// Final authoritative apply duration.
     pub final_apply_duration: Option<RiffDbReadStageEvidence>,
     /// Final apply through deferred-journal receipt creation duration.
@@ -1667,9 +1667,9 @@ fn parse_writer_evidence(encoded: &str) -> io::Result<RiffDbWriterEvidence> {
         flush_duration: find("flush_us")?,
         batch_size: find("batch_size")?,
         storage_queue_duration: find("storage_queue_us")?,
-        group_formation_duration: parsed
+        group_residence_duration: parsed
             .iter()
-            .find(|entry| entry.name == "group_formation_us")
+            .find(|entry| entry.name == "group_residence_us")
             .cloned(),
         final_apply_duration: parsed
             .iter()
@@ -1929,7 +1929,7 @@ mod tests {
         assert_eq!(writer.flush_duration.name, "flush_us");
         assert_eq!(writer.batch_size.name, "batch_size");
         assert_eq!(writer.storage_queue_duration.name, "storage_queue_us");
-        assert_eq!(writer.group_formation_duration, None);
+        assert_eq!(writer.group_residence_duration, None);
         assert_eq!(
             writer.final_apply_duration.as_ref().map(|stage| stage.name.as_str()),
             Some("final_apply_us")
@@ -1947,7 +1947,7 @@ mod tests {
             "flush_us",
             "batch_size",
             "storage_queue_us",
-            "group_formation_us",
+            "group_residence_us",
             "final_apply_us",
             "journal_submit_us",
             "preparation_pool_depth",
@@ -1961,10 +1961,10 @@ mod tests {
         .expect("current writer evidence");
         assert_eq!(
             current_writer
-                .group_formation_duration
+                .group_residence_duration
                 .as_ref()
                 .map(|stage| stage.name.as_str()),
-            Some("group_formation_us")
+            Some("group_residence_us")
         );
         assert_eq!(
             current_writer
