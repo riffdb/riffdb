@@ -14045,3 +14045,78 @@ work_packages:
       release activation is claimed. Remaining small-read/service costs and BoardPage450 result
       assembly are assigned to follow-on packages; physical journal dispatch remains unchanged.
   human_review_triggers: *id001
+- id: WP-650
+  name: Exact named-read session ledger and safe orchestration decision
+  depends_on: [WP-637, WP-644, WP-649]
+  objective: Close the current-HEAD low-concurrency named-read ledger across unary and bounded-session
+    transports, reject authentication or dispatch changes whose measured ceiling cannot satisfy the
+    public gates, and draft or implement a session-proof amendment only after a material end-to-end
+    gain and exact human acceptance.
+  requirements: [SEC-001, SEC-003, PERF-007, PERF-008, PERF-018]
+  required_adrs: [ADR-0007, ADR-0009, ADR-0055, ADR-0070, ADR-0105, ADR-0111,
+    ADR-0123, ADR-0127, ADR-0129]
+  allowed_paths: [work_packages.yaml, adr/README.md,
+    adr/0127-bounded-multiplexed-application-session.md,
+    adr/0133-session-authentication-proof-and-read-orchestration.md,
+    crates/riffdb-auth/**, crates/riffdb-policy/**, crates/riffdb-service/**,
+    crates/riffdb-api-grpc/**, crates/riffdb-server/**, crates/riffdb-observability/**,
+    crates/riffdb-client-rust/**, examples/app-baseline/**, fixtures/**, tests/**,
+    scripts/**, docs/performance/**]
+  deliverables:
+  - A current-HEAD N1/E2 exact GetTicket ledger for frozen unary and accepted bounded-session shapes,
+    plus a receipted workstation attempt, separating benchmark bridge, client/session protocol,
+    transport adaptation, credential authentication, lifecycle admission, service supervision
+    dispatch, plan and parameter preparation, all three current-policy safe points, authoritative
+    execution, result conversion, and the remaining customer-paid residual within five percent
+  - A predeclared Amdahl table for session-scoped immutable credential proof, inline or supervised
+    service orchestration, and their combined bound; any candidate whose perfect-removal ceiling
+    cannot materially improve the failed public ratios is rejected before production editing
+  - A reject-first decision on whether an ADR-0127 amendment is justified for paying immutable bearer
+    proof once per bounded session while current capability state, revision, expiry, operation
+    authority, row/field policy, response release, cancellation, and audit containment remain fresh
+    at every existing safe point; no amendment is drafted when the measured ceiling misses the gate
+  - If and only if the accepted candidate clears its mechanics threshold, a service-owned bounded
+    named-read path that preserves the API-neutral application service, panic/audit containment,
+    cancellation, response budgets, retry, freshness, and typed failure semantics without granting
+    the transport policy, storage, plan, or result authority
+  - If the mechanics threshold passes, deterministic revocation, expiry, policy revision, row-policy,
+    cancellation, panic, slow-consumer, session-close, saturation, and shutdown schedules plus
+    architecture tests proving no cached allow decision, credential exposure, storage bypass,
+    unaudited accepted work, or raw query capability
+  - If the mechanics threshold passes, paired safe-application PostgreSQL receipts for every
+    representative unary scenario, mixed c32 throughput and p95, seed, and BoardPage50/200
+    no-regression; BoardPage450 remains owned by the ADR-0130/ADR-0131 result-set campaign and cannot
+    be hidden by this package
+  acceptance_commands:
+  - cargo +1.97.0 test -p riffdb-auth -p riffdb-policy -p riffdb-service -p riffdb-api-grpc -p riffdb-server -p riffdb-observability -p riffdb-client-rust --all-features
+  - cargo +1.97.0 test --manifest-path examples/app-baseline/Cargo.toml --workspace
+  - ./scripts/check-workspace-policy
+  - ./scripts/check-requirement-coverage
+  - cargo +1.97.0 fmt --all -- --check
+  - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: Production activation requires an exact accepted ADR amendment, a closed ledger, at
+    least a twenty-percent improvement in the exact bounded-session GetTicket mean on both cloud
+    profiles, every representative unary scenario at most 1.10x safe-application PostgreSQL, mixed
+    c32 throughput at least 0.90x and p95 at most 1.25x, seed at most 5.0x, no read/write/tail
+    regression beyond five percent, and exact authorization, audit, cancellation, recovery, and
+    shutdown semantics; otherwise the candidate closes honestly without production activation.
+  standing_design_tests:
+    interface_safety: Applications still invoke only generated named reads and commands and cannot
+      select authentication scope, authorization reuse, dispatch mode, audit posture, retry,
+      freshness, or transport internals; every released row is governed by current capability and
+      row/field policy at the existing safe points.
+    scale: Session proof state, operation supervision, in-flight work, buffers, telemetry, and
+      diagnostic samples are fixed and bounded independently of history, tenant count, database
+      size, session duration, or completed operation count; no full-state rewrite or co-located
+      storage assumption is introduced.
+  closure:
+    status: complete_without_production_activation
+    evidence: docs/performance/wp-650-named-read-session-ledger.md
+    decision: Exact back-to-back N1/E2 GetTicket cells reject session-scoped authentication proof
+      and read-orchestration changes before production editing. Authentication plus service dispatch
+      is only 24--26 microseconds per operation, while the accepted bounded session is 2.7 percent
+      slower on N1 and 15.5 percent slower on E2 than the unchanged unary path. The candidate misses
+      its twenty-percent mechanics threshold on both cloud families, so ADR-0127 is not amended,
+      current per-operation authentication and authorization remain exact, and unary remains the
+      generated-client default.
+  human_review_triggers: *id001
