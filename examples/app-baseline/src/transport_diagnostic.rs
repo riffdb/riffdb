@@ -36,6 +36,7 @@ struct Args {
     warmup_per_client: usize,
     clients: Vec<usize>,
     postgres_url: Option<String>,
+    bounded_session_shadow: bool,
 }
 
 #[derive(Debug, Default)]
@@ -147,6 +148,44 @@ fn main() -> Result<(), String> {
             .map_err(|error| error.to_string())?;
         session = restarted;
 
+        let bounded_session = if args.bounded_session_shadow {
+            let bounded_memory_before = process_memory_json(session.child_pid())?;
+            let mut backend = session
+                .backend
+                .fresh_bounded_session()
+                .map_err(|error| error.to_string())?;
+            let measured = run_synchronous_shape(
+                &backend,
+                &expected,
+                clients,
+                args.samples_per_client,
+                args.warmup_per_client,
+            )?;
+            backend.close_bounded_session();
+            let bounded_memory_after = process_memory_json(session.child_pid())?;
+            let (restarted, bounded_server) = runtime
+                .block_on(session.restart_for_measurement())
+                .map_err(|error| error.to_string())?;
+            session = restarted;
+            Some(json!({
+                "shape": shape_json(&measured),
+                "server_read_stages": read_stages_json(&bounded_server),
+                "server_query_execute_windows": query_execute_json(
+                    bounded_server.query_execute.as_ref(),
+                ),
+                "server_memory_kib": {
+                    "before": bounded_memory_before,
+                    "after": bounded_memory_after,
+                },
+                "bookkeeping": {
+                    "classification": "accepted_adr_0127_diagnostic_shape_not_perf_018_evidence",
+                    "session_open_note": "one catalog authentication precedes measured operations; no query-stage sample is attributed to session establishment",
+                },
+            }))
+        } else {
+            None
+        };
+
         cells.push(json!({
             "clients": clients,
             "operation": "generated.GetTicket",
@@ -170,6 +209,7 @@ fn main() -> Result<(), String> {
                 "before": asynchronous_memory_before,
                 "after": asynchronous_memory_after,
             },
+            "bounded_session_shadow": bounded_session,
             "bookkeeping": {
                 "bridge_only_classification": "measurement_artifact_not_product_gain",
                 "asynchronous_call_classification": "customer_paid_product_path",
@@ -507,6 +547,7 @@ fn parse_args() -> Result<Args, String> {
     let mut warmup_per_client = DEFAULT_WARMUP_PER_CLIENT;
     let mut clients = CLIENT_POINTS.to_vec();
     let mut postgres_url = None;
+    let mut bounded_session_shadow = false;
     let mut arguments = env::args_os().skip(1);
     while let Some(argument) = arguments.next() {
         let argument = argument
@@ -585,11 +626,13 @@ fn parse_args() -> Result<Args, String> {
                         .map_err(|_| "--postgres-url must be UTF-8".to_owned())?,
                 );
             }
+            "--bounded-session-shadow" => bounded_session_shadow = true,
             "--help" | "-h" => {
                 return Err(
                     "usage: riffdb-client-transport-diagnostic --riffdbd-bin PATH \
                      [--output PATH] [--scale smoke|full] \
                      [--clients 1,8,32] \
+                     [--bounded-session-shadow] \
                      [--postgres-url URL] \
                      [--samples-per-client 1..10000] [--warmup-per-client 0..1000]"
                         .to_owned(),
@@ -613,6 +656,7 @@ fn parse_args() -> Result<Args, String> {
         warmup_per_client,
         clients,
         postgres_url,
+        bounded_session_shadow,
     })
 }
 

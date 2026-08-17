@@ -352,6 +352,27 @@ examples/app-baseline/target/release/riffdb-app-baseline \
 The runner writes JSON to `target/app-baseline/report-v1.json` and prints a
 human summary with p50 latencies and RiffDB/Postgres ratios.
 
+The non-evidentiary transport diagnostic can compare the frozen unary
+`GetTicket` shape with the already accepted bounded-session protocol without
+changing `PERF-018`:
+
+```bash
+examples/app-baseline/target/release/riffdb-client-transport-diagnostic \
+  --riffdbd-bin "$RIFFDB_APP_BASELINE_RIFFDBD_BIN" \
+  --scale full \
+  --clients 1 \
+  --samples-per-client 1000 \
+  --warmup-per-client 64 \
+  --bounded-session-shadow \
+  --output target/app-baseline/transport-diagnostic.json
+```
+
+The session cell opens one exact application session before measurement and
+then executes the same generated operation, credential, and application lock.
+It remains diagnostic: its report sets `perf_018_eligible=false`, and neither
+it nor removal of the synchronous benchmark bridge can establish a release
+performance pass.
+
 ## Architecture rules
 
 - No raw `redb` / storage primitives on the RiffDB client path.

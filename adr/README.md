@@ -145,7 +145,7 @@ direction, merged draft, or implementation choice.
 | [0124](0124-version-topology-and-retirement-governance.md) | Version Topology and Retirement Governance | Accepted |
 | [0125](0125-command-segment-raw-fallback-compatibility.md) | Command-Segment Raw Fallback Compatibility | Accepted |
 | [0126](0126-compiler-bounded-one-hop-cascade-deletion.md) | Compiler-Bounded One-Hop Cascade Deletion | Accepted |
-| [0127](0127-bounded-multiplexed-application-session.md) | Bounded Multiplexed Application Session | Proposed |
+| [0127](0127-bounded-multiplexed-application-session.md) | Bounded Multiplexed Application Session | Accepted |
 | [0128](0128-compiler-declared-secret-outputs-for-named-riffql.md) | Compiler-Declared Secret Outputs for Named RiffQL | Accepted |
 | [0129](0129-bounded-prepared-command-finalization.md) | Bounded Prepared Command Finalization and Pay-Once Batch Apply | Accepted |
 | [0130](0130-compiler-planned-projection-result-sets.md) | Compiler-Planned Projection Result Sets and Snapshot-Aligned Composition | Accepted |
