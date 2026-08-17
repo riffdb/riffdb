@@ -14,6 +14,7 @@ mod notification;
 mod query;
 mod recovery;
 mod registry;
+mod result_set_epoch;
 
 pub use control::*;
 pub use error::*;
@@ -24,3 +25,4 @@ pub use notification::*;
 pub use query::*;
 pub use recovery::*;
 pub use registry::*;
+pub use result_set_epoch::*;

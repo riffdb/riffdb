@@ -74,7 +74,7 @@ pub use apply::ApplyProgress;
 pub use checkpoint::{CheckpointError, ManifestV1, SegmentInventoryEntry};
 pub use definition::{
     ColumnarProjectionDefinition, DefinitionError, DefinitionFingerprint, LAYOUT_VERSION,
-    RegisteredDefinition, VectorAnnConfig,
+    ProviderDescriptorError, RegisteredDefinition, VectorAnnConfig, VectorProviderProfileV1,
 };
 pub use engine::{ColumnarEngine, OpenOptions};
 pub use error::{ColumnarError, StorageFailure};

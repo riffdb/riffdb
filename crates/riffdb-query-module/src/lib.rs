@@ -10,6 +10,7 @@ mod application_role;
 mod application_source;
 mod generation;
 mod go_generation;
+mod projection_result_set;
 mod python_generation;
 mod reactive_module;
 
@@ -42,6 +43,7 @@ pub use generation::{
     generate_typescript_application_client, generate_typescript_client,
 };
 pub use go_generation::{generate_go_application_client, generate_go_client};
+pub use projection_result_set::*;
 pub use python_generation::{
     PythonGenerationError, PythonGenerationLocation, generate_python_application_client,
     generate_python_client,
@@ -72,8 +74,8 @@ use riffdb_types::{
 use std::fmt;
 
 pub use riffdb_query_ir::{
-    CompiledReactiveOperationV1, ReactiveModulePlanV1, ReactiveOperationPlanV1,
-    ReactivePredicateNodeV1,
+    CompiledReactiveOperationV1, ProjectionResultSetPlanV1, ReactiveModulePlanV1,
+    ReactiveOperationPlanV1, ReactivePredicateNodeV1, ResultSetOutputShapeV1, ResultSetWindowV1,
 };
 pub use riffdb_types::{QueryModuleName, QueryModuleVersion};
 

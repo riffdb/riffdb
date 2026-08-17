@@ -16,9 +16,9 @@ use crate::{
     ContractPlanRootHash, DigestKey, DigestKeyId, EntityKeyHash, EntityRecordHash,
     EntityTransitionHash, EventConsumerIdentityHash, EventHash, GeneratedArtifactHash,
     MigrationBundleHash, MigrationSourceHash, OfflineMaintenanceInputHash, PartitionKeyHash,
-    PlanHash, ProjectionApplyHash, ProjectionPlanHash, QueryModuleHash, QueryParameterHash,
-    QueryPlanHash, QuerySourceHash, ReactiveModuleHash, ReactiveOperationHash, ReactiveSourceHash,
-    ScheduledAttemptHash, SchemaHash, SourceHash,
+    PlanHash, ProjectionApplyHash, ProjectionPlanHash, ProjectionProviderDescriptorHash,
+    QueryModuleHash, QueryParameterHash, QueryPlanHash, QuerySourceHash, ReactiveModuleHash,
+    ReactiveOperationHash, ReactiveSourceHash, ScheduledAttemptHash, SchemaHash, SourceHash,
 };
 
 /// Hash framing and algorithm scheme defined by ADR-0011.
@@ -44,6 +44,8 @@ pub enum HashDomain {
     Plan,
     /// Validated projection plan.
     ProjectionPlan,
+    /// Canonical sealed projection-provider descriptor.
+    ProjectionProviderDescriptor,
     /// Closed RiffQL query access program.
     QueryPlan,
     /// Canonical immutable query module.
@@ -130,7 +132,7 @@ pub enum HashDomain {
 
 impl HashDomain {
     /// Every registered unkeyed domain, for compatibility and collision checks.
-    pub const ALL: [Self; 48] = [
+    pub const ALL: [Self; 49] = [
         Self::CanonicalValue,
         Self::Source,
         Self::MigrationSource,
@@ -138,6 +140,7 @@ impl HashDomain {
         Self::MigrationBundle,
         Self::Plan,
         Self::ProjectionPlan,
+        Self::ProjectionProviderDescriptor,
         Self::QueryPlan,
         Self::QueryModule,
         Self::ReactiveSource,
@@ -191,6 +194,7 @@ impl HashDomain {
             Self::MigrationBundle => "riffdb.migration-bundle/v1",
             Self::Plan => "riffdb.plan/v1",
             Self::ProjectionPlan => "riffdb.projection-plan/v1",
+            Self::ProjectionProviderDescriptor => "riffdb.projection-provider-descriptor/v1",
             Self::QueryPlan => "riffdb.query-plan/v1",
             Self::QueryModule => "riffdb.query-module/v1",
             Self::ReactiveSource => "riffdb.reactive-source/v1",
@@ -419,6 +423,12 @@ typed_hash_function!(
     hash_projection_plan,
     ProjectionPlan,
     ProjectionPlanHash
+);
+typed_hash_function!(
+    /// Hashes a canonical sealed projection-provider descriptor.
+    hash_projection_provider_descriptor,
+    ProjectionProviderDescriptor,
+    ProjectionProviderDescriptorHash
 );
 typed_hash_function!(
     /// Hashes a closed RiffQL query access program in its immutable v1 domain.

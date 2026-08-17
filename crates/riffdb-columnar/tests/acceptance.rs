@@ -4,7 +4,11 @@
 mod common;
 
 use riffdb_storage_api::CommittedEntityReferenceV2;
-use riffdb_types::{CanonicalValue, CommitSequence, EntityVersion, FrontierPosition};
+use riffdb_types::{
+    CanonicalValue, CommitSequence, EntityVersion, FrontierPosition,
+    ProjectionProviderCapabilitiesV1, ProjectionProviderKindV1, ProjectionProviderPolicyModeV1,
+    ProjectionProviderPostureV1, ProjectionProviderStaticBoundsV1,
+};
 
 use riffdb_columnar::{
     AggregateOp, CheckpointError, ColumnPredicate, ColumnarEngine, ColumnarError, ColumnarOutcome,
@@ -1680,4 +1684,43 @@ fn query_org_scope_type_mismatch_is_typed_error() {
             .expect("typed org query"),
     );
     assert_eq!(rows.len(), 1);
+}
+
+#[test]
+fn columnar_provider_descriptor_matches_real_reference_engine_contract() {
+    let bundle = compile_bundle();
+    let descriptor = register_ticket_board(&bundle)
+        .columnar_provider_descriptor_v1(
+            ProjectionProviderPolicyModeV1::PartitionAligned,
+            ProjectionProviderStaticBoundsV1 {
+                max_candidates: 100_000,
+                max_output_rows: 500,
+                max_measures: 16,
+                max_input_bytes: 16_384,
+                max_work_units: 1_000_000,
+                max_state_bytes_per_row: 16_384,
+                max_diagnostic_bytes: 4_096,
+                retained_epochs: 8_192,
+                max_catchup_lag: 100,
+                max_epoch_lease_steps: 1_000,
+            },
+        )
+        .unwrap();
+    assert_eq!(descriptor.kind(), ProjectionProviderKindV1::Columnar);
+    assert_eq!(descriptor.posture(), ProjectionProviderPostureV1::Exact);
+    assert!(
+        descriptor
+            .capabilities()
+            .contains(ProjectionProviderCapabilitiesV1::ORDER)
+    );
+    assert!(
+        descriptor
+            .capabilities()
+            .contains(ProjectionProviderCapabilitiesV1::MEASURE)
+    );
+    assert!(
+        !descriptor
+            .capabilities()
+            .contains(ProjectionProviderCapabilitiesV1::RANK)
+    );
 }

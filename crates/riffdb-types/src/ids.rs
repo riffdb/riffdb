@@ -335,6 +335,10 @@ hash_id!(
     ProjectionPlanHash
 );
 hash_id!(
+    /// The hash of one canonical sealed projection-provider descriptor.
+    ProjectionProviderDescriptorHash
+);
+hash_id!(
     /// The hash of one closed RiffQL query access program.
     QueryPlanHash
 );

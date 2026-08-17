@@ -20,6 +20,7 @@ mod materialization;
 mod migration;
 mod notification;
 mod projection_materialization;
+mod projection_provider;
 mod query_module;
 mod reactive_module;
 
@@ -35,5 +36,6 @@ pub use materialization::*;
 pub use migration::*;
 pub use notification::*;
 pub use projection_materialization::*;
+pub use projection_provider::*;
 pub use query_module::*;
 pub use reactive_module::*;
