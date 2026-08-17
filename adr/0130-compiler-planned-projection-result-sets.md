@@ -1,17 +1,16 @@
 # ADR-0130: Compiler-Planned Projection Result Sets and Snapshot-Aligned Composition
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Direction approved:** 2026-08-16 (maintainer, in session)
-- **Exact text accepted:** No
+- **Exact text accepted:** 2026-08-16 (maintainer, as written)
 - **Decision deadline:** Before WP-644 freezes a provider descriptor or any
   durable projection-result identity
 - **Requires:** ADR-0002, ADR-0051, ADR-0053, ADR-0086, ADR-0087, ADR-0091,
   ADR-0092, ADR-0111, ADR-0124, and ADR-0129
 - **Defines or blocks:** WP-644 and the durable foundation used by WP-645
 
-Direction approval authorizes this draft and the associated planning records.
-This ADR is not authoritative until a human accepts its exact text and changes
-the status to Accepted.
+The maintainer accepted this exact text on 2026-08-16. This ADR is now
+authoritative.
 
 ## Context
 

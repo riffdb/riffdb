@@ -1,8 +1,8 @@
 # ADR-0131: Exact Indexed Text Matching, Cardinality, and Ordinal Windowing
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Direction approved:** 2026-08-16 (maintainer, in session)
-- **Exact text accepted:** No
+- **Exact text accepted:** 2026-08-16 (maintainer, as written)
 - **Decision deadline:** Before WP-645 freezes an exact-text profile, provider
   state format, count plan, or ordinal public surface
 - **Requires:** ADR-0051, ADR-0052, ADR-0053, ADR-0086, ADR-0108, ADR-0111,
@@ -10,9 +10,8 @@
 - **Defines or blocks:** WP-645 through WP-647 and Better Auth admin-profile
   acceptance
 
-Direction approval authorizes this draft and the associated planning records.
-This ADR is not authoritative until a human accepts its exact text and changes
-the status to Accepted.
+The maintainer accepted this exact text on 2026-08-16. This ADR is now
+authoritative.
 
 ## Context
 
