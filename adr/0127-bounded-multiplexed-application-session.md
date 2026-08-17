@@ -1,16 +1,18 @@
 # ADR-0127: Bounded Multiplexed Application Session
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Direction approved:** 2026-08-15 (maintainer)
-- **Exact text accepted:** No
-- **Decision deadline:** Before WP-633 adds a session RPC or changes the
+- **Exact text accepted:** 2026-08-16 (maintainer authorization after the
+  WP-641/WP-642/WP-643 reliability closures)
+- **Decision deadline:** Satisfied before WP-644 adds a session RPC or changes the
   `PERF-018` transport/client freeze
 - **Requires:** ADR-0040, ADR-0055, ADR-0056, ADR-0105, ADR-0106, and ADR-0123
-- **Defines or blocks:** WP-633 and any session-shaped `PERF-018` evidence
+- **Defines or blocks:** WP-644 and any session-shaped `PERF-018` evidence
 
-Direction approval authorizes attribution and this draft. It does not authorize
-the protocol, comparator amendment, or implementation until the maintainer
-accepts this exact text.
+The accepted decision authorizes a reject-first optional protocol candidate.
+It does not amend the frozen `PERF-018` comparator or authorize session-shaped
+release evidence unless WP-644 first passes every semantic and performance
+activation gate below.
 
 ## Context
 
@@ -53,6 +55,16 @@ escape hatch, or source of hidden ordering semantics. Every operation must
 continue through the same API-neutral application service, authorization,
 runtime, commit coordinator, idempotency, freshness, and structured-error
 boundaries as the unary path.
+
+The current-HEAD refresh after WP-641 through WP-643 is receipted in
+`docs/performance/wp-644-session-baseline.md`. On N1, RiffDB/safe-application
+PostgreSQL mixed throughput is 0.59x, 0.61x, and 0.88x at c1/c8/c32; c32 p95
+is 1.38x and `CreateComment` p50 is 1.44x, 1.60x, and 1.47x. The dedicated N1
+write scenarios are 1.32--1.49x and the seed is 4.78x. On E2, mixed throughput
+is 0.94x, 0.67x, and 0.88x; c32 p95 is 1.23x, dedicated writes are
+0.91--0.99x, and the seed is 2.00x. The short E2 c1 comparator varied enough
+that its mean is diagnostic only. These measurements replace WP-632's old
+candidate arithmetic; they do not replace the 90-second release matrix.
 
 ## Proposed Decision
 
@@ -168,13 +180,29 @@ qualify:
   disclosed separately.
 
 Session activation requires material public improvement on both inventoried
-cloud CPU families with correctness unchanged. Before implementation, WP-633
-must predeclare per-cell bounds from WP-632. At minimum, the session candidate
-must improve c=1 by 15 percent and c=8 by 10 percent, must not regress c=32,
-seed, unary commands, or tail latency by more than five percent, and must leave
-all authorization, revocation, uncertainty, and read-after-commit tests exact.
-Passing those candidate gates does not itself waive the independent
-`PERF-008` release ratios.
+cloud CPU families with correctness unchanged. WP-644 freezes the following
+reject-first candidate gates before production dispatch changes:
+
+- relative to same-run unary RiffDB, session throughput improves by at least
+  15 percent at c1 and 10 percent at c8 on both hosts;
+- at c32, session-shaped RiffDB reaches at least 0.90 times same-run
+  safe-application PostgreSQL throughput and at most 1.25 times its p95, while
+  absolute RiffDB throughput does not regress more than five percent from its
+  same-run unary path;
+- every dedicated representative session-shaped unary scenario reaches at
+  most 1.10 times same-run safe-application PostgreSQL p50; a partial gain may
+  retain the optional candidate for diagnosis but cannot activate it as the
+  release transport;
+- the unchanged public seed remains at most 5.0 times same-run PostgreSQL and
+  no read, write, seed, or tail metric regresses more than five percent where
+  the stricter ratios above do not already apply; and
+- all correctness, authorization, revocation, uncertainty, cancellation,
+  read-after-commit, recovery, and boundedness tests remain exact.
+
+Passing short candidate gates still does not amend `PERF-018` or qualify
+release evidence. Failure leaves unary as the generated-client default and
+prevents a comparator amendment; it is not grounds to weaken a semantic or
+performance gate.
 
 ## Options Considered
 
@@ -262,10 +290,11 @@ command into a safe retry or expose whether a hidden row/event exists.
 
 - **Requirements:** existing `PERF-008` and `PERF-018`; additive session
   requirements are registered only after exact acceptance.
-- **Defines or blocks:** WP-633.
+- **Defines or blocks:** WP-644.
 - **Final evidence:** the future amended `PERF-018` package and alpha gate.
 
 ## Decision Deadline
 
-Exact acceptance is required before any session RPC, envelope, generated
-runtime method, feature advertisement, or comparator-shape amendment merges.
+Exact acceptance was recorded before WP-644. A comparator-shape amendment
+still requires a separate accepted, receipted `PERF-018` decision after the
+candidate passes.

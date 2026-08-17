@@ -13673,3 +13673,57 @@ work_packages:
     scale: The protocol uses fixed lifecycle states, bounded output, and fixed deadlines and adds no
       polling history, unbounded log retention, or sleep-based synchronization.
   human_review_triggers: *id001
+- id: WP-644
+  name: Bounded multiplexed generated-application session candidate
+  depends_on: [WP-641, WP-642, WP-643]
+  objective: Implement ADR-0127's optional bounded long-lived generated-operation session only
+    after refreshing the current-HEAD N1/E2 gates, preserving one independently authenticated,
+    authorized, idempotent, durable, and freshness-checked operation per envelope and retaining
+    unary as the default unless every activation gate passes.
+  requirements: [PERF-005, PERF-008, PERF-018, API-001, QRY-001, ID-001, SEC-001,
+    SEC-002, NET-001, NET-002, NET-003]
+  required_adrs: [ADR-0040, ADR-0055, ADR-0056, ADR-0105, ADR-0106, ADR-0123, ADR-0127]
+  allowed_paths: [work_packages.yaml, adr/0127-bounded-multiplexed-application-session.md,
+    proto/riffdb/v1/**, crates/riffdb-proto/**, crates/riffdb-api-grpc/**,
+    crates/riffdb-client-rust/**, crates/riffdb-server/**, examples/app-baseline/**,
+    tests/**, scripts/**, docs/performance/**, docs/src/**, docs/SUMMARY.md]
+  deliverables:
+  - Current-HEAD paired N1/E2 mixed c1/c8/c32/c128, dedicated unary, and seed receipts with exact
+    safe-application PostgreSQL comparisons and candidate arithmetic frozen before protocol edits
+  - Additive versioned bidirectional generated-operation session envelopes with one exact database,
+    credential presentation, application identity, finite negotiated in-flight ceiling, correlation
+    identities, cancellation, bounded response buffering, feature negotiation, and unary fallback
+  - Server dispatch that re-enters the ordinary gRPC adaptation, authentication, authorization,
+    API-neutral service, command/query runtime, freshness, durability, uncertainty, and error paths
+    for every envelope, with no session transaction, authority cache, ordering, or storage access
+  - Rust generated-client integration and an explicitly non-evidentiary app-baseline session shape,
+    retaining unary side-by-side and reporting the selected transport; other language comparators
+    remain deferred and continue through semantically equivalent unary fallback
+  - Deterministic and process tests for out-of-order completion, duplicate/unknown correlation,
+    bounded capacity, slow consumer, query and command cancellation, stream loss, reconnect,
+    revocation, expiry, application drift, database routing, read-after-commit, and uncertainty
+  - Same-run N1/E2 candidate receipts against ADR-0127's refreshed activation gates; a miss keeps
+    the session disabled by default and cannot amend PERF-018 or claim a release pass
+  acceptance_commands:
+  - cargo +1.97.0 test -p riffdb-proto -p riffdb-api-grpc -p riffdb-client-rust -p riffdb-server --all-features
+  - cargo +1.97.0 test --manifest-path examples/app-baseline/Cargo.toml --workspace
+  - ./scripts/recovery_full
+  - ./scripts/check-workspace-policy
+  - ./scripts/check-requirement-coverage
+  - ./scripts/handbook check
+  - cargo +1.97.0 fmt --all -- --check
+  - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: The optional session is semantically indistinguishable from unary per operation,
+    remains finite and fail-closed under every lifecycle edge, and activates as a release candidate
+    only if both hosts meet the refreshed c1/c8 gains, c32 throughput and p95 ratios, every unary
+    ratio, the 5.0x seed ceiling, correctness, recovery, and no-regression gates; otherwise unary
+    remains the generated-client default and PERF-018 remains unchanged.
+  standing_design_tests:
+    interface_safety: The session accepts only generated named commands and exact named queries and
+      cannot express a transaction, implicit ordering, relaxed durability, cached authorization,
+      raw method, numeric symbol, storage behavior, freshness waiver, or unsafe retry; each envelope
+      traverses the same application service and retains its own idempotency and uncertainty state.
+    scale: Session lifetime work, in-flight operations, request/response bytes, correlation state,
+      cancellation state, output buffering, and task count are fixed and finite; no session retains
+      operation history, values, durable responses, or capacity proportional to data or runtime.
+  human_review_triggers: *id001
