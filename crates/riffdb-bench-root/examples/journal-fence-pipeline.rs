@@ -124,7 +124,7 @@ fn arguments() -> Result<(PathBuf, usize, Option<PathBuf>), Box<dyn Error>> {
         }
     }
     let root = root.ok_or("usage: journal-fence-pipeline --root PATH [--iterations N]")?;
-    if iterations < 32 || iterations > 4_096 {
+    if !(32..=4_096).contains(&iterations) {
         return Err("iterations must be in 32..=4096".into());
     }
     Ok((root, iterations, output))

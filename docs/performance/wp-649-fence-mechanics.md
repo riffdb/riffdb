@@ -2,8 +2,9 @@
 
 Date: 2026-08-17
 
-Status: ADR-0132 accepted; bounded ordered-completion lane implemented and
-under acceptance evaluation.
+Status: implementation complete; mixed-load tail gate passed with the bounded
+session, but the conjunctive unary gate did not pass. No alpha performance or
+`PERF-018` release activation is claimed.
 
 ## Question
 
@@ -204,4 +205,80 @@ The first local public-gRPC smoke cell (32 interactive clients, one-second
 warmup, five measured seconds) completed with zero errors at 33,189 ops/s,
 aggregate p95 5.24 ms, and CreateComment p50/p99 4.72/19.92 ms. This is a
 directional checkpoint only, not paired release evidence. The paired N1/E2
-safe-application comparisons and full crash/recovery gates remain outstanding.
+safe-application comparisons are recorded below.
+
+## Paired cloud decision
+
+Commit `a9c4cefb` was evaluated on the inventoried N1 and E2 hosts with
+safe-application PostgreSQL in sequential exclusive phases. Each mixed cell
+used two seconds of warmup and ten measured seconds; each dedicated cell used
+the full TicketDesk dataset and one repetition. These are candidate-selection
+receipts, not the required 90-second release matrix.
+
+The ordinary public unary transport improved enough for N1 to pass both mixed
+gates. E2 missed throughput by 1.3 percentage points while landing exactly at
+the tail boundary.
+
+| Host | Transport | Safe PG ops/s | RiffDB ops/s | Throughput ratio | Safe PG p95 | RiffDB p95 | p95 ratio | Seed ratio |
+|---|---|---:|---:|---:|---:|---:|---:|---:|
+| N1 | unary | 8,261 | 7,763 | 0.940x | 15.20 ms | 18.87 ms | 1.241x | 3.75x |
+| E2 | unary | 7,649 | 6,786 | 0.887x | 16.78 ms | 20.97 ms | 1.250x | 2.43x |
+
+The unchanged ADR-0127 bounded session then composed with the completion lane.
+It passed the mixed c32 throughput and p95 gates on both hosts, with zero
+errors, conflicts, unavailable results, or idempotency mismatches.
+
+| Host | Transport | Safe PG ops/s | RiffDB ops/s | Throughput ratio | Safe PG p95 | RiffDB p95 | p95 ratio | Seed ratio |
+|---|---|---:|---:|---:|---:|---:|---:|---:|
+| N1 | bounded session | 8,263 | 8,686 | 1.051x | 15.20 ms | 18.87 ms | 1.241x | 4.47x |
+| E2 | bounded session | 7,629 | 8,258 | 1.082x | 16.78 ms | 19.92 ms | 1.188x | 2.96x |
+
+The completion owner remained bounded. The ordinary mixed cells observed
+maximum submitted depths of four on N1 and six on E2; the bounded-session cells
+observed depths of three and four. Reorder occupancy remained zero by FIFO
+construction, every submitted unit was published, and the writer frontier
+equivalence counters reported no failure.
+
+The dedicated session-shaped unary matrix remains the rejecting gate. The
+table below lists the mutation p50 ratios; the accepted ceiling is 1.10x on
+both hosts.
+
+| Scenario | N1 ratio | E2 ratio |
+|---|---:|---:|
+| CreateComment | 1.53x | 1.23x |
+| CloseTicketWithComment | 1.37x | 1.02x |
+| SwapMemberRoles | 1.38x | 1.14x |
+| OpenTicketWithLabels | 1.50x | 1.17x |
+
+Reads also do not satisfy the conjunctive unary ceiling. The best larger N1
+pages are competitive (`BoardPage50` 1.02x, `BoardPage200` 0.93x), but small
+N1 reads range from 1.28x to 2.16x and E2 reads range from 1.10x to 2.41x;
+`BoardPage450` remains a separate measured result-assembly defect at 2.91x N1
+and 3.25x E2. The completion lane is not the owner of those costs.
+
+The decision is therefore:
+
+1. retain the bounded completion owner and its semantic/recovery coverage;
+2. leave physical journal scheduling unchanged;
+3. keep unary as the generated-client default and do not amend `PERF-018`;
+4. close WP-649 without alpha release activation; and
+5. assign the remaining unary/read gates to the pre-fence service/read fast
+   path, with result-set windowing owning `BoardPage450`.
+
+No additional journal-fence or coordinator candidate is justified by this
+evidence. The mixed tail mechanism is closed; the remaining failures are
+low-concurrency orchestration, service preparation, query execution, and
+large-result assembly.
+
+### Receipt hashes
+
+| Receipt | SHA-256 |
+|---|---|
+| N1 unary mixed | `e6998ce85cc939de86ea368934ffed5136e0ec78296f5cfc6c5be6a968d119f3` |
+| E2 unary mixed | `c341915bc6c3064c5c8bb2e1ac8a65d14c615da389b0e213012f54625821e8fc` |
+| N1 bounded-session mixed | `16e7471fe49a2aeb47166247775ed421609c43d28e52206459c088808e0f88fe` |
+| E2 bounded-session mixed | `a88bad5c6df86d8338b84f72dafa32b57ab24a4df6115d5947cb2485aa82aeb2` |
+| N1 unary dedicated | `50a26ccd5e5eaec36d2052b32b83c9d5382ffaaf42b46d800d4670afa8ecc203` |
+| E2 unary dedicated | `bd18a03889249e016fcc95ad5fbccef632db0072819a628c8280922340f1cd5b` |
+| N1 session dedicated | `a57db669a0469013d89839909c6c1e6c8c143c973465ec73d564523c2fd56be1` |
+| E2 session dedicated | `c83f2f42e62339f0afcec171138eea3485e41f4d83ebd146f2873e1a18ec7cd4` |
