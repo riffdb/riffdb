@@ -3,7 +3,13 @@
 use std::fmt;
 
 use riffdb_contract_ir::{ContractBundle, KeySchema, ValueType, ValueTypeTag};
-use riffdb_types::{EntityTypeId, FieldId, HashDomain, hash};
+use riffdb_types::{
+    EntityTypeId, FieldId, HashDomain, ProjectionProviderCapabilitiesV1,
+    ProjectionProviderDescriptorV1, ProjectionProviderKindV1, ProjectionProviderPolicyModeV1,
+    ProjectionProviderPostureV1, ProjectionProviderStateIdentityV1,
+    ProjectionProviderStaticBoundsV1, ProjectionProviderValidationError, hash,
+};
+use std::num::NonZeroU32;
 
 /// Layout version frozen into definition fingerprints and manifests.
 pub const LAYOUT_VERSION: u32 = 1;
@@ -71,6 +77,15 @@ pub struct RegisteredDefinition {
 pub struct VectorAnnConfig {
     row_threshold: u32,
     recall_target_bps: u32,
+}
+
+/// Compiler-selected vector execution posture.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum VectorProviderProfileV1 {
+    /// Exact reference KNN.
+    Exact,
+    /// Declared ANN using the contract's recall target.
+    Approximate,
 }
 
 impl VectorAnnConfig {
@@ -272,7 +287,102 @@ impl RegisteredDefinition {
     pub const fn fingerprint(&self) -> DefinitionFingerprint {
         self.fingerprint
     }
+
+    /// Builds the exact columnar provider descriptor from this registered definition.
+    pub fn columnar_provider_descriptor_v1(
+        &self,
+        policy_mode: ProjectionProviderPolicyModeV1,
+        bounds: ProjectionProviderStaticBoundsV1,
+    ) -> Result<ProjectionProviderDescriptorV1, ProviderDescriptorError> {
+        ProjectionProviderDescriptorV1::new(
+            ProjectionProviderKindV1::Columnar,
+            ProjectionProviderPostureV1::Exact,
+            ProjectionProviderCapabilitiesV1::CANDIDATE
+                | ProjectionProviderCapabilitiesV1::FILTER
+                | ProjectionProviderCapabilitiesV1::ORDER
+                | ProjectionProviderCapabilitiesV1::MEASURE
+                | ProjectionProviderCapabilitiesV1::FACET
+                | ProjectionProviderCapabilitiesV1::WINDOW
+                | ProjectionProviderCapabilitiesV1::OUTPUT,
+            policy_mode,
+            bounds,
+            ProjectionProviderStateIdentityV1::new(
+                NonZeroU32::new(LAYOUT_VERSION).expect("layout version is nonzero"),
+                *self.fingerprint.as_bytes(),
+            ),
+        )
+        .map_err(ProviderDescriptorError::InvalidDescriptor)
+    }
+
+    /// Builds an exact or contract-declared ANN vector provider descriptor.
+    pub fn vector_provider_descriptor_v1(
+        &self,
+        vector_field: FieldId,
+        profile: VectorProviderProfileV1,
+        policy_mode: ProjectionProviderPolicyModeV1,
+        bounds: ProjectionProviderStaticBoundsV1,
+    ) -> Result<ProjectionProviderDescriptorV1, ProviderDescriptorError> {
+        let position = self
+            .projected_fields
+            .iter()
+            .position(|field| *field == vector_field)
+            .ok_or(ProviderDescriptorError::NotProjectedVector)?;
+        if self.projected_types[position].tag() != ValueTypeTag::Vector {
+            return Err(ProviderDescriptorError::NotProjectedVector);
+        }
+        let posture = match profile {
+            VectorProviderProfileV1::Exact => ProjectionProviderPostureV1::Exact,
+            VectorProviderProfileV1::Approximate => {
+                let config = self
+                    .vector_ann_config(vector_field)
+                    .ok_or(ProviderDescriptorError::ApproximationUndeclared)?;
+                ProjectionProviderPostureV1::approximate(
+                    u16::try_from(config.recall_target_bps())
+                        .map_err(|_| ProviderDescriptorError::ApproximationUndeclared)?,
+                )
+                .map_err(ProviderDescriptorError::InvalidDescriptor)?
+            }
+        };
+        ProjectionProviderDescriptorV1::new(
+            ProjectionProviderKindV1::Vector,
+            posture,
+            ProjectionProviderCapabilitiesV1::CANDIDATE
+                | ProjectionProviderCapabilitiesV1::FILTER
+                | ProjectionProviderCapabilitiesV1::RANK
+                | ProjectionProviderCapabilitiesV1::WINDOW
+                | ProjectionProviderCapabilitiesV1::OUTPUT,
+            policy_mode,
+            ProjectionProviderStaticBoundsV1 {
+                max_measures: 0,
+                ..bounds
+            },
+            ProjectionProviderStateIdentityV1::new(
+                NonZeroU32::new(LAYOUT_VERSION).expect("layout version is nonzero"),
+                *self.fingerprint.as_bytes(),
+            ),
+        )
+        .map_err(ProviderDescriptorError::InvalidDescriptor)
+    }
 }
+
+/// Real-engine descriptor adapter failures.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ProviderDescriptorError {
+    /// Field is not a projected vector.
+    NotProjectedVector,
+    /// Approximation was requested without a compiler-declared ANN contract.
+    ApproximationUndeclared,
+    /// Descriptor bounds or capabilities are invalid.
+    InvalidDescriptor(ProjectionProviderValidationError),
+}
+
+impl fmt::Display for ProviderDescriptorError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "invalid columnar provider descriptor: {self:?}")
+    }
+}
+
+impl std::error::Error for ProviderDescriptorError {}
 
 /// Registration rejection classes (D2).
 #[derive(Clone, Debug, Eq, PartialEq)]

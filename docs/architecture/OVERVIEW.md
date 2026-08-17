@@ -40,6 +40,63 @@ atomic with a command, while external delivery is not. Projection state is
 versioned by generation and frontier and can be rebuilt from authoritative
 history.
 
+### Projection result-set provider foundation
+
+WP-645 freezes the compiler-owned vocabulary accepted by ADR-0130. It does not
+activate a new public query shape or a composite execution engine.
+
+`ProjectionProviderDescriptorV1` is a 112-byte canonical artifact. It pins one
+real provider family, exact or bounded-approximate posture, closed capabilities,
+ranked policy mode, exact retained-epoch and rebuildable-generation semantics,
+finite input/work/state/diagnostic/candidate/output/measure bounds,
+retention/catch-up and deterministic epoch-lease obligations, and one
+provider-state layout identity. Its
+domain-separated digest is carried by the separately versioned 160-byte
+`ProjectionResultSetPlanV1`.
+The named `ProjectionResultSetBindingV1` associates that plan with one exact
+query operation without changing query IR V1--V4 or query-module V1--V4.
+
+The semantic plan order is fixed: candidates; policy admission and declared
+filtering; ranking or exact ordering; whole-admitted-set measures; bounded
+windowing; and typed output. Applications cannot select or alter a provider,
+capability, policy mode, precision, epoch, stage, scan, fallback, or bridge.
+Unsupported combinations are rejected while constructing the compiler artifact.
+
+The existing columnar engine advertises exact partition-scoped candidates,
+filters, ordering, whole-set measures/facets, windows, and output. It does not
+advertise relevance ranking. The existing per-organization vector engine
+advertises candidates, pre-rank filtering, exact or contract-declared ANN
+ranking, windows, and output. It does not advertise exact order, measures, or
+facets. Existing randomized reference, tenant-statistics isolation, pre-rank
+policy admission, and frontier tests remain the execution evidence behind these
+descriptors.
+
+ADR-0092 lexical search remains a compile-only thought experiment: a future
+descriptor could name lexical candidates, fixed-point ranking, partition-local
+statistics, filters, and whole-set measures. WP-645 contains no lexical runtime,
+durable lexical state, bitmap/ID transfer, or cross-provider bridge.
+
+Opening a result set observes each finite compiled participant once and chooses
+the newest epoch inside their common retained interval. The process-local proof
+binds exact query plan, compiled policy shape, descriptor digest, provider-state
+schema, history incarnation, generation, floor, and ceiling. It has a fixed
+participant ceiling and is deliberately not serializable. Incarnation mismatch,
+empty intersection, expired retention, rebuild, retirement, and unavailable
+health are closed typed failures.
+
+Descriptor and plan bytes are decoded once per deployment/catalog generation;
+lookups share the checked binding. Epoch negotiation runs once per opened result
+set or continuation, not per row, candidate, measure, item, page, or provider
+call. Authorization and revocation checks remain per request and safe point. A
+deterministic admitted-lag monitor turns sustained bound violations into degraded
+and then unavailable health.
+
+The maintainer explicitly approved this package after WP-641, WP-642, and
+WP-643 closed. The preceding named-read session candidate (WP-650) was rejected
+on both N1 and E2 before production activation. WP-645 therefore remains the
+bounded ADR-0130 descriptor/conformance slice; it does not displace the standing
+c32, unary, or deferred ADR-0127 performance priorities.
+
 ## Reactive application path
 
 The accepted P8 architecture reuses authoritative domain events; it does not

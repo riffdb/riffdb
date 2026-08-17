@@ -9,6 +9,7 @@ mod operational;
 mod plan;
 mod reactive;
 mod resolver;
+mod result_set;
 mod schema;
 
 pub use catalog::{
@@ -30,6 +31,7 @@ pub use resolver::{
     BindingSymbol, ExactContractIdentity, QuerySourceMap, ResolvedQueryV1, SecretOutputRequirement,
     SourceMapEntry, SourceSymbolKind, resolve_query_surface,
 };
+pub use result_set::*;
 pub use schema::{
     NamedFieldSchema, NamedParameterSchema, NamedQuerySchemas, NamedResultBranchSchema,
     NamedTypeSchema, PageBound,

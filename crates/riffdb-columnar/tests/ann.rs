@@ -6,14 +6,16 @@ use rand::{Rng, SeedableRng, rngs::StdRng};
 use riffdb_columnar::{
     ColumnPredicate, ColumnarProjectionDefinition, ColumnarSnapshot, LiveRow, NearestCandidate,
     NearestCandidateAdmission, NearestQueryRequest, NearestSearchKind, OrgKey, PrimaryKeyBytes,
-    QueryBudget, RegisteredDefinition, nearest_query_snapshot,
+    QueryBudget, RegisteredDefinition, VectorProviderProfileV1, nearest_query_snapshot,
     nearest_query_snapshot_with_admission,
 };
 use riffdb_contract_compiler::compile_contract_source;
 use riffdb_contract_ir::ContractBundle;
 use riffdb_types::{
     CanonicalValue, CanonicalVector, CommitSequence, DistanceMetric, EntityKeyBuilder,
-    EntityTypeId, EntityVersion, FieldId, FrontierPosition,
+    EntityTypeId, EntityVersion, FieldId, FrontierPosition, ProjectionProviderCapabilitiesV1,
+    ProjectionProviderKindV1, ProjectionProviderPolicyModeV1, ProjectionProviderPostureV1,
+    ProjectionProviderStaticBoundsV1,
 };
 
 const ANN_CONTRACT: &str = r#"
@@ -346,5 +348,68 @@ fn denied_rows_cannot_shape_the_ann_graph_or_result() {
     assert_eq!(
         actual.scanned_rows, 352,
         "denied rows still charge scan work"
+    );
+}
+
+#[test]
+fn vector_provider_descriptor_matches_real_exact_and_ann_engine_contracts() {
+    let fixture = Fixture::new();
+    let bounds = ProjectionProviderStaticBoundsV1 {
+        max_candidates: 1_000,
+        max_output_rows: 100,
+        max_measures: 0,
+        max_input_bytes: 16_384,
+        max_work_units: 1_000_000,
+        max_state_bytes_per_row: 16_384,
+        max_diagnostic_bytes: 4_096,
+        retained_epochs: 8_192,
+        max_catchup_lag: 100,
+        max_epoch_lease_steps: 1_000,
+    };
+    let exact = fixture
+        .exact
+        .vector_provider_descriptor_v1(
+            fixture.vector_field,
+            VectorProviderProfileV1::Exact,
+            ProjectionProviderPolicyModeV1::BoundedRowAdmission,
+            bounds,
+        )
+        .unwrap();
+    assert_eq!(exact.kind(), ProjectionProviderKindV1::Vector);
+    assert_eq!(exact.posture(), ProjectionProviderPostureV1::Exact);
+    assert!(
+        exact
+            .capabilities()
+            .contains(ProjectionProviderCapabilitiesV1::RANK)
+    );
+    assert!(
+        !exact
+            .capabilities()
+            .contains(ProjectionProviderCapabilitiesV1::MEASURE)
+    );
+
+    let approximate = fixture
+        .ann
+        .vector_provider_descriptor_v1(
+            fixture.vector_field,
+            VectorProviderProfileV1::Approximate,
+            ProjectionProviderPolicyModeV1::BoundedRowAdmission,
+            bounds,
+        )
+        .unwrap();
+    assert_eq!(
+        approximate.posture(),
+        ProjectionProviderPostureV1::approximate(9_500).unwrap()
+    );
+    assert!(
+        fixture
+            .exact
+            .vector_provider_descriptor_v1(
+                fixture.vector_field,
+                VectorProviderProfileV1::Approximate,
+                ProjectionProviderPolicyModeV1::BoundedRowAdmission,
+                bounds,
+            )
+            .is_err()
     );
 }

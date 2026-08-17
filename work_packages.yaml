@@ -13797,12 +13797,27 @@ work_packages:
     identity is registered; and no composite runtime, bridge, BM25 implementation, or new public
     query behavior exists. Alpha-critical WP-646 may begin immediately from this frozen least-
     sufficient slice without waiting for optional foundation plumbing.
+  closure:
+    status: complete
+    evidence: docs/architecture/OVERVIEW.md
+    decision: Projection-provider descriptor V1, projection result-set plan V1, and named binding
+      V1 are separately canonical, digest-bound, and topology-registered without rotating query IR
+      or query-module V1 through V4. The real columnar and exact/ANN vector engines advertise only
+      their independently exercised capabilities and reject the other engine's unsupported stages.
+      Descriptor validation occurs once per deployment/catalog generation, newest-common-epoch
+      negotiation occurs once per opened result set or exact continuation, and a nonserializable
+      bounded proof binds plan, compiled policy shape, descriptor, state schema, incarnation,
+      generation, and retained interval.
+      Sustained admitted lag degrades then refuses normal success. The package contains no public
+      activation, composite executor, cross-provider bridge, lexical runtime, durable lexical
+      state, or caller-selectable provider behavior.
   standing_design_tests:
     interface_safety: Descriptors and plans are sealed compiler artifacts; applications cannot
       choose a provider, policy mode, epoch, precision, cost, bridge, scan, or fallback, and every
       unsupported combination fails closed before deployment or execution.
-    scale: Descriptors/proofs are fixed size, epoch negotiation is proportional only to the finite
-      compiled participant count, engines remain partition scoped, and the package adds no full-
+    scale: Descriptors are fixed size, proofs have a fixed participant ceiling, epoch negotiation
+      is proportional only to the finite compiled participant count, engines remain partition scoped,
+      and the package adds no full-
       database memory, authoritative-storage co-location, or cross-provider materialization.
   human_review_triggers: *id001
 - id: WP-646

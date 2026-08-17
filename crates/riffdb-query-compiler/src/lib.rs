@@ -11,17 +11,52 @@ use std::collections::{BTreeMap, BTreeSet};
 use riffdb_contract_ir::{IndexFieldEncodingV1, ValueType, ValueTypeTag};
 use riffdb_query_ir::{
     AccessDirection, AuthorizationEntityAccess, EntitySymbol, MAX_OPERATIONAL_PRESENCE_PARAMETERS,
-    OperationalPlanMemberV1, OperationalQueryFamilyV1, QueryAccessKind, QueryAccessProgramV1,
-    QueryAccessStep, QueryLiteral, QueryPredicate, QueryPredicateOperator, QueryPredicateValue,
-    QueryRowLimit, SymbolicCatalog, resolve_query_surface,
+    OperationalPlanMemberV1, OperationalQueryFamilyV1, ProjectionResultSetPlanError,
+    ProjectionResultSetPlanV1, QueryAccessKind, QueryAccessProgramV1, QueryAccessStep,
+    QueryLiteral, QueryPredicate, QueryPredicateOperator, QueryPredicateValue, QueryRowLimit,
+    ResultSetOutputShapeV1, ResultSetWindowV1, SymbolicCatalog, resolve_query_surface,
 };
 use riffdb_riffql_syntax::{
     BinaryOperator, Cardinality, Direction, Document, Expression, FieldSelection, Literal, Path,
     Span, Spanned, TypeReference, UnaryOperator,
 };
-use riffdb_types::QueryCostVectorV1;
+use riffdb_types::{ProjectionProviderDescriptorV1, QueryCostVectorV1};
 
 const MAX_QUERY_ROWS: u64 = 500;
+
+/// Closed compiler input for the ADR-0130 result-set stage family.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ProjectionResultSetRequirementsV1 {
+    /// Predicate filtering stage is required.
+    pub filtering: bool,
+    /// Ranking or exact total ordering stage is required.
+    pub rank_or_order: bool,
+    /// Whole-admitted-set measures stage is required.
+    pub whole_set_measures: bool,
+    /// Bounded compiler-owned window.
+    pub window: ResultSetWindowV1,
+    /// Closed typed output shape.
+    pub output: ResultSetOutputShapeV1,
+}
+
+/// Pins one validated provider into a sealed result-set plan.
+///
+/// Application parameters cannot reach this function. The query compiler calls
+/// it only after resolving a finite declared plan family from contract and
+/// catalog artifacts; there is no runtime selection or fallback branch.
+pub fn pin_projection_result_set_provider_v1(
+    provider: ProjectionProviderDescriptorV1,
+    requirements: ProjectionResultSetRequirementsV1,
+) -> Result<ProjectionResultSetPlanV1, ProjectionResultSetPlanError> {
+    ProjectionResultSetPlanV1::new(
+        provider,
+        requirements.filtering,
+        requirements.rank_or_order,
+        requirements.whole_set_measures,
+        requirements.window,
+        requirements.output,
+    )
+}
 
 /// Stable planner/type-checker diagnostic code.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
