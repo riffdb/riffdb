@@ -778,6 +778,60 @@ fn riffdb_shutdown_evidence_json(evidence: &RiffDbShutdownEvidence) -> serde_jso
             })
         },
     );
+    let writer_journal_stages = evidence.writer_journal_stages.map(
+        |[
+            queue_observations,
+            queue_sum_us,
+            queue_max_us,
+            physical_flushes,
+            encode_sum_us,
+            encode_max_us,
+            positional_write_sum_us,
+            positional_write_max_us,
+            sync_sum_us,
+            sync_max_us,
+        ]| {
+            json!({
+                "queue_observations": queue_observations,
+                "queue_sum_us": queue_sum_us,
+                "queue_max_us": queue_max_us,
+                "physical_flushes": physical_flushes,
+                "encode_sum_us": encode_sum_us,
+                "encode_max_us": encode_max_us,
+                "positional_write_sum_us": positional_write_sum_us,
+                "positional_write_max_us": positional_write_max_us,
+                "sync_sum_us": sync_sum_us,
+                "sync_max_us": sync_max_us,
+                "labels": "closed_fixed_cardinality",
+            })
+        },
+    );
+    let writer_publication_stages = evidence.writer_publication_stages.map(
+        |[
+            publications,
+            residence_sum_us,
+            residence_max_us,
+            receipt_block_sum_us,
+            receipt_block_max_us,
+            durable_to_publish_sum_us,
+            durable_to_publish_max_us,
+            publication_work_sum_us,
+            publication_work_max_us,
+        ]| {
+            json!({
+                "publications": publications,
+                "residence_sum_us": residence_sum_us,
+                "residence_max_us": residence_max_us,
+                "receipt_block_sum_us": receipt_block_sum_us,
+                "receipt_block_max_us": receipt_block_max_us,
+                "durable_to_publish_sum_us": durable_to_publish_sum_us,
+                "durable_to_publish_max_us": durable_to_publish_max_us,
+                "publication_work_sum_us": publication_work_sum_us,
+                "publication_work_max_us": publication_work_max_us,
+                "labels": "closed_fixed_cardinality",
+            })
+        },
+    );
     let table_inventory = evidence
         .table_inventory_after_measurement
         .iter()
@@ -851,6 +905,7 @@ fn riffdb_shutdown_evidence_json(evidence: &RiffDbShutdownEvidence) -> serde_jso
             "durable_flush_duration_us": histogram(&evidence.writer.flush_duration),
             "commit_batch_size": histogram(&evidence.writer.batch_size),
             "storage_queue_duration_us": histogram(&evidence.writer.storage_queue_duration),
+            "group_formation_duration_us": evidence.writer.group_formation_duration.as_ref().map(histogram),
             "final_apply_duration_us": evidence.writer.final_apply_duration.as_ref().map(histogram),
             "journal_submit_duration_us": histogram(&evidence.writer.journal_submit_duration),
             "preparation_pool_depth": evidence.writer.preparation_pool_depth.as_ref().map(histogram),
@@ -869,6 +924,8 @@ fn riffdb_shutdown_evidence_json(evidence: &RiffDbShutdownEvidence) -> serde_jso
         },
         "writer_frame_census": writer_frame_census,
         "writer_flush_census": writer_flush_census,
+        "writer_journal_stages": writer_journal_stages,
+        "writer_publication_stages": writer_publication_stages,
         "authoritative_table_inventory": table_inventory,
         "table_inventory_scope": if evidence.table_inventory_before_measurement.is_some() {
             "after_seed_before_measured_process_to_after_clean_shutdown_and_structural_reopen"

@@ -66,6 +66,26 @@ pub fn writer_command_flush_census_v1() -> [u64; 7] {
     journal::command_flush_census()
 }
 
+/// Fixed-cardinality journal queue/encode/write/sync stage census.
+///
+/// Values are command-frame queue observations, queue sum/max microseconds,
+/// command-bearing flushes, and encode/write/sync sum/max microseconds.
+#[doc(hidden)]
+#[must_use]
+pub fn writer_journal_stage_census_v1() -> [u64; 10] {
+    journal::command_journal_stage_census()
+}
+
+/// Fixed-cardinality ordered command-publication stage census.
+///
+/// Values are command publications followed by residence, receipt-block,
+/// durable-to-publication, and publication-work sum/max microseconds.
+#[doc(hidden)]
+#[must_use]
+pub fn writer_publication_stage_census_v1() -> [u64; 9] {
+    store::command_publication_stage_census()
+}
+
 /// Fixed execute-stage order for the bounded query-growth diagnostic.
 #[doc(hidden)]
 pub const QUERY_EXECUTE_STAGE_LABELS_V1: [&str; 14] = [

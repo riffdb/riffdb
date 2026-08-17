@@ -1013,6 +1013,7 @@ struct MetricRegistryInner {
     command_series: Mutex<BTreeMap<CommandMetricDimensions, CommandMetricSeries>>,
     mcp_tool_calls: [AtomicU64; McpRiskClass::ALL.len()],
     command_group_dispatch_reasons: [AtomicU64; COMMAND_GROUP_DISPATCH_REASON_COUNT],
+    command_group_formation_durations: FixedHistogram,
     command_stage_durations: [FixedHistogram; COMMAND_PIPELINE_STAGE_COUNT],
     read_stage_durations: [FixedHistogram; READ_PIPELINE_STAGE_COUNT],
     write_service_stage_durations: [FixedHistogram; WRITE_SERVICE_STAGE_COUNT],
@@ -1041,6 +1042,7 @@ impl MetricRegistry {
                 command_series: Mutex::new(BTreeMap::new()),
                 mcp_tool_calls: std::array::from_fn(|_| AtomicU64::new(0)),
                 command_group_dispatch_reasons: std::array::from_fn(|_| AtomicU64::new(0)),
+                command_group_formation_durations: FixedHistogram::new(),
                 command_stage_durations: std::array::from_fn(|_| FixedHistogram::new()),
                 read_stage_durations: std::array::from_fn(|_| FixedHistogram::new()),
                 write_service_stage_durations: std::array::from_fn(|_| FixedHistogram::new()),
@@ -1195,6 +1197,17 @@ impl MetricRegistry {
             &self.inner.required_counters[RequiredCounter::CommandGroupDeferred.index()],
             deferred,
         );
+    }
+
+    /// Observes time from receiving the oldest groupable item through dispatch.
+    pub fn observe_command_group_formation_duration(&self, value: u64) {
+        self.inner.command_group_formation_durations.observe(value);
+    }
+
+    /// Returns the fixed command-group formation histogram.
+    #[must_use]
+    pub fn command_group_formation_duration(&self) -> HistogramSnapshot {
+        self.inner.command_group_formation_durations.snapshot()
     }
 
     /// Returns dispatch counts in full, barrier, queue-drained, receiver-closed order.

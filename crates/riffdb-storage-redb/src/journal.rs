@@ -82,11 +82,30 @@ static COMMAND_FLUSH_BYTES: AtomicU64 = AtomicU64::new(0);
 static COMMAND_FLUSH_MAX_FRAMES: AtomicU64 = AtomicU64::new(0);
 static COMMAND_FLUSH_IO_MICROS: AtomicU64 = AtomicU64::new(0);
 static COMMAND_FLUSH_MAX_IO_MICROS: AtomicU64 = AtomicU64::new(0);
+static COMMAND_QUEUE_OBSERVATIONS: AtomicU64 = AtomicU64::new(0);
+static COMMAND_QUEUE_MICROS: AtomicU64 = AtomicU64::new(0);
+static COMMAND_QUEUE_MAX_MICROS: AtomicU64 = AtomicU64::new(0);
+static COMMAND_ENCODE_MICROS: AtomicU64 = AtomicU64::new(0);
+static COMMAND_ENCODE_MAX_MICROS: AtomicU64 = AtomicU64::new(0);
+static COMMAND_WRITE_MICROS: AtomicU64 = AtomicU64::new(0);
+static COMMAND_WRITE_MAX_MICROS: AtomicU64 = AtomicU64::new(0);
+static COMMAND_SYNC_MICROS: AtomicU64 = AtomicU64::new(0);
+static COMMAND_SYNC_MAX_MICROS: AtomicU64 = AtomicU64::new(0);
 
 fn saturating_atomic_add(target: &AtomicU64, value: usize) {
     let value = u64::try_from(value).unwrap_or(u64::MAX);
     let _ = target.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
         Some(current.saturating_add(value))
+    });
+}
+
+fn record_duration(sum: &AtomicU64, maximum: &AtomicU64, elapsed: Duration) {
+    let micros = u64::try_from(elapsed.as_micros()).unwrap_or(u64::MAX);
+    let _ = sum.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+        Some(current.saturating_add(micros))
+    });
+    let _ = maximum.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+        Some(current.max(micros))
     });
 }
 
@@ -122,7 +141,13 @@ pub(crate) fn command_frame_census() -> [u64; 6] {
     ]
 }
 
-fn record_command_flush_census(batch: &[JournalSubmission], io_elapsed: Duration) {
+fn record_command_flush_census(
+    batch: &[JournalSubmission],
+    encode_started: Instant,
+    encode_elapsed: Duration,
+    write_elapsed: Duration,
+    sync_elapsed: Duration,
+) {
     let mut frames = 0_usize;
     let mut commands = 0_usize;
     let mut bytes = 0_usize;
@@ -138,6 +163,19 @@ fn record_command_flush_census(batch: &[JournalSubmission], io_elapsed: Duration
     if frames == 0 {
         return;
     }
+    for submission in batch
+        .iter()
+        .filter(|submission| submission.frame.command_count() > 0)
+    {
+        saturating_atomic_add(&COMMAND_QUEUE_OBSERVATIONS, 1);
+        record_duration(
+            &COMMAND_QUEUE_MICROS,
+            &COMMAND_QUEUE_MAX_MICROS,
+            encode_started
+                .checked_duration_since(submission.submitted_at)
+                .unwrap_or_default(),
+        );
+    }
     saturating_atomic_add(&COMMAND_FLUSH_COUNT, 1);
     saturating_atomic_add(&COMMAND_FLUSH_FRAMES, frames);
     saturating_atomic_add(&COMMAND_FLUSH_COMMANDS, commands);
@@ -147,6 +185,9 @@ fn record_command_flush_census(batch: &[JournalSubmission], io_elapsed: Duration
         COMMAND_FLUSH_MAX_FRAMES.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
             Some(current.max(frames))
         });
+    let io_elapsed = encode_elapsed
+        .saturating_add(write_elapsed)
+        .saturating_add(sync_elapsed);
     let io_micros = u64::try_from(io_elapsed.as_micros()).unwrap_or(u64::MAX);
     let _ = COMMAND_FLUSH_IO_MICROS.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
         Some(current.saturating_add(io_micros))
@@ -155,6 +196,17 @@ fn record_command_flush_census(batch: &[JournalSubmission], io_elapsed: Duration
         COMMAND_FLUSH_MAX_IO_MICROS.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
             Some(current.max(io_micros))
         });
+    record_duration(
+        &COMMAND_ENCODE_MICROS,
+        &COMMAND_ENCODE_MAX_MICROS,
+        encode_elapsed,
+    );
+    record_duration(
+        &COMMAND_WRITE_MICROS,
+        &COMMAND_WRITE_MAX_MICROS,
+        write_elapsed,
+    );
+    record_duration(&COMMAND_SYNC_MICROS, &COMMAND_SYNC_MAX_MICROS, sync_elapsed);
 }
 
 pub(crate) fn command_flush_census() -> [u64; 7] {
@@ -166,6 +218,21 @@ pub(crate) fn command_flush_census() -> [u64; 7] {
         COMMAND_FLUSH_MAX_FRAMES.load(Ordering::Relaxed),
         COMMAND_FLUSH_IO_MICROS.load(Ordering::Relaxed),
         COMMAND_FLUSH_MAX_IO_MICROS.load(Ordering::Relaxed),
+    ]
+}
+
+pub(crate) fn command_journal_stage_census() -> [u64; 10] {
+    [
+        COMMAND_QUEUE_OBSERVATIONS.load(Ordering::Relaxed),
+        COMMAND_QUEUE_MICROS.load(Ordering::Relaxed),
+        COMMAND_QUEUE_MAX_MICROS.load(Ordering::Relaxed),
+        COMMAND_FLUSH_COUNT.load(Ordering::Relaxed),
+        COMMAND_ENCODE_MICROS.load(Ordering::Relaxed),
+        COMMAND_ENCODE_MAX_MICROS.load(Ordering::Relaxed),
+        COMMAND_WRITE_MICROS.load(Ordering::Relaxed),
+        COMMAND_WRITE_MAX_MICROS.load(Ordering::Relaxed),
+        COMMAND_SYNC_MICROS.load(Ordering::Relaxed),
+        COMMAND_SYNC_MAX_MICROS.load(Ordering::Relaxed),
     ]
 }
 
@@ -1666,6 +1733,7 @@ pub(crate) struct JournalFence {
     pub(crate) covered_sequence: Option<CommitSequence>,
     pub(crate) covered_administration_sequence: Option<AdministrationSequence>,
     pub(crate) frame_hash: [u8; HASH_BYTES],
+    pub(crate) durable_at: Instant,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1680,6 +1748,7 @@ pub(crate) enum JournalIoError {
 struct JournalSubmission {
     frame: EncodedJournalFrame,
     completion: Arc<JournalFenceCompletion>,
+    submitted_at: Instant,
 }
 
 impl Drop for JournalSubmission {
@@ -1788,6 +1857,7 @@ impl JournalLane {
             .send(JournalSubmission {
                 frame,
                 completion: Arc::clone(&completion),
+                submitted_at: Instant::now(),
             })
             .map_err(|_| JournalIoError::Stopped)?;
         Ok(JournalFenceReceipt { completion })
@@ -1893,6 +1963,7 @@ fn journal_worker(
             batch.push(next);
         }
 
+        let encode_started = Instant::now();
         let mut physical = Vec::with_capacity(batch.len());
         let mut encode_error = None;
         for submission in &batch {
@@ -1913,9 +1984,10 @@ fn journal_worker(
                 }
             }
         }
+        let encode_elapsed = encode_started.elapsed();
         let tail_position = next_position;
         let write_started = Instant::now();
-        let write = if let Some(error) = encode_error {
+        let positional_write = if let Some(error) = encode_error {
             Err(error)
         } else {
             physical
@@ -1936,11 +2008,21 @@ fn journal_worker(
                     }
                     Ok(())
                 })
-                .and_then(|()| file.sync_data().map_err(|_| JournalIoError::Io))
         };
+        let write_elapsed = write_started.elapsed();
+        let sync_started = Instant::now();
+        let write =
+            positional_write.and_then(|()| file.sync_data().map_err(|_| JournalIoError::Io));
+        let sync_elapsed = sync_started.elapsed();
         if write.is_ok() {
             durable_flushes.fetch_add(1, Ordering::Relaxed);
-            record_command_flush_census(&batch, write_started.elapsed());
+            record_command_flush_census(
+                &batch,
+                encode_started,
+                encode_elapsed,
+                write_elapsed,
+                sync_elapsed,
+            );
             for submission in &batch {
                 record_command_frame_census(&submission.frame);
             }
@@ -1953,6 +2035,7 @@ fn journal_worker(
                         .frame
                         .covered_administration_sequence(),
                     frame_hash: submission.frame.frame_hash(),
+                    durable_at: Instant::now(),
                 })
             } else {
                 Err(write.clone().expect_err("failed write carries an error"))
