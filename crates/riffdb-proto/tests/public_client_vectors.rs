@@ -1456,6 +1456,23 @@ fn expected_enum_values() -> BTreeSet<String> {
     .collect::<BTreeSet<_>>();
     for (enumeration, names) in [
         (
+            "riffdb.v1.ApplicationSessionOperationKind",
+            &[
+                "APPLICATION_SESSION_OPERATION_KIND_UNSPECIFIED",
+                "APPLICATION_SESSION_OPERATION_KIND_COMMAND",
+                "APPLICATION_SESSION_OPERATION_KIND_QUERY",
+            ][..],
+        ),
+        (
+            "riffdb.v1.ApplicationSessionCancellationDisposition",
+            &[
+                "APPLICATION_SESSION_CANCELLATION_DISPOSITION_UNSPECIFIED",
+                "APPLICATION_SESSION_CANCELLATION_DISPOSITION_QUERY_CANCELLED",
+                "APPLICATION_SESSION_CANCELLATION_DISPOSITION_COMMAND_OUTCOME_UNKNOWN",
+                "APPLICATION_SESSION_CANCELLATION_DISPOSITION_NOT_LIVE",
+            ][..],
+        ),
+        (
             "riffdb.v1.OfflineMaintenanceOperationKind",
             &[
                 "OFFLINE_MAINTENANCE_OPERATION_KIND_UNSPECIFIED",

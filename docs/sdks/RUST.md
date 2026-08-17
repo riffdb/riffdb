@@ -56,6 +56,42 @@ The exact generated names come from your contract and lock. Treat a changed
 generated diff like an API change: review the source change and new lock before
 accepting it.
 
+### Optional bounded application session
+
+Rust generated clients expose `open_bounded_session` as an explicit alpha
+transport candidate. Unary application RPCs remain the default. The call takes
+the SHA-256 identity of the exact canonical `riffdb.application.lock.json` that
+produced the generated client; the generated module supplies its compiled
+contract and query-module identities itself.
+
+```rust,ignore
+let application_lock_hash = load_reviewed_application_lock_hash()?;
+client.open_bounded_session(application_lock_hash).await?;
+assert!(client.bounded_session_enabled());
+// Before a controlled colocated-server shutdown:
+client.close_bounded_session();
+```
+
+The session is transport multiplexing only. Every command and query is still
+independently authenticated, authorized, bounded, and executed through the
+ordinary application service. Stream order grants no transaction, snapshot,
+freshness, or command ordering: use generated `*_after_commit` methods for
+causal reads exactly as on unary transport. Command retries retain the original
+idempotency input, and stream loss retains the existing `OutcomeUnknown`
+classification when the durable result cannot be resolved.
+
+One session is bound to one database, credential presentation, exact contract,
+and finite set of query modules. Metadata or application-identity drift fails
+closed. The alpha ceiling is 128 independently in-flight operations; response
+state, cancellation state, total lifetime work, and output stalls are bounded.
+There is no automatic fallback after a session has opened. If establishment is
+unavailable, the application may deliberately keep the unchanged unary client;
+diagnostics and benchmarks must report which transport was selected.
+`close_bounded_session` explicitly ends the request stream, releases pending
+operations under the ordinary uncertainty rules, and returns the facade to
+unary transport. Drop the client or call it before waiting for a colocated
+server's graceful shutdown.
+
 Operational applications can preflight the exact authorized server feature
 registry with `StableApplicationClient::preflight_application_features` before
 constructing the generated facade. An unavailable feature never authorizes a

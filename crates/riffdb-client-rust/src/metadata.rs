@@ -176,6 +176,20 @@ impl CallMetadata {
             request.metadata_mut().insert(DATABASE_METADATA_KEY, value);
         }
     }
+
+    pub(crate) fn has_same_session_scope(&self, other: &Self) -> bool {
+        let credentials_match = match (&self.credential, &other.credential) {
+            (Some(left), Some(right)) => left.has_same_presentation(right),
+            (None, None) => true,
+            (Some(_), None) | (None, Some(_)) => false,
+        };
+        let traces_match = match (&self.trace_parent, &other.trace_parent) {
+            (Some(left), Some(right)) => left.value == right.value,
+            (None, None) => true,
+            (Some(_), None) | (None, Some(_)) => false,
+        };
+        credentials_match && traces_match && self.database == other.database
+    }
 }
 
 /// Checked metadata available only to loopback bootstrap capability creation.

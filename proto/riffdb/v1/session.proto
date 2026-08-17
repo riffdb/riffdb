@@ -1,0 +1,86 @@
+syntax = "proto3";
+
+package riffdb.v1;
+
+import "riffdb/app/v1/application.proto";
+import "riffdb/v1/command.proto";
+
+// Exact immutable application identity bound to one transport session.
+message ApplicationSessionOpen {
+  uint32 protocol_version = 1;
+  riffdb.app.v1.ContractSelector contract = 2;
+  repeated bytes query_module_hashes = 3;
+  bytes application_lock_hash = 4;
+  uint32 requested_max_in_flight = 5;
+  bytes request_id = 6;
+}
+
+// One cancellation request. The target retains its own outcome semantics.
+message ApplicationSessionCancel {
+  uint64 target_correlation_id = 1;
+}
+
+// One closed generated application operation carried by the session.
+// Correlation identities are nonzero and strictly increase for the lifetime
+// of one stream; they identify responses but never imply application order.
+message ApplicationSessionRequest {
+  uint64 correlation_id = 1;
+  oneof request {
+    ApplicationSessionOpen open = 2;
+    ExecuteCommandRequest command = 3;
+    riffdb.app.v1.ExecuteQueryRequest query = 4;
+    ApplicationSessionCancel cancel = 5;
+  }
+}
+
+message ApplicationSessionOpened {
+  uint32 protocol_version = 1;
+  riffdb.app.v1.ContractSelector contract = 2;
+  repeated bytes query_module_hashes = 3;
+  bytes application_lock_hash = 4;
+  uint32 maximum_in_flight = 5;
+}
+
+enum ApplicationSessionOperationKind {
+  APPLICATION_SESSION_OPERATION_KIND_UNSPECIFIED = 0;
+  APPLICATION_SESSION_OPERATION_KIND_COMMAND = 1;
+  APPLICATION_SESSION_OPERATION_KIND_QUERY = 2;
+}
+
+// Closed status carriage. The message text is deliberately absent; details
+// are the already-bounded structured public error bytes produced by the unary
+// application boundary.
+message ApplicationSessionFailure {
+  ApplicationSessionOperationKind operation_kind = 1;
+  int32 grpc_code = 2;
+  bytes details = 3;
+}
+
+enum ApplicationSessionCancellationDisposition {
+  APPLICATION_SESSION_CANCELLATION_DISPOSITION_UNSPECIFIED = 0;
+  APPLICATION_SESSION_CANCELLATION_DISPOSITION_QUERY_CANCELLED = 1;
+  APPLICATION_SESSION_CANCELLATION_DISPOSITION_COMMAND_OUTCOME_UNKNOWN = 2;
+  APPLICATION_SESSION_CANCELLATION_DISPOSITION_NOT_LIVE = 3;
+}
+
+message ApplicationSessionCancellation {
+  uint64 target_correlation_id = 1;
+  ApplicationSessionCancellationDisposition disposition = 2;
+}
+
+// One independently correlated response. Operation responses may arrive in a
+// different order from requests; correlation never implies application order.
+message ApplicationSessionResponse {
+  uint64 correlation_id = 1;
+  oneof response {
+    ApplicationSessionOpened opened = 2;
+    ExecuteCommandResponse command = 3;
+    riffdb.app.v1.ExecuteQueryResponse query = 4;
+    ApplicationSessionFailure failure = 5;
+    ApplicationSessionCancellation cancellation = 6;
+  }
+}
+
+service ApplicationSessionService {
+  rpc Open(stream ApplicationSessionRequest) returns (stream ApplicationSessionResponse);
+}

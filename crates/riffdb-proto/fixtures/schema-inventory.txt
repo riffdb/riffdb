@@ -153,6 +153,9 @@ files
     import riffdb/v1/live_query.proto
     import riffdb/v1/projection.proto
     import riffdb/v1/query.proto
+  riffdb/v1/session.proto
+    import riffdb/app/v1/application.proto
+    import riffdb/v1/command.proto
   riffdb/v1/value.proto
 
 messages
@@ -1434,6 +1437,41 @@ messages
     14 failure optional .riffdb.v1.ApplicationReimportFailure
     15 canonical_reimport_receipt_json optional bytes
     16 reimport_receipt_hash optional bytes
+  riffdb.v1.ApplicationSessionCancel fields=1
+    1 target_correlation_id optional uint64
+  riffdb.v1.ApplicationSessionCancellation fields=2
+    1 target_correlation_id optional uint64
+    2 disposition optional .riffdb.v1.ApplicationSessionCancellationDisposition
+  riffdb.v1.ApplicationSessionFailure fields=3
+    1 operation_kind optional .riffdb.v1.ApplicationSessionOperationKind
+    2 grpc_code optional int32
+    3 details optional bytes
+  riffdb.v1.ApplicationSessionOpen fields=6
+    1 protocol_version optional uint32
+    2 contract optional .riffdb.app.v1.ContractSelector
+    3 query_module_hashes repeated bytes
+    4 application_lock_hash optional bytes
+    5 requested_max_in_flight optional uint32
+    6 request_id optional bytes
+  riffdb.v1.ApplicationSessionOpened fields=5
+    1 protocol_version optional uint32
+    2 contract optional .riffdb.app.v1.ContractSelector
+    3 query_module_hashes repeated bytes
+    4 application_lock_hash optional bytes
+    5 maximum_in_flight optional uint32
+  riffdb.v1.ApplicationSessionRequest fields=5
+    1 correlation_id optional uint64
+    2 open optional .riffdb.v1.ApplicationSessionOpen oneof=request
+    3 command optional .riffdb.v1.ExecuteCommandRequest oneof=request
+    4 query optional .riffdb.app.v1.ExecuteQueryRequest oneof=request
+    5 cancel optional .riffdb.v1.ApplicationSessionCancel oneof=request
+  riffdb.v1.ApplicationSessionResponse fields=6
+    1 correlation_id optional uint64
+    2 opened optional .riffdb.v1.ApplicationSessionOpened oneof=response
+    3 command optional .riffdb.v1.ExecuteCommandResponse oneof=response
+    4 query optional .riffdb.app.v1.ExecuteQueryResponse oneof=response
+    5 failure optional .riffdb.v1.ApplicationSessionFailure oneof=response
+    6 cancellation optional .riffdb.v1.ApplicationSessionCancellation oneof=response
   riffdb.v1.ApplyApplicationReimportPageRequest fields=3
     1 request_id optional bytes
     2 campaign_id optional bytes
@@ -3005,6 +3043,15 @@ enums
     3 APPLICATION_REIMPORT_PHASE_RECONCILED
     4 APPLICATION_REIMPORT_PHASE_CANCELLED
     5 APPLICATION_REIMPORT_PHASE_FAILED
+  riffdb.v1.ApplicationSessionCancellationDisposition values=4
+    0 APPLICATION_SESSION_CANCELLATION_DISPOSITION_UNSPECIFIED
+    1 APPLICATION_SESSION_CANCELLATION_DISPOSITION_QUERY_CANCELLED
+    2 APPLICATION_SESSION_CANCELLATION_DISPOSITION_COMMAND_OUTCOME_UNKNOWN
+    3 APPLICATION_SESSION_CANCELLATION_DISPOSITION_NOT_LIVE
+  riffdb.v1.ApplicationSessionOperationKind values=3
+    0 APPLICATION_SESSION_OPERATION_KIND_UNSPECIFIED
+    1 APPLICATION_SESSION_OPERATION_KIND_COMMAND
+    2 APPLICATION_SESSION_OPERATION_KIND_QUERY
   riffdb.v1.CapabilityApplicationExportScope values=3
     0 CAPABILITY_APPLICATION_EXPORT_SCOPE_UNSPECIFIED
     1 CAPABILITY_APPLICATION_EXPORT_SCOPE_PRINCIPAL_FILTERED
@@ -3368,6 +3415,8 @@ services
     ApplyApplicationReimportPage .riffdb.v1.ApplyApplicationReimportPageRequest -> .riffdb.v1.ApplyApplicationReimportPageResponse (unary)
     GetApplicationReimport .riffdb.v1.GetApplicationReimportRequest -> .riffdb.v1.GetApplicationReimportResponse (unary)
     CancelApplicationReimport .riffdb.v1.CancelApplicationReimportRequest -> .riffdb.v1.CancelApplicationReimportResponse (unary)
+  riffdb.v1.ApplicationSessionService
+    Open .riffdb.v1.ApplicationSessionRequest -> .riffdb.v1.ApplicationSessionResponse (bidirectional-streaming)
   riffdb.v1.CommandService
     Execute .riffdb.v1.ExecuteCommandRequest -> .riffdb.v1.ExecuteCommandResponse (unary)
     ExecuteBatch .riffdb.v1.ExecuteCommandBatchRequest -> .riffdb.v1.ExecuteCommandBatchResponse (unary)

@@ -153,6 +153,33 @@ impl StableApplicationClient {
         }
     }
 
+    /// Opens the optional bounded multiplexed application transport against
+    /// one exact generated application identity. Unary transport remains the
+    /// default until this explicit operation succeeds.
+    pub async fn open_bounded_session(
+        &mut self,
+        identity: crate::ApplicationSessionIdentity,
+        metadata: &CallMetadata,
+    ) -> Result<(), ApplicationClientError> {
+        self.inner
+            .enable_bounded_application_session(identity, metadata.clone())
+            .await?;
+        Ok(())
+    }
+
+    /// Reports whether this facade explicitly selected the bounded session.
+    #[must_use]
+    pub const fn bounded_session_enabled(&self) -> bool {
+        self.inner.bounded_application_session_enabled()
+    }
+
+    /// Explicitly closes the optional bounded session and returns this facade
+    /// to unary transport. In-flight operations are released under the same
+    /// uncertainty rules as stream loss.
+    pub fn close_bounded_session(&mut self) {
+        self.inner.disable_bounded_application_session();
+    }
+
     /// Proves that the authenticated remote database currently exposes the
     /// exact contract identity compiled into the application lock.
     pub async fn verify_active_contract(
@@ -1423,7 +1450,7 @@ impl RiffDbClient {
             });
         }
         let response = self
-            .execute_query(
+            .execute_selected_query_transport(
                 app_v1::ExecuteQueryRequest {
                     contract: lower_contract(query.contract),
                     query: Some(app_v1::execute_query_request::Query::QueryName(query.name)),

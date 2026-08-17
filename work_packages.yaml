@@ -13685,8 +13685,9 @@ work_packages:
   required_adrs: [ADR-0040, ADR-0055, ADR-0056, ADR-0105, ADR-0106, ADR-0123, ADR-0127]
   allowed_paths: [work_packages.yaml, adr/0127-bounded-multiplexed-application-session.md,
     proto/riffdb/v1/**, crates/riffdb-proto/**, crates/riffdb-api-grpc/**,
-    crates/riffdb-client-rust/**, crates/riffdb-server/**, examples/app-baseline/**,
-    tests/**, scripts/**, docs/performance/**, docs/src/**, docs/SUMMARY.md]
+    crates/riffdb-client-rust/**, crates/riffdb-query-module/**, crates/riffdb-server/**,
+    examples/app-baseline/**, examples/agent-alpha/**, examples/ticketdesk/**, fixtures/**,
+    tests/**, scripts/**, docs/**]
   deliverables:
   - Current-HEAD paired N1/E2 mixed c1/c8/c32/c128, dedicated unary, and seed receipts with exact
     safe-application PostgreSQL comparisons and candidate arithmetic frozen before protocol edits
@@ -13726,4 +13727,14 @@ work_packages:
     scale: Session lifetime work, in-flight operations, request/response bytes, correlation state,
       cancellation state, output buffering, and task count are fixed and finite; no session retains
       operation history, values, durable responses, or capacity proportional to data or runtime.
+  closure:
+    status: complete_without_release_activation
+    evidence: docs/performance/wp-644-session-candidate.md
+    decision: The optional bounded generated-operation session preserves ordinary per-envelope
+      authentication, authorization, idempotency, durability, freshness, cancellation, uncertainty,
+      and finite lifecycle semantics and materially improves mixed throughput. It remains explicit
+      and disabled by default because both cloud profiles miss the c32 p95 gate and no dedicated
+      representative scenario reaches the 1.10x ratio on both hosts. PERF-018 and unary defaults
+      remain unchanged. A reproducible graceful-shutdown stall discovered during candidate evidence
+      is repaired by an explicit generated-client session close and clean N1/E2 reruns.
   human_review_triggers: *id001

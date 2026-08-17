@@ -19,6 +19,7 @@ mod metadata;
 mod projected;
 mod reactive;
 mod reimport;
+mod session;
 mod status;
 mod tls;
 
@@ -93,6 +94,10 @@ pub use reactive::{
 pub use reimport::StartApplicationReimport;
 /// Freshness policy and commit token types used by projected queries.
 pub use riffdb_types::{CommitToken, FreshnessPolicy, ProjectionFrontier};
+pub use session::{
+    APPLICATION_SESSION_PROTOCOL_V1, ApplicationSessionConfigurationError,
+    ApplicationSessionIdentity, MAX_APPLICATION_SESSION_IN_FLIGHT,
+};
 pub use status::{
     ClientError, DetailsFreeStatus, OutcomeUnknown, ProtocolFailure, ProtocolFailureKind,
 };

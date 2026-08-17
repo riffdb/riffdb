@@ -5,9 +5,11 @@ use std::fmt;
 use std::time::Duration;
 
 use riffdb_api_grpc::generated::{
-    admin_service_client::AdminServiceClient, command_service_client::CommandServiceClient,
-    commit_service_client::CommitServiceClient, contract_service_client::ContractServiceClient,
-    event_service_client::EventServiceClient, query_service_client::QueryServiceClient,
+    admin_service_client::AdminServiceClient,
+    application_session_service_client::ApplicationSessionServiceClient,
+    command_service_client::CommandServiceClient, commit_service_client::CommitServiceClient,
+    contract_service_client::ContractServiceClient, event_service_client::EventServiceClient,
+    query_service_client::QueryServiceClient,
 };
 use riffdb_api_grpc::generated_app::application_query_service_client::ApplicationQueryServiceClient;
 use riffdb_proto::{
@@ -33,7 +35,7 @@ use riffdb_types::{
     ApplicationExportOperationId, ApplicationInstallationCampaignId, CommitSequence, RequestId,
 };
 use tonic::transport::{Channel, Endpoint};
-use tonic::{Request, Streaming};
+use tonic::{Request, Response, Streaming};
 
 use crate::application::contextualize_command_client_error;
 use crate::command::{RetryDecision, RetryState, apply_overloaded_backoff};
@@ -191,6 +193,8 @@ pub struct RiffDbClient {
     event: EventServiceClient<Channel>,
     admin: AdminServiceClient<Channel>,
     application_query: ApplicationQueryServiceClient<Channel>,
+    application_session: ApplicationSessionServiceClient<Channel>,
+    bounded_application_session: Option<crate::session::BoundedApplicationSession>,
     /// Optional client-remembered history incarnation for commit read surfaces.
     ///
     /// When set, [`Self::apply_observed_history_incarnation`] fills request
@@ -219,9 +223,63 @@ impl RiffDbClient {
             commit: CommitServiceClient::new(channel.clone()),
             event: EventServiceClient::new(channel.clone()),
             admin: AdminServiceClient::new(channel.clone()),
-            application_query: ApplicationQueryServiceClient::new(channel),
+            application_query: ApplicationQueryServiceClient::new(channel.clone()),
+            application_session: ApplicationSessionServiceClient::new(channel),
+            bounded_application_session: None,
             observed_history_incarnation: None,
         }
+    }
+
+    pub(crate) async fn enable_bounded_application_session(
+        &mut self,
+        identity: crate::ApplicationSessionIdentity,
+        metadata: CallMetadata,
+    ) -> Result<(), ClientError> {
+        let session =
+            crate::session::BoundedApplicationSession::open(self, identity, metadata).await?;
+        self.bounded_application_session = Some(session);
+        Ok(())
+    }
+
+    pub(crate) const fn bounded_application_session_enabled(&self) -> bool {
+        self.bounded_application_session.is_some()
+    }
+
+    pub(crate) fn disable_bounded_application_session(&mut self) {
+        if let Some(session) = self.bounded_application_session.take() {
+            session.close();
+        }
+    }
+
+    pub(crate) async fn execute_selected_query_transport(
+        &mut self,
+        message: app_v1::ExecuteQueryRequest,
+        metadata: &CallMetadata,
+    ) -> Result<app_v1::ExecuteQueryResponse, ClientError> {
+        if let Some(session) = self.bounded_application_session.as_ref() {
+            if !session.matches_metadata(metadata) {
+                return Err(invalid_outbound());
+            }
+            return session.execute_query(message).await;
+        }
+        self.execute_query(message, metadata).await
+    }
+
+    pub(crate) async fn open_application_session<S>(
+        &mut self,
+        stream: S,
+        metadata: &CallMetadata,
+    ) -> Result<Streaming<v1::ApplicationSessionResponse>, ClientError>
+    where
+        S: futures_util::Stream<Item = v1::ApplicationSessionRequest> + Send + 'static,
+    {
+        let mut request = Request::new(stream);
+        metadata.apply(&mut request);
+        self.application_session
+            .open(request)
+            .await
+            .map_err(checked_application_status)
+            .map(Response::into_inner)
     }
 
     /// Remembers an observed history incarnation for subsequent commit reads.
@@ -1424,6 +1482,12 @@ impl ExecuteRetryAttempt for RiffDbClient {
         request: v1::ExecuteCommandRequest,
         metadata: &CallMetadata,
     ) -> Result<v1::ExecuteCommandResponse, ClientError> {
+        if let Some(session) = self.bounded_application_session.as_ref() {
+            if !session.matches_metadata(metadata) {
+                return Err(invalid_outbound());
+            }
+            return session.execute_command(request).await;
+        }
         self.execute(request, metadata).await
     }
 }

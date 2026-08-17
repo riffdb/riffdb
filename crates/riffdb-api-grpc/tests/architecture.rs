@@ -87,7 +87,7 @@ fn generated_servers_are_wrapped_with_exact_public_message_limits() {
         source
             .matches(".max_decoding_message_size(MAX_PUBLIC_REQUEST_BYTES)")
             .count(),
-        6
+        7
     );
     assert_eq!(
         source
@@ -99,10 +99,50 @@ fn generated_servers_are_wrapped_with_exact_public_message_limits() {
         source
             .matches(".max_encoding_message_size(MAX_PUBLIC_RESPONSE_BYTES)")
             .count(),
-        7
+        8
     );
     assert!(!source.contains("accept_compressed"));
     assert!(!source.contains("send_compressed"));
+}
+
+#[test]
+fn application_session_is_confined_to_existing_application_operations() {
+    let protocol = include_str!("../../../proto/riffdb/v1/session.proto");
+    assert!(protocol.contains("rpc Open(stream ApplicationSessionRequest)"));
+    assert!(protocol.contains("ExecuteCommandRequest command"));
+    assert!(protocol.contains("riffdb.app.v1.ExecuteQueryRequest query"));
+    for forbidden in [
+        "ScanIndex",
+        "GetEntity",
+        "CreateCapability",
+        "DeployContract",
+        "Mcp",
+        "Transaction",
+    ] {
+        assert!(
+            !protocol.contains(forbidden),
+            "session protocol must not expose {forbidden}"
+        );
+    }
+
+    let source = include_str!("../src/server.rs");
+    let dispatch = source
+        .split("fn application_session_operation(")
+        .nth(1)
+        .and_then(|tail| tail.split("async fn run_application_session(").next())
+        .expect("bounded session operation adapter");
+    assert!(dispatch.contains("CommandService::execute(&application, request)"));
+    assert!(dispatch.contains("ApplicationQueryService::execute_query(&application, request)"));
+    for forbidden in ["storage", "commit_coordinator", "execute_command(context"] {
+        assert!(
+            !dispatch.contains(forbidden),
+            "session adapter must not acquire lower authority through {forbidden}"
+        );
+    }
+    assert!(source.contains("struct ApplicationSessionMetadata(MetadataMap);"));
+    assert!(source.contains("ApplicationSessionMetadata([REDACTED])"));
+    assert!(source.contains("metadata.copy_for_operation()"));
+    assert!(source.contains("if operations.len() >= scope.maximum_in_flight"));
 }
 
 #[test]

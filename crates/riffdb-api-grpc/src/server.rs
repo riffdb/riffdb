@@ -10,12 +10,16 @@ use std::sync::{Arc, RwLock};
 use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
 
-use futures_util::future::join_all;
+use futures_util::future::{AbortHandle, Abortable, join_all};
+use futures_util::stream::{FuturesUnordered, StreamExt};
 use riffdb_auth::{
     AuthenticatedPrincipal, AuthenticationContext, CapabilityDigestKeyProvider,
     CredentialAuthenticator,
 };
-use riffdb_errors::{ApplicationOperation, PublicError, PublicErrorKind};
+use riffdb_errors::{
+    ApplicationError, ApplicationErrorCode, ApplicationErrorContext, ApplicationOperation,
+    PublicError, PublicErrorKind,
+};
 use riffdb_proto::{
     MAX_CONTRACT_MIGRATION_REQUEST_BYTES, MAX_PUBLIC_REQUEST_BYTES, MAX_PUBLIC_RESPONSE_BYTES,
     PublicWireError, app::v1 as app_v1, application_error_to_proto, v1, validate_public_message,
@@ -39,7 +43,6 @@ use tonic::codegen::tokio_stream::Stream;
 use tonic::metadata::MetadataMap;
 use tonic::{Request, Response, Status};
 
-use crate::DATABASE_METADATA_KEY;
 use crate::authentication::{
     AUTHORIZATION_METADATA_KEY, BOOTSTRAP_TOKEN_METADATA_KEY, UNAUTHENTICATED_MESSAGE,
     authenticate_and_retain_normal_request, authenticate_normal_request,
@@ -47,10 +50,13 @@ use crate::authentication::{
 };
 use crate::conversion::*;
 use crate::error::{
-    RESPONSE_TOO_LARGE_MESSAGE, status_from_application_boundary, status_from_application_failure,
-    status_from_public_error, status_from_service_failure,
+    RESPONSE_TOO_LARGE_MESSAGE, status_from_application_boundary, status_from_application_error,
+    status_from_application_failure, status_from_public_error, status_from_service_failure,
 };
 use crate::generated::admin_service_server::{AdminService, AdminServiceServer};
+use crate::generated::application_session_service_server::{
+    ApplicationSessionService, ApplicationSessionServiceServer,
+};
 use crate::generated::command_service_server::{CommandService, CommandServiceServer};
 use crate::generated::commit_service_server::{CommitService, CommitServiceServer};
 use crate::generated::contract_service_server::{ContractService, ContractServiceServer};
@@ -62,8 +68,15 @@ use crate::generated_app::application_query_service_server::{
 use crate::projected_query_conversion::{
     execute_projected_query_request_from_proto, execute_projected_query_result_to_proto_for_request,
 };
+use crate::{DATABASE_METADATA_KEY, EMERGENCY_INTERNAL_MESSAGE};
 
 const GRPC_TIMEOUT_METADATA_KEY: &str = "grpc-timeout";
+const APPLICATION_SESSION_PROTOCOL_V1: u32 = 1;
+const MAX_APPLICATION_SESSION_IN_FLIGHT: usize = 128;
+const MAX_APPLICATION_SESSION_WORK: u64 = 1_048_576;
+const MAX_APPLICATION_SESSION_LIFETIME: Duration = Duration::from_secs(15 * 60);
+const MAX_APPLICATION_SESSION_OUTPUT_STALL: Duration = Duration::from_secs(30);
+const MAX_APPLICATION_SESSION_ERROR_DETAILS_BYTES: usize = 64 * 1024;
 
 /// Server-owned atomic route across initializing and activated service stages.
 pub trait GrpcLifecycleRoute: Send + Sync {
@@ -467,7 +480,7 @@ impl fmt::Debug for CheckedGrpcRestoreRetrySecurityContext {
     }
 }
 
-/// One transport adapter shared by all five generated gRPC services.
+/// One transport adapter shared by every generated gRPC service.
 #[derive(Clone)]
 pub struct GrpcApplication {
     routes: Arc<GrpcDatabaseRoutes>,
@@ -539,6 +552,14 @@ impl GrpcApplication {
     #[must_use]
     pub fn command_server(&self) -> CommandServiceServer<Self> {
         CommandServiceServer::new(self.clone())
+            .max_decoding_message_size(MAX_PUBLIC_REQUEST_BYTES)
+            .max_encoding_message_size(MAX_PUBLIC_RESPONSE_BYTES)
+    }
+
+    /// Builds the optional bounded generated-operation session service.
+    #[must_use]
+    pub fn application_session_server(&self) -> ApplicationSessionServiceServer<Self> {
+        ApplicationSessionServiceServer::new(self.clone())
             .max_decoding_message_size(MAX_PUBLIC_REQUEST_BYTES)
             .max_encoding_message_size(MAX_PUBLIC_RESPONSE_BYTES)
     }
@@ -1052,6 +1073,410 @@ fn map_service<T>(result: ServiceResult<T>) -> Result<T, Status> {
     result.map_err(|failure| status_from_service_failure(&failure))
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SessionOperationKind {
+    Command,
+    Query,
+}
+
+#[derive(Clone)]
+struct ApplicationSessionMetadata(MetadataMap);
+
+impl ApplicationSessionMetadata {
+    fn copy_for_operation(&self) -> MetadataMap {
+        self.0.clone()
+    }
+}
+
+impl fmt::Debug for ApplicationSessionMetadata {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("ApplicationSessionMetadata([REDACTED])")
+    }
+}
+
+impl SessionOperationKind {
+    const fn proto(self) -> i32 {
+        match self {
+            Self::Command => v1::ApplicationSessionOperationKind::Command as i32,
+            Self::Query => v1::ApplicationSessionOperationKind::Query as i32,
+        }
+    }
+}
+
+type ApplicationSessionOutputStream =
+    Pin<Box<dyn Stream<Item = Result<v1::ApplicationSessionResponse, Status>> + Send + 'static>>;
+type ApplicationSessionOperation = Pin<
+    Box<
+        dyn Future<
+                Output = (
+                    u64,
+                    SessionOperationKind,
+                    Option<Result<v1::ApplicationSessionResponse, Status>>,
+                ),
+            > + Send
+            + 'static,
+    >,
+>;
+
+struct ApplicationSessionScope {
+    contract: app_v1::ContractSelector,
+    query_module_hashes: Vec<Vec<u8>>,
+    maximum_in_flight: usize,
+    opening_correlation_id: u64,
+}
+
+fn application_session_failure(
+    correlation_id: u64,
+    operation: SessionOperationKind,
+    status: Status,
+) -> v1::ApplicationSessionResponse {
+    let details = if status.details().len() <= MAX_APPLICATION_SESSION_ERROR_DETAILS_BYTES {
+        status.details().to_vec()
+    } else {
+        Vec::new()
+    };
+    v1::ApplicationSessionResponse {
+        correlation_id,
+        response: Some(v1::application_session_response::Response::Failure(
+            v1::ApplicationSessionFailure {
+                operation_kind: operation.proto(),
+                grpc_code: status.code() as i32,
+                details,
+            },
+        )),
+    }
+}
+
+fn application_session_overloaded(
+    correlation_id: u64,
+    operation: SessionOperationKind,
+) -> v1::ApplicationSessionResponse {
+    let overloaded = PublicError::overloaded();
+    let status = match operation {
+        SessionOperationKind::Command => status_from_public_error(&overloaded),
+        SessionOperationKind::Query => {
+            let context =
+                ApplicationErrorContextBuilder::without_trace(ApplicationOperation::ExecuteQuery);
+            status_from_application_failure(&ServiceFailure::from(overloaded), &context)
+        }
+    };
+    application_session_failure(correlation_id, operation, status)
+}
+
+fn application_session_request_matches(
+    request: &v1::application_session_request::Request,
+    contract: &app_v1::ContractSelector,
+    query_module_hashes: &[Vec<u8>],
+) -> Result<SessionOperationKind, Status> {
+    match request {
+        v1::application_session_request::Request::Command(command) => {
+            if command.expected_contract_version != Some(contract.version) {
+                let version = ContractVersion::new(contract.version)
+                    .ok_or_else(|| Status::internal(EMERGENCY_INTERNAL_MESSAGE))?;
+                return Err(status_from_public_error(&PublicError::contract_mismatch(
+                    version,
+                )));
+            }
+            Ok(SessionOperationKind::Command)
+        }
+        v1::application_session_request::Request::Query(query) => {
+            let selected = query
+                .contract
+                .as_ref()
+                .ok_or_else(|| Status::failed_precondition(EMERGENCY_INTERNAL_MESSAGE))?;
+            let named = matches!(
+                query.query,
+                Some(app_v1::execute_query_request::Query::QueryName(_))
+            );
+            let module = query.module_hash.as_ref().is_some_and(|hash| {
+                query_module_hashes
+                    .binary_search_by(|candidate| candidate.as_slice().cmp(hash.as_slice()))
+                    .is_ok()
+            });
+            let code = if selected.lineage != contract.lineage
+                || selected.version != contract.version
+                || selected.bundle_hash != contract.bundle_hash
+            {
+                Some(ApplicationErrorCode::ContractMismatch)
+            } else if !named {
+                Some(ApplicationErrorCode::QueryInvalid)
+            } else if !module {
+                Some(ApplicationErrorCode::ModuleUnavailable)
+            } else {
+                None
+            };
+            if let Some(code) = code {
+                return Err(status_from_application_error(&ApplicationError::new(
+                    code,
+                    ApplicationOperation::ExecuteQuery,
+                    ApplicationErrorContext::empty(),
+                    None,
+                )));
+            }
+            Ok(SessionOperationKind::Query)
+        }
+        v1::application_session_request::Request::Open(_)
+        | v1::application_session_request::Request::Cancel(_) => {
+            Err(Status::invalid_argument(EMERGENCY_INTERNAL_MESSAGE))
+        }
+    }
+}
+
+fn application_session_operation(
+    application: GrpcApplication,
+    metadata: ApplicationSessionMetadata,
+    correlation_id: u64,
+    request: v1::application_session_request::Request,
+    kind: SessionOperationKind,
+) -> (ApplicationSessionOperation, AbortHandle) {
+    let (abort, registration) = AbortHandle::new_pair();
+    let operation = async move {
+        let result = match request {
+            v1::application_session_request::Request::Command(command) => {
+                let mut request = Request::new(command);
+                *request.metadata_mut() = metadata.copy_for_operation();
+                CommandService::execute(&application, request)
+                    .await
+                    .map(|response| v1::ApplicationSessionResponse {
+                        correlation_id,
+                        response: Some(v1::application_session_response::Response::Command(
+                            response.into_inner(),
+                        )),
+                    })
+            }
+            v1::application_session_request::Request::Query(query) => {
+                let mut request = Request::new(query);
+                *request.metadata_mut() = metadata.copy_for_operation();
+                ApplicationQueryService::execute_query(&application, request)
+                    .await
+                    .map(|response| v1::ApplicationSessionResponse {
+                        correlation_id,
+                        response: Some(v1::application_session_response::Response::Query(
+                            response.into_inner(),
+                        )),
+                    })
+            }
+            v1::application_session_request::Request::Open(_)
+            | v1::application_session_request::Request::Cancel(_) => {
+                Err(Status::invalid_argument(EMERGENCY_INTERNAL_MESSAGE))
+            }
+        };
+        result.unwrap_or_else(|status| application_session_failure(correlation_id, kind, status))
+    };
+    let future = async move {
+        let response = Abortable::new(operation, registration).await.ok();
+        (correlation_id, kind, response.map(Ok))
+    };
+    (Box::pin(future), abort)
+}
+
+async fn send_application_session_output(
+    output: &tokio::sync::mpsc::Sender<Result<v1::ApplicationSessionResponse, Status>>,
+    item: Result<v1::ApplicationSessionResponse, Status>,
+) -> bool {
+    send_application_session_output_with_timeout(output, item, MAX_APPLICATION_SESSION_OUTPUT_STALL)
+        .await
+}
+
+async fn send_application_session_output_with_timeout(
+    output: &tokio::sync::mpsc::Sender<Result<v1::ApplicationSessionResponse, Status>>,
+    item: Result<v1::ApplicationSessionResponse, Status>,
+    timeout: Duration,
+) -> bool {
+    matches!(
+        tokio::time::timeout(timeout, output.send(item)).await,
+        Ok(Ok(()))
+    )
+}
+
+fn advance_application_session_correlation(
+    last_correlation_id: &mut u64,
+    correlation_id: u64,
+) -> Result<(), Status> {
+    if correlation_id == 0 || correlation_id <= *last_correlation_id {
+        return Err(Status::invalid_argument(EMERGENCY_INTERNAL_MESSAGE));
+    }
+    *last_correlation_id = correlation_id;
+    Ok(())
+}
+
+async fn run_application_session(
+    application: GrpcApplication,
+    metadata: ApplicationSessionMetadata,
+    mut inbound: tonic::Streaming<v1::ApplicationSessionRequest>,
+    output: tokio::sync::mpsc::Sender<Result<v1::ApplicationSessionResponse, Status>>,
+    scope: ApplicationSessionScope,
+) {
+    let mut live = BTreeMap::<u64, (AbortHandle, SessionOperationKind)>::new();
+    let mut operations = FuturesUnordered::<ApplicationSessionOperation>::new();
+    let mut accepted_work = 0_u64;
+    let mut last_correlation_id = scope.opening_correlation_id;
+    let lifetime = tokio::time::sleep(MAX_APPLICATION_SESSION_LIFETIME);
+    tokio::pin!(lifetime);
+
+    loop {
+        tokio::select! {
+            _ = &mut lifetime => {
+                let _ = send_application_session_output(&output, Err(Status::deadline_exceeded(EMERGENCY_INTERNAL_MESSAGE))).await;
+                break;
+            }
+            completed = operations.next(), if !operations.is_empty() => {
+                let Some((correlation_id, _kind, response)) = completed else {
+                    continue;
+                };
+                live.remove(&correlation_id);
+                if let Some(response) = response
+                    && !send_application_session_output(&output, response).await
+                {
+                    break;
+                }
+            }
+            message = inbound.message() => {
+                let message = match message {
+                    Ok(Some(message)) => message,
+                    Ok(None) => break,
+                    Err(status) => {
+                        let _ = send_application_session_output(&output, Err(status)).await;
+                        break;
+                    }
+                };
+                if advance_application_session_correlation(
+                    &mut last_correlation_id,
+                    message.correlation_id,
+                )
+                .is_err()
+                {
+                    let _ = send_application_session_output(&output, Err(Status::invalid_argument(EMERGENCY_INTERNAL_MESSAGE))).await;
+                    break;
+                }
+                let Some(request) = message.request else {
+                    let _ = send_application_session_output(&output, Err(Status::invalid_argument(EMERGENCY_INTERNAL_MESSAGE))).await;
+                    break;
+                };
+                match request {
+                    v1::application_session_request::Request::Cancel(cancel) => {
+                        let (disposition, target_failure) = match live.remove(&cancel.target_correlation_id) {
+                            Some((abort, SessionOperationKind::Command)) => {
+                                abort.abort();
+                                (
+                                    v1::ApplicationSessionCancellationDisposition::CommandOutcomeUnknown,
+                                    Some(application_session_failure(
+                                        cancel.target_correlation_id,
+                                        SessionOperationKind::Command,
+                                        Status::unknown(EMERGENCY_INTERNAL_MESSAGE),
+                                    )),
+                                )
+                            }
+                            Some((abort, SessionOperationKind::Query)) => {
+                                abort.abort();
+                                (
+                                    v1::ApplicationSessionCancellationDisposition::QueryCancelled,
+                                    Some(application_session_failure(
+                                        cancel.target_correlation_id,
+                                        SessionOperationKind::Query,
+                                        Status::cancelled(EMERGENCY_INTERNAL_MESSAGE),
+                                    )),
+                                )
+                            }
+                            None => (
+                                v1::ApplicationSessionCancellationDisposition::NotLive,
+                                None,
+                            ),
+                        };
+                        if let Some(failure) = target_failure
+                            && !send_application_session_output(&output, Ok(failure)).await
+                        {
+                            break;
+                        }
+                        let response = v1::ApplicationSessionResponse {
+                            correlation_id: message.correlation_id,
+                            response: Some(v1::application_session_response::Response::Cancellation(
+                                v1::ApplicationSessionCancellation {
+                                    target_correlation_id: cancel.target_correlation_id,
+                                    disposition: disposition as i32,
+                                },
+                            )),
+                        };
+                        if !send_application_session_output(&output, Ok(response)).await {
+                            break;
+                        }
+                    }
+                    v1::application_session_request::Request::Open(_) => {
+                        let _ = send_application_session_output(&output, Err(Status::invalid_argument(EMERGENCY_INTERNAL_MESSAGE))).await;
+                        break;
+                    }
+                    operation => {
+                        accepted_work = accepted_work.saturating_add(1);
+                        let kind = match application_session_request_matches(
+                            &operation,
+                            &scope.contract,
+                            &scope.query_module_hashes,
+                        ) {
+                            Ok(kind) => kind,
+                            Err(status) => {
+                                let response = match operation {
+                                    v1::application_session_request::Request::Command(_) => {
+                                        application_session_failure(
+                                            message.correlation_id,
+                                            SessionOperationKind::Command,
+                                            status,
+                                        )
+                                    }
+                                    v1::application_session_request::Request::Query(_) => {
+                                        application_session_failure(
+                                            message.correlation_id,
+                                            SessionOperationKind::Query,
+                                            status,
+                                        )
+                                    }
+                                    v1::application_session_request::Request::Open(_)
+                                    | v1::application_session_request::Request::Cancel(_) => {
+                                        let _ = send_application_session_output(&output, Err(Status::invalid_argument(EMERGENCY_INTERNAL_MESSAGE))).await;
+                                        break;
+                                    }
+                                };
+                                if !send_application_session_output(&output, Ok(response)).await {
+                                    break;
+                                }
+                                continue;
+                            }
+                        };
+                        if accepted_work > MAX_APPLICATION_SESSION_WORK {
+                            let _ = send_application_session_output(&output, Err(Status::resource_exhausted(EMERGENCY_INTERNAL_MESSAGE))).await;
+                            break;
+                        }
+                        // Aborted futures remain in `operations` until the
+                        // scheduler observes their cancellation. Count those
+                        // slots too so a cancel flood cannot transiently grow
+                        // the task set beyond the negotiated ceiling.
+                        if operations.len() >= scope.maximum_in_flight {
+                            let response =
+                                application_session_overloaded(message.correlation_id, kind);
+                            if !send_application_session_output(&output, Ok(response)).await {
+                                break;
+                            }
+                            continue;
+                        }
+                        let (future, abort) = application_session_operation(
+                            application.clone(),
+                            metadata.clone(),
+                            message.correlation_id,
+                            operation,
+                            kind,
+                        );
+                        live.insert(message.correlation_id, (abort, kind));
+                        operations.push(future);
+                    }
+                }
+            }
+        }
+    }
+
+    for (_, (abort, _)) in live {
+        abort.abort();
+    }
+}
+
 /// Captures one batch item from the service result without Status round-trips.
 ///
 /// Application-classified [`ServiceFailure::Public`] failures become the item
@@ -1332,6 +1757,112 @@ impl ContractService for GrpcApplication {
             self.normal_invocation(ServiceOperationV1::GetReactiveWakeup, &metadata, request_id)?;
         let result = map_service(service.get_reactive_wakeup(context).await)?;
         Ok(Response::new(get_reactive_wakeup_result_to_proto(result)))
+    }
+}
+
+#[tonic::async_trait]
+impl ApplicationSessionService for GrpcApplication {
+    type OpenStream = ApplicationSessionOutputStream;
+
+    async fn open(
+        &self,
+        request: Request<tonic::Streaming<v1::ApplicationSessionRequest>>,
+    ) -> Result<Response<Self::OpenStream>, Status> {
+        let (metadata, _peer, mut inbound) = split_request(request);
+        let deadline = self.limits.deadline(&metadata)?;
+        let first =
+            tokio::time::timeout_at(tokio::time::Instant::from_std(deadline), inbound.message())
+                .await
+                .map_err(|_| Status::deadline_exceeded(EMERGENCY_INTERNAL_MESSAGE))??
+                .ok_or_else(|| Status::invalid_argument(EMERGENCY_INTERNAL_MESSAGE))?;
+        let Some(v1::application_session_request::Request::Open(open)) = first.request else {
+            return Err(Status::invalid_argument(EMERGENCY_INTERNAL_MESSAGE));
+        };
+        if open.protocol_version != APPLICATION_SESSION_PROTOCOL_V1
+            || open.requested_max_in_flight == 0
+            || open.requested_max_in_flight as usize > MAX_APPLICATION_SESSION_IN_FLIGHT
+        {
+            return Err(Status::invalid_argument(EMERGENCY_INTERNAL_MESSAGE));
+        }
+        let contract = open
+            .contract
+            .clone()
+            .ok_or_else(|| Status::invalid_argument(EMERGENCY_INTERNAL_MESSAGE))?;
+
+        // Establishment proves the exact contract and every selected query
+        // module under the same authenticated, authorized catalog boundary
+        // used by unary clients. This grants no reusable allow decision: every
+        // operation below re-enters its ordinary handler and authenticates
+        // again.
+        let mut catalog = Request::new(app_v1::GetApplicationCatalogRequest {
+            contract: Some(contract.clone()),
+            limit: 1,
+            cursor: None,
+            request_id: open.request_id.clone(),
+        });
+        *catalog.metadata_mut() = metadata.clone();
+        let described = ApplicationQueryService::get_application_catalog(self, catalog)
+            .await?
+            .into_inner();
+        if described.contract_lineage != contract.lineage
+            || described.contract_version != contract.version
+            || described.contract_bundle_hash != contract.bundle_hash
+        {
+            return Err(status_from_application_error(&ApplicationError::new(
+                ApplicationErrorCode::ContractMismatch,
+                ApplicationOperation::DescribeContract,
+                ApplicationErrorContext::empty(),
+                None,
+            )));
+        }
+        if open.query_module_hashes.iter().any(|selected| {
+            !described
+                .query_module_hashes
+                .iter()
+                .any(|active| active == selected)
+        }) {
+            return Err(status_from_application_error(&ApplicationError::new(
+                ApplicationErrorCode::ModuleUnavailable,
+                ApplicationOperation::DescribeContract,
+                ApplicationErrorContext::empty(),
+                None,
+            )));
+        }
+
+        let maximum_in_flight = open.requested_max_in_flight as usize;
+        let (output, receiver) = tokio::sync::mpsc::channel(maximum_in_flight + 1);
+        output
+            .send(Ok(v1::ApplicationSessionResponse {
+                correlation_id: first.correlation_id,
+                response: Some(v1::application_session_response::Response::Opened(
+                    v1::ApplicationSessionOpened {
+                        protocol_version: APPLICATION_SESSION_PROTOCOL_V1,
+                        contract: Some(contract.clone()),
+                        query_module_hashes: open.query_module_hashes.clone(),
+                        application_lock_hash: open.application_lock_hash,
+                        maximum_in_flight: open.requested_max_in_flight,
+                    },
+                )),
+            }))
+            .await
+            .map_err(|_| Status::unavailable(EMERGENCY_INTERNAL_MESSAGE))?;
+
+        tokio::spawn(run_application_session(
+            self.clone(),
+            ApplicationSessionMetadata(metadata),
+            inbound,
+            output,
+            ApplicationSessionScope {
+                contract,
+                query_module_hashes: open.query_module_hashes,
+                maximum_in_flight,
+                opening_correlation_id: first.correlation_id,
+            },
+        ));
+        let stream = futures_util::stream::unfold(receiver, |mut receiver| async move {
+            receiver.recv().await.map(|item| (item, receiver))
+        });
+        Ok(Response::new(Box::pin(stream)))
     }
 }
 
@@ -3315,6 +3846,177 @@ mod tests {
             GrpcRequestLimits::new(MAX_COMMIT_SUBSCRIPTION_LIFETIME + Duration::from_nanos(1))
                 .is_err()
         );
+    }
+
+    #[test]
+    fn session_identity_accepts_only_bound_named_operations() {
+        let contract = app_v1::ContractSelector {
+            lineage: "TicketDesk".to_owned(),
+            version: 7,
+            bundle_hash: vec![1; 32],
+        };
+        let module = vec![2; 32];
+        let command =
+            v1::application_session_request::Request::Command(v1::ExecuteCommandRequest {
+                expected_contract_version: Some(7),
+                ..v1::ExecuteCommandRequest::default()
+            });
+        assert_eq!(
+            application_session_request_matches(&command, &contract, std::slice::from_ref(&module))
+                .expect("bound command"),
+            SessionOperationKind::Command
+        );
+        let stale = v1::application_session_request::Request::Command(v1::ExecuteCommandRequest {
+            expected_contract_version: Some(6),
+            ..v1::ExecuteCommandRequest::default()
+        });
+        let stale =
+            application_session_request_matches(&stale, &contract, std::slice::from_ref(&module))
+                .expect_err("stale command");
+        assert_eq!(
+            riffdb_proto::decode_public_error(stale.details())
+                .expect("typed contract mismatch")
+                .kind(),
+            PublicErrorKind::ContractMismatch
+        );
+
+        let query = v1::application_session_request::Request::Query(app_v1::ExecuteQueryRequest {
+            contract: Some(contract.clone()),
+            query: Some(app_v1::execute_query_request::Query::QueryName(
+                "TicketPage".to_owned(),
+            )),
+            module_hash: Some(module.clone()),
+            ..app_v1::ExecuteQueryRequest::default()
+        });
+        assert_eq!(
+            application_session_request_matches(&query, &contract, std::slice::from_ref(&module))
+                .expect("bound query"),
+            SessionOperationKind::Query
+        );
+        let ad_hoc = v1::application_session_request::Request::Query(app_v1::ExecuteQueryRequest {
+            contract: Some(contract),
+            query: Some(app_v1::execute_query_request::Query::Source(
+                "from Ticket take 1".to_owned(),
+            )),
+            module_hash: Some(module.clone()),
+            ..app_v1::ExecuteQueryRequest::default()
+        });
+        let ad_hoc = application_session_request_matches(
+            &ad_hoc,
+            &app_v1::ContractSelector {
+                lineage: "TicketDesk".to_owned(),
+                version: 7,
+                bundle_hash: vec![1; 32],
+            },
+            std::slice::from_ref(&module),
+        )
+        .expect_err("ad hoc query");
+        assert_eq!(
+            riffdb_proto::decode_application_error(ad_hoc.details())
+                .expect("typed query rejection")
+                .code(),
+            ApplicationErrorCode::QueryInvalid
+        );
+    }
+
+    #[test]
+    fn session_failure_carriage_is_bounded_and_message_free() {
+        let status = Status::with_details(
+            tonic::Code::FailedPrecondition,
+            "must not cross the envelope",
+            tonic::codegen::Bytes::from_static(b"bounded-details"),
+        );
+        let failure = application_session_failure(9, SessionOperationKind::Query, status);
+        let Some(v1::application_session_response::Response::Failure(failure)) = failure.response
+        else {
+            panic!("failure response")
+        };
+        assert_eq!(failure.details, b"bounded-details");
+        assert_eq!(failure.grpc_code, tonic::Code::FailedPrecondition as i32);
+
+        let oversized = Status::with_details(
+            tonic::Code::Internal,
+            "must not cross the envelope",
+            vec![7; MAX_APPLICATION_SESSION_ERROR_DETAILS_BYTES + 1].into(),
+        );
+        let response = application_session_failure(10, SessionOperationKind::Command, oversized);
+        let Some(v1::application_session_response::Response::Failure(failure)) = response.response
+        else {
+            panic!("failure response")
+        };
+        assert!(failure.details.is_empty());
+    }
+
+    #[test]
+    fn session_capacity_is_typed_for_commands_and_queries() {
+        for (kind, application) in [
+            (SessionOperationKind::Command, false),
+            (SessionOperationKind::Query, true),
+        ] {
+            let response = application_session_overloaded(11, kind);
+            let Some(v1::application_session_response::Response::Failure(failure)) =
+                response.response
+            else {
+                panic!("capacity failure")
+            };
+            assert_eq!(failure.grpc_code, tonic::Code::ResourceExhausted as i32);
+            if application {
+                let error = riffdb_proto::decode_application_error(&failure.details)
+                    .expect("application overload");
+                assert_eq!(
+                    error.code(),
+                    riffdb_errors::ApplicationErrorCode::Overloaded
+                );
+            } else {
+                let error =
+                    riffdb_proto::decode_public_error(&failure.details).expect("public overload");
+                assert_eq!(error.kind(), riffdb_errors::PublicErrorKind::Overloaded);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn session_slow_consumer_hits_the_finite_output_bound() {
+        let (output, _receiver) = tokio::sync::mpsc::channel(1);
+        assert!(
+            send_application_session_output_with_timeout(
+                &output,
+                Ok(v1::ApplicationSessionResponse::default()),
+                Duration::from_secs(1),
+            )
+            .await
+        );
+        assert!(
+            !send_application_session_output_with_timeout(
+                &output,
+                Ok(v1::ApplicationSessionResponse::default()),
+                Duration::ZERO,
+            )
+            .await
+        );
+    }
+
+    #[test]
+    fn session_request_correlations_are_nonzero_unique_and_monotonic() {
+        let mut last = 8;
+        assert!(advance_application_session_correlation(&mut last, 9).is_ok());
+        assert_eq!(last, 9);
+        for rejected in [0, 8, 9] {
+            assert!(advance_application_session_correlation(&mut last, rejected).is_err());
+            assert_eq!(last, 9);
+        }
+    }
+
+    #[test]
+    fn session_metadata_debug_is_unconditionally_redacted() {
+        let mut metadata = MetadataMap::new();
+        metadata.insert(
+            AUTHORIZATION_METADATA_KEY,
+            MetadataValue::from_static("Bearer secret-presentation"),
+        );
+        let rendered = format!("{:?}", ApplicationSessionMetadata(metadata));
+        assert_eq!(rendered, "ApplicationSessionMetadata([REDACTED])");
+        assert!(!rendered.contains("secret-presentation"));
     }
 
     #[test]

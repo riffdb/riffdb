@@ -436,6 +436,7 @@ fn service_inventory_and_completed_phase_zero_messages_are_exact() {
         BTreeSet::from([
             "AdminService",
             "ApplicationQueryService",
+            "ApplicationSessionService",
             "CommandService",
             "CommitService",
             "ContractService",
@@ -449,7 +450,7 @@ fn service_inventory_and_completed_phase_zero_messages_are_exact() {
             .iter()
             .map(|file| file.service.len())
             .sum::<usize>(),
-        7
+        8
     );
     let mut methods = Vec::new();
     for file in &descriptors.file {
@@ -467,7 +468,7 @@ fn service_inventory_and_completed_phase_zero_messages_are_exact() {
         }
     }
     methods.sort();
-    assert_eq!(methods.len(), 66);
+    assert_eq!(methods.len(), 67);
     let descriptor_order = descriptors
         .file
         .iter()
@@ -497,6 +498,7 @@ fn service_inventory_and_completed_phase_zero_messages_are_exact() {
             "ExecuteProjectedQuery",
         ]
     );
+    assert_eq!(descriptor_order["ApplicationSessionService"], vec!["Open"]);
     assert_eq!(
         descriptor_order["ContractService"],
         vec![
@@ -588,6 +590,7 @@ fn service_inventory_and_completed_phase_zero_messages_are_exact() {
         BTreeSet::from([
             "AdminService",
             "ApplicationQueryService",
+            "ApplicationSessionService",
             "CommandService",
             "CommitService",
             "ContractService",
@@ -595,7 +598,14 @@ fn service_inventory_and_completed_phase_zero_messages_are_exact() {
             "QueryService",
         ])
     );
-    assert!(methods.iter().all(|method| !method.4));
+    assert_eq!(
+        methods
+            .iter()
+            .filter(|method| method.4)
+            .map(|method| (method.0.as_str(), method.1.as_str()))
+            .collect::<Vec<_>>(),
+        vec![("ApplicationSessionService", "Open")]
+    );
     assert_eq!(
         methods
             .iter()
@@ -603,6 +613,7 @@ fn service_inventory_and_completed_phase_zero_messages_are_exact() {
             .map(|method| (method.0.as_str(), method.1.as_str()))
             .collect::<Vec<_>>(),
         vec![
+            ("ApplicationSessionService", "Open"),
             ("CommitService", "SubscribeCommits"),
             ("EventService", "StreamEventConsumer"),
             ("QueryService", "WatchNamedQuery"),
@@ -745,7 +756,7 @@ fn service_inventory_and_completed_phase_zero_messages_are_exact() {
             .keys()
             .filter(|name| name.starts_with("riffdb.v1."))
             .count(),
-        274
+        281
     );
     assert_eq!(
         messages
