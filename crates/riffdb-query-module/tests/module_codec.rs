@@ -365,6 +365,8 @@ fn generated_clients_are_reproducible_name_addressed_and_identity_pinned() {
     assert!(rust.contains("\"TicketPage\",\n            Some(QUERY_MODULE_HASH)"));
     assert!(rust.contains("pub struct CreateTicketInput"));
     assert!(rust.contains("pub const CONTRACT_BUNDLE_HASH"));
+    assert!(rust.contains("pub async fn open_bounded_session"));
+    assert!(rust.contains("ApplicationSessionIdentity::new(CONTRACT_LINEAGE.to_owned()"));
     assert!(rust.contains("impl GeneratedQuery for TicketPageQuery"));
     assert!(rust.contains("pub struct TicketDeskClient"));
     assert!(rust.contains("execute_generated_command"));

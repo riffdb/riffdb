@@ -127,6 +127,7 @@ const PRODUCTION_SOURCES: &[&str] = &[
     "riffdb/v1/live_query.proto",
     "riffdb/v1/projection.proto",
     "riffdb/v1/query.proto",
+    "riffdb/v1/session.proto",
     "riffdb/v1/services.proto",
     "riffdb/v1/value.proto",
 ];
@@ -618,6 +619,7 @@ const PROBE_RECORD_TYPE: &str = "riffdb.testing.v1.CompatibilityProbe";
 const PROBE_PAYLOAD: &[u8] = &[0x08, 0x2a];
 const CRC_32C: Crc<u32> = Crc::<u32>::new(&CRC_32_ISCSI);
 const EXPECTED_METHODS: &[(&str, &str, bool)] = &[
+    ("ApplicationSessionService", "Open", true),
     ("ApplicationQueryService", "CheckQuery", false),
     ("ApplicationQueryService", "DeployQueryModule", false),
     ("ApplicationQueryService", "DeployReactiveModule", false),
@@ -2256,7 +2258,7 @@ fn validate_service_inventory(descriptor_set: &FileDescriptorSet) -> Result<(), 
         .sum::<usize>();
     if actual_services != expected_services || service_count != expected_services.len() {
         return Err(io::Error::other(
-            "service descriptors differ from the accepted seven-service baseline",
+            "service descriptors differ from the ADR-0127 eight-service baseline",
         )
         .into());
     }
@@ -2290,12 +2292,14 @@ fn validate_service_inventory(descriptor_set: &FileDescriptorSet) -> Result<(), 
                 "riffdb.v1"
             };
             let input_type = match *method {
+                "Open" => ".riffdb.v1.ApplicationSessionRequest".to_owned(),
                 "Execute" => ".riffdb.v1.ExecuteCommandRequest".to_owned(),
                 "ExecuteBatch" => ".riffdb.v1.ExecuteCommandBatchRequest".to_owned(),
                 "StreamEventConsumer" => ".riffdb.v1.ConsumeEventStreamRequest".to_owned(),
                 _ => format!(".{package}.{method}Request"),
             };
             let output_type = match *method {
+                "Open" => ".riffdb.v1.ApplicationSessionResponse".to_owned(),
                 "Execute" | "ExecuteContextualReaction" => {
                     ".riffdb.v1.ExecuteCommandResponse".to_owned()
                 }
@@ -2322,7 +2326,7 @@ fn validate_service_inventory(descriptor_set: &FileDescriptorSet) -> Result<(), 
                 input_type,
                 output_type,
                 *server_streaming,
-                false,
+                *method == "Open",
             )
         })
         .collect::<Vec<_>>();
@@ -2330,7 +2334,7 @@ fn validate_service_inventory(descriptor_set: &FileDescriptorSet) -> Result<(), 
 
     if actual != expected {
         return Err(io::Error::other(format!(
-            "service inventory differs from the accepted seven-service, sixty-six-RPC baseline: expected {expected:?}, found {actual:?}"
+            "service inventory differs from the ADR-0127 eight-service, sixty-seven-RPC baseline: expected {expected:?}, found {actual:?}"
         ))
         .into());
     }

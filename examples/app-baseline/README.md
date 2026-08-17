@@ -109,6 +109,15 @@ silently clamped. RiffDB is bounded at 128. Each handle is **prewarmed**
 (Postgres prepares every timed statement; RiffDB touches a cheap read) before
 the shared measure window.
 
+ADR-0127's optional Rust application-session candidate is available as
+`--load-riffdb-transport bounded-session`. Each load client still owns an
+independent HTTP/2 connection, but generated commands and exact named queries
+share one bounded bidirectional application stream on that connection. The
+report records `per_session_bounded_application_stream_v1` and marks that
+shape non-evidentiary under the unchanged PERF-018 comparator. It cannot emit
+release evidence unless the accepted activation gates pass and PERF-018 is
+amended separately. Seed remains on the unchanged bounded batch path.
+
 Open tickets for comment/close writes are selected with Zipf skew via a CDF
 `partition_point` (`--load-zipf-s`, default 1.0). Read probes use a separate
 stable ticket excluded from that pool. The default targets one organization;

@@ -59,6 +59,10 @@ const MAX_AUTHENTICATED_HEALTH_COMPONENTS: usize = 6;
 const MAX_BUILD_STRING_BYTES: usize = 128;
 const MAX_COMMAND_EXPLAIN_ITEMS: usize = 4_096;
 const MAX_COMMAND_BATCH_ITEMS: usize = 16;
+const APPLICATION_SESSION_PROTOCOL_V1: u32 = 1;
+const MAX_APPLICATION_SESSION_IN_FLIGHT: u32 = 128;
+const MAX_APPLICATION_SESSION_QUERY_MODULES: usize = 32;
+const MAX_APPLICATION_SESSION_ERROR_DETAILS_BYTES: usize = 64 * 1024;
 const MAX_DISCOVERY_PAGE_BYTES: usize = 2_621_440;
 const MAX_OPERATION_SCHEMA_BYTES: usize = 65_536;
 const MAX_INSTALLATION_DRIVERS: usize = 4;
@@ -184,6 +188,89 @@ pub trait PublicMessage: Message + Default + Sized {
 
     #[doc(hidden)]
     fn validate_structure(&self) -> Result<(), PublicWireError>;
+}
+
+#[cfg(test)]
+mod application_session_tests {
+    use super::*;
+
+    fn contract() -> crate::app::v1::ContractSelector {
+        crate::app::v1::ContractSelector {
+            lineage: "TicketDesk".to_owned(),
+            version: 1,
+            bundle_hash: vec![7; 32],
+        }
+    }
+
+    fn open_request() -> v1::ApplicationSessionRequest {
+        v1::ApplicationSessionRequest {
+            correlation_id: 1,
+            request: Some(v1::application_session_request::Request::Open(
+                v1::ApplicationSessionOpen {
+                    protocol_version: 1,
+                    contract: Some(contract()),
+                    query_module_hashes: vec![vec![8; 32], vec![9; 32]],
+                    application_lock_hash: vec![10; 32],
+                    requested_max_in_flight: 32,
+                    request_id: vec![11; 16],
+                },
+            )),
+        }
+    }
+
+    #[test]
+    fn session_open_is_exact_bounded_and_canonical() {
+        let request = open_request();
+        assert_eq!(validate_public_message(&request), Ok(()));
+        let encoded = request.encode_to_vec();
+        assert_eq!(
+            decode_public_message::<v1::ApplicationSessionRequest>(&encoded),
+            Ok(request)
+        );
+
+        let mut duplicate = open_request();
+        let Some(v1::application_session_request::Request::Open(open)) = duplicate.request.as_mut()
+        else {
+            panic!("open request")
+        };
+        open.query_module_hashes[1] = open.query_module_hashes[0].clone();
+        assert_eq!(
+            validate_public_message(&duplicate),
+            Err(PublicWireError::NonCanonical)
+        );
+    }
+
+    #[test]
+    fn session_open_rejects_duplicate_nested_singular_fields() {
+        let Some(v1::application_session_request::Request::Open(open)) = open_request().request
+        else {
+            panic!("open request")
+        };
+        let mut encoded = open.encode_to_vec();
+        // A second protocol_version field would be silently merged by Prost.
+        // The public preflight must reject it before decoding.
+        encoded.extend_from_slice(&[0x08, 0x01]);
+        assert_eq!(
+            preflight_application_session_open(&encoded),
+            Err(PublicWireError::MalformedEncoding)
+        );
+    }
+
+    #[test]
+    fn session_cancel_cannot_target_itself() {
+        let request = v1::ApplicationSessionRequest {
+            correlation_id: 5,
+            request: Some(v1::application_session_request::Request::Cancel(
+                v1::ApplicationSessionCancel {
+                    target_correlation_id: 5,
+                },
+            )),
+        };
+        assert_eq!(
+            validate_public_message(&request),
+            Err(PublicWireError::InvalidIdentity)
+        );
+    }
 }
 
 /// Decodes one bounded public message through its context-free validator.
@@ -10586,6 +10673,266 @@ impl_public_message!(
     &[&[1, 2, 3, 4, 5]],
     preflight_noop,
     validate_live_query_update
+);
+
+fn validate_application_session_contract(
+    contract: Option<&crate::app::v1::ContractSelector>,
+) -> Result<(), PublicWireError> {
+    let contract = contract.ok_or(PublicWireError::MissingRequiredField)?;
+    if contract.lineage.is_empty()
+        || contract.lineage.len() > MAX_CONTRACT_LINEAGE_BYTES
+        || contract.version == 0
+        || contract.bundle_hash.len() != 32
+    {
+        return Err(PublicWireError::InvalidIdentity);
+    }
+    Ok(())
+}
+
+fn preflight_application_session_contract(input: &[u8]) -> Result<(), PublicWireError> {
+    preflight_nested_message(input, 3, &[], &[], &[], &[])
+}
+
+fn preflight_application_session_open(input: &[u8]) -> Result<(), PublicWireError> {
+    preflight_nested_message(
+        input,
+        6,
+        &[3],
+        &[],
+        &[NestedRule {
+            field: 2,
+            preflight: preflight_application_session_contract,
+        }],
+        &[RepeatedRule {
+            field: 3,
+            maximum: MAX_APPLICATION_SESSION_QUERY_MODULES,
+            wire: RepeatedWire::LengthDelimited,
+        }],
+    )
+}
+
+fn preflight_application_session_cancel(input: &[u8]) -> Result<(), PublicWireError> {
+    preflight_nested_message(input, 1, &[], &[], &[], &[])
+}
+
+fn preflight_application_query_request(input: &[u8]) -> Result<(), PublicWireError> {
+    <crate::app::v1::ExecuteQueryRequest as PublicMessage>::preflight(input)
+}
+
+fn preflight_application_query_response(input: &[u8]) -> Result<(), PublicWireError> {
+    <crate::app::v1::ExecuteQueryResponse as PublicMessage>::preflight(input)
+}
+
+fn preflight_application_session_request(input: &[u8]) -> Result<(), PublicWireError> {
+    preflight_nested_message(
+        input,
+        5,
+        &[],
+        &[&[2, 3, 4, 5]],
+        &[
+            NestedRule {
+                field: 2,
+                preflight: preflight_application_session_open,
+            },
+            NestedRule {
+                field: 3,
+                preflight: preflight_execute_request,
+            },
+            NestedRule {
+                field: 4,
+                preflight: preflight_application_query_request,
+            },
+            NestedRule {
+                field: 5,
+                preflight: preflight_application_session_cancel,
+            },
+        ],
+        &[],
+    )
+}
+
+fn preflight_application_session_opened(input: &[u8]) -> Result<(), PublicWireError> {
+    preflight_nested_message(
+        input,
+        5,
+        &[3],
+        &[],
+        &[NestedRule {
+            field: 2,
+            preflight: preflight_application_session_contract,
+        }],
+        &[RepeatedRule {
+            field: 3,
+            maximum: MAX_APPLICATION_SESSION_QUERY_MODULES,
+            wire: RepeatedWire::LengthDelimited,
+        }],
+    )
+}
+
+fn preflight_application_session_failure(input: &[u8]) -> Result<(), PublicWireError> {
+    preflight_nested_message(input, 3, &[], &[], &[], &[])
+}
+
+fn preflight_application_session_cancellation(input: &[u8]) -> Result<(), PublicWireError> {
+    preflight_nested_message(input, 2, &[], &[], &[], &[])
+}
+
+fn preflight_application_session_response(input: &[u8]) -> Result<(), PublicWireError> {
+    preflight_nested_message(
+        input,
+        6,
+        &[],
+        &[&[2, 3, 4, 5, 6]],
+        &[
+            NestedRule {
+                field: 2,
+                preflight: preflight_application_session_opened,
+            },
+            NestedRule {
+                field: 3,
+                preflight: preflight_execute_response,
+            },
+            NestedRule {
+                field: 4,
+                preflight: preflight_application_query_response,
+            },
+            NestedRule {
+                field: 5,
+                preflight: preflight_application_session_failure,
+            },
+            NestedRule {
+                field: 6,
+                preflight: preflight_application_session_cancellation,
+            },
+        ],
+        &[],
+    )
+}
+
+fn validate_application_session_hashes(hashes: &[Vec<u8>]) -> Result<(), PublicWireError> {
+    if hashes.len() > MAX_APPLICATION_SESSION_QUERY_MODULES
+        || hashes.iter().any(|hash| hash.len() != 32)
+        || hashes.windows(2).any(|pair| pair[0] >= pair[1])
+    {
+        return Err(PublicWireError::NonCanonical);
+    }
+    Ok(())
+}
+
+fn validate_application_session_request(
+    value: &v1::ApplicationSessionRequest,
+) -> Result<(), PublicWireError> {
+    use v1::application_session_request::Request;
+
+    if value.correlation_id == 0 {
+        return Err(PublicWireError::InvalidIdentity);
+    }
+    match value
+        .request
+        .as_ref()
+        .ok_or(PublicWireError::MissingRequiredField)?
+    {
+        Request::Open(open) => {
+            if open.protocol_version != APPLICATION_SESSION_PROTOCOL_V1
+                || open.application_lock_hash.len() != 32
+                || open.requested_max_in_flight == 0
+                || open.requested_max_in_flight > MAX_APPLICATION_SESSION_IN_FLIGHT
+                || open.request_id.len() != 16
+            {
+                return Err(PublicWireError::InvalidIdentity);
+            }
+            validate_application_session_contract(open.contract.as_ref())?;
+            validate_application_session_hashes(&open.query_module_hashes)
+        }
+        Request::Command(command) => crate::validate_execute_request(command)
+            .map_err(|_| PublicWireError::InconsistentFields),
+        Request::Query(query) => validate_public_message(query),
+        Request::Cancel(cancel) => {
+            if cancel.target_correlation_id == 0
+                || cancel.target_correlation_id == value.correlation_id
+            {
+                Err(PublicWireError::InvalidIdentity)
+            } else {
+                Ok(())
+            }
+        }
+    }
+}
+
+fn validate_application_session_response(
+    value: &v1::ApplicationSessionResponse,
+) -> Result<(), PublicWireError> {
+    use v1::application_session_response::Response;
+
+    if value.correlation_id == 0 {
+        return Err(PublicWireError::InvalidIdentity);
+    }
+    match value
+        .response
+        .as_ref()
+        .ok_or(PublicWireError::MissingRequiredField)?
+    {
+        Response::Opened(opened) => {
+            if opened.protocol_version != APPLICATION_SESSION_PROTOCOL_V1
+                || opened.application_lock_hash.len() != 32
+                || opened.maximum_in_flight == 0
+                || opened.maximum_in_flight > MAX_APPLICATION_SESSION_IN_FLIGHT
+            {
+                return Err(PublicWireError::InvalidIdentity);
+            }
+            validate_application_session_contract(opened.contract.as_ref())?;
+            validate_application_session_hashes(&opened.query_module_hashes)
+        }
+        Response::Command(command) => crate::validate_execute_response(command)
+            .map_err(|_| PublicWireError::InconsistentFields),
+        Response::Query(query) => validate_public_message(query),
+        Response::Failure(failure) => {
+            if !matches!(
+                v1::ApplicationSessionOperationKind::try_from(failure.operation_kind),
+                Ok(v1::ApplicationSessionOperationKind::Command)
+                    | Ok(v1::ApplicationSessionOperationKind::Query)
+            ) || failure.grpc_code <= 0
+                || failure.grpc_code > 16
+                || failure.details.len() > MAX_APPLICATION_SESSION_ERROR_DETAILS_BYTES
+            {
+                return Err(PublicWireError::InvalidValue);
+            }
+            Ok(())
+        }
+        Response::Cancellation(cancellation) => {
+            if cancellation.target_correlation_id == 0
+                || matches!(
+                    v1::ApplicationSessionCancellationDisposition::try_from(
+                        cancellation.disposition
+                    ),
+                    Err(_) | Ok(v1::ApplicationSessionCancellationDisposition::Unspecified)
+                )
+            {
+                return Err(PublicWireError::InvalidValue);
+            }
+            Ok(())
+        }
+    }
+}
+
+impl_public_message!(
+    v1::ApplicationSessionRequest,
+    MAX_PUBLIC_REQUEST_BYTES,
+    5,
+    &[],
+    &[&[2, 3, 4, 5]],
+    preflight_application_session_request,
+    validate_application_session_request
+);
+
+impl_public_message!(
+    v1::ApplicationSessionResponse,
+    MAX_PUBLIC_RESPONSE_BYTES,
+    6,
+    &[],
+    &[&[2, 3, 4, 5, 6]],
+    preflight_application_session_response,
+    validate_application_session_response
 );
 
 impl PublicMessage for v1::ExecuteCommandRequest {

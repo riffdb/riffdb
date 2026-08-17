@@ -252,13 +252,29 @@ fn run() -> Result<(), String> {
                     }
                     return Err(error.to_string());
                 }
-                match run_scenarios_with_options(
+                // ADR-0127 is an explicitly selected diagnostic shape. Seed and
+                // projection preparation stay on the frozen unary path; the
+                // representative application operations below use one bounded
+                // generated-operation session when requested so their public
+                // write-latency ratios are measured rather than inferred from
+                // the mixed-load histogram.
+                if args.riffdb_transport == RiffDbTransport::BoundedSession {
+                    session.backend = session
+                        .backend
+                        .fresh_bounded_session()
+                        .map_err(|error| error.to_string())?;
+                }
+                let scenario_result = run_scenarios_with_options(
                     &mut session.backend,
                     &dataset,
                     args.warmups,
                     args.samples,
                     true,
-                ) {
+                );
+                if args.riffdb_transport == RiffDbTransport::BoundedSession {
+                    session.backend.close_bounded_session();
+                }
+                match scenario_result {
                     Ok(scenarios) => scenarios,
                     Err(error) => {
                         if let Ok(groups) = session.shutdown() {
@@ -1495,6 +1511,9 @@ fn run_load(args: Args) -> Result<(), String> {
                                     let mut backend = match transport_topology {
                                         RiffDbTransport::PerSession => prototype.fresh_session(),
                                         RiffDbTransport::Shared => Ok(prototype.clone()),
+                                        RiffDbTransport::BoundedSession => {
+                                            prototype.fresh_bounded_session()
+                                        }
                                     }
                                     .map_err(|error| error.to_string())?;
                                     backend.prewarm().map_err(|error| error.to_string())?;
@@ -1526,6 +1545,9 @@ fn run_load(args: Args) -> Result<(), String> {
                                     let mut backend = match transport_topology {
                                         RiffDbTransport::PerSession => prototype.fresh_session(),
                                         RiffDbTransport::Shared => Ok(prototype.clone()),
+                                        RiffDbTransport::BoundedSession => {
+                                            prototype.fresh_bounded_session()
+                                        }
                                     }
                                     .map_err(|error| error.to_string())?;
                                     backend.prewarm().map_err(|error| error.to_string())?;
@@ -1687,6 +1709,9 @@ fn run_load(args: Args) -> Result<(), String> {
                                 let mut backend = match transport_topology {
                                     RiffDbTransport::PerSession => prototype.fresh_session(),
                                     RiffDbTransport::Shared => Ok(prototype.clone()),
+                                    RiffDbTransport::BoundedSession => {
+                                        prototype.fresh_bounded_session()
+                                    }
                                 }
                                 .map_err(|error| error.to_string())?;
                                 backend.prewarm().map_err(|error| error.to_string())?;
@@ -1715,6 +1740,9 @@ fn run_load(args: Args) -> Result<(), String> {
                                 let mut backend = match transport_topology {
                                     RiffDbTransport::PerSession => prototype.fresh_session(),
                                     RiffDbTransport::Shared => Ok(prototype.clone()),
+                                    RiffDbTransport::BoundedSession => {
+                                        prototype.fresh_bounded_session()
+                                    }
                                 }
                                 .map_err(|error| error.to_string())?;
                                 backend.prewarm().map_err(|error| error.to_string())?;
@@ -1927,6 +1955,7 @@ fn run_load(args: Args) -> Result<(), String> {
             "concurrency_sweep": args.load_concurrency_sweep,
             "client_points": client_points,
             "riffdb_transport": args.riffdb_transport.as_report_str(),
+            "riffdb_transport_evidentiary_under_perf_018": args.riffdb_transport == RiffDbTransport::PerSession,
             "postgres_comparator": args.postgres_comparator.backend_id(),
             "automatic_command_retries": false,
             "contended": args.load_contended,
@@ -2607,6 +2636,7 @@ fn print_board_marginal_line(label: &str, value: &serde_json::Value) {
 enum RiffDbTransport {
     PerSession,
     Shared,
+    BoundedSession,
 }
 
 impl RiffDbTransport {
@@ -2614,6 +2644,7 @@ impl RiffDbTransport {
         match value {
             "per-session" => Some(Self::PerSession),
             "shared" => Some(Self::Shared),
+            "bounded-session" => Some(Self::BoundedSession),
             _ => None,
         }
     }
@@ -2622,6 +2653,7 @@ impl RiffDbTransport {
         match self {
             Self::PerSession => "per_session_http2_connection",
             Self::Shared => "shared_http2_connection",
+            Self::BoundedSession => "per_session_bounded_application_stream_v1",
         }
     }
 }
@@ -2864,7 +2896,8 @@ impl Args {
                 "--load-riffdb-transport" => {
                     let value = args.next().ok_or("--load-riffdb-transport needs a value")?;
                     riffdb_transport = RiffDbTransport::parse(&value).ok_or_else(|| {
-                        "--load-riffdb-transport must be per-session or shared".to_owned()
+                        "--load-riffdb-transport must be per-session, shared, or bounded-session"
+                            .to_owned()
                     })?;
                 }
                 "--database-root" => {
@@ -2956,7 +2989,7 @@ impl Args {
                          [--load-journeys] \
                          [--load-contended] [--load-saturate] [--load-saturate-p99-ms N] \
                          [--load-concurrency-sweep] [--load-sweep-per-level-daemon|--load-accumulate-history] \
-                         [--load-riffdb-transport per-session|shared] \
+                         [--load-riffdb-transport per-session|shared|bounded-session] \
                          [--database-root PATH] [--postgres-data-host-path PATH] \
                          [--allow-tmpfs] [--reps N] [--require-stable] \
                          [--seed-only] \
@@ -3041,8 +3074,7 @@ impl Args {
                 || load_journeys
                 || load_contended
                 || load_saturate
-                || load_concurrency_sweep
-                || riffdb_transport != RiffDbTransport::PerSession)
+                || load_concurrency_sweep)
         {
             return Err("--load-* options require --load".to_owned());
         }
@@ -3223,6 +3255,26 @@ mod tests {
         assert!(args.load_contended);
         assert!(args.load_saturate);
         assert_eq!(args.riffdb_transport, RiffDbTransport::Shared);
+
+        let session_args = Args::parse(
+            [
+                "--load",
+                "interactive",
+                "--load-riffdb-transport",
+                "bounded-session",
+            ]
+            .into_iter()
+            .map(str::to_owned),
+        )
+        .expect("bounded session flag");
+        assert_eq!(
+            session_args.riffdb_transport,
+            RiffDbTransport::BoundedSession
+        );
+        assert_eq!(
+            session_args.riffdb_transport.as_report_str(),
+            "per_session_bounded_application_stream_v1"
+        );
     }
 
     #[test]

@@ -22,7 +22,7 @@ rustls-pki-types = { version = "=1.15.1", default-features = false, features = [
 rustls-webpki = { version = "=0.103.13", default-features = false, features = ["std"] }
 # Already transitive via tonic; direct dep with only `time` for non-blocking
 # Overloaded backoff (must not block the async runtime during saturation).
-tokio = { version = "=1.52.0", default-features = false, features = ["time"] }
+tokio = { version = "=1.52.0", default-features = false, features = ["rt", "sync", "time"] }
 tonic = { version = "=0.14.6", default-features = false, features = ["channel", "codegen", "tls-ring"] }
 tonic-prost = { version = "=0.14.6", default-features = false }
 zeroize = { version = "=1.8.1", default-features = false, features = ["alloc"] }

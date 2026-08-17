@@ -943,7 +943,7 @@ pub fn generate_rust_client(module: &QueryModule, contract: &ContractBundle) -> 
          use std::collections::BTreeMap;\n\
          use riffdb_client_rust::generated::{{GeneratedCommand, GeneratedCommandError, GeneratedQuery}};\n\
          use riffdb_client_rust::{{ApplicationCardinality, ApplicationClientError, ApplicationContract, ApplicationUuid, \
-         ApplicationRecord, ApplicationValue, AttemptBudget, CallMetadata, GeneratedBatchError, GeneratedBatchOptions, \
+         ApplicationRecord, ApplicationSessionIdentity, ApplicationValue, AttemptBudget, CallMetadata, GeneratedBatchError, GeneratedBatchOptions, \
          GeneratedBatchProgress, GeneratedBatchResult, IdempotentCommand, NamedQuery, NamedQueryResult, \
          StableApplicationClient, TypedCommandResult, TypedQueryResult, v1}};\n\
          pub use riffdb_client_rust::QueryOptions;\n\
@@ -1999,6 +1999,20 @@ fn emit_rust_client_facade(output: &mut String, module: &QueryModule, commands: 
          command_attempts: AttemptBudget,\n}}\n\
          impl {client_name} {{\n    pub const fn new(client: StableApplicationClient, metadata: CallMetadata, \
          command_attempts: AttemptBudget) -> Self {{\n        Self {{ client, metadata, command_attempts }}\n    }}\n"
+    )
+    .expect("string");
+    writeln!(
+        output,
+        "    /// Selects ADR-0127's optional bounded application-operation session for this exact generated identity.\n\
+         \x20   pub async fn open_bounded_session(&mut self, application_lock_hash: [u8; 32]) -> Result<(), ApplicationClientError> {{\n\
+         \x20       let identity = ApplicationSessionIdentity::new(CONTRACT_LINEAGE.to_owned(), CONTRACT_VERSION, CONTRACT_BUNDLE_HASH, vec![QUERY_MODULE_HASH], application_lock_hash, 128)\n\
+         \x20           .map_err(|_| ApplicationClientError::InvalidInput)?;\n\
+         \x20       self.client.open_bounded_session(identity, &self.metadata).await\n    }}\n\
+         \x20   /// Reports the application transport selected by this generated client.\n\
+         \x20   #[must_use]\n\
+         \x20   pub const fn bounded_session_enabled(&self) -> bool {{ self.client.bounded_session_enabled() }}\n\
+         \x20   /// Closes the optional bounded session and returns to unary transport.\n\
+         \x20   pub fn close_bounded_session(&mut self) {{ self.client.close_bounded_session(); }}\n"
     )
     .expect("string");
     for query in module.queries() {

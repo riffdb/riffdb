@@ -5707,6 +5707,174 @@ pub struct ScanIndexResponse {
     #[prost(message, optional, tag = "1")]
     pub page: ::core::option::Option<IndexPage>,
 }
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ApplicationSessionOpen {
+    #[prost(uint32, tag = "1")]
+    pub protocol_version: u32,
+    #[prost(message, optional, tag = "2")]
+    pub contract: ::core::option::Option<super::app::v1::ContractSelector>,
+    #[prost(bytes = "vec", repeated, tag = "3")]
+    pub query_module_hashes: ::prost::alloc::vec::Vec<::prost::alloc::vec::Vec<u8>>,
+    #[prost(bytes = "vec", tag = "4")]
+    pub application_lock_hash: ::prost::alloc::vec::Vec<u8>,
+    #[prost(uint32, tag = "5")]
+    pub requested_max_in_flight: u32,
+    #[prost(bytes = "vec", tag = "6")]
+    pub request_id: ::prost::alloc::vec::Vec<u8>,
+}
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ApplicationSessionCancel {
+    #[prost(uint64, tag = "1")]
+    pub target_correlation_id: u64,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ApplicationSessionRequest {
+    #[prost(uint64, tag = "1")]
+    pub correlation_id: u64,
+    #[prost(oneof = "application_session_request::Request", tags = "2, 3, 4, 5")]
+    pub request: ::core::option::Option<application_session_request::Request>,
+}
+/// Nested message and enum types in `ApplicationSessionRequest`.
+pub mod application_session_request {
+    #[derive(Clone, PartialEq, ::prost::Oneof)]
+    pub enum Request {
+        #[prost(message, tag = "2")]
+        Open(super::ApplicationSessionOpen),
+        #[prost(message, tag = "3")]
+        Command(super::ExecuteCommandRequest),
+        #[prost(message, tag = "4")]
+        Query(super::super::app::v1::ExecuteQueryRequest),
+        #[prost(message, tag = "5")]
+        Cancel(super::ApplicationSessionCancel),
+    }
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ApplicationSessionOpened {
+    #[prost(uint32, tag = "1")]
+    pub protocol_version: u32,
+    #[prost(message, optional, tag = "2")]
+    pub contract: ::core::option::Option<super::app::v1::ContractSelector>,
+    #[prost(bytes = "vec", repeated, tag = "3")]
+    pub query_module_hashes: ::prost::alloc::vec::Vec<::prost::alloc::vec::Vec<u8>>,
+    #[prost(bytes = "vec", tag = "4")]
+    pub application_lock_hash: ::prost::alloc::vec::Vec<u8>,
+    #[prost(uint32, tag = "5")]
+    pub maximum_in_flight: u32,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ApplicationSessionFailure {
+    #[prost(enumeration = "ApplicationSessionOperationKind", tag = "1")]
+    pub operation_kind: i32,
+    #[prost(int32, tag = "2")]
+    pub grpc_code: i32,
+    #[prost(bytes = "vec", tag = "3")]
+    pub details: ::prost::alloc::vec::Vec<u8>,
+}
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ApplicationSessionCancellation {
+    #[prost(uint64, tag = "1")]
+    pub target_correlation_id: u64,
+    #[prost(enumeration = "ApplicationSessionCancellationDisposition", tag = "2")]
+    pub disposition: i32,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ApplicationSessionResponse {
+    #[prost(uint64, tag = "1")]
+    pub correlation_id: u64,
+    #[prost(oneof = "application_session_response::Response", tags = "2, 3, 4, 5, 6")]
+    pub response: ::core::option::Option<application_session_response::Response>,
+}
+/// Nested message and enum types in `ApplicationSessionResponse`.
+pub mod application_session_response {
+    #[derive(Clone, PartialEq, ::prost::Oneof)]
+    pub enum Response {
+        #[prost(message, tag = "2")]
+        Opened(super::ApplicationSessionOpened),
+        #[prost(message, tag = "3")]
+        Command(super::ExecuteCommandResponse),
+        #[prost(message, tag = "4")]
+        Query(super::super::app::v1::ExecuteQueryResponse),
+        #[prost(message, tag = "5")]
+        Failure(super::ApplicationSessionFailure),
+        #[prost(message, tag = "6")]
+        Cancellation(super::ApplicationSessionCancellation),
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum ApplicationSessionOperationKind {
+    Unspecified = 0,
+    Command = 1,
+    Query = 2,
+}
+impl ApplicationSessionOperationKind {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "APPLICATION_SESSION_OPERATION_KIND_UNSPECIFIED",
+            Self::Command => "APPLICATION_SESSION_OPERATION_KIND_COMMAND",
+            Self::Query => "APPLICATION_SESSION_OPERATION_KIND_QUERY",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "APPLICATION_SESSION_OPERATION_KIND_UNSPECIFIED" => Some(Self::Unspecified),
+            "APPLICATION_SESSION_OPERATION_KIND_COMMAND" => Some(Self::Command),
+            "APPLICATION_SESSION_OPERATION_KIND_QUERY" => Some(Self::Query),
+            _ => None,
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum ApplicationSessionCancellationDisposition {
+    Unspecified = 0,
+    QueryCancelled = 1,
+    CommandOutcomeUnknown = 2,
+    NotLive = 3,
+}
+impl ApplicationSessionCancellationDisposition {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => {
+                "APPLICATION_SESSION_CANCELLATION_DISPOSITION_UNSPECIFIED"
+            }
+            Self::QueryCancelled => {
+                "APPLICATION_SESSION_CANCELLATION_DISPOSITION_QUERY_CANCELLED"
+            }
+            Self::CommandOutcomeUnknown => {
+                "APPLICATION_SESSION_CANCELLATION_DISPOSITION_COMMAND_OUTCOME_UNKNOWN"
+            }
+            Self::NotLive => "APPLICATION_SESSION_CANCELLATION_DISPOSITION_NOT_LIVE",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "APPLICATION_SESSION_CANCELLATION_DISPOSITION_UNSPECIFIED" => {
+                Some(Self::Unspecified)
+            }
+            "APPLICATION_SESSION_CANCELLATION_DISPOSITION_QUERY_CANCELLED" => {
+                Some(Self::QueryCancelled)
+            }
+            "APPLICATION_SESSION_CANCELLATION_DISPOSITION_COMMAND_OUTCOME_UNKNOWN" => {
+                Some(Self::CommandOutcomeUnknown)
+            }
+            "APPLICATION_SESSION_CANCELLATION_DISPOSITION_NOT_LIVE" => {
+                Some(Self::NotLive)
+            }
+            _ => None,
+        }
+    }
+}
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct Value {
     #[prost(

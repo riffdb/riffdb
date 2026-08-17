@@ -3559,6 +3559,7 @@ fn application_router(
     builder
         .add_service(application.contract_server())
         .add_service(application.command_server())
+        .add_service(application.application_session_server())
         .add_service(application.query_server())
         .add_service(application.application_query_server())
         .add_service(application.commit_server())

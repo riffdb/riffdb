@@ -48,6 +48,15 @@ fn resolve_riffdbd() -> Option<PathBuf> {
 
 #[test]
 fn kill_daemon_mid_load_aborts_within_two_seconds() {
+    kill_daemon_mid_load_aborts_within_two_seconds_for(false);
+}
+
+#[test]
+fn kill_daemon_mid_bounded_session_aborts_within_two_seconds() {
+    kill_daemon_mid_load_aborts_within_two_seconds_for(true);
+}
+
+fn kill_daemon_mid_load_aborts_within_two_seconds_for(bounded_session: bool) {
     let Some(riffdbd) = resolve_riffdbd() else {
         if env::var_os("RUN_RIFFDB_DEAD_PEER").is_some() {
             panic!(
@@ -63,7 +72,11 @@ fn kill_daemon_mid_load_aborts_within_two_seconds() {
     let database_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("target")
         .join("perf-db")
-        .join("dead-peer-abort");
+        .join(if bounded_session {
+            "dead-peer-abort-session"
+        } else {
+            "dead-peer-abort-unary"
+        });
     let _ = std::fs::create_dir_all(&database_root);
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -92,6 +105,30 @@ fn kill_daemon_mid_load_aborts_within_two_seconds() {
         let mut guard = session.lock().expect("lock");
         guard.backend.reset().expect("reset");
         guard.backend.seed(&dataset).expect("seed");
+        if bounded_session {
+            let probes = dataset.probes();
+            let first = guard
+                .backend
+                .fresh_bounded_session()
+                .expect("first bounded session");
+            let comment = probes.write_comment(8_000_001);
+            let (commit_sequence, application_head) = first
+                .create_comment_then_fenced_ticket_page(&comment)
+                .expect("generated command and fenced query");
+            assert!(application_head >= commit_sequence);
+            drop(first);
+
+            let mut reconnected = guard
+                .backend
+                .fresh_bounded_session()
+                .expect("replacement bounded session");
+            assert!(
+                reconnected
+                    .point_get_ticket(probes.organization_id, probes.ticket_id)
+                    .expect("generated read after reconnect")
+                    .is_some()
+            );
+        }
     }
 
     let kill_at = Arc::new(Mutex::new(None::<Instant>));
@@ -132,15 +169,22 @@ fn kill_daemon_mid_load_aborts_within_two_seconds() {
         "riffdb_public_grpc",
         config,
         LoadExecutionShape {
-            transport_topology: "per_session_http2_connection",
+            transport_topology: if bounded_session {
+                "per_session_bounded_application_stream_v1"
+            } else {
+                "per_session_http2_connection"
+            },
             command_attempt_budget: 1,
         },
         &dataset,
         0,
         move || {
-            let mut backend = prototype
-                .fresh_session()
-                .map_err(|error| error.to_string())?;
+            let mut backend = if bounded_session {
+                prototype.fresh_bounded_session()
+            } else {
+                prototype.fresh_session()
+            }
+            .map_err(|error| error.to_string())?;
             backend.prewarm().map_err(|error| error.to_string())?;
             Ok(backend)
         },

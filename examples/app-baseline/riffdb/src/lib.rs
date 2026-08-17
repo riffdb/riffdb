@@ -26,14 +26,15 @@ use riffdb_app_baseline_core::{
 use riffdb_client_rust::ApplicationRecord;
 use riffdb_client_rust::{
     ApplicationClientError, ApplicationContract, ApplicationUuid, ApplicationValue, AttemptBudget,
-    BearerCredential, CallMetadata, GeneratedBatchError, GeneratedBatchOptions,
-    GeneratedBatchResult, NamedQuery, NamedQueryResult, StableApplicationClient,
+    ApplicationSessionIdentity, BearerCredential, CallMetadata, GeneratedBatchError,
+    GeneratedBatchOptions, GeneratedBatchResult, NamedQuery, NamedQueryResult,
+    StableApplicationClient,
 };
 use riffdb_ticketdesk::{
     AddProjectMemberInput, AttachLabelInput, CloseTicketWithCommentInput, CreateCommentInput,
     CreateLabelInput, CreateOrganizationInput, CreateProjectInput, CreateTicketInput,
     CreateUserInput, GetTicketParams, GetTicketResult, OpenTicketWithLabelsInput,
-    SwapMemberRolesInput, TicketDeskClient,
+    SwapMemberRolesInput, TicketDeskClient, TicketPageParams,
 };
 use tonic::transport::Endpoint;
 
@@ -63,6 +64,11 @@ pub use server::{
 /// run into an audit-saturation probe through the environment.
 const DEFAULT_SEED_CONCURRENCY: usize = 128;
 const MAX_SEED_CONCURRENCY: usize = 128;
+const TICKETDESK_APPLICATION_LOCK_HASH: [u8; 32] = [
+    0xde, 0xb8, 0xd2, 0xfb, 0xc8, 0x87, 0x4a, 0x90, 0x13, 0xc6, 0x28, 0xb8, 0x9f, 0x19, 0xf8,
+    0xda, 0x40, 0xdb, 0x2f, 0x31, 0xbd, 0xa6, 0x25, 0x29, 0xae, 0xaf, 0xe4, 0x76, 0xba, 0x9e,
+    0xe8, 0x0a,
+];
 
 /// Public symbolic application backend.
 #[derive(Clone)]
@@ -207,6 +213,37 @@ impl RiffDbPublicBackend {
             history_incarnation: self.history_incarnation,
             projected_gates_ready: self.projected_gates_ready,
         })
+    }
+
+    /// Opens ADR-0127's explicitly non-evidentiary bounded application
+    /// session on an independent HTTP/2 connection.
+    pub fn fresh_bounded_session(&self) -> Result<Self, RiffDbError> {
+        let mut backend = self.fresh_session()?;
+        let identity = ApplicationSessionIdentity::new(
+            "TicketDesk".to_owned(),
+            1,
+            self.contract_bundle_hash,
+            vec![self.query_module_hash],
+            TICKETDESK_APPLICATION_LOCK_HASH,
+            128,
+        )
+        .map_err(|_| RiffDbError::Connection)?;
+        backend
+            .runtime
+            .clone()
+            .block_on(
+                backend
+                    .transport
+                    .open_bounded_session(identity, &backend.metadata),
+            )
+            .map_err(map_app)?;
+        Ok(backend)
+    }
+
+    /// Ends an explicitly selected bounded session before the harness asks
+    /// its colocated daemon to perform a graceful shutdown.
+    pub fn close_bounded_session(&mut self) {
+        self.transport.close_bounded_session();
     }
 
     /// Opens an independent HTTP/2 connection without crossing the
@@ -372,6 +409,50 @@ impl RiffDbPublicBackend {
         ticket_id: UuidBytes,
     ) -> Result<PairedClientResult<Option<TicketRow>>, RiffDbError> {
         self.block_on_paired(self.get_ticket_generated_async(organization_id, ticket_id))
+    }
+
+    /// Exercises one generated command followed by an explicit generated
+    /// read-after-commit query on the currently selected transport.
+    ///
+    /// This is process-test support for ADR-0127. It does not add a public
+    /// database transaction or infer freshness from stream order.
+    pub fn create_comment_then_fenced_ticket_page(
+        &self,
+        comment: &CommentSeed,
+    ) -> Result<(u64, u64), RiffDbError> {
+        self.block_on(async {
+            let mut client = self.ticketdesk();
+            let committed = client
+                .create_comment(CreateCommentInput {
+                    body: comment.row.body.clone(),
+                    author_id: uuid_text(comment.row.author_id),
+                    ticket_id: uuid_text(comment.row.ticket_id),
+                    comment_id: uuid_text(comment.row.comment_id),
+                    idempotency_key: comment.idempotency_key.clone(),
+                    organization_id: uuid_text(comment.row.organization_id),
+                })
+                .await
+                .map_err(map_app)?;
+            let commit_sequence = committed.commit_sequence.ok_or_else(|| {
+                RiffDbError::Rpc("generated command omitted its durable commit sequence".into())
+            })?;
+            let page = client
+                .ticket_page_after_commit(
+                    TicketPageParams {
+                        organization_id: uuid_text(comment.row.organization_id),
+                        ticket_id: uuid_text(comment.row.ticket_id),
+                    },
+                    commit_sequence,
+                )
+                .await
+                .map_err(map_app)?;
+            if page.application_head < commit_sequence {
+                return Err(RiffDbError::Rpc(
+                    "generated read returned below its explicit commit fence".into(),
+                ));
+            }
+            Ok((commit_sequence, page.application_head))
+        })
     }
 }
 
