@@ -150,6 +150,7 @@ direction, merged draft, or implementation choice.
 | [0129](0129-bounded-prepared-command-finalization.md) | Bounded Prepared Command Finalization and Pay-Once Batch Apply | Accepted |
 | [0130](0130-compiler-planned-projection-result-sets.md) | Compiler-Planned Projection Result Sets and Snapshot-Aligned Composition | Accepted |
 | [0131](0131-exact-indexed-text-cardinality-and-ordinal-windowing.md) | Exact Indexed Text Matching, Cardinality, and Ordinal Windowing | Accepted |
+| [0132](0132-bounded-journal-fence-pipeline.md) | Bounded Journal Fence Pipeline and Ordered Durable-Prefix Publication | Proposed |
 
 The human architecture review on 2026-07-12 approved the direction represented
 by ADR-0001 through ADR-0012. The human maintainer accepted ADR-0001 through

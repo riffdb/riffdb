@@ -56,6 +56,8 @@ const COMMAND_STAGE_PREFIX: &str = "riffdb-command-stages-v1\t";
 const WRITER_EVIDENCE_PREFIX: &str = "riffdb-writer-evidence-v1\t";
 const WRITER_FRAME_CENSUS_PREFIX: &str = "riffdb-writer-frame-census-v1\t";
 const WRITER_FLUSH_CENSUS_PREFIX: &str = "riffdb-writer-flush-census-v1\t";
+const WRITER_JOURNAL_STAGES_PREFIX: &str = "riffdb-writer-journal-stages-v1\t";
+const WRITER_PUBLICATION_STAGES_PREFIX: &str = "riffdb-writer-publication-stages-v1\t";
 const QUERY_EXECUTE_WINDOWS_PREFIX: &str = "riffdb-query-execute-windows-v1\t";
 const PROCESS_START_TIMEOUT: Duration = Duration::from_secs(90);
 const PROCESS_STOP_TIMEOUT: Duration = Duration::from_secs(15);
@@ -216,6 +218,10 @@ pub struct RiffDbShutdownEvidence {
     pub writer_frame_census: Option<[u64; 6]>,
     /// Physical flushes, frames, commands, bytes, maximum grouping, and I/O time.
     pub writer_flush_census: Option<[u64; 7]>,
+    /// Journal queue, encode, positional-write, and sync stage totals.
+    pub writer_journal_stages: Option<[u64; 10]>,
+    /// Ordered publication residence, wait, readiness, and work totals.
+    pub writer_publication_stages: Option<[u64; 9]>,
     /// Optional fixed-cardinality query-execute ordinal windows.
     pub query_execute: Option<RiffDbQueryExecuteEvidence>,
     /// Command-table inventory after seed and before the measured process.
@@ -295,6 +301,8 @@ pub struct RiffDbWriterEvidence {
     pub batch_size: RiffDbReadStageEvidence,
     /// Accepted command queue-duration histogram.
     pub storage_queue_duration: RiffDbReadStageEvidence,
+    /// Bounded command-group formation duration.
+    pub group_formation_duration: Option<RiffDbReadStageEvidence>,
     /// Final authoritative apply duration.
     pub final_apply_duration: Option<RiffDbReadStageEvidence>,
     /// Final apply through deferred-journal receipt creation duration.
@@ -1367,6 +1375,8 @@ fn read_server_stdout(
     let mut writer = None;
     let mut writer_frame_census = None;
     let mut writer_flush_census = None;
+    let mut writer_journal_stages = None;
+    let mut writer_publication_stages = None;
     let mut query_execute = None;
     loop {
         line.clear();
@@ -1398,6 +1408,17 @@ fn read_server_stdout(
             writer_frame_census = Some(parse_fixed_counts(encoded, "writer-frame-census", 6));
         } else if let Some(encoded) = line.trim_end().strip_prefix(WRITER_FLUSH_CENSUS_PREFIX) {
             writer_flush_census = Some(parse_fixed_counts(encoded, "writer-flush-census", 7));
+        } else if let Some(encoded) = line.trim_end().strip_prefix(WRITER_JOURNAL_STAGES_PREFIX) {
+            writer_journal_stages = Some(parse_fixed_counts(encoded, "writer-journal-stages", 10));
+        } else if let Some(encoded) = line
+            .trim_end()
+            .strip_prefix(WRITER_PUBLICATION_STAGES_PREFIX)
+        {
+            writer_publication_stages = Some(parse_fixed_counts(
+                encoded,
+                "writer-publication-stages",
+                9,
+            ));
         } else if let Some(encoded) = line.trim_end().strip_prefix(QUERY_EXECUTE_WINDOWS_PREFIX) {
             query_execute = Some(parse_query_execute_windows(encoded));
         }
@@ -1423,21 +1444,29 @@ fn read_server_stdout(
                 writer_flush_census
                     .transpose()
                     .and_then(|writer_flush_census| {
-                        query_execute
-                            .transpose()
-                            .map(|query_execute| RiffDbShutdownEvidence {
-                                write_completion_groups,
-                                dispatch_reasons,
-                                read_stages,
-                                write_service_stages,
-                                command_stages,
-                                writer,
-                                writer_frame_census,
-                                writer_flush_census,
-                                query_execute,
-                                table_inventory_before_measurement: None,
-                                table_inventory_after_measurement: Vec::new(),
-                            })
+                        writer_journal_stages.transpose().and_then(|writer_journal_stages| {
+                            writer_publication_stages.transpose().and_then(
+                                |writer_publication_stages| {
+                                    query_execute.transpose().map(|query_execute| {
+                                        RiffDbShutdownEvidence {
+                                            write_completion_groups,
+                                            dispatch_reasons,
+                                            read_stages,
+                                            write_service_stages,
+                                            command_stages,
+                                            writer,
+                                            writer_frame_census,
+                                            writer_flush_census,
+                                            writer_journal_stages,
+                                            writer_publication_stages,
+                                            query_execute,
+                                            table_inventory_before_measurement: None,
+                                            table_inventory_after_measurement: Vec::new(),
+                                        }
+                                    })
+                                },
+                            )
+                        })
                     })
             }),
         (Some(Err(error)), _, _, _, _, _)
@@ -1611,7 +1640,7 @@ fn parse_writer_evidence(encoded: &str) -> io::Result<RiffDbWriterEvidence> {
         None => return Err(io::Error::other("missing writer queue estimate")),
     };
     let parsed = parse_read_stages(histograms)?;
-    if !matches!(parsed.len(), 5 | 6 | 8) {
+    if !matches!(parsed.len(), 5 | 6 | 8 | 9) {
         return Err(io::Error::other("invalid writer histogram cardinality"));
     }
     let find = |name: &str| -> io::Result<RiffDbReadStageEvidence> {
@@ -1638,6 +1667,10 @@ fn parse_writer_evidence(encoded: &str) -> io::Result<RiffDbWriterEvidence> {
         flush_duration: find("flush_us")?,
         batch_size: find("batch_size")?,
         storage_queue_duration: find("storage_queue_us")?,
+        group_formation_duration: parsed
+            .iter()
+            .find(|entry| entry.name == "group_formation_us")
+            .cloned(),
         final_apply_duration: parsed
             .iter()
             .find(|entry| entry.name == "final_apply_us")
@@ -1896,6 +1929,7 @@ mod tests {
         assert_eq!(writer.flush_duration.name, "flush_us");
         assert_eq!(writer.batch_size.name, "batch_size");
         assert_eq!(writer.storage_queue_duration.name, "storage_queue_us");
+        assert_eq!(writer.group_formation_duration, None);
         assert_eq!(
             writer.final_apply_duration.as_ref().map(|stage| stage.name.as_str()),
             Some("final_apply_us")
@@ -1907,6 +1941,45 @@ mod tests {
         assert_eq!(writer.prepared_epoch_proof_mismatches, 0);
         assert_eq!(writer.frontier_equivalence_checks, 0);
         assert_eq!(writer.frontier_equivalence_failures, 0);
+
+        let current_writer_histograms = [
+            "commit_us",
+            "flush_us",
+            "batch_size",
+            "storage_queue_us",
+            "group_formation_us",
+            "final_apply_us",
+            "journal_submit_us",
+            "preparation_pool_depth",
+            "reorder_buffer_occupancy",
+        ]
+        .map(|name| format!("{name}:2:9:{buckets}"))
+        .join(";");
+        let current_writer = parse_writer_evidence(&format!(
+            "busy_us=11;idle_us=12;dispatch_selected=13;dispatch_deferred=14;compatibility_selected=15;compatibility_groups=16;compatibility_conflict_key_splits=17;compatibility_exact_access_splits=18;compatibility_commutative_shared_groups=19;queue_delay_estimate_us=20\t{current_writer_histograms}"
+        ))
+        .expect("current writer evidence");
+        assert_eq!(
+            current_writer
+                .group_formation_duration
+                .as_ref()
+                .map(|stage| stage.name.as_str()),
+            Some("group_formation_us")
+        );
+        assert_eq!(
+            current_writer
+                .preparation_pool_depth
+                .as_ref()
+                .map(|stage| stage.name.as_str()),
+            Some("preparation_pool_depth")
+        );
+        assert_eq!(
+            current_writer
+                .reorder_buffer_occupancy
+                .as_ref()
+                .map(|stage| stage.name.as_str()),
+            Some("reorder_buffer_occupancy")
+        );
         assert!(parse_writer_evidence("busy_us=1\tcommit_us:1:1:1,2").is_err());
 
         let query_stages = riffdb_storage_redb::QUERY_EXECUTE_STAGE_LABELS_V1.join(",");

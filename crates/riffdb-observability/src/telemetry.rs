@@ -264,6 +264,7 @@ impl Observability {
             storage_queue_duration_us: self
                 .metrics
                 .required_histogram(RequiredHistogram::StorageQueueLatencyMicroseconds),
+            command_group_formation_duration_us: self.metrics.command_group_formation_duration(),
             command_application_duration_us: self.metrics.command_application_duration(),
             command_submission_duration_us: self.metrics.command_submission_duration(),
             preparation_pool_depth: self.metrics.preparation_pool_depth(),
@@ -584,6 +585,8 @@ pub struct WriterEvidenceSnapshotV1 {
     pub commit_batch_size: HistogramSnapshot,
     /// Accepted command queue latency.
     pub storage_queue_duration_us: HistogramSnapshot,
+    /// Time from the oldest groupable item through bounded dispatch.
+    pub command_group_formation_duration_us: HistogramSnapshot,
     /// Final apply to writer-private authoritative state.
     pub command_application_duration_us: HistogramSnapshot,
     /// Final apply, frame encoding, and journal receipt creation duration.
@@ -632,6 +635,10 @@ pub fn format_writer_evidence_v1_line(snapshot: &WriterEvidenceSnapshotV1) -> St
         ("flush_us", snapshot.durable_flush_duration_us),
         ("batch_size", snapshot.commit_batch_size),
         ("storage_queue_us", snapshot.storage_queue_duration_us),
+        (
+            "group_formation_us",
+            snapshot.command_group_formation_duration_us,
+        ),
         ("final_apply_us", snapshot.command_application_duration_us),
         ("journal_submit_us", snapshot.command_submission_duration_us),
         ("preparation_pool_depth", snapshot.preparation_pool_depth),
@@ -822,7 +829,7 @@ impl CommitTelemetry for Observability {
                 reason,
                 selected,
                 deferred,
-                ..
+                elapsed,
             } => {
                 let reason_index = command_group_dispatch_reason_index(reason);
                 saturating_increment(&self.command_group_dispatch_reasons[reason_index]);
@@ -835,6 +842,8 @@ impl CommitTelemetry for Observability {
                     u64::from(selected),
                     u64::from(deferred),
                 );
+                self.metrics
+                    .observe_command_group_formation_duration(duration_micros(elapsed));
             }
             CommitTelemetryEvent::CommandGroupPartitioned {
                 selected,

@@ -3087,6 +3087,8 @@ async fn supervise_ready_process(
     let writer_evidence = graph.writer_evidence_snapshot();
     let writer_frame_census = riffdb_storage_redb::writer_command_frame_census_v1();
     let writer_flush_census = riffdb_storage_redb::writer_command_flush_census_v1();
+    let writer_journal_stage_census = riffdb_storage_redb::writer_journal_stage_census_v1();
+    let writer_publication_stage_census = riffdb_storage_redb::writer_publication_stage_census_v1();
     let query_execute_census = riffdb_storage_redb::query_execute_census_v1();
     let notification_stop_failed = graph.begin_transport_shutdown().is_err();
     let transport_result = match &trigger {
@@ -3162,6 +3164,24 @@ async fn supervise_ready_process(
         let _ = writeln!(
             stdout,
             "riffdb-writer-flush-census-v1\t{writer_flush_census}"
+        );
+        let writer_journal_stage_census = writer_journal_stage_census
+            .iter()
+            .map(u64::to_string)
+            .collect::<Vec<_>>()
+            .join(",");
+        let _ = writeln!(
+            stdout,
+            "riffdb-writer-journal-stages-v1\t{writer_journal_stage_census}"
+        );
+        let writer_publication_stage_census = writer_publication_stage_census
+            .iter()
+            .map(u64::to_string)
+            .collect::<Vec<_>>()
+            .join(",");
+        let _ = writeln!(
+            stdout,
+            "riffdb-writer-publication-stages-v1\t{writer_publication_stage_census}"
         );
         if query_execute_census.total_count > 0 {
             let stage_names = riffdb_storage_redb::QUERY_EXECUTE_STAGE_LABELS_V1.join(",");

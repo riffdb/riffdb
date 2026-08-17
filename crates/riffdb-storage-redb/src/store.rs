@@ -71,6 +71,40 @@ use crate::transient::{
     TransientIndexDelta, TransientIndexState, TransientIndexes, UnpublishedCommandIndexes,
 };
 
+static COMMAND_PUBLICATION_COUNT: AtomicU64 = AtomicU64::new(0);
+static COMMAND_PUBLICATION_RESIDENCE_MICROS: AtomicU64 = AtomicU64::new(0);
+static COMMAND_PUBLICATION_RESIDENCE_MAX_MICROS: AtomicU64 = AtomicU64::new(0);
+static COMMAND_RECEIPT_BLOCK_MICROS: AtomicU64 = AtomicU64::new(0);
+static COMMAND_RECEIPT_BLOCK_MAX_MICROS: AtomicU64 = AtomicU64::new(0);
+static COMMAND_DURABLE_TO_PUBLISH_MICROS: AtomicU64 = AtomicU64::new(0);
+static COMMAND_DURABLE_TO_PUBLISH_MAX_MICROS: AtomicU64 = AtomicU64::new(0);
+static COMMAND_PUBLICATION_WORK_MICROS: AtomicU64 = AtomicU64::new(0);
+static COMMAND_PUBLICATION_WORK_MAX_MICROS: AtomicU64 = AtomicU64::new(0);
+
+fn record_publication_duration(sum: &AtomicU64, maximum: &AtomicU64, elapsed: std::time::Duration) {
+    let micros = u64::try_from(elapsed.as_micros()).unwrap_or(u64::MAX);
+    let _ = sum.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+        Some(current.saturating_add(micros))
+    });
+    let _ = maximum.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+        Some(current.max(micros))
+    });
+}
+
+pub(crate) fn command_publication_stage_census() -> [u64; 9] {
+    [
+        COMMAND_PUBLICATION_COUNT.load(Ordering::Relaxed),
+        COMMAND_PUBLICATION_RESIDENCE_MICROS.load(Ordering::Relaxed),
+        COMMAND_PUBLICATION_RESIDENCE_MAX_MICROS.load(Ordering::Relaxed),
+        COMMAND_RECEIPT_BLOCK_MICROS.load(Ordering::Relaxed),
+        COMMAND_RECEIPT_BLOCK_MAX_MICROS.load(Ordering::Relaxed),
+        COMMAND_DURABLE_TO_PUBLISH_MICROS.load(Ordering::Relaxed),
+        COMMAND_DURABLE_TO_PUBLISH_MAX_MICROS.load(Ordering::Relaxed),
+        COMMAND_PUBLICATION_WORK_MICROS.load(Ordering::Relaxed),
+        COMMAND_PUBLICATION_WORK_MAX_MICROS.load(Ordering::Relaxed),
+    ]
+}
+
 pub(crate) struct SharedRedb {
     pub(crate) database: Database,
     #[allow(dead_code, reason = "WP-070 offline backup consumes the source path")]
@@ -547,6 +581,7 @@ struct PendingPublication {
     ticket: PublicationTicket,
     receipt: crate::journal::JournalFenceReceipt,
     payload: PendingPublicationPayload,
+    registered_at: Instant,
 }
 
 enum PendingPublicationPayload {
@@ -5063,6 +5098,7 @@ impl SharedRedb {
             ticket: ticket.clone(),
             receipt,
             payload,
+            registered_at: Instant::now(),
         });
         Ok(ticket)
     }
@@ -5108,11 +5144,44 @@ impl SharedRedb {
                 return Err(storage_error(StorageErrorKind::InvariantViolation));
             };
             let id = pending.ticket.id;
-            let publication = pending
-                .receipt
-                .wait()
-                .map_err(journal_io_error)
-                .and_then(|fence| self.publish_pending(pending.payload, fence));
+            let command_publication =
+                matches!(&pending.payload, PendingPublicationPayload::Command(_));
+            let receipt_started = Instant::now();
+            let fenced = pending.receipt.wait().map_err(journal_io_error);
+            let receipt_elapsed = receipt_started.elapsed();
+            let durable_at = fenced.as_ref().ok().map(|fence| fence.durable_at);
+            let publication_started = Instant::now();
+            let publication = fenced.and_then(|fence| self.publish_pending(pending.payload, fence));
+            let publication_elapsed = publication_started.elapsed();
+            if command_publication && publication.is_ok() {
+                let _ = COMMAND_PUBLICATION_COUNT.fetch_update(
+                    Ordering::Relaxed,
+                    Ordering::Relaxed,
+                    |current| Some(current.saturating_add(1)),
+                );
+                record_publication_duration(
+                    &COMMAND_PUBLICATION_RESIDENCE_MICROS,
+                    &COMMAND_PUBLICATION_RESIDENCE_MAX_MICROS,
+                    pending.registered_at.elapsed(),
+                );
+                record_publication_duration(
+                    &COMMAND_RECEIPT_BLOCK_MICROS,
+                    &COMMAND_RECEIPT_BLOCK_MAX_MICROS,
+                    receipt_elapsed,
+                );
+                if let Some(durable_at) = durable_at {
+                    record_publication_duration(
+                        &COMMAND_DURABLE_TO_PUBLISH_MICROS,
+                        &COMMAND_DURABLE_TO_PUBLISH_MAX_MICROS,
+                        durable_at.elapsed(),
+                    );
+                }
+                record_publication_duration(
+                    &COMMAND_PUBLICATION_WORK_MICROS,
+                    &COMMAND_PUBLICATION_WORK_MAX_MICROS,
+                    publication_elapsed,
+                );
+            }
             pending.ticket.complete(publication.clone());
             if let Err(error) = publication {
                 self.fence_writes();
