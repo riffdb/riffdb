@@ -1,8 +1,8 @@
 # ADR-0132: Bounded Journal Fence Pipeline and Ordered Durable-Prefix Publication
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Direction approved:** 2026-08-17 (maintainer)
-- **Exact text accepted:** No
+- **Exact text accepted:** Yes, 2026-08-17 (maintainer)
 - **Decision deadline:** Before WP-649 changes journal submission, durability
   completion, publication ordering, or acknowledgement
 - **Requires:** ADR-0058, ADR-0098, ADR-0101, ADR-0103, ADR-0104, ADR-0123,

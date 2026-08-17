@@ -770,6 +770,13 @@ impl RunningProductionGraph {
         self.observability.writer_evidence_snapshot()
     }
 
+    /// Fixed-cardinality ordered-completion evidence for shutdown diagnosis.
+    pub(crate) fn completion_lane_evidence_snapshot(
+        &self,
+    ) -> riffdb_observability::CompletionLaneEvidenceSnapshotV1 {
+        self.observability.completion_lane_evidence_snapshot()
+    }
+
     /// History incarnation retained from the successful open that built this graph.
     ///
     /// Available after activation even once ordinary admission is closed for

@@ -30,7 +30,7 @@ use crate::{
     AdministrationAuditInputView, AdministrationClock, AdministrationClockError, AdmissionClock,
     ApplicationCommitNotificationSink, CommandExecutionPreparation, CommandPipelineStage,
     CommitCommandTerminal, CommitGroupDispatchReason, CommitTelemetry, CommitTelemetryEvent,
-    CommittedOutcomeDisposition, NoopCommitTelemetry, ProvenanceIdSource,
+    CommittedOutcomeDisposition, CompletionLanePhase, NoopCommitTelemetry, ProvenanceIdSource,
     command_execution::{
         CommandEvaluationPool, CommandExecutionError, CommandExecutionLifecycle,
         CommandExecutionResult, CommandGroupDriveResult, CoordinatorDurability,
@@ -313,14 +313,6 @@ struct SubmittedAuditGroup {
 }
 
 impl SubmittedAuditGroup {
-    fn try_wait(&mut self) -> Option<Vec<Result<(), AdministrationAuditExecutionError>>> {
-        match self.fence.as_mut()?.try_wait() {
-            Ok(Some(results)) => Some(self.install(results)),
-            Ok(None) => None,
-            Err(error) => Some(self.fail(error)),
-        }
-    }
-
     fn wait(self) -> Vec<Result<(), AdministrationAuditExecutionError>> {
         let mut group = self;
         let Some(fence) = group.fence.take() else {
@@ -3009,6 +3001,26 @@ struct CommandWriter {
     ewma_initialized: bool,
 }
 
+#[derive(Clone, Copy)]
+struct InFlightWriterUnit {
+    transition_count: usize,
+    has_command_pipeline_proof: bool,
+}
+
+struct CompletionOwner {
+    notifications: Arc<dyn ApplicationCommitNotificationSink>,
+    telemetry: Arc<dyn CommitTelemetry>,
+    lifecycle: ActorLifecyclePublisher,
+}
+
+struct SubmittedCompletionUnit {
+    unit: SubmittedWriterUnit,
+    submitted_at: Instant,
+    submitted_depth: u16,
+}
+
+struct CompletionPublished;
+
 impl SubmittedWriterUnit {
     fn transition_count(&self) -> usize {
         match self {
@@ -3049,78 +3061,143 @@ impl SubmittedWriterUnit {
         )
     }
 
-    fn try_finish(&mut self, writer: &mut CommandWriter) -> bool {
-        match self {
-            Self::Command {
-                pending, metadata, ..
-            } => {
-                let Some(publication) = pending.as_mut() else {
-                    writer.lifecycle.stop();
-                    return true;
-                };
-                let results = match publication {
-                    PendingCommandPublication::Fence(group) => {
-                        let Some(results) =
-                            group.try_wait(&writer.lifecycle, writer.telemetry.as_ref())
-                        else {
-                            return false;
-                        };
-                        results
-                    }
-                    PendingCommandPublication::AfterPredecessor(results) => std::mem::take(results),
-                };
-                pending.take();
-                writer.finish_command_group(std::mem::take(metadata), results);
-                true
-            }
-            Self::Audit {
-                submitted,
-                completions,
-            } => {
-                let Some(group) = submitted.as_mut() else {
-                    writer.lifecycle.stop();
-                    return true;
-                };
-                let Some(results) = group.try_wait() else {
-                    return false;
-                };
-                submitted.take();
-                writer.finish_audit_group(std::mem::take(completions), results);
-                true
-            }
-        }
-    }
-
-    fn finish(self, writer: &mut CommandWriter) {
+    fn finish(self, owner: &CompletionOwner) {
         match self {
             Self::Command {
                 pending, metadata, ..
             } => {
                 let Some(publication) = pending else {
-                    writer.lifecycle.stop();
+                    owner.lifecycle.stop();
                     return;
                 };
                 let results = match publication {
                     PendingCommandPublication::Fence(submitted) => {
-                        submitted.wait(&writer.lifecycle, writer.telemetry.as_ref())
+                        submitted.wait(&owner.lifecycle, owner.telemetry.as_ref())
                     }
                     PendingCommandPublication::AfterPredecessor(results) => results,
                 };
-                writer.finish_command_group(metadata, results);
+                CommandWriter::finish_command_group_with(
+                    owner.notifications.as_ref(),
+                    owner.telemetry.as_ref(),
+                    &owner.lifecycle,
+                    metadata,
+                    results,
+                );
             }
             Self::Audit {
                 submitted,
                 completions,
             } => {
                 let Some(submitted) = submitted else {
-                    writer.lifecycle.stop();
+                    owner.lifecycle.stop();
                     return;
                 };
                 let results = submitted.wait();
-                writer.finish_audit_group(completions, results);
+                CommandWriter::finish_audit_group_with(&owner.lifecycle, completions, results);
             }
         }
     }
+}
+
+impl CompletionOwner {
+    fn run(
+        self,
+        receiver: std::sync::mpsc::Receiver<SubmittedCompletionUnit>,
+        published: std::sync::mpsc::SyncSender<CompletionPublished>,
+    ) {
+        while let Ok(submitted) = receiver.recv() {
+            submitted.unit.finish(&self);
+            self.telemetry
+                .record(CommitTelemetryEvent::CompletionLaneObserved {
+                    phase: CompletionLanePhase::Published,
+                    depth: submitted.submitted_depth,
+                    reorder_occupancy: 0,
+                    elapsed: submitted.submitted_at.elapsed(),
+                });
+            if published.send(CompletionPublished).is_err() {
+                self.lifecycle.stop();
+                return;
+            }
+        }
+    }
+}
+
+fn accept_published_completion(
+    in_flight: &mut VecDeque<InFlightWriterUnit>,
+    journal_suffix_transitions: &mut usize,
+    lifecycle: &ActorLifecyclePublisher,
+) {
+    let Some(completed) = in_flight.pop_front() else {
+        lifecycle.stop();
+        return;
+    };
+    if completed.transition_count > *journal_suffix_transitions {
+        lifecycle.stop();
+    }
+    if in_flight.is_empty() {
+        // The next writer unit begins after every prior fence is published;
+        // storage can checkpoint the complete suffix before opening its
+        // transaction.
+        *journal_suffix_transitions = 0;
+    }
+}
+
+fn drain_ready_completions(
+    published: &std::sync::mpsc::Receiver<CompletionPublished>,
+    in_flight: &mut VecDeque<InFlightWriterUnit>,
+    journal_suffix_transitions: &mut usize,
+    lifecycle: &ActorLifecyclePublisher,
+) {
+    loop {
+        match published.try_recv() {
+            Ok(CompletionPublished) => {
+                accept_published_completion(in_flight, journal_suffix_transitions, lifecycle)
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => return,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                if !in_flight.is_empty() {
+                    lifecycle.stop();
+                    in_flight.clear();
+                    *journal_suffix_transitions = 0;
+                }
+                return;
+            }
+        }
+    }
+}
+
+fn drain_one_completion(
+    published: &std::sync::mpsc::Receiver<CompletionPublished>,
+    in_flight: &mut VecDeque<InFlightWriterUnit>,
+    journal_suffix_transitions: &mut usize,
+    lifecycle: &ActorLifecyclePublisher,
+) {
+    if in_flight.is_empty() {
+        return;
+    }
+    match published.recv() {
+        Ok(CompletionPublished) => {
+            accept_published_completion(in_flight, journal_suffix_transitions, lifecycle);
+        }
+        Err(_) => {
+            lifecycle.stop();
+            in_flight.clear();
+            *journal_suffix_transitions = 0;
+        }
+    }
+}
+
+fn drain_all_completions(
+    published: &std::sync::mpsc::Receiver<CompletionPublished>,
+    in_flight: &mut VecDeque<InFlightWriterUnit>,
+    journal_suffix_transitions: &mut usize,
+    lifecycle: &ActorLifecyclePublisher,
+) -> Duration {
+    let started = Instant::now();
+    while !in_flight.is_empty() {
+        drain_one_completion(published, in_flight, journal_suffix_transitions, lifecycle);
+    }
+    started.elapsed()
 }
 
 impl CommandWriter {
@@ -3130,8 +3207,29 @@ impl CommandWriter {
         feedback_tx: mpsc::Sender<UnitCompleted>,
         runtime: &runtime::Runtime,
     ) {
+        const COMPLETION_LANE_CAPACITY: usize = riffdb_storage_api::MAX_GROUPED_WRITE_TRANSITIONS;
+        let (completion_tx, completion_rx) =
+            std::sync::mpsc::sync_channel::<SubmittedCompletionUnit>(COMPLETION_LANE_CAPACITY);
+        let (published_tx, published_rx) =
+            std::sync::mpsc::sync_channel::<CompletionPublished>(COMPLETION_LANE_CAPACITY);
+        let completion_owner = CompletionOwner {
+            notifications: Arc::clone(&self.notifications),
+            telemetry: Arc::clone(&self.telemetry),
+            lifecycle: self.lifecycle.clone(),
+        };
+        let completion_lifecycle = self.lifecycle.clone();
+        let completion_thread = match thread::Builder::new()
+            .name("riffdb-command-completion".to_owned())
+            .spawn(move || completion_owner.run(completion_rx, published_tx))
+        {
+            Ok(join) => join,
+            Err(_) => {
+                completion_lifecycle.stop();
+                panic!("command completion thread unavailable");
+            }
+        };
         let mut last_edge = Instant::now();
-        let mut submitted = VecDeque::<SubmittedWriterUnit>::new();
+        let mut in_flight = VecDeque::<InFlightWriterUnit>::new();
         // Complete journal suffix since the last point at which the writer
         // drained every fence and the next storage begin can checkpoint it.
         // Published frames remain in that suffix until checkpoint, so counting
@@ -3139,33 +3237,15 @@ impl CommandWriter {
         // bounded recovery suffix even as old receipts are published.
         let mut journal_suffix_transitions = 0_usize;
         loop {
-            if submitted
-                .front_mut()
-                .is_some_and(|pending| pending.try_finish(&mut self))
-            {
-                submitted.pop_front();
-                if submitted.is_empty() {
-                    // The next writer unit begins after every prior fence is
-                    // published; storage can checkpoint the complete suffix
-                    // before opening its transaction.
-                    journal_suffix_transitions = 0;
-                }
-                continue;
-            }
-            let unit = if submitted.is_empty() {
-                match work_rx.recv() {
-                    Ok(unit) => unit,
-                    Err(_) => break,
-                }
-            } else {
-                match work_rx.try_recv() {
-                    Ok(unit) => unit,
-                    Err(std::sync::mpsc::TryRecvError::Empty) => {
-                        std::thread::yield_now();
-                        continue;
-                    }
-                    Err(std::sync::mpsc::TryRecvError::Disconnected) => break,
-                }
+            drain_ready_completions(
+                &published_rx,
+                &mut in_flight,
+                &mut journal_suffix_transitions,
+                &self.lifecycle,
+            );
+            let unit = match work_rx.recv() {
+                Ok(unit) => unit,
+                Err(_) => break,
             };
             let pipeline_transitions = match &unit {
                 WorkUnit::CommandGroup(group) => group.len(),
@@ -3181,7 +3261,7 @@ impl CommandWriter {
                 WorkUnit::AuditGroup(_) | WorkUnit::Single(_) | WorkUnit::Shutdown => None,
             };
             let (command_deferred_eligible, mut command_evaluation_frontier) =
-                if submitted.is_empty() {
+                if in_flight.is_empty() {
                     (
                         true,
                         crate::command_execution::CommandEvaluationFrontier::Published,
@@ -3193,9 +3273,7 @@ impl CommandWriter {
                                 .as_ref()
                                 .and_then(Option::as_ref)
                                 .is_some()
-                                && submitted
-                                    .iter()
-                                    .all(SubmittedWriterUnit::has_command_pipeline_proof),
+                                && in_flight.iter().all(|unit| unit.has_command_pipeline_proof),
                             crate::command_execution::CommandEvaluationFrontier::WriterPrivate,
                         ),
                         WorkUnit::AuditGroup(_) => (
@@ -3219,10 +3297,19 @@ impl CommandWriter {
                 || journal_suffix_transitions.saturating_add(pipeline_transitions)
                     > WRITER_PIPELINE_DRAIN_TRANSITIONS
             {
-                while let Some(pending) = submitted.pop_front() {
-                    pending.finish(&mut self);
-                }
-                journal_suffix_transitions = 0;
+                let drain_elapsed = drain_all_completions(
+                    &published_rx,
+                    &mut in_flight,
+                    &mut journal_suffix_transitions,
+                    &self.lifecycle,
+                );
+                self.telemetry
+                    .record(CommitTelemetryEvent::CompletionLaneObserved {
+                        phase: CompletionLanePhase::Drained,
+                        depth: 0,
+                        reorder_occupancy: 0,
+                        elapsed: drain_elapsed,
+                    });
                 command_evaluation_frontier =
                     crate::command_execution::CommandEvaluationFrontier::Published;
             }
@@ -3264,15 +3351,54 @@ impl CommandWriter {
                     queue_delay_estimate_micros,
                 });
             if let Some(deferred) = deferred {
+                if in_flight.len() >= COMPLETION_LANE_CAPACITY {
+                    drain_one_completion(
+                        &published_rx,
+                        &mut in_flight,
+                        &mut journal_suffix_transitions,
+                        &self.lifecycle,
+                    );
+                }
                 journal_suffix_transitions =
                     journal_suffix_transitions.saturating_add(deferred.transition_count());
                 let requires_pipeline_drain = deferred.requires_pipeline_drain();
-                submitted.push_back(deferred);
+                let footprint = InFlightWriterUnit {
+                    transition_count: deferred.transition_count(),
+                    has_command_pipeline_proof: deferred.has_command_pipeline_proof(),
+                };
+                let submitted_depth =
+                    u16::try_from(in_flight.len().saturating_add(1)).unwrap_or(u16::MAX);
+                let submitted = SubmittedCompletionUnit {
+                    unit: deferred,
+                    submitted_at: Instant::now(),
+                    submitted_depth,
+                };
+                if completion_tx.send(submitted).is_err() {
+                    self.lifecycle.stop();
+                } else {
+                    in_flight.push_back(footprint);
+                    self.telemetry
+                        .record(CommitTelemetryEvent::CompletionLaneObserved {
+                            phase: CompletionLanePhase::Submitted,
+                            depth: submitted_depth,
+                            reorder_occupancy: 0,
+                            elapsed: Duration::ZERO,
+                        });
+                }
                 if requires_pipeline_drain {
-                    while let Some(pending) = submitted.pop_front() {
-                        pending.finish(&mut self);
-                    }
-                    journal_suffix_transitions = 0;
+                    let drain_elapsed = drain_all_completions(
+                        &published_rx,
+                        &mut in_flight,
+                        &mut journal_suffix_transitions,
+                        &self.lifecycle,
+                    );
+                    self.telemetry
+                        .record(CommitTelemetryEvent::CompletionLaneObserved {
+                            phase: CompletionLanePhase::Drained,
+                            depth: 0,
+                            reorder_occupancy: 0,
+                            elapsed: drain_elapsed,
+                        });
                 }
             }
             // Capacity 2 with <=1 outstanding unit: send always succeeds while
@@ -3287,9 +3413,19 @@ impl CommandWriter {
             }
             last_edge = Instant::now();
         }
-        while let Some(pending) = submitted.pop_front() {
-            pending.finish(&mut self);
+        drop(completion_tx);
+        let shutdown_started = Instant::now();
+        if let Err(payload) = completion_thread.join() {
+            self.lifecycle.stop();
+            panic::resume_unwind(payload);
         }
+        self.telemetry
+            .record(CommitTelemetryEvent::CompletionLaneObserved {
+                phase: CompletionLanePhase::Shutdown,
+                depth: 0,
+                reorder_occupancy: 0,
+                elapsed: shutdown_started.elapsed(),
+            });
     }
 
     fn observe_ewma(&mut self, enqueue_hint: Option<Instant>, service: Duration) -> u64 {
@@ -3498,8 +3634,16 @@ impl CommandWriter {
         completions: Vec<oneshot::Sender<Result<(), AdministrationAuditExecutionError>>>,
         results: Vec<Result<(), AdministrationAuditExecutionError>>,
     ) {
+        Self::finish_audit_group_with(&self.lifecycle, completions, results);
+    }
+
+    fn finish_audit_group_with(
+        lifecycle: &ActorLifecyclePublisher,
+        completions: Vec<oneshot::Sender<Result<(), AdministrationAuditExecutionError>>>,
+        results: Vec<Result<(), AdministrationAuditExecutionError>>,
+    ) {
         if results.len() != completions.len() {
-            self.lifecycle.stop();
+            lifecycle.stop();
             for completion in completions {
                 let _receiver_may_be_dropped =
                     completion.send(Err(AdministrationAuditExecutionError::CoordinatorStopped));
@@ -3513,9 +3657,9 @@ impl CommandWriter {
                     if error.kind()
                         == riffdb_storage_api::StorageErrorKind::CommitStatusUnknown =>
                 {
-                    self.lifecycle.fence();
+                    lifecycle.fence();
                 }
-                Err(_) => self.lifecycle.stop(),
+                Err(_) => lifecycle.stop(),
             }
             let _receiver_may_be_dropped = completion.send(result);
         }
@@ -3618,8 +3762,24 @@ impl CommandWriter {
         metadata: Vec<CommandGroupMetadata>,
         results: Vec<Result<CommandExecutionResult, CommandExecutionError>>,
     ) {
+        Self::finish_command_group_with(
+            self.notifications.as_ref(),
+            self.telemetry.as_ref(),
+            &self.lifecycle,
+            metadata,
+            results,
+        );
+    }
+
+    fn finish_command_group_with(
+        notifications: &dyn ApplicationCommitNotificationSink,
+        telemetry: &dyn CommitTelemetry,
+        lifecycle: &ActorLifecyclePublisher,
+        metadata: Vec<CommandGroupMetadata>,
+        results: Vec<Result<CommandExecutionResult, CommandExecutionError>>,
+    ) {
         if results.len() != metadata.len() {
-            self.lifecycle.stop();
+            lifecycle.stop();
             for (_, _, _, completion) in metadata {
                 let _receiver_may_be_dropped =
                     completion.send(Err(CommandExecutionError::coordinator_stopped()));
@@ -3644,29 +3804,26 @@ impl CommandWriter {
         if !first_commit_sequences.is_empty() {
             let publication_started = Instant::now();
             let publication = panic::catch_unwind(panic::AssertUnwindSafe(|| {
-                self.notifications
-                    .publish_first_commit_group(&first_commit_sequences)
+                notifications.publish_first_commit_group(&first_commit_sequences)
             }));
-            self.telemetry
-                .record(CommitTelemetryEvent::CommandPipelineStageCompleted {
-                    stage: CommandPipelineStage::Publication,
-                    command_count: u16::try_from(first_commit_sequences.len()).unwrap_or(u16::MAX),
-                    elapsed: publication_started.elapsed(),
-                });
+            telemetry.record(CommitTelemetryEvent::CommandPipelineStageCompleted {
+                stage: CommandPipelineStage::Publication,
+                command_count: u16::try_from(first_commit_sequences.len()).unwrap_or(u16::MAX),
+                elapsed: publication_started.elapsed(),
+            });
             if !matches!(publication, Ok(Ok(()))) {
-                self.lifecycle.stop();
+                lifecycle.stop();
             }
         }
         for ((command_id, ingress, enqueued_at, completion), result) in
             metadata.into_iter().zip(results)
         {
-            self.telemetry
-                .record(CommitTelemetryEvent::CommandTerminal {
-                    command_id,
-                    ingress,
-                    terminal: commit_command_terminal(&result),
-                    elapsed: enqueued_at.elapsed(),
-                });
+            telemetry.record(CommitTelemetryEvent::CommandTerminal {
+                command_id,
+                ingress,
+                terminal: commit_command_terminal(&result),
+                elapsed: enqueued_at.elapsed(),
+            });
             let _receiver_may_be_dropped = completion.send(result);
         }
     }

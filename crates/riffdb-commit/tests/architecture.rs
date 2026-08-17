@@ -1311,6 +1311,33 @@ fn command_driver_public_surface_is_closed_and_has_no_storage_or_transport_autho
 }
 
 #[test]
+fn completion_owner_can_publish_but_carries_no_storage_or_sequence_authority() {
+    let production = production_source(AUDIT_EXECUTOR_SOURCE);
+    let owner = braced_item_body(production, "struct CompletionOwner {");
+    assert!(owner.contains("notifications: Arc<dyn ApplicationCommitNotificationSink>"));
+    assert!(owner.contains("telemetry: Arc<dyn CommitTelemetry>"));
+    assert!(owner.contains("lifecycle: ActorLifecyclePublisher"));
+    for forbidden in [
+        "operations",
+        "CoordinatorActorOperations",
+        "Repository",
+        "Storage",
+        "assign_sequence",
+        "drive_command",
+        "append_audit",
+    ] {
+        assert!(
+            !owner.contains(forbidden),
+            "completion owner gained forbidden authority through {forbidden}"
+        );
+    }
+    assert!(production.contains("struct InFlightWriterUnit"));
+    assert!(production.contains("struct SubmittedCompletionUnit"));
+    assert!(production.contains("unit: SubmittedWriterUnit"));
+    assert!(production.contains("sync_channel::<SubmittedCompletionUnit>"));
+}
+
+#[test]
 fn command_driver_fences_uncertain_admission_before_one_nonexecuting_recovery_read() {
     let production = production_source(COMMAND_EXECUTION_SOURCE);
     let driver = production

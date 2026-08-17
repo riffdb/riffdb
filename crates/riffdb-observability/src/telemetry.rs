@@ -14,7 +14,7 @@ use riffdb_catalog::{
 };
 use riffdb_commit::{
     CommandPipelineStage, CommitGroupDispatchReason, CommitIdempotencyObservation, CommitTelemetry,
-    CommitTelemetryEvent, CommitUncertaintyResolution, CommitUncertaintyStage,
+    CommitTelemetryEvent, CommitUncertaintyResolution, CommitUncertaintyStage, CompletionLanePhase,
 };
 use riffdb_conflict::{ConflictEvent, ConflictObserver};
 use riffdb_errors::{IncidentIdSource, InternalError};
@@ -42,6 +42,8 @@ pub const MAX_WRITE_GROUP_SIZE: usize = riffdb_storage_api::MAX_GROUPED_WRITE_TR
 pub const COMMAND_GROUP_DISPATCH_REASON_COUNT: usize = 4;
 /// Closed coordinator command-stage cardinality.
 pub const COMMAND_PIPELINE_STAGE_COUNT: usize = 5;
+/// Closed ordered-completion lifecycle phase cardinality.
+pub const COMPLETION_LANE_PHASE_COUNT: usize = 4;
 
 const COMMAND_PIPELINE_STAGES: [(CommandPipelineStage, &str); COMMAND_PIPELINE_STAGE_COUNT] = [
     (CommandPipelineStage::Admission, "admission"),
@@ -154,6 +156,10 @@ pub struct Observability {
     prepared_epoch_proof_mismatches: AtomicU64,
     frontier_equivalence_checks: AtomicU64,
     frontier_equivalence_failures: AtomicU64,
+    completion_lane_phases: [AtomicU64; COMPLETION_LANE_PHASE_COUNT],
+    completion_lane_elapsed_us: [AtomicU64; COMPLETION_LANE_PHASE_COUNT],
+    completion_lane_depth_max: AtomicU64,
+    completion_lane_reorder_max: AtomicU64,
     metrics: MetricRegistry,
     traces: TraceCollector,
     health: HealthRegistry,
@@ -187,6 +193,10 @@ impl Observability {
             prepared_epoch_proof_mismatches: AtomicU64::new(0),
             frontier_equivalence_checks: AtomicU64::new(0),
             frontier_equivalence_failures: AtomicU64::new(0),
+            completion_lane_phases: std::array::from_fn(|_| AtomicU64::new(0)),
+            completion_lane_elapsed_us: std::array::from_fn(|_| AtomicU64::new(0)),
+            completion_lane_depth_max: AtomicU64::new(0),
+            completion_lane_reorder_max: AtomicU64::new(0),
             metrics: MetricRegistry::new(),
             traces,
             health: HealthRegistry::new(),
@@ -277,6 +287,21 @@ impl Observability {
             frontier_equivalence_failures: self
                 .frontier_equivalence_failures
                 .load(Ordering::Relaxed),
+        }
+    }
+
+    /// Returns the complete fixed-cardinality ordered-completion evidence.
+    #[must_use]
+    pub fn completion_lane_evidence_snapshot(&self) -> CompletionLaneEvidenceSnapshotV1 {
+        CompletionLaneEvidenceSnapshotV1 {
+            phase_counts: std::array::from_fn(|index| {
+                self.completion_lane_phases[index].load(Ordering::Relaxed)
+            }),
+            phase_elapsed_us: std::array::from_fn(|index| {
+                self.completion_lane_elapsed_us[index].load(Ordering::Relaxed)
+            }),
+            max_depth: self.completion_lane_depth_max.load(Ordering::Relaxed),
+            max_reorder_occupancy: self.completion_lane_reorder_max.load(Ordering::Relaxed),
         }
     }
 
@@ -605,6 +630,42 @@ pub struct WriterEvidenceSnapshotV1 {
     pub frontier_equivalence_failures: u64,
 }
 
+/// Complete fixed-cardinality evidence for one ordered-completion owner.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CompletionLaneEvidenceSnapshotV1 {
+    /// Submitted, published, drained, and shutdown observation counts.
+    pub phase_counts: [u64; COMPLETION_LANE_PHASE_COUNT],
+    /// Summed microseconds in the same canonical phase order.
+    pub phase_elapsed_us: [u64; COMPLETION_LANE_PHASE_COUNT],
+    /// Largest submitted-unit depth observed.
+    pub max_depth: u64,
+    /// Largest ready-unit reorder occupancy. The FIFO owner keeps this zero.
+    pub max_reorder_occupancy: u64,
+}
+
+/// Renders one payload-free completion-lane evidence line.
+#[must_use]
+pub fn format_completion_lane_evidence_v1_line(
+    snapshot: &CompletionLaneEvidenceSnapshotV1,
+) -> String {
+    let counts = snapshot
+        .phase_counts
+        .iter()
+        .map(u64::to_string)
+        .collect::<Vec<_>>()
+        .join(",");
+    let elapsed = snapshot
+        .phase_elapsed_us
+        .iter()
+        .map(u64::to_string)
+        .collect::<Vec<_>>()
+        .join(",");
+    format!(
+        "riffdb-completion-lane-v1\tcounts={counts};elapsed_us={elapsed};max_depth={};max_reorder={}",
+        snapshot.max_depth, snapshot.max_reorder_occupancy
+    )
+}
+
 /// Renders one process-generation writer evidence line.
 ///
 /// The line is closed and numeric: it carries no command, tenant, key, or principal labels.
@@ -801,6 +862,23 @@ impl ConflictObserver for Observability {
 impl CommitTelemetry for Observability {
     fn record(&self, event: CommitTelemetryEvent) {
         match event {
+            CommitTelemetryEvent::CompletionLaneObserved {
+                phase,
+                depth,
+                reorder_occupancy,
+                elapsed,
+            } => {
+                let index = completion_lane_phase_index(phase);
+                saturating_increment(&self.completion_lane_phases[index]);
+                saturating_add(
+                    &self.completion_lane_elapsed_us[index],
+                    duration_micros(elapsed),
+                );
+                self.completion_lane_depth_max
+                    .fetch_max(u64::from(depth), Ordering::Relaxed);
+                self.completion_lane_reorder_max
+                    .fetch_max(u64::from(reorder_occupancy), Ordering::Relaxed);
+            }
             CommitTelemetryEvent::PreparationPoolDepthObserved { depth } => {
                 self.metrics
                     .observe_preparation_pool_depth(u64::from(depth));
@@ -970,6 +1048,15 @@ impl CommitTelemetry for Observability {
             }
         }
         self.record_trace(TraceRecord::commit(event));
+    }
+}
+
+const fn completion_lane_phase_index(phase: CompletionLanePhase) -> usize {
+    match phase {
+        CompletionLanePhase::Submitted => 0,
+        CompletionLanePhase::Published => 1,
+        CompletionLanePhase::Drained => 2,
+        CompletionLanePhase::Shutdown => 3,
     }
 }
 
