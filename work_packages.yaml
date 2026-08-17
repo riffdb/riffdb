@@ -11181,7 +11181,7 @@ work_packages:
   name: Deployable Application Alpha release gate
   depends_on: [WP-421, WP-490, WP-493, WP-494, WP-496, WP-551, WP-552, WP-558,
     WP-562, WP-565, WP-567, WP-569, WP-573, WP-574, WP-575, WP-576, WP-578,
-    WP-597, WP-598, WP-600, WP-647]
+    WP-597, WP-598, WP-600, WP-648]
   objective: Close the first alpha release with installed, remote, multi-language, adapter-shaped,
     upgrade, rotation, correctness, recovery, security, performance, and documentation evidence
     over only generated and public symbolic application surfaces.

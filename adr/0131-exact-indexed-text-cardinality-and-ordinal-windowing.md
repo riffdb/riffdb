@@ -3,11 +3,13 @@
 - **Status:** Accepted
 - **Direction approved:** 2026-08-16 (maintainer, in session)
 - **Exact text accepted:** 2026-08-16 (maintainer, as written)
-- **Decision deadline:** Before WP-645 freezes an exact-text profile, provider
+- **Administrative package renumbering accepted:** 2026-08-17 (maintainer),
+  WP-644--WP-647 to WP-645--WP-648 with no semantic change
+- **Decision deadline:** Before WP-646 freezes an exact-text profile, provider
   state format, count plan, or ordinal public surface
 - **Requires:** ADR-0051, ADR-0052, ADR-0053, ADR-0086, ADR-0108, ADR-0111,
   ADR-0117, ADR-0124, and ADR-0130
-- **Defines or blocks:** WP-645 through WP-647 and Better Auth admin-profile
+- **Defines or blocks:** WP-646 through WP-648 and Better Auth admin-profile
   acceptance
 
 The maintainer accepted this exact text on 2026-08-16. This ADR is now
@@ -135,7 +137,7 @@ provider.
 
 ### 6. Use Better Auth as acceptance evidence, not the design center
 
-WP-647 must prove the real Better Auth admin route for `contains`,
+WP-648 must prove the real Better Auth admin route for `contains`,
 `starts_with`, and `ends_with`, its declared typed filters and total orders,
 numeric offsets including zero/end/out-of-range cases, and exact totals at the
 same snapshot. It must include adversarial pagination, concurrent-write,
@@ -151,7 +153,7 @@ cannot add route-specific runtime branches to the provider.
 ### 7. Reserve facets and ranked-search composition without implementing them
 
 The provider reports exact cardinality through ADR-0130's whole-result measure
-shape, which can later carry compiler-declared facets. WP-645 through WP-647 do
+shape, which can later carry compiler-declared facets. WP-646 through WP-648 do
 not add a public facet operator unless a real accepted profile requires one.
 They add no BM25 runtime, full-text token index, vector/text bridge, columnar
 bitmap transfer, or cross-provider executor. A future composite must satisfy
@@ -184,7 +186,7 @@ ADR-0130's real-consumer, bridge, epoch, policy, and cost requirements.
 ## Compatibility
 
 This Proposed ADR changes no current bytes or public behavior. If accepted,
-WP-645 introduces new exact-text semantic and provider-state identities,
+WP-646 introduces new exact-text semantic and provider-state identities,
 compiler IR/module/plan identities as required, generated surface revisions,
 and compatibility fixtures. All are registered under ADR-0124 before merge.
 Existing `text_key` prefix indexes and query modules remain readable and byte-
@@ -233,13 +235,13 @@ remain redacted unless a named query has ADR-0128 authority.
 ## Requirements and Work Packages
 
 - **Requirements:** `OQ-025` through `OQ-030`
-- **Provider and compiler:** `WP-645`
-- **Execution and generated surfaces:** `WP-646`
-- **Final Better Auth evidence:** `WP-647`
+- **Provider and compiler:** `WP-646`
+- **Execution and generated surfaces:** `WP-647`
+- **Final Better Auth evidence:** `WP-648`
 
 ## Decision Deadline
 
-Exact human acceptance is required before WP-645 freezes the semantic profile,
+Exact human acceptance is required before WP-646 freezes the semantic profile,
 provider-state format, query IR, module/plan hash carriage, topology entries, or
 generated application surface. A physical design that cannot meet exact count
 or ordinal bounds must return for review rather than weaken those semantics.

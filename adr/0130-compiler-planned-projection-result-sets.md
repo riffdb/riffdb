@@ -3,11 +3,13 @@
 - **Status:** Accepted
 - **Direction approved:** 2026-08-16 (maintainer, in session)
 - **Exact text accepted:** 2026-08-16 (maintainer, as written)
-- **Decision deadline:** Before WP-644 freezes a provider descriptor or any
+- **Administrative package renumbering accepted:** 2026-08-17 (maintainer),
+  WP-644--WP-647 to WP-645--WP-648 with no semantic change
+- **Decision deadline:** Before WP-645 freezes a provider descriptor or any
   durable projection-result identity
 - **Requires:** ADR-0002, ADR-0051, ADR-0053, ADR-0086, ADR-0087, ADR-0091,
   ADR-0092, ADR-0111, ADR-0124, and ADR-0129
-- **Defines or blocks:** WP-644 and the durable foundation used by WP-645
+- **Defines or blocks:** WP-645 and the durable foundation used by WP-646
 
 The maintainer accepted this exact text on 2026-08-16. This ADR is now
 authoritative.
@@ -88,7 +90,7 @@ party compiler input; applications and deployment requests cannot supply or
 alter one.
 
 The canonical descriptor and every compiler artifact that embeds its digest
-are release-significant formats. WP-644 must register them in the ADR-0124
+are release-significant formats. WP-645 must register them in the ADR-0124
 version topology before they merge. A provider-owned persisted projection
 format is rebuildable rather than authoritative, but it still requires a
 versioned identity, fixtures, readable/writable windows, and typed rebuild or
@@ -97,7 +99,7 @@ must remain minimal until another real engine requires more.
 
 ### 3. Validate the descriptor against real engines, not an imagined union
 
-WP-644 must adapt and test both existing provider families:
+WP-645 must adapt and test both existing provider families:
 
 - the columnar provider exercises partitioned filtering, total order,
   aggregation/facet-shaped measures, exact reference evaluation, and frontier
@@ -112,7 +114,7 @@ not a requirement that either implement the other's features.
 ADR-0092 BM25 full-text search is represented only by a non-normative
 descriptor sketch proving that the closed shapes can name lexical candidates,
 fixed-point ranking, filters, whole-result measures, partition-local
-statistics, and exact/approximate posture. WP-644 must add no BM25 runtime,
+statistics, and exact/approximate posture. WP-645 must add no BM25 runtime,
 durable BM25 artifact, adapter, fixture, or bridge. If the sketch cannot be
 expressed, the descriptor is revised before acceptance rather than worked
 around in speculative code.
@@ -202,7 +204,7 @@ construction, applying ADR-0129's pay-once rule to this plane.
 ### 7. Defer cross-provider bridges until a real plan needs one
 
 The descriptor can state whether a provider consumes a compiler-owned bounded
-candidate representation, but WP-644 builds no bitmap transfer, ID bridge,
+candidate representation, but WP-645 builds no bitmap transfer, ID bridge,
 cross-provider materialization, or composite executor. The columnar and vector
 engines are validated independently against the same descriptor and epoch
 rules.
@@ -215,10 +217,10 @@ from two descriptors advertising superficially compatible types.
 
 ### 8. Preserve standing delivery priority
 
-Drafting and accepting this paper decision may proceed in parallel. WP-644
+Drafting and accepting this paper decision may proceed in parallel. WP-645
 implementation must follow WP-641 through WP-643 and the standing c=32, unary,
 and ADR-0127 priority gates unless the maintainer explicitly reprioritizes them.
-WP-644 is limited to the descriptor/format slice, the two real provider
+WP-645 is limited to the descriptor/format slice, the two real provider
 adapters, and reference conformance; it may not grow a universal runtime or
 bridge.
 
@@ -259,7 +261,7 @@ review.
 ## Compatibility
 
 This Proposed ADR changes no current bytes or public behavior. If accepted,
-WP-644 introduces a new canonical descriptor identity and provider-generation
+WP-645 introduces a new canonical descriptor identity and provider-generation
 fixtures under ADR-0124. It must use a least-sufficient writer policy and
 register every embedded executable/application artifact and persisted
 rebuildable provider-state identity before merge. Existing query modules,
@@ -302,18 +304,18 @@ and epoch proofs.
 - Architecture checks proving descriptor validation is catalog-generation
   scoped, epoch proof is result-set scoped, and neither occurs per row/page.
 - A compile-only non-normative BM25 descriptor sketch and a negative test that
-  no BM25 runtime or bridge artifact is linked into WP-644.
+  no BM25 runtime or bridge artifact is linked into WP-645.
 
 ## Requirements and Work Packages
 
 - **Requirements:** `OQ-017` through `OQ-024`
-- **Defines or blocks:** `WP-644`
-- **First consuming provider:** `WP-645`
-- **Final evidence:** `WP-647`
+- **Defines or blocks:** `WP-645`
+- **First consuming provider:** `WP-646`
+- **Final evidence:** `WP-648`
 
 ## Decision Deadline
 
-Exact human acceptance is required before WP-644 freezes the descriptor,
+Exact human acceptance is required before WP-645 freezes the descriptor,
 provider-generation identity, topology entry, or compiler-plan carriage. The
 maintainer must separately approve any implementation scope that adds a cross-
 provider bridge or changes transaction, policy, freshness, or durable format
