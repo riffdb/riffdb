@@ -832,6 +832,25 @@ fn riffdb_shutdown_evidence_json(evidence: &RiffDbShutdownEvidence) -> serde_jso
             })
         },
     );
+    let completion_lane = evidence.completion_lane.map(|lane| {
+        json!({
+            "phase_counts": {
+                "submitted": lane.phase_counts[0],
+                "published": lane.phase_counts[1],
+                "drained": lane.phase_counts[2],
+                "shutdown": lane.phase_counts[3],
+            },
+            "phase_elapsed_us": {
+                "submitted": lane.phase_elapsed_us[0],
+                "published": lane.phase_elapsed_us[1],
+                "drained": lane.phase_elapsed_us[2],
+                "shutdown": lane.phase_elapsed_us[3],
+            },
+            "max_depth": lane.max_depth,
+            "max_reorder_occupancy": lane.max_reorder_occupancy,
+            "labels": "closed_fixed_cardinality",
+        })
+    });
     let table_inventory = evidence
         .table_inventory_after_measurement
         .iter()
@@ -926,6 +945,7 @@ fn riffdb_shutdown_evidence_json(evidence: &RiffDbShutdownEvidence) -> serde_jso
         "writer_flush_census": writer_flush_census,
         "writer_journal_stages": writer_journal_stages,
         "writer_publication_stages": writer_publication_stages,
+        "completion_lane": completion_lane,
         "authoritative_table_inventory": table_inventory,
         "table_inventory_scope": if evidence.table_inventory_before_measurement.is_some() {
             "after_seed_before_measured_process_to_after_clean_shutdown_and_structural_reopen"

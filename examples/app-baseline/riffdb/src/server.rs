@@ -58,6 +58,7 @@ const WRITER_FRAME_CENSUS_PREFIX: &str = "riffdb-writer-frame-census-v1\t";
 const WRITER_FLUSH_CENSUS_PREFIX: &str = "riffdb-writer-flush-census-v1\t";
 const WRITER_JOURNAL_STAGES_PREFIX: &str = "riffdb-writer-journal-stages-v1\t";
 const WRITER_PUBLICATION_STAGES_PREFIX: &str = "riffdb-writer-publication-stages-v1\t";
+const COMPLETION_LANE_PREFIX: &str = "riffdb-completion-lane-v1\t";
 const QUERY_EXECUTE_WINDOWS_PREFIX: &str = "riffdb-query-execute-windows-v1\t";
 const PROCESS_START_TIMEOUT: Duration = Duration::from_secs(90);
 const PROCESS_STOP_TIMEOUT: Duration = Duration::from_secs(15);
@@ -222,6 +223,8 @@ pub struct RiffDbShutdownEvidence {
     pub writer_journal_stages: Option<[u64; 10]>,
     /// Ordered publication residence, wait, readiness, and work totals.
     pub writer_publication_stages: Option<[u64; 9]>,
+    /// Ordered completion phase counts/times and bounded depth maxima.
+    pub completion_lane: Option<RiffDbCompletionLaneEvidence>,
     /// Optional fixed-cardinality query-execute ordinal windows.
     pub query_execute: Option<RiffDbQueryExecuteEvidence>,
     /// Command-table inventory after seed and before the measured process.
@@ -230,6 +233,19 @@ pub struct RiffDbShutdownEvidence {
     /// Command-table inventory after the measured process stopped cleanly.
     pub table_inventory_after_measurement:
         Vec<riffdb_storage_redb::benchmark_support::AuthoritativeTableInventoryV1>,
+}
+
+/// Closed completion-lane evidence in submitted, published, drained, shutdown order.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RiffDbCompletionLaneEvidence {
+    /// Observation counts by canonical phase.
+    pub phase_counts: [u64; 4],
+    /// Summed microseconds by canonical phase.
+    pub phase_elapsed_us: [u64; 4],
+    /// Maximum number of submitted transitions awaiting publication.
+    pub max_depth: u64,
+    /// Maximum software reorder-buffer occupancy; FIFO completion keeps this zero.
+    pub max_reorder_occupancy: u64,
 }
 
 /// One bounded process-generation exact-query execute census.
@@ -1377,6 +1393,7 @@ fn read_server_stdout(
     let mut writer_flush_census = None;
     let mut writer_journal_stages = None;
     let mut writer_publication_stages = None;
+    let mut completion_lane = None;
     let mut query_execute = None;
     loop {
         line.clear();
@@ -1419,6 +1436,8 @@ fn read_server_stdout(
                 "writer-publication-stages",
                 9,
             ));
+        } else if let Some(encoded) = line.trim_end().strip_prefix(COMPLETION_LANE_PREFIX) {
+            completion_lane = Some(parse_completion_lane(encoded));
         } else if let Some(encoded) = line.trim_end().strip_prefix(QUERY_EXECUTE_WINDOWS_PREFIX) {
             query_execute = Some(parse_query_execute_windows(encoded));
         }
@@ -1447,22 +1466,25 @@ fn read_server_stdout(
                         writer_journal_stages.transpose().and_then(|writer_journal_stages| {
                             writer_publication_stages.transpose().and_then(
                                 |writer_publication_stages| {
-                                    query_execute.transpose().map(|query_execute| {
-                                        RiffDbShutdownEvidence {
-                                            write_completion_groups,
-                                            dispatch_reasons,
-                                            read_stages,
-                                            write_service_stages,
-                                            command_stages,
-                                            writer,
-                                            writer_frame_census,
-                                            writer_flush_census,
-                                            writer_journal_stages,
-                                            writer_publication_stages,
-                                            query_execute,
-                                            table_inventory_before_measurement: None,
-                                            table_inventory_after_measurement: Vec::new(),
-                                        }
+                                    completion_lane.transpose().and_then(|completion_lane| {
+                                        query_execute.transpose().map(|query_execute| {
+                                            RiffDbShutdownEvidence {
+                                                write_completion_groups,
+                                                dispatch_reasons,
+                                                read_stages,
+                                                write_service_stages,
+                                                command_stages,
+                                                writer,
+                                                writer_frame_census,
+                                                writer_flush_census,
+                                                writer_journal_stages,
+                                                writer_publication_stages,
+                                                completion_lane,
+                                                query_execute,
+                                                table_inventory_before_measurement: None,
+                                                table_inventory_after_measurement: Vec::new(),
+                                            }
+                                        })
                                     })
                                 },
                             )
@@ -1479,6 +1501,48 @@ fn read_server_stdout(
     };
     let _ = shutdown_sender.send(evidence);
     total
+}
+
+fn parse_completion_lane(encoded: &str) -> io::Result<RiffDbCompletionLaneEvidence> {
+    let mut counts = None;
+    let mut elapsed = None;
+    let mut max_depth = None;
+    let mut max_reorder = None;
+    for field in encoded.split(';') {
+        let (name, value) = field
+            .split_once('=')
+            .ok_or_else(|| io::Error::other("invalid completion-lane field"))?;
+        match name {
+            "counts" => counts = Some(parse_fixed_counts(value, "completion-lane-counts", 4)?),
+            "elapsed_us" => {
+                elapsed = Some(parse_fixed_counts(value, "completion-lane-elapsed", 4)?)
+            }
+            "max_depth" => {
+                max_depth = Some(
+                    value
+                        .parse::<u64>()
+                        .map_err(|_| io::Error::other("invalid completion-lane max depth"))?,
+                )
+            }
+            "max_reorder" => {
+                max_reorder = Some(
+                    value
+                        .parse::<u64>()
+                        .map_err(|_| io::Error::other("invalid completion-lane max reorder"))?,
+                )
+            }
+            _ => return Err(io::Error::other("unknown completion-lane field")),
+        }
+    }
+    Ok(RiffDbCompletionLaneEvidence {
+        phase_counts: counts.ok_or_else(|| io::Error::other("missing completion-lane counts"))?,
+        phase_elapsed_us: elapsed
+            .ok_or_else(|| io::Error::other("missing completion-lane elapsed"))?,
+        max_depth: max_depth
+            .ok_or_else(|| io::Error::other("missing completion-lane max depth"))?,
+        max_reorder_occupancy: max_reorder
+            .ok_or_else(|| io::Error::other("missing completion-lane max reorder"))?,
+    })
 }
 
 fn parse_query_execute_windows(encoded: &str) -> io::Result<RiffDbQueryExecuteEvidence> {
@@ -1900,6 +1964,23 @@ mod tests {
         assert_eq!(stages[0].count, 2);
         assert_eq!(stages[0].buckets.len(), 16);
         assert!(parse_read_stages("authorize:2:9:1,2").is_err());
+
+        let completion = parse_completion_lane(
+            "counts=3,2,1,0;elapsed_us=30,20,10,0;max_depth=7;max_reorder=0",
+        )
+        .expect("completion lane evidence");
+        assert_eq!(completion.phase_counts, [3, 2, 1, 0]);
+        assert_eq!(completion.phase_elapsed_us, [30, 20, 10, 0]);
+        assert_eq!(completion.max_depth, 7);
+        assert_eq!(completion.max_reorder_occupancy, 0);
+        assert!(parse_completion_lane(
+            "counts=3,2,1;elapsed_us=30,20,10,0;max_depth=7;max_reorder=0"
+        )
+        .is_err());
+        assert!(parse_completion_lane(
+            "counts=3,2,1,0;elapsed_us=30,20,10,0;max_depth=7;unknown=0"
+        )
+        .is_err());
 
         let writer_histograms = [
             "commit_us",
