@@ -186,6 +186,13 @@ operational port. If the existing checked-fence interface cannot meet that
 bound, the candidate is rejected; the implementation may not replace it with
 raw receipts or an unchecked publication callback.
 
+The WP-649 compile-only probe has proven the first half: adding `Send` as a
+supertrait of the two existing checked-fence interfaces and asserting the
+complete `SubmittedWriterUnit: Send` passes Rust 1.97 checks for storage API,
+redb storage, and commit crates with all features. Production implementation
+must preserve that exact typed boundary and add the architecture test excluding
+operational ports from the completion owner.
+
 ### 5. Physical journal scheduling remains unchanged
 
 The accepted candidate retains one ordered append sequencer, current ready-

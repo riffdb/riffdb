@@ -171,3 +171,11 @@ assumed. The branch proceeds only after exact ADR acceptance and only if its
 deterministic schedules prove that publication never exceeds durability,
 results never exceed publication, and failure of either lane fences all later
 work.
+
+A compile-only mechanics probe in an isolated `~/tmp` source tree added `Send`
+as a supertrait of `DeferredCommandFence` and `CheckedCommandGroupFence`, then
+required the complete `SubmittedWriterUnit: Send`. Rust 1.97 successfully
+checked `riffdb-storage-api`, `riffdb-storage-redb`, and `riffdb-commit` with all
+features and no unsafe code or representation change. This proves the existing
+typed redb fence and captured read root can cross the proposed bounded lane; it
+does not authorize the scheduling change.
