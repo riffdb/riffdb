@@ -2819,6 +2819,7 @@ impl Args {
         let mut allow_tmpfs = false;
         let mut reps: Option<usize> = None;
         let mut require_stable = false;
+        let mut allow_unstable = false;
         let mut seed_only = false;
         let mut full = false;
         let mut board_density: Option<u32> = None;
@@ -2998,6 +2999,7 @@ impl Args {
                     );
                 }
                 "--require-stable" => require_stable = true,
+                "--allow-unstable" => allow_unstable = true,
                 "--seed-only" => seed_only = true,
                 "--board-density" => {
                     let value = args
@@ -3198,6 +3200,16 @@ impl Args {
         if seed_only && load_profile.is_some() {
             return Err("--seed-only is only for the parity seed path, not --load".to_owned());
         }
+        // A comparator run whose repetitions disagree cannot produce a gate
+        // ratio: the PostgreSQL side has differed by 1.9x within one run while
+        // RiffDB differed by 1.05x, so averaging an unstable rep set silently
+        // reports host noise as a result. Multi-rep comparator runs therefore
+        // enforce stability unless the operator opts out explicitly.
+        if allow_unstable && require_stable {
+            return Err("--allow-unstable contradicts --require-stable; choose one".to_owned());
+        }
+        let require_stable =
+            require_stable || (!skip_postgres && !skip_riffdb && reps >= 2 && !allow_unstable);
         Ok(Self {
             scale,
             samples,
