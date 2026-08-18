@@ -7,6 +7,7 @@ use std::error::Error;
 use std::fmt;
 use std::time::{Duration, Instant};
 
+use postgres::error::SqlState;
 use postgres::{Client, Config, NoTls, Row, Statement, Transaction};
 use riffdb_app_baseline_core::{
     AppBackend, BOARD_PAGE_SQL, CloseTicketWithCommentSeed, CommentRow, CommentSeed, LabelRow,
@@ -414,6 +415,9 @@ pub struct PostgresAppBackend {
     client: Option<Client>,
     statements: HashMap<&'static str, Statement>,
     profile: PostgresComparisonProfile,
+    /// Whether the post-seed `CHECKPOINT` was accepted; a deployment without
+    /// the privilege still settles statistics and dead tuples.
+    seed_checkpoint_issued: bool,
 }
 
 /// Explicit PostgreSQL comparison semantics.
@@ -488,7 +492,18 @@ impl PostgresAppBackend {
             client: None,
             statements: HashMap::new(),
             profile,
+            seed_checkpoint_issued: false,
         })
+    }
+
+    /// Whether the post-seed `CHECKPOINT` was accepted by this deployment.
+    ///
+    /// `false` means the connected role lacked `pg_checkpoint`, so the seed's
+    /// dirty buffers were not forced out before measurement and a checkpoint
+    /// may still land inside a measured window.
+    #[must_use]
+    pub const fn seed_checkpoint_issued(&self) -> bool {
+        self.seed_checkpoint_issued
     }
 
     /// Selected comparison profile.
@@ -527,6 +542,40 @@ impl PostgresAppBackend {
         self.client
             .as_mut()
             .ok_or(PostgresError::InvalidConfiguration)
+    }
+
+    /// Settles the freshly seeded database so the measured window observes
+    /// steady state rather than bulk-load aftermath.
+    ///
+    /// The seed drops, recreates, and bulk-loads every table. Without this the
+    /// measured window starts with no planner statistics, autovacuum pending on
+    /// every seeded relation, and the seed's dirty buffers unwritten, so an
+    /// autoanalyze or checkpoint can land inside it. That is the comparator's
+    /// dominant variance source: same-run repetitions have differed by 1.9x
+    /// while the RiffDB backend, which restarts into a bounded checkpoint
+    /// cadence, differed by 1.05x.
+    ///
+    /// `VACUUM (ANALYZE)` cannot run inside a transaction block, so it is
+    /// issued on the plain connection. `CHECKPOINT` then moves the seed's
+    /// dirty pages out of the measured window.
+    fn settle_after_seed(&mut self) -> Result<(), PostgresError> {
+        let client = self.client()?;
+        client.batch_execute("VACUUM (ANALYZE)").map_err(db_err)?;
+        // CHECKPOINT needs superuser or pg_checkpoint. A deployment that
+        // withholds it still gets the statistics and dead-tuple settling
+        // above, so an insufficient-privilege refusal is reported by the
+        // durability receipt rather than failing the comparator outright.
+        match client.batch_execute("CHECKPOINT") {
+            Ok(()) => {
+                self.seed_checkpoint_issued = true;
+                Ok(())
+            }
+            Err(error) if error.code().map(SqlState::code) == Some("42501") => {
+                self.seed_checkpoint_issued = false;
+                Ok(())
+            }
+            Err(error) => Err(db_err(error)),
+        }
     }
 
     /// Returns the cached prepared statement for `sql`, preparing it once.
@@ -937,7 +986,8 @@ impl AppBackend for PostgresAppBackend {
             )
             .map_err(db_err)?;
         }
-        tx.commit().map_err(db_err)
+        tx.commit().map_err(db_err)?;
+        self.settle_after_seed()
     }
 
     fn point_get_ticket(
