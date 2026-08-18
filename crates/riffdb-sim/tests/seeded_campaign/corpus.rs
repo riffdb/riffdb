@@ -116,6 +116,12 @@ pub(crate) struct CorpusWitnessRotation {
     pub invalidated_by_commit: &'static str,
     /// Review date (UTC).
     pub rotated: &'static str,
+    /// Exact change that later moved the window BACK, if one has. A rotated
+    /// entry normally must stop reaching its territory; once a named change
+    /// restores it the entry must reach it again, and both receipts are kept
+    /// so the corpus records the whole history rather than dropping the
+    /// rotation that was true in between.
+    pub restored_by: Option<&'static str>,
 }
 
 /// The corpus. Append-only.
@@ -139,6 +145,7 @@ pub(crate) const REGRESSION_CORPUS: &[CorpusEntry] = &[
             successor_seed: 0x51C2_C022,
             invalidated_by_commit: "c2bba5ce043d9b8933e432c6d2a49e5adf618985",
             rotated: "2026-08-11",
+            restored_by: Some("c7ec046edb68fd489a7ca00f7c356f6265f979c7"),
         }),
     },
     CorpusEntry {
@@ -161,6 +168,7 @@ pub(crate) const REGRESSION_CORPUS: &[CorpusEntry] = &[
             successor_seed: 0x51C2_C000,
             invalidated_by_commit: "c2bba5ce043d9b8933e432c6d2a49e5adf618985",
             rotated: "2026-08-11",
+            restored_by: None,
         }),
     },
     CorpusEntry {
@@ -184,6 +192,7 @@ pub(crate) const REGRESSION_CORPUS: &[CorpusEntry] = &[
             successor_seed: 0x51C2_C001,
             invalidated_by_commit: "a725142385f26326e4af014414511b71e485033e",
             rotated: "2026-08-14",
+            restored_by: None,
         }),
     },
     CorpusEntry {
@@ -205,6 +214,13 @@ pub(crate) const REGRESSION_CORPUS: &[CorpusEntry] = &[
             successor_seed: 0x51C2_C0DF,
             invalidated_by_commit: "a725142385f26326e4af014414511b71e485033e",
             rotated: "2026-08-14",
+            // The redb 4.2.0 pin carries upstream fd82ced, whose extra
+            // pre-header growth sync moved this window back onto the original
+            // seed: the replay again lands three crashes inside recovery
+            // windows with an interrupted admission resolved. The 2026-08-14
+            // rotation receipt is retained because it was true under the
+            // 4.1.0 pin; the successor witness stays in the corpus.
+            restored_by: Some("c7ec046edb68fd489a7ca00f7c356f6265f979c7"),
         }),
     },
     CorpusEntry {
@@ -224,6 +240,7 @@ pub(crate) const REGRESSION_CORPUS: &[CorpusEntry] = &[
             successor_seed: 0x51C2_C06D,
             invalidated_by_commit: "a725142385f26326e4af014414511b71e485033e",
             rotated: "2026-08-14",
+            restored_by: Some("c7ec046edb68fd489a7ca00f7c356f6265f979c7"),
         }),
     },
     CorpusEntry {
@@ -262,7 +279,12 @@ pub(crate) const REGRESSION_CORPUS: &[CorpusEntry] = &[
             CorpusExpectation::InFlightCommitAbsent,
             CorpusExpectation::InFlightAdmitResolved,
         ]),
-        rotation: None,
+        rotation: Some(CorpusWitnessRotation {
+            successor_seed: 0x51C2_C147,
+            invalidated_by_commit: "c7ec046edb68fd489a7ca00f7c356f6265f979c7",
+            rotated: "2026-08-18",
+            restored_by: None,
+        }),
     },
     CorpusEntry {
         seed: 0x51C2_C0DF,
@@ -280,7 +302,12 @@ pub(crate) const REGRESSION_CORPUS: &[CorpusEntry] = &[
             CorpusExpectation::TornDecisionsAtLeast(10),
             CorpusExpectation::InFlightAdmitResolved,
         ]),
-        rotation: None,
+        rotation: Some(CorpusWitnessRotation {
+            successor_seed: 0x51C2_C200,
+            invalidated_by_commit: "c7ec046edb68fd489a7ca00f7c356f6265f979c7",
+            rotated: "2026-08-18",
+            restored_by: None,
+        }),
     },
     CorpusEntry {
         seed: 0x51C2_C06D,
@@ -294,6 +321,45 @@ pub(crate) const REGRESSION_CORPUS: &[CorpusEntry] = &[
                  Reproduced identically in 12/12 runs before pinning.",
         pinned: "2026-08-14",
         outcome: CorpusOutcome::WedgesUntilRedbFileGrowthFix,
+        rotation: None,
+    },
+    CorpusEntry {
+        seed: 0x51C2_C147,
+        generator_version: 1,
+        config: COMMIT_PRESENT_ARMS_CONFIG,
+        caught: "active successor for the commit-PRESENT recovery arm after \
+                 the redb pin advanced to =4.2.0: upstream fd82ced syncs a \
+                 file extension before its layout reaches the header, which \
+                 moved the physical operation stream and made this territory \
+                 markedly rarer (three of ninety seeds under the 4.1.0 pin, \
+                 one of two hundred thirty-four under 4.2.0). One \
+                 interrupted commit resolves present, seven resolve absent, \
+                 and an interrupted admission resolves across the run; rerun \
+                 12/12 with identical counters before pinning.",
+        pinned: "2026-08-18",
+        outcome: CorpusOutcome::Completes(&[
+            CorpusExpectation::InFlightCommitPresent,
+            CorpusExpectation::InFlightCommitAbsent,
+            CorpusExpectation::InFlightAdmitResolved,
+        ]),
+        rotation: None,
+    },
+    CorpusEntry {
+        seed: 0x51C2_C200,
+        generator_version: 1,
+        config: COMMIT_ARMS_CONFIG,
+        caught: "active successor for crash-during-recovery plus interrupted \
+                 admission after the redb pin advanced to =4.2.0 and upstream \
+                 fd82ced moved the physical operation stream again: four of \
+                 fourteen crashes land in recovery windows, 34 torn decisions \
+                 resolve, and one interrupted admission resolves; rerun 12/12 \
+                 with identical counters before pinning.",
+        pinned: "2026-08-18",
+        outcome: CorpusOutcome::Completes(&[
+            CorpusExpectation::RecoveryWindowCrash,
+            CorpusExpectation::TornDecisionsAtLeast(10),
+            CorpusExpectation::InFlightAdmitResolved,
+        ]),
         rotation: None,
     },
 ];
@@ -377,7 +443,14 @@ fn regression_corpus_replays_and_reproduces_its_territory() {
                 "corpus seed {:#x} rotation date is required",
                 entry.seed
             );
-            if REDB_PIN_CONTAINS_FD82CED
+            if rotation.restored_by.is_some() {
+                assert!(
+                    outcome_holds(entry, &outcome),
+                    "corpus seed {:#x} records a restoring change, so it must reach its \
+                     expected territory again: {outcome:?}",
+                    entry.seed
+                );
+            } else if REDB_PIN_CONTAINS_FD82CED
                 && matches!(entry.outcome, CorpusOutcome::WedgesUntilRedbFileGrowthFix)
             {
                 assert!(
