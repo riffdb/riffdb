@@ -85,7 +85,7 @@ fn production_sized_storage_tests_never_allocate_under_the_ambient_temp_director
 fn dependency_surface_keeps_redb_private_and_excludes_infrastructure_assemblies() {
     let manifest = read(crate_root().join("Cargo.toml"));
     assert!(manifest.contains("cap-std = { version = \"=4.0.2\", default-features = false }"));
-    assert!(manifest.contains("redb = { version = \"=4.1.0\", default-features = false }"));
+    assert!(manifest.contains("redb = { version = \"=4.2.0\", default-features = false }"));
     assert!(manifest.contains("sha2 = { version = \"=0.11.0\", default-features = false }"));
     assert!(manifest.contains(
         "riffdb-catalog = { version = \"0.1.0\", path = \"../riffdb-catalog\", default-features = false }"

@@ -37,6 +37,7 @@
 
 | Version | Date | Summary |
 |---|---|---|
+| 1.03 | 2026-08-18 | Advanced the ADR-0004 embedded-storage baseline from redb 4.1.0 to exactly redb 4.2.0 with default features disabled and no optional features. The pin carries upstream `fd82ced`, so a torn crash inside a file-growing commit no longer leaves an unopenable database: `PageManager::grow` syncs the extension before the larger layout can reach the on-disk header, and an actually truncated file returns `StorageError::Corrupted` instead of tripping an open-time assert. `REDB_PIN_CONTAINS_FD82CED` flips to `true` with it; the seeded-campaign corpus consequences are recorded as findings for maintainer rotation rather than silently re-pinned. Renewed dependency-graph, feature, and unsafe-surface review plus a full portable performance re-baseline remain required before this pin carries release evidence. |
 | 1.02 | 2026-08-16 | Amended the PERF-008 alpha performance gate per the WP-640 closure evidence: the real-world gates are unchanged (every representative unary scenario within 1.10x, c32 mixed throughput at least 0.90x, and c32 p95 at most 1.25x same-run PostgreSQL), while the full TicketDesk seed becomes receipted evidence under a 5.0x same-run regression ceiling rather than an alpha parity gate, because the measured single-lane ordered apply/submit floor alone exceeds the seed parity budget on both inventoried profiles; seed parity is deferred to the conflict-domain-parallel batch apply direction preserved by ADR-0129. |
 | 1.01 | 2026-08-15 | Accepted ADR-0128 and registered QSO-001 through QSO-012 plus WP-634 and WP-635 for exact compiler-declared secret outputs in named RiffQL, least derived role authority, same-operation widening approval, SDK-only initial exposure, and Better Auth named-read acceptance without reveal-shaped commands. |
 | 1.00 | 2026-08-15 | Accepted ADR-0126 and registered DEL-001 through DEL-012 plus WP-628 through WP-630 for compiler-bounded one-hop cascade deletion, atomic runtime execution, and generated Better Auth lifecycle acceptance. |
@@ -1310,7 +1311,7 @@ Versions are the verified July 2026 starting point, not a promise to track every
 | Hosted HTTP | Axum 0.8.9, default features disabled, `http1` and `tokio` only | WP-185 loopback hosting of WP-140's accepted MCP Tower service |
 | Protobuf | Prost 0.14.x | Wire and durable record generation |
 | Pure-Rust proto compiler | Protox 0.9.x | Build without requiring an external `protoc` executable |
-| Embedded storage | redb 4.1.0, default features disabled, no optional features | POC durable state and atomic commits; direct only in `riffdb-storage-redb` |
+| Embedded storage | redb 4.2.0, default features disabled, no optional features | POC durable state and atomic commits; direct only in `riffdb-storage-redb` |
 | Backup checksum | sha2 0.11.0, default features disabled | SHA-256 backup manifests; direct only in `riffdb-storage-redb` and never command semantics |
 | Storage comparison | Fjall 3.1.x | POC-exit benchmark and possible MVP engine |
 | MCP SDK | rmcp exactly 2.2.0, default features disabled | Solely through `riffdb-api-mcp`: unconditional `server`, `stdio` adds only `transport-io`, and `streamable-http` adds only `transport-streamable-http-server` plus optional service/auth edges |
@@ -2939,7 +2940,7 @@ online migration, persisted continuation, or readiness concurrent with
 migration.
 
 The concrete `redb` adapter may contain private compaction, backup, integrity,
-and statistics APIs. The approved baseline is exactly `redb` 4.1.0 with default
+and statistics APIs. The approved baseline is exactly `redb` 4.2.0 with default
 features disabled and no optional features, directly owned only by
 `riffdb-storage-redb`; any dependency-graph or feature change requires renewed
 human review. Approval of the dependency does not replace WP-070 semantic

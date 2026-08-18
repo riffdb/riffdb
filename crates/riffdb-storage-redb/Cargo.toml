@@ -13,7 +13,7 @@ test-fixtures = ["riffdb-storage-api/test-fixtures"]
 
 [dependencies]
 cap-std = { version = "=4.0.2", default-features = false }
-redb = { version = "=4.1.0", default-features = false }
+redb = { version = "=4.2.0", default-features = false }
 riffdb-catalog = { version = "0.1.0", path = "../riffdb-catalog", default-features = false }
 riffdb-policy = { version = "0.1.0", path = "../riffdb-policy", default-features = false }
 riffdb-query-executor = { version = "0.1.0", path = "../riffdb-query-executor", default-features = false }
