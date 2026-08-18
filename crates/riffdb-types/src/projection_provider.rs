@@ -30,6 +30,8 @@ pub enum ProjectionProviderKindV1 {
     Columnar = 1,
     /// Existing per-organization exact/ANN vector engine.
     Vector = 2,
+    /// Partition-scoped exact binary UTF-8 text engine.
+    ExactText = 3,
 }
 
 /// Exact or explicitly bounded approximate result posture.
@@ -240,6 +242,7 @@ impl ProjectionProviderDescriptorV1 {
         let kind = match bytes[6] {
             1 => ProjectionProviderKindV1::Columnar,
             2 => ProjectionProviderKindV1::Vector,
+            3 => ProjectionProviderKindV1::ExactText,
             _ => return Err(ProjectionProviderValidationError::UnknownProvider),
         };
         let recall = u16::from_be_bytes([bytes[8], bytes[9]]);
@@ -417,6 +420,13 @@ impl ProjectionProviderDescriptorV1 {
                 | ProjectionProviderCapabilitiesV1::WINDOW
                 | ProjectionProviderCapabilitiesV1::OUTPUT)
                 .bits(),
+            ProjectionProviderKindV1::ExactText => (ProjectionProviderCapabilitiesV1::CANDIDATE
+                | ProjectionProviderCapabilitiesV1::FILTER
+                | ProjectionProviderCapabilitiesV1::ORDER
+                | ProjectionProviderCapabilitiesV1::MEASURE
+                | ProjectionProviderCapabilitiesV1::WINDOW
+                | ProjectionProviderCapabilitiesV1::OUTPUT)
+                .bits(),
         };
         if self.capabilities.bits() & !supported != 0 {
             return Err(ProjectionProviderValidationError::UnsupportedCapability);
@@ -440,8 +450,10 @@ impl ProjectionProviderDescriptorV1 {
         {
             return Err(ProjectionProviderValidationError::InvalidBound);
         }
-        if self.kind == ProjectionProviderKindV1::Columnar
-            && !matches!(self.posture, ProjectionProviderPostureV1::Exact)
+        if matches!(
+            self.kind,
+            ProjectionProviderKindV1::Columnar | ProjectionProviderKindV1::ExactText
+        ) && !matches!(self.posture, ProjectionProviderPostureV1::Exact)
         {
             return Err(ProjectionProviderValidationError::InvalidPosture);
         }

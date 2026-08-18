@@ -885,6 +885,10 @@ fn query_plan_class(
         Code::NonLocal => (AuthoringCause::NonLocal, AuthoringFix::SupplyPartitionRoute),
         Code::Unindexed | Code::Unordered => (AuthoringCause::MissingIndex, AuthoringFix::AddIndex),
         Code::Unbounded => (AuthoringCause::Unbounded, AuthoringFix::AddBound),
+        Code::ExactTextProvider => (
+            AuthoringCause::InvalidSyntax,
+            AuthoringFix::UseLanguageReference,
+        ),
         Code::InternalInvariant | Code::OperationalFamilyRequired => (
             AuthoringCause::InternalInvariant,
             AuthoringFix::ContactOperator,

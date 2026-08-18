@@ -97,6 +97,41 @@ on both N1 and E2 before production activation. WP-645 therefore remains the
 bounded ADR-0130 descriptor/conformance slice; it does not displace the standing
 c32, unary, or deferred ADR-0127 performance priorities.
 
+### Exact indexed text foundation
+
+WP-646 adds the compile-only `binary_utf8_v1` exact-text provider described by
+ADR-0131. It is not yet a public RiffQL, CLI, MCP, SDK, or runtime operation;
+WP-647 owns activation. Existing prefix text-key and query-module V1--V4 bytes
+are unchanged.
+
+The semantic profile compares canonical UTF-8 bytes with no normalization.
+Its closed predicates are equality, starts-with, ends-with, and contains.
+Missing and null fields never match, and an empty needle is a typed refusal.
+Indexed values are limited to 256 bytes, bound needles to 64 bytes, and one
+complete policy/partition state to 4,096 rows. Locale rules, case folding,
+wildcards, regular expressions, tokenization, stemming, fuzzy matching,
+relevance scores, and corpus statistics are deliberately absent.
+
+The compiler enumerates only declared predicate and total-order combinations.
+Each total order uses the authoritative entity-key hash as its unique
+tie-breaker. The resulting family pins one exact provider descriptor, complete
+partition-aligned or compiler-proven bounded-row policy admission, static
+candidate and amplification ceilings, the declaration source span, and the
+provider-state schema identity. A separately versioned named binding carries
+the domain-separated family hash without rotating the existing query module.
+Callers cannot provide a field, operator, order, provider, scan, fallback, or
+bridge at runtime.
+
+Provider state is partition-scoped, derived, bounded, and rebuildable. V1
+checkpoints retain sorted row/value source state plus partition, generation,
+and frontier; exact postings are reconstructed during recovery or compaction.
+Unknown and mixed versions fail closed. Updates change only the affected row's
+postings rather than rewriting the full state. Randomized reference tests cover
+writes, replacement, deletion, Unicode boundaries, compaction, rebuild, and
+recovery, and a frozen checkpoint fixture protects the durable identity.
+Policy-denied rows are absent from the provider partition, so they cannot affect
+results or any future result-shaping statistic.
+
 ## Reactive application path
 
 The accepted P8 architecture reuses authoritative domain events; it does not

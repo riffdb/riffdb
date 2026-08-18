@@ -4,6 +4,7 @@
 
 mod catalog;
 mod diagnostic;
+mod exact_text;
 mod live;
 mod operational;
 mod plan;
@@ -19,6 +20,7 @@ pub use catalog::{
 pub use diagnostic::{
     QueryDiagnostic, QueryDiagnosticCode, QueryDiagnosticStage, QueryDiagnostics,
 };
+pub use exact_text::*;
 pub use live::*;
 pub use operational::*;
 pub use plan::{

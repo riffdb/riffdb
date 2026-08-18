@@ -13871,6 +13871,20 @@ work_packages:
     epoch under bounded indexed work, every format and compiler identity is migration-safe and
     topology-registered, unsupported shapes fail at source spans, and no public execution or
     framework-specific behavior is claimed.
+  closure:
+    status: complete
+    evidence: docs/architecture/OVERVIEW.md
+    decision: The frozen binary_utf8_v1 profile implements exact UTF-8 byte equality, prefix,
+      suffix, and containment with typed empty-needle refusal and missing/null non-match semantics.
+      The compiler enumerates only declared operator and total-order combinations, binds complete
+      partition-aligned or bounded-row policy admission plus static amplification ceilings to one
+      exact provider descriptor, and preserves source spans for closed RDB-QP009 failures. Exact
+      provider checkpoints are partition-scoped, bounded, canonical, versioned, topology-registered,
+      and rebuild postings from sorted source rows at an exact generation/frontier; unknown and
+      mixed versions refuse before use. Randomized independent-oracle evidence covers replacement,
+      deletion, Unicode, compaction, rebuild, and recovery. Existing query-module V1 through V4 and
+      prefix text-key artifacts remain unchanged. No public execution surface, scan fallback,
+      full-text dependency, cross-provider bridge, or framework-specific branch was added.
   standing_design_tests:
     interface_safety: Only a finite compiled named-query family can select an exact profile; callers
       cannot express regex, scans, arbitrary fields/operators, unbounded values, a policy bypass,

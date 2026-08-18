@@ -1,0 +1,241 @@
+//! Exact text provider reference, rebuild, and recovery conformance.
+
+use riffdb_projection::{
+    ExactTextIndexMutationV1, ExactTextPartitionIndexV1, ExactTextProviderErrorV1,
+};
+use riffdb_types::{
+    CommitSequence, EntityKeyHash, ExactTextFieldValueV1, ExactTextOperatorV1, ExactTextProfileV1,
+    PartitionKeyHash, ProjectionGeneration,
+};
+use std::collections::BTreeMap;
+
+const CHECKPOINT_FIXTURE: &str =
+    include_str!("../../../fixtures/projection/exact-text-provider-state-v1.txt");
+
+fn seq(value: u64) -> CommitSequence {
+    CommitSequence::new(value).unwrap()
+}
+
+fn row(value: u8) -> EntityKeyHash {
+    EntityKeyHash::from_bytes([value; 32])
+}
+
+fn partition(value: u8) -> PartitionKeyHash {
+    PartitionKeyHash::from_bytes([value; 32])
+}
+
+#[test]
+fn indexed_results_match_oracle_across_delete_compact_rebuild_and_recovery() {
+    let profile = ExactTextProfileV1::BinaryUtf8V1;
+    let mut index = ExactTextPartitionIndexV1::new(
+        partition(1),
+        ProjectionGeneration::new(1).unwrap(),
+        profile,
+    );
+    index
+        .apply(
+            seq(1),
+            &[
+                ExactTextIndexMutationV1::upsert(row(1), "alpha café").unwrap(),
+                ExactTextIndexMutationV1::upsert(row(2), "beta café").unwrap(),
+                ExactTextIndexMutationV1::upsert(row(3), "東京駅").unwrap(),
+            ],
+        )
+        .unwrap();
+    let needle = profile.bind_needle("café").unwrap();
+    assert_eq!(
+        index.lookup(ExactTextOperatorV1::Contains, &needle),
+        &[row(1), row(2)]
+    );
+
+    index
+        .apply(seq(2), &[ExactTextIndexMutationV1::delete(row(1))])
+        .unwrap();
+    index.compact();
+    assert_eq!(
+        index.lookup(ExactTextOperatorV1::Contains, &needle),
+        &[row(2)]
+    );
+
+    let bytes = index.to_checkpoint_bytes().unwrap();
+    let recovered = ExactTextPartitionIndexV1::from_checkpoint_bytes(&bytes).unwrap();
+    assert_eq!(recovered, index);
+    assert_eq!(
+        recovered.lookup(ExactTextOperatorV1::Contains, &needle),
+        &[row(2)]
+    );
+
+    let rebuilt = ExactTextPartitionIndexV1::rebuild(
+        partition(1),
+        ProjectionGeneration::new(2).unwrap(),
+        seq(2),
+        profile,
+        index.rows(),
+    )
+    .unwrap();
+    assert_eq!(
+        rebuilt.lookup(ExactTextOperatorV1::Contains, &needle),
+        &[row(2)]
+    );
+}
+
+#[test]
+fn partitions_and_format_versions_fail_closed() {
+    let profile = ExactTextProfileV1::BinaryUtf8V1;
+    let mut first = ExactTextPartitionIndexV1::new(
+        partition(1),
+        ProjectionGeneration::new(1).unwrap(),
+        profile,
+    );
+    first
+        .apply(
+            seq(1),
+            &[ExactTextIndexMutationV1::upsert(row(1), "secret").unwrap()],
+        )
+        .unwrap();
+    let second = ExactTextPartitionIndexV1::new(
+        partition(2),
+        ProjectionGeneration::new(1).unwrap(),
+        profile,
+    );
+    let needle = profile.bind_needle("secret").unwrap();
+    assert!(
+        second
+            .lookup(ExactTextOperatorV1::Contains, &needle)
+            .is_empty()
+    );
+
+    let mut bytes = first.to_checkpoint_bytes().unwrap();
+    bytes[5] = 2;
+    assert_eq!(
+        ExactTextPartitionIndexV1::from_checkpoint_bytes(&bytes),
+        Err(ExactTextProviderErrorV1::UnsupportedFormat)
+    );
+}
+
+#[test]
+fn randomized_incremental_writes_match_independent_truth_table() {
+    let profile = ExactTextProfileV1::BinaryUtf8V1;
+    let mut index = ExactTextPartitionIndexV1::new(
+        partition(9),
+        ProjectionGeneration::new(1).unwrap(),
+        profile,
+    );
+    let corpus = [
+        "alpha",
+        "beta",
+        "café",
+        "東京駅",
+        "a🙂b",
+        "Straße",
+        "wild*card",
+    ];
+    let needles = ["a", "é", "駅", "🙂", "*", "beta", "strasse"];
+    let operators = [
+        ExactTextOperatorV1::Equals,
+        ExactTextOperatorV1::StartsWith,
+        ExactTextOperatorV1::EndsWith,
+        ExactTextOperatorV1::Contains,
+    ];
+    let mut oracle = BTreeMap::new();
+    let mut state = 0x51c2_c003_u64;
+    for epoch in 1..=300 {
+        state = state
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1);
+        let row_id = ((state >> 32) % 31 + 1) as u8;
+        let mutation = if state & 7 == 0 {
+            oracle.remove(&row(row_id));
+            ExactTextIndexMutationV1::delete(row(row_id))
+        } else {
+            let value = corpus[usize::try_from(state).unwrap() % corpus.len()];
+            oracle.insert(row(row_id), value.to_owned());
+            ExactTextIndexMutationV1::upsert(row(row_id), value).unwrap()
+        };
+        index.apply(seq(epoch), &[mutation]).unwrap();
+
+        let needle = profile
+            .bind_needle(needles[usize::try_from(state >> 8).unwrap() % needles.len()])
+            .unwrap();
+        for operator in operators {
+            let expected: Vec<_> = oracle
+                .iter()
+                .filter_map(|(row, value)| {
+                    profile
+                        .matches(operator, ExactTextFieldValueV1::Value(value), &needle)
+                        .then_some(*row)
+                })
+                .collect();
+            assert_eq!(index.lookup(operator, &needle), expected);
+        }
+        if epoch % 37 == 0 {
+            index.compact();
+            let recovered = ExactTextPartitionIndexV1::from_checkpoint_bytes(
+                &index.to_checkpoint_bytes().unwrap(),
+            )
+            .unwrap();
+            let rebuilt = ExactTextPartitionIndexV1::rebuild(
+                partition(9),
+                ProjectionGeneration::new(2).unwrap(),
+                seq(epoch),
+                profile,
+                index.rows(),
+            )
+            .unwrap();
+            for operator in operators {
+                assert_eq!(
+                    recovered.lookup(operator, &needle),
+                    index.lookup(operator, &needle)
+                );
+                assert_eq!(
+                    rebuilt.lookup(operator, &needle),
+                    index.lookup(operator, &needle)
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn provider_state_v1_matches_the_frozen_compatibility_fixture() {
+    let profile = ExactTextProfileV1::BinaryUtf8V1;
+    let mut index = ExactTextPartitionIndexV1::new(
+        partition(1),
+        ProjectionGeneration::new(1).unwrap(),
+        profile,
+    );
+    index
+        .apply(
+            seq(1),
+            &[ExactTextIndexMutationV1::upsert(row(2), "é").unwrap()],
+        )
+        .unwrap();
+    let expected = CHECKPOINT_FIXTURE
+        .lines()
+        .find_map(|line| line.strip_prefix("bytes_hex="))
+        .map(decode_hex)
+        .unwrap();
+    assert_eq!(index.to_checkpoint_bytes().unwrap(), expected);
+}
+
+#[test]
+fn maximum_value_and_one_byte_over_are_checked_before_mutation() {
+    let maximum = "a".repeat(riffdb_types::MAX_EXACT_TEXT_VALUE_BYTES_V1);
+    assert!(ExactTextIndexMutationV1::upsert(row(1), &maximum).is_ok());
+    assert_eq!(
+        ExactTextIndexMutationV1::upsert(row(1), &(maximum + "a")),
+        Err(ExactTextProviderErrorV1::ValueTooLong)
+    );
+}
+
+fn decode_hex(value: &str) -> Vec<u8> {
+    assert_eq!(value.len() % 2, 0);
+    value
+        .as_bytes()
+        .chunks_exact(2)
+        .map(|pair| {
+            let pair = std::str::from_utf8(pair).unwrap();
+            u8::from_str_radix(pair, 16).unwrap()
+        })
+        .collect()
+}

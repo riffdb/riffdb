@@ -8,6 +8,7 @@ mod application_lock;
 mod application_manifest;
 mod application_role;
 mod application_source;
+mod exact_text;
 mod generation;
 mod go_generation;
 mod projection_result_set;
@@ -36,6 +37,7 @@ pub use application_source::{
     ApplicationSourceRole, ApplicationSourceTenantScope, MAX_APPLICATION_MIGRATIONS,
     MAX_APPLICATION_SOURCE_BYTES,
 };
+pub use exact_text::*;
 pub use generation::{
     GeneratedMcpCommand, GeneratedMcpReactiveTool, GeneratedMcpTool, McpToolGenerationError,
     generate_mcp_commands, generate_mcp_reactive_tools, generate_mcp_tools,
