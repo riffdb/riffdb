@@ -1202,3 +1202,64 @@ fn checkpoint_pay_once_apply_is_confined_to_live_same_process_materialization() 
         }
     }
 }
+
+/// Publication moves a command segment out of the unpublished index and into the
+/// published one while holding both locks. Every lookup that consults the two
+/// indexes must therefore keep one continuous transient guard across both
+/// probes; a guard released between them lets a concurrent publication land in
+/// the gap and report a present record as absent, which the administration-tail
+/// proof then classifies as corruption.
+#[test]
+fn paired_command_index_lookups_hold_one_transient_guard_across_both_probes() {
+    let source = read(crate_root().join("src/store.rs"));
+    for name in [
+        "fn command_segment_tail",
+        "fn command_derived_member",
+        "fn command_audit_record",
+        "fn service_audit_sequences_for",
+    ] {
+        let start = source
+            .find(name)
+            .unwrap_or_else(|| panic!("paired index lookup {name} is present"));
+        let body = &source[start..];
+        let unpublished = body
+            .find("unpublished_command_indexes")
+            .unwrap_or_else(|| panic!("{name} consults the unpublished index"));
+        let released = body
+            .find("drop(transient)")
+            .unwrap_or_else(|| panic!("{name} releases its transient guard explicitly"));
+        assert!(
+            released > unpublished,
+            "{name} must hold its transient guard until after the unpublished probe"
+        );
+        let published = body
+            .find("transient_indexes")
+            .unwrap_or_else(|| panic!("{name} consults the published index"));
+        assert!(
+            published < unpublished,
+            "{name} must acquire the transient guard before the unpublished lock so the \
+             lock order matches publication"
+        );
+    }
+}
+
+/// An apply that precedes the journal fence is a proven noncommit. Relabelling
+/// its failure as `CommitStatusUnknown` would fence the command coordinator over
+/// a retryable condition and hide the exact classification.
+#[test]
+fn pre_fence_apply_failures_are_not_relabelled_as_commit_status_unknown() {
+    let source = read(crate_root().join("../riffdb-commit/src/command_records.rs"));
+    let start = source
+        .find("fn apply_group_deferred")
+        .expect("deferred apply is present");
+    let end = start
+        + source[start..]
+            .find("\n    }\n")
+            .expect("deferred apply body terminates");
+    let body = &source[start..end];
+    assert!(
+        !without_whitespace(body).contains("StorageErrorKind::CommitStatusUnknown"),
+        "the pre-fence deferred apply must surface its exact storage cause instead of \
+         reclassifying every failure as durability uncertainty"
+    );
+}

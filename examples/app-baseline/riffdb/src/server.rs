@@ -498,7 +498,7 @@ impl RiffDbServerSession {
                 })?;
         let database_path = self._temporary.path().join("riffdb.redb");
         let table_inventory_before_measurement =
-            riffdb_storage_redb::benchmark_support::authoritative_table_inventory_v1(
+            riffdb_storage_redb::benchmark_support::authoritative_table_inventory_after_reopen_v1(
                 &database_path,
             )
             .map_err(|error| RiffDbError::Server {

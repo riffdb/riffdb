@@ -3822,20 +3822,23 @@ impl RedbWriteAccess {
         &self,
         sequence: riffdb_types::AdministrationSequence,
     ) -> Result<Option<riffdb_storage_api::StoredServiceAuditRecordV1>, StorageError> {
-        let mut found = {
-            let state = self
-                .shared
-                .transient_indexes
-                .read()
-                .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
-            match &*state {
-                TransientIndexState::Ready(indexes) => indexes
-                    .command_audit_record(sequence)
-                    .ok_or_else(|| storage_error(StorageErrorKind::Unavailable))?,
-                TransientIndexState::Dormant => None,
-                TransientIndexState::Invalid => {
-                    return Err(storage_error(StorageErrorKind::Unavailable));
-                }
+        // Publication moves a segment out of the unpublished index and into the
+        // published one while holding both locks. Both probes must run under one
+        // continuous transient guard, exactly as the sibling lookups do: a guard
+        // released between them lets a concurrent publication land in the gap and
+        // hide a record that never left the store.
+        let transient = self
+            .shared
+            .transient_indexes
+            .read()
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+        let mut found = match &*transient {
+            TransientIndexState::Ready(indexes) => indexes
+                .command_audit_record(sequence)
+                .ok_or_else(|| storage_error(StorageErrorKind::Unavailable))?,
+            TransientIndexState::Dormant => None,
+            TransientIndexState::Invalid => {
+                return Err(storage_error(StorageErrorKind::Unavailable));
             }
         };
         let unpublished = self
@@ -3844,6 +3847,7 @@ impl RedbWriteAccess {
             .lock()
             .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?
             .command_audit_record(sequence);
+        drop(transient);
         if found.is_some() && unpublished.is_some() {
             return Err(storage_error(StorageErrorKind::CorruptData));
         }
@@ -6602,23 +6606,23 @@ impl RedbWriteAccess {
             }
             sequences.insert(request_id, found);
         }
-        {
-            let state = self
-                .shared
-                .transient_indexes
-                .read()
-                .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
-            match &*state {
-                TransientIndexState::Ready(indexes) => {
-                    let derived = indexes
-                        .command_audit_sequences_for(request_ids)
-                        .ok_or_else(|| storage_error(StorageErrorKind::Unavailable))??;
-                    merge_audit_sequences(&mut sequences, derived)?;
-                }
-                TransientIndexState::Dormant => {}
-                TransientIndexState::Invalid => {
-                    return Err(storage_error(StorageErrorKind::Unavailable));
-                }
+        // One continuous transient guard spans both probes so a concurrent
+        // publication cannot move a segment between them and drop its sequences.
+        let transient = self
+            .shared
+            .transient_indexes
+            .read()
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+        match &*transient {
+            TransientIndexState::Ready(indexes) => {
+                let derived = indexes
+                    .command_audit_sequences_for(request_ids)
+                    .ok_or_else(|| storage_error(StorageErrorKind::Unavailable))??;
+                merge_audit_sequences(&mut sequences, derived)?;
+            }
+            TransientIndexState::Dormant => {}
+            TransientIndexState::Invalid => {
+                return Err(storage_error(StorageErrorKind::Unavailable));
             }
         }
         let unpublished = self
@@ -6627,6 +6631,7 @@ impl RedbWriteAccess {
             .lock()
             .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?
             .command_audit_sequences_for(request_ids)?;
+        drop(transient);
         merge_audit_sequences(&mut sequences, unpublished)?;
         if let Some(RedbWriteOwnership::Epoch(epoch)) = self.ownership.as_ref() {
             let mut derived = std::collections::BTreeMap::new();

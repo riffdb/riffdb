@@ -545,13 +545,16 @@ where
                     }
                 }
             }
+            // This apply precedes the journal fence, so a failure here is a proven
+            // noncommit, not a durability ambiguity. Relabelling it
+            // `CommitStatusUnknown` would fence the coordinator over a retryable
+            // condition and hide the real classification; the exact cause reaches
+            // `finish_checked_group_commit`, which turns a non-uncertain error into
+            // an ordinary proven abort with retryable pending commands.
             Err(error) => CheckedCommandGroupApplyResult::Failed(finish_checked_group_commit(
                 entries,
                 durability_mode,
-                Err(StorageError::new(
-                    StorageErrorKind::CommitStatusUnknown,
-                    error.incident_id(),
-                )),
+                Err(error),
             )),
         }
     }
