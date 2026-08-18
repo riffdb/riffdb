@@ -819,7 +819,7 @@ fn per_merge_sweep_holds_the_oracle_and_reaches_the_swept_territory() {
             .max(report.max_torn_in_one_recovery);
     }
     let commit_present =
-        match run_campaign_outcome(0x51C2_C001, crate::subsumption::COMMIT_PRESENT_ARMS_CONFIG) {
+        match run_campaign_outcome(0x51C2_C147, crate::subsumption::COMMIT_PRESENT_ARMS_CONFIG) {
             CampaignOutcome::Completed(report) => report,
             CampaignOutcome::WedgedByRedb410FileGrowth { .. } => {
                 panic!("targeted commit-PRESENT witness wedged instead of completing")

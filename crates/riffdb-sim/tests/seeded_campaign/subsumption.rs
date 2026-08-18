@@ -266,20 +266,26 @@ pub(crate) const SCENARIO_CLASSIFICATION: &[(&str, ScenarioClass)] = &[
     (
         // The exact checkpoint-at-S layout moved the former witness. The
         // replacement was scouted against the new operation stream and rerun
-        // 12/12 with identical counters before pinning.
+        // 12/12 with identical counters before pinning. The redb 4.2.0 pin
+        // then moved it again: `PageManager::grow` syncs the extension before
+        // the layout reaches the header, which shifts the operation stream and
+        // makes this territory rarer (3 of 90 seeds under 4.1.0, 1 of 234
+        // under 4.2.0). Seed `0x51C2_C147` was scouted against the new stream and
+        // reruns 12/12 PRESENT, ABSENT, interrupted-admission, and complete
+        // before pinning, so one witness still covers every commit territory.
         "command.commit.after-engine-commit",
         ScenarioClass::CoveredByCampaign {
-            seed: 0x51C2_C001,
+            seed: 0x51C2_C147,
             config: COMMIT_PRESENT_ARMS_CONFIG,
             evidence: CoveredEvidence::InFlightCommitPresent,
         },
     ),
     (
-        // The same pinned campaign resolves eight interrupted batches ABSENT
-        // in full (crashes before the engine commit).
+        // The same pinned campaign resolves interrupted batches ABSENT in
+        // full (crashes before the engine commit).
         "command.commit.before-engine-commit",
         ScenarioClass::CoveredByCampaign {
-            seed: 0x51C2_C001,
+            seed: 0x51C2_C147,
             config: COMMIT_PRESENT_ARMS_CONFIG,
             evidence: CoveredEvidence::InFlightCommitAbsent,
         },
