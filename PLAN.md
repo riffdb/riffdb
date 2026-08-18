@@ -186,8 +186,9 @@ isolated Fjall comparison, and WP-140 owns its Inspector script.
 3. All first-party crates are private Rust 2024 workspace packages on the fixed
    Rust 1.97.0 baseline. Linux CI is gating; macOS is best effort and Windows is
    outside the POC gate.
-4. Redb 4.1.0 with default features disabled and no optional features is the
-   reviewed production POC backend behind the semantic storage API. It is owned
+4. Redb 4.2.0 with default features disabled and no optional features is the
+   reviewed production POC backend behind the semantic storage API (advanced
+   from 4.1.0 by ADR-0004 Amendment 5). It is owned
    only by `riffdb-storage-redb`; no redb type crosses into runtime, service,
    policy, or transport crates. Dependency approval does not substitute for
    WP-070 durability, crash, and conformance evidence.

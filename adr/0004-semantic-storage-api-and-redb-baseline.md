@@ -3,7 +3,7 @@
 - **Status:** Accepted
 - **Direction approved:** 2026-07-12
 - **Exact text accepted:** Yes; amended 2026-07-14, 2026-07-20, 2026-07-21,
-  and 2026-07-22
+  2026-07-22, and 2026-08-18 (Amendment 5: redb baseline 4.2.0)
 - **Accepted:** 2026-07-13
 - **Requires:** ADR-0007, ADR-0009, ADR-0012, and ADR-0017 accepted before or in
   the same governance change
@@ -1802,3 +1802,56 @@ transaction trait. The ADR-0005 amendment must accompany acceptance. The WP-010
 follow-up and manifest reconciliation must precede WP-060 implementation;
 WP-065 proto-owner records and exact redb dependency approval must precede
 WP-070 physical persistence. None may choose a competing shape first.
+
+## Amendment 5 — redb baseline advanced to 4.2.0 (Accepted 2026-08-18)
+
+The maintainer accepted this exact text on 2026-08-18. The approved
+embedded-storage baseline becomes exactly `redb` 4.2.0 with default features
+disabled and no optional features, directly owned only by
+`riffdb-storage-redb` (and, for the deterministic simulator's backend seam,
+`riffdb-sim`). Every obligation in the Decision section above stands: redb
+remains private behind the semantic storage API, no other crate may depend on
+it directly, and any dependency-graph or feature change still requires renewed
+human review.
+
+- **Why the pin advances.** The 4.1.0 pin carries a durability defect this
+  repository's own seeded campaign found and reported upstream: its one-phase
+  commit orders `set_len` growth against the in-commit header write only
+  through the commit's final fsync, so a torn crash inside a file-growing
+  commit can durably keep the header while losing the extension, and 4.1.0
+  then fails at every subsequent open instead of repairing. Upstream
+  `fd82ced` fixes it, and 4.2.0 is the first released version to contain the
+  fix. Staying on a pin with a known unopenable-database state is the larger
+  durability risk.
+- **Fix verified in the vendored source, not assumed.**
+  `PageManager::grow` calls `Storage::sync_file` so a file extension is
+  durable before the larger layout can reach the on-disk header, and a file
+  actually truncated below its stored layout now returns
+  `StorageError::Corrupted` from the header check rather than tripping an
+  open-time assert. `REDB_PIN_CONTAINS_FD82CED` flips to `true` with the pin,
+  and the manifest guard that reds when the pin moves keeps the two in step.
+- **Observed behaviour change inside the fault simulator.** Moving the growth
+  sync ahead of the header write moves the physical operation stream, so
+  seeded crash placement moves with it. The interrupted-commit-PRESENT
+  territory becomes rarer rather than unreachable: 3 of 90 completed campaigns
+  under the 4.1.0 pin, 1 of 234 under 4.2.0. Four campaign and corpus
+  witnesses were rotated under the corpus's documented procedure, each rerun
+  12/12 on every expectation before pinning, and three historical entries that
+  reach their original territory again carry a `restored_by` receipt so the
+  corpus records the whole history.
+- **One precondition no longer holds.** A quiet-schedule `Immediate` commit
+  now leaves exactly one mutation written but unsynced at the crash point used
+  by `simulated_store_reopens_through_dirty_shutdown_repair_after_a_crash`,
+  because `sync_file` makes the file durable without flushing the in-memory
+  write buffer. Durability is unaffected: recovery keeps the write, both
+  acknowledged rows are present after reopen, the torn-resolution sweep over
+  real keep/drop/truncate decisions still proves the acknowledged rows survive
+  exactly, and the 86-arm recovery matrix is green. Whether to re-establish an
+  all-synced crash point or restate that test's claim is a separate decision
+  and is not settled by this amendment.
+- **What this amendment does not grant.** It does not make the pin
+  release-eligible. The renewed dependency-graph, feature, and unsafe-surface
+  review this record requires for any redb change is still outstanding, as is
+  the portable two-profile re-baseline, which must run against the settled
+  PostgreSQL comparator rather than the unsettled one whose repetitions
+  differed by 1.9x within a single run.
