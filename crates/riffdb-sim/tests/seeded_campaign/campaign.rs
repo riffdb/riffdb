@@ -59,17 +59,21 @@ use crate::harness::{
 /// through the commit's final fsync, so a torn crash inside a file-growing
 /// commit's single-fsync window can durably keep the header while losing the
 /// extension — a state 4.1.0 panics on at every subsequent open
-/// (`page_manager.rs:231`) instead of repairing. The pinned `=4.1.0`
-/// PREDATES the fix and no released version contains it.
+/// (`page_manager.rs:231`) instead of repairing. The pinned `=4.2.0`
+/// CONTAINS the fix: `PageManager::grow` calls `Storage::sync_file` to make
+/// the extension durable before the larger layout can reach the on-disk
+/// header, and an actually truncated file now returns
+/// `StorageError::Corrupted("File truncated below stored layout: ...")`
+/// from the header check instead of tripping an open-time assert.
 ///
-/// FLIP THIS TO `true` WHEN THE PIN ADVANCES past `fd82ced`. Everything
+/// Flipped to `true` when the pin advanced to `=4.2.0`. Everything
 /// keyed on it flips together: [`run_campaign_outcome`] stops classifying
 /// the wedge panic as an excluded placement (a wedge would again fail
 /// loudly), and the corpus's inaugural entry flips from
 /// must-reproduce-the-wedge to must-recover-cleanly. The manifest guard in
 /// `subsumption.rs` reds if the pin moves while this constant still says
 /// `false`, so the flip cannot be forgotten silently.
-pub(crate) const REDB_PIN_CONTAINS_FD82CED: bool = false;
+pub(crate) const REDB_PIN_CONTAINS_FD82CED: bool = true;
 
 /// The panic text of the redb 4.1.0 wedge assert (the whole-expression
 /// message of `assert!(storage.raw_file_len()? >= header.layout().len())`).
