@@ -7,22 +7,162 @@ mod reactive;
 pub use reactive::*;
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::num::NonZeroU32;
 
 use riffdb_contract_ir::{IndexFieldEncodingV1, ValueType, ValueTypeTag};
 use riffdb_query_ir::{
-    AccessDirection, AuthorizationEntityAccess, EntitySymbol, MAX_OPERATIONAL_PRESENCE_PARAMETERS,
-    OperationalPlanMemberV1, OperationalQueryFamilyV1, ProjectionResultSetPlanError,
-    ProjectionResultSetPlanV1, QueryAccessKind, QueryAccessProgramV1, QueryAccessStep,
-    QueryLiteral, QueryPredicate, QueryPredicateOperator, QueryPredicateValue, QueryRowLimit,
-    ResultSetOutputShapeV1, ResultSetWindowV1, SymbolicCatalog, resolve_query_surface,
+    AccessDirection, AuthorizationEntityAccess, EntitySymbol, ExactTextOperatorSetV1,
+    ExactTextOrderSetV1, ExactTextPlanFamilyErrorV1, ExactTextPlanFamilyV1,
+    MAX_OPERATIONAL_PRESENCE_PARAMETERS, OperationalPlanMemberV1, OperationalQueryFamilyV1,
+    ProjectionResultSetPlanError, ProjectionResultSetPlanV1, QueryAccessKind, QueryAccessProgramV1,
+    QueryAccessStep, QueryLiteral, QueryPredicate, QueryPredicateOperator, QueryPredicateValue,
+    QueryRowLimit, ResultSetOutputShapeV1, ResultSetWindowV1, SymbolicCatalog,
+    resolve_query_surface,
 };
 use riffdb_riffql_syntax::{
     BinaryOperator, Cardinality, Direction, Document, Expression, FieldSelection, Literal, Path,
     Span, Spanned, TypeReference, UnaryOperator,
 };
-use riffdb_types::{ProjectionProviderDescriptorV1, QueryCostVectorV1};
+use riffdb_types::{
+    EXACT_TEXT_PROVIDER_STATE_SCHEMA_HASH_V1, FieldId, MAX_EXACT_TEXT_NEEDLE_BYTES_V1,
+    MAX_EXACT_TEXT_ROWS_PER_PARTITION_V1, MAX_EXACT_TEXT_TERMS_PER_ROW_V1,
+    MAX_EXACT_TEXT_VALUE_BYTES_V1, ProjectionProviderCapabilitiesV1,
+    ProjectionProviderDescriptorV1, ProjectionProviderKindV1, ProjectionProviderPolicyModeV1,
+    ProjectionProviderPostureV1, ProjectionProviderStateIdentityV1,
+    ProjectionProviderStaticBoundsV1, QueryCostVectorV1,
+};
 
 const MAX_QUERY_ROWS: u64 = 500;
+
+/// Raw compiler declaration for one finite exact binary UTF-8 family.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ExactTextCompilerDeclarationV1 {
+    /// Exact indexed contract field.
+    pub field: FieldId,
+    /// Equals, starts-with, ends-with, and contains membership.
+    pub operators: [bool; 4],
+    /// Ascending and descending value orders, each with an entity-key tie-breaker.
+    pub orders: [bool; 2],
+    /// Compiler-proven complete partition or policy shape.
+    pub policy_mode: ProjectionProviderPolicyModeV1,
+    /// Maximum indexed UTF-8 bytes.
+    pub max_value_bytes: u16,
+    /// Maximum bound needle bytes.
+    pub max_needle_bytes: u16,
+    /// Maximum candidates in one policy partition.
+    pub max_candidates: u32,
+    /// Source span of the complete declaration.
+    pub span: Span,
+}
+
+impl ExactTextCompilerDeclarationV1 {
+    /// Constructs the fixed safe V1 declaration defaults.
+    #[must_use]
+    pub const fn bounded_binary_utf8(
+        field: FieldId,
+        operators: [bool; 4],
+        policy_mode: ProjectionProviderPolicyModeV1,
+        span: Span,
+    ) -> Self {
+        Self {
+            field,
+            operators,
+            orders: [true, true],
+            policy_mode,
+            max_value_bytes: MAX_EXACT_TEXT_VALUE_BYTES_V1 as u16,
+            max_needle_bytes: MAX_EXACT_TEXT_NEEDLE_BYTES_V1 as u16,
+            max_candidates: MAX_EXACT_TEXT_ROWS_PER_PARTITION_V1 as u32,
+            span,
+        }
+    }
+}
+
+/// Compiles and pins one exact-text provider without exposing provider choice.
+pub fn compile_exact_text_family_v1(
+    declaration: ExactTextCompilerDeclarationV1,
+) -> Result<ExactTextPlanFamilyV1, PlannerDiagnostics> {
+    if declaration.max_value_bytes == 0
+        || usize::from(declaration.max_value_bytes) > MAX_EXACT_TEXT_VALUE_BYTES_V1
+        || declaration.max_needle_bytes == 0
+        || usize::from(declaration.max_needle_bytes) > MAX_EXACT_TEXT_NEEDLE_BYTES_V1
+        || declaration.max_candidates == 0
+        || usize::try_from(declaration.max_candidates)
+            .map_or(true, |count| count > MAX_EXACT_TEXT_ROWS_PER_PARTITION_V1)
+    {
+        return Err(exact_text_diagnostic(
+            declaration.span,
+            "exact text provider declaration exceeds a static bound",
+        ));
+    }
+    let descriptor = ProjectionProviderDescriptorV1::new(
+        ProjectionProviderKindV1::ExactText,
+        ProjectionProviderPostureV1::Exact,
+        ProjectionProviderCapabilitiesV1::CANDIDATE
+            | ProjectionProviderCapabilitiesV1::FILTER
+            | ProjectionProviderCapabilitiesV1::ORDER
+            | ProjectionProviderCapabilitiesV1::MEASURE
+            | ProjectionProviderCapabilitiesV1::WINDOW
+            | ProjectionProviderCapabilitiesV1::OUTPUT,
+        declaration.policy_mode,
+        ProjectionProviderStaticBoundsV1 {
+            max_candidates: declaration.max_candidates,
+            max_output_rows: 500,
+            max_measures: 1,
+            max_input_bytes: u32::from(declaration.max_needle_bytes),
+            max_work_units: u64::try_from(MAX_EXACT_TEXT_TERMS_PER_ROW_V1)
+                .expect("fixed term bound")
+                .saturating_mul(u64::from(declaration.max_candidates)),
+            max_state_bytes_per_row: 4_194_304,
+            max_diagnostic_bytes: 4_096,
+            retained_epochs: 8_192,
+            max_catchup_lag: 100,
+            max_epoch_lease_steps: 1_024,
+        },
+        ProjectionProviderStateIdentityV1::new(
+            NonZeroU32::new(1).expect("state layout is nonzero"),
+            EXACT_TEXT_PROVIDER_STATE_SCHEMA_HASH_V1,
+        ),
+    )
+    .map_err(|_| exact_text_diagnostic(declaration.span, "exact text provider is inconsistent"))?;
+    ExactTextPlanFamilyV1::new(
+        declaration.field,
+        ExactTextOperatorSetV1::from_flags(declaration.operators),
+        ExactTextOrderSetV1::from_flags(declaration.orders),
+        declaration.policy_mode,
+        declaration.max_value_bytes,
+        declaration.max_needle_bytes,
+        declaration.max_candidates,
+        descriptor,
+        declaration.span,
+    )
+    .map_err(|error| match error {
+        ExactTextPlanFamilyErrorV1::StaticBound => exact_text_diagnostic(
+            declaration.span,
+            "exact text provider declaration exceeds a static bound",
+        ),
+        ExactTextPlanFamilyErrorV1::EmptyOrUnknownOperatorSet => exact_text_diagnostic(
+            declaration.span,
+            "exact text provider requires a declared operator",
+        ),
+        ExactTextPlanFamilyErrorV1::EmptyOrUnknownOrderSet => exact_text_diagnostic(
+            declaration.span,
+            "exact text provider requires a declared total order",
+        ),
+        ExactTextPlanFamilyErrorV1::ProviderMismatch => {
+            exact_text_diagnostic(declaration.span, "exact text provider is inconsistent")
+        }
+    })
+}
+
+fn exact_text_diagnostic(span: Span, summary: &'static str) -> PlannerDiagnostics {
+    one(
+        PlannerDiagnosticCode::ExactTextProvider,
+        span,
+        Vec::new(),
+        summary,
+        None,
+    )
+}
 
 /// Closed compiler input for the ADR-0130 result-set stage family.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -77,6 +217,8 @@ pub enum PlannerDiagnosticCode {
     Cardinality,
     /// Operational predicates require finite-family compilation.
     OperationalFamilyRequired,
+    /// Exact text provider declaration is unsupported or exceeds a bound.
+    ExactTextProvider,
 }
 
 impl PlannerDiagnosticCode {
@@ -92,6 +234,7 @@ impl PlannerDiagnosticCode {
             Self::InternalInvariant => "RDB-QP006",
             Self::Cardinality => "RDB-QP007",
             Self::OperationalFamilyRequired => "RDB-QP008",
+            Self::ExactTextProvider => "RDB-QP009",
         }
     }
 }
