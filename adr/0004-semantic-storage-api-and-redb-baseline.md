@@ -1855,3 +1855,32 @@ human review.
   the portable two-profile re-baseline, which must run against the settled
   PostgreSQL comparator rather than the unsettled one whose repetitions
   differed by 1.9x within a single run.
+
+### Amendment 5 review record (2026-08-18)
+
+The renewed review this record requires for any redb change was performed
+against the vendored `redb` 4.2.0 source and the resolved workspace graph.
+
+- **Dependency graph.** `cargo tree -p redb --edges normal` resolves to
+  `redb v4.2.0` alone: with default features disabled the crate pulls no
+  transitive dependency at all, unchanged from the 4.1.0 baseline.
+- **Features.** `cargo tree -p redb -e features` shows no feature enabled. No
+  optional feature is selected by `riffdb-storage-redb` or `riffdb-sim`.
+- **Unsafe surface.** The production surface is unchanged at 37 occurrences:
+  32 in `tree_store/page_store/xxh3.rs`, 2 in
+  `tree_store/page_store/file_backend/optimized.rs`, 2 in the multimap btree
+  (moved from `multimap_table.rs` to `tree_store/multimap_btree.rs`), and 1 in
+  `transactions.rs`. A raw count reports 47 because 4.2.0 adds a 10-occurrence
+  spinning `Mutex`/`RwLock` fallback in `sync.rs`, gated
+  `#[cfg(any(redb_no_std, test))]`. `redb_no_std` is never set anywhere in this
+  repository and the `test` cfg belongs to redb's own suite, so that module is
+  not compiled into any RiffDB artifact.
+- **`cargo deny`.** `bans`, `licenses`, and `sources` pass. `advisories` fails
+  on RUSTSEC-2026-0258 (`h2`, unbounded empty DATA frames), which reaches the
+  graph through `tonic`/`hyper` in the gRPC stack and is unrelated to this
+  amendment. It predates the pin change and is recorded here as a separate
+  outstanding security item, not as a redb finding.
+
+The dependency, feature, and unsafe-surface obligation of this record is
+therefore discharged for the 4.2.0 pin. The portable two-profile re-baseline
+remains outstanding before the pin carries release evidence.
