@@ -800,10 +800,24 @@ impl QueryReadView for RedbQueryView<'_> {
                     EntityTarget::new(step.internal_entity_id(), decoded_key.entity_key().clone())
                         .map_err(|_| corrupt())?;
                 let record = self.read_entity(&target)?.ok_or_else(corrupt)?;
-                if !self.allows_policy_record(policy, step.internal_entity_id(), record.fields())? {
+                let policy_started = self.profile.as_ref().map(|_| Instant::now());
+                let allowed =
+                    self.allows_policy_record(policy, step.internal_entity_id(), record.fields())?;
+                if let (Some(profile), Some(started)) = (self.profile.as_mut(), policy_started) {
+                    profile.stage_ns[ROW_POLICY] =
+                        profile.stage_ns[ROW_POLICY].saturating_add(elapsed_nanos(started));
+                }
+                if !allowed {
                     continue;
                 }
-                entries.push((decoded.0, plan.materialize(&record)?));
+                let materialize_started = self.profile.as_ref().map(|_| Instant::now());
+                let row = plan.materialize(&record)?;
+                if let (Some(profile), Some(started)) = (self.profile.as_mut(), materialize_started)
+                {
+                    profile.stage_ns[ROW_MATERIALIZE] =
+                        profile.stage_ns[ROW_MATERIALIZE].saturating_add(elapsed_nanos(started));
+                }
+                entries.push((decoded.0, row));
                 if entries.len() == fetch_limit {
                     break 'prefixes;
                 }

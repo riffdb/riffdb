@@ -264,11 +264,16 @@ pub fn run_scenarios_with_options<B: AppBackend>(
     include_projected: bool,
 ) -> Result<Vec<ScenarioResult>, B::Error> {
     let probes = dataset.probes();
-    let scenario_ids = if include_projected {
+    let mut scenario_ids = if include_projected {
         ScenarioId::for_dataset_with_projected(dataset)
     } else {
         ScenarioId::for_dataset(dataset)
     };
+    if std::env::var_os("RIFFDB_APP_BASELINE_ONLY_COMPILED_BOARD_DIAGNOSTICS")
+        .is_some_and(|value| value == "1")
+    {
+        scenario_ids.retain(|scenario| scenario.is_compiled_board());
+    }
     for _ in 0..warmups {
         run_once(backend, &probes, &scenario_ids)?;
     }
@@ -282,8 +287,7 @@ pub fn run_scenarios_with_options<B: AppBackend>(
         })
         .collect::<Vec<_>>();
 
-    for sample in 0..samples {
-        for result in &mut results {
+    let mut measure = |result: &mut ScenarioResult, sample: usize| -> Result<(), B::Error> {
             let scenario_name = result.scenario.as_str();
             let outcome = match result.scenario {
                 ScenarioId::PointGetTicket => {
@@ -432,6 +436,24 @@ pub fn run_scenarios_with_options<B: AppBackend>(
             };
             result.samples.record(elapsed);
             result.last_row_count = row_count;
+            Ok(())
+    };
+    if std::env::var_os("RIFFDB_APP_BASELINE_SCENARIO_MAJOR_DIAGNOSTICS")
+        .is_some_and(|value| value == "1")
+    {
+        // Diagnostic-only ordering: keep each scenario contiguous so the
+        // fixed-width server ordinal windows can close a size-specific stage
+        // ledger. The normal PERF-018 comparator remains sample-major.
+        for result in &mut results {
+            for sample in 0..samples {
+                measure(result, sample)?;
+            }
+        }
+    } else {
+        for sample in 0..samples {
+            for result in &mut results {
+                measure(result, sample)?;
+            }
         }
     }
     Ok(results)
