@@ -9,7 +9,7 @@ use riffdb_query_module::{
     generate_go_application_client, generate_mcp_tools, generate_python_application_client,
     generate_rust_application_client, generate_typescript_application_client,
 };
-use riffdb_types::{ExactTextOperatorV1, ExactTextOrderV1};
+use riffdb_types::{ExactTextOperatorV1, ExactTextOrderV1, ProjectionProviderPolicyModeV1};
 
 const CONTRACT: &str = r#"
 contract ExactUsers version 1 {
@@ -118,4 +118,37 @@ fn exact_page_count_and_offset_are_generated_identically_for_every_public_sdk() 
     assert!(input["properties"]["limit"].is_object());
     assert!(output.to_string().contains("users"));
     assert!(output.to_string().contains("total"));
+}
+
+#[test]
+fn protected_exact_module_binds_bounded_admission_and_round_trips() {
+    let protected_contract = CONTRACT.replace(
+        "  aggregate Users {",
+        concat!(
+            "  row policy UserAccess on User {\n",
+            "    allow read when user_id == principal.id\n",
+            "  }\n",
+            "  aggregate Users {"
+        ),
+    );
+    let contract = compile_contract_source(&protected_contract).expect("protected contract");
+    let candidate = QueryModuleCandidate::new(
+        QueryModuleName::new("protected_exact_users").expect("name"),
+        QueryModuleVersion::new(1).expect("version"),
+        vec![NamedQuerySource::new("SearchUsers", QUERY).expect("query")],
+    )
+    .expect("candidate");
+    let module = QueryModule::compile(candidate, &contract).expect("protected exact module");
+    let CompiledNamedQueryPlan::ExactTextResultV1(exact) =
+        module.query("SearchUsers").expect("query").plan()
+    else {
+        panic!("exact plan kind");
+    };
+    assert_eq!(
+        exact.binding().family().descriptor().policy_mode(),
+        ProjectionProviderPolicyModeV1::BoundedRowAdmission
+    );
+    let decoded = QueryModule::decode_and_validate(module.canonical_bytes(), &contract)
+        .expect("strict protected exact module decode");
+    assert_eq!(decoded.canonical_bytes(), module.canonical_bytes());
 }

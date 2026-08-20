@@ -13988,7 +13988,7 @@ work_packages:
   human_review_triggers: *id001
 - id: WP-648
   name: Better Auth indexed admin profile and exact acceptance
-  depends_on: [WP-630, WP-647]
+  depends_on: [WP-630, WP-647, WP-652]
   objective: Prove a fresh external Better Auth adapter can serve its real admin user-listing route
     through generated named RiffQL for contains, starts-with, ends-with, typed filters/sorts, exact
     total, and numeric offset with no adapter-side filtering, counting, sorting, page walking, raw
@@ -14235,4 +14235,59 @@ work_packages:
       sentinel snapshot is accepted only as a zero-mutation declared outcome; the four-language
       Better Auth public-TLS regression proves an authorized owner receives that outcome while an
       outsider receives only the ordinary authorization denial, and revocation remains effective.
+  human_review_triggers: *id001
+- id: WP-652
+  name: Exact result policy and finite-filter completion
+  depends_on: [WP-570, WP-647]
+  objective: Repair the gap between ADR-0131 and WP-647 by making protected exact-result plans
+    compiler-reachable, rejecting every predicate the exact provider cannot execute, and completing
+    the finite typed filter/order family before Better Auth acceptance can begin.
+  requirements: [OQ-026, OQ-027, OQ-028, OQ-029, OQ-030]
+  required_adrs: [ADR-0055, ADR-0108, ADR-0111, ADR-0117, ADR-0124, ADR-0130,
+    ADR-0131]
+  allowed_paths: [work_packages.yaml, release/version-topology-v1.json,
+    crates/riffdb-types/**, crates/riffdb-query-ir/**,
+    crates/riffdb-query-compiler/**, crates/riffdb-query-module/**,
+    crates/riffdb-query-executor/**, crates/riffdb-projection/**,
+    crates/riffdb-policy/**, crates/riffdb-service/**,
+    crates/riffdb-storage-api/**, crates/riffdb-storage-memory/**,
+    crates/riffdb-storage-redb/**, crates/riffdb-server/**,
+    fixtures/**, tests/**, scripts/**, docs/**]
+  deliverables:
+  - A compiler completeness gate that source-spans and rejects every extra, optional, disjunctive,
+    or otherwise unimplemented exact predicate instead of retaining it only as non-executable
+    metadata, plus architecture coverage proving no accepted predicate can be omitted at execution
+  - Protected exact-query compilation selecting bounded row admission and end-to-end provider
+    evidence that current candidate policy is applied before postings, exact count, total order,
+    ordinal selection, cursor identity, and public release
+  - One finite compiler-enumerated typed filter/order family whose request contains only typed
+    values and closed generated choices, whose derived index performs exact intersection/count and
+    direct ordinal selection, and whose plan/provider identities bind every admitted combination
+  - Version-topology and compatibility receipts for any query, IR, descriptor, or rebuildable-state
+    identity required by the finite family; existing unfiltered exact modules and provider V1/V2
+    checkpoints remain readable and byte-exact
+  - Deterministic reference, policy-inference, concurrent-write, rebuild, recovery, maximum-bound,
+    and unsupported-shape tests proving filtered page and total share one authorized epoch without
+    scan, page walk, materialize-all, remote hydration, or client result shaping
+  acceptance_commands:
+  - cargo +1.97.0 test -p riffdb-query-compiler -p riffdb-query-module -p riffdb-query-executor -p riffdb-projection -p riffdb-policy -p riffdb-service -p riffdb-storage-api -p riffdb-storage-memory -p riffdb-storage-redb -p riffdb-server --all-features
+  - ./scripts/check-version-topology
+  - ./scripts/check-generated
+  - ./scripts/check-requirement-coverage
+  - ./scripts/handbook check
+  - cargo +1.97.0 fmt --all -- --check
+  - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: Every exact-result predicate and total-order term accepted by the compiler is executed
+    by the pinned provider before exact count and ordinal selection; protected plans admit only
+    currently authorized rows; every unsupported combination fails at source; and WP-648 can use
+    generated typed filters and sorts without adapter shaping or a hidden policy/count oracle.
+  standing_design_tests:
+    interface_safety: Applications receive only finite generated methods and typed bounded values;
+      no request can supply a predicate AST, field/index/provider name, policy choice, fallback,
+      post-filter, count strategy, order expression, or freshness downgrade, and compilation fails
+      closed when the exact provider cannot execute the complete named predicate.
+    scale: Candidate, filter-family, order-family, posting, count, offset, output, rebuild,
+      checkpoint, wait, and diagnostic work is compiler bounded per partition and policy shape;
+      direct ordinal selection never walks skipped rows or pages and no request materializes the
+      matching population.
   human_review_triggers: *id001

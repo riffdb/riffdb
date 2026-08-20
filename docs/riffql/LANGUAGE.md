@@ -362,6 +362,13 @@ policy shapes, non-total orders, excessive bounds, and any combination the
 provider cannot prove. There is no scan, page-walk, client-filter, approximate
 count, or fallback execution path.
 
+The current public source shape admits exactly the complete partition equality
+and one of those exact-text predicates. Additional typed filter predicates are
+rejected at their source span; they are never retained only as metadata or
+silently omitted by execution. The finite indexed filter/order family required
+for the Better Auth administrative profile remains gated by WP-652 and is not
+available until that package completes.
+
 Exact-result requests currently start a fresh one-page result and therefore do
 not accept an ordinary query cursor. A causal minimum may be supplied through
 the normal generated read-after-commit option. Rebuild and capacity return

@@ -256,17 +256,22 @@ pub fn compile_exact_text_query_v1(
         .ok_or_else(|| {
             exact_text_diagnostic(binding.entity.span, "exact result entity is unknown")
         })?;
-    if catalog
+    let policy_mode = if catalog
         .row_policies()
         .any(|policy| policy.entity() == entity.name())
     {
-        return Err(exact_text_diagnostic(
-            binding.entity.span,
-            "exact result provider requires a partition-aligned policy shape",
-        ));
-    }
+        ProjectionProviderPolicyModeV1::BoundedRowAdmission
+    } else {
+        ProjectionProviderPolicyModeV1::PartitionAligned
+    };
     let (operator, field_name, needle_parameter, predicate_span) =
-        exact_predicate(&binding.predicate)?;
+        exact_predicate(&binding.predicate, entity.partition_field())?;
+    validate_exact_predicate_completeness(
+        &binding.predicate,
+        entity.partition_field(),
+        &field_name,
+        &needle_parameter,
+    )?;
     let field = entity
         .field(&field_name)
         .ok_or_else(|| exact_text_diagnostic(predicate_span, "exact text field is unknown"))?;
@@ -365,7 +370,7 @@ pub fn compile_exact_text_query_v1(
         compile_exact_text_result_family_v1(ExactTextCompilerDeclarationV1::bounded_binary_utf8(
             field.internal_id(),
             operator_flags(operator),
-            ProjectionProviderPolicyModeV1::PartitionAligned,
+            policy_mode,
             predicate_span,
         ))?;
     let plan = pin_projection_result_set_provider_v2(
@@ -383,7 +388,7 @@ pub fn compile_exact_text_query_v1(
     )
     .map_err(|_| exact_text_diagnostic(predicate_span, "exact result plan is inconsistent"))?;
     let mut metadata_document = document.clone();
-    rewrite_exact_metadata(&mut metadata_document);
+    rewrite_exact_metadata(&mut metadata_document, &field_name, &needle_parameter);
     let metadata = compile_operational_query_family(&metadata_document, catalog)?;
     if !metadata.presence_parameters().is_empty() {
         return Err(exact_text_diagnostic(
@@ -401,6 +406,108 @@ pub fn compile_exact_text_query_v1(
         limit_parameter,
         offset_parameter,
     })
+}
+
+fn validate_exact_predicate_completeness(
+    expression: &Spanned<Expression>,
+    partition_field: &str,
+    exact_field: &str,
+    needle_parameter: &str,
+) -> Result<(), PlannerDiagnostics> {
+    fn is_path_parameter(
+        left: &Spanned<Expression>,
+        right: &Spanned<Expression>,
+        field: &str,
+        parameter: Option<&str>,
+    ) -> bool {
+        matches!(
+            (&left.value, &right.value),
+            (Expression::Path(path), Expression::Parameter(candidate))
+                if path_tail(path) == Some(field)
+                    && parameter.is_none_or(|expected| candidate.value.as_str() == expected)
+        )
+    }
+
+    fn visit(
+        expression: &Spanned<Expression>,
+        partition_field: &str,
+        exact_field: &str,
+        needle_parameter: &str,
+        partition_seen: &mut bool,
+        exact_seen: &mut bool,
+    ) -> Result<(), PlannerDiagnostics> {
+        let Expression::Binary {
+            operator,
+            left,
+            right,
+        } = &expression.value
+        else {
+            return Err(exact_text_diagnostic(
+                expression.span,
+                "exact result predicate is not implemented by the selected provider",
+            ));
+        };
+        if operator.value == BinaryOperator::And {
+            visit(
+                left,
+                partition_field,
+                exact_field,
+                needle_parameter,
+                partition_seen,
+                exact_seen,
+            )?;
+            return visit(
+                right,
+                partition_field,
+                exact_field,
+                needle_parameter,
+                partition_seen,
+                exact_seen,
+            );
+        }
+        if operator.value == BinaryOperator::Equal
+            && is_path_parameter(left, right, partition_field, None)
+            && !*partition_seen
+        {
+            *partition_seen = true;
+            return Ok(());
+        }
+        if matches!(
+            operator.value,
+            BinaryOperator::Equal
+                | BinaryOperator::StartsWith
+                | BinaryOperator::EndsWith
+                | BinaryOperator::Contains
+        ) && is_path_parameter(left, right, exact_field, Some(needle_parameter))
+            && !*exact_seen
+        {
+            *exact_seen = true;
+            return Ok(());
+        }
+        Err(exact_text_diagnostic(
+            expression.span,
+            "exact result predicate is not implemented by the selected provider",
+        ))
+    }
+
+    let mut partition_seen = false;
+    let mut exact_seen = false;
+    visit(
+        expression,
+        partition_field,
+        exact_field,
+        needle_parameter,
+        &mut partition_seen,
+        &mut exact_seen,
+    )?;
+    if partition_seen && exact_seen {
+        Ok(())
+    } else {
+        Err(exact_text_diagnostic(
+            expression.span,
+            "exact result predicate is not implemented by the selected provider",
+        ))
+    }
 }
 
 fn operator_flags(operator: riffdb_types::ExactTextOperatorV1) -> [bool; 4] {
@@ -422,9 +529,11 @@ fn path_tail(path: &Path) -> Option<&str> {
 
 fn exact_predicate(
     expression: &Spanned<Expression>,
+    partition_field: &str,
 ) -> Result<(riffdb_types::ExactTextOperatorV1, String, String, Span), PlannerDiagnostics> {
     fn visit(
         expression: &Spanned<Expression>,
+        partition_field: &str,
         found: &mut Option<(riffdb_types::ExactTextOperatorV1, String, String, Span)>,
     ) -> Result<(), PlannerDiagnostics> {
         if let Expression::Binary {
@@ -434,6 +543,15 @@ fn exact_predicate(
         } = &expression.value
         {
             let exact = match operator.value {
+                BinaryOperator::Equal
+                    if !matches!(
+                        &left.value,
+                        Expression::Path(path)
+                            if path_tail(path) == Some(partition_field)
+                    ) =>
+                {
+                    Some(riffdb_types::ExactTextOperatorV1::Equals)
+                }
                 BinaryOperator::StartsWith => Some(riffdb_types::ExactTextOperatorV1::StartsWith),
                 BinaryOperator::EndsWith => Some(riffdb_types::ExactTextOperatorV1::EndsWith),
                 BinaryOperator::Contains => Some(riffdb_types::ExactTextOperatorV1::Contains),
@@ -464,14 +582,14 @@ fn exact_predicate(
                     operator.span,
                 ));
             } else {
-                visit(left, found)?;
-                visit(right, found)?;
+                visit(left, partition_field, found)?;
+                visit(right, partition_field, found)?;
             }
         }
         Ok(())
     }
     let mut found = None;
-    visit(expression, &mut found)?;
+    visit(expression, partition_field, &mut found)?;
     found.ok_or_else(|| {
         exact_text_diagnostic(
             expression.span,
@@ -480,33 +598,46 @@ fn exact_predicate(
     })
 }
 
-fn rewrite_exact_metadata(document: &mut Document) {
-    fn rewrite(expression: &mut Spanned<Expression>) {
+fn rewrite_exact_metadata(document: &mut Document, exact_field: &str, needle_parameter: &str) {
+    fn rewrite(expression: &mut Spanned<Expression>, exact_field: &str, needle_parameter: &str) {
         match &mut expression.value {
             Expression::Binary {
                 operator,
                 left,
                 right,
             } => {
-                if matches!(
-                    operator.value,
-                    BinaryOperator::StartsWith
-                        | BinaryOperator::EndsWith
-                        | BinaryOperator::Contains
-                ) {
+                let exact_equality = operator.value == BinaryOperator::Equal
+                    && matches!(
+                        (&left.value, &right.value),
+                        (Expression::Path(path), Expression::Parameter(parameter))
+                            if path_tail(path) == Some(exact_field)
+                                && parameter.value.as_str() == needle_parameter
+                    );
+                if exact_equality
+                    || matches!(
+                        operator.value,
+                        BinaryOperator::StartsWith
+                            | BinaryOperator::EndsWith
+                            | BinaryOperator::Contains
+                    )
+                {
                     operator.value = BinaryOperator::Prefix;
                 }
-                rewrite(left);
-                rewrite(right);
+                rewrite(left, exact_field, needle_parameter);
+                rewrite(right, exact_field, needle_parameter);
             }
-            Expression::PresenceGuard { predicate, .. } => rewrite(predicate),
-            Expression::Unary { operand, .. } => rewrite(operand),
+            Expression::PresenceGuard { predicate, .. } => {
+                rewrite(predicate, exact_field, needle_parameter);
+            }
+            Expression::Unary { operand, .. } => {
+                rewrite(operand, exact_field, needle_parameter);
+            }
             Expression::Path(_) | Expression::Parameter(_) | Expression::Literal(_) => {}
         }
     }
     document.language_version = riffdb_riffql_syntax::RIFFQL_LANGUAGE_VERSION_OPERATIONAL_V1;
     for binding in &mut document.body.bindings {
-        rewrite(&mut binding.predicate);
+        rewrite(&mut binding.predicate, exact_field, needle_parameter);
         if let Some(take) = &mut binding.take {
             take.offset = None;
         }
