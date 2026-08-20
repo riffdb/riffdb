@@ -14319,3 +14319,70 @@ work_packages:
       direct ordinal selection never walks skipped rows or pages and no request materializes the
       matching population.
   human_review_triggers: *id001
+- id: WP-653
+  name: Large bounded named-result hydration and assembly
+  depends_on: [WP-637, WP-645, WP-649, WP-650]
+  objective: Close the BoardPage50/200/450 growth ledger across authoritative index traversal,
+    entity hydration, durable-record validation, query-row materialization, result assembly, gRPC
+    conversion, transport, and generated-client decoding, then activate only a byte-exact internal
+    optimization whose measured ceiling materially reduces the 450-row public result without
+    weakening authorization, freshness, durability validation, boundedness, or application safety.
+  requirements: [PERF-001, PERF-002, PERF-008, PERF-018]
+  required_adrs: [ADR-0055, ADR-0056, ADR-0074, ADR-0111, ADR-0123, ADR-0129,
+    ADR-0130]
+  allowed_paths: [work_packages.yaml, crates/riffdb-storage-api/**,
+    crates/riffdb-storage-redb/**, crates/riffdb-storage-memory/**,
+    crates/riffdb-query-executor/**,
+    crates/riffdb-service/**, crates/riffdb-api-grpc/**,
+    crates/riffdb-client-rust/**, crates/riffdb-observability/**,
+    examples/app-baseline/**, fixtures/**, tests/**, scripts/**,
+    docs/performance/**]
+  deliverables:
+  - A size-isolated BoardPage50/200/450 ledger on the workstation and one inventoried cloud host,
+    separating index access, entity lookup, envelope identity/bounds, checksum, wire preflight,
+    Protobuf decode, canonical verification, semantic reconstruction, row policy, row
+    materialization, executor drive, service result assembly, gRPC conversion/encoding, transport,
+    generated decoding, and benchmark-only bridge work; every measured request closes within five
+    percent of client-observed mean
+  - A per-row and fixed-cost model reconciled against the public 50/200/450 curve and the same-run
+    safe-application PostgreSQL pages, with predeclared Amdahl bounds for every candidate and an
+    explicit stop when no candidate can improve BoardPage450 by at least twenty percent on both
+    tested CPU profiles
+  - If the mechanics gate passes, one bounded internal optimization that preserves byte-identical
+    named-query results, one authoritative snapshot, all three current authorization safe points,
+    current row/field policy, exact fuel and output charges, continuation identity, and durable
+    corruption detection; no application-selectable cache, validation downgrade, scan fallback,
+    raw storage surface, provider-format change, or public query/module identity change is allowed
+  - Production fixed-cardinality evidence and architecture tests proving any immutable validation
+    or materialization proof is paid once only at its accepted datum or process-generation scope,
+    never per returned row or operation, while corrupt, mixed-generation, stale-policy, and
+    malformed-record cases still fail closed before release
+  - Paired post-candidate BoardPage50/200/450 and ordinary point/list/detail receipts plus mixed c32,
+    unary writes, and seed no-regression evidence; any durable format, compiler/provider identity,
+    covering-index syntax, policy safe-point, or public protocol change stops for a separately
+    accepted ADR rather than entering this package
+  acceptance_commands:
+  - cargo +1.97.0 test -p riffdb-storage-api -p riffdb-storage-redb -p riffdb-query-executor -p riffdb-service -p riffdb-api-grpc -p riffdb-client-rust -p riffdb-observability --all-features
+  - cargo +1.97.0 test --manifest-path examples/app-baseline/Cargo.toml --workspace
+  - ./scripts/check-workspace-policy
+  - ./scripts/check-requirement-coverage
+  - cargo +1.97.0 fmt --all -- --check
+  - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: BoardPage450 improves at least twenty percent on the workstation and one inventoried
+    cloud host and reaches at most 1.10x same-run safe-application PostgreSQL, BoardPage50/200 and
+    ordinary reads/writes/mixed/seed regress no more than five percent, every result and diagnostic
+    remains bounded and redaction-safe, and authorization, snapshot, fuel, corruption, continuation,
+    crash, and recovery semantics remain exact; otherwise the candidate closes honestly without
+    production activation and the existing path remains selected.
+  standing_design_tests:
+    interface_safety: Applications continue to invoke only generated named queries with compiler-
+      fixed fields, predicates, order, bounds, policy, and freshness; they cannot select hydration,
+      validation, caching, provider, scan, fallback, transport, or response-assembly behavior, and
+      every released row still passes current authorization and row/field policy at the existing
+      safe points.
+    scale: Index candidates, entity reads, decoded values, materialized rows, response bytes,
+      continuations, proof state, telemetry, and any process-generation validation state remain
+      compiler bounded per request and fixed-capacity per process independently of history, tenant
+      count, database size, or completed-operation count; no full-population materialization or
+      unbounded cache is introduced.
+  human_review_triggers: *id001

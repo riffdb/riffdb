@@ -212,6 +212,13 @@ fn run() -> Result<(), String> {
                         database_root: args.database_root.clone(),
                         allow_tmpfs: args.allow_tmpfs,
                         min_free_bytes: min_free,
+                        // Diagnostic-only, fixed-cardinality production telemetry. Keeping this
+                        // behind an environment switch avoids changing PERF-018's frozen
+                        // comparator CLI or request shape.
+                        query_execute_diagnostics: env::var_os(
+                            "RIFFDB_APP_BASELINE_QUERY_EXECUTE_DIAGNOSTICS",
+                        )
+                        .is_some_and(|value| value == "1"),
                         ..ServerStartOptions::default()
                     },
                 ))
@@ -851,6 +858,39 @@ fn riffdb_shutdown_evidence_json(evidence: &RiffDbShutdownEvidence) -> serde_jso
             "labels": "closed_fixed_cardinality",
         })
     });
+    let query_execute = evidence.query_execute.as_ref().map(|query| {
+        let windows = query
+            .windows
+            .iter()
+            .map(|window| {
+                let stages = query
+                    .stage_names
+                    .iter()
+                    .zip(&window.stage_ns)
+                    .map(|(name, elapsed)| (name.clone(), json!(elapsed)))
+                    .collect::<serde_json::Map<String, serde_json::Value>>();
+                json!({
+                    "count": window.count,
+                    "stage_ns": stages,
+                    "overlay_transitions_sum": window.overlay_transitions_sum,
+                    "overlay_transitions_max": window.overlay_transitions_max,
+                    "overlay_bytes_sum": window.overlay_bytes_sum,
+                    "overlay_bytes_max": window.overlay_bytes_max,
+                    "authority_tail_bytes_sum": window.authority_tail_bytes_sum,
+                    "authority_tail_bytes_max": window.authority_tail_bytes_max,
+                    "authority_tail_commands_sum": window.authority_tail_commands_sum,
+                    "authority_tail_commands_max": window.authority_tail_commands_max,
+                })
+            })
+            .collect::<Vec<_>>();
+        json!({
+            "window_width": query.window_width,
+            "total_count": query.total_count,
+            "stage_names": query.stage_names,
+            "windows": windows,
+            "labels": "closed_fixed_cardinality_ordinal_windows",
+        })
+    });
     let table_inventory = evidence
         .table_inventory_after_measurement
         .iter()
@@ -946,6 +986,7 @@ fn riffdb_shutdown_evidence_json(evidence: &RiffDbShutdownEvidence) -> serde_jso
         "writer_journal_stages": writer_journal_stages,
         "writer_publication_stages": writer_publication_stages,
         "completion_lane": completion_lane,
+        "query_execute": query_execute,
         "authoritative_table_inventory": table_inventory,
         "table_inventory_scope": if evidence.table_inventory_before_measurement.is_some() {
             "after_seed_before_measured_process_to_after_clean_shutdown_and_structural_reopen"
@@ -1504,7 +1545,10 @@ fn run_load(args: Args) -> Result<(), String> {
                 database_root: args.database_root.clone(),
                 allow_tmpfs: args.allow_tmpfs,
                 min_free_bytes: min_free_bytes_for_full(args.scale.name() == "full"),
-                query_execute_diagnostics: false,
+                query_execute_diagnostics: env::var_os(
+                    "RIFFDB_APP_BASELINE_QUERY_EXECUTE_DIAGNOSTICS",
+                )
+                .is_some_and(|value| value == "1"),
             };
             let transport_topology = if args.load_saturate {
                 RiffDbTransport::PerSession
@@ -3119,8 +3163,16 @@ impl Args {
         if !(1..=32).contains(&reps) {
             return Err("--reps must be 1..=32".to_owned());
         }
-        if !(1..=100).contains(&samples) {
-            return Err("--samples must be 1..=100".to_owned());
+        let diagnostic_sample_ceiling = env::var_os(
+            "RIFFDB_APP_BASELINE_QUERY_EXECUTE_DIAGNOSTICS",
+        )
+        .is_some_and(|value| value == "1")
+        .then_some(1_024)
+        .unwrap_or(100);
+        if !(1..=diagnostic_sample_ceiling).contains(&samples) {
+            return Err(format!(
+                "--samples must be 1..={diagnostic_sample_ceiling}"
+            ));
         }
         if warmups > 20 {
             return Err("--warmup must be <= 20".to_owned());
