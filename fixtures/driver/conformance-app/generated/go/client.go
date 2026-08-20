@@ -8,10 +8,10 @@ import (
 	riffdb "riffdb.dev/application"
 )
 
-const QueryModuleHash = "937b7406f0ced9d34a88f55389f4254b4ea6daa5f9a1dd4289fa6d43501220f7"
+const QueryModuleHash = "617a781639cc99054763abfcaa3878194732bb6693136016652ef143f653c454"
 const ContractLineage = "DriverConformance"
 const ContractVersion uint64 = 1
-const ContractBundleHash = "1814b1b5192a65f0b6a44b290762997b4c69d104c281f6902c3f8c0cf3ccce51"
+const ContractBundleHash = "3c62e62ed9ae163cb49ec2733b55c6c8c6ec13f18e700f2de218ee10c58e69ea"
 
 type QuerySecretOutput struct { Query string; Entity string; Field string }
 
@@ -78,6 +78,7 @@ func (ItemSecretNotFound) GoString() string { return "ItemSecretNotFound{<secret
 type SearchItemsParams struct {
 	OrganizationId string
 	Needle string
+	ItemId *string
 	Limit *uint32
 	Offset *uint64
 }
@@ -128,7 +129,7 @@ raw, err = requiredField(fields, "token_digest"); if err != nil { return result,
 raw, err = requiredField(fields, "organization_id"); if err != nil { return result, err }; result.OrganizationId, err = riffdb.UUIDValue(raw); if err != nil { return result, err }
 return result, nil }
 
-const ItemPageQueryPlanHash = "5a134b87048610ffe47691a6e1473841515af498eb583ac009b8f5eae8328a52"
+const ItemPageQueryPlanHash = "d4816a9c447cb58923f690b2006dbc2758ed542694d5047f4c4e926b9d771ee5"
 var ItemPageOperation = riffdb.Operation{Name: "driver_conformance_item_page", InputSchemaHash: "6c5ac3d8b9ce0d9a07e57a5ea08e5a9cad362f5f3d05377af535436975cb54cb"}
 func decodeItemPageResult(value riffdb.Value) (ItemPageResult, error) { fields, err := riffdb.RecordFields(value); if err != nil { return nil, err }; outcomeValue, err := requiredField(fields, "outcome"); if err != nil { return nil, err }; outcome, err := riffdb.EnumValue(outcomeValue); if err != nil { return nil, err }; var raw riffdb.Value; switch outcome {
 case "Found": result := ItemPageFound{Outcome: outcome}
@@ -142,7 +143,7 @@ input["organization_id"] = riffdb.UUID(parameters.OrganizationId)
 input["item_id"] = riffdb.UUID(parameters.ItemId)
 response, err := client.session.Invoke(ctx, ItemPageOperation, input, options); if err != nil { return QueryResult[ItemPageResult]{}, err }; if response.ApplicationHead == nil { return QueryResult[ItemPageResult]{}, errors.New("RiffDB driver omitted query frontier") }; value, err := decodeItemPageResult(response.Value); if err != nil { return QueryResult[ItemPageResult]{}, err }; identity := QueryIdentity{ContractLineage: ContractLineage, ContractVersion: ContractVersion, ContractBundleHash: ContractBundleHash, ModuleHash: QueryModuleHash, QueryName: "ItemPage", PlanHash: ItemPageQueryPlanHash}; return QueryResult[ItemPageResult]{Value: value, Identity: identity, ApplicationHead: *response.ApplicationHead, NextCursor: response.Cursor}, nil }
 
-const ItemSecretQueryPlanHash = "d8710767e1ab0bea0595dc8aee903cb325151ebca200dcf01ef624f73cb07d09"
+const ItemSecretQueryPlanHash = "6927ccdbdb7a1b0c9a503a4a4c1930cd5b7eee16e7b505a92c086ebd94b02935"
 var ItemSecretOperation = riffdb.Operation{Name: "driver_conformance_item_secret", InputSchemaHash: "6c5ac3d8b9ce0d9a07e57a5ea08e5a9cad362f5f3d05377af535436975cb54cb"}
 func decodeItemSecretResult(value riffdb.Value) (ItemSecretResult, error) { fields, err := riffdb.RecordFields(value); if err != nil { return nil, err }; outcomeValue, err := requiredField(fields, "outcome"); if err != nil { return nil, err }; outcome, err := riffdb.EnumValue(outcomeValue); if err != nil { return nil, err }; var raw riffdb.Value; switch outcome {
 case "Found": result := ItemSecretFound{Outcome: outcome}
@@ -156,8 +157,8 @@ input["organization_id"] = riffdb.UUID(parameters.OrganizationId)
 input["item_id"] = riffdb.UUID(parameters.ItemId)
 response, err := client.session.Invoke(ctx, ItemSecretOperation, input, options); if err != nil { return QueryResult[ItemSecretResult]{}, err }; if response.ApplicationHead == nil { return QueryResult[ItemSecretResult]{}, errors.New("RiffDB driver omitted query frontier") }; value, err := decodeItemSecretResult(response.Value); if err != nil { return QueryResult[ItemSecretResult]{}, err }; identity := QueryIdentity{ContractLineage: ContractLineage, ContractVersion: ContractVersion, ContractBundleHash: ContractBundleHash, ModuleHash: QueryModuleHash, QueryName: "ItemSecret", PlanHash: ItemSecretQueryPlanHash}; return QueryResult[ItemSecretResult]{Value: value, Identity: identity, ApplicationHead: *response.ApplicationHead, NextCursor: response.Cursor}, nil }
 
-const SearchItemsQueryPlanHash = "6e72802ea01324e4635480a1e27d767f23731e0e9a05a8dd2e3fcb5927248f02"
-var SearchItemsOperation = riffdb.Operation{Name: "driver_conformance_search_items", InputSchemaHash: "c143da5105f239aff09b0d7d6463f0825abcd370fe7afe8f66ba7f21f94b87dd"}
+const SearchItemsQueryPlanHash = "d34a5799407213975e82b27e3391d823608317db7326a7fe8b898586e5ce2755"
+var SearchItemsOperation = riffdb.Operation{Name: "driver_conformance_search_items", InputSchemaHash: "8b5d1f261f1dc98cccaa81d531b27eb9e71094bb3f38485898e015f3a7fcd26c"}
 func decodeSearchItemsResult(value riffdb.Value) (SearchItemsResult, error) { fields, err := riffdb.RecordFields(value); if err != nil { return nil, err }; outcomeValue, err := requiredField(fields, "outcome"); if err != nil { return nil, err }; outcome, err := riffdb.EnumValue(outcomeValue); if err != nil { return nil, err }; var raw riffdb.Value; switch outcome {
 case "Found": result := SearchItemsFound{Outcome: outcome}
 raw, err = requiredField(fields, "items"); if err != nil { return nil, err }; result.Items, err = riffdb.DecodeValues(raw, func(item riffdb.Value) (struct { OrganizationId string; ItemId string; Title string; CreatedAt riffdb.Instant }, error) { return func() (struct { OrganizationId string; ItemId string; Title string; CreatedAt riffdb.Instant }, error) { fields, err := riffdb.RecordFields(item); if err != nil { return struct { OrganizationId string; ItemId string; Title string; CreatedAt riffdb.Instant }{}, err }; var result struct { OrganizationId string; ItemId string; Title string; CreatedAt riffdb.Instant }; var raw riffdb.Value; raw, err = requiredField(fields, "organization_id"); if err != nil { return result, err }; result.OrganizationId, err = riffdb.UUIDValue(raw); if err != nil { return result, err }; raw, err = requiredField(fields, "item_id"); if err != nil { return result, err }; result.ItemId, err = riffdb.UUIDValue(raw); if err != nil { return result, err }; raw, err = requiredField(fields, "title"); if err != nil { return result, err }; result.Title, err = riffdb.StringValue(raw); if err != nil { return result, err }; raw, err = requiredField(fields, "created_at"); if err != nil { return result, err }; result.CreatedAt, err = riffdb.TimestampValue(raw); if err != nil { return result, err }; return result, nil }() }); if err != nil { return nil, err }
@@ -167,11 +168,12 @@ default: return nil, errors.New("RiffDB driver returned unknown query outcome") 
 func (client *Client) SearchItems(ctx context.Context, parameters SearchItemsParams, options QueryOptions) (QueryResult[SearchItemsResult], error) { input := map[string]riffdb.Value{}
 input["organization_id"] = riffdb.UUID(parameters.OrganizationId)
 input["needle"] = riffdb.String(parameters.Needle)
+if parameters.ItemId != nil { input["item_id"] = riffdb.Optional(parameters.ItemId, func(item string) riffdb.Value { return riffdb.UUID(item) }) }
 if parameters.Limit != nil { input["limit"] = riffdb.U64(uint64(*parameters.Limit)) }
 if parameters.Offset != nil { input["offset"] = riffdb.U64(*parameters.Offset) }
 response, err := client.session.Invoke(ctx, SearchItemsOperation, input, options); if err != nil { return QueryResult[SearchItemsResult]{}, err }; if response.ApplicationHead == nil { return QueryResult[SearchItemsResult]{}, errors.New("RiffDB driver omitted query frontier") }; value, err := decodeSearchItemsResult(response.Value); if err != nil { return QueryResult[SearchItemsResult]{}, err }; identity := QueryIdentity{ContractLineage: ContractLineage, ContractVersion: ContractVersion, ContractBundleHash: ContractBundleHash, ModuleHash: QueryModuleHash, QueryName: "SearchItems", PlanHash: SearchItemsQueryPlanHash}; return QueryResult[SearchItemsResult]{Value: value, Identity: identity, ApplicationHead: *response.ApplicationHead, NextCursor: response.Cursor}, nil }
 
-const CreateItemPlanHash = "e78f98213a06004935156142ecf46d62ef51f96c3fa9704db29f06608e97beb7"
+const CreateItemPlanHash = "87a5eec76b98cff7209bae2bb535864c4ba5c259770db96dd159c8c407dc3273"
 var CreateItemOperation = riffdb.Operation{Name: "driver_conformance_create_item", InputSchemaHash: "61073bd1bbaacc606a002fba9d9f7810b43799ef379b4dda35741d38a606e670"}
 func encodeCreateItemInput(input CreateItemInput) map[string]riffdb.Value { return map[string]riffdb.Value{
 	"title": riffdb.String(input.Title),

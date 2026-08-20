@@ -4,10 +4,12 @@
 
 use riffdb_contract_compiler::compile_contract_source;
 use riffdb_query_module::{
-    CompiledNamedQueryPlan, NamedQuerySource, QUERY_MODULE_FORMAT_VERSION_EXACT_RESULT_SET_V1,
-    QueryModule, QueryModuleCandidate, QueryModuleName, QueryModuleVersion,
-    generate_go_application_client, generate_mcp_tools, generate_python_application_client,
-    generate_rust_application_client, generate_typescript_application_client,
+    CompiledNamedQueryPlan, NamedQuerySource,
+    QUERY_MODULE_FORMAT_VERSION_EXACT_FILTERED_RESULT_SET_V1,
+    QUERY_MODULE_FORMAT_VERSION_EXACT_RESULT_SET_V1, QueryModule, QueryModuleCandidate,
+    QueryModuleName, QueryModuleVersion, generate_go_application_client, generate_mcp_tools,
+    generate_python_application_client, generate_rust_application_client,
+    generate_typescript_application_client,
 };
 use riffdb_types::{ExactTextOperatorV1, ExactTextOrderV1, ProjectionProviderPolicyModeV1};
 
@@ -24,6 +26,7 @@ contract ExactUsers version 1 {
     conflict_key (organization_id, user_id)
   }
 }
+
 "#;
 
 const QUERY: &str = r#"
@@ -53,6 +56,70 @@ fn module() -> (riffdb_contract_ir::ContractBundle, QueryModule) {
     .expect("candidate");
     let module = QueryModule::compile(candidate, &contract).expect("exact module");
     (contract, module)
+}
+
+#[test]
+fn optional_typed_filter_rotates_to_v6_without_changing_unfiltered_v5() {
+    let contract_source = CONTRACT
+        .replace(
+            "    field name: string<128>",
+            "    field name: string<128>\n    field active: bool",
+        )
+        .replace(
+            "    index by_name (organization_id, name, user_id) text_key(name, binary_utf8_v1)",
+            concat!(
+                "    index by_name (organization_id, name, user_id) text_key(name, binary_utf8_v1)\n",
+                "    index by_active_name (organization_id, active, name, user_id) text_key(name, binary_utf8_v1)"
+            ),
+        );
+    let query = QUERY
+        .replace(
+            "$needle: User.name,",
+            "$needle: User.name,\n  $active: User.active?,",
+        )
+        .replace(
+            "where organization_id == $organization_id && name contains $needle",
+            "where organization_id == $organization_id && when $active { active == $active } && name contains $needle",
+        )
+        .replace("{ user_id name }", "{ user_id name active }");
+    let contract = compile_contract_source(&contract_source).expect("filtered contract");
+    let candidate = QueryModuleCandidate::new(
+        QueryModuleName::new("filtered_exact_users").expect("name"),
+        QueryModuleVersion::new(1).expect("version"),
+        vec![NamedQuerySource::new("SearchUsers", query).expect("query")],
+    )
+    .expect("candidate");
+    let filtered_module =
+        QueryModule::compile(candidate, &contract).expect("filtered exact module");
+    assert_eq!(
+        filtered_module.format_version(),
+        QUERY_MODULE_FORMAT_VERSION_EXACT_FILTERED_RESULT_SET_V1
+    );
+    let exact = filtered_module
+        .query("SearchUsers")
+        .and_then(|query| query.exact_text_result())
+        .expect("filtered exact plan");
+    let filter = exact.filter().expect("sealed filter");
+    assert_eq!(filter.parameter(), "active");
+    assert_eq!(
+        exact
+            .binding()
+            .family()
+            .descriptor()
+            .state_identity()
+            .layout_version()
+            .get(),
+        3
+    );
+    let decoded = QueryModule::decode_and_validate(filtered_module.canonical_bytes(), &contract)
+        .expect("strict filtered module decode");
+    assert_eq!(decoded.canonical_bytes(), filtered_module.canonical_bytes());
+
+    let (_, unfiltered) = module();
+    assert_eq!(
+        unfiltered.format_version(),
+        QUERY_MODULE_FORMAT_VERSION_EXACT_RESULT_SET_V1
+    );
 }
 
 #[test]

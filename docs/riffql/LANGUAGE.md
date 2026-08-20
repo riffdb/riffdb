@@ -322,11 +322,13 @@ and one compiler-proved total order with the entity key as the unique tie-breake
 query SearchUsers(
     $organization_id: User.organization_id,
     $needle: User.name,
+    $active: User.active?,
     $limit: Limit = 50,
     $offset: u64 = 0
 ) {
     many users from User
         where organization_id == $organization_id
+          && when $active { active == $active }
           && name contains $needle
         order by name asc, user_id asc
         take $limit offset $offset
@@ -362,12 +364,21 @@ policy shapes, non-total orders, excessive bounds, and any combination the
 provider cannot prove. There is no scan, page-walk, client-filter, approximate
 count, or fallback execution path.
 
-The current public source shape admits exactly the complete partition equality
-and one of those exact-text predicates. Additional typed filter predicates are
-rejected at their source span; they are never retained only as metadata or
-silently omitted by execution. The finite indexed filter/order family required
-for the Better Auth administrative profile remains gated by WP-652 and is not
-available until that package completes.
+The current public source shape admits the complete partition equality, one
+exact-text predicate, and at most one top-level optional typed equality guard.
+The guard must use the same optional parameter on both sides, target a distinct
+entity field, and compile in every presence member against declared indexes.
+When absent, the V3 provider uses its complete admitted posting family; when
+present, it selects the disjoint canonical-value posting family before count
+and ordinal selection. Additional, required, disjunctive, or otherwise
+unimplemented predicates are rejected at their source span and are never
+retained only as metadata or silently omitted by execution.
+
+Ascending and descending text orders are separate compiler-fixed named plan
+members; callers pass no field name or sort expression. Both append the
+complete ascending entity-key tie breaker. Applications that need several
+operator/order choices declare several named queries, preserving a finite
+generated surface rather than accepting an arbitrary query structure.
 
 Exact-result requests currently start a fresh one-page result and therefore do
 not accept an ordinary query cursor. A causal minimum may be supplied through

@@ -2656,6 +2656,10 @@ async fn execute_exact_named_query(
             .map_err(|_| validation_failure(ValidationCode::InvalidValue))?,
         _ => return Err(validation_failure(ValidationCode::TypeMismatch)),
     };
+    let filter_value = exact
+        .filter()
+        .and_then(|filter| parameters.get(filter.parameter()))
+        .cloned();
     let limit = exact_u64_parameter(&document, &parameters, exact.limit_parameter())
         .and_then(|value| u16::try_from(value).ok())
         .and_then(NonZeroU16::new)
@@ -2721,6 +2725,7 @@ async fn execute_exact_named_query(
         policy_shape,
         row_policy,
         needle,
+        filter_value,
         offset,
         limit,
         minimum_epoch,

@@ -10,13 +10,15 @@ use riffdb_types::{
     ExactTextOperatorV1, ExactTextOrderV1, ExactTextProfileV1, MAX_EXACT_TEXT_OUTPUT_ROW_BYTES_V1,
     MAX_EXACT_TEXT_ROWS_PER_PARTITION_V1, MAX_EXACT_TEXT_VALUE_BYTES_V1, MAX_KEY_BYTES,
     PartitionKeyHash, ProjectionGeneration, decode_canonical_value, encode_canonical_record,
-    hash_entity_key,
+    encode_canonical_value, hash_entity_key,
 };
 
 /// Provider-owned rebuildable checkpoint format identity.
 pub const EXACT_TEXT_PROVIDER_STATE_FORMAT_VERSION_V1: u16 = 1;
 /// Activated provider checkpoint carrying canonical entity keys for hydration.
 pub const EXACT_TEXT_PROVIDER_STATE_FORMAT_VERSION_V2: u16 = 2;
+/// Additive provider checkpoint carrying one compiler-bound typed equality dimension.
+pub const EXACT_TEXT_PROVIDER_STATE_FORMAT_VERSION_V3: u16 = 3;
 /// Exact maximum canonical checkpoint size under V1 row/value bounds.
 pub const MAX_EXACT_TEXT_CHECKPOINT_BYTES_V1: usize = 4
     + 2
@@ -42,6 +44,10 @@ pub const MAX_EXACT_TEXT_CHECKPOINT_BYTES_V2: usize = 4
             + MAX_EXACT_TEXT_VALUE_BYTES_V1
             + 4
             + MAX_EXACT_TEXT_OUTPUT_ROW_BYTES_V1);
+/// Exact maximum V3 wrapper bytes around one V2 state plus one typed filter value per row.
+pub const MAX_EXACT_TEXT_CHECKPOINT_BYTES_V3: usize = 18
+    + MAX_EXACT_TEXT_CHECKPOINT_BYTES_V2
+    + MAX_EXACT_TEXT_ROWS_PER_PARTITION_V1 * (32 + 4 + MAX_EXACT_TEXT_OUTPUT_ROW_BYTES_V1);
 
 /// Maximum rows released by one exact result window.
 pub const MAX_EXACT_TEXT_PAGE_ROWS_V1: u16 = 500;
@@ -301,9 +307,6 @@ impl ExactTextPartitionIndexV1 {
         offset: u32,
         limit: NonZeroU16,
     ) -> Result<ExactTextResultPageV1, ExactTextProviderErrorV1> {
-        if limit.get() > MAX_EXACT_TEXT_PAGE_ROWS_V1 {
-            return Err(ExactTextProviderErrorV1::PageLimit);
-        }
         let postings = match operator {
             ExactTextOperatorV1::Equals => &self.equals,
             ExactTextOperatorV1::StartsWith => &self.prefixes,
@@ -796,48 +799,15 @@ impl ExactTextPartitionIndexV2 {
             ExactTextOperatorV1::EndsWith => &self.suffixes,
             ExactTextOperatorV1::Contains => &self.contains,
         };
-        let Some(posting) = postings.get(needle.as_str().as_bytes()) else {
-            return Ok(ExactTextResultPageV2 {
-                rows: Vec::new(),
-                exact_total: 0,
-            });
-        };
-        let exact_total = u64::try_from(posting.ascending.len())
-            .map_err(|_| ExactTextProviderErrorV1::CardinalityOverflow)?;
-        let start = usize::try_from(offset).unwrap_or(usize::MAX);
-        if start >= posting.ascending.len() {
-            return Ok(ExactTextResultPageV2 {
-                rows: Vec::new(),
-                exact_total,
-            });
-        }
-        let end = start
-            .saturating_add(usize::from(limit.get()))
-            .min(posting.ascending.len());
-        let hashes = match order {
-            ExactTextOrderV1::ValueAscEntityKey => posting.ascending[start..end].to_vec(),
-            ExactTextOrderV1::ValueDescEntityKey => posting.descending[start..end]
-                .iter()
-                .map(|position| posting.ascending[usize::from(*position)])
-                .collect(),
-        };
-        let rows = hashes
-            .iter()
-            .map(|hash| {
-                let key = self
-                    .keys
-                    .get(hash)
-                    .cloned()
-                    .ok_or(ExactTextProviderErrorV1::InvalidCheckpoint)?;
-                let output = self
-                    .outputs
-                    .get(hash)
-                    .cloned()
-                    .ok_or(ExactTextProviderErrorV1::InvalidCheckpoint)?;
-                Ok(ExactTextResultRowV2 { key, output })
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        Ok(ExactTextResultPageV2 { rows, exact_total })
+        result_page_from_postings(
+            postings,
+            &self.keys,
+            &self.outputs,
+            needle,
+            order,
+            offset,
+            limit,
+        )
     }
 
     /// Exact partition identity of this complete policy-aligned state.
@@ -996,6 +966,322 @@ impl ExactTextPartitionIndexV2 {
         }
         Ok(recovered)
     }
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+struct ExactTextFilterPostingsV3 {
+    equals: PostingMap,
+    prefixes: PostingMap,
+    suffixes: PostingMap,
+    contains: PostingMap,
+}
+
+/// Additive exact provider state with one compiler-bound typed equality dimension.
+///
+/// Every distinct canonical filter value owns disjoint posting maps. Query-time
+/// filtering therefore selects one already-maintained posting family before
+/// exact count and ordinal selection; it never scans or post-filters matches.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ExactTextPartitionIndexV3 {
+    base: ExactTextPartitionIndexV2,
+    filter_field: riffdb_types::FieldId,
+    filters: BTreeMap<EntityKeyHash, CanonicalValue>,
+    filtered: BTreeMap<Vec<u8>, ExactTextFilterPostingsV3>,
+}
+
+impl ExactTextPartitionIndexV3 {
+    /// Rebuilds one complete V3 generation from authoritative rows.
+    pub fn rebuild(
+        partition: PartitionKeyHash,
+        generation: ProjectionGeneration,
+        frontier: CommitSequence,
+        profile: ExactTextProfileV1,
+        filter_field: riffdb_types::FieldId,
+        rows: &BTreeMap<EntityKey, (String, CanonicalValue, CanonicalRecord)>,
+    ) -> Result<Self, ExactTextProviderErrorV1> {
+        let base_rows = rows
+            .iter()
+            .map(|(key, (text, _, output))| (key.clone(), (text.clone(), output.clone())))
+            .collect::<BTreeMap<_, _>>();
+        let base = ExactTextPartitionIndexV2::rebuild(
+            partition, generation, frontier, profile, &base_rows,
+        )?;
+        let mut filters = BTreeMap::new();
+        for (key, (_, filter, _)) in rows {
+            let encoded = encode_canonical_value(filter)
+                .map_err(|_| ExactTextProviderErrorV1::OutputInvalid)?;
+            if encoded.len() > MAX_EXACT_TEXT_OUTPUT_ROW_BYTES_V1 {
+                return Err(ExactTextProviderErrorV1::OutputTooLarge);
+            }
+            let hash = hash_entity_key(key.as_bytes());
+            if filters.insert(hash, filter.clone()).is_some() {
+                return Err(ExactTextProviderErrorV1::EntityKeyHashCollision);
+            }
+        }
+        let filtered = build_filter_postings_v3(&base, &filters)?;
+        Ok(Self {
+            base,
+            filter_field,
+            filters,
+            filtered,
+        })
+    }
+
+    /// Returns one exact page from either the whole set or one typed filter partition.
+    pub fn result_page(
+        &self,
+        operator: ExactTextOperatorV1,
+        needle: &ExactTextNeedleV1,
+        filter: Option<&CanonicalValue>,
+        order: ExactTextOrderV1,
+        offset: u32,
+        limit: NonZeroU16,
+    ) -> Result<ExactTextResultPageV2, ExactTextProviderErrorV1> {
+        let postings = match filter {
+            None => match operator {
+                ExactTextOperatorV1::Equals => &self.base.equals,
+                ExactTextOperatorV1::StartsWith => &self.base.prefixes,
+                ExactTextOperatorV1::EndsWith => &self.base.suffixes,
+                ExactTextOperatorV1::Contains => &self.base.contains,
+            },
+            Some(filter) => {
+                let encoded = encode_canonical_value(filter)
+                    .map_err(|_| ExactTextProviderErrorV1::OutputInvalid)?;
+                let Some(filtered) = self.filtered.get(&encoded) else {
+                    return Ok(ExactTextResultPageV2 {
+                        rows: Vec::new(),
+                        exact_total: 0,
+                    });
+                };
+                match operator {
+                    ExactTextOperatorV1::Equals => &filtered.equals,
+                    ExactTextOperatorV1::StartsWith => &filtered.prefixes,
+                    ExactTextOperatorV1::EndsWith => &filtered.suffixes,
+                    ExactTextOperatorV1::Contains => &filtered.contains,
+                }
+            }
+        };
+        result_page_from_postings(
+            postings,
+            &self.base.keys,
+            &self.base.outputs,
+            needle,
+            order,
+            offset,
+            limit,
+        )
+    }
+
+    /// Compiler-resolved equality field bound into this state identity.
+    #[must_use]
+    pub const fn filter_field(&self) -> riffdb_types::FieldId {
+        self.filter_field
+    }
+
+    /// Exact partition identity.
+    #[must_use]
+    pub const fn partition(&self) -> PartitionKeyHash {
+        self.base.partition()
+    }
+
+    /// Never-reused provider generation.
+    #[must_use]
+    pub const fn generation(&self) -> ProjectionGeneration {
+        self.base.generation()
+    }
+
+    /// Latest completely applied provider epoch.
+    #[must_use]
+    pub const fn frontier(&self) -> Option<CommitSequence> {
+        self.base.frontier()
+    }
+
+    /// Canonical V3 wrapper; the embedded V2 bytes remain independently exact.
+    pub fn to_checkpoint_bytes(&self) -> Result<Vec<u8>, ExactTextProviderErrorV1> {
+        let base = self.base.to_checkpoint_bytes()?;
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"RXTF");
+        bytes.extend_from_slice(&EXACT_TEXT_PROVIDER_STATE_FORMAT_VERSION_V3.to_be_bytes());
+        bytes.extend_from_slice(&self.filter_field.to_be_bytes());
+        bytes.extend_from_slice(
+            &u32::try_from(base.len())
+                .map_err(|_| ExactTextProviderErrorV1::CheckpointTooLarge)?
+                .to_be_bytes(),
+        );
+        bytes.extend_from_slice(&base);
+        bytes.extend_from_slice(&(self.filters.len() as u32).to_be_bytes());
+        for (row, filter) in &self.filters {
+            let encoded = encode_canonical_value(filter)
+                .map_err(|_| ExactTextProviderErrorV1::OutputInvalid)?;
+            bytes.extend_from_slice(row.as_bytes());
+            bytes.extend_from_slice(
+                &u32::try_from(encoded.len())
+                    .map_err(|_| ExactTextProviderErrorV1::CheckpointTooLarge)?
+                    .to_be_bytes(),
+            );
+            bytes.extend_from_slice(&encoded);
+        }
+        if bytes.len() > MAX_EXACT_TEXT_CHECKPOINT_BYTES_V3 {
+            return Err(ExactTextProviderErrorV1::CheckpointTooLarge);
+        }
+        Ok(bytes)
+    }
+
+    /// Strictly recovers V3 and rejects unknown, mixed, or non-canonical bytes.
+    pub fn from_checkpoint_bytes(bytes: &[u8]) -> Result<Self, ExactTextProviderErrorV1> {
+        if bytes.len() < 18
+            || bytes.len() > MAX_EXACT_TEXT_CHECKPOINT_BYTES_V3
+            || &bytes[..4] != b"RXTF"
+            || u16::from_be_bytes([bytes[4], bytes[5]])
+                != EXACT_TEXT_PROVIDER_STATE_FORMAT_VERSION_V3
+        {
+            return Err(ExactTextProviderErrorV1::UnsupportedFormat);
+        }
+        let filter_field = riffdb_types::FieldId::new(read_u32(bytes, 6)?)
+            .ok_or(ExactTextProviderErrorV1::InvalidCheckpoint)?;
+        let base_len = usize::try_from(read_u32(bytes, 10)?)
+            .map_err(|_| ExactTextProviderErrorV1::InvalidCheckpoint)?;
+        let base_end = 14_usize
+            .checked_add(base_len)
+            .filter(|end| end.saturating_add(4) <= bytes.len())
+            .ok_or(ExactTextProviderErrorV1::InvalidCheckpoint)?;
+        let base = ExactTextPartitionIndexV2::from_checkpoint_bytes(&bytes[14..base_end])?;
+        let count = usize::try_from(read_u32(bytes, base_end)?)
+            .map_err(|_| ExactTextProviderErrorV1::InvalidCheckpoint)?;
+        if count != base.keys.len() || count > MAX_EXACT_TEXT_ROWS_PER_PARTITION_V1 {
+            return Err(ExactTextProviderErrorV1::InvalidCheckpoint);
+        }
+        let mut cursor = base_end + 4;
+        let mut filters = BTreeMap::new();
+        for _ in 0..count {
+            let row = EntityKeyHash::from_bytes(read_array(bytes, cursor)?);
+            cursor += 32;
+            let length = usize::try_from(read_u32(bytes, cursor)?)
+                .map_err(|_| ExactTextProviderErrorV1::InvalidCheckpoint)?;
+            cursor += 4;
+            let end = cursor
+                .checked_add(length)
+                .filter(|end| *end <= bytes.len())
+                .ok_or(ExactTextProviderErrorV1::InvalidCheckpoint)?;
+            let filter = decode_canonical_value(&bytes[cursor..end])
+                .map_err(|_| ExactTextProviderErrorV1::OutputInvalid)?;
+            if !base.keys.contains_key(&row) || filters.insert(row, filter).is_some() {
+                return Err(ExactTextProviderErrorV1::InvalidCheckpoint);
+            }
+            cursor = end;
+        }
+        if cursor != bytes.len() {
+            return Err(ExactTextProviderErrorV1::InvalidCheckpoint);
+        }
+        let filtered = build_filter_postings_v3(&base, &filters)?;
+        let recovered = Self {
+            base,
+            filter_field,
+            filters,
+            filtered,
+        };
+        if recovered.to_checkpoint_bytes()? != bytes {
+            return Err(ExactTextProviderErrorV1::InvalidCheckpoint);
+        }
+        Ok(recovered)
+    }
+}
+
+fn build_filter_postings_v3(
+    base: &ExactTextPartitionIndexV2,
+    filters: &BTreeMap<EntityKeyHash, CanonicalValue>,
+) -> Result<BTreeMap<Vec<u8>, ExactTextFilterPostingsV3>, ExactTextProviderErrorV1> {
+    if filters.len() != base.keys.len() || filters.keys().any(|row| !base.keys.contains_key(row)) {
+        return Err(ExactTextProviderErrorV1::InvalidCheckpoint);
+    }
+    let mut members = BTreeMap::<Vec<u8>, BTreeSet<EntityKeyHash>>::new();
+    for (row, filter) in filters {
+        let encoded =
+            encode_canonical_value(filter).map_err(|_| ExactTextProviderErrorV1::OutputInvalid)?;
+        members.entry(encoded).or_default().insert(*row);
+    }
+    members
+        .into_iter()
+        .map(|(filter, members)| {
+            let rows = base
+                .index
+                .rows
+                .iter()
+                .filter(|(row, _)| members.contains(row))
+                .map(|(row, value)| (*row, value.clone()))
+                .collect::<BTreeMap<_, _>>();
+            let keys = base
+                .keys
+                .iter()
+                .filter(|(row, _)| members.contains(row))
+                .map(|(row, key)| (*row, key.clone()))
+                .collect::<BTreeMap<_, _>>();
+            let (equals, prefixes, suffixes, contains) = build_v2_postings(&rows, &keys)?;
+            Ok((
+                filter,
+                ExactTextFilterPostingsV3 {
+                    equals,
+                    prefixes,
+                    suffixes,
+                    contains,
+                },
+            ))
+        })
+        .collect()
+}
+
+fn result_page_from_postings(
+    postings: &PostingMap,
+    keys: &BTreeMap<EntityKeyHash, EntityKey>,
+    outputs: &BTreeMap<EntityKeyHash, CanonicalRecord>,
+    needle: &ExactTextNeedleV1,
+    order: ExactTextOrderV1,
+    offset: u32,
+    limit: NonZeroU16,
+) -> Result<ExactTextResultPageV2, ExactTextProviderErrorV1> {
+    if limit.get() > MAX_EXACT_TEXT_PAGE_ROWS_V1 {
+        return Err(ExactTextProviderErrorV1::PageLimit);
+    }
+    let Some(posting) = postings.get(needle.as_str().as_bytes()) else {
+        return Ok(ExactTextResultPageV2 {
+            rows: Vec::new(),
+            exact_total: 0,
+        });
+    };
+    let exact_total = u64::try_from(posting.ascending.len())
+        .map_err(|_| ExactTextProviderErrorV1::CardinalityOverflow)?;
+    let start = usize::try_from(offset).unwrap_or(usize::MAX);
+    if start >= posting.ascending.len() {
+        return Ok(ExactTextResultPageV2 {
+            rows: Vec::new(),
+            exact_total,
+        });
+    }
+    let end = start
+        .saturating_add(usize::from(limit.get()))
+        .min(posting.ascending.len());
+    let hashes = match order {
+        ExactTextOrderV1::ValueAscEntityKey => posting.ascending[start..end].to_vec(),
+        ExactTextOrderV1::ValueDescEntityKey => posting.descending[start..end]
+            .iter()
+            .map(|position| posting.ascending[usize::from(*position)])
+            .collect(),
+    };
+    let rows = hashes
+        .iter()
+        .map(|hash| {
+            let key = keys
+                .get(hash)
+                .cloned()
+                .ok_or(ExactTextProviderErrorV1::InvalidCheckpoint)?;
+            let output = outputs
+                .get(hash)
+                .cloned()
+                .ok_or(ExactTextProviderErrorV1::InvalidCheckpoint)?;
+            Ok(ExactTextResultRowV2 { key, output })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(ExactTextResultPageV2 { rows, exact_total })
 }
 
 fn build_v2_postings(

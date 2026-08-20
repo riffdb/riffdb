@@ -1,11 +1,14 @@
 query SearchItems(
     $organization_id: Item.organization_id,
     $needle: Item.title,
+    $item_id: Item.item_id?,
     $limit: Limit = 50,
     $offset: u64 = 0
 ) {
     many items from Item
-        where organization_id == $organization_id && title contains $needle
+        where organization_id == $organization_id
+          && when $item_id { item_id == $item_id }
+          && title contains $needle
         order by title asc, item_id asc
         take $limit offset $offset
 

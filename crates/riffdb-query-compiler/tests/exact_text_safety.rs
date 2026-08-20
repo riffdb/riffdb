@@ -43,6 +43,26 @@ query SearchUsers(
 }
 "#;
 
+const FILTERED_QUERY: &str = r#"
+query SearchActiveUsers(
+  $organization_id: User.organization_id,
+  $needle: User.name,
+  $active: User.active?,
+  $limit: Limit = 50,
+  $offset: u64 = 0
+) {
+  many users from User
+    where organization_id == $organization_id
+      && when $active { active == $active }
+      && name contains $needle
+    order by name desc, user_id asc
+    take $limit offset $offset
+  aggregate total from users { exact_count() as value }
+  return Found { users: users { user_id name active } total: total { value } }
+  outcomes Found
+}
+"#;
+
 fn catalog() -> SymbolicCatalog {
     let bundle = compile_contract_source(PROTECTED_CONTRACT).expect("protected contract");
     SymbolicCatalog::from_bundle(&bundle).expect("catalog")
@@ -85,7 +105,29 @@ fn exact_query_rejects_any_predicate_the_provider_does_not_execute() {
     assert_eq!(diagnostic.code(), PlannerDiagnosticCode::ExactTextProvider);
     assert_eq!(
         diagnostic.summary(),
-        "exact result query admits one exact text predicate"
+        "exact result predicate is not implemented by the selected provider"
     );
     assert!(diagnostic.primary().start < diagnostic.primary().end);
+}
+
+#[test]
+fn one_optional_typed_equality_filter_is_sealed_into_provider_v3() {
+    let document = parse_query(FILTERED_QUERY).expect("filtered exact query");
+    let compiled = compile_exact_text_query_v1(&document, &catalog()).expect("filtered exact plan");
+    let filter = compiled.filter.expect("compiled filter");
+    assert_eq!(filter.field_name(), "active");
+    assert_eq!(filter.parameter(), "active");
+    assert_eq!(
+        compiled.order,
+        riffdb_types::ExactTextOrderV1::ValueDescEntityKey
+    );
+    assert_eq!(
+        compiled
+            .family
+            .descriptor()
+            .state_identity()
+            .layout_version()
+            .get(),
+        3
+    );
 }

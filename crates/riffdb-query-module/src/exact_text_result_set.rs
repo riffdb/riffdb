@@ -11,12 +11,16 @@ use riffdb_query_ir::{
     QuerySourceMap, SecretOutputRequirement,
 };
 use riffdb_types::{
-    ExactTextOperatorV1, ExactTextOrderV1, QueryCostVectorV1, QueryOperationName, QueryPlanHash,
-    hash_query_plan,
+    ExactTextOperatorV1, ExactTextOrderV1, FieldId, QueryCostVectorV1, QueryOperationName,
+    QueryPlanHash, hash_query_plan,
 };
 
 /// Canonical exact-text result-set binding version.
 pub const EXACT_TEXT_RESULT_SET_BINDING_VERSION_V1: u16 = 1;
+/// Canonical compiled exact-query identity without a typed equality filter.
+pub const COMPILED_EXACT_TEXT_QUERY_VERSION_V1: u16 = 1;
+/// Canonical compiled exact-query identity with one typed equality filter.
+pub const COMPILED_EXACT_TEXT_QUERY_VERSION_V2: u16 = 2;
 /// Fixed non-name bytes in one canonical binding.
 pub const EXACT_TEXT_RESULT_SET_BINDING_FIXED_BYTES_V1: usize =
     8 + 64 + PROJECTION_RESULT_SET_PLAN_V2_BYTES;
@@ -154,9 +158,44 @@ pub struct CompiledExactTextResultSetV1 {
     needle_parameter: String,
     limit_parameter: String,
     offset_parameter: String,
+    filter: Option<ExactTextFilterBindingV1>,
     cost: QueryCostVectorV1,
     canonical_bytes: Vec<u8>,
     identity: QueryPlanHash,
+}
+
+/// One compiler-bound optional equality filter; callers supply only its typed value.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ExactTextFilterBindingV1 {
+    field: FieldId,
+    parameter: String,
+}
+
+impl ExactTextFilterBindingV1 {
+    /// Constructs a closed filter binding from compiler-owned identities.
+    pub fn new(
+        field: FieldId,
+        parameter: impl Into<String>,
+    ) -> Result<Self, ExactTextResultSetBindingError> {
+        let parameter = parameter.into();
+        if parameter.is_empty() || parameter.len() > u16::MAX as usize {
+            return Err(ExactTextResultSetBindingError::InvalidEncoding);
+        }
+        Ok(Self { field, parameter })
+    }
+
+    /// Compiler-resolved filtered field.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn internal_field(&self) -> FieldId {
+        self.field
+    }
+
+    /// Typed optional parameter controlling filter presence.
+    #[must_use]
+    pub fn parameter(&self) -> &str {
+        &self.parameter
+    }
 }
 
 impl CompiledExactTextResultSetV1 {
@@ -170,9 +209,13 @@ impl CompiledExactTextResultSetV1 {
         needle_parameter: impl Into<String>,
         limit_parameter: impl Into<String>,
         offset_parameter: impl Into<String>,
+        filter: Option<ExactTextFilterBindingV1>,
     ) -> Result<Self, ExactTextResultSetBindingError> {
+        let expected_presence = filter
+            .as_ref()
+            .map_or(&[][..], |filter| std::slice::from_ref(&filter.parameter));
         if !binding.family().contains_member(operator, order)
-            || !metadata.presence_parameters().is_empty()
+            || metadata.presence_parameters() != expected_presence
         {
             return Err(ExactTextResultSetBindingError::ProviderMismatch);
         }
@@ -209,6 +252,7 @@ impl CompiledExactTextResultSetV1 {
             &needle_parameter,
             &limit_parameter,
             &offset_parameter,
+            filter.as_ref(),
             cost,
         )?;
         let identity = hash_query_plan(&canonical_bytes);
@@ -220,6 +264,7 @@ impl CompiledExactTextResultSetV1 {
             needle_parameter,
             limit_parameter,
             offset_parameter,
+            filter,
             cost,
             canonical_bytes,
             identity,
@@ -260,6 +305,12 @@ impl CompiledExactTextResultSetV1 {
     #[must_use]
     pub fn offset_parameter(&self) -> &str {
         &self.offset_parameter
+    }
+
+    /// Optional compiler-bound equality filter executed before count and windowing.
+    #[must_use]
+    pub const fn filter(&self) -> Option<&ExactTextFilterBindingV1> {
+        self.filter.as_ref()
     }
 
     /// Public typed schemas proved by the symbolic resolver.
@@ -343,14 +394,26 @@ fn encode_compiled_exact(
     needle_parameter: &str,
     limit_parameter: &str,
     offset_parameter: &str,
+    filter: Option<&ExactTextFilterBindingV1>,
     cost: QueryCostVectorV1,
 ) -> Result<Vec<u8>, ExactTextResultSetBindingError> {
     let binding_bytes = binding.to_canonical_bytes();
     let mut bytes = Vec::new();
     bytes.extend_from_slice(b"RXCQ");
-    bytes.extend_from_slice(&1_u16.to_be_bytes());
+    bytes.extend_from_slice(
+        &if filter.is_some() {
+            COMPILED_EXACT_TEXT_QUERY_VERSION_V2
+        } else {
+            COMPILED_EXACT_TEXT_QUERY_VERSION_V1
+        }
+        .to_be_bytes(),
+    );
     bytes.push(operator as u8);
     bytes.push(order as u8);
+    if let Some(filter) = filter {
+        bytes.extend_from_slice(&filter.field.to_be_bytes());
+        write_blob(&mut bytes, filter.parameter.as_bytes())?;
+    }
     write_blob(&mut bytes, &binding_bytes)?;
     write_blob(&mut bytes, metadata.canonical_bytes())?;
     for value in [needle_parameter, limit_parameter, offset_parameter] {

@@ -1066,6 +1066,7 @@ pub struct ExactTextProjectionRequest {
     policy_shape: ApplicationRoleHash,
     row_policy: Option<Arc<AuthorizedQueryRowPolicyContextV1>>,
     needle: riffdb_types::ExactTextNeedleV1,
+    filter_value: Option<CanonicalValue>,
     offset: u32,
     limit: std::num::NonZeroU16,
     minimum_epoch: Option<CommitSequence>,
@@ -1083,6 +1084,7 @@ impl ExactTextProjectionRequest {
         policy_shape: ApplicationRoleHash,
         row_policy: Option<Arc<AuthorizedQueryRowPolicyContextV1>>,
         needle: riffdb_types::ExactTextNeedleV1,
+        filter_value: Option<CanonicalValue>,
         offset: u32,
         limit: std::num::NonZeroU16,
         minimum_epoch: Option<CommitSequence>,
@@ -1094,6 +1096,7 @@ impl ExactTextProjectionRequest {
             policy_shape,
             row_policy,
             needle,
+            filter_value,
             offset,
             limit,
             minimum_epoch,
@@ -1129,6 +1132,11 @@ impl ExactTextProjectionRequest {
     #[must_use]
     pub const fn needle(&self) -> &riffdb_types::ExactTextNeedleV1 {
         &self.needle
+    }
+    /// Optional typed equality value for the compiler-bound filter dimension.
+    #[must_use]
+    pub const fn filter_value(&self) -> Option<&CanonicalValue> {
+        self.filter_value.as_ref()
     }
     /// Checked zero-based ordinal.
     #[must_use]

@@ -13,12 +13,13 @@ use std::time::Duration;
 
 use riffdb_policy::{AuthorizedQueryRowPolicyContextV1, MAX_PROJECTED_POLICY_CANDIDATES_V1};
 use riffdb_projection::{
-    ExactTextPartitionIndexV2, MAX_EXACT_TEXT_CHECKPOINT_BYTES_V2, ProviderEpochObservationV1,
-    ProviderLifecycleV1, ResultSetEpochContextV1, ResultSetEpochRequirementV1,
-    negotiate_result_set_epoch_v1,
+    ExactTextPartitionIndexV2, ExactTextPartitionIndexV3, MAX_EXACT_TEXT_CHECKPOINT_BYTES_V3,
+    ProviderEpochObservationV1, ProviderLifecycleV1, ResultSetEpochContextV1,
+    ResultSetEpochRequirementV1, negotiate_result_set_epoch_v1,
 };
 use riffdb_query_executor::{
-    QueryExecutionError, QueryExecutionPort, execute_exact_text_result_set_v1,
+    ExactTextResultSetV1, QueryExecutionError, QueryExecutionPort,
+    execute_exact_text_filtered_result_set_v1, execute_exact_text_result_set_v1,
 };
 use riffdb_service::{
     ExactTextProjectionPort, ExactTextProjectionPortError, ExactTextProjectionRequest,
@@ -49,9 +50,11 @@ const CHECKPOINT_LENGTH_OFFSET: usize = CHECKPOINT_SLOT_OFFSET + SLOT_KEY_BYTES;
 const CHECKPOINT_HEADER_BYTES: usize = CHECKPOINT_LENGTH_OFFSET + 4;
 const CHECKPOINT_DIGEST_BYTES: usize = 32;
 const MAX_ACTIVATION_CHECKPOINT_BYTES: usize =
-    CHECKPOINT_HEADER_BYTES + MAX_EXACT_TEXT_CHECKPOINT_BYTES_V2 + CHECKPOINT_DIGEST_BYTES;
+    CHECKPOINT_HEADER_BYTES + MAX_EXACT_TEXT_CHECKPOINT_BYTES_V3 + CHECKPOINT_DIGEST_BYTES;
 
 type SlotKey = Vec<u8>;
+type ExactTextSourceRow = (String, Option<CanonicalValue>, CanonicalRecord);
+type ExactTextSourceRows = BTreeMap<riffdb_types::EntityKey, ExactTextSourceRow>;
 
 struct ExactTextRegistration {
     query: Arc<riffdb_query_module::CompiledExactTextResultSetV1>,
@@ -102,12 +105,47 @@ impl ExactTextRegistration {
 enum ExactTextSlotState {
     Building,
     Rebuilding(ProjectionGeneration),
-    Ready(Box<ExactTextPartitionIndexV2>),
+    Ready(ExactTextProviderState),
     Unavailable {
         observed_head: CommitSequence,
         prior_generation: ProjectionGeneration,
     },
     IntegrityFailure,
+}
+
+enum ExactTextProviderState {
+    V2(Box<ExactTextPartitionIndexV2>),
+    V3(Box<ExactTextPartitionIndexV3>),
+}
+
+impl ExactTextProviderState {
+    const fn partition(&self) -> PartitionKeyHash {
+        match self {
+            Self::V2(provider) => provider.partition(),
+            Self::V3(provider) => provider.partition(),
+        }
+    }
+
+    const fn generation(&self) -> ProjectionGeneration {
+        match self {
+            Self::V2(provider) => provider.generation(),
+            Self::V3(provider) => provider.generation(),
+        }
+    }
+
+    const fn frontier(&self) -> Option<CommitSequence> {
+        match self {
+            Self::V2(provider) => provider.frontier(),
+            Self::V3(provider) => provider.frontier(),
+        }
+    }
+
+    fn checkpoint_bytes(&self) -> Result<Vec<u8>, riffdb_projection::ExactTextProviderErrorV1> {
+        match self {
+            Self::V2(provider) => provider.to_checkpoint_bytes(),
+            Self::V3(provider) => provider.to_checkpoint_bytes(),
+        }
+    }
 }
 
 struct ExactTextSlot {
@@ -274,17 +312,38 @@ impl ExactTextProjectionPort for ExactTextRuntime {
                 ExactTextProjectionPortError::Integrity
             }
         })?;
-        let result = execute_exact_text_result_set_v1(
-            request.query().binding().plan(),
-            request.query().binding().family(),
-            &proof,
-            provider,
-            request.query().operator(),
-            request.query().order(),
-            request.needle(),
-            request.offset(),
-            request.limit(),
-        )
+        let result: ExactTextResultSetV1 = match (request.query().filter(), provider) {
+            (None, ExactTextProviderState::V2(provider)) if request.filter_value().is_none() => {
+                execute_exact_text_result_set_v1(
+                    request.query().binding().plan(),
+                    request.query().binding().family(),
+                    &proof,
+                    provider,
+                    request.query().operator(),
+                    request.query().order(),
+                    request.needle(),
+                    request.offset(),
+                    request.limit(),
+                )
+            }
+            (Some(filter), ExactTextProviderState::V3(provider))
+                if provider.filter_field() == filter.internal_field() =>
+            {
+                execute_exact_text_filtered_result_set_v1(
+                    request.query().binding().plan(),
+                    request.query().binding().family(),
+                    &proof,
+                    provider,
+                    request.query().operator(),
+                    request.query().order(),
+                    request.needle(),
+                    request.filter_value(),
+                    request.offset(),
+                    request.limit(),
+                )
+            }
+            _ => return Err(ExactTextProjectionPortError::Integrity),
+        }
         .map_err(|_| ExactTextProjectionPortError::Integrity)?;
         let rows = result
             .rows()
@@ -399,7 +458,7 @@ fn refresh_registered_slots(runtime: &ExactTextRuntime) -> Result<(), ()> {
         match rebuild_slot(runtime, &slot, head, prior_generation) {
             Ok(Some(provider)) => {
                 let mut state = slot.state.lock().map_err(|_| ())?;
-                *state = ExactTextSlotState::Ready(Box::new(provider));
+                *state = ExactTextSlotState::Ready(provider);
             }
             Ok(None) => {}
             Err(RebuildFailure::Transient) => {}
@@ -424,7 +483,7 @@ fn rebuild_slot(
     slot: &ExactTextSlot,
     head: CommitSequence,
     prior_generation: Option<ProjectionGeneration>,
-) -> Result<Option<ExactTextPartitionIndexV2>, RebuildFailure> {
+) -> Result<Option<ExactTextProviderState>, RebuildFailure> {
     if prior_generation.is_none()
         && let Some(bytes) = read_checkpoint(&slot.checkpoint)?
         && let Ok(provider_bytes) = decode_activation_checkpoint(
@@ -432,7 +491,7 @@ fn rebuild_slot(
             &slot.registration.key(),
             runtime.history_incarnation,
         )
-        && let Ok(recovered) = ExactTextPartitionIndexV2::from_checkpoint_bytes(provider_bytes)
+        && let Ok(recovered) = recover_provider(&slot.registration, provider_bytes)
         && recovered.partition() == hash_partition_key(slot.registration.partition_key.as_bytes())
     {
         if recovered.frontier() == Some(head) {
@@ -447,14 +506,43 @@ fn rebuild_slot(
         )
         .ok_or(RebuildFailure::Integrity)?;
     let rows = read_complete_partition(runtime, &slot.registration, head, generation)?;
-    let provider = ExactTextPartitionIndexV2::rebuild(
-        hash_partition_key(slot.registration.partition_key.as_bytes()),
-        generation,
-        head,
-        ExactTextProfileV1::BinaryUtf8V1,
-        &rows,
-    )
-    .map_err(|_| RebuildFailure::Integrity)?;
+    let provider = match slot.registration.query.filter() {
+        None => {
+            let rows = rows
+                .into_iter()
+                .map(|(key, (text, _, output))| (key, (text, output)))
+                .collect::<BTreeMap<_, _>>();
+            ExactTextProviderState::V2(Box::new(
+                ExactTextPartitionIndexV2::rebuild(
+                    hash_partition_key(slot.registration.partition_key.as_bytes()),
+                    generation,
+                    head,
+                    ExactTextProfileV1::BinaryUtf8V1,
+                    &rows,
+                )
+                .map_err(|_| RebuildFailure::Integrity)?,
+            ))
+        }
+        Some(filter) => {
+            let rows = rows
+                .into_iter()
+                .map(|(key, (text, filter, output))| {
+                    (key, (text, filter.unwrap_or(CanonicalValue::Null), output))
+                })
+                .collect::<BTreeMap<_, _>>();
+            ExactTextProviderState::V3(Box::new(
+                ExactTextPartitionIndexV3::rebuild(
+                    hash_partition_key(slot.registration.partition_key.as_bytes()),
+                    generation,
+                    head,
+                    ExactTextProfileV1::BinaryUtf8V1,
+                    filter.internal_field(),
+                    &rows,
+                )
+                .map_err(|_| RebuildFailure::Integrity)?,
+            ))
+        }
+    };
     persist_checkpoint(
         &slot.checkpoint,
         &slot.registration.key(),
@@ -465,12 +553,30 @@ fn rebuild_slot(
     Ok(Some(provider))
 }
 
+fn recover_provider(
+    registration: &ExactTextRegistration,
+    bytes: &[u8],
+) -> Result<ExactTextProviderState, riffdb_projection::ExactTextProviderErrorV1> {
+    match registration.query.filter() {
+        None => ExactTextPartitionIndexV2::from_checkpoint_bytes(bytes)
+            .map(Box::new)
+            .map(ExactTextProviderState::V2),
+        Some(filter) => {
+            let provider = ExactTextPartitionIndexV3::from_checkpoint_bytes(bytes)?;
+            if provider.filter_field() != filter.internal_field() {
+                return Err(riffdb_projection::ExactTextProviderErrorV1::InvalidCheckpoint);
+            }
+            Ok(ExactTextProviderState::V3(Box::new(provider)))
+        }
+    }
+}
+
 fn read_complete_partition(
     runtime: &ExactTextRuntime,
     registration: &ExactTextRegistration,
     expected_head: CommitSequence,
     generation: ProjectionGeneration,
-) -> Result<BTreeMap<riffdb_types::EntityKey, (String, CanonicalRecord)>, RebuildFailure> {
+) -> Result<ExactTextSourceRows, RebuildFailure> {
     let program = registration.query.representative_program();
     let step = program.steps().first().ok_or(RebuildFailure::Integrity)?;
     if program.steps().len() != 1 {
@@ -497,6 +603,10 @@ fn read_complete_partition(
         })
         .collect::<Result<BTreeSet<FieldId>, _>>()?;
     let text_field = registration.query.binding().family().field();
+    let filter_field = registration
+        .query
+        .filter()
+        .map(|filter| filter.internal_field());
     let maximum_candidates =
         usize::try_from(registration.query.binding().family().max_candidates())
             .map_err(|_| RebuildFailure::Integrity)?
@@ -550,8 +660,16 @@ fn read_complete_partition(
                     .collect(),
             )
             .map_err(|_| RebuildFailure::Integrity)?;
+            let filter = filter_field.and_then(|filter_field| {
+                record
+                    .fields()
+                    .fields()
+                    .iter()
+                    .find(|(field, _)| *field == filter_field)
+                    .map(|(_, value)| value.clone())
+            });
             if output.len() != output_fields.len()
-                || rows.insert(entity_key, (text, output)).is_some()
+                || rows.insert(entity_key, (text, filter, output)).is_some()
             {
                 return Err(RebuildFailure::Integrity);
             }
@@ -634,11 +752,11 @@ fn persist_checkpoint(
     path: &Path,
     slot_key: &[u8],
     history_incarnation: u64,
-    provider: &ExactTextPartitionIndexV2,
+    provider: &ExactTextProviderState,
 ) -> Result<(), std::io::Error> {
     let pending = path.with_extension("pending");
     let provider_bytes = provider
-        .to_checkpoint_bytes()
+        .checkpoint_bytes()
         .map_err(|_| std::io::Error::other("exact checkpoint integrity"))?;
     let bytes = encode_activation_checkpoint(slot_key, history_incarnation, &provider_bytes)
         .map_err(|_| std::io::Error::other("exact checkpoint integrity"))?;
@@ -681,7 +799,7 @@ fn encode_activation_checkpoint(
     history_incarnation: u64,
     provider: &[u8],
 ) -> Result<Vec<u8>, RebuildFailure> {
-    if slot_key.len() != SLOT_KEY_BYTES || provider.len() > MAX_EXACT_TEXT_CHECKPOINT_BYTES_V2 {
+    if slot_key.len() != SLOT_KEY_BYTES || provider.len() > MAX_EXACT_TEXT_CHECKPOINT_BYTES_V3 {
         return Err(RebuildFailure::Integrity);
     }
     let provider_length = u32::try_from(provider.len()).map_err(|_| RebuildFailure::Integrity)?;
@@ -731,7 +849,7 @@ fn decode_activation_checkpoint<'a>(
     let digest_end = provider_end
         .checked_add(CHECKPOINT_DIGEST_BYTES)
         .ok_or(RebuildFailure::Integrity)?;
-    if provider_length > MAX_EXACT_TEXT_CHECKPOINT_BYTES_V2 || digest_end != bytes.len() {
+    if provider_length > MAX_EXACT_TEXT_CHECKPOINT_BYTES_V3 || digest_end != bytes.len() {
         return Err(RebuildFailure::Integrity);
     }
     let expected = hash(HashDomain::ExactResultCheckpoint, &bytes[..provider_end]);

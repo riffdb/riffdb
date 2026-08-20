@@ -152,6 +152,7 @@ async fn run_async() -> TestResult<()> {
                 generated::SearchItemsParams {
                     organization_id: organization_id.clone(),
                     needle: "remote Rust".to_owned(),
+                    item_id: Some(item_id.clone()),
                     limit: 50,
                     offset: 0,
                 },

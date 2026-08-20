@@ -17,8 +17,8 @@ from riffdb_application._binding import decode_variant, encode_record
 
 CONTRACT_LINEAGE: Final[str] = "DriverConformance"
 CONTRACT_VERSION: Final[int] = 1
-CONTRACT_BUNDLE_HASH: Final[str] = "1814b1b5192a65f0b6a44b290762997b4c69d104c281f6902c3f8c0cf3ccce51"
-QUERY_MODULE_HASH: Final[str] = "937b7406f0ced9d34a88f55389f4254b4ea6daa5f9a1dd4289fa6d43501220f7"
+CONTRACT_BUNDLE_HASH: Final[str] = "3c62e62ed9ae163cb49ec2733b55c6c8c6ec13f18e700f2de218ee10c58e69ea"
+QUERY_MODULE_HASH: Final[str] = "617a781639cc99054763abfcaa3878194732bb6693136016652ef143f653c454"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class Item:
@@ -28,7 +28,7 @@ class Item:
     token_digest: str
     organization_id: UUID
 
-ITEM_PAGE_QUERY_PLAN_HASH: Final[str] = "5a134b87048610ffe47691a6e1473841515af498eb583ac009b8f5eae8328a52"
+ITEM_PAGE_QUERY_PLAN_HASH: Final[str] = "d4816a9c447cb58923f690b2006dbc2758ed542694d5047f4c4e926b9d771ee5"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ItemPageParams:
@@ -53,7 +53,7 @@ class ItemPageNotFound:
 
 ItemPageResult: TypeAlias = ItemPageFound | ItemPageNotFound
 
-ITEM_SECRET_QUERY_PLAN_HASH: Final[str] = "d8710767e1ab0bea0595dc8aee903cb325151ebca200dcf01ef624f73cb07d09"
+ITEM_SECRET_QUERY_PLAN_HASH: Final[str] = "6927ccdbdb7a1b0c9a503a4a4c1930cd5b7eee16e7b505a92c086ebd94b02935"
 ITEM_SECRET_SECRET_OUTPUTS: Final[tuple[tuple[str, str, str], ...]] = (
     ("ItemSecret", "Item", "token_digest"),
 )
@@ -79,12 +79,13 @@ class ItemSecretNotFound:
 
 ItemSecretResult: TypeAlias = ItemSecretFound | ItemSecretNotFound
 
-SEARCH_ITEMS_QUERY_PLAN_HASH: Final[str] = "6e72802ea01324e4635480a1e27d767f23731e0e9a05a8dd2e3fcb5927248f02"
+SEARCH_ITEMS_QUERY_PLAN_HASH: Final[str] = "d34a5799407213975e82b27e3391d823608317db7326a7fe8b898586e5ce2755"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class SearchItemsParams:
     organization_id: UUID
     needle: str
+    item_id: UUID | None = None
     limit: Annotated[int, "u64"] | None = None
     offset: Annotated[int, "u64"] | None = None
 
@@ -115,7 +116,7 @@ class CreateItemInput:
     idempotency_key: str
     organization_id: UUID
 
-CREATE_ITEM_PLAN_HASH: Final[str] = "e78f98213a06004935156142ecf46d62ef51f96c3fa9704db29f06608e97beb7"
+CREATE_ITEM_PLAN_HASH: Final[str] = "87a5eec76b98cff7209bae2bb535864c4ba5c259770db96dd159c8c407dc3273"
 @dataclass(frozen=True, slots=True, kw_only=True)
 class CreateItemCreated:
     outcome: Literal["Created"] = field(default="Created", init=False)
