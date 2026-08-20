@@ -62,8 +62,16 @@ esac
 work_root="$(mktemp -d "$task_tmp_root/riffdb-adapter-cascade.XXXXXX")"
 server_pid=''
 driver_pid=''
+admin_driver_pid=''
+writer_driver_pid=''
 server_input_fd=''
 cleanup() {
+    for auxiliary_pid in "$admin_driver_pid" "$writer_driver_pid"; do
+        if [[ -n "$auxiliary_pid" ]] && kill -0 "$auxiliary_pid" 2>/dev/null; then
+            kill -TERM "$auxiliary_pid" 2>/dev/null || true
+            wait "$auxiliary_pid" 2>/dev/null || true
+        fi
+    done
     if [[ -n "$driver_pid" ]] && kill -0 "$driver_pid" 2>/dev/null; then
         kill -TERM "$driver_pid" 2>/dev/null || true
         wait "$driver_pid" 2>/dev/null || true
@@ -383,7 +391,224 @@ for language in go typescript; do
     }
 done
 
+# WP-648: the same real Better Auth application also owns one read-only admin
+# profile. Seed through ordinary per-user command capabilities, then exercise
+# the generated TypeScript admin route over its distinct least-authority role.
+admin_organization_id='018f0f8b-7c6d-7e31-8a4f-000000000501'
+foreign_organization_id='018f0f8b-7c6d-7e31-8a4f-000000000502'
+admin_user_alpha='018f0f8b-7c6d-7e31-8a4f-000000000511'
+admin_user_alpine='018f0f8b-7c6d-7e31-8a4f-000000000512'
+admin_user_beta='018f0f8b-7c6d-7e31-8a4f-000000000513'
+admin_user_omega='018f0f8b-7c6d-7e31-8a4f-000000000514'
+admin_user_foreign='018f0f8b-7c6d-7e31-8a4f-000000000515'
+admin_user_concurrent='018f0f8b-7c6d-7e31-8a4f-000000000516'
+
+seed_admin_user() {
+    local ordinal="$1"
+    local organization="$2"
+    local user="$3"
+    local email="$4"
+    local credential="$work_root/admin-seed-$ordinal.credential"
+    bind_role "$user" "$credential" >"$work_root/admin-seed-$ordinal-bind.json"
+    cat >"$work_root/admin-seed-$ordinal-client.toml" <<EOF
+[client]
+endpoint = "https://127.0.0.1:$port"
+database = "default"
+output = "json"
+max_attempts = 3
+credential_file = "$credential"
+tls_trust_root = "$work_root/ca.pem"
+tls_server_name = "127.0.0.1"
+EOF
+    jq -n \
+        --arg request "018f0f8b-7c6d-7e31-8a4f-0000000006$ordinal" \
+        --arg organization "$organization" --arg user "$user" --arg email "$email" \
+        --arg account "018f0f8b-7c6d-7e31-8a4f-0000000007$ordinal" \
+        --arg session "018f0f8b-7c6d-7e31-8a4f-0000000008$ordinal" \
+        '{request_id:{"$uuid":$request},signups:[{organization_id:{"$uuid":$organization},user_id:{"$uuid":$user},account_id:{"$uuid":$account},session_id:{"$uuid":$session},email:$email,provider:"password",provider_account_id:$email,token_digest:("sha256:admin-seed-" + $user),expires_at:{"$timestamp":{seconds:"2000000000",nanos:0}}}]}' \
+        >"$work_root/admin-seed-$ordinal.json"
+    target/debug/riffdb --config "$work_root/admin-seed-$ordinal-client.toml" \
+        command run CreateUserAccountSessions \
+        --input "$work_root/admin-seed-$ordinal.json" \
+        --application "$work_root/application/riffdb.application.json" --output json \
+        >"$work_root/admin-seed-$ordinal.out"
+    jq -e '.ok == true and .result.outcome_type == "UserAccountSessionsCreated"' \
+        "$work_root/admin-seed-$ordinal.out" >/dev/null
+}
+
+seed_admin_user 01 "$admin_organization_id" "$admin_user_alpha" 'alpha@example.test'
+seed_admin_user 02 "$admin_organization_id" "$admin_user_alpine" 'alpine@example.test'
+seed_admin_user 03 "$admin_organization_id" "$admin_user_beta" 'béta@example.test'
+seed_admin_user 04 "$admin_organization_id" "$admin_user_omega" 'omega@other.test'
+seed_admin_user 05 "$foreign_organization_id" "$admin_user_foreign" 'foreign@example.test'
+
+jq -n '{administer_users:true}' >"$work_root/admin-facts.json"
+target/debug/riffdb --config "$work_root/operator-client.toml" role bind \
+    "$work_root/application/riffdb.application.json" \
+    --role BetterAuthAdmin --principal better-auth-admin \
+    --actor-kind service --audience riffdb-adapter-cascade --lifetime-seconds 3600 \
+    --principal-facts "$work_root/admin-facts.json" \
+    --credential-output "$work_root/admin.credential" --output json \
+    >"$work_root/admin-bind.json"
+admin_capability="$(jq -r '.result.transition.identity.capability_id' "$work_root/admin-bind.json")"
+
+cat >"$work_root/admin-client.toml" <<EOF
+[client]
+endpoint = "https://127.0.0.1:$port"
+database = "default"
+output = "json"
+max_attempts = 1
+credential_file = "$work_root/admin.credential"
+tls_trust_root = "$work_root/ca.pem"
+tls_server_name = "127.0.0.1"
+EOF
+jq -n --arg organization "$admin_organization_id" \
+    '{organization_id:{"$uuid":$organization},needle:"@example.test",user_id:null,limit:2,offset:{"$u64":"0"}}' \
+    >"$work_root/admin-readiness-query.json"
+admin_ready=''
+for _attempt in $(seq 1 100); do
+    if target/debug/riffdb --config "$work_root/admin-client.toml" \
+        query run-named AdminUsersContainsAsc \
+        --contract-lineage BetterAuthAcceptance --contract-version 1 \
+        --module-hash "$module_hash" --parameters "$work_root/admin-readiness-query.json" \
+        --output json >"$work_root/admin-readiness.out" 2>&1; then
+        admin_ready=yes
+        break
+    fi
+    if ! rg -q 'RDB-QUERY-0102' "$work_root/admin-readiness.out"; then
+        cat "$work_root/admin-readiness.out" >&2
+        exit 1
+    fi
+done
+[[ "$admin_ready" == yes ]] || {
+    cat "$work_root/admin-readiness.out" >&2
+    echo 'Better Auth exact admin provider did not become ready' >&2
+    exit 1
+}
+
+bind_role "$admin_user_concurrent" "$work_root/admin-writer.credential" \
+    >"$work_root/admin-writer-bind.json"
+
+admin_role_hash="$(jq -r '.roles[] | select(.definition.name == "BetterAuthAdmin") | .definition_hash' "$work_root/application/riffdb.application.lock.json")"
+application_role_hash="$(jq -r '.roles[] | select(.definition.name == "BetterAuthApplication") | .definition_hash' "$work_root/application/riffdb.application.lock.json")"
+for identity_role in admin writer; do
+    if [[ "$identity_role" == admin ]]; then
+        identity_name=BetterAuthAdmin
+        identity_hash="$admin_role_hash"
+    else
+        identity_name=BetterAuthApplication
+        identity_hash="$application_role_hash"
+    fi
+    jq -n \
+        --arg applicationManifestHash "$manifest_hash" --arg operationCatalogHash "$catalog_hash" \
+        --arg contractLineage BetterAuthAcceptance --argjson contractVersion 1 \
+        --arg contractBundleHash "$bundle_hash" --arg database default \
+        --arg role "$identity_name" --arg roleDefinitionHash "$identity_hash" \
+        --arg remoteIdentityHash "$remote_hash" \
+        '{applicationManifestHash:$applicationManifestHash,operationCatalogHash:$operationCatalogHash,contractLineage:$contractLineage,contractVersion:$contractVersion,contractBundleHash:$contractBundleHash,database:$database,role:$role,roleDefinitionHash:$roleDefinitionHash,remoteIdentityHash:$remoteIdentityHash}' \
+        >"$work_root/$identity_role-identity.json"
+done
+
+start_admin_driver() {
+    local name="$1"
+    local role="$2"
+    local credential="$3"
+    local socket="$work_root/$name-driver.sock"
+    cat >"$work_root/$name-driver.toml" <<EOF
+[driver]
+socket = "$socket"
+
+[application]
+lock_file = "$work_root/application/riffdb.application.lock.json"
+manifest_file = "$work_root/application/generated/riffdb.application.exact.json"
+operation_catalog_file = "$work_root/application/generated/mcp/tools.json"
+database = "default"
+role = "$role"
+
+[remote]
+endpoint = "https://127.0.0.1:$port"
+tls_trust_root = "$work_root/ca.pem"
+tls_server_name = "127.0.0.1"
+credential_file = "$credential"
+pool_connections = 2
+streams_per_connection = 32
+EOF
+    chmod 0600 "$work_root/$name-driver.toml"
+    target/debug/riffdb-driverd "$work_root/$name-driver.toml" \
+        >"$work_root/$name-driver.stdout" 2>"$work_root/$name-driver.stderr" &
+    if [[ "$name" == admin ]]; then admin_driver_pid=$!; else writer_driver_pid=$!; fi
+    local deadline=$((SECONDS + 30))
+    while [[ ! -S "$socket" && "$SECONDS" -lt "$deadline" ]]; do
+        if [[ "$name" == admin ]]; then kill -0 "$admin_driver_pid" 2>/dev/null || break
+        else kill -0 "$writer_driver_pid" 2>/dev/null || break
+        fi
+    done
+    [[ -S "$socket" ]] || {
+        sed -n '1,200p' "$work_root/$name-driver.stderr" >&2
+        echo "Better Auth $name driver did not become ready" >&2
+        exit 1
+    }
+}
+
+start_admin_driver admin BetterAuthAdmin "$work_root/admin.credential"
+start_admin_driver writer BetterAuthApplication "$work_root/admin-writer.credential"
+export RIFFDB_BETTER_AUTH_ADMIN_SOCKET="$work_root/admin-driver.sock"
+export RIFFDB_BETTER_AUTH_WRITER_SOCKET="$work_root/writer-driver.sock"
+export RIFFDB_BETTER_AUTH_ADMIN_IDENTITY="$work_root/admin-identity.json"
+export RIFFDB_BETTER_AUTH_WRITER_IDENTITY="$work_root/writer-identity.json"
+export RIFFDB_BETTER_AUTH_ADMIN_ORGANIZATION_ID="$admin_organization_id"
+export RIFFDB_BETTER_AUTH_FILTER_USER_ID="$admin_user_beta"
+export RIFFDB_BETTER_AUTH_CONCURRENT_USER_ID="$admin_user_concurrent"
+node fixtures/adapters/better-auth/runner/admin-typescript.mjs \
+    >"$work_root/admin-typescript.json"
+jq -e '
+  .schema == "riffdb.better-auth-admin-observation/v1"
+  and .transport == "public_tls"
+  and .route == "GET /admin/users"
+  and .generated_typescript
+  and .exact_total and .direct_offset and .typed_filter
+  and .concurrent_snapshot and .unicode_binary_utf8
+  and (.operator_family | sort) == ["contains", "ends_with", "starts_with"]
+  and (.order_family | sort) == ["value_asc_key_asc", "value_desc_key_asc"]
+' "$work_root/admin-typescript.json" >/dev/null
+
+kill -TERM "$admin_driver_pid" "$writer_driver_pid"
+wait "$admin_driver_pid" "$writer_driver_pid"
+admin_driver_pid=''
+writer_driver_pid=''
+
+target/debug/riffdb --config "$work_root/operator-client.toml" role revoke \
+    "$admin_capability" --reason policy_change >/dev/null
+cat >"$work_root/revoked-admin-client.toml" <<EOF
+[client]
+endpoint = "https://127.0.0.1:$port"
+database = "default"
+output = "json"
+max_attempts = 1
+credential_file = "$work_root/admin.credential"
+tls_trust_root = "$work_root/ca.pem"
+tls_server_name = "127.0.0.1"
+EOF
+jq -n --arg organization "$admin_organization_id" \
+    '{organization_id:{"$uuid":$organization},needle:"@example.test",user_id:null,limit:50,offset:{"$u64":"0"}}' \
+    >"$work_root/revoked-admin-query.json"
+if target/debug/riffdb --config "$work_root/revoked-admin-client.toml" \
+    query run-named AdminUsersContainsAsc \
+    --contract-lineage BetterAuthAcceptance --contract-version 1 \
+    --module-hash "$module_hash" --parameters "$work_root/revoked-admin-query.json" \
+    --output json >"$work_root/revoked-admin.out" 2>&1; then
+    echo 'revoked Better Auth admin capability still executed its named query' >&2
+    exit 1
+fi
+rg -q 'RDB-AUTH-0215' "$work_root/revoked-admin.out"
+
+if rg -n 'riffdb[_-](kernel|storage)|GetEntity|ScanIndex|entity_type_id|field_id|index_id|\.filter\(|\.sort\(' \
+    fixtures/adapters/better-auth/runner/admin-typescript.mjs; then
+    echo 'Better Auth admin route crossed the application boundary or shaped results client-side' >&2
+    exit 1
+fi
+
 printf 'shutdown\n' >&"$server_input_fd"
 wait "$server_pid"
 server_pid=''
-printf '%s\n' 'WP-630 Better Auth bounded cascade generated Rust/Go/TypeScript/Python lifecycle: passed'
+printf '%s\n' 'WP-630 cascade and WP-648 generated Better Auth admin profile: passed'

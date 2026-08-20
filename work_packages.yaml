@@ -13996,9 +13996,10 @@ work_packages:
   requirements: [OQ-027, OQ-028, OQ-029, OQ-030]
   required_adrs: [ADR-0055, ADR-0056, ADR-0074, ADR-0106, ADR-0108, ADR-0111,
     ADR-0117, ADR-0118, ADR-0120, ADR-0124, ADR-0128, ADR-0130, ADR-0131]
-  allowed_paths: [SPEC.md, work_packages.yaml, crates/riffdb-application/**,
+  allowed_paths: [.gitignore, SPEC.md, work_packages.yaml, crates/riffdb-application/**,
     crates/riffdb-client-rust/**, crates/riffdb-driver-host/**,
-    crates/riffdb-query-module/**, clients/**, templates/**,
+    crates/riffdb-query-module/**, crates/riffdb-storage-redb/src/shared_ports.rs,
+    clients/**, templates/**,
     fixtures/application-parity/**, fixtures/adapters/**, fixtures/driver/**,
     examples/**, tests/**, scripts/**, docs/**, release/distribution/**]
   deliverables:
@@ -14029,6 +14030,20 @@ work_packages:
     every accepted filter/search/order/offset shape at one authorized snapshot, every negative is
     typed and isolation-safe, and the adapter contains no result shaping, raw query/storage escape,
     or RiffDB-owned userland auth behavior.
+  closure:
+    status: complete
+    evidence: docs/getting-started/OPERATIONAL-QUERIES.md
+    decision: The retained Better Auth application now exposes a distinct read-only
+      BetterAuthAdmin role and three generated TypeScript methods for exact contains,
+      starts-with, and ends-with searches with compiler-declared orders, one typed optional user
+      filter, bounded limit/offset, and exact total. A real public-TLS GET /admin/users route proves
+      empty and multi-page windows, offset boundaries, maximum values, binary-UTF8 Unicode
+      boundaries, optional-filter null/present forms, concurrent current snapshots,
+      cross-organization isolation, ordinary-role denial, and revocation without adapter-side
+      filtering, sorting, counting, page walking, query structure, or RiffDB-owned identity/session
+      behavior. Protected exact-provider activation now reaches transaction-current row admission
+      through the shared redb read port before any posting, count, or ordinal state is built; the
+      missing delegation remains fail closed and has a public end-to-end regression.
   standing_design_tests:
     interface_safety: The adapter receives only generated named methods and typed bounded values;
       it cannot select fields, operators, indexes, providers, policy, freshness, count semantics,

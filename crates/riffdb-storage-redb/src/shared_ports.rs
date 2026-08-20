@@ -6,7 +6,7 @@
 
 use std::sync::Arc;
 
-use riffdb_policy::AuthorizedQueryRowPolicyContextV1;
+use riffdb_policy::{AuthorizedProjectedRowAdmissionV1, AuthorizedQueryRowPolicyContextV1};
 use riffdb_query_executor::{
     QueryContinuation, QueryExecutionError, QueryExecutionPort, QueryExecutionRequest,
     QueryOwnedSnapshot, QueryParameters,
@@ -152,6 +152,20 @@ impl QueryExecutionPort for RedbSharedPorts {
             aggregates,
             parameters,
             prior,
+            policy,
+        )
+    }
+
+    fn authorize_projected_candidates(
+        &self,
+        entity: riffdb_types::EntityTypeId,
+        candidates: &[riffdb_types::EntityKey],
+        policy: &AuthorizedQueryRowPolicyContextV1,
+    ) -> Result<AuthorizedProjectedRowAdmissionV1, QueryExecutionError> {
+        QueryExecutionPort::authorize_projected_candidates(
+            &self.operational(),
+            entity,
+            candidates,
             policy,
         )
     }
