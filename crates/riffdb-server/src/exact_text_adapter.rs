@@ -31,8 +31,8 @@ use riffdb_storage_api::{
 };
 use riffdb_types::{
     CanonicalRecord, CanonicalValue, CapabilityId, CommitSequence, ExactTextProfileV1, FieldId,
-    FrontierPosition, HashDomain, PartitionKey, PartitionKeyHash, ProjectionGeneration, hash,
-    hash_partition_key,
+    FrontierPosition, HashDomain, PartitionKey, PartitionKeyHash, ProjectionGeneration,
+    ProjectionProviderPolicyModeV1, hash, hash_partition_key,
 };
 
 use crate::columnar_adapter::read_application_head;
@@ -191,6 +191,17 @@ impl ExactTextProjectionPort for ExactTextRuntime {
         &self,
         request: ExactTextProjectionRequest,
     ) -> Result<ExactTextProjectionResult, ExactTextProjectionPortError> {
+        let policy_binding_is_exact =
+            match request.query().binding().plan().provider().policy_mode() {
+                ProjectionProviderPolicyModeV1::PartitionAligned => request.row_policy().is_none(),
+                ProjectionProviderPolicyModeV1::BoundedRowAdmission => {
+                    request.row_policy().is_some()
+                }
+                ProjectionProviderPolicyModeV1::PolicySubpartition => false,
+            };
+        if !policy_binding_is_exact {
+            return Err(ExactTextProjectionPortError::Integrity);
+        }
         let head = read_application_head(&self.storage)
             .map_err(|_| ExactTextProjectionPortError::Unavailable)?;
         let FrontierPosition::AppliedThrough(head) = head else {
@@ -890,6 +901,8 @@ mod tests {
             );
         }
         assert!(execute.contains("execute_exact_text_result_set_v1"));
+        assert!(execute.contains("policy_binding_is_exact"));
+        assert!(execute.contains("request.row_policy().is_some()"));
     }
 
     #[test]

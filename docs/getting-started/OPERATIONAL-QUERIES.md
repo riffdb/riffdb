@@ -90,6 +90,13 @@ commit floor is not yet available. Generated clients expose these as the same
 typed application error codes on every transport; do not emulate a scan or
 weaken freshness after any of them.
 
+Exact-result source currently accepts one partition equality plus one exact
+text predicate. An additional filter, disjunction, or optional predicate is a
+source-spanned compiler error rather than a request-time filter or ignored
+condition. Ordinary operational queries retain their existing finite optional
+predicate families; exact count/offset queries gain typed filtered families
+only after the separately gated provider support is complete.
+
 ## CLI and MCP
 
 The same named query can be invoked by CLI or its generated MCP tool. CLI
