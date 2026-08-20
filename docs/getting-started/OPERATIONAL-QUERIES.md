@@ -85,17 +85,38 @@ queries when snapshot-bound continuation is required.
 The initial request may temporarily return `RDB-QUERY-0102` while the bounded
 derived provider builds. `RDB-PROJECTION-0101` means the required providers
 cannot prove one common epoch, `RDB-PROJECTION-0102` means the requested
-snapshot retired, and `RDB-PROJECTION-0103` means the requested read-after-
-commit floor is not yet available. Generated clients expose these as the same
-typed application error codes on every transport; do not emulate a scan or
-weaken freshness after any of them.
+snapshot retired, and `RDB-PROJECTION-0103` means no provider snapshot yet
+satisfies the request's current or read-after-commit freshness. Generated
+clients expose these as the same typed application error codes on every
+transport. A host may retry these lifecycle outcomes with a bounded attempt
+budget; it must not emulate a scan, retain a stale page, or weaken freshness.
 
-Exact-result source currently accepts one partition equality plus one exact
-text predicate. An additional filter, disjunction, or optional predicate is a
-source-spanned compiler error rather than a request-time filter or ignored
-condition. Ordinary operational queries retain their existing finite optional
-predicate families; exact count/offset queries gain typed filtered families
-only after the separately gated provider support is complete.
+Exact-result source currently accepts one partition equality, one exact text
+predicate, and at most one compiler-declared optional typed equality filter.
+The filter's absent/null form means the named plan omits that predicate; its
+present form selects a disjoint canonical-value posting before count and
+ordinal selection. Any second filter, disjunction, caller-selected field or
+operator, or other unsupported predicate is a source-spanned compiler error
+rather than a request-time filter or ignored condition.
+
+## Better Auth admin profile
+
+The retained Better Auth adapter demonstrates a separate least-authority
+`BetterAuthAdmin` role and three generated methods:
+
+- `AdminUsersContainsAsc`;
+- `AdminUsersStartsWithAsc`; and
+- `AdminUsersEndsWithDesc`.
+
+Each method accepts only an organization, a bounded nonempty search value, an
+optional typed user ID, a bounded limit, and a bounded numeric offset. The
+server applies the current `UserAdminAccess` row policy before constructing
+postings, exact totals, or ordinals. The generated TypeScript host exposes a
+real `GET /admin/users` route but contains no predicate AST, result filter,
+sort, count, or page-walk loop. Binary UTF-8 ordering and matching are
+case-sensitive byte semantics; this profile does not promise Unicode folding,
+locale collation, regex, wildcard search, BM25, facets, or cross-provider
+composition.
 
 ## CLI and MCP
 
@@ -110,12 +131,15 @@ The retained acceptance corpus is:
 ./scripts/adapter-operational-query-acceptance --all-languages
 ```
 
-It deploys one exact application over verified TLS, seeds through compiled
+It deploys exact applications over verified TLS, seeds through compiled
 commands, and checks OpenFGA tuple filtering, an MLflow exact metric dashboard,
-Payload binary-prefix and null pages, a Woodpecker state queue, and a typed
-Better Auth session lookup through Rust, Go, TypeScript, Python, CLI, and
-generated MCP schemas. The accepted-alpha observation inventory names OpenFGA,
-MLflow, Better Auth, and Woodpecker; Payload is reported separately as a
-post-alpha regression. The corpus also proves a malformed cursor fails closed
-and scans the application runners for kernel, storage, numeric-ID,
-raw-transaction, and client-filter escape hatches.
+Payload binary-prefix and null pages, a Woodpecker state queue, and Better Auth
+session/admin operations through Rust, Go, TypeScript, Python, CLI, and
+generated MCP schemas. The Better Auth phase proves every declared text/order
+shape, direct offset boundaries, exact totals, optional-filter null/present
+forms, Unicode byte boundaries, concurrent current snapshots, organization
+isolation, role separation, and revocation. The accepted-alpha observation
+inventory names OpenFGA, MLflow, Better Auth, and Woodpecker; Payload is
+reported separately as a post-alpha regression. The corpus also proves a
+malformed cursor fails closed and scans the application runners for kernel,
+storage, numeric-ID, raw-transaction, and client-filter escape hatches.

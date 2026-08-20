@@ -28,6 +28,36 @@ generic capabilities:
 
 It is a workload shape, not a bundled framework adapter.
 
+## Better Auth admin users
+
+The retained Better Auth acceptance application is a compiled adapter profile,
+not RiffDB-owned authentication. Its ordinary application role owns account,
+session, and verification commands. A distinct read-only `BetterAuthAdmin`
+role owns only three generated admin-user queries and must carry the declared
+`administer_users` principal fact. RiffDB does not create end-user sessions,
+interpret sign-in state, or implement OAuth for either role.
+
+The TypeScript acceptance host serves `GET /admin/users` using generated named
+methods for contains/ascending, starts-with/ascending, and ends-with/descending
+email searches. Each method has one optional typed user-ID filter, a bounded
+limit, and a bounded direct offset; page and exact total come from one current,
+policy-filtered provider epoch. A transient building or freshness lifecycle
+outcome may be retried only under a fixed host budget. The adapter never
+downloads a broader page to filter, sort, count, or walk locally.
+
+Run the real public-TLS profile with:
+
+```bash
+./scripts/adapter-cascade-acceptance --all-languages
+```
+
+The gate includes cross-organization seed data, an ordinary role attempting
+the admin method, explicit admin revocation, concurrent generated writes,
+Unicode binary-UTF-8 boundaries, offset boundaries, and static application-
+boundary checks. Search remains exact binary UTF-8 and case-sensitive; locale
+folding, regex, wildcard, scoring, facets, and cross-provider composition are
+not available in this alpha profile.
+
 ## Keyless upstream retries
 
 When an upstream framework supplies no idempotency key, the adapter owns the

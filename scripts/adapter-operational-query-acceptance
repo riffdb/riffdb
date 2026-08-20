@@ -319,4 +319,6 @@ if rg -n 'riffdb[_-](kernel|storage)|GetEntity|ScanIndex|raw[_ -]?(mutation|tran
     exit 1
 fi
 
+"$repo_root/scripts/adapter-cascade-acceptance" --all-languages
+
 echo "Rust, Go, TypeScript, Python, CLI, and MCP passed the bounded operational-query corpus."

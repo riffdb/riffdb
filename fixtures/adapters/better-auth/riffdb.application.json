@@ -19,6 +19,9 @@
       "name": "better_auth_acceptance",
       "version": 1,
       "queries": [
+        { "name": "AdminUsersContainsAsc", "source": "queries/admin_users_contains_asc.riffq" },
+        { "name": "AdminUsersEndsWithDesc", "source": "queries/admin_users_ends_with_desc.riffq" },
+        { "name": "AdminUsersStartsWithAsc", "source": "queries/admin_users_starts_with_asc.riffq" },
         { "name": "GetSession", "source": "queries/get_session.riffq" },
         { "name": "GetUser", "source": "queries/get_user.riffq" }
       ]
@@ -26,6 +29,17 @@
   ],
   "reactive_modules": [],
   "roles": [
+    {
+      "name": "BetterAuthAdmin",
+      "environment": "development",
+      "tenant_scope": "global",
+      "queries": ["AdminUsersContainsAsc", "AdminUsersEndsWithDesc", "AdminUsersStartsWithAsc"],
+      "commands": [],
+      "event_streams": [],
+      "watch_queries": [],
+      "agent_subscriptions": [],
+      "row_policies": ["UserAdminAccess"]
+    },
     {
       "name": "BetterAuthApplication",
       "environment": "development",

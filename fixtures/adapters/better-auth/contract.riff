@@ -1,9 +1,12 @@
 contract BetterAuthAcceptance version 1 {
   enum SessionState { Active, Revoked }
 
+  principal fact administer_users: bool
+
   entity User {
     key (organization_id: uuid, user_id: uuid)
     field email: string<320>
+    index by_email (organization_id, email, user_id) text_key(email, binary_utf8_v1)
     unique user_email (organization_id, email)
     delete_policy cascade {
       relationship Account.account_user using Account.by_user maximum 8
@@ -69,6 +72,10 @@ contract BetterAuthAcceptance version 1 {
     allow create when user_id == principal.id
     allow update when user_id == principal.id
     allow delete when user_id == principal.id
+  }
+
+  row policy UserAdminAccess on User {
+    allow read when principal.fact.administer_users == true
   }
 
   row policy AccountAccess on Account {

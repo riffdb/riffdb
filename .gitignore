@@ -2,6 +2,9 @@
 /xtask/target/
 /examples/app-baseline/target/
 
+# Rebuildable local exact-query provider checkpoints
+/projections/
+
 # Public marketing website
 /website/node_modules/
 /website/dist/
