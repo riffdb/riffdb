@@ -2,7 +2,7 @@
 
 use riffdb_projection::{
     ExactTextIndexMutationV1, ExactTextIndexMutationV2, ExactTextPartitionIndexV1,
-    ExactTextPartitionIndexV2, ExactTextProviderErrorV1,
+    ExactTextPartitionIndexV2, ExactTextPartitionIndexV3, ExactTextProviderErrorV1,
 };
 use riffdb_types::{
     CanonicalRecord, CanonicalValue, CommitSequence, EntityKey, EntityKeyBuilder, EntityKeyHash,
@@ -428,6 +428,80 @@ fn activated_v2_uses_canonical_entity_keys_not_hashes_as_the_tie_breaker() {
         .unwrap();
     assert_eq!(recovered_page.rows()[0].key(), first);
     assert_eq!(recovered_page.rows()[1].key(), second);
+}
+
+#[test]
+fn filtered_v3_counts_and_selects_ordinals_inside_the_typed_partition() {
+    let rows = BTreeMap::from([
+        (
+            key(1),
+            (
+                "alpha match".to_owned(),
+                CanonicalValue::Bool(true),
+                output(1),
+            ),
+        ),
+        (
+            key(2),
+            (
+                "beta match".to_owned(),
+                CanonicalValue::Bool(false),
+                output(2),
+            ),
+        ),
+        (
+            key(3),
+            (
+                "gamma match".to_owned(),
+                CanonicalValue::Bool(true),
+                output(3),
+            ),
+        ),
+    ]);
+    let index = ExactTextPartitionIndexV3::rebuild(
+        partition(0x33),
+        ProjectionGeneration::new(11).unwrap(),
+        seq(19),
+        ExactTextProfileV1::BinaryUtf8V1,
+        FieldId::new(2).unwrap(),
+        &rows,
+    )
+    .unwrap();
+    let needle = ExactTextProfileV1::BinaryUtf8V1
+        .bind_needle("match")
+        .unwrap();
+    let filtered = index
+        .result_page(
+            ExactTextOperatorV1::Contains,
+            &needle,
+            Some(&CanonicalValue::Bool(true)),
+            ExactTextOrderV1::ValueDescEntityKey,
+            1,
+            NonZeroU16::new(1).unwrap(),
+        )
+        .unwrap();
+    assert_eq!(filtered.exact_total(), 2);
+    assert_eq!(filtered.rows()[0].key(), &key(1));
+
+    let absent = index
+        .result_page(
+            ExactTextOperatorV1::Contains,
+            &needle,
+            Some(&CanonicalValue::Null),
+            ExactTextOrderV1::ValueAscEntityKey,
+            0,
+            NonZeroU16::new(10).unwrap(),
+        )
+        .unwrap();
+    assert_eq!(absent.exact_total(), 0);
+
+    let bytes = index.to_checkpoint_bytes().unwrap();
+    let recovered = ExactTextPartitionIndexV3::from_checkpoint_bytes(&bytes).unwrap();
+    assert_eq!(recovered, index);
+    assert_eq!(
+        ExactTextPartitionIndexV2::from_checkpoint_bytes(&bytes),
+        Err(ExactTextProviderErrorV1::UnsupportedFormat)
+    );
 }
 
 #[test]

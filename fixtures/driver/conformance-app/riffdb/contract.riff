@@ -5,6 +5,7 @@ contract DriverConformance version 1 {
     field secret token_digest: string<128>
     field created_at: timestamp
     index by_title (organization_id, title, item_id) text_key(title, binary_utf8_v1)
+    index by_item_title (organization_id, item_id, title) text_key(title, binary_utf8_v1)
   }
 
   aggregate ItemRoot {

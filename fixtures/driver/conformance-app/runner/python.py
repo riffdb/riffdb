@@ -109,6 +109,7 @@ def main() -> None:
                     SearchItemsParams(
                         organization_id=organization_id,
                         needle="remote Python",
+                        item_id=item_id,
                         limit=50,
                         offset=0,
                     ),

@@ -122,7 +122,7 @@ func run() error {
 	}
 	var exact generated.QueryResult[generated.SearchItemsResult]
 	for attempt := 0; attempt < 200; attempt++ {
-		exact, err = client.SearchItems(ctx, generated.SearchItemsParams{OrganizationId: organizationID, Needle: "remote Go"}, riffdb.Options{ReadAfterCommit: first.CommitSequence})
+		exact, err = client.SearchItems(ctx, generated.SearchItemsParams{OrganizationId: organizationID, Needle: "remote Go", ItemId: &itemID}, riffdb.Options{ReadAfterCommit: first.CommitSequence})
 		if err == nil {
 			break
 		}

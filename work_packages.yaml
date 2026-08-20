@@ -14281,6 +14281,19 @@ work_packages:
     by the pinned provider before exact count and ordinal selection; protected plans admit only
     currently authorized rows; every unsupported combination fails at source; and WP-648 can use
     generated typed filters and sorts without adapter shaping or a hidden policy/count oracle.
+  closure:
+    status: complete
+    evidence: docs/architecture/OVERVIEW.md
+    decision: The exact-result compiler now rejects every predicate outside its complete executable
+      family and admits one compiler-enumerated optional typed equality filter. Filtered plans use
+      additive query-IR and query-module V6 identities plus provider-state V3, whose disjoint
+      canonical-value postings perform intersection, exact count, and direct ordinal selection
+      before public release. Unfiltered modules and V1/V2 provider checkpoints remain byte-exact
+      and readable. Protected activation admits only currently authorized rows before constructing
+      either whole-set or filtered postings, while fresh authorization still runs at every existing
+      safe point. The shared remote TLS conformance corpus proves the same generated Rust, Go,
+      TypeScript, and Python behavior without adapter filtering, page walking, or caller-supplied
+      query structure.
   standing_design_tests:
     interface_safety: Applications receive only finite generated methods and typed bounded values;
       no request can supply a predicate AST, field/index/provider name, policy choice, fallback,

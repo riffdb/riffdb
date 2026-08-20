@@ -1,5 +1,5 @@
 {
-  "application_manifest_hash": "8652d84881a0075bf1ed2da007741e83e9eee82a47a401c760f2639a752a6121",
+  "application_manifest_hash": "1d048c73f131a2b84dd962f8f41300de9d92e3db98f177279c9dbd4c9037cab6",
   "commands": [
     {
       "annotations": {
@@ -8,7 +8,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "contract_bundle_hash": "1814b1b5192a65f0b6a44b290762997b4c69d104c281f6902c3f8c0cf3ccce51",
+      "contract_bundle_hash": "3c62e62ed9ae163cb49ec2733b55c6c8c6ec13f18e700f2de218ee10c58e69ea",
       "description": "Execute the exact CreateItem compiled command from contract DriverConformance.",
       "input_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -41,7 +41,7 @@
       },
       "name": "driver_conformance_create_item",
       "operation_name": "CreateItem",
-      "plan_hash": "e78f98213a06004935156142ecf46d62ef51f96c3fa9704db29f06608e97beb7",
+      "plan_hash": "87a5eec76b98cff7209bae2bb535864c4ba5c259770db96dd159c8c407dc3273",
       "result_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "oneOf": [
@@ -108,7 +108,7 @@
         ],
         "type": "object"
       },
-      "module_hash": "937b7406f0ced9d34a88f55389f4254b4ea6daa5f9a1dd4289fa6d43501220f7",
+      "module_hash": "617a781639cc99054763abfcaa3878194732bb6693136016652ef143f653c454",
       "name": "driver_conformance_item_secret",
       "operation_name": "ItemSecret",
       "result_schema": {
@@ -184,7 +184,7 @@
         ],
         "type": "object"
       },
-      "module_hash": "937b7406f0ced9d34a88f55389f4254b4ea6daa5f9a1dd4289fa6d43501220f7",
+      "module_hash": "617a781639cc99054763abfcaa3878194732bb6693136016652ef143f653c454",
       "name": "driver_conformance_item_page",
       "operation_name": "ItemPage",
       "result_schema": {
@@ -257,6 +257,16 @@
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "additionalProperties": false,
         "properties": {
+          "item_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "limit": {
             "maximum": 499,
             "minimum": 1,
@@ -278,7 +288,7 @@
         ],
         "type": "object"
       },
-      "module_hash": "937b7406f0ced9d34a88f55389f4254b4ea6daa5f9a1dd4289fa6d43501220f7",
+      "module_hash": "617a781639cc99054763abfcaa3878194732bb6693136016652ef143f653c454",
       "name": "driver_conformance_search_items",
       "operation_name": "SearchItems",
       "result_schema": {

@@ -65,10 +65,10 @@ use riffdb_query_compiler::{
 };
 use riffdb_query_ir::{
     AuthorizationEntityAccess, NamedQuerySchemas, OperationalQueryFamilyV1,
-    QUERY_IR_VERSION_EXACT_RESULT_SET_V1, QUERY_IR_VERSION_OPERATIONAL_AGGREGATE_V1,
-    QUERY_IR_VERSION_OPERATIONAL_V1, QUERY_IR_VERSION_SECRET_OUTPUT_V1, QUERY_IR_VERSION_V1,
-    QueryAccessProgramV1, QuerySourceMap, SecretOutputRequirement, SourceSymbolKind,
-    SymbolicCatalog,
+    QUERY_IR_VERSION_EXACT_FILTERED_RESULT_SET_V1, QUERY_IR_VERSION_EXACT_RESULT_SET_V1,
+    QUERY_IR_VERSION_OPERATIONAL_AGGREGATE_V1, QUERY_IR_VERSION_OPERATIONAL_V1,
+    QUERY_IR_VERSION_SECRET_OUTPUT_V1, QUERY_IR_VERSION_V1, QueryAccessProgramV1, QuerySourceMap,
+    SecretOutputRequirement, SourceSymbolKind, SymbolicCatalog,
 };
 use riffdb_riffql_syntax::{
     Document, MAX_IDENTIFIER_BYTES, MAX_SOURCE_BYTES, ParseDiagnostics, RIFFQL_LANGUAGE_VERSION,
@@ -99,6 +99,8 @@ pub const QUERY_MODULE_FORMAT_VERSION_OPERATIONAL_AGGREGATE_V1: u32 = 3;
 pub const QUERY_MODULE_FORMAT_VERSION_SECRET_OUTPUT_V1: u32 = 4;
 /// Additive module codec carrying exact whole-result/count/ordinal plans.
 pub const QUERY_MODULE_FORMAT_VERSION_EXACT_RESULT_SET_V1: u32 = 5;
+/// Additive module codec carrying a compiler-bound typed equality filter.
+pub const QUERY_MODULE_FORMAT_VERSION_EXACT_FILTERED_RESULT_SET_V1: u32 = 6;
 /// Maximum queries retained in one immutable module.
 pub const MAX_MODULE_QUERIES: usize = 4_096;
 /// Maximum canonical bytes for one immutable module.
@@ -588,7 +590,13 @@ impl QueryModule {
     /// Canonical module codec selected by its contained plan kinds.
     #[must_use]
     pub fn format_version(&self) -> u32 {
-        if self
+        if self.queries.iter().any(|query| {
+            query
+                .exact_text_result()
+                .is_some_and(|exact| exact.filter().is_some())
+        }) {
+            QUERY_MODULE_FORMAT_VERSION_EXACT_FILTERED_RESULT_SET_V1
+        } else if self
             .queries
             .iter()
             .any(|query| query.exact_text_result().is_some())
@@ -771,6 +779,25 @@ fn compile_document_plan(
                         }),
                 )
             })?;
+        let filter = compiled
+            .filter
+            .map(|filter| {
+                ExactTextFilterBindingV1::new(
+                    filter.internal_field(),
+                    filter.parameter().to_owned(),
+                )
+            })
+            .transpose()
+            .map_err(|_| {
+                exact_text_artifact_invariant(
+                    document
+                        .name
+                        .as_ref()
+                        .map_or(riffdb_riffql_syntax::Span { start: 0, end: 0 }, |name| {
+                            name.span
+                        }),
+                )
+            })?;
         let exact = CompiledExactTextResultSetV1::new(
             binding,
             compiled.metadata,
@@ -779,6 +806,7 @@ fn compile_document_plan(
             compiled.needle_parameter,
             compiled.limit_parameter,
             compiled.offset_parameter,
+            filter,
         )
         .map_err(|_| {
             exact_text_artifact_invariant(
@@ -890,6 +918,11 @@ fn encode_module(
     let exact_result = queries
         .iter()
         .any(|query| matches!(query.plan(), CompiledNamedQueryPlan::ExactTextResultV1(_)));
+    let exact_filtered_result = queries.iter().any(|query| {
+        query
+            .exact_text_result()
+            .is_some_and(|exact| exact.filter().is_some())
+    });
     let operational_aggregate = queries.iter().any(|query| {
         query
             .operational_family()
@@ -898,7 +931,9 @@ fn encode_module(
     let secret_output = queries
         .iter()
         .any(|query| !query.plan().secret_outputs().is_empty());
-    let format_version = if exact_result {
+    let format_version = if exact_filtered_result {
+        QUERY_MODULE_FORMAT_VERSION_EXACT_FILTERED_RESULT_SET_V1
+    } else if exact_result {
         QUERY_MODULE_FORMAT_VERSION_EXACT_RESULT_SET_V1
     } else if secret_output {
         QUERY_MODULE_FORMAT_VERSION_SECRET_OUTPUT_V1
@@ -930,7 +965,9 @@ fn encode_module(
         .to_be_bytes(),
     );
     output.extend_from_slice(
-        &if exact_result {
+        &if exact_filtered_result {
+            QUERY_IR_VERSION_EXACT_FILTERED_RESULT_SET_V1
+        } else if exact_result {
             QUERY_IR_VERSION_EXACT_RESULT_SET_V1
         } else if secret_output {
             QUERY_IR_VERSION_SECRET_OUTPUT_V1
@@ -1000,6 +1037,7 @@ fn decode_candidate(bytes: &[u8]) -> Result<DecodedCandidate, QueryModuleError> 
             | QUERY_MODULE_FORMAT_VERSION_OPERATIONAL_AGGREGATE_V1
             | QUERY_MODULE_FORMAT_VERSION_SECRET_OUTPUT_V1
             | QUERY_MODULE_FORMAT_VERSION_EXACT_RESULT_SET_V1
+            | QUERY_MODULE_FORMAT_VERSION_EXACT_FILTERED_RESULT_SET_V1
     ) {
         return Err(QueryModuleError::new(
             QueryModuleErrorKind::UnsupportedVersion,
@@ -1036,6 +1074,10 @@ fn decode_candidate(bytes: &[u8]) -> Result<DecodedCandidate, QueryModuleError> 
             language_version == RIFFQL_LANGUAGE_VERSION_EXACT_RESULT_SET_V1
                 && ir_version == QUERY_IR_VERSION_EXACT_RESULT_SET_V1
         }
+        QUERY_MODULE_FORMAT_VERSION_EXACT_FILTERED_RESULT_SET_V1 => {
+            language_version == RIFFQL_LANGUAGE_VERSION_EXACT_RESULT_SET_V1
+                && ir_version == QUERY_IR_VERSION_EXACT_FILTERED_RESULT_SET_V1
+        }
         _ => false,
     };
     if !versions_match {
@@ -1067,7 +1109,8 @@ fn decode_candidate(bytes: &[u8]) -> Result<DecodedCandidate, QueryModuleError> 
             let tag = input.u8()?;
             let maximum_tag = match format_version {
                 QUERY_MODULE_FORMAT_VERSION_SECRET_OUTPUT_V1
-                | QUERY_MODULE_FORMAT_VERSION_EXACT_RESULT_SET_V1 => 10,
+                | QUERY_MODULE_FORMAT_VERSION_EXACT_RESULT_SET_V1
+                | QUERY_MODULE_FORMAT_VERSION_EXACT_FILTERED_RESULT_SET_V1 => 10,
                 QUERY_MODULE_FORMAT_VERSION_OPERATIONAL_AGGREGATE_V1 => 9,
                 _ => 7,
             };

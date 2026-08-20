@@ -55,7 +55,7 @@ try {
   for (let attempt = 0; attempt < 200; attempt += 1) {
     try {
       exact = await client.searchItems(
-        { organization_id: organizationId, needle: "remote TypeScript", limit: 50, offset: 0n },
+        { organization_id: organizationId, needle: "remote TypeScript", item_id: itemId, limit: 50, offset: 0n },
         { readAfterCommit: first.commitSequence },
       );
       break;

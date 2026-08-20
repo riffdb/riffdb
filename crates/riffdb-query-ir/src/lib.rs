@@ -51,6 +51,8 @@ pub const QUERY_IR_VERSION_OPERATIONAL_AGGREGATE_V1: u32 = 3;
 pub const QUERY_IR_VERSION_SECRET_OUTPUT_V1: u32 = 4;
 /// Canonical exact whole-result/count/ordinal query IR version.
 pub const QUERY_IR_VERSION_EXACT_RESULT_SET_V1: u32 = 5;
+/// Canonical exact result-set IR with one compiler-bound typed equality filter.
+pub const QUERY_IR_VERSION_EXACT_FILTERED_RESULT_SET_V1: u32 = 6;
 /// Maximum public query schema and canonical IR bytes.
 pub const MAX_QUERY_ARTIFACT_BYTES: usize = 4_194_304;
 /// Maximum source-map entries.
