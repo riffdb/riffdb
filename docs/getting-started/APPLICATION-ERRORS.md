@@ -36,6 +36,15 @@ policy denial. Unknown, malformed, expired, or boundary-mismatched credentials
 remain the generic authentication/authorization class; the revoked code is not
 an oracle for credentials that did not establish an exact retained match.
 
+Exact result sets use three projection lifecycle codes. `RDB-PROJECTION-0101`
+reports that the declared providers cannot prove one common epoch;
+`RDB-PROJECTION-0102` reports that a requested snapshot has retired; and
+`RDB-PROJECTION-0103` reports that no retained snapshot satisfies the requested
+freshness floor. The first and third permit a bounded retry. The retired-
+snapshot response requires a new first-page/current-snapshot request. None of
+these codes authorizes client-side filtering, page walking, or weaker
+consistency.
+
 ## Safety boundary
 
 An application error may contain:

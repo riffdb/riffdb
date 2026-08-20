@@ -1,24 +1,26 @@
 contract DriverConformance version 1 {
   entity Item {
-    key (item_id: uuid)
+    key (organization_id: uuid, item_id: uuid)
     field title: string<128>
     field secret token_digest: string<128>
     field created_at: timestamp
+    index by_title (organization_id, title, item_id) text_key(title, binary_utf8_v1)
   }
 
   aggregate ItemRoot {
     root Item
-    partition_by item_id
-    conflict_key (item_id)
+    partition_by organization_id
+    conflict_key (organization_id, item_id)
   }
 
   command CreateItem {
     input idempotency_key: string<128>
+    input organization_id: uuid
     input item_id: uuid
     input title: string<128>
     input token_digest: string<128>
     idempotency_key idempotency_key
-    create Item(item_id) as item
+    create Item(organization_id, item_id) as item
       else ItemExists { item_id: item_id }
     set item.title = title
     set item.token_digest = token_digest

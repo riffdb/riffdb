@@ -7,7 +7,7 @@ use riffdb_projection::{
 use riffdb_types::{
     CanonicalRecord, CanonicalValue, CommitSequence, EntityKey, EntityKeyBuilder, EntityKeyHash,
     EntityTypeId, ExactTextFieldValueV1, ExactTextOperatorV1, ExactTextOrderV1, ExactTextProfileV1,
-    FieldId, PartitionKeyHash, ProjectionGeneration,
+    FieldId, PartitionKeyHash, ProjectionGeneration, hash_entity_key,
 };
 use std::collections::BTreeMap;
 use std::num::NonZeroU16;
@@ -363,6 +363,71 @@ fn activated_v2_retains_typed_rows_and_matches_the_frozen_checkpoint() {
         ),
         Err(ExactTextProviderErrorV1::UnsupportedFormat)
     );
+}
+
+#[test]
+fn activated_v2_uses_canonical_entity_keys_not_hashes_as_the_tie_breaker() {
+    let candidates = (1..=64).map(key).collect::<Vec<_>>();
+    let (first, second) = candidates
+        .iter()
+        .enumerate()
+        .flat_map(|(left, first)| {
+            candidates
+                .iter()
+                .skip(left + 1)
+                .map(move |second| (first, second))
+        })
+        .find(|(first, second)| {
+            first.as_bytes() < second.as_bytes()
+                && hash_entity_key(first.as_bytes()) > hash_entity_key(second.as_bytes())
+        })
+        .expect("the deterministic corpus contains a hash/key order inversion");
+    let mut index = ExactTextPartitionIndexV2::new(
+        partition(0x32),
+        ProjectionGeneration::new(10).unwrap(),
+        ExactTextProfileV1::BinaryUtf8V1,
+    );
+    index
+        .apply(
+            seq(18),
+            &[
+                ExactTextIndexMutationV2::upsert(first.clone(), "same", output(1)).unwrap(),
+                ExactTextIndexMutationV2::upsert(second.clone(), "same", output(2)).unwrap(),
+            ],
+        )
+        .unwrap();
+
+    let page = index
+        .result_page(
+            ExactTextOperatorV1::Equals,
+            &ExactTextProfileV1::BinaryUtf8V1
+                .bind_needle("same")
+                .unwrap(),
+            ExactTextOrderV1::ValueAscEntityKey,
+            0,
+            NonZeroU16::new(2).unwrap(),
+        )
+        .unwrap();
+    assert_eq!(page.rows()[0].key(), first);
+    assert_eq!(page.rows()[1].key(), second);
+
+    index.compact().unwrap();
+    let recovered =
+        ExactTextPartitionIndexV2::from_checkpoint_bytes(&index.to_checkpoint_bytes().unwrap())
+            .unwrap();
+    let recovered_page = recovered
+        .result_page(
+            ExactTextOperatorV1::Equals,
+            &ExactTextProfileV1::BinaryUtf8V1
+                .bind_needle("same")
+                .unwrap(),
+            ExactTextOrderV1::ValueDescEntityKey,
+            0,
+            NonZeroU16::new(2).unwrap(),
+        )
+        .unwrap();
+    assert_eq!(recovered_page.rows()[0].key(), first);
+    assert_eq!(recovered_page.rows()[1].key(), second);
 }
 
 #[test]

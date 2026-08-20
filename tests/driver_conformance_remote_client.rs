@@ -66,9 +66,11 @@ async fn run_async() -> TestResult<()> {
         metadata,
         AttemptBudget::new(3).ok_or("attempt budget")?,
     );
+    let organization_id = "018f0f8b-7c6d-7e31-8a4f-000000000100".to_owned();
     if std::env::var_os("RIFFDB_CONFORMANCE_EXPECT_REVOKED").is_some() {
         let error = client
             .item_secret(generated::ItemSecretParams {
+                organization_id: organization_id.clone(),
                 item_id: "018f0f8b-7c6d-7e31-8a4f-000000000101".to_owned(),
             })
             .await
@@ -98,6 +100,7 @@ async fn run_async() -> TestResult<()> {
         token_digest: token_digest.clone(),
         item_id: item_id.clone(),
         idempotency_key: idempotency_key.clone(),
+        organization_id: organization_id.clone(),
     };
     let first = client.create_item(input.clone()).await?;
     let commit = first
@@ -113,6 +116,7 @@ async fn run_async() -> TestResult<()> {
     let page = client
         .item_page_after_commit(
             generated::ItemPageParams {
+                organization_id: organization_id.clone(),
                 item_id: item_id.clone(),
             },
             commit,
@@ -127,6 +131,7 @@ async fn run_async() -> TestResult<()> {
     let secret = client
         .item_secret_after_commit(
             generated::ItemSecretParams {
+                organization_id: organization_id.clone(),
                 item_id: item_id.clone(),
             },
             commit,
@@ -140,12 +145,53 @@ async fn run_async() -> TestResult<()> {
     {
         return Err("Rust secret query value or redacted Debug was incorrect".into());
     }
+    let mut exact = None;
+    for _ in 0..200 {
+        match client
+            .search_items_after_commit(
+                generated::SearchItemsParams {
+                    organization_id: organization_id.clone(),
+                    needle: "remote Rust".to_owned(),
+                    limit: 50,
+                    offset: 0,
+                },
+                commit,
+            )
+            .await
+        {
+            Ok(result) => {
+                exact = Some(result);
+                break;
+            }
+            Err(error)
+                if matches!(
+                    error
+                        .semantic_error()
+                        .map(|semantic| semantic.code().as_str()),
+                    Some("RDB-QUERY-0102" | "RDB-PROJECTION-0103")
+                ) =>
+            {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
+    let exact = exact.ok_or("Rust exact provider did not become ready within the retry bound")?;
+    let generated::SearchItemsResult::Found(exact) = exact.value;
+    if exact.total.value != 1
+        || exact.items.len() != 1
+        || exact.items[0].item_id != item_id
+        || exact.items[0].organization_id != organization_id
+    {
+        return Err("Rust exact result page and whole-population total diverged".into());
+    }
     let reuse = client
         .create_item(generated::CreateItemInput {
             title: "Changed input".to_owned(),
             token_digest,
             item_id,
             idempotency_key,
+            organization_id,
         })
         .await
         .expect_err("idempotency-key reuse must fail");
@@ -168,6 +214,8 @@ async fn run_async() -> TestResult<()> {
             "reuse_error": code,
             "secret_query": "Found",
             "secret_redacted": true,
+            "exact_query": "Found",
+            "exact_total": 1,
         })
     );
     Ok(())

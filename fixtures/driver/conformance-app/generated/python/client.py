@@ -17,8 +17,8 @@ from riffdb_application._binding import decode_variant, encode_record
 
 CONTRACT_LINEAGE: Final[str] = "DriverConformance"
 CONTRACT_VERSION: Final[int] = 1
-CONTRACT_BUNDLE_HASH: Final[str] = "d7c86778e9adc0cbbf7c7a0b9a40e523da30cc4c6b0ab53b24d1ed4d6b7e8da8"
-QUERY_MODULE_HASH: Final[str] = "4d91b038b0f72770ececae8f3f7c6bc13bf8162abf6532fede49f762b712868d"
+CONTRACT_BUNDLE_HASH: Final[str] = "1814b1b5192a65f0b6a44b290762997b4c69d104c281f6902c3f8c0cf3ccce51"
+QUERY_MODULE_HASH: Final[str] = "937b7406f0ced9d34a88f55389f4254b4ea6daa5f9a1dd4289fa6d43501220f7"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class Item:
@@ -26,16 +26,19 @@ class Item:
     item_id: UUID
     created_at: Timestamp
     token_digest: str
+    organization_id: UUID
 
-ITEM_PAGE_QUERY_PLAN_HASH: Final[str] = "9d0521d5cdbb526bf170d6933d03265840e6397661640a064a3eb660b3310e4b"
+ITEM_PAGE_QUERY_PLAN_HASH: Final[str] = "5a134b87048610ffe47691a6e1473841515af498eb583ac009b8f5eae8328a52"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ItemPageParams:
+    organization_id: UUID
     item_id: UUID
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ItemPageFoundItem:
     item_id: UUID
+    organization_id: UUID
     title: str
     created_at: Timestamp
 
@@ -50,7 +53,7 @@ class ItemPageNotFound:
 
 ItemPageResult: TypeAlias = ItemPageFound | ItemPageNotFound
 
-ITEM_SECRET_QUERY_PLAN_HASH: Final[str] = "e623a69842d8a88348ab5449b2de4b4793a7cd814f0d82d090a0b1171ff19d5e"
+ITEM_SECRET_QUERY_PLAN_HASH: Final[str] = "d8710767e1ab0bea0595dc8aee903cb325151ebca200dcf01ef624f73cb07d09"
 ITEM_SECRET_SECRET_OUTPUTS: Final[tuple[tuple[str, str, str], ...]] = (
     ("ItemSecret", "Item", "token_digest"),
 )
@@ -58,6 +61,7 @@ ITEM_SECRET_SECRET_OUTPUTS: Final[tuple[tuple[str, str, str], ...]] = (
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ItemSecretParams:
+    organization_id: UUID
     item_id: UUID
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -75,14 +79,43 @@ class ItemSecretNotFound:
 
 ItemSecretResult: TypeAlias = ItemSecretFound | ItemSecretNotFound
 
+SEARCH_ITEMS_QUERY_PLAN_HASH: Final[str] = "6e72802ea01324e4635480a1e27d767f23731e0e9a05a8dd2e3fcb5927248f02"
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class SearchItemsParams:
+    organization_id: UUID
+    needle: str
+    limit: Annotated[int, "u64"] | None = None
+    offset: Annotated[int, "u64"] | None = None
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class SearchItemsFoundItems:
+    organization_id: UUID
+    item_id: UUID
+    title: str
+    created_at: Timestamp
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class SearchItemsFoundTotal:
+    value: Annotated[int, "u64"]
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class SearchItemsFound:
+    items: tuple[SearchItemsFoundItems, ...]
+    total: SearchItemsFoundTotal
+    outcome: Literal["Found"] = field(default="Found", init=False)
+
+SearchItemsResult: TypeAlias = SearchItemsFound
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class CreateItemInput:
     title: str
     item_id: UUID
     token_digest: str
     idempotency_key: str
+    organization_id: UUID
 
-CREATE_ITEM_PLAN_HASH: Final[str] = "3f8a3041bd21b64bfce8bd8e6df3ab755e056e2f0753e6c49117e15fa06f3d8c"
+CREATE_ITEM_PLAN_HASH: Final[str] = "e78f98213a06004935156142ecf46d62ef51f96c3fa9704db29f06608e97beb7"
 @dataclass(frozen=True, slots=True, kw_only=True)
 class CreateItemCreated:
     outcome: Literal["Created"] = field(default="Created", init=False)
@@ -122,6 +155,18 @@ class DriverConformanceClient:
         outcomes = {
             "Found": ItemSecretFound,
             "NotFound": ItemSecretNotFound,
+        }
+        return raw._map_value(lambda value: decode_variant(outcomes, value))
+
+    def search_items(self, parameters: SearchItemsParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[SearchItemsResult]:
+        raw = self._transport._execute_named_query(
+            contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
+            contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
+            query_name="SearchItems", plan_hash=SEARCH_ITEMS_QUERY_PLAN_HASH,
+            parameters=encode_record(parameters), options=options,
+        )
+        outcomes = {
+            "Found": SearchItemsFound,
         }
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
@@ -171,6 +216,18 @@ class AsyncDriverConformanceClient:
         outcomes = {
             "Found": ItemSecretFound,
             "NotFound": ItemSecretNotFound,
+        }
+        return raw._map_value(lambda value: decode_variant(outcomes, value))
+
+    async def search_items(self, parameters: SearchItemsParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[SearchItemsResult]:
+        raw = await self._transport._execute_named_query(
+            contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
+            contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
+            query_name="SearchItems", plan_hash=SEARCH_ITEMS_QUERY_PLAN_HASH,
+            parameters=encode_record(parameters), options=options,
+        )
+        outcomes = {
+            "Found": SearchItemsFound,
         }
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 

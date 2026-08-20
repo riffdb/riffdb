@@ -53,9 +53,9 @@ pub enum ExactTextOperatorV1 {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u8)]
 pub enum ExactTextOrderV1 {
-    /// Indexed value ascending, then authoritative entity-key hash ascending.
+    /// Indexed value ascending, then canonical authoritative entity-key bytes ascending.
     ValueAscEntityKey = 1,
-    /// Indexed value descending, then authoritative entity-key hash ascending.
+    /// Indexed value descending, then canonical authoritative entity-key bytes ascending.
     ValueDescEntityKey = 2,
 }
 

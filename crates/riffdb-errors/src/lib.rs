@@ -116,10 +116,16 @@ pub enum ApplicationErrorCode {
     HistoryPruned,
     /// The service is over capacity and rejected admission.
     Overloaded,
+    /// Exact result-set providers cannot prove one common epoch.
+    ProjectionDiverged,
+    /// The exact snapshot bound to the request is no longer retained.
+    SnapshotRetired,
+    /// No servable exact snapshot satisfies the requested freshness floor.
+    FreshnessUnsatisfied,
 }
 
 /// Complete v1 application error code registry in stable wire order.
-pub const APPLICATION_ERROR_CODES: [ApplicationErrorCode; 21] = [
+pub const APPLICATION_ERROR_CODES: [ApplicationErrorCode; 24] = [
     ApplicationErrorCode::InvalidRequest,
     ApplicationErrorCode::InputInvalid,
     ApplicationErrorCode::AuthorizationDenied,
@@ -141,6 +147,9 @@ pub const APPLICATION_ERROR_CODES: [ApplicationErrorCode; 21] = [
     ApplicationErrorCode::HistoryIncarnationMismatch,
     ApplicationErrorCode::HistoryPruned,
     ApplicationErrorCode::Overloaded,
+    ApplicationErrorCode::ProjectionDiverged,
+    ApplicationErrorCode::SnapshotRetired,
+    ApplicationErrorCode::FreshnessUnsatisfied,
 ];
 
 impl ApplicationErrorCode {
@@ -188,6 +197,9 @@ impl ApplicationErrorCode {
             Self::HistoryIncarnationMismatch => "RDB-HISTORY-0101",
             Self::HistoryPruned => "RDB-HISTORY-0102",
             Self::Overloaded => "RDB-CAPACITY-0101",
+            Self::ProjectionDiverged => "RDB-PROJECTION-0101",
+            Self::SnapshotRetired => "RDB-PROJECTION-0102",
+            Self::FreshnessUnsatisfied => "RDB-PROJECTION-0103",
         }
     }
 
@@ -218,6 +230,9 @@ impl ApplicationErrorCode {
             Self::HistoryIncarnationMismatch => "observed history predates a database restore",
             Self::HistoryPruned => "requested history has been pruned",
             Self::Overloaded => "service is over capacity",
+            Self::ProjectionDiverged => "query projections cannot prove one common snapshot",
+            Self::SnapshotRetired => "the requested query snapshot has been retired",
+            Self::FreshnessUnsatisfied => "no query snapshot satisfies the requested freshness",
         }
     }
 
@@ -230,7 +245,11 @@ impl ApplicationErrorCode {
                 ApplicationErrorCategory::Authorization
             }
             Self::ContractMismatch => ApplicationErrorCategory::Contract,
-            Self::QueryInvalid | Self::QueryUnavailable => ApplicationErrorCategory::Query,
+            Self::QueryInvalid
+            | Self::QueryUnavailable
+            | Self::ProjectionDiverged
+            | Self::SnapshotRetired
+            | Self::FreshnessUnsatisfied => ApplicationErrorCategory::Query,
             Self::ModuleUnavailable => ApplicationErrorCategory::Module,
             Self::CursorInvalid => ApplicationErrorCategory::Cursor,
             Self::ResponseTooLarge => ApplicationErrorCategory::Resource,
@@ -260,16 +279,19 @@ impl ApplicationErrorCode {
             | Self::ResponseTooLarge
             | Self::IdempotencyKeyReuse
             | Self::HistoryIncarnationMismatch
-            | Self::HistoryPruned => ApplicationRecoveryAction::CorrectRequest,
+            | Self::HistoryPruned
+            | Self::SnapshotRetired => ApplicationRecoveryAction::CorrectRequest,
             Self::AuthorizationDenied | Self::CapabilityRevoked => {
                 ApplicationRecoveryAction::ObtainPermission
             }
             Self::ContractMismatch | Self::QueryUnavailable | Self::ModuleUnavailable => {
                 ApplicationRecoveryAction::RefreshContract
             }
-            Self::StorageUnavailable | Self::DeadlineExceeded | Self::Overloaded => {
-                ApplicationRecoveryAction::Retry
-            }
+            Self::StorageUnavailable
+            | Self::DeadlineExceeded
+            | Self::Overloaded
+            | Self::ProjectionDiverged
+            | Self::FreshnessUnsatisfied => ApplicationRecoveryAction::Retry,
             Self::OutcomeUnknown => ApplicationRecoveryAction::ResolveWithSameIdempotencyKey,
             Self::OperationCancelled => ApplicationRecoveryAction::None,
             Self::InternalDefect | Self::CommandExecutionFailed | Self::ProtocolInvalid => {
@@ -295,12 +317,15 @@ impl ApplicationErrorCode {
                 &[ApplicationFixCode::PinActiveModule]
             }
             Self::CursorInvalid => &[ApplicationFixCode::RestartFromFirstPage],
+            Self::SnapshotRetired => &[ApplicationFixCode::RestartFromFirstPage],
             Self::ResponseTooLarge | Self::IdempotencyKeyReuse => {
                 &[ApplicationFixCode::CorrectInput]
             }
-            Self::StorageUnavailable | Self::DeadlineExceeded | Self::Overloaded => {
-                &[ApplicationFixCode::RetryLater]
-            }
+            Self::StorageUnavailable
+            | Self::DeadlineExceeded
+            | Self::Overloaded
+            | Self::ProjectionDiverged
+            | Self::FreshnessUnsatisfied => &[ApplicationFixCode::RetryLater],
             Self::OutcomeUnknown => &[ApplicationFixCode::ResolveWithSameIdempotencyKey],
             Self::InternalDefect => &[ApplicationFixCode::ContactOperatorWithIncident],
             Self::OperationCancelled | Self::CommandExecutionFailed | Self::ProtocolInvalid => &[],
@@ -1348,6 +1373,9 @@ impl PublicError {
                     | ApplicationErrorCode::QueryUnavailable
                     | ApplicationErrorCode::ModuleUnavailable
                     | ApplicationErrorCode::CursorInvalid
+                    | ApplicationErrorCode::ProjectionDiverged
+                    | ApplicationErrorCode::SnapshotRetired
+                    | ApplicationErrorCode::FreshnessUnsatisfied
             ),
             PublicErrorKind::AuthorizationDenied => matches!(
                 code,
@@ -1712,7 +1740,7 @@ mod tests {
         assert_eq!(KINDS[9], PublicErrorKind::HistoryIncarnationMismatch);
         assert_eq!(KINDS[10], PublicErrorKind::HistoryPruned);
         assert_eq!(KINDS[11], PublicErrorKind::Overloaded);
-        assert_eq!(APPLICATION_ERROR_CODES.len(), 21);
+        assert_eq!(APPLICATION_ERROR_CODES.len(), 24);
         assert_eq!(
             APPLICATION_ERROR_CODES[18],
             ApplicationErrorCode::HistoryIncarnationMismatch
@@ -1724,6 +1752,18 @@ mod tests {
         assert_eq!(
             APPLICATION_ERROR_CODES[20],
             ApplicationErrorCode::Overloaded
+        );
+        assert_eq!(
+            APPLICATION_ERROR_CODES[21],
+            ApplicationErrorCode::ProjectionDiverged
+        );
+        assert_eq!(
+            APPLICATION_ERROR_CODES[22],
+            ApplicationErrorCode::SnapshotRetired
+        );
+        assert_eq!(
+            APPLICATION_ERROR_CODES[23],
+            ApplicationErrorCode::FreshnessUnsatisfied
         );
 
         for (kind, (code, message, class, recovery_action)) in KINDS.into_iter().zip(expected) {

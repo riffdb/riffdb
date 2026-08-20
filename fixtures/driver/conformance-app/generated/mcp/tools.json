@@ -1,5 +1,5 @@
 {
-  "application_manifest_hash": "9f074967056a76eab90e2901c9eb0d65cc2b339d579fd5aa8a7c7ecd5ce15b6f",
+  "application_manifest_hash": "8652d84881a0075bf1ed2da007741e83e9eee82a47a401c760f2639a752a6121",
   "commands": [
     {
       "annotations": {
@@ -8,7 +8,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "contract_bundle_hash": "d7c86778e9adc0cbbf7c7a0b9a40e523da30cc4c6b0ab53b24d1ed4d6b7e8da8",
+      "contract_bundle_hash": "1814b1b5192a65f0b6a44b290762997b4c69d104c281f6902c3f8c0cf3ccce51",
       "description": "Execute the exact CreateItem compiled command from contract DriverConformance.",
       "input_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -18,6 +18,9 @@
             "type": "string"
           },
           "item_id": {
+            "type": "string"
+          },
+          "organization_id": {
             "type": "string"
           },
           "title": {
@@ -31,13 +34,14 @@
           "title",
           "item_id",
           "token_digest",
-          "idempotency_key"
+          "idempotency_key",
+          "organization_id"
         ],
         "type": "object"
       },
       "name": "driver_conformance_create_item",
       "operation_name": "CreateItem",
-      "plan_hash": "3f8a3041bd21b64bfce8bd8e6df3ab755e056e2f0753e6c49117e15fa06f3d8c",
+      "plan_hash": "e78f98213a06004935156142ecf46d62ef51f96c3fa9704db29f06608e97beb7",
       "result_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "oneOf": [
@@ -93,14 +97,18 @@
         "properties": {
           "item_id": {
             "type": "string"
+          },
+          "organization_id": {
+            "type": "string"
           }
         },
         "required": [
+          "organization_id",
           "item_id"
         ],
         "type": "object"
       },
-      "module_hash": "4d91b038b0f72770ececae8f3f7c6bc13bf8162abf6532fede49f762b712868d",
+      "module_hash": "937b7406f0ced9d34a88f55389f4254b4ea6daa5f9a1dd4289fa6d43501220f7",
       "name": "driver_conformance_item_secret",
       "operation_name": "ItemSecret",
       "result_schema": {
@@ -165,14 +173,18 @@
         "properties": {
           "item_id": {
             "type": "string"
+          },
+          "organization_id": {
+            "type": "string"
           }
         },
         "required": [
+          "organization_id",
           "item_id"
         ],
         "type": "object"
       },
-      "module_hash": "4d91b038b0f72770ececae8f3f7c6bc13bf8162abf6532fede49f762b712868d",
+      "module_hash": "937b7406f0ced9d34a88f55389f4254b4ea6daa5f9a1dd4289fa6d43501220f7",
       "name": "driver_conformance_item_page",
       "operation_name": "ItemPage",
       "result_schema": {
@@ -190,12 +202,16 @@
                   "item_id": {
                     "type": "string"
                   },
+                  "organization_id": {
+                    "type": "string"
+                  },
                   "title": {
                     "type": "string"
                   }
                 },
                 "required": [
                   "item_id",
+                  "organization_id",
                   "title",
                   "created_at"
                 ],
@@ -228,6 +244,104 @@
         ]
       },
       "title": "Run ItemPage"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "Execute the exact SearchItems named query from immutable module driver_conformance.",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "limit": {
+            "maximum": 499,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "needle": {
+            "type": "string"
+          },
+          "offset": {
+            "type": "string"
+          },
+          "organization_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "organization_id",
+          "needle"
+        ],
+        "type": "object"
+      },
+      "module_hash": "937b7406f0ced9d34a88f55389f4254b4ea6daa5f9a1dd4289fa6d43501220f7",
+      "name": "driver_conformance_search_items",
+      "operation_name": "SearchItems",
+      "result_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "items": {
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "created_at": {
+                      "type": "string"
+                    },
+                    "item_id": {
+                      "type": "string"
+                    },
+                    "organization_id": {
+                      "type": "string"
+                    },
+                    "title": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "organization_id",
+                    "item_id",
+                    "title",
+                    "created_at"
+                  ],
+                  "type": "object"
+                },
+                "maxItems": 499,
+                "type": "array"
+              },
+              "outcome": {
+                "const": "Found",
+                "type": "string"
+              },
+              "total": {
+                "additionalProperties": false,
+                "properties": {
+                  "value": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "value"
+                ],
+                "type": "object"
+              }
+            },
+            "required": [
+              "outcome",
+              "items",
+              "total"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "title": "Run SearchItems"
     }
   ]
 }

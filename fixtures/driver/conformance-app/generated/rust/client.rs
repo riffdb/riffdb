@@ -5,11 +5,11 @@ use riffdb_client_rust::{ApplicationCardinality, ApplicationClientError, Applica
 pub use riffdb_client_rust::QueryOptions;
 use riffdb_client_rust::v1::value::Kind as WireKind;
 
-pub const QUERY_MODULE_HASH: [u8; 32] = [0x4d, 0x91, 0xb0, 0x38, 0xb0, 0xf7, 0x27, 0x70, 0xec, 0xec, 0xae, 0x8f, 0x3f, 0x7c, 0x6b, 0xc1, 0x3b, 0xf8, 0x16, 0x2a, 0xbf, 0x65, 0x32, 0xfe, 0xde, 0x49, 0xf7, 0x62, 0xb7, 0x12, 0x86, 0x8d];
+pub const QUERY_MODULE_HASH: [u8; 32] = [0x93, 0x7b, 0x74, 0x06, 0xf0, 0xce, 0xd9, 0xd3, 0x4a, 0x88, 0xf5, 0x53, 0x89, 0xf4, 0x25, 0x4b, 0x4e, 0xa6, 0xda, 0xa5, 0xf9, 0xa1, 0xdd, 0x42, 0x89, 0xfa, 0x6d, 0x43, 0x50, 0x12, 0x20, 0xf7];
 pub const CONTRACT_LINEAGE: &str = "DriverConformance";
 pub const CONTRACT_VERSION: u64 = 1;
 
-pub const CONTRACT_BUNDLE_HASH: [u8; 32] = [0xd7, 0xc8, 0x67, 0x78, 0xe9, 0xad, 0xc0, 0xcb, 0xbf, 0x7c, 0x7a, 0x0b, 0x9a, 0x40, 0xe5, 0x23, 0xda, 0x30, 0xcc, 0x4c, 0x6b, 0x0a, 0xb5, 0x3b, 0x24, 0xd1, 0xed, 0x4d, 0x6b, 0x7e, 0x8d, 0xa8];
+pub const CONTRACT_BUNDLE_HASH: [u8; 32] = [0x18, 0x14, 0xb1, 0xb5, 0x19, 0x2a, 0x65, 0xf0, 0xb6, 0xa4, 0x4b, 0x29, 0x07, 0x62, 0x99, 0x7b, 0x4c, 0x69, 0xd1, 0x04, 0xc2, 0x81, 0xf6, 0x90, 0x2c, 0x3f, 0x8c, 0x0c, 0xf3, 0xcc, 0xce, 0x51];
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DecimalValue {
@@ -30,12 +30,14 @@ pub struct TimestampValue {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ItemPageParams {
+    pub organization_id: String,
     pub item_id: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ItemPageFoundItem {
     pub item_id: String,
+    pub organization_id: String,
     pub title: String,
     pub created_at: TimestampValue,
 }
@@ -55,7 +57,7 @@ pub enum ItemPageResult {
     NotFound(Box<ItemPageNotFound>),
 }
 
-pub const ITEM_PAGE_QUERY_PLAN_HASH: [u8; 32] = [0x9d, 0x05, 0x21, 0xd5, 0xcd, 0xbb, 0x52, 0x6b, 0xf1, 0x70, 0xd6, 0x93, 0x3d, 0x03, 0x26, 0x58, 0x40, 0xe6, 0x39, 0x76, 0x61, 0x64, 0x0a, 0x06, 0x4a, 0x3e, 0xb6, 0x60, 0xb3, 0x31, 0x0e, 0x4b];
+pub const ITEM_PAGE_QUERY_PLAN_HASH: [u8; 32] = [0x5a, 0x13, 0x4b, 0x87, 0x04, 0x86, 0x10, 0xff, 0xe4, 0x76, 0x91, 0xa6, 0xe1, 0x47, 0x38, 0x41, 0x51, 0x5a, 0xf4, 0x98, 0xeb, 0x58, 0x3a, 0xc0, 0x09, 0xb8, 0xf5, 0xea, 0xe8, 0x32, 0x8a, 0x52];
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ItemPageQuery(pub ItemPageParams);
 impl GeneratedQuery for ItemPageQuery {
@@ -63,6 +65,7 @@ impl GeneratedQuery for ItemPageQuery {
 
     fn named_query(self, options: QueryOptions) -> Result<NamedQuery, ApplicationClientError> {
         let mut parameters = BTreeMap::new();
+        parameters.insert("organization_id".to_owned(), ApplicationValue::Uuid(ApplicationUuid::from_text(self.0.organization_id)?));
         parameters.insert("item_id".to_owned(), ApplicationValue::Uuid(ApplicationUuid::from_text(self.0.item_id)?));
         NamedQuery::new(
             ApplicationContract::Exact {
@@ -101,6 +104,7 @@ impl GeneratedQuery for ItemPageQuery {
 fn decode_item_page_found_item_record(mut record: ApplicationRecord) -> Result<ItemPageFoundItem, ApplicationClientError> {
     let value = ItemPageFoundItem {
         item_id: application_uuid(take_application_value(&mut record.fields, "item_id")?)?,
+        organization_id: application_uuid(take_application_value(&mut record.fields, "organization_id")?)?,
         title: application_string(take_application_value(&mut record.fields, "title")?)?,
         created_at: application_timestamp(take_application_value(&mut record.fields, "created_at")?)?,
     };
@@ -110,6 +114,7 @@ fn decode_item_page_found_item_record(mut record: ApplicationRecord) -> Result<I
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ItemSecretParams {
+    pub organization_id: String,
     pub item_id: String,
 }
 
@@ -155,7 +160,7 @@ pub enum ItemSecretResult {
     NotFound(Box<ItemSecretNotFound>),
 }
 
-pub const ITEM_SECRET_QUERY_PLAN_HASH: [u8; 32] = [0xe6, 0x23, 0xa6, 0x98, 0x42, 0xd8, 0xa8, 0x83, 0x48, 0xab, 0x54, 0x49, 0xb2, 0xde, 0x4b, 0x47, 0x93, 0xa7, 0xcd, 0x81, 0x4f, 0x0d, 0x82, 0xd0, 0x90, 0xa0, 0xb1, 0x17, 0x1f, 0xf1, 0x9d, 0x5e];
+pub const ITEM_SECRET_QUERY_PLAN_HASH: [u8; 32] = [0xd8, 0x71, 0x07, 0x67, 0xe1, 0xab, 0x0b, 0xea, 0x05, 0x95, 0xdc, 0x8a, 0xee, 0x90, 0x3c, 0xb3, 0x25, 0x15, 0x1e, 0xbc, 0xa2, 0x00, 0xdc, 0xf0, 0x1e, 0xf6, 0x24, 0xf7, 0x3c, 0xb0, 0x7d, 0x09];
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ItemSecretQuery(pub ItemSecretParams);
 impl GeneratedQuery for ItemSecretQuery {
@@ -163,6 +168,7 @@ impl GeneratedQuery for ItemSecretQuery {
 
     fn named_query(self, options: QueryOptions) -> Result<NamedQuery, ApplicationClientError> {
         let mut parameters = BTreeMap::new();
+        parameters.insert("organization_id".to_owned(), ApplicationValue::Uuid(ApplicationUuid::from_text(self.0.organization_id)?));
         parameters.insert("item_id".to_owned(), ApplicationValue::Uuid(ApplicationUuid::from_text(self.0.item_id)?));
         NamedQuery::new(
             ApplicationContract::Exact {
@@ -207,11 +213,104 @@ fn decode_item_secret_found_secret_record(mut record: ApplicationRecord) -> Resu
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SearchItemsParams {
+    pub organization_id: String,
+    pub needle: String,
+    pub limit: u64,
+    pub offset: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SearchItemsFoundItems {
+    pub organization_id: String,
+    pub item_id: String,
+    pub title: String,
+    pub created_at: TimestampValue,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SearchItemsFoundTotal {
+    pub value: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SearchItemsFound {
+    pub items: Vec<SearchItemsFoundItems>,
+    pub total: SearchItemsFoundTotal,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum SearchItemsResult {
+    Found(Box<SearchItemsFound>),
+}
+
+pub const SEARCH_ITEMS_QUERY_PLAN_HASH: [u8; 32] = [0x6e, 0x72, 0x80, 0x2e, 0xa0, 0x13, 0x24, 0xe4, 0x63, 0x54, 0x80, 0xa1, 0xe2, 0x7d, 0x76, 0x7f, 0x23, 0x73, 0x1e, 0x0e, 0x9a, 0x05, 0xa8, 0xdd, 0x2e, 0x3f, 0xcb, 0x59, 0x27, 0x24, 0x8f, 0x02];
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SearchItemsQuery(pub SearchItemsParams);
+impl GeneratedQuery for SearchItemsQuery {
+    type Output = SearchItemsResult;
+
+    fn named_query(self, options: QueryOptions) -> Result<NamedQuery, ApplicationClientError> {
+        let mut parameters = BTreeMap::new();
+        parameters.insert("organization_id".to_owned(), ApplicationValue::Uuid(ApplicationUuid::from_text(self.0.organization_id)?));
+        parameters.insert("needle".to_owned(), ApplicationValue::String(self.0.needle));
+        parameters.insert("limit".to_owned(), ApplicationValue::U64(self.0.limit));
+        parameters.insert("offset".to_owned(), ApplicationValue::U64(self.0.offset));
+        NamedQuery::new(
+            ApplicationContract::Exact {
+                lineage: CONTRACT_LINEAGE.to_owned(),
+                version: CONTRACT_VERSION,
+                bundle_hash: Some(CONTRACT_BUNDLE_HASH),
+            },
+            "SearchItems",
+            Some(QUERY_MODULE_HASH),
+            parameters,
+            None,
+        )?.expect_plan_hash(SEARCH_ITEMS_QUERY_PLAN_HASH).with_options(options)
+    }
+
+    fn decode_result(mut response: NamedQueryResult) -> Result<Self::Output, ApplicationClientError> {
+        let outcome = response.outcome.clone();
+        match outcome.as_str() {
+            "Found" => {
+                let decoded = SearchItemsFound {
+                    items: many_result_records(take_result_field(&mut response.fields, "items")?)?.into_iter().map(decode_search_items_found_items_record).collect::<Result<Vec<_>, _>>()?,
+                    total: decode_search_items_found_total_record(one_result_record(take_result_field(&mut response.fields, "total")?)?)?,
+                };
+                if !response.fields.is_empty() { return Err(ApplicationClientError::InvalidResponse); }
+                Ok(SearchItemsResult::Found(Box::new(decoded)))
+            },
+            _ => Err(ApplicationClientError::InvalidResponse),
+        }
+    }
+}
+
+fn decode_search_items_found_items_record(mut record: ApplicationRecord) -> Result<SearchItemsFoundItems, ApplicationClientError> {
+    let value = SearchItemsFoundItems {
+        organization_id: application_uuid(take_application_value(&mut record.fields, "organization_id")?)?,
+        item_id: application_uuid(take_application_value(&mut record.fields, "item_id")?)?,
+        title: application_string(take_application_value(&mut record.fields, "title")?)?,
+        created_at: application_timestamp(take_application_value(&mut record.fields, "created_at")?)?,
+    };
+    if !record.fields.is_empty() { return Err(ApplicationClientError::InvalidResponse); }
+    Ok(value)
+}
+
+fn decode_search_items_found_total_record(mut record: ApplicationRecord) -> Result<SearchItemsFoundTotal, ApplicationClientError> {
+    let value = SearchItemsFoundTotal {
+        value: application_u64(take_application_value(&mut record.fields, "value")?)?,
+    };
+    if !record.fields.is_empty() { return Err(ApplicationClientError::InvalidResponse); }
+    Ok(value)
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Item {
     pub title: String,
     pub item_id: String,
     pub created_at: TimestampValue,
     pub token_digest: String,
+    pub organization_id: String,
 }
 
 fn encode_item_entity(value: &Item) -> Result<v1::Value, GeneratedCommandError> {
@@ -220,6 +319,7 @@ fn encode_item_entity(value: &Item) -> Result<v1::Value, GeneratedCommandError> 
         v1::ValueField { field_id: Some(2), name: String::new(), value: Some(wire_uuid(&value.item_id)?) },
         v1::ValueField { field_id: Some(3), name: String::new(), value: Some(wire_timestamp(&value.created_at)?) },
         v1::ValueField { field_id: Some(4), name: String::new(), value: Some(wire_string(Clone::clone(&value.token_digest))) },
+        v1::ValueField { field_id: Some(5), name: String::new(), value: Some(wire_uuid(&value.organization_id)?) },
     ];
     Ok(v1::Value { kind: Some(WireKind::RecordValue(v1::ValueRecord { fields })) })
 }
@@ -231,6 +331,7 @@ fn decode_item_entity(value: v1::Value) -> Result<Item, GeneratedCommandError> {
         item_id: decode_wire_uuid(take_wire_field(&mut fields, 2)?)?,
         created_at: decode_wire_timestamp(take_wire_field(&mut fields, 3)?)?,
         token_digest: decode_wire_string(take_wire_field(&mut fields, 4)?)?,
+        organization_id: decode_wire_uuid(take_wire_field(&mut fields, 5)?)?,
     };
     if !fields.is_empty() { return Err(GeneratedCommandError::InvalidOutcomeShape); }
     Ok(entity)
@@ -242,6 +343,7 @@ pub struct CreateItemInput {
     pub item_id: String,
     pub token_digest: String,
     pub idempotency_key: String,
+    pub organization_id: String,
 }
 
 #[allow(clippy::large_enum_variant)]
@@ -254,7 +356,7 @@ pub enum CreateItemOutcome {
     },
 }
 
-const CREATE_ITEM_PLAN_HASH: [u8; 32] = [0x3f, 0x8a, 0x30, 0x41, 0xbd, 0x21, 0xb6, 0x4b, 0xfc, 0xe8, 0xbd, 0x8e, 0x6d, 0xf3, 0xab, 0x75, 0x5e, 0x05, 0x6e, 0x2f, 0x07, 0x53, 0xe6, 0xc4, 0x91, 0x17, 0xe1, 0x5f, 0xa0, 0x6f, 0x3d, 0x8c];
+const CREATE_ITEM_PLAN_HASH: [u8; 32] = [0xe7, 0x8f, 0x98, 0x21, 0x3a, 0x06, 0x00, 0x49, 0x35, 0x15, 0x61, 0x42, 0xec, 0xf4, 0x6d, 0x62, 0xef, 0x51, 0xf9, 0x6c, 0x3f, 0xa9, 0x70, 0x4d, 0xb2, 0x9f, 0x06, 0x60, 0x8e, 0x97, 0xbe, 0xb7];
 impl GeneratedCommand for CreateItemInput {
     type Outcome = CreateItemOutcome;
 
@@ -265,6 +367,7 @@ impl GeneratedCommand for CreateItemInput {
             wire_named_field("item_id", wire_uuid(&self.item_id)?),
             wire_named_field("token_digest", wire_string(Clone::clone(&self.token_digest))),
             wire_named_field("idempotency_key", wire_string(Clone::clone(&self.idempotency_key))),
+            wire_named_field("organization_id", wire_uuid(&self.organization_id)?),
         ];
         IdempotentCommand::new("CreateItem", Some(CONTRACT_VERSION), wire_record(fields)).map_err(Into::into)
     }
@@ -341,6 +444,19 @@ impl DriverConformanceClient {
     /// Executes `ItemSecret` with generated pagination or read-fence options.
     pub async fn item_secret_with_options(&mut self, parameters: ItemSecretParams, options: QueryOptions) -> Result<TypedQueryResult<ItemSecretResult>, ApplicationClientError> {
         self.client.execute_generated_query(ItemSecretQuery(parameters), options, &self.metadata).await
+    }
+
+    /// Executes the generated `SearchItems` named query.
+    pub async fn search_items(&mut self, parameters: SearchItemsParams) -> Result<SearchItemsResult, ApplicationClientError> {
+        Ok(self.search_items_with_options(parameters, QueryOptions::new()).await?.value)
+    }
+    /// Executes `SearchItems` against a snapshot at or after the supplied command commit.
+    pub async fn search_items_after_commit(&mut self, parameters: SearchItemsParams, commit_sequence: u64) -> Result<TypedQueryResult<SearchItemsResult>, ApplicationClientError> {
+        self.search_items_with_options(parameters, QueryOptions::new().read_after_commit(commit_sequence)).await
+    }
+    /// Executes `SearchItems` with generated pagination or read-fence options.
+    pub async fn search_items_with_options(&mut self, parameters: SearchItemsParams, options: QueryOptions) -> Result<TypedQueryResult<SearchItemsResult>, ApplicationClientError> {
+        self.client.execute_generated_query(SearchItemsQuery(parameters), options, &self.metadata).await
     }
 
     pub async fn create_item(&mut self, input: CreateItemInput) -> Result<TypedCommandResult<CreateItemOutcome>, ApplicationClientError> {

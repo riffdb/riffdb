@@ -5,7 +5,7 @@ use std::fmt;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
-use riffdb_policy::AuthorizedQueryRowPolicyContextV1;
+use riffdb_policy::{AuthorizedProjectedRowAdmissionV1, AuthorizedQueryRowPolicyContextV1};
 use riffdb_query_executor::{
     QueryContinuation, QueryExecutionError, QueryExecutionPort, QueryExecutionRequest,
     QueryOwnedSnapshot, QueryParameters,
@@ -284,6 +284,15 @@ impl QueryExecutionPort for SharedRedbOperationalPorts {
             prior,
             policy,
         )
+    }
+
+    fn authorize_projected_candidates(
+        &self,
+        entity: riffdb_types::EntityTypeId,
+        candidates: &[riffdb_types::EntityKey],
+        policy: &AuthorizedQueryRowPolicyContextV1,
+    ) -> Result<AuthorizedProjectedRowAdmissionV1, QueryExecutionError> {
+        QueryExecutionPort::authorize_projected_candidates(&self.shared, entity, candidates, policy)
     }
 }
 

@@ -20,3 +20,6 @@ RDB-PROTOCOL-0101	protocol	contact_operator		the RiffDB peer returned an invalid
 RDB-HISTORY-0101	history	correct_request	correct_input	observed history predates a database restore
 RDB-HISTORY-0102	history	correct_request	correct_input	requested history has been pruned
 RDB-CAPACITY-0101	capacity	retry	retry_later	service is over capacity
+RDB-PROJECTION-0101	query	retry	retry_later	query projections cannot prove one common snapshot
+RDB-PROJECTION-0102	query	correct_request	restart_from_first_page	the requested query snapshot has been retired
+RDB-PROJECTION-0103	query	retry	retry_later	no query snapshot satisfies the requested freshness

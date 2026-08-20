@@ -181,6 +181,7 @@ pub struct ServiceProviders {
     pub(crate) event_lease_tokens: Option<Arc<dyn EventLeaseTokenSource>>,
     pub(crate) contextual_causation: Option<ContextualCausationTokenCodec>,
     pub(crate) columnar: Option<Arc<dyn ColumnarProjectionPort>>,
+    pub(crate) exact_text: Option<Arc<dyn crate::ExactTextProjectionPort>>,
 }
 
 impl ServiceProviders {
@@ -234,6 +235,7 @@ impl ServiceProviders {
             event_lease_tokens: None,
             contextual_causation: None,
             columnar: None,
+            exact_text: None,
         }
     }
 
@@ -293,6 +295,13 @@ impl ServiceProviders {
     #[must_use]
     pub fn with_columnar(mut self, columnar: Arc<dyn ColumnarProjectionPort>) -> Self {
         self.columnar = Some(columnar);
+        self
+    }
+
+    /// Installs the derived exact-count and ordinal-window provider.
+    #[must_use]
+    pub fn with_exact_text(mut self, exact_text: Arc<dyn crate::ExactTextProjectionPort>) -> Self {
+        self.exact_text = Some(exact_text);
         self
     }
 

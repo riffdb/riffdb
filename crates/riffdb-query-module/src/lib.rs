@@ -255,6 +255,15 @@ impl CompiledNamedQueryPlan {
         }
     }
 
+    /// Request-time policy charge, excluding compiler-owned background provider work.
+    #[must_use]
+    pub fn authorization_cost(&self) -> QueryCostVectorV1 {
+        match self {
+            Self::ExactTextResultV1(exact) => exact.authorization_cost(),
+            _ => self.cost(),
+        }
+    }
+
     /// Canonical bytes bound by `identity`.
     #[must_use]
     pub fn canonical_bytes(&self) -> &[u8] {
@@ -357,6 +366,16 @@ impl CompiledNamedQuery {
     pub fn exact_text_result(&self) -> Option<&CompiledExactTextResultSetV1> {
         match &self.plan {
             CompiledNamedQueryPlan::ExactTextResultV1(exact) => Some(exact),
+            CompiledNamedQueryPlan::V1(_) | CompiledNamedQueryPlan::OperationalV1(_) => None,
+        }
+    }
+
+    /// Shared immutable exact result-set plan for derived-provider execution.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn shared_exact_text_result(&self) -> Option<Arc<CompiledExactTextResultSetV1>> {
+        match &self.plan {
+            CompiledNamedQueryPlan::ExactTextResultV1(exact) => Some(Arc::clone(exact)),
             CompiledNamedQueryPlan::V1(_) | CompiledNamedQueryPlan::OperationalV1(_) => None,
         }
     }
@@ -1034,7 +1053,7 @@ fn decode_candidate(bytes: &[u8]) -> Result<DecodedCandidate, QueryModuleError> 
         let query_name = input.text(MAX_IDENTIFIER_BYTES)?;
         let source = input.text(MAX_SOURCE_BYTES)?;
         input.skip(32)?;
-        if format_version != QUERY_MODULE_FORMAT_VERSION_V1 && !matches!(input.u8()?, 1 | 2 | 3) {
+        if format_version != QUERY_MODULE_FORMAT_VERSION_V1 && !matches!(input.u8()?, 1..=3) {
             return Err(QueryModuleError::new(QueryModuleErrorKind::InvalidEncoding));
         }
         input.bytes(riffdb_query_ir::MAX_QUERY_ARTIFACT_BYTES)?;

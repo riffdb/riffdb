@@ -38,10 +38,10 @@ use riffdb_service::{
     AuthoritativeReadPort, BuildInfo, CapabilityTokenIssuer, CatalogReadPort,
     ColumnarProjectionPort, ContractMigrationApplication, CurrentPolicyPort, CursorMonotonicClock,
     CursorTokenGenerator, EventConsumerClock, EventConsumerPort, EventLeaseTokenSource,
-    OperationalStatusPort, ProjectionQueryPort, QueryModuleReadPort, ReactiveModuleReadPort,
-    RequestDeadlineScheduler, RiffDbServiceActivator, ServiceDiagnostics, ServiceExecutors,
-    ServiceHealthHooks, ServiceIdentity, ServiceJobSpawner, ServiceProcessMetadata,
-    ServiceProviders, ServiceTelemetry,
+    ExactTextProjectionPort, OperationalStatusPort, ProjectionQueryPort, QueryModuleReadPort,
+    ReactiveModuleReadPort, RequestDeadlineScheduler, RiffDbServiceActivator, ServiceDiagnostics,
+    ServiceExecutors, ServiceHealthHooks, ServiceIdentity, ServiceJobSpawner,
+    ServiceProcessMetadata, ServiceProviders, ServiceTelemetry,
 };
 use riffdb_storage_api::{
     OutboxDestinationIdV1, OutboxPageLimit, ReadableDigestKey, ReadableIdempotencyDigestInventory,
@@ -66,6 +66,10 @@ use crate::config::{ConfiguredProjection, ServerConfig};
 use crate::consumer_adapter::ServerEventConsumerPort;
 use crate::consumer_token::ProductionEventLeaseTokenSource;
 use crate::cursor::{ProductionCursorMonotonicClock, ProductionCursorTokenGenerator};
+use crate::exact_text_adapter::{
+    ExactTextRuntime, ExactTextRuntimeOpenError, ExactTextWorkerShutdownError,
+    ExactTextWorkerStartError, RunningExactTextWorker,
+};
 use crate::identifiers::{ProductionIdentifierSources, ServerRequestIdSource};
 use crate::installation_adapter::ServerApplicationInstallationCoordinator;
 use crate::lifecycle::{LifecycleInstallError, ProductionLifecycleRoute};
@@ -88,7 +92,9 @@ use crate::runtime_support::{
     ProductionObservabilityDiagnostics, ProductionObservabilityHealthHooks, RuntimeSupportError,
     SupervisedServiceJobSpawner, TokioRequestDeadlineScheduler,
 };
-use crate::server_generation::{ProductionServerGenerationSource, ServerGenerationSourceError};
+use crate::server_generation::{
+    ProductionServerGenerationSource, ServerGenerationSourceError, ServerGenerationV1,
+};
 use crate::startup::CheckedRedbStartup;
 use crate::storage::SharedRedbOperationalPorts;
 
@@ -469,6 +475,39 @@ impl ProductionGraphBuilder {
         let columnar_status = columnar_worker.status();
         let columnar: Arc<dyn ColumnarProjectionPort> =
             Arc::new(ServerColumnarProjectionPort::new(columnar_runtime));
+        let initial_exact_generation = exact_generation_from_process(&server_generation);
+        let exact_runtime = match ExactTextRuntime::open(
+            storage.clone(),
+            &projections_root,
+            retained_metadata.history_incarnation(),
+            initial_exact_generation,
+        ) {
+            Ok(runtime) => runtime,
+            Err(source) => {
+                return Err(cleanup_after_exact_runtime_failure(
+                    source,
+                    columnar_worker,
+                    projection_worker,
+                    coordinator,
+                    blocking,
+                    &notifications,
+                ));
+            }
+        };
+        let exact_worker = match RunningExactTextWorker::start(Arc::clone(&exact_runtime)) {
+            Ok(worker) => worker,
+            Err(source) => {
+                return Err(cleanup_after_exact_worker_failure(
+                    source,
+                    columnar_worker,
+                    projection_worker,
+                    coordinator,
+                    blocking,
+                    &notifications,
+                ));
+            }
+        };
+        let exact_text: Arc<dyn ExactTextProjectionPort> = exact_runtime;
 
         let executors = ServiceExecutors::new(
             coordinator.administration_audit_executor(),
@@ -554,6 +593,7 @@ impl ProductionGraphBuilder {
         .with_event_consumers(event_consumers, consumer_clock, event_lease_tokens)
         .with_live_query_clock(live_query_clock)
         .with_columnar(columnar)
+        .with_exact_text(exact_text)
         .with_offline_maintenance(offline_maintenance)
         .with_contract_migration(migration)
         .with_application_installation(installation);
@@ -583,6 +623,7 @@ impl ProductionGraphBuilder {
         ) {
             lifecycle.stop();
             let cleanup = cleanup_unpublished_graph(
+                exact_worker,
                 columnar_worker,
                 projection_worker,
                 coordinator,
@@ -594,6 +635,7 @@ impl ProductionGraphBuilder {
         if let Err(source) = lifecycle.install_contract_migration(migration_service) {
             lifecycle.stop();
             let cleanup = cleanup_unpublished_graph(
+                exact_worker,
                 columnar_worker,
                 projection_worker,
                 coordinator,
@@ -605,6 +647,7 @@ impl ProductionGraphBuilder {
         if let Err(source) = lifecycle.install_application_export(export_service) {
             lifecycle.stop();
             let cleanup = cleanup_unpublished_graph(
+                exact_worker,
                 columnar_worker,
                 projection_worker,
                 coordinator,
@@ -616,6 +659,7 @@ impl ProductionGraphBuilder {
         if let Err(source) = lifecycle.install_application_reimport(reimport_service) {
             lifecycle.stop();
             let cleanup = cleanup_unpublished_graph(
+                exact_worker,
                 columnar_worker,
                 projection_worker,
                 coordinator,
@@ -639,6 +683,7 @@ impl ProductionGraphBuilder {
             mcp_telemetry,
             observability,
             storage: shutdown_storage,
+            exact_worker: Some(exact_worker),
             columnar_worker: Some(columnar_worker),
             projection_worker: Some(projection_worker),
             coordinator: Some(coordinator),
@@ -662,6 +707,16 @@ fn recover_outbox(
         OutboxRecoveryResult::Ready { .. } => OutboxRecoveryReadiness::Ready,
         OutboxRecoveryResult::Degraded { .. } => OutboxRecoveryReadiness::Degraded,
     }
+}
+
+fn exact_generation_from_process(
+    generation: &ServerGenerationV1,
+) -> riffdb_types::ProjectionGeneration {
+    let bytes = generation.bytes();
+    let first = u64::from_be_bytes(bytes[..8].try_into().expect("fixed process generation"));
+    let second = u64::from_be_bytes(bytes[8..].try_into().expect("fixed process generation"));
+    riffdb_types::ProjectionGeneration::new(first ^ second)
+        .unwrap_or_else(riffdb_types::ProjectionGeneration::first)
 }
 
 fn server_outbox_recovery_policy() -> DeliveryPolicy {
@@ -705,6 +760,7 @@ pub(crate) struct RunningProductionGraph {
     observability: Arc<Observability>,
     /// Activated storage retained for the graceful-shutdown checkpoint write.
     storage: SharedRedbOperationalPorts,
+    exact_worker: Option<RunningExactTextWorker>,
     columnar_worker: Option<RunningColumnarWorker>,
     projection_worker: Option<RunningProjectionWorker>,
     coordinator: Option<RunningCommandCoordinator>,
@@ -823,6 +879,12 @@ impl RunningProductionGraph {
         self.lifecycle.stop();
         self.spawner.wait_for_idle().await;
 
+        let exact = self
+            .exact_worker
+            .take()
+            .expect("a running graph retains one exact text worker")
+            .shutdown()
+            .err();
         let columnar = self
             .columnar_worker
             .take()
@@ -852,6 +914,7 @@ impl RunningProductionGraph {
         // final engine commit. A write failure is non-fatal (lost fast path).
         write_shutdown_validated_prefix_checkpoint(&self.storage);
         shutdown_result(
+            exact,
             columnar,
             projection,
             notification_failed,
@@ -869,6 +932,12 @@ impl RunningProductionGraph {
         self.lifecycle.stop();
         self.spawner.wait_for_idle().await;
 
+        let exact = self
+            .exact_worker
+            .take()
+            .expect("a running graph retains one exact text worker")
+            .shutdown()
+            .err();
         let columnar = self
             .columnar_worker
             .take()
@@ -900,6 +969,7 @@ impl RunningProductionGraph {
         // Same non-fatal final checkpoint write as graceful production shutdown.
         write_shutdown_validated_prefix_checkpoint(&self.storage);
         shutdown_result(
+            exact,
             columnar,
             projection,
             notification_failed,
@@ -948,7 +1018,7 @@ fn cleanup_after_conflict_start_failure(
     let blocking = blocking.shutdown_and_drain().err();
     ProductionGraphBuildError::ConflictManager {
         source,
-        cleanup: shutdown_result(None, None, notification_failed, None, blocking).err(),
+        cleanup: shutdown_result(None, None, None, notification_failed, None, blocking).err(),
     }
 }
 
@@ -961,7 +1031,7 @@ fn cleanup_after_coordinator_start_failure(
     let blocking = blocking.shutdown_and_drain().err();
     ProductionGraphBuildError::Coordinator {
         source,
-        cleanup: shutdown_result(None, None, notification_failed, None, blocking).err(),
+        cleanup: shutdown_result(None, None, None, notification_failed, None, blocking).err(),
     }
 }
 
@@ -976,7 +1046,8 @@ fn cleanup_after_projection_start_failure(
     let blocking = blocking.shutdown_and_drain().err();
     ProductionGraphBuildError::ProjectionWorker {
         source,
-        cleanup: shutdown_result(None, None, notification_failed, coordinator, blocking).err(),
+        cleanup: shutdown_result(None, None, None, notification_failed, coordinator, blocking)
+            .err(),
     }
 }
 
@@ -993,8 +1064,15 @@ fn cleanup_after_columnar_registration_failure(
     let blocking = blocking.shutdown_and_drain().err();
     ProductionGraphBuildError::ColumnarRegistration {
         source,
-        cleanup: shutdown_result(None, projection, notification_failed, coordinator, blocking)
-            .err(),
+        cleanup: shutdown_result(
+            None,
+            None,
+            projection,
+            notification_failed,
+            coordinator,
+            blocking,
+        )
+        .err(),
     }
 }
 
@@ -1011,24 +1089,88 @@ fn cleanup_after_columnar_start_failure(
     let blocking = blocking.shutdown_and_drain().err();
     ProductionGraphBuildError::ColumnarWorker {
         source,
-        cleanup: shutdown_result(None, projection, notification_failed, coordinator, blocking)
-            .err(),
+        cleanup: shutdown_result(
+            None,
+            None,
+            projection,
+            notification_failed,
+            coordinator,
+            blocking,
+        )
+        .err(),
+    }
+}
+
+fn cleanup_after_exact_runtime_failure(
+    source: ExactTextRuntimeOpenError,
+    columnar_worker: RunningColumnarWorker,
+    projection_worker: RunningProjectionWorker,
+    coordinator: RunningCommandCoordinator,
+    blocking: BlockingPortDriver,
+    notifications: &FirstCommitNotificationHub,
+) -> ProductionGraphBuildError {
+    let columnar = columnar_worker.shutdown().err();
+    let projection = projection_worker.shutdown().err();
+    let notification_failed = notifications.shutdown().is_err();
+    let coordinator = coordinator.shutdown().err();
+    let blocking = blocking.shutdown_and_drain().err();
+    ProductionGraphBuildError::ExactTextRuntime {
+        source,
+        cleanup: shutdown_result(
+            None,
+            columnar,
+            projection,
+            notification_failed,
+            coordinator,
+            blocking,
+        )
+        .err(),
+    }
+}
+
+fn cleanup_after_exact_worker_failure(
+    source: ExactTextWorkerStartError,
+    columnar_worker: RunningColumnarWorker,
+    projection_worker: RunningProjectionWorker,
+    coordinator: RunningCommandCoordinator,
+    blocking: BlockingPortDriver,
+    notifications: &FirstCommitNotificationHub,
+) -> ProductionGraphBuildError {
+    let columnar = columnar_worker.shutdown().err();
+    let projection = projection_worker.shutdown().err();
+    let notification_failed = notifications.shutdown().is_err();
+    let coordinator = coordinator.shutdown().err();
+    let blocking = blocking.shutdown_and_drain().err();
+    ProductionGraphBuildError::ExactTextWorker {
+        source,
+        cleanup: shutdown_result(
+            None,
+            columnar,
+            projection,
+            notification_failed,
+            coordinator,
+            blocking,
+        )
+        .err(),
     }
 }
 
 fn cleanup_unpublished_graph(
+    exact_worker: RunningExactTextWorker,
     columnar_worker: RunningColumnarWorker,
     projection_worker: RunningProjectionWorker,
     coordinator: RunningCommandCoordinator,
     blocking: BlockingPortDriver,
     notifications: &FirstCommitNotificationHub,
 ) -> Option<ProductionGraphShutdownError> {
+    let exact = exact_worker.shutdown().err();
     let columnar = columnar_worker.shutdown().err();
     let projection = projection_worker.shutdown().err();
     let notification_failed = notifications.shutdown().is_err();
     let coordinator = coordinator.shutdown().err();
     let blocking = blocking.shutdown_and_drain().err();
     shutdown_result(
+        exact,
         columnar,
         projection,
         notification_failed,
@@ -1039,13 +1181,15 @@ fn cleanup_unpublished_graph(
 }
 
 fn shutdown_result(
+    exact: Option<ExactTextWorkerShutdownError>,
     columnar: Option<ColumnarWorkerShutdownError>,
     projection: Option<ProjectionWorkerShutdownError>,
     notification_failed: bool,
     coordinator: Option<CoordinatorShutdownError>,
     blocking: Option<BlockingPortDriverShutdownError>,
 ) -> Result<(), ProductionGraphShutdownError> {
-    if columnar.is_none()
+    if exact.is_none()
+        && columnar.is_none()
         && projection.is_none()
         && !notification_failed
         && coordinator.is_none()
@@ -1054,6 +1198,7 @@ fn shutdown_result(
         Ok(())
     } else {
         Err(ProductionGraphShutdownError {
+            exact,
             columnar,
             projection,
             notification_failed,
@@ -1092,6 +1237,14 @@ pub(crate) enum ProductionGraphBuildError {
         source: ColumnarWorkerStartError,
         cleanup: Option<ProductionGraphShutdownError>,
     },
+    ExactTextRuntime {
+        source: ExactTextRuntimeOpenError,
+        cleanup: Option<ProductionGraphShutdownError>,
+    },
+    ExactTextWorker {
+        source: ExactTextWorkerStartError,
+        cleanup: Option<ProductionGraphShutdownError>,
+    },
     Activation {
         source: LifecycleInstallError,
         cleanup: Option<ProductionGraphShutdownError>,
@@ -1112,6 +1265,8 @@ impl fmt::Display for ProductionGraphBuildError {
             | Self::ProjectionWorker { cleanup, .. }
             | Self::ColumnarRegistration { cleanup, .. }
             | Self::ColumnarWorker { cleanup, .. }
+            | Self::ExactTextRuntime { cleanup, .. }
+            | Self::ExactTextWorker { cleanup, .. }
             | Self::Activation { cleanup, .. } => cleanup.is_some(),
             Self::ServerGeneration(_)
             | Self::CurrentView
@@ -1145,6 +1300,8 @@ impl Error for ProductionGraphBuildError {
             Self::ProjectionWorker { source, .. } => Some(source),
             Self::ColumnarRegistration { source, .. } => Some(source),
             Self::ColumnarWorker { source, .. } => Some(source),
+            Self::ExactTextRuntime { source, .. } => Some(source),
+            Self::ExactTextWorker { source, .. } => Some(source),
             Self::Activation { source, .. } => Some(source),
         }
     }
@@ -1153,6 +1310,7 @@ impl Error for ProductionGraphBuildError {
 /// Aggregate evidence that every shutdown stage was attempted in order.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct ProductionGraphShutdownError {
+    exact: Option<ExactTextWorkerShutdownError>,
     columnar: Option<ColumnarWorkerShutdownError>,
     projection: Option<ProjectionWorkerShutdownError>,
     notification_failed: bool,
@@ -1162,7 +1320,8 @@ pub(crate) struct ProductionGraphShutdownError {
 
 impl fmt::Display for ProductionGraphShutdownError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let _failed_stages = usize::from(self.columnar.is_some())
+        let _failed_stages = usize::from(self.exact.is_some())
+            + usize::from(self.columnar.is_some())
             + usize::from(self.projection.is_some())
             + usize::from(self.notification_failed)
             + usize::from(self.coordinator.is_some())
@@ -1215,6 +1374,8 @@ mod tests {
             "RunningCommandCoordinator::start_with_telemetry(",
             "RunningProjectionWorker::start(",
             "RunningColumnarWorker::start(",
+            "ExactTextRuntime::open(",
+            "RunningExactTextWorker::start(",
             "CheckedGrpcSecurityContext::new(",
             "activator.activate(",
         ] {

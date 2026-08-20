@@ -5,10 +5,11 @@ use std::num::{NonZeroU16, NonZeroU64};
 
 use riffdb_auth::PrincipalFactBindingV1;
 use riffdb_types::{
-    ActorId, ActorKind, ApprovalId, CapabilityGrantV1, CapabilityId, CapabilityPermissionV1,
-    CapabilityRowPolicyGrantV1, ContractBundleHash, ContractLineage, ContractVersion, DatabaseId,
-    EntityTypeId, Environment, FieldId, MAX_CAPABILITY_FIELD_VISIBILITY, PartitionScopeV1,
-    ScopedPartitionV1, ServiceOperationV1, TenantScope, Timestamp,
+    ActorId, ActorKind, ApplicationRoleHash, ApprovalId, CapabilityGrantV1, CapabilityId,
+    CapabilityPermissionV1, CapabilityRowPolicyGrantV1, ContractBundleHash, ContractLineage,
+    ContractVersion, DatabaseId, EntityTypeId, Environment, FieldId,
+    MAX_CAPABILITY_FIELD_VISIBILITY, PartitionScopeV1, ScopedPartitionV1, ServiceOperationV1,
+    TenantScope, Timestamp,
 };
 
 use crate::operation::{
@@ -650,6 +651,7 @@ impl AuthorizedApplicationQuery {
             principal.principal_id().clone(),
             principal.actor_kind(),
             CheckedCapabilityValidity::new(principal.issued_at(), principal.expires_at()),
+            Some(authority.internal_grant().application_role_hash()),
         );
         let exact_obligations = Obligations::new(
             obligations.effective_tenant_scope().clone(),
@@ -694,6 +696,16 @@ impl AuthorizedApplicationQuery {
     #[must_use]
     pub const fn capability_revision(&self) -> NonZeroU64 {
         self.identity.capability_revision
+    }
+
+    /// Exact current compiled application role carried by the capability.
+    ///
+    /// Exact result-set epoch proofs bind this identity to the opened snapshot;
+    /// a capability without one cannot execute that generated surface.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn application_role_hash(&self) -> Option<ApplicationRoleHash> {
+        self.identity.application_role_hash
     }
 
     /// Returns the exact policy obligations attached to execution and output.
@@ -795,6 +807,7 @@ pub(crate) struct CurrentAuthorizationIdentity {
     principal_id: ActorId,
     actor_kind: ActorKind,
     validity: CheckedCapabilityValidity,
+    application_role_hash: Option<ApplicationRoleHash>,
 }
 
 impl CurrentAuthorizationIdentity {
@@ -804,6 +817,7 @@ impl CurrentAuthorizationIdentity {
         principal_id: ActorId,
         actor_kind: ActorKind,
         validity: CheckedCapabilityValidity,
+        application_role_hash: Option<ApplicationRoleHash>,
     ) -> Self {
         Self {
             capability_id,
@@ -811,6 +825,7 @@ impl CurrentAuthorizationIdentity {
             principal_id,
             actor_kind,
             validity,
+            application_role_hash,
         }
     }
 }
@@ -1933,6 +1948,7 @@ mod tests {
                 riffdb_types::Timestamp::new(0, 0).expect("issued at"),
                 riffdb_types::Timestamp::new(1_000, 0).expect("expires at"),
             ),
+            None,
         )
     }
 

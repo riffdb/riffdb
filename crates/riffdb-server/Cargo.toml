@@ -32,6 +32,7 @@ riffdb-policy = { version = "0.1.0", path = "../riffdb-policy", default-features
 riffdb-projection = { version = "0.1.0", path = "../riffdb-projection", default-features = false }
 riffdb-query-executor = { version = "0.1.0", path = "../riffdb-query-executor", default-features = false }
 riffdb-query-ir = { version = "0.1.0", path = "../riffdb-query-ir", default-features = false }
+riffdb-query-module = { version = "0.1.0", path = "../riffdb-query-module", default-features = false }
 riffdb-service = { version = "0.1.0", path = "../riffdb-service", default-features = false }
 riffdb-storage-api = { version = "0.1.0", path = "../riffdb-storage-api", default-features = false }
 riffdb-storage-redb = { version = "0.1.0", path = "../riffdb-storage-redb", default-features = false }
@@ -51,7 +52,6 @@ zeroize = { version = "=1.8.1", default-features = false, features = ["alloc"] }
 [dev-dependencies]
 riffdb-client-rust = { version = "0.1.0", path = "../riffdb-client-rust", default-features = false }
 riffdb-contract-compiler = { version = "0.1.0", path = "../riffdb-contract-compiler", default-features = false }
-riffdb-query-module = { version = "0.1.0", path = "../riffdb-query-module", default-features = false }
 riffdb-proto = { version = "0.1.0", path = "../riffdb-proto", default-features = false }
 riffdb-storage-redb = { version = "0.1.0", path = "../riffdb-storage-redb", default-features = false, features = ["test-fixtures"] }
 riffdb-testkit = { version = "0.1.0", path = "../riffdb-testkit", default-features = false }
