@@ -14385,4 +14385,85 @@ work_packages:
       compiler bounded per request and fixed-capacity per process independently of history, tenant
       count, database size, or completed-operation count; no full-population materialization or
       unbounded cache is introduced.
+  closure:
+    status: complete
+    evidence: docs/performance/wp-653-large-result-ledger.md
+    decision: The closed workstation ledger attributed 65 percent of BoardPage450 marginal time to
+      storage execution and 35 percent to response, wire, and client assembly. The internal exact-
+      projection candidate improved BoardPage450 only 4.9 percent and regressed BoardPage50 5.1
+      percent, so it was removed before cloud activation. Existing production semantics remain
+      selected; the separately proposed ADR-0133 owns the evidence-sized covering-index plus
+      compact-carriage direction.
+  human_review_triggers: *id001
+- id: WP-654
+  name: Compiler-planned covering result batches and compact carriage
+  depends_on: [WP-645, WP-650, WP-653]
+  objective: Implement the exact accepted ADR-0133 compiler, durable-index, internal positional-
+    batch, negotiated public-carriage, and four-language generated-decoder path only after its
+    mechanics ledger proves the combined candidate can close BoardPage450 without weakening any
+    authorization, snapshot, durability, corruption, boundedness, or compatibility guarantee.
+  requirements: [PERF-001, PERF-002, PERF-008, PERF-018, STO-002, API-001, QRY-001,
+    QRY-002, QRY-003, QRY-004]
+  required_adrs: [ADR-0022, ADR-0023, ADR-0027, ADR-0051, ADR-0052, ADR-0053,
+    ADR-0055, ADR-0074, ADR-0111, ADR-0124, ADR-0128, ADR-0130, ADR-0131,
+    ADR-0133]
+  allowed_paths: [AGENTS.md, SPEC.md, work_packages.yaml, adr/**, proto/**,
+    crates/riffdb-types/**, crates/riffdb-contract-syntax/**,
+    crates/riffdb-contract-ir/**, crates/riffdb-contract-compiler/**,
+    crates/riffdb-query-ir/**, crates/riffdb-query-compiler/**,
+    crates/riffdb-query-module/**, crates/riffdb-storage-api/**,
+    crates/riffdb-storage-memory/**, crates/riffdb-storage-redb/**,
+    crates/riffdb-commit/**, crates/riffdb-query-executor/**,
+    crates/riffdb-service/**, crates/riffdb-api-grpc/**,
+    crates/riffdb-client-rust/**, crates/riffdb-codegen-rust/**,
+    crates/riffdb-codegen-typescript/**, crates/riffdb-codegen-go/**,
+    crates/riffdb-codegen-python/**, crates/riffdb-driver-host/**,
+    crates/riffdb-observability/**, examples/app-baseline/**,
+    examples/agent-alpha/**, fixtures/**, tests/**, scripts/**,
+    docs/SUMMARY.md, docs/getting-started/**, docs/reference/**,
+    docs/performance/**, docs/architecture/**]
+  deliverables:
+  - The accepted ADR-0133 SPEC amendments, version-topology entries, compiler grammar/IR/hash/lock
+    fixtures, source diagnostics, and additive evolution rules for a new explicitly covering index;
+    existing indexes, modules, and empty-cover bytes remain readable and byte-exact
+  - Atomic coordinator derivation, update/delete behavior, epoch/changelog/recovery integration,
+    rebuild/migration receipts, and process-generation structural proof for bounded covered values;
+    missing, stale, malformed, duplicate, or non-derivable coverage refuses without entity fallback
+  - A compiler-sealed one-step covered-result batch whose positional layout, predicates, order,
+    policy, fuel, continuation, snapshot, and result identity are independently checked and cannot
+    be selected or altered by an application
+  - Additive negotiated compact Protobuf/session carriage plus strict codecs and parent goldens;
+    old clients default to legacy named records, new clients accept both, and mixed or malformed
+    arms fail closed
+  - Rust, Go, TypeScript, and Python generated decoders that construct typed query results directly
+    from the exact positional layout without handwritten glue, generic per-row maps, exposed
+    ordinals, or caller-supplied schemas
+  - A closed pre/post ledger and paired workstation, N1, and E2 receipts covering BoardPage50/200/
+    450, ordinary reads, every unary write, mixed c32, seed, startup, deployment, recovery, and
+    backup/restore, with every newly introduced write/read/startup cost reconciled
+  acceptance_commands:
+  - cargo +1.97.0 test -p riffdb-contract-syntax -p riffdb-contract-ir -p riffdb-contract-compiler -p riffdb-query-ir -p riffdb-query-compiler -p riffdb-query-module -p riffdb-storage-api -p riffdb-storage-memory -p riffdb-storage-redb -p riffdb-commit -p riffdb-query-executor -p riffdb-service -p riffdb-api-grpc -p riffdb-client-rust --all-features
+  - ./scripts/check-version-topology
+  - ./scripts/check-generated
+  - ./scripts/check-application-bindings
+  - ./scripts/check-requirement-coverage
+  - ./scripts/check-workspace-policy
+  - ./scripts/handbook check
+  - cargo +1.97.0 fmt --all -- --check
+  - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: BoardPage450 improves at least forty percent from WP-653 and reaches at most 1.10x
+    paired safe-application PostgreSQL on N1 and E2, compact and legacy results are semantically
+    identical in Rust, Go, TypeScript, and Python, every ordinary performance and reliability gate
+    remains green, cover write/startup amplification is bounded and receipted, and no public caller
+    can choose physical layout, fallback, validation, policy, or consistency behavior; otherwise
+    partial candidates follow ADR-0133's independent activation rules and existing defaults remain.
+  standing_design_tests:
+    interface_safety: Applications continue to invoke only finite generated named queries with
+      typed bounded parameters; compiler-owned cover/layout/encoding decisions expose no index,
+      field ordinal, response schema, provider, fallback, validation, authorization, freshness, or
+      durability choice, and both wire arms fail closed unless bound to the same exact plan.
+    scale: Cover bytes, index/write amplification, migration/rebuild pages, startup proof, scan
+      work, rows, columns, values, response bytes, continuation, SDK decode, and diagnostics are
+      statically bounded; execution materializes only the requested page and creates no full-state
+      cache or full-population result.
   human_review_triggers: *id001
