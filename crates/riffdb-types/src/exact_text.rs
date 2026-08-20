@@ -10,8 +10,15 @@ pub const EXACT_TEXT_PROVIDER_STATE_SCHEMA_HASH_V1: [u8; 32] = [
     0x9b, 0x8a, 0x2f, 0x7e, 0xd9, 0xfd, 0xf1, 0xc5, 0xd9, 0x68, 0x8f, 0xbd, 0x39, 0xad, 0x3d, 0x86,
     0x20, 0x70, 0xa7, 0x17, 0x74, 0xdc, 0x77, 0x4d, 0x0c, 0xe0, 0x0e, 0xdb, 0x69, 0x1a, 0x1e, 0x40,
 ];
+/// Opaque schema identity for activated V2 checkpoints with typed output rows.
+pub const EXACT_TEXT_PROVIDER_STATE_SCHEMA_HASH_V2: [u8; 32] = [
+    0x58, 0xa4, 0x1e, 0x51, 0x2c, 0x04, 0xef, 0x93, 0xe7, 0xc1, 0xfd, 0xb2, 0xbf, 0xfb, 0x2d, 0x44,
+    0xbb, 0x54, 0xfc, 0x76, 0xac, 0x61, 0xab, 0x8e, 0x47, 0x93, 0xf1, 0xf0, 0x1d, 0x2b, 0x2f, 0x8a,
+];
 /// Maximum indexed UTF-8 value bytes admitted by V1.
 pub const MAX_EXACT_TEXT_VALUE_BYTES_V1: usize = 256;
+/// Maximum canonical typed output bytes retained for one exact result row.
+pub const MAX_EXACT_TEXT_OUTPUT_ROW_BYTES_V1: usize = 64 * 1024;
 /// Maximum bound needle bytes admitted by V1.
 pub const MAX_EXACT_TEXT_NEEDLE_BYTES_V1: usize = 64;
 /// Maximum indexed rows in one policy/partition state.
@@ -40,6 +47,16 @@ pub enum ExactTextOperatorV1 {
     EndsWith = 3,
     /// Needle is an exact contiguous byte sequence.
     Contains = 4,
+}
+
+/// Closed total orders supported by exact binary UTF-8 result sets.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u8)]
+pub enum ExactTextOrderV1 {
+    /// Indexed value ascending, then authoritative entity-key hash ascending.
+    ValueAscEntityKey = 1,
+    /// Indexed value descending, then authoritative entity-key hash ascending.
+    ValueDescEntityKey = 2,
 }
 
 /// Input field state before exact matching.

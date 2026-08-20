@@ -9,26 +9,28 @@ pub use reactive::*;
 use std::collections::{BTreeMap, BTreeSet};
 use std::num::NonZeroU32;
 
-use riffdb_contract_ir::{IndexFieldEncodingV1, ValueType, ValueTypeTag};
+use riffdb_contract_ir::{IndexFieldEncodingV1, TextKeyProfileV1, ValueType, ValueTypeTag};
 use riffdb_query_ir::{
     AccessDirection, AuthorizationEntityAccess, EntitySymbol, ExactTextOperatorSetV1,
     ExactTextOrderSetV1, ExactTextPlanFamilyErrorV1, ExactTextPlanFamilyV1,
     MAX_OPERATIONAL_PRESENCE_PARAMETERS, OperationalPlanMemberV1, OperationalQueryFamilyV1,
-    ProjectionResultSetPlanError, ProjectionResultSetPlanV1, QueryAccessKind, QueryAccessProgramV1,
-    QueryAccessStep, QueryLiteral, QueryPredicate, QueryPredicateOperator, QueryPredicateValue,
-    QueryRowLimit, ResultSetOutputShapeV1, ResultSetWindowV1, SymbolicCatalog,
+    ProjectionResultSetPlanError, ProjectionResultSetPlanV1, ProjectionResultSetPlanV2,
+    ProjectionResultSetPlanV2Error, QueryAccessKind, QueryAccessProgramV1, QueryAccessStep,
+    QueryLiteral, QueryPredicate, QueryPredicateOperator, QueryPredicateValue, QueryRowLimit,
+    ResultSetOutputShapeV1, ResultSetWindowBoundsV2, ResultSetWindowV1, SymbolicCatalog,
     resolve_query_surface,
 };
 use riffdb_riffql_syntax::{
-    BinaryOperator, Cardinality, Direction, Document, Expression, FieldSelection, Literal, Path,
-    Span, Spanned, TypeReference, UnaryOperator,
+    AggregateFunction, BinaryOperator, Cardinality, Direction, Document, Expression,
+    FieldSelection, Literal, Path, RIFFQL_LANGUAGE_VERSION_EXACT_RESULT_SET_V1, Span, Spanned,
+    TypeReference, UnaryOperator,
 };
 use riffdb_types::{
-    EXACT_TEXT_PROVIDER_STATE_SCHEMA_HASH_V1, FieldId, MAX_EXACT_TEXT_NEEDLE_BYTES_V1,
-    MAX_EXACT_TEXT_ROWS_PER_PARTITION_V1, MAX_EXACT_TEXT_TERMS_PER_ROW_V1,
-    MAX_EXACT_TEXT_VALUE_BYTES_V1, ProjectionProviderCapabilitiesV1,
-    ProjectionProviderDescriptorV1, ProjectionProviderKindV1, ProjectionProviderPolicyModeV1,
-    ProjectionProviderPostureV1, ProjectionProviderStateIdentityV1,
+    EXACT_TEXT_PROVIDER_STATE_SCHEMA_HASH_V1, EXACT_TEXT_PROVIDER_STATE_SCHEMA_HASH_V2, FieldId,
+    MAX_EXACT_TEXT_NEEDLE_BYTES_V1, MAX_EXACT_TEXT_ROWS_PER_PARTITION_V1,
+    MAX_EXACT_TEXT_TERMS_PER_ROW_V1, MAX_EXACT_TEXT_VALUE_BYTES_V1,
+    ProjectionProviderCapabilitiesV1, ProjectionProviderDescriptorV1, ProjectionProviderKindV1,
+    ProjectionProviderPolicyModeV1, ProjectionProviderPostureV1, ProjectionProviderStateIdentityV1,
     ProjectionProviderStaticBoundsV1, QueryCostVectorV1,
 };
 
@@ -81,6 +83,33 @@ impl ExactTextCompilerDeclarationV1 {
 pub fn compile_exact_text_family_v1(
     declaration: ExactTextCompilerDeclarationV1,
 ) -> Result<ExactTextPlanFamilyV1, PlannerDiagnostics> {
+    compile_exact_text_family_with_state_v1(
+        declaration,
+        NonZeroU32::new(1).expect("state layout is nonzero"),
+        EXACT_TEXT_PROVIDER_STATE_SCHEMA_HASH_V1,
+    )
+}
+
+/// Compiles the activated family whose provider retains typed output rows.
+///
+/// The compile-only V1 family and checkpoint identity remain available for
+/// strict compatibility. Public execution pins V2 so output never requires a
+/// remote fetch or hash reversal.
+pub fn compile_exact_text_result_family_v1(
+    declaration: ExactTextCompilerDeclarationV1,
+) -> Result<ExactTextPlanFamilyV1, PlannerDiagnostics> {
+    compile_exact_text_family_with_state_v1(
+        declaration,
+        NonZeroU32::new(2).expect("state layout is nonzero"),
+        EXACT_TEXT_PROVIDER_STATE_SCHEMA_HASH_V2,
+    )
+}
+
+fn compile_exact_text_family_with_state_v1(
+    declaration: ExactTextCompilerDeclarationV1,
+    state_version: NonZeroU32,
+    state_schema_hash: [u8; 32],
+) -> Result<ExactTextPlanFamilyV1, PlannerDiagnostics> {
     if declaration.max_value_bytes == 0
         || usize::from(declaration.max_value_bytes) > MAX_EXACT_TEXT_VALUE_BYTES_V1
         || declaration.max_needle_bytes == 0
@@ -118,10 +147,7 @@ pub fn compile_exact_text_family_v1(
             max_catchup_lag: 100,
             max_epoch_lease_steps: 1_024,
         },
-        ProjectionProviderStateIdentityV1::new(
-            NonZeroU32::new(1).expect("state layout is nonzero"),
-            EXACT_TEXT_PROVIDER_STATE_SCHEMA_HASH_V1,
-        ),
+        ProjectionProviderStateIdentityV1::new(state_version, state_schema_hash),
     )
     .map_err(|_| exact_text_diagnostic(declaration.span, "exact text provider is inconsistent"))?;
     ExactTextPlanFamilyV1::new(
@@ -151,6 +177,9 @@ pub fn compile_exact_text_family_v1(
         ExactTextPlanFamilyErrorV1::ProviderMismatch => {
             exact_text_diagnostic(declaration.span, "exact text provider is inconsistent")
         }
+        ExactTextPlanFamilyErrorV1::NonCanonicalEncoding => {
+            exact_text_diagnostic(declaration.span, "exact text provider is inconsistent")
+        }
     })
 }
 
@@ -162,6 +191,333 @@ fn exact_text_diagnostic(span: Span, summary: &'static str) -> PlannerDiagnostic
         summary,
         None,
     )
+}
+
+/// Produces the closed exact-provider invariant diagnostic for a failed
+/// downstream artifact seal. Public callers cannot supply the summary.
+#[doc(hidden)]
+#[must_use]
+pub fn exact_text_artifact_invariant(span: Span) -> PlannerDiagnostics {
+    exact_text_diagnostic(span, "exact result artifact is inconsistent")
+}
+
+/// Compiler-owned pieces of one exact whole-result named query.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CompiledExactTextQueryV1 {
+    /// Exact provider family pinned to durable output-capable state V2.
+    pub family: ExactTextPlanFamilyV1,
+    /// Count/window/output stage plan.
+    pub plan: ProjectionResultSetPlanV2,
+    /// Non-executable symbolic metadata proof used for schemas and authority.
+    pub metadata: OperationalQueryFamilyV1,
+    /// Fixed predicate member.
+    pub operator: riffdb_types::ExactTextOperatorV1,
+    /// Fixed total order member.
+    pub order: riffdb_types::ExactTextOrderV1,
+    /// Typed exact needle parameter.
+    pub needle_parameter: String,
+    /// Typed page limit parameter.
+    pub limit_parameter: String,
+    /// Typed ordinal parameter.
+    pub offset_parameter: String,
+}
+
+/// Compiles the finite ADR-0131 source form into one exact provider plan.
+///
+/// This is deliberately not a general expression compiler: exactly one
+/// partition-routed `many`, one exact text predicate, one total-order field
+/// plus the entity primary-key tie breaker, one bounded ordinal window, and
+/// one whole-set `exact_count` are admitted.
+pub fn compile_exact_text_query_v1(
+    document: &Document,
+    catalog: &SymbolicCatalog,
+) -> Result<CompiledExactTextQueryV1, PlannerDiagnostics> {
+    if document.language_version != RIFFQL_LANGUAGE_VERSION_EXACT_RESULT_SET_V1
+        || document.body.bindings.len() != 1
+        || document.body.aggregates.len() != 1
+    {
+        return Err(exact_text_diagnostic(
+            document
+                .name
+                .as_ref()
+                .map_or(Span { start: 0, end: 0 }, |name| name.span),
+            "exact result query must use one bounded binding and one exact count",
+        ));
+    }
+    let binding = &document.body.bindings[0];
+    if binding.cardinality.value != Cardinality::Many || binding.nearest.is_some() {
+        return Err(exact_text_diagnostic(
+            binding.cardinality.span,
+            "exact result query requires one bounded many binding",
+        ));
+    }
+    let entity = catalog
+        .entity(binding.entity.value.as_str())
+        .ok_or_else(|| {
+            exact_text_diagnostic(binding.entity.span, "exact result entity is unknown")
+        })?;
+    if catalog
+        .row_policies()
+        .any(|policy| policy.entity() == entity.name())
+    {
+        return Err(exact_text_diagnostic(
+            binding.entity.span,
+            "exact result provider requires a partition-aligned policy shape",
+        ));
+    }
+    let (operator, field_name, needle_parameter, predicate_span) =
+        exact_predicate(&binding.predicate)?;
+    let field = entity
+        .field(&field_name)
+        .ok_or_else(|| exact_text_diagnostic(predicate_span, "exact text field is unknown"))?;
+    if field.value_type().tag() != ValueTypeTag::String {
+        return Err(exact_text_diagnostic(
+            predicate_span,
+            "exact text field must be a bounded string",
+        ));
+    }
+    let compatible_index = entity.indexes().find(|index| {
+        let fields = index.fields();
+        let encodings = index.internal_encodings();
+        fields
+            .first()
+            .is_some_and(|name| name == entity.partition_field())
+            && fields
+                .iter()
+                .position(|name| name == &field_name)
+                .is_some_and(|position| {
+                    encodings.get(position)
+                        == Some(&IndexFieldEncodingV1::TextKey(TextKeyProfileV1::BinaryUtf8))
+                })
+    });
+    if compatible_index.is_none() {
+        return Err(exact_text_diagnostic(
+            predicate_span,
+            "exact text field requires a partition-routed binary_utf8_v1 text key",
+        ));
+    }
+    let first_order = binding.order.first().ok_or_else(|| {
+        exact_text_diagnostic(binding.cardinality.span, "exact result order is required")
+    })?;
+    if path_tail(&first_order.path.value) != Some(field_name.as_str()) {
+        return Err(exact_text_diagnostic(
+            first_order.path.span,
+            "exact result order must begin with the exact text field",
+        ));
+    }
+    let order = match first_order.direction.value {
+        Direction::Ascending => riffdb_types::ExactTextOrderV1::ValueAscEntityKey,
+        Direction::Descending => riffdb_types::ExactTextOrderV1::ValueDescEntityKey,
+    };
+    let tie_breakers = binding.order[1..]
+        .iter()
+        .map(|term| path_tail(&term.path.value))
+        .collect::<Option<Vec<_>>>();
+    let expected_tie_breakers = entity
+        .primary_key()
+        .iter()
+        .filter(|name| name.as_str() != entity.partition_field())
+        .map(String::as_str)
+        .collect::<Vec<_>>();
+    if tie_breakers.as_deref() != Some(expected_tie_breakers.as_slice())
+        || binding.order[1..]
+            .iter()
+            .any(|term| term.direction.value != Direction::Ascending)
+    {
+        return Err(exact_text_diagnostic(
+            first_order.path.span,
+            "exact result order must append the complete ascending entity key tie breaker",
+        ));
+    }
+    let take = binding.take.as_ref().ok_or_else(|| {
+        exact_text_diagnostic(binding.cardinality.span, "exact result window is required")
+    })?;
+    if take.after.is_some() || take.offset.is_none() {
+        return Err(exact_text_diagnostic(
+            take.limit.span,
+            "exact result window requires bounded numeric offset without a cursor",
+        ));
+    }
+    let limit_parameter = exact_parameter_name(&take.limit.value).ok_or_else(|| {
+        exact_text_diagnostic(
+            take.limit.span,
+            "exact result limit must be a typed parameter",
+        )
+    })?;
+    let offset = take.offset.as_ref().expect("checked exact offset");
+    let offset_parameter = exact_parameter_name(&offset.value).ok_or_else(|| {
+        exact_text_diagnostic(offset.span, "exact result offset must be a typed parameter")
+    })?;
+    let aggregate = &document.body.aggregates[0];
+    if aggregate.source.value != binding.name.value
+        || !aggregate.group_by.is_empty()
+        || aggregate.measures.len() != 1
+        || aggregate.measures[0].function.value != AggregateFunction::ExactCount
+        || aggregate.measures[0].field.is_some()
+    {
+        return Err(exact_text_diagnostic(
+            aggregate.name.span,
+            "exact result query requires one ungrouped exact_count over the complete binding",
+        ));
+    }
+
+    let family =
+        compile_exact_text_result_family_v1(ExactTextCompilerDeclarationV1::bounded_binary_utf8(
+            field.internal_id(),
+            operator_flags(operator),
+            ProjectionProviderPolicyModeV1::PartitionAligned,
+            predicate_span,
+        ))?;
+    let plan = pin_projection_result_set_provider_v2(
+        family.descriptor().clone(),
+        ProjectionResultSetRequirementsV2 {
+            filtering: true,
+            rank_or_order: true,
+            whole_set_measures: true,
+            window: ResultSetWindowBoundsV2::Ordinal {
+                max_offset: family.max_candidates(),
+                max_limit: std::num::NonZeroU16::new(499).expect("fixed nonzero page limit"),
+            },
+            output: ResultSetOutputShapeV1::TypedRows,
+        },
+    )
+    .map_err(|_| exact_text_diagnostic(predicate_span, "exact result plan is inconsistent"))?;
+    let mut metadata_document = document.clone();
+    rewrite_exact_metadata(&mut metadata_document);
+    let metadata = compile_operational_query_family(&metadata_document, catalog)?;
+    if !metadata.presence_parameters().is_empty() {
+        return Err(exact_text_diagnostic(
+            predicate_span,
+            "optional exact predicate combinations are not available in this profile",
+        ));
+    }
+    Ok(CompiledExactTextQueryV1 {
+        family,
+        plan,
+        metadata,
+        operator,
+        order,
+        needle_parameter,
+        limit_parameter,
+        offset_parameter,
+    })
+}
+
+fn operator_flags(operator: riffdb_types::ExactTextOperatorV1) -> [bool; 4] {
+    let mut flags = [false; 4];
+    flags[usize::from(operator as u8) - 1] = true;
+    flags
+}
+
+fn exact_parameter_name(expression: &Expression) -> Option<String> {
+    match expression {
+        Expression::Parameter(parameter) => Some(parameter.value.as_str().to_owned()),
+        _ => None,
+    }
+}
+
+fn path_tail(path: &Path) -> Option<&str> {
+    path.0.last().map(|part| part.value.as_str())
+}
+
+fn exact_predicate(
+    expression: &Spanned<Expression>,
+) -> Result<(riffdb_types::ExactTextOperatorV1, String, String, Span), PlannerDiagnostics> {
+    fn visit(
+        expression: &Spanned<Expression>,
+        found: &mut Option<(riffdb_types::ExactTextOperatorV1, String, String, Span)>,
+    ) -> Result<(), PlannerDiagnostics> {
+        if let Expression::Binary {
+            operator,
+            left,
+            right,
+        } = &expression.value
+        {
+            let exact = match operator.value {
+                BinaryOperator::StartsWith => Some(riffdb_types::ExactTextOperatorV1::StartsWith),
+                BinaryOperator::EndsWith => Some(riffdb_types::ExactTextOperatorV1::EndsWith),
+                BinaryOperator::Contains => Some(riffdb_types::ExactTextOperatorV1::Contains),
+                _ => None,
+            };
+            if let Some(exact) = exact {
+                let (Expression::Path(path), Expression::Parameter(parameter)) =
+                    (&left.value, &right.value)
+                else {
+                    return Err(exact_text_diagnostic(
+                        operator.span,
+                        "exact text predicate requires a field and typed parameter",
+                    ));
+                };
+                let field = path_tail(path).ok_or_else(|| {
+                    exact_text_diagnostic(operator.span, "exact text field path is invalid")
+                })?;
+                if found.is_some() {
+                    return Err(exact_text_diagnostic(
+                        operator.span,
+                        "exact result query admits one exact text predicate",
+                    ));
+                }
+                *found = Some((
+                    exact,
+                    field.to_owned(),
+                    parameter.value.as_str().to_owned(),
+                    operator.span,
+                ));
+            } else {
+                visit(left, found)?;
+                visit(right, found)?;
+            }
+        }
+        Ok(())
+    }
+    let mut found = None;
+    visit(expression, &mut found)?;
+    found.ok_or_else(|| {
+        exact_text_diagnostic(
+            expression.span,
+            "exact result query requires one exact text predicate",
+        )
+    })
+}
+
+fn rewrite_exact_metadata(document: &mut Document) {
+    fn rewrite(expression: &mut Spanned<Expression>) {
+        match &mut expression.value {
+            Expression::Binary {
+                operator,
+                left,
+                right,
+            } => {
+                if matches!(
+                    operator.value,
+                    BinaryOperator::StartsWith
+                        | BinaryOperator::EndsWith
+                        | BinaryOperator::Contains
+                ) {
+                    operator.value = BinaryOperator::Prefix;
+                }
+                rewrite(left);
+                rewrite(right);
+            }
+            Expression::PresenceGuard { predicate, .. } => rewrite(predicate),
+            Expression::Unary { operand, .. } => rewrite(operand),
+            Expression::Path(_) | Expression::Parameter(_) | Expression::Literal(_) => {}
+        }
+    }
+    document.language_version = riffdb_riffql_syntax::RIFFQL_LANGUAGE_VERSION_OPERATIONAL_V1;
+    for binding in &mut document.body.bindings {
+        rewrite(&mut binding.predicate);
+        if let Some(take) = &mut binding.take {
+            take.offset = None;
+        }
+    }
+    for aggregate in &mut document.body.aggregates {
+        for measure in &mut aggregate.measures {
+            if measure.function.value == AggregateFunction::ExactCount {
+                measure.function.value = AggregateFunction::Count;
+            }
+        }
+    }
 }
 
 /// Closed compiler input for the ADR-0130 result-set stage family.
@@ -189,6 +545,36 @@ pub fn pin_projection_result_set_provider_v1(
     requirements: ProjectionResultSetRequirementsV1,
 ) -> Result<ProjectionResultSetPlanV1, ProjectionResultSetPlanError> {
     ProjectionResultSetPlanV1::new(
+        provider,
+        requirements.filtering,
+        requirements.rank_or_order,
+        requirements.whole_set_measures,
+        requirements.window,
+        requirements.output,
+    )
+}
+
+/// Closed compiler input for parameter-bounded result windows.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ProjectionResultSetRequirementsV2 {
+    /// Predicate filtering stage is required.
+    pub filtering: bool,
+    /// Ranking or exact total ordering stage is required.
+    pub rank_or_order: bool,
+    /// Whole-admitted-set measures stage is required.
+    pub whole_set_measures: bool,
+    /// Compiler-owned maxima for runtime window values.
+    pub window: ResultSetWindowBoundsV2,
+    /// Closed typed output shape.
+    pub output: ResultSetOutputShapeV1,
+}
+
+/// Pins one provider into a plan whose offset and limit are typed values.
+pub fn pin_projection_result_set_provider_v2(
+    provider: ProjectionProviderDescriptorV1,
+    requirements: ProjectionResultSetRequirementsV2,
+) -> Result<ProjectionResultSetPlanV2, ProjectionResultSetPlanV2Error> {
+    ProjectionResultSetPlanV2::new(
         provider,
         requirements.filtering,
         requirements.rank_or_order,
@@ -1396,6 +1782,9 @@ fn predicate_operator(
         }
         SourcePredicateOperator::Binary(BinaryOperator::In) => QueryPredicateOperator::In,
         SourcePredicateOperator::Binary(BinaryOperator::Prefix) => QueryPredicateOperator::Prefix,
+        SourcePredicateOperator::Binary(
+            BinaryOperator::StartsWith | BinaryOperator::EndsWith | BinaryOperator::Contains,
+        ) => return Err(internal()),
         SourcePredicateOperator::Unary(UnaryOperator::IsNull) => QueryPredicateOperator::IsNull,
         SourcePredicateOperator::Unary(UnaryOperator::IsNotNull) => {
             QueryPredicateOperator::IsNotNull

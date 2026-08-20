@@ -3345,6 +3345,9 @@ fn query_value_type(
 ) -> Option<riffdb_contract_ir::ValueType> {
     match ty {
         TypeReference::Named(path) => match path.0.as_slice() {
+            [enumeration] if enumeration.value.as_str() == "u64" => {
+                Some(riffdb_contract_ir::ValueType::u64())
+            }
             [enumeration] => bundle
                 .schema()
                 .enums()

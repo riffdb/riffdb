@@ -76,6 +76,10 @@ pub fn format_query(document: &Document) -> String {
                 write!(output, " after ${}", after.value.as_str())
                     .expect("String writes cannot fail");
             }
+            if let Some(offset) = &take.offset {
+                write!(output, " offset {}", format_expression(&offset.value, 0))
+                    .expect("String writes cannot fail");
+            }
             output.push('\n');
         }
         if let Some(nearest) = &binding.nearest {
@@ -117,6 +121,7 @@ pub fn format_query(document: &Document) -> String {
             output.push_str("        ");
             output.push_str(match measure.function.value {
                 AggregateFunction::Count => "count(",
+                AggregateFunction::ExactCount => "exact_count(",
                 AggregateFunction::Sum => "sum(",
                 AggregateFunction::Min => "min(",
                 AggregateFunction::Max => "max(",
@@ -233,6 +238,9 @@ fn format_expression(value: &Expression, parent_precedence: u8) -> String {
                 BinaryOperator::GreaterEqual => (">=", 3),
                 BinaryOperator::In => ("in", 3),
                 BinaryOperator::Prefix => ("prefix", 3),
+                BinaryOperator::StartsWith => ("starts_with", 3),
+                BinaryOperator::EndsWith => ("ends_with", 3),
+                BinaryOperator::Contains => ("contains", 3),
             };
             let rendered = format!(
                 "{} {text} {}",

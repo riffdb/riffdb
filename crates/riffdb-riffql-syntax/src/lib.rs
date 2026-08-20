@@ -14,7 +14,8 @@ pub use parser::{parse_query, parse_query_bytes};
 pub use syntax::{
     AggregateBinding, AggregateFunction, AggregateMeasure, BinaryOperator, Binding, Cardinality,
     Direction, Document, Expression, FieldSelection, Identifier, Literal, NearestClause, OrderTerm,
-    Parameter, Path, QueryBody, RIFFQL_LANGUAGE_VERSION, RIFFQL_LANGUAGE_VERSION_OPERATIONAL_V1,
+    Parameter, Path, QueryBody, RIFFQL_LANGUAGE_VERSION,
+    RIFFQL_LANGUAGE_VERSION_EXACT_RESULT_SET_V1, RIFFQL_LANGUAGE_VERSION_OPERATIONAL_V1,
     RIFFQL_LANGUAGE_VERSION_SECRET_OUTPUT_V1, Selection, Span, Spanned, Take, TypeReference,
     UnaryOperator,
 };

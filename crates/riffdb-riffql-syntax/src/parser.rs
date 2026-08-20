@@ -5,8 +5,9 @@ use crate::{
     MAX_AGGREGATE_BINDINGS, MAX_AGGREGATE_GROUP_KEYS, MAX_AGGREGATE_MEASURES, MAX_BINDINGS,
     MAX_COLLECTION_ITEMS, MAX_NESTING, MAX_SYNTAX_ITEMS, OrderTerm, Parameter, ParseDiagnostic,
     ParseDiagnostics, Path, QueryBody, RIFFQL_LANGUAGE_VERSION,
-    RIFFQL_LANGUAGE_VERSION_OPERATIONAL_V1, RIFFQL_LANGUAGE_VERSION_SECRET_OUTPUT_V1, Selection,
-    Span, Spanned, Take, TypeReference, UnaryOperator,
+    RIFFQL_LANGUAGE_VERSION_EXACT_RESULT_SET_V1, RIFFQL_LANGUAGE_VERSION_OPERATIONAL_V1,
+    RIFFQL_LANGUAGE_VERSION_SECRET_OUTPUT_V1, Selection, Span, Spanned, Take, TypeReference,
+    UnaryOperator,
 };
 
 /// Parses one UTF-8 RiffQL source document in a supported language version.
@@ -135,7 +136,9 @@ impl Parser {
             selection,
             outcomes,
         };
-        let language_version = if selection_uses_secret_output(&body.selection) {
+        let language_version = if body_uses_exact_result_set(&body) {
+            RIFFQL_LANGUAGE_VERSION_EXACT_RESULT_SET_V1
+        } else if selection_uses_secret_output(&body.selection) {
             RIFFQL_LANGUAGE_VERSION_SECRET_OUTPUT_V1
         } else if !body.aggregates.is_empty()
             || body
@@ -259,7 +262,23 @@ impl Parser {
             } else {
                 None
             };
-            Some(Take { limit, after })
+            let offset = if self.take_word("offset").is_some() {
+                if after.is_some() {
+                    return Err(self.error(
+                        DiagnosticCode::UnsupportedForm,
+                        "cursor and ordinal windows cannot be combined",
+                        Some("use either after $cursor or offset $offset"),
+                    ));
+                }
+                Some(self.take_offset()?)
+            } else {
+                None
+            };
+            Some(Take {
+                limit,
+                after,
+                offset,
+            })
         } else {
             None
         };
@@ -399,6 +418,9 @@ impl Parser {
         let token = self.next()?.clone();
         let (function, requires_field) = match &token.kind {
             TokenKind::Ident(value) if value == "count" => (AggregateFunction::Count, false),
+            TokenKind::Ident(value) if value == "exact_count" => {
+                (AggregateFunction::ExactCount, false)
+            }
             TokenKind::Ident(value) if value == "sum" => (AggregateFunction::Sum, true),
             TokenKind::Ident(value) if value == "min" => (AggregateFunction::Min, true),
             TokenKind::Ident(value) if value == "max" => (AggregateFunction::Max, true),
@@ -407,7 +429,7 @@ impl Parser {
                     DiagnosticCode::UnexpectedToken,
                     token.span,
                     "unknown aggregate function",
-                    Some("use count(), sum(field), min(field), or max(field)"),
+                    Some("use count(), exact_count(), sum(field), min(field), or max(field)"),
                 )));
             }
         };
@@ -777,9 +799,46 @@ impl Parser {
             TokenKind::GreaterEqual => (BinaryOperator::GreaterEqual, 3),
             TokenKind::Ident(word) if word == "in" => (BinaryOperator::In, 3),
             TokenKind::Ident(word) if word == "prefix" => (BinaryOperator::Prefix, 3),
+            TokenKind::Ident(word) if word == "starts_with" => (BinaryOperator::StartsWith, 3),
+            TokenKind::Ident(word) if word == "ends_with" => (BinaryOperator::EndsWith, 3),
+            TokenKind::Ident(word) if word == "contains" => (BinaryOperator::Contains, 3),
             _ => return None,
         };
         Some((pair.0, pair.1, token.span))
+    }
+
+    fn take_offset(&mut self) -> Result<Spanned<Expression>, ParseDiagnostics> {
+        let token = self.next()?.clone();
+        let value = match token.kind {
+            TokenKind::Unsigned(value) => Expression::Literal(Literal::Unsigned(value)),
+            TokenKind::Parameter(value) => {
+                let name = Identifier::new(&value).ok_or_else(|| {
+                    ParseDiagnostics::one(ParseDiagnostic::new(
+                        DiagnosticCode::InvalidToken,
+                        token.span,
+                        "invalid offset parameter",
+                        None,
+                    ))
+                })?;
+                Expression::Parameter(Spanned {
+                    value: name,
+                    span: token.span,
+                })
+            }
+            _ => {
+                return Err(ParseDiagnostics::one(ParseDiagnostic::new(
+                    DiagnosticCode::UnexpectedToken,
+                    token.span,
+                    "offset requires a nonnegative literal or u64 parameter",
+                    None,
+                )));
+            }
+        };
+        self.node()?;
+        Ok(Spanned {
+            value,
+            span: token.span,
+        })
     }
 
     fn take_null_operator(&mut self) -> Option<(UnaryOperator, Span)> {
@@ -984,6 +1043,40 @@ fn expression_uses_operational_syntax(expression: &Expression) -> bool {
                 || expression_uses_operational_syntax(&left.value)
                 || expression_uses_operational_syntax(&right.value)
         }
+        Expression::Parameter(_) | Expression::Path(_) | Expression::Literal(_) => false,
+    }
+}
+
+fn body_uses_exact_result_set(body: &QueryBody) -> bool {
+    body.bindings.iter().any(|binding| {
+        binding
+            .take
+            .as_ref()
+            .is_some_and(|take| take.offset.is_some())
+            || expression_uses_exact_text(&binding.predicate.value)
+    }) || body.aggregates.iter().any(|aggregate| {
+        aggregate
+            .measures
+            .iter()
+            .any(|measure| measure.function.value == AggregateFunction::ExactCount)
+    })
+}
+
+fn expression_uses_exact_text(expression: &Expression) -> bool {
+    match expression {
+        Expression::Binary {
+            operator,
+            left,
+            right,
+        } => {
+            matches!(
+                operator.value,
+                BinaryOperator::StartsWith | BinaryOperator::EndsWith | BinaryOperator::Contains
+            ) || expression_uses_exact_text(&left.value)
+                || expression_uses_exact_text(&right.value)
+        }
+        Expression::PresenceGuard { predicate, .. } => expression_uses_exact_text(&predicate.value),
+        Expression::Unary { operand, .. } => expression_uses_exact_text(&operand.value),
         Expression::Parameter(_) | Expression::Path(_) | Expression::Literal(_) => false,
     }
 }

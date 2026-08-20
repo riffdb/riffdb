@@ -2,6 +2,10 @@
 
 //! Closed-program execution over one engine-owned authoritative read view.
 
+mod exact_result_set;
+
+pub use exact_result_set::*;
+
 #[cfg(test)]
 use std::cell::Cell;
 use std::cmp::Ordering;

@@ -594,7 +594,12 @@ impl<'a> Resolver<'a> {
                     ));
                 }
                 let (function, input_field, result_type) = match measure.function.value {
-                    AggregateFunction::Count => (
+                    // `exact_count` has the same public scalar schema as the
+                    // bounded operational count. Its whole-population
+                    // semantics are retained by the exact result-set plan;
+                    // the ordinary operational compiler rejects it before
+                    // member lowering.
+                    AggregateFunction::Count | AggregateFunction::ExactCount => (
                         OperationalAggregateFunctionV1::Count,
                         None,
                         NamedTypeSchema::Scalar("u64".to_owned()),
@@ -851,6 +856,9 @@ impl<'a> Resolver<'a> {
                 let segments = names(path);
                 let value_type = match segments.as_slice() {
                     [enumeration] => {
+                        if enumeration == "u64" {
+                            return Ok(NamedTypeSchema::Scalar("u64".to_owned()));
+                        }
                         let symbol = self.catalog.enumeration(enumeration).ok_or_else(|| {
                             self.diagnostic(
                                 QueryDiagnosticCode::UnknownSymbol,

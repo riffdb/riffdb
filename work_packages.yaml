@@ -13906,14 +13906,23 @@ work_packages:
     ADR-0130, ADR-0131]
   allowed_paths: [SPEC.md, work_packages.yaml, proto/**, fixtures/**,
     crates/riffdb-types/**, crates/riffdb-query-ir/**,
+    crates/riffdb-riffql-syntax/**,
     crates/riffdb-query-compiler/**, crates/riffdb-query-module/**,
     crates/riffdb-query-executor/**, crates/riffdb-catalog/**,
-    crates/riffdb-projection/**, crates/riffdb-policy/**, crates/riffdb-service/**,
+    crates/riffdb-projection/**, crates/riffdb-storage-api/**,
+    crates/riffdb-storage-memory/**, crates/riffdb-storage-redb/**,
+    crates/riffdb-policy/**, crates/riffdb-service/**,
     crates/riffdb-proto/**, crates/riffdb-api-grpc/**, crates/riffdb-api-mcp/**,
     crates/riffdb-client-rust/**, crates/riffdb-driver-host/**,
     crates/riffdb-cli/**, crates/riffdb-mcp-stdio/**, crates/riffdb-server/**,
     clients/**, templates/**, examples/**, tests/**, scripts/**, docs/**,
     release/distribution/**, release/version-topology-v1.json]
+  scope_expansion: Maintainer authority to add package paths as needed applies to the activation
+    work. WP-646 froze a programmatic compile-only declaration and provider-state V1, but public
+    activation requires the finite RiffQL spelling and durable derived-state ports that were
+    accidentally omitted from this package. The added syntax and storage paths are limited to
+    compiler-owned exact operators/window parameters and V2 provider-state persistence; they add
+    no caller AST, scan fallback, authoritative mutation path, or Better-Auth-specific behavior.
   deliverables:
   - Exact whole-result count over the complete admitted population at one selected epoch, never an
     earlier take/page/candidate fold, with checked cardinality and typed overflow/lifecycle outcomes
