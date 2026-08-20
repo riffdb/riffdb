@@ -5,11 +5,11 @@ use riffdb_client_rust::{ApplicationCardinality, ApplicationClientError, Applica
 pub use riffdb_client_rust::QueryOptions;
 use riffdb_client_rust::v1::value::Kind as WireKind;
 
-pub const QUERY_MODULE_HASH: [u8; 32] = [0x1e, 0xea, 0x54, 0xc2, 0x71, 0x3b, 0xd0, 0xae, 0x51, 0x08, 0xfd, 0xba, 0x01, 0x6a, 0x2c, 0xc5, 0xbe, 0x9b, 0xb5, 0x54, 0xf0, 0xd1, 0xd1, 0x02, 0xbe, 0x68, 0xa7, 0xb9, 0x15, 0xb8, 0x36, 0x13];
+pub const QUERY_MODULE_HASH: [u8; 32] = [0xfd, 0xf5, 0x34, 0x0b, 0xae, 0x52, 0x05, 0x90, 0xd2, 0x97, 0x85, 0x6e, 0x69, 0x8d, 0xd6, 0xf0, 0x97, 0xd9, 0xc1, 0x20, 0xc5, 0xe0, 0xf2, 0x65, 0xdb, 0x82, 0xf6, 0x50, 0xf9, 0x48, 0x14, 0x5f];
 pub const CONTRACT_LINEAGE: &str = "BetterAuthAcceptance";
 pub const CONTRACT_VERSION: u64 = 1;
 
-pub const CONTRACT_BUNDLE_HASH: [u8; 32] = [0x02, 0xfc, 0xda, 0x36, 0x70, 0x78, 0xea, 0x53, 0x70, 0x39, 0x5c, 0x88, 0x45, 0x52, 0xb1, 0xa9, 0xd6, 0xe0, 0x5f, 0xfa, 0xd1, 0xa4, 0x33, 0xc6, 0xfd, 0x12, 0xc7, 0x91, 0x6d, 0xa6, 0xb2, 0xab];
+pub const CONTRACT_BUNDLE_HASH: [u8; 32] = [0xc1, 0x37, 0x6f, 0x90, 0xce, 0xda, 0x16, 0x6b, 0xa3, 0x26, 0xed, 0x7e, 0x38, 0x9d, 0x3c, 0x47, 0x42, 0x24, 0xf1, 0x8d, 0x07, 0x74, 0x0b, 0x3d, 0x5e, 0x29, 0x9c, 0xaf, 0xc9, 0x4e, 0x94, 0xd4];
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DecimalValue {
@@ -35,22 +35,45 @@ pub struct GetSessionParams {
     pub session_id: String,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+pub const GET_SESSION_SECRET_OUTPUTS: &[(&str, &str, &str)] = &[
+    ("GetSession", "Session", "token_digest"),
+];
+
+#[derive(Clone, Eq, PartialEq)]
 pub struct GetSessionFoundSession {
     pub organization_id: String,
     pub user_id: String,
     pub session_id: String,
     pub state: String,
+    pub token_digest: String,
     pub expires_at: TimestampValue,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+impl std::fmt::Debug for GetSessionFoundSession {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("GetSessionFoundSession { <secret outputs redacted> }")
+    }
+}
+
+#[derive(Clone, Eq, PartialEq)]
 pub struct GetSessionFound {
     pub session: GetSessionFoundSession,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+impl std::fmt::Debug for GetSessionFound {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("GetSessionFound { <secret outputs redacted> }")
+    }
+}
+
+#[derive(Clone, Eq, PartialEq)]
 pub struct GetSessionMissing {
+}
+
+impl std::fmt::Debug for GetSessionMissing {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("GetSessionMissing { <secret outputs redacted> }")
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -59,7 +82,7 @@ pub enum GetSessionResult {
     Missing(Box<GetSessionMissing>),
 }
 
-pub const GET_SESSION_QUERY_PLAN_HASH: [u8; 32] = [0xb4, 0xa7, 0x42, 0x57, 0x59, 0x56, 0x4b, 0x52, 0xc7, 0x26, 0xa6, 0x50, 0xd4, 0x99, 0x3d, 0xf4, 0x52, 0x23, 0x0b, 0xc6, 0x33, 0x1d, 0x72, 0xe7, 0x78, 0x9c, 0x42, 0x4c, 0x0d, 0x26, 0xbc, 0x30];
+pub const GET_SESSION_QUERY_PLAN_HASH: [u8; 32] = [0x14, 0xda, 0x73, 0x0f, 0xc5, 0x89, 0xd7, 0xef, 0x19, 0xc9, 0xed, 0x97, 0x6c, 0x72, 0x15, 0xcf, 0x2e, 0x35, 0xd6, 0x00, 0x5a, 0x5f, 0xc1, 0x0f, 0x36, 0xc0, 0x60, 0x1a, 0xf3, 0xa1, 0x18, 0x9c];
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct GetSessionQuery(pub GetSessionParams);
 impl GeneratedQuery for GetSessionQuery {
@@ -110,7 +133,90 @@ fn decode_get_session_found_session_record(mut record: ApplicationRecord) -> Res
         user_id: application_uuid(take_application_value(&mut record.fields, "user_id")?)?,
         session_id: application_uuid(take_application_value(&mut record.fields, "session_id")?)?,
         state: application_enum(take_application_value(&mut record.fields, "state")?)?,
+        token_digest: application_string(take_application_value(&mut record.fields, "token_digest")?)?,
         expires_at: application_timestamp(take_application_value(&mut record.fields, "expires_at")?)?,
+    };
+    if !record.fields.is_empty() { return Err(ApplicationClientError::InvalidResponse); }
+    Ok(value)
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GetUserParams {
+    pub organization_id: String,
+    pub user_id: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GetUserFoundUser {
+    pub organization_id: String,
+    pub user_id: String,
+    pub email: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GetUserFound {
+    pub user: GetUserFoundUser,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GetUserMissing {
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum GetUserResult {
+    Found(Box<GetUserFound>),
+    Missing(Box<GetUserMissing>),
+}
+
+pub const GET_USER_QUERY_PLAN_HASH: [u8; 32] = [0x34, 0x6e, 0xe2, 0x3a, 0x55, 0xe1, 0xd1, 0x12, 0x44, 0x86, 0x26, 0xae, 0x99, 0x68, 0x81, 0x6c, 0xd0, 0x10, 0x0d, 0xe7, 0xa3, 0x78, 0xfb, 0x80, 0xe0, 0xf4, 0x65, 0x3d, 0xa3, 0x50, 0x51, 0xa8];
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GetUserQuery(pub GetUserParams);
+impl GeneratedQuery for GetUserQuery {
+    type Output = GetUserResult;
+
+    fn named_query(self, options: QueryOptions) -> Result<NamedQuery, ApplicationClientError> {
+        let mut parameters = BTreeMap::new();
+        parameters.insert("organization_id".to_owned(), ApplicationValue::Uuid(ApplicationUuid::from_text(self.0.organization_id)?));
+        parameters.insert("user_id".to_owned(), ApplicationValue::Uuid(ApplicationUuid::from_text(self.0.user_id)?));
+        NamedQuery::new(
+            ApplicationContract::Exact {
+                lineage: CONTRACT_LINEAGE.to_owned(),
+                version: CONTRACT_VERSION,
+                bundle_hash: Some(CONTRACT_BUNDLE_HASH),
+            },
+            "GetUser",
+            Some(QUERY_MODULE_HASH),
+            parameters,
+            None,
+        )?.expect_plan_hash(GET_USER_QUERY_PLAN_HASH).with_options(options)
+    }
+
+    fn decode_result(mut response: NamedQueryResult) -> Result<Self::Output, ApplicationClientError> {
+        let outcome = response.outcome.clone();
+        match outcome.as_str() {
+            "Found" => {
+                let decoded = GetUserFound {
+                    user: decode_get_user_found_user_record(one_result_record(take_result_field(&mut response.fields, "user")?)?)?,
+                };
+                if !response.fields.is_empty() { return Err(ApplicationClientError::InvalidResponse); }
+                Ok(GetUserResult::Found(Box::new(decoded)))
+            },
+            "Missing" => {
+                let decoded = GetUserMissing {
+                };
+                if !response.fields.is_empty() { return Err(ApplicationClientError::InvalidResponse); }
+                Ok(GetUserResult::Missing(Box::new(decoded)))
+            },
+            _ => Err(ApplicationClientError::InvalidResponse),
+        }
+    }
+}
+
+fn decode_get_user_found_user_record(mut record: ApplicationRecord) -> Result<GetUserFoundUser, ApplicationClientError> {
+    let value = GetUserFoundUser {
+        organization_id: application_uuid(take_application_value(&mut record.fields, "organization_id")?)?,
+        user_id: application_uuid(take_application_value(&mut record.fields, "user_id")?)?,
+        email: application_string(take_application_value(&mut record.fields, "email")?)?,
     };
     if !record.fields.is_empty() { return Err(ApplicationClientError::InvalidResponse); }
     Ok(value)
@@ -319,7 +425,7 @@ pub enum ConsumeVerificationTokenOutcome {
     VerificationTokenAlreadyConsumed,
 }
 
-const CONSUME_VERIFICATION_TOKEN_PLAN_HASH: [u8; 32] = [0x37, 0x09, 0xe7, 0x44, 0xa9, 0x63, 0xcc, 0x6a, 0x83, 0x3b, 0x6a, 0xbf, 0xe2, 0xb7, 0xd2, 0xd0, 0x07, 0x78, 0x0f, 0xa1, 0xde, 0x00, 0xae, 0xc7, 0x6c, 0x36, 0x8a, 0x61, 0x73, 0xb4, 0x02, 0xdd];
+const CONSUME_VERIFICATION_TOKEN_PLAN_HASH: [u8; 32] = [0xd3, 0xe6, 0xb6, 0x96, 0xc3, 0x90, 0x9e, 0x8d, 0x19, 0xde, 0x94, 0x41, 0xe0, 0xc2, 0x5c, 0x41, 0x06, 0x56, 0xe0, 0xda, 0xa4, 0x0b, 0x9e, 0x7a, 0x6b, 0xc8, 0x73, 0x8d, 0x62, 0xff, 0x17, 0xdc];
 impl GeneratedCommand for ConsumeVerificationTokenInput {
     type Outcome = ConsumeVerificationTokenOutcome;
 
@@ -381,7 +487,7 @@ pub enum CreateUserAccountSessionsOutcome {
     UserAccountSessionsCreated,
 }
 
-const CREATE_USER_ACCOUNT_SESSIONS_PLAN_HASH: [u8; 32] = [0xfe, 0x63, 0x52, 0x91, 0x5e, 0x40, 0x80, 0x7a, 0xd3, 0x08, 0xac, 0xf3, 0xb4, 0x46, 0xbe, 0x29, 0xb0, 0x58, 0x89, 0x16, 0x4f, 0xd2, 0x41, 0xe1, 0x4f, 0xcf, 0x8b, 0xe9, 0x50, 0x86, 0x28, 0xc8];
+const CREATE_USER_ACCOUNT_SESSIONS_PLAN_HASH: [u8; 32] = [0xe3, 0x5b, 0xe7, 0xf9, 0x87, 0x7e, 0x51, 0xa2, 0x1f, 0x27, 0xf7, 0x37, 0x16, 0x79, 0xdf, 0xae, 0xdb, 0x2c, 0xbd, 0xab, 0xad, 0x7e, 0x13, 0xc2, 0x28, 0xec, 0xac, 0xbe, 0x61, 0x2c, 0x11, 0x26];
 impl GeneratedCommand for CreateUserAccountSessionsInput {
     type Outcome = CreateUserAccountSessionsOutcome;
 
@@ -418,6 +524,59 @@ impl GeneratedCommand for CreateUserAccountSessionsInput {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DeleteUsersInput {
+    pub user_ids: Vec<String>,
+    pub request_id: String,
+    pub organization_id: String,
+}
+
+#[allow(clippy::large_enum_variant)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum DeleteUsersOutcome {
+    DeleteUserMissing,
+
+    UserAccountsDeleted,
+
+    CascadeLimitExceeded,
+}
+
+const DELETE_USERS_PLAN_HASH: [u8; 32] = [0x8b, 0x97, 0xf4, 0x34, 0x74, 0xcf, 0x0f, 0xf0, 0x7c, 0x38, 0x31, 0x98, 0x5b, 0xf5, 0x15, 0x0a, 0xf4, 0x85, 0x76, 0x23, 0x56, 0xd0, 0x5e, 0xce, 0xf7, 0x9d, 0xc6, 0x66, 0xb6, 0x43, 0x13, 0x07];
+impl GeneratedCommand for DeleteUsersInput {
+    type Outcome = DeleteUsersOutcome;
+
+    fn idempotent_command(&self) -> Result<IdempotentCommand, GeneratedCommandError> {
+
+        if self.user_ids.is_empty() || self.user_ids.len() > 8 { return Err(GeneratedCommandError::InvalidInputShape); }
+        let fields = vec![
+            wire_named_field("user_ids", v1::Value { kind: Some(WireKind::ListValue(v1::ValueList { values: (self.user_ids).iter().map(|value| wire_uuid(value)).collect::<Result<Vec<_>, GeneratedCommandError>>()? })) }),
+            wire_named_field("request_id", wire_uuid(&self.request_id)?),
+            wire_named_field("organization_id", wire_uuid(&self.organization_id)?),
+        ];
+        IdempotentCommand::new("DeleteUsers", Some(CONTRACT_VERSION), wire_record(fields)).map_err(Into::into)
+    }
+
+    fn outcome_request(&self, request_id: riffdb_client_rust::RequestId) -> Result<v1::GetOutcomeRequest, GeneratedCommandError> {
+        Ok(v1::GetOutcomeRequest {
+            request_id: request_id.into_bytes().to_vec(),
+            contract_lineage: CONTRACT_LINEAGE.to_owned(),
+            command_name: "DeleteUsers".to_owned(),
+            idempotency_key: self.request_id.clone(),
+            outcome_uri: None,
+        })
+    }
+
+    fn decode_outcome(&self, response: &v1::ExecuteCommandResponse) -> Result<Self::Outcome, GeneratedCommandError> {
+        let fields = wire_outcome_fields(response, &DELETE_USERS_PLAN_HASH)?;
+        match response.outcome_type.as_str() {
+            "DeleteUserMissing" => if fields.is_empty() { Ok(Self::Outcome::DeleteUserMissing) } else { Err(GeneratedCommandError::InvalidOutcomeShape) },
+            "UserAccountsDeleted" => if fields.is_empty() { Ok(Self::Outcome::UserAccountsDeleted) } else { Err(GeneratedCommandError::InvalidOutcomeShape) },
+            "CascadeLimitExceeded" => if fields.is_empty() { Ok(Self::Outcome::CascadeLimitExceeded) } else { Err(GeneratedCommandError::InvalidOutcomeShape) },
+            _ => Err(GeneratedCommandError::InvalidOutcomeShape),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct IssueVerificationTokenInput {
     pub user_id: String,
     pub expires_at: TimestampValue,
@@ -441,7 +600,7 @@ pub enum IssueVerificationTokenOutcome {
     VerificationTokenUserMissing,
 }
 
-const ISSUE_VERIFICATION_TOKEN_PLAN_HASH: [u8; 32] = [0x9d, 0xfa, 0x8b, 0x16, 0xba, 0x03, 0x3a, 0xf7, 0x82, 0x97, 0xc1, 0x53, 0x6d, 0x9f, 0x05, 0x16, 0xb9, 0xb7, 0x97, 0x7e, 0x78, 0x37, 0x36, 0xc4, 0xca, 0xac, 0x0d, 0x76, 0xf1, 0x14, 0xd6, 0x8d];
+const ISSUE_VERIFICATION_TOKEN_PLAN_HASH: [u8; 32] = [0x9d, 0x22, 0x69, 0x08, 0xf0, 0xf6, 0x9a, 0x90, 0xf7, 0x63, 0xb7, 0xdc, 0x78, 0x29, 0xb5, 0xfe, 0x9f, 0xf7, 0x17, 0xa3, 0x6f, 0x9f, 0x60, 0x7a, 0x31, 0x62, 0xc0, 0xf0, 0xfa, 0xed, 0x75, 0xba];
 impl GeneratedCommand for IssueVerificationTokenInput {
     type Outcome = IssueVerificationTokenOutcome;
 
@@ -513,7 +672,7 @@ pub enum RefreshSessionOutcome {
     RefreshSessionRevoked,
 }
 
-const REFRESH_SESSION_PLAN_HASH: [u8; 32] = [0x1f, 0xc3, 0x6d, 0xf2, 0xcd, 0xda, 0x25, 0x81, 0xa7, 0x73, 0x6e, 0x5b, 0x49, 0x77, 0x4d, 0x6d, 0xac, 0xbd, 0x25, 0x75, 0x06, 0x11, 0x15, 0xab, 0xdf, 0x95, 0xcf, 0x53, 0xc8, 0x21, 0xa3, 0x97];
+const REFRESH_SESSION_PLAN_HASH: [u8; 32] = [0xbe, 0xc1, 0x58, 0x66, 0x3a, 0x65, 0x11, 0x37, 0x2e, 0x7f, 0x49, 0x7f, 0x3d, 0x0e, 0xd5, 0xae, 0x9f, 0xfa, 0x45, 0xa0, 0xa3, 0x9b, 0x7b, 0x54, 0xd7, 0x1a, 0x81, 0x7d, 0x9f, 0xd3, 0x10, 0x67];
 impl GeneratedCommand for RefreshSessionInput {
     type Outcome = RefreshSessionOutcome;
 
@@ -589,7 +748,7 @@ pub enum RevokeSessionOutcome {
     SessionAlreadyRevoked,
 }
 
-const REVOKE_SESSION_PLAN_HASH: [u8; 32] = [0x5d, 0xbc, 0x02, 0x37, 0xea, 0x41, 0xa1, 0x12, 0xca, 0x34, 0x76, 0xf8, 0xa5, 0x91, 0x2e, 0x57, 0xfc, 0x4d, 0x3a, 0xcd, 0xfc, 0xc2, 0x1f, 0x29, 0x0e, 0x5a, 0x89, 0x57, 0xbd, 0x2a, 0x88, 0x07];
+const REVOKE_SESSION_PLAN_HASH: [u8; 32] = [0x30, 0x90, 0x62, 0xf5, 0x0e, 0xe3, 0x5e, 0xea, 0x4b, 0x2a, 0xb7, 0x39, 0x3c, 0x8a, 0x3b, 0xe7, 0x45, 0x47, 0xa3, 0xd7, 0xe0, 0x59, 0x95, 0xeb, 0x6b, 0x8c, 0x6c, 0xec, 0xc9, 0xf3, 0x98, 0x13];
 impl GeneratedCommand for RevokeSessionInput {
     type Outcome = RevokeSessionOutcome;
 
@@ -675,6 +834,19 @@ impl BetterAuthAcceptanceClient {
         self.client.execute_generated_query(GetSessionQuery(parameters), options, &self.metadata).await
     }
 
+    /// Executes the generated `GetUser` named query.
+    pub async fn get_user(&mut self, parameters: GetUserParams) -> Result<GetUserResult, ApplicationClientError> {
+        Ok(self.get_user_with_options(parameters, QueryOptions::new()).await?.value)
+    }
+    /// Executes `GetUser` against a snapshot at or after the supplied command commit.
+    pub async fn get_user_after_commit(&mut self, parameters: GetUserParams, commit_sequence: u64) -> Result<TypedQueryResult<GetUserResult>, ApplicationClientError> {
+        self.get_user_with_options(parameters, QueryOptions::new().read_after_commit(commit_sequence)).await
+    }
+    /// Executes `GetUser` with generated pagination or read-fence options.
+    pub async fn get_user_with_options(&mut self, parameters: GetUserParams, options: QueryOptions) -> Result<TypedQueryResult<GetUserResult>, ApplicationClientError> {
+        self.client.execute_generated_query(GetUserQuery(parameters), options, &self.metadata).await
+    }
+
     pub async fn consume_verification_token(&mut self, input: ConsumeVerificationTokenInput) -> Result<TypedCommandResult<ConsumeVerificationTokenOutcome>, ApplicationClientError> {
         self.client.execute_generated_command(&input, self.command_attempts, &self.metadata).await.map_err(Into::into)
     }
@@ -699,6 +871,21 @@ impl BetterAuthAcceptanceClient {
     }
 
     pub async fn create_user_account_sessions_batch_with_progress<F>(&self, inputs: Vec<CreateUserAccountSessionsInput>, options: GeneratedBatchOptions, progress: F) -> Result<GeneratedBatchResult<CreateUserAccountSessionsOutcome>, GeneratedBatchError>
+    where
+        F: FnMut(GeneratedBatchProgress),
+    {
+        self.client.execute_generated_command_batch_with_progress(inputs, options, self.command_attempts, &self.metadata, progress).await
+    }
+
+    pub async fn delete_users(&mut self, input: DeleteUsersInput) -> Result<TypedCommandResult<DeleteUsersOutcome>, ApplicationClientError> {
+        self.client.execute_generated_command(&input, self.command_attempts, &self.metadata).await.map_err(Into::into)
+    }
+
+    pub async fn delete_users_batch(&self, inputs: Vec<DeleteUsersInput>, options: GeneratedBatchOptions) -> Result<GeneratedBatchResult<DeleteUsersOutcome>, GeneratedBatchError> {
+        self.client.execute_generated_command_batch(inputs, options, self.command_attempts, &self.metadata).await
+    }
+
+    pub async fn delete_users_batch_with_progress<F>(&self, inputs: Vec<DeleteUsersInput>, options: GeneratedBatchOptions, progress: F) -> Result<GeneratedBatchResult<DeleteUsersOutcome>, GeneratedBatchError>
     where
         F: FnMut(GeneratedBatchProgress),
     {

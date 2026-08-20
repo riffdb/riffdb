@@ -19,7 +19,8 @@
       "name": "better_auth_acceptance",
       "version": 1,
       "queries": [
-        { "name": "GetSession", "source": "queries/get_session.riffq" }
+        { "name": "GetSession", "source": "queries/get_session.riffq" },
+        { "name": "GetUser", "source": "queries/get_user.riffq" }
       ]
     }
   ],
@@ -29,8 +30,8 @@
       "name": "BetterAuthApplication",
       "environment": "development",
       "tenant_scope": "global",
-      "queries": ["GetSession"],
-      "commands": ["ConsumeVerificationToken", "CreateUserAccountSessions", "IssueVerificationToken", "RefreshSession", "RevokeSession"],
+      "queries": ["GetSession", "GetUser"],
+      "commands": ["ConsumeVerificationToken", "CreateUserAccountSessions", "DeleteUsers", "IssueVerificationToken", "RefreshSession", "RevokeSession"],
       "event_streams": [],
       "watch_queries": [],
       "agent_subscriptions": [],

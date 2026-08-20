@@ -13067,7 +13067,7 @@ work_packages:
   allowed_paths: [SPEC.md, work_packages.yaml, crates/riffdb-application/**,
     crates/riffdb-client-rust/**, crates/riffdb-driver-host/**, crates/riffdb-cli/**,
     crates/riffdb-api-mcp/**, crates/riffdb-query-module/**, clients/**, templates/**,
-    fixtures/application-parity/**, fixtures/adapters/**, fixtures/driver/**,
+    fixtures/application-parity/**, fixtures/adapters/**, fixtures/driver/**, fixtures/export/**,
     examples/**, tests/**, scripts/**, docs/**, release/distribution/**]
   deliverables:
   - Generated Rust, Go, TypeScript, and Python methods, typed inputs, overflow outcomes, errors, and
@@ -13097,6 +13097,17 @@ work_packages:
       outcomes. The adapter owns user/session meaning while RiffDB owns safe atomic data mutation.
     scale: Clients preflight fixed input bounds, runtime discovery remains server-side and bounded,
       and the adapter cannot request recursive traversal or split one claimed atomic deletion.
+  closure:
+    status: complete
+    evidence: docs/contracts/BOUNDED-COMMANDS.md
+    decision: The Better Auth fixture now exposes exact and explicitly secret-bearing named reads
+      plus one generated bounded user-deletion command through Rust, Go, TypeScript, and Python.
+      Fresh public TLS clients prove signup, token issue and single-use consumption, replay, exact
+      lookup, session/account/token cleanup, recreate, authorized zero-mutation overflow,
+      authorization denial, and revocation with identical typed observations and no handwritten
+      transport or transaction glue. Immutable local-registry consumers compile the generated
+      cascade facade in all four ecosystems. Secret output stays out of MCP and reactive surfaces,
+      and identity, sessions, sign-in, and OAuth remain application-owned.
 - id: WP-631
   name: TypeScript empty-frontier decoding and immutable development publication
   depends_on: [WP-611]
@@ -14173,4 +14184,55 @@ work_packages:
       its twenty-percent mechanics threshold on both cloud families, so ADR-0127 is not amended,
       current per-operation authentication and authorization remain exact, and unary remains the
       generated-client default.
+  human_review_triggers: *id001
+- id: WP-651
+  name: Authorization-before-cascade-overflow release
+  depends_on: [WP-570, WP-629]
+  objective: Close the relationship-cardinality inference channel found by WP-630 so a cascade
+    overflow outcome can be selected or released only after the explicit root and every bounded
+    maximum-plus-one candidate row have passed current capability and row-policy authorization.
+  requirements: [DEL-007, DEL-008, DEL-009, DEL-012]
+  required_adrs: [ADR-0055, ADR-0059, ADR-0107, ADR-0111, ADR-0126]
+  allowed_paths: [work_packages.yaml, crates/riffdb-runtime/**, crates/riffdb-policy/**,
+    crates/riffdb-storage-api/**, crates/riffdb-storage-memory/**,
+    crates/riffdb-storage-redb/**, crates/riffdb-commit/**, crates/riffdb-testkit/**,
+    fixtures/adapters/**, tests/**, scripts/**, docs/**]
+  deliverables:
+  - Bounded maximum-plus-one predecessor materialization for every cascade relationship before an
+    overflow decision, preserving exact conflict ownership, stable ordering, and snapshot identity
+  - A transaction-current policy proof for each present root and discovered predecessor whose
+    existence can influence the declared cascade outcome, including capability revision recheck
+  - Deterministic owner/outsider, hidden-child, revocation, create-versus-delete, replay,
+    memory/redb, and malformed-snapshot tests proving denial precedes overflow and mutates nothing
+  - The WP-630 Better Auth public generated-client regression demonstrating identical authorized
+    overflow while an unauthorized principal receives only the ordinary typed authorization denial
+  acceptance_commands:
+  - cargo +1.97.0 test -p riffdb-runtime -p riffdb-policy -p riffdb-storage-api -p riffdb-storage-memory -p riffdb-storage-redb -p riffdb-commit -p riffdb-testkit --all-features
+  - ./scripts/adapter-cascade-acceptance --all-languages
+  - ./scripts/check-workspace-policy
+  - ./scripts/check-requirement-coverage
+  - cargo +1.97.0 fmt --all -- --check
+  - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: No principal can distinguish an absent, within-limit, or over-limit protected cascade
+    graph without authority over every bounded candidate that influences the outcome; authorized
+    callers retain the exact zero-mutation overflow and all existing crash, replay, and ordering
+    guarantees.
+  standing_design_tests:
+    interface_safety: The application still chooses only a compiled command and typed inputs; the
+      runtime derives and authorizes the exact maximum-plus-one candidate set and never releases
+      cardinality, identities, or outcomes from unauthorized rows.
+    scale: Candidate materialization remains bounded by the compiler-fixed maximum plus one for
+      each of at most 32 declared relationships, the transaction-current snapshot count and byte
+      ceilings, and the existing 16-MiB successful-command graph ceiling. The sentinel row used to
+      prove overflow is authorization evidence only and never becomes a mutation.
+  closure:
+    status: complete
+    evidence: docs/contracts/BOUNDED-COMMANDS.md
+    decision: Cascade discovery now retains the exact compiler-bounded maximum-plus-one candidate
+      set through transaction-current validation. Before releasing a declared overflow, commit
+      validation rechecks the current capability revision and delete row policy for each present
+      root and predecessor that influenced the outcome. Deterministic runtime coverage proves the
+      sentinel snapshot is accepted only as a zero-mutation declared outcome; the four-language
+      Better Auth public-TLS regression proves an authorized owner receives that outcome while an
+      outsider receives only the ordinary authorization denial, and revocation remains effective.
   human_review_triggers: *id001

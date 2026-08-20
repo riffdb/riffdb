@@ -102,6 +102,18 @@ const BETTER_AUTH_PROBES: &[ProbeSpec] = &[
         operation: "GetSession",
         maximum_items: 1,
     },
+    ProbeSpec {
+        name: "get-user",
+        kind: RoleOperationKind::Query,
+        operation: "GetUser",
+        maximum_items: 1,
+    },
+    ProbeSpec {
+        name: "delete-users",
+        kind: RoleOperationKind::Command,
+        operation: "DeleteUsers",
+        maximum_items: 8,
+    },
 ];
 const PAYLOAD_PROBES: &[ProbeSpec] = &[
     ProbeSpec {

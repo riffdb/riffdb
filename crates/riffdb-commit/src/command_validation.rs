@@ -406,34 +406,24 @@ where
 {
     /// Rechecks every protected mutation inside the authoritative write transaction.
     pub(super) fn recheck_row_policy(self) -> CheckedRowPolicyDecision<C> {
-        let protected = self
-            .evaluated()
-            .mutations()
-            .iter()
-            .any(|mutation| mutation_entity_is_protected(self.resolved(), mutation));
-        if !protected {
+        let transitions = match command_policy_transitions(&self) {
+            Ok(transitions) => transitions,
+            Err(()) => return CheckedRowPolicyDecision::Integrity,
+        };
+        if transitions.is_empty() {
             return CheckedRowPolicyDecision::Authorized(self);
         }
         let Some(context) = self.attempt.row_policy() else {
             return CheckedRowPolicyDecision::Denied(self.reject_row_policy());
         };
         let mut all_lookups = Vec::new();
-        let mut lookup_counts = Vec::with_capacity(self.evaluated().mutations().len());
-        for mutation in self.evaluated().mutations() {
-            if !mutation_entity_is_protected(self.resolved(), mutation) {
-                lookup_counts.push(0usize);
-                continue;
-            }
-            let Some((operation, current, successor)) =
-                mutation_policy_rows(self.current(), mutation)
-            else {
-                return CheckedRowPolicyDecision::Integrity;
-            };
+        let mut lookup_counts = Vec::with_capacity(transitions.len());
+        for transition in &transitions {
             let lookups = match context.relationship_lookups(
-                mutation.target().entity_type_id(),
-                operation,
-                current,
-                successor,
+                transition.entity_type,
+                transition.operation,
+                transition.current,
+                transition.successor,
             ) {
                 Ok(lookups) => lookups,
                 Err(_) => return CheckedRowPolicyDecision::Denied(self.reject_row_policy()),
@@ -469,23 +459,15 @@ where
             return CheckedRowPolicyDecision::Denied(self.reject_row_policy());
         }
         let mut evidence = current_policy.relationship_exists();
-        for (mutation, lookup_count) in self.evaluated().mutations().iter().zip(lookup_counts) {
-            if !mutation_entity_is_protected(self.resolved(), mutation) {
-                continue;
-            }
-            let Some((operation, current, successor)) =
-                mutation_policy_rows(self.current(), mutation)
-            else {
-                return CheckedRowPolicyDecision::Integrity;
-            };
+        for (transition, lookup_count) in transitions.iter().zip(lookup_counts) {
             let Some((selected, remaining)) = evidence.split_at_checked(lookup_count) else {
                 return CheckedRowPolicyDecision::Integrity;
             };
             if !context.allows_transition(
-                mutation.target().entity_type_id(),
-                operation,
-                current,
-                successor,
+                transition.entity_type,
+                transition.operation,
+                transition.current,
+                transition.successor,
                 selected,
             ) {
                 return CheckedRowPolicyDecision::Denied(self.reject_row_policy());
@@ -515,9 +497,110 @@ where
     }
 }
 
+struct PolicyTransition<'a> {
+    entity_type: riffdb_types::EntityTypeId,
+    operation: riffdb_contract_ir::RowPolicyOperationV1,
+    current: Option<&'a CanonicalRecord>,
+    successor: Option<&'a CanonicalRecord>,
+}
+
+fn command_policy_transitions<'a, C>(
+    command: &'a CheckedValidatedCommand<C>,
+) -> Result<Vec<PolicyTransition<'a>>, ()> {
+    let mut transitions = Vec::new();
+    for mutation in command.evaluated().mutations() {
+        if !mutation_entity_is_protected(command.resolved(), mutation) {
+            continue;
+        }
+        let Some((operation, current, successor)) =
+            mutation_policy_rows(command.current(), mutation)
+        else {
+            return Err(());
+        };
+        transitions.push(PolicyTransition {
+            entity_type: mutation.target().entity_type_id(),
+            operation,
+            current,
+            successor,
+        });
+    }
+    if !transitions.is_empty() || !is_cascade_failure(command.resolved(), command.evaluated()) {
+        return Ok(transitions);
+    }
+
+    // A declared cascade overflow has no mutation graph, but the root and
+    // maximum-plus-one candidate rows still influenced the released outcome.
+    // Treat those observations as delete-policy transitions so current
+    // capability and row policy are proven before cardinality is disclosed.
+    let facts = derive_input_command_facts(
+        command.resolved().plan(),
+        command.attempt.normalized_input().clone(),
+    )
+    .map_err(|_| ())?;
+    for (plan_index, observation) in facts
+        .binding_plan_indices()
+        .iter()
+        .zip(command.current().bindings())
+    {
+        let binding = command
+            .resolved()
+            .plan()
+            .bindings()
+            .get(*plan_index as usize)
+            .ok_or(())?;
+        if binding.mode() != BindingMode::Delete
+            || !binding.cascade_failure().is_some_and(|failure| {
+                failure.outcome_id() == command.evaluated().outcome().outcome_id()
+            })
+        {
+            continue;
+        }
+        let EntityObservation::Present(record) = observation else {
+            continue;
+        };
+        if entity_is_policy_protected(command.resolved(), record.target().entity_type_id()) {
+            transitions.push(PolicyTransition {
+                entity_type: record.target().entity_type_id(),
+                operation: riffdb_contract_ir::RowPolicyOperationV1::Delete,
+                current: Some(record.fields()),
+                successor: None,
+            });
+        }
+    }
+    for observation in command.current().cascade_predecessors() {
+        let EntityObservation::Present(record) = observation else {
+            return Err(());
+        };
+        if entity_is_policy_protected(command.resolved(), record.target().entity_type_id()) {
+            transitions.push(PolicyTransition {
+                entity_type: record.target().entity_type_id(),
+                operation: riffdb_contract_ir::RowPolicyOperationV1::Delete,
+                current: Some(record.fields()),
+                successor: None,
+            });
+        }
+    }
+    Ok(transitions)
+}
+
+fn is_cascade_failure(resolved: &ResolvedExecutablePlan, evaluated: &EvaluatedCommand) -> bool {
+    resolved.plan().bindings().iter().any(|binding| {
+        binding
+            .cascade_failure()
+            .is_some_and(|failure| failure.outcome_id() == evaluated.outcome().outcome_id())
+    })
+}
+
 fn mutation_entity_is_protected(
     resolved: &ResolvedExecutablePlan,
     mutation: &EntityMutation,
+) -> bool {
+    entity_is_policy_protected(resolved, mutation.target().entity_type_id())
+}
+
+fn entity_is_policy_protected(
+    resolved: &ResolvedExecutablePlan,
+    entity_type: riffdb_types::EntityTypeId,
 ) -> bool {
     resolved
         .bundle()
@@ -525,7 +608,7 @@ fn mutation_entity_is_protected(
         .row_policies()
         .policies()
         .iter()
-        .any(|policy| policy.entity() == mutation.target().entity_type_id())
+        .any(|policy| policy.entity() == entity_type)
 }
 
 fn mutation_policy_rows<'a>(

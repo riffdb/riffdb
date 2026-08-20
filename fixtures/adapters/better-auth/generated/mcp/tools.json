@@ -1,5 +1,5 @@
 {
-  "application_manifest_hash": "4ebb1a6a3676922a9cbb83d1cfca5c8939fe9c2a37e3951925bbcad573c8bcc5",
+  "application_manifest_hash": "6c3edb5c5e208f3cbade3548c2bf6002eb79b31a80dbd8ea1d01acd02d84879e",
   "commands": [
     {
       "annotations": {
@@ -8,7 +8,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "contract_bundle_hash": "02fcda367078ea5370395c884552b1a9d6e05ffad1a433c6fd12c7916da6b2ab",
+      "contract_bundle_hash": "c1376f90ceda166ba326ed7e389d3c474224f18d07740b3d5e299cafc94e94d4",
       "description": "Execute the exact ConsumeVerificationToken compiled command from contract BetterAuthAcceptance.",
       "input_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -37,7 +37,7 @@
       },
       "name": "better_auth_acceptance_consume_verification_token",
       "operation_name": "ConsumeVerificationToken",
-      "plan_hash": "3709e744a963cc6a833b6abfe2b7d2d007780fa1de00aec76c368a6173b402dd",
+      "plan_hash": "d3e6b696c3909e8d19de9441e0c25c410656e0daa40b9e7a6bc8738d62ff17dc",
       "result_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "oneOf": [
@@ -112,7 +112,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "contract_bundle_hash": "02fcda367078ea5370395c884552b1a9d6e05ffad1a433c6fd12c7916da6b2ab",
+      "contract_bundle_hash": "c1376f90ceda166ba326ed7e389d3c474224f18d07740b3d5e299cafc94e94d4",
       "description": "Execute the exact CreateUserAccountSessions compiled command from contract BetterAuthAcceptance.",
       "input_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -179,7 +179,7 @@
       },
       "name": "better_auth_acceptance_create_user_account_sessions",
       "operation_name": "CreateUserAccountSessions",
-      "plan_hash": "fe6352915e40807ad308acf3b446be29b05889164fd241e14fcf8be9508628c8",
+      "plan_hash": "e35be7f9877e51a21f27f7371679dfaedb2cbdabad7e13c228ecacbe612c1126",
       "result_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "oneOf": [
@@ -246,7 +246,91 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "contract_bundle_hash": "02fcda367078ea5370395c884552b1a9d6e05ffad1a433c6fd12c7916da6b2ab",
+      "contract_bundle_hash": "c1376f90ceda166ba326ed7e389d3c474224f18d07740b3d5e299cafc94e94d4",
+      "description": "Execute the exact DeleteUsers compiled command from contract BetterAuthAcceptance.",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "organization_id": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "user_ids": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 8,
+            "minItems": 1,
+            "type": "array"
+          }
+        },
+        "required": [
+          "user_ids",
+          "request_id",
+          "organization_id"
+        ],
+        "type": "object"
+      },
+      "name": "better_auth_acceptance_delete_users",
+      "operation_name": "DeleteUsers",
+      "plan_hash": "8b97f43474cf0ff07c3831985bf5150af485762356d05ecef79dc666b6431307",
+      "result_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "DeleteUserMissing",
+                "type": "string"
+              }
+            },
+            "required": [
+              "outcome"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "UserAccountsDeleted",
+                "type": "string"
+              }
+            },
+            "required": [
+              "outcome"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "CascadeLimitExceeded",
+                "type": "string"
+              }
+            },
+            "required": [
+              "outcome"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "title": "Run DeleteUsers"
+    },
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "contract_bundle_hash": "c1376f90ceda166ba326ed7e389d3c474224f18d07740b3d5e299cafc94e94d4",
       "description": "Execute the exact IssueVerificationToken compiled command from contract BetterAuthAcceptance.",
       "input_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -283,7 +367,7 @@
       },
       "name": "better_auth_acceptance_issue_verification_token",
       "operation_name": "IssueVerificationToken",
-      "plan_hash": "9dfa8b16ba033af78297c1536d9f0516b9b7977e783736c4caac0d76f114d68d",
+      "plan_hash": "9d226908f0f69a90f763b7dc7829b5fe9ff717a36f9f607a3162c0f0faed75ba",
       "result_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "oneOf": [
@@ -349,7 +433,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "contract_bundle_hash": "02fcda367078ea5370395c884552b1a9d6e05ffad1a433c6fd12c7916da6b2ab",
+      "contract_bundle_hash": "c1376f90ceda166ba326ed7e389d3c474224f18d07740b3d5e299cafc94e94d4",
       "description": "Execute the exact RefreshSession compiled command from contract BetterAuthAcceptance.",
       "input_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -386,7 +470,7 @@
       },
       "name": "better_auth_acceptance_refresh_session",
       "operation_name": "RefreshSession",
-      "plan_hash": "1fc36df2cdda2581a7736e5b49774d6dacbd2575061115abdf95cf53c821a397",
+      "plan_hash": "bec158663a6511372e7f497f3d0ed5ae9ffa45a0a39b7b54d71a817d9fd31067",
       "result_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "oneOf": [
@@ -499,7 +583,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "contract_bundle_hash": "02fcda367078ea5370395c884552b1a9d6e05ffad1a433c6fd12c7916da6b2ab",
+      "contract_bundle_hash": "c1376f90ceda166ba326ed7e389d3c474224f18d07740b3d5e299cafc94e94d4",
       "description": "Execute the exact RevokeSession compiled command from contract BetterAuthAcceptance.",
       "input_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -532,7 +616,7 @@
       },
       "name": "better_auth_acceptance_revoke_session",
       "operation_name": "RevokeSession",
-      "plan_hash": "5dbc0237ea41a112ca3476f8a5912e57fc4d3acdfcc21f290e5a8957bd2a8807",
+      "plan_hash": "309062f50ee35eea4b2ab7393c8a3be74547a3d7e05995eb6b8c6cecc9f39813",
       "result_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "oneOf": [
@@ -627,8 +711,8 @@
     }
   ],
   "reactive_tools": [],
-  "schema": "riffdb-generated-application-operations/v2",
-  "tools": [
+  "schema": "riffdb-generated-application-operations/v3",
+  "sdk_tools": [
     {
       "annotations": {
         "destructiveHint": false,
@@ -658,7 +742,7 @@
         ],
         "type": "object"
       },
-      "module_hash": "1eea54c2713bd0ae5108fdba016a2cc5be9bb554f0d1d102be68a7b915b83613",
+      "module_hash": "fdf5340bae520590d297856e698dd6f097d9c120c5e0f265db82f650f948145f",
       "name": "better_auth_acceptance_get_session",
       "operation_name": "GetSession",
       "result_schema": {
@@ -686,6 +770,9 @@
                   "state": {
                     "type": "string"
                   },
+                  "token_digest": {
+                    "type": "string"
+                  },
                   "user_id": {
                     "type": "string"
                   }
@@ -695,6 +782,7 @@
                   "user_id",
                   "session_id",
                   "state",
+                  "token_digest",
                   "expires_at"
                 ],
                 "type": "object"
@@ -722,6 +810,90 @@
         ]
       },
       "title": "Run GetSession"
+    }
+  ],
+  "tools": [
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "Execute the exact GetUser named query from immutable module better_auth_acceptance.",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "organization_id": {
+            "type": "string"
+          },
+          "user_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "organization_id",
+          "user_id"
+        ],
+        "type": "object"
+      },
+      "module_hash": "fdf5340bae520590d297856e698dd6f097d9c120c5e0f265db82f650f948145f",
+      "name": "better_auth_acceptance_get_user",
+      "operation_name": "GetUser",
+      "result_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "Found",
+                "type": "string"
+              },
+              "user": {
+                "additionalProperties": false,
+                "properties": {
+                  "email": {
+                    "type": "string"
+                  },
+                  "organization_id": {
+                    "type": "string"
+                  },
+                  "user_id": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "organization_id",
+                  "user_id",
+                  "email"
+                ],
+                "type": "object"
+              }
+            },
+            "required": [
+              "outcome",
+              "user"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "Missing",
+                "type": "string"
+              }
+            },
+            "required": [
+              "outcome"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "title": "Run GetUser"
     }
   ]
 }

@@ -1425,11 +1425,10 @@ fn validate_collection_delete_evidence(
                         return Err(ExecutionFault::Integrity);
                     }
                     let range = &snapshot.ranges()[range_position];
-                    if range.entries().len() > usize::from(relationship.maximum()) {
-                        if failure_binding_slot.is_none() {
-                            failure_binding_slot = Some(binding_slot);
-                        }
-                        continue;
+                    if range.entries().len() > usize::from(relationship.maximum())
+                        && failure_binding_slot.is_none()
+                    {
+                        failure_binding_slot = Some(binding_slot);
                     }
                     let source = bundle
                         .schema()
@@ -1460,14 +1459,7 @@ fn validate_collection_delete_evidence(
     if used_ranges.len() != snapshot.ranges().len() {
         return Err(ExecutionFault::Integrity);
     }
-    if failure_binding_slot.is_some() {
-        if !snapshot.cascade_predecessors().is_empty() {
-            return Err(ExecutionFault::Integrity);
-        }
-        for positions in &mut child_positions_by_binding {
-            positions.clear();
-        }
-    } else if expected_children.len() != snapshot.cascade_predecessors().len()
+    if expected_children.len() != snapshot.cascade_predecessors().len()
         || expected_children
             .iter()
             .zip(snapshot.cascade_predecessors())

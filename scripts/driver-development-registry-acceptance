@@ -130,6 +130,12 @@ cp fixtures/driver/development/typescript-empty-frontier-consumer.mjs \
 node "$work_root/typescript/empty-frontier-consumer.mjs"
 node -e \
     "const lock=require('$work_root/typescript/package-lock.json'); if(lock.packages['node_modules/@riffdb/client'].version !== '$npm_version') process.exit(1)"
+cp fixtures/adapters/better-auth/generated/typescript/client.ts \
+    "$work_root/typescript/better-auth-client.ts"
+clients/typescript/runtime/node_modules/.bin/tsc \
+    "$work_root/typescript/better-auth-client.ts" \
+    --noEmit --target ES2022 --module NodeNext --moduleResolution NodeNext \
+    --strict --skipLibCheck
 
 python3 -m venv "$work_root/python-consumer"
 "$work_root/python-consumer/bin/pip" install \
@@ -157,6 +163,18 @@ for distribution in ("riffdb", "riffdb-application"):
             if b"path+file://" in content or b"/riffdb/" in content:
                 raise SystemExit(f"Python installed metadata retains a source path: {path.name}")
 PY
+cp fixtures/adapters/better-auth/generated/python/client.py \
+    "$work_root/python-consumer/better_auth_client.py"
+PYTHONPATH="$work_root/python-consumer" \
+    "$work_root/python-consumer/bin/python" - <<'PY'
+import better_auth_client
+
+assert better_auth_client.CONTRACT_LINEAGE == "BetterAuthAcceptance"
+assert better_auth_client.DeleteUsersCascadeLimitExceeded().outcome == "CascadeLimitExceeded"
+assert better_auth_client.GET_SESSION_SECRET_OUTPUTS == (
+    ("GetSession", "Session", "token_digest"),
+)
+PY
 
 mkdir "$work_root/go-consumer" "$work_root/go-cache" "$work_root/go-build-cache"
 (
@@ -178,6 +196,23 @@ GO
         GOPROXY=http://127.0.0.1:4874/go,off \
         GOSUMDB=off \
         go get "riffdb.dev/application@$go_version"
+    mkdir generated
+    cp "$repo_root/fixtures/adapters/better-auth/generated/go/client.go" generated/client.go
+    cat >generated/client_test.go <<'GO'
+package better_auth_acceptance
+
+import "testing"
+
+func TestPublishedRuntimeCompilesCascadeClient(t *testing.T) {
+	if ContractLineage != "BetterAuthAcceptance" || len(GetSessionSecretOutputs) != 1 {
+		t.Fatal("generated Better Auth identity is absent")
+	}
+	var outcome DeleteUsersOutcome = DeleteUsersCascadeLimitExceeded{Outcome: "CascadeLimitExceeded"}
+	if _, ok := outcome.(DeleteUsersCascadeLimitExceeded); !ok {
+		t.Fatal("typed cascade overflow is absent")
+	}
+}
+GO
     GOPATH="$work_root/go-cache" \
         GOCACHE="$work_root/go-build-cache" \
         GOPROXY=http://127.0.0.1:4874/go,off \
@@ -193,6 +228,28 @@ CARGO_HOME="$work_root/cargo-home" cargo +1.97.0 add \
     "riffdb-client-rust@=$rust_version" \
     --registry riffdb-dev \
     --config 'registries.riffdb-dev.index="sparse+http://127.0.0.1:4874/cargo/index/"'
+CARGO_HOME="$work_root/cargo-home" cargo +1.97.0 check \
+    --manifest-path "$work_root/rust-consumer/Cargo.toml" \
+    --locked \
+    --config 'registries.riffdb-dev.index="sparse+http://127.0.0.1:4874/cargo/index/"'
+cp fixtures/adapters/better-auth/generated/rust/client.rs \
+    "$work_root/rust-consumer/src/generated.rs"
+cat >"$work_root/rust-consumer/src/main.rs" <<'RS'
+#![forbid(unsafe_code)]
+#![allow(dead_code)]
+
+mod generated;
+
+fn main() {
+    assert_eq!(generated::CONTRACT_LINEAGE, "BetterAuthAcceptance");
+    assert_eq!(generated::GET_SESSION_SECRET_OUTPUTS.len(), 1);
+    let outcome = generated::DeleteUsersOutcome::CascadeLimitExceeded;
+    assert!(matches!(
+        outcome,
+        generated::DeleteUsersOutcome::CascadeLimitExceeded
+    ));
+}
+RS
 CARGO_HOME="$work_root/cargo-home" cargo +1.97.0 check \
     --manifest-path "$work_root/rust-consumer/Cargo.toml" \
     --locked \
