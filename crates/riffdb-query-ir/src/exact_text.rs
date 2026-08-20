@@ -1,6 +1,7 @@
 //! Compiler-enumerated exact-text provider families (ADR-0131).
 
 use riffdb_riffql_syntax::Span;
+pub use riffdb_types::ExactTextOrderV1;
 use riffdb_types::{
     ExactTextOperatorV1, FieldId, MAX_EXACT_TEXT_NEEDLE_BYTES_V1,
     MAX_EXACT_TEXT_ROWS_PER_PARTITION_V1, MAX_EXACT_TEXT_VALUE_BYTES_V1,
@@ -12,16 +13,6 @@ use riffdb_types::{
 pub const EXACT_TEXT_PLAN_FAMILY_VERSION_V1: u16 = 1;
 /// Maximum operator/order members in the closed V1 family.
 pub const MAX_EXACT_TEXT_PLAN_MEMBERS_V1: usize = 8;
-
-/// Closed total orders supported by the V1 exact-text family.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[repr(u8)]
-pub enum ExactTextOrderV1 {
-    /// Indexed value ascending, then authoritative entity-key hash ascending.
-    ValueAscEntityKey = 1,
-    /// Indexed value descending, then authoritative entity-key hash ascending.
-    ValueDescEntityKey = 2,
-}
 
 /// Closed order mask in stable semantic-tag order.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -194,6 +185,46 @@ impl ExactTextPlanFamilyV1 {
         })
     }
 
+    /// Strictly reconstructs one canonical family using its pinned descriptor.
+    pub fn from_canonical_bytes(
+        bytes: &[u8],
+        descriptor: ProjectionProviderDescriptorV1,
+    ) -> Result<Self, ExactTextPlanFamilyErrorV1> {
+        if bytes.len() != 64
+            || &bytes[..4] != b"RXTQ"
+            || u16::from_be_bytes([bytes[4], bytes[5]]) != EXACT_TEXT_PLAN_FAMILY_VERSION_V1
+            || bytes[53..].iter().any(|byte| *byte != 0)
+        {
+            return Err(ExactTextPlanFamilyErrorV1::NonCanonicalEncoding);
+        }
+        let field = FieldId::new(u32::from_be_bytes(
+            bytes[6..10].try_into().expect("fixed family"),
+        ))
+        .ok_or(ExactTextPlanFamilyErrorV1::NonCanonicalEncoding)?;
+        let operators = ExactTextOperatorSetV1(bytes[10]);
+        let policy_mode = match bytes[11] {
+            1 => ProjectionProviderPolicyModeV1::PartitionAligned,
+            2 => ProjectionProviderPolicyModeV1::PolicySubpartition,
+            3 => ProjectionProviderPolicyModeV1::BoundedRowAdmission,
+            _ => return Err(ExactTextPlanFamilyErrorV1::NonCanonicalEncoding),
+        };
+        let family = Self::new(
+            field,
+            operators,
+            ExactTextOrderSetV1(bytes[52]),
+            policy_mode,
+            u16::from_be_bytes([bytes[12], bytes[13]]),
+            u16::from_be_bytes([bytes[14], bytes[15]]),
+            u32::from_be_bytes(bytes[16..20].try_into().expect("fixed family")),
+            descriptor,
+            Span { start: 0, end: 0 },
+        )?;
+        if family.to_canonical_bytes().as_slice() != bytes {
+            return Err(ExactTextPlanFamilyErrorV1::NonCanonicalEncoding);
+        }
+        Ok(family)
+    }
+
     /// Compiler-enumerated stable operator members.
     #[must_use]
     pub fn members(&self) -> &[ExactTextPlanMemberV1] {
@@ -216,6 +247,34 @@ impl ExactTextPlanFamilyV1 {
     #[must_use]
     pub const fn descriptor(&self) -> &ProjectionProviderDescriptorV1 {
         &self.descriptor
+    }
+
+    /// Declared exact predicate choices.
+    #[must_use]
+    pub const fn operators(&self) -> ExactTextOperatorSetV1 {
+        self.operators
+    }
+
+    /// Declared exact total-order choices.
+    #[must_use]
+    pub const fn orders(&self) -> ExactTextOrderSetV1 {
+        self.orders
+    }
+
+    /// Maximum runtime ordinal admitted by this family.
+    #[must_use]
+    pub const fn max_candidates(&self) -> u32 {
+        self.max_candidates
+    }
+
+    /// Whether the operator/order pair is one compiler-enumerated member.
+    #[must_use]
+    pub const fn contains_member(
+        &self,
+        operator: ExactTextOperatorV1,
+        order: ExactTextOrderV1,
+    ) -> bool {
+        self.operators.contains(operator) && self.orders.contains(order)
     }
 
     /// Canonical separately versioned family bytes; existing query IR is untouched.
@@ -247,4 +306,6 @@ pub enum ExactTextPlanFamilyErrorV1 {
     StaticBound,
     /// Descriptor family, posture, policy, capabilities, or costs disagree.
     ProviderMismatch,
+    /// Framing, version, tags, reserved bytes, or canonical bytes disagree.
+    NonCanonicalEncoding,
 }

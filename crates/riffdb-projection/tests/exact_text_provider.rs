@@ -1,16 +1,21 @@
 //! Exact text provider reference, rebuild, and recovery conformance.
 
 use riffdb_projection::{
-    ExactTextIndexMutationV1, ExactTextPartitionIndexV1, ExactTextProviderErrorV1,
+    ExactTextIndexMutationV1, ExactTextIndexMutationV2, ExactTextPartitionIndexV1,
+    ExactTextPartitionIndexV2, ExactTextProviderErrorV1,
 };
 use riffdb_types::{
-    CommitSequence, EntityKeyHash, ExactTextFieldValueV1, ExactTextOperatorV1, ExactTextProfileV1,
-    PartitionKeyHash, ProjectionGeneration,
+    CanonicalRecord, CanonicalValue, CommitSequence, EntityKey, EntityKeyBuilder, EntityKeyHash,
+    EntityTypeId, ExactTextFieldValueV1, ExactTextOperatorV1, ExactTextOrderV1, ExactTextProfileV1,
+    FieldId, PartitionKeyHash, ProjectionGeneration,
 };
 use std::collections::BTreeMap;
+use std::num::NonZeroU16;
 
 const CHECKPOINT_FIXTURE: &str =
     include_str!("../../../fixtures/projection/exact-text-provider-state-v1.txt");
+const CHECKPOINT_FIXTURE_V2: &str =
+    include_str!("../../../fixtures/projection/exact-text-provider-state-v2.txt");
 
 fn seq(value: u64) -> CommitSequence {
     CommitSequence::new(value).unwrap()
@@ -18,6 +23,16 @@ fn seq(value: u64) -> CommitSequence {
 
 fn row(value: u8) -> EntityKeyHash {
     EntityKeyHash::from_bytes([value; 32])
+}
+
+fn key(value: u32) -> EntityKey {
+    let mut builder = EntityKeyBuilder::new(EntityTypeId::first());
+    builder.push_u32(value).unwrap();
+    builder.finish().unwrap()
+}
+
+fn output(value: u64) -> CanonicalRecord {
+    CanonicalRecord::new(vec![(FieldId::first(), CanonicalValue::U64(value))]).unwrap()
 }
 
 fn partition(value: u8) -> PartitionKeyHash {
@@ -165,7 +180,14 @@ fn randomized_incremental_writes_match_independent_truth_table() {
                         .matches(operator, ExactTextFieldValueV1::Value(value), &needle)
                         .then_some(*row)
                 })
-                .collect();
+                .collect::<Vec<_>>();
+            let mut expected = expected;
+            expected.sort_unstable_by(|left, right| {
+                oracle[left]
+                    .as_bytes()
+                    .cmp(oracle[right].as_bytes())
+                    .then_with(|| left.cmp(right))
+            });
             assert_eq!(index.lookup(operator, &needle), expected);
         }
         if epoch % 37 == 0 {
@@ -197,6 +219,67 @@ fn randomized_incremental_writes_match_independent_truth_table() {
 }
 
 #[test]
+fn exact_count_precedes_direct_ordinal_window_in_both_total_orders() {
+    let profile = ExactTextProfileV1::BinaryUtf8V1;
+    let mut index = ExactTextPartitionIndexV1::new(
+        partition(4),
+        ProjectionGeneration::new(3).unwrap(),
+        profile,
+    );
+    index
+        .apply(
+            seq(9),
+            &[
+                ExactTextIndexMutationV1::upsert(row(4), "beta match").unwrap(),
+                ExactTextIndexMutationV1::upsert(row(3), "alpha match").unwrap(),
+                ExactTextIndexMutationV1::upsert(row(2), "beta match").unwrap(),
+                ExactTextIndexMutationV1::upsert(row(1), "gamma").unwrap(),
+            ],
+        )
+        .unwrap();
+    let needle = profile.bind_needle("match").unwrap();
+    let limit = NonZeroU16::new(2).unwrap();
+
+    let ascending = index
+        .result_page(
+            ExactTextOperatorV1::Contains,
+            &needle,
+            ExactTextOrderV1::ValueAscEntityKey,
+            1,
+            limit,
+        )
+        .unwrap();
+    assert_eq!(ascending.exact_total(), 3);
+    assert_eq!(ascending.rows(), &[row(2), row(4)]);
+
+    let descending = index
+        .result_page(
+            ExactTextOperatorV1::Contains,
+            &needle,
+            ExactTextOrderV1::ValueDescEntityKey,
+            0,
+            limit,
+        )
+        .unwrap();
+    assert_eq!(descending.exact_total(), 3);
+    assert_eq!(descending.rows(), &[row(2), row(4)]);
+
+    for offset in [3, 4, u32::MAX] {
+        let empty = index
+            .result_page(
+                ExactTextOperatorV1::Contains,
+                &needle,
+                ExactTextOrderV1::ValueAscEntityKey,
+                offset,
+                limit,
+            )
+            .unwrap();
+        assert_eq!(empty.exact_total(), 3);
+        assert!(empty.rows().is_empty());
+    }
+}
+
+#[test]
 fn provider_state_v1_matches_the_frozen_compatibility_fixture() {
     let profile = ExactTextProfileV1::BinaryUtf8V1;
     let mut index = ExactTextPartitionIndexV1::new(
@@ -216,6 +299,70 @@ fn provider_state_v1_matches_the_frozen_compatibility_fixture() {
         .map(decode_hex)
         .unwrap();
     assert_eq!(index.to_checkpoint_bytes().unwrap(), expected);
+}
+
+#[test]
+fn activated_v2_retains_typed_rows_and_matches_the_frozen_checkpoint() {
+    let profile = ExactTextProfileV1::BinaryUtf8V1;
+    let mut index = ExactTextPartitionIndexV2::new(
+        partition(0x31),
+        ProjectionGeneration::new(9).unwrap(),
+        profile,
+    );
+    index
+        .apply(
+            seq(17),
+            &[
+                ExactTextIndexMutationV2::upsert(key(2), "beta", output(22)).unwrap(),
+                ExactTextIndexMutationV2::upsert(key(1), "alpha", output(11)).unwrap(),
+            ],
+        )
+        .unwrap();
+    let needle = profile.bind_needle("a").unwrap();
+    let page = index
+        .result_page(
+            ExactTextOperatorV1::Contains,
+            &needle,
+            ExactTextOrderV1::ValueAscEntityKey,
+            0,
+            NonZeroU16::new(2).unwrap(),
+        )
+        .unwrap();
+    assert_eq!(page.exact_total(), 2);
+    assert_eq!(page.rows()[0].key(), &key(1));
+    assert_eq!(page.rows()[0].output(), &output(11));
+    assert_eq!(page.rows()[1].key(), &key(2));
+    assert_eq!(page.rows()[1].output(), &output(22));
+
+    let checkpoint = index.to_checkpoint_bytes().unwrap();
+    let actual = checkpoint
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    assert_eq!(actual, CHECKPOINT_FIXTURE_V2.trim());
+    assert_eq!(
+        ExactTextPartitionIndexV2::from_checkpoint_bytes(&checkpoint).unwrap(),
+        index
+    );
+    assert_eq!(
+        ExactTextPartitionIndexV1::from_checkpoint_bytes(&checkpoint),
+        Err(ExactTextProviderErrorV1::UnsupportedFormat)
+    );
+    assert_eq!(
+        ExactTextPartitionIndexV2::from_checkpoint_bytes(
+            &ExactTextPartitionIndexV1::rebuild(
+                partition(1),
+                ProjectionGeneration::new(1).unwrap(),
+                seq(1),
+                profile,
+                &BTreeMap::from([(row(1), "one".to_owned())]),
+            )
+            .unwrap()
+            .to_checkpoint_bytes()
+            .unwrap(),
+        ),
+        Err(ExactTextProviderErrorV1::UnsupportedFormat)
+    );
 }
 
 #[test]

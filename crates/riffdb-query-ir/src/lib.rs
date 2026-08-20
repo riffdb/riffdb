@@ -11,6 +11,7 @@ mod plan;
 mod reactive;
 mod resolver;
 mod result_set;
+mod result_set_v2;
 mod schema;
 
 pub use catalog::{
@@ -34,6 +35,7 @@ pub use resolver::{
     SourceMapEntry, SourceSymbolKind, resolve_query_surface,
 };
 pub use result_set::*;
+pub use result_set_v2::*;
 pub use schema::{
     NamedFieldSchema, NamedParameterSchema, NamedQuerySchemas, NamedResultBranchSchema,
     NamedTypeSchema, PageBound,
@@ -47,6 +49,8 @@ pub const QUERY_IR_VERSION_OPERATIONAL_V1: u32 = 2;
 pub const QUERY_IR_VERSION_OPERATIONAL_AGGREGATE_V1: u32 = 3;
 /// Canonical query IR carrying exact secret-output requirements.
 pub const QUERY_IR_VERSION_SECRET_OUTPUT_V1: u32 = 4;
+/// Canonical exact whole-result/count/ordinal query IR version.
+pub const QUERY_IR_VERSION_EXACT_RESULT_SET_V1: u32 = 5;
 /// Maximum public query schema and canonical IR bytes.
 pub const MAX_QUERY_ARTIFACT_BYTES: usize = 4_194_304;
 /// Maximum source-map entries.

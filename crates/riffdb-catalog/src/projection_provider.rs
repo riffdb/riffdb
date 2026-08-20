@@ -5,7 +5,7 @@ use std::error::Error;
 use std::fmt;
 use std::sync::Arc;
 
-use riffdb_query_module::ProjectionResultSetBindingV1;
+use riffdb_query_module::{ExactTextResultSetBindingV1, ProjectionResultSetBindingV1};
 use riffdb_types::QueryOperationName;
 
 /// Maximum named provider bindings in one deployment generation.
@@ -20,6 +20,7 @@ pub const MAX_PROJECTION_PROVIDER_BINDINGS_V1: usize = 4_096;
 pub struct ProjectionProviderCatalogV1 {
     deployment_generation: u64,
     bindings: BTreeMap<QueryOperationName, Arc<ProjectionResultSetBindingV1>>,
+    exact_text_bindings: BTreeMap<QueryOperationName, Arc<ExactTextResultSetBindingV1>>,
     validation_count: usize,
 }
 
@@ -29,10 +30,23 @@ impl ProjectionProviderCatalogV1 {
         deployment_generation: u64,
         canonical_bindings: &[Vec<u8>],
     ) -> Result<Self, ProjectionProviderCatalogError> {
+        Self::open_with_exact_text(deployment_generation, canonical_bindings, &[])
+    }
+
+    /// Validates foundation and activated exact-text bindings once.
+    pub fn open_with_exact_text(
+        deployment_generation: u64,
+        canonical_bindings: &[Vec<u8>],
+        exact_text_bindings: &[Vec<u8>],
+    ) -> Result<Self, ProjectionProviderCatalogError> {
         if deployment_generation == 0 {
             return Err(ProjectionProviderCatalogError::InvalidGeneration);
         }
-        if canonical_bindings.len() > MAX_PROJECTION_PROVIDER_BINDINGS_V1 {
+        if canonical_bindings
+            .len()
+            .checked_add(exact_text_bindings.len())
+            .is_none_or(|count| count > MAX_PROJECTION_PROVIDER_BINDINGS_V1)
+        {
             return Err(ProjectionProviderCatalogError::TooManyBindings);
         }
         let mut bindings = BTreeMap::new();
@@ -44,10 +58,24 @@ impl ProjectionProviderCatalogV1 {
                 return Err(ProjectionProviderCatalogError::DuplicateQuery);
             }
         }
+        let mut checked_exact_text_bindings = BTreeMap::new();
+        for bytes in exact_text_bindings {
+            let binding = ExactTextResultSetBindingV1::from_canonical_bytes(bytes)
+                .map_err(|_| ProjectionProviderCatalogError::InvalidBinding)?;
+            let name = binding.query_name().clone();
+            if bindings.contains_key(&name)
+                || checked_exact_text_bindings
+                    .insert(name, Arc::new(binding))
+                    .is_some()
+            {
+                return Err(ProjectionProviderCatalogError::DuplicateQuery);
+            }
+        }
         Ok(Self {
             deployment_generation,
-            validation_count: canonical_bindings.len(),
+            validation_count: canonical_bindings.len() + exact_text_bindings.len(),
             bindings,
+            exact_text_bindings: checked_exact_text_bindings,
         })
     }
 
@@ -65,6 +93,15 @@ impl ProjectionProviderCatalogV1 {
     #[must_use]
     pub fn get(&self, name: &QueryOperationName) -> Option<Arc<ProjectionResultSetBindingV1>> {
         self.bindings.get(name).cloned()
+    }
+
+    /// Returns one already validated activated exact binding.
+    #[must_use]
+    pub fn get_exact_text(
+        &self,
+        name: &QueryOperationName,
+    ) -> Option<Arc<ExactTextResultSetBindingV1>> {
+        self.exact_text_bindings.get(name).cloned()
     }
 }
 

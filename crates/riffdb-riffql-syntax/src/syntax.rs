@@ -8,6 +8,8 @@ pub const RIFFQL_LANGUAGE_VERSION: u32 = 1;
 pub const RIFFQL_LANGUAGE_VERSION_OPERATIONAL_V1: u32 = 2;
 /// Exact secret-output declaration language version.
 pub const RIFFQL_LANGUAGE_VERSION_SECRET_OUTPUT_V1: u32 = 3;
+/// Exact indexed result-set language version.
+pub const RIFFQL_LANGUAGE_VERSION_EXACT_RESULT_SET_V1: u32 = 4;
 
 /// Checked half-open UTF-8 byte span.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -151,6 +153,8 @@ pub struct AggregateMeasure {
 pub enum AggregateFunction {
     /// Exact row count.
     Count,
+    /// Exact count over the complete admitted population before windowing.
+    ExactCount,
     /// Checked exact sum.
     Sum,
     /// Minimum value or the shared empty-set absence.
@@ -202,6 +206,8 @@ pub struct Take {
     pub limit: Spanned<Expression>,
     /// Optional cursor parameter.
     pub after: Option<Spanned<Identifier>>,
+    /// Optional zero-based ordinal parameter or literal; mutually exclusive with cursor paging.
+    pub offset: Option<Spanned<Expression>>,
 }
 
 /// Nearest-neighbor search clause (ADR-0091).
@@ -327,6 +333,12 @@ pub enum BinaryOperator {
     In,
     /// Canonical leading-byte text-key match.
     Prefix,
+    /// Exact binary UTF-8 leading-byte match through an ADR-0131 provider.
+    StartsWith,
+    /// Exact binary UTF-8 trailing-byte match through an ADR-0131 provider.
+    EndsWith,
+    /// Exact binary UTF-8 contiguous-byte match through an ADR-0131 provider.
+    Contains,
     /// Boolean conjunction.
     And,
     /// Boolean disjunction.

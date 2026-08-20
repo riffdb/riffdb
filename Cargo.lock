@@ -1730,7 +1730,9 @@ dependencies = [
  "riffdb-contract-compiler",
  "riffdb-contract-ir",
  "riffdb-invariant",
+ "riffdb-query-compiler",
  "riffdb-query-module",
+ "riffdb-riffql-syntax",
  "riffdb-storage-api",
  "riffdb-types",
 ]
@@ -2025,6 +2027,7 @@ dependencies = [
  "riffdb-contract-compiler",
  "riffdb-contract-ir",
  "riffdb-policy",
+ "riffdb-projection",
  "riffdb-query-compiler",
  "riffdb-query-ir",
  "riffdb-riffql-syntax",
