@@ -17,8 +17,8 @@ from riffdb_application._binding import decode_variant, encode_record
 
 CONTRACT_LINEAGE: Final[str] = "BetterAuthAcceptance"
 CONTRACT_VERSION: Final[int] = 1
-CONTRACT_BUNDLE_HASH: Final[str] = "02fcda367078ea5370395c884552b1a9d6e05ffad1a433c6fd12c7916da6b2ab"
-QUERY_MODULE_HASH: Final[str] = "1eea54c2713bd0ae5108fdba016a2cc5be9bb554f0d1d102be68a7b915b83613"
+CONTRACT_BUNDLE_HASH: Final[str] = "c1376f90ceda166ba326ed7e389d3c474224f18d07740b3d5e299cafc94e94d4"
+QUERY_MODULE_HASH: Final[str] = "fdf5340bae520590d297856e698dd6f097d9c120c5e0f265db82f650f948145f"
 
 class SessionState(StrEnum):
     ACTIVE = "Active"
@@ -69,7 +69,11 @@ class VerificationToken:
     organization_id: UUID
     verification_token_id: UUID
 
-GET_SESSION_QUERY_PLAN_HASH: Final[str] = "b4a7425759564b52c726a650d4993df452230bc6331d72e7789c424c0d26bc30"
+GET_SESSION_QUERY_PLAN_HASH: Final[str] = "14da730fc589d7ef19c9ed976c7215cf2e35d6005a5fc10f36c0601af3a1189c"
+GET_SESSION_SECRET_OUTPUTS: Final[tuple[tuple[str, str, str], ...]] = (
+    ("GetSession", "Session", "token_digest"),
+)
+
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class GetSessionParams:
@@ -79,15 +83,16 @@ class GetSessionParams:
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class GetSessionFoundSession:
-    organization_id: UUID
-    user_id: UUID
-    session_id: UUID
-    state: SessionState
-    expires_at: Timestamp
+    organization_id: UUID = field(repr=False)
+    user_id: UUID = field(repr=False)
+    session_id: UUID = field(repr=False)
+    state: SessionState = field(repr=False)
+    token_digest: str = field(repr=False)
+    expires_at: Timestamp = field(repr=False)
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class GetSessionFound:
-    session: GetSessionFoundSession
+    session: GetSessionFoundSession = field(repr=False)
     outcome: Literal["Found"] = field(default="Found", init=False)
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -96,6 +101,30 @@ class GetSessionMissing:
 
 GetSessionResult: TypeAlias = GetSessionFound | GetSessionMissing
 
+GET_USER_QUERY_PLAN_HASH: Final[str] = "346ee23a55e1d112448626ae9968816cd0100de7a378fb80e0f4653da35051a8"
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class GetUserParams:
+    organization_id: UUID
+    user_id: UUID
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class GetUserFoundUser:
+    organization_id: UUID
+    user_id: UUID
+    email: str
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class GetUserFound:
+    user: GetUserFoundUser
+    outcome: Literal["Found"] = field(default="Found", init=False)
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class GetUserMissing:
+    outcome: Literal["Missing"] = field(default="Missing", init=False)
+
+GetUserResult: TypeAlias = GetUserFound | GetUserMissing
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ConsumeVerificationTokenInput:
     user_id: UUID
@@ -103,7 +132,7 @@ class ConsumeVerificationTokenInput:
     organization_id: UUID
     verification_token_id: UUID
 
-CONSUME_VERIFICATION_TOKEN_PLAN_HASH: Final[str] = "3709e744a963cc6a833b6abfe2b7d2d007780fa1de00aec76c368a6173b402dd"
+CONSUME_VERIFICATION_TOKEN_PLAN_HASH: Final[str] = "d3e6b696c3909e8d19de9441e0c25c410656e0daa40b9e7a6bc8738d62ff17dc"
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ConsumeVerificationTokenVerificationTokenExpired:
     outcome: Literal["VerificationTokenExpired"] = field(default="VerificationTokenExpired", init=False)
@@ -129,7 +158,7 @@ class CreateUserAccountSessionsInput:
     signups: tuple[SignupGraphInput, ...]
     request_id: UUID
 
-CREATE_USER_ACCOUNT_SESSIONS_PLAN_HASH: Final[str] = "fe6352915e40807ad308acf3b446be29b05889164fd241e14fcf8be9508628c8"
+CREATE_USER_ACCOUNT_SESSIONS_PLAN_HASH: Final[str] = "e35be7f9877e51a21f27f7371679dfaedb2cbdabad7e13c228ecacbe612c1126"
 @dataclass(frozen=True, slots=True, kw_only=True)
 class CreateUserAccountSessionsSignupUserExists:
     outcome: Literal["SignupUserExists"] = field(default="SignupUserExists", init=False)
@@ -149,6 +178,27 @@ class CreateUserAccountSessionsUserAccountSessionsCreated:
 CreateUserAccountSessionsOutcome: TypeAlias = CreateUserAccountSessionsSignupUserExists | CreateUserAccountSessionsSignupAccountExists | CreateUserAccountSessionsSignupSessionExists | CreateUserAccountSessionsUserAccountSessionsCreated
 
 @dataclass(frozen=True, slots=True, kw_only=True)
+class DeleteUsersInput:
+    user_ids: tuple[UUID, ...]
+    request_id: UUID
+    organization_id: UUID
+
+DELETE_USERS_PLAN_HASH: Final[str] = "8b97f43474cf0ff07c3831985bf5150af485762356d05ecef79dc666b6431307"
+@dataclass(frozen=True, slots=True, kw_only=True)
+class DeleteUsersDeleteUserMissing:
+    outcome: Literal["DeleteUserMissing"] = field(default="DeleteUserMissing", init=False)
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class DeleteUsersUserAccountsDeleted:
+    outcome: Literal["UserAccountsDeleted"] = field(default="UserAccountsDeleted", init=False)
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class DeleteUsersCascadeLimitExceeded:
+    outcome: Literal["CascadeLimitExceeded"] = field(default="CascadeLimitExceeded", init=False)
+
+DeleteUsersOutcome: TypeAlias = DeleteUsersDeleteUserMissing | DeleteUsersUserAccountsDeleted | DeleteUsersCascadeLimitExceeded
+
+@dataclass(frozen=True, slots=True, kw_only=True)
 class IssueVerificationTokenInput:
     user_id: UUID
     expires_at: Timestamp
@@ -157,7 +207,7 @@ class IssueVerificationTokenInput:
     organization_id: UUID
     verification_token_id: UUID
 
-ISSUE_VERIFICATION_TOKEN_PLAN_HASH: Final[str] = "9dfa8b16ba033af78297c1536d9f0516b9b7977e783736c4caac0d76f114d68d"
+ISSUE_VERIFICATION_TOKEN_PLAN_HASH: Final[str] = "9d226908f0f69a90f763b7dc7829b5fe9ff717a36f9f607a3162c0f0faed75ba"
 @dataclass(frozen=True, slots=True, kw_only=True)
 class IssueVerificationTokenVerificationTokenExists:
     outcome: Literal["VerificationTokenExists"] = field(default="VerificationTokenExists", init=False)
@@ -184,7 +234,7 @@ class RefreshSessionInput:
     expected_revision: Annotated[int, "u64"]
     successor_token_digest: str
 
-REFRESH_SESSION_PLAN_HASH: Final[str] = "1fc36df2cdda2581a7736e5b49774d6dacbd2575061115abdf95cf53c821a397"
+REFRESH_SESSION_PLAN_HASH: Final[str] = "bec158663a6511372e7f497f3d0ed5ae9ffa45a0a39b7b54d71a817d9fd31067"
 @dataclass(frozen=True, slots=True, kw_only=True)
 class RefreshSessionSessionRefreshed:
     session: Session
@@ -216,7 +266,7 @@ class RevokeSessionInput:
     organization_id: UUID
     expected_revision: Annotated[int, "u64"]
 
-REVOKE_SESSION_PLAN_HASH: Final[str] = "5dbc0237ea41a112ca3476f8a5912e57fc4d3acdfcc21f290e5a8957bd2a8807"
+REVOKE_SESSION_PLAN_HASH: Final[str] = "309062f50ee35eea4b2ab7393c8a3be74547a3d7e05995eb6b8c6cecc9f39813"
 @dataclass(frozen=True, slots=True, kw_only=True)
 class RevokeSessionSessionRevoked:
     session: Session
@@ -251,6 +301,19 @@ class BetterAuthAcceptanceClient:
         outcomes = {
             "Found": GetSessionFound,
             "Missing": GetSessionMissing,
+        }
+        return raw._map_value(lambda value: decode_variant(outcomes, value))
+
+    def get_user(self, parameters: GetUserParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[GetUserResult]:
+        raw = self._transport._execute_named_query(
+            contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
+            contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
+            query_name="GetUser", plan_hash=GET_USER_QUERY_PLAN_HASH,
+            parameters=encode_record(parameters), options=options,
+        )
+        outcomes = {
+            "Found": GetUserFound,
+            "Missing": GetUserMissing,
         }
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
@@ -298,6 +361,30 @@ class BetterAuthAcceptanceClient:
             if not 1 <= len(input.signups) <= 8:
                 raise ValueError("invalid bounded collection length for CreateUserAccountSessions.signups")
         return self._transport._command_batch(inputs, options, self.create_user_account_sessions, progress)
+
+    def delete_users(self, input: DeleteUsersInput) -> TypedCommandResult[DeleteUsersOutcome]:
+        if not 1 <= len(input.user_ids) <= 8:
+            raise ValueError("invalid bounded collection length for DeleteUsers.user_ids")
+        raw = self._transport._execute_command(
+            contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
+            command_name="DeleteUsers", plan_hash=DELETE_USERS_PLAN_HASH,
+            input=encode_record(input), attempts=self._command_attempts,
+        )
+        outcomes = {
+            "DeleteUserMissing": DeleteUsersDeleteUserMissing,
+            "UserAccountsDeleted": DeleteUsersUserAccountsDeleted,
+            "CascadeLimitExceeded": DeleteUsersCascadeLimitExceeded,
+        }
+        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+
+    def delete_users_batch(
+        self, inputs: Sequence[DeleteUsersInput], options: CommandBatchOptions,
+        progress: Callable[[CommandBatchProgress], None] | None = None,
+    ) -> CommandBatchResult[DeleteUsersOutcome]:
+        for input in inputs:
+            if not 1 <= len(input.user_ids) <= 8:
+                raise ValueError("invalid bounded collection length for DeleteUsers.user_ids")
+        return self._transport._command_batch(inputs, options, self.delete_users, progress)
 
     def issue_verification_token(self, input: IssueVerificationTokenInput) -> TypedCommandResult[IssueVerificationTokenOutcome]:
         raw = self._transport._execute_command(
@@ -391,6 +478,19 @@ class AsyncBetterAuthAcceptanceClient:
         }
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
+    async def get_user(self, parameters: GetUserParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[GetUserResult]:
+        raw = await self._transport._execute_named_query(
+            contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
+            contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
+            query_name="GetUser", plan_hash=GET_USER_QUERY_PLAN_HASH,
+            parameters=encode_record(parameters), options=options,
+        )
+        outcomes = {
+            "Found": GetUserFound,
+            "Missing": GetUserMissing,
+        }
+        return raw._map_value(lambda value: decode_variant(outcomes, value))
+
     async def consume_verification_token(self, input: ConsumeVerificationTokenInput) -> TypedCommandResult[ConsumeVerificationTokenOutcome]:
         raw = await self._transport._execute_command(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
@@ -435,6 +535,30 @@ class AsyncBetterAuthAcceptanceClient:
             if not 1 <= len(input.signups) <= 8:
                 raise ValueError("invalid bounded collection length for CreateUserAccountSessions.signups")
         return await self._transport._command_batch(inputs, options, self.create_user_account_sessions, progress)
+
+    async def delete_users(self, input: DeleteUsersInput) -> TypedCommandResult[DeleteUsersOutcome]:
+        if not 1 <= len(input.user_ids) <= 8:
+            raise ValueError("invalid bounded collection length for DeleteUsers.user_ids")
+        raw = await self._transport._execute_command(
+            contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
+            command_name="DeleteUsers", plan_hash=DELETE_USERS_PLAN_HASH,
+            input=encode_record(input), attempts=self._command_attempts,
+        )
+        outcomes = {
+            "DeleteUserMissing": DeleteUsersDeleteUserMissing,
+            "UserAccountsDeleted": DeleteUsersUserAccountsDeleted,
+            "CascadeLimitExceeded": DeleteUsersCascadeLimitExceeded,
+        }
+        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+
+    async def delete_users_batch(
+        self, inputs: Sequence[DeleteUsersInput], options: CommandBatchOptions,
+        progress: Callable[[CommandBatchProgress], None] | None = None,
+    ) -> CommandBatchResult[DeleteUsersOutcome]:
+        for input in inputs:
+            if not 1 <= len(input.user_ids) <= 8:
+                raise ValueError("invalid bounded collection length for DeleteUsers.user_ids")
+        return await self._transport._command_batch(inputs, options, self.delete_users, progress)
 
     async def issue_verification_token(self, input: IssueVerificationTokenInput) -> TypedCommandResult[IssueVerificationTokenOutcome]:
         raw = await self._transport._execute_command(

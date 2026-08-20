@@ -4,8 +4,8 @@
 > TypeScript, Python, and MCP bindings are implemented. Collection commands use the ordinary
 > symbolic command service; they do not introduce a generic transaction API. Compiler-bounded
 > one-hop cascade grammar, executable IR V13, and the command/runtime/storage path are implemented.
-> Generated language-specific cascade facades remain unavailable until WP-627; callers can use
-> the ordinary symbolic command service in the meantime.
+> Generated Rust, Go, TypeScript, and Python cascade facades expose the declared typed success and
+> overflow outcomes; generated MCP deliberately omits secret-bearing query output.
 
 RiffDB collection writes are compiled commands, not caller-defined transactions. A `bulk command`
 may expand exactly one bounded list, once, with no nesting or data-dependent iteration. The
@@ -113,9 +113,12 @@ Contracts without cascade continue to emit V1 through V12 as appropriate. This c
 is deployable by a V13-capable runtime. After acquiring the command's canonical aggregate conflict,
 the coordinator reads each named reverse-index prefix only through its compiler-declared
 `maximum + 1` bound. If any prefix returns the extra row, it durably records the declared cascade
-outcome with no entity mutation. Otherwise it rereads the roots, discovered predecessors, and
-range epochs in one consistent view, applies ordinary authorization and transaction-current checks
-to every row, and evaluates one children-before-parent graph.
+outcome with no entity mutation. The root and every present candidate in that bounded
+maximum-plus-one set are nevertheless materialized and checked against the transaction-current
+capability revision and row policy before the outcome is released. An unauthorized caller therefore
+cannot distinguish an absent, within-limit, or over-limit protected relationship by observing the
+cascade result. Otherwise the runtime rereads the roots, discovered predecessors, and range epochs
+in one consistent view and evaluates one children-before-parent graph.
 
 The persisted entity mutations remain canonically ordered in the existing command envelope. This
 is a physical encoding detail: the validated semantic graph proves every child precedes its parent
@@ -127,6 +130,13 @@ Duplicate collection keys reject the whole command. All expanded effects, the ty
 events, provenance, idempotency record, and commit record are one atomic command result. A crash
 or retry can expose only the complete persisted result or complete absence; an element-level
 partial result is not part of the protocol.
+
+The shipped Better Auth adapter exercises this surface through the generated Rust, Go, TypeScript,
+and Python clients: deleting a user removes its bounded account, session, and verification-token
+rows atomically. The identity and session model remains application-owned; RiffDB supplies only the
+compiled data command, authorization, and durability guarantees. Secret-bearing session reads are
+available only through explicitly generated application clients and are intentionally omitted from
+MCP and reactive display surfaces.
 
 ## Client and CLI preflight
 

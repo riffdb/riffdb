@@ -606,6 +606,196 @@ fn bounded_cascade_deletes_children_before_parent_from_exact_reverse_index_evide
 }
 
 #[test]
+fn bounded_cascade_overflow_retains_maximum_plus_one_predecessors_without_mutation() {
+    let bundle = compile_contract_source(CASCADE_DELETE_SOURCE).expect("cascade fixture compiles");
+    let plan = command(&bundle, "DeleteUsers");
+    let organization_id = CanonicalValue::Uuid([0xa1; 16]);
+    let user_id = CanonicalValue::Uuid([0xa2; 16]);
+    let input = input_record(
+        plan.input().record(),
+        [
+            ("request_id", CanonicalValue::Uuid([0xa3; 16])),
+            ("organization_id", organization_id.clone()),
+            (
+                "user_ids",
+                CanonicalValue::List(CanonicalList::new(vec![user_id.clone()]).expect("one user")),
+            ),
+        ],
+    );
+    let facts = derive_input_command_facts(plan, input.clone()).expect("cascade facts");
+    let root_target = EntityTarget::new(
+        plan.bindings()[facts.binding_plan_indices()[0] as usize].entity_type(),
+        facts.binding_entity_keys()[0].clone(),
+    )
+    .expect("user target");
+    let user = bundle
+        .schema()
+        .entities()
+        .iter()
+        .find(|entity| entity.name() == "User")
+        .expect("User entity");
+    let root = stored_record(
+        &bundle,
+        plan,
+        root_target.clone(),
+        input_record(
+            user.record(),
+            [
+                ("organization_id", organization_id.clone()),
+                ("user_id", user_id.clone()),
+            ],
+        ),
+    );
+
+    let account = bundle
+        .schema()
+        .entities()
+        .iter()
+        .find(|entity| entity.name() == "Account")
+        .expect("Account entity");
+    let account_index = account
+        .indexes()
+        .iter()
+        .find(|index| index.name() == "by_user")
+        .expect("Account reverse index");
+    let mut account_entries = Vec::new();
+    let mut discovered = Vec::new();
+    for ordinal in 0_u8..33 {
+        let account_id = CanonicalValue::Uuid([ordinal; 16]);
+        let child_key = account
+            .primary_key()
+            .encode_entity(&[organization_id.clone(), user_id.clone(), account_id.clone()])
+            .expect("account key");
+        let target = EntityTarget::new(account.id(), child_key.clone()).expect("account target");
+        discovered.push((
+            target,
+            stored_record(
+                &bundle,
+                plan,
+                EntityTarget::new(account.id(), child_key.clone()).expect("stored target"),
+                input_record(
+                    account.record(),
+                    [
+                        ("organization_id", organization_id.clone()),
+                        ("user_id", user_id.clone()),
+                        ("account_id", account_id),
+                    ],
+                ),
+            ),
+        ));
+        let index_key = account_index
+            .key_schema()
+            .encode_index(&[organization_id.clone(), user_id.clone()], child_key)
+            .expect("account index key");
+        account_entries.push(
+            IndexRangeEntry::new(
+                account_index.id(),
+                index_key,
+                CanonicalRecord::new(vec![]).expect("empty covered values"),
+            )
+            .expect("account range entry"),
+        );
+    }
+
+    let session = bundle
+        .schema()
+        .entities()
+        .iter()
+        .find(|entity| entity.name() == "Session")
+        .expect("Session entity");
+    let session_index = session
+        .indexes()
+        .iter()
+        .find(|index| index.name() == "by_user")
+        .expect("Session reverse index");
+    let range_target = |index_id| {
+        let mut prefix = IndexRangePrefixBuilder::new(index_id);
+        prefix.push_uuid(&[0xa1; 16]).expect("organization prefix");
+        prefix.push_uuid(&[0xa2; 16]).expect("user prefix");
+        IndexRangeTarget::new(facts.partition_key().clone(), prefix.finish())
+    };
+    let account_range = range_target(account_index.id());
+    let session_range = range_target(session_index.id());
+    let mut ranges = vec![
+        (
+            account_range.clone(),
+            IndexRangeObservation::new(
+                account_range,
+                riffdb_storage_api::IndexEpochPosition::BeforeFirst,
+                account_entries,
+            )
+            .expect("account range"),
+        ),
+        (
+            session_range.clone(),
+            IndexRangeObservation::new(
+                session_range,
+                riffdb_storage_api::IndexEpochPosition::BeforeFirst,
+                vec![],
+            )
+            .expect("session range"),
+        ),
+    ];
+    ranges.sort_unstable_by(|left, right| left.0.cmp(&right.0));
+    discovered.sort_unstable_by(|left, right| left.0.cmp(&right.0));
+
+    let request = SnapshotRequest::new_with_cascade(
+        plan_ref(&bundle, plan),
+        vec![root_target],
+        vec![],
+        discovered
+            .iter()
+            .map(|(target, _)| target.clone())
+            .collect(),
+        ranges
+            .iter()
+            .map(|(target, _)| (target.clone(), 33))
+            .collect(),
+    )
+    .expect("maximum-plus-one request");
+    let snapshot = ReadSnapshot::new_with_cascade(
+        &request,
+        None,
+        vec![EntityObservation::Present(root)],
+        vec![],
+        discovered
+            .iter()
+            .map(|(_, record)| EntityObservation::Present(record.clone()))
+            .collect(),
+        ranges
+            .into_iter()
+            .map(|(_, observation)| observation)
+            .collect(),
+    )
+    .expect("maximum-plus-one snapshot");
+    let context = TransactionContext::new(
+        RequestId::from_unix_milliseconds_and_random(1, [0xa4; 10]).expect("request ID"),
+        AdmittedActorContext::new(
+            ActorId::new("cascade-overflow-runtime-test").expect("actor"),
+            ActorKind::Service,
+            TenantScope::Global,
+            None,
+        ),
+        plan_ref(&bundle, plan),
+        LogicalTime::new(Timestamp::new(1, 0).expect("time")),
+        facts.partition_key().clone(),
+    );
+
+    let ExecutionResult::CommitRequired(evaluated) =
+        execute_command(&bundle, &input, &snapshot, &context, EvaluationBudget::v1())
+            .expect("overflow is a declared outcome")
+    else {
+        panic!("overflow outcome is persisted");
+    };
+    assert_eq!(
+        evaluated.outcome().outcome_id(),
+        outcome_id(plan, "CascadeLimitExceeded")
+    );
+    assert!(evaluated.mutations().is_empty());
+    assert_eq!(snapshot.cascade_predecessors().len(), 33);
+}
+
+#[test]
 fn bounded_collection_create_executes_as_one_complete_evaluated_graph() {
     let bundle = compile_contract_source(BULK_TUPLE_SOURCE).expect("bulk fixture compiles");
     let plan = command(&bundle, "WriteTuples");

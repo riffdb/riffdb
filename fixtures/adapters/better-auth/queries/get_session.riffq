@@ -15,6 +15,7 @@ query GetSession(
             user_id
             session_id
             state
+            token_digest reveals session.token_digest
             expires_at
         }
     }

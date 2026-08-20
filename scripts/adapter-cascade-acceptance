@@ -1,0 +1,389 @@
+#!/usr/bin/env bash
+set -euo pipefail
+umask 077
+
+if [[ $# -ne 1 || "$1" != "--all-languages" ]]; then
+    echo 'usage: adapter-cascade-acceptance --all-languages' >&2
+    exit 2
+fi
+
+repo_root="$(git rev-parse --show-toplevel)"
+cd "$repo_root"
+
+contract=fixtures/adapters/better-auth/contract.riff
+manifest=fixtures/adapters/better-auth/riffdb.application.json
+
+# WP-630's interface-first tripwire: the adapter may only receive one closed,
+# compiler-owned cascade command and named reads. Keep these assertions even
+# after the runtime campaign below is added so generation drift fails early.
+rg -q 'delete_policy cascade' "$contract" || {
+    echo 'Better Auth root has no compiler-declared cascade policy' >&2
+    exit 1
+}
+rg -q 'bulk command DeleteUsers' "$contract" || {
+    echo 'Better Auth exposes no bounded full-user deletion command' >&2
+    exit 1
+}
+rg -q 'cascade CascadeLimitExceeded' "$contract" || {
+    echo 'Better Auth deletion has no typed cascade overflow outcome' >&2
+    exit 1
+}
+rg -q 'reveals session\.token_digest' fixtures/adapters/better-auth/queries/*.riffq || {
+    echo 'Better Auth has no named secret-bearing session lookup' >&2
+    exit 1
+}
+jq -e '.roles[] | select(.name == "BetterAuthApplication")
+    | (.commands | index("DeleteUsers")) != null' "$manifest" >/dev/null || {
+    echo 'Better Auth role does not select DeleteUsers' >&2
+    exit 1
+}
+
+for generated in \
+    fixtures/adapters/better-auth/generated/rust/client.rs \
+    fixtures/adapters/better-auth/generated/go/client.go \
+    fixtures/adapters/better-auth/generated/typescript/client.ts \
+    fixtures/adapters/better-auth/generated/python/client.py
+do
+    rg -q 'DeleteUsers' "$generated" || {
+        echo "generated client omits DeleteUsers: $generated" >&2
+        exit 1
+    }
+done
+
+task_tmp_root="${RIFFDB_TMP_ROOT:-$HOME/tmp}"
+mkdir -p "$task_tmp_root"
+task_tmp_root="$(realpath "$task_tmp_root")"
+case "$task_tmp_root/" in
+    "$repo_root/"*)
+        echo 'RIFFDB_TMP_ROOT must place the external adapter outside the repository' >&2
+        exit 1
+        ;;
+esac
+work_root="$(mktemp -d "$task_tmp_root/riffdb-adapter-cascade.XXXXXX")"
+server_pid=''
+driver_pid=''
+server_input_fd=''
+cleanup() {
+    if [[ -n "$driver_pid" ]] && kill -0 "$driver_pid" 2>/dev/null; then
+        kill -TERM "$driver_pid" 2>/dev/null || true
+        wait "$driver_pid" 2>/dev/null || true
+    fi
+    if [[ -n "$server_pid" ]] && kill -0 "$server_pid" 2>/dev/null; then
+        printf 'shutdown\n' >&"$server_input_fd" 2>/dev/null || true
+        wait "$server_pid" 2>/dev/null || true
+    fi
+    if [[ "${RIFFDB_KEEP_CONFORMANCE:-0}" == "1" ]]; then
+        echo "retained adapter cascade work root: $work_root" >&2
+    else
+        chmod -R u+w "$work_root" 2>/dev/null || true
+        rm -rf "$work_root"
+    fi
+}
+trap cleanup EXIT INT TERM
+
+cargo +1.97.0 build --quiet \
+    -p riffdb-server --bin riffdbd \
+    -p riffdb-cli --bin riffdb \
+    -p riffdb-driver-host --bin riffdb-driverd \
+    -p riffdb-testkit --example adapter_cascade_remote_client
+npm --prefix clients/typescript/runtime run build >/dev/null
+mkdir "$work_root/python-dist"
+(
+    cd clients/python/runtime
+    python3 -m maturin build --quiet --interpreter python3 \
+        --compatibility linux --out "$work_root/python-dist"
+)
+python_wheel="$(find "$work_root/python-dist" -maxdepth 1 -type f -name '*.whl' -print -quit)"
+[[ -n "$python_wheel" ]] || { echo 'Python cascade wheel was not built' >&2; exit 1; }
+UV_CACHE_DIR="$work_root/uv-cache" uv venv "$work_root/python-venv" >/dev/null
+UV_CACHE_DIR="$work_root/uv-cache" uv pip install --offline \
+    --python "$work_root/python-venv/bin/python" "$python_wheel" >/dev/null
+
+port="$(python3 - <<'PY'
+import socket
+with socket.socket() as listener:
+    listener.bind(("127.0.0.1", 0))
+    print(listener.getsockname()[1])
+PY
+)"
+cp crates/riffdb-server/tests/fixtures/localhost-cert.pem "$work_root/server.pem"
+cp crates/riffdb-server/tests/fixtures/localhost-key.pem "$work_root/server.key"
+cp crates/riffdb-server/tests/fixtures/test-ca.pem "$work_root/ca.pem"
+chmod 0444 "$work_root/server.pem" "$work_root/ca.pem"
+chmod 0600 "$work_root/server.key"
+printf '%s' 'riffdb-capability-digest-keys-v1
+1:000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f
+' >"$work_root/capability.keys"
+printf '%s' 'riffdb-idempotency-digest-keys-v1
+1:202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f
+' >"$work_root/idempotency.keys"
+chmod 0600 "$work_root/capability.keys" "$work_root/idempotency.keys"
+mkdir -m 0700 "$work_root/backups"
+
+cat >"$work_root/riffdbd.toml" <<EOF
+[server]
+database = "$work_root/riffdb.redb"
+environment = "development"
+audience = "riffdb-adapter-cascade"
+capability_keys = "$work_root/capability.keys"
+idempotency_keys = "$work_root/idempotency.keys"
+
+[server.application_listener]
+mode = "direct_tls"
+listen = "127.0.0.1:$port"
+public_endpoint = "https://127.0.0.1:$port"
+certificate_chain = "$work_root/server.pem"
+private_key = "$work_root/server.key"
+
+[server.application_listener.bounds]
+max_connections = 64
+max_streams_per_connection = 128
+handshake_timeout_seconds = 5
+drain_timeout_seconds = 5
+
+[maintenance]
+backup_root = "$work_root/backups"
+EOF
+
+mkfifo "$work_root/server.input" "$work_root/server.output"
+exec {server_input_fd}<>"$work_root/server.input"
+exec {server_output_fd}<>"$work_root/server.output"
+target/debug/riffdbd --config "$work_root/riffdbd.toml" \
+    <&"$server_input_fd" >"$work_root/server.output" 2>"$work_root/server.stderr" &
+server_pid=$!
+ready=''
+while IFS= read -r -t 60 line <&"$server_output_fd"; do
+    if [[ "$line" == riffdbd-ready-v1$'\t'* ]]; then ready="$line"; break; fi
+done
+[[ "$ready" == "riffdbd-ready-v1"$'\t'"127.0.0.1:$port" ]] || {
+    sed -n '1,200p' "$work_root/server.stderr" >&2
+    echo 'adapter cascade RiffDB did not become ready' >&2
+    exit 1
+}
+
+cat >"$work_root/bootstrap.json" <<'EOF'
+{"principal_id":"adapter-cascade-operator","actor_kind":"human","requested_lifetime_seconds":86400,"audiences":["riffdb-adapter-cascade"],"grant":{"tenant_scope":{"type":"global"},"partition_scope":{"type":"all"},"permissions":[{"type":"validate_contract"},{"type":"read_contract"},{"type":"deploy_contract"},{"type":"read_health"},{"type":"create_capability"},{"type":"revoke_capability"},{"type":"administer_capabilities"}],"field_visibility":[],"max_scan_rows":50,"approval_required":[]}}
+EOF
+cat >"$work_root/bootstrap-client.toml" <<EOF
+[client]
+endpoint = "https://127.0.0.1:$port"
+database = "default"
+output = "json"
+max_attempts = 3
+tls_trust_root = "$work_root/ca.pem"
+tls_server_name = "127.0.0.1"
+EOF
+target/debug/riffdb --config "$work_root/bootstrap-client.toml" capability bootstrap \
+    --request "$work_root/bootstrap.json" --generate "$work_root/bootstrap.credential" \
+    --bearer-output "$work_root/operator.credential" >/dev/null
+cat >"$work_root/operator-client.toml" <<EOF
+[client]
+endpoint = "https://127.0.0.1:$port"
+database = "default"
+output = "json"
+max_attempts = 3
+credential_file = "$work_root/operator.credential"
+tls_trust_root = "$work_root/ca.pem"
+tls_server_name = "127.0.0.1"
+EOF
+
+cp -R fixtures/adapters/better-auth "$work_root/application"
+(
+    cd "$work_root/application"
+    "$repo_root/target/debug/riffdb" --config "$work_root/operator-client.toml" application deploy \
+        riffdb.application.json --lock riffdb.application.lock.json \
+        >"$work_root/application-deploy.json" 2>"$work_root/application-deploy.stderr" || {
+            cat "$work_root/application-deploy.stderr" >&2
+            cat "$work_root/application-deploy.json" >&2
+            exit 1
+        }
+)
+
+owner_id='018f0f8b-7c6d-7e31-8a4f-000000000002'
+python_id='018f0f8b-7c6d-7e31-8a4f-000000000066'
+go_id='018f0f8b-7c6d-7e31-8a4f-0000000000ca'
+typescript_id='018f0f8b-7c6d-7e31-8a4f-00000000012e'
+outsider_id='018f0f8b-7c6d-7e31-8a4f-0000000003e7'
+jq -n '{}' >"$work_root/owner-facts.json"
+bind_role() {
+    local principal="$1"
+    local credential="$2"
+    target/debug/riffdb --config "$work_root/operator-client.toml" role bind \
+        "$work_root/application/riffdb.application.json" \
+        --role BetterAuthApplication --principal "$principal" \
+        --actor-kind service --audience riffdb-adapter-cascade --lifetime-seconds 3600 \
+        --principal-facts "$work_root/owner-facts.json" \
+        --credential-output "$credential" --output json
+}
+bind_role "$owner_id" "$work_root/owner.credential" >"$work_root/owner-bind.json"
+bind_role "$python_id" "$work_root/python.credential" >"$work_root/python-bind.json"
+bind_role "$go_id" "$work_root/go.credential" >"$work_root/go-bind.json"
+bind_role "$typescript_id" "$work_root/typescript.credential" >"$work_root/typescript-bind.json"
+bind_role "$outsider_id" "$work_root/outsider.credential" >"$work_root/outsider-bind.json"
+
+clients/typescript/runtime/node_modules/.bin/tsc \
+    "$work_root/application/generated/typescript/client.ts" \
+    --target ES2022 --module NodeNext --moduleResolution NodeNext --strict --skipLibCheck \
+    --outDir "$work_root/typescript-generated"
+export RIFFDB_CONFORMANCE_TYPESCRIPT_RUNTIME="$repo_root/clients/typescript/runtime/dist/index.js"
+export RIFFDB_CONFORMANCE_TYPESCRIPT_GENERATED="$work_root/typescript-generated/client.js"
+
+manifest_hash="$(jq -r '.exact_manifest_hash' "$work_root/application/riffdb.application.lock.json")"
+catalog_hash="$(jq -r '.artifacts[] | select(.kind == "mcp") | .content_hash' "$work_root/application/riffdb.application.lock.json")"
+bundle_hash="$(jq -r '.contract.bundle_hash' "$work_root/application/riffdb.application.lock.json")"
+role_hash="$(jq -r '.roles[] | select(.definition.name == "BetterAuthApplication") | .definition_hash' "$work_root/application/riffdb.application.lock.json")"
+remote_hash="$(printf 'https://127.0.0.1:%s|127.0.0.1' "$port" | sha256sum | cut -d' ' -f1)"
+jq -n \
+    --arg applicationManifestHash "$manifest_hash" --arg operationCatalogHash "$catalog_hash" \
+    --arg contractLineage BetterAuthAcceptance --argjson contractVersion 1 \
+    --arg contractBundleHash "$bundle_hash" --arg database default \
+    --arg role BetterAuthApplication --arg roleDefinitionHash "$role_hash" \
+    --arg remoteIdentityHash "$remote_hash" \
+    '{applicationManifestHash:$applicationManifestHash,operationCatalogHash:$operationCatalogHash,contractLineage:$contractLineage,contractVersion:$contractVersion,contractBundleHash:$contractBundleHash,database:$database,role:$role,roleDefinitionHash:$roleDefinitionHash,remoteIdentityHash:$remoteIdentityHash}' \
+    >"$work_root/identity.json"
+export RIFFDB_CONFORMANCE_IDENTITY="$work_root/identity.json"
+
+start_driver() {
+    local credential="$1"
+    local socket="$work_root/riffdb-driver.sock"
+    rm -f "$socket"
+    cat >"$work_root/driver.toml" <<EOF
+[driver]
+socket = "$socket"
+
+[application]
+lock_file = "$work_root/application/riffdb.application.lock.json"
+manifest_file = "$work_root/application/generated/riffdb.application.exact.json"
+operation_catalog_file = "$work_root/application/generated/mcp/tools.json"
+database = "default"
+role = "BetterAuthApplication"
+
+[remote]
+endpoint = "https://127.0.0.1:$port"
+tls_trust_root = "$work_root/ca.pem"
+tls_server_name = "127.0.0.1"
+credential_file = "$credential"
+pool_connections = 4
+streams_per_connection = 64
+EOF
+    chmod 0600 "$work_root/driver.toml"
+    target/debug/riffdb-driverd "$work_root/driver.toml" \
+        >"$work_root/driver.stdout" 2>"$work_root/driver.stderr" &
+    driver_pid=$!
+    local deadline=$((SECONDS + 30))
+    while [[ ! -S "$socket" && "$SECONDS" -lt "$deadline" ]]; do
+        kill -0 "$driver_pid" 2>/dev/null || break
+    done
+    [[ -S "$socket" ]] || {
+        sed -n '1,200p' "$work_root/driver.stderr" >&2
+        echo 'cascade driver host did not become ready' >&2
+        exit 1
+    }
+    export RIFFDB_CONFORMANCE_SOCKET="$socket"
+}
+
+export RIFFDB_CONFORMANCE_ENDPOINT="https://127.0.0.1:$port"
+export RIFFDB_CONFORMANCE_TRUST_ROOT="$work_root/ca.pem"
+export RIFFDB_CONFORMANCE_CREDENTIAL="$work_root/owner.credential"
+export RIFFDB_BETTER_AUTH_USER_ID="$owner_id"
+cargo +1.97.0 run --quiet -p riffdb-testkit --example adapter_cascade_remote_client -- \
+    >"$work_root/rust.json"
+jq -e '
+  .schema == "riffdb.adapter-cascade-observation/v1"
+  and .language == "rust"
+  and .signup and .named_exact_read and .named_secret_read
+  and .session_account_cleanup and .bounded_full_user_delete
+  and .atomic_token_consume and .idempotent_replay
+  and .typed_overflow and .overflow_zero_mutation
+' "$work_root/rust.json" >/dev/null
+
+cat >"$work_root/outsider-client.toml" <<EOF
+[client]
+endpoint = "https://127.0.0.1:$port"
+database = "default"
+output = "json"
+max_attempts = 3
+credential_file = "$work_root/outsider.credential"
+tls_trust_root = "$work_root/ca.pem"
+tls_server_name = "127.0.0.1"
+EOF
+jq -n --arg request '018f0f8b-7c6d-7e31-8a4f-0000000003e8' \
+    --arg organization '018f0f8b-7c6d-7e31-8a4f-000000000001' \
+    --arg user "$owner_id" \
+    '{request_id:{"$uuid":$request},organization_id:{"$uuid":$organization},user_ids:[{"$uuid":$user}]}' \
+    >"$work_root/outsider-delete.json"
+if target/debug/riffdb --config "$work_root/outsider-client.toml" command run DeleteUsers \
+    --input "$work_root/outsider-delete.json" \
+    --application "$work_root/application/riffdb.application.json" --output json \
+    >"$work_root/outsider-delete.out" 2>&1; then
+    echo 'row-policy outsider deleted another principal user' >&2
+    exit 1
+fi
+rg -q 'RDB-AUTH-0214' "$work_root/outsider-delete.out"
+
+owner_capability="$(jq -r '.result.transition.identity.capability_id' "$work_root/owner-bind.json")"
+target/debug/riffdb --config "$work_root/operator-client.toml" role revoke \
+    "$owner_capability" --reason policy_change >/dev/null
+cat >"$work_root/owner-client.toml" <<EOF
+[client]
+endpoint = "https://127.0.0.1:$port"
+database = "default"
+output = "json"
+max_attempts = 3
+credential_file = "$work_root/owner.credential"
+tls_trust_root = "$work_root/ca.pem"
+tls_server_name = "127.0.0.1"
+EOF
+module_hash="$(jq -r '.modules[0].module_hash' "$work_root/application/riffdb.application.lock.json")"
+jq -n --arg organization '018f0f8b-7c6d-7e31-8a4f-000000000001' \
+    --arg user "$owner_id" \
+    '{organization_id:{"$uuid":$organization},user_id:{"$uuid":$user}}' \
+    >"$work_root/get-user.json"
+if target/debug/riffdb --config "$work_root/owner-client.toml" query run-named GetUser \
+    --contract-lineage BetterAuthAcceptance --contract-version 1 \
+    --module-hash "$module_hash" --parameters "$work_root/get-user.json" --output json \
+    >"$work_root/revoked-query.out" 2>&1; then
+    echo 'revoked Better Auth role still executed a named read' >&2
+    exit 1
+fi
+rg -q 'RDB-AUTH-0215' "$work_root/revoked-query.out"
+
+export RIFFDB_CONFORMANCE_CREDENTIAL="$work_root/python.credential"
+export RIFFDB_BETTER_AUTH_USER_ID="$python_id"
+PYTHONPATH="$work_root/application/generated/python" \
+    "$work_root/python-venv/bin/python" \
+    fixtures/adapters/better-auth/runner/python.py >"$work_root/python.json"
+python_observation="$(jq -cS 'del(.language)' "$work_root/python.json")"
+rust_observation="$(jq -cS 'del(.language)' "$work_root/rust.json")"
+[[ "$python_observation" == "$rust_observation" ]] || {
+    echo "Python cascade observation diverged: $python_observation" >&2
+    exit 1
+}
+
+export RIFFDB_BETTER_AUTH_USER_ID="$go_id"
+start_driver "$work_root/go.credential"
+GOCACHE="$work_root/go-build-cache" GOPATH="$work_root/go-cache" GOPROXY=off \
+    go -C fixtures/adapters/better-auth run ./runner/go >"$work_root/go.json"
+kill -TERM "$driver_pid"
+wait "$driver_pid"
+driver_pid=''
+
+export RIFFDB_BETTER_AUTH_USER_ID="$typescript_id"
+start_driver "$work_root/typescript.credential"
+node fixtures/adapters/better-auth/runner/typescript.mjs >"$work_root/typescript.json"
+kill -TERM "$driver_pid"
+wait "$driver_pid"
+driver_pid=''
+
+for language in go typescript; do
+    observed="$(jq -cS 'del(.language)' "$work_root/$language.json")"
+    [[ "$observed" == "$rust_observation" ]] || {
+        echo "$language cascade observation diverged: $observed" >&2
+        exit 1
+    }
+done
+
+printf 'shutdown\n' >&"$server_input_fd"
+wait "$server_pid"
+server_pid=''
+printf '%s\n' 'WP-630 Better Auth bounded cascade generated Rust/Go/TypeScript/Python lifecycle: passed'

@@ -85,7 +85,6 @@ pub(super) fn lower_cascade_discovery(
     let plan = resolved.plan();
     let schema = resolved.bundle().bundle().schema();
     let mut child_targets = Vec::new();
-    let mut terminal = false;
     let mut has_cascade = false;
     for (plan_index, key) in facts
         .binding_plan_indices()
@@ -129,7 +128,7 @@ pub(super) fn lower_cascade_discovery(
                     .collect()
             }
         };
-        for (source_entity, index_id, maximum, cascade) in specifications {
+        for (source_entity, index_id, _maximum, cascade) in specifications {
             let expected = derive_delete_range_target(
                 schema,
                 facts.partition_key(),
@@ -145,11 +144,6 @@ pub(super) fn lower_cascade_discovery(
                 .get(position)
                 .ok_or_else(CommandIndexError::internal_defect)?;
             if !cascade {
-                terminal |= !range.entries().is_empty();
-                continue;
-            }
-            if range.entries().len() > usize::from(maximum) {
-                terminal = true;
                 continue;
             }
             let source = schema
@@ -172,7 +166,7 @@ pub(super) fn lower_cascade_discovery(
             }
         }
     }
-    if terminal || !has_cascade || child_targets.is_empty() {
+    if !has_cascade || child_targets.is_empty() {
         return Ok(CascadeDiscoveryDecision::Complete);
     }
     let request = SnapshotRequest::new_with_cascade(

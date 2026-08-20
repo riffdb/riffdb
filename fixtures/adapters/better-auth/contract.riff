@@ -5,14 +5,21 @@ contract BetterAuthAcceptance version 1 {
     key (organization_id: uuid, user_id: uuid)
     field email: string<320>
     unique user_email (organization_id, email)
+    delete_policy cascade {
+      relationship Account.account_user using Account.by_user maximum 8
+      relationship Session.session_user using Session.by_user maximum 8
+      relationship VerificationToken.token_user using VerificationToken.by_user maximum 8
+    }
   }
 
   entity Account {
     key (organization_id: uuid, user_id: uuid, account_id: uuid)
     field provider: string<64>
     field provider_account_id: string<256>
+    index by_user (organization_id, user_id)
     unique provider_identity (organization_id, provider, provider_account_id)
     reference account_user (organization_id, user_id) -> User(organization_id, user_id)
+    delete_policy no_inbound
   }
 
   entity Session {
@@ -20,8 +27,10 @@ contract BetterAuthAcceptance version 1 {
     field state: SessionState
     field secret token_digest: string<128>
     field expires_at: timestamp
+    index by_user (organization_id, user_id)
     unique session_token (organization_id, token_digest)
     reference session_user (organization_id, user_id) -> User(organization_id, user_id)
+    delete_policy no_inbound
   }
 
   entity VerificationToken {
@@ -30,8 +39,10 @@ contract BetterAuthAcceptance version 1 {
     field expires_at: timestamp
     field consumed: bool
     field issued_at: timestamp
+    index by_user (organization_id, user_id)
     unique verification_token_value (organization_id, token_digest)
     reference token_user (organization_id, user_id) -> User(organization_id, user_id)
+    delete_policy no_inbound
   }
 
   entity SignupGraphInput {
@@ -106,6 +117,18 @@ contract BetterAuthAcceptance version 1 {
     return UserAccountSessionsCreated {}
   }
 
+  bulk command DeleteUsers {
+    input request_id: uuid
+    input organization_id: uuid
+    input user_ids: list<uuid, 1..8>
+    idempotency_key request_id
+    for user_id in user_ids {
+      delete User(organization_id, user_id) as user else DeleteUserMissing {}
+        cascade CascadeLimitExceeded {}
+    }
+    return UserAccountsDeleted {}
+  }
+
   command IssueVerificationToken {
     input request_id: uuid
     input organization_id: uuid
@@ -173,7 +196,7 @@ contract BetterAuthAcceptance version 1 {
   }
 
   reimport command ReconstituteUsers {
-    input records: list<User, 1..32>
+    input records: list<User, 1..8>
     reconstitute User from records else UserAlreadyExists {}
     return UsersReconstituted {}
   }
