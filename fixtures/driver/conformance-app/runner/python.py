@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from uuid import UUID
 
 from client import (
@@ -12,6 +13,8 @@ from client import (
     ItemPageParams,
     ItemSecretFound,
     ItemSecretParams,
+    SearchItemsFound,
+    SearchItemsParams,
 )
 from riffdb_application import (
     ApplicationErrorCode,
@@ -35,12 +38,14 @@ def main() -> None:
     metadata = CallMetadata.authenticated(credential).with_database(DatabaseAlias("default"))
     tls = VerifiedTlsConfig(endpoint=endpoint, trust_root=trust_root, server_name="127.0.0.1")
     item_id = UUID("018f0f8b-7c6d-7e31-8a4f-000000000104")
+    organization_id = UUID("018f0f8b-7c6d-7e31-8a4f-000000000100")
     idempotency_key = "driver-conformance-python-create-v1"
     input_value = CreateItemInput(
         title="Shared remote Python",
         token_digest="python-secret-digest-must-not-log",
         item_id=item_id,
         idempotency_key=idempotency_key,
+        organization_id=organization_id,
     )
     with SyncApplicationTransport.connect_verified_tls(tls, metadata) as transport:
         client = DriverConformanceClient(transport, AttemptBudget(3))
@@ -48,6 +53,7 @@ def main() -> None:
             try:
                 client.item_secret(
                     ItemSecretParams(
+                        organization_id=organization_id,
                         item_id=UUID("018f0f8b-7c6d-7e31-8a4f-000000000104")
                     )
                 )
@@ -77,7 +83,7 @@ def main() -> None:
         if not replay.replayed:
             raise RuntimeError("second Python command did not replay")
         page = client.item_page(
-            ItemPageParams(item_id=item_id),
+            ItemPageParams(organization_id=organization_id, item_id=item_id),
             QueryOptions(read_after_commit=first.commit_sequence),
         )
         if (
@@ -87,7 +93,7 @@ def main() -> None:
         ):
             raise RuntimeError("Python read-after-commit returned the wrong item")
         secret = client.item_secret(
-            ItemSecretParams(item_id=item_id),
+            ItemSecretParams(organization_id=organization_id, item_id=item_id),
             QueryOptions(read_after_commit=first.commit_sequence),
         )
         if (
@@ -96,6 +102,36 @@ def main() -> None:
             or "python-secret-digest-must-not-log" in repr(secret.value)
         ):
             raise RuntimeError("Python secret query value or redacted repr was incorrect")
+        exact = None
+        for _ in range(200):
+            try:
+                exact = client.search_items(
+                    SearchItemsParams(
+                        organization_id=organization_id,
+                        needle="remote Python",
+                        limit=50,
+                        offset=0,
+                    ),
+                    QueryOptions(read_after_commit=first.commit_sequence),
+                )
+                break
+            except RiffDbApplicationError as error:
+                if error.details.code not in {
+                    ApplicationErrorCode.QUERY_UNAVAILABLE,
+                    ApplicationErrorCode.FRESHNESS_UNSATISFIED,
+                }:
+                    raise
+                time.sleep(0.01)
+        if exact is None:
+            raise RuntimeError("Python exact provider did not become ready within the retry bound")
+        if (
+            not isinstance(exact.value, SearchItemsFound)
+            or exact.value.total.value != 1
+            or len(exact.value.items) != 1
+            or exact.value.items[0].item_id != item_id
+            or exact.value.items[0].organization_id != organization_id
+        ):
+            raise RuntimeError("Python exact page and whole-population total diverged")
         reuse_error = None
         try:
             client.create_item(
@@ -104,6 +140,7 @@ def main() -> None:
                     token_digest="python-secret-digest-must-not-log",
                     item_id=item_id,
                     idempotency_key=idempotency_key,
+                    organization_id=organization_id,
                 )
             )
         except RiffDbApplicationError as error:
@@ -122,6 +159,8 @@ def main() -> None:
                 "reuse_error": reuse_error,
                 "secret_query": "Found",
                 "secret_redacted": True,
+                "exact_query": "Found",
+                "exact_total": 1,
             },
             separators=(",", ":"),
         )

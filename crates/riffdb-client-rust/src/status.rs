@@ -309,7 +309,10 @@ const fn code_for_application(code: ApplicationErrorCode) -> Code {
         | ApplicationErrorCode::ModuleUnavailable
         | ApplicationErrorCode::CommandExecutionFailed
         | ApplicationErrorCode::HistoryIncarnationMismatch
-        | ApplicationErrorCode::HistoryPruned => Code::FailedPrecondition,
+        | ApplicationErrorCode::HistoryPruned
+        | ApplicationErrorCode::ProjectionDiverged
+        | ApplicationErrorCode::SnapshotRetired
+        | ApplicationErrorCode::FreshnessUnsatisfied => Code::FailedPrecondition,
         ApplicationErrorCode::ResponseTooLarge | ApplicationErrorCode::Overloaded => {
             Code::ResourceExhausted
         }

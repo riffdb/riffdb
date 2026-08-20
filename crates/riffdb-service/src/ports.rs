@@ -1,5 +1,6 @@
 //! Least-authority consumer ports used by service orchestration.
 
+use std::fmt;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
@@ -20,14 +21,17 @@ use riffdb_policy::{
     ApplicationExportAuthorizationRequestV1, ApplicationExportDecisionV1,
     ApplicationReimportAuthorizationRequestV1, ApplicationReimportDecisionV1, AuthorizationClock,
     AuthorizationError, AuthorizationTelemetry, AuthorizedContractMigration,
-    AuthorizedOfflineMaintenance, CapabilityViewCheckpoint, ContractMigrationAuthorizationRequest,
-    ContractMigrationDecision, CurrentAuthorizer, Decision, OfflineMaintenanceAuthorizationRequest,
-    OfflineMaintenanceDecision, OperationRequest, ProvenanceSelector,
+    AuthorizedOfflineMaintenance, AuthorizedQueryRowPolicyContextV1, CapabilityViewCheckpoint,
+    ContractMigrationAuthorizationRequest, ContractMigrationDecision, CurrentAuthorizer, Decision,
+    OfflineMaintenanceAuthorizationRequest, OfflineMaintenanceDecision, OperationRequest,
+    ProvenanceSelector,
 };
 use riffdb_types::{
-    CapabilityId, CommandId, ContractBundleHash, ContractLineage, ContractMigrationOperationId,
-    ContractVersion, FrontierPosition, PlanHash, QueryModuleHash, QueryOperationName,
-    ReactiveModuleHash, RequestId,
+    ApplicationRoleHash, CanonicalRecord, CanonicalValue, CapabilityId, CommandId, CommitSequence,
+    ContractBundleHash, ContractLineage, ContractMigrationOperationId, ContractVersion, EntityKey,
+    FrontierPosition, PartitionKey, PlanHash, ProjectionGeneration,
+    ProjectionProviderDescriptorHash, QueryModuleHash, QueryOperationName, ReactiveModuleHash,
+    RequestId,
 };
 
 use crate::{
@@ -1051,6 +1055,251 @@ pub trait ColumnarProjectionPort: Send + Sync {
 
     /// Startup-fixed known projection names.
     fn known_names(&self) -> &[String];
+}
+
+/// One compiler-owned exact-provider request constructed only after current authorization.
+#[derive(Clone)]
+pub struct ExactTextProjectionRequest {
+    query: Arc<riffdb_query_module::CompiledExactTextResultSetV1>,
+    partition_key: PartitionKey,
+    partition_value: CanonicalValue,
+    policy_shape: ApplicationRoleHash,
+    row_policy: Option<Arc<AuthorizedQueryRowPolicyContextV1>>,
+    needle: riffdb_types::ExactTextNeedleV1,
+    offset: u32,
+    limit: std::num::NonZeroU16,
+    minimum_epoch: Option<CommitSequence>,
+}
+
+impl ExactTextProjectionRequest {
+    /// Seals service-materialized values to one immutable compiled exact plan.
+    #[doc(hidden)]
+    #[allow(clippy::too_many_arguments)]
+    #[must_use]
+    pub fn new(
+        query: Arc<riffdb_query_module::CompiledExactTextResultSetV1>,
+        partition_key: PartitionKey,
+        partition_value: CanonicalValue,
+        policy_shape: ApplicationRoleHash,
+        row_policy: Option<Arc<AuthorizedQueryRowPolicyContextV1>>,
+        needle: riffdb_types::ExactTextNeedleV1,
+        offset: u32,
+        limit: std::num::NonZeroU16,
+        minimum_epoch: Option<CommitSequence>,
+    ) -> Self {
+        Self {
+            query,
+            partition_key,
+            partition_value,
+            policy_shape,
+            row_policy,
+            needle,
+            offset,
+            limit,
+            minimum_epoch,
+        }
+    }
+
+    /// Immutable exact plan and provider descriptor.
+    #[must_use]
+    pub const fn query(&self) -> &Arc<riffdb_query_module::CompiledExactTextResultSetV1> {
+        &self.query
+    }
+    /// Exact authorization-routed aggregate partition.
+    #[must_use]
+    pub const fn partition_key(&self) -> &PartitionKey {
+        &self.partition_key
+    }
+    /// Canonical partition value used to validate the compiler-owned index prefix.
+    #[must_use]
+    pub const fn partition_value(&self) -> &CanonicalValue {
+        &self.partition_value
+    }
+    /// Current compiled role/policy identity checked for this request.
+    #[must_use]
+    pub const fn policy_shape(&self) -> ApplicationRoleHash {
+        self.policy_shape
+    }
+    /// Current compiler-owned row-policy authority, when this query is protected.
+    #[must_use]
+    pub const fn row_policy(&self) -> Option<&Arc<AuthorizedQueryRowPolicyContextV1>> {
+        self.row_policy.as_ref()
+    }
+    /// Bounded nonempty exact needle.
+    #[must_use]
+    pub const fn needle(&self) -> &riffdb_types::ExactTextNeedleV1 {
+        &self.needle
+    }
+    /// Checked zero-based ordinal.
+    #[must_use]
+    pub const fn offset(&self) -> u32 {
+        self.offset
+    }
+    /// Checked bounded page size.
+    #[must_use]
+    pub const fn limit(&self) -> std::num::NonZeroU16 {
+        self.limit
+    }
+    /// Optional causal lower frontier.
+    #[must_use]
+    pub const fn minimum_epoch(&self) -> Option<CommitSequence> {
+        self.minimum_epoch
+    }
+}
+
+impl fmt::Debug for ExactTextProjectionRequest {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("ExactTextProjectionRequest([REDACTED])")
+    }
+}
+
+/// One compiler-shaped exact-provider row; no remote hydration remains.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ExactTextProjectionRow {
+    key: EntityKey,
+    output: CanonicalRecord,
+}
+
+impl ExactTextProjectionRow {
+    /// Constructs one already-validated derived output row.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn new(key: EntityKey, output: CanonicalRecord) -> Self {
+        Self { key, output }
+    }
+    /// Canonical entity identity used as the total-order tie breaker.
+    #[must_use]
+    pub const fn key(&self) -> &EntityKey {
+        &self.key
+    }
+    /// Compiler-shaped projected values.
+    #[must_use]
+    pub const fn output(&self) -> &CanonicalRecord {
+        &self.output
+    }
+
+    /// Consumes the row without cloning its bounded projected values.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn into_parts(self) -> (EntityKey, CanonicalRecord) {
+        (self.key, self.output)
+    }
+}
+
+/// One exact page/count observation from a single provider epoch proof.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ExactTextProjectionResult {
+    rows: Vec<ExactTextProjectionRow>,
+    exact_total: u64,
+    epoch: CommitSequence,
+    generation: ProjectionGeneration,
+    provider: ProjectionProviderDescriptorHash,
+    history_incarnation: u64,
+}
+
+impl ExactTextProjectionResult {
+    /// Constructs a complete checked provider response.
+    #[doc(hidden)]
+    #[allow(clippy::too_many_arguments)]
+    #[must_use]
+    pub fn new(
+        rows: Vec<ExactTextProjectionRow>,
+        exact_total: u64,
+        epoch: CommitSequence,
+        generation: ProjectionGeneration,
+        provider: ProjectionProviderDescriptorHash,
+        history_incarnation: u64,
+    ) -> Self {
+        Self {
+            rows,
+            exact_total,
+            epoch,
+            generation,
+            provider,
+            history_incarnation,
+        }
+    }
+    /// Bounded ordered output rows.
+    #[must_use]
+    pub fn rows(&self) -> &[ExactTextProjectionRow] {
+        &self.rows
+    }
+    /// Exact admitted cardinality before the ordinal window.
+    #[must_use]
+    pub const fn exact_total(&self) -> u64 {
+        self.exact_total
+    }
+    /// Shared count/page epoch.
+    #[must_use]
+    pub const fn epoch(&self) -> CommitSequence {
+        self.epoch
+    }
+    /// Never-reused provider generation.
+    #[must_use]
+    pub const fn generation(&self) -> ProjectionGeneration {
+        self.generation
+    }
+    /// Pinned provider descriptor digest.
+    #[must_use]
+    pub const fn provider(&self) -> ProjectionProviderDescriptorHash {
+        self.provider
+    }
+    /// Authoritative history incarnation.
+    #[must_use]
+    pub const fn history_incarnation(&self) -> u64 {
+        self.history_incarnation
+    }
+
+    /// Consumes the checked result into response-assembly parts.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn into_parts(
+        self,
+    ) -> (
+        Vec<ExactTextProjectionRow>,
+        u64,
+        CommitSequence,
+        ProjectionGeneration,
+        ProjectionProviderDescriptorHash,
+        u64,
+    ) {
+        (
+            self.rows,
+            self.exact_total,
+            self.epoch,
+            self.generation,
+            self.provider,
+            self.history_incarnation,
+        )
+    }
+}
+
+/// Closed value-free exact-provider lifecycle or integrity failure.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ExactTextProjectionPortError {
+    /// Registration or initial rebuild is in progress.
+    Building,
+    /// The provider is rebuilding a new generation.
+    Rebuilding,
+    /// The requested snapshot has retired.
+    SnapshotRetired,
+    /// The provider cannot yet satisfy the causal/current frontier.
+    FreshnessUnsatisfied,
+    /// Provider intervals or histories cannot form one exact snapshot.
+    Diverged,
+    /// Bounded provider capacity is temporarily exhausted.
+    Unavailable,
+    /// Checked plan, state, epoch, or row integrity failed.
+    Integrity,
+}
+
+/// Least-authority exact derived-result execution boundary.
+pub trait ExactTextProjectionPort: Send + Sync {
+    /// Executes one compiler-owned request without authoritative scans or row fetches.
+    fn execute(
+        &self,
+        request: ExactTextProjectionRequest,
+    ) -> Result<ExactTextProjectionResult, ExactTextProjectionPortError>;
 }
 
 /// Closed payload-free outbox-status source failure.

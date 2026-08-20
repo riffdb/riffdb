@@ -20,7 +20,8 @@
       "version": 1,
       "queries": [
         { "name": "ItemPage", "source": "riffdb/queries/item_page.riffq" },
-        { "name": "ItemSecret", "source": "riffdb/queries/item_secret.riffq" }
+        { "name": "ItemSecret", "source": "riffdb/queries/item_secret.riffq" },
+        { "name": "SearchItems", "source": "riffdb/queries/search_items.riffq" }
       ]
     }
   ],
@@ -30,7 +31,7 @@
       "name": "DriverConformanceApplication",
       "environment": "development",
       "tenant_scope": "global",
-      "queries": ["ItemPage", "ItemSecret"],
+      "queries": ["ItemPage", "ItemSecret", "SearchItems"],
       "commands": ["CreateItem"],
       "event_streams": [],
       "watch_queries": [],

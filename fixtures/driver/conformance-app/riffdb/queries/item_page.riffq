@@ -1,13 +1,15 @@
 query ItemPage(
+    $organization_id: Item.organization_id,
     $item_id: Item.item_id,
 ) {
     one item from Item
-        where item_id == $item_id
+        where organization_id == $organization_id && item_id == $item_id
         else NotFound
 
     return Found {
         item: item {
             item_id
+            organization_id
             title
             created_at
         }

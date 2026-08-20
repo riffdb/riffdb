@@ -133,6 +133,7 @@ drain_timeout_seconds = 5
 
 [maintenance]
 backup_root = "$work_root/backups"
+projections_root = "$work_root/projections"
 EOF
 
 mkfifo "$work_root/server.input" "$work_root/server.output"
@@ -273,7 +274,7 @@ PYTHONPATH="$work_root/application/generated/python" \
     "$python_bin" "$application_source/runner/python.py" \
     >"$work_root/python.json"
 
-expected='{"created":"Created","query":"Found","read_after_commit":true,"replayed":true,"reuse_error":"RDB-COMMAND-0101","schema":"riffdb.driver-conformance-observation/v1","secret_query":"Found","secret_redacted":true}'
+expected='{"created":"Created","exact_query":"Found","exact_total":1,"query":"Found","read_after_commit":true,"replayed":true,"reuse_error":"RDB-COMMAND-0101","schema":"riffdb.driver-conformance-observation/v1","secret_query":"Found","secret_redacted":true}'
 for language in rust go typescript python; do
     observed="$(jq -cS 'del(.language)' "$work_root/$language.json")"
     [[ "$observed" == "$expected" ]] || {

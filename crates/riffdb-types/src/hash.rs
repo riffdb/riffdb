@@ -128,11 +128,13 @@ pub enum HashDomain {
     ApplicationPortabilityManifest,
     /// One terminal application reimport reconciliation receipt.
     ApplicationReimportReceipt,
+    /// One complete exact-result provider activation checkpoint.
+    ExactResultCheckpoint,
 }
 
 impl HashDomain {
     /// Every registered unkeyed domain, for compatibility and collision checks.
-    pub const ALL: [Self; 49] = [
+    pub const ALL: [Self; 50] = [
         Self::CanonicalValue,
         Self::Source,
         Self::MigrationSource,
@@ -182,6 +184,7 @@ impl HashDomain {
         Self::ApplicationExportCursor,
         Self::ApplicationPortabilityManifest,
         Self::ApplicationReimportReceipt,
+        Self::ExactResultCheckpoint,
     ];
 
     /// Returns the immutable ASCII v1 domain label.
@@ -236,6 +239,7 @@ impl HashDomain {
             Self::ApplicationExportCursor => "riffdb.application-export-cursor/v1",
             Self::ApplicationPortabilityManifest => "riffdb.application-portability-manifest/v1",
             Self::ApplicationReimportReceipt => "riffdb.application-reimport-receipt/v1",
+            Self::ExactResultCheckpoint => "riffdb.exact-result-checkpoint/v1",
         }
     }
 }

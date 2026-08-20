@@ -63,6 +63,33 @@ current alpha, binary UTF-8 prefix lookup is available and
 replace an unavailable feature with client filtering, raw reads, N+1 requests,
 or handwritten query text.
 
+## Exact count and numeric offset
+
+An exact-result named query may combine a bounded indexed text predicate,
+`take $limit offset $offset`, and `exact_count()`. Generated Rust, Go,
+TypeScript, and Python methods carry `limit` and `offset` as ordinary typed
+parameters and decode both the bounded row collection and `{ value: u64 }`
+total. The CLI and generated MCP tool use the same operation and schema.
+
+The server chooses one authorized provider epoch and returns the page and total
+from that epoch. For a protected query, bounded background activation applies
+the current row policy before it constructs count or ordinal state; the
+capability identity and revision select a separate derived slot. Denied rows
+therefore cannot influence the released total or order. The request path seeks
+the indexed ordinal directly; it never scans, walks cursor pages, filters in
+the client, or counts only the page. A fresh invocation is a new current-
+snapshot observation, so numeric offset is intended for admin-style windows
+rather than stable traversal across concurrent writes. Use ordinary cursor
+queries when snapshot-bound continuation is required.
+
+The initial request may temporarily return `RDB-QUERY-0102` while the bounded
+derived provider builds. `RDB-PROJECTION-0101` means the required providers
+cannot prove one common epoch, `RDB-PROJECTION-0102` means the requested
+snapshot retired, and `RDB-PROJECTION-0103` means the requested read-after-
+commit floor is not yet available. Generated clients expose these as the same
+typed application error codes on every transport; do not emulate a scan or
+weaken freshness after any of them.
+
 ## CLI and MCP
 
 The same named query can be invoked by CLI or its generated MCP tool. CLI

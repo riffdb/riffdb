@@ -1,0 +1,19 @@
+query SearchItems(
+    $organization_id: Item.organization_id,
+    $needle: Item.title,
+    $limit: Limit = 50,
+    $offset: u64 = 0
+) {
+    many items from Item
+        where organization_id == $organization_id && title contains $needle
+        order by title asc, item_id asc
+        take $limit offset $offset
+
+    aggregate total from items { exact_count() as value }
+
+    return Found {
+        items: items { organization_id item_id title created_at }
+        total: total { value }
+    }
+    outcomes Found
+}

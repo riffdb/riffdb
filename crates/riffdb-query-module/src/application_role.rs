@@ -517,7 +517,9 @@ fn compile_application_role_inner(
         let operation_name = QueryOperationName::new(query_name.clone())
             .map_err(|_| ApplicationRoleError::new(ApplicationRoleErrorKind::RequirementLimit))?;
         let mut requires_row_policy = false;
-        maximum_rows = maximum_rows.max(query.plan().cost().scanned_index_rows());
+        maximum_rows = maximum_rows.max(minimum_scan_budget_for_cost(
+            query.plan().authorization_cost(),
+        ));
         for access in query.plan().authorization() {
             let entity = contract
                 .schema()
@@ -854,6 +856,23 @@ fn compile_application_role_inner(
         identity,
         grant,
     })
+}
+
+fn minimum_scan_budget_for_cost(cost: riffdb_types::QueryCostVectorV1) -> u64 {
+    let row_work_factor = riffdb_types::MAX_APPLICATION_QUERY_STEPS;
+    let projected_value_factor =
+        row_work_factor.saturating_mul(riffdb_types::MAX_CAPABILITY_FIELD_VISIBILITY as u64);
+    [
+        cost.scanned_index_rows(),
+        cost.point_reads().div_ceil(row_work_factor),
+        cost.dependent_keys().div_ceil(row_work_factor),
+        cost.intermediate_rows().div_ceil(row_work_factor),
+        cost.projected_values().div_ceil(projected_value_factor),
+    ]
+    .into_iter()
+    .max()
+    .unwrap_or(1)
+    .max(1)
 }
 
 type SelectedPolicyMap<'a> = BTreeMap<riffdb_types::EntityTypeId, &'a RowPolicyPlanV1>;
@@ -1354,4 +1373,16 @@ fn write_count(bytes: &mut Vec<u8>, value: usize) -> Result<(), ApplicationRoleE
             .to_be_bytes(),
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn role_scan_budget_covers_every_request_time_cost_dimension() {
+        let cost =
+            riffdb_types::QueryCostVectorV1::new(1, 0, 65, 129, 257, 1, 1_024).expect("cost");
+        assert_eq!(minimum_scan_budget_for_cost(cost), 5);
+    }
 }

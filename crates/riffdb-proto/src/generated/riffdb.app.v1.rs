@@ -731,6 +731,9 @@ pub enum ApplicationErrorCode {
     HistoryIncarnationMismatch = 19,
     HistoryPruned = 21,
     Overloaded = 20,
+    ProjectionDiverged = 22,
+    SnapshotRetired = 23,
+    FreshnessUnsatisfied = 24,
 }
 impl ApplicationErrorCode {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -765,6 +768,9 @@ impl ApplicationErrorCode {
             }
             Self::HistoryPruned => "APPLICATION_ERROR_CODE_HISTORY_PRUNED",
             Self::Overloaded => "APPLICATION_ERROR_CODE_OVERLOADED",
+            Self::ProjectionDiverged => "APPLICATION_ERROR_CODE_PROJECTION_DIVERGED",
+            Self::SnapshotRetired => "APPLICATION_ERROR_CODE_SNAPSHOT_RETIRED",
+            Self::FreshnessUnsatisfied => "APPLICATION_ERROR_CODE_FRESHNESS_UNSATISFIED",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
@@ -804,6 +810,13 @@ impl ApplicationErrorCode {
             }
             "APPLICATION_ERROR_CODE_HISTORY_PRUNED" => Some(Self::HistoryPruned),
             "APPLICATION_ERROR_CODE_OVERLOADED" => Some(Self::Overloaded),
+            "APPLICATION_ERROR_CODE_PROJECTION_DIVERGED" => {
+                Some(Self::ProjectionDiverged)
+            }
+            "APPLICATION_ERROR_CODE_SNAPSHOT_RETIRED" => Some(Self::SnapshotRetired),
+            "APPLICATION_ERROR_CODE_FRESHNESS_UNSATISFIED" => {
+                Some(Self::FreshnessUnsatisfied)
+            }
             _ => None,
         }
     }

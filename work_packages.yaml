@@ -13911,7 +13911,7 @@ work_packages:
     crates/riffdb-query-executor/**, crates/riffdb-catalog/**,
     crates/riffdb-projection/**, crates/riffdb-storage-api/**,
     crates/riffdb-storage-memory/**, crates/riffdb-storage-redb/**,
-    crates/riffdb-policy/**, crates/riffdb-service/**,
+    crates/riffdb-policy/**, crates/riffdb-errors/**, crates/riffdb-service/**,
     crates/riffdb-proto/**, crates/riffdb-api-grpc/**, crates/riffdb-api-mcp/**,
     crates/riffdb-client-rust/**, crates/riffdb-driver-host/**,
     crates/riffdb-cli/**, crates/riffdb-mcp-stdio/**, crates/riffdb-server/**,
@@ -13951,6 +13951,22 @@ work_packages:
   exit_gate: Every surface returns the same page and exact total from one authorized epoch, ordinal
     offsets seek rather than walk, current authorization remains fresh, lifecycle and retention
     failures are typed, and no adapter/runtime supplies structure or performs result shaping.
+  closure:
+    status: complete
+    evidence: docs/architecture/OVERVIEW.md
+    decision: Exact named RiffQL operations execute through one policy-bound derived provider epoch
+      and return the ordinal page plus whole-population count without an authoritative request-time
+      scan, page walk, client fold, or fallback. Bounded background activation applies the current
+      candidate-bound row-policy proof before constructing counts, ranks, or ordinal state; each
+      protected slot and checkpoint is isolated by capability identity and revision, while denied
+      rows cannot influence released totals or order. Provider activation checkpoints also bind
+      plan, partition, role, history incarnation, generation, frontier, payload, and checksum;
+      corrupt, over-capacity, or stale state is never served and the background worker is the only
+      scan owner. Fresh authorization runs before provider selection and again before release, with
+      typed unavailable, rebuilding, freshness, retirement, divergence, and revocation outcomes.
+      The shared remote TLS corpus proves identical generated Rust, Go, TypeScript, and Python
+      behavior, and generated MCP, CLI, and service paths retain the same finite operation identity
+      and schemas.
   standing_design_tests:
     interface_safety: Generated methods expose only typed finite parameters and results; no caller
       can request unindexed work, unsafe offset, arbitrary structure, weaker freshness, secret

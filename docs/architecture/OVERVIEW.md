@@ -97,12 +97,13 @@ on both N1 and E2 before production activation. WP-645 therefore remains the
 bounded ADR-0130 descriptor/conformance slice; it does not displace the standing
 c32, unary, or deferred ADR-0127 performance priorities.
 
-### Exact indexed text foundation
+### Exact indexed text result sets
 
-WP-646 adds the compile-only `binary_utf8_v1` exact-text provider described by
-ADR-0131. It is not yet a public RiffQL, CLI, MCP, SDK, or runtime operation;
-WP-647 owns activation. Existing prefix text-key and query-module V1--V4 bytes
-are unchanged.
+WP-646 introduced the `binary_utf8_v1` exact-text provider described by
+ADR-0131. WP-647 activates it through named RiffQL and the shared service,
+gRPC, CLI, MCP, and generated Rust, Go, TypeScript, and Python surfaces.
+Existing prefix text-key and query-module V1--V4 bytes are unchanged; exact
+result modules use the additive V5 identity.
 
 The semantic profile compares canonical UTF-8 bytes with no normalization.
 Its closed predicates are equality, starts-with, ends-with, and contains.
@@ -113,7 +114,7 @@ wildcards, regular expressions, tokenization, stemming, fuzzy matching,
 relevance scores, and corpus statistics are deliberately absent.
 
 The compiler enumerates only declared predicate and total-order combinations.
-Each total order uses the authoritative entity-key hash as its unique
+Each total order uses the authoritative canonical entity-key bytes as its unique
 tie-breaker. The resulting family pins one exact provider descriptor, complete
 partition-aligned or compiler-proven bounded-row policy admission, static
 candidate and amplification ceilings, the declaration source span, and the
@@ -122,15 +123,25 @@ the domain-separated family hash without rotating the existing query module.
 Callers cannot provide a field, operator, order, provider, scan, fallback, or
 bridge at runtime.
 
-Provider state is partition-scoped, derived, bounded, and rebuildable. V1
-checkpoints retain sorted row/value source state plus partition, generation,
-and frontier; exact postings are reconstructed during recovery or compaction.
-Unknown and mixed versions fail closed. Updates change only the affected row's
-postings rather than rewriting the full state. Randomized reference tests cover
-writes, replacement, deletion, Unicode boundaries, compaction, rebuild, and
-recovery, and a frozen checkpoint fixture protects the durable identity.
-Policy-denied rows are absent from the provider partition, so they cannot affect
-results or any future result-shaping statistic.
+Provider state is partition-scoped, derived, bounded, and rebuildable. Frozen
+V1 remains readable; activated V2 retains canonical entity keys and selected
+typed output rows together with partition, generation, and frontier. The
+server checkpoint envelope additionally binds query plan, partition, current
+application-role definition, row-policy capability identity and revision,
+history incarnation, and a domain-separated digest. Unknown, mixed, swapped,
+corrupt, or excessive state fails closed. Only the background provider worker
+may scan and hydrate authoritative rows; for protected queries it applies one
+opaque, complete-candidate admission proof before constructing provider state.
+The public execution path uses the ready derived state, negotiates one epoch,
+and returns exact count plus indexed ordinal window without a fallback.
+
+The provider is registered lazily for one finite query/partition/policy shape.
+Initial build, rebuild, and bounded capacity are typed availability outcomes;
+divergence, retention, and freshness use the stable projection application
+codes. Authorization is never reused as request authority: the role definition
+and current capability revision identify the policy-aligned derived state,
+while every request still reauthorizes before provider selection and again
+before values cross the public boundary.
 
 ## Reactive application path
 

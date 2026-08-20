@@ -311,6 +311,64 @@ normalization, locale collation, tokenization, or relevance scoring. The
 Unicode tables and migration fixtures ship. A parsed spelling is not an
 executable feature unless every required storage and planning proof exists.
 
+## Exact indexed result sets (language version 4)
+
+An application that needs an exact whole-population total and numeric offset
+may declare the closed exact-result shape. It is available only for a bounded
+`binary_utf8_v1` text index, partition-aligned or bounded-row-policy admission,
+and one compiler-proved total order with the entity key as the unique tie-breaker:
+
+```riffql
+query SearchUsers(
+    $organization_id: User.organization_id,
+    $needle: User.name,
+    $limit: Limit = 50,
+    $offset: u64 = 0
+) {
+    many users from User
+        where organization_id == $organization_id
+          && name contains $needle
+        order by name asc, user_id asc
+        take $limit offset $offset
+
+    aggregate total from users { exact_count() as value }
+
+    return Found {
+        users: users { user_id name }
+        total: total { value }
+    }
+    outcomes Found
+}
+```
+
+The same provider epoch supplies `users` and `total`. `exact_count()` counts
+the complete authorized matching population, not the returned page or a
+candidate cap. `offset` is a direct indexed ordinal: zero selects the first
+row, exact-end and beyond-end return an empty page with the unchanged exact
+total, and no earlier row or cursor page is read or discarded. Offset stability
+is scoped to the selected snapshot; a later current-snapshot request may see
+intervening writes.
+
+When the selected role carries a row predicate, the background provider first
+evaluates one bounded authoritative candidate set under the current capability
+revision. Only admitted rows enter its count, order, and ordinal structures.
+This is not request-time filtering: each capability revision selects separate
+derived state, and a revision change requires fresh activation before release.
+
+The closed predicates are `==`, `starts_with`, `ends_with`, and `contains`.
+They compare exact UTF-8 bytes; missing and null values do not match, and an
+empty needle is rejected. The compiler refuses absent indexes, unsupported
+policy shapes, non-total orders, excessive bounds, and any combination the
+provider cannot prove. There is no scan, page-walk, client-filter, approximate
+count, or fallback execution path.
+
+Exact-result requests currently start a fresh one-page result and therefore do
+not accept an ordinary query cursor. A causal minimum may be supplied through
+the normal generated read-after-commit option. Rebuild and capacity return
+temporary query unavailability; divergence, retired snapshots, and an
+unsatisfied freshness floor return the typed `RDB-PROJECTION-0101` through
+`RDB-PROJECTION-0103` application errors.
+
 ## Bounded exact aggregates (language version 2)
 
 Version 2 also reserves a closed aggregate declaration over one earlier,

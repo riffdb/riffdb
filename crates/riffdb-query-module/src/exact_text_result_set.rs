@@ -286,6 +286,28 @@ impl CompiledExactTextResultSetV1 {
         self.cost
     }
 
+    /// Request-time authorization charge after compiler-owned provider work is separated.
+    ///
+    /// `cost` retains the complete provider candidate/rebuild ceiling in the
+    /// immutable plan identity. Public execution performs no authoritative
+    /// index scan or point read: it consumes one already policy-aligned derived
+    /// posting and shapes at most the declared output window. The application
+    /// role therefore grants only this request-time charge rather than gaining
+    /// authority for the provider's background maintenance scan.
+    #[must_use]
+    pub fn authorization_cost(&self) -> QueryCostVectorV1 {
+        QueryCostVectorV1::new(
+            self.cost.access_steps(),
+            0,
+            0,
+            self.cost.dependent_keys(),
+            self.cost.intermediate_rows(),
+            self.cost.projected_values(),
+            self.cost.encoded_result_bytes(),
+        )
+        .expect("lowering valid internal work dimensions preserves a valid query cost")
+    }
+
     /// Source map proved by the symbolic resolver.
     #[must_use]
     pub fn source_map(&self) -> &QuerySourceMap {

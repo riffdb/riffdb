@@ -46,13 +46,13 @@ use riffdb_query_ir::{
 };
 use riffdb_query_module::{CompiledNamedQuery, NamedQuerySource, QueryModuleCandidate};
 use riffdb_riffql_syntax::{
-    Document, MAX_IDENTIFIER_BYTES, ParseDiagnostic, Span, TypeReference, parse_query,
+    Document, Literal, MAX_IDENTIFIER_BYTES, ParseDiagnostic, Span, TypeReference, parse_query,
 };
 use riffdb_types::{
-    CanonicalValue, ContractBundleHash, ContractLineage, ContractVersion, QueryModuleHash,
-    QueryModuleName, QueryModuleVersion, QueryOperationName, QueryPlanHash, ReactiveModuleHash,
-    ServiceAuditLinkV1, ServiceAuditPhaseV1, ServiceOperationV1, encode_canonical_value,
-    hash_generated_artifact, hash_query_parameters,
+    CanonicalValue, CommitSequence, ContractBundleHash, ContractLineage, ContractVersion,
+    ExactTextProfileV1, FieldId, QueryModuleHash, QueryModuleName, QueryModuleVersion,
+    QueryOperationName, QueryPlanHash, ReactiveModuleHash, ServiceAuditLinkV1, ServiceAuditPhaseV1,
+    ServiceOperationV1, encode_canonical_value, hash_generated_artifact, hash_query_parameters,
 };
 
 use crate::command_operations::{SubmittedValueMaterializationError, materialize_submitted_value};
@@ -64,7 +64,8 @@ use crate::query_discovery_operations::{
 use crate::wait::{ControlledWaitError, wait_with_control};
 use crate::{
     ApplicationCatalogCursorLookup, ApplicationCatalogCursorState, ContractSelection,
-    CursorAccessError, CursorContractIdentity, CursorToken, InternalDefect, QueryCursorLookup,
+    CursorAccessError, CursorContractIdentity, CursorToken, ExactTextProjectionPortError,
+    ExactTextProjectionRequest, ExactTextProjectionResult, InternalDefect, QueryCursorLookup,
     QueryCursorState, ReadPipelineStage, RequestContext, RiffDbService, RiffDbServiceInner,
     ServiceAuditTargetMap, ServiceFailure, ServiceFuture, ServiceResult, ServiceTelemetryEvent,
     SourceName, SubmittedEnum, SubmittedValue,
@@ -2542,6 +2543,21 @@ async fn execute_named_query(
             stage: ReadPipelineStage::PlanLookup,
             elapsed: plan_lookup_started.elapsed(),
         });
+    if let Some(exact) = query.shared_exact_text_result() {
+        return execute_exact_named_query(
+            service,
+            context,
+            bundle,
+            exact,
+            query.shared_document(),
+            module_hash,
+            query_name,
+            request.parameters,
+            request.cursor,
+            request.minimum_application_head,
+        )
+        .await;
+    }
     let presence = query
         .operational_family()
         .map(|family| {
@@ -2584,6 +2600,351 @@ async fn execute_named_query(
         request.minimum_application_head,
     )
     .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn execute_exact_named_query(
+    service: Arc<RiffDbServiceInner>,
+    context: RequestContext,
+    bundle: riffdb_catalog::ValidatedContractBundle,
+    exact: Arc<riffdb_query_module::CompiledExactTextResultSetV1>,
+    document: Arc<Document>,
+    module_hash: QueryModuleHash,
+    query_name: QueryOperationName,
+    submitted: SymbolicQueryParameters,
+    cursor: Option<CursorToken>,
+    minimum_application_head: Option<u64>,
+) -> ServiceResult<ExecuteSymbolicQueryResult> {
+    const OPERATION: ServiceOperationV1 = ServiceOperationV1::ExecuteQuery;
+    if cursor.is_some() {
+        return Err(application_validation_failure(
+            ValidationCode::InvalidValue,
+            ApplicationErrorCode::CursorInvalid,
+        ));
+    }
+    let submitted = exact_parameters_with_defaults(
+        document.as_ref(),
+        submitted,
+        [exact.limit_parameter(), exact.offset_parameter()],
+    )
+    .ok_or_else(|| validation_failure(ValidationCode::InvalidValue))?;
+    let program = exact.representative_program();
+    let parameters = materialize_query_parameters(
+        &service,
+        OPERATION,
+        bundle.bundle(),
+        document.as_ref(),
+        &submitted,
+    )?;
+    let target = application_query_target_with_identity(
+        bundle.bundle(),
+        program,
+        &parameters,
+        context.ingress(),
+        exact.identity(),
+        exact.authorization_cost(),
+        Some(NonZeroU16::MIN),
+    )
+    .ok_or_else(|| validation_failure(ValidationCode::InvalidValue))?;
+    let partition_value = parameters
+        .get(program.partition_parameter())
+        .cloned()
+        .ok_or_else(|| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?;
+    let needle = match parameters.get(exact.needle_parameter()) {
+        Some(CanonicalValue::String(value)) => ExactTextProfileV1::BinaryUtf8V1
+            .bind_needle(value.as_str())
+            .map_err(|_| validation_failure(ValidationCode::InvalidValue))?,
+        _ => return Err(validation_failure(ValidationCode::TypeMismatch)),
+    };
+    let limit = exact_u64_parameter(&document, &parameters, exact.limit_parameter())
+        .and_then(|value| u16::try_from(value).ok())
+        .and_then(NonZeroU16::new)
+        .ok_or_else(|| validation_failure(ValidationCode::InvalidValue))?;
+    let offset = exact_u64_parameter(&document, &parameters, exact.offset_parameter())
+        .and_then(|value| u32::try_from(value).ok())
+        .ok_or_else(|| validation_failure(ValidationCode::InvalidValue))?;
+    exact
+        .binding()
+        .plan()
+        .bind_window(offset, limit)
+        .map_err(|_| validation_failure(ValidationCode::InvalidValue))?;
+    let minimum_epoch = match minimum_application_head {
+        Some(value) => Some(
+            CommitSequence::new(value)
+                .ok_or_else(|| validation_failure(ValidationCode::InvalidValue))?,
+        ),
+        None => None,
+    };
+    let operation_request = OperationRequest::execute_named_query(
+        bundle.lineage().clone(),
+        module_hash,
+        query_name,
+        target,
+    )
+    .map_err(|_| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?;
+    let begun = begin_symbolic(&service, &context, &bundle, operation_request, OPERATION).await?;
+
+    let execution_authorization = begun
+        .reauthorize_read(&service, &context)
+        .await?
+        .into_application_query()
+        .ok_or_else(|| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?;
+    // Resolve the exact current row-policy authority before provider selection.
+    // The provider applies its opaque candidate-bound proof before it builds
+    // count, rank, or ordinal state; public execution never post-filters.
+    let row_policy =
+        resolve_authorized_query_row_policy_context(&execution_authorization, bundle.bundle())
+            .map_err(|_| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?
+            .map(Arc::new);
+    let row_policy_identity =
+        match row_policy.as_deref() {
+            Some(policy) => Some(policy.internal_capability_identity().ok_or_else(|| {
+                service.internal_failure(OPERATION, InternalDefect::ProofMismatch)
+            })?),
+            None => None,
+        };
+    let Some(policy_shape) = execution_authorization.application_role_hash() else {
+        let failure = application_validation_failure(
+            ValidationCode::InvalidValue,
+            ApplicationErrorCode::QueryUnavailable,
+        );
+        return Err(finish_failure(&service, &context, &begun, failure).await);
+    };
+    let request = ExactTextProjectionRequest::new(
+        Arc::clone(&exact),
+        execution_authorization
+            .target()
+            .partition()
+            .partition_key()
+            .clone(),
+        partition_value,
+        policy_shape,
+        row_policy,
+        needle,
+        offset,
+        limit,
+        minimum_epoch,
+    );
+    let Some(provider) = service.providers.exact_text.as_ref() else {
+        let failure = PublicError::storage_unavailable().into();
+        return Err(finish_failure(&service, &context, &begun, failure).await);
+    };
+    let observed = match provider.execute(request) {
+        Ok(observed) => observed,
+        Err(error) => {
+            let Some(code) = exact_projection_application_code(error) else {
+                let failure = service.internal_failure(OPERATION, InternalDefect::ProofMismatch);
+                return Err(finish_failure(&service, &context, &begun, failure).await);
+            };
+            let failure = application_validation_failure(ValidationCode::InvalidValue, code);
+            return Err(finish_failure(&service, &context, &begun, failure).await);
+        }
+    };
+    if observed.provider() != exact.binding().plan().provider_digest()
+        || minimum_epoch.is_some_and(|minimum| observed.epoch() < minimum)
+    {
+        let failure = service.internal_failure(OPERATION, InternalDefect::ProofMismatch);
+        return Err(finish_failure(&service, &context, &begun, failure).await);
+    }
+    // Fresh authorization safe point 3 occurs after the complete page/count
+    // epoch is selected and before any value crosses the service boundary.
+    let release_authorization = begun
+        .reauthorize_read(&service, &context)
+        .await?
+        .into_application_query()
+        .ok_or_else(|| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?;
+    let release_row_policy =
+        resolve_authorized_query_row_policy_context(&release_authorization, bundle.bundle())
+            .map_err(|_| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?;
+    let release_row_policy_identity =
+        match release_row_policy.as_ref() {
+            Some(policy) => Some(policy.internal_capability_identity().ok_or_else(|| {
+                service.internal_failure(OPERATION, InternalDefect::ProofMismatch)
+            })?),
+            None => None,
+        };
+    if release_authorization.application_role_hash() != Some(policy_shape)
+        || release_row_policy_identity != row_policy_identity
+    {
+        let failure = application_validation_failure(
+            ValidationCode::InvalidValue,
+            ApplicationErrorCode::QueryUnavailable,
+        );
+        return Err(finish_failure(&service, &context, &begun, failure).await);
+    }
+    let result = exact_result_response(
+        &exact,
+        &document,
+        module_hash,
+        observed,
+        Arc::clone(bundle.enum_variant_names()),
+    )
+    .ok_or_else(|| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?;
+    finish_success(&service, &context, &begun).await?;
+    Ok(result)
+}
+
+const fn exact_projection_application_code(
+    error: ExactTextProjectionPortError,
+) -> Option<ApplicationErrorCode> {
+    match error {
+        ExactTextProjectionPortError::SnapshotRetired => {
+            Some(ApplicationErrorCode::SnapshotRetired)
+        }
+        ExactTextProjectionPortError::FreshnessUnsatisfied => {
+            Some(ApplicationErrorCode::FreshnessUnsatisfied)
+        }
+        ExactTextProjectionPortError::Diverged => Some(ApplicationErrorCode::ProjectionDiverged),
+        ExactTextProjectionPortError::Building
+        | ExactTextProjectionPortError::Rebuilding
+        | ExactTextProjectionPortError::Unavailable => Some(ApplicationErrorCode::QueryUnavailable),
+        ExactTextProjectionPortError::Integrity => None,
+    }
+}
+
+fn exact_u64_parameter(
+    document: &Document,
+    parameters: &QueryParameters,
+    name: &str,
+) -> Option<u64> {
+    if let Some(CanonicalValue::U64(value)) = parameters.get(name) {
+        return Some(*value);
+    }
+    let default = document
+        .parameters
+        .iter()
+        .find(|parameter| parameter.name.value.as_str() == name)?
+        .default
+        .as_ref()?;
+    match &default.value {
+        Literal::Unsigned(value) => value.parse().ok(),
+        Literal::String(_) | Literal::Boolean(_) | Literal::Null => None,
+    }
+}
+
+fn exact_parameters_with_defaults(
+    document: &Document,
+    mut submitted: SymbolicQueryParameters,
+    names: [&str; 2],
+) -> Option<SymbolicQueryParameters> {
+    for name in names {
+        if submitted.0.contains_key(name) {
+            continue;
+        }
+        let parameter = document
+            .parameters
+            .iter()
+            .find(|parameter| parameter.name.value.as_str() == name)?;
+        let Literal::Unsigned(value) = &parameter.default.as_ref()?.value else {
+            return None;
+        };
+        submitted
+            .0
+            .insert(name.to_owned(), SubmittedValue::U64(value.parse().ok()?));
+    }
+    Some(submitted)
+}
+
+fn exact_result_response(
+    exact: &riffdb_query_module::CompiledExactTextResultSetV1,
+    document: &Document,
+    module_hash: QueryModuleHash,
+    observed: ExactTextProjectionResult,
+    enum_variant_names: SharedEnumVariantNames,
+) -> Option<ExecuteSymbolicQueryResult> {
+    let program = exact.representative_program();
+    let step = program.steps().first()?;
+    if program.steps().len() != 1 || step.result_names().len() != 1 {
+        return None;
+    }
+    let access = program.internal_entity_access(step.entity())?;
+    let field_names = step
+        .selected_fields()
+        .iter()
+        .map(|name| access.internal_field_id(name).map(|field| (field, name)))
+        .collect::<Option<BTreeMap<FieldId, &String>>>()?;
+    let (rows, exact_total, epoch, _generation, _provider, _history_incarnation) =
+        observed.into_parts();
+    let rows = rows
+        .into_iter()
+        .map(|row| {
+            let (_key, output) = row.into_parts();
+            let fields = output
+                .into_fields()
+                .into_iter()
+                .map(|(field, value)| {
+                    field_names
+                        .get(&field)
+                        .map(|name| (Arc::<str>::from(name.as_str()), value))
+                })
+                .collect::<Option<BTreeMap<_, _>>>()?;
+            (fields.len() == field_names.len()).then_some(SymbolicResultRecord {
+                entity: Arc::from(step.entity()),
+                fields,
+                exact_decimals: BTreeMap::new(),
+            })
+        })
+        .collect::<Option<Vec<_>>>()?;
+
+    let aggregate = document.body.aggregates.first()?;
+    if document.body.aggregates.len() != 1
+        || aggregate.measures.len() != 1
+        || aggregate.source.value.as_str() != step.binding()
+    {
+        return None;
+    }
+    let measure = aggregate.measures.first()?;
+    if measure.function.value != riffdb_riffql_syntax::AggregateFunction::ExactCount {
+        return None;
+    }
+    let aggregate_result_name =
+        selection_result_name(&document.body.selection, &aggregate.name.value)?;
+    let row_result_name = selection_result_name(
+        &document.body.selection,
+        &document.body.bindings.first()?.name.value,
+    )?;
+    let mut fields = BTreeMap::new();
+    fields.insert(row_result_name, SymbolicResultField::Many(rows));
+    fields.insert(
+        aggregate_result_name,
+        SymbolicResultField::One(SymbolicResultRecord {
+            entity: Arc::from(aggregate.name.value.as_str()),
+            fields: BTreeMap::from([(
+                Arc::from(measure.alias.value.as_str()),
+                CanonicalValue::U64(exact_total),
+            )]),
+            exact_decimals: BTreeMap::new(),
+        }),
+    );
+    Some(ExecuteSymbolicQueryResult {
+        identity: SymbolicQueryIdentity::from_named_plan(program, module_hash, exact.identity()),
+        outcome: document.body.outcome.as_ref()?.value.as_str().to_owned(),
+        application_head: epoch.get(),
+        fields,
+        enum_variant_names,
+        next_cursor: None,
+    })
+}
+
+fn selection_result_name(
+    selection: &riffdb_riffql_syntax::Selection,
+    source: &riffdb_riffql_syntax::Identifier,
+) -> Option<String> {
+    let field = selection.fields.iter().find(|field| {
+        field
+            .source
+            .value
+            .0
+            .first()
+            .is_some_and(|segment| segment.value.as_str() == source.as_str())
+    })?;
+    Some(
+        field
+            .alias
+            .as_ref()
+            .map_or(source.as_str(), |alias| alias.value.as_str())
+            .to_owned(),
+    )
 }
 
 /// Executes one compiler-owned portability observation under current V7 authority.
@@ -3412,6 +3773,26 @@ pub(crate) fn application_query_target(
     parameters: &QueryParameters,
     ingress: riffdb_types::ServiceIngressKindV1,
 ) -> Option<ApplicationQueryTarget> {
+    application_query_target_with_identity(
+        bundle,
+        program,
+        parameters,
+        ingress,
+        program.identity().hash(),
+        program.cost(),
+        None,
+    )
+}
+
+fn application_query_target_with_identity(
+    bundle: &riffdb_contract_ir::ContractBundle,
+    program: &QueryAccessProgramV1,
+    parameters: &QueryParameters,
+    ingress: riffdb_types::ServiceIngressKindV1,
+    plan_hash: QueryPlanHash,
+    cost: riffdb_types::QueryCostVectorV1,
+    maximum_access_rows_override: Option<NonZeroU16>,
+) -> Option<ApplicationQueryTarget> {
     let partition_value = parameters.get(program.partition_parameter())?;
     let mut routed_partition = None;
     let mut accesses = Vec::with_capacity(program.steps().len());
@@ -3450,10 +3831,21 @@ pub(crate) fn application_query_target(
         if routed_partition.is_none() {
             routed_partition = Some(partition);
         }
-        let Ok(rows) = u16::try_from(step.maximum_rows()) else {
-            return None;
+        // Exact provider execution performs no authoritative entity/index
+        // scan on the request path. Its access requirement names the entity,
+        // index, and visible fields whose already-proved derived descriptor is
+        // consumed, while the output/candidate ceilings remain in the sealed
+        // cost vector. Represent that single descriptor access explicitly so
+        // background provider work never inflates application scan authority.
+        let rows = match maximum_access_rows_override {
+            Some(rows) => rows,
+            None => {
+                let Ok(rows) = u16::try_from(step.maximum_rows()) else {
+                    return None;
+                };
+                NonZeroU16::new(rows)?
+            }
         };
-        let rows = NonZeroU16::new(rows)?;
         let index_id = match step.access() {
             QueryAccessKind::Index { .. } => Some(step.internal_index_id()?),
             QueryAccessKind::Point { .. }
@@ -3504,12 +3896,12 @@ pub(crate) fn application_query_target(
         program.contract().lineage().clone(),
         program.contract().version(),
         program.contract().bundle_hash(),
-        program.identity().hash(),
+        plan_hash,
         ingress,
         OperationTenantScope::global_only(),
         routed_partition?,
         accesses,
-        program.cost(),
+        cost,
     )
     .ok()
 }
@@ -3803,6 +4195,197 @@ mod operational_cursor_identity_tests {
             query_parameter_hash(&present).expect("present hash"),
             "a cursor from the absent family member must not resume the present member"
         );
+    }
+}
+
+#[cfg(test)]
+mod exact_result_response_tests {
+    use super::*;
+    use crate::ExactTextProjectionRow;
+    use riffdb_query_module::{
+        NamedQuerySource, QueryModule, QueryModuleCandidate, QueryModuleName, QueryModuleVersion,
+    };
+    use riffdb_types::{CanonicalRecord, ProjectionGeneration};
+
+    const CONTRACT: &str = r#"
+contract ExactUsers version 1 {
+  entity User {
+    key (organization_id: uuid, user_id: uuid)
+    field name: string<128>
+    index by_name (organization_id, name, user_id) text_key(name, binary_utf8_v1)
+  }
+  aggregate Users {
+    root User
+    partition_by organization_id
+    conflict_key (organization_id, user_id)
+  }
+}
+"#;
+
+    const QUERY: &str = r#"
+query SearchUsers(
+  $organization_id: User.organization_id,
+  $needle: User.name,
+  $limit: Limit = 50,
+  $offset: u64 = 0
+) {
+  many users from User
+    where organization_id == $organization_id && name contains $needle
+    order by name asc, user_id asc
+    take $limit offset $offset
+  aggregate total from users { exact_count() as value }
+  return Found { users: users { user_id name } total: total { value } }
+  outcomes Found
+}
+"#;
+
+    #[test]
+    fn exact_page_and_count_shape_share_one_epoch_without_client_shaping() {
+        let bundle = riffdb_contract_compiler::compile_contract_source(CONTRACT).expect("contract");
+        let module = QueryModule::compile(
+            QueryModuleCandidate::new(
+                QueryModuleName::new("exact_users").expect("module name"),
+                QueryModuleVersion::new(1).expect("module version"),
+                vec![NamedQuerySource::new("SearchUsers", QUERY).expect("query")],
+            )
+            .expect("candidate"),
+            &bundle,
+        )
+        .expect("module");
+        let query = module.query("SearchUsers").expect("compiled query");
+        let exact = query.exact_text_result().expect("exact plan");
+        let program = exact.representative_program();
+        let authorization_parameters = QueryParameters::checked(BTreeMap::from([
+            (
+                "organization_id".to_owned(),
+                CanonicalValue::Uuid([0x11; 16]),
+            ),
+            (
+                "needle".to_owned(),
+                CanonicalValue::string("Ada").expect("needle"),
+            ),
+            ("limit".to_owned(), CanonicalValue::U64(50)),
+            ("offset".to_owned(), CanonicalValue::U64(0)),
+        ]))
+        .expect("authorization parameters");
+        let authorization_target = application_query_target_with_identity(
+            &bundle,
+            program,
+            &authorization_parameters,
+            riffdb_types::ServiceIngressKindV1::Grpc,
+            exact.identity(),
+            exact.authorization_cost(),
+            Some(NonZeroU16::MIN),
+        )
+        .expect("exact authorization target");
+        assert_eq!(authorization_target.cost().scanned_index_rows(), 0);
+        assert_eq!(
+            authorization_target.accesses()[0].maximum_rows(),
+            NonZeroU16::MIN,
+            "provider maintenance must not become request-time scan authority"
+        );
+        let step = &program.steps()[0];
+        let access = program
+            .internal_entity_access("User")
+            .expect("entity access");
+        let key = step
+            .internal_entity_key_schema()
+            .encode_entity(&[
+                CanonicalValue::Uuid([0x11; 16]),
+                CanonicalValue::Uuid([0x22; 16]),
+            ])
+            .expect("entity key");
+        let output = CanonicalRecord::new(vec![
+            (
+                access.internal_field_id("user_id").expect("user id"),
+                CanonicalValue::Uuid([0x22; 16]),
+            ),
+            (
+                access.internal_field_id("name").expect("name"),
+                CanonicalValue::string("Ada").expect("string"),
+            ),
+        ])
+        .expect("output");
+        let epoch = CommitSequence::new(17).expect("epoch");
+        let observed = ExactTextProjectionResult::new(
+            vec![ExactTextProjectionRow::new(key, output)],
+            3,
+            epoch,
+            ProjectionGeneration::first(),
+            exact.binding().plan().provider_digest(),
+            9,
+        );
+        let result = exact_result_response(
+            exact,
+            query.shared_document().as_ref(),
+            module.identity(),
+            observed,
+            Arc::new(BTreeMap::new()),
+        )
+        .expect("response");
+
+        assert_eq!(result.application_head(), epoch.get());
+        assert_eq!(result.outcome(), "Found");
+        let SymbolicResultField::Many(users) = &result.fields()["users"] else {
+            panic!("users list");
+        };
+        assert_eq!(users.len(), 1);
+        assert_eq!(users[0].entity(), "User");
+        assert_eq!(
+            users[0].fields()["name"],
+            CanonicalValue::string("Ada").unwrap()
+        );
+        let SymbolicResultField::One(total) = &result.fields()["total"] else {
+            panic!("total record");
+        };
+        assert_eq!(total.fields()["value"], CanonicalValue::U64(3));
+        assert!(result.next_cursor().is_none());
+        assert_eq!(result.identity().plan_hash(), exact.identity());
+    }
+
+    #[test]
+    fn exact_defaults_are_materialized_before_authorization_and_provider_work() {
+        let document = parse_query(QUERY).expect("query");
+        let submitted = SymbolicQueryParameters::new(BTreeMap::new()).expect("parameters");
+        let materialized =
+            exact_parameters_with_defaults(&document, submitted, ["limit", "offset"])
+                .expect("defaults");
+        assert_eq!(materialized.get("limit"), Some(&SubmittedValue::U64(50)));
+        assert_eq!(materialized.get("offset"), Some(&SubmittedValue::U64(0)));
+    }
+
+    #[test]
+    fn exact_provider_lifecycle_has_one_closed_public_mapping() {
+        let mappings = [
+            (
+                ExactTextProjectionPortError::Building,
+                Some(ApplicationErrorCode::QueryUnavailable),
+            ),
+            (
+                ExactTextProjectionPortError::Rebuilding,
+                Some(ApplicationErrorCode::QueryUnavailable),
+            ),
+            (
+                ExactTextProjectionPortError::Unavailable,
+                Some(ApplicationErrorCode::QueryUnavailable),
+            ),
+            (
+                ExactTextProjectionPortError::SnapshotRetired,
+                Some(ApplicationErrorCode::SnapshotRetired),
+            ),
+            (
+                ExactTextProjectionPortError::FreshnessUnsatisfied,
+                Some(ApplicationErrorCode::FreshnessUnsatisfied),
+            ),
+            (
+                ExactTextProjectionPortError::Diverged,
+                Some(ApplicationErrorCode::ProjectionDiverged),
+            ),
+            (ExactTextProjectionPortError::Integrity, None),
+        ];
+        for (error, expected) in mappings {
+            assert_eq!(exact_projection_application_code(error), expected);
+        }
     }
 }
 

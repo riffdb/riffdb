@@ -8,8 +8,8 @@ use riffdb_auth::{
 use riffdb_types::{
     ActorId, ActorKind, ApplicationExportSelectionV1, Audience, CapabilityApplicationExportScopeV1,
     CapabilityApplicationReimportScopeV1, CapabilityGrantV1, CapabilityId,
-    CapabilityPermissionKindV1, DatabaseId, Environment, PartitionScopeV1, ServiceOperationV1,
-    TenantScope, Timestamp,
+    CapabilityPermissionKindV1, CapabilityPermissionV1, DatabaseId, Environment, PartitionScopeV1,
+    ServiceOperationV1, TenantScope, Timestamp,
 };
 
 use crate::decision::{PermissionCheck, check_permission, derive_field_mask};
@@ -416,6 +416,7 @@ where
                     // Retained so revision-checked reauthorization can apply the
                     // exact same time clause without reloading the record.
                     current_validity(&current_facts),
+                    unique_application_role_hash(&current_facts.grant),
                 );
                 let mut proof = if request.permission_requirement().is_none()
                     || request.operation() == ServiceOperationV1::DescribeContract
@@ -507,6 +508,24 @@ where
             }
         }
     }
+}
+
+fn unique_application_role_hash(
+    grant: &CapabilityGrantV1,
+) -> Option<riffdb_types::ApplicationRoleHash> {
+    let mut roles = grant
+        .permissions()
+        .as_slice()
+        .iter()
+        .filter_map(|permission| {
+            if let CapabilityPermissionV1::ApplicationRoleIdentity(role) = permission {
+                Some(*role)
+            } else {
+                None
+            }
+        });
+    let role = roles.next()?;
+    roles.next().is_none().then_some(role)
 }
 
 fn evaluate_offline_maintenance(
