@@ -1,12 +1,320 @@
 //! Authoritative, nonduplicating evidence for production vector fields.
 
-use std::fmt;
+use std::{collections::BTreeMap, fmt};
 
 use riffdb_types::{
-    CommitSequence, EmbeddingMetadata, EntityVersion, FieldId, PartitionKey, ProvenanceId,
+    CommitSequence, ContractLineage, EmbeddingMetadata, EntityTypeId, EntityVersion, FieldId,
+    PartitionKey, ProvenanceId,
 };
 
 use crate::{DurableKeySchemaBindingV1, EntityTarget, ExecutablePlanRef, StorageValueError};
+
+/// Maximum distinct live embedding model revisions retained in one logical
+/// partition/field observation row.
+///
+/// Contract successors can introduce new versions, but a malformed workload
+/// cannot grow one authoritative counter record without bound.
+pub const MAX_VECTOR_MODELS_PER_OBSERVATION: usize = 256;
+
+/// Stable logical identity for maintained vector counts and ordered indexes.
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct VectorObservationTargetV1 {
+    lineage: ContractLineage,
+    partition_key: PartitionKey,
+    entity_type: EntityTypeId,
+    vector_field: FieldId,
+}
+
+impl VectorObservationTargetV1 {
+    /// Constructs the stable cross-version identity for one partitioned vector
+    /// field.
+    #[must_use]
+    pub const fn new(
+        lineage: ContractLineage,
+        partition_key: PartitionKey,
+        entity_type: EntityTypeId,
+        vector_field: FieldId,
+    ) -> Self {
+        Self {
+            lineage,
+            partition_key,
+            entity_type,
+            vector_field,
+        }
+    }
+
+    /// Borrows the application contract lineage.
+    #[must_use]
+    pub const fn lineage(&self) -> &ContractLineage {
+        &self.lineage
+    }
+
+    /// Borrows the exact logical partition.
+    #[must_use]
+    pub const fn partition_key(&self) -> &PartitionKey {
+        &self.partition_key
+    }
+
+    /// Returns the stable entity type.
+    #[must_use]
+    pub const fn entity_type(&self) -> EntityTypeId {
+        self.entity_type
+    }
+
+    /// Returns the stable vector field.
+    #[must_use]
+    pub const fn vector_field(&self) -> FieldId {
+        self.vector_field
+    }
+}
+
+/// Canonical authoritative counters for one partitioned vector field.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VectorObservationCountsV1 {
+    target: VectorObservationTargetV1,
+    total_entities: u64,
+    source_stale_entities: u64,
+    model_counts: BTreeMap<EmbeddingMetadata, u64>,
+    revision: CommitSequence,
+}
+
+impl VectorObservationCountsV1 {
+    /// Reconstructs one persisted canonical observation row.
+    pub fn from_parts(
+        target: VectorObservationTargetV1,
+        total_entities: u64,
+        source_stale_entities: u64,
+        model_counts: Vec<(EmbeddingMetadata, u64)>,
+        revision: CommitSequence,
+    ) -> Result<Self, StorageValueError> {
+        if source_stale_entities > total_entities
+            || model_counts.len() > MAX_VECTOR_MODELS_PER_OBSERVATION
+            || model_counts.iter().any(|(_, count)| *count == 0)
+            || model_counts.windows(2).any(|pair| pair[0].0 >= pair[1].0)
+        {
+            return Err(StorageValueError::InvalidShape);
+        }
+        let model_total = model_counts.iter().try_fold(0_u64, |total, (_, count)| {
+            total
+                .checked_add(*count)
+                .ok_or(StorageValueError::SizeOverflow)
+        })?;
+        if model_total > total_entities {
+            return Err(StorageValueError::InvalidShape);
+        }
+        Ok(Self {
+            target,
+            total_entities,
+            source_stale_entities,
+            model_counts: model_counts.into_iter().collect(),
+            revision,
+        })
+    }
+
+    /// Creates the first empty observation state immediately before applying a
+    /// transition at `revision`.
+    #[must_use]
+    pub const fn empty(target: VectorObservationTargetV1, revision: CommitSequence) -> Self {
+        Self {
+            target,
+            total_entities: 0,
+            source_stale_entities: 0,
+            model_counts: BTreeMap::new(),
+            revision,
+        }
+    }
+
+    /// Applies one exact before/after evidence classification.
+    pub fn apply(
+        &mut self,
+        transition: &VectorEvidenceClassificationTransitionV1,
+        revision: CommitSequence,
+    ) -> Result<(), StorageValueError> {
+        if revision < self.revision {
+            return Err(StorageValueError::InvalidShape);
+        }
+        if let Some(prior) = transition.prior() {
+            self.remove(prior)?;
+        }
+        if let Some(successor) = transition.successor() {
+            self.insert(successor)?;
+        }
+        if self.source_stale_entities > self.total_entities
+            || self.model_counts.values().any(|count| *count == 0)
+            || self.model_counts.len() > MAX_VECTOR_MODELS_PER_OBSERVATION
+        {
+            return Err(StorageValueError::InvalidShape);
+        }
+        self.revision = revision;
+        Ok(())
+    }
+
+    fn remove(
+        &mut self,
+        classification: &VectorEvidenceClassificationV1,
+    ) -> Result<(), StorageValueError> {
+        self.total_entities = self
+            .total_entities
+            .checked_sub(1)
+            .ok_or(StorageValueError::InvalidShape)?;
+        if classification.source_stale() {
+            self.source_stale_entities = self
+                .source_stale_entities
+                .checked_sub(1)
+                .ok_or(StorageValueError::InvalidShape)?;
+        }
+        if let Some(embedding) = classification.embedding() {
+            let metadata = embedding.metadata();
+            let count = self
+                .model_counts
+                .get_mut(metadata)
+                .ok_or(StorageValueError::InvalidShape)?;
+            *count = count
+                .checked_sub(1)
+                .ok_or(StorageValueError::InvalidShape)?;
+            if *count == 0 {
+                self.model_counts.remove(metadata);
+            }
+        }
+        Ok(())
+    }
+
+    fn insert(
+        &mut self,
+        classification: &VectorEvidenceClassificationV1,
+    ) -> Result<(), StorageValueError> {
+        self.total_entities = self
+            .total_entities
+            .checked_add(1)
+            .ok_or(StorageValueError::SizeOverflow)?;
+        if classification.source_stale() {
+            self.source_stale_entities = self
+                .source_stale_entities
+                .checked_add(1)
+                .ok_or(StorageValueError::SizeOverflow)?;
+        }
+        if let Some(embedding) = classification.embedding() {
+            if !self.model_counts.contains_key(embedding.metadata())
+                && self.model_counts.len() == MAX_VECTOR_MODELS_PER_OBSERVATION
+            {
+                return Err(StorageValueError::LimitExceeded);
+            }
+            let count = self
+                .model_counts
+                .entry(embedding.metadata().clone())
+                .or_default();
+            *count = count
+                .checked_add(1)
+                .ok_or(StorageValueError::SizeOverflow)?;
+        }
+        Ok(())
+    }
+
+    /// Borrows the stable partition/field identity.
+    #[must_use]
+    pub const fn target(&self) -> &VectorObservationTargetV1 {
+        &self.target
+    }
+
+    /// Returns the total live evidence rows.
+    #[must_use]
+    pub const fn total_entities(&self) -> u64 {
+        self.total_entities
+    }
+
+    /// Returns the source-stale evidence rows, including missing embeddings.
+    #[must_use]
+    pub const fn source_stale_entities(&self) -> u64 {
+        self.source_stale_entities
+    }
+
+    /// Returns the count carrying one exact model identity/version.
+    #[must_use]
+    pub fn model_count(&self, metadata: &EmbeddingMetadata) -> u64 {
+        self.model_counts.get(metadata).copied().unwrap_or(0)
+    }
+
+    /// Iterates exact model counts in canonical metadata order.
+    pub fn model_counts(&self) -> impl ExactSizeIterator<Item = (&EmbeddingMetadata, u64)> {
+        self.model_counts
+            .iter()
+            .map(|(metadata, count)| (metadata, *count))
+    }
+
+    /// Returns the last command sequence incorporated into these counts.
+    #[must_use]
+    pub const fn revision(&self) -> CommitSequence {
+        self.revision
+    }
+}
+
+/// Canonical count/index classification for one current vector-evidence row.
+///
+/// This is the single definition consumed by authoritative observation
+/// counters, ordered inspection indexes, projected candidate admission, and
+/// health. A missing embedding is stale once source state exists; model
+/// identity is absent exactly when the embedding is absent.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VectorEvidenceClassificationV1 {
+    source_stale: bool,
+    embedding: Option<StoredVectorEmbeddingWriteV1>,
+}
+
+impl VectorEvidenceClassificationV1 {
+    fn from_parts(
+        newest_source_write: Option<CommitSequence>,
+        embedding: Option<StoredVectorEmbeddingWriteV1>,
+    ) -> Self {
+        let source_stale = newest_source_write.is_some_and(|source| {
+            embedding
+                .as_ref()
+                .is_none_or(|embedding| source > embedding.sequence())
+        });
+        Self {
+            source_stale,
+            embedding,
+        }
+    }
+
+    /// Returns whether source state is newer than, or exists without, an
+    /// embedding revision.
+    #[must_use]
+    pub const fn source_stale(&self) -> bool {
+        self.source_stale
+    }
+
+    /// Borrows the exact model identity/version and embedding sequence, when
+    /// an embedding exists.
+    #[must_use]
+    pub const fn embedding(&self) -> Option<&StoredVectorEmbeddingWriteV1> {
+        self.embedding.as_ref()
+    }
+}
+
+/// Exact before/after classification for one authoritative evidence mutation.
+///
+/// Count and ordered-index maintenance consume this value inside the same
+/// command transition as the entity and evidence mutation. `None` represents
+/// absence, including the checked deletion successor.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VectorEvidenceClassificationTransitionV1 {
+    prior: Option<VectorEvidenceClassificationV1>,
+    successor: Option<VectorEvidenceClassificationV1>,
+}
+
+impl VectorEvidenceClassificationTransitionV1 {
+    /// Borrows the transaction-current predecessor classification.
+    #[must_use]
+    pub const fn prior(&self) -> Option<&VectorEvidenceClassificationV1> {
+        self.prior.as_ref()
+    }
+
+    /// Borrows the sequence-assigned successor classification.
+    #[must_use]
+    pub const fn successor(&self) -> Option<&VectorEvidenceClassificationV1> {
+        self.successor.as_ref()
+    }
+}
 
 /// One compiler-derived authoritative evidence key read during command finalization.
 #[derive(Clone, Eq, Ord, PartialEq, PartialOrd)]
@@ -159,6 +467,7 @@ pub struct VectorEvidenceTransitionPlanV1 {
     entity_version: EntityVersion,
     prior_source_write: Option<CommitSequence>,
     prior_embedding_write: Option<StoredVectorEmbeddingWriteV1>,
+    prior_exists: bool,
     source_changed: bool,
     embedding_changed: Option<EmbeddingMetadata>,
     delete: bool,
@@ -203,6 +512,7 @@ impl VectorEvidenceTransitionPlanV1 {
             prior_embedding_write: prior
                 .and_then(StoredVectorEvidenceV1::embedding_write)
                 .cloned(),
+            prior_exists: prior.is_some(),
             source_changed,
             embedding_changed,
             delete: false,
@@ -225,6 +535,7 @@ impl VectorEvidenceTransitionPlanV1 {
             entity_version: prior.entity_version(),
             prior_source_write: prior.newest_source_write(),
             prior_embedding_write: prior.embedding_write().cloned(),
+            prior_exists: true,
             source_changed: false,
             embedding_changed: None,
             delete: true,
@@ -244,6 +555,18 @@ impl VectorEvidenceTransitionPlanV1 {
     #[must_use]
     pub const fn vector_field(&self) -> FieldId {
         self.vector_field
+    }
+
+    /// Returns the stable partitioned observation identity maintained with
+    /// this transition.
+    #[must_use]
+    pub fn observation_target(&self) -> VectorObservationTargetV1 {
+        VectorObservationTargetV1::new(
+            self.schema_binding.lineage().clone(),
+            self.partition_key.clone(),
+            self.target.entity_type_id(),
+            self.vector_field,
+        )
     }
 
     pub(crate) const fn provenance_id(&self) -> ProvenanceId {
@@ -316,6 +639,25 @@ impl VectorEvidenceTransitionPlanV1 {
         )
         .map(Box::new)
         .map(VectorEvidenceMutationV1::Put)
+    }
+
+    /// Produces the one canonical classification transition used by all
+    /// maintained observation structures.
+    pub fn classification_transition(
+        &self,
+        sequence: CommitSequence,
+    ) -> Result<VectorEvidenceClassificationTransitionV1, StorageValueError> {
+        let prior = self.prior_exists.then(|| {
+            VectorEvidenceClassificationV1::from_parts(
+                self.prior_source_write,
+                self.prior_embedding_write.clone(),
+            )
+        });
+        let successor = match self.materialize(sequence)? {
+            VectorEvidenceMutationV1::Put(value) => Some(value.classification()),
+            VectorEvidenceMutationV1::Delete { .. } => None,
+        };
+        Ok(VectorEvidenceClassificationTransitionV1 { prior, successor })
     }
 
     pub(crate) fn semantic_bytes(&self) -> Result<usize, StorageValueError> {
@@ -548,6 +890,16 @@ impl StoredVectorEvidenceV1 {
     #[must_use]
     pub const fn plan(&self) -> &ExecutablePlanRef {
         &self.plan
+    }
+
+    /// Returns the canonical maintained-count and ordered-index
+    /// classification for this row.
+    #[must_use]
+    pub fn classification(&self) -> VectorEvidenceClassificationV1 {
+        VectorEvidenceClassificationV1::from_parts(
+            self.newest_source_write,
+            self.embedding_write.clone(),
+        )
     }
 
     pub(crate) fn semantic_bytes(&self) -> Result<usize, StorageValueError> {

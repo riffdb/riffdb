@@ -3378,6 +3378,34 @@ pub struct StoredVectorEvidenceV1 {
     pub plan: ::core::option::Option<ExecutablePlanRefV1>,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct StoredVectorModelCountV1 {
+    #[prost(string, tag = "1")]
+    pub model_identity: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub model_version: ::prost::alloc::string::String,
+    #[prost(uint64, tag = "3")]
+    pub entity_count: u64,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct StoredVectorObservationV1 {
+    #[prost(string, tag = "1")]
+    pub contract_lineage: ::prost::alloc::string::String,
+    #[prost(bytes = "vec", tag = "2")]
+    pub partition_key: ::prost::alloc::vec::Vec<u8>,
+    #[prost(uint32, tag = "3")]
+    pub entity_type_id: u32,
+    #[prost(uint32, tag = "4")]
+    pub vector_field_id: u32,
+    #[prost(uint64, tag = "5")]
+    pub total_entities: u64,
+    #[prost(uint64, tag = "6")]
+    pub source_stale_entities: u64,
+    #[prost(message, repeated, tag = "7")]
+    pub model_counts: ::prost::alloc::vec::Vec<StoredVectorModelCountV1>,
+    #[prost(uint64, tag = "8")]
+    pub revision_sequence: u64,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct StoredPendingAdmissionV3 {
     #[prost(message, optional, tag = "1")]
     pub base: ::core::option::Option<StoredPendingAdmissionV2>,

@@ -361,6 +361,14 @@ fn storage_source_import_and_type_inventory_is_exact() {
                 vec![],
             ),
             (
+                "riffdb/storage/v1/vector_evidence_v1.proto".to_owned(),
+                vec!["riffdb/storage/v1/application.proto"],
+            ),
+            (
+                "riffdb/storage/v1/vector_observation_v1.proto".to_owned(),
+                vec![],
+            ),
+            (
                 "riffdb/storage/v1/workflow_service_values_v3.proto".to_owned(),
                 vec![
                     "riffdb/storage/v1/application.proto",
@@ -383,8 +391,8 @@ fn storage_source_import_and_type_inventory_is_exact() {
             .iter()
             .map(|file| file.message_type.len())
             .sum::<usize>(),
-        166,
-        "165 semantic messages plus the unchanged StoredEnvelope"
+        170,
+        "169 semantic messages plus the unchanged StoredEnvelope"
     );
     assert_eq!(
         descriptors
@@ -413,9 +421,9 @@ fn storage_source_import_and_type_inventory_is_exact() {
 
 #[test]
 fn closed_registry_order_and_schema_hashes_are_exactly_derived() {
-    assert_eq!(CURRENT_RECORD_SCHEMA_COUNT, 66);
-    assert_eq!(READABLE_RECORD_SCHEMA_COUNT, 89);
-    assert_eq!(WRITABLE_RECORD_SCHEMA_COUNT, 66);
+    assert_eq!(CURRENT_RECORD_SCHEMA_COUNT, 67);
+    assert_eq!(READABLE_RECORD_SCHEMA_COUNT, 90);
+    assert_eq!(WRITABLE_RECORD_SCHEMA_COUNT, 67);
     assert_eq!(
         CURRENT_RECORD_SCHEMAS
             .iter()
@@ -493,6 +501,7 @@ fn closed_registry_order_and_schema_hashes_are_exactly_derived() {
     readable_names.push("riffdb.storage.v1.CapabilityRecordV6".to_owned());
     readable_names.push("riffdb.storage.v1.CapabilityRecordV7".to_owned());
     readable_names.push("riffdb.storage.v1.StoredVectorEvidenceV1".to_owned());
+    readable_names.push("riffdb.storage.v1.StoredVectorObservationV1".to_owned());
     readable_names.push("riffdb.storage.v1.CapabilityRecordV1".to_owned());
     readable_names.push("riffdb.storage.v1.CapabilityRecordV1".to_owned());
     readable_names.push("riffdb.storage.v1.CapabilityTokenLookupV1".to_owned());
@@ -551,6 +560,7 @@ fn closed_registry_order_and_schema_hashes_are_exactly_derived() {
     writable_names.push("riffdb.storage.v1.CapabilityRecordV7".to_owned());
     writable_names.push("riffdb.storage.v1.StoredRecordRegistryV2".to_owned());
     writable_names.push("riffdb.storage.v1.StoredVectorEvidenceV1".to_owned());
+    writable_names.push("riffdb.storage.v1.StoredVectorObservationV1".to_owned());
     assert_eq!(
         READABLE_RECORD_SCHEMAS
             .iter()
@@ -678,8 +688,8 @@ fn closed_registry_order_and_schema_hashes_are_exactly_derived() {
 #[test]
 fn generated_registry_fixtures_freeze_exact_membership_and_hashes() {
     let legacy = registry_fixture_entries(LEGACY_REGISTRY_FIXTURE, 26);
-    let readable = registry_fixture_entries(READABLE_REGISTRY_FIXTURE, 89);
-    let writable = registry_fixture_entries(WRITABLE_REGISTRY_FIXTURE, 66);
+    let readable = registry_fixture_entries(READABLE_REGISTRY_FIXTURE, 90);
+    let writable = registry_fixture_entries(WRITABLE_REGISTRY_FIXTURE, 67);
 
     assert_eq!(legacy, readable[..legacy.len()]);
     assert_eq!(
@@ -745,6 +755,26 @@ fn canonical_command_capsule_records_are_closed_current_schemas() {
         assert_eq!(schema.compact_tag(), compact_tag, "{current}");
         assert_eq!(schema.schema_revision(), 4, "{current}");
     }
+}
+
+#[test]
+fn vector_observation_is_a_closed_current_schema() {
+    let message = riffdb_proto::storage::v1::StoredVectorObservationV1 {
+        contract_lineage: "vectors".to_owned(),
+        partition_key: vec![1, 2, 3],
+        entity_type_id: 1,
+        vector_field_id: 2,
+        total_entities: 1,
+        source_stale_entities: 0,
+        model_counts: vec![riffdb_proto::storage::v1::StoredVectorModelCountV1 {
+            model_identity: "model".to_owned(),
+            model_version: "v1".to_owned(),
+            entity_count: 1,
+        }],
+        revision_sequence: 1,
+    };
+    let encoded = riffdb_proto::durable::encode_current_message(&message);
+    assert!(encoded.is_ok(), "vector observation encoding: {encoded:?}");
 }
 
 #[test]
@@ -938,6 +968,7 @@ fn semantic_optional_wire_presence_is_exact() {
         "StoredReactiveModuleAdministrationV1.approval_id",
         "StoredRetentionWatermarkV1.chain_root_registry_digest",
         "StoredValidatedPrefixCheckpointV1.previous_checkpoint_hash",
+        "StoredVectorEvidenceV1.newest_source_write_sequence",
     ]
     .into_iter()
     .map(|suffix| format!("riffdb.storage.v1.{suffix}"))

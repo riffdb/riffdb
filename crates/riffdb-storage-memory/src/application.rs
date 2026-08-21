@@ -38,7 +38,7 @@ use riffdb_storage_api::{
     TransactionCurrentStateBuilder, TransactionCurrentVectorEvidenceV1,
     TransactionLocalCommandBatch, UniqueIndexOccupancy, UniqueOccupancyKind,
     UnpublishedAuditedBatchV1, ValidationReadRequest, VectorEvidenceReadRequestV1,
-    derive_event_hash_v1,
+    VectorObservationCountsV1, derive_event_hash_v1,
 };
 use riffdb_types::{CommitSequence, EventId, FrontierPosition, ProvenanceId};
 
@@ -58,6 +58,7 @@ struct ApplicationOverlay {
     admissions: Vec<StoredAdmissionStateV1>,
     entities: Vec<StoredEntityRecordV1>,
     vector_evidence: Vec<StoredVectorEvidenceV1>,
+    vector_observations: Vec<VectorObservationCountsV1>,
     entity_commits: Vec<EntityCommitIndexRow>,
     index_entries: Vec<MemoryIndexEntry>,
     index_epochs: Vec<StoredIndexEpochV1>,
@@ -85,6 +86,7 @@ impl ApplicationOverlay {
             admissions: state.admissions.clone(),
             entities: state.entities.clone(),
             vector_evidence: state.vector_evidence.clone(),
+            vector_observations: state.vector_observations.clone(),
             entity_commits: state.entity_commits.clone(),
             index_entries: state.index_entries.clone(),
             index_epochs: state.index_epochs.clone(),
@@ -108,6 +110,7 @@ impl ApplicationOverlay {
         state.admissions = self.admissions;
         state.entities = self.entities;
         state.vector_evidence = self.vector_evidence;
+        state.vector_observations = self.vector_observations;
         state.entity_commits = self.entity_commits;
         state.index_entries = self.index_entries;
         state.index_epochs = self.index_epochs;
@@ -1913,11 +1916,37 @@ fn apply_vector_evidence(
     if records.vector_evidence_transitions().len() != records.vector_evidence().len() {
         return Err(storage_error(StorageErrorKind::InvariantViolation));
     }
+    let sequence = records.commit().commit_sequence();
     for (transition, mutation) in records
         .vector_evidence_transitions()
         .iter()
         .zip(records.vector_evidence())
     {
+        let observation_target = transition.observation_target();
+        let observation_position = overlay
+            .vector_observations
+            .binary_search_by(|row| row.target().cmp(&observation_target));
+        let mut observation = match observation_position {
+            Ok(index) => overlay.vector_observations[index].clone(),
+            Err(_) => VectorObservationCountsV1::empty(observation_target, sequence),
+        };
+        observation
+            .apply(
+                &transition
+                    .classification_transition(sequence)
+                    .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?,
+                sequence,
+            )
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+        match (observation.total_entities(), observation_position) {
+            (0, Ok(index)) => {
+                overlay.vector_observations.remove(index);
+            }
+            (0, Err(_)) => return Err(storage_error(StorageErrorKind::InvariantViolation)),
+            (_, Ok(index)) => overlay.vector_observations[index] = observation,
+            (_, Err(index)) => overlay.vector_observations.insert(index, observation),
+        }
+
         let position = overlay.vector_evidence.binary_search_by(|row| {
             row.target()
                 .cmp(mutation.target())
