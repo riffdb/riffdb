@@ -6,9 +6,9 @@
 **Tagline:** *Vibe fast. Commit safely.*  
 **Category:** Contract-first operational database for agent-built applications  
 
-**Version:** 1.02
+**Version:** 1.04
 **Status:** Deployable Application Alpha architecture accepted; implementation gated by work packages
-**Date:** 9 August 2026
+**Date:** 20 August 2026
 **Audience:** Coding agents, database engineers, compiler engineers, security reviewers, and technical product leads  
 **Working binaries:** `riffdbd`, `riffdb`, `riffdb-mcp`  
 **Working URI scheme:** `riffdb://`  
@@ -37,6 +37,7 @@
 
 | Version | Date | Summary |
 |---|---|---|
+| 1.04 | 2026-08-20 | Accepted ADR-0133 and registered QRY-006 through QRY-009 plus WP-654 for explicit compiler-owned covering indexes, atomic covered-value production, sealed positional result batches, additive negotiated compact named-query carriage, and direct typed Rust/Go/TypeScript/Python decoding. Existing index identities and grammar/IR-v1 empty covered values remain byte-exact; opted-in covering indexes use the least sufficient V14 contract bundle/grammar/IR identity. PERF-018 permits only the negotiated byte-equivalent representation change and retains every comparator and semantic obligation. |
 | 1.03 | 2026-08-18 | Advanced the ADR-0004 embedded-storage baseline from redb 4.1.0 to exactly redb 4.2.0 with default features disabled and no optional features. The pin carries upstream `fd82ced`, so a torn crash inside a file-growing commit no longer leaves an unopenable database: `PageManager::grow` syncs the extension before the larger layout can reach the on-disk header, and an actually truncated file returns `StorageError::Corrupted` instead of tripping an open-time assert. `REDB_PIN_CONTAINS_FD82CED` flips to `true` with it; the seeded-campaign corpus consequences are recorded as findings for maintainer rotation rather than silently re-pinned. Renewed dependency-graph, feature, and unsafe-surface review plus a full portable performance re-baseline remain required before this pin carries release evidence. |
 | 1.02 | 2026-08-16 | Amended the PERF-008 alpha performance gate per the WP-640 closure evidence: the real-world gates are unchanged (every representative unary scenario within 1.10x, c32 mixed throughput at least 0.90x, and c32 p95 at most 1.25x same-run PostgreSQL), while the full TicketDesk seed becomes receipted evidence under a 5.0x same-run regression ceiling rather than an alpha parity gate, because the measured single-lane ordered apply/submit floor alone exceeds the seed parity budget on both inventoried profiles; seed parity is deferred to the conflict-domain-parallel batch apply direction preserved by ADR-0129. |
 | 1.01 | 2026-08-15 | Accepted ADR-0128 and registered QSO-001 through QSO-012 plus WP-634 and WP-635 for exact compiler-declared secret outputs in named RiffQL, least derived role authority, same-operation widening approval, SDK-only initial exposure, and Better Auth named-read acceptance without reveal-shaped commands. |
@@ -2472,6 +2473,26 @@ copy an entity, indexed fields, or an ad hoc projection into that field. The
 storage semantic API and durable codec remain generic and retain bounded covered
 values plus their epoch behavior. Any nonempty v1 producer requires a future
 accepted language/IR and durable compatibility decision.
+
+Accepted grammar and executable IR version 14 add an explicit finite ordered
+`cover (...)` clause for a newly declared index identity. Key components are
+implicitly available and MUST NOT be repeated. Every cover field MUST be a
+direct non-secret field of the indexed entity with a statically bounded
+canonical encoding; expressions, relations, aliases, aggregates, dynamic
+projections, and caller-selected layouts are forbidden. Cover order is
+canonical schema identity. An existing index identity MUST NOT gain or change a
+cover; evolution declares a new index and uses the ordinary receipted
+rebuild/migration path.
+
+For a V14 covering index, the coordinator MUST derive the exact canonical
+covered record from the transaction-current entity post-image and commit it
+atomically with the entity, index key, affected epoch, command outcome, events,
+provenance, audit, commit record, and changelog-visible mutation. A covered-only
+change replaces the entry and advances every already-defined affected epoch
+even when the key is unchanged. Covered values remain redundant rebuildable
+index state; missing, stale, malformed, duplicate, wrong-lineage, or
+non-derivable coverage is corruption and MUST fail closed without entity-read
+fallback.
 
 Checked command-plan construction conservatively computes the maximum successful
 grammar/IR-v1 index shape before hashing or activation. It rejects a mutating
@@ -6514,8 +6535,9 @@ and ADR-0023 also resolved the remaining grammar-v1 transaction defaults:
   commit-check arithmetic fault discards the already-sourced unpersisted
   provenance candidate and sources no second candidate while terminalizing.
 - Grammar/IR-v1 coordinator writes always use the canonical empty record for
-  index `covered_values`; nonempty covered values remain a future language/IR
-  and durable-compatibility decision.
+  index `covered_values`. Only an accepted V14 covering index may produce a
+  nonempty covered record, under ADR-0133's atomic derivation, compatibility,
+  corruption, and no-fallback rules.
 - Full reevaluation is bounded to three attempt slots per invocation, consumed
   before catalog snapshot materialization; valid lineage overflow consumes a
   slot without runtime entry.
@@ -6856,6 +6878,37 @@ ADR-0055.
   input MUST return an empty collection; null, duplicate, noncanonical,
   over-bound, or malformed keys MUST fail closed; and a missing target MUST
   select the query's declared outcome without partial results.
+- `QRY-006`: A contract MAY declare a finite ordered `cover (...)` only on a
+  new index identity. The compiler MUST reject duplicate key/cover fields,
+  unknown or non-entity fields, expressions, relations, secrets, and any cover
+  whose canonical entry, write set, journal frame, rebuild, migration, or
+  retained-state charge exceeds an existing bound. Cover order MUST participate
+  in exact contract, schema, module, plan, lock, and generated-binding identity.
+- `QRY-007`: The compiler MAY seal one named ordered index step as a covered
+  positional result batch only when key plus cover contain every predicate,
+  ordering, selected output, and complete row-policy field. Storage MUST apply
+  row policy in the authoritative snapshot and return one bounded layout
+  witness, positional rows, scan work, epoch, and continuation. The executor
+  MUST validate the exact layout, widths, order, work, continuation, and fuel
+  once; unavailable or invalid cover proof MUST fail closed and MUST NOT fall
+  back to entity hydration, another index, or a nearby result shape.
+- `QRY-008`: Named-query requests MAY negotiate one additive compact response
+  encoding whose field name, cardinality, entity, and ordered selected-field
+  layout occur once and whose rows contain exact positional public values.
+  Legacy callers MUST receive the existing named-record arm. A response MUST
+  select exactly one arm and bind the exact module/plan layout; mixed arms,
+  unknown encodings, identity/layout/width drift, or any exceeded row/field/
+  byte bound MUST fail closed. Negotiation changes representation only and MUST
+  NOT change result, authorization, policy, snapshot, freshness, cursor, fuel,
+  error, or comparator semantics.
+- `QRY-009`: Generated Rust, Go, TypeScript, and Python named-query methods MAY
+  decode an eligible compact positional row directly into the exact typed
+  result only after validating operation identity, selected encoding, result
+  field/cardinality/entity/layout, row width, value type, nullability, enum
+  identity, and all collection/byte bounds. Generated application code MUST NOT
+  construct a generic per-row map, expose ordinals, or accept a caller-supplied
+  decoder or layout. Generic clients, CLI, and MCP MUST preserve symbolic output
+  through bounded conversion.
 
 - `DX-001`: The implementation MUST add an additive versioned application gRPC
   API over the same API-neutral service, authorization, compiler, query
@@ -7979,6 +8032,12 @@ behavior:
   three same-run 90-second post-warmup repetitions for interactive and write-
   only concurrency sweeps on an idle inventoried host; short, unstable,
   interfered, drifted, or incorrect runs are non-evidentiary.
+  ADR-0133 permits generated named-query clients to negotiate its exact
+  schema-bound compact response arm in both RiffDB and comparator workloads.
+  This is a representation-only amendment: the frozen dataset, operations,
+  obligations, authorization, durability, isolation, workload weights,
+  correctness reconciliation, calculations, and host-validity rules remain
+  unchanged, and legacy requests continue to use the legacy arm.
 
 ### 24.5.11 Secret field classification and display-surface redaction
 

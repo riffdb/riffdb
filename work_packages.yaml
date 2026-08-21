@@ -1,4 +1,4 @@
-spec_version: '1.02'
+spec_version: '1.04'
 product: RiffDB
 repository: riffdb
 status: deployable-application-alpha-architecture-accepted
@@ -14403,7 +14403,7 @@ work_packages:
     mechanics ledger proves the combined candidate can close BoardPage450 without weakening any
     authorization, snapshot, durability, corruption, boundedness, or compatibility guarantee.
   requirements: [PERF-001, PERF-002, PERF-008, PERF-018, STO-002, API-001, QRY-001,
-    QRY-002, QRY-003, QRY-004]
+    QRY-002, QRY-003, QRY-004, QRY-006, QRY-007, QRY-008, QRY-009]
   required_adrs: [ADR-0022, ADR-0023, ADR-0027, ADR-0051, ADR-0052, ADR-0053,
     ADR-0055, ADR-0074, ADR-0111, ADR-0124, ADR-0128, ADR-0130, ADR-0131,
     ADR-0133]
@@ -14411,7 +14411,7 @@ work_packages:
     crates/riffdb-types/**, crates/riffdb-contract-syntax/**,
     crates/riffdb-contract-ir/**, crates/riffdb-contract-compiler/**,
     crates/riffdb-query-ir/**, crates/riffdb-query-compiler/**,
-    crates/riffdb-query-module/**, crates/riffdb-storage-api/**,
+    crates/riffdb-query-module/**, crates/riffdb-catalog/**, crates/riffdb-storage-api/**,
     crates/riffdb-storage-memory/**, crates/riffdb-storage-redb/**,
     crates/riffdb-commit/**, crates/riffdb-query-executor/**,
     crates/riffdb-service/**, crates/riffdb-api-grpc/**,

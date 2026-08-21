@@ -703,6 +703,7 @@ Fields below are listed in exact byte order. A collection field includes its cou
 | 2 | `name` | string |
 | 3 | `fields` | u32 count + FieldId[] |
 | 4 | `key_schema` | KeySchema |
+| 5 | `cover_fields` | IR v14+: extension marker + u32 count + FieldId[]; omitted in v1-v13 |
 
 ### RecordSchema
 

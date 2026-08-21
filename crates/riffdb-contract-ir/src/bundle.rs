@@ -71,6 +71,8 @@ pub const BUNDLE_FORMAT_VERSION_V11: u32 = 11;
 pub const BUNDLE_FORMAT_VERSION_V12: u32 = 12;
 /// Bundle framing containing compiler-bounded one-hop cascade deletion.
 pub const BUNDLE_FORMAT_VERSION_V13: u32 = 13;
+/// Bundle framing containing compiler-declared covering-index fields.
+pub const BUNDLE_FORMAT_VERSION_V14: u32 = 14;
 /// Canonical grammar version represented by a bundle.
 pub const GRAMMAR_VERSION_V1: u32 = 1;
 /// Contract grammar containing compiled workflows and service-owned values.
@@ -97,6 +99,8 @@ pub const GRAMMAR_VERSION_V11: u32 = 11;
 pub const GRAMMAR_VERSION_V12: u32 = 12;
 /// Contract grammar containing exhaustive bounded one-hop cascade policies.
 pub const GRAMMAR_VERSION_V13: u32 = 13;
+/// Contract grammar containing explicit finite covering-index declarations.
+pub const GRAMMAR_VERSION_V14: u32 = 14;
 /// Executable IR version represented by a bundle.
 pub const EXECUTABLE_IR_VERSION_V1: u32 = 1;
 /// Executable IR containing compiled workflow transitions and service values.
@@ -123,12 +127,15 @@ pub const EXECUTABLE_IR_VERSION_V11: u32 = 11;
 pub const EXECUTABLE_IR_VERSION_V12: u32 = 12;
 /// Executable IR containing bounded one-hop cascade plans and overflow outcomes.
 pub const EXECUTABLE_IR_VERSION_V13: u32 = 13;
+/// Executable IR containing ordered covering-index field layouts.
+pub const EXECUTABLE_IR_VERSION_V14: u32 = 14;
 
 const RELATIONSHIP_SCHEMA_EXTENSION: u32 = 0xffff_fffe;
 const UNIQUE_KEY_SCHEMA_EXTENSION: u32 = 0xffff_fffd;
 const DELETE_POLICY_SCHEMA_EXTENSION: u32 = 0xffff_fffc;
 const VECTOR_FIELD_SPEC_SCHEMA_EXTENSION: u32 = 0xffff_fffb;
 const INDEX_FIELD_ENCODING_EXTENSION: u32 = 0xffff_fffa;
+const INDEX_COVER_FIELDS_EXTENSION: u32 = 0xffff_fff6;
 // 0xffff_fff9 is the high word of the event-policy-anchor magic below;
 // the secret extension takes the next clean value.
 const SECRET_FIELD_SPEC_SCHEMA_EXTENSION: u32 = 0xffff_fff8;
@@ -1048,34 +1055,35 @@ impl ContractBundle {
         mcp_command_names: McpCommandNameRegistryV2,
         compatibility: CompatibilityReport,
     ) -> Result<Self, IrValidationError> {
-        let version =
-            if schema.requires_ir_v13() || commands.iter().any(CommandPlan::requires_ir_v13) {
-                BUNDLE_FORMAT_VERSION_V13
-            } else if schema.requires_ir_v12() {
-                BUNDLE_FORMAT_VERSION_V12
-            } else if commands.iter().any(CommandPlan::requires_ir_v11) {
-                BUNDLE_FORMAT_VERSION_V11
-            } else if commands.iter().any(CommandPlan::requires_ir_v10) {
-                BUNDLE_FORMAT_VERSION_V10
-            } else if workflows.iter().any(WorkflowSchema::requires_ir_v9) {
-                BUNDLE_FORMAT_VERSION_V9
-            } else if schema.requires_ir_v8() {
-                BUNDLE_FORMAT_VERSION_V8
-            } else if schema.requires_ir_v7() {
-                BUNDLE_FORMAT_VERSION_V7
-            } else if schema.requires_ir_v6() || commands.iter().any(CommandPlan::requires_ir_v6) {
-                BUNDLE_FORMAT_VERSION_V6
-            } else if schema.requires_ir_v5() || commands.iter().any(CommandPlan::requires_ir_v5) {
-                BUNDLE_FORMAT_VERSION_V5
-            } else if !row_policies.is_empty() {
-                BUNDLE_FORMAT_VERSION_V4
-            } else if commands.iter().any(CommandPlan::requires_ir_v3) {
-                BUNDLE_FORMAT_VERSION_V3
-            } else if !workflows.is_empty() || commands.iter().any(CommandPlan::requires_ir_v2) {
-                BUNDLE_FORMAT_VERSION_V2
-            } else {
-                BUNDLE_FORMAT_VERSION_V1
-            };
+        let version = if schema.requires_ir_v14() {
+            BUNDLE_FORMAT_VERSION_V14
+        } else if schema.requires_ir_v13() || commands.iter().any(CommandPlan::requires_ir_v13) {
+            BUNDLE_FORMAT_VERSION_V13
+        } else if schema.requires_ir_v12() {
+            BUNDLE_FORMAT_VERSION_V12
+        } else if commands.iter().any(CommandPlan::requires_ir_v11) {
+            BUNDLE_FORMAT_VERSION_V11
+        } else if commands.iter().any(CommandPlan::requires_ir_v10) {
+            BUNDLE_FORMAT_VERSION_V10
+        } else if workflows.iter().any(WorkflowSchema::requires_ir_v9) {
+            BUNDLE_FORMAT_VERSION_V9
+        } else if schema.requires_ir_v8() {
+            BUNDLE_FORMAT_VERSION_V8
+        } else if schema.requires_ir_v7() {
+            BUNDLE_FORMAT_VERSION_V7
+        } else if schema.requires_ir_v6() || commands.iter().any(CommandPlan::requires_ir_v6) {
+            BUNDLE_FORMAT_VERSION_V6
+        } else if schema.requires_ir_v5() || commands.iter().any(CommandPlan::requires_ir_v5) {
+            BUNDLE_FORMAT_VERSION_V5
+        } else if !row_policies.is_empty() {
+            BUNDLE_FORMAT_VERSION_V4
+        } else if commands.iter().any(CommandPlan::requires_ir_v3) {
+            BUNDLE_FORMAT_VERSION_V3
+        } else if !workflows.is_empty() || commands.iter().any(CommandPlan::requires_ir_v2) {
+            BUNDLE_FORMAT_VERSION_V2
+        } else {
+            BUNDLE_FORMAT_VERSION_V1
+        };
         Self::new_with_versions(
             version,
             version,
@@ -1171,6 +1179,10 @@ impl ContractBundle {
                 BUNDLE_FORMAT_VERSION_V13,
                 GRAMMAR_VERSION_V13,
                 EXECUTABLE_IR_VERSION_V13
+            ) | (
+                BUNDLE_FORMAT_VERSION_V14,
+                GRAMMAR_VERSION_V14,
+                EXECUTABLE_IR_VERSION_V14
             )
         ) || (ir_version < EXECUTABLE_IR_VERSION_V2
             && (!workflows.is_empty() || commands.iter().any(CommandPlan::requires_ir_v2)))
@@ -1192,6 +1204,7 @@ impl ContractBundle {
             || (ir_version < EXECUTABLE_IR_VERSION_V12 && schema.requires_ir_v12())
             || (ir_version < EXECUTABLE_IR_VERSION_V13
                 && (schema.requires_ir_v13() || commands.iter().any(CommandPlan::requires_ir_v13)))
+            || (ir_version < EXECUTABLE_IR_VERSION_V14 && schema.requires_ir_v14())
             || (ir_version >= EXECUTABLE_IR_VERSION_V6
                 && commands
                     .iter()
@@ -2804,6 +2817,13 @@ fn encode_index_schema(
             })?;
         }
     }
+    if !index.cover_fields().is_empty() {
+        writer.u32(INDEX_COVER_FIELDS_EXTENSION)?;
+        writer.u32(index.cover_fields().len() as u32)?;
+        for field in index.cover_fields() {
+            writer.u32(field.get())?;
+        }
+    }
     Ok(())
 }
 
@@ -3691,6 +3711,10 @@ fn decode_bundle(bytes: &[u8]) -> Result<ContractBundle, IrValidationError> {
             BUNDLE_FORMAT_VERSION_V13,
             GRAMMAR_VERSION_V13,
             EXECUTABLE_IR_VERSION_V13
+        ) | (
+            BUNDLE_FORMAT_VERSION_V14,
+            GRAMMAR_VERSION_V14,
+            EXECUTABLE_IR_VERSION_V14
         )
     ) {
         return Err(IrValidationError::UnsupportedVersion {
@@ -4488,7 +4512,19 @@ fn decode_index_schema(reader: &mut Reader<'_>) -> Result<IndexSchema, IrValidat
         } else {
             vec![IndexFieldEncodingV1::Canonical; fields.len()]
         };
-    IndexSchema::with_encodings(id, name, fields, encodings, key_schema)
+    let cover_fields =
+        if reader.remaining() >= 4 && reader.peek_u32()? == INDEX_COVER_FIELDS_EXTENSION {
+            let _extension = reader.u32()?;
+            let cover_count = decode_len(reader, "index cover fields", 1_024)?;
+            let mut cover_fields = Vec::with_capacity(cover_count);
+            for _ in 0..cover_count {
+                cover_fields.push(decode_field_id(reader)?);
+            }
+            cover_fields
+        } else {
+            Vec::new()
+        };
+    IndexSchema::with_encodings_and_cover(id, name, fields, encodings, cover_fields, key_schema)
 }
 
 fn decode_record_schema(reader: &mut Reader<'_>) -> Result<RecordSchema, IrValidationError> {

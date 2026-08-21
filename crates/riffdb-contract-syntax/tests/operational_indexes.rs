@@ -45,6 +45,41 @@ fn parses_closed_presence_and_text_key_options() {
 }
 
 #[test]
+fn parses_ordered_cover_fields_with_source_spans() {
+    let source = concat!(
+        "contract Board version 1 { entity Card { ",
+        "key (organization_id: uuid, card_id: uuid) ",
+        "field lane: string<32> field title: string<200> field owner_id: optional<uuid> ",
+        "index by_lane (organization_id, lane, card_id) cover (title, owner_id) } }",
+    );
+    let document = parse_contract(source).expect("covering index parses");
+    let Declaration::Entity(entity) = &document.contract.value.declarations[0].value else {
+        panic!("entity declaration")
+    };
+    let index = entity
+        .items
+        .iter()
+        .find_map(|item| match &item.value {
+            EntityItem::Index(index) => Some(index),
+            _ => None,
+        })
+        .expect("index declaration");
+    let IndexOption::Cover { fields } = &index.options[0].value else {
+        panic!("cover option")
+    };
+    assert_eq!(
+        fields
+            .iter()
+            .map(|field| field.value.as_str())
+            .collect::<Vec<_>>(),
+        ["title", "owner_id"]
+    );
+    assert!(index.options[0].span.start() < fields[0].span.start());
+    assert!(fields[0].span.end() < fields[1].span.start());
+    assert!(fields[1].span.end() <= index.options[0].span.end());
+}
+
+#[test]
 fn legacy_indexes_retain_an_empty_option_set() {
     let document =
         parse_contract("contract C version 1 { entity E { key (id: uuid) index by_id (id) } }")

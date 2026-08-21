@@ -1125,6 +1125,7 @@ layout!(INDEX_LAYOUT, "IndexSchema", {
     "name" => "string",
     "fields" => "u32 count + FieldId[]",
     "key_schema" => "KeySchema",
+    "cover_fields" => "IR v14+: extension marker + u32 count + FieldId[]; omitted in v1-v13",
 });
 layout!(RECORD_LAYOUT, "RecordSchema", {
     "owner" => "RecordTypeRef",
