@@ -1690,6 +1690,7 @@ const fn operation_name(operation: ServiceOperationV1) -> &'static str {
         ServiceOperationV1::ApplyApplicationReimportPage => "apply_application_reimport_page",
         ServiceOperationV1::GetApplicationReimport => "get_application_reimport",
         ServiceOperationV1::CancelApplicationReimport => "cancel_application_reimport",
+        ServiceOperationV1::InspectVectorState => "inspect_vector_state",
     }
 }
 

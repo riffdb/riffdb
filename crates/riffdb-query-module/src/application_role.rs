@@ -8,12 +8,13 @@ use riffdb_contract_ir::{
     BindingMode, ContractBundle, PrincipalFactSchemaV1, RowPolicyExpressionNodeV1,
     RowPolicyOperationV1, RowPolicyPlanV1, RowPolicyValueSourceV1,
 };
-use riffdb_query_ir::{ReactiveModulePlanV1, ReactiveOperationPlanV1};
+use riffdb_query_ir::{QueryAccessKind, ReactiveModulePlanV1, ReactiveOperationPlanV1};
 use riffdb_types::{
     ActorId, ApplicationManifestHash, ApplicationRoleHash, CanonicalValue, CapabilityGrantV1,
     CapabilityPermissionKindV1, CapabilityPermissionV1, CapabilityPermissionsV1,
     CapabilityPrincipalFactsV1, CapabilityRowPolicyBindingV1, CapabilityRowPolicyGrantV1,
-    CapabilityRowPolicyOperationV1, ContractBundleHash, ContractLineage, ContractVersion,
+    CapabilityRowPolicyOperationV1, CapabilityVectorInspectionGrantV1,
+    CapabilityVectorInspectionTargetV1, ContractBundleHash, ContractLineage, ContractVersion,
     EntityFieldVisibilityV1, Environment, PartitionScopeV1, QueryModuleHash, QueryOperationName,
     ReactiveModuleHash, RowPolicyName, TenantId, TenantScope, hash_application_role,
 };
@@ -25,6 +26,7 @@ const ROLE_FORMAT_VERSION_V1: u32 = 1;
 const ROLE_FORMAT_VERSION_V2: u32 = 2;
 const ROLE_FORMAT_VERSION_V3: u32 = 3;
 const ROLE_FORMAT_VERSION_V4: u32 = 4;
+const ROLE_FORMAT_VERSION_V5: u32 = 5;
 const MAX_ROLE_BYTES: usize = 1024 * 1024;
 
 /// Symbolic operation kind exposed by a compiled application role.
@@ -57,6 +59,48 @@ pub struct ApplicationRoleSecretOutput {
     entity_id: riffdb_types::EntityTypeId,
     field: String,
     field_id: riffdb_types::FieldId,
+}
+
+/// One exact compiler-derived vector-state inspection target.
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub struct ApplicationRoleVectorInspection {
+    entity: String,
+    entity_id: riffdb_types::EntityTypeId,
+    field: String,
+    field_id: riffdb_types::FieldId,
+    allow_counts: bool,
+}
+
+impl ApplicationRoleVectorInspection {
+    /// Exact contract entity symbol.
+    #[must_use]
+    pub fn entity(&self) -> &str {
+        &self.entity
+    }
+
+    /// Exact production vector-field symbol.
+    #[must_use]
+    pub fn field(&self) -> &str {
+        &self.field
+    }
+
+    /// Whether this role may observe maintained whole-partition counts.
+    #[must_use]
+    pub const fn allow_counts(&self) -> bool {
+        self.allow_counts
+    }
+
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn internal_entity_id(&self) -> riffdb_types::EntityTypeId {
+        self.entity_id
+    }
+
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn internal_field_id(&self) -> riffdb_types::FieldId {
+        self.field_id
+    }
 }
 
 impl ApplicationRoleSecretOutput {
@@ -182,6 +226,7 @@ pub struct CompiledApplicationRole {
     reactive_module_hashes: Vec<ReactiveModuleHash>,
     operations: Vec<ApplicationRoleOperation>,
     secret_outputs: Vec<ApplicationRoleSecretOutput>,
+    vector_inspections: Vec<ApplicationRoleVectorInspection>,
     row_policies: Vec<ApplicationRolePolicy>,
     principal_fact_schemas: Vec<ApplicationRoleFactSchema>,
     principal_fact_plans: Vec<PrincipalFactSchemaV1>,
@@ -264,6 +309,12 @@ impl CompiledApplicationRole {
         &self.secret_outputs
     }
 
+    /// Exact vector-state targets derived from the role's named nearest queries.
+    #[must_use]
+    pub fn vector_inspections(&self) -> &[ApplicationRoleVectorInspection] {
+        &self.vector_inspections
+    }
+
     /// Safe symbolic row-policy catalog for this exact role.
     #[must_use]
     pub fn row_policies(&self) -> &[ApplicationRolePolicy] {
@@ -335,7 +386,7 @@ impl CompiledApplicationRole {
             ));
         }
 
-        let grant = CapabilityGrantV1::new(
+        let mut grant = CapabilityGrantV1::new(
             self.tenant_scope.clone(),
             PartitionScopeV1::All,
             self.bound_permissions.clone(),
@@ -344,17 +395,24 @@ impl CompiledApplicationRole {
             Vec::new(),
         )
         .map_err(|_| ApplicationRoleError::new(ApplicationRoleErrorKind::RequirementLimit))?;
-        if self.policy_bindings.is_empty() {
-            return Ok(grant);
+        if !self.policy_bindings.is_empty() {
+            let row_policy =
+                CapabilityRowPolicyGrantV1::new(self.identity, facts, self.policy_bindings.clone())
+                    .map_err(|_| {
+                        ApplicationRoleError::new(ApplicationRoleErrorKind::RequirementLimit)
+                    })?;
+            grant = grant.with_row_policy(row_policy).map_err(|_| {
+                ApplicationRoleError::new(ApplicationRoleErrorKind::RequirementLimit)
+            })?;
         }
-        let row_policy =
-            CapabilityRowPolicyGrantV1::new(self.identity, facts, self.policy_bindings.clone())
+        if let Some(inspection) = self.grant.internal_vector_inspection() {
+            grant = grant
+                .with_vector_inspection(inspection.clone())
                 .map_err(|_| {
                     ApplicationRoleError::new(ApplicationRoleErrorKind::RequirementLimit)
                 })?;
-        grant
-            .with_row_policy(row_policy)
-            .map_err(|_| ApplicationRoleError::new(ApplicationRoleErrorKind::RequirementLimit))
+        }
+        Ok(grant)
     }
 }
 
@@ -504,6 +562,7 @@ fn compile_application_role_inner(
     let mut fields_by_entity = BTreeMap::<_, BTreeSet<_>>::new();
     let mut secret_fields_by_entity = BTreeMap::<_, BTreeSet<_>>::new();
     let mut secret_output_atoms = BTreeSet::new();
+    let mut vector_inspection_atoms = BTreeMap::new();
     let mut maximum_rows = 1_u64;
     let mut operations = Vec::with_capacity(role.queries().len() + role.commands().len());
 
@@ -551,6 +610,55 @@ fn compile_application_role_inner(
                     .internal_fields()
                     .map(|(_, field)| field)
                     .filter(|field| !primary.contains(field)),
+            );
+        }
+        for step in query.plan().representative_program().steps() {
+            let QueryAccessKind::Nearest { vector_field, .. } = step.access() else {
+                continue;
+            };
+            let entity = contract
+                .schema()
+                .entities()
+                .iter()
+                .find(|entity| entity.id() == step.internal_entity_id())
+                .ok_or_else(|| {
+                    ApplicationRoleError::new(ApplicationRoleErrorKind::ContractMismatch)
+                })?;
+            let field = entity
+                .record()
+                .fields()
+                .iter()
+                .find(|field| field.name() == vector_field)
+                .ok_or_else(|| {
+                    ApplicationRoleError::new(ApplicationRoleErrorKind::ContractMismatch)
+                })?;
+            if contract
+                .schema()
+                .vector_production_spec(entity.id(), field.id())
+                .is_none()
+            {
+                return Err(ApplicationRoleError::new(
+                    ApplicationRoleErrorKind::ContractMismatch,
+                ));
+            }
+            fields_by_entity
+                .entry(entity.id())
+                .or_default()
+                .insert(field.id());
+            let allow_counts = !contract
+                .row_policies()
+                .policies()
+                .iter()
+                .any(|policy| policy.entity() == entity.id());
+            vector_inspection_atoms.insert(
+                (entity.id(), field.id()),
+                ApplicationRoleVectorInspection {
+                    entity: entity.name().to_owned(),
+                    entity_id: entity.id(),
+                    field: field.name().to_owned(),
+                    field_id: field.id(),
+                    allow_counts,
+                },
             );
         }
         for requirement in query.plan().secret_outputs() {
@@ -724,6 +832,17 @@ fn compile_application_role_inner(
             .then_with(|| left.name.cmp(&right.name))
     });
 
+    let vector_inspections = vector_inspection_atoms.into_values().collect::<Vec<_>>();
+    if !vector_inspections.is_empty() {
+        let inspect =
+            CapabilityPermissionV1::unparameterized(CapabilityPermissionKindV1::InspectVectorState)
+                .map_err(|_| {
+                    ApplicationRoleError::new(ApplicationRoleErrorKind::RequirementLimit)
+                })?;
+        permissions.push(inspect.clone());
+        bound_permissions.push(inspect);
+    }
+
     let permissions = CapabilityPermissionsV1::new(permissions)
         .map_err(|_| ApplicationRoleError::new(ApplicationRoleErrorKind::RequirementLimit))?;
     let secret_outputs = secret_output_atoms
@@ -815,6 +934,7 @@ fn compile_application_role_inner(
         &row_policies,
         &principal_fact_schemas,
         &secret_outputs,
+        &vector_inspections,
         &base_grant,
     )?;
     let identity = hash_application_role(&canonical);
@@ -823,7 +943,7 @@ fn compile_application_role_inner(
     bound_permissions.push(CapabilityPermissionV1::ApplicationRoleIdentity(identity));
     let bound_permissions = CapabilityPermissionsV1::new(bound_permissions)
         .map_err(|_| ApplicationRoleError::new(ApplicationRoleErrorKind::RequirementLimit))?;
-    let grant = CapabilityGrantV1::new(
+    let mut grant = CapabilityGrantV1::new(
         tenant_scope.clone(),
         PartitionScopeV1::All,
         CapabilityPermissionsV1::new(final_permissions)
@@ -833,6 +953,29 @@ fn compile_application_role_inner(
         Vec::new(),
     )
     .map_err(|_| ApplicationRoleError::new(ApplicationRoleErrorKind::RequirementLimit))?;
+    if !vector_inspections.is_empty() {
+        grant = grant
+            .with_vector_inspection(
+                CapabilityVectorInspectionGrantV1::new(
+                    identity,
+                    vector_inspections
+                        .iter()
+                        .map(|target| {
+                            CapabilityVectorInspectionTargetV1::new(
+                                lineage.clone(),
+                                target.internal_entity_id(),
+                                target.internal_field_id(),
+                                target.allow_counts(),
+                            )
+                        })
+                        .collect(),
+                )
+                .map_err(|_| {
+                    ApplicationRoleError::new(ApplicationRoleErrorKind::RequirementLimit)
+                })?,
+            )
+            .map_err(|_| ApplicationRoleError::new(ApplicationRoleErrorKind::RequirementLimit))?;
+    }
     let policy_bindings = compile_policy_bindings(&selected_policies, &lineage)?;
     Ok(CompiledApplicationRole {
         application_name: manifest.application_name().to_owned(),
@@ -847,6 +990,7 @@ fn compile_application_role_inner(
         reactive_module_hashes,
         operations,
         secret_outputs,
+        vector_inspections,
         row_policies,
         principal_fact_schemas,
         principal_fact_plans,
@@ -1241,12 +1385,15 @@ fn encode_role(
     row_policies: &[ApplicationRolePolicy],
     principal_fact_schemas: &[ApplicationRoleFactSchema],
     secret_outputs: &[ApplicationRoleSecretOutput],
+    vector_inspections: &[ApplicationRoleVectorInspection],
     grant: &CapabilityGrantV1,
 ) -> Result<Vec<u8>, ApplicationRoleError> {
     let mut bytes = Vec::new();
     bytes.extend_from_slice(ROLE_MAGIC);
     bytes.extend_from_slice(
-        &(if !secret_outputs.is_empty() {
+        &(if !vector_inspections.is_empty() {
+            ROLE_FORMAT_VERSION_V5
+        } else if !secret_outputs.is_empty() {
             ROLE_FORMAT_VERSION_V4
         } else if manifest.schema() == crate::APPLICATION_MANIFEST_SCHEMA_V4 {
             ROLE_FORMAT_VERSION_V3
@@ -1326,6 +1473,16 @@ fn encode_role(
             bytes.extend_from_slice(&output.internal_entity_id().to_be_bytes());
             write_text(&mut bytes, output.field())?;
             bytes.extend_from_slice(&output.internal_field_id().to_be_bytes());
+        }
+    }
+    if !vector_inspections.is_empty() {
+        write_count(&mut bytes, vector_inspections.len())?;
+        for inspection in vector_inspections {
+            write_text(&mut bytes, inspection.entity())?;
+            bytes.extend_from_slice(&inspection.internal_entity_id().to_be_bytes());
+            write_text(&mut bytes, inspection.field())?;
+            bytes.extend_from_slice(&inspection.internal_field_id().to_be_bytes());
+            bytes.push(u8::from(inspection.allow_counts()));
         }
     }
     bytes.extend_from_slice(&grant.max_scan_rows().get().to_be_bytes());

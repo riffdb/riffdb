@@ -842,6 +842,28 @@ fn evaluate(
             PermissionCheck::Allowed => {}
         }
     }
+    if let Some(requirement) = request.vector_inspection_requirement() {
+        let inspection = current
+            .grant
+            .internal_vector_inspection()
+            .ok_or(PolicyCode::MissingPermission)?;
+        if unique_application_role_hash(&current.grant) != Some(inspection.application_role_hash())
+        {
+            return Err(PolicyCode::MissingPermission);
+        }
+        let target = inspection
+            .target(
+                requirement.lineage,
+                requirement.entity_type_id,
+                requirement.field_id,
+            )
+            .ok_or(PolicyCode::MissingPermission)?;
+        if requirement.counts_requested
+            && (!target.allow_counts() || current.grant.internal_row_policy().is_some())
+        {
+            return Err(PolicyCode::MissingPermission);
+        }
+    }
     if let Some(target) = request.application_query_target() {
         let rows = u64::from(current.grant.max_scan_rows().get());
         let row_work = rows.saturating_mul(riffdb_types::MAX_APPLICATION_QUERY_STEPS);
@@ -993,12 +1015,14 @@ mod tests {
         CapabilityApplicationExportGrantV1, CapabilityApplicationReimportGrantV1,
         CapabilityExportGrantV1, CapabilityPermissionKindV1, CapabilityPermissionV1,
         CapabilityPermissionsV1, CapabilityPrincipalFactsV1, CapabilityRowPolicyBindingV1,
-        CapabilityRowPolicyGrantV1, CapabilityRowPolicyOperationV1, CommandId, CommitSequence,
-        ContractBundleHash, ContractLineage, ContractVersion, EntityFieldVisibilityV1,
-        EntityTypeId, EventConsumerName, FieldId, IndexId, PartitionKeyBuilder, ProjectionId,
-        ProjectionIdentity, ProjectionPlanHash, QueryModuleHash, QueryOperationName,
-        QueryParameterHash, QueryPlanHash, ReactiveModuleHash, ReactiveOperationName, RequestId,
-        RowPolicyName, ScopedPartitionV1, ServiceIngressKindV1, TenantId,
+        CapabilityRowPolicyGrantV1, CapabilityRowPolicyOperationV1,
+        CapabilityVectorInspectionGrantV1, CapabilityVectorInspectionTargetV1, CommandId,
+        CommitSequence, ContractBundleHash, ContractLineage, ContractVersion,
+        EntityFieldVisibilityV1, EntityTypeId, EventConsumerName, FieldId, IndexId,
+        PartitionKeyBuilder, ProjectionId, ProjectionIdentity, ProjectionPlanHash, QueryModuleHash,
+        QueryOperationName, QueryParameterHash, QueryPlanHash, ReactiveModuleHash,
+        ReactiveOperationName, RequestId, RowPolicyName, ScopedPartitionV1, ServiceIngressKindV1,
+        TenantId,
     };
 
     use super::*;
@@ -1138,6 +1162,151 @@ mod tests {
             grant,
         };
         (principal, current, environment)
+    }
+
+    #[test]
+    fn vector_inspection_requires_exact_v8_target_and_count_posture() {
+        let role = ApplicationRoleHash::from_bytes([0x71; 32]);
+        let base = || {
+            grant(
+                TenantScope::Global,
+                PartitionScopeV1::All,
+                vec![
+                    CapabilityPermissionV1::ApplicationRoleIdentity(role),
+                    CapabilityPermissionV1::unparameterized(
+                        CapabilityPermissionKindV1::InspectVectorState,
+                    )
+                    .expect("inspection permission"),
+                ],
+                vec![
+                    EntityFieldVisibilityV1::new(
+                        lineage(),
+                        EntityTypeId::first(),
+                        vec![FieldId::first()],
+                    )
+                    .expect("visibility"),
+                ],
+                20,
+                Vec::new(),
+            )
+        };
+        let request = |field, counts| {
+            OperationRequest::inspect_vector_state(
+                lineage(),
+                EntityTypeId::first(),
+                field,
+                OperationTenantScope::global_only(),
+                partition(),
+                NonZeroU16::new(10).expect("page"),
+                counts,
+            )
+        };
+
+        let (principal, current, environment) = facts(base());
+        assert_eq!(
+            evaluate(
+                &principal,
+                &current,
+                current.database_id,
+                &environment,
+                timestamp(15),
+                &request(FieldId::first(), false),
+            ),
+            Err(PolicyCode::MissingPermission),
+        );
+
+        let exact = base()
+            .with_vector_inspection(
+                CapabilityVectorInspectionGrantV1::new(
+                    role,
+                    vec![CapabilityVectorInspectionTargetV1::new(
+                        lineage(),
+                        EntityTypeId::first(),
+                        FieldId::first(),
+                        true,
+                    )],
+                )
+                .expect("inspection extension"),
+            )
+            .expect("exact grant");
+        let (principal, current, environment) = facts(exact);
+        assert!(
+            evaluate(
+                &principal,
+                &current,
+                current.database_id,
+                &environment,
+                timestamp(15),
+                &request(FieldId::first(), true),
+            )
+            .is_ok()
+        );
+        assert_eq!(
+            evaluate(
+                &principal,
+                &current,
+                current.database_id,
+                &environment,
+                timestamp(15),
+                &request(FieldId::new(2).expect("field"), false),
+            ),
+            Err(PolicyCode::MissingPermission),
+        );
+
+        let protected = base()
+            .with_row_policy(
+                CapabilityRowPolicyGrantV1::new(
+                    role,
+                    CapabilityPrincipalFactsV1::empty(),
+                    vec![
+                        CapabilityRowPolicyBindingV1::new(
+                            lineage(),
+                            RowPolicyName::new("DocumentAccess").expect("policy"),
+                            EntityTypeId::first(),
+                            vec![CapabilityRowPolicyOperationV1::Read],
+                        )
+                        .expect("binding"),
+                    ],
+                )
+                .expect("row policy"),
+            )
+            .expect("protected base")
+            .with_vector_inspection(
+                CapabilityVectorInspectionGrantV1::new(
+                    role,
+                    vec![CapabilityVectorInspectionTargetV1::new(
+                        lineage(),
+                        EntityTypeId::first(),
+                        FieldId::first(),
+                        false,
+                    )],
+                )
+                .expect("inspection extension"),
+            )
+            .expect("protected inspection grant");
+        let (principal, current, environment) = facts(protected);
+        assert!(
+            evaluate(
+                &principal,
+                &current,
+                current.database_id,
+                &environment,
+                timestamp(15),
+                &request(FieldId::first(), false),
+            )
+            .is_ok()
+        );
+        assert_eq!(
+            evaluate(
+                &principal,
+                &current,
+                current.database_id,
+                &environment,
+                timestamp(15),
+                &request(FieldId::first(), true),
+            ),
+            Err(PolicyCode::MissingPermission),
+        );
     }
 
     fn export_selection(

@@ -1034,6 +1034,14 @@ enum OperationKind {
     GetApplicationInstallation {
         lineage: ContractLineage,
     },
+    InspectVectorState {
+        lineage: ContractLineage,
+        entity_type_id: EntityTypeId,
+        field_id: FieldId,
+        scope: ExactDataScope,
+        requested_rows: NonZeroU16,
+        counts_requested: bool,
+    },
 }
 
 /// Checked policy facts for exactly one closed application-service operation.
@@ -1569,6 +1577,29 @@ impl OperationRequest {
         Self(OperationKind::GetApplicationInstallation { lineage })
     }
 
+    /// Constructs one bounded exact production-vector inspection request.
+    #[must_use]
+    #[allow(clippy::too_many_arguments)]
+    pub fn inspect_vector_state(
+        lineage: ContractLineage,
+        entity_type_id: EntityTypeId,
+        field_id: FieldId,
+        tenant_scope: OperationTenantScope,
+        partition: PartitionKey,
+        requested_rows: NonZeroU16,
+        counts_requested: bool,
+    ) -> Self {
+        let scope = ExactDataScope::new(tenant_scope, lineage.clone(), partition);
+        Self(OperationKind::InspectVectorState {
+            lineage,
+            entity_type_id,
+            field_id,
+            scope,
+            requested_rows,
+            counts_requested,
+        })
+    }
+
     /// Returns the exact closed service operation.
     #[must_use]
     pub const fn operation(&self) -> ServiceOperationV1 {
@@ -1656,6 +1687,7 @@ impl OperationRequest {
             OperationKind::GetApplicationInstallation { .. } => {
                 ServiceOperationV1::GetApplicationInstallation
             }
+            OperationKind::InspectVectorState { .. } => ServiceOperationV1::InspectVectorState,
         }
     }
 
@@ -1874,6 +1906,9 @@ impl OperationRequest {
                     lineage.clone(),
                 ))
             }
+            OperationKind::InspectVectorState { .. } => {
+                PermissionRequirement::Kind(Kind::InspectVectorState)
+            }
             OperationKind::DiscoverCommandTools | OperationKind::DiscoverResources => return None,
         };
         Some(requirement)
@@ -1883,7 +1918,8 @@ impl OperationRequest {
         match &self.0 {
             OperationKind::ExecuteCommand { scope, .. }
             | OperationKind::ResolveCommandOutcome { scope, .. }
-            | OperationKind::GetEntity { scope, .. } => Some(&scope.tenant_scope),
+            | OperationKind::GetEntity { scope, .. }
+            | OperationKind::InspectVectorState { scope, .. } => Some(&scope.tenant_scope),
             OperationKind::ResolveCommandOutcomePreLookup { tenant_scope, .. }
             | OperationKind::ScanIndex { tenant_scope, .. }
             | OperationKind::QueryProjection { tenant_scope, .. } => Some(tenant_scope),
@@ -1942,7 +1978,8 @@ impl OperationRequest {
         match &self.0 {
             OperationKind::ExecuteCommand { scope, .. }
             | OperationKind::ResolveCommandOutcome { scope, .. }
-            | OperationKind::GetEntity { scope, .. } => {
+            | OperationKind::GetEntity { scope, .. }
+            | OperationKind::InspectVectorState { scope, .. } => {
                 PartitionRequirement::Exact(&scope.partition)
             }
             OperationKind::ExecuteAdHocQuery { target }
@@ -1994,6 +2031,37 @@ impl OperationRequest {
                     secret_fields: &fields.secret_fields,
                 })
             }
+            OperationKind::InspectVectorState {
+                lineage,
+                entity_type_id,
+                field_id,
+                ..
+            } => Some(FieldRequirement {
+                lineage,
+                entity_type_id: *entity_type_id,
+                non_key_fields: std::slice::from_ref(field_id),
+                secret_fields: &[],
+            }),
+            _ => None,
+        }
+    }
+
+    pub(crate) const fn vector_inspection_requirement(
+        &self,
+    ) -> Option<VectorInspectionRequirement<'_>> {
+        match &self.0 {
+            OperationKind::InspectVectorState {
+                lineage,
+                entity_type_id,
+                field_id,
+                counts_requested,
+                ..
+            } => Some(VectorInspectionRequirement {
+                lineage,
+                entity_type_id: *entity_type_id,
+                field_id: *field_id,
+                counts_requested: *counts_requested,
+            }),
             _ => None,
         }
     }
@@ -2032,6 +2100,7 @@ impl OperationRequest {
             OperationKind::ConsumeContextualSubscription { requested_rows, .. } => {
                 Some(*requested_rows)
             }
+            OperationKind::InspectVectorState { requested_rows, .. } => Some(*requested_rows),
             _ => None,
         }
     }
@@ -2109,6 +2178,9 @@ impl OperationRequest {
             }
             OperationKind::ConsumeContextualSubscription { .. }
             | OperationKind::ExecuteContextualReaction { .. } => {
+                OutputClassification::PolicyFilteredApplicationData
+            }
+            OperationKind::InspectVectorState { .. } => {
                 OutputClassification::PolicyFilteredApplicationData
             }
             OperationKind::GetReactiveWakeup => OutputClassification::PublicMetadata,
@@ -2260,6 +2332,13 @@ pub(crate) struct FieldRequirement<'a> {
     /// Schema-declared secret-classified fields for the entity (ADR-0118),
     /// in increasing order.
     pub(crate) secret_fields: &'a [FieldId],
+}
+
+pub(crate) struct VectorInspectionRequirement<'a> {
+    pub(crate) lineage: &'a ContractLineage,
+    pub(crate) entity_type_id: EntityTypeId,
+    pub(crate) field_id: FieldId,
+    pub(crate) counts_requested: bool,
 }
 
 pub(crate) struct OutcomeOwnerRequirement<'a> {
@@ -2659,7 +2738,7 @@ mod tests {
             OperationRequest::retire_event_stream_consumer(event_consumer_target()),
             OperationRequest::get_event_stream_consumer_status(event_consumer_target()),
             OperationRequest::watch_named_query(
-                lineage,
+                lineage.clone(),
                 ReactiveModuleHash::from_bytes([10; 32]),
                 ReactiveOperationName::new("WorkspaceBoard").expect("operation"),
                 application_query_target(),
@@ -2673,13 +2752,22 @@ mod tests {
             OperationRequest::negative_acknowledge_contextual_subscription(event_consumer_target()),
             OperationRequest::get_contextual_subscription_status(event_consumer_target()),
             OperationRequest::execute_contextual_reaction(event_consumer_target()),
+            OperationRequest::inspect_vector_state(
+                lineage,
+                EntityTypeId::first(),
+                FieldId::first(),
+                OperationTenantScope::global_only(),
+                partition(),
+                NonZeroU16::new(10).expect("nonzero"),
+                true,
+            ),
         ]
     }
 
     #[test]
     fn request_inventory_covers_every_shared_operation() {
         let requests = requests();
-        assert_eq!(requests.len(), 49);
+        assert_eq!(requests.len(), 50);
         // Migration, export, and reimport have dedicated current-policy request types:
         // they must not be representable through the ordinary permission
         // registry or an `OperationRequest` fallback.

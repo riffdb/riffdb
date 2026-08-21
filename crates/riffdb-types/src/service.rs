@@ -125,11 +125,13 @@ pub enum ServiceOperationV1 {
     GetApplicationReimport,
     /// Close one nonterminal application reimport without publishing readiness.
     CancelApplicationReimport,
+    /// Inspect one exact compiler-declared production vector field.
+    InspectVectorState,
 }
 
 impl ServiceOperationV1 {
     /// Every accepted v1 service operation, in tag order.
-    pub const ALL: [Self; 56] = [
+    pub const ALL: [Self; 57] = [
         Self::ValidateContract,
         Self::ExplainCommand,
         Self::DeployContract,
@@ -186,6 +188,7 @@ impl ServiceOperationV1 {
         Self::ApplyApplicationReimportPage,
         Self::GetApplicationReimport,
         Self::CancelApplicationReimport,
+        Self::InspectVectorState,
     ];
 
     /// Returns the stable v1 semantic tag.
@@ -248,6 +251,7 @@ impl ServiceOperationV1 {
             Self::ApplyApplicationReimportPage => 0x36,
             Self::GetApplicationReimport => 0x37,
             Self::CancelApplicationReimport => 0x38,
+            Self::InspectVectorState => 0x39,
         }
     }
 
@@ -311,6 +315,7 @@ impl ServiceOperationV1 {
             0x36 => Some(Self::ApplyApplicationReimportPage),
             0x37 => Some(Self::GetApplicationReimport),
             0x38 => Some(Self::CancelApplicationReimport),
+            0x39 => Some(Self::InspectVectorState),
             _ => None,
         }
     }
@@ -780,7 +785,11 @@ mod tests {
             ServiceOperationV1::from_tag(0x38),
             Some(ServiceOperationV1::CancelApplicationReimport)
         );
-        assert_eq!(ServiceOperationV1::from_tag(0x39), None);
+        assert_eq!(
+            ServiceOperationV1::from_tag(0x39),
+            Some(ServiceOperationV1::InspectVectorState)
+        );
+        assert_eq!(ServiceOperationV1::from_tag(0x3a), None);
         assert_eq!(ServiceOperationV1::from_tag(u8::MAX), None);
     }
 
