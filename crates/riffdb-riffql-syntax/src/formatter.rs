@@ -262,6 +262,7 @@ fn format_expression(value: &Expression, parent_precedence: u8) -> String {
                 BinaryOperator::Greater => (">", 3),
                 BinaryOperator::GreaterEqual => (">=", 3),
                 BinaryOperator::In => ("in", 3),
+                BinaryOperator::NotIn => ("not_in", 3),
                 BinaryOperator::Prefix => ("prefix", 3),
                 BinaryOperator::StartsWith => ("starts_with", 3),
                 BinaryOperator::EndsWith => ("ends_with", 3),

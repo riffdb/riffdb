@@ -16,9 +16,10 @@ pub use syntax::{
     Direction, Document, Expression, FieldSelection, Identifier, Literal,
     MAX_PROJECTED_CAUSAL_WAIT_MS, MAX_PROJECTED_LAG_MS, NearestClause, OrderTerm, Parameter, Path,
     ProjectedFreshness, ProjectedSource, QueryBody, RIFFQL_LANGUAGE_VERSION,
-    RIFFQL_LANGUAGE_VERSION_EXACT_RESULT_SET_V1, RIFFQL_LANGUAGE_VERSION_OPERATIONAL_V1,
-    RIFFQL_LANGUAGE_VERSION_PROJECTED_VECTOR_V1, RIFFQL_LANGUAGE_VERSION_SECRET_OUTPUT_V1,
-    Selection, Span, Spanned, Take, TypeReference, UnaryOperator,
+    RIFFQL_LANGUAGE_VERSION_EXACT_PREDICATE_V1, RIFFQL_LANGUAGE_VERSION_EXACT_RESULT_SET_V1,
+    RIFFQL_LANGUAGE_VERSION_OPERATIONAL_V1, RIFFQL_LANGUAGE_VERSION_PROJECTED_VECTOR_V1,
+    RIFFQL_LANGUAGE_VERSION_SECRET_OUTPUT_V1, Selection, Span, Spanned, Take, TypeReference,
+    UnaryOperator,
 };
 
 /// Maximum accepted UTF-8 query source bytes.

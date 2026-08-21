@@ -99,6 +99,15 @@ ordinal selection. Any second filter, disjunction, caller-selected field or
 operator, or other unsupported predicate is a source-spanned compiler error
 rather than a request-time filter or ignored condition.
 
+The compiler also recognizes the additive V6 exact-predicate language and can
+seal its complete provider-independent predicate/order family into query IR
+and module identity. V6 exists so contracts, locks, diagnostics, and provider
+requirements can be reviewed before physical activation. It is not yet an
+executable application query: until its indexed-set provider is installed by
+the subsequent provider package, use the narrower exact-text form above for
+runtime traffic. RiffDB does not fall back from a V6 family to scans, page
+walking, client filtering, or the older provider.
+
 ## Framework-neutral exact-result proof
 
 The retained operational fixture exposes a generic `Document` query family for

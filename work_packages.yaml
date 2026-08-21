@@ -14636,7 +14636,8 @@ work_packages:
     release/version-topology-v1.json, crates/riffdb-types/**,
     crates/riffdb-riffql-syntax/**, crates/riffdb-query-ir/**,
     crates/riffdb-query-compiler/**, crates/riffdb-query-module/**,
-    crates/riffdb-catalog/**, fixtures/**, fuzz/**, tests/**, scripts/**,
+    crates/riffdb-catalog/**, crates/riffdb-cli/assets/editor/**,
+    clients/editor/**, fixtures/**, fuzz/**, tests/**, scripts/**,
     docs/SUMMARY.md, docs/riffql/**, docs/architecture/**,
     docs/getting-started/OPERATIONAL-QUERIES.md]
   deliverables:
@@ -14672,6 +14673,17 @@ work_packages:
     evaluated semantic identity and a complete statically bounded provider requirement; all old
     artifacts remain byte-exact and readable; and no runtime provider, framework branch, public
     query structure, scan, or fallback is introduced.
+  closure:
+    status: complete
+    evidence: docs/architecture/WP-656-EXACT-PREDICATE-SEMANTICS.md
+    decision: RiffQL V6, query IR V9, and query-module V9 freeze one canonical bounded predicate,
+      optional-presence, exact-count, ordinal-window, and independent total-order model while the
+      compiler continues to emit older identities for existing narrow queries. Independent and
+      randomized reference evaluation, strict codecs, source-spanned whole-family rejection,
+      four-language generated-surface negatives, version topology, generated artifacts,
+      requirement coverage, handbook, formatting, Clippy, and the required 60-second parser fuzz
+      run pass. No provider runtime, durable provider state, framework artifact, public query AST,
+      scan, client shaping, or fallback is activated; WP-657 and WP-658 retain that ownership.
   standing_design_tests:
     interface_safety: Application callers receive only finite generated operations and typed
       bounded values; compilation owns every field, operator, Boolean edge, order, tie-breaker,

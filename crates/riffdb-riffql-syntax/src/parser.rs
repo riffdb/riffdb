@@ -6,9 +6,10 @@ use crate::{
     MAX_COLLECTION_ITEMS, MAX_NESTING, MAX_PROJECTED_CAUSAL_WAIT_MS, MAX_PROJECTED_LAG_MS,
     MAX_SYNTAX_ITEMS, OrderTerm, Parameter, ParseDiagnostic, ParseDiagnostics, Path,
     ProjectedFreshness, ProjectedSource, QueryBody, RIFFQL_LANGUAGE_VERSION,
-    RIFFQL_LANGUAGE_VERSION_EXACT_RESULT_SET_V1, RIFFQL_LANGUAGE_VERSION_OPERATIONAL_V1,
-    RIFFQL_LANGUAGE_VERSION_PROJECTED_VECTOR_V1, RIFFQL_LANGUAGE_VERSION_SECRET_OUTPUT_V1,
-    Selection, Span, Spanned, Take, TypeReference, UnaryOperator,
+    RIFFQL_LANGUAGE_VERSION_EXACT_PREDICATE_V1, RIFFQL_LANGUAGE_VERSION_EXACT_RESULT_SET_V1,
+    RIFFQL_LANGUAGE_VERSION_OPERATIONAL_V1, RIFFQL_LANGUAGE_VERSION_PROJECTED_VECTOR_V1,
+    RIFFQL_LANGUAGE_VERSION_SECRET_OUTPUT_V1, Selection, Span, Spanned, Take, TypeReference,
+    UnaryOperator,
 };
 
 /// Parses one UTF-8 RiffQL source document in a supported language version.
@@ -144,6 +145,8 @@ impl Parser {
         };
         let language_version = if projected_source.is_some() {
             RIFFQL_LANGUAGE_VERSION_PROJECTED_VECTOR_V1
+        } else if body_uses_rich_exact_result_set(&body) {
+            RIFFQL_LANGUAGE_VERSION_EXACT_PREDICATE_V1
         } else if body_uses_exact_result_set(&body) {
             RIFFQL_LANGUAGE_VERSION_EXACT_RESULT_SET_V1
         } else if selection_uses_secret_output(&body.selection) {
@@ -899,6 +902,7 @@ impl Parser {
             TokenKind::Greater => (BinaryOperator::Greater, 3),
             TokenKind::GreaterEqual => (BinaryOperator::GreaterEqual, 3),
             TokenKind::Ident(word) if word == "in" => (BinaryOperator::In, 3),
+            TokenKind::Ident(word) if word == "not_in" => (BinaryOperator::NotIn, 3),
             TokenKind::Ident(word) if word == "prefix" => (BinaryOperator::Prefix, 3),
             TokenKind::Ident(word) if word == "starts_with" => (BinaryOperator::StartsWith, 3),
             TokenKind::Ident(word) if word == "ends_with" => (BinaryOperator::EndsWith, 3),
@@ -1140,10 +1144,79 @@ fn expression_uses_operational_syntax(expression: &Expression) -> bool {
             left,
             right,
         } => {
-            operator.value == BinaryOperator::Prefix
-                || expression_uses_operational_syntax(&left.value)
+            matches!(
+                operator.value,
+                BinaryOperator::Prefix | BinaryOperator::NotIn
+            ) || expression_uses_operational_syntax(&left.value)
                 || expression_uses_operational_syntax(&right.value)
         }
+        Expression::Parameter(_) | Expression::Path(_) | Expression::Literal(_) => false,
+    }
+}
+
+fn body_uses_rich_exact_result_set(body: &QueryBody) -> bool {
+    if !body_uses_exact_result_set(body) {
+        return false;
+    }
+    body.bindings.iter().any(|binding| {
+        expression_uses_rich_exact_predicate(&binding.predicate.value)
+            || exact_text_field(&binding.predicate.value).is_some_and(|field| {
+                binding
+                    .order
+                    .first()
+                    .and_then(|term| term.path.value.0.last())
+                    .is_some_and(|ordered| ordered.value.as_str() != field)
+            })
+    })
+}
+
+fn exact_text_field(expression: &Expression) -> Option<&str> {
+    match expression {
+        Expression::Binary {
+            operator,
+            left,
+            right,
+        } => {
+            if matches!(
+                operator.value,
+                BinaryOperator::StartsWith | BinaryOperator::EndsWith | BinaryOperator::Contains
+            ) && let Expression::Path(path) = &left.value
+            {
+                return path.0.last().map(|segment| segment.value.as_str());
+            }
+            exact_text_field(&left.value).or_else(|| exact_text_field(&right.value))
+        }
+        Expression::PresenceGuard { predicate, .. } => exact_text_field(&predicate.value),
+        Expression::Unary { operand, .. } => exact_text_field(&operand.value),
+        Expression::Parameter(_) | Expression::Path(_) | Expression::Literal(_) => None,
+    }
+}
+
+fn expression_uses_rich_exact_predicate(expression: &Expression) -> bool {
+    match expression {
+        Expression::Binary {
+            operator,
+            left,
+            right,
+        } => {
+            matches!(
+                operator.value,
+                BinaryOperator::NotEqual
+                    | BinaryOperator::Less
+                    | BinaryOperator::LessEqual
+                    | BinaryOperator::Greater
+                    | BinaryOperator::GreaterEqual
+                    | BinaryOperator::In
+                    | BinaryOperator::NotIn
+                    | BinaryOperator::Prefix
+                    | BinaryOperator::Or
+            ) || expression_uses_rich_exact_predicate(&left.value)
+                || expression_uses_rich_exact_predicate(&right.value)
+        }
+        Expression::PresenceGuard { predicate, .. } => {
+            expression_uses_rich_exact_predicate(&predicate.value)
+        }
+        Expression::Unary { .. } => true,
         Expression::Parameter(_) | Expression::Path(_) | Expression::Literal(_) => false,
     }
 }

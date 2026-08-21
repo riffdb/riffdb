@@ -68,6 +68,7 @@
 # RiffQL
 
 - [RiffQL Language](riffql/LANGUAGE.md)
+- [Exact Predicate and Order Families](riffql/EXACT-PREDICATES.md)
 - [Planning and Bounds](riffql/PLANNING.md)
 - [Immutable Query Modules](riffql/MODULES.md)
 - [Query IR Reference](riffql/IR.md)
@@ -94,6 +95,7 @@
 - [System Overview](architecture/OVERVIEW.md)
 - [Command Execution Path](architecture/COMMAND-PATH.md)
 - [Composite Read Views](architecture/COMPOSITE-READ-VIEWS.md)
+- [WP-656 Exact-predicate Semantic Closure](architecture/WP-656-EXACT-PREDICATE-SEMANTICS.md)
 - [Vector Acceptance Evidence](architecture/wp-595-vector-acceptance.md)
 - [Deployable Application Alpha Plan](architecture/DEPLOYABLE-APPLICATION-ALPHA.md)
   - [Alpha Architecture Freeze](architecture/DEPLOYABLE-APPLICATION-ALPHA-FREEZE.md)
