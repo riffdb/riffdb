@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"io"
+	"math"
 	"net"
 	"os"
 	"path/filepath"
@@ -133,6 +134,30 @@ func TestSchemaBoundDecimalAcceptsMissingWirePrecision(t *testing.T) {
 		t.Fatal("conflicting wire precision was accepted")
 	}
 }
+
+func TestVectorRegistryPreservesCanonicalBinary32Components(t *testing.T) {
+	value := VectorFrom([]float32{-0.0, 1.5, -2.25})
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded Value
+	if err = json.Unmarshal(encoded, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	vector, err := VectorValue(decoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(vector) != 3 || math.Signbit(float64(vector[0])) || vector[1] != 1.5 || vector[2] != -2.25 {
+		t.Fatalf("vector changed across driver registry: %#v", vector)
+	}
+	if validateValue(Value{Type: "vector", Value: Vector{ComponentBits: []uint32{f32bits(float32(math.NaN()))}}}, 0) == nil {
+		t.Fatal("non-finite vector was accepted")
+	}
+}
+
+func f32bits(value float32) uint32 { return math.Float32bits(value) }
 
 type fixture struct {
 	path        string

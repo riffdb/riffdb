@@ -20,6 +20,7 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[89ab][0-9a-f]{3}-[0-9a-f]{12
 
 export type ApplicationValueSchema =
   | { readonly kind: "bool" | "i64" | "u64" | "string" | "uuid" | "bytes" | "date" | "timestamp" | "cursor" | "limit" }
+  | { readonly kind: "vector"; readonly dimension: number }
   | { readonly kind: "decimal"; readonly precision?: number; readonly scale?: number }
   | { readonly kind: "money"; readonly precision?: number; readonly scale?: number; readonly currency?: string }
   | { readonly kind: "enum"; readonly typeId?: number; readonly variants?: Readonly<Record<string, number>> }
@@ -1267,6 +1268,10 @@ function encodeDriverValue(value: unknown, schema: ApplicationValueSchema): Driv
       if (currency !== schema.currency) throw new Error("generated RiffDB money currency does not match");
       return { type: "money", value: { currency, amount: encodeDriverDecimal(money.amount, schema) } };
     }
+    case "vector": return {
+      type: "vector",
+      value: { component_bits: encodeVectorBits(value, schema.dimension) },
+    };
     case "limit": return { type: "u64", value: String(boundedInteger(value, 1, 500)) };
   }
 }
@@ -1356,6 +1361,7 @@ function decodeDriverValue(value: DriverValue, schema: ApplicationValueSchema): 
     case "timestamp": if (value.type === "timestamp") return { seconds: BigInt(value.value.seconds), nanos: boundedInteger(value.value.nanos, 0, 999_999_999) }; break;
     case "decimal": if (value.type === "decimal") return decodeDriverDecimal(value.value, schema); break;
     case "money": if (value.type === "money" && value.value.currency === schema.currency) return { currency: value.value.currency, amount: decodeDriverDecimal(value.value.amount, schema) }; break;
+    case "vector": if (value.type === "vector") return decodeVectorBits(value.value.component_bits, schema.dimension); break;
     case "limit": if (value.type === "u64") return boundedInteger(Number(value.value), 1, 500); break;
   }
   throw new Error("RiffDB driver result does not match the generated schema");
@@ -1576,6 +1582,7 @@ function encodeValue(value: unknown, schema: ApplicationValueSchema): unknown {
       }
       return { $timestamp: { seconds: seconds.toString(), nanos } };
     }
+    case "vector": return { $vector: encodeVector(value, schema.dimension) };
     case "limit":
       if (!Number.isInteger(value) || (value as number) < 1 || (value as number) > 500) {
         throw new Error("invalid limit input");
@@ -1642,6 +1649,7 @@ function decodeTagged(value: unknown): unknown {
       currency: expectCurrency(input.currency),
       amount: decodeDecimal(exactObject(input.amount)),
     };
+    case "vector": return decodeVector(input.components, undefined);
     case "list":
       if (!Array.isArray(input.values)) return fail();
       return input.values.map(decodeTagged);
@@ -1737,6 +1745,7 @@ function decodePlain(value: unknown, schema: ApplicationValueSchema): unknown {
         amount: normalizeDecodedDecimal(input.amount, schema.precision, schema.scale),
       };
     }
+    case "vector": return decodeVector(value, schema.dimension);
     default: break;
   }
   return fail();
@@ -1929,6 +1938,10 @@ function encodeCliReactiveValue(value: unknown, schema: ApplicationValueSchema):
         })(),
       };
     }
+    case "vector": return {
+      type: "vector",
+      components: encodeVector(value, schema.dimension),
+    };
     case "limit":
       return { type: "u64", value: String(boundedInteger(value, 1, 500)) };
     case "optional":
@@ -1936,6 +1949,50 @@ function encodeCliReactiveValue(value: unknown, schema: ApplicationValueSchema):
     case "record":
       throw new Error("invalid reactive parameter schema");
   }
+}
+
+function encodeVector(value: unknown, dimension: number): ReadonlyArray<number> {
+  if (!Array.isArray(value) || !Number.isInteger(dimension) || dimension < 1
+      || dimension > 4_096 || value.length !== dimension) return fail();
+  return value.map((component) => {
+    if (typeof component !== "number" || !Number.isFinite(component)) return fail();
+    const rounded = Math.fround(component === 0 ? 0 : component);
+    if (!Number.isFinite(rounded)) return fail();
+    return rounded;
+  });
+}
+
+function encodeVectorBits(value: unknown, dimension: number): ReadonlyArray<number> {
+  const vector = encodeVector(value, dimension);
+  const float = new Float32Array(1);
+  const bits = new Uint32Array(float.buffer);
+  return vector.map((component) => {
+    float[0] = component;
+    return bits[0]!;
+  });
+}
+
+function decodeVectorBits(value: unknown, dimension: number): ReadonlyArray<number> {
+  if (!Array.isArray(value) || value.length !== dimension) return fail();
+  const float = new Float32Array(1);
+  const bits = new Uint32Array(float.buffer);
+  return value.map((componentBits) => {
+    bits[0] = boundedInteger(componentBits, 0, 4_294_967_295);
+    const component = float[0]!;
+    if (!Number.isFinite(component)) return fail();
+    return component === 0 ? 0 : component;
+  });
+}
+
+function decodeVector(value: unknown, dimension: number | undefined): ReadonlyArray<number> {
+  if (!Array.isArray(value) || value.length < 1 || value.length > 4_096
+      || (dimension !== undefined && value.length !== dimension)) return fail();
+  return value.map((component) => {
+    if (typeof component !== "number" || !Number.isFinite(component)) return fail();
+    const rounded = Math.fround(component);
+    if (!Number.isFinite(rounded) || rounded !== component) return fail();
+    return component === 0 ? 0 : component;
+  });
 }
 
 function decodeReactiveConsumerStatus(value: unknown): ReactiveConsumerStatus {

@@ -1159,6 +1159,24 @@ fn parse_value(value: Value, depth: usize, budget: &mut ValueBudget) -> PyResult
                 budget,
             )?),
         }),
+        "vector" if object.len() == 2 => {
+            let components = exact_value(object, "components")?
+                .as_array()
+                .ok_or_else(|| native_error("invalid_input", None))?
+                .iter()
+                .map(|component| {
+                    component
+                        .as_f64()
+                        .filter(|value| value.is_finite())
+                        .map(|value| value as f32)
+                        .filter(|value| value.is_finite())
+                        .ok_or_else(|| native_error("invalid_input", None))
+                })
+                .collect::<PyResult<Vec<_>>>()?;
+            riffdb_client_rust::CanonicalVector::new(components)
+                .map(ApplicationValue::Vector)
+                .map_err(|_| native_error("invalid_input", None))
+        }
         "list" if object.len() == 2 => Ok(ApplicationValue::List(
             exact_value(object, "value")?
                 .as_array()
@@ -1583,6 +1601,9 @@ fn value_to_json(value: ApplicationValue) -> Value {
         ApplicationValue::Date(value) => json!({"$riffdb": "date", "value": value}),
         ApplicationValue::Timestamp { seconds, nanos } => {
             json!({"$riffdb": "timestamp", "seconds": seconds, "nanos": nanos})
+        }
+        ApplicationValue::Vector(value) => {
+            json!({"$riffdb": "vector", "components": value.into_components()})
         }
         ApplicationValue::List(values) => {
             Value::Array(values.into_iter().map(value_to_json).collect())

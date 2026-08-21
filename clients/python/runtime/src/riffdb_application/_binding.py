@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import types
 import typing
 from dataclasses import fields, is_dataclass
@@ -49,11 +50,34 @@ def _integer_kind(annotation: object) -> str | None:
     return None
 
 
+def _vector_dimension(annotation: object) -> int | None:
+    if get_origin(annotation) is not Annotated:
+        return None
+    arguments = get_args(annotation)
+    if len(arguments) < 2 or arguments[0] != tuple[float, ...] or not isinstance(arguments[1], str):
+        return None
+    marker = arguments[1]
+    if not marker.startswith("vector<") or not marker.endswith(">"):
+        return None
+    dimension = int(marker[7:-1])
+    return dimension if 1 <= dimension <= 4096 else None
+
+
 def _is_union(origin: object) -> bool:
     return origin in {types.UnionType, typing.Union}
 
 
 def _encode_typed(value: object, annotation: object) -> dict[str, object]:
+    vector_dimension = _vector_dimension(annotation)
+    if vector_dimension is not None:
+        if not isinstance(value, tuple) or len(value) != vector_dimension:
+            raise TypeError("RiffDB vector field requires its declared tuple dimension")
+        components = []
+        for component in value:
+            if type(component) is not float or not math.isfinite(component):
+                raise TypeError("RiffDB vector components must be finite floats")
+            components.append(0.0 if component == 0.0 else component)
+        return {"kind": "vector", "components": components}
     integer_kind = _integer_kind(annotation)
     if integer_kind is not None:
         if type(value) is not int:
@@ -190,6 +214,19 @@ def _decode_decimal(value: object) -> Decimal:
 
 
 def _decode_typed(value: object, annotation: object) -> object:
+    vector_dimension = _vector_dimension(annotation)
+    if vector_dimension is not None:
+        if (
+            not isinstance(value, dict)
+            or value.get("$riffdb") != "vector"
+            or not isinstance(value.get("components"), list)
+            or len(value["components"]) != vector_dimension
+        ):
+            raise TypeError("invalid RiffDB vector response")
+        components = tuple(value["components"])
+        if any(type(component) is not float or not math.isfinite(component) for component in components):
+            raise TypeError("invalid RiffDB vector response")
+        return components
     if get_origin(annotation) is Annotated:
         annotation = get_args(annotation)[0]
     origin = get_origin(annotation)

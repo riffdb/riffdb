@@ -15,7 +15,7 @@ let nextSession = 0;
 /** Exact alpha driver protocol generation. */
 export const DRIVER_PROTOCOL_VERSION = 2 as const;
 /** Exact tagged value registry compiled into `riffdb-driverd`. */
-export const DRIVER_VALUE_REGISTRY_HASH = "8660841ce2055895ba4e1999836b0be11792651c7dcf166f21cf1b43c0dd86af" as const;
+export const DRIVER_VALUE_REGISTRY_HASH = "8e1681ddf5e6a82e7fa646f9737128ad7e36f54f8b5846ac6e33e732125407e5" as const;
 /** Exact structured-error registry compiled into `riffdb-driverd`. */
 export const DRIVER_ERROR_REGISTRY_HASH = "b94d685ecbc18f2369a2bfa1a53139d06100699c4ee41b31c86d6a7e17039850" as const;
 
@@ -26,6 +26,7 @@ export type DriverValue =
   | { readonly type: "timestamp"; readonly value: DriverTimestamp }
   | { readonly type: "decimal"; readonly value: DriverDecimal }
   | { readonly type: "money"; readonly value: DriverMoney }
+  | { readonly type: "vector"; readonly value: DriverVector }
   | { readonly type: "list"; readonly value: ReadonlyArray<DriverValue> }
   | { readonly type: "record"; readonly value: Readonly<Record<string, DriverValue>> };
 
@@ -43,6 +44,10 @@ export interface DriverDecimal {
 export interface DriverMoney {
   readonly currency: string;
   readonly amount: DriverDecimal;
+}
+
+export interface DriverVector {
+  readonly component_bits: ReadonlyArray<number>;
 }
 
 export interface ExactDecimalValue {
@@ -729,6 +734,13 @@ function validateDriverValue(value: unknown, depth: number): DriverValue {
     const money = exactObject(item.value);
     boundedPattern(money.currency, /^[A-Z]{3}$/);
     validateDecimal(money.amount);
+    return item as unknown as DriverValue;
+  }
+  if (type === "vector") {
+    const vector = exactObject(item.value);
+    if (Object.keys(vector).length !== 1 || !Array.isArray(vector.component_bits) || vector.component_bits.length < 1
+        || vector.component_bits.length > MAX_COLLECTION_ITEMS) throw new Error("invalid RiffDB driver vector");
+    vector.component_bits.forEach((bits) => boundedInteger(bits, 0, 4_294_967_295));
     return item as unknown as DriverValue;
   }
   if (type === "list" && Array.isArray(item.value) && item.value.length <= MAX_COLLECTION_ITEMS) {

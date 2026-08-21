@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"os"
 	"regexp"
@@ -24,7 +25,7 @@ import (
 
 const (
 	ProtocolVersion   = uint32(2)
-	ValueRegistryHash = "8660841ce2055895ba4e1999836b0be11792651c7dcf166f21cf1b43c0dd86af"
+	ValueRegistryHash = "8e1681ddf5e6a82e7fa646f9737128ad7e36f54f8b5846ac6e33e732125407e5"
 	ErrorRegistryHash = "b94d685ecbc18f2369a2bfa1a53139d06100699c4ee41b31c86d6a7e17039850"
 	maxFrameBytes     = 1_048_576
 	maxPending        = 256
@@ -57,6 +58,9 @@ type Decimal struct {
 type Money struct {
 	Currency string  `json:"currency"`
 	Amount   Decimal `json:"amount"`
+}
+type Vector struct {
+	ComponentBits []uint32 `json:"component_bits"`
 }
 
 type ExactDecimal struct {
@@ -95,6 +99,16 @@ func DecimalFrom(value ExactDecimal) Value {
 func MoneyFrom(value ExactMoney) Value {
 	decimal := DecimalFrom(value.Amount).Value.(Decimal)
 	return Value{Type: "money", Value: Money{Currency: value.Currency, Amount: decimal}}
+}
+func VectorFrom(value []float32) Value {
+	bits := make([]uint32, len(value))
+	for index, component := range value {
+		if component == 0 {
+			component = 0
+		}
+		bits[index] = math.Float32bits(component)
+	}
+	return Value{Type: "vector", Value: Vector{ComponentBits: bits}}
 }
 func Optional[T any](value *T, encode func(T) Value) Value {
 	if value == nil {
@@ -295,6 +309,47 @@ func MoneyValue(value Value) (ExactMoney, error) {
 		return ExactMoney{}, err
 	}
 	return ExactMoney{Currency: wire.Currency, Amount: decimal}, nil
+}
+func VectorValue(value Value) ([]float32, error) {
+	if value.Type != "vector" {
+		return nil, errors.New("invalid RiffDB vector value")
+	}
+	var bits []uint32
+	if typed, ok := value.Value.(Vector); ok {
+		bits = typed.ComponentBits
+	} else {
+		object, ok := value.Value.(map[string]any)
+		if !ok || len(object) != 1 {
+			return nil, errors.New("invalid RiffDB vector value")
+		}
+		raw, ok := object["component_bits"].([]any)
+		if !ok {
+			return nil, errors.New("invalid RiffDB vector value")
+		}
+		bits = make([]uint32, len(raw))
+		for index, item := range raw {
+			number, ok := item.(float64)
+			if !ok || number < 0 || number > 4_294_967_295 || math.Trunc(number) != number {
+				return nil, errors.New("invalid RiffDB vector value")
+			}
+			bits[index] = uint32(number)
+		}
+	}
+	if len(bits) == 0 || len(bits) > maxCollection {
+		return nil, errors.New("invalid RiffDB vector value")
+	}
+	output := make([]float32, len(bits))
+	for index, bitPattern := range bits {
+		component := math.Float32frombits(bitPattern)
+		if math.IsNaN(float64(component)) || math.IsInf(float64(component), 0) {
+			return nil, errors.New("invalid RiffDB vector value")
+		}
+		if component == 0 {
+			component = 0
+		}
+		output[index] = component
+	}
+	return output, nil
 }
 func DecodeOptional[T any](value Value, decode func(Value) (T, error)) (*T, error) {
 	if value.Type == "null" {
@@ -936,6 +991,36 @@ func validateValue(value Value, depth int) error {
 	case "money":
 		if _, ok := value.Value.(map[string]any); !ok {
 			if _, typed := value.Value.(Money); !typed {
+				return errors.New("invalid value")
+			}
+		}
+	case "vector":
+		var bits []uint32
+		if typed, ok := value.Value.(Vector); ok {
+			bits = typed.ComponentBits
+		} else {
+			object, ok := value.Value.(map[string]any)
+			if !ok || len(object) != 1 {
+				return errors.New("invalid value")
+			}
+			raw, ok := object["component_bits"].([]any)
+			if !ok {
+				return errors.New("invalid value")
+			}
+			bits = make([]uint32, len(raw))
+			for index, item := range raw {
+				number, ok := item.(float64)
+				if !ok || number < 0 || number > 4_294_967_295 || math.Trunc(number) != number {
+					return errors.New("invalid value")
+				}
+				bits[index] = uint32(number)
+			}
+		}
+		if len(bits) == 0 || len(bits) > maxCollection {
+			return errors.New("invalid value")
+		}
+		for _, bitPattern := range bits {
+			if component := math.Float32frombits(bitPattern); math.IsNaN(float64(component)) || math.IsInf(float64(component), 0) {
 				return errors.New("invalid value")
 			}
 		}

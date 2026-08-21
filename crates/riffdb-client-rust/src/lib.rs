@@ -95,7 +95,7 @@ pub use reactive::{
 };
 pub use reimport::StartApplicationReimport;
 /// Freshness policy and commit token types used by projected queries.
-pub use riffdb_types::{CommitToken, FreshnessPolicy, ProjectionFrontier};
+pub use riffdb_types::{CanonicalVector, CommitToken, FreshnessPolicy, ProjectionFrontier};
 pub use session::{
     APPLICATION_SESSION_PROTOCOL_V1, ApplicationSessionConfigurationError,
     ApplicationSessionIdentity, MAX_APPLICATION_SESSION_IN_FLIGHT,

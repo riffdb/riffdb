@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 
 use riffdb_driver_host::{
     DRIVER_ERROR_REGISTRY_HASH, DRIVER_PROTOCOL_VERSION, DRIVER_VALUE_REGISTRY_HASH, DriverRequest,
-    DriverResponse, DriverValue, FrameCodec, InvokeOptions, ProtocolError,
+    DriverResponse, DriverValue, DriverVector, FrameCodec, InvokeOptions, ProtocolError,
 };
 
 const HASH: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
@@ -49,6 +49,62 @@ fn request_round_trip_is_exact_and_name_addressed() {
             "forbidden local surface: {forbidden}"
         );
     }
+}
+
+#[test]
+fn canonical_vector_registry_round_trips_exact_component_bits() {
+    let vector = DriverValue::Vector(DriverVector {
+        component_bits: vec![0, 1.5_f32.to_bits(), (-2.25_f32).to_bits()],
+    });
+    let request = DriverRequest::Invoke {
+        request_id: "vector-1".to_owned(),
+        operation: "docs_set_document_embedding".to_owned(),
+        input_schema_hash: HASH.to_owned(),
+        input: BTreeMap::from([("embedding".to_owned(), vector.clone())]),
+        options: InvokeOptions {
+            deadline_millis: 10_000,
+            maximum_attempts: 1,
+            read_after_commit: None,
+            cursor: None,
+            accept_compact_result: false,
+        },
+    };
+    let encoded = FrameCodec::encode_request(&request).expect("encode vector request");
+    assert_eq!(
+        FrameCodec::decode_request(&encoded).expect("decode"),
+        request
+    );
+    assert!(
+        std::str::from_utf8(&encoded[4..])
+            .expect("json")
+            .contains("component_bits")
+    );
+}
+
+#[test]
+fn non_finite_driver_vector_bits_fail_before_dispatch() {
+    let request = DriverRequest::Invoke {
+        request_id: "vector-invalid".to_owned(),
+        operation: "docs_set_document_embedding".to_owned(),
+        input_schema_hash: HASH.to_owned(),
+        input: BTreeMap::from([(
+            "embedding".to_owned(),
+            DriverValue::Vector(DriverVector {
+                component_bits: vec![f32::NAN.to_bits()],
+            }),
+        )]),
+        options: InvokeOptions {
+            deadline_millis: 10_000,
+            maximum_attempts: 1,
+            read_after_commit: None,
+            cursor: None,
+            accept_compact_result: false,
+        },
+    };
+    assert_eq!(
+        FrameCodec::encode_request(&request),
+        Err(ProtocolError::InvalidBounds)
+    );
 }
 
 #[test]

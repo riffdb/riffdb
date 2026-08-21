@@ -1106,6 +1106,8 @@ pub enum ApplicationValue {
         /// Nanosecond fraction.
         nanos: u32,
     },
+    /// Canonical finite binary32 vector with a structurally bounded dimension.
+    Vector(riffdb_types::CanonicalVector),
     /// Ordered bounded values.
     List(Vec<Self>),
     /// Name-addressed record.
@@ -1770,6 +1772,9 @@ pub(crate) fn lower_value(value: ApplicationValue) -> Result<v1::Value, Applicat
         ApplicationValue::Timestamp { .. } => {
             return Err(ApplicationClientError::InvalidInput);
         }
+        ApplicationValue::Vector(value) => Kind::VectorValue(v1::VectorValue {
+            components: value.into_components(),
+        }),
         ApplicationValue::List(values) => Kind::ListValue(v1::ValueList {
             values: values
                 .into_iter()
@@ -2027,7 +2032,10 @@ pub fn raise_value(value: v1::Value) -> Result<ApplicationValue, ApplicationClie
                 nanos: value.nanos,
             })
         }
-        Kind::TimestampValue(_) | Kind::EnumValue(_) | Kind::VectorValue(_) => {
+        Kind::VectorValue(value) => riffdb_types::CanonicalVector::new(value.components)
+            .map(ApplicationValue::Vector)
+            .map_err(|_| ApplicationClientError::InvalidResponse),
+        Kind::TimestampValue(_) | Kind::EnumValue(_) => {
             Err(ApplicationClientError::InvalidResponse)
         }
     }
@@ -3079,5 +3087,33 @@ mod tests {
         ))
         .expect("lower text");
         assert_eq!(re_lowered, text_lowered);
+    }
+
+    #[test]
+    fn canonical_vector_values_round_trip_without_punning() {
+        let vector =
+            riffdb_types::CanonicalVector::new(vec![-0.0, 1.5, -2.25]).expect("canonical vector");
+        let lowered = lower_value(ApplicationValue::Vector(vector.clone())).expect("lower");
+        let Some(v1::value::Kind::VectorValue(wire)) = lowered.kind.as_ref() else {
+            panic!("expected the dedicated vector wire arm");
+        };
+        assert_eq!(wire.components, vector.components());
+        assert_eq!(
+            raise_value(lowered).expect("raise"),
+            ApplicationValue::Vector(vector)
+        );
+    }
+
+    #[test]
+    fn non_finite_vector_response_is_rejected() {
+        let result = raise_value(v1::Value {
+            kind: Some(v1::value::Kind::VectorValue(v1::VectorValue {
+                components: vec![f32::NAN],
+            })),
+        });
+        assert!(matches!(
+            result,
+            Err(ApplicationClientError::InvalidResponse)
+        ));
     }
 }

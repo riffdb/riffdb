@@ -211,12 +211,15 @@ the same checked command and persist atomically with its outcome, provenance,
 and idempotency record. An application cannot submit evidence separately or
 use generic field mutation to bypass it.
 
-Typed vector values cross the native, Protobuf, gRPC, hosted MCP, and CLI
-conversion boundaries with finite-component and exact-dimension checks. Stable
-generated application facades do not yet expose vector fields, so complete
-generated-client ingress remains unavailable. The production staleness
-enumeration/health observer and `nearest()` storage path are also absent — see
-[Known Limitations](../known-limitations.md).
+Typed vector values cross the native, Protobuf, gRPC, hosted MCP, CLI, and
+generated Rust, Go, TypeScript, and Python conversion boundaries with
+finite-component and exact-dimension checks. Each generated embedding command
+also has a field-specific constructor that fills the contract-sealed model
+identity and version; generated constants and accessors keep that evidence
+inspectable without asking application code to duplicate it. Direct input
+construction remains checked by the same server authority. The production
+staleness enumeration/health observer and `nearest()` storage path are still
+absent — see [Known Limitations](../known-limitations.md).
 
 ## Revision-checked workflow transitions
 
