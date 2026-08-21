@@ -510,6 +510,38 @@ pub(crate) fn decode_entity_key(bytes: &[u8]) -> Result<EntityKey, PhysicalKeyEr
     Ok(key)
 }
 
+pub(crate) fn encode_vector_evidence_key(
+    key: &EntityKey,
+    field: riffdb_types::FieldId,
+) -> Result<Vec<u8>, PhysicalKeyError> {
+    let mut encoded = Vec::with_capacity(key.as_bytes().len().saturating_add(4));
+    encoded.extend_from_slice(key.as_bytes());
+    encoded.extend_from_slice(&field.get().to_be_bytes());
+    if encoded.len() != key.as_bytes().len().saturating_add(4) {
+        return Err(PhysicalKeyError::InvalidLength);
+    }
+    Ok(encoded)
+}
+
+pub(crate) fn decode_vector_evidence_key(
+    bytes: &[u8],
+) -> Result<(EntityKey, riffdb_types::FieldId), PhysicalKeyError> {
+    let split = bytes
+        .len()
+        .checked_sub(4)
+        .ok_or(PhysicalKeyError::InvalidLength)?;
+    let key = decode_entity_key(&bytes[..split])?;
+    let field = riffdb_types::FieldId::new(u32::from_be_bytes(
+        bytes[split..]
+            .try_into()
+            .map_err(|_| PhysicalKeyError::InvalidLength)?,
+    ))
+    .ok_or(PhysicalKeyError::InvalidComponent)?;
+    let canonical = encode_vector_evidence_key(&key, field)?;
+    require_canonical(bytes, &canonical)?;
+    Ok((key, field))
+}
+
 pub(crate) fn encode_index_entry_key(key: &IndexEntryKey) -> &[u8] {
     key.as_bytes()
 }
