@@ -8,7 +8,7 @@ use riffdb_types::{
 
 use crate::{
     EncodedPageItem, StoredVectorEmbeddingWriteV1, StoredVectorEvidenceV1,
-    VectorObservationCountsV1, VectorObservationTargetV1,
+    VectorEvidenceIndexEntryV1, VectorObservationCountsV1, VectorObservationTargetV1,
 };
 
 use super::{
@@ -19,6 +19,7 @@ use super::{
 
 pub(super) const VECTOR_EVIDENCE: &str = "riffdb.storage.v1.StoredVectorEvidenceV1";
 pub(super) const VECTOR_OBSERVATION: &str = "riffdb.storage.v1.StoredVectorObservationV1";
+pub(super) const VECTOR_EVIDENCE_INDEX: &str = "riffdb.storage.v1.StoredVectorEvidenceIndexV1";
 
 fn embedding_to_proto(value: &StoredVectorEmbeddingWriteV1) -> wire::StoredVectorEmbeddingWriteV1 {
     wire::StoredVectorEmbeddingWriteV1 {
@@ -159,5 +160,65 @@ pub fn decode_vector_observation_v1(
         VECTOR_OBSERVATION,
         encoded,
         observation_from_proto,
+    )
+}
+
+fn evidence_index_to_proto(
+    value: &VectorEvidenceIndexEntryV1,
+) -> wire::StoredVectorEvidenceIndexV1 {
+    wire::StoredVectorEvidenceIndexV1 {
+        contract_lineage: value.target().lineage().as_str().to_owned(),
+        partition_key: value.target().partition_key().as_bytes().to_vec(),
+        entity_type_id: value.target().entity_type().get(),
+        vector_field_id: value.target().vector_field().get(),
+        entity_key: value.entity_key().as_bytes().to_vec(),
+        evidence_sequence: value.evidence_sequence().get(),
+        newest_source_write_sequence: value.newest_source_write().map(CommitSequence::get),
+        embedding_write: value.embedding_write().map(embedding_to_proto),
+    }
+}
+
+fn evidence_index_from_proto(
+    value: wire::StoredVectorEvidenceIndexV1,
+) -> Result<VectorEvidenceIndexEntryV1, DurableCodecError> {
+    let entity_key = riffdb_types::EntityKey::from_bytes(value.entity_key)
+        .map_err(|_| DurableCodecError::corrupt())?;
+    storage_result(VectorEvidenceIndexEntryV1::from_parts(
+        VectorObservationTargetV1::new(
+            ContractLineage::new(value.contract_lineage)
+                .map_err(|_| DurableCodecError::corrupt())?,
+            PartitionKey::from_bytes(value.partition_key)
+                .map_err(|_| DurableCodecError::corrupt())?,
+            EntityTypeId::new(value.entity_type_id).ok_or_else(DurableCodecError::corrupt)?,
+            FieldId::new(value.vector_field_id).ok_or_else(DurableCodecError::corrupt)?,
+        ),
+        entity_key,
+        CommitSequence::new(value.evidence_sequence).ok_or_else(DurableCodecError::corrupt)?,
+        value
+            .newest_source_write_sequence
+            .map(|sequence| CommitSequence::new(sequence).ok_or_else(DurableCodecError::corrupt))
+            .transpose()?,
+        value
+            .embedding_write
+            .map(embedding_from_proto)
+            .transpose()?,
+    ))
+}
+
+/// Encodes one authoritative partition-ordered vector-evidence index row.
+pub fn encode_vector_evidence_index_v1(
+    value: &VectorEvidenceIndexEntryV1,
+) -> Result<CanonicalStoredEnvelopeV1, DurableCodecError> {
+    encode_message(VECTOR_EVIDENCE_INDEX, &evidence_index_to_proto(value))
+}
+
+/// Decodes and validates one authoritative vector-evidence index row.
+pub fn decode_vector_evidence_index_v1(
+    encoded: &[u8],
+) -> Result<EncodedPageItem<VectorEvidenceIndexEntryV1>, DurableCodecError> {
+    decode_message::<wire::StoredVectorEvidenceIndexV1, _, _>(
+        VECTOR_EVIDENCE_INDEX,
+        encoded,
+        evidence_index_from_proto,
     )
 }

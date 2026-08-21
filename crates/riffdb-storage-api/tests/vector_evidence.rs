@@ -2,8 +2,9 @@
 
 use riffdb_storage_api::{
     DurableKeySchemaBindingV1, EntityTarget, ExecutablePlanRef, StorageValueError,
-    StoredVectorEmbeddingWriteV1, StoredVectorEvidenceV1, VectorEvidenceTransitionPlanV1,
-    VectorObservationCountsV1, decode_vector_evidence_v1, decode_vector_observation_v1,
+    StoredVectorEmbeddingWriteV1, StoredVectorEvidenceV1, VectorEvidenceIndexEntryV1,
+    VectorEvidenceTransitionPlanV1, VectorObservationCountsV1, decode_vector_evidence_index_v1,
+    decode_vector_evidence_v1, decode_vector_observation_v1, encode_vector_evidence_index_v1,
     encode_vector_evidence_v1, encode_vector_observation_v1,
 };
 use riffdb_types::{
@@ -164,6 +165,30 @@ fn durable_codec_round_trips_without_vector_or_post_image_duplication() {
         decoded.encoded_content_charge(),
         encoded.encoded_content_charge()
     );
+}
+
+#[test]
+fn partition_index_round_trips_and_proves_primary_classification() {
+    let sequence = CommitSequence::new(9).expect("sequence");
+    let primary = evidence(sequence, Some(sequence), None).expect("evidence");
+    let index = VectorEvidenceIndexEntryV1::from_evidence(&primary).expect("index entry");
+    assert!(index.source_stale());
+    assert!(index.matches_evidence(&primary));
+
+    let encoded = encode_vector_evidence_index_v1(&index).expect("encode index");
+    let decoded = decode_vector_evidence_index_v1(encoded.as_bytes()).expect("decode index");
+    assert_eq!(decoded.value(), &index);
+
+    let other = evidence(
+        CommitSequence::new(10).expect("later sequence"),
+        Some(CommitSequence::new(10).expect("later sequence")),
+        Some(StoredVectorEmbeddingWriteV1::new(
+            CommitSequence::new(10).expect("later sequence"),
+            metadata(),
+        )),
+    )
+    .expect("other evidence");
+    assert!(!index.matches_evidence(&other));
 }
 
 #[test]

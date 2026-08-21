@@ -365,6 +365,10 @@ fn storage_source_import_and_type_inventory_is_exact() {
                 vec!["riffdb/storage/v1/application.proto"],
             ),
             (
+                "riffdb/storage/v1/vector_evidence_index_v1.proto".to_owned(),
+                vec!["riffdb/storage/v1/vector_evidence_v1.proto"],
+            ),
+            (
                 "riffdb/storage/v1/vector_observation_v1.proto".to_owned(),
                 vec![],
             ),
@@ -391,8 +395,8 @@ fn storage_source_import_and_type_inventory_is_exact() {
             .iter()
             .map(|file| file.message_type.len())
             .sum::<usize>(),
-        170,
-        "169 semantic messages plus the unchanged StoredEnvelope"
+        171,
+        "170 semantic messages plus the unchanged StoredEnvelope"
     );
     assert_eq!(
         descriptors
@@ -421,9 +425,9 @@ fn storage_source_import_and_type_inventory_is_exact() {
 
 #[test]
 fn closed_registry_order_and_schema_hashes_are_exactly_derived() {
-    assert_eq!(CURRENT_RECORD_SCHEMA_COUNT, 67);
-    assert_eq!(READABLE_RECORD_SCHEMA_COUNT, 90);
-    assert_eq!(WRITABLE_RECORD_SCHEMA_COUNT, 67);
+    assert_eq!(CURRENT_RECORD_SCHEMA_COUNT, 68);
+    assert_eq!(READABLE_RECORD_SCHEMA_COUNT, 91);
+    assert_eq!(WRITABLE_RECORD_SCHEMA_COUNT, 68);
     assert_eq!(
         CURRENT_RECORD_SCHEMAS
             .iter()
@@ -502,6 +506,7 @@ fn closed_registry_order_and_schema_hashes_are_exactly_derived() {
     readable_names.push("riffdb.storage.v1.CapabilityRecordV7".to_owned());
     readable_names.push("riffdb.storage.v1.StoredVectorEvidenceV1".to_owned());
     readable_names.push("riffdb.storage.v1.StoredVectorObservationV1".to_owned());
+    readable_names.push("riffdb.storage.v1.StoredVectorEvidenceIndexV1".to_owned());
     readable_names.push("riffdb.storage.v1.CapabilityRecordV1".to_owned());
     readable_names.push("riffdb.storage.v1.CapabilityRecordV1".to_owned());
     readable_names.push("riffdb.storage.v1.CapabilityTokenLookupV1".to_owned());
@@ -561,6 +566,7 @@ fn closed_registry_order_and_schema_hashes_are_exactly_derived() {
     writable_names.push("riffdb.storage.v1.StoredRecordRegistryV2".to_owned());
     writable_names.push("riffdb.storage.v1.StoredVectorEvidenceV1".to_owned());
     writable_names.push("riffdb.storage.v1.StoredVectorObservationV1".to_owned());
+    writable_names.push("riffdb.storage.v1.StoredVectorEvidenceIndexV1".to_owned());
     assert_eq!(
         READABLE_RECORD_SCHEMAS
             .iter()
@@ -688,8 +694,8 @@ fn closed_registry_order_and_schema_hashes_are_exactly_derived() {
 #[test]
 fn generated_registry_fixtures_freeze_exact_membership_and_hashes() {
     let legacy = registry_fixture_entries(LEGACY_REGISTRY_FIXTURE, 26);
-    let readable = registry_fixture_entries(READABLE_REGISTRY_FIXTURE, 90);
-    let writable = registry_fixture_entries(WRITABLE_REGISTRY_FIXTURE, 67);
+    let readable = registry_fixture_entries(READABLE_REGISTRY_FIXTURE, 91);
+    let writable = registry_fixture_entries(WRITABLE_REGISTRY_FIXTURE, 68);
 
     assert_eq!(legacy, readable[..legacy.len()]);
     assert_eq!(
@@ -968,6 +974,7 @@ fn semantic_optional_wire_presence_is_exact() {
         "StoredReactiveModuleAdministrationV1.approval_id",
         "StoredRetentionWatermarkV1.chain_root_registry_digest",
         "StoredValidatedPrefixCheckpointV1.previous_checkpoint_hash",
+        "StoredVectorEvidenceIndexV1.newest_source_write_sequence",
         "StoredVectorEvidenceV1.newest_source_write_sequence",
     ]
     .into_iter()

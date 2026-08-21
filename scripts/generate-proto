@@ -82,10 +82,14 @@ artifacts=(
     fixtures/proto/durable-vector-evidence-v1-schema-hash.bin
     fixtures/proto/durable-vector-observation-v1-record-bound.bin
     fixtures/proto/durable-vector-observation-v1-schema-hash.bin
+    fixtures/proto/durable-vector-evidence-index-v1-record-bound.bin
+    fixtures/proto/durable-vector-evidence-index-v1-schema-hash.bin
     crates/riffdb-proto/fixtures/durable-vector-evidence-v1-record-bound.bin
     crates/riffdb-proto/fixtures/durable-vector-evidence-v1-schema-hash.bin
     crates/riffdb-proto/fixtures/durable-vector-observation-v1-record-bound.bin
     crates/riffdb-proto/fixtures/durable-vector-observation-v1-schema-hash.bin
+    crates/riffdb-proto/fixtures/durable-vector-evidence-index-v1-record-bound.bin
+    crates/riffdb-proto/fixtures/durable-vector-evidence-index-v1-schema-hash.bin
     fixtures/proto/durable-validated-prefix-checkpoint-v1-record-bound.bin
     fixtures/proto/durable-validated-prefix-checkpoint-v1-schema-hash.bin
     fixtures/proto/durable-retention-watermark-v1-record-bound.bin

@@ -3346,6 +3346,25 @@ pub struct StoredValidatedPrefixCheckpointV1 {
     pub retention_watermark_sequence: u64,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct StoredVectorEvidenceIndexV1 {
+    #[prost(string, tag = "1")]
+    pub contract_lineage: ::prost::alloc::string::String,
+    #[prost(bytes = "vec", tag = "2")]
+    pub partition_key: ::prost::alloc::vec::Vec<u8>,
+    #[prost(uint32, tag = "3")]
+    pub entity_type_id: u32,
+    #[prost(uint32, tag = "4")]
+    pub vector_field_id: u32,
+    #[prost(bytes = "vec", tag = "5")]
+    pub entity_key: ::prost::alloc::vec::Vec<u8>,
+    #[prost(uint64, tag = "6")]
+    pub evidence_sequence: u64,
+    #[prost(uint64, optional, tag = "7")]
+    pub newest_source_write_sequence: ::core::option::Option<u64>,
+    #[prost(message, optional, tag = "8")]
+    pub embedding_write: ::core::option::Option<StoredVectorEmbeddingWriteV1>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct StoredVectorEmbeddingWriteV1 {
     #[prost(uint64, tag = "1")]
     pub commit_sequence: u64,

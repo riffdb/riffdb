@@ -3,8 +3,8 @@
 use std::{collections::BTreeMap, fmt};
 
 use riffdb_types::{
-    CommitSequence, ContractLineage, EmbeddingMetadata, EntityTypeId, EntityVersion, FieldId,
-    PartitionKey, ProvenanceId,
+    CommitSequence, ContractLineage, EmbeddingMetadata, EntityKey, EntityTypeId, EntityVersion,
+    FieldId, PartitionKey, ProvenanceId,
 };
 
 use crate::{DurableKeySchemaBindingV1, EntityTarget, ExecutablePlanRef, StorageValueError};
@@ -257,6 +257,124 @@ impl VectorObservationCountsV1 {
     #[must_use]
     pub const fn revision(&self) -> CommitSequence {
         self.revision
+    }
+}
+
+/// Canonical partition-ordered index row for one authoritative vector-evidence
+/// record.
+///
+/// This is an authoritative reciprocal index, not a derived cache. It is
+/// mutated atomically with the primary evidence row and contains only the
+/// bounded classification needed for stale/outdated pages. Startup proves its
+/// identity and classification against the primary row.
+#[derive(Clone, Eq, PartialEq)]
+pub struct VectorEvidenceIndexEntryV1 {
+    target: VectorObservationTargetV1,
+    entity_key: EntityKey,
+    evidence_sequence: CommitSequence,
+    newest_source_write: Option<CommitSequence>,
+    embedding_write: Option<StoredVectorEmbeddingWriteV1>,
+}
+
+impl VectorEvidenceIndexEntryV1 {
+    /// Reconstructs one checked durable index row.
+    pub fn from_parts(
+        target: VectorObservationTargetV1,
+        entity_key: EntityKey,
+        evidence_sequence: CommitSequence,
+        newest_source_write: Option<CommitSequence>,
+        embedding_write: Option<StoredVectorEmbeddingWriteV1>,
+    ) -> Result<Self, StorageValueError> {
+        if entity_key.entity_type_id() != target.entity_type()
+            || newest_source_write.is_some_and(|sequence| sequence > evidence_sequence)
+            || embedding_write
+                .as_ref()
+                .is_some_and(|embedding| embedding.sequence() > evidence_sequence)
+        {
+            return Err(StorageValueError::IdentityMismatch);
+        }
+        Ok(Self {
+            target,
+            entity_key,
+            evidence_sequence,
+            newest_source_write,
+            embedding_write,
+        })
+    }
+
+    /// Constructs the exact index row owned by one primary evidence record.
+    pub fn from_evidence(value: &StoredVectorEvidenceV1) -> Result<Self, StorageValueError> {
+        Self::from_parts(
+            VectorObservationTargetV1::new(
+                value.schema_binding().lineage().clone(),
+                value.partition_key().clone(),
+                value.target().entity_type_id(),
+                value.vector_field(),
+            ),
+            value.target().key().clone(),
+            value.evidence_sequence(),
+            value.newest_source_write(),
+            value.embedding_write().cloned(),
+        )
+    }
+
+    /// Stable partitioned field identity used as the physical key prefix.
+    #[must_use]
+    pub const fn target(&self) -> &VectorObservationTargetV1 {
+        &self.target
+    }
+
+    /// Canonical entity key used as the final ordered key component.
+    #[must_use]
+    pub const fn entity_key(&self) -> &EntityKey {
+        &self.entity_key
+    }
+
+    /// Primary evidence revision this index row mirrors.
+    #[must_use]
+    pub const fn evidence_sequence(&self) -> CommitSequence {
+        self.evidence_sequence
+    }
+
+    /// Newest declared source-field write, when one exists.
+    #[must_use]
+    pub const fn newest_source_write(&self) -> Option<CommitSequence> {
+        self.newest_source_write
+    }
+
+    /// Exact stored embedding write and model, when present.
+    #[must_use]
+    pub const fn embedding_write(&self) -> Option<&StoredVectorEmbeddingWriteV1> {
+        self.embedding_write.as_ref()
+    }
+
+    /// Whether this row is source-stale, including a missing embedding after a
+    /// source write.
+    #[must_use]
+    pub fn source_stale(&self) -> bool {
+        match (self.newest_source_write, self.embedding_write.as_ref()) {
+            (Some(_), None) => true,
+            (Some(source), Some(embedding)) => source > embedding.sequence(),
+            _ => false,
+        }
+    }
+
+    /// Proves complete classification reciprocity with a primary evidence row.
+    #[must_use]
+    pub fn matches_evidence(&self, value: &StoredVectorEvidenceV1) -> bool {
+        Self::from_evidence(value).is_ok_and(|expected| expected == *self)
+    }
+}
+
+impl fmt::Debug for VectorEvidenceIndexEntryV1 {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("VectorEvidenceIndexEntryV1")
+            .field("target", &"[REDACTED]")
+            .field("entity_key", &"[REDACTED]")
+            .field("evidence_sequence", &self.evidence_sequence)
+            .field("source_stale", &self.source_stale())
+            .finish_non_exhaustive()
     }
 }
 

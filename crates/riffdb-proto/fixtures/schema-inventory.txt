@@ -107,8 +107,11 @@ files
     import riffdb/storage/v1/audit.proto
     import riffdb/storage/v1/common.proto
   riffdb/storage/v1/validated_prefix_checkpoint_v1.proto
+  riffdb/storage/v1/vector_evidence_index_v1.proto
+    import riffdb/storage/v1/vector_evidence_v1.proto
   riffdb/storage/v1/vector_evidence_v1.proto
     import riffdb/storage/v1/application.proto
+  riffdb/storage/v1/vector_observation_v1.proto
   riffdb/storage/v1/workflow_service_values_v3.proto
     import riffdb/storage/v1/application.proto
     import riffdb/storage/v1/command_segment_v1.proto
@@ -1340,6 +1343,15 @@ messages
     1 commit_sequence optional uint64
     2 model_identity optional string
     3 model_version optional string
+  riffdb.storage.v1.StoredVectorEvidenceIndexV1 fields=8
+    1 contract_lineage optional string
+    2 partition_key optional bytes
+    3 entity_type_id optional uint32
+    4 vector_field_id optional uint32
+    5 entity_key optional bytes
+    6 evidence_sequence optional uint64
+    7 newest_source_write_sequence optional uint64 proto3-optional oneof=_newest_source_write_sequence
+    8 embedding_write optional .riffdb.storage.v1.StoredVectorEmbeddingWriteV1
   riffdb.storage.v1.StoredVectorEvidenceV1 fields=10
     1 target optional .riffdb.storage.v1.EntityTargetV1
     2 partition_key optional bytes
@@ -1351,6 +1363,19 @@ messages
     8 schema_binding optional .riffdb.storage.v1.DurableKeySchemaBindingV1
     9 provenance_id optional bytes
     10 plan optional .riffdb.storage.v1.ExecutablePlanRefV1
+  riffdb.storage.v1.StoredVectorModelCountV1 fields=3
+    1 model_identity optional string
+    2 model_version optional string
+    3 entity_count optional uint64
+  riffdb.storage.v1.StoredVectorObservationV1 fields=8
+    1 contract_lineage optional string
+    2 partition_key optional bytes
+    3 entity_type_id optional uint32
+    4 vector_field_id optional uint32
+    5 total_entities optional uint64
+    6 source_stale_entities optional uint64
+    7 model_counts repeated .riffdb.storage.v1.StoredVectorModelCountV1
+    8 revision_sequence optional uint64
   riffdb.storage.v1.TenantScopeV1 fields=2
     1 global optional .riffdb.storage.v1.UnitV1 oneof=scope
     2 tenant_id optional string oneof=scope

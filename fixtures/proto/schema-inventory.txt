@@ -107,6 +107,8 @@ files
     import riffdb/storage/v1/audit.proto
     import riffdb/storage/v1/common.proto
   riffdb/storage/v1/validated_prefix_checkpoint_v1.proto
+  riffdb/storage/v1/vector_evidence_index_v1.proto
+    import riffdb/storage/v1/vector_evidence_v1.proto
   riffdb/storage/v1/vector_evidence_v1.proto
     import riffdb/storage/v1/application.proto
   riffdb/storage/v1/vector_observation_v1.proto
@@ -1341,6 +1343,15 @@ messages
     1 commit_sequence optional uint64
     2 model_identity optional string
     3 model_version optional string
+  riffdb.storage.v1.StoredVectorEvidenceIndexV1 fields=8
+    1 contract_lineage optional string
+    2 partition_key optional bytes
+    3 entity_type_id optional uint32
+    4 vector_field_id optional uint32
+    5 entity_key optional bytes
+    6 evidence_sequence optional uint64
+    7 newest_source_write_sequence optional uint64 proto3-optional oneof=_newest_source_write_sequence
+    8 embedding_write optional .riffdb.storage.v1.StoredVectorEmbeddingWriteV1
   riffdb.storage.v1.StoredVectorEvidenceV1 fields=10
     1 target optional .riffdb.storage.v1.EntityTargetV1
     2 partition_key optional bytes

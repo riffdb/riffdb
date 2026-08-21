@@ -931,8 +931,14 @@ shape!(VECTOR_OBSERVATION [
     bytes(2, MAX_KEY_BYTES),
     repeated_message(7, 256, &VECTOR_MODEL_COUNT),
 ]);
+shape!(VECTOR_EVIDENCE_INDEX [
+    string(1, MAX_TEXT_ID_BYTES),
+    bytes(2, MAX_KEY_BYTES),
+    bytes(5, MAX_KEY_BYTES),
+    message(8, &VECTOR_EMBEDDING_WRITE),
+]);
 
-const ROOTS: [&Shape; 85] = [
+const ROOTS: [&Shape; 86] = [
     &ROOT_EMPTY,
     &ROOT_DATABASE_ID,
     &ROOT_OPTIONAL_UNIT_FIELD_TWO,
@@ -1029,6 +1035,7 @@ const ROOTS: [&Shape; 85] = [
     &CAPABILITY_RECORD_V7,
     &VECTOR_EVIDENCE,
     &VECTOR_OBSERVATION,
+    &VECTOR_EVIDENCE_INDEX,
 ];
 
 pub(crate) fn payload(record_index: usize, input: &[u8]) -> Result<(), DurablePreflightError> {
