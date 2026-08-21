@@ -555,7 +555,13 @@ fi
 
 host_validity_preflight=
 host_validity_postflight=
-if ((require_stable)) && [[ -n "$load_profile" ]]; then
+if ((require_stable)); then
+    if ! git diff --quiet --ignore-submodules -- || \
+       ! git diff --cached --quiet --ignore-submodules -- || \
+       [[ -n "$(git ls-files --others --exclude-standard)" ]]; then
+        printf 'measurement-integrity: --require-stable requires an exact clean source tree\n' >&2
+        exit 2
+    fi
     host_validity_preflight="$(mktemp "$task_tmp_root/riffdb-host-preflight.XXXXXX")"
     set +e
     ./scripts/app-baseline-host-validity >"$host_validity_preflight"
@@ -570,7 +576,7 @@ if ((require_stable)) && [[ -n "$load_profile" ]]; then
             --output "$report" \
             --reason host_interference \
             --mode "$mode" \
-            --profile "$load_profile" \
+            --profile "${load_profile:-parity}" \
             --duration-secs "${load_duration_secs:-90}" \
             --reps "${reps:-3}" \
             --postgres-comparator "$postgres_comparator" \
@@ -1304,7 +1310,42 @@ reasons = list(eligibility.get("reason_codes") or [])
 if not host_idle and "host_interference" not in reasons:
     reasons.append("host_interference")
 eligibility["reason_codes"] = reasons
-eligibility["eligible"] = bool(eligibility.get("eligible")) and host_idle
+if report.get("schema") == "riffdb.app-baseline/v1":
+    summaries = (report.get("comparisons") or {}).get("rep_summaries") or {}
+    parity_stable = bool(summaries) and all(
+        isinstance(summary, dict) and summary.get("stability") == "stable"
+        for summary in summaries.values()
+    )
+    comparisons = report.get("comparisons") or {}
+    crosscheck = report.get("board_page_live_crosscheck") or {}
+    scenario_rows = comparisons.get("scenarios") or []
+    correctness_clean = (
+        crosscheck.get("status") == "ok"
+        and bool(scenario_rows)
+        and all(row.get("last_row_count_equal") is True for row in scenario_rows)
+    )
+    required = {
+        "same_device": report.get("same_device") is True,
+        "repetitions": int(report.get("reps") or 0) >= 3,
+        "environment": bool(report.get("environment")),
+        "device_baseline": bool(report.get("device_baseline")),
+        "postgres_durability": bool(report.get("postgres_durability")),
+        "comparison": comparisons.get("available") is True,
+        "stability": parity_stable,
+        "correctness": correctness_clean,
+    }
+    missing = [name for name, present in required.items() if not present]
+    eligibility.update({
+        "stable": parity_stable,
+        "correctness_clean": correctness_clean,
+        "same_device_comparable": report.get("same_device") is True,
+        "comparison_complete": comparisons.get("available") is True,
+        "missing_required_fields": missing,
+        "non_evidentiary_window": False,
+    })
+    eligibility["eligible"] = not missing and host_idle
+else:
+    eligibility["eligible"] = bool(eligibility.get("eligible")) and host_idle
 with open(report_path, "w", encoding="utf-8") as destination:
     json.dump(report, destination, indent=2)
     destination.write("\n")
@@ -1313,4 +1354,40 @@ PY
         printf 'measurement-integrity: host interference invalidated %s\n' "$report" >&2
         exit 1
     fi
+fi
+
+if ((require_stable)); then
+    source_revision="$(git rev-parse --verify HEAD)"
+    cargo_lock_sha256="$(sha256sum Cargo.lock | awk '{print $1}')"
+    runner_sha256="$(sha256sum "$runner" | awk '{print $1}')"
+    riffdbd_sha256="$(sha256sum "$RIFFDB_APP_BASELINE_RIFFDBD_BIN" | awk '{print $1}')"
+    harness_sha256="$(sha256sum benchmarks/run-app-baseline | awk '{print $1}')"
+    python3 - "$report" "$source_revision" "$cargo_lock_sha256" \
+        "$runner_sha256" "$riffdbd_sha256" "$harness_sha256" <<'PY'
+import json
+import sys
+
+(
+    report_path,
+    source_revision,
+    cargo_lock_sha256,
+    runner_sha256,
+    riffdbd_sha256,
+    harness_sha256,
+) = sys.argv[1:]
+with open(report_path, encoding="utf-8") as source:
+    report = json.load(source)
+report["qualification_candidate"] = {
+    "schema": "riffdb.app-baseline-qualified-candidate/v1",
+    "source_revision": source_revision,
+    "source_tree_clean": True,
+    "cargo_lock_sha256": cargo_lock_sha256,
+    "runner_sha256": runner_sha256,
+    "riffdbd_sha256": riffdbd_sha256,
+    "harness_sha256": harness_sha256,
+}
+with open(report_path, "w", encoding="utf-8") as destination:
+    json.dump(report, destination, indent=2)
+    destination.write("\n")
+PY
 fi
