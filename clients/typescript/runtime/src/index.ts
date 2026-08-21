@@ -113,6 +113,28 @@ interface CommandRequest<I, R> {
   readonly outcomeType?: R;
 }
 
+interface VectorInspectionRequest<P, R> {
+  readonly driverOperation?: DriverOperation;
+  readonly contractLineage: string;
+  readonly contractVersion: number;
+  readonly contractBundleHash: string;
+  readonly entity: string;
+  readonly field: string;
+  readonly inspectionKind: "staleness" | "model_versions";
+  readonly partition: P;
+  readonly partitionSchema: ApplicationValueSchema;
+  readonly limit: number;
+  readonly resultType?: R;
+}
+
+interface VectorInspectionOptions { readonly cursor?: string; }
+
+interface TypedVectorInspectionResult<T> {
+  readonly value: T;
+  readonly applicationHead?: bigint;
+  readonly nextCursor?: string;
+}
+
 export interface QueryResponseIdentity {
   readonly contractLineage: string;
   readonly contractVersion: number;
@@ -317,6 +339,36 @@ export class CliApplicationTransport {
     );
     const envelope = await this.invoke(args, input, request.decodeError);
     return decodeTypedCommandResult(exactObject(envelope.result), request);
+  }
+
+  public async executeVectorInspection<P, R>(
+    request: VectorInspectionRequest<P, R>,
+    options: VectorInspectionOptions = {},
+  ): Promise<TypedVectorInspectionResult<R>> {
+    validateIdentity(request);
+    const limit = boundedInteger(request.limit, 1, 500);
+    const partition = JSON.stringify(encodeValue(request.partition, request.partitionSchema));
+    const args = this.baseArguments();
+    args.push(
+      "query", "inspect-vector", request.entity, request.field,
+      "--partition", partition,
+      "--kind", request.inspectionKind === "staleness" ? "stale" : "outdated",
+      "--limit", String(limit),
+      "--contract-lineage", request.contractLineage,
+      "--contract-version", String(request.contractVersion),
+    );
+    if (options.cursor !== undefined) args.push("--cursor-hex", options.cursor);
+    const envelope = await this.invokeArguments(args);
+    if (envelope.ok !== true) throw new Error("RiffDB vector inspection failed");
+    const value = decodePlainVectorInspection(exactObject(envelope.result)) as R;
+    const raw = exactObject(envelope.result);
+    return {
+      value,
+      ...(raw.observed_frontier === null || raw.observed_frontier === undefined
+        ? {} : { applicationHead: positiveBigInt(raw.observed_frontier) }),
+      ...(raw.next_cursor === null || raw.next_cursor === undefined
+        ? {} : { nextCursor: expectBoundedString(raw.next_cursor, 32) }),
+    };
   }
 
   public async *consumeEventStream<P, E>(
@@ -713,6 +765,28 @@ export class DriverGeneratedApplicationTransport {
       { maximumAttempts: boundedInteger(attemptBudget, 1, 10) },
     );
     return decodeDriverCommandResult(request, requireDriverValue(result), result.applicationHead, result.cursor, result.replayed);
+  }
+
+  public async executeVectorInspection<P, R>(
+    request: VectorInspectionRequest<P, R>,
+    options: VectorInspectionOptions = {},
+  ): Promise<TypedVectorInspectionResult<R>> {
+    validateIdentity(request);
+    const operation = requireDriverOperation(request.driverOperation);
+    const result = await this.driver.invoke(
+      operation,
+      {
+        partition: encodeDriverValue(request.partition, request.partitionSchema),
+        limit: { type: "u64", value: BigInt(boundedInteger(request.limit, 1, 500)).toString() },
+      },
+      { ...(options.cursor === undefined ? {} : { cursor: options.cursor }) },
+    );
+    const value = decodeDriverVectorInspection(requireDriverValue(result)) as R;
+    return {
+      value,
+      ...(result.applicationHead === undefined ? {} : { applicationHead: result.applicationHead }),
+      ...(result.cursor === undefined ? {} : { nextCursor: result.cursor }),
+    };
   }
 
   public async executeCommandBatch<I, R>(
@@ -1300,6 +1374,103 @@ function requireDriverValue(result: {
     throw new Error("RiffDB driver returned an unexpected compact result");
   }
   return result.value;
+}
+
+function decodeDriverVectorInspection(value: DriverValue): unknown {
+  if (value.type !== "record") throw new Error("RiffDB driver returned invalid vector inspection");
+  const kindValue = value.value.kind;
+  if (kindValue?.type !== "enum") throw new Error("RiffDB driver returned invalid vector inspection");
+  const u64 = (name: string, optional = false): bigint | null => {
+    const field = value.value[name];
+    if (optional && field?.type === "null") return null;
+    if (field?.type !== "u64" || !/^(?:0|[1-9][0-9]*)$/.test(field.value)) throw new Error("RiffDB driver returned invalid vector inspection");
+    return BigInt(field.value);
+  };
+  const items = (): ReadonlyArray<Readonly<Record<string, DriverValue>>> => {
+    const field = value.value.items;
+    if (field?.type !== "list" || field.value.length > 500 || field.value.some((item) => item.type !== "record")) {
+      throw new Error("RiffDB driver returned invalid vector inspection");
+    }
+    return field.value.map((item) => (item as Extract<DriverValue, { type: "record" }>).value);
+  };
+  switch (kindValue.value) {
+    case "staleness_summary": {
+      const breached = value.value.slo_breached;
+      if (breached?.type !== "bool") throw new Error("RiffDB driver returned invalid vector inspection");
+      return { kind: "staleness_summary", totalEntities: u64("total_entities"), staleCount: u64("stale_count"), staleEntityCountThreshold: u64("stale_entity_count_threshold"), sloBreached: breached.value };
+    }
+    case "model_version_summary":
+      return { kind: "model_version_summary", currentCount: u64("current_count"), outdatedCount: u64("outdated_count") };
+    case "stale_entities":
+      return {
+        kind: "stale_entities",
+        items: items().map((item) => ({
+          entityKey: decodeDriverBytes(item.entity_key),
+          newestSourceWrite: decodeDriverU64(item.newest_source_write),
+          embeddingWrite: item.embedding_write?.type === "null" ? null : decodeDriverU64(item.embedding_write),
+        })),
+        observedFrontier: u64("observed_frontier", true),
+      };
+    case "outdated_model_entities":
+      return {
+        kind: "outdated_model_entities",
+        items: items().map((item) => ({
+          entityKey: decodeDriverBytes(item.entity_key),
+          model: decodeDriverString(item.model),
+          modelVersion: decodeDriverString(item.model_version),
+          embeddingWrite: decodeDriverU64(item.embedding_write),
+        })),
+        observedFrontier: u64("observed_frontier", true),
+      };
+    default: throw new Error("RiffDB driver returned invalid vector inspection");
+  }
+}
+
+function decodeDriverU64(value: DriverValue | undefined): bigint {
+  if (value?.type !== "u64" || !/^(?:0|[1-9][0-9]*)$/.test(value.value)) throw new Error("RiffDB driver returned invalid vector inspection");
+  return BigInt(value.value);
+}
+
+function decodeDriverString(value: DriverValue | undefined): string {
+  if (value?.type !== "string") throw new Error("RiffDB driver returned invalid vector inspection");
+  return expectBoundedString(value.value, 256);
+}
+
+function decodeDriverBytes(value: DriverValue | undefined): Uint8Array {
+  if (value?.type !== "bytes") throw new Error("RiffDB driver returned invalid vector inspection");
+  const bytes = Uint8Array.from(Buffer.from(value.value, "base64"));
+  if (bytes.byteLength < 1 || bytes.byteLength > 1_048_576) throw new Error("RiffDB driver returned invalid vector inspection");
+  return bytes;
+}
+
+function decodePlainVectorInspection(value: Record<string, unknown>): unknown {
+  switch (value.kind) {
+    case "staleness_summary":
+      return { kind: value.kind, totalEntities: positiveOrZeroBigInt(value.total_entities), staleCount: positiveOrZeroBigInt(value.stale_count), staleEntityCountThreshold: positiveOrZeroBigInt(value.stale_entity_count_threshold), sloBreached: value.slo_breached === true };
+    case "model_version_summary":
+      return { kind: value.kind, currentCount: positiveOrZeroBigInt(value.current_count), outdatedCount: positiveOrZeroBigInt(value.outdated_count) };
+    case "stale_entities":
+      return { kind: value.kind, items: boundedPlainInspectionItems(value.items).map((item) => ({ entityKey: lowerHexBytes(item.entity_key), newestSourceWrite: positiveBigInt(item.newest_source_write), embeddingWrite: item.embedding_write === null ? null : positiveBigInt(item.embedding_write) })), observedFrontier: value.observed_frontier === null ? null : positiveBigInt(value.observed_frontier) };
+    case "outdated_model_entities":
+      return { kind: value.kind, items: boundedPlainInspectionItems(value.items).map((item) => ({ entityKey: lowerHexBytes(item.entity_key), model: expectBoundedString(item.model, 256), modelVersion: expectBoundedString(item.model_version, 256), embeddingWrite: positiveBigInt(item.embedding_write) })), observedFrontier: value.observed_frontier === null ? null : positiveBigInt(value.observed_frontier) };
+    default: throw new Error("RiffDB CLI returned invalid vector inspection");
+  }
+}
+
+function boundedPlainInspectionItems(value: unknown): ReadonlyArray<Record<string, unknown>> {
+  if (!Array.isArray(value) || value.length > 500) throw new Error("RiffDB CLI returned invalid vector inspection");
+  return value.map(exactObject);
+}
+
+function positiveOrZeroBigInt(value: unknown): bigint {
+  if (typeof value !== "string" || !/^(?:0|[1-9][0-9]*)$/.test(value)) throw new Error("invalid nonnegative integer");
+  return BigInt(value);
+}
+
+function lowerHexBytes(value: unknown): Uint8Array {
+  const text = expectBoundedString(value, 2_097_152);
+  if (text.length < 2 || text.length % 2 !== 0 || !/^[0-9a-f]+$/.test(text)) throw new Error("invalid lower-hex bytes");
+  return Uint8Array.from(text.match(/../g)!.map((byte) => Number.parseInt(byte, 16)));
 }
 
 function decodeDriverCommandResult<I, R>(

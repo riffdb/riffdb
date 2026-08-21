@@ -13,7 +13,7 @@ use riffdb_riffql_syntax::{FieldSelection, Selection};
 use crate::QueryModule;
 use crate::generation::{
     RustCompactResultShape, embedding_command_facades, rust_compact_result_shape,
-    workflow_revision_bindings, workflow_success_outcome_name,
+    vector_inspection_facades, workflow_revision_bindings, workflow_success_outcome_name,
 };
 
 /// Source symbol responsible for one Python name collision.
@@ -336,6 +336,19 @@ pub fn generate_python_client(
     contract: &ContractBundle,
 ) -> Result<String, PythonGenerationError> {
     validate_names(module, contract)?;
+    let has_vector_inspection = !vector_inspection_facades(module, contract).is_empty();
+    let vector_runtime_imports = if has_vector_inspection {
+        "\n             TypedVectorInspectionResult, VectorInspectionOptions, VectorModelVersionResult,\n\
+             VectorStalenessResult, WorkflowSuccessorRevision"
+    } else {
+        " WorkflowSuccessorRevision"
+    };
+    let vector_binding_import = if has_vector_inspection {
+        ", encode_value"
+    } else {
+        ""
+    };
+    let vector_typing_import = if has_vector_inspection { ", cast" } else { "" };
     let mut output = String::new();
     writeln!(
         output,
@@ -345,14 +358,14 @@ pub fn generate_python_client(
          from dataclasses import dataclass, field\n\
          from decimal import Decimal\n\
          from enum import StrEnum\n\
-         from typing import Annotated, Final, Literal, TypeAlias\n\
+         from typing import Annotated, Final, Literal, TypeAlias{vector_typing_import}\n\
          from uuid import UUID\n\n\
          from riffdb_application import (\n\
              AsyncApplicationTransport, AttemptBudget, CommandBatchOptions,\n\
              CommandBatchProgress, CommandBatchResult, Money, QueryOptions, RiffDate,\n\
-             SyncApplicationTransport, Timestamp, TypedCommandResult, TypedQueryResult, WorkflowSuccessorRevision,\n\
+             SyncApplicationTransport, Timestamp, TypedCommandResult, TypedQueryResult,{vector_runtime_imports},\n\
          )\n\
-         from riffdb_application._binding import decode_variant, encode_record\n"
+         from riffdb_application._binding import decode_variant, encode_record{vector_binding_import}\n"
     )
     .expect("String writes cannot fail");
     output.push_str(
@@ -1239,6 +1252,31 @@ fn emit_client(
             writeln!(output, "        }}\n        return raw._map_value(lambda value: _decode_{method}_compact(value) if isinstance(value, dict) and \"$riffdb_compact\" in value else decode_variant(outcomes, value))\n").expect("String writes cannot fail");
         } else {
             output.push_str("        }\n        return raw._map_value(lambda value: decode_variant(outcomes, value))\n\n");
+        }
+    }
+    for inspection in vector_inspection_facades(module, contract) {
+        let function = format!(
+            "inspect_{}_{}",
+            snake(&inspection.entity),
+            snake(&inspection.field)
+        );
+        let partition_type = python_contract_type(&inspection.partition_type, contract);
+        for (suffix, kind, result_type) in [
+            ("staleness", "staleness", "VectorStalenessResult"),
+            (
+                "model_versions",
+                "model_versions",
+                "VectorModelVersionResult",
+            ),
+        ] {
+            let async_token = if asynchronous { "async " } else { "" };
+            writeln!(
+                output,
+                "    {async_token}def {function}_{suffix}(self, partition: {partition_type}, limit: int = 50, options: VectorInspectionOptions = VectorInspectionOptions()) -> TypedVectorInspectionResult[{result_type}]:\n        if type(limit) is not int or not 1 <= limit <= 500:\n            raise ValueError(\"invalid vector inspection limit\")\n        raw = {await_token}self._transport._inspect_vector_state(\n            contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,\n            contract_bundle_hash=CONTRACT_BUNDLE_HASH, entity={entity:?}, field={field:?},\n            inspection_kind={kind:?}, partition=encode_value(partition, {partition_type}),\n            limit=limit, options=options,\n        )\n        return cast(TypedVectorInspectionResult[{result_type}], raw)\n",
+                entity = inspection.entity,
+                field = inspection.field,
+            )
+            .expect("String writes cannot fail");
         }
     }
     for command in commands {

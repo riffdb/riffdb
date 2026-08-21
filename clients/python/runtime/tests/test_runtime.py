@@ -25,16 +25,19 @@ from riffdb_application import (
     SyncApplicationTransport,
     Timestamp,
     TypedCommandResult,
+    VectorModelVersionSummary,
+    VectorStaleEntities,
     VerifiedTlsConfig,
     WorkflowSuccessorRevision,
 )
-from riffdb_application import _translate_native, _validate_batch
+from riffdb_application import _translate_native, _validate_batch, _vector_inspection_result
 from riffdb_application import _native
 from riffdb_application._binding import (
     decode_record,
     decode_variant,
     encode_reactive_record,
     encode_record,
+    encode_value,
 )
 
 
@@ -62,6 +65,66 @@ class ReactiveParameters:
 
 
 class RuntimeTests(unittest.TestCase):
+    def test_vector_inspection_results_are_closed_and_cursor_bytes_are_exact(self) -> None:
+        summary = _vector_inspection_result(
+            {
+                "kind": "model_version_summary",
+                "current_count": 7,
+                "outdated_count": 2,
+            }
+        )
+        self.assertEqual(summary.value, VectorModelVersionSummary(7, 2))
+        page = _vector_inspection_result(
+            {
+                "kind": "stale_entities",
+                "items": [
+                    {
+                        "entity_key": "0001ff",
+                        "newest_source_write": 9,
+                        "embedding_write": None,
+                    }
+                ],
+                "next_cursor": "0102",
+                "observed_frontier": 11,
+            }
+        )
+        self.assertIsInstance(page.value, VectorStaleEntities)
+        self.assertEqual(page.next_cursor, b"\x01\x02")
+        self.assertEqual(page.value.items[0].entity_key, b"\x00\x01\xff")
+        with self.assertRaises(ProtocolError):
+            _vector_inspection_result(
+                {
+                    "kind": "staleness_summary",
+                    "total_entities": 1,
+                    "stale_count": 0,
+                    "stale_entity_count_threshold": 1,
+                    "slo_breached": False,
+                    "peer_extension": "must-not-be-accepted",
+                }
+            )
+        with self.assertRaises(ProtocolError):
+            _vector_inspection_result(
+                {
+                    "kind": "staleness_summary",
+                    "total_entities": True,
+                    "stale_count": 0,
+                    "stale_entity_count_threshold": 1,
+                    "slo_breached": False,
+                }
+            )
+        with self.assertRaises(ProtocolError):
+            _vector_inspection_result(
+                {
+                    "kind": "model_version_summary",
+                    "current_count": "7",
+                    "outdated_count": 2,
+                }
+            )
+
+    def test_generated_value_encoder_supports_exact_partition_types(self) -> None:
+        identifier = UUID(int=7)
+        self.assertEqual(encode_value(identifier, UUID), {"kind": "uuid", "value": str(identifier)})
+
     def test_typed_command_mapping_preserves_workflow_revision_evidence(self) -> None:
         revision = WorkflowSuccessorRevision(binding="work", revision=8)
         result = TypedCommandResult(

@@ -14,13 +14,16 @@ use riffdb_client_rust::{
     ApplicationEventMutationResult, ApplicationEventPullDisposition, ApplicationLiveQueryUpdate,
     ApplicationReactiveOperation, ApplicationRecord, ApplicationUuid, ApplicationValue,
     AttemptBudget, CallMetadata, EventConsumerOptions, LiveQueryCursor, LiveQueryPatchOperation,
-    NamedQuery, QueryOptions, StableApplicationClient, app_v1,
+    NamedQuery, QueryOptions, StableApplicationClient, VectorModelVersionItem, VectorStalenessItem,
+    VectorStateInspection, VectorStateInspectionKind, VectorStateInspectionResult, app_v1,
     raise_query_result as raise_wire_query_result, raise_value as raise_wire_value,
 };
 use riffdb_config::TlsClientConfig;
 use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore, watch};
 
-use crate::catalog::{ApplicationCatalog, OperationKind, OperationSpec, ReactiveKind};
+use crate::catalog::{
+    ApplicationCatalog, OperationKind, OperationSpec, ReactiveKind, VectorInspectionKind,
+};
 use crate::protocol::{
     DRIVER_PROTOCOL_VERSION, DRIVER_PROTOCOL_VERSION_V1, DriverBatchItem, DriverBatchOutcome,
     DriverDecimal, DriverMoney, DriverRequest, DriverResponse, DriverTimestamp, DriverValue,
@@ -754,6 +757,108 @@ impl DriverHost {
                     }
                 }
             }
+            OperationKind::VectorInspection => {
+                if options.accept_compact_result || options.read_after_commit.is_some() {
+                    return local_error(
+                        Some(request_id),
+                        Some(spec.public_name().to_owned()),
+                        "RDB-INPUT-0101",
+                        "input",
+                        "application input is invalid",
+                        false,
+                        "correct_request",
+                    );
+                }
+                let target = match spec.vector_target() {
+                    Some(target) => target,
+                    None => {
+                        return application_error(
+                            request_id,
+                            spec,
+                            ApplicationClientError::InvalidResponse,
+                            false,
+                        );
+                    }
+                };
+                let mut input = application_input;
+                let partition = match input.remove("partition") {
+                    Some(value) => value,
+                    None => {
+                        return application_error(
+                            request_id,
+                            spec,
+                            ApplicationClientError::InvalidInput,
+                            false,
+                        );
+                    }
+                };
+                let limit = match input.remove("limit") {
+                    Some(ApplicationValue::U64(value)) => match u32::try_from(value) {
+                        Ok(value) if (1..=500).contains(&value) => value,
+                        _ => {
+                            return application_error(
+                                request_id,
+                                spec,
+                                ApplicationClientError::InvalidInput,
+                                false,
+                            );
+                        }
+                    },
+                    _ => {
+                        return application_error(
+                            request_id,
+                            spec,
+                            ApplicationClientError::InvalidInput,
+                            false,
+                        );
+                    }
+                };
+                if !input.is_empty() {
+                    return application_error(
+                        request_id,
+                        spec,
+                        ApplicationClientError::InvalidInput,
+                        false,
+                    );
+                }
+                let kind = match target.kind() {
+                    VectorInspectionKind::Staleness => VectorStateInspectionKind::Stale,
+                    VectorInspectionKind::ModelVersions => VectorStateInspectionKind::OutdatedModel,
+                };
+                let mut inspection = VectorStateInspection::new(
+                    ApplicationContract::Exact {
+                        lineage: self.inner.catalog.contract_lineage().to_owned(),
+                        version: self.inner.catalog.contract_version(),
+                        bundle_hash: Some(self.inner.catalog.contract_bundle_hash()),
+                    },
+                    target.entity(),
+                    target.field(),
+                    partition,
+                    kind,
+                    limit,
+                );
+                if let Some(cursor) = options.cursor {
+                    let cursor = match BASE64.decode(cursor) {
+                        Ok(cursor) => cursor,
+                        Err(_) => {
+                            return application_error(
+                                request_id,
+                                spec,
+                                ApplicationClientError::InvalidInput,
+                                false,
+                            );
+                        }
+                    };
+                    inspection = inspection.after(cursor);
+                }
+                match client
+                    .inspect_vector_state(inspection, &self.inner.metadata)
+                    .await
+                {
+                    Ok(result) => vector_inspection_response(request_id, result),
+                    Err(error) => application_error(request_id, spec, error, false),
+                }
+            }
             OperationKind::Reactive => {
                 if options.accept_compact_result {
                     return local_error(
@@ -1024,6 +1129,141 @@ impl DriverHost {
             Err(error) => application_error(request_id, spec, error, action.starts_with("react_")),
         }
     }
+}
+
+fn vector_inspection_response(
+    request_id: String,
+    result: VectorStateInspectionResult,
+) -> DriverResponse {
+    let (fields, application_head, cursor) = match result {
+        VectorStateInspectionResult::StalenessSummary(summary) => (
+            BTreeMap::from([
+                (
+                    "kind".to_owned(),
+                    DriverValue::Enum("staleness_summary".to_owned()),
+                ),
+                (
+                    "total_entities".to_owned(),
+                    DriverValue::U64(summary.total_entities.to_string()),
+                ),
+                (
+                    "stale_count".to_owned(),
+                    DriverValue::U64(summary.stale_count.to_string()),
+                ),
+                (
+                    "stale_entity_count_threshold".to_owned(),
+                    DriverValue::U64(summary.stale_entity_count_threshold.to_string()),
+                ),
+                (
+                    "slo_breached".to_owned(),
+                    DriverValue::Bool(summary.slo_breached),
+                ),
+            ]),
+            None,
+            None,
+        ),
+        VectorStateInspectionResult::StaleEntities(page) => {
+            let application_head = page.observed_frontier;
+            let cursor = page.next_cursor;
+            let items = page.items.into_iter().map(vector_staleness_item).collect();
+            vector_inspection_page("stale_entities", items, application_head, cursor)
+        }
+        VectorStateInspectionResult::ModelVersionSummary(summary) => (
+            BTreeMap::from([
+                (
+                    "kind".to_owned(),
+                    DriverValue::Enum("model_version_summary".to_owned()),
+                ),
+                (
+                    "current_count".to_owned(),
+                    DriverValue::U64(summary.current_count.to_string()),
+                ),
+                (
+                    "outdated_count".to_owned(),
+                    DriverValue::U64(summary.outdated_count.to_string()),
+                ),
+            ]),
+            None,
+            None,
+        ),
+        VectorStateInspectionResult::OutdatedModelEntities(page) => {
+            let application_head = page.observed_frontier;
+            let cursor = page.next_cursor;
+            let items = page
+                .items
+                .into_iter()
+                .map(vector_model_version_item)
+                .collect();
+            vector_inspection_page("outdated_model_entities", items, application_head, cursor)
+        }
+    };
+    DriverResponse::Result {
+        request_id,
+        value: DriverValue::Record(fields),
+        application_head,
+        cursor,
+        replayed: false,
+    }
+}
+
+fn vector_inspection_page(
+    kind: &str,
+    items: Vec<DriverValue>,
+    application_head: Option<u64>,
+    next_cursor: Option<Vec<u8>>,
+) -> (BTreeMap<String, DriverValue>, Option<u64>, Option<String>) {
+    let cursor = next_cursor.map(|cursor| BASE64.encode(cursor));
+    (
+        BTreeMap::from([
+            ("kind".to_owned(), DriverValue::Enum(kind.to_owned())),
+            ("items".to_owned(), DriverValue::List(items)),
+            (
+                "observed_frontier".to_owned(),
+                application_head.map_or(DriverValue::Null, |value| {
+                    DriverValue::U64(value.to_string())
+                }),
+            ),
+        ]),
+        application_head,
+        cursor,
+    )
+}
+
+fn vector_staleness_item(item: VectorStalenessItem) -> DriverValue {
+    DriverValue::Record(BTreeMap::from([
+        (
+            "entity_key".to_owned(),
+            DriverValue::Bytes(BASE64.encode(item.entity_key)),
+        ),
+        (
+            "newest_source_write".to_owned(),
+            DriverValue::U64(item.newest_source_write.to_string()),
+        ),
+        (
+            "embedding_write".to_owned(),
+            item.embedding_write.map_or(DriverValue::Null, |value| {
+                DriverValue::U64(value.to_string())
+            }),
+        ),
+    ]))
+}
+
+fn vector_model_version_item(item: VectorModelVersionItem) -> DriverValue {
+    DriverValue::Record(BTreeMap::from([
+        (
+            "entity_key".to_owned(),
+            DriverValue::Bytes(BASE64.encode(item.entity_key)),
+        ),
+        ("model".to_owned(), DriverValue::String(item.model)),
+        (
+            "model_version".to_owned(),
+            DriverValue::String(item.model_version),
+        ),
+        (
+            "embedding_write".to_owned(),
+            DriverValue::U64(item.embedding_write.to_string()),
+        ),
+    ]))
 }
 
 fn legacy_query_response(

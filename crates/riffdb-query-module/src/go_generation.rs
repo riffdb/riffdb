@@ -10,9 +10,13 @@ use sha2::{Digest, Sha256};
 
 use crate::generation::{
     RustCompactResultShape, embedding_command_facades, generated_query_driver_operations,
-    rust_compact_result_shape, workflow_revision_bindings, workflow_success_outcome_name,
+    rust_compact_result_shape, vector_inspection_facades, workflow_revision_bindings,
+    workflow_success_outcome_name,
 };
-use crate::{QueryModule, generate_mcp_commands, generate_mcp_reactive_tools};
+use crate::{
+    QueryModule, generate_mcp_commands, generate_mcp_reactive_tools,
+    generate_vector_inspection_tools,
+};
 
 /// Generates one dependency-light Go package for all named queries and commands.
 #[must_use]
@@ -43,6 +47,16 @@ fn generate_go_client_inner(
         .map(|operation| {
             (
                 operation.operation_name,
+                (operation.name, schema_hash(&operation.input_schema)),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    let vector_operations = generate_vector_inspection_tools(module, contract)
+        .expect("validated vector inspection operations")
+        .into_iter()
+        .map(|operation| {
+            (
+                (operation.entity, operation.field, operation.inspection_kind),
                 (operation.name, schema_hash(&operation.input_schema)),
             )
         })
@@ -108,6 +122,7 @@ fn generate_go_client_inner(
     emit_entity_codecs(&mut output, contract);
     emit_query_methods(&mut output, module, contract, &query_operations);
     emit_command_methods(&mut output, contract, &command_operations);
+    emit_vector_inspection_methods(&mut output, module, contract, &vector_operations);
     emit_reactive_modules(&mut output, contract, reactive_modules);
     output.push_str("func requiredField(fields map[string]riffdb.Value, name string) (riffdb.Value, error) { value, ok := fields[name]; if !ok { return riffdb.Value{}, errors.New(\"RiffDB driver result is missing a generated field\") }; return value, nil }\n");
     output
@@ -658,6 +673,72 @@ fn emit_command_methods(
             String::new()
         };
         writeln!(output, "func (client *Client) {name}Batch(ctx context.Context, inputs []{name}Input, concurrency, checkpoint uint32) (BatchResult[{name}Outcome], error) {{ encoded := make([]map[string]riffdb.Value, len(inputs)); for index, input := range inputs {{ {batch_collection_validation}encoded[index] = encode{name}Input(input) }}; response, err := client.session.Batch(ctx, {name}Operation, encoded, concurrency, checkpoint, riffdb.Options{{MaximumAttempts: client.commandAttempts}}); if err != nil {{ return BatchResult[{name}Outcome]{{}}, err }}; result := BatchResult[{name}Outcome]{{Checkpoint: response.Checkpoint, Total: response.Total, Items: make([]BatchItem[{name}Outcome], 0, len(response.Items))}}; for _, item := range response.Items {{ converted := BatchItem[{name}Outcome]{{Index: item.Index}}; if item.Error != nil {{ converted.Error = item.Error }} else if item.Result != nil {{ outcome, decodeErr := decode{name}Outcome(item.Result.Value); if decodeErr != nil {{ return BatchResult[{name}Outcome]{{}}, decodeErr }}; {batch_revision_call}converted.Result = &CommandResult[{name}Outcome]{{Outcome: outcome, CommitSequence: item.Result.CommitSequence, ContractVersion: ContractVersion, PlanHash: {name}PlanHash, Replayed: item.Result.Replayed, OutcomeURI: item.Result.OutcomeURI{batch_revision_field}}} }}; result.Items = append(result.Items, converted) }}; return result, nil }}\n").unwrap();
+    }
+}
+
+fn emit_vector_inspection_methods(
+    output: &mut String,
+    module: &QueryModule,
+    contract: &ContractBundle,
+    operations: &BTreeMap<(String, String, String), (String, String)>,
+) {
+    let facades = vector_inspection_facades(module, contract);
+    if facades.is_empty() {
+        return;
+    }
+    output.push_str(
+        "type VectorInspectionOptions struct { Limit uint32; Cursor string }\n\
+         func (options VectorInspectionOptions) normalized() (VectorInspectionOptions, error) { if options.Limit == 0 { options.Limit = 50 }; if options.Limit > 500 { return VectorInspectionOptions{}, errors.New(\"invalid vector inspection limit\") }; return options, nil }\n\
+         type VectorInspectionResult[T any] struct { Value T; ApplicationHead *uint64; NextCursor string }\n\
+         type VectorStalenessResult interface { isVectorStalenessResult() }\n\
+         type VectorStalenessSummary struct { TotalEntities uint64; StaleCount uint64; StaleEntityCountThreshold uint64; SLOBreached bool }\n\
+         func (VectorStalenessSummary) isVectorStalenessResult() {}\n\
+         type VectorStalenessItem struct { EntityKey []byte; NewestSourceWrite uint64; EmbeddingWrite *uint64 }\n\
+         type VectorStaleEntities struct { Items []VectorStalenessItem; ObservedFrontier *uint64 }\n\
+         func (VectorStaleEntities) isVectorStalenessResult() {}\n\
+         type VectorModelVersionResult interface { isVectorModelVersionResult() }\n\
+         type VectorModelVersionSummary struct { CurrentCount uint64; OutdatedCount uint64 }\n\
+         func (VectorModelVersionSummary) isVectorModelVersionResult() {}\n\
+         type VectorModelVersionItem struct { EntityKey []byte; Model string; ModelVersion string; EmbeddingWrite uint64 }\n\
+         type VectorOutdatedModelEntities struct { Items []VectorModelVersionItem; ObservedFrontier *uint64 }\n\
+         func (VectorOutdatedModelEntities) isVectorModelVersionResult() {}\n\n\
+         func optionalVectorU64(fields map[string]riffdb.Value, name string) (*uint64, error) { value, err := requiredField(fields, name); if err != nil { return nil, err }; if value.Type == \"null\" { return nil, nil }; decoded, err := riffdb.U64Value(value); if err != nil { return nil, err }; return &decoded, nil }\n\
+         func decodeVectorStaleness(value riffdb.Value) (VectorStalenessResult, error) { fields, err := riffdb.RecordFields(value); if err != nil { return nil, err }; kindValue, err := requiredField(fields, \"kind\"); if err != nil { return nil, err }; kind, err := riffdb.EnumValue(kindValue); if err != nil { return nil, err }; switch kind { case \"staleness_summary\": total, err := requiredU64(fields, \"total_entities\"); if err != nil { return nil, err }; stale, err := requiredU64(fields, \"stale_count\"); if err != nil { return nil, err }; threshold, err := requiredU64(fields, \"stale_entity_count_threshold\"); if err != nil { return nil, err }; breachedValue, err := requiredField(fields, \"slo_breached\"); if err != nil { return nil, err }; breached, err := riffdb.BoolValue(breachedValue); if err != nil { return nil, err }; return VectorStalenessSummary{TotalEntities: total, StaleCount: stale, StaleEntityCountThreshold: threshold, SLOBreached: breached}, nil; case \"stale_entities\": list, err := requiredField(fields, \"items\"); if err != nil { return nil, err }; items, err := riffdb.DecodeValues(list, decodeVectorStalenessItem); if err != nil { return nil, err }; frontier, err := optionalVectorU64(fields, \"observed_frontier\"); if err != nil { return nil, err }; return VectorStaleEntities{Items: items, ObservedFrontier: frontier}, nil; default: return nil, errors.New(\"RiffDB driver returned unknown vector staleness result\") } }\n\
+         func decodeVectorStalenessItem(value riffdb.Value) (VectorStalenessItem, error) { fields, err := riffdb.RecordFields(value); if err != nil { return VectorStalenessItem{}, err }; keyValue, err := requiredField(fields, \"entity_key\"); if err != nil { return VectorStalenessItem{}, err }; key, err := riffdb.BytesValue(keyValue); if err != nil { return VectorStalenessItem{}, err }; newest, err := requiredU64(fields, \"newest_source_write\"); if err != nil { return VectorStalenessItem{}, err }; embedding, err := optionalVectorU64(fields, \"embedding_write\"); if err != nil { return VectorStalenessItem{}, err }; return VectorStalenessItem{EntityKey: key, NewestSourceWrite: newest, EmbeddingWrite: embedding}, nil }\n\
+         func decodeVectorModelVersions(value riffdb.Value) (VectorModelVersionResult, error) { fields, err := riffdb.RecordFields(value); if err != nil { return nil, err }; kindValue, err := requiredField(fields, \"kind\"); if err != nil { return nil, err }; kind, err := riffdb.EnumValue(kindValue); if err != nil { return nil, err }; switch kind { case \"model_version_summary\": current, err := requiredU64(fields, \"current_count\"); if err != nil { return nil, err }; outdated, err := requiredU64(fields, \"outdated_count\"); if err != nil { return nil, err }; return VectorModelVersionSummary{CurrentCount: current, OutdatedCount: outdated}, nil; case \"outdated_model_entities\": list, err := requiredField(fields, \"items\"); if err != nil { return nil, err }; items, err := riffdb.DecodeValues(list, decodeVectorModelVersionItem); if err != nil { return nil, err }; frontier, err := optionalVectorU64(fields, \"observed_frontier\"); if err != nil { return nil, err }; return VectorOutdatedModelEntities{Items: items, ObservedFrontier: frontier}, nil; default: return nil, errors.New(\"RiffDB driver returned unknown vector model-version result\") } }\n\
+         func decodeVectorModelVersionItem(value riffdb.Value) (VectorModelVersionItem, error) { fields, err := riffdb.RecordFields(value); if err != nil { return VectorModelVersionItem{}, err }; keyValue, err := requiredField(fields, \"entity_key\"); if err != nil { return VectorModelVersionItem{}, err }; key, err := riffdb.BytesValue(keyValue); if err != nil { return VectorModelVersionItem{}, err }; model, err := requiredString(fields, \"model\"); if err != nil { return VectorModelVersionItem{}, err }; version, err := requiredString(fields, \"model_version\"); if err != nil { return VectorModelVersionItem{}, err }; embedding, err := requiredU64(fields, \"embedding_write\"); if err != nil { return VectorModelVersionItem{}, err }; return VectorModelVersionItem{EntityKey: key, Model: model, ModelVersion: version, EmbeddingWrite: embedding}, nil }\n\n",
+    );
+    for facade in facades {
+        let base = format!(
+            "Inspect{}{}",
+            go_public(&facade.entity),
+            go_public(&facade.field)
+        );
+        let partition_type = go_type(&facade.partition_type, contract);
+        let partition = encode_expr("partition", &facade.partition_type, contract);
+        for (kind, suffix, result_type, decoder) in [
+            (
+                "staleness",
+                "Staleness",
+                "VectorStalenessResult",
+                "decodeVectorStaleness",
+            ),
+            (
+                "model_versions",
+                "ModelVersions",
+                "VectorModelVersionResult",
+                "decodeVectorModelVersions",
+            ),
+        ] {
+            let (name, schema_hash) = operations
+                .get(&(facade.entity.clone(), facade.field.clone(), kind.to_owned()))
+                .expect("generated vector inspection operation");
+            writeln!(
+                output,
+                "var {base}{suffix}Operation = riffdb.Operation{{Name: {name:?}, InputSchemaHash: {schema_hash:?}}}\nfunc (client *Client) {base}{suffix}(ctx context.Context, partition {partition_type}, options VectorInspectionOptions) (VectorInspectionResult[{result_type}], error) {{ options, err := options.normalized(); if err != nil {{ return VectorInspectionResult[{result_type}]{{}}, err }}; response, err := client.session.Invoke(ctx, {base}{suffix}Operation, map[string]riffdb.Value{{\"partition\": {partition}, \"limit\": riffdb.U64(uint64(options.Limit))}}, riffdb.Options{{Cursor: options.Cursor}}); if err != nil {{ return VectorInspectionResult[{result_type}]{{}}, err }}; value, err := {decoder}(response.Value); if err != nil {{ return VectorInspectionResult[{result_type}]{{}}, err }}; return VectorInspectionResult[{result_type}]{{Value: value, ApplicationHead: response.ApplicationHead, NextCursor: response.Cursor}}, nil }}\n"
+            )
+            .unwrap();
+        }
     }
 }
 

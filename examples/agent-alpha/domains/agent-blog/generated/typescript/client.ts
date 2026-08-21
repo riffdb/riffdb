@@ -32,7 +32,7 @@ export const APPLICATION_ERROR_REGISTRY = {
 } as const;
 
 export type ApplicationErrorCode = keyof typeof APPLICATION_ERROR_REGISTRY;
-export type ApplicationOperation = "DescribeContract" | "CheckQuery" | "ExplainQuery" | "ExecuteQuery" | "DeployQueryModule" | "GetQueryModule" | "ExecuteCommand" | "BatchCommand";
+export type ApplicationOperation = "DescribeContract" | "CheckQuery" | "ExplainQuery" | "ExecuteQuery" | "DeployQueryModule" | "GetQueryModule" | "ExecuteCommand" | "BatchCommand" | "InspectVectorState";
 export type ApplicationErrorCategory = typeof APPLICATION_ERROR_REGISTRY[ApplicationErrorCode][1];
 export type ApplicationRecoveryAction = typeof APPLICATION_ERROR_REGISTRY[ApplicationErrorCode][2];
 export type ApplicationFixCode = typeof APPLICATION_ERROR_REGISTRY[ApplicationErrorCode][3][number];
@@ -63,7 +63,7 @@ export class RiffDbApplicationError extends Error {
 
 const APPLICATION_OPERATIONS: ReadonlySet<string> = new Set([
   "DescribeContract", "CheckQuery", "ExplainQuery", "ExecuteQuery",
-  "DeployQueryModule", "GetQueryModule", "ExecuteCommand", "BatchCommand",
+  "DeployQueryModule", "GetQueryModule", "ExecuteCommand", "BatchCommand", "InspectVectorState",
 ]);
 const SAFE_SYMBOL = /^[A-Za-z0-9_.-]{1,256}$/;
 const UUID_V7 = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -144,7 +144,15 @@ export interface ApplicationTransport {
   executeNamedQuery<P, R>(request: NamedQueryRequest<P, R>, options?: QueryOptions): Promise<TypedQueryResult<R>>;
   executeCommand<I, R>(request: CommandRequest<I, R>, attemptBudget: number): Promise<TypedCommandResult<R>>;
   executeCommandBatch?<I, R>(request: CommandRequest<I, R>, inputs: ReadonlyArray<I>, concurrency: number, checkpoint: number, attemptBudget: number): Promise<CommandBatchResult<R>>;
+  executeVectorInspection?<P, R>(request: VectorInspectionRequest<P, R>, options?: VectorInspectionOptions): Promise<TypedVectorInspectionResult<R>>;
 }
+export interface VectorInspectionRequest<P, R> { readonly driverOperation: DriverOperationIdentity; readonly contractLineage: typeof CONTRACT_LINEAGE; readonly contractVersion: typeof CONTRACT_VERSION; readonly contractBundleHash: typeof CONTRACT_BUNDLE_HASH; readonly entity: string; readonly field: string; readonly inspectionKind: "staleness" | "model_versions"; readonly partition: P; readonly partitionSchema: ApplicationValueSchema; readonly limit: number; readonly resultType?: R; }
+export interface VectorInspectionOptions { readonly cursor?: string; }
+export interface TypedVectorInspectionResult<T> { readonly value: T; readonly applicationHead?: bigint; readonly nextCursor?: string; }
+export interface VectorStalenessItem { readonly entityKey: Uint8Array; readonly newestSourceWrite: bigint; readonly embeddingWrite: bigint | null; }
+export type VectorStalenessResult = { readonly kind: "staleness_summary"; readonly totalEntities: bigint; readonly staleCount: bigint; readonly staleEntityCountThreshold: bigint; readonly sloBreached: boolean } | { readonly kind: "stale_entities"; readonly items: ReadonlyArray<VectorStalenessItem>; readonly observedFrontier: bigint | null };
+export interface VectorModelVersionItem { readonly entityKey: Uint8Array; readonly model: string; readonly modelVersion: string; readonly embeddingWrite: bigint; }
+export type VectorModelVersionResult = { readonly kind: "model_version_summary"; readonly currentCount: bigint; readonly outdatedCount: bigint } | { readonly kind: "outdated_model_entities"; readonly items: ReadonlyArray<VectorModelVersionItem>; readonly observedFrontier: bigint | null };
 
 function compactPayload(value: CompactApplicationValue, expected: string): unknown {
   if (typeof value !== "object" || value === null || Array.isArray(value) || value.type !== expected) throw new Error("invalid RiffDB compact value");

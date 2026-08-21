@@ -14,6 +14,7 @@ mod socket;
 
 pub use catalog::{
     ApplicationCatalog, CatalogError, OperationKind, OperationSpec, ReactionSpec, ReactiveKind,
+    VectorInspectionKind, VectorInspectionSpec,
 };
 pub use config::{DriverRuntime, DriverRuntimeError};
 pub use host::{
