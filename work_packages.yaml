@@ -11848,7 +11848,7 @@ work_packages:
     standing test (no expressible unsafety — no unscoped nearest, no silent staleness, no
     policy bypass, no opt-out of the recall declaration).
   requirements: [VEC-005, VEC-007, VEC-008, VEC-010, VEC-011]
-  required_adrs: [ADR-0086, ADR-0091, ADR-0113]
+  required_adrs: [ADR-0086, ADR-0091, ADR-0113, ADR-0136]
   allowed_paths: [work_packages.yaml, crates/riffdb-sim/**, crates/riffdb-testkit/**,
     docs/**, examples/**, fixtures/**]
   deliverables:
@@ -11885,8 +11885,10 @@ work_packages:
     scan charging and policy before ranking; and parameterized K bound at execution.
   requirements: [VEC-001, VEC-002, VEC-003, VEC-004, VEC-005, VEC-006, VEC-007, VEC-011,
     VEC-012]
-  required_adrs: [ADR-0011, ADR-0040, ADR-0041, ADR-0086, ADR-0087, ADR-0091]
+  required_adrs: [ADR-0011, ADR-0040, ADR-0041, ADR-0086, ADR-0087, ADR-0091,
+    ADR-0136]
   allowed_paths: [work_packages.yaml, SPEC.md,
+    adr/README.md, adr/0136-authoritative-vector-evidence-and-projected-nearest.md,
     adr/0011-canonical-values-keys-and-hashing.md,
     adr/0040-public-grpc-mcp-parity-bridge.md,
     adr/0041-cli-public-flow-and-output-contract.md, proto/**, fixtures/**,
