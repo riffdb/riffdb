@@ -11220,42 +11220,76 @@ contract OutcomeShapes version 1 {
 // V1 uses authoritative sequence comparison and a stale-entity count
 // threshold. Duration-based semantics are reserved for a future amendment.
 
-/// Request to inspect vector field staleness for one entity type.
+/// Closed result population selected by one symbolic vector-state inspection.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum VectorStateInspectionKind {
+    /// Enumerate entities whose declared sources are newer than their embedding,
+    /// including entities with no embedding.
+    StaleEntities,
+    /// Enumerate entities whose embedding model is not contract-current.
+    OutdatedModelEntities,
+}
+
+/// Symbolic bounded request for one compiler-declared vector field.
+///
+/// Numeric entity and field identities are deliberately absent from the
+/// application boundary. The service resolves these source symbols through the
+/// exact active contract and compiler-derived `InspectVectorState` role grant.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct VectorStalenessRequest {
-    /// The entity type containing the vector field.
-    entity_type: riffdb_types::EntityTypeId,
-    /// The vector field to inspect.
-    vector_field: riffdb_types::VectorFieldId,
+pub struct InspectVectorStateRequest {
+    /// Application contract lineage that owns the symbols.
+    contract_lineage: ContractLineage,
+    /// Source-level entity name.
+    entity: SourceName,
+    /// Source-level vector field name.
+    field: SourceName,
+    /// Compiler-closed population to inspect.
+    kind: VectorStateInspectionKind,
     /// Bounded initial page or continuation.
     page: PageRequest,
 }
 
-impl VectorStalenessRequest {
-    /// Creates a staleness inspection request.
+impl InspectVectorStateRequest {
+    /// Creates one symbolic vector-state inspection request.
     #[must_use]
     pub const fn new(
-        entity_type: riffdb_types::EntityTypeId,
-        vector_field: riffdb_types::VectorFieldId,
+        contract_lineage: ContractLineage,
+        entity: SourceName,
+        field: SourceName,
+        kind: VectorStateInspectionKind,
         page: PageRequest,
     ) -> Self {
         Self {
-            entity_type,
-            vector_field,
+            contract_lineage,
+            entity,
+            field,
+            kind,
             page,
         }
     }
 
-    /// The entity type.
+    /// Borrows the application contract lineage.
     #[must_use]
-    pub const fn entity_type(&self) -> riffdb_types::EntityTypeId {
-        self.entity_type
+    pub const fn contract_lineage(&self) -> &ContractLineage {
+        &self.contract_lineage
     }
 
-    /// The vector field.
+    /// Borrows the source-level entity name.
     #[must_use]
-    pub const fn vector_field(&self) -> riffdb_types::VectorFieldId {
-        self.vector_field
+    pub const fn entity(&self) -> &SourceName {
+        &self.entity
+    }
+
+    /// Borrows the source-level vector field name.
+    #[must_use]
+    pub const fn field(&self) -> &SourceName {
+        &self.field
+    }
+
+    /// Returns the closed requested population.
+    #[must_use]
+    pub const fn kind(&self) -> VectorStateInspectionKind {
+        self.kind
     }
 
     /// Requested bounded page.
@@ -11322,50 +11356,6 @@ impl VectorStalenessReport {
     }
 }
 
-/// Request to inspect model-version distribution for one vector field.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct VectorModelVersionRequest {
-    /// The entity type containing the vector field.
-    entity_type: riffdb_types::EntityTypeId,
-    /// The vector field to inspect.
-    vector_field: riffdb_types::VectorFieldId,
-    /// Bounded initial page or continuation.
-    page: PageRequest,
-}
-
-impl VectorModelVersionRequest {
-    /// Creates a model-version inspection request.
-    pub const fn new(
-        entity_type: riffdb_types::EntityTypeId,
-        vector_field: riffdb_types::VectorFieldId,
-        page: PageRequest,
-    ) -> Self {
-        Self {
-            entity_type,
-            vector_field,
-            page,
-        }
-    }
-
-    /// The entity type.
-    #[must_use]
-    pub const fn entity_type(&self) -> riffdb_types::EntityTypeId {
-        self.entity_type
-    }
-
-    /// The vector field.
-    #[must_use]
-    pub const fn vector_field(&self) -> riffdb_types::VectorFieldId {
-        self.vector_field
-    }
-
-    /// Requested bounded page.
-    #[must_use]
-    pub const fn page(&self) -> PageRequest {
-        self.page
-    }
-}
-
 /// Result of a model-version inspection.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct VectorModelVersionReport {
@@ -11403,7 +11393,7 @@ impl VectorModelVersionReport {
 pub struct VectorStalenessItem {
     entity_key: EntityKey,
     newest_source_write: CommitSequence,
-    embedding_write: CommitSequence,
+    embedding_write: Option<CommitSequence>,
 }
 
 impl VectorStalenessItem {
@@ -11411,9 +11401,9 @@ impl VectorStalenessItem {
     pub fn new(
         entity_key: EntityKey,
         newest_source_write: CommitSequence,
-        embedding_write: CommitSequence,
+        embedding_write: Option<CommitSequence>,
     ) -> Result<Self, ServiceDtoError> {
-        if newest_source_write <= embedding_write {
+        if embedding_write.is_some_and(|embedding| newest_source_write <= embedding) {
             return Err(ServiceDtoError::InvalidShape);
         }
         Ok(Self {
@@ -11435,9 +11425,10 @@ impl VectorStalenessItem {
         self.newest_source_write
     }
 
-    /// Returns the most recent embedding write sequence.
+    /// Returns the most recent embedding write sequence, or `None` when no
+    /// embedding has ever been written.
     #[must_use]
-    pub const fn embedding_write(&self) -> CommitSequence {
+    pub const fn embedding_write(&self) -> Option<CommitSequence> {
         self.embedding_write
     }
 }
@@ -11512,6 +11503,38 @@ impl fmt::Debug for VectorModelVersionItem {
 /// Bounded outdated-model enumeration at one authoritative commit fence.
 pub type VectorModelVersionPage = Page<VectorModelVersionItem, Option<CommitSequence>>;
 
+/// One authorized vector-state result.
+///
+/// Whole-partition summaries are distinct variants because a row-policy-
+/// limited grant may receive a bounded page but must never receive a total
+/// from which hidden rows can be inferred.
+#[derive(Clone, Eq, PartialEq)]
+pub enum InspectVectorStateResult {
+    /// Whole-partition stale count under an exact count-authorized grant.
+    StalenessSummary(VectorStalenessReport),
+    /// Policy-filtered bounded stale population.
+    StaleEntities(VectorStalenessPage),
+    /// Whole-partition current/outdated model counts under exact count authority.
+    ModelVersionSummary(VectorModelVersionReport),
+    /// Policy-filtered bounded outdated-model population.
+    OutdatedModelEntities(VectorModelVersionPage),
+}
+
+impl fmt::Debug for InspectVectorStateResult {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let variant = match self {
+            Self::StalenessSummary(_) => "StalenessSummary",
+            Self::StaleEntities(_) => "StaleEntities",
+            Self::ModelVersionSummary(_) => "ModelVersionSummary",
+            Self::OutdatedModelEntities(_) => "OutdatedModelEntities",
+        };
+        formatter
+            .debug_struct("InspectVectorStateResult")
+            .field("variant", &variant)
+            .finish_non_exhaustive()
+    }
+}
+
 #[cfg(test)]
 mod vector_observability_tests {
     use super::*;
@@ -11524,5 +11547,31 @@ mod vector_observability_tests {
         assert!(over_threshold.slo_breached());
         assert!(VectorStalenessReport::new(3, 4, 3).is_err());
         assert!(VectorStalenessReport::new(3, 1, 0).is_err());
+    }
+
+    #[test]
+    fn inspection_request_is_symbolic_and_missing_embedding_is_stale() {
+        let request = InspectVectorStateRequest::new(
+            ContractLineage::new("ticketdesk").expect("lineage"),
+            SourceName::new("Ticket").expect("entity"),
+            SourceName::new("embedding").expect("field"),
+            VectorStateInspectionKind::StaleEntities,
+            PageRequest::new(PageLimit::new(20).expect("page limit"), None),
+        );
+        assert_eq!(request.contract_lineage().as_str(), "ticketdesk");
+        assert_eq!(request.entity().as_str(), "Ticket");
+        assert_eq!(request.field().as_str(), "embedding");
+        assert_eq!(request.kind(), VectorStateInspectionKind::StaleEntities);
+
+        let mut key =
+            riffdb_types::EntityKeyBuilder::new(EntityTypeId::new(7).expect("entity type"));
+        key.push_u64(1).expect("key component");
+        let item = VectorStalenessItem::new(
+            key.finish().expect("entity key"),
+            CommitSequence::new(3).expect("source write"),
+            None,
+        )
+        .expect("missing embedding is stale");
+        assert_eq!(item.embedding_write(), None);
     }
 }
