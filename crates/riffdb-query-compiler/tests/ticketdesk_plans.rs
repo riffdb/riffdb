@@ -57,10 +57,7 @@ const BOARD_PAGE_450: &str = include_str!("../../../queries/ticketdesk/board_pag
 
 #[test]
 fn complete_cover_seals_board_page_layout_and_incomplete_cover_does_not() {
-    let covered_contract = CONTRACT.replace(
-        "    index by_project_status (organization_id, project_id, status, ticket_id)",
-        "    index by_project_status (organization_id, project_id, status, ticket_id)\n    index by_board_project_status (organization_id, project_id, status, ticket_id) cover (title, reporter_id, assignee_id)",
-    );
+    let covered_contract = CONTRACT.to_owned();
     let bundle = compile_contract_source(&covered_contract).expect("covered contract");
     let catalog = SymbolicCatalog::from_bundle(&bundle).expect("covered catalog");
     let covered = compile_query(&parse_query(BOARD_PAGE_450).expect("board parse"), &catalog)
@@ -94,8 +91,8 @@ fn complete_cover_seals_board_page_layout_and_incomplete_cover_does_not() {
     assert_eq!(covered.ir_version(), QUERY_IR_VERSION_COVERED_RESULT_V1);
 
     let incomplete_contract = CONTRACT.replace(
-        "    index by_project_status (organization_id, project_id, status, ticket_id)",
-        "    index by_project_status (organization_id, project_id, status, ticket_id)\n    index by_board_project_status (organization_id, project_id, status, ticket_id) cover (title, reporter_id)",
+        "    index by_board_project_status (organization_id, project_id, status, ticket_id) cover (title, reporter_id, assignee_id)",
+        "    index by_board_project_status (organization_id, project_id, status, ticket_id) cover (title, reporter_id)",
     );
     let bundle = compile_contract_source(&incomplete_contract).expect("incomplete contract");
     let catalog = SymbolicCatalog::from_bundle(&bundle).expect("incomplete catalog");
@@ -159,7 +156,7 @@ fn list_and_detail_choose_expected_physical_accesses() {
     );
     assert!(matches!(
         list.steps()[0].access(),
-        QueryAccessKind::Index { index, .. } if index == "by_project_status"
+        QueryAccessKind::Index { index, .. } if index == "by_board_project_status"
     ));
 
     let detail =

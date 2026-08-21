@@ -54,7 +54,7 @@ provider setting on this surface.
 Before binding the socket, the host authenticates across every pooled TLS
 channel and verifies the database alias, active contract lineage/version, and
 bundle hash against the exact lock. Every local connection then begins with
-protocol V1 `handshake`. Both sides prove:
+protocol V2 `handshake`. Both sides prove:
 
 - protocol version and driver build identity;
 - application manifest, active contract, generated module/operation catalog,
@@ -81,6 +81,16 @@ input-schema hash. Values use the shared tagged application-value registry;
 integers and exact decimals never pass through floating point. Query calls may
 carry an opaque cursor and read-after-commit frontier. Deadline and retry
 bounds are explicit.
+
+For a compiler-proven covering named query, a generated client also advertises
+that it accepts the V2 compact result arm. The host returns the compiler-sealed
+entity symbol, field order once, and bounded positional rows. The generated
+operation-specific decoder checks that exact outcome, result field, entity,
+layout, row width, value type, and bound before constructing typed results
+directly. Callers cannot request a physical index or supply a layout. Queries
+without a complete safe cover, and older clients that do not opt in, continue
+to receive the legacy named-record result. CLI and MCP also retain that legacy
+shape.
 
 A `batch` selects one generated command, at most 4,096 independently
 idempotent inputs, concurrency from 1 through 384, and a contiguous resume

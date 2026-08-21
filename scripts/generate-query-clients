@@ -80,9 +80,13 @@ if [[ "${1:-}" == "--check" ]]; then
         (["contract_bundle", "go", "manifest", "mcp", "python", "rust", "typescript"] | sort)
       and (.repository_closure | map(.path) | sort) ==
         (["examples/agent-alpha/riffdb.application.lock.json", "examples/ticketdesk/riffdb.application.lock.json"] | sort)
-      and all(.repository_closure[]; .query_module_format == 1 and .rotation == "unchanged_ordinary_v1")
+      and (.repository_closure[] | select(.path == "examples/agent-alpha/riffdb.application.lock.json") |
+        .query_module_format == 1 and .rotation == "unchanged_ordinary_v1")
+      and (.repository_closure[] | select(.path == "examples/ticketdesk/riffdb.application.lock.json") |
+        .query_module_format == 7 and .rotation == "accepted_successor_current")
       and .classification.ordinary_v1_bytes_preserved == true
       and .classification.operational_v2_additive == true
+      and .classification.repository_closure_successors_current == true
       and .classification.partial_rotation_is_success == false
     ' fixtures/riffql/operational-identity-rotation-v1.json >/dev/null
     # agent-alpha clients (non-workspace packages; previously invisible to battery)

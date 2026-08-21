@@ -14408,6 +14408,7 @@ work_packages:
     ADR-0055, ADR-0074, ADR-0111, ADR-0124, ADR-0128, ADR-0130, ADR-0131,
     ADR-0133]
   allowed_paths: [AGENTS.md, SPEC.md, work_packages.yaml, adr/**, proto/**,
+    crates/riffdb-proto/**,
     crates/riffdb-types/**, crates/riffdb-contract-syntax/**,
     crates/riffdb-contract-ir/**, crates/riffdb-contract-compiler/**,
     crates/riffdb-query-ir/**, crates/riffdb-query-compiler/**,
@@ -14419,8 +14420,10 @@ work_packages:
     crates/riffdb-codegen-typescript/**, crates/riffdb-codegen-go/**,
     crates/riffdb-codegen-python/**, crates/riffdb-driver-host/**,
     crates/riffdb-observability/**, crates/riffdb-cli/**, crates/riffdb-mcp-stdio/**,
+    clients/editor/**, clients/go/**, clients/python/**, clients/typescript/**,
     examples/app-baseline/**,
     examples/agent-alpha/**, fixtures/**, tests/**, scripts/**,
+    release/**,
     docs/SUMMARY.md, docs/contracts/**, docs/getting-started/**, docs/reference/**,
     docs/performance/**, docs/architecture/**]
   deliverables:

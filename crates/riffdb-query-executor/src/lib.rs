@@ -1007,6 +1007,9 @@ pub struct CoveredQueryResultV1 {
     rows: Vec<Vec<CanonicalValue>>,
 }
 
+/// Owned compiler-sealed compact result components in protocol order.
+pub type CoveredQueryResultPartsV1 = (String, Arc<str>, Vec<Arc<str>>, Vec<Vec<CanonicalValue>>);
+
 impl CoveredQueryResultV1 {
     /// Exact top-level result field name.
     #[must_use]
@@ -1034,7 +1037,7 @@ impl CoveredQueryResultV1 {
 
     /// Consumes the sealed result without constructing name-addressed rows.
     #[must_use]
-    pub fn into_parts(self) -> (String, Arc<str>, Vec<Arc<str>>, Vec<Vec<CanonicalValue>>) {
+    pub fn into_parts(self) -> CoveredQueryResultPartsV1 {
         (self.result_name, self.entity, self.fields, self.rows)
     }
 
@@ -1736,14 +1739,14 @@ fn execute_covered_page_in_snapshot<V: QueryReadView>(
     epoch_key.push('.');
     epoch_key.push_str(index);
     index_epochs.insert(epoch_key, batch.epoch);
-    if let Some(prior) = prior {
-        if step.cursor_parameter().is_none() || prior.index_epochs != index_epochs {
-            return Err(if step.cursor_parameter().is_none() {
-                QueryExecutionError::InvalidContinuation
-            } else {
-                QueryExecutionError::StaleCursor
-            });
-        }
+    if let Some(prior) = prior
+        && (step.cursor_parameter().is_none() || prior.index_epochs != index_epochs)
+    {
+        return Err(if step.cursor_parameter().is_none() {
+            QueryExecutionError::InvalidContinuation
+        } else {
+            QueryExecutionError::StaleCursor
+        });
     }
     let continuation = batch.continuation;
     let continuation_binding = continuation.as_ref().map(|_| step.binding().to_owned());
@@ -3033,7 +3036,8 @@ query OptionalMinimumSummary($organization_id: Ticket.organization_id) {
     #[test]
     fn leaf_many_projection_does_not_clone_selected_values() {
         enable_pipeline_clone_counting();
-        let bundle = compile_contract_source(CONTRACT).expect("contract");
+        let contract = CONTRACT.replace(" cover (title, reporter_id, assignee_id)", "");
+        let bundle = compile_contract_source(&contract).expect("contract");
         let catalog = SymbolicCatalog::from_bundle(&bundle).expect("catalog");
         let program =
             compile_query(&parse_query(OPEN_TICKETS).expect("query"), &catalog).expect("program");

@@ -198,6 +198,7 @@ fn main() {
             "ordinary_v1_bytes_preserved": true,
             "operational_v2_additive": true,
             "operational_aggregate_v3_additive": true,
+            "repository_closure_successors_current": true,
             "partial_rotation_is_success": false,
         },
     });
@@ -399,20 +400,28 @@ fn retained_application(path: &str) -> Value {
     let bytes = fs::read(path).unwrap_or_else(|error| panic!("read {path}: {error}"));
     let lock: Value =
         serde_json::from_slice(&bytes).unwrap_or_else(|error| panic!("parse {path}: {error}"));
+    let query_module_format = lock["compiler_formats"]["query_module"]
+        .as_u64()
+        .expect("query module format");
+    let rotation = if query_module_format == 1 {
+        "unchanged_ordinary_v1"
+    } else {
+        "accepted_successor_current"
+    };
     json!({
         "path": path,
         "lock_hash": hex(riffdb_types::hash_application_lock(&bytes).as_bytes()),
         "source_hash": lock["source_hash"],
         "manifest_hash": lock["exact_manifest_hash"],
         "contract_bundle_hash": lock["contract"]["bundle_hash"],
-        "query_module_format": lock["compiler_formats"]["query_module"],
+        "query_module_format": query_module_format,
         "module_hashes": lock["modules"].as_array().expect("module array").iter()
             .map(|module| module["module_hash"].clone()).collect::<Vec<_>>(),
         "role_hashes": lock["roles"].as_array().expect("role array").iter()
             .map(|role| role["definition_hash"].clone()).collect::<Vec<_>>(),
         "artifact_hashes": lock["artifacts"].as_array().expect("artifact array").iter()
             .map(|artifact| artifact["content_hash"].clone()).collect::<Vec<_>>(),
-        "rotation": "unchanged_ordinary_v1",
+        "rotation": rotation,
     })
 }
 

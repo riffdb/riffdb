@@ -38,6 +38,14 @@ artifact identities; checked input and result types; declared outcomes; and the
 operation-specific client methods. The stable facade owns transport validation,
 retry classification, fresh request IDs, and uncertain-outcome recovery.
 
+When the compiler proves that a named page is fully served by an explicit
+covering index, the generated Rust operation accepts a compact positional wire
+result and decodes it directly into the same public result type. The field
+layout is compiled into the operation and is never a caller option. Any
+identity, field-order, cardinality, width, enum, bound, or value mismatch fails
+closed; the same decoder still accepts the legacy named-record response from
+an older compatible server.
+
 ```rust,ignore
 let outcome = client
     .create_item(CreateItemInput {

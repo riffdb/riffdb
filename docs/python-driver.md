@@ -28,6 +28,13 @@ or the private native module. Both transports delegate gRPC status validation,
 request identity, bounded retry, and uncertain-outcome behavior to the stable
 Rust application client.
 
+Generated named queries that the compiler proves fully covered negotiate a
+compact result from the native transport. The generated synchronous and
+asynchronous decoders validate the exact plan-owned entity, field order,
+cardinality, row width, enum values, and bounds before constructing the same
+dataclasses directly. No ordinal or physical-index choice is exposed to Python,
+and legacy named-record results remain accepted.
+
 `AsyncApplicationTransport` also backs Application Source V5 generated event
 iterators and live named-query iterators. Generated delivery types retain the
 attempt-specific acknowledgement evidence, and live cursors are returned as

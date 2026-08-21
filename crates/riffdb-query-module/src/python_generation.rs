@@ -11,7 +11,10 @@ use riffdb_query_ir::{
 use riffdb_riffql_syntax::{FieldSelection, Selection};
 
 use crate::QueryModule;
-use crate::generation::{workflow_revision_bindings, workflow_success_outcome_name};
+use crate::generation::{
+    RustCompactResultShape, rust_compact_result_shape, workflow_revision_bindings,
+    workflow_success_outcome_name,
+};
 
 /// Source symbol responsible for one Python name collision.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -352,6 +355,9 @@ pub fn generate_python_client(
          from riffdb_application._binding import decode_variant, encode_record\n"
     )
     .expect("String writes cannot fail");
+    output.push_str(
+        "def _compact_tag(value: object, tag: str, keys: frozenset[str]) -> dict[str, object]:\n    if not isinstance(value, dict) or value.get(\"$riffdb\") != tag or frozenset(value) != keys:\n        raise ValueError(\"invalid RiffDB compact value\")\n    return value\n\n",
+    );
     writeln!(
         output,
         "CONTRACT_LINEAGE: Final[str] = {:?}\nCONTRACT_VERSION: Final[int] = {}\n\
@@ -511,6 +517,19 @@ pub fn generate_python_client(
             write!(output, "{name}{}", pascal(branch.name())).expect("String writes cannot fail");
         }
         output.push_str("\n\n");
+        if let Some(shape) = query.plan().common_covered_result().and_then(
+            |(result_name, layout, selected_fields)| {
+                rust_compact_result_shape(
+                    schemas,
+                    &result_name,
+                    &layout,
+                    &selected_fields,
+                    contract,
+                )
+            },
+        ) {
+            emit_python_compact_query_decoder(&mut output, &name, &shape, contract);
+        }
     }
 
     let mut commands = contract
@@ -574,8 +593,8 @@ pub fn generate_python_client(
         output.push_str("\n\n");
     }
 
-    emit_client(&mut output, module, &commands, false);
-    emit_client(&mut output, module, &commands, true);
+    emit_client(&mut output, module, contract, &commands, false);
+    emit_client(&mut output, module, contract, &commands, true);
     while output.ends_with("\n\n") {
         output.pop();
     }
@@ -998,9 +1017,92 @@ fn python_reactive_type(type_name: &str, contract: &ContractBundle) -> String {
     .to_owned()
 }
 
+fn emit_python_compact_query_decoder(
+    output: &mut String,
+    name: &str,
+    shape: &RustCompactResultShape,
+    contract: &ContractBundle,
+) {
+    let method = python_identifier(&snake(name));
+    let nested = format!(
+        "{name}{}{}",
+        pascal(&shape.outcome),
+        pascal(&shape.result_name)
+    );
+    let branch = format!("{name}{}", pascal(&shape.outcome));
+    let fields = shape
+        .fields
+        .iter()
+        .map(|field| format!("{:?}", field.name))
+        .collect::<Vec<_>>()
+        .join(", ");
+    writeln!(output, "def _decode_{method}_compact(value: object) -> {name}Result:\n    if not isinstance(value, dict) or frozenset(value) != frozenset((\"$riffdb_compact\",)):\n        raise ValueError(\"invalid RiffDB compact result\")\n    compact = value[\"$riffdb_compact\"]\n    if not isinstance(compact, dict) or frozenset(compact) != frozenset((\"outcome\", \"result_name\", \"entity\", \"fields\", \"rows\")) or compact[\"outcome\"] != {:?} or compact[\"result_name\"] != {:?} or compact[\"entity\"] != {:?} or compact[\"fields\"] != [{fields}] or not isinstance(compact[\"rows\"], list) or len(compact[\"rows\"]) > {}:\n        raise ValueError(\"invalid RiffDB compact result\")\n    decoded: list[{nested}] = []\n    for row in compact[\"rows\"]:\n        if not isinstance(row, list) or len(row) != {}:\n            raise ValueError(\"invalid RiffDB compact result\")\n        decoded.append({nested}(\n", shape.outcome, shape.result_name, shape.entity, shape.maximum_rows, shape.fields.len()).expect("String writes cannot fail");
+    for (index, field) in shape.fields.iter().enumerate() {
+        writeln!(
+            output,
+            "            {}={},",
+            python_identifier(&field.name),
+            python_decode_compact_expr(&format!("row[{index}]"), &field.value_type, contract)
+        )
+        .expect("String writes cannot fail");
+    }
+    writeln!(
+        output,
+        "        ))\n    return {branch}({}=tuple(decoded))\n",
+        python_identifier(&shape.result_name)
+    )
+    .expect("String writes cannot fail");
+}
+
+fn python_decode_compact_expr(value: &str, ty: &ValueType, contract: &ContractBundle) -> String {
+    if let Some(inner) = ty.optional_inner() {
+        return format!(
+            "None if {value} is None else {}",
+            python_decode_compact_expr(value, inner, contract)
+        );
+    }
+    match ty.tag() {
+        ValueTypeTag::Bool => format!(
+            "({value} if type({value}) is bool else (_ for _ in ()).throw(ValueError(\"invalid RiffDB compact bool\")))"
+        ),
+        ValueTypeTag::I64 => format!(
+            "({value} if type({value}) is int and -(2**63) <= {value} < 2**63 else (_ for _ in ()).throw(ValueError(\"invalid RiffDB compact i64\")))"
+        ),
+        ValueTypeTag::U64 => format!(
+            "({value} if type({value}) is int and 0 <= {value} < 2**64 else (_ for _ in ()).throw(ValueError(\"invalid RiffDB compact u64\")))"
+        ),
+        ValueTypeTag::String => format!(
+            "({value} if isinstance({value}, str) and len({value}.encode(\"utf-8\")) <= {} else (_ for _ in ()).throw(ValueError(\"invalid RiffDB compact string\")))",
+            ty.byte_bound().expect("string bound")
+        ),
+        ValueTypeTag::Uuid => format!(
+            "UUID(str(_compact_tag({value}, \"uuid\", frozenset((\"$riffdb\", \"value\")))[\"value\"]))"
+        ),
+        ValueTypeTag::Date => format!(
+            "RiffDate(int(_compact_tag({value}, \"date\", frozenset((\"$riffdb\", \"value\")))[\"value\"]))"
+        ),
+        ValueTypeTag::Timestamp => format!(
+            "Timestamp(seconds=int(_compact_tag({value}, \"timestamp\", frozenset((\"$riffdb\", \"seconds\", \"nanos\")))[\"seconds\"]), nanos=int(_compact_tag({value}, \"timestamp\", frozenset((\"$riffdb\", \"seconds\", \"nanos\")))[\"nanos\"]))"
+        ),
+        ValueTypeTag::Enum => {
+            let enumeration = contract
+                .schema()
+                .enumeration(ty.enum_type_id().expect("enum identity"))
+                .expect("validated enum");
+            format!(
+                "{}(str(_compact_tag({value}, \"enum\", frozenset((\"$riffdb\", \"value\")))[\"value\"]))",
+                pascal(enumeration.name())
+            )
+        }
+        ValueTypeTag::Optional => unreachable!("handled above"),
+        _ => "(_ for _ in ()).throw(ValueError(\"unsupported RiffDB compact value\"))".to_owned(),
+    }
+}
+
 fn emit_client(
     output: &mut String,
     module: &QueryModule,
+    contract: &ContractBundle,
     commands: &[&riffdb_contract_ir::CommandPlan],
     asynchronous: bool,
 ) {
@@ -1022,10 +1124,28 @@ fn emit_client(
         let name = pascal(wire_name);
         let method = python_identifier(&snake(wire_name));
         let async_token = if asynchronous { "async " } else { "" };
+        let compact = query
+            .plan()
+            .common_covered_result()
+            .and_then(|(result_name, layout, selected_fields)| {
+                rust_compact_result_shape(
+                    query.plan().schemas(),
+                    &result_name,
+                    &layout,
+                    &selected_fields,
+                    contract,
+                )
+            })
+            .is_some();
+        let compact_argument = if compact {
+            "            accept_compact_result=True,\n"
+        } else {
+            ""
+        };
         writeln!(
             output,
-            "    {async_token}def {method}(self, parameters: {name}Params, options: QueryOptions = QueryOptions()) -> TypedQueryResult[{name}Result]:\n        raw = {await_token}self._transport._execute_named_query(\n            contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,\n            contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,\n            query_name={wire_name:?}, plan_hash={constant}_QUERY_PLAN_HASH,\n            parameters=encode_record(parameters), options=options,\n        )\n        outcomes = {{",
-            constant = screaming_snake(wire_name)
+            "    {async_token}def {method}(self, parameters: {name}Params, options: QueryOptions = QueryOptions()) -> TypedQueryResult[{name}Result]:\n        raw = {await_token}self._transport._execute_named_query(\n            contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,\n            contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,\n            query_name={wire_name:?}, plan_hash={constant}_QUERY_PLAN_HASH,\n            parameters=encode_record(parameters), options=options,\n{compact_argument}        )\n        outcomes = {{",
+            constant = screaming_snake(wire_name),
         )
         .expect("String writes cannot fail");
         for branch in query.plan().schemas().results() {
@@ -1037,9 +1157,11 @@ fn emit_client(
             )
             .expect("String writes cannot fail");
         }
-        output.push_str(
-            "        }\n        return raw._map_value(lambda value: decode_variant(outcomes, value))\n\n",
-        );
+        if compact {
+            writeln!(output, "        }}\n        return raw._map_value(lambda value: _decode_{method}_compact(value) if isinstance(value, dict) and \"$riffdb_compact\" in value else decode_variant(outcomes, value))\n").expect("String writes cannot fail");
+        } else {
+            output.push_str("        }\n        return raw._map_value(lambda value: decode_variant(outcomes, value))\n\n");
+        }
     }
     for command in commands {
         let wire_name = command.name();

@@ -1,4 +1,4 @@
-import { DriverApplicationTransport, type DriverApplicationError, type DriverOperation } from "./driver.js";
+import { DriverApplicationTransport, type DriverApplicationError, type DriverCompactQueryResult, type DriverOperation } from "./driver.js";
 export type ApplicationValueSchema = {
     readonly kind: "bool" | "i64" | "u64" | "string" | "uuid" | "bytes" | "date" | "timestamp" | "cursor" | "limit";
 } | {
@@ -63,6 +63,7 @@ interface NamedQueryRequest<P, R> {
     readonly parameters: P;
     readonly parameterSchema: ApplicationValueSchema;
     readonly resultSchemas: Readonly<Record<string, ApplicationValueSchema>>;
+    readonly compactDecoder?: (value: DriverCompactQueryResult) => R;
     readonly decodeError: (value: unknown) => Error;
     readonly resultType?: R;
 }

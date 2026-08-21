@@ -118,7 +118,9 @@ export type ApplicationValueSchema =
   | { readonly kind: "list"; readonly value: ApplicationValueSchema; readonly minimum?: number; readonly maximum?: number }
   | { readonly kind: "record"; readonly fields: ReadonlyArray<{ readonly name: string; readonly schema: ApplicationValueSchema; readonly wireId?: number }> };
 export interface DriverOperationIdentity { readonly name: string; readonly inputSchemaHash: string; }
-export interface NamedQueryRequest<P, R> { readonly driverOperation: DriverOperationIdentity; readonly contractLineage: typeof CONTRACT_LINEAGE; readonly contractVersion: typeof CONTRACT_VERSION; readonly contractBundleHash: typeof CONTRACT_BUNDLE_HASH; readonly moduleHash: typeof QUERY_MODULE_HASH; readonly queryName: string; readonly planHash: string; readonly parameters: P; readonly parameterSchema: ApplicationValueSchema; readonly resultSchemas: Readonly<Record<string, ApplicationValueSchema>>; readonly decodeError: typeof decodeApplicationError; readonly resultType?: R; }
+export interface CompactApplicationValue { readonly type: string; readonly value?: unknown; }
+export interface CompactNamedQueryResult { readonly outcome: string; readonly resultName: string; readonly entity: string; readonly fields: ReadonlyArray<string>; readonly rows: ReadonlyArray<ReadonlyArray<CompactApplicationValue>>; }
+export interface NamedQueryRequest<P, R> { readonly driverOperation: DriverOperationIdentity; readonly contractLineage: typeof CONTRACT_LINEAGE; readonly contractVersion: typeof CONTRACT_VERSION; readonly contractBundleHash: typeof CONTRACT_BUNDLE_HASH; readonly moduleHash: typeof QUERY_MODULE_HASH; readonly queryName: string; readonly planHash: string; readonly parameters: P; readonly parameterSchema: ApplicationValueSchema; readonly resultSchemas: Readonly<Record<string, ApplicationValueSchema>>; readonly compactDecoder?: (value: CompactNamedQueryResult) => R; readonly decodeError: typeof decodeApplicationError; readonly resultType?: R; }
 export interface QueryResponseIdentity { readonly contractLineage: string; readonly contractVersion: number; readonly contractBundleHash: string; readonly moduleHash: string; readonly queryName: string; readonly planHash: string; }
 export function acceptsIdentity<P, R>(request: NamedQueryRequest<P, R>, identity: QueryResponseIdentity): boolean {
   return identity.contractLineage === request.contractLineage
@@ -142,6 +144,37 @@ export interface ApplicationTransport {
   executeNamedQuery<P, R>(request: NamedQueryRequest<P, R>, options?: QueryOptions): Promise<TypedQueryResult<R>>;
   executeCommand<I, R>(request: CommandRequest<I, R>, attemptBudget: number): Promise<TypedCommandResult<R>>;
   executeCommandBatch?<I, R>(request: CommandRequest<I, R>, inputs: ReadonlyArray<I>, concurrency: number, checkpoint: number, attemptBudget: number): Promise<CommandBatchResult<R>>;
+}
+
+function compactPayload(value: CompactApplicationValue, expected: string): unknown {
+  if (typeof value !== "object" || value === null || Array.isArray(value) || value.type !== expected) throw new Error("invalid RiffDB compact value");
+  const keys = Object.keys(value);
+  if (expected === "null") { if (keys.length !== 1) throw new Error("invalid RiffDB compact value"); return null; }
+  if (keys.length !== 2 || !Object.hasOwn(value, "value")) throw new Error("invalid RiffDB compact value");
+  return value.value;
+}
+function compactString(value: CompactApplicationValue, expected: string, maximum: number): string {
+  const payload = compactPayload(value, expected);
+  if (typeof payload !== "string" || new TextEncoder().encode(payload).length > maximum) throw new Error("invalid RiffDB compact value");
+  return payload;
+}
+function compactInteger(value: CompactApplicationValue, expected: "i64" | "u64"): bigint {
+  const payload = compactPayload(value, expected);
+  if (typeof payload !== "string" || !/^-?(?:0|[1-9][0-9]*)$/.test(payload)) throw new Error("invalid RiffDB compact value");
+  const parsed = BigInt(payload);
+  if ((expected === "i64" && (parsed < -9223372036854775808n || parsed > 9223372036854775807n))
+      || (expected === "u64" && (parsed < 0n || parsed > 18446744073709551615n))) throw new Error("invalid RiffDB compact value");
+  return parsed;
+}
+function compactTimestamp(value: CompactApplicationValue): { readonly seconds: bigint; readonly nanos: number } {
+  const payload = compactPayload(value, "timestamp");
+  if (typeof payload !== "object" || payload === null || Array.isArray(payload)) throw new Error("invalid RiffDB compact value");
+  const record = payload as Record<string, unknown>;
+  if (Object.keys(record).length !== 2 || typeof record.seconds !== "string" || !/^-?(?:0|[1-9][0-9]*)$/.test(record.seconds)
+      || !Number.isInteger(record.nanos) || (record.nanos as number) < 0 || (record.nanos as number) >= 1_000_000_000) throw new Error("invalid RiffDB compact value");
+  const seconds = BigInt(record.seconds);
+  if (seconds < -9223372036854775808n || seconds > 9223372036854775807n) throw new Error("invalid RiffDB compact value");
+  return { seconds, nanos: record.nanos as number };
 }
 
 export const MODERATION_QUEUE_QUERY_PLAN_HASH = "2bbb8bfb76c59acd5041728d77156ae717f69fd87b80a7491c2114e8a0d4bae0" as const;

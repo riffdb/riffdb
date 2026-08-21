@@ -46,6 +46,7 @@ contract TicketDesk version 1 {
     field created_at: timestamp
     field updated_at: timestamp
     index by_project_status (organization_id, project_id, status, ticket_id)
+    index by_board_project_status (organization_id, project_id, status, ticket_id) cover (title, reporter_id, assignee_id)
     index by_assignee_status (organization_id, assignee_id, status, ticket_id)
     reference project (organization_id, project_id) -> Project(organization_id, project_id)
     reference reporter (organization_id, reporter_id) -> AppUser(organization_id, user_id)

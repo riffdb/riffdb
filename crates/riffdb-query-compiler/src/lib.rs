@@ -1522,10 +1522,12 @@ impl<'a> Planner<'a> {
                     binding,
                     &comparisons,
                     &self.binding_cardinalities,
-                    &self.binding_maximum_rows,
-                    self.document,
-                    maximum_rows,
-                    &cover_required_fields,
+                    AccessContext {
+                        binding_maximum_rows: &self.binding_maximum_rows,
+                        document: self.document,
+                        maximum_rows,
+                        cover_required_fields: &cover_required_fields,
+                    },
                 )?
             };
             let predicates = self.normalize_predicates(&comparisons)?;
@@ -1583,6 +1585,11 @@ impl<'a> Planner<'a> {
                         && self.document.body.bindings.len() == 1
                         && binding.cardinality.value == Cardinality::Many
                         && binding_results.len() == 1
+                        && selected_fields.iter().all(|name| {
+                            entity.field(name).is_some_and(|field| {
+                                compact_result_type_supported(field.value_type())
+                            })
+                        })
                         && dependency_fields
                             .get(binding.name.value.as_str())
                             .is_none_or(BTreeSet::is_empty)
@@ -1949,6 +1956,21 @@ impl<'a> Planner<'a> {
             TypeReference::Set(_) | TypeReference::Cursor | TypeReference::Limit => None,
         }
     }
+}
+
+fn compact_result_type_supported(value_type: &ValueType) -> bool {
+    let value_type = value_type.optional_inner().unwrap_or(value_type);
+    matches!(
+        value_type.tag(),
+        ValueTypeTag::Bool
+            | ValueTypeTag::I64
+            | ValueTypeTag::U64
+            | ValueTypeTag::String
+            | ValueTypeTag::Timestamp
+            | ValueTypeTag::Date
+            | ValueTypeTag::Uuid
+            | ValueTypeTag::Enum
+    )
 }
 
 struct QueryCostAccumulator {
@@ -2364,15 +2386,19 @@ fn collect_comparisons<'a>(expression: &'a Expression, output: &mut Vec<Comparis
     }
 }
 
+struct AccessContext<'a, 'query> {
+    binding_maximum_rows: &'a BTreeMap<&'query str, u64>,
+    document: &'a Document,
+    maximum_rows: u64,
+    cover_required_fields: &'a BTreeSet<String>,
+}
+
 fn choose_access(
     entity: &EntitySymbol,
     binding: &riffdb_riffql_syntax::Binding,
     comparisons: &[Comparison<'_>],
     binding_cardinalities: &BTreeMap<&str, Cardinality>,
-    binding_maximum_rows: &BTreeMap<&str, u64>,
-    document: &Document,
-    maximum_rows: u64,
-    cover_required_fields: &BTreeSet<String>,
+    context: AccessContext<'_, '_>,
 ) -> Result<(QueryAccessKind, Option<riffdb_types::IndexId>), PlannerDiagnostics> {
     let collection_dependencies = comparisons
         .iter()
@@ -2412,11 +2438,13 @@ fn choose_access(
         let key_only = comparisons
             .iter()
             .all(|comparison| key_fields.iter().any(|field| field == comparison.field));
-        let source_maximum = binding_maximum_rows
+        let source_maximum = context
+            .binding_maximum_rows
             .get(source_binding.value.as_str())
             .copied()
             .ok_or_else(internal)?;
-        let source = document
+        let source = context
+            .document
             .body
             .bindings
             .iter()
@@ -2448,7 +2476,7 @@ fn choose_access(
                 .is_some_and(|take| take.after.is_none())
             && complete_key
             && key_only
-            && maximum_rows <= source_maximum
+            && context.maximum_rows <= source_maximum
             && source_order == [source_field.value.as_str()]
             && source_order_is_forward
             && target_order == [collection.field]
@@ -2601,7 +2629,7 @@ fn choose_access(
             Some(index.internal_id()),
         );
         if !index.cover_fields().is_empty()
-            && index_covers_fields(entity, index, cover_required_fields)
+            && index_covers_fields(entity, index, context.cover_required_fields)
         {
             return Ok(candidate);
         }

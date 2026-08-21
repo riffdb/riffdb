@@ -3,7 +3,7 @@
 use std::error::Error;
 use std::fmt;
 
-use riffdb_proto::v1;
+use riffdb_proto::{app::v1 as app_v1, v1};
 use riffdb_types::RequestId;
 
 use crate::{
@@ -48,6 +48,15 @@ pub trait GeneratedQuery {
 
     /// Decodes one identity-checked name-addressed response.
     fn decode_result(response: NamedQueryResult) -> Result<Self::Output, ApplicationClientError>;
+
+    /// Decodes the compiler-sealed positional arm without constructing generic
+    /// per-row maps. Only cover-eligible generated operations override this.
+    fn decode_compact_result(
+        _outcome: String,
+        _response: app_v1::CompactResultField,
+    ) -> Result<Self::Output, ApplicationClientError> {
+        Err(ApplicationClientError::InvalidResponse)
+    }
 }
 
 /// One command shape emitted from a checked contract bundle.

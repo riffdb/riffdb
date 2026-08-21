@@ -8,6 +8,7 @@ use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::{Semaphore, mpsc, watch};
 use tokio::task::JoinSet;
 
+use crate::protocol::DRIVER_PROTOCOL_VERSION_V1;
 use crate::{DriverHost, DriverRequest, DriverResponse, FrameCodec};
 
 const MAX_CONNECTIONS: usize = 256;
@@ -126,6 +127,12 @@ async fn serve_connection(stream: UnixStream, host: DriverHost, mut drain: watch
             return;
         }
     };
+    let protocol_version = match &first {
+        DriverRequest::Handshake {
+            protocol_version, ..
+        } => *protocol_version,
+        _ => 0,
+    };
     let handshake = host.handshake(&first);
     let accepted = matches!(handshake, DriverResponse::Handshake { .. });
     if responses.send(handshake).await.is_err() || !accepted {
@@ -141,6 +148,24 @@ async fn serve_connection(stream: UnixStream, host: DriverHost, mut drain: watch
             changed=drain.changed()=>{let _=changed;break;}
             request=FrameCodec::read_request(&mut reader)=>match request{Ok(request)=>request,Err(_)=>break},
         };
+        if protocol_version == DRIVER_PROTOCOL_VERSION_V1
+            && matches!(
+                &request,
+                DriverRequest::Invoke {
+                    options,
+                    ..
+                } if options.accept_compact_result
+            )
+        {
+            let response = local_protocol_error(
+                &request,
+                "driver protocol V1 cannot negotiate compact results",
+            );
+            if responses.send(response).await.is_err() {
+                break;
+            }
+            continue;
+        }
         match request {
             DriverRequest::Invoke { .. } => {
                 let Ok(permit) = operation_admission.clone().try_acquire_owned() else {
@@ -245,6 +270,37 @@ fn local_capacity_error(request: &DriverRequest) -> DriverResponse {
         message: "driver host is over capacity".to_owned(),
         retryability: "retryable".to_owned(),
         recovery_action: "retry_later".to_owned(),
+        outcome_uncertain: false,
+    }
+}
+
+fn local_protocol_error(request: &DriverRequest, message: &'static str) -> DriverResponse {
+    let (request_id, operation) = match request {
+        DriverRequest::Invoke {
+            request_id,
+            operation,
+            ..
+        }
+        | DriverRequest::Batch {
+            request_id,
+            operation,
+            ..
+        } => (Some(request_id.clone()), Some(operation.clone())),
+        DriverRequest::Handshake { .. } | DriverRequest::Cancel { .. } => (None, None),
+    };
+    DriverResponse::Error {
+        request_id,
+        code: "RDB-DRIVER-0001".to_owned(),
+        category: "protocol".to_owned(),
+        operation,
+        symbol_path: Vec::new(),
+        contract_lineage: None,
+        contract_version: None,
+        trace_id: None,
+        incident_id: None,
+        message: message.to_owned(),
+        retryability: "not_retryable".to_owned(),
+        recovery_action: "upgrade_driver".to_owned(),
         outcome_uncertain: false,
     }
 }

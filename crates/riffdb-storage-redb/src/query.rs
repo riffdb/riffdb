@@ -1650,11 +1650,7 @@ query ProjectMembers(
 
     #[test]
     fn covered_index_page_never_opens_or_reads_the_entity_table() {
-        let covered_contract = CONTRACT.replace(
-            "    index by_project_status (organization_id, project_id, status, ticket_id)",
-            "    index by_project_status (organization_id, project_id, status, ticket_id)\n    index by_board_project_status (organization_id, project_id, status, ticket_id) cover (title, reporter_id, assignee_id)",
-        );
-        let bundle = compile_contract_source(&covered_contract).expect("covered contract");
+        let bundle = compile_contract_source(CONTRACT).expect("covered contract");
         let catalog = SymbolicCatalog::from_bundle(&bundle).expect("catalog");
         let program =
             compile_query(&parse_query(BOARD_QUERY).expect("parse"), &catalog).expect("program");

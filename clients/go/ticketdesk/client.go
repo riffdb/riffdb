@@ -8,10 +8,10 @@ import (
 	riffdb "riffdb.dev/application"
 )
 
-const QueryModuleHash = "001679e8e2e2e29c46be0bf8e85674f874f3e255c30b6a34c40ed824f408964c"
+const QueryModuleHash = "c30959d45f028bb8f7eb452f9368c32cd05dd19d4b524a60f01935fcb473c0b7"
 const ContractLineage = "TicketDesk"
 const ContractVersion uint64 = 1
-const ContractBundleHash = "cd221ebb44c57105da5bdb2682b473e4ce4cde4d7cac540e49097450df6ec7de"
+const ContractBundleHash = "7cae1122f8daad0469b74e1e40473f7cfcd9ea8474c39e1ddc510218b2ac0999"
 
 type QueryOptions = riffdb.Options
 type QueryIdentity struct {
@@ -1375,7 +1375,7 @@ func decodeProjectMember(value riffdb.Value) (ProjectMember, error) {
 	return result, nil
 }
 
-const BoardPage200QueryPlanHash = "d0a4294c1ce4e0fe8883f4a382d445a4addf346d1ee6a39989f18521788b355a"
+const BoardPage200QueryPlanHash = "cb06f3300791614daa6bb72e5a8d850527bde79c63a08c2d03aaccb6e73bfc47"
 
 var BoardPage200Operation = riffdb.Operation{Name: "ticketdesk_board_page200", InputSchemaHash: "09bcdc1788d66641ac2def372383c69f620a3006fa4cd7763832752bf75b2c30"}
 
@@ -1463,11 +1463,88 @@ func decodeBoardPage200Result(value riffdb.Value) (BoardPage200Result, error) {
 		return nil, errors.New("RiffDB driver returned unknown query outcome")
 	}
 }
+func decodeBoardPage200Compact(value *riffdb.CompactQueryResult) (BoardPage200Result, error) {
+	if value == nil || value.Outcome != "Found" || value.ResultName != "tickets" || value.Entity != "Ticket" || len(value.Fields) != 6 || len(value.Rows) > 200 {
+		return nil, errors.New("RiffDB driver returned invalid compact result")
+	}
+	expected := []string{"assignee_id", "project_id", "reporter_id", "status", "ticket_id", "title"}
+	for index := range expected {
+		if value.Fields[index] != expected[index] {
+			return nil, errors.New("RiffDB driver returned invalid compact result")
+		}
+	}
+	rows := make([]struct {
+		TicketId   string
+		ProjectId  string
+		Title      string
+		Status     TicketStatus
+		ReporterId string
+		AssigneeId string
+	}, 0, len(value.Rows))
+	for _, rawRow := range value.Rows {
+		if len(rawRow) != len(expected) {
+			return nil, errors.New("RiffDB driver returned invalid compact result")
+		}
+		var row struct {
+			TicketId   string
+			ProjectId  string
+			Title      string
+			Status     TicketStatus
+			ReporterId string
+			AssigneeId string
+		}
+		var err error
+		row.AssigneeId, err = riffdb.UUIDValue(rawRow[0])
+		if err != nil {
+			return nil, err
+		}
+		row.ProjectId, err = riffdb.UUIDValue(rawRow[1])
+		if err != nil {
+			return nil, err
+		}
+		row.ReporterId, err = riffdb.UUIDValue(rawRow[2])
+		if err != nil {
+			return nil, err
+		}
+		row.Status, err = func() (TicketStatus, error) {
+			result, err := riffdb.EnumValue(rawRow[3])
+			if err != nil {
+				return "", err
+			}
+			switch result {
+			case "Open", "Closed", "InProgress":
+				return TicketStatus(result), nil
+			default:
+				return "", errors.New("invalid RiffDB compact enum")
+			}
+		}()
+		if err != nil {
+			return nil, err
+		}
+		row.TicketId, err = riffdb.UUIDValue(rawRow[4])
+		if err != nil {
+			return nil, err
+		}
+		row.Title, err = func() (string, error) {
+			result, err := riffdb.StringValue(rawRow[5])
+			if err != nil || len(result) > 128 {
+				return "", errors.New("invalid RiffDB compact value")
+			}
+			return result, nil
+		}()
+		if err != nil {
+			return nil, err
+		}
+		rows = append(rows, row)
+	}
+	return BoardPage200Found{Outcome: "Found", Tickets: rows}, nil
+}
 func (client *Client) BoardPage200(ctx context.Context, parameters BoardPage200Params, options QueryOptions) (QueryResult[BoardPage200Result], error) {
 	input := map[string]riffdb.Value{}
 	input["organization_id"] = riffdb.UUID(parameters.OrganizationId)
 	input["project_id"] = riffdb.UUID(parameters.ProjectId)
 	input["status"] = riffdb.Enum(string(parameters.Status))
+	options.AcceptCompactResult = true
 	response, err := client.session.Invoke(ctx, BoardPage200Operation, input, options)
 	if err != nil {
 		return QueryResult[BoardPage200Result]{}, err
@@ -1475,7 +1552,12 @@ func (client *Client) BoardPage200(ctx context.Context, parameters BoardPage200P
 	if response.ApplicationHead == nil {
 		return QueryResult[BoardPage200Result]{}, errors.New("RiffDB driver omitted query frontier")
 	}
-	value, err := decodeBoardPage200Result(response.Value)
+	var value BoardPage200Result
+	if response.Compact != nil {
+		value, err = decodeBoardPage200Compact(response.Compact)
+	} else {
+		value, err = decodeBoardPage200Result(response.Value)
+	}
 	if err != nil {
 		return QueryResult[BoardPage200Result]{}, err
 	}
@@ -1483,7 +1565,7 @@ func (client *Client) BoardPage200(ctx context.Context, parameters BoardPage200P
 	return QueryResult[BoardPage200Result]{Value: value, Identity: identity, ApplicationHead: *response.ApplicationHead, NextCursor: response.Cursor}, nil
 }
 
-const BoardPage450QueryPlanHash = "1047c13c0665d0c7e39e332dc766b64e690e5dd577e9864ba59dd8291ddf04d4"
+const BoardPage450QueryPlanHash = "22f105b94037c2a8b46878139028e3ee495b2ac4e94495d28ba202c2386e8c84"
 
 var BoardPage450Operation = riffdb.Operation{Name: "ticketdesk_board_page450", InputSchemaHash: "09bcdc1788d66641ac2def372383c69f620a3006fa4cd7763832752bf75b2c30"}
 
@@ -1571,11 +1653,88 @@ func decodeBoardPage450Result(value riffdb.Value) (BoardPage450Result, error) {
 		return nil, errors.New("RiffDB driver returned unknown query outcome")
 	}
 }
+func decodeBoardPage450Compact(value *riffdb.CompactQueryResult) (BoardPage450Result, error) {
+	if value == nil || value.Outcome != "Found" || value.ResultName != "tickets" || value.Entity != "Ticket" || len(value.Fields) != 6 || len(value.Rows) > 450 {
+		return nil, errors.New("RiffDB driver returned invalid compact result")
+	}
+	expected := []string{"assignee_id", "project_id", "reporter_id", "status", "ticket_id", "title"}
+	for index := range expected {
+		if value.Fields[index] != expected[index] {
+			return nil, errors.New("RiffDB driver returned invalid compact result")
+		}
+	}
+	rows := make([]struct {
+		TicketId   string
+		ProjectId  string
+		Title      string
+		Status     TicketStatus
+		ReporterId string
+		AssigneeId string
+	}, 0, len(value.Rows))
+	for _, rawRow := range value.Rows {
+		if len(rawRow) != len(expected) {
+			return nil, errors.New("RiffDB driver returned invalid compact result")
+		}
+		var row struct {
+			TicketId   string
+			ProjectId  string
+			Title      string
+			Status     TicketStatus
+			ReporterId string
+			AssigneeId string
+		}
+		var err error
+		row.AssigneeId, err = riffdb.UUIDValue(rawRow[0])
+		if err != nil {
+			return nil, err
+		}
+		row.ProjectId, err = riffdb.UUIDValue(rawRow[1])
+		if err != nil {
+			return nil, err
+		}
+		row.ReporterId, err = riffdb.UUIDValue(rawRow[2])
+		if err != nil {
+			return nil, err
+		}
+		row.Status, err = func() (TicketStatus, error) {
+			result, err := riffdb.EnumValue(rawRow[3])
+			if err != nil {
+				return "", err
+			}
+			switch result {
+			case "Open", "Closed", "InProgress":
+				return TicketStatus(result), nil
+			default:
+				return "", errors.New("invalid RiffDB compact enum")
+			}
+		}()
+		if err != nil {
+			return nil, err
+		}
+		row.TicketId, err = riffdb.UUIDValue(rawRow[4])
+		if err != nil {
+			return nil, err
+		}
+		row.Title, err = func() (string, error) {
+			result, err := riffdb.StringValue(rawRow[5])
+			if err != nil || len(result) > 128 {
+				return "", errors.New("invalid RiffDB compact value")
+			}
+			return result, nil
+		}()
+		if err != nil {
+			return nil, err
+		}
+		rows = append(rows, row)
+	}
+	return BoardPage450Found{Outcome: "Found", Tickets: rows}, nil
+}
 func (client *Client) BoardPage450(ctx context.Context, parameters BoardPage450Params, options QueryOptions) (QueryResult[BoardPage450Result], error) {
 	input := map[string]riffdb.Value{}
 	input["organization_id"] = riffdb.UUID(parameters.OrganizationId)
 	input["project_id"] = riffdb.UUID(parameters.ProjectId)
 	input["status"] = riffdb.Enum(string(parameters.Status))
+	options.AcceptCompactResult = true
 	response, err := client.session.Invoke(ctx, BoardPage450Operation, input, options)
 	if err != nil {
 		return QueryResult[BoardPage450Result]{}, err
@@ -1583,7 +1742,12 @@ func (client *Client) BoardPage450(ctx context.Context, parameters BoardPage450P
 	if response.ApplicationHead == nil {
 		return QueryResult[BoardPage450Result]{}, errors.New("RiffDB driver omitted query frontier")
 	}
-	value, err := decodeBoardPage450Result(response.Value)
+	var value BoardPage450Result
+	if response.Compact != nil {
+		value, err = decodeBoardPage450Compact(response.Compact)
+	} else {
+		value, err = decodeBoardPage450Result(response.Value)
+	}
 	if err != nil {
 		return QueryResult[BoardPage450Result]{}, err
 	}
@@ -1591,7 +1755,7 @@ func (client *Client) BoardPage450(ctx context.Context, parameters BoardPage450P
 	return QueryResult[BoardPage450Result]{Value: value, Identity: identity, ApplicationHead: *response.ApplicationHead, NextCursor: response.Cursor}, nil
 }
 
-const BoardPage50QueryPlanHash = "35c9815474d34fbf61e5fa4d81375e9a89f1fb62ea2cccf70bd18db0aa83280e"
+const BoardPage50QueryPlanHash = "1fe070429b28a2870a0ffde2e089ff0e79fdf740c602528ff3562bb4123d11f7"
 
 var BoardPage50Operation = riffdb.Operation{Name: "ticketdesk_board_page50", InputSchemaHash: "09bcdc1788d66641ac2def372383c69f620a3006fa4cd7763832752bf75b2c30"}
 
@@ -1679,11 +1843,88 @@ func decodeBoardPage50Result(value riffdb.Value) (BoardPage50Result, error) {
 		return nil, errors.New("RiffDB driver returned unknown query outcome")
 	}
 }
+func decodeBoardPage50Compact(value *riffdb.CompactQueryResult) (BoardPage50Result, error) {
+	if value == nil || value.Outcome != "Found" || value.ResultName != "tickets" || value.Entity != "Ticket" || len(value.Fields) != 6 || len(value.Rows) > 50 {
+		return nil, errors.New("RiffDB driver returned invalid compact result")
+	}
+	expected := []string{"assignee_id", "project_id", "reporter_id", "status", "ticket_id", "title"}
+	for index := range expected {
+		if value.Fields[index] != expected[index] {
+			return nil, errors.New("RiffDB driver returned invalid compact result")
+		}
+	}
+	rows := make([]struct {
+		TicketId   string
+		ProjectId  string
+		Title      string
+		Status     TicketStatus
+		ReporterId string
+		AssigneeId string
+	}, 0, len(value.Rows))
+	for _, rawRow := range value.Rows {
+		if len(rawRow) != len(expected) {
+			return nil, errors.New("RiffDB driver returned invalid compact result")
+		}
+		var row struct {
+			TicketId   string
+			ProjectId  string
+			Title      string
+			Status     TicketStatus
+			ReporterId string
+			AssigneeId string
+		}
+		var err error
+		row.AssigneeId, err = riffdb.UUIDValue(rawRow[0])
+		if err != nil {
+			return nil, err
+		}
+		row.ProjectId, err = riffdb.UUIDValue(rawRow[1])
+		if err != nil {
+			return nil, err
+		}
+		row.ReporterId, err = riffdb.UUIDValue(rawRow[2])
+		if err != nil {
+			return nil, err
+		}
+		row.Status, err = func() (TicketStatus, error) {
+			result, err := riffdb.EnumValue(rawRow[3])
+			if err != nil {
+				return "", err
+			}
+			switch result {
+			case "Open", "Closed", "InProgress":
+				return TicketStatus(result), nil
+			default:
+				return "", errors.New("invalid RiffDB compact enum")
+			}
+		}()
+		if err != nil {
+			return nil, err
+		}
+		row.TicketId, err = riffdb.UUIDValue(rawRow[4])
+		if err != nil {
+			return nil, err
+		}
+		row.Title, err = func() (string, error) {
+			result, err := riffdb.StringValue(rawRow[5])
+			if err != nil || len(result) > 128 {
+				return "", errors.New("invalid RiffDB compact value")
+			}
+			return result, nil
+		}()
+		if err != nil {
+			return nil, err
+		}
+		rows = append(rows, row)
+	}
+	return BoardPage50Found{Outcome: "Found", Tickets: rows}, nil
+}
 func (client *Client) BoardPage50(ctx context.Context, parameters BoardPage50Params, options QueryOptions) (QueryResult[BoardPage50Result], error) {
 	input := map[string]riffdb.Value{}
 	input["organization_id"] = riffdb.UUID(parameters.OrganizationId)
 	input["project_id"] = riffdb.UUID(parameters.ProjectId)
 	input["status"] = riffdb.Enum(string(parameters.Status))
+	options.AcceptCompactResult = true
 	response, err := client.session.Invoke(ctx, BoardPage50Operation, input, options)
 	if err != nil {
 		return QueryResult[BoardPage50Result]{}, err
@@ -1691,7 +1932,12 @@ func (client *Client) BoardPage50(ctx context.Context, parameters BoardPage50Par
 	if response.ApplicationHead == nil {
 		return QueryResult[BoardPage50Result]{}, errors.New("RiffDB driver omitted query frontier")
 	}
-	value, err := decodeBoardPage50Result(response.Value)
+	var value BoardPage50Result
+	if response.Compact != nil {
+		value, err = decodeBoardPage50Compact(response.Compact)
+	} else {
+		value, err = decodeBoardPage50Result(response.Value)
+	}
 	if err != nil {
 		return QueryResult[BoardPage50Result]{}, err
 	}
@@ -1699,7 +1945,7 @@ func (client *Client) BoardPage50(ctx context.Context, parameters BoardPage50Par
 	return QueryResult[BoardPage50Result]{Value: value, Identity: identity, ApplicationHead: *response.ApplicationHead, NextCursor: response.Cursor}, nil
 }
 
-const GetTicketQueryPlanHash = "a3c62d90ae6fb48303631110c500933f3f06c20e141fdd1f681a484a7450ab0d"
+const GetTicketQueryPlanHash = "14cf6045df12cea4c1680074ba99090d8dfbe8da8e02ff778e82c8e8dcdf1dd7"
 
 var GetTicketOperation = riffdb.Operation{Name: "ticketdesk_get_ticket", InputSchemaHash: "cd3d7f77ee75dee8d99ace0a2fc341057aeb943342378d0d22cd1fce32b9010b"}
 
@@ -1802,7 +2048,7 @@ func (client *Client) GetTicket(ctx context.Context, parameters GetTicketParams,
 	return QueryResult[GetTicketResult]{Value: value, Identity: identity, ApplicationHead: *response.ApplicationHead, NextCursor: response.Cursor}, nil
 }
 
-const GetUserQueryPlanHash = "13e3d239243777fe536c33a1f309fe8a17946de357a3745a1747d42b2f958930"
+const GetUserQueryPlanHash = "1623690c03865daba8c6a42aed6ac276e96595541a2d5cd1c3540e1d71466284"
 
 var GetUserOperation = riffdb.Operation{Name: "ticketdesk_get_user", InputSchemaHash: "55fc1b8b0854edb2d5cffb1ed6f3ac0f4b562e81f48c8dac7cd955339ebb0a60"}
 
@@ -1884,7 +2130,7 @@ func (client *Client) GetUser(ctx context.Context, parameters GetUserParams, opt
 	return QueryResult[GetUserResult]{Value: value, Identity: identity, ApplicationHead: *response.ApplicationHead, NextCursor: response.Cursor}, nil
 }
 
-const ListCommentsQueryPlanHash = "a92d1ac5b4549fc66d4726e423f1da27959a02beda7f92254297402c666802c7"
+const ListCommentsQueryPlanHash = "257a1d3a6301bdb15c3fac5d1cda94569ae3f6e7c94f1cbbd8a62dcb83462dbd"
 
 var ListCommentsOperation = riffdb.Operation{Name: "ticketdesk_list_comments", InputSchemaHash: "008e7247e2011c184634a1852a886aaf3d4b878d97e75f2b65749841638f53d7"}
 
@@ -1981,7 +2227,7 @@ func (client *Client) ListComments(ctx context.Context, parameters ListCommentsP
 	return QueryResult[ListCommentsResult]{Value: value, Identity: identity, ApplicationHead: *response.ApplicationHead, NextCursor: response.Cursor}, nil
 }
 
-const ListTicketsQueryPlanHash = "52bbabe150cd501efd4a007bf753a1116f42a1d7b6b3a94dd2e7455b5a98a366"
+const ListTicketsQueryPlanHash = "6930b4040e3c0c7a8b3d44315e74f356e5c5a4fa6d05049cb78cca1ec4643f95"
 
 var ListTicketsOperation = riffdb.Operation{Name: "ticketdesk_list_tickets", InputSchemaHash: "bf2fcb24cfb4f236db61aad07b9363d7b4a3702bf71ce94dc297f48cb64d6905"}
 
@@ -2103,7 +2349,7 @@ func (client *Client) ListTickets(ctx context.Context, parameters ListTicketsPar
 	return QueryResult[ListTicketsResult]{Value: value, Identity: identity, ApplicationHead: *response.ApplicationHead, NextCursor: response.Cursor}, nil
 }
 
-const ListTicketsByAssigneeQueryPlanHash = "42dede464162450d9c0e5f50c54944d2a7517daaa6f1ac206168eede200c2718"
+const ListTicketsByAssigneeQueryPlanHash = "c927cb236e2e0929f2ff3e323eed462578a6cbbf1fe8bc5571888bcd77d4c7d8"
 
 var ListTicketsByAssigneeOperation = riffdb.Operation{Name: "ticketdesk_list_tickets_by_assignee", InputSchemaHash: "528863e9349e4b0b4861b4b0aa80385f3ef3216d04d7f762afa1d6f2c8d1a9a5"}
 
@@ -2225,7 +2471,7 @@ func (client *Client) ListTicketsByAssignee(ctx context.Context, parameters List
 	return QueryResult[ListTicketsByAssigneeResult]{Value: value, Identity: identity, ApplicationHead: *response.ApplicationHead, NextCursor: response.Cursor}, nil
 }
 
-const ProjectMembersQueryPlanHash = "273e025bc51fcf488794f28c45746c0ff180a6955d414873feac581a22708f7b"
+const ProjectMembersQueryPlanHash = "6327a0d15a757c3f265b595bccf697019650f5f21e7e30f8366fb181a4352669"
 
 var ProjectMembersOperation = riffdb.Operation{Name: "ticketdesk_project_members", InputSchemaHash: "b1314ded38cc8a3dc63a45ebecf93ca4eeda35986229127e2e4e0278ad330afc"}
 
@@ -2303,7 +2549,7 @@ func (client *Client) ProjectMembers(ctx context.Context, parameters ProjectMemb
 	return QueryResult[ProjectMembersResult]{Value: value, Identity: identity, ApplicationHead: *response.ApplicationHead, NextCursor: response.Cursor}, nil
 }
 
-const ProjectSummaryQueryPlanHash = "281b68867d9a37f1f3367fd4b63b14dd8533b60c385238cac774a3bcd5936d7e"
+const ProjectSummaryQueryPlanHash = "f58b2f9edf69a8f0edd43a9363ce5bff3cd908c3bb7b37a3cdfdcf48719510e3"
 
 var ProjectSummaryOperation = riffdb.Operation{Name: "ticketdesk_project_summary", InputSchemaHash: "09bcdc1788d66641ac2def372383c69f620a3006fa4cd7763832752bf75b2c30"}
 
@@ -2425,7 +2671,7 @@ func (client *Client) ProjectSummary(ctx context.Context, parameters ProjectSumm
 	return QueryResult[ProjectSummaryResult]{Value: value, Identity: identity, ApplicationHead: *response.ApplicationHead, NextCursor: response.Cursor}, nil
 }
 
-const TicketPageQueryPlanHash = "ac390a2d26f0d6a9e2f0587fb2fed428910c6e6175fe47de9e40c47a29a979d5"
+const TicketPageQueryPlanHash = "abbf375e3d2920ad04991308eaa6ffe4f8d2ce3e3fb57805978e5e64de7903f0"
 
 var TicketPageOperation = riffdb.Operation{Name: "ticketdesk_ticket_page", InputSchemaHash: "cd3d7f77ee75dee8d99ace0a2fc341057aeb943342378d0d22cd1fce32b9010b"}
 
@@ -2718,7 +2964,7 @@ func (client *Client) TicketPage(ctx context.Context, parameters TicketPageParam
 	return QueryResult[TicketPageResult]{Value: value, Identity: identity, ApplicationHead: *response.ApplicationHead, NextCursor: response.Cursor}, nil
 }
 
-const TicketPagePagedQueryPlanHash = "9c70120d89323d7401b0225b82fd9f691da7e013b19f28f422f41f66ba45bd58"
+const TicketPagePagedQueryPlanHash = "105db755be54dc657ca72c51f6f3f29df8e543bc3b4ffa6e04db7a3329ca7aaf"
 
 var TicketPagePagedOperation = riffdb.Operation{Name: "ticketdesk_ticket_page_paged", InputSchemaHash: "f4ef29944234e1bef0c0a46448589cd8f29f3666f133ac022e8f11443c4193b0"}
 
@@ -3014,7 +3260,7 @@ func (client *Client) TicketPagePaged(ctx context.Context, parameters TicketPage
 	return QueryResult[TicketPagePagedResult]{Value: value, Identity: identity, ApplicationHead: *response.ApplicationHead, NextCursor: response.Cursor}, nil
 }
 
-const TicketQueueQueryPlanHash = "9b6c3f914d4a2a7abff328b9a3750dcc9b0c904688a8aae8b2bd1276a1c27e3d"
+const TicketQueueQueryPlanHash = "ecdcd9ea75fc9a1d762b94dbf91a5d05cbcec126d4dbd2ae315674ad79a9e1ae"
 
 var TicketQueueOperation = riffdb.Operation{Name: "ticketdesk_ticket_queue", InputSchemaHash: "8bd9c7956b74fb8ae16b2e958f77daf2eae2c899b53171f3063d88a065440b68"}
 
@@ -3137,7 +3383,7 @@ func (client *Client) TicketQueue(ctx context.Context, parameters TicketQueuePar
 	return QueryResult[TicketQueueResult]{Value: value, Identity: identity, ApplicationHead: *response.ApplicationHead, NextCursor: response.Cursor}, nil
 }
 
-const AddProjectMemberPlanHash = "65a0a5eedbc1dd1704da23be83c989c564e106f555511ac9c8fd2e986241b644"
+const AddProjectMemberPlanHash = "f6e97f3c3d3eb05aef230e22910a65ff8d6bbbbcecb778c931e8fb45805bbaff"
 
 var AddProjectMemberOperation = riffdb.Operation{Name: "ticketdesk_add_project_member", InputSchemaHash: "15c936e77569e9f6c20d7d435a77d16d7ca665ca7c25cae6968c57b967cad590"}
 
@@ -3258,7 +3504,7 @@ func (client *Client) AddProjectMemberBatch(ctx context.Context, inputs []AddPro
 	return result, nil
 }
 
-const AttachLabelPlanHash = "c17660b5bd5160390772aac001925acc2017273fe03bf39723094ff769b73a43"
+const AttachLabelPlanHash = "7fa91ce949317cddf0164f98f463344e9032cfff6952919824f0c55cd7124091"
 
 var AttachLabelOperation = riffdb.Operation{Name: "ticketdesk_attach_label", InputSchemaHash: "5cb533fd1fef81af9490c6abe4eac4060b7ad172c14b065b180c7ab9dc3372de"}
 
@@ -3378,7 +3624,7 @@ func (client *Client) AttachLabelBatch(ctx context.Context, inputs []AttachLabel
 	return result, nil
 }
 
-const CloseTicketWithCommentPlanHash = "f126142eed87d07f3b8dd3b82e09ee48c430c23583d50196c2ad17ed59bf91d7"
+const CloseTicketWithCommentPlanHash = "43be33bba05e123f6497b432174d8c275e5cc32b6cb604849c407f4b9cb744b8"
 
 var CloseTicketWithCommentOperation = riffdb.Operation{Name: "ticketdesk_close_ticket_with_comment", InputSchemaHash: "93880522ce9a9d60d309d706ffda136a83bb9328e8ba1f3dc13f747a2ad4f4c3"}
 
@@ -3511,7 +3757,7 @@ func (client *Client) CloseTicketWithCommentBatch(ctx context.Context, inputs []
 	return result, nil
 }
 
-const CreateCommentPlanHash = "5456fbeb4b1781f6707104a3182c809fd3af7a0dbdfaf5d6498d1eee0a5a5529"
+const CreateCommentPlanHash = "fe01d1e99d6cafeebe24b0bbe8f369ed69eda463a3c5becbc50860b7a6dc4987"
 
 var CreateCommentOperation = riffdb.Operation{Name: "ticketdesk_create_comment", InputSchemaHash: "93880522ce9a9d60d309d706ffda136a83bb9328e8ba1f3dc13f747a2ad4f4c3"}
 
@@ -3815,7 +4061,7 @@ func (client *Client) CreateOrganizationBatch(ctx context.Context, inputs []Crea
 	return result, nil
 }
 
-const CreateProjectPlanHash = "ad382ce1fb915985b0b0170fadc7b2e7313aa5446554be13773394a7f25a5124"
+const CreateProjectPlanHash = "52bb2be37e357bf38f979845dcbab0f65333202cad3fddb8eb70192a384e55f6"
 
 var CreateProjectOperation = riffdb.Operation{Name: "ticketdesk_create_project", InputSchemaHash: "2273a55f78823250feabc303c50f66c5bf37cb986830de39af3875c9c53c8031"}
 
@@ -3916,7 +4162,7 @@ func (client *Client) CreateProjectBatch(ctx context.Context, inputs []CreatePro
 	return result, nil
 }
 
-const CreateTicketPlanHash = "cfaebe79ac6ac9288a0b5e7982d659eacb2aad088eb87c4496ae3d5cdbe9bfc6"
+const CreateTicketPlanHash = "dbc87a3736e4acb09dd95247dd6598b5adf9131b0c9ce5bb88b1f82b84ede069"
 
 var CreateTicketOperation = riffdb.Operation{Name: "ticketdesk_create_ticket", InputSchemaHash: "9380387289622fcd67129d9482cae8a4ed22f2d9d7b03fa2726e51bda7bb167b"}
 
@@ -4043,7 +4289,7 @@ func (client *Client) CreateTicketBatch(ctx context.Context, inputs []CreateTick
 	return result, nil
 }
 
-const CreateUserPlanHash = "ec5c88b02cbf31705aef2d5224c363a883346623979dd0fb4e6403ec29f351fd"
+const CreateUserPlanHash = "a1e67b10a10027728f412fbb065e431e0b9cc67526b23f9d83325213d80a85a2"
 
 var CreateUserOperation = riffdb.Operation{Name: "ticketdesk_create_user", InputSchemaHash: "717ba5b4dee3764ef870d08fb230b97988ca5707a8510c270bfa8dd4b1eac9b4"}
 
@@ -4145,7 +4391,7 @@ func (client *Client) CreateUserBatch(ctx context.Context, inputs []CreateUserIn
 	return result, nil
 }
 
-const OpenTicketWithLabelsPlanHash = "4000515b7b4b975c17ba6ff23c78478869cdd3f40ef2afeae80c88aefb452a48"
+const OpenTicketWithLabelsPlanHash = "b52f080b84ac70d77c505bf2cc9da258b6434c1f9788f3d15bbb658a70857c9e"
 
 var OpenTicketWithLabelsOperation = riffdb.Operation{Name: "ticketdesk_open_ticket_with_labels", InputSchemaHash: "d1d0030301bc0da64004cce8e02de6e9d70141cf196033547d854d03bc5f3d6f"}
 
@@ -4319,7 +4565,7 @@ func (client *Client) OpenTicketWithLabelsBatch(ctx context.Context, inputs []Op
 	return result, nil
 }
 
-const SwapMemberRolesPlanHash = "0b4e799a310aeca5c4c62a7eaa584d6b45d15013eb4cbaa9265460045b2a9126"
+const SwapMemberRolesPlanHash = "9be1787da3660f0c4d9ab97509979bc9466b49f38762ee747c3c1ee21c252695"
 
 var SwapMemberRolesOperation = riffdb.Operation{Name: "ticketdesk_swap_member_roles", InputSchemaHash: "3a0f1689dcfe88e123654aff052f598439fc272e0c3ceab2dd728e67dc8bd445"}
 

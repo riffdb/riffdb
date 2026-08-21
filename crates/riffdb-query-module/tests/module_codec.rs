@@ -131,11 +131,7 @@ fn identity_and_bytes_are_independent_of_input_order() {
 
 #[test]
 fn covered_result_module_uses_v7_and_round_trips_exactly() {
-    let covered_contract = CONTRACT.replace(
-        "    index by_project_status (organization_id, project_id, status, ticket_id)",
-        "    index by_project_status (organization_id, project_id, status, ticket_id)\n    index by_board_project_status (organization_id, project_id, status, ticket_id) cover (title, reporter_id, assignee_id)",
-    );
-    let bundle = compile_contract_source(&covered_contract).expect("covered contract");
+    let bundle = compile_contract_source(CONTRACT).expect("covered contract");
     let candidate = QueryModuleCandidate::new(
         QueryModuleName::new("ticketdesk_board").expect("module name"),
         QueryModuleVersion::new(1).expect("module version"),
@@ -164,6 +160,29 @@ fn covered_result_module_uses_v7_and_round_trips_exactly() {
         .expect("strict V7 round trip");
     assert_eq!(decoded.canonical_bytes(), module.canonical_bytes());
     assert_eq!(decoded.identity(), module.identity());
+
+    let rust = generate_rust_client(&module, &bundle);
+    assert!(rust.contains("fn decode_compact_result("));
+    assert!(rust.contains("response.fields != vec![\"assignee_id\".to_owned()"));
+    assert!(rust.contains("response.rows.len() > 450usize"));
+    assert!(rust.contains("let [value_0, value_1, value_2, value_3, value_4, value_5]"));
+    assert!(rust.contains("(1, 1, \"Open\") => \"Open\".to_owned()"));
+    assert!(!rust.contains("decode_compact_result(outcome: String, response: app_v1::CompactResultField) -> Result<Self::Output, ApplicationClientError> {\n        let mut fields = BTreeMap"));
+
+    let typescript = generate_typescript_client(&module, &bundle);
+    assert!(typescript.contains("function decodeBoardPage450Compact("));
+    assert!(typescript.contains("compactDecoder: decodeBoardPage450Compact"));
+    assert!(!typescript.contains("value.rows.map((row) => Object.fromEntries"));
+
+    let go = generate_go_client(&module, &bundle);
+    assert!(go.contains("func decodeBoardPage450Compact("));
+    assert!(go.contains("options.AcceptCompactResult = true"));
+    assert!(!go.contains("map[string]riffdb.Value{}; for _, row := range value.Rows"));
+
+    let python = generate_python_client(&module, &bundle).expect("Python");
+    assert!(python.contains("def _decode_board_page450_compact("));
+    assert!(python.contains("accept_compact_result=True"));
+    assert!(!python.contains("dict(zip(compact[\"fields\"], row))"));
 }
 
 #[test]

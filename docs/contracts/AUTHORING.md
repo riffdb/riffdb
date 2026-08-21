@@ -101,6 +101,31 @@ on an optional field, declare `presence(field)` as shown above so missing,
 explicit-null, and present values remain distinct and the compiler can prove
 the access shape.
 
+## Explicit covering indexes
+
+A new index identity may declare bounded authoritative fields that are stored
+atomically with each index entry:
+
+```riff
+index by_board_project_status
+    (organization_id, project_id, status, ticket_id)
+    cover (title, reporter_id, assignee_id)
+```
+
+The compiler may use this index for a named query only when its key plus cover
+contains every predicate, ordering, and selected field and the complete result
+has one statically bounded positional layout. The application still names only
+the query; it cannot select the index, request a partial cover, provide field
+ordinals, or disable validation. Covered bytes are derived from the same
+authoritative post-image as the index key and commit atomically with it.
+
+`cover (...)` is intentionally explicit and ordered. Adding it to an existing
+index is not an in-place optimization: add a new index identity and use the
+normal migration/rebuild path. Missing, stale, malformed, duplicate, or
+non-derivable covered values fail closed; the executor never falls back to
+entity reads after selecting a covered plan. Unbounded, secret, unsupported,
+or policy-incompatible layouts remain on the ordinary checked result path.
+
 ## Vector fields (alpha)
 
 An entity may declare one or more fixed-dimension embedding fields:

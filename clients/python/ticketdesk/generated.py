@@ -15,10 +15,15 @@ SyncApplicationTransport, Timestamp, TypedCommandResult, TypedQueryResult, Workf
 )
 from riffdb_application._binding import decode_variant, encode_record
 
+def _compact_tag(value: object, tag: str, keys: frozenset[str]) -> dict[str, object]:
+    if not isinstance(value, dict) or value.get("$riffdb") != tag or frozenset(value) != keys:
+        raise ValueError("invalid RiffDB compact value")
+    return value
+
 CONTRACT_LINEAGE: Final[str] = "TicketDesk"
 CONTRACT_VERSION: Final[int] = 1
-CONTRACT_BUNDLE_HASH: Final[str] = "cd221ebb44c57105da5bdb2682b473e4ce4cde4d7cac540e49097450df6ec7de"
-QUERY_MODULE_HASH: Final[str] = "001679e8e2e2e29c46be0bf8e85674f874f3e255c30b6a34c40ed824f408964c"
+CONTRACT_BUNDLE_HASH: Final[str] = "7cae1122f8daad0469b74e1e40473f7cfcd9ea8474c39e1ddc510218b2ac0999"
+QUERY_MODULE_HASH: Final[str] = "c30959d45f028bb8f7eb452f9368c32cd05dd19d4b524a60f01935fcb473c0b7"
 
 class TicketStatus(StrEnum):
     OPEN = "Open"
@@ -89,7 +94,7 @@ class ProjectMember:
     project_id: UUID
     organization_id: UUID
 
-BOARD_PAGE200_QUERY_PLAN_HASH: Final[str] = "d0a4294c1ce4e0fe8883f4a382d445a4addf346d1ee6a39989f18521788b355a"
+BOARD_PAGE200_QUERY_PLAN_HASH: Final[str] = "cb06f3300791614daa6bb72e5a8d850527bde79c63a08c2d03aaccb6e73bfc47"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class BoardPage200Params:
@@ -113,7 +118,28 @@ class BoardPage200Found:
 
 BoardPage200Result: TypeAlias = BoardPage200Found
 
-BOARD_PAGE450_QUERY_PLAN_HASH: Final[str] = "1047c13c0665d0c7e39e332dc766b64e690e5dd577e9864ba59dd8291ddf04d4"
+def _decode_board_page200_compact(value: object) -> BoardPage200Result:
+    if not isinstance(value, dict) or frozenset(value) != frozenset(("$riffdb_compact",)):
+        raise ValueError("invalid RiffDB compact result")
+    compact = value["$riffdb_compact"]
+    if not isinstance(compact, dict) or frozenset(compact) != frozenset(("outcome", "result_name", "entity", "fields", "rows")) or compact["outcome"] != "Found" or compact["result_name"] != "tickets" or compact["entity"] != "Ticket" or compact["fields"] != ["assignee_id", "project_id", "reporter_id", "status", "ticket_id", "title"] or not isinstance(compact["rows"], list) or len(compact["rows"]) > 200:
+        raise ValueError("invalid RiffDB compact result")
+    decoded: list[BoardPage200FoundTickets] = []
+    for row in compact["rows"]:
+        if not isinstance(row, list) or len(row) != 6:
+            raise ValueError("invalid RiffDB compact result")
+        decoded.append(BoardPage200FoundTickets(
+
+            assignee_id=UUID(str(_compact_tag(row[0], "uuid", frozenset(("$riffdb", "value")))["value"])),
+            project_id=UUID(str(_compact_tag(row[1], "uuid", frozenset(("$riffdb", "value")))["value"])),
+            reporter_id=UUID(str(_compact_tag(row[2], "uuid", frozenset(("$riffdb", "value")))["value"])),
+            status=TicketStatus(str(_compact_tag(row[3], "enum", frozenset(("$riffdb", "value")))["value"])),
+            ticket_id=UUID(str(_compact_tag(row[4], "uuid", frozenset(("$riffdb", "value")))["value"])),
+            title=(row[5] if isinstance(row[5], str) and len(row[5].encode("utf-8")) <= 128 else (_ for _ in ()).throw(ValueError("invalid RiffDB compact string"))),
+        ))
+    return BoardPage200Found(tickets=tuple(decoded))
+
+BOARD_PAGE450_QUERY_PLAN_HASH: Final[str] = "22f105b94037c2a8b46878139028e3ee495b2ac4e94495d28ba202c2386e8c84"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class BoardPage450Params:
@@ -137,7 +163,28 @@ class BoardPage450Found:
 
 BoardPage450Result: TypeAlias = BoardPage450Found
 
-BOARD_PAGE50_QUERY_PLAN_HASH: Final[str] = "35c9815474d34fbf61e5fa4d81375e9a89f1fb62ea2cccf70bd18db0aa83280e"
+def _decode_board_page450_compact(value: object) -> BoardPage450Result:
+    if not isinstance(value, dict) or frozenset(value) != frozenset(("$riffdb_compact",)):
+        raise ValueError("invalid RiffDB compact result")
+    compact = value["$riffdb_compact"]
+    if not isinstance(compact, dict) or frozenset(compact) != frozenset(("outcome", "result_name", "entity", "fields", "rows")) or compact["outcome"] != "Found" or compact["result_name"] != "tickets" or compact["entity"] != "Ticket" or compact["fields"] != ["assignee_id", "project_id", "reporter_id", "status", "ticket_id", "title"] or not isinstance(compact["rows"], list) or len(compact["rows"]) > 450:
+        raise ValueError("invalid RiffDB compact result")
+    decoded: list[BoardPage450FoundTickets] = []
+    for row in compact["rows"]:
+        if not isinstance(row, list) or len(row) != 6:
+            raise ValueError("invalid RiffDB compact result")
+        decoded.append(BoardPage450FoundTickets(
+
+            assignee_id=UUID(str(_compact_tag(row[0], "uuid", frozenset(("$riffdb", "value")))["value"])),
+            project_id=UUID(str(_compact_tag(row[1], "uuid", frozenset(("$riffdb", "value")))["value"])),
+            reporter_id=UUID(str(_compact_tag(row[2], "uuid", frozenset(("$riffdb", "value")))["value"])),
+            status=TicketStatus(str(_compact_tag(row[3], "enum", frozenset(("$riffdb", "value")))["value"])),
+            ticket_id=UUID(str(_compact_tag(row[4], "uuid", frozenset(("$riffdb", "value")))["value"])),
+            title=(row[5] if isinstance(row[5], str) and len(row[5].encode("utf-8")) <= 128 else (_ for _ in ()).throw(ValueError("invalid RiffDB compact string"))),
+        ))
+    return BoardPage450Found(tickets=tuple(decoded))
+
+BOARD_PAGE50_QUERY_PLAN_HASH: Final[str] = "1fe070429b28a2870a0ffde2e089ff0e79fdf740c602528ff3562bb4123d11f7"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class BoardPage50Params:
@@ -161,7 +208,28 @@ class BoardPage50Found:
 
 BoardPage50Result: TypeAlias = BoardPage50Found
 
-GET_TICKET_QUERY_PLAN_HASH: Final[str] = "a3c62d90ae6fb48303631110c500933f3f06c20e141fdd1f681a484a7450ab0d"
+def _decode_board_page50_compact(value: object) -> BoardPage50Result:
+    if not isinstance(value, dict) or frozenset(value) != frozenset(("$riffdb_compact",)):
+        raise ValueError("invalid RiffDB compact result")
+    compact = value["$riffdb_compact"]
+    if not isinstance(compact, dict) or frozenset(compact) != frozenset(("outcome", "result_name", "entity", "fields", "rows")) or compact["outcome"] != "Found" or compact["result_name"] != "tickets" or compact["entity"] != "Ticket" or compact["fields"] != ["assignee_id", "project_id", "reporter_id", "status", "ticket_id", "title"] or not isinstance(compact["rows"], list) or len(compact["rows"]) > 50:
+        raise ValueError("invalid RiffDB compact result")
+    decoded: list[BoardPage50FoundTickets] = []
+    for row in compact["rows"]:
+        if not isinstance(row, list) or len(row) != 6:
+            raise ValueError("invalid RiffDB compact result")
+        decoded.append(BoardPage50FoundTickets(
+
+            assignee_id=UUID(str(_compact_tag(row[0], "uuid", frozenset(("$riffdb", "value")))["value"])),
+            project_id=UUID(str(_compact_tag(row[1], "uuid", frozenset(("$riffdb", "value")))["value"])),
+            reporter_id=UUID(str(_compact_tag(row[2], "uuid", frozenset(("$riffdb", "value")))["value"])),
+            status=TicketStatus(str(_compact_tag(row[3], "enum", frozenset(("$riffdb", "value")))["value"])),
+            ticket_id=UUID(str(_compact_tag(row[4], "uuid", frozenset(("$riffdb", "value")))["value"])),
+            title=(row[5] if isinstance(row[5], str) and len(row[5].encode("utf-8")) <= 128 else (_ for _ in ()).throw(ValueError("invalid RiffDB compact string"))),
+        ))
+    return BoardPage50Found(tickets=tuple(decoded))
+
+GET_TICKET_QUERY_PLAN_HASH: Final[str] = "14cf6045df12cea4c1680074ba99090d8dfbe8da8e02ff778e82c8e8dcdf1dd7"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class GetTicketParams:
@@ -188,7 +256,7 @@ class GetTicketNotFound:
 
 GetTicketResult: TypeAlias = GetTicketFound | GetTicketNotFound
 
-GET_USER_QUERY_PLAN_HASH: Final[str] = "13e3d239243777fe536c33a1f309fe8a17946de357a3745a1747d42b2f958930"
+GET_USER_QUERY_PLAN_HASH: Final[str] = "1623690c03865daba8c6a42aed6ac276e96595541a2d5cd1c3540e1d71466284"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class GetUserParams:
@@ -212,7 +280,7 @@ class GetUserNotFound:
 
 GetUserResult: TypeAlias = GetUserFound | GetUserNotFound
 
-LIST_COMMENTS_QUERY_PLAN_HASH: Final[str] = "a92d1ac5b4549fc66d4726e423f1da27959a02beda7f92254297402c666802c7"
+LIST_COMMENTS_QUERY_PLAN_HASH: Final[str] = "257a1d3a6301bdb15c3fac5d1cda94569ae3f6e7c94f1cbbd8a62dcb83462dbd"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ListCommentsParams:
@@ -235,7 +303,7 @@ class ListCommentsFound:
 
 ListCommentsResult: TypeAlias = ListCommentsFound
 
-LIST_TICKETS_QUERY_PLAN_HASH: Final[str] = "52bbabe150cd501efd4a007bf753a1116f42a1d7b6b3a94dd2e7455b5a98a366"
+LIST_TICKETS_QUERY_PLAN_HASH: Final[str] = "6930b4040e3c0c7a8b3d44315e74f356e5c5a4fa6d05049cb78cca1ec4643f95"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ListTicketsParams:
@@ -262,7 +330,7 @@ class ListTicketsFound:
 
 ListTicketsResult: TypeAlias = ListTicketsFound
 
-LIST_TICKETS_BY_ASSIGNEE_QUERY_PLAN_HASH: Final[str] = "42dede464162450d9c0e5f50c54944d2a7517daaa6f1ac206168eede200c2718"
+LIST_TICKETS_BY_ASSIGNEE_QUERY_PLAN_HASH: Final[str] = "c927cb236e2e0929f2ff3e323eed462578a6cbbf1fe8bc5571888bcd77d4c7d8"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ListTicketsByAssigneeParams:
@@ -289,7 +357,7 @@ class ListTicketsByAssigneeFound:
 
 ListTicketsByAssigneeResult: TypeAlias = ListTicketsByAssigneeFound
 
-PROJECT_MEMBERS_QUERY_PLAN_HASH: Final[str] = "273e025bc51fcf488794f28c45746c0ff180a6955d414873feac581a22708f7b"
+PROJECT_MEMBERS_QUERY_PLAN_HASH: Final[str] = "6327a0d15a757c3f265b595bccf697019650f5f21e7e30f8366fb181a4352669"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ProjectMembersParams:
@@ -309,7 +377,7 @@ class ProjectMembersFound:
 
 ProjectMembersResult: TypeAlias = ProjectMembersFound
 
-PROJECT_SUMMARY_QUERY_PLAN_HASH: Final[str] = "281b68867d9a37f1f3367fd4b63b14dd8533b60c385238cac774a3bcd5936d7e"
+PROJECT_SUMMARY_QUERY_PLAN_HASH: Final[str] = "f58b2f9edf69a8f0edd43a9363ce5bff3cd908c3bb7b37a3cdfdcf48719510e3"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ProjectSummaryParams:
@@ -341,7 +409,7 @@ class ProjectSummaryNotFound:
 
 ProjectSummaryResult: TypeAlias = ProjectSummaryFound | ProjectSummaryNotFound
 
-TICKET_PAGE_QUERY_PLAN_HASH: Final[str] = "ac390a2d26f0d6a9e2f0587fb2fed428910c6e6175fe47de9e40c47a29a979d5"
+TICKET_PAGE_QUERY_PLAN_HASH: Final[str] = "abbf375e3d2920ad04991308eaa6ffe4f8d2ce3e3fb57805978e5e64de7903f0"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class TicketPageParams:
@@ -410,7 +478,7 @@ class TicketPageIntegrityFailure:
 
 TicketPageResult: TypeAlias = TicketPageFound | TicketPageNotFound | TicketPageIntegrityFailure
 
-TICKET_PAGE_PAGED_QUERY_PLAN_HASH: Final[str] = "9c70120d89323d7401b0225b82fd9f691da7e013b19f28f422f41f66ba45bd58"
+TICKET_PAGE_PAGED_QUERY_PLAN_HASH: Final[str] = "105db755be54dc657ca72c51f6f3f29df8e543bc3b4ffa6e04db7a3329ca7aaf"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class TicketPagePagedParams:
@@ -480,7 +548,7 @@ class TicketPagePagedIntegrityFailure:
 
 TicketPagePagedResult: TypeAlias = TicketPagePagedFound | TicketPagePagedNotFound | TicketPagePagedIntegrityFailure
 
-TICKET_QUEUE_QUERY_PLAN_HASH: Final[str] = "9b6c3f914d4a2a7abff328b9a3750dcc9b0c904688a8aae8b2bd1276a1c27e3d"
+TICKET_QUEUE_QUERY_PLAN_HASH: Final[str] = "ecdcd9ea75fc9a1d762b94dbf91a5d05cbcec126d4dbd2ae315674ad79a9e1ae"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class TicketQueueParams:
@@ -513,7 +581,7 @@ class AddProjectMemberInput:
     idempotency_key: str
     organization_id: UUID
 
-ADD_PROJECT_MEMBER_PLAN_HASH: Final[str] = "65a0a5eedbc1dd1704da23be83c989c564e106f555511ac9c8fd2e986241b644"
+ADD_PROJECT_MEMBER_PLAN_HASH: Final[str] = "f6e97f3c3d3eb05aef230e22910a65ff8d6bbbbcecb778c931e8fb45805bbaff"
 @dataclass(frozen=True, slots=True, kw_only=True)
 class AddProjectMemberCreated:
     member: ProjectMember
@@ -544,7 +612,7 @@ class AttachLabelInput:
     idempotency_key: str
     organization_id: UUID
 
-ATTACH_LABEL_PLAN_HASH: Final[str] = "c17660b5bd5160390772aac001925acc2017273fe03bf39723094ff769b73a43"
+ATTACH_LABEL_PLAN_HASH: Final[str] = "7fa91ce949317cddf0164f98f463344e9032cfff6952919824f0c55cd7124091"
 @dataclass(frozen=True, slots=True, kw_only=True)
 class AttachLabelCreated:
     link: TicketLabel
@@ -577,7 +645,7 @@ class CloseTicketWithCommentInput:
     idempotency_key: str
     organization_id: UUID
 
-CLOSE_TICKET_WITH_COMMENT_PLAN_HASH: Final[str] = "f126142eed87d07f3b8dd3b82e09ee48c430c23583d50196c2ad17ed59bf91d7"
+CLOSE_TICKET_WITH_COMMENT_PLAN_HASH: Final[str] = "43be33bba05e123f6497b432174d8c275e5cc32b6cb604849c407f4b9cb744b8"
 @dataclass(frozen=True, slots=True, kw_only=True)
 class CloseTicketWithCommentClosed:
     ticket: Ticket
@@ -615,7 +683,7 @@ class CreateCommentInput:
     idempotency_key: str
     organization_id: UUID
 
-CREATE_COMMENT_PLAN_HASH: Final[str] = "5456fbeb4b1781f6707104a3182c809fd3af7a0dbdfaf5d6498d1eee0a5a5529"
+CREATE_COMMENT_PLAN_HASH: Final[str] = "fe01d1e99d6cafeebe24b0bbe8f369ed69eda463a3c5becbc50860b7a6dc4987"
 @dataclass(frozen=True, slots=True, kw_only=True)
 class CreateCommentCreated:
     comment: Comment
@@ -689,7 +757,7 @@ class CreateProjectInput:
     idempotency_key: str
     organization_id: UUID
 
-CREATE_PROJECT_PLAN_HASH: Final[str] = "ad382ce1fb915985b0b0170fadc7b2e7313aa5446554be13773394a7f25a5124"
+CREATE_PROJECT_PLAN_HASH: Final[str] = "52bb2be37e357bf38f979845dcbab0f65333202cad3fddb8eb70192a384e55f6"
 @dataclass(frozen=True, slots=True, kw_only=True)
 class CreateProjectCreated:
     project: Project
@@ -718,7 +786,7 @@ class CreateTicketInput:
     idempotency_key: str
     organization_id: UUID
 
-CREATE_TICKET_PLAN_HASH: Final[str] = "cfaebe79ac6ac9288a0b5e7982d659eacb2aad088eb87c4496ae3d5cdbe9bfc6"
+CREATE_TICKET_PLAN_HASH: Final[str] = "dbc87a3736e4acb09dd95247dd6598b5adf9131b0c9ce5bb88b1f82b84ede069"
 @dataclass(frozen=True, slots=True, kw_only=True)
 class CreateTicketCreated:
     ticket: Ticket
@@ -754,7 +822,7 @@ class CreateUserInput:
     idempotency_key: str
     organization_id: UUID
 
-CREATE_USER_PLAN_HASH: Final[str] = "ec5c88b02cbf31705aef2d5224c363a883346623979dd0fb4e6403ec29f351fd"
+CREATE_USER_PLAN_HASH: Final[str] = "a1e67b10a10027728f412fbb065e431e0b9cc67526b23f9d83325213d80a85a2"
 @dataclass(frozen=True, slots=True, kw_only=True)
 class CreateUserCreated:
     user: AppUser
@@ -784,7 +852,7 @@ class OpenTicketWithLabelsInput:
     idempotency_key: str
     organization_id: UUID
 
-OPEN_TICKET_WITH_LABELS_PLAN_HASH: Final[str] = "4000515b7b4b975c17ba6ff23c78478869cdd3f40ef2afeae80c88aefb452a48"
+OPEN_TICKET_WITH_LABELS_PLAN_HASH: Final[str] = "b52f080b84ac70d77c505bf2cc9da258b6434c1f9788f3d15bbb658a70857c9e"
 @dataclass(frozen=True, slots=True, kw_only=True)
 class OpenTicketWithLabelsCreated:
     ticket: Ticket
@@ -835,7 +903,7 @@ class SwapMemberRolesInput:
     idempotency_key: str
     organization_id: UUID
 
-SWAP_MEMBER_ROLES_PLAN_HASH: Final[str] = "0b4e799a310aeca5c4c62a7eaa584d6b45d15013eb4cbaa9265460045b2a9126"
+SWAP_MEMBER_ROLES_PLAN_HASH: Final[str] = "9be1787da3660f0c4d9ab97509979bc9466b49f38762ee747c3c1ee21c252695"
 @dataclass(frozen=True, slots=True, kw_only=True)
 class SwapMemberRolesSwapped:
     member_a: ProjectMember
@@ -865,11 +933,12 @@ class TicketDeskClient:
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
             query_name="BoardPage200", plan_hash=BOARD_PAGE200_QUERY_PLAN_HASH,
             parameters=encode_record(parameters), options=options,
+            accept_compact_result=True,
         )
         outcomes = {
             "Found": BoardPage200Found,
         }
-        return raw._map_value(lambda value: decode_variant(outcomes, value))
+        return raw._map_value(lambda value: _decode_board_page200_compact(value) if isinstance(value, dict) and "$riffdb_compact" in value else decode_variant(outcomes, value))
 
     def board_page450(self, parameters: BoardPage450Params, options: QueryOptions = QueryOptions()) -> TypedQueryResult[BoardPage450Result]:
         raw = self._transport._execute_named_query(
@@ -877,11 +946,12 @@ class TicketDeskClient:
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
             query_name="BoardPage450", plan_hash=BOARD_PAGE450_QUERY_PLAN_HASH,
             parameters=encode_record(parameters), options=options,
+            accept_compact_result=True,
         )
         outcomes = {
             "Found": BoardPage450Found,
         }
-        return raw._map_value(lambda value: decode_variant(outcomes, value))
+        return raw._map_value(lambda value: _decode_board_page450_compact(value) if isinstance(value, dict) and "$riffdb_compact" in value else decode_variant(outcomes, value))
 
     def board_page50(self, parameters: BoardPage50Params, options: QueryOptions = QueryOptions()) -> TypedQueryResult[BoardPage50Result]:
         raw = self._transport._execute_named_query(
@@ -889,11 +959,12 @@ class TicketDeskClient:
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
             query_name="BoardPage50", plan_hash=BOARD_PAGE50_QUERY_PLAN_HASH,
             parameters=encode_record(parameters), options=options,
+            accept_compact_result=True,
         )
         outcomes = {
             "Found": BoardPage50Found,
         }
-        return raw._map_value(lambda value: decode_variant(outcomes, value))
+        return raw._map_value(lambda value: _decode_board_page50_compact(value) if isinstance(value, dict) and "$riffdb_compact" in value else decode_variant(outcomes, value))
 
     def get_ticket(self, parameters: GetTicketParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[GetTicketResult]:
         raw = self._transport._execute_named_query(
@@ -1252,11 +1323,12 @@ class AsyncTicketDeskClient:
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
             query_name="BoardPage200", plan_hash=BOARD_PAGE200_QUERY_PLAN_HASH,
             parameters=encode_record(parameters), options=options,
+            accept_compact_result=True,
         )
         outcomes = {
             "Found": BoardPage200Found,
         }
-        return raw._map_value(lambda value: decode_variant(outcomes, value))
+        return raw._map_value(lambda value: _decode_board_page200_compact(value) if isinstance(value, dict) and "$riffdb_compact" in value else decode_variant(outcomes, value))
 
     async def board_page450(self, parameters: BoardPage450Params, options: QueryOptions = QueryOptions()) -> TypedQueryResult[BoardPage450Result]:
         raw = await self._transport._execute_named_query(
@@ -1264,11 +1336,12 @@ class AsyncTicketDeskClient:
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
             query_name="BoardPage450", plan_hash=BOARD_PAGE450_QUERY_PLAN_HASH,
             parameters=encode_record(parameters), options=options,
+            accept_compact_result=True,
         )
         outcomes = {
             "Found": BoardPage450Found,
         }
-        return raw._map_value(lambda value: decode_variant(outcomes, value))
+        return raw._map_value(lambda value: _decode_board_page450_compact(value) if isinstance(value, dict) and "$riffdb_compact" in value else decode_variant(outcomes, value))
 
     async def board_page50(self, parameters: BoardPage50Params, options: QueryOptions = QueryOptions()) -> TypedQueryResult[BoardPage50Result]:
         raw = await self._transport._execute_named_query(
@@ -1276,11 +1349,12 @@ class AsyncTicketDeskClient:
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
             query_name="BoardPage50", plan_hash=BOARD_PAGE50_QUERY_PLAN_HASH,
             parameters=encode_record(parameters), options=options,
+            accept_compact_result=True,
         )
         outcomes = {
             "Found": BoardPage50Found,
         }
-        return raw._map_value(lambda value: decode_variant(outcomes, value))
+        return raw._map_value(lambda value: _decode_board_page50_compact(value) if isinstance(value, dict) and "$riffdb_compact" in value else decode_variant(outcomes, value))
 
     async def get_ticket(self, parameters: GetTicketParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[GetTicketResult]:
         raw = await self._transport._execute_named_query(

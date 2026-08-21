@@ -1,5 +1,5 @@
 /** Exact alpha driver protocol generation. */
-export declare const DRIVER_PROTOCOL_VERSION: 1;
+export declare const DRIVER_PROTOCOL_VERSION: 2;
 /** Exact tagged value registry compiled into `riffdb-driverd`. */
 export declare const DRIVER_VALUE_REGISTRY_HASH: "8660841ce2055895ba4e1999836b0be11792651c7dcf166f21cf1b43c0dd86af";
 /** Exact structured-error registry compiled into `riffdb-driverd`. */
@@ -77,9 +77,18 @@ export interface DriverInvokeOptions {
     readonly readAfterCommit?: bigint;
     readonly cursor?: string;
     readonly signal?: AbortSignal;
+    readonly acceptCompactResult?: boolean;
+}
+export interface DriverCompactQueryResult {
+    readonly outcome: string;
+    readonly resultName: string;
+    readonly entity: string;
+    readonly fields: ReadonlyArray<string>;
+    readonly rows: ReadonlyArray<ReadonlyArray<DriverValue>>;
 }
 export interface DriverResult {
-    readonly value: DriverValue;
+    readonly value?: DriverValue;
+    readonly compact?: DriverCompactQueryResult;
     readonly applicationHead?: bigint;
     readonly cursor?: string;
     readonly replayed: boolean;

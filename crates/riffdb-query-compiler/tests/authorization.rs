@@ -33,7 +33,7 @@ fn authorization_set_contains_predicate_order_key_and_selected_fields() {
             "{field}"
         );
     }
-    assert_eq!(ticket.indexes(), &["by_project_status"]);
+    assert_eq!(ticket.indexes(), &["by_board_project_status"]);
 }
 
 #[test]
@@ -95,6 +95,9 @@ fn index_plan_fails_closed_when_its_bounded_prefix_does_not_bind_the_partition()
     let contract = CONTRACT.replace(
         "index by_project_status (organization_id, project_id, status, ticket_id)",
         "index by_project_status (project_id, status, ticket_id)",
+    ).replace(
+        "index by_board_project_status (organization_id, project_id, status, ticket_id) cover (title, reporter_id, assignee_id)",
+        "index by_board_project_status (project_id, status, ticket_id) cover (title, reporter_id, assignee_id)",
     );
     let bundle = compile_contract_source(&contract).expect("contract");
     let catalog = SymbolicCatalog::from_bundle(&bundle).expect("catalog");

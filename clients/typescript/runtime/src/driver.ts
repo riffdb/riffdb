@@ -13,7 +13,7 @@ const UTF8_DECODER = new TextDecoder("utf-8", { fatal: true });
 let nextSession = 0;
 
 /** Exact alpha driver protocol generation. */
-export const DRIVER_PROTOCOL_VERSION = 1 as const;
+export const DRIVER_PROTOCOL_VERSION = 2 as const;
 /** Exact tagged value registry compiled into `riffdb-driverd`. */
 export const DRIVER_VALUE_REGISTRY_HASH = "8660841ce2055895ba4e1999836b0be11792651c7dcf166f21cf1b43c0dd86af" as const;
 /** Exact structured-error registry compiled into `riffdb-driverd`. */
@@ -108,10 +108,20 @@ export interface DriverInvokeOptions {
   readonly readAfterCommit?: bigint;
   readonly cursor?: string;
   readonly signal?: AbortSignal;
+  readonly acceptCompactResult?: boolean;
+}
+
+export interface DriverCompactQueryResult {
+  readonly outcome: string;
+  readonly resultName: string;
+  readonly entity: string;
+  readonly fields: ReadonlyArray<string>;
+  readonly rows: ReadonlyArray<ReadonlyArray<DriverValue>>;
 }
 
 export interface DriverResult {
-  readonly value: DriverValue;
+  readonly value?: DriverValue;
+  readonly compact?: DriverCompactQueryResult;
   readonly applicationHead?: bigint;
   readonly cursor?: string;
   readonly replayed: boolean;
@@ -400,6 +410,7 @@ function lowerOptions(options: DriverInvokeOptions): Record<string, unknown> {
     maximum_attempts: attempts,
     read_after_commit: options.readAfterCommit ?? null,
     cursor: options.cursor ?? null,
+    accept_compact_result: options.acceptCompactResult ?? false,
   };
 }
 
@@ -558,6 +569,35 @@ class ExactJsonParser {
 }
 
 function decodeResult(response: DriverResponse): DriverResult {
+  if (response.type === "compact_query_result") {
+    const outcome = boundedPattern(response.outcome, SYMBOL);
+    const resultName = boundedPattern(response.result_name, SYMBOL);
+    const entity = boundedPattern(response.entity, SYMBOL);
+    if (!Array.isArray(response.fields) || response.fields.length < 1
+        || response.fields.length > MAX_COLLECTION_ITEMS
+        || !Array.isArray(response.rows) || response.rows.length > MAX_COLLECTION_ITEMS) {
+      throw new Error("RiffDB driver returned an invalid compact result");
+    }
+    const fields = response.fields.map((field) => boundedPattern(field, SYMBOL));
+    if (new Set(fields).size !== fields.length) {
+      throw new Error("RiffDB driver returned an invalid compact result");
+    }
+    const rows = response.rows.map((raw) => {
+      if (!Array.isArray(raw) || raw.length !== fields.length) {
+        throw new Error("RiffDB driver returned an invalid compact result");
+      }
+      return raw.map((value) => validateDriverValue(value, 0));
+    });
+    const head = optionalNonnegativeBigInt(response.application_head);
+    if (head === undefined) throw new Error("RiffDB driver omitted the query frontier");
+    const cursor = optionalBoundedString(response.cursor, 16_384);
+    return {
+      compact: { outcome, resultName, entity, fields, rows },
+      applicationHead: head,
+      replayed: false,
+      ...(cursor === undefined ? {} : { cursor }),
+    };
+  }
   if (response.type !== "result") throw new Error("RiffDB driver returned an invalid result");
   const value = validateDriverValue(response.value, 0);
   const head = optionalNonnegativeBigInt(response.application_head);
