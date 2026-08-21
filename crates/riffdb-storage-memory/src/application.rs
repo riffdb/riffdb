@@ -38,7 +38,8 @@ use riffdb_storage_api::{
     TransactionCurrentStateBuilder, TransactionCurrentVectorEvidenceV1,
     TransactionLocalCommandBatch, UniqueIndexOccupancy, UniqueOccupancyKind,
     UnpublishedAuditedBatchV1, ValidationReadRequest, VectorEvidenceReadRequestV1,
-    VectorObservationCountsV1, derive_event_hash_v1,
+    VectorObservationCountsV1, VectorObservationRepository, VectorObservationTargetV1,
+    derive_event_hash_v1,
 };
 use riffdb_types::{CommitSequence, EventId, FrontierPosition, ProvenanceId};
 
@@ -74,6 +75,21 @@ struct ApplicationOverlay {
     pending_outbox_events: Vec<EventId>,
     undelivered_outbox_events: Vec<EventId>,
     command_charges: Vec<(CommitSequence, SyntheticCommandClassCharges)>,
+}
+
+impl VectorObservationRepository for MemoryOperationalPorts {
+    fn read_vector_observation(
+        &self,
+        target: &VectorObservationTargetV1,
+    ) -> Result<Option<VectorObservationCountsV1>, StorageError> {
+        self.read(|state| {
+            Ok(state
+                .vector_observations
+                .binary_search_by(|row| row.target().cmp(target))
+                .ok()
+                .map(|index| state.vector_observations[index].clone()))
+        })
+    }
 }
 
 impl ApplicationOverlay {
@@ -2706,6 +2722,55 @@ mod tests {
             })
             .expect("seed catalog bundle");
         crate::startup::MemoryDormantPorts { store }.into_operational()
+    }
+
+    fn vector_observation_target(partition: u64) -> VectorObservationTargetV1 {
+        let mut key = PartitionKeyBuilder::new(
+            AggregateTypeId::new(9).expect("vector observation aggregate"),
+        );
+        key.push_u64(partition).expect("partition component");
+        VectorObservationTargetV1::new(
+            ContractLineage::new("application-test").expect("lineage"),
+            key.finish().expect("partition key"),
+            EntityTypeId::new(7).expect("entity type"),
+            FieldId::new(8).expect("vector field"),
+        )
+    }
+
+    #[test]
+    fn vector_observation_repository_reads_one_exact_row_without_scanning() {
+        let ports = operational_ports(bundle());
+        let present = vector_observation_target(1);
+        let absent = vector_observation_target(2);
+        let expected = VectorObservationCountsV1::from_parts(
+            present.clone(),
+            3,
+            1,
+            Vec::new(),
+            CommitSequence::new(11).expect("revision"),
+        )
+        .expect("observation");
+        ports
+            .acquire()
+            .expect("seed access")
+            .write(|state| {
+                state.vector_observations.push(expected.clone());
+                Ok(())
+            })
+            .expect("seed observation");
+
+        assert_eq!(
+            ports
+                .read_vector_observation(&present)
+                .expect("read present observation"),
+            Some(expected)
+        );
+        assert_eq!(
+            ports
+                .read_vector_observation(&absent)
+                .expect("read absent observation"),
+            None
+        );
     }
 
     fn filtered_range() -> IndexRangeTarget {
