@@ -12065,6 +12065,13 @@ work_packages:
     scale: Profile generation and verification operate over bounded declared plugin schemas and
       finite operation catalogs; runtime dispatch is a bounded symbolic lookup and adds no generic
       query, callback, or whole-database mechanism.
+  closure:
+    status: complete
+    evidence: docs/architecture/WP-598-FRAMEWORK-PROFILE-VERIFICATION.md
+    decision: The framework-neutral profile verifies transactional uniqueness, exact logical-time
+      expiry, atomic workflow graphs, adapter-minted idempotency, and the one-time secret handout.
+      WP-606 and WP-607 discharged the two deliberately escalated coordinator and unique-delete
+      boundaries with the original race and ownership assertions intact.
   human_review_triggers: *id001
 - id: WP-599
   name: Compiler-owned workflow reconstitution and all-domain portability closure
@@ -12136,6 +12143,14 @@ work_packages:
     scale: Canonical pages, compiler-derived dependency schedules, command groups, checkpoints,
       diagnostics, observations, and retained replay state are bounded and stream without whole-state
       memory; unsupported dependency cycles fail compilation.
+  closure:
+    status: complete
+    evidence: release/evidence/alpha
+    decision: The compiler-owned create-only reimport class, distinct V7 authority, resumable
+      not-ready campaign, quiescent workflow restoration, exact reconciliation, and generated
+      Rust/Go/TypeScript/Python operator paths are merged. OpenFGA, MLflow, Better Auth, and
+      Woodpecker carry receipted export/reimport observations; Payload remains the named regression
+      fixture.
   human_review_triggers: *id001
 - id: WP-600
   name: Sticky secret classification with declared reveals annotations
@@ -12177,6 +12192,13 @@ work_packages:
       authority and cannot be supplied dynamically or used to bypass read visibility.
     scale: Secret-flow analysis is bounded by the finite compiled contract graph and emits bounded
       two-ended diagnostics; it adds no per-row runtime traversal or retained value tracking.
+  closure:
+    status: complete
+    evidence: docs/security/SECRET-FIELDS.md
+    decision: Commit ff4ff910 carries source-naming reveals through syntax, AST, V11 executable
+      identity, catalogs, diagnostics, compatibility fixtures, and the Better Auth token handout.
+      Unannotated, incomplete, indirect, duplicate, and runtime-supplied disclosure authority remain
+      unrepresentable.
   human_review_triggers: *id001
 - id: WP-601
   name: Driver distribution — platform binaries and published runtimes across four registries
