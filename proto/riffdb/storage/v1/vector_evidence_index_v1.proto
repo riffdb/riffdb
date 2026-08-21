@@ -1,0 +1,19 @@
+syntax = "proto3";
+
+package riffdb.storage.v1;
+
+import "riffdb/storage/v1/vector_evidence_v1.proto";
+
+// Authoritative partition-ordered pointer and classification for one vector
+// evidence row. The physical key repeats the target plus entity_key and is
+// checked reciprocally at startup and on every page.
+message StoredVectorEvidenceIndexV1 {
+  string contract_lineage = 1;
+  bytes partition_key = 2;
+  uint32 entity_type_id = 3;
+  uint32 vector_field_id = 4;
+  bytes entity_key = 5;
+  uint64 evidence_sequence = 6;
+  optional uint64 newest_source_write_sequence = 7;
+  StoredVectorEmbeddingWriteV1 embedding_write = 8;
+}
