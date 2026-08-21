@@ -230,6 +230,12 @@ pub(crate) fn resolve_type(
             .parse::<usize>()
             .ok()
             .and_then(|maximum| ValueType::bytes(maximum).ok()),
+        TypeExpression::Vector { dimension } => dimension
+            .value
+            .parse::<u32>()
+            .ok()
+            .and_then(riffdb_types::VectorDimension::new)
+            .map(ValueType::vector),
         TypeExpression::Optional(inner) => resolve_type(inner, symbols, diagnostics)
             .and_then(|inner| ValueType::optional(inner).ok()),
         TypeExpression::List {

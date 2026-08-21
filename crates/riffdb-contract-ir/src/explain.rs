@@ -166,6 +166,7 @@ impl CommandExplain {
             .iter()
             .filter_map(|instruction| match instruction {
                 crate::Instruction::SetField { binding, field, .. }
+                | crate::Instruction::SetEmbedding { binding, field, .. }
                 | crate::Instruction::WorkflowTransition {
                     binding,
                     state_field: field,

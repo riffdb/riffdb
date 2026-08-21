@@ -180,13 +180,42 @@ and principal-policy admission, so another organization or a denied row cannot
 shape traversal or reported graph statistics. Exact KNN remains the reference
 path.
 
-Typed vector values now cross the low-level native, Protobuf, gRPC, hosted MCP,
-and CLI conversion boundaries with finite-component and exact-dimension checks.
-The compiler now seals production model and replay identity, but complete
-application embedding ingress is not yet available: authoritative storage does
-not yet persist the corresponding evidence, and stable generated application
-facades do not expose vector fields. The production staleness observer and
-`nearest()` storage path are also absent — see
+Production vector fields are written only through the compiler-sealed `embed`
+effect; generic `set` is rejected at the target field:
+
+```riff
+command SetDocumentEmbedding {
+    input request_id: string<128>
+    input org_id: uuid
+    input doc_id: uuid
+    input embedding: vector<1536>
+    input submitted_model: string<256>
+    input submitted_version: string<256>
+
+    idempotency_key request_id
+    mutate Document(org_id, doc_id) as document else Missing {}
+
+    embed document.embedding = embedding
+        from (submitted_model, submitted_version)
+
+    return Embedded { document: document }
+}
+```
+
+The vector dimension is part of the input type. Model identity and version are
+distinct direct command inputs and must exactly match the field's compiled
+production declaration; a mismatch is rejected before admission with the
+symbolic input path. The entity post-image and its authoritative embedding
+evidence (model identity, model version, and commit sequence) are derived from
+the same checked command and persist atomically with its outcome, provenance,
+and idempotency record. An application cannot submit evidence separately or
+use generic field mutation to bypass it.
+
+Typed vector values cross the native, Protobuf, gRPC, hosted MCP, and CLI
+conversion boundaries with finite-component and exact-dimension checks. Stable
+generated application facades do not yet expose vector fields, so complete
+generated-client ingress remains unavailable. The production staleness
+enumeration/health observer and `nearest()` storage path are also absent — see
 [Known Limitations](../known-limitations.md).
 
 ## Revision-checked workflow transitions

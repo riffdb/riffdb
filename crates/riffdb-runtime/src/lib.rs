@@ -20,14 +20,15 @@ use riffdb_invariant::{
     InputDerivedCommandFacts, derive_input_command_facts,
 };
 use riffdb_storage_api::{
-    DeclaredOutcome, DurableKeySchemaBindingV1, EntityMutation, EntityObservation, EntityPostImage,
-    EntityTarget, EvaluatedCommand, EvaluatedCommandBuilder, EvaluationBudget, EventIntent,
-    ExecutablePlanRef, ReadSnapshot, StorageValueError, StoredEventPolicyAnchorV1,
+    DeclaredOutcome, DurableKeySchemaBindingV1, EmbeddingWriteIntentV1, EntityMutation,
+    EntityObservation, EntityPostImage, EntityTarget, EvaluatedCommand, EvaluatedCommandBuilder,
+    EvaluationBudget, EventIntent, ExecutablePlanRef, ReadSnapshot, StorageValueError,
+    StoredEventPolicyAnchorV1,
 };
 use riffdb_types::{
-    AdmittedActorContext, CanonicalCodecError, CanonicalRecord, CanonicalValue, EntityKey, FieldId,
-    LogicalTime, MAX_CANONICAL_DOCUMENT_BYTES, PartitionKey, RequestId, RowPolicyName, Timestamp,
-    ValueError, encode_canonical_record, encode_canonical_value,
+    AdmittedActorContext, CanonicalCodecError, CanonicalRecord, CanonicalValue, EmbeddingMetadata,
+    EntityKey, FieldId, LogicalTime, MAX_CANONICAL_DOCUMENT_BYTES, PartitionKey, RequestId,
+    RowPolicyName, Timestamp, ValueError, encode_canonical_record, encode_canonical_value,
 };
 
 /// Immutable values admitted for one deterministic command evaluation.
@@ -213,7 +214,7 @@ pub fn execute_command(
                 };
                 let mut evaluation = evaluator.batch(&values);
                 let outcome = construct_outcome(binding.failure(), &mut evaluation)?;
-                return finish_declared(plan, snapshot, budget, outcome, vec![], vec![]);
+                return finish_declared(plan, snapshot, budget, outcome, vec![], vec![], vec![]);
             }
             (BindingMode::Read | BindingMode::Mutate, EntityObservation::Present(record)) => {
                 let entity = bundle
@@ -268,6 +269,7 @@ pub fn execute_command(
     }
 
     let mut evaluated_builder = None;
+    let mut embedding_writes = Vec::new();
     for instruction in plan.instructions() {
         match instruction {
             Instruction::Require {
@@ -291,7 +293,15 @@ pub fn execute_command(
                     }
                 };
                 if let Some(outcome) = rejected {
-                    return finish_declared(plan, snapshot, budget, outcome, vec![], vec![]);
+                    return finish_declared(
+                        plan,
+                        snapshot,
+                        budget,
+                        outcome,
+                        vec![],
+                        vec![],
+                        vec![],
+                    );
                 }
             }
             Instruction::SetField {
@@ -311,6 +321,46 @@ pub fn execute_command(
                     };
                     evaluator.batch(&values).evaluate(*value)?
                 };
+                set_working_field(bundle.schema(), plan, &mut records, *binding, *field, value)?;
+            }
+            Instruction::SetEmbedding {
+                binding,
+                field,
+                value,
+                model_identity,
+                model_version,
+            } => {
+                let (value, model_identity, model_version) = {
+                    let values = RuntimeValues {
+                        schema: bundle.schema(),
+                        plan,
+                        input,
+                        records: &records,
+                        roots: &roots,
+                        tx_time: context.tx_time(),
+                        service_values: context.service_values(),
+                    };
+                    let mut evaluation = evaluator.batch(&values);
+                    (
+                        evaluation.evaluate(*value)?,
+                        evaluation.evaluate(*model_identity)?,
+                        evaluation.evaluate(*model_version)?,
+                    )
+                };
+                let target = snapshot
+                    .bindings()
+                    .get(binding.get() as usize)
+                    .map(EntityObservation::target)
+                    .ok_or(ExecutionFault::Integrity)?;
+                embedding_writes.push(embedding_write_intent(
+                    bundle.schema(),
+                    plan,
+                    target,
+                    *binding,
+                    *field,
+                    model_identity,
+                    model_version,
+                )?);
                 set_working_field(bundle.schema(), plan, &mut records, *binding, *field, value)?;
             }
             Instruction::EmitEvent(event) => {
@@ -409,7 +459,15 @@ pub fn execute_command(
                         let mut evaluation = evaluator.batch(&values);
                         construct_outcome(stale, &mut evaluation)?
                     };
-                    return finish_declared(plan, snapshot, budget, outcome, vec![], vec![]);
+                    return finish_declared(
+                        plan,
+                        snapshot,
+                        budget,
+                        outcome,
+                        vec![],
+                        vec![],
+                        vec![],
+                    );
                 }
 
                 let state = records
@@ -441,7 +499,15 @@ pub fn execute_command(
                         let mut evaluation = evaluator.batch(&values);
                         construct_outcome(illegal, &mut evaluation)?
                     };
-                    return finish_declared(plan, snapshot, budget, outcome, vec![], vec![]);
+                    return finish_declared(
+                        plan,
+                        snapshot,
+                        budget,
+                        outcome,
+                        vec![],
+                        vec![],
+                        vec![],
+                    );
                 }
                 let destination = CanonicalValue::Enum {
                     type_id: *type_id,
@@ -529,7 +595,15 @@ pub fn execute_command(
                             let mut evaluation = evaluator.batch(&values);
                             construct_outcome($outcome, &mut evaluation)?
                         };
-                        return finish_declared(plan, snapshot, budget, value, vec![], vec![]);
+                        return finish_declared(
+                            plan,
+                            snapshot,
+                            budget,
+                            value,
+                            vec![],
+                            vec![],
+                            vec![],
+                        );
                     }};
                 }
                 let require_revision = |value: CanonicalValue| -> Result<bool, ExecutionFault> {
@@ -789,9 +863,12 @@ pub fn execute_command(
                     plan,
                     snapshot,
                     budget,
-                    outcome,
-                    &records,
-                    evaluated_builder,
+                    SuccessfulEvaluation {
+                        outcome,
+                        records: &records,
+                        embedding_writes,
+                        builder: evaluated_builder,
+                    },
                 );
             }
         }
@@ -886,6 +963,7 @@ fn execute_collection_command(
     let mut evaluator = ExpressionEvaluator::new(plan.expressions());
     let mut mutations = Vec::new();
     let mut events = Vec::new();
+    let mut embedding_writes = Vec::new();
     if let Some(binding_slot) = delete_evidence.failure_binding_slot {
         let binding_index = *facts
             .binding_plan_indices()
@@ -911,7 +989,15 @@ fn execute_collection_command(
         };
         let mut evaluation = evaluator.batch(&values);
         let outcome = construct_outcome(failure, &mut evaluation)?;
-        return finish_declared(plan, snapshot, budget, outcome, mutations, events);
+        return finish_declared(
+            plan,
+            snapshot,
+            budget,
+            outcome,
+            mutations,
+            events,
+            embedding_writes,
+        );
     }
     for (element_ordinal, element) in elements.values().iter().enumerate() {
         let ordinal = u16::try_from(element_ordinal).map_err(|_| ExecutionFault::ResourceLimit)?;
@@ -950,7 +1036,15 @@ fn execute_collection_command(
                     );
                     let mut evaluation = evaluator.batch(&values);
                     let outcome = construct_outcome(binding.failure(), &mut evaluation)?;
-                    return finish_declared(plan, snapshot, budget, outcome, vec![], vec![]);
+                    return finish_declared(
+                        plan,
+                        snapshot,
+                        budget,
+                        outcome,
+                        vec![],
+                        vec![],
+                        vec![],
+                    );
                 }
                 (
                     BindingMode::Read | BindingMode::Mutate | BindingMode::Delete,
@@ -1033,7 +1127,15 @@ fn execute_collection_command(
                     let mut evaluation = evaluator.batch(&values);
                     if !evaluation.evaluate_predicate(*predicate)? {
                         let outcome = construct_outcome(reject, &mut evaluation)?;
-                        return finish_declared(plan, snapshot, budget, outcome, vec![], vec![]);
+                        return finish_declared(
+                            plan,
+                            snapshot,
+                            budget,
+                            outcome,
+                            vec![],
+                            vec![],
+                            vec![],
+                        );
                     }
                 }
                 Instruction::SetField {
@@ -1053,6 +1155,62 @@ fn execute_collection_command(
                         );
                         evaluator.batch(&values).evaluate(*value)?
                     };
+                    set_working_field(
+                        bundle.schema(),
+                        plan,
+                        &mut records,
+                        *binding,
+                        *field,
+                        value,
+                    )?;
+                }
+                Instruction::SetEmbedding {
+                    binding,
+                    field,
+                    value,
+                    model_identity,
+                    model_version,
+                } => {
+                    let (value, model_identity, model_version) = {
+                        let values = CollectionRuntimeValues::new(
+                            bundle.schema(),
+                            plan,
+                            input,
+                            &records,
+                            &roots,
+                            context,
+                            element,
+                        );
+                        let mut evaluation = evaluator.batch(&values);
+                        (
+                            evaluation.evaluate(*value)?,
+                            evaluation.evaluate(*model_identity)?,
+                            evaluation.evaluate(*model_version)?,
+                        )
+                    };
+                    let slot = facts
+                        .binding_plan_indices()
+                        .iter()
+                        .zip(facts.binding_element_ordinals())
+                        .position(|(plan_index, element_ordinal)| {
+                            *plan_index as usize == binding.get() as usize
+                                && *element_ordinal == Some(ordinal)
+                        })
+                        .ok_or(ExecutionFault::Integrity)?;
+                    let target = snapshot
+                        .bindings()
+                        .get(slot)
+                        .map(EntityObservation::target)
+                        .ok_or(ExecutionFault::Integrity)?;
+                    embedding_writes.push(embedding_write_intent(
+                        bundle.schema(),
+                        plan,
+                        target,
+                        *binding,
+                        *field,
+                        model_identity,
+                        model_version,
+                    )?);
                     set_working_field(
                         bundle.schema(),
                         plan,
@@ -1196,7 +1354,15 @@ fn execute_collection_command(
     };
     let mut evaluation = evaluator.batch(&values);
     let outcome = construct_outcome(outcome, &mut evaluation)?;
-    finish_declared(plan, snapshot, budget, outcome, mutations, events)
+    finish_declared(
+        plan,
+        snapshot,
+        budget,
+        outcome,
+        mutations,
+        events,
+        embedding_writes,
+    )
 }
 
 fn event_intent(
@@ -1825,6 +1991,41 @@ fn mutation_order_key(target: &EntityTarget) -> Vec<u8> {
     output
 }
 
+fn embedding_write_intent(
+    schema: &SchemaIr,
+    plan: &CommandPlan,
+    target: &EntityTarget,
+    binding: BindingId,
+    field: FieldId,
+    model_identity: CanonicalValue,
+    model_version: CanonicalValue,
+) -> Result<EmbeddingWriteIntentV1, ExecutionFault> {
+    let binding = plan
+        .bindings()
+        .get(binding.get() as usize)
+        .ok_or(ExecutionFault::Integrity)?;
+    if target.entity_type_id() != binding.entity_type() {
+        return Err(ExecutionFault::Integrity);
+    }
+    let production = schema
+        .vector_production_spec(binding.entity_type(), field)
+        .ok_or(ExecutionFault::Integrity)?;
+    let (CanonicalValue::String(model_identity), CanonicalValue::String(model_version)) =
+        (model_identity, model_version)
+    else {
+        return Err(ExecutionFault::Integrity);
+    };
+    let metadata = EmbeddingMetadata::new(
+        model_identity.as_str().to_owned(),
+        model_version.as_str().to_owned(),
+    )
+    .ok_or(ExecutionFault::Integrity)?;
+    if &metadata != production.metadata() {
+        return Err(ExecutionFault::Integrity);
+    }
+    Ok(EmbeddingWriteIntentV1::new(target.clone(), field, metadata))
+}
+
 fn finish_declared(
     plan: &CommandPlan,
     snapshot: &ReadSnapshot,
@@ -1832,10 +2033,11 @@ fn finish_declared(
     outcome: DeclaredOutcome,
     mutations: Vec<EntityMutation>,
     events: Vec<EventIntent>,
+    mut embedding_writes: Vec<EmbeddingWriteIntentV1>,
 ) -> Result<ExecutionResult, ExecutionFault> {
     match plan.execution_class() {
         ExecutionClass::ReadOnly => {
-            if !mutations.is_empty() || !events.is_empty() {
+            if !mutations.is_empty() || !events.is_empty() || !embedding_writes.is_empty() {
                 return Err(ExecutionFault::Integrity);
             }
             Ok(ExecutionResult::ReadOnly(outcome))
@@ -1846,6 +2048,14 @@ fn finish_declared(
             for mutation in mutations {
                 builder
                     .push_mutation(mutation)
+                    .map_err(map_storage_value_error)?;
+            }
+            embedding_writes.sort_unstable_by(|left, right| {
+                (left.target(), left.vector_field()).cmp(&(right.target(), right.vector_field()))
+            });
+            for write in embedding_writes {
+                builder
+                    .push_embedding_write(write)
                     .map_err(map_storage_value_error)?;
             }
             for event in events {
@@ -1862,26 +2072,39 @@ fn finish_declared(
     }
 }
 
-fn finish_success(
+struct SuccessfulEvaluation<'records, 'snapshot> {
+    outcome: DeclaredOutcome,
+    records: &'records [Option<CanonicalRecord>],
+    embedding_writes: Vec<EmbeddingWriteIntentV1>,
+    builder: Option<EvaluatedCommandBuilder<'snapshot>>,
+}
+
+fn finish_success<'snapshot>(
     schema: &SchemaIr,
     plan: &CommandPlan,
-    snapshot: &ReadSnapshot,
+    snapshot: &'snapshot ReadSnapshot,
     budget: EvaluationBudget,
-    outcome: DeclaredOutcome,
-    records: &[Option<CanonicalRecord>],
-    builder: Option<EvaluatedCommandBuilder<'_>>,
+    mut success: SuccessfulEvaluation<'_, 'snapshot>,
 ) -> Result<ExecutionResult, ExecutionFault> {
     match plan.execution_class() {
-        ExecutionClass::ReadOnly => Ok(ExecutionResult::ReadOnly(outcome)),
+        ExecutionClass::ReadOnly => Ok(ExecutionResult::ReadOnly(success.outcome)),
         ExecutionClass::IdempotentMutation => {
-            let mut builder = match builder {
+            let mut builder = match success.builder {
                 Some(builder) => builder,
                 None => EvaluatedCommandBuilder::new(snapshot, budget)
                     .map_err(map_storage_value_error)?,
             };
-            push_mutations(schema, plan, snapshot, records, &mut builder)?;
+            push_mutations(schema, plan, snapshot, success.records, &mut builder)?;
+            success.embedding_writes.sort_unstable_by(|left, right| {
+                (left.target(), left.vector_field()).cmp(&(right.target(), right.vector_field()))
+            });
+            for write in success.embedding_writes {
+                builder
+                    .push_embedding_write(write)
+                    .map_err(map_storage_value_error)?;
+            }
             builder
-                .set_outcome(outcome)
+                .set_outcome(success.outcome)
                 .map_err(map_storage_value_error)?;
             builder
                 .finish()

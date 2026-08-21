@@ -143,6 +143,7 @@ tag_registry!(instruction, "Instruction", {
     RETURN = 0x04 => "return",
     WORKFLOW_TRANSITION = 0x05 => "workflow transition",
     WORKFLOW_LEASE = 0x06 => "workflow lease",
+    SET_EMBEDDING = 0x07 => "set production embedding",
 });
 tag_registry!(workflow_lease_operation, "Workflow lease operation", {
     CLAIM = 0x01 => "claim",
@@ -508,6 +509,13 @@ pub(crate) const INSTRUCTION_VARIANTS: &[TaggedVariantLayout] = &[
         "binding" => "BindingId as u32",
         "fields" => "WorkflowLeaseFields",
         "operation" => "tagged WorkflowLeaseOperation",
+    }),
+    tagged_variant!(instruction::SET_EMBEDDING, "set production embedding", {
+        "binding" => "BindingId as u32",
+        "field" => "FieldId as u32",
+        "value" => "ExprId as u32",
+        "model_identity" => "ExprId as u32",
+        "model_version" => "ExprId as u32",
     }),
 ];
 

@@ -235,6 +235,35 @@ contract VectorAnnShape version 1 {
 }
 "#;
 
+/// Production embedding fixture (ADR-0136 / WP-596): pins the V15 value type,
+/// instruction tag, direct metadata-input roots, and public explain write set.
+const PRODUCTION_EMBEDDING_SOURCE: &str = r#"
+contract ProductionEmbeddingShape version 1 {
+  entity Document {
+    key (org_id: uuid, doc_id: uuid)
+    field title: string<256>
+    vector_field embedding(4, cosine, (title), staleness_slo 60, model "embed-v1", current_version "2026-08-21", replay_age_seconds 86400, replay_bytes 1073741824, replay_backlog 100000)
+  }
+  aggregate Documents {
+    root Document
+    partition_by org_id
+    conflict_key (org_id, doc_id)
+  }
+  command SetDocumentEmbedding {
+    input request_id: string<128>
+    input org_id: uuid
+    input doc_id: uuid
+    input embedding: vector<4>
+    input submitted_model: string<256>
+    input submitted_version: string<256>
+    idempotency_key request_id
+    mutate Document(org_id, doc_id) as document else Missing {}
+    embed document.embedding = embedding from (submitted_model, submitted_version)
+    return Embedded { document: document }
+  }
+}
+"#;
+
 fn main() -> Result<(), Box<dyn Error>> {
     let output_root = parse_output_root()?;
     let fixture_root = output_root.join("fixtures/compiler");
@@ -290,6 +319,35 @@ fn main() -> Result<(), Box<dyn Error>> {
     fs::write(
         vector_ann_root.join("bundle-hash.txt"),
         format!("{}\n", hex(vector_ann_bundle.bundle_hash().as_bytes())),
+    )?;
+
+    let production_embedding_bundle = compile_contract_source(PRODUCTION_EMBEDDING_SOURCE)?;
+    let production_embedding_root = fixture_root.join("production-embedding");
+    fs::create_dir_all(&production_embedding_root)?;
+    fs::write(
+        production_embedding_root.join("contract.riff"),
+        PRODUCTION_EMBEDDING_SOURCE,
+    )?;
+    fs::write(
+        production_embedding_root.join("bundle.bin"),
+        production_embedding_bundle.canonical_bytes(),
+    )?;
+    fs::write(
+        production_embedding_root.join("bundle-hash.txt"),
+        format!(
+            "{}\n",
+            hex(production_embedding_bundle.bundle_hash().as_bytes())
+        ),
+    )?;
+    fs::write(
+        production_embedding_root.join("command-explain.txt"),
+        CommandExplain::from_plan(
+            production_embedding_bundle
+                .commands()
+                .first()
+                .ok_or("production embedding fixture command is absent")?,
+        )
+        .render_text(),
     )?;
 
     let cascade_bundle = compile_contract_source(CASCADE_SOURCE)?;
@@ -1868,6 +1926,20 @@ fn render_instruction(instruction: &Instruction) -> String {
             binding.get(),
             field.get(),
             value.get()
+        ),
+        Instruction::SetEmbedding {
+            binding,
+            field,
+            value,
+            model_identity,
+            model_version,
+        } => format!(
+            "embed binding:{} field:{} value:{} model_identity:{} model_version:{}",
+            binding.get(),
+            field.get(),
+            value.get(),
+            model_identity.get(),
+            model_version.get()
         ),
         Instruction::WorkflowTransition {
             binding,

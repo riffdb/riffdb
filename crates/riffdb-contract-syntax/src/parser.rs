@@ -693,6 +693,7 @@ fn validate_collection_bounds(tokens: &[SpannedToken]) -> Result<(), SyntaxDiagn
                         | Token::Money
                         | Token::String
                         | Token::Bytes
+                        | Token::Vector
                         | Token::Optional
                         | Token::List
                 )
@@ -890,6 +891,7 @@ const EXPECTED_TOKEN_NAMES: &[&str] = &[
     "else",
     "require",
     "set",
+    "embed",
     "emit",
     "return",
     "bool",
@@ -1272,6 +1274,13 @@ impl NodeCounter {
                     self.path(reveal)?;
                 }
             }
+            Effect::Embed(embed) => {
+                self.add(2, effect.span)?;
+                self.path(&embed.target)?;
+                self.expression(&embed.value)?;
+                self.expression(&embed.model_identity)?;
+                self.expression(&embed.model_version)?;
+            }
             Effect::Emit(emit) => {
                 self.add(1, effect.span)?;
                 self.name(&emit.event)?;
@@ -1470,7 +1479,10 @@ impl NodeCounter {
             }
             TypeExpression::Money { currency }
             | TypeExpression::String { maximum: currency }
-            | TypeExpression::Bytes { maximum: currency } => self.add(1, currency.span),
+            | TypeExpression::Bytes { maximum: currency }
+            | TypeExpression::Vector {
+                dimension: currency,
+            } => self.add(1, currency.span),
             TypeExpression::Optional(inner) => self.type_expression(inner),
             TypeExpression::List {
                 element,

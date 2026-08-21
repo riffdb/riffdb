@@ -397,6 +397,8 @@ TypeExpression: Spanned<TypeExpression> = {
         => parser::spanned(TypeExpression::String { maximum }, lo, hi),
     <lo:@L> "bytes" "<" <maximum:UnsignedInteger> ">" <hi:@R>
         => parser::spanned(TypeExpression::Bytes { maximum }, lo, hi),
+    <lo:@L> "vector" "<" <dimension:UnsignedInteger> ">" <hi:@R>
+        => parser::spanned(TypeExpression::Vector { dimension }, lo, hi),
     <lo:@L> "optional" "<" <inner:TypeExpression> ">" <hi:@R>
         => parser::spanned(TypeExpression::Optional(Box::new(inner)), lo, hi),
     <lo:@L> "list" "<" <element:TypeExpression> "," <bound:ListBound> ">" <hi:@R>
@@ -560,6 +562,14 @@ Effect: Spanned<Effect> = {
             target,
             value: value.into_syntax(),
             reveals,
+        }), lo, hi),
+    <lo:@L> "embed" <target:Path> "=" <value:Expression>
+        "from" "(" <model_identity:Expression> "," <model_version:Expression> ")" <hi:@R>
+        => parser::spanned(Effect::Embed(EmbeddingEffect {
+            target,
+            value: value.into_syntax(),
+            model_identity: model_identity.into_syntax(),
+            model_version: model_version.into_syntax(),
         }), lo, hi),
     <lo:@L> "emit" <event:Identifier> <payload:ObjectLiteral> <hi:@R>
         => parser::spanned(Effect::Emit(EmitEffect { event, payload }), lo, hi),
@@ -1005,6 +1015,7 @@ extern {
         "else" => Token::Else,
         "require" => Token::Require,
         "set" => Token::Set,
+        "embed" => Token::Embed,
         "emit" => Token::Emit,
         "return" => Token::Return,
         "reveals" => Token::Reveals,
@@ -1030,6 +1041,7 @@ extern {
         "money" => Token::Money,
         "string" => Token::String,
         "bytes" => Token::Bytes,
+        "vector" => Token::Vector,
         "optional" => Token::Optional,
         "list" => Token::List,
         "true" => Token::True,

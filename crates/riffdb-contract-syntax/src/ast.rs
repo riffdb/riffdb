@@ -511,6 +511,11 @@ pub enum TypeExpression {
         /// The unsigned maximum-length lexeme.
         maximum: Spanned<String>,
     },
+    /// A fixed-dimension f32 vector accepted at command boundaries.
+    Vector {
+        /// The unsigned fixed-dimension lexeme.
+        dimension: Spanned<String>,
+    },
     /// An explicitly nullable nested type.
     Optional(Box<Spanned<TypeExpression>>),
     /// A bounded homogeneous list type.
@@ -674,12 +679,27 @@ pub struct Requirement {
 pub enum Effect {
     /// Assign a value to a bound entity path.
     Set(SetEffect),
+    /// Write one production embedding with explicit model evidence.
+    Embed(EmbeddingEffect),
     /// Emit one durable typed event.
     Emit(EmitEffect),
     /// Apply one declared revision-checked workflow transition.
     WorkflowTransition(WorkflowTransitionEffect),
     /// Apply one declared aggregate-local fenced lease operation.
     WorkflowLease(Box<WorkflowLeaseEffect>),
+}
+
+/// A compiler-sealed production embedding assignment.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EmbeddingEffect {
+    /// The declared production vector field path.
+    pub target: Spanned<Path>,
+    /// The canonical vector value.
+    pub value: Spanned<Expression>,
+    /// Caller-submitted bounded model identity.
+    pub model_identity: Spanned<Expression>,
+    /// Caller-submitted bounded model version.
+    pub model_version: Spanned<Expression>,
 }
 
 /// A revision-checked invocation of one declared workflow transition.

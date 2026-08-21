@@ -191,6 +191,8 @@ pub(crate) enum Token {
     Require,
     #[token("set")]
     Set,
+    #[token("embed")]
+    Embed,
     #[token("emit")]
     Emit,
     #[token("return")]
@@ -242,6 +244,8 @@ pub(crate) enum Token {
     String,
     #[token("bytes")]
     Bytes,
+    #[token("vector")]
+    Vector,
     #[token("optional")]
     Optional,
     #[token("list")]
@@ -444,6 +448,7 @@ const fn opens_type_arguments(token: &Token) -> bool {
             | Token::Money
             | Token::String
             | Token::Bytes
+            | Token::Vector
             | Token::Optional
             | Token::List
     )

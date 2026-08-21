@@ -11894,6 +11894,9 @@ work_packages:
     adr/0041-cli-public-flow-and-output-contract.md, proto/**, fixtures/**,
     crates/riffdb-types/**, crates/riffdb-contract-syntax/**,
     crates/riffdb-contract-ir/**, crates/riffdb-contract-compiler/**,
+    # Coordinator-authorized 2026-08-21: production V15 bundles must cross the
+    # catalog's exact version trust boundary before any public command can run.
+    crates/riffdb-catalog/**,
     crates/riffdb-service/**, crates/riffdb-commit/**, crates/riffdb-runtime/**,
     crates/riffdb-storage-api/**, crates/riffdb-storage-memory/**,
     crates/riffdb-storage-redb/**, crates/riffdb-proto/**, crates/riffdb-api-grpc/**,

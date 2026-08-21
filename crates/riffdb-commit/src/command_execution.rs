@@ -49,8 +49,8 @@ use crate::{
     },
     command_index::{
         CheckedAffectedEpochDecision, CheckedAssignDecision, CheckedCandidateDetach,
-        CheckedCommitCandidate, CheckedReserveDecision, DetachedCheckedCommitCandidate,
-        derive_checked_command_indexes,
+        CheckedCommitCandidate, CheckedReserveDecision, CommandIndexError,
+        DetachedCheckedCommitCandidate, derive_checked_command_indexes,
     },
     command_preparation::PostEvaluationAuthorizationError,
     command_records::{
@@ -4192,7 +4192,7 @@ where
     };
     let indexed = match derive_checked_command_indexes(validated) {
         Ok(indexed) => indexed,
-        Err(_) => return internal_defect(lifecycle),
+        Err(error) => return command_index_failure(error, lifecycle),
     };
     let indexed = match indexed.read_affected_epoch_current() {
         CheckedAffectedEpochDecision::Ready(indexed) => indexed,
@@ -4509,8 +4509,8 @@ where
         }
         CheckedRowPolicyDecision::Integrity => return Err(internal_defect(lifecycle)),
     };
-    let indexed =
-        derive_checked_command_indexes(validated).map_err(|_| internal_defect(lifecycle))?;
+    let indexed = derive_checked_command_indexes(validated)
+        .map_err(|error| command_index_failure(error, lifecycle))?;
     let indexed = match indexed.read_affected_epoch_current() {
         CheckedAffectedEpochDecision::Ready(indexed) => indexed,
         CheckedAffectedEpochDecision::Rejected(rejected) => {
@@ -4642,8 +4642,8 @@ where
         }
         CheckedRowPolicyDecision::Integrity => return Err(internal_defect(lifecycle)),
     };
-    let indexed =
-        derive_checked_command_indexes(validated).map_err(|_| internal_defect(lifecycle))?;
+    let indexed = derive_checked_command_indexes(validated)
+        .map_err(|error| command_index_failure(error, lifecycle))?;
     let indexed = match indexed.read_affected_epoch_current() {
         CheckedAffectedEpochDecision::Ready(indexed) => indexed,
         CheckedAffectedEpochDecision::Rejected(rejected) => {
@@ -4789,8 +4789,8 @@ where
         }
         CheckedRowPolicyDecision::Integrity => return Err(internal_defect(lifecycle)),
     };
-    let indexed =
-        derive_checked_command_indexes(validated).map_err(|_| internal_defect(lifecycle))?;
+    let indexed = derive_checked_command_indexes(validated)
+        .map_err(|error| command_index_failure(error, lifecycle))?;
     let indexed = match indexed.read_affected_epoch_current() {
         CheckedAffectedEpochDecision::Ready(indexed) => indexed,
         CheckedAffectedEpochDecision::Rejected(rejected) => {
@@ -5027,6 +5027,16 @@ fn internal_defect(lifecycle: &dyn CommandExecutionLifecycle) -> CommandDriverCo
     CommandDriverContinuation::Failed(CommandExecutionError::without_detail(
         CommandExecutionErrorKind::InternalDefect,
     ))
+}
+
+fn command_index_failure(
+    error: CommandIndexError,
+    lifecycle: &dyn CommandExecutionLifecycle,
+) -> CommandDriverContinuation {
+    match error.into_storage() {
+        Some(error) => proven_storage_failure(error, lifecycle),
+        None => internal_defect(lifecycle),
+    }
 }
 
 fn post_evaluation_authorization_failure(

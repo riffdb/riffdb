@@ -3420,6 +3420,19 @@ fn encode_instruction(
             writer.u32(field.get())?;
             writer.u32(value.get())
         }
+        Instruction::SetEmbedding {
+            binding,
+            field,
+            value,
+            model_identity,
+            model_version,
+        } => {
+            writer.u32(binding.get())?;
+            writer.u32(field.get())?;
+            writer.u32(value.get())?;
+            writer.u32(model_identity.get())?;
+            writer.u32(model_version.get())
+        }
         Instruction::WorkflowTransition {
             binding,
             state_field,
@@ -5764,6 +5777,15 @@ fn decode_instruction_versioned(
             field: decode_field_id(reader)?,
             value: ExprId::new(reader.u32()?),
         }),
+        instruction_tag::SET_EMBEDDING if ir_version >= EXECUTABLE_IR_VERSION_V15 => {
+            Ok(Instruction::SetEmbedding {
+                binding: BindingId::new(reader.u32()?),
+                field: decode_field_id(reader)?,
+                value: ExprId::new(reader.u32()?),
+                model_identity: ExprId::new(reader.u32()?),
+                model_version: ExprId::new(reader.u32()?),
+            })
+        }
         instruction_tag::WORKFLOW_TRANSITION if ir_version >= EXECUTABLE_IR_VERSION_V2 => {
             let binding = BindingId::new(reader.u32()?);
             let state_field = decode_field_id(reader)?;

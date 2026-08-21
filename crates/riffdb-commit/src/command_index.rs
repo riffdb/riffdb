@@ -12,26 +12,32 @@ use riffdb_contract_ir::{
     EXECUTABLE_IR_VERSION_V6, EXECUTABLE_IR_VERSION_V7, EXECUTABLE_IR_VERSION_V8,
     EXECUTABLE_IR_VERSION_V9, EXECUTABLE_IR_VERSION_V10, EXECUTABLE_IR_VERSION_V11,
     EXECUTABLE_IR_VERSION_V12, EXECUTABLE_IR_VERSION_V13, EXECUTABLE_IR_VERSION_V14,
-    ExecutionClass, GRAMMAR_VERSION_V1, GRAMMAR_VERSION_V2, GRAMMAR_VERSION_V3, GRAMMAR_VERSION_V4,
-    GRAMMAR_VERSION_V5, GRAMMAR_VERSION_V6, GRAMMAR_VERSION_V7, GRAMMAR_VERSION_V8,
-    GRAMMAR_VERSION_V9, GRAMMAR_VERSION_V10, GRAMMAR_VERSION_V11, GRAMMAR_VERSION_V12,
-    GRAMMAR_VERSION_V13, GRAMMAR_VERSION_V14, IndexSchema,
+    EXECUTABLE_IR_VERSION_V15, ExecutionClass, GRAMMAR_VERSION_V1, GRAMMAR_VERSION_V2,
+    GRAMMAR_VERSION_V3, GRAMMAR_VERSION_V4, GRAMMAR_VERSION_V5, GRAMMAR_VERSION_V6,
+    GRAMMAR_VERSION_V7, GRAMMAR_VERSION_V8, GRAMMAR_VERSION_V9, GRAMMAR_VERSION_V10,
+    GRAMMAR_VERSION_V11, GRAMMAR_VERSION_V12, GRAMMAR_VERSION_V13, GRAMMAR_VERSION_V14,
+    GRAMMAR_VERSION_V15, IndexSchema,
 };
 use riffdb_invariant::{InputDerivedCommandFacts, derive_input_command_facts};
+#[cfg(test)]
+use riffdb_storage_api::command_write_set_upper_bound_v1;
 use riffdb_storage_api::{
     AffectedEpochCurrentState, AffectedIndexEpochTargets, CommandCandidateAffectedEpochRead,
     CommandCandidateAwaitingCapacity, CommandCandidateAwaitingValidation,
     CommandCandidateCapacityReserved, CommandCandidateSequenceAssigned, CommandWriteSetPlanV1,
     CommitIntent, DurableCodecError, DurableKeySchemaBindingV1, EncodedWriteSetUpperBound,
-    EncodedWriteSetUpperBoundResultV1, EntityObservation, EntityTarget, EvaluatedCommand,
-    IdempotencyLookupCandidatesV1, IndexEntryMutationV1, IndexEpochAdvanceError,
+    EncodedWriteSetUpperBoundResultV1, EntityMutation, EntityObservation, EntityTarget,
+    EvaluatedCommand, IdempotencyLookupCandidatesV1, IndexEntryMutationV1, IndexEpochAdvanceError,
     IndexEpochAdvanceV1, IndexRangePrefixBuilder, IndexRangeTarget,
     MAX_AFFECTED_INDEX_EPOCH_TARGETS, MAX_INDEX_DELTAS, MAX_READ_SNAPSHOT_BYTES,
     MAX_VALIDATION_TARGETS, PartitionIndexTarget, ReadSnapshot, SnapshotRequest, StorageError,
     StoredIndexEntryV2, TransactionCurrentState, UniqueIndexTarget, UniqueOccupancyKind,
-    ValidatedCommandWriteSetShapeV1, command_write_set_upper_bound_v1,
+    ValidatedCommandWriteSetShapeV1, VectorEvidenceReadRequestV1, VectorEvidenceReadTargetV1,
+    VectorEvidenceTransitionPlanV1, command_write_set_upper_bound_with_vector_evidence_v1,
 };
-use riffdb_types::{CanonicalRecord, CanonicalValue, IndexEntryKey, PartitionKey};
+use riffdb_types::{
+    CanonicalRecord, CanonicalValue, EntityVersion, FieldId, IndexEntryKey, PartitionKey,
+};
 
 use crate::command_attempt::{
     PendingCommandAttempts, PostApplyCommandEvidence, RolledBackCandidateDisposition,
@@ -48,9 +54,9 @@ const AFFECTED_CURRENT_STATE_FIXED_BYTES_V1: usize = 4;
 const INDEX_RANGE_TARGET_FIXED_BYTES_V1: usize = 8;
 const MAX_INDEX_EPOCH_POSITION_BYTES_V1: usize = 9;
 
-#[derive(Clone, Copy, Eq, PartialEq)]
+#[derive(Clone, Eq, PartialEq)]
 pub(super) struct CommandIndexError {
-    _private: (),
+    storage: Option<StorageError>,
 }
 
 /// Coordinator-owned outcome of the bounded reverse-index discovery read.
@@ -225,7 +231,17 @@ fn derive_delete_range_target(
 
 impl CommandIndexError {
     pub(super) const fn internal_defect() -> Self {
-        Self { _private: () }
+        Self { storage: None }
+    }
+
+    fn storage(error: StorageError) -> Self {
+        Self {
+            storage: Some(error),
+        }
+    }
+
+    pub(super) fn into_storage(self) -> Option<StorageError> {
+        self.storage
     }
 }
 
@@ -442,11 +458,187 @@ pub(super) fn prepare_command_body(
     }))
 }
 
+fn current_observation_for_target<'a>(
+    current: &'a TransactionCurrentState,
+    target: &EntityTarget,
+) -> Result<&'a EntityObservation, CommandIndexError> {
+    let mut found = None;
+    for observation in current
+        .bindings()
+        .iter()
+        .chain(current.root_validations())
+        .chain(current.cascade_predecessors())
+        .filter(|observation| observation.target() == target)
+    {
+        if found.is_some_and(|prior| prior != observation) {
+            return Err(CommandIndexError::internal_defect());
+        }
+        found = Some(observation);
+    }
+    found.ok_or_else(CommandIndexError::internal_defect)
+}
+
+fn record_field_value(record: &CanonicalRecord, field: FieldId) -> Option<&CanonicalValue> {
+    record
+        .fields()
+        .binary_search_by_key(&field, |(candidate, _)| *candidate)
+        .ok()
+        .map(|position| &record.fields()[position].1)
+}
+
+fn vector_value(
+    record: Option<&CanonicalRecord>,
+    field: FieldId,
+) -> Result<Option<&CanonicalValue>, CommandIndexError> {
+    match record.and_then(|record| record_field_value(record, field)) {
+        None | Some(CanonicalValue::Null) => Ok(None),
+        Some(value @ CanonicalValue::Vector(_)) => Ok(Some(value)),
+        Some(_) => Err(CommandIndexError::internal_defect()),
+    }
+}
+
+fn next_entity_version(mutation: &EntityMutation) -> Result<EntityVersion, CommandIndexError> {
+    match mutation {
+        EntityMutation::Create(_) => Ok(EntityVersion::first()),
+        EntityMutation::Replace {
+            expected_version, ..
+        } => expected_version
+            .checked_next()
+            .ok_or_else(CommandIndexError::internal_defect),
+        EntityMutation::Delete {
+            expected_version, ..
+        } => Ok(*expected_version),
+    }
+}
+
+fn derive_vector_evidence<C>(
+    checked: &CheckedValidatedCommand<C>,
+) -> Result<Vec<VectorEvidenceTransitionPlanV1>, CommandIndexError>
+where
+    C: CommandCandidateAwaitingValidation,
+{
+    let evaluated = checked.evaluated();
+    let schema = checked.resolved().bundle().bundle().schema();
+    let mut targets = Vec::new();
+    for mutation in evaluated.mutations() {
+        for production in schema
+            .vector_production_specs()
+            .iter()
+            .filter(|spec| spec.entity() == mutation.target().entity_type_id())
+        {
+            targets.push(VectorEvidenceReadTargetV1::new(
+                mutation.target().clone(),
+                production.field(),
+            ));
+        }
+    }
+    let request = VectorEvidenceReadRequestV1::new(targets)
+        .map_err(|_| CommandIndexError::internal_defect())?;
+    if request.targets().is_empty() {
+        if evaluated.embedding_writes().is_empty() {
+            return Ok(Vec::new());
+        }
+        return Err(CommandIndexError::internal_defect());
+    }
+    let current_evidence = checked
+        .read_vector_evidence(&request)
+        .map_err(CommandIndexError::storage)?;
+    let schema_binding = DurableKeySchemaBindingV1::from_plan(evaluated.plan());
+    let partition = checked.attempt().commit_intent().pending().partition_key();
+    let provenance_id = checked.attempt().commit_intent().provenance_id();
+    let mut matched_embedding_writes = 0usize;
+    let mut transitions = Vec::new();
+
+    for target in request.targets() {
+        let mutation = evaluated
+            .mutations()
+            .iter()
+            .find(|mutation| mutation.target() == target.target())
+            .ok_or_else(CommandIndexError::internal_defect)?;
+        let production = schema
+            .vector_production_spec(target.target().entity_type_id(), target.vector_field())
+            .ok_or_else(CommandIndexError::internal_defect)?;
+        let vector_spec = schema
+            .vector_field_spec(target.target().entity_type_id(), target.vector_field())
+            .ok_or_else(CommandIndexError::internal_defect)?;
+        let observation = current_observation_for_target(checked.current(), target.target())?;
+        let current_record = match observation {
+            EntityObservation::Absent(_) => None,
+            EntityObservation::Present(record) => Some(record.fields()),
+        };
+        let embedding_write = evaluated.embedding_writes().iter().find(|write| {
+            write.target() == target.target() && write.vector_field() == target.vector_field()
+        });
+        if let Some(write) = embedding_write {
+            matched_embedding_writes = matched_embedding_writes
+                .checked_add(1)
+                .ok_or_else(CommandIndexError::internal_defect)?;
+            if write.metadata() != production.metadata() {
+                return Err(CommandIndexError::internal_defect());
+            }
+        }
+
+        if mutation.is_delete() {
+            if embedding_write.is_some() {
+                return Err(CommandIndexError::internal_defect());
+            }
+            if let Some(prior) = current_evidence.get(target) {
+                transitions.push(
+                    VectorEvidenceTransitionPlanV1::delete(
+                        prior,
+                        provenance_id,
+                        evaluated.plan().clone(),
+                    )
+                    .map_err(|_| CommandIndexError::internal_defect())?,
+                );
+            }
+            continue;
+        }
+
+        let successor = mutation.post_image().fields();
+        let current_vector = vector_value(current_record, target.vector_field())?;
+        let successor_vector = vector_value(Some(successor), target.vector_field())?;
+        if current_vector != successor_vector && embedding_write.is_none() {
+            return Err(CommandIndexError::internal_defect());
+        }
+        if embedding_write.is_some() && successor_vector.is_none() {
+            return Err(CommandIndexError::internal_defect());
+        }
+        let source_changed = matches!(mutation, EntityMutation::Create(_))
+            || vector_spec.source_fields().iter().any(|field| {
+                current_record.and_then(|record| record_field_value(record, *field))
+                    != record_field_value(successor, *field)
+            });
+        if source_changed || embedding_write.is_some() {
+            transitions.push(
+                VectorEvidenceTransitionPlanV1::live(
+                    target.target().clone(),
+                    partition.clone(),
+                    target.vector_field(),
+                    next_entity_version(mutation)?,
+                    current_evidence.get(target),
+                    source_changed,
+                    embedding_write.map(|write| write.metadata().clone()),
+                    schema_binding.clone(),
+                    provenance_id,
+                    evaluated.plan().clone(),
+                )
+                .map_err(|_| CommandIndexError::internal_defect())?,
+            );
+        }
+    }
+    if matched_embedding_writes != evaluated.embedding_writes().len() {
+        return Err(CommandIndexError::internal_defect());
+    }
+    Ok(transitions)
+}
+
 /// Exact semantically checked candidate retained after index derivation.
 pub(super) struct CheckedCommitCandidate<S = ()> {
     authority: CheckedAttemptAuthority<S>,
     entry_mutations: Vec<IndexEntryMutationV1>,
     affected_targets: AffectedIndexEpochTargets,
+    vector_evidence: Vec<VectorEvidenceTransitionPlanV1>,
 }
 
 struct CheckedAttemptAuthority<S>(Box<CheckedValidatedCommand<S>>);
@@ -498,11 +690,13 @@ where
             checked.attempt().commit_intent().pending().partition_key(),
         )?
     };
+    let vector_evidence = derive_vector_evidence(&checked)?;
     let checked = checked.plan_validated(derived.affected_targets.clone());
     Ok(CheckedCommitCandidate {
         authority: CheckedAttemptAuthority(Box::new(checked)),
         entry_mutations: derived.entry_mutations,
         affected_targets: derived.affected_targets,
+        vector_evidence,
     })
 }
 
@@ -524,6 +718,7 @@ where
             authority,
             entry_mutations,
             affected_targets,
+            vector_evidence,
         } = self;
         let CheckedAttemptAuthority(checked) = authority;
         match checked.read_affected_epoch_current() {
@@ -543,6 +738,7 @@ where
                     authority: CheckedAttemptAuthority(checked),
                     entry_mutations,
                     affected_targets,
+                    vector_evidence,
                 })
             }
             CheckedAffectedEpochRead::StorageFailure(error) => {
@@ -595,22 +791,27 @@ fn prepare_sequence_free_write_set(
     affected_current: AffectedEpochCurrentState,
     index_entries: Vec<IndexEntryMutationV1>,
     index_epochs: Vec<IndexEpochAdvanceV1>,
+    vector_evidence: Vec<VectorEvidenceTransitionPlanV1>,
 ) -> SequenceFreeWriteSetPreparation {
-    let shape = match ValidatedCommandWriteSetShapeV1::new(
+    let shape = match ValidatedCommandWriteSetShapeV1::new_with_vector_evidence(
         intent,
         affected_targets,
         affected_current,
         index_entries,
         index_epochs,
+        vector_evidence,
     ) {
         Ok(shape) => shape,
         Err(_) => return SequenceFreeWriteSetPreparation::Integrity,
     };
-    match classify_sequence_free_write_set_sizing(command_write_set_upper_bound_v1(
-        shape.intent(),
-        shape.index_entries(),
-        shape.index_epochs(),
-    )) {
+    match classify_sequence_free_write_set_sizing(
+        command_write_set_upper_bound_with_vector_evidence_v1(
+            shape.intent(),
+            shape.index_entries(),
+            shape.index_epochs(),
+            shape.vector_evidence(),
+        ),
+    ) {
         SequenceFreeWriteSetSizing::Fits(bound) => SequenceFreeWriteSetPreparation::Ready(
             Box::new(CommandWriteSetPlanV1::from_validated_shape(shape, bound)),
         ),
@@ -630,6 +831,7 @@ where
             authority,
             entry_mutations,
             affected_targets,
+            vector_evidence,
         } = self;
         let CheckedAttemptAuthority(checked) = authority;
         let retained = checked.awaiting_capacity();
@@ -674,6 +876,7 @@ where
             retained.affected_current().clone(),
             entry_mutations.clone(),
             epoch_advances,
+            vector_evidence.clone(),
         ) {
             SequenceFreeWriteSetPreparation::Ready(write_plan) => *write_plan,
             SequenceFreeWriteSetPreparation::CapacityUnavailable => {
@@ -694,6 +897,7 @@ where
                     authority: CheckedAttemptAuthority(checked),
                     entry_mutations,
                     affected_targets,
+                    vector_evidence,
                 })
             }
             CheckedCapacityReservation::Reserved(checked) => {
@@ -728,12 +932,14 @@ where
             authority,
             entry_mutations,
             affected_targets,
+            vector_evidence,
         } = self;
         let CheckedAttemptAuthority(checked) = authority;
         let retained = checked.capacity_reserved();
         if retained.intent() != checked.attempt().commit_intent()
             || retained.write_plan().index_entries() != entry_mutations
             || retained.write_plan().affected_targets() != &affected_targets
+            || retained.write_plan().vector_evidence() != vector_evidence
         {
             drop(checked);
             return CheckedAssignDecision::Integrity;
@@ -747,6 +953,7 @@ where
                     authority: CheckedAttemptAuthority(checked),
                     entry_mutations,
                     affected_targets,
+                    vector_evidence,
                 })
             }
             CheckedSequenceAssignment::Assigned(checked) => {
@@ -1013,6 +1220,7 @@ where
             authority,
             entry_mutations,
             affected_targets,
+            vector_evidence: _,
         } = self;
         let CheckedAttemptAuthority(checked) = authority;
         match checked.detach() {
@@ -1052,6 +1260,7 @@ where
             authority,
             entry_mutations,
             affected_targets,
+            vector_evidence: _,
         } = self;
         let CheckedAttemptAuthority(checked) = authority;
         match checked.stage(records) {
@@ -1321,6 +1530,18 @@ impl IndexDerivationBuilder {
 //   generation even when the key is unchanged. The V14 tests below pin that
 //   new production rule while every V1-V13 index retains the canonical empty
 //   covered record.
+//
+// (V15, V15) — authoritative production embedding writes (ADR-0136 / WP-596).
+//   `SetEmbedding` assigns the declared vector field in the same entity
+//   post-image consumed by this derivation, while carrying model identity and
+//   version in a separately validated evidence intent. Vector fields cannot
+//   participate in ordinary index key or cover schemas, so V15 changes no
+//   index key/value codec and introduces no hidden index mutation. The
+//   transaction-current evidence read and evidence transition are derived by
+//   the adjacent vector-evidence stage, not trusted from the runtime intent.
+//   Evidence: `production_embedding_v15_preserves_ordinary_index_derivation`
+//   compiles and executes a real V15 mutation, pins its atomic evidence
+//   intent, and derives exactly the ordinary scalar index transition.
 const fn index_derivation_version_supported(grammar: u32, ir: u32) -> bool {
     matches!(
         (grammar, ir),
@@ -1338,6 +1559,7 @@ const fn index_derivation_version_supported(grammar: u32, ir: u32) -> bool {
             | (GRAMMAR_VERSION_V12, EXECUTABLE_IR_VERSION_V12)
             | (GRAMMAR_VERSION_V13, EXECUTABLE_IR_VERSION_V13)
             | (GRAMMAR_VERSION_V14, EXECUTABLE_IR_VERSION_V14)
+            | (GRAMMAR_VERSION_V15, EXECUTABLE_IR_VERSION_V15)
     )
 }
 
@@ -1671,9 +1893,10 @@ mod tests {
     };
     use riffdb_types::{
         ActorId, ActorKind, AdmittedActorContext, AggregateTypeId, CanonicalInputHash,
-        CanonicalList, CanonicalValue, DatabaseId, Date, DigestKeyId, EntityVersion, Environment,
-        FieldId, IndexEntryKeyBuilder, IndexId, LogicalTime, MAX_CANONICAL_DOCUMENT_BYTES,
-        PartitionKeyBuilder, ProvenanceId, RequestId, TenantScope, Timestamp, hash_partition_key,
+        CanonicalList, CanonicalValue, CanonicalVector, DatabaseId, Date, DigestKeyId,
+        EntityVersion, Environment, FieldId, IndexEntryKeyBuilder, IndexId, LogicalTime,
+        MAX_CANONICAL_DOCUMENT_BYTES, PartitionKeyBuilder, ProvenanceId, RequestId, TenantScope,
+        Timestamp, hash_partition_key,
     };
 
     use super::*;
@@ -1690,7 +1913,7 @@ mod tests {
         for grammar in 0..=16_u32 {
             for ir in 0..=16_u32 {
                 let audited_identity_pair =
-                    grammar == ir && (GRAMMAR_VERSION_V1..=GRAMMAR_VERSION_V14).contains(&grammar);
+                    grammar == ir && (GRAMMAR_VERSION_V1..=GRAMMAR_VERSION_V15).contains(&grammar);
                 assert_eq!(
                     index_derivation_version_supported(grammar, ir),
                     audited_identity_pair,
@@ -2394,6 +2617,7 @@ contract DeleteRestrict version 1 {
             affected_current,
             entries,
             Vec::new(),
+            Vec::new(),
         )
     }
 
@@ -2659,6 +2883,132 @@ contract DeleteRestrict version 1 {
                 .as_slice()
                 .iter()
                 .any(|target| target.index_id() == cover_index.id())
+        );
+    }
+
+    const PRODUCTION_EMBEDDING_INDEXED_SOURCE: &str = r#"
+contract ProductionEmbeddingIndexedRows version 1 {
+  entity Document {
+    key (org_id: uuid, doc_id: uuid)
+    field category: string<32>
+    field title: string<256>
+    vector_field embedding(4, cosine, (title), staleness_slo 60, model "embed-v1", current_version "2026-08-21", replay_age_seconds 86400, replay_bytes 1073741824, replay_backlog 100000)
+    index by_category (category)
+  }
+  aggregate Documents { root Document partition_by org_id conflict_key (org_id, doc_id) }
+  command UpdateDocumentEmbedding {
+    input request_key: string<128>
+    input org_id: uuid
+    input doc_id: uuid
+    input category: string<32>
+    input embedding: vector<4>
+    input submitted_model: string<256>
+    input submitted_version: string<256>
+    idempotency_key request_key
+    mutate Document(org_id, doc_id) as doc else Missing {}
+    set doc.category = category
+    embed doc.embedding = embedding from (submitted_model, submitted_version)
+    return Updated { document: doc }
+  }
+}
+"#;
+
+    #[test]
+    fn production_embedding_v15_preserves_ordinary_index_derivation() {
+        let old_vector = CanonicalVector::new(vec![0.0, 0.0, 0.0, 0.0]).expect("old vector");
+        let new_vector = CanonicalVector::new(vec![0.1, 0.2, 0.3, 0.4]).expect("new vector");
+        let fixture = custom_fixture_from_source(
+            PRODUCTION_EMBEDDING_INDEXED_SOURCE,
+            "UpdateDocumentEmbedding",
+            &[
+                ("request_key", string("embedding-update-1")),
+                ("org_id", CanonicalValue::Uuid([0x11; 16])),
+                ("doc_id", CanonicalValue::Uuid([0x12; 16])),
+                ("category", string("new")),
+                ("embedding", CanonicalValue::Vector(new_vector.clone())),
+                ("submitted_model", string("embed-v1")),
+                ("submitted_version", string("2026-08-21")),
+            ],
+            Some(&[
+                ("category", string("old")),
+                ("title", string("Authoritative vectors")),
+                ("embedding", CanonicalValue::Vector(old_vector)),
+            ]),
+        );
+        assert_eq!(
+            fixture.resolved.bundle().bundle().grammar_version(),
+            GRAMMAR_VERSION_V15
+        );
+        assert_eq!(
+            fixture.resolved.bundle().bundle().ir_version(),
+            EXECUTABLE_IR_VERSION_V15
+        );
+        assert_eq!(fixture.evaluated.embedding_writes().len(), 1);
+        let write = &fixture.evaluated.embedding_writes()[0];
+        assert_eq!(write.metadata().model_identity(), "embed-v1");
+        assert_eq!(write.metadata().model_version(), "2026-08-21");
+        let vector_field = fixture.resolved.bundle().bundle().schema().entities()[0]
+            .record()
+            .fields()
+            .iter()
+            .find(|field| field.name() == "embedding")
+            .expect("embedding field")
+            .id();
+        assert_eq!(write.vector_field(), vector_field);
+        assert!(
+            fixture.evaluated.mutations()[0]
+                .post_image()
+                .fields()
+                .fields()
+                .binary_search_by_key(&vector_field, |(field, _)| *field)
+                .ok()
+                .and_then(|index| {
+                    fixture.evaluated.mutations()[0]
+                        .post_image()
+                        .fields()
+                        .fields()
+                        .get(index)
+                })
+                .is_some_and(|(_, value)| value == &CanonicalValue::Vector(new_vector))
+        );
+
+        let derived = derive_grammar_v1_indexes(
+            &fixture.resolved,
+            &fixture.input,
+            &fixture.evaluated,
+            &fixture.current,
+            &[Some(0)],
+            &fixture.partition,
+        )
+        .expect("V15 embedding metadata cannot perturb scalar index derivation");
+        let category = index(&fixture, "by_category");
+        let entity_key = fixture.evaluated.mutations()[0].target().key().clone();
+        assert_eq!(
+            actual_entry_kinds(&derived),
+            BTreeSet::from([
+                (
+                    category
+                        .key_schema()
+                        .encode_index(&[string("old")], entity_key.clone())
+                        .expect("old category index key")
+                        .as_bytes()
+                        .to_vec(),
+                    false,
+                ),
+                (
+                    category
+                        .key_schema()
+                        .encode_index(&[string("new")], entity_key)
+                        .expect("new category index key")
+                        .as_bytes()
+                        .to_vec(),
+                    true,
+                ),
+            ])
+        );
+        assert_eq!(
+            actual_generation_ids(&derived),
+            expected_generation_ids(&[category])
         );
     }
 

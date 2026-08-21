@@ -18,8 +18,8 @@ use riffdb_commit::{
     queued_preparation_units,
 };
 use riffdb_contract_ir::{
-    CommandPlan, ExecutionClass, McpCommandToolNameV2, RecordSchema, RecordTypeRef, SchemaIr,
-    ValueType, ValueTypeTag,
+    CommandPlan, ExecutionClass, ExpressionKind, Instruction, McpCommandToolNameV2, RecordSchema,
+    RecordTypeRef, SchemaIr, ValueType, ValueTypeTag,
 };
 use riffdb_errors::{
     MAX_VALIDATION_ISSUES, MAX_VALIDATION_PATH_SEGMENTS, PublicError, PublicErrorKind,
@@ -1682,12 +1682,71 @@ fn normalize_command_input(
     }
     let normalized =
         CanonicalRecord::new(normalized).map_err(|_| InputPreparationError::Integrity)?;
+    validate_embedding_metadata_inputs(selected, selected_schema, &normalized)?;
     match encode_canonical_record(&normalized) {
         Ok(_) => Ok(normalized),
         Err(CanonicalCodecError::DocumentTooLarge { .. }) => Err(InputPreparationError::Public(
             invalid_root(ValidationCode::TooLong),
         )),
         Err(_) => Err(InputPreparationError::Integrity),
+    }
+}
+
+fn validate_embedding_metadata_inputs(
+    plan: &CommandPlan,
+    schema: &SchemaIr,
+    normalized: &CanonicalRecord,
+) -> Result<(), InputPreparationError> {
+    let mut issues = Vec::new();
+    for instruction in plan.instructions() {
+        let Instruction::SetEmbedding {
+            binding,
+            field,
+            model_identity,
+            model_version,
+            ..
+        } = instruction
+        else {
+            continue;
+        };
+        let binding = plan
+            .bindings()
+            .get(binding.get() as usize)
+            .ok_or(InputPreparationError::Integrity)?;
+        let production = schema
+            .vector_production_spec(binding.entity_type(), *field)
+            .ok_or(InputPreparationError::Integrity)?;
+        for (expression, expected) in [
+            (*model_identity, production.metadata().model_identity()),
+            (*model_version, production.metadata().model_version()),
+        ] {
+            let input_field = match plan.expressions().get(expression).map(|node| node.kind()) {
+                Some(ExpressionKind::InputField(field)) => *field,
+                _ => return Err(InputPreparationError::Integrity),
+            };
+            let matches = normalized
+                .fields()
+                .binary_search_by_key(&input_field, |(field, _)| *field)
+                .ok()
+                .and_then(|index| normalized.fields().get(index))
+                .is_some_and(|(_, value)| {
+                    matches!(value, CanonicalValue::String(value) if value.as_str() == expected)
+                });
+            if !matches {
+                push_issue(
+                    &mut issues,
+                    field_issue(ValidationCode::InvalidValue, input_field),
+                );
+            }
+        }
+    }
+    if issues.is_empty() {
+        Ok(())
+    } else {
+        let issues = ValidationIssues::new(issues).map_err(|_| InputPreparationError::Integrity)?;
+        Err(InputPreparationError::Public(PublicError::validation(
+            issues,
+        )))
     }
 }
 
@@ -2881,11 +2940,12 @@ mod tests {
         IdempotencyKeyDigest, StoredAdmittedProvenanceClaimsV1, StoredOutcomeV1,
     };
     use riffdb_types::{
-        ActorId, ActorKind, AdmittedActorContext, AggregateTypeId, CanonicalInputHash, CommandId,
-        CommitSequence, ContractBundleHash, ContractLineage, ContractVersion, CurrencyCode,
-        DatabaseId, DigestKeyId, EnumTypeId, EnumVariantId, Environment, FieldId, IncidentId,
-        LogicalTime, OutcomeId, PartitionKeyBuilder, PlanHash, ProvenanceId, RequestId, TenantId,
-        TenantScope, Timestamp, hash_command_input, hash_partition_key,
+        ActorId, ActorKind, AdmittedActorContext, AggregateTypeId, CanonicalInputHash,
+        CanonicalVector, CommandId, CommitSequence, ContractBundleHash, ContractLineage,
+        ContractVersion, CurrencyCode, DatabaseId, DigestKeyId, EnumTypeId, EnumVariantId,
+        Environment, FieldId, IncidentId, LogicalTime, OutcomeId, PartitionKeyBuilder, PlanHash,
+        ProvenanceId, RequestId, TenantId, TenantScope, Timestamp, hash_command_input,
+        hash_partition_key,
     };
 
     use crate::{SourceName, SubmittedDecimal, SubmittedEnum, SubmittedField, SubmittedMoney};
@@ -3098,6 +3158,83 @@ contract LargeDecimalInput version 1 {
   }
 }
 "#
+    }
+
+    fn production_embedding_source() -> &'static str {
+        r#"
+contract EmbeddingInput version 1 {
+  entity Document {
+    key (org_id: uuid, doc_id: uuid)
+    field title: string<256>
+    vector_field embedding(4, cosine, (title), staleness_slo 60, model "embed-v1", current_version "2026-08-21", replay_age_seconds 86400, replay_bytes 1073741824, replay_backlog 100000)
+  }
+  aggregate Documents { root Document partition_by org_id conflict_key (org_id, doc_id) }
+  command SetDocumentEmbedding {
+    input request_id: string<128>
+    input org_id: uuid
+    input doc_id: uuid
+    input embedding: vector<4>
+    input submitted_model: string<256>
+    input submitted_version: string<256>
+    idempotency_key request_id
+    mutate Document(org_id, doc_id) as doc else Missing { doc_id: doc_id }
+    embed doc.embedding = embedding from (submitted_model, submitted_version)
+    return Embedded { document: doc }
+  }
+}
+"#
+    }
+
+    #[test]
+    fn command_input_normalization_rejects_wrong_embedding_model_at_exact_fields() {
+        let bundle =
+            compile_contract_source(production_embedding_source()).expect("contract compiles");
+        let plan = command(&bundle);
+        let submitted = submitted_input(
+            CanonicalRecord::new(vec![
+                (
+                    field_id(plan, "request_id"),
+                    CanonicalValue::string("request-1").expect("request"),
+                ),
+                (field_id(plan, "org_id"), CanonicalValue::Uuid([0x11; 16])),
+                (field_id(plan, "doc_id"), CanonicalValue::Uuid([0x12; 16])),
+                (
+                    field_id(plan, "embedding"),
+                    CanonicalValue::Vector(
+                        CanonicalVector::new(vec![0.1, 0.2, 0.3, 0.4]).expect("vector"),
+                    ),
+                ),
+                (
+                    field_id(plan, "submitted_model"),
+                    CanonicalValue::string("wrong-model").expect("wrong model"),
+                ),
+                (
+                    field_id(plan, "submitted_version"),
+                    CanonicalValue::string("wrong-version").expect("wrong version"),
+                ),
+            ])
+            .expect("canonical input"),
+        );
+        let issues = validation_issues(
+            normalize_command_input(plan, bundle.schema(), plan, &submitted)
+                .expect_err("wrong model evidence rejects before admission"),
+        );
+        assert_eq!(issues.len(), 2);
+        assert!(
+            issues
+                .iter()
+                .all(|issue| issue.code() == ValidationCode::InvalidValue)
+        );
+        assert_eq!(
+            issues
+                .iter()
+                .filter_map(|issue| issue.path().segments().first())
+                .collect::<Vec<_>>(),
+            vec![
+                &ValidationPathSegment::Field(field_id(plan, "submitted_model")),
+                &ValidationPathSegment::Field(field_id(plan, "submitted_version")),
+            ]
+        );
     }
 
     fn compile_normalization_fixture() -> ContractBundle {

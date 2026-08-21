@@ -13,8 +13,8 @@ use riffdb_storage_api::{
 };
 use riffdb_types::{
     ActorId, ActorKind, AdmittedActorContext, CanonicalBytes, CanonicalList, CanonicalRecord,
-    CanonicalValue, Decimal, DecimalSpec, EntityVersion, FieldId, LogicalTime, OutcomeId,
-    RequestId, TenantScope, Timestamp,
+    CanonicalValue, CanonicalVector, Decimal, DecimalSpec, EntityVersion, FieldId, LogicalTime,
+    OutcomeId, RequestId, TenantScope, Timestamp,
 };
 
 const BUDGET_SOURCE: &str = include_str!(concat!(
@@ -52,6 +52,131 @@ const FRAMEWORK_PROFILE_SOURCE: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../fixtures/adapters/framework-profile/riffdb/contract.riff"
 ));
+const PRODUCTION_EMBEDDING_SOURCE: &str = r#"
+contract RuntimeEmbedding version 1 {
+  entity Document {
+    key (org_id: uuid, doc_id: uuid)
+    field title: string<256>
+    vector_field embedding(4, cosine, (title), staleness_slo 60, model "embed-v1", current_version "2026-08-21", replay_age_seconds 86400, replay_bytes 1073741824, replay_backlog 100000)
+  }
+  aggregate Documents { root Document partition_by org_id conflict_key (org_id, doc_id) }
+  command SetDocumentEmbedding {
+    input request_id: string<128>
+    input org_id: uuid
+    input doc_id: uuid
+    input embedding: vector<4>
+    input submitted_model: string<256>
+    input submitted_version: string<256>
+    idempotency_key request_id
+    mutate Document(org_id, doc_id) as doc else Missing { doc_id: doc_id }
+    embed doc.embedding = embedding from (submitted_model, submitted_version)
+    return Embedded { document: doc }
+  }
+}
+"#;
+
+#[test]
+fn production_embedding_write_mutates_entity_and_emits_exact_atomic_intent() {
+    let bundle = compile_contract_source(PRODUCTION_EMBEDDING_SOURCE).expect("contract compiles");
+    let plan = command(&bundle, "SetDocumentEmbedding");
+    let submitted_vector = CanonicalVector::new(vec![0.1, 0.2, 0.3, 0.4]).expect("vector");
+    let input = input_record(
+        plan.input().record(),
+        [
+            (
+                "request_id",
+                CanonicalValue::string("embed-request-1").expect("request"),
+            ),
+            ("org_id", CanonicalValue::Uuid([0x11; 16])),
+            ("doc_id", CanonicalValue::Uuid([0x12; 16])),
+            (
+                "embedding",
+                CanonicalValue::Vector(submitted_vector.clone()),
+            ),
+            (
+                "submitted_model",
+                CanonicalValue::string("embed-v1").expect("model"),
+            ),
+            (
+                "submitted_version",
+                CanonicalValue::string("2026-08-21").expect("version"),
+            ),
+        ],
+    );
+    let target = derive_binding_target(plan, &input, 0);
+    let entity = bundle
+        .schema()
+        .entity(target.entity_type_id())
+        .expect("entity");
+    let stored = stored_record(
+        &bundle,
+        plan,
+        target.clone(),
+        input_record(
+            entity.record(),
+            [
+                ("org_id", CanonicalValue::Uuid([0x11; 16])),
+                ("doc_id", CanonicalValue::Uuid([0x12; 16])),
+                (
+                    "title",
+                    CanonicalValue::string("Authoritative vectors").expect("title"),
+                ),
+                (
+                    "embedding",
+                    CanonicalValue::Vector(
+                        CanonicalVector::new(vec![0.0, 0.0, 0.0, 0.0]).expect("prior vector"),
+                    ),
+                ),
+            ],
+        ),
+    );
+    let read_snapshot = snapshot(
+        plan_ref(&bundle, plan),
+        vec![EntityObservation::Present(stored)],
+    );
+    let transaction = context(
+        &bundle,
+        plan,
+        &input,
+        LogicalTime::new(Timestamp::new(100, 0).expect("time")),
+    );
+    let ExecutionResult::CommitRequired(evaluated) = execute_command(
+        &bundle,
+        &input,
+        &read_snapshot,
+        &transaction,
+        EvaluationBudget::v1(),
+    )
+    .expect("embedding evaluates") else {
+        panic!("embedding write requires commit");
+    };
+    assert_eq!(evaluated.mutations().len(), 1);
+    assert_eq!(evaluated.embedding_writes().len(), 1);
+    let write = &evaluated.embedding_writes()[0];
+    assert_eq!(write.target(), &target);
+    assert_eq!(write.metadata().model_identity(), "embed-v1");
+    assert_eq!(write.metadata().model_version(), "2026-08-21");
+    let vector_field = entity
+        .record()
+        .fields()
+        .iter()
+        .find(|field| field.name() == "embedding")
+        .expect("embedding field")
+        .id();
+    assert_eq!(write.vector_field(), vector_field);
+    let post_image = evaluated.mutations()[0].post_image();
+    let stored_vector = post_image
+        .fields()
+        .fields()
+        .binary_search_by_key(&vector_field, |(field, _)| *field)
+        .ok()
+        .and_then(|index| post_image.fields().fields().get(index))
+        .map(|(_, value)| value);
+    assert_eq!(
+        stored_vector,
+        Some(&CanonicalValue::Vector(submitted_vector))
+    );
+}
 
 #[test]
 fn framework_profile_signup_is_one_complete_atomic_graph_with_compiler_initial_state() {

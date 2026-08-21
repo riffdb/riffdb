@@ -672,6 +672,16 @@ impl<C> CheckedValidatedCommand<C>
 where
     C: CommandCandidateAwaitingValidation,
 {
+    /// Reads exact production-vector predecessors without releasing the
+    /// validated writer candidate.
+    pub(super) fn read_vector_evidence(
+        &self,
+        request: &riffdb_storage_api::VectorEvidenceReadRequestV1,
+    ) -> Result<riffdb_storage_api::TransactionCurrentVectorEvidenceV1, StorageError> {
+        self.candidate
+            .read_transaction_current_vector_evidence(request)
+    }
+
     pub(super) fn plan_validated(
         self,
         affected_targets: riffdb_storage_api::AffectedIndexEpochTargets,
@@ -1366,10 +1376,14 @@ fn validate_evaluated_output(
                             .any(|candidate| candidate.outcome_id() == outcome.outcome_id()),
                     },
                     Instruction::SetField { .. }
+                    | Instruction::SetEmbedding { .. }
                     | Instruction::EmitEvent(_)
                     | Instruction::Return(_) => false,
                 }));
-        if !declared_rejection || !evaluated.event_intents().is_empty() {
+        if !declared_rejection
+            || !evaluated.event_intents().is_empty()
+            || !evaluated.embedding_writes().is_empty()
+        {
             return Err(CommandValidationError::integrity());
         }
         return Ok(());
@@ -1413,12 +1427,14 @@ fn validate_evaluated_output(
         (0..plan.instructions().len()).collect()
     };
     let expected_events = instruction_ordinals
-        .into_iter()
+        .iter()
+        .copied()
         .map(|index| &plan.instructions()[index])
         .filter_map(|instruction| match instruction {
             Instruction::EmitEvent(event) => Some(event),
             Instruction::Require { .. }
             | Instruction::SetField { .. }
+            | Instruction::SetEmbedding { .. }
             | Instruction::WorkflowTransition { .. }
             | Instruction::WorkflowLease { .. }
             | Instruction::Return(_) => None,
@@ -1437,6 +1453,28 @@ fn validate_evaluated_output(
         validate_exact_record(schema, declared.payload(), actual.payload())?;
     }
     if actual_events.next().is_some() {
+        return Err(CommandValidationError::integrity());
+    }
+    let mut expected_embeddings = BTreeMap::<(riffdb_types::EntityTypeId, FieldId), usize>::new();
+    for instruction in &instruction_ordinals {
+        let Instruction::SetEmbedding { binding, field, .. } = &plan.instructions()[*instruction]
+        else {
+            continue;
+        };
+        let entity = plan
+            .bindings()
+            .get(binding.get() as usize)
+            .map(riffdb_contract_ir::BindingPlan::entity_type)
+            .ok_or_else(CommandValidationError::integrity)?;
+        *expected_embeddings.entry((entity, *field)).or_default() += 1;
+    }
+    let mut actual_embeddings = BTreeMap::new();
+    for write in evaluated.embedding_writes() {
+        *actual_embeddings
+            .entry((write.target().entity_type_id(), write.vector_field()))
+            .or_default() += 1;
+    }
+    if actual_embeddings != expected_embeddings {
         return Err(CommandValidationError::integrity());
     }
     Ok(())
