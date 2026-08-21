@@ -16,10 +16,11 @@ use crate::{
     GetContractVersionRequest, GetContractVersionResult, GetEntityRequest, GetEntityResult,
     GetOfflineMaintenanceOperationRequest, GetOfflineMaintenanceOperationResult,
     GetProjectionStatusRequest, GetProjectionStatusResult, GetReactiveWakeupResult, HealthContext,
-    HealthRequest, HealthResult, ListPendingOutboxDeliveriesRequest,
-    ListPendingOutboxDeliveriesResult, OfflineMaintenanceStartResult, QueryProjectionRequest,
-    QueryProjectionResult, RecoveryRestoreOfflineBackupInvocation, ReplayEventsRequest,
-    ReplayEventsResult, RequestContext, ResolveCommandOutcomeRequest, ResolveCommandOutcomeResult,
+    HealthRequest, HealthResult, InspectVectorStateRequest, InspectVectorStateResult,
+    ListPendingOutboxDeliveriesRequest, ListPendingOutboxDeliveriesResult,
+    OfflineMaintenanceStartResult, QueryProjectionRequest, QueryProjectionResult,
+    RecoveryRestoreOfflineBackupInvocation, ReplayEventsRequest, ReplayEventsResult,
+    RequestContext, ResolveCommandOutcomeRequest, ResolveCommandOutcomeResult,
     RestoreOfflineBackupInvocation, RetireOfflineBackupRequest, RevokeCapabilityRequest,
     RevokeCapabilityResult, ScanCommitsRequest, ScanCommitsResult, ScanIndexRequest,
     ScanIndexResult, ServiceResult, StartApplicationInstallationRequest, StatisticsRequest,
@@ -114,6 +115,13 @@ pub trait QueryApplication: Send + Sync {
         context: RequestContext,
         request: GetProjectionStatusRequest,
     ) -> ServiceFuture<'_, GetProjectionStatusResult>;
+
+    /// Inspects one compiler-declared vector field under exact role authority.
+    fn inspect_vector_state(
+        &self,
+        context: RequestContext,
+        request: InspectVectorStateRequest,
+    ) -> ServiceFuture<'_, InspectVectorStateResult>;
 }
 
 /// Commit-log reads, subscription establishment, and provenance tracing.

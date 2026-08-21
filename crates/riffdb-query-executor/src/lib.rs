@@ -10,6 +10,7 @@ pub use exact_result_set::*;
 use std::cell::Cell;
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
+use std::num::NonZeroU16;
 use std::sync::Arc;
 
 use riffdb_policy::{AuthorizedProjectedRowAdmissionV1, AuthorizedQueryRowPolicyContextV1};
@@ -20,8 +21,9 @@ use riffdb_query_ir::{
 };
 use riffdb_riffql_syntax::Cardinality;
 use riffdb_types::{
-    CanonicalValue, EntityKey, EntityTypeId, PartitionKeyHash, QueryCostVectorV1,
-    canonical_value_encoded_len, encode_canonical_value, hash_partition_key,
+    CanonicalValue, CommitSequence, ContractLineage, EmbeddingMetadata, EntityKey, EntityTypeId,
+    FieldId, PartitionKey, PartitionKeyHash, QueryCostVectorV1, canonical_value_encoded_len,
+    encode_canonical_value, hash_partition_key,
 };
 
 /// Maximum checked submitted parameters.
@@ -41,6 +43,206 @@ pub use riffdb_query_ir::{
 pub const MAX_QUERY_CONTINUATION_BYTES: usize = 4_096;
 /// Maximum named queries in one contextual shared snapshot.
 pub const MAX_CONTEXTUAL_HYDRATION_QUERIES: usize = 16;
+
+/// One compiler-resolved authoritative vector evidence target.
+///
+/// This is an engine boundary, never an application request: symbolic names,
+/// partition values, limits, and cursors are resolved by the application
+/// service before construction.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VectorInspectionTargetV1 {
+    lineage: ContractLineage,
+    partition: PartitionKey,
+    entity: EntityTypeId,
+    field: FieldId,
+    after: Option<EntityKey>,
+    limit: NonZeroU16,
+}
+
+impl VectorInspectionTargetV1 {
+    /// Binds one exact evidence-prefix scan.
+    #[must_use]
+    pub const fn new(
+        lineage: ContractLineage,
+        partition: PartitionKey,
+        entity: EntityTypeId,
+        field: FieldId,
+        after: Option<EntityKey>,
+        limit: NonZeroU16,
+    ) -> Self {
+        Self {
+            lineage,
+            partition,
+            entity,
+            field,
+            after,
+            limit,
+        }
+    }
+
+    /// Contract lineage.
+    #[must_use]
+    pub const fn lineage(&self) -> &ContractLineage {
+        &self.lineage
+    }
+    /// Exact aggregate partition.
+    #[must_use]
+    pub const fn partition(&self) -> &PartitionKey {
+        &self.partition
+    }
+    /// Entity type.
+    #[must_use]
+    pub const fn entity(&self) -> EntityTypeId {
+        self.entity
+    }
+    /// Vector field.
+    #[must_use]
+    pub const fn field(&self) -> FieldId {
+        self.field
+    }
+    /// Exclusive lower key.
+    #[must_use]
+    pub const fn after(&self) -> Option<&EntityKey> {
+        self.after.as_ref()
+    }
+    /// Maximum physical candidates returned by this snapshot.
+    #[must_use]
+    pub const fn limit(&self) -> NonZeroU16 {
+        self.limit
+    }
+}
+
+/// One authoritative evidence row copied from a single inspection snapshot.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VectorInspectionCandidateV1 {
+    entity_key: EntityKey,
+    newest_source_write: Option<CommitSequence>,
+    embedding_write: Option<(CommitSequence, EmbeddingMetadata)>,
+}
+
+impl VectorInspectionCandidateV1 {
+    /// Retains storage-validated evidence.
+    #[must_use]
+    pub const fn new(
+        entity_key: EntityKey,
+        newest_source_write: Option<CommitSequence>,
+        embedding_write: Option<(CommitSequence, EmbeddingMetadata)>,
+    ) -> Self {
+        Self {
+            entity_key,
+            newest_source_write,
+            embedding_write,
+        }
+    }
+    /// Entity identity.
+    #[must_use]
+    pub const fn entity_key(&self) -> &EntityKey {
+        &self.entity_key
+    }
+    /// Newest declared source-field write.
+    #[must_use]
+    pub const fn newest_source_write(&self) -> Option<CommitSequence> {
+        self.newest_source_write
+    }
+    /// Current embedding write and metadata.
+    #[must_use]
+    pub const fn embedding_write(&self) -> Option<&(CommitSequence, EmbeddingMetadata)> {
+        self.embedding_write.as_ref()
+    }
+}
+
+/// One policy-admitted authoritative vector inspection snapshot.
+///
+/// Counts, evidence rows, current-row policy observations, and the application
+/// frontier are read from one engine-owned transaction. The optional proof is
+/// bound to the complete returned candidate set and cannot be edited by the
+/// service before filtering.
+pub struct VectorInspectionSnapshotV1 {
+    total_entities: u64,
+    stale_entities: u64,
+    model_counts: BTreeMap<EmbeddingMetadata, u64>,
+    revision: Option<CommitSequence>,
+    frontier: Option<CommitSequence>,
+    candidates: Vec<VectorInspectionCandidateV1>,
+    continuation: Option<EntityKey>,
+    exact_end: bool,
+    admission: Option<AuthorizedProjectedRowAdmissionV1>,
+}
+
+impl VectorInspectionSnapshotV1 {
+    /// Constructs an owned result at the storage boundary.
+    #[allow(clippy::too_many_arguments)]
+    #[must_use]
+    pub const fn new(
+        total_entities: u64,
+        stale_entities: u64,
+        model_counts: BTreeMap<EmbeddingMetadata, u64>,
+        revision: Option<CommitSequence>,
+        frontier: Option<CommitSequence>,
+        candidates: Vec<VectorInspectionCandidateV1>,
+        continuation: Option<EntityKey>,
+        exact_end: bool,
+        admission: Option<AuthorizedProjectedRowAdmissionV1>,
+    ) -> Self {
+        Self {
+            total_entities,
+            stale_entities,
+            model_counts,
+            revision,
+            frontier,
+            candidates,
+            continuation,
+            exact_end,
+            admission,
+        }
+    }
+    /// Whole-partition entity count.
+    #[must_use]
+    pub const fn total_entities(&self) -> u64 {
+        self.total_entities
+    }
+    /// Whole-partition stale count.
+    #[must_use]
+    pub const fn stale_entities(&self) -> u64 {
+        self.stale_entities
+    }
+    /// Counts by exact embedding metadata.
+    pub fn model_counts(&self) -> impl Iterator<Item = (&EmbeddingMetadata, u64)> {
+        self.model_counts
+            .iter()
+            .map(|(metadata, count)| (metadata, *count))
+    }
+    /// Authoritative observation revision.
+    #[must_use]
+    pub const fn revision(&self) -> Option<CommitSequence> {
+        self.revision
+    }
+    /// Application frontier of the same authoritative read transaction.
+    #[must_use]
+    pub const fn frontier(&self) -> Option<CommitSequence> {
+        self.frontier
+    }
+    /// Complete physical candidate page.
+    #[must_use]
+    pub fn candidates(&self) -> &[VectorInspectionCandidateV1] {
+        &self.candidates
+    }
+    /// Exclusive lower continuation.
+    #[must_use]
+    pub const fn continuation(&self) -> Option<&EntityKey> {
+        self.continuation.as_ref()
+    }
+    /// Exact prefix end marker.
+    #[must_use]
+    pub const fn exact_end(&self) -> bool {
+        self.exact_end
+    }
+    /// Candidate-bound row-policy admission, when the target is protected.
+    #[must_use]
+    pub const fn admission(&self) -> Option<&AuthorizedProjectedRowAdmissionV1> {
+        self.admission.as_ref()
+    }
+}
 
 /// Checked name-addressed canonical parameters.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -907,6 +1109,18 @@ pub trait QueryExecutionPort: Send + Sync {
         _candidates: &[EntityKey],
         _policy: &AuthorizedQueryRowPolicyContextV1,
     ) -> Result<AuthorizedProjectedRowAdmissionV1, QueryExecutionError> {
+        Err(QueryExecutionError::InvalidProgram)
+    }
+
+    /// Reads vector observation, evidence, and current-row policy in one snapshot.
+    ///
+    /// The default denies so a policy-neutral evidence repository cannot be
+    /// composed into an application disclosure by accident.
+    fn inspect_vector_evidence(
+        &self,
+        _target: &VectorInspectionTargetV1,
+        _policy: Option<&AuthorizedQueryRowPolicyContextV1>,
+    ) -> Result<VectorInspectionSnapshotV1, QueryExecutionError> {
         Err(QueryExecutionError::InvalidProgram)
     }
 

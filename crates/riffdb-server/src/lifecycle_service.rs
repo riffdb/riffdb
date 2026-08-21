@@ -32,19 +32,19 @@ use riffdb_service::{
     GetEntityRequest, GetEntityResult, GetOfflineMaintenanceOperationRequest,
     GetOfflineMaintenanceOperationResult, GetProjectionStatusRequest, GetProjectionStatusResult,
     GetQueryModuleRequest, GetReactiveWakeupResult, HealthContext, HealthRequest, HealthResult,
-    ListPendingOutboxDeliveriesRequest, ListPendingOutboxDeliveriesResult,
-    LiveNamedQueryApplication, NamedSymbolicQueryRequest, NegativeAcknowledgeEventStreamRequest,
-    OfflineMaintenanceApplication, OfflineMaintenanceStartResult, ProjectedQueryApplication,
-    QueryApplication, QueryModuleInspection, QueryProjectionRequest, QueryProjectionResult,
-    ReplayEventsRequest, ReplayEventsResult, RequestContext, ResolveCommandOutcomeRequest,
-    ResolveCommandOutcomeResult, RestoreOfflineBackupInvocation, RevokeCapabilityRequest,
-    RevokeCapabilityResult, ScanCommitsRequest, ScanCommitsResult, ScanIndexRequest,
-    ScanIndexResult, SeekEventStreamConsumerRequest, ServiceFuture,
-    StartApplicationInstallationRequest, StatisticsRequest, StatisticsResult,
-    SubscribeToCommitsRequest, SubscribeToCommitsResult, SymbolicContractSelector,
-    SymbolicQueryApplication, TailEventsRequest, TailEventsResult, TraceProvenanceRequest,
-    TraceProvenanceResult, ValidateContractRequest, WatchLiveNamedQueryRequest,
-    WatchLiveNamedQueryResult,
+    InspectVectorStateRequest, InspectVectorStateResult, ListPendingOutboxDeliveriesRequest,
+    ListPendingOutboxDeliveriesResult, LiveNamedQueryApplication, NamedSymbolicQueryRequest,
+    NegativeAcknowledgeEventStreamRequest, OfflineMaintenanceApplication,
+    OfflineMaintenanceStartResult, ProjectedQueryApplication, QueryApplication,
+    QueryModuleInspection, QueryProjectionRequest, QueryProjectionResult, ReplayEventsRequest,
+    ReplayEventsResult, RequestContext, ResolveCommandOutcomeRequest, ResolveCommandOutcomeResult,
+    RestoreOfflineBackupInvocation, RevokeCapabilityRequest, RevokeCapabilityResult,
+    ScanCommitsRequest, ScanCommitsResult, ScanIndexRequest, ScanIndexResult,
+    SeekEventStreamConsumerRequest, ServiceFuture, StartApplicationInstallationRequest,
+    StatisticsRequest, StatisticsResult, SubscribeToCommitsRequest, SubscribeToCommitsResult,
+    SymbolicContractSelector, SymbolicQueryApplication, TailEventsRequest, TailEventsResult,
+    TraceProvenanceRequest, TraceProvenanceResult, ValidateContractRequest,
+    WatchLiveNamedQueryRequest, WatchLiveNamedQueryResult,
 };
 use riffdb_types::ServiceOperationV1;
 
@@ -211,6 +211,10 @@ delegate_operation! {
             context: RequestContext,
             request: GetProjectionStatusRequest
         ) -> GetProjectionStatusResult => GetProjectionStatus;
+        inspect_vector_state(
+            context: RequestContext,
+            request: InspectVectorStateRequest
+        ) -> InspectVectorStateResult => InspectVectorState;
     }
 }
 

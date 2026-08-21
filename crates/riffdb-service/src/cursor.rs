@@ -13,16 +13,17 @@ use riffdb_policy::{FixedToolCandidate, PartitionConstraint};
 use riffdb_query_executor::QueryContinuation;
 use riffdb_types::{
     ActorId, ApplicationRoleHash, CanonicalValue, CapabilityId, CommitSequence, ContractBundleHash,
-    ContractLineage, ContractVersion, EntityTypeId, EventConsumerIdentityHash,
-    EventConsumerRevision, EventId, FieldId, IndexEntryKey, IndexEpochPosition, IndexId,
-    MAX_CAPABILITY_FIELD_VISIBILITY, ProjectionIdentity, QueryParameterHash, QueryPlanHash,
-    TenantScope,
+    ContractLineage, ContractVersion, EmbeddingMetadata, EntityKey, EntityTypeId,
+    EventConsumerIdentityHash, EventConsumerRevision, EventId, FieldId, IndexEntryKey,
+    IndexEpochPosition, IndexId, MAX_CAPABILITY_FIELD_VISIBILITY, PartitionKey, ProjectionIdentity,
+    QueryParameterHash, QueryPlanHash, TenantScope,
 };
 
 use crate::EventSelection;
 use crate::dto::{
     DiscoveryCatalogFence, DiscoveryRepresentation, FieldSelection, MAX_PROJECTION_COMPONENTS,
     MAX_PROJECTION_WAIT, ProjectionContinuation, ProjectionPageFence, ResourceDiscoveryKind,
+    VectorStateInspectionKind,
 };
 
 const MAX_APPLICATION_CATALOG_AUTHORITIES: usize =
@@ -925,6 +926,120 @@ pub(crate) struct IndexScanCursorState {
     policy: IndexScanCursorPolicy,
 }
 
+/// Caller-reconstructible identity for one symbolic vector inspection.
+#[derive(Clone, Eq, PartialEq)]
+pub(crate) struct VectorInspectionCursorLookup {
+    contract: CursorContractIdentity,
+    entity: EntityTypeId,
+    field: FieldId,
+    partition: PartitionKey,
+    kind: VectorStateInspectionKind,
+    current_model: EmbeddingMetadata,
+    requested_limit: PageLimit,
+}
+
+impl VectorInspectionCursorLookup {
+    #[allow(clippy::too_many_arguments)]
+    #[must_use]
+    pub(crate) const fn new(
+        contract: CursorContractIdentity,
+        entity: EntityTypeId,
+        field: FieldId,
+        partition: PartitionKey,
+        kind: VectorStateInspectionKind,
+        current_model: EmbeddingMetadata,
+        requested_limit: PageLimit,
+    ) -> Self {
+        Self {
+            contract,
+            entity,
+            field,
+            partition,
+            kind,
+            current_model,
+            requested_limit,
+        }
+    }
+
+    #[must_use]
+    pub(crate) const fn entity(&self) -> EntityTypeId {
+        self.entity
+    }
+    #[must_use]
+    pub(crate) const fn requested_limit(&self) -> PageLimit {
+        self.requested_limit
+    }
+}
+
+/// Registry-only vector evidence continuation and safe-point bindings.
+#[derive(Clone, Eq, PartialEq)]
+pub(crate) struct VectorInspectionCursorState {
+    after: EntityKey,
+    observation_revision: Option<CommitSequence>,
+    snapshot_frontier: Option<CommitSequence>,
+    capability_id: CapabilityId,
+    capability_revision: NonZeroU64,
+    role_hash: ApplicationRoleHash,
+    history_incarnation: u64,
+    effective_limit: PageLimit,
+}
+
+impl VectorInspectionCursorState {
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn new(
+        after: EntityKey,
+        observation_revision: Option<CommitSequence>,
+        snapshot_frontier: Option<CommitSequence>,
+        capability_id: CapabilityId,
+        capability_revision: NonZeroU64,
+        role_hash: ApplicationRoleHash,
+        history_incarnation: u64,
+        effective_limit: PageLimit,
+    ) -> Result<Self, CursorBindingError> {
+        if history_incarnation == 0 {
+            return Err(CursorBindingError);
+        }
+        Ok(Self {
+            after,
+            observation_revision,
+            snapshot_frontier,
+            capability_id,
+            capability_revision,
+            role_hash,
+            history_incarnation,
+            effective_limit,
+        })
+    }
+    #[must_use]
+    pub(crate) const fn after(&self) -> &EntityKey {
+        &self.after
+    }
+    #[must_use]
+    pub(crate) const fn observation_revision(&self) -> Option<CommitSequence> {
+        self.observation_revision
+    }
+    #[must_use]
+    pub(crate) const fn snapshot_frontier(&self) -> Option<CommitSequence> {
+        self.snapshot_frontier
+    }
+    #[must_use]
+    pub(crate) const fn capability_identity(&self) -> (CapabilityId, NonZeroU64) {
+        (self.capability_id, self.capability_revision)
+    }
+    #[must_use]
+    pub(crate) const fn role_hash(&self) -> ApplicationRoleHash {
+        self.role_hash
+    }
+    #[must_use]
+    pub(crate) const fn history_incarnation(&self) -> u64 {
+        self.history_incarnation
+    }
+    #[must_use]
+    pub(crate) const fn effective_limit(&self) -> PageLimit {
+        self.effective_limit
+    }
+}
+
 impl IndexScanCursorState {
     #[must_use]
     pub(crate) const fn new(
@@ -1564,6 +1679,7 @@ pub(crate) enum ServiceCursorLookup {
     EventReplay(EventReplayCursorLookup),
     CommitScan(CommitScanCursorLookup),
     IndexScan(IndexScanCursorLookup),
+    VectorInspection(VectorInspectionCursorLookup),
     Projection(ProjectionCursorLookup),
     Outbox(OutboxCursorLookup),
     CommandDiscovery(CommandDiscoveryCursorLookup),
@@ -1578,6 +1694,7 @@ pub(crate) enum ServiceCursorState {
     EventReplay(Arc<EventReplayCursorState>),
     CommitScan(Arc<CommitScanCursorState>),
     IndexScan(Arc<IndexScanCursorState>),
+    VectorInspection(Arc<VectorInspectionCursorState>),
     Projection(Arc<ProjectionCursorState>),
     Outbox(Arc<OutboxCursorState>),
     CommandDiscovery(Arc<CommandDiscoveryCursorState>),
@@ -1796,6 +1913,46 @@ impl ServiceCursorRegistries {
         )?;
         match state.as_ref() {
             ServiceCursorState::IndexScan(state) => Ok(Arc::clone(state)),
+            _ => Err(CursorAccessError::Unavailable),
+        }
+    }
+
+    pub(crate) fn register_vector_inspection_unpublished(
+        &self,
+        principal: &ActorId,
+        lookup: VectorInspectionCursorLookup,
+        state: VectorInspectionCursorState,
+    ) -> Result<CursorPublicationGuard<'_>, CursorUnavailable> {
+        if state.after().entity_type_id() != lookup.entity()
+            || state.effective_limit() > lookup.requested_limit()
+        {
+            return Err(CursorUnavailable);
+        }
+        let registration = self.registry.register(
+            CursorBinding::new(
+                principal.clone(),
+                ServiceCursorLookup::VectorInspection(lookup),
+            ),
+            ServiceCursorState::VectorInspection(Arc::new(state)),
+        )?;
+        Ok(self.publication_guard(registration))
+    }
+
+    pub(crate) fn resolve_vector_inspection(
+        &self,
+        token: CursorToken,
+        principal: &ActorId,
+        lookup: &VectorInspectionCursorLookup,
+    ) -> Result<Arc<VectorInspectionCursorState>, CursorAccessError> {
+        let state = self.registry.resolve(
+            token,
+            &CursorBinding::new(
+                principal.clone(),
+                ServiceCursorLookup::VectorInspection(lookup.clone()),
+            ),
+        )?;
+        match state.as_ref() {
+            ServiceCursorState::VectorInspection(state) => Ok(Arc::clone(state)),
             _ => Err(CursorAccessError::Unavailable),
         }
     }

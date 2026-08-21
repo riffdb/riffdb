@@ -927,6 +927,13 @@ impl AuthorizedOperation {
         )
     }
 
+    /// Exact compiler-derived application role carried by this operation.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn internal_application_role_hash(&self) -> Option<ApplicationRoleHash> {
+        self.identity.application_role_hash
+    }
+
     /// Re-issues this allow proof only when live state proves it still holds.
     ///
     /// `baseline_generation` is the capability-view generation observed
