@@ -1,0 +1,22 @@
+syntax = "proto3";
+
+package riffdb.storage.v1;
+
+// One exact model identity/version count inside a bounded observation row.
+message StoredVectorModelCountV1 {
+  string model_identity = 1;
+  string model_version = 2;
+  uint64 entity_count = 3;
+}
+
+// Authoritative maintained counters for one partitioned vector field.
+message StoredVectorObservationV1 {
+  string contract_lineage = 1;
+  bytes partition_key = 2;
+  uint32 entity_type_id = 3;
+  uint32 vector_field_id = 4;
+  uint64 total_entities = 5;
+  uint64 source_stale_entities = 6;
+  repeated StoredVectorModelCountV1 model_counts = 7;
+  uint64 revision_sequence = 8;
+}

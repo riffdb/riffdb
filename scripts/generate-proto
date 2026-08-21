@@ -54,6 +54,8 @@ artifacts=(
     crates/riffdb-proto/src/generated/riffdb.app.v1.rs
     crates/riffdb-proto/src/generated/riffdb.storage.v1.rs
     crates/riffdb-proto/src/generated/riffdb.v1.rs
+    crates/riffdb-proto/fixtures/descriptors/riffdb-storage-v1-descriptor-set.bin
+    crates/riffdb-proto/fixtures/descriptors/riffdb-v1-descriptor-set.bin
     fixtures/proto/compatibility-probe-envelope.bin
     fixtures/proto/compatibility-probe-payload.bin
     fixtures/proto/descriptors/compatibility-probe-descriptor-set.bin
@@ -78,8 +80,12 @@ artifacts=(
     fixtures/proto/durable-capability-v7-schema-hash.bin
     fixtures/proto/durable-vector-evidence-v1-record-bound.bin
     fixtures/proto/durable-vector-evidence-v1-schema-hash.bin
+    fixtures/proto/durable-vector-observation-v1-record-bound.bin
+    fixtures/proto/durable-vector-observation-v1-schema-hash.bin
     crates/riffdb-proto/fixtures/durable-vector-evidence-v1-record-bound.bin
     crates/riffdb-proto/fixtures/durable-vector-evidence-v1-schema-hash.bin
+    crates/riffdb-proto/fixtures/durable-vector-observation-v1-record-bound.bin
+    crates/riffdb-proto/fixtures/durable-vector-observation-v1-schema-hash.bin
     fixtures/proto/durable-validated-prefix-checkpoint-v1-record-bound.bin
     fixtures/proto/durable-validated-prefix-checkpoint-v1-schema-hash.bin
     fixtures/proto/durable-retention-watermark-v1-record-bound.bin
