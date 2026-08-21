@@ -8,6 +8,7 @@ use crate::{
     AtomicCommandRecordSet, CommandWriteClassBreakdownV1, CommitIntent, DurabilityMode,
     DurableKeySchemaBindingV1, EncodedWriteSetUpperBound, EntityMutation, IndexEntryMutationV1,
     IndexEpochAdvanceV1, MAX_STAGED_WRITE_BYTES, StoredReadDependenciesV1,
+    VectorEvidenceMutationV1, VectorEvidenceTransitionPlanV1,
 };
 
 use super::{
@@ -17,7 +18,8 @@ use super::{
     encode_application_sequence_allocator_v1, encode_commit_record_v1, encode_durable_event_v1,
     encode_entity_record_v1, encode_event_route_v1, encode_index_entry_v2, encode_index_epoch_v1,
     encode_outbox_intent_v1, encode_provenance_record_v1, encode_stored_outcome_v1,
-    entity_target_to_proto, identity_to_proto, plan_to_proto, storage_result, timestamp_to_proto,
+    encode_vector_evidence_v1, entity_target_to_proto, identity_to_proto, plan_to_proto,
+    storage_result, timestamp_to_proto,
 };
 
 const OUTBOX_INTENT: &str = "riffdb.storage.v1.StoredOutboxIntentV2";
@@ -121,6 +123,7 @@ impl RawWriteClassBreakdownV1 {
 pub struct EncodedAtomicCommandRecordSetV1 {
     allocator: CanonicalStoredEnvelopeV1,
     entities: Vec<Option<CanonicalStoredEnvelopeV1>>,
+    vector_evidence: Vec<Option<CanonicalStoredEnvelopeV1>>,
     index_entries: Vec<Option<CanonicalStoredEnvelopeV1>>,
     index_epochs: Vec<CanonicalStoredEnvelopeV1>,
     outcome: CanonicalStoredEnvelopeV1,
@@ -141,6 +144,7 @@ pub struct EncodedAtomicCommandRecordSetV1 {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EncodedCapsuleCommandRecordSetV1 {
     entities: Vec<Option<CanonicalStoredEnvelopeV1>>,
+    vector_evidence: Vec<Option<CanonicalStoredEnvelopeV1>>,
     index_entries: Vec<Option<CanonicalStoredEnvelopeV1>>,
     index_epochs: Vec<CanonicalStoredEnvelopeV1>,
 }
@@ -245,9 +249,15 @@ impl EncodedCapsuleCommandRecordSetV1 {
     ) -> (
         Vec<Option<CanonicalStoredEnvelopeV1>>,
         Vec<Option<CanonicalStoredEnvelopeV1>>,
+        Vec<Option<CanonicalStoredEnvelopeV1>>,
         Vec<CanonicalStoredEnvelopeV1>,
     ) {
-        (self.entities, self.index_entries, self.index_epochs)
+        (
+            self.entities,
+            self.vector_evidence,
+            self.index_entries,
+            self.index_epochs,
+        )
     }
 }
 
@@ -264,6 +274,14 @@ impl EncodedAtomicCommandRecordSetV1 {
     #[must_use]
     pub fn entities(&self) -> &[Option<CanonicalStoredEnvelopeV1>] {
         &self.entities
+    }
+
+    /// Returns vector-evidence changes aligned with the semantic mutation list.
+    ///
+    /// `None` is a checked deletion and therefore stores no current row.
+    #[must_use]
+    pub fn vector_evidence(&self) -> &[Option<CanonicalStoredEnvelopeV1>] {
+        &self.vector_evidence
     }
 
     /// Returns index changes aligned with the semantic mutation list.
@@ -335,6 +353,7 @@ impl EncodedAtomicCommandRecordSetV1 {
         CanonicalStoredEnvelopeV1,
         Vec<Option<CanonicalStoredEnvelopeV1>>,
         Vec<Option<CanonicalStoredEnvelopeV1>>,
+        Vec<Option<CanonicalStoredEnvelopeV1>>,
         Vec<CanonicalStoredEnvelopeV1>,
         CanonicalStoredEnvelopeV1,
         Vec<CanonicalStoredEnvelopeV1>,
@@ -347,6 +366,7 @@ impl EncodedAtomicCommandRecordSetV1 {
         (
             self.allocator,
             self.entities,
+            self.vector_evidence,
             self.index_entries,
             self.index_epochs,
             self.outcome,
@@ -370,6 +390,16 @@ pub fn command_write_set_upper_bound_v1(
     intent: &CommitIntent,
     index_entries: &[IndexEntryMutationV1],
     index_epochs: &[IndexEpochAdvanceV1],
+) -> Result<EncodedWriteSetUpperBoundResultV1, DurableCodecError> {
+    command_write_set_upper_bound_with_vector_evidence_v1(intent, index_entries, index_epochs, &[])
+}
+
+/// Computes a tight sequence-free reservation including vector evidence.
+pub fn command_write_set_upper_bound_with_vector_evidence_v1(
+    intent: &CommitIntent,
+    index_entries: &[IndexEntryMutationV1],
+    index_epochs: &[IndexEpochAdvanceV1],
+    vector_evidence: &[VectorEvidenceTransitionPlanV1],
 ) -> Result<EncodedWriteSetUpperBoundResultV1, DurableCodecError> {
     let evaluated = intent.evaluated();
     let pending = intent.pending();
@@ -511,7 +541,19 @@ pub fn command_write_set_upper_bound_v1(
         entities: sum_sizes(evaluated.mutations().iter().map(|mutation| {
             sizing_entity_len(mutation, schema_binding_len)
                 .and_then(|len| sizing_charge_len(ENTITY, len))
-        }))?,
+        }))?
+        .checked_add(sum_sizes(vector_evidence.iter().map(|transition| {
+            match transition.materialize(
+                riffdb_types::CommitSequence::new(MAXIMUM_WIDTH_U64)
+                    .expect("maximum nonzero commit sequence is valid"),
+            ) {
+                Ok(VectorEvidenceMutationV1::Put(value)) => encode_vector_evidence_v1(&value)
+                    .map(|envelope| envelope.encoded_content_charge().get()),
+                Ok(VectorEvidenceMutationV1::Delete { .. }) => Ok(0),
+                Err(error) => Err(DurableCodecError::from_storage_value(error)),
+            }
+        }))?)
+        .ok_or_else(DurableCodecError::invariant)?,
         index_entries: sum_sizes(index_entries.iter().filter_map(|mutation| match mutation {
             IndexEntryMutationV1::Delete(_) => None,
             IndexEntryMutationV1::Put(value) => Some(
@@ -567,6 +609,14 @@ pub fn encode_atomic_command_record_set_v1(
                 .transpose()
         })
         .collect::<Result<Vec<_>, _>>()?;
+    let vector_evidence = records
+        .vector_evidence()
+        .iter()
+        .map(|value| match value {
+            VectorEvidenceMutationV1::Delete { .. } => Ok(None),
+            VectorEvidenceMutationV1::Put(value) => encode_vector_evidence_v1(value).map(Some),
+        })
+        .collect::<Result<Vec<_>, _>>()?;
     let index_entries = records
         .index_entries()
         .iter()
@@ -607,7 +657,9 @@ pub fn encode_atomic_command_record_set_v1(
     let actual_charge = CommandWriteClassBreakdownV1::new(
         allocator.encoded_content_charge().get(),
         0,
-        sum_optional_envelope_charges(&entities)?,
+        sum_optional_envelope_charges(&entities)?
+            .checked_add(sum_optional_envelope_charges(&vector_evidence)?)
+            .ok_or_else(DurableCodecError::invariant)?,
         sum_optional_envelope_charges(&index_entries)?,
         sum_envelope_charges(&index_epochs)?,
         outcome.encoded_content_charge().get(),
@@ -626,6 +678,7 @@ pub fn encode_atomic_command_record_set_v1(
     Ok(EncodedAtomicCommandRecordSetV1 {
         allocator,
         entities,
+        vector_evidence,
         index_entries,
         index_epochs,
         outcome,
@@ -665,8 +718,19 @@ pub fn encode_capsule_command_record_set_v1(
         .iter()
         .map(|value| encode_index_epoch_v1(value.post_image()))
         .collect::<Result<Vec<_>, _>>()?;
+    let vector_evidence = records
+        .vector_evidence()
+        .iter()
+        .map(|value| match value {
+            VectorEvidenceMutationV1::Delete { .. } => Ok(None),
+            VectorEvidenceMutationV1::Put(value) => encode_vector_evidence_v1(value).map(Some),
+        })
+        .collect::<Result<Vec<_>, _>>()?;
     let reserved = records.presequence_charge().encoded_upper_bound().classes();
-    let fits = sum_optional_envelope_charges(&entities)? <= reserved.entities()
+    let fits = sum_optional_envelope_charges(&entities)?
+        .checked_add(sum_optional_envelope_charges(&vector_evidence)?)
+        .ok_or_else(DurableCodecError::invariant)?
+        <= reserved.entities()
         && sum_optional_envelope_charges(&index_entries)? <= reserved.index_entries()
         && sum_envelope_charges(&index_epochs)? <= reserved.index_epochs();
     if !fits {
@@ -677,6 +741,7 @@ pub fn encode_capsule_command_record_set_v1(
 
     Ok(EncodedCapsuleCommandRecordSetV1 {
         entities,
+        vector_evidence,
         index_entries,
         index_epochs,
     })

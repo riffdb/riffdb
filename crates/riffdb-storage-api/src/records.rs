@@ -20,8 +20,9 @@ use crate::{
     IndexEpochPosition, MAX_COMMIT_CONFLICT_HASHES, MAX_ENTITY_MUTATIONS, MAX_EVENT_INTENTS,
     MAX_INDEX_DELTAS, MAX_STAGED_WRITE_BYTES, MAX_VALIDATION_TARGETS, PartitionIndexTarget,
     StorageValueError, StoredAdmittedProvenanceClaimsV1, StoredReadDependenciesV1,
-    StoredServiceAuditRecordV1, StructurallyDecodedIndexRangePrefixV1, actor_semantic_bytes,
-    canonical_codec_storage_error, canonical_record_bytes, framed_bytes,
+    StoredServiceAuditRecordV1, StructurallyDecodedIndexRangePrefixV1, VectorEvidenceMutationV1,
+    VectorEvidenceTransitionPlanV1, actor_semantic_bytes, canonical_codec_storage_error,
+    canonical_record_bytes, framed_bytes,
 };
 
 /// The durability contract used for one completed engine commit.
@@ -2196,6 +2197,7 @@ pub struct ValidatedCommandWriteSetShapeV1 {
     affected_current: AffectedEpochCurrentState,
     index_entries: Vec<IndexEntryMutationV1>,
     index_epochs: Vec<IndexEpochAdvanceV1>,
+    vector_evidence: Vec<VectorEvidenceTransitionPlanV1>,
     semantic_classes: CommandWriteClassBreakdownV1,
 }
 
@@ -2207,6 +2209,25 @@ impl ValidatedCommandWriteSetShapeV1 {
         affected_current: AffectedEpochCurrentState,
         index_entries: Vec<IndexEntryMutationV1>,
         index_epochs: Vec<IndexEpochAdvanceV1>,
+    ) -> Result<Self, StorageValueError> {
+        Self::new_with_vector_evidence(
+            intent,
+            affected_targets,
+            affected_current,
+            index_entries,
+            index_epochs,
+            Vec::new(),
+        )
+    }
+
+    /// Validates a complete sequence-free shape including vector evidence.
+    pub fn new_with_vector_evidence(
+        intent: &CommitIntent,
+        affected_targets: AffectedIndexEpochTargets,
+        affected_current: AffectedEpochCurrentState,
+        index_entries: Vec<IndexEntryMutationV1>,
+        index_epochs: Vec<IndexEpochAdvanceV1>,
+        vector_evidence: Vec<VectorEvidenceTransitionPlanV1>,
     ) -> Result<Self, StorageValueError> {
         let validation = intent.evaluated().validation_request();
         let validation_target_count = validation
@@ -2228,14 +2249,20 @@ impl ValidatedCommandWriteSetShapeV1 {
             &index_entries,
             &index_epochs,
         )?;
-        let semantic_classes =
-            projected_atomic_semantic_breakdown(intent, &index_entries, &index_epochs)?;
+        validate_vector_evidence_plans(intent, &vector_evidence)?;
+        let semantic_classes = projected_atomic_semantic_breakdown(
+            intent,
+            &index_entries,
+            &index_epochs,
+            &vector_evidence,
+        )?;
         Ok(Self {
             intent: intent.clone(),
             affected_targets,
             affected_current,
             index_entries,
             index_epochs,
+            vector_evidence,
             semantic_classes,
         })
     }
@@ -2270,6 +2297,12 @@ impl ValidatedCommandWriteSetShapeV1 {
         &self.index_epochs
     }
 
+    /// Borrows canonical sequence-free vector evidence transitions.
+    #[must_use]
+    pub fn vector_evidence(&self) -> &[VectorEvidenceTransitionPlanV1] {
+        &self.vector_evidence
+    }
+
     /// Returns the checked semantic record-class breakdown.
     #[must_use]
     pub const fn semantic_classes(&self) -> CommandWriteClassBreakdownV1 {
@@ -2291,6 +2324,7 @@ struct CommandWriteSetPlanInnerV1 {
     affected_current: AffectedEpochCurrentState,
     index_entries: Vec<IndexEntryMutationV1>,
     index_epochs: Vec<IndexEpochAdvanceV1>,
+    vector_evidence: Vec<VectorEvidenceTransitionPlanV1>,
     charge: CommandWriteSetChargeV1,
 }
 
@@ -2322,6 +2356,28 @@ impl CommandWriteSetPlanV1 {
         Ok(Self::from_validated_shape(shape, encoded_upper_bound))
     }
 
+    /// Freezes a complete pre-sequence plan including vector evidence transitions.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_with_vector_evidence(
+        intent: &CommitIntent,
+        affected_targets: AffectedIndexEpochTargets,
+        affected_current: AffectedEpochCurrentState,
+        index_entries: Vec<IndexEntryMutationV1>,
+        index_epochs: Vec<IndexEpochAdvanceV1>,
+        vector_evidence: Vec<VectorEvidenceTransitionPlanV1>,
+        encoded_upper_bound: EncodedWriteSetUpperBound,
+    ) -> Result<Self, StorageValueError> {
+        let shape = ValidatedCommandWriteSetShapeV1::new_with_vector_evidence(
+            intent,
+            affected_targets,
+            affected_current,
+            index_entries,
+            index_epochs,
+            vector_evidence,
+        )?;
+        Ok(Self::from_validated_shape(shape, encoded_upper_bound))
+    }
+
     /// Binds a codec-proved fitting upper bound to one validated semantic shape.
     #[must_use]
     pub fn from_validated_shape(
@@ -2335,6 +2391,7 @@ impl CommandWriteSetPlanV1 {
             affected_current,
             index_entries,
             index_epochs,
+            vector_evidence,
             semantic_classes: _,
         } = shape;
         Self(Arc::new(CommandWriteSetPlanInnerV1 {
@@ -2343,6 +2400,7 @@ impl CommandWriteSetPlanV1 {
             affected_current,
             index_entries,
             index_epochs,
+            vector_evidence,
             charge,
         }))
     }
@@ -2377,6 +2435,12 @@ impl CommandWriteSetPlanV1 {
         &self.0.index_epochs
     }
 
+    /// Borrows canonical sequence-free vector evidence transitions.
+    #[must_use]
+    pub fn vector_evidence(&self) -> &[VectorEvidenceTransitionPlanV1] {
+        &self.0.vector_evidence
+    }
+
     /// Returns the checked semantic and encoded capacity charge.
     #[must_use]
     pub fn charge(&self) -> CommandWriteSetChargeV1 {
@@ -2403,6 +2467,7 @@ pub struct AtomicCommandRecordSet {
     assignment: AssignedCommandSequence,
     entities: Vec<CommittedEntityMutationV1>,
     write_plan: CommandWriteSetPlanV1,
+    vector_evidence: Vec<VectorEvidenceMutationV1>,
     stored_outcome: StoredOutcomeV1,
     outbox_intents: Vec<StoredOutboxIntentV1>,
     provenance: StoredProvenanceRecordV1,
@@ -2419,6 +2484,7 @@ impl PartialEq for AtomicCommandRecordSet {
         self.assignment == other.assignment
             && self.entities == other.entities
             && self.write_plan == other.write_plan
+            && self.vector_evidence == other.vector_evidence
             && self.stored_outcome == other.stored_outcome
             && self.outbox_intents == other.outbox_intents
             && self.provenance == other.provenance
@@ -2612,6 +2678,11 @@ impl AtomicCommandRecordSet {
         let presequence_charge = write_plan.charge();
         let sequence = commit.commit_sequence();
         let events = commit.events();
+        let vector_evidence = write_plan
+            .vector_evidence()
+            .iter()
+            .map(|transition| transition.materialize(sequence))
+            .collect::<Result<Vec<_>, _>>()?;
         let entity_references_match = if entity_references_are_prechecked {
             true
         } else {
@@ -2696,6 +2767,13 @@ impl AtomicCommandRecordSet {
             index_epochs,
         )?;
         validate_events(sequence, events)?;
+        validate_vector_evidence_mutations(
+            &entities,
+            &vector_evidence,
+            sequence,
+            &provenance,
+            &commit,
+        )?;
         validate_intent_event_derivation(evaluated, sequence, events)?;
         if !commit
             .read_dependencies()
@@ -2738,6 +2816,7 @@ impl AtomicCommandRecordSet {
             &entities,
             index_entries,
             index_epochs,
+            &vector_evidence,
             events,
             &outbox_intents,
             &stored_outcome,
@@ -2752,6 +2831,7 @@ impl AtomicCommandRecordSet {
             assignment,
             entities,
             write_plan,
+            vector_evidence,
             stored_outcome,
             outbox_intents,
             provenance,
@@ -2807,6 +2887,18 @@ impl AtomicCommandRecordSet {
     #[must_use]
     pub fn index_epochs(&self) -> &[IndexEpochAdvanceV1] {
         self.write_plan.index_epochs()
+    }
+
+    /// Borrows canonical current-row vector evidence mutations.
+    #[must_use]
+    pub fn vector_evidence(&self) -> &[VectorEvidenceMutationV1] {
+        &self.vector_evidence
+    }
+
+    /// Borrows the exact transaction-current predecessor plans for vector evidence.
+    #[must_use]
+    pub fn vector_evidence_transitions(&self) -> &[VectorEvidenceTransitionPlanV1] {
+        self.write_plan.vector_evidence()
     }
 
     /// Borrows the terminal stored outcome.
@@ -2902,6 +2994,73 @@ fn validate_conflict_hashes(hashes: &[ConflictKeyHash]) -> Result<(), StorageVal
     }
     if hashes.windows(2).any(|pair| pair[0] >= pair[1]) {
         return Err(StorageValueError::NonCanonicalOrder);
+    }
+    Ok(())
+}
+
+fn validate_vector_evidence_plans(
+    intent: &CommitIntent,
+    plans: &[VectorEvidenceTransitionPlanV1],
+) -> Result<(), StorageValueError> {
+    if plans.windows(2).any(|pair| {
+        (pair[0].target(), pair[0].vector_field()) >= (pair[1].target(), pair[1].vector_field())
+    }) {
+        return Err(StorageValueError::NonCanonicalOrder);
+    }
+    for plan in plans {
+        if plan.plan() != intent.evaluated().plan()
+            || plan.provenance_id() != intent.provenance_id()
+        {
+            return Err(StorageValueError::IdentityMismatch);
+        }
+        let mutation = intent
+            .evaluated()
+            .mutations()
+            .iter()
+            .find(|mutation| mutation.target() == plan.target())
+            .ok_or(StorageValueError::IdentityMismatch)?;
+        if mutation.is_delete() != plan.is_delete() {
+            return Err(StorageValueError::IdentityMismatch);
+        }
+    }
+    Ok(())
+}
+
+fn validate_vector_evidence_mutations(
+    entities: &[CommittedEntityMutationV1],
+    evidence: &[VectorEvidenceMutationV1],
+    sequence: CommitSequence,
+    provenance: &StoredProvenanceRecordV1,
+    commit: &StoredCommitRecordV1,
+) -> Result<(), StorageValueError> {
+    if evidence.windows(2).any(|pair| {
+        (pair[0].target(), pair[0].vector_field()) >= (pair[1].target(), pair[1].vector_field())
+    }) {
+        return Err(StorageValueError::NonCanonicalOrder);
+    }
+    for mutation in evidence {
+        let entity = entities
+            .iter()
+            .find(|entity| entity.target() == mutation.target())
+            .ok_or(StorageValueError::IdentityMismatch)?;
+        match mutation {
+            VectorEvidenceMutationV1::Put(value) => {
+                let post_image = entity
+                    .live_post_image()
+                    .ok_or(StorageValueError::IdentityMismatch)?;
+                if value.entity_version() != post_image.entity_version()
+                    || value.evidence_sequence() != sequence
+                    || value.provenance_id() != provenance.provenance_id()
+                    || value.plan() != commit.plan()
+                {
+                    return Err(StorageValueError::IdentityMismatch);
+                }
+            }
+            VectorEvidenceMutationV1::Delete { .. } if !entity.is_delete() => {
+                return Err(StorageValueError::IdentityMismatch);
+            }
+            VectorEvidenceMutationV1::Delete { .. } => {}
+        }
     }
     Ok(())
 }
@@ -3283,6 +3442,7 @@ fn projected_atomic_semantic_breakdown(
     intent: &CommitIntent,
     index_entries: &[IndexEntryMutationV1],
     index_epochs: &[IndexEpochAdvanceV1],
+    vector_evidence: &[VectorEvidenceTransitionPlanV1],
 ) -> Result<CommandWriteClassBreakdownV1, StorageValueError> {
     let pending = intent.pending();
     let evaluated = intent.evaluated();
@@ -3389,6 +3549,16 @@ fn projected_atomic_semantic_breakdown(
         9,
         pending.semantic_bytes()?,
         entity_bytes
+            .checked_add(
+                vector_evidence
+                    .iter()
+                    .try_fold(0usize, |total, transition| {
+                        total
+                            .checked_add(transition.semantic_bytes()?)
+                            .ok_or(StorageValueError::SizeOverflow)
+                    })?,
+            )
+            .ok_or(StorageValueError::SizeOverflow)?
             .checked_add(4)
             .ok_or(StorageValueError::SizeOverflow)?,
         index_bytes
@@ -3415,6 +3585,7 @@ fn atomic_semantic_breakdown(
     entities: &[CommittedEntityMutationV1],
     index_entries: &[IndexEntryMutationV1],
     index_epochs: &[IndexEpochAdvanceV1],
+    vector_evidence: &[VectorEvidenceMutationV1],
     events: &[StoredDurableEventV1],
     outbox_intents: &[StoredOutboxIntentV1],
     outcome: &StoredOutcomeV1,
@@ -3426,6 +3597,13 @@ fn atomic_semantic_breakdown(
             .checked_add(mutation.semantic_bytes()?)
             .ok_or(StorageValueError::SizeOverflow)
     })?;
+    let entity_bytes = vector_evidence
+        .iter()
+        .try_fold(entity_bytes, |total, mutation| {
+            total
+                .checked_add(mutation.semantic_bytes()?)
+                .ok_or(StorageValueError::SizeOverflow)
+        })?;
     let index_bytes = index_entries.iter().try_fold(4usize, |total, entry| {
         total
             .checked_add(entry.semantic_bytes()?)
@@ -3500,16 +3678,18 @@ mod tests {
     use super::*;
     use riffdb_types::{
         ActorId, ActorKind, AggregateTypeId, ApprovalId, CanonicalInputHash, CanonicalValue,
-        CommandId, ContractBundleHash, ContractLineage, DatabaseId, DigestKeyId, EntityKeyBuilder,
-        EntityTypeId, Environment, FieldId, PartitionKeyBuilder, PlanHash, TenantId, TenantScope,
-        Timestamp,
+        CommandId, ContractBundleHash, ContractLineage, DatabaseId, DigestKeyId, EmbeddingMetadata,
+        EntityKeyBuilder, EntityTypeId, Environment, FieldId, PartitionKeyBuilder, PlanHash,
+        TenantId, TenantScope, Timestamp,
     };
 
     use crate::{
-        AffectedEpochCurrentState, AffectedIndexEpochTargets, EntityMutation, EntityObservation,
-        EntityPostImage, EvaluatedCommand, EvaluationBudget, EventIntent, IdempotencyKeyDigest,
-        PreEvaluationCommitContext, ReadDependencies, ReadDependency, ReadSnapshot,
-        SnapshotRequest, StoredPendingAdmissionV1,
+        AffectedEpochCurrentState, AffectedIndexEpochTargets, EncodedWriteSetUpperBoundResultV1,
+        EntityMutation, EntityObservation, EntityPostImage, EvaluatedCommand, EvaluationBudget,
+        EventIntent, IdempotencyKeyDigest, PreEvaluationCommitContext, ReadDependencies,
+        ReadDependency, ReadSnapshot, SnapshotRequest, StoredPendingAdmissionV1,
+        StoredVectorEmbeddingWriteV1, command_write_set_upper_bound_with_vector_evidence_v1,
+        encode_capsule_command_record_set_v1,
     };
 
     fn uuid_bytes(fill: u8) -> [u8; 16] {
@@ -3628,6 +3808,14 @@ mod tests {
         entity_payload_bytes: usize,
         event_payload_bytes: &[usize],
     ) -> Result<AtomicCommandRecordSet, StorageValueError> {
+        atomic_record_set_inner(entity_payload_bytes, event_payload_bytes, false)
+    }
+
+    fn atomic_record_set_inner(
+        entity_payload_bytes: usize,
+        event_payload_bytes: &[usize],
+        with_vector_evidence: bool,
+    ) -> Result<AtomicCommandRecordSet, StorageValueError> {
         let plan = plan();
         let sequence = CommitSequence::first();
         let tenant_scope = TenantScope::Tenant(TenantId::new("tenant-a").expect("tenant"));
@@ -3710,7 +3898,7 @@ mod tests {
         }])?;
         let stored_read_dependencies = StoredReadDependenciesV1::from_live(&read_dependencies)?;
         let entity = StoredEntityRecordV1::new(
-            target,
+            target.clone(),
             EntityVersion::first(),
             plan.contract_version(),
             DurableKeySchemaBindingV1::from_plan(&plan),
@@ -3795,14 +3983,43 @@ mod tests {
         )?;
         let affected_targets = AffectedIndexEpochTargets::new(Vec::new())?;
         let affected_current = AffectedEpochCurrentState::new(&affected_targets, Vec::new())?;
-        let shape = ValidatedCommandWriteSetShapeV1::new(
+        let vector_evidence = if with_vector_evidence {
+            vec![VectorEvidenceTransitionPlanV1::live(
+                target,
+                partition,
+                FieldId::new(1).expect("vector field"),
+                EntityVersion::first(),
+                None,
+                true,
+                Some(EmbeddingMetadata::new("model-a", "v1").expect("bounded embedding metadata")),
+                DurableKeySchemaBindingV1::from_plan(&plan),
+                provenance_id,
+                plan.clone(),
+            )?]
+        } else {
+            Vec::new()
+        };
+        let shape = ValidatedCommandWriteSetShapeV1::new_with_vector_evidence(
             &intent,
             affected_targets,
             affected_current,
             Vec::new(),
             Vec::new(),
+            vector_evidence.clone(),
         )?;
-        let encoded_upper_bound = EncodedWriteSetUpperBound::new(shape.semantic_classes())?;
+        let encoded_upper_bound = match command_write_set_upper_bound_with_vector_evidence_v1(
+            &intent,
+            &[],
+            &[],
+            &vector_evidence,
+        )
+        .map_err(|_| StorageValueError::InvalidShape)?
+        {
+            EncodedWriteSetUpperBoundResultV1::Fits(bound) => bound,
+            EncodedWriteSetUpperBoundResultV1::ExceedsAcceptedAggregateCap(_) => {
+                return Err(StorageValueError::LimitExceeded);
+            }
+        };
         let write_plan = CommandWriteSetPlanV1::from_validated_shape(shape, encoded_upper_bound);
         AtomicCommandRecordSet::new(
             AssignedCommandSequence::from_assigned(sequence),
@@ -3812,6 +4029,39 @@ mod tests {
             provenance,
             commit,
         )
+    }
+
+    #[test]
+    fn vector_evidence_is_sequence_assigned_and_encoded_with_the_entity_graph() {
+        let mut records = atomic_record_set_inner(8, &[], true).expect("vector record graph");
+        let evidence = records.vector_evidence();
+        assert_eq!(evidence.len(), 1);
+        let VectorEvidenceMutationV1::Put(evidence) = &evidence[0] else {
+            panic!("live vector evidence must be a put");
+        };
+        assert_eq!(
+            evidence.evidence_sequence(),
+            records.assignment().assigned()
+        );
+        assert_eq!(
+            evidence.newest_source_write(),
+            Some(records.assignment().assigned())
+        );
+        assert_eq!(
+            evidence
+                .embedding_write()
+                .map(StoredVectorEmbeddingWriteV1::sequence),
+            Some(records.assignment().assigned())
+        );
+
+        let encoded = encode_capsule_command_record_set_v1(&mut records)
+            .expect("bounded vector evidence encoding");
+        let (entities, vector_evidence, indexes, epochs) = encoded.into_parts();
+        assert_eq!(entities.len(), 1);
+        assert_eq!(vector_evidence.len(), 1);
+        assert!(vector_evidence[0].is_some());
+        assert!(indexes.is_empty());
+        assert!(epochs.is_empty());
     }
 
     #[test]

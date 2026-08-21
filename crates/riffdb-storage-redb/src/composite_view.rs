@@ -25,6 +25,7 @@ use crate::codec::{
     decode_event_route_v1, decode_history_incarnation_v1, decode_idempotency_record_v1,
     decode_index_entry_v2, decode_index_epoch_v1, decode_pending_admission_v1,
     decode_provenance_record_v1, decode_record_registry_v2, decode_service_audit_request_index_v1,
+    decode_vector_evidence_v1,
 };
 use crate::error::{precommit_storage_error, storage_error, table_error};
 use crate::journal::{JournalFrame, read_value};
@@ -32,11 +33,13 @@ use crate::keys::{
     decode_application_sequence_key, decode_audit_by_request_key, decode_audit_key,
     decode_entity_key, decode_event_key, decode_event_route_key, decode_idempotency_key,
     decode_index_entry_key, decode_partition_index_key, decode_provenance_key,
+    decode_vector_evidence_key,
 };
 use crate::layout::{
     AUDIT, AUDIT_BY_REQUEST, COMMITS, ENTITIES, ENTITY_CHAIN_HEADS, EVENT_ROUTES, EVENTS,
     IDEMPOTENCY, IDEMPOTENCY_PENDING, INDEX_EPOCHS, META, META_DATABASE_ID,
     META_HISTORY_INCARNATION, META_RECORD_REGISTRY, OUTBOX, PROVENANCE, SECONDARY_INDEXES,
+    VECTOR_EVIDENCE,
 };
 use crate::store::{RedbOperationalPorts, read_administration_tail, read_commit_tail};
 
@@ -791,6 +794,17 @@ fn validate_canonical_entry(
                 }
             }
         }
+        CompositeTableV1::VectorEvidence => {
+            let (entity_key, field) = decode_vector_evidence_key(key).map_err(invalid_shape)?;
+            if let Some(value) = value {
+                let decoded = decode_vector_evidence_v1(value).map_err(invalid_shape)?;
+                if decoded.value().target().key() != &entity_key
+                    || decoded.value().vector_field() != field
+                {
+                    return Err(StorageValueError::IdentityMismatch);
+                }
+            }
+        }
     }
     Ok(())
 }
@@ -811,6 +825,7 @@ const fn journal_table(table: CompositeTableV1) -> crate::journal::JournalTable 
         CompositeTableV1::Audit => crate::journal::JournalTable::Audit,
         CompositeTableV1::AuditByRequest => crate::journal::JournalTable::AuditByRequest,
         CompositeTableV1::EntityChainHeads => crate::journal::JournalTable::EntityChainHeads,
+        CompositeTableV1::VectorEvidence => crate::journal::JournalTable::VectorEvidence,
     }
 }
 
@@ -832,6 +847,7 @@ const fn byte_table(
         CompositeTableV1::Audit => Some(AUDIT),
         CompositeTableV1::AuditByRequest => Some(AUDIT_BY_REQUEST),
         CompositeTableV1::EntityChainHeads => Some(ENTITY_CHAIN_HEADS),
+        CompositeTableV1::VectorEvidence => Some(VECTOR_EVIDENCE),
     }
 }
 

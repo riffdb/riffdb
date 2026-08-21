@@ -970,6 +970,7 @@ impl AdminAuditCheckpoint {
             service_audit_invocations,
             admissions: _,
             entities: _,
+            vector_evidence: _,
             entity_commits: _,
             index_entries: _,
             index_epochs: _,
