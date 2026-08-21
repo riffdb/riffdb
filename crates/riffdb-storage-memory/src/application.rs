@@ -33,7 +33,7 @@ use riffdb_storage_api::{
     SnapshotRequest, StagedBatchMetrics, StagedCommandEvidenceV1, StorageError, StorageErrorKind,
     StorageValueError, StoredAdmissionStateV1, StoredCommitRecordV1, StoredDurableEventV1,
     StoredEntityRecordV1, StoredEventRouteV1, StoredExecutionFailedV1, StoredIndexEpochV1,
-    StoredOutcomeV1, StoredPendingAdmissionV1, StoredProvenanceRecordV1,
+    StoredOutcomeV1, StoredPendingAdmissionV1, StoredProvenanceRecordV1, StoredVectorEvidenceV1,
     TransactionCurrentPolicyRequestV1, TransactionCurrentPolicyStateV1, TransactionCurrentState,
     TransactionCurrentStateBuilder, TransactionLocalCommandBatch, UniqueIndexOccupancy,
     UniqueOccupancyKind, UnpublishedAuditedBatchV1, ValidationReadRequest, derive_event_hash_v1,
@@ -55,6 +55,7 @@ struct ApplicationOverlay {
     metadata: RetainedMetadataV1,
     admissions: Vec<StoredAdmissionStateV1>,
     entities: Vec<StoredEntityRecordV1>,
+    vector_evidence: Vec<StoredVectorEvidenceV1>,
     entity_commits: Vec<EntityCommitIndexRow>,
     index_entries: Vec<MemoryIndexEntry>,
     index_epochs: Vec<StoredIndexEpochV1>,
@@ -81,6 +82,7 @@ impl ApplicationOverlay {
             metadata: metadata.clone(),
             admissions: state.admissions.clone(),
             entities: state.entities.clone(),
+            vector_evidence: state.vector_evidence.clone(),
             entity_commits: state.entity_commits.clone(),
             index_entries: state.index_entries.clone(),
             index_epochs: state.index_epochs.clone(),
@@ -103,6 +105,7 @@ impl ApplicationOverlay {
         state.metadata = MemoryMetadataSlot::Retained(self.metadata);
         state.admissions = self.admissions;
         state.entities = self.entities;
+        state.vector_evidence = self.vector_evidence;
         state.entity_commits = self.entity_commits;
         state.index_entries = self.index_entries;
         state.index_epochs = self.index_epochs;
@@ -1872,6 +1875,47 @@ fn apply_entities(
     Ok(())
 }
 
+fn apply_vector_evidence(
+    overlay: &mut ApplicationOverlay,
+    records: &AtomicCommandRecordSet,
+) -> Result<(), StorageError> {
+    if records.vector_evidence_transitions().len() != records.vector_evidence().len() {
+        return Err(storage_error(StorageErrorKind::InvariantViolation));
+    }
+    for (transition, mutation) in records
+        .vector_evidence_transitions()
+        .iter()
+        .zip(records.vector_evidence())
+    {
+        let position = overlay.vector_evidence.binary_search_by(|row| {
+            row.target()
+                .cmp(mutation.target())
+                .then_with(|| row.vector_field().cmp(&mutation.vector_field()))
+        });
+        let current = position.ok().map(|index| &overlay.vector_evidence[index]);
+        if !transition.matches_current(current) {
+            return Err(storage_error(StorageErrorKind::InvariantViolation));
+        }
+        match (mutation, position) {
+            (riffdb_storage_api::VectorEvidenceMutationV1::Put(value), Ok(index)) => {
+                overlay.vector_evidence[index] = value.as_ref().clone();
+            }
+            (riffdb_storage_api::VectorEvidenceMutationV1::Put(value), Err(index)) => {
+                overlay
+                    .vector_evidence
+                    .insert(index, value.as_ref().clone());
+            }
+            (riffdb_storage_api::VectorEvidenceMutationV1::Delete { .. }, Ok(index)) => {
+                overlay.vector_evidence.remove(index);
+            }
+            (riffdb_storage_api::VectorEvidenceMutationV1::Delete { .. }, Err(_)) => {
+                return Err(storage_error(StorageErrorKind::InvariantViolation));
+            }
+        }
+    }
+    Ok(())
+}
+
 fn apply_index_entries(
     overlay: &mut ApplicationOverlay,
     mutations: &[IndexEntryMutationV1],
@@ -2078,6 +2122,7 @@ fn apply_record_set(
     }
 
     apply_entities(overlay, records)?;
+    apply_vector_evidence(overlay, records)?;
     apply_index_entries(overlay, records.index_entries())?;
     apply_index_epochs(overlay, records.index_epochs())?;
 

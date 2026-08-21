@@ -12,7 +12,7 @@ use riffdb_storage_api::{
     StoredIndexEntryV1, StoredIndexEntryV2, StoredIndexEpochV1, StoredOutboxIntentV1,
     StoredOutboxStatusV1, StoredProjectionApplyV1, StoredProjectionControlV1,
     StoredProjectionStateV1, StoredProvenanceRecordV1, StoredQueryModuleAdministrationV1,
-    StoredQueryModuleV1, StoredReactiveModuleV1,
+    StoredQueryModuleV1, StoredReactiveModuleV1, StoredVectorEvidenceV1,
 };
 use riffdb_types::{
     AdministrationSequence, CapabilityTokenDigest, CommitSequence, ContractBundleHash,
@@ -548,6 +548,7 @@ pub(crate) struct MemoryState {
     pub(crate) service_audit_invocations: Vec<ServiceAuditInvocationIndexRow>,
     pub(crate) admissions: Vec<StoredAdmissionStateV1>,
     pub(crate) entities: Vec<StoredEntityRecordV1>,
+    pub(crate) vector_evidence: Vec<StoredVectorEvidenceV1>,
     pub(crate) entity_commits: Vec<EntityCommitIndexRow>,
     pub(crate) index_entries: Vec<MemoryIndexEntry>,
     pub(crate) index_epochs: Vec<StoredIndexEpochV1>,

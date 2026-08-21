@@ -46,9 +46,10 @@ use crate::codec::{
     IdempotencyRecordV1, decode_application_sequence_allocator_v1, decode_capability_record_v1,
     decode_database_identity_v1, decode_entity_record_v1, decode_history_incarnation_v1,
     decode_idempotency_record_v1, decode_index_entry_v2, decode_index_epoch_v1,
-    decode_pending_admission_v1, encode_commit_record_v1, encode_durable_event_v1,
-    encode_event_route_v1, encode_execution_failed_v1, encode_outbox_intent_v1,
-    encode_pending_admission_v1, encode_provenance_record_v1, encode_stored_outcome_v1,
+    decode_pending_admission_v1, decode_vector_evidence_v1, encode_commit_record_v1,
+    encode_durable_event_v1, encode_event_route_v1, encode_execution_failed_v1,
+    encode_outbox_intent_v1, encode_pending_admission_v1, encode_provenance_record_v1,
+    encode_stored_outcome_v1,
 };
 use crate::command_authority::{command_member_at, command_member_at_access};
 use crate::error::{codec_error, precommit_storage_error, table_error};
@@ -58,7 +59,7 @@ use crate::keys::{
     decode_index_entry_key, encode_application_sequence_key, encode_audit_by_request_key,
     encode_audit_key, encode_contract_bundle_key, encode_entity_key, encode_event_key,
     encode_event_route_key, encode_idempotency_key, encode_index_entry_key,
-    encode_partition_index_key, encode_provenance_key,
+    encode_partition_index_key, encode_provenance_key, encode_vector_evidence_key,
 };
 use crate::layout::{
     COMMITS, CONTRACT_BUNDLES, ENTITIES, EVENT_ROUTES, EVENTS, IDEMPOTENCY, IDEMPOTENCY_PENDING,
@@ -1692,7 +1693,7 @@ fn apply_record_set(
         ..
     } = core;
     let identity_key = identity_key(records.expected_pending().identity())?;
-    let (entities, index_entries, index_epochs) = encoded.into_parts();
+    let (entities, vector_evidence, index_entries, index_epochs) = encoded.into_parts();
     // `RedbCandidateAdmission::recheck_admission` established this exact
     // expectation earlier in the same exclusive write transaction. Every
     // subsequent state is consuming and backend-private, so no path can stage
@@ -1708,6 +1709,7 @@ fn apply_record_set(
         entity_observations,
         entity_observation_bytes,
     )?;
+    apply_vector_evidence(access, records, vector_evidence)?;
     apply_index_entries(access, records, index_entries)?;
     apply_index_epochs(
         records,
@@ -1736,6 +1738,50 @@ fn apply_record_set(
         };
     }
     Ok(entity_transitions)
+}
+
+fn apply_vector_evidence(
+    access: &RedbWriteAccess,
+    records: &AtomicCommandRecordSet,
+    encoded: Vec<Option<riffdb_storage_api::CanonicalStoredEnvelopeV1>>,
+) -> Result<(), StorageError> {
+    if records.vector_evidence().len() != encoded.len()
+        || records.vector_evidence_transitions().len() != encoded.len()
+    {
+        return Err(storage_error(StorageErrorKind::InvariantViolation));
+    }
+    for ((transition, mutation), bytes) in records
+        .vector_evidence_transitions()
+        .iter()
+        .zip(records.vector_evidence())
+        .zip(encoded)
+    {
+        let key = encode_vector_evidence_key(mutation.target().key(), mutation.vector_field())
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+        let current_bytes = access.read_command_value(JournalTable::VectorEvidence, &key)?;
+        let current = current_bytes
+            .as_deref()
+            .map(|value| decode_vector_evidence_v1(value).map(decoded_value))
+            .transpose()?;
+        if !transition.matches_current(current.as_ref()) {
+            return Err(storage_error(StorageErrorKind::InvariantViolation));
+        }
+        match (mutation, bytes, current_bytes) {
+            (riffdb_storage_api::VectorEvidenceMutationV1::Put(_), Some(bytes), current) => {
+                access.put_proven_command_value(
+                    JournalTable::VectorEvidence,
+                    key,
+                    current,
+                    bytes,
+                )?;
+            }
+            (riffdb_storage_api::VectorEvidenceMutationV1::Delete { .. }, None, Some(current)) => {
+                access.delete_proven_command_value(JournalTable::VectorEvidence, key, current)?;
+            }
+            _ => return Err(storage_error(StorageErrorKind::InvariantViolation)),
+        }
+    }
+    Ok(())
 }
 
 fn journal_codec_error(error: JournalCodecError) -> StorageError {

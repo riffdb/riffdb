@@ -8,6 +8,243 @@ use riffdb_types::{
 
 use crate::{DurableKeySchemaBindingV1, EntityTarget, ExecutablePlanRef, StorageValueError};
 
+/// Sequence-free authoritative transition for one production vector field.
+///
+/// This is retained in the pre-sequence write plan. `source_changed` and
+/// `embedding_changed` select the newly assigned command sequence; absent
+/// changes preserve the exact prior evidence supplied by the transaction-
+/// current reader.
+#[derive(Clone, Eq, PartialEq)]
+pub struct VectorEvidenceTransitionPlanV1 {
+    target: EntityTarget,
+    partition_key: PartitionKey,
+    vector_field: FieldId,
+    entity_version: EntityVersion,
+    prior_source_write: Option<CommitSequence>,
+    prior_embedding_write: Option<StoredVectorEmbeddingWriteV1>,
+    source_changed: bool,
+    embedding_changed: Option<EmbeddingMetadata>,
+    delete: bool,
+    schema_binding: DurableKeySchemaBindingV1,
+    provenance_id: ProvenanceId,
+    plan: ExecutablePlanRef,
+}
+
+impl VectorEvidenceTransitionPlanV1 {
+    /// Constructs one live source/embedding transition from exact prior evidence.
+    #[allow(clippy::too_many_arguments)]
+    pub fn live(
+        target: EntityTarget,
+        partition_key: PartitionKey,
+        vector_field: FieldId,
+        entity_version: EntityVersion,
+        prior: Option<&StoredVectorEvidenceV1>,
+        source_changed: bool,
+        embedding_changed: Option<EmbeddingMetadata>,
+        schema_binding: DurableKeySchemaBindingV1,
+        provenance_id: ProvenanceId,
+        plan: ExecutablePlanRef,
+    ) -> Result<Self, StorageValueError> {
+        if !source_changed && embedding_changed.is_none() {
+            return Err(StorageValueError::InvalidShape);
+        }
+        if !schema_binding.matches_plan(&plan)
+            || prior.is_some_and(|prior| {
+                prior.target() != &target
+                    || prior.partition_key() != &partition_key
+                    || prior.vector_field() != vector_field
+            })
+        {
+            return Err(StorageValueError::IdentityMismatch);
+        }
+        Ok(Self {
+            target,
+            partition_key,
+            vector_field,
+            entity_version,
+            prior_source_write: prior.and_then(StoredVectorEvidenceV1::newest_source_write),
+            prior_embedding_write: prior
+                .and_then(StoredVectorEvidenceV1::embedding_write)
+                .cloned(),
+            source_changed,
+            embedding_changed,
+            delete: false,
+            schema_binding,
+            provenance_id,
+            plan,
+        })
+    }
+
+    /// Constructs the checked removal paired with one entity deletion.
+    pub fn delete(
+        prior: &StoredVectorEvidenceV1,
+        provenance_id: ProvenanceId,
+        plan: ExecutablePlanRef,
+    ) -> Result<Self, StorageValueError> {
+        Ok(Self {
+            target: prior.target().clone(),
+            partition_key: prior.partition_key().clone(),
+            vector_field: prior.vector_field(),
+            entity_version: prior.entity_version(),
+            prior_source_write: prior.newest_source_write(),
+            prior_embedding_write: prior.embedding_write().cloned(),
+            source_changed: false,
+            embedding_changed: None,
+            delete: true,
+            schema_binding: prior.schema_binding().clone(),
+            provenance_id,
+            plan,
+        })
+    }
+
+    /// Borrows the entity target used for canonical ordering and graph checks.
+    #[must_use]
+    pub const fn target(&self) -> &EntityTarget {
+        &self.target
+    }
+
+    /// Returns the stable vector field identity.
+    #[must_use]
+    pub const fn vector_field(&self) -> FieldId {
+        self.vector_field
+    }
+
+    pub(crate) const fn provenance_id(&self) -> ProvenanceId {
+        self.provenance_id
+    }
+
+    pub(crate) const fn plan(&self) -> &ExecutablePlanRef {
+        &self.plan
+    }
+
+    /// Returns whether this transition deletes current evidence.
+    #[must_use]
+    pub const fn is_delete(&self) -> bool {
+        self.delete
+    }
+
+    /// Proves an observed current row is the exact predecessor summarized by this plan.
+    #[must_use]
+    pub fn matches_current(&self, current: Option<&StoredVectorEvidenceV1>) -> bool {
+        match current {
+            Some(current) => {
+                current.target() == &self.target
+                    && current.partition_key() == &self.partition_key
+                    && current.vector_field() == self.vector_field
+                    && current.newest_source_write() == self.prior_source_write
+                    && current.embedding_write() == self.prior_embedding_write.as_ref()
+            }
+            None => {
+                !self.delete
+                    && self.prior_source_write.is_none()
+                    && self.prior_embedding_write.is_none()
+            }
+        }
+    }
+
+    /// Materializes the exact sequence-assigned current-row mutation.
+    pub fn materialize(
+        &self,
+        sequence: CommitSequence,
+    ) -> Result<VectorEvidenceMutationV1, StorageValueError> {
+        if self.delete {
+            return Ok(VectorEvidenceMutationV1::Delete {
+                target: self.target.clone(),
+                vector_field: self.vector_field,
+            });
+        }
+        let newest_source_write = if self.source_changed {
+            Some(sequence)
+        } else {
+            self.prior_source_write
+        };
+        let embedding_write = match &self.embedding_changed {
+            Some(metadata) => Some(StoredVectorEmbeddingWriteV1::new(
+                sequence,
+                metadata.clone(),
+            )),
+            None => self.prior_embedding_write.clone(),
+        };
+        StoredVectorEvidenceV1::new(
+            self.target.clone(),
+            self.partition_key.clone(),
+            self.vector_field,
+            self.entity_version,
+            sequence,
+            newest_source_write,
+            embedding_write,
+            self.schema_binding.clone(),
+            self.provenance_id,
+            self.plan.clone(),
+        )
+        .map(Box::new)
+        .map(VectorEvidenceMutationV1::Put)
+    }
+
+    pub(crate) fn semantic_bytes(&self) -> Result<usize, StorageValueError> {
+        self.materialize(
+            CommitSequence::new(u64::MAX).expect("maximum nonzero commit sequence is valid"),
+        )?
+        .semantic_bytes()
+    }
+}
+
+impl fmt::Debug for VectorEvidenceTransitionPlanV1 {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("VectorEvidenceTransitionPlanV1([REDACTED])")
+    }
+}
+
+/// One current-row vector evidence insertion/replacement or checked deletion.
+#[derive(Clone, Eq, PartialEq)]
+pub enum VectorEvidenceMutationV1 {
+    /// Insert or replace the complete authoritative evidence row.
+    Put(Box<StoredVectorEvidenceV1>),
+    /// Remove evidence paired with an entity deletion.
+    Delete {
+        /// Deleted entity target.
+        target: EntityTarget,
+        /// Stable vector field identity.
+        vector_field: FieldId,
+    },
+}
+
+impl VectorEvidenceMutationV1 {
+    /// Borrows the target used by the physical key.
+    #[must_use]
+    pub const fn target(&self) -> &EntityTarget {
+        match self {
+            Self::Put(value) => value.target(),
+            Self::Delete { target, .. } => target,
+        }
+    }
+
+    /// Returns the vector field used by the physical key.
+    #[must_use]
+    pub const fn vector_field(&self) -> FieldId {
+        match self {
+            Self::Put(value) => value.vector_field(),
+            Self::Delete { vector_field, .. } => *vector_field,
+        }
+    }
+
+    pub(crate) fn semantic_bytes(&self) -> Result<usize, StorageValueError> {
+        match self {
+            Self::Put(value) => value.semantic_bytes(),
+            Self::Delete { target, .. } => target
+                .semantic_bytes()?
+                .checked_add(4 + 1)
+                .ok_or(StorageValueError::SizeOverflow),
+        }
+    }
+}
+
+impl fmt::Debug for VectorEvidenceMutationV1 {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("VectorEvidenceMutationV1([REDACTED])")
+    }
+}
+
 /// The last authoritative embedding write for one vector field.
 ///
 /// Model metadata cannot exist independently of an embedding revision because
@@ -174,6 +411,29 @@ impl StoredVectorEvidenceV1 {
     #[must_use]
     pub const fn plan(&self) -> &ExecutablePlanRef {
         &self.plan
+    }
+
+    pub(crate) fn semantic_bytes(&self) -> Result<usize, StorageValueError> {
+        let embedding_bytes = self.embedding_write.as_ref().map_or(1, |write| {
+            1 + 8
+                + 4
+                + write.metadata().model_identity().len()
+                + 4
+                + write.metadata().model_version().len()
+        });
+        self.target
+            .semantic_bytes()?
+            .checked_add(4 + self.partition_key.as_bytes().len())
+            .and_then(|value| value.checked_add(4 + 8 + 8 + 1 + embedding_bytes))
+            .and_then(|value| {
+                self.schema_binding
+                    .semantic_bytes()
+                    .ok()?
+                    .checked_add(value)
+            })
+            .and_then(|value| self.plan.semantic_bytes()?.checked_add(value))
+            .and_then(|value| value.checked_add(16))
+            .ok_or(StorageValueError::SizeOverflow)
     }
 }
 
