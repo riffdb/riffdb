@@ -1,8 +1,8 @@
 # ADR-0135: Packed Compiler-Bound Named-Result Carriage
 
-- **Status:** Proposed
-- **Direction approved:** Not yet approved
-- **Exact text accepted:** Not yet accepted
+- **Status:** Accepted
+- **Direction approved:** 2026-08-21 (maintainer, in session)
+- **Exact text accepted:** Yes — 2026-08-21 (maintainer, as written)
 - **Decision deadline:** Before a production named-query response emits a
   packed result arm or a generated client advertises it
 - **Requires:** ADR-0040, ADR-0055, ADR-0056, ADR-0074, ADR-0123, ADR-0124,
