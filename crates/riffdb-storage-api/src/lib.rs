@@ -43,6 +43,7 @@ pub mod sequence;
 pub mod snapshot;
 pub mod startup;
 pub mod validated_prefix_checkpoint;
+pub mod vector_evidence;
 
 pub use admission::*;
 pub use application_export::*;
@@ -83,3 +84,4 @@ pub use sequence::*;
 pub use snapshot::*;
 pub use startup::*;
 pub use validated_prefix_checkpoint::*;
+pub use vector_evidence::*;

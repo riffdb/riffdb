@@ -36,6 +36,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         (RELEASE_PAIRS_PATH, release_pairs.as_bytes()),
         (PHYSICAL_FORMATS_PATH, physical_formats.as_bytes()),
         (INVENTORY_PATH, inventory.as_bytes()),
+        (
+            "crates/riffdb-storage-api/fixtures/durable-fixture-inventory-v1.txt",
+            inventory.as_bytes(),
+        ),
         (MANIFEST_PATH, release_manifest.as_bytes()),
     ];
     for (relative, bytes) in generated {

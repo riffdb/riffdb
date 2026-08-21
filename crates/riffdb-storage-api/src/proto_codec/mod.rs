@@ -19,6 +19,7 @@ mod outbox;
 mod projection;
 mod retention;
 mod validated_prefix_checkpoint;
+mod vector_evidence;
 
 use std::fmt;
 use std::time::Instant;
@@ -48,6 +49,7 @@ pub use outbox::*;
 pub use projection::*;
 pub use retention::*;
 pub use validated_prefix_checkpoint::*;
+pub use vector_evidence::*;
 
 /// One complete canonical v1 durable envelope and its exact byte charge.
 #[derive(Clone, Eq, PartialEq)]

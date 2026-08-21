@@ -413,9 +413,9 @@ fn storage_source_import_and_type_inventory_is_exact() {
 
 #[test]
 fn closed_registry_order_and_schema_hashes_are_exactly_derived() {
-    assert_eq!(CURRENT_RECORD_SCHEMA_COUNT, 65);
-    assert_eq!(READABLE_RECORD_SCHEMA_COUNT, 88);
-    assert_eq!(WRITABLE_RECORD_SCHEMA_COUNT, 65);
+    assert_eq!(CURRENT_RECORD_SCHEMA_COUNT, 66);
+    assert_eq!(READABLE_RECORD_SCHEMA_COUNT, 89);
+    assert_eq!(WRITABLE_RECORD_SCHEMA_COUNT, 66);
     assert_eq!(
         CURRENT_RECORD_SCHEMAS
             .iter()
@@ -492,6 +492,7 @@ fn closed_registry_order_and_schema_hashes_are_exactly_derived() {
     readable_names.push("riffdb.storage.v1.StoredCommandSegmentV4".to_owned());
     readable_names.push("riffdb.storage.v1.CapabilityRecordV6".to_owned());
     readable_names.push("riffdb.storage.v1.CapabilityRecordV7".to_owned());
+    readable_names.push("riffdb.storage.v1.StoredVectorEvidenceV1".to_owned());
     readable_names.push("riffdb.storage.v1.CapabilityRecordV1".to_owned());
     readable_names.push("riffdb.storage.v1.CapabilityRecordV1".to_owned());
     readable_names.push("riffdb.storage.v1.CapabilityTokenLookupV1".to_owned());
@@ -549,6 +550,7 @@ fn closed_registry_order_and_schema_hashes_are_exactly_derived() {
     writable_names.push("riffdb.storage.v1.CapabilityRecordV6".to_owned());
     writable_names.push("riffdb.storage.v1.CapabilityRecordV7".to_owned());
     writable_names.push("riffdb.storage.v1.StoredRecordRegistryV2".to_owned());
+    writable_names.push("riffdb.storage.v1.StoredVectorEvidenceV1".to_owned());
     assert_eq!(
         READABLE_RECORD_SCHEMAS
             .iter()
@@ -676,8 +678,8 @@ fn closed_registry_order_and_schema_hashes_are_exactly_derived() {
 #[test]
 fn generated_registry_fixtures_freeze_exact_membership_and_hashes() {
     let legacy = registry_fixture_entries(LEGACY_REGISTRY_FIXTURE, 26);
-    let readable = registry_fixture_entries(READABLE_REGISTRY_FIXTURE, 88);
-    let writable = registry_fixture_entries(WRITABLE_REGISTRY_FIXTURE, 65);
+    let readable = registry_fixture_entries(READABLE_REGISTRY_FIXTURE, 89);
+    let writable = registry_fixture_entries(WRITABLE_REGISTRY_FIXTURE, 66);
 
     assert_eq!(legacy, readable[..legacy.len()]);
     assert_eq!(

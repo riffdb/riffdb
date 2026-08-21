@@ -3346,6 +3346,38 @@ pub struct StoredValidatedPrefixCheckpointV1 {
     pub retention_watermark_sequence: u64,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct StoredVectorEmbeddingWriteV1 {
+    #[prost(uint64, tag = "1")]
+    pub commit_sequence: u64,
+    #[prost(string, tag = "2")]
+    pub model_identity: ::prost::alloc::string::String,
+    #[prost(string, tag = "3")]
+    pub model_version: ::prost::alloc::string::String,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct StoredVectorEvidenceV1 {
+    #[prost(message, optional, tag = "1")]
+    pub target: ::core::option::Option<EntityTargetV1>,
+    #[prost(bytes = "vec", tag = "2")]
+    pub partition_key: ::prost::alloc::vec::Vec<u8>,
+    #[prost(uint32, tag = "3")]
+    pub vector_field_id: u32,
+    #[prost(uint64, tag = "4")]
+    pub entity_version: u64,
+    #[prost(uint64, tag = "5")]
+    pub evidence_sequence: u64,
+    #[prost(uint64, optional, tag = "6")]
+    pub newest_source_write_sequence: ::core::option::Option<u64>,
+    #[prost(message, optional, tag = "7")]
+    pub embedding_write: ::core::option::Option<StoredVectorEmbeddingWriteV1>,
+    #[prost(message, optional, tag = "8")]
+    pub schema_binding: ::core::option::Option<DurableKeySchemaBindingV1>,
+    #[prost(bytes = "vec", tag = "9")]
+    pub provenance_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(message, optional, tag = "10")]
+    pub plan: ::core::option::Option<ExecutablePlanRefV1>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct StoredPendingAdmissionV3 {
     #[prost(message, optional, tag = "1")]
     pub base: ::core::option::Option<StoredPendingAdmissionV2>,

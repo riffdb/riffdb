@@ -12,9 +12,9 @@ use crate::envelope::{PayloadValidationError, RecordRegistry, RecordSchema};
 use crate::storage::v1;
 
 /// Number of durable semantic payload tuples accepted while opening or migrating storage.
-pub const READABLE_RECORD_SCHEMA_COUNT: usize = 88;
+pub const READABLE_RECORD_SCHEMA_COUNT: usize = 89;
 /// Number of durable semantic roles accepted for current writes.
-pub const WRITABLE_RECORD_SCHEMA_COUNT: usize = 65;
+pub const WRITABLE_RECORD_SCHEMA_COUNT: usize = 66;
 /// Number of durable semantic roles accepted for current writes.
 pub const CURRENT_RECORD_SCHEMA_COUNT: usize = WRITABLE_RECORD_SCHEMA_COUNT;
 
@@ -274,6 +274,14 @@ const ENTITY_TRANSITIONS_V4_SCHEMA_HASH_BYTES: &[u8; 160] = include_bytes!(conca
 const ENTITY_TRANSITIONS_V4_RECORD_BOUND_BYTES: &[u8; 40] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/fixtures/durable-entity-transitions-v4-record-bounds.bin"
+));
+const VECTOR_EVIDENCE_V1_SCHEMA_HASH_BYTES: &[u8; 32] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/fixtures/durable-vector-evidence-v1-schema-hash.bin"
+));
+const VECTOR_EVIDENCE_V1_RECORD_BOUND_BYTES: &[u8; 8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/fixtures/durable-vector-evidence-v1-record-bound.bin"
 ));
 const PRE_WP280_CAPABILITY_SCHEMA_HASH: SchemaHash = SchemaHash::from_bytes([
     0xcb, 0x42, 0xc4, 0xeb, 0xbc, 0xe8, 0x28, 0x01, 0x23, 0xf8, 0xb3, 0x4d, 0x4d, 0xcd, 0xe7, 0x4c,
@@ -1399,6 +1407,26 @@ const VALIDATED_PREFIX_CHECKPOINT_V2_RECORD_SCHEMA: RecordSchema<'static> = enti
     2
 );
 
+const VECTOR_EVIDENCE_V1_RECORD_SCHEMA: RecordSchema<'static> = RecordSchema::new_current(
+    "riffdb.storage.v1.StoredVectorEvidenceV1",
+    SchemaHash::from_bytes(*VECTOR_EVIDENCE_V1_SCHEMA_HASH_BYTES),
+    u32::from_be_bytes([
+        VECTOR_EVIDENCE_V1_RECORD_BOUND_BYTES[0],
+        VECTOR_EVIDENCE_V1_RECORD_BOUND_BYTES[1],
+        VECTOR_EVIDENCE_V1_RECORD_BOUND_BYTES[2],
+        VECTOR_EVIDENCE_V1_RECORD_BOUND_BYTES[3],
+    ]) as usize,
+    u32::from_be_bytes([
+        VECTOR_EVIDENCE_V1_RECORD_BOUND_BYTES[4],
+        VECTOR_EVIDENCE_V1_RECORD_BOUND_BYTES[5],
+        VECTOR_EVIDENCE_V1_RECORD_BOUND_BYTES[6],
+        VECTOR_EVIDENCE_V1_RECORD_BOUND_BYTES[7],
+    ]) as usize,
+    preflight_payload::<83>,
+    validate_payload::<83, v1::StoredVectorEvidenceV1>,
+)
+.with_compact_identity(61, 1);
+
 mod sealed {
     pub trait ReadableRecordMessage {}
     pub trait WritableRecordMessage: ReadableRecordMessage {}
@@ -1563,6 +1591,7 @@ readable_message!(v1::StoredDurableEventV2, DURABLE_EVENT_V2_RECORD_SCHEMA);
 readable_message!(v1::CapabilityRecordV5, CAPABILITY_V5_RECORD_SCHEMA);
 readable_message!(v1::CapabilityRecordV6, CAPABILITY_V6_RECORD_SCHEMA);
 readable_message!(v1::CapabilityRecordV7, CAPABILITY_V7_RECORD_SCHEMA);
+readable_message!(v1::StoredVectorEvidenceV1, VECTOR_EVIDENCE_V1_RECORD_SCHEMA);
 readable_message!(
     v1::StoredApplicationExportOperationV1,
     APPLICATION_EXPORT_OPERATION_V1_RECORD_SCHEMA
@@ -1688,6 +1717,7 @@ writable_message!(v1::CapabilityRecordV4);
 writable_message!(v1::CapabilityRecordV5);
 writable_message!(v1::CapabilityRecordV6);
 writable_message!(v1::CapabilityRecordV7);
+writable_message!(v1::StoredVectorEvidenceV1);
 writable_message!(v1::StoredRetentionWatermarkV1);
 writable_message!(v1::StoredRetentionHoldsV1);
 writable_message!(v1::StoredHistoryTombstoneV1);
@@ -1894,6 +1924,7 @@ pub static READABLE_RECORD_SCHEMAS: [RecordSchema<'static>; READABLE_RECORD_SCHE
     COMMAND_SEGMENT_V4_RECORD_SCHEMA,
     CAPABILITY_V6_RECORD_SCHEMA,
     CAPABILITY_V7_RECORD_SCHEMA,
+    VECTOR_EVIDENCE_V1_RECORD_SCHEMA,
     PRE_WP280_CAPABILITY_RECORD_SCHEMA,
     PRE_WP416_CAPABILITY_RECORD_SCHEMA,
     PRE_WP416_CAPABILITY_TOKEN_LOOKUP_RECORD_SCHEMA,
@@ -1968,6 +1999,7 @@ pub static WRITABLE_RECORD_SCHEMAS: [RecordSchema<'static>; WRITABLE_RECORD_SCHE
     CAPABILITY_V6_RECORD_SCHEMA,
     CAPABILITY_V7_RECORD_SCHEMA,
     REGISTRY_V2_RECORD_SCHEMA,
+    VECTOR_EVIDENCE_V1_RECORD_SCHEMA,
 ];
 
 /// Current durable schemas. `current` is exactly synonymous with writable roles.
