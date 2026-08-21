@@ -124,6 +124,7 @@ pub(crate) struct HirIndex {
     pub(crate) span: Span,
     pub(crate) fields: Vec<(FieldId, Span)>,
     pub(crate) encodings: Vec<riffdb_contract_ir::IndexFieldEncodingV1>,
+    pub(crate) cover_fields: Vec<(FieldId, Span)>,
     pub(crate) unique: bool,
 }
 
@@ -752,8 +753,51 @@ fn lower_entities(
                         riffdb_contract_ir::IndexFieldEncodingV1::Canonical;
                         index_fields.len()
                     ];
+                    let mut cover_fields = Vec::new();
                     for option in &index.options {
                         let (field, encoding) = match &option.value {
+                            riffdb_contract_syntax::ast::IndexOption::Cover {
+                                fields: covered,
+                            } => {
+                                if !cover_fields.is_empty() {
+                                    diagnostics.push(CompilerDiagnostic::new(
+                                        CompilerDiagnosticCode::DuplicateName,
+                                        option.span,
+                                    ));
+                                    continue;
+                                }
+                                let mut seen = BTreeSet::new();
+                                for field in covered {
+                                    let Some((field_id, _)) = field_scope.get(&field.value) else {
+                                        diagnostics.push(CompilerDiagnostic::new(
+                                            CompilerDiagnosticCode::UnknownName,
+                                            field.span,
+                                        ));
+                                        continue;
+                                    };
+                                    if key_fields.contains(field_id)
+                                        || index_fields.iter().any(|(key, _)| key == field_id)
+                                        || !seen.insert(*field_id)
+                                    {
+                                        diagnostics.push(CompilerDiagnostic::new(
+                                            CompilerDiagnosticCode::DuplicateName,
+                                            field.span,
+                                        ));
+                                        continue;
+                                    }
+                                    if fields.iter().any(|candidate| {
+                                        candidate.id == *field_id && candidate.secret_span.is_some()
+                                    }) {
+                                        diagnostics.push(CompilerDiagnostic::new(
+                                            CompilerDiagnosticCode::InvalidSecretReveal,
+                                            field.span,
+                                        ));
+                                        continue;
+                                    }
+                                    cover_fields.push((*field_id, field.span));
+                                }
+                                continue;
+                            }
                             riffdb_contract_syntax::ast::IndexOption::Presence { field } => (
                                 field,
                                 riffdb_contract_ir::IndexFieldEncodingV1::Presence,
@@ -803,6 +847,7 @@ fn lower_entities(
                         span: index.name.span,
                         fields: index_fields,
                         encodings,
+                        cover_fields,
                         unique: false,
                     });
                 }
@@ -833,6 +878,7 @@ fn lower_entities(
                             index_fields.len()
                         ],
                         fields: index_fields,
+                        cover_fields: Vec::new(),
                         unique: true,
                     });
                 }

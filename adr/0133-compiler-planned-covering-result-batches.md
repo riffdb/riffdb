@@ -1,17 +1,17 @@
 # ADR-0133: Compiler-Planned Covering Result Batches and Compact Named-Query Carriage
 
-- **Status:** Proposed
-- **Direction approved:** No
-- **Exact text accepted:** No
+- **Status:** Accepted
+- **Direction approved:** 20 August 2026 (maintainer, in session)
+- **Exact text accepted:** 20 August 2026 (maintainer, in session)
 - **Decision deadline:** Before WP-654 changes contract index syntax, query IR,
   durable index production, public Protobuf, or generated query decoding
 - **Requires:** ADR-0022, ADR-0023, ADR-0027, ADR-0051, ADR-0052, ADR-0053,
   ADR-0055, ADR-0074, ADR-0111, ADR-0124, ADR-0128, ADR-0130, and ADR-0131
 - **Defines or blocks:** WP-654
 
-This record is planning input only until the maintainer accepts its exact text.
-It proposes public protocol, compiler identity, and durable index-production
-changes that an implementation package cannot authorize by itself.
+The maintainer accepted this record's exact text on 20 August 2026. WP-654 may
+make the named public protocol, compiler identity, and durable index-production
+changes only within this decision and its fail-closed activation gates.
 
 ## Context
 

@@ -659,6 +659,91 @@ contract BetterAuthDelete version 1 {
     }
 
     #[test]
+    fn covering_index_lowers_to_ordered_v14_schema_and_rejects_unsafe_fields() {
+        let source = r#"
+contract Board version 1 {
+  entity Card {
+    key (organization_id: uuid, card_id: uuid)
+    field lane: string<32>
+    field title: string<200>
+    field owner_id: optional<uuid>
+    field secret private_note: string<200>
+    index by_lane (organization_id, lane, card_id) cover (title, owner_id)
+  }
+}
+"#;
+        let bundle = compile_contract_source(source).expect("covering index compiles");
+        assert_eq!(
+            bundle.format_version(),
+            riffdb_contract_ir::BUNDLE_FORMAT_VERSION_V14
+        );
+        assert_eq!(
+            bundle.grammar_version(),
+            riffdb_contract_ir::GRAMMAR_VERSION_V14
+        );
+        assert_eq!(
+            bundle.ir_version(),
+            riffdb_contract_ir::EXECUTABLE_IR_VERSION_V14
+        );
+        let card = bundle.schema().entities().first().expect("Card entity");
+        let index = card.indexes().first().expect("covering index");
+        assert_eq!(
+            index
+                .cover_fields()
+                .iter()
+                .map(|field| card.record().field(*field).expect("covered field").name())
+                .collect::<Vec<_>>(),
+            ["title", "owner_id"]
+        );
+        let decoded = riffdb_contract_ir::ContractBundle::decode(bundle.canonical_bytes())
+            .expect("V14 cover round trip");
+        assert_eq!(decoded, bundle);
+
+        for (needle, replacement, code, offending) in [
+            (
+                "cover (title, owner_id)",
+                "cover (title, title)",
+                CompilerDiagnosticCode::DuplicateName,
+                "title",
+            ),
+            (
+                "cover (title, owner_id)",
+                "cover (title, lane)",
+                CompilerDiagnosticCode::DuplicateName,
+                "lane",
+            ),
+            (
+                "cover (title, owner_id)",
+                "cover (title, missing)",
+                CompilerDiagnosticCode::UnknownName,
+                "missing",
+            ),
+            (
+                "cover (title, owner_id)",
+                "cover (title, private_note)",
+                CompilerDiagnosticCode::InvalidSecretReveal,
+                "private_note",
+            ),
+        ] {
+            let invalid = source.replace(needle, replacement);
+            let error = validate_contract_source(&invalid).expect_err("invalid cover rejects");
+            let diagnostic = error
+                .semantic()
+                .expect("semantic diagnostics")
+                .as_slice()
+                .iter()
+                .find(|diagnostic| diagnostic.code() == code)
+                .expect("cover diagnostic");
+            let start = invalid.rfind(offending).expect("offending cover field");
+            assert_eq!(diagnostic.primary_span().start() as usize, start);
+            assert_eq!(
+                diagnostic.primary_span().end() as usize,
+                start + offending.len()
+            );
+        }
+    }
+
+    #[test]
     fn bounded_collection_create_lowers_to_one_v5_plan() {
         let source = r#"
 contract BulkCreate version 1 {

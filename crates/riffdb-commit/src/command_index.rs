@@ -11,11 +11,11 @@ use riffdb_contract_ir::{
     EXECUTABLE_IR_VERSION_V3, EXECUTABLE_IR_VERSION_V4, EXECUTABLE_IR_VERSION_V5,
     EXECUTABLE_IR_VERSION_V6, EXECUTABLE_IR_VERSION_V7, EXECUTABLE_IR_VERSION_V8,
     EXECUTABLE_IR_VERSION_V9, EXECUTABLE_IR_VERSION_V10, EXECUTABLE_IR_VERSION_V11,
-    EXECUTABLE_IR_VERSION_V12, EXECUTABLE_IR_VERSION_V13, ExecutionClass, GRAMMAR_VERSION_V1,
-    GRAMMAR_VERSION_V2, GRAMMAR_VERSION_V3, GRAMMAR_VERSION_V4, GRAMMAR_VERSION_V5,
-    GRAMMAR_VERSION_V6, GRAMMAR_VERSION_V7, GRAMMAR_VERSION_V8, GRAMMAR_VERSION_V9,
-    GRAMMAR_VERSION_V10, GRAMMAR_VERSION_V11, GRAMMAR_VERSION_V12, GRAMMAR_VERSION_V13,
-    IndexSchema,
+    EXECUTABLE_IR_VERSION_V12, EXECUTABLE_IR_VERSION_V13, EXECUTABLE_IR_VERSION_V14,
+    ExecutionClass, GRAMMAR_VERSION_V1, GRAMMAR_VERSION_V2, GRAMMAR_VERSION_V3, GRAMMAR_VERSION_V4,
+    GRAMMAR_VERSION_V5, GRAMMAR_VERSION_V6, GRAMMAR_VERSION_V7, GRAMMAR_VERSION_V8,
+    GRAMMAR_VERSION_V9, GRAMMAR_VERSION_V10, GRAMMAR_VERSION_V11, GRAMMAR_VERSION_V12,
+    GRAMMAR_VERSION_V13, GRAMMAR_VERSION_V14, IndexSchema,
 };
 use riffdb_invariant::{InputDerivedCommandFacts, derive_input_command_facts};
 use riffdb_storage_api::{
@@ -1312,6 +1312,15 @@ impl IndexDerivationBuilder {
 //   Authoritative index derivation is therefore byte-identical to V11. The
 //   boundary test and `vector_ann_era_v12_application_commands_derive_ordinarily`
 //   pin that conclusion locally rather than admitting the version broadly.
+//
+// (V14, V14) — explicit covering-index metadata (ADR-0133 / WP-654).
+//   Unlike the intervening metadata-only versions, V14 deliberately changes
+//   index values: it derives the exact covered record from the same
+//   transaction-current entity post-image that owns the index key. A
+//   covered-only change replaces the entry and advances the existing index
+//   generation even when the key is unchanged. The V14 tests below pin that
+//   new production rule while every V1-V13 index retains the canonical empty
+//   covered record.
 const fn index_derivation_version_supported(grammar: u32, ir: u32) -> bool {
     matches!(
         (grammar, ir),
@@ -1328,6 +1337,7 @@ const fn index_derivation_version_supported(grammar: u32, ir: u32) -> bool {
             | (GRAMMAR_VERSION_V11, EXECUTABLE_IR_VERSION_V11)
             | (GRAMMAR_VERSION_V12, EXECUTABLE_IR_VERSION_V12)
             | (GRAMMAR_VERSION_V13, EXECUTABLE_IR_VERSION_V13)
+            | (GRAMMAR_VERSION_V14, EXECUTABLE_IR_VERSION_V14)
     )
 }
 
@@ -1387,9 +1397,6 @@ fn derive_grammar_v1_indexes(
         request.root_validation_targets().len(),
     )?;
     let schema_binding = DurableKeySchemaBindingV1::from_plan(resolved.reference());
-    let empty_covered =
-        CanonicalRecord::new(Vec::new()).map_err(|_| CommandIndexError::internal_defect())?;
-
     for (binding_position, plan_index) in facts.binding_plan_indices().iter().enumerate() {
         let Some(mutation_position) = mutation_positions[binding_position] else {
             continue;
@@ -1439,6 +1446,7 @@ fn derive_grammar_v1_indexes(
                 .iter()
                 .any(|unique| unique.index_id() == index.id());
             let new_values = index_values(index, mutation.post_image().fields())?;
+            let new_covered = covered_values(index, mutation.post_image().fields())?;
             let new_key = index
                 .key_schema()
                 .encode_index(&new_values, mutation.target().key().clone())
@@ -1458,7 +1466,7 @@ fn derive_grammar_v1_indexes(
                         StoredIndexEntryV2::new(
                             new_key,
                             schema_binding.clone(),
-                            empty_covered.clone(),
+                            new_covered,
                             command_partition.clone(),
                         )
                         .map_err(|_| CommandIndexError::internal_defect())?,
@@ -1471,7 +1479,8 @@ fn derive_grammar_v1_indexes(
                         .key_schema()
                         .encode_index(&old_values, mutation.target().key().clone())
                         .map_err(|_| CommandIndexError::internal_defect())?;
-                    if old_key == new_key {
+                    let old_covered = covered_values(index, record)?;
+                    if old_key == new_key && old_covered == new_covered {
                         continue;
                     }
                     if is_unique {
@@ -1483,12 +1492,14 @@ fn derive_grammar_v1_indexes(
                             &mut builder,
                         )?;
                     }
-                    builder.push_entry(IndexEntryMutationV1::Delete(old_key))?;
+                    if old_key != new_key {
+                        builder.push_entry(IndexEntryMutationV1::Delete(old_key))?;
+                    }
                     builder.push_entry(IndexEntryMutationV1::Put(
                         StoredIndexEntryV2::new(
                             new_key,
                             schema_binding.clone(),
-                            empty_covered.clone(),
+                            new_covered,
                             command_partition.clone(),
                         )
                         .map_err(|_| CommandIndexError::internal_defect())?,
@@ -1566,6 +1577,21 @@ fn index_values(
 ) -> Result<Vec<CanonicalValue>, CommandIndexError> {
     riffdb_contract_ir::encode_operational_index_values_v1(index, record)
         .map_err(|_| CommandIndexError::internal_defect())
+}
+
+fn covered_values(
+    index: &IndexSchema,
+    record: &CanonicalRecord,
+) -> Result<CanonicalRecord, CommandIndexError> {
+    let mut covered = Vec::with_capacity(index.cover_fields().len());
+    for field in index.cover_fields() {
+        let position = record
+            .fields()
+            .binary_search_by_key(field, |(candidate, _)| *candidate)
+            .map_err(|_| CommandIndexError::internal_defect())?;
+        covered.push((*field, record.fields()[position].1.clone()));
+    }
+    CanonicalRecord::new(covered).map_err(|_| CommandIndexError::internal_defect())
 }
 
 fn insert_generation(
@@ -1664,7 +1690,7 @@ mod tests {
         for grammar in 0..=16_u32 {
             for ir in 0..=16_u32 {
                 let audited_identity_pair =
-                    grammar == ir && (GRAMMAR_VERSION_V1..=GRAMMAR_VERSION_V13).contains(&grammar);
+                    grammar == ir && (GRAMMAR_VERSION_V1..=GRAMMAR_VERSION_V14).contains(&grammar);
                 assert_eq!(
                     index_derivation_version_supported(grammar, ir),
                     audited_identity_pair,
@@ -1683,6 +1709,46 @@ contract IndexedRows version 1 {
     field category: string<32>
     field score: i64
     index by_tenant_category (tenant, category)
+    index by_score (score)
+  }
+  aggregate Rows { root Row partition_by id conflict_key (id) }
+  command CreateRow {
+    input request_key: string<128>
+    input id: uuid
+    input tenant: uuid
+    input category: string<32>
+    input score: i64
+    idempotency_key request_key
+    create Row(id) as row else AlreadyExists {}
+    set row.tenant = tenant
+    set row.category = category
+    set row.score = score
+    return Created { row: row }
+  }
+  command ChangeRow {
+    input request_key: string<128>
+    input id: uuid
+    input tenant: uuid
+    input category: string<32>
+    input score: i64
+    idempotency_key request_key
+    mutate Row(id) as row else Missing {}
+    set row.tenant = tenant
+    set row.category = category
+    set row.score = score
+    return Changed { row: row }
+  }
+}
+"#;
+
+    const COVERED_INDEXED_SOURCE: &str = r#"
+contract IndexedRows version 1 {
+  entity Row {
+    key (id: uuid)
+    field tenant: uuid
+    field category: string<32>
+    field score: i64
+    index by_tenant_category (tenant, category) cover (score)
     index by_score (score)
   }
   aggregate Rows { root Row partition_by id conflict_key (id) }
@@ -2502,6 +2568,97 @@ contract DeleteRestrict version 1 {
                 .as_slice()
                 .iter()
                 .all(|target| target.partition_key() == &fixture.partition)
+        );
+    }
+
+    #[test]
+    fn v14_create_derives_only_declared_cover_fields_from_the_post_image() {
+        let fixture = fixture_from_source(
+            COVERED_INDEXED_SOURCE,
+            "CreateRow",
+            "cover-create-1",
+            ([0x21; 16], "new", 10),
+            None,
+        );
+        let derived = derive_grammar_v1_indexes(
+            &fixture.resolved,
+            &fixture.input,
+            &fixture.evaluated,
+            &fixture.current,
+            &[Some(0)],
+            &fixture.partition,
+        )
+        .expect("V14 create indexes");
+        let entity = &fixture.resolved.bundle().bundle().schema().entities()[0];
+        let score = entity
+            .record()
+            .fields()
+            .iter()
+            .find(|field| field.name() == "score")
+            .expect("score field")
+            .id();
+        let entries = derived
+            .entry_mutations
+            .iter()
+            .filter_map(|mutation| match mutation {
+                IndexEntryMutationV1::Put(record) => Some(record),
+                IndexEntryMutationV1::Delete(_) => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(entries.len(), 2);
+        let covered = entries
+            .iter()
+            .find(|record| record.key().index_id() == index(&fixture, "by_tenant_category").id())
+            .expect("covered entry");
+        assert_eq!(
+            covered.covered_values().fields(),
+            &[(score, CanonicalValue::I64(10))]
+        );
+        let uncovered = entries
+            .iter()
+            .find(|record| record.key().index_id() == index(&fixture, "by_score").id())
+            .expect("uncovered entry");
+        assert!(uncovered.covered_values().is_empty());
+    }
+
+    #[test]
+    fn v14_covered_only_change_replaces_same_key_and_advances_generation() {
+        let fixture = fixture_from_source(
+            COVERED_INDEXED_SOURCE,
+            "ChangeRow",
+            "cover-update-1",
+            ([0x21; 16], "same", 11),
+            Some(([0x21; 16], "same", 10)),
+        );
+        let derived = derive_grammar_v1_indexes(
+            &fixture.resolved,
+            &fixture.input,
+            &fixture.evaluated,
+            &fixture.current,
+            &[Some(0)],
+            &fixture.partition,
+        )
+        .expect("V14 covered update indexes");
+        let cover_index = index(&fixture, "by_tenant_category");
+        let cover_mutations = derived
+            .entry_mutations
+            .iter()
+            .filter(|mutation| mutation.key().index_id() == cover_index.id())
+            .collect::<Vec<_>>();
+        assert_eq!(cover_mutations.len(), 1, "same key is replaced in place");
+        let IndexEntryMutationV1::Put(replacement) = cover_mutations[0] else {
+            panic!("covered-only update must put replacement")
+        };
+        assert_eq!(
+            replacement.covered_values().fields()[0].1,
+            CanonicalValue::I64(11)
+        );
+        assert!(
+            derived
+                .affected_targets
+                .as_slice()
+                .iter()
+                .any(|target| target.index_id() == cover_index.id())
         );
     }
 

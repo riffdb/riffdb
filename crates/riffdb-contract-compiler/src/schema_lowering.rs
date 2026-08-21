@@ -724,11 +724,12 @@ fn lower_entities(
             }
             let key_schema = KeySchema::index(index.id, entity.id, components, primary_key.clone());
             match key_schema.and_then(|key_schema| {
-                IndexSchema::with_encodings(
+                IndexSchema::with_encodings_and_cover(
                     index.id,
                     index.name.clone(),
                     index.fields.iter().map(|field| field.0).collect(),
                     index.encodings.clone(),
+                    index.cover_fields.iter().map(|field| field.0).collect(),
                     key_schema,
                 )
             }) {

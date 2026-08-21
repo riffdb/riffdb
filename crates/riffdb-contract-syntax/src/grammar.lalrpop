@@ -251,6 +251,8 @@ VectorAnnClause: VectorAnnDeclaration = {
 };
 
 IndexOption: Spanned<IndexOption> = {
+    <lo:@L> "cover" "(" <fields:IdentifierList> ")" <hi:@R>
+        => parser::spanned(IndexOption::Cover { fields }, lo, hi),
     <lo:@L> "presence" "(" <field:Identifier> ")" <hi:@R>
         => parser::spanned(IndexOption::Presence { field }, lo, hi),
     <lo:@L> "text_key" "(" <field:Identifier> "," <profile:TextKeyProfile> ")" <hi:@R>
@@ -824,6 +826,7 @@ OrOperator: Spanned<BinaryOperator> = {
 
 Identifier: Spanned<String> = {
     <lo:@L> <value:"identifier"> <hi:@R> => parser::spanned(value, lo, hi),
+    <lo:@L> "cover" <hi:@R> => parser::spanned("cover".to_owned(), lo, hi),
     <lo:@L> "presence" <hi:@R> => parser::spanned("presence".to_owned(), lo, hi),
     <lo:@L> "text_key" <hi:@R> => parser::spanned("text_key".to_owned(), lo, hi),
     <lo:@L> "binary_utf8_v1" <hi:@R>
@@ -901,6 +904,7 @@ extern {
         "field" => Token::Field,
         "invariant" => Token::Invariant,
         "index" => Token::Index,
+        "cover" => Token::Cover,
         "presence" => Token::Presence,
         "text_key" => Token::TextKey,
         "binary_utf8_v1" => Token::BinaryUtf8V1,

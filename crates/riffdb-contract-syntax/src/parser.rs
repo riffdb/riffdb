@@ -966,6 +966,9 @@ impl NodeCounter {
                             for option in &index.options {
                                 self.add(1, option.span)?;
                                 match &option.value {
+                                    crate::ast::IndexOption::Cover { fields } => {
+                                        self.names(fields, option.span)?;
+                                    }
                                     crate::ast::IndexOption::Presence { field }
                                     | crate::ast::IndexOption::TextKey { field, .. } => {
                                         self.name(field)?;

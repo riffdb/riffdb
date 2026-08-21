@@ -337,7 +337,10 @@ fn ordered_layout_registry_has_one_closed_witness_slot_per_layout() {
             "InvariantPlan",
             vec!["id", "name", "expressions", "predicate"],
         ),
-        ("IndexSchema", vec!["id", "name", "fields", "key_schema"]),
+        (
+            "IndexSchema",
+            vec!["id", "name", "fields", "key_schema", "cover_fields"],
+        ),
         ("RecordSchema", vec!["owner", "fields"]),
         ("FieldSchema", vec!["id", "name", "value_type"]),
         (

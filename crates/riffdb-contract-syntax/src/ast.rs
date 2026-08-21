@@ -296,6 +296,11 @@ pub struct IndexDeclaration {
 /// One closed operational-index encoding declaration.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum IndexOption {
+    /// Materialize direct entity fields in canonical declared order.
+    Cover {
+        /// Covered field names in positional result order.
+        fields: Vec<Spanned<String>>,
+    },
     /// Record missing, explicit-null, and non-null as distinct key states.
     Presence {
         /// Indexed optional field receiving the discriminator.

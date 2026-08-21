@@ -43,6 +43,8 @@ pub(crate) enum Token {
     Invariant,
     #[token("index")]
     Index,
+    #[token("cover")]
+    Cover,
     #[token("presence")]
     Presence,
     #[token("text_key")]

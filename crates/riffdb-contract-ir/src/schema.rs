@@ -253,6 +253,7 @@ pub struct IndexSchema {
     name: String,
     fields: Vec<FieldId>,
     encodings: Vec<IndexFieldEncodingV1>,
+    cover_fields: Vec<FieldId>,
     key_schema: KeySchema,
 }
 
@@ -274,6 +275,19 @@ impl IndexSchema {
         name: impl Into<String>,
         fields: Vec<FieldId>,
         encodings: Vec<IndexFieldEncodingV1>,
+        key_schema: KeySchema,
+    ) -> Result<Self, IrValidationError> {
+        Self::with_encodings_and_cover(id, name, fields, encodings, Vec::new(), key_schema)
+    }
+
+    /// Creates a checked local index with explicit key encodings and a finite
+    /// ordered set of direct covered entity fields.
+    pub fn with_encodings_and_cover(
+        id: IndexId,
+        name: impl Into<String>,
+        fields: Vec<FieldId>,
+        encodings: Vec<IndexFieldEncodingV1>,
+        cover_fields: Vec<FieldId>,
         key_schema: KeySchema,
     ) -> Result<Self, IrValidationError> {
         let name = name.into();
@@ -301,11 +315,17 @@ impl IndexSchema {
                 kind: "index fields",
             });
         }
+        if cover_fields.len() > 1_024 || cover_fields.iter().any(|field| !unique.insert(*field)) {
+            return Err(IrValidationError::NonCanonicalOrder {
+                kind: "index cover fields",
+            });
+        }
         Ok(Self {
             id,
             name,
             fields,
             encodings,
+            cover_fields,
             key_schema,
         })
     }
@@ -332,6 +352,12 @@ impl IndexSchema {
     #[must_use]
     pub fn encodings(&self) -> &[IndexFieldEncodingV1] {
         &self.encodings
+    }
+
+    /// Direct entity fields materialized in canonical declared order.
+    #[must_use]
+    pub fn cover_fields(&self) -> &[FieldId] {
+        &self.cover_fields
     }
 
     /// Complete checked index-entry schema.
@@ -441,6 +467,15 @@ impl EntitySchema {
             if invalid {
                 return Err(IrValidationError::InvalidReference {
                     kind: "entity index field",
+                });
+            }
+            if index.cover_fields().iter().any(|field| {
+                record.field(*field).is_none()
+                    || primary_key_fields.contains(field)
+                    || index.fields().contains(field)
+            }) {
+                return Err(IrValidationError::InvalidReference {
+                    kind: "entity index cover field",
                 });
             }
         }
@@ -1906,6 +1941,15 @@ impl SchemaIr {
                     kind: "secret spec names a primary-key field",
                 });
             }
+            if entity
+                .indexes()
+                .iter()
+                .any(|index| index.cover_fields().contains(&spec.field))
+            {
+                return Err(IrValidationError::InvalidReference {
+                    kind: "secret spec names an index cover field",
+                });
+            }
         }
         self.secret_field_specs = specs;
         Ok(self)
@@ -2016,6 +2060,14 @@ impl SchemaIr {
         self.delete_policies
             .iter()
             .any(|policy| matches!(policy.mode(), DeletePolicyModeV1::Cascade { .. }))
+    }
+    /// Whether this schema requires V14 covering-index metadata.
+    #[must_use]
+    pub fn requires_ir_v14(&self) -> bool {
+        self.entities()
+            .iter()
+            .flat_map(EntitySchema::indexes)
+            .any(|index| !index.cover_fields().is_empty())
     }
     /// Resolves an entity.
     #[must_use]
