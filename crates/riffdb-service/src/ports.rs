@@ -1307,8 +1307,8 @@ pub trait ColumnarProjectionPort: Send + Sync {
     /// Process-local notifier for register-before-read waits.
     fn notifier(&self) -> &crate::ColumnarNotifier;
 
-    /// Startup-fixed known projection names.
-    fn known_names(&self) -> &[String];
+    /// Current compiler-owned projection names in canonical order.
+    fn known_names(&self) -> Vec<String>;
 }
 
 /// One compiler-owned exact-nearest request over a named vector projection.

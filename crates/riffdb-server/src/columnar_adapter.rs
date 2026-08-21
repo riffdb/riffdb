@@ -3,7 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 
 use riffdb_catalog::ActiveCatalogSnapshot;
 use riffdb_columnar::{
@@ -151,9 +151,11 @@ impl fmt::Debug for ColumnarEngineSlot {
 
 /// Process-local columnar engines and notifier fixed at startup registration.
 pub(crate) struct ColumnarRuntime {
-    engines: BTreeMap<String, Arc<ColumnarEngineSlot>>,
+    engines: RwLock<BTreeMap<String, Arc<ColumnarEngineSlot>>>,
     notifier: ColumnarNotifier,
-    names: Vec<String>,
+    names: RwLock<Vec<String>>,
+    configured_names: BTreeSet<String>,
+    projections_root: PathBuf,
     history_incarnation: u64,
     apply_source: ServerColumnarApplySource,
 }
@@ -163,12 +165,15 @@ impl ColumnarRuntime {
     #[must_use]
     pub(crate) fn empty(
         storage: SharedRedbOperationalPorts,
+        projections_root: PathBuf,
         history_incarnation: u64,
     ) -> Arc<Self> {
         Arc::new(Self {
-            engines: BTreeMap::new(),
+            engines: RwLock::new(BTreeMap::new()),
             notifier: ColumnarNotifier::from_names(Vec::new()),
-            names: Vec::new(),
+            names: RwLock::new(Vec::new()),
+            configured_names: BTreeSet::new(),
+            projections_root,
             history_incarnation,
             apply_source: ServerColumnarApplySource::new(storage),
         })
@@ -186,7 +191,11 @@ impl ColumnarRuntime {
         })?;
         let Some(active) = active else {
             if projections.is_empty() {
-                return Ok(Self::empty(storage, history_incarnation));
+                return Ok(Self::empty(
+                    storage,
+                    projections_root.to_path_buf(),
+                    history_incarnation,
+                ));
             }
             return Err(ColumnarRegistrationError::no_active_catalog(
                 first_projection_name(projections),
@@ -196,6 +205,7 @@ impl ColumnarRuntime {
         let mut engines = BTreeMap::new();
         let mut names =
             Vec::with_capacity(projections.len() + bundle.schema().vector_production_specs().len());
+        let mut configured_names = BTreeSet::new();
         for configured in projections {
             let name = configured.name().to_owned();
             if engines.contains_key(&name) {
@@ -209,6 +219,7 @@ impl ColumnarRuntime {
             )
             .map_err(|error| ColumnarRegistrationError::open(name.clone(), error))?;
             engines.insert(name.clone(), Arc::new(ColumnarEngineSlot::new(engine)));
+            configured_names.insert(name.clone());
             names.push(name);
         }
         for spec in bundle.schema().vector_production_specs() {
@@ -237,9 +248,11 @@ impl ColumnarRuntime {
         names.sort();
         let notifier = ColumnarNotifier::from_names(names.iter().cloned());
         Ok(Arc::new(Self {
-            engines,
+            engines: RwLock::new(engines),
             notifier,
-            names,
+            names: RwLock::new(names),
+            configured_names,
+            projections_root: projections_root.to_path_buf(),
             history_incarnation,
             apply_source: ServerColumnarApplySource::new(storage),
         }))
@@ -252,9 +265,11 @@ impl ColumnarRuntime {
     }
 
     /// Startup-fixed known projection names.
-    #[must_use]
-    pub(crate) fn names(&self) -> &[String] {
-        &self.names
+    pub(crate) fn names(&self) -> Result<Vec<String>, ColumnarPortError> {
+        self.names
+            .read()
+            .map(|names| names.clone())
+            .map_err(|_| ColumnarPortError::Unavailable)
     }
 
     /// History incarnation bound into published frontiers.
@@ -264,9 +279,100 @@ impl ColumnarRuntime {
     }
 
     /// Registered engine slots in name order.
-    #[must_use]
-    pub(crate) fn engines(&self) -> &BTreeMap<String, Arc<ColumnarEngineSlot>> {
-        &self.engines
+    pub(crate) fn engines(
+        &self,
+    ) -> Result<Vec<(String, Arc<ColumnarEngineSlot>)>, ColumnarPortError> {
+        self.engines
+            .read()
+            .map(|engines| {
+                engines
+                    .iter()
+                    .map(|(name, slot)| (name.clone(), Arc::clone(slot)))
+                    .collect()
+            })
+            .map_err(|_| ColumnarPortError::Unavailable)
+    }
+
+    fn engine(&self, name: &str) -> Result<Option<Arc<ColumnarEngineSlot>>, ColumnarPortError> {
+        self.engines
+            .read()
+            .map(|engines| engines.get(name).cloned())
+            .map_err(|_| ColumnarPortError::Unavailable)
+    }
+
+    /// Reconciles compiler-declared vector projections after catalog activation.
+    ///
+    /// A definition change never reuses an existing engine generation. Until
+    /// the durable rebuild lifecycle replaces it, the worker fails closed.
+    pub(crate) fn synchronize_active_vector_projections(
+        &self,
+    ) -> Result<(), ColumnarRegistrationError> {
+        let active = ActiveCatalogSnapshot::read(self.storage())
+            .map_err(|error| ColumnarRegistrationError::storage(error, "production-vector"))?;
+        let Some(active) = active else {
+            return Ok(());
+        };
+        let bundle = active.bundle().bundle();
+        let mut desired = BTreeMap::new();
+        for spec in bundle.schema().vector_production_specs() {
+            let entity = bundle
+                .schema()
+                .entity(spec.entity())
+                .ok_or_else(|| ColumnarRegistrationError::definition("production-vector"))?;
+            let vector = entity
+                .record()
+                .field(spec.field())
+                .ok_or_else(|| ColumnarRegistrationError::definition("production-vector"))?;
+            let name = format!("{}.{}", entity.name(), vector.name());
+            if self.configured_names.contains(&name) || desired.contains_key(&name) {
+                return Err(ColumnarRegistrationError::duplicate_name(name));
+            }
+            desired.insert(
+                name.clone(),
+                resolve_production_vector_projection(bundle, entity, &name)?,
+            );
+        }
+
+        let existing = self
+            .engines
+            .read()
+            .map_err(|_| ColumnarRegistrationError::synchronization())?;
+        let mut additions = Vec::new();
+        for (name, definition) in &desired {
+            if let Some(slot) = existing.get(name) {
+                if slot.definition().fingerprint() != definition.fingerprint() {
+                    return Err(ColumnarRegistrationError::definition(name.clone()));
+                }
+                continue;
+            }
+            let directory = projection_directory(&self.projections_root, name);
+            let engine = ColumnarEngine::open(
+                definition.clone(),
+                OpenOptions::new(directory).with_history_incarnation(self.history_incarnation),
+            )
+            .map_err(|error| ColumnarRegistrationError::open(name.clone(), error))?;
+            additions.push((name.clone(), Arc::new(ColumnarEngineSlot::new(engine))));
+        }
+        drop(existing);
+
+        let mut engines = self
+            .engines
+            .write()
+            .map_err(|_| ColumnarRegistrationError::synchronization())?;
+        engines
+            .retain(|name, _| self.configured_names.contains(name) || desired.contains_key(name));
+        for (name, slot) in additions {
+            engines.entry(name).or_insert(slot);
+        }
+        let names = engines.keys().cloned().collect::<Vec<_>>();
+        self.notifier
+            .synchronize_names(names.iter().cloned())
+            .map_err(|_| ColumnarRegistrationError::synchronization())?;
+        *self
+            .names
+            .write()
+            .map_err(|_| ColumnarRegistrationError::synchronization())? = names;
+        Ok(())
     }
 
     /// Apply source used by the worker (`AuthoritativeScanReader` + point reads).
@@ -352,7 +458,10 @@ impl fmt::Debug for ColumnarRuntime {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("ColumnarRuntime")
-            .field("projection_count", &self.names.len())
+            .field(
+                "projection_count",
+                &self.names.read().map_or(0, |names| names.len()),
+            )
             .field("history_incarnation", &self.history_incarnation)
             .finish()
     }
@@ -375,8 +484,8 @@ impl ColumnarProjectionPort for ServerColumnarProjectionPort {
     fn observe(&self, projection_name: &str) -> Result<ColumnarObservation, ColumnarPortError> {
         let slot = self
             .runtime
-            .engines
-            .get(projection_name)
+            .engine(projection_name)
+            .map_err(|_| ColumnarPortError::Unavailable)?
             .ok_or(ColumnarPortError::Integrity)?;
         // Head from storage without holding the engine lock.
         let head_position = self.runtime.read_application_head()?;
@@ -404,8 +513,9 @@ impl ColumnarProjectionPort for ServerColumnarProjectionPort {
 
     fn definition(&self, projection_name: &str) -> Option<RegisteredDefinition> {
         self.runtime
-            .engines
-            .get(projection_name)
+            .engine(projection_name)
+            .ok()
+            .flatten()
             .map(|slot| slot.definition().clone())
     }
 
@@ -413,8 +523,8 @@ impl ColumnarProjectionPort for ServerColumnarProjectionPort {
         self.runtime.notifier()
     }
 
-    fn known_names(&self) -> &[String] {
-        self.runtime.names()
+    fn known_names(&self) -> Vec<String> {
+        self.runtime.names().unwrap_or_default()
     }
 }
 
@@ -659,6 +769,7 @@ enum ColumnarRegistrationErrorKind {
     Definition,
     Open,
     Storage,
+    Synchronization,
 }
 
 impl ColumnarRegistrationError {
@@ -715,6 +826,13 @@ impl ColumnarRegistrationError {
         }
     }
 
+    fn synchronization() -> Self {
+        Self {
+            projection_name: "production-vector".to_owned(),
+            kind: ColumnarRegistrationErrorKind::Synchronization,
+        }
+    }
+
     /// Projection name that failed registration (config-visible identity).
     #[must_use]
     pub(crate) fn projection_name(&self) -> &str {
@@ -760,6 +878,9 @@ impl fmt::Display for ColumnarRegistrationError {
                 "columnar projection '{}' could not read the active catalog",
                 self.projection_name()
             ),
+            ColumnarRegistrationErrorKind::Synchronization => {
+                formatter.write_str("columnar projection registry could not be synchronized")
+            }
         }
     }
 }
@@ -1141,14 +1262,86 @@ contract VectorBoard version 1 {
     #[test]
     fn production_vector_contract_registers_exact_symbolic_projection_automatically() {
         let (runtime, _scope) = production_vector_runtime("production-vector");
-        assert_eq!(runtime.names(), &["Document.embedding"]);
+        assert_eq!(
+            runtime.names().expect("runtime names"),
+            ["Document.embedding"]
+        );
         let slot = runtime
-            .engines()
-            .get("Document.embedding")
+            .engine("Document.embedding")
+            .expect("engine registry")
             .expect("compiler-owned vector projection");
         assert_eq!(slot.definition().name(), "Document.embedding");
         assert_eq!(slot.definition().entity_name(), "Document");
         assert_eq!(slot.definition().projected_fields().len(), 2);
+    }
+
+    #[test]
+    fn first_contract_activation_registers_vector_source_without_process_restart() {
+        let scope = adapter_scope("dynamic-production-vector");
+        let database_path = scope.path().join("db.redb");
+        let projections_root = scope.path().join("projections");
+        std::fs::create_dir_all(&projections_root).expect("create projections root");
+        let mut store = RedbStore::open(&database_path).expect("create adapter database");
+        let database_id = DatabaseId::from_bytes(uuid_bytes(0x13)).expect("database id");
+        assert_eq!(
+            store
+                .initialize_database(database_id)
+                .expect("initialize adapter database"),
+            DatabaseInitializationResult::Installed(database_id)
+        );
+        let ports = open_operational(store);
+        let storage =
+            SharedRedbOperationalPorts::new(ports, None).expect("share operational ports");
+        let runtime = ColumnarRuntime::open(storage.clone(), &[], &projections_root, 1)
+            .expect("open empty runtime");
+        assert!(runtime.names().expect("empty names").is_empty());
+
+        let checked = ValidatedContractBundle::from_compiler_bundle(
+            riffdb_contract_compiler::compile_contract_source(PRODUCTION_VECTOR_CONTRACT)
+                .expect("compile production vector contract"),
+        )
+        .expect("validate production vector contract");
+        let mut administration = storage.clone();
+        let activation = CatalogAdministrationRepository::activate_catalog(
+            &mut administration,
+            &CatalogActivationIntentV1::new(
+                None,
+                checked.to_stored().expect("encode adapter bundle"),
+                RequestId::from_bytes(uuid_bytes(0x23)).expect("request id"),
+                AuditPrincipalV1::new(
+                    ActorId::new("adapter-test").expect("actor"),
+                    ActorKind::Human,
+                    CapabilityId::from_bytes(uuid_bytes(0x33)).expect("capability"),
+                    std::num::NonZeroU64::MIN,
+                ),
+                Timestamp::new(1_700_200_002, 0).expect("timestamp"),
+                None,
+            ),
+        )
+        .expect("activate catalog after runtime startup");
+        assert!(matches!(
+            activation,
+            CatalogActivationResult::Activated { .. }
+        ));
+
+        runtime
+            .synchronize_active_vector_projections()
+            .expect("synchronize vector registry");
+        assert_eq!(
+            runtime.names().expect("runtime names"),
+            ["Document.embedding"]
+        );
+        let registration = runtime
+            .notifier()
+            .register("Document.embedding".to_owned())
+            .expect("new name must be waitable after synchronization");
+        drop(registration);
+        assert!(
+            runtime
+                .engine("Document.embedding")
+                .expect("engine registry")
+                .is_some()
+        );
     }
 
     #[test]
@@ -1183,7 +1376,10 @@ contract VectorBoard version 1 {
         let (runtime, _scope) = board_runtime("lockfree");
         // First worker pass publishes the (empty) snapshot.
         {
-            let slot = runtime.engines().get("ticket_board").expect("board slot");
+            let slot = runtime
+                .engine("ticket_board")
+                .expect("engine registry")
+                .expect("board slot");
             let mut engine = slot.lock_engine().expect("engine lock");
             engine
                 .apply_available(runtime.apply_source())
@@ -1221,7 +1417,10 @@ contract VectorBoard version 1 {
         let worker = {
             let runtime = Arc::clone(&runtime);
             thread::spawn(move || {
-                let slot = runtime.engines().get("ticket_board").expect("board slot");
+                let slot = runtime
+                    .engine("ticket_board")
+                    .expect("engine registry")
+                    .expect("board slot");
                 let mut engine = slot.lock_engine().expect("worker engine lock");
                 locked_sender.send(()).expect("report lock acquisition");
                 proceed_receiver

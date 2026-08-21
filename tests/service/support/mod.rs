@@ -5547,8 +5547,8 @@ impl ColumnarProjectionPort for HarnessColumnar {
         &self.notifier
     }
 
-    fn known_names(&self) -> &[String] {
-        &self.names
+    fn known_names(&self) -> Vec<String> {
+        self.names.clone()
     }
 }
 

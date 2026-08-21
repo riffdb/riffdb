@@ -165,7 +165,7 @@ struct ColumnarWorkerState {
 impl ColumnarWorkerState {
     fn new(runtime: &ColumnarRuntime) -> Self {
         let mut engines = BTreeMap::new();
-        for (name, slot) in runtime.engines() {
+        for (name, slot) in runtime.engines().unwrap_or_default() {
             let published = slot
                 .lock_engine()
                 .map(|engine| engine.published_frontier_position())
@@ -190,6 +190,9 @@ fn run_columnar_pass(
     metrics: Option<&MetricRegistry>,
     state: &mut ColumnarWorkerState,
 ) -> Result<(), ColumnarWorkerError> {
+    runtime
+        .synchronize_active_vector_projections()
+        .map_err(|_| ColumnarWorkerError::Registration)?;
     state.polls_since_checkpoint = state.polls_since_checkpoint.saturating_add(1);
     let force_checkpoint = state.polls_since_checkpoint >= CHECKPOINT_POLL_CADENCE;
     if force_checkpoint {
@@ -200,7 +203,10 @@ fn run_columnar_pass(
     let head = read_head(runtime)?;
     let mut max_lag = 0u64;
 
-    for (name, slot) in runtime.engines() {
+    for (name, slot) in runtime
+        .engines()
+        .map_err(|_| ColumnarWorkerError::Unavailable)?
+    {
         let catchup = state
             .engines
             .entry(name.clone())
@@ -225,7 +231,7 @@ fn run_columnar_pass(
                 .saturating_add(commits_applied);
 
             if published_after != published_before {
-                let _ = runtime.notifier().notify(name);
+                let _ = runtime.notifier().notify(&name);
             }
             catchup.last_published = published_after;
 
@@ -327,6 +333,7 @@ impl std::error::Error for ColumnarWorkerShutdownError {}
 
 enum ColumnarWorkerError {
     Apply(ColumnarError),
+    Registration,
     Unavailable,
     Integrity,
 }
@@ -338,6 +345,7 @@ impl fmt::Debug for ColumnarWorkerError {
                 let _ = error;
                 "apply"
             }
+            Self::Registration => "registration",
             Self::Unavailable => "unavailable",
             Self::Integrity => "integrity",
         };
