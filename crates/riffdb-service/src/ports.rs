@@ -47,8 +47,8 @@ use crate::{
     EventConsumerPortResponse, GetContractMigrationOperationRequest,
     GetOfflineMaintenanceOperationRequest, OfflineMaintenanceOperationObservation,
     OfflineMaintenanceStartResult, OperationalHealthSnapshot, OperationalStatisticsSnapshot,
-    OutboxStatusRequest, OutboxStatusSnapshot, ProjectionPortRequest, ProjectionPortResult,
-    ProjectionStatusSnapshot, RequestControl, RestoreOfflineBackupRequest,
+    OutboxStatusRequest, OutboxStatusSnapshot, PageLimit, ProjectionPortRequest,
+    ProjectionPortResult, ProjectionStatusSnapshot, RequestControl, RestoreOfflineBackupRequest,
     RetireOfflineBackupRequest,
 };
 
@@ -706,6 +706,228 @@ pub enum AuthoritativeCommitNotification {
 /// rather than overwrite or silently drop an item when this capacity is exhausted.
 pub const MAX_COMMIT_SUBSCRIPTION_BUFFER_ITEMS: usize = 256;
 
+/// Compiler-resolved exact target for authoritative vector observations.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AuthoritativeVectorTarget {
+    lineage: ContractLineage,
+    partition_key: PartitionKey,
+    entity_type: riffdb_types::EntityTypeId,
+    vector_field: riffdb_types::FieldId,
+}
+
+impl AuthoritativeVectorTarget {
+    /// Joins catalog-resolved identities; no public request constructs this value.
+    #[must_use]
+    pub const fn new(
+        lineage: ContractLineage,
+        partition_key: PartitionKey,
+        entity_type: riffdb_types::EntityTypeId,
+        vector_field: riffdb_types::FieldId,
+    ) -> Self {
+        Self {
+            lineage,
+            partition_key,
+            entity_type,
+            vector_field,
+        }
+    }
+
+    /// Exact lineage.
+    #[must_use]
+    pub const fn lineage(&self) -> &ContractLineage {
+        &self.lineage
+    }
+    /// Exact logical partition.
+    #[must_use]
+    pub const fn partition_key(&self) -> &PartitionKey {
+        &self.partition_key
+    }
+    /// Catalog-resolved entity identity.
+    #[must_use]
+    pub const fn entity_type(&self) -> riffdb_types::EntityTypeId {
+        self.entity_type
+    }
+    /// Catalog-resolved vector-field identity.
+    #[must_use]
+    pub const fn vector_field(&self) -> riffdb_types::FieldId {
+        self.vector_field
+    }
+}
+
+/// Maintained whole-partition vector counts from one authoritative snapshot.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AuthoritativeVectorObservation {
+    target: AuthoritativeVectorTarget,
+    total_entities: u64,
+    stale_entities: u64,
+    model_counts: Vec<(riffdb_types::EmbeddingMetadata, u64)>,
+    revision: CommitSequence,
+}
+
+impl AuthoritativeVectorObservation {
+    /// Retains one storage-validated observation.
+    #[must_use]
+    pub const fn new(
+        target: AuthoritativeVectorTarget,
+        total_entities: u64,
+        stale_entities: u64,
+        model_counts: Vec<(riffdb_types::EmbeddingMetadata, u64)>,
+        revision: CommitSequence,
+    ) -> Self {
+        Self {
+            target,
+            total_entities,
+            stale_entities,
+            model_counts,
+            revision,
+        }
+    }
+    /// Exact target.
+    #[must_use]
+    pub const fn target(&self) -> &AuthoritativeVectorTarget {
+        &self.target
+    }
+    /// Total rows.
+    #[must_use]
+    pub const fn total_entities(&self) -> u64 {
+        self.total_entities
+    }
+    /// Source-stale rows.
+    #[must_use]
+    pub const fn stale_entities(&self) -> u64 {
+        self.stale_entities
+    }
+    /// Exact model populations.
+    #[must_use]
+    pub fn model_counts(&self) -> &[(riffdb_types::EmbeddingMetadata, u64)] {
+        &self.model_counts
+    }
+    /// Last incorporated command sequence.
+    #[must_use]
+    pub const fn revision(&self) -> CommitSequence {
+        self.revision
+    }
+}
+
+/// One policy-neutral authoritative evidence-index row.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AuthoritativeVectorEvidenceRow {
+    entity_key: riffdb_types::EntityKey,
+    newest_source_write: Option<CommitSequence>,
+    embedding_write: Option<(CommitSequence, riffdb_types::EmbeddingMetadata)>,
+}
+
+impl AuthoritativeVectorEvidenceRow {
+    /// Retains one storage-validated row for later policy admission.
+    #[must_use]
+    pub const fn new(
+        entity_key: riffdb_types::EntityKey,
+        newest_source_write: Option<CommitSequence>,
+        embedding_write: Option<(CommitSequence, riffdb_types::EmbeddingMetadata)>,
+    ) -> Self {
+        Self {
+            entity_key,
+            newest_source_write,
+            embedding_write,
+        }
+    }
+    /// Opaque entity identity; never log or render without output authority.
+    #[must_use]
+    pub const fn entity_key(&self) -> &riffdb_types::EntityKey {
+        &self.entity_key
+    }
+    /// Newest declared source write.
+    #[must_use]
+    pub const fn newest_source_write(&self) -> Option<CommitSequence> {
+        self.newest_source_write
+    }
+    /// Exact embedding revision and model, when present.
+    #[must_use]
+    pub const fn embedding_write(
+        &self,
+    ) -> Option<&(CommitSequence, riffdb_types::EmbeddingMetadata)> {
+        self.embedding_write.as_ref()
+    }
+}
+
+/// Lower bounded evidence-index request; constructed only after symbolic resolution.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AuthoritativeVectorEvidenceRequest {
+    target: AuthoritativeVectorTarget,
+    after: Option<riffdb_types::EntityKey>,
+    limit: PageLimit,
+}
+
+impl AuthoritativeVectorEvidenceRequest {
+    /// Joins one resolved target and bounded lower continuation.
+    #[must_use]
+    pub const fn new(
+        target: AuthoritativeVectorTarget,
+        after: Option<riffdb_types::EntityKey>,
+        limit: PageLimit,
+    ) -> Self {
+        Self {
+            target,
+            after,
+            limit,
+        }
+    }
+    /// Exact target.
+    #[must_use]
+    pub const fn target(&self) -> &AuthoritativeVectorTarget {
+        &self.target
+    }
+    /// Exclusive lower continuation.
+    #[must_use]
+    pub const fn after(&self) -> Option<&riffdb_types::EntityKey> {
+        self.after.as_ref()
+    }
+    /// Fixed service page bound.
+    #[must_use]
+    pub const fn limit(&self) -> PageLimit {
+        self.limit
+    }
+}
+
+/// One bounded policy-neutral lower page.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AuthoritativeVectorEvidencePage {
+    rows: Vec<AuthoritativeVectorEvidenceRow>,
+    continuation: Option<riffdb_types::EntityKey>,
+    exact_end: bool,
+}
+
+impl AuthoritativeVectorEvidencePage {
+    /// Retains a storage-validated bounded page.
+    #[must_use]
+    pub const fn new(
+        rows: Vec<AuthoritativeVectorEvidenceRow>,
+        continuation: Option<riffdb_types::EntityKey>,
+        exact_end: bool,
+    ) -> Self {
+        Self {
+            rows,
+            continuation,
+            exact_end,
+        }
+    }
+    /// Policy-neutral candidates.
+    #[must_use]
+    pub fn rows(&self) -> &[AuthoritativeVectorEvidenceRow] {
+        &self.rows
+    }
+    /// Exclusive continuation.
+    #[must_use]
+    pub const fn continuation(&self) -> Option<&riffdb_types::EntityKey> {
+        self.continuation.as_ref()
+    }
+    /// Exact end marker.
+    #[must_use]
+    pub const fn exact_end(&self) -> bool {
+        self.exact_end
+    }
+}
+
 /// Move-only bounded source behind an established commit subscription.
 ///
 /// Each implementation owns exactly one
@@ -729,6 +951,37 @@ pub trait CommitNotificationSource: Send {
 
 /// Authoritative entity, outcome, commit, provenance, and capability observations.
 pub trait AuthoritativeReadPort: Send + Sync {
+    /// Reserves one exact maintained vector-observation read.
+    fn reserve_vector_observation<'a>(
+        &'a self,
+        _control: &'a RequestControl,
+    ) -> PortFuture<
+        'a,
+        BoxPortCapacityPermit<
+            AuthoritativeVectorTarget,
+            Option<AuthoritativeVectorObservation>,
+            AuthoritativeReadError,
+        >,
+        PortAdmissionError,
+    > {
+        Box::pin(async { Err(PortAdmissionError::Stopped) })
+    }
+
+    /// Reserves one bounded policy-neutral vector evidence page.
+    fn reserve_vector_evidence<'a>(
+        &'a self,
+        _control: &'a RequestControl,
+    ) -> PortFuture<
+        'a,
+        BoxPortCapacityPermit<
+            AuthoritativeVectorEvidenceRequest,
+            AuthoritativeVectorEvidencePage,
+            AuthoritativeReadError,
+        >,
+        PortAdmissionError,
+    > {
+        Box::pin(async { Err(PortAdmissionError::Stopped) })
+    }
     /// Reserves capacity for one opaque-wakeup application-head observation.
     fn reserve_application_head<'a>(
         &'a self,

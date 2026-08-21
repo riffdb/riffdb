@@ -53,7 +53,9 @@ use riffdb_storage_api::{
     StoredCapabilityRecordV1, StoredCommitRecordV1, StoredContractBundleV1,
     StoredContractMigrationEdgeV1, StoredDurableEventV1, StoredEntityRecordV1, StoredOutcomeV1,
     StoredProvenanceRecordV1, StoredQueryModuleV1, StoredReactiveModuleV1,
-    UndeliveredOutboxStatusScanRequestV1, UndeliveredOutboxStatusScanV1,
+    UndeliveredOutboxStatusScanRequestV1, UndeliveredOutboxStatusScanV1, VectorEvidenceIndexPageV1,
+    VectorEvidenceIndexRepository, VectorEvidenceIndexScanRequestV1, VectorObservationCountsV1,
+    VectorObservationRepository, VectorObservationTargetV1,
 };
 use riffdb_storage_redb::{RedbOperationalPorts, RedbSharedPorts};
 use riffdb_types::{
@@ -1434,6 +1436,24 @@ impl CapabilityInventoryReader for SharedRedbOperationalPorts {
         limit: StorageScanLimit,
     ) -> Result<riffdb_storage_api::CapabilityInventoryPageV1, StorageError> {
         CapabilityInventoryReader::scan_capabilities(&self.shared, after, limit)
+    }
+}
+
+impl VectorObservationRepository for SharedRedbOperationalPorts {
+    fn read_vector_observation(
+        &self,
+        target: &VectorObservationTargetV1,
+    ) -> Result<Option<VectorObservationCountsV1>, StorageError> {
+        VectorObservationRepository::read_vector_observation(&self.shared, target)
+    }
+}
+
+impl VectorEvidenceIndexRepository for SharedRedbOperationalPorts {
+    fn scan_vector_evidence_index(
+        &self,
+        request: &VectorEvidenceIndexScanRequestV1,
+    ) -> Result<VectorEvidenceIndexPageV1, StorageError> {
+        VectorEvidenceIndexRepository::scan_vector_evidence_index(&self.shared, request)
     }
 }
 
