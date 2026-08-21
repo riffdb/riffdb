@@ -719,6 +719,11 @@ fn expected_enum_values() -> BTreeSet<String> {
             31,
             "CAPABILITY_PERMISSION_KIND_INSTALL_APPLICATION",
         ),
+        (
+            "riffdb.v1.CapabilityPermissionKind",
+            32,
+            "CAPABILITY_PERMISSION_KIND_INSPECT_VECTOR_STATE",
+        ),
         // Inherited-base completeness repair, not a WP-596 enum addition:
         // bac8c0db added this enum and its generated fixture rows before the
         // WP-596 base, but omitted them from this exhaustive expected set.

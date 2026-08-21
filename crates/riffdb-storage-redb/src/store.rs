@@ -67,7 +67,7 @@ use crate::layout::{
     META_RECORD_REGISTRY, META_RETENTION_HOLDS, META_RETENTION_WATERMARK,
     META_VALIDATED_PREFIX_CHECKPOINT, OUTBOX, SECONDARY_INDEXES, TABLE_NAMES,
     VALIDATED_PREFIX_ENTITY_HEADS, VECTOR_EVIDENCE, VECTOR_EVIDENCE_INDEX, VECTOR_OBSERVATIONS,
-    create_all_tables,
+    VECTOR_PROJECTION_CONTROLS, create_all_tables,
 };
 use crate::media::{DynStorageBackend, JournalMedia, RealJournalMedia, RedbStorageMedia};
 use crate::transient::{
@@ -949,6 +949,7 @@ enum RegistryMigration {
     VectorEvidence,
     VectorObservations,
     VectorHealthObservations,
+    VectorProjectionControls,
 }
 
 const FORMAT_MIGRATION_MAX_ROWS: usize = 500;
@@ -1037,6 +1038,12 @@ pub(crate) const PRE_VECTOR_OBSERVATION_REGISTRY_DIGEST: [u8; 32] = [
 pub(crate) const PRE_VECTOR_HEALTH_OBSERVATION_REGISTRY_DIGEST: [u8; 32] = [
     0x6b, 0x17, 0x4a, 0x49, 0xe8, 0x30, 0xcd, 0x9c, 0x05, 0x7a, 0xef, 0xd7, 0x17, 0x94, 0x92, 0x7c,
     0xc9, 0x99, 0xa3, 0xa7, 0x13, 0xdb, 0x62, 0x75, 0x71, 0x21, 0x3c, 0x56, 0x96, 0xac, 0xc5, 0x72,
+];
+/// Registry digest immediately before vector projection lifecycle controls
+/// became authoritative and retention-visible.
+pub(crate) const PRE_VECTOR_PROJECTION_CONTROL_REGISTRY_DIGEST: [u8; 32] = [
+    0x84, 0x54, 0x2f, 0x62, 0xcf, 0xa3, 0x45, 0x05, 0xd7, 0x88, 0xe8, 0xfb, 0x82, 0x5c, 0xd4, 0x24,
+    0xea, 0xcb, 0x1b, 0x49, 0x5b, 0xda, 0x5b, 0x53, 0xf9, 0x53, 0xf6, 0x68, 0x96, 0x77, 0x33, 0x37,
 ];
 
 /// Last observed redb repair progress in basis points (0..=10_000), for recovery telemetry.
@@ -1498,6 +1505,10 @@ impl RedbStore {
                     == &SchemaHash::from_bytes(PRE_VECTOR_HEALTH_OBSERVATION_REGISTRY_DIGEST)
                 {
                     RegistryMigration::VectorHealthObservations
+                } else if observed.value()
+                    == &SchemaHash::from_bytes(PRE_VECTOR_PROJECTION_CONTROL_REGISTRY_DIGEST)
+                {
+                    RegistryMigration::VectorProjectionControls
                 } else {
                     return Err(storage_error(StorageErrorKind::IncompatibleFormat));
                 }
@@ -1745,6 +1756,20 @@ impl RedbStore {
             publish_record_registry(
                 &self.shared,
                 SchemaHash::from_bytes(PRE_VECTOR_HEALTH_OBSERVATION_REGISTRY_DIGEST),
+                SchemaHash::from_bytes(PRE_VECTOR_PROJECTION_CONTROL_REGISTRY_DIGEST),
+            )?;
+        }
+        if format == StorageFormatVersion::V2
+            && (matches!(
+                registry_migration,
+                RegistryMigration::VectorProjectionControls
+            ) || observed_registry_digest(&self.shared)?
+                == SchemaHash::from_bytes(PRE_VECTOR_PROJECTION_CONTROL_REGISTRY_DIGEST))
+        {
+            install_vector_projection_controls_table(&self.shared)?;
+            publish_record_registry(
+                &self.shared,
+                SchemaHash::from_bytes(PRE_VECTOR_PROJECTION_CONTROL_REGISTRY_DIGEST),
                 riffdb_storage_api::proto_codec::current_record_registry_digest(),
             )?;
         }
@@ -3127,6 +3152,19 @@ fn install_vector_observations_table(shared: &SharedRedb) -> Result<(), StorageE
     );
     shared.commit_durable(transaction)?;
     backfill_vector_evidence_index(shared)
+}
+
+fn install_vector_projection_controls_table(shared: &SharedRedb) -> Result<(), StorageError> {
+    let mut transaction = shared.database.begin_write().map_err(transaction_error)?;
+    transaction
+        .set_durability(Durability::Immediate)
+        .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+    drop(
+        transaction
+            .open_table(VECTOR_PROJECTION_CONTROLS)
+            .map_err(table_error)?,
+    );
+    shared.commit_durable(transaction)
 }
 
 fn backfill_vector_evidence_index(shared: &SharedRedb) -> Result<(), StorageError> {
@@ -7250,7 +7288,16 @@ fn classify_table_names(
         .iter()
         .map(|name| (*name).to_owned())
         .collect::<BTreeSet<_>>();
-    if tables == expected {
+    // Vector projection control is the newest additive table. Normalize only
+    // that exact absence while classifying the already-enumerated predecessor
+    // layouts below; the registry migration installs it before publishing the
+    // successor registry digest. No other missing or extra table is hidden.
+    let mut with_vector_projection_control = tables.clone();
+    with_vector_projection_control.insert("vector_projection_controls".to_owned());
+    let matches = |candidate: &BTreeSet<String>| {
+        tables == *candidate || with_vector_projection_control == *candidate
+    };
+    if matches(&expected) {
         return Ok(LayoutState::Initialized);
     }
     // The immediate predecessor lacks only the authoritative reciprocal
@@ -7259,20 +7306,20 @@ fn classify_table_names(
     // that already installed vector observations before a crash.
     let mut pre_vector_index = expected.clone();
     pre_vector_index.remove("vector_evidence_index");
-    if tables == pre_vector_index {
+    if matches(&pre_vector_index) {
         return Ok(LayoutState::Initialized);
     }
     // The earlier predecessor lacks observations and their reciprocal index.
     let mut pre_vector_observations = pre_vector_index;
     pre_vector_observations.remove("vector_observations");
-    if tables == pre_vector_observations {
+    if matches(&pre_vector_observations) {
         return Ok(LayoutState::Initialized);
     }
     // The earlier predecessor lacks authoritative vector evidence and
     // observations. Its registry advances only after each empty table is installed.
     let mut pre_vector_evidence = pre_vector_observations;
     pre_vector_evidence.remove("vector_evidence");
-    if tables == pre_vector_evidence {
+    if matches(&pre_vector_evidence) {
         return Ok(LayoutState::Initialized);
     }
     // The immediate predecessor lacks only the additive checkpoint-head proof
@@ -7280,7 +7327,7 @@ fn classify_table_names(
     // rotation because its values reuse the frozen EntityChainHeadV1 codec.
     let mut pre_checkpoint_entity_heads = pre_vector_evidence.clone();
     pre_checkpoint_entity_heads.remove("validated_prefix_entity_heads");
-    if tables == pre_checkpoint_entity_heads {
+    if matches(&pre_checkpoint_entity_heads) {
         return Ok(LayoutState::InitializedWithoutValidatedPrefixEntityHeads);
     }
     // The WP-575 predecessor lacks only durable application-export operation
@@ -7290,24 +7337,24 @@ fn classify_table_names(
     // are separate crash boundaries.
     let mut pre_application_export_with_checkpoint_heads = pre_vector_evidence;
     pre_application_export_with_checkpoint_heads.remove("application_export_operations");
-    if tables == pre_application_export_with_checkpoint_heads {
+    if matches(&pre_application_export_with_checkpoint_heads) {
         return Ok(LayoutState::Initialized);
     }
     let mut pre_application_export = pre_checkpoint_entity_heads;
     pre_application_export.remove("application_export_operations");
-    if tables == pre_application_export {
+    if matches(&pre_application_export) {
         return Ok(LayoutState::InitializedWithoutValidatedPrefixEntityHeads);
     }
     // The immediate predecessor lacks only delete-aware entity-chain heads.
     let mut pre_entity_transitions = pre_application_export;
     pre_entity_transitions.remove("entity_chain_heads");
-    if tables == pre_entity_transitions {
+    if matches(&pre_entity_transitions) {
         return Ok(LayoutState::InitializedWithoutValidatedPrefixEntityHeads);
     }
     // Pre-retention layout: missing history_tombstones is migration-eligible.
     let mut pre_retention = pre_entity_transitions;
     pre_retention.remove("history_tombstones");
-    if tables == pre_retention {
+    if matches(&pre_retention) {
         return Ok(LayoutState::InitializedWithoutValidatedPrefixEntityHeads);
     }
     // Pre-audit-request-index layout: exactly the 21-table predecessor is
@@ -7315,12 +7362,12 @@ fn classify_table_names(
     // ensure_current_storage_format creates audit_by_request before any write path.
     let mut pre_event_route = pre_retention;
     pre_event_route.remove("event_routes");
-    if tables == pre_event_route {
+    if matches(&pre_event_route) {
         return Ok(LayoutState::InitializedWithoutValidatedPrefixEntityHeads);
     }
     let mut pre_audit_request_index = pre_event_route;
     pre_audit_request_index.remove("audit_by_request");
-    if tables == pre_audit_request_index {
+    if matches(&pre_audit_request_index) {
         return Ok(LayoutState::InitializedWithoutValidatedPrefixEntityHeads);
     }
     if tables.iter().any(|name| !expected.contains(name)) {
@@ -7806,6 +7853,71 @@ mod tests {
             transaction
                 .open_table(crate::layout::VECTOR_OBSERVATIONS)
                 .expect("vector observation table")
+                .is_empty()
+                .expect("table length")
+        );
+        let metadata = transaction.open_table(META).expect("metadata");
+        let encoded = metadata
+            .get(META_RECORD_REGISTRY)
+            .expect("registry read")
+            .expect("registry");
+        assert_eq!(
+            *decode_record_registry_v2(encoded.value())
+                .expect("decode registry")
+                .value(),
+            riffdb_storage_api::proto_codec::current_record_registry_digest()
+        );
+    }
+
+    #[test]
+    fn pre_vector_projection_control_registry_installs_table_before_publication() {
+        let scope =
+            crate::test_path::ScopedDirectory::new("pre-vector-projection-control-registry");
+        let path = scope.join("db.redb");
+        let mut store = RedbStore::open(&path).expect("open");
+        let database_id = DatabaseId::from_bytes({
+            let mut bytes = [0x25; 16];
+            bytes[6] = 0x75;
+            bytes[8] = 0xa5;
+            bytes
+        })
+        .expect("database");
+        store.initialize_database(database_id).expect("initialize");
+        {
+            let mut transaction = store
+                .shared
+                .database
+                .begin_write()
+                .expect("begin predecessor write");
+            transaction
+                .set_durability(Durability::Immediate)
+                .expect("durability");
+            transaction
+                .delete_table(crate::layout::VECTOR_PROJECTION_CONTROLS)
+                .expect("remove successor table");
+            let predecessor = encode_record_registry_v2(SchemaHash::from_bytes(
+                PRE_VECTOR_PROJECTION_CONTROL_REGISTRY_DIGEST,
+            ))
+            .expect("predecessor registry");
+            transaction
+                .open_table(META)
+                .expect("metadata")
+                .insert(META_RECORD_REGISTRY, predecessor.as_bytes())
+                .expect("pin predecessor registry");
+            transaction.commit().expect("commit predecessor fixture");
+        }
+        drop(store);
+
+        let reopened = RedbStore::open(&path).expect("migrate predecessor");
+        let transaction = reopened
+            .shared
+            .database
+            .begin_read()
+            .expect("read migrated database");
+        assert!(
+            transaction
+                .open_table(crate::layout::VECTOR_PROJECTION_CONTROLS)
+                .expect("vector projection control table")
                 .is_empty()
                 .expect("table length")
         );

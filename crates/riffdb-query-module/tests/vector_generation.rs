@@ -75,6 +75,12 @@ query SimilarDocuments(
 }
 "#;
 
+const VECTOR_EXIT_CONTRACT: &str = include_str!("../../../fixtures/vector-exit/documents.riff");
+const VECTOR_EXIT_QUERY: &str =
+    include_str!("../../../fixtures/vector-exit/similar_documents.riffq");
+const VECTOR_EXIT_GENERATED: &str =
+    include_str!("../../../fixtures/vector-exit/generated-client.rs");
+
 fn application() -> (riffdb_contract_ir::ContractBundle, QueryModule) {
     let contract = compile_contract_source(CONTRACT).expect("vector contract compiles");
     let candidate = QueryModuleCandidate::new(
@@ -85,6 +91,23 @@ fn application() -> (riffdb_contract_ir::ContractBundle, QueryModule) {
     .expect("module candidate");
     let module = QueryModule::compile(candidate, &contract).expect("query module");
     (contract, module)
+}
+
+#[test]
+fn remote_vector_exit_client_fixture_is_exactly_generator_owned() {
+    let contract =
+        compile_contract_source(VECTOR_EXIT_CONTRACT).expect("vector exit contract compiles");
+    let candidate = QueryModuleCandidate::new(
+        QueryModuleName::new("vector_documents").expect("module name"),
+        QueryModuleVersion::new(1).expect("module version"),
+        vec![NamedQuerySource::new("SimilarDocuments", VECTOR_EXIT_QUERY).expect("query source")],
+    )
+    .expect("module candidate");
+    let module = QueryModule::compile(candidate, &contract).expect("vector exit module");
+    assert_eq!(
+        generate_rust_application_client(&module, &contract, &[]),
+        VECTOR_EXIT_GENERATED
+    );
 }
 
 #[test]

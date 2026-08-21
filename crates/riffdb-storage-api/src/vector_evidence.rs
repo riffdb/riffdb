@@ -4,7 +4,7 @@ use std::{collections::BTreeMap, fmt};
 
 use riffdb_types::{
     CommitSequence, ContractLineage, EmbeddingMetadata, EntityKey, EntityTypeId, EntityVersion,
-    FieldId, PartitionKey, ProvenanceId,
+    FieldId, FrontierPosition, PartitionKey, ProjectionGeneration, ProvenanceId,
 };
 
 use crate::{
@@ -25,6 +25,132 @@ pub const MAX_VECTOR_MODELS_PER_OBSERVATION: usize = 256;
 /// durable summary independently bounded prevents a corrupt record from
 /// turning an authenticated health probe into unbounded allocation.
 pub const MAX_VECTOR_FIELDS_PER_HEALTH_OBSERVATION: usize = 256;
+
+/// Durable lifecycle for one compiler-declared vector projection source.
+///
+/// Unlike the generic aggregate projection identity, this identity is the
+/// stable `(lineage, entity, vector field)` tuple. A model or layout successor
+/// therefore allocates a new generation under the same logical source instead
+/// of inventing a colliding synthetic `ProjectionId`.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum VectorProjectionLifecycleV1 {
+    /// No complete generation has been published yet.
+    Building,
+    /// One complete generation is queryable and owns a retention frontier.
+    Ready,
+    /// A replay limit was breached and the old retention frontier is detached.
+    RebuildRequired,
+    /// A bounded authoritative snapshot replacement is being assembled.
+    Rebuilding,
+    /// Durable control or rebuild input failed closed.
+    Invalid,
+}
+
+impl VectorProjectionLifecycleV1 {
+    /// Stable durable semantic tag.
+    #[must_use]
+    pub const fn tag(self) -> u8 {
+        match self {
+            Self::Building => 0x01,
+            Self::Ready => 0x02,
+            Self::RebuildRequired => 0x03,
+            Self::Rebuilding => 0x04,
+            Self::Invalid => 0x05,
+        }
+    }
+
+    /// Decodes one stable durable semantic tag.
+    #[must_use]
+    pub const fn from_tag(tag: u8) -> Option<Self> {
+        match tag {
+            0x01 => Some(Self::Building),
+            0x02 => Some(Self::Ready),
+            0x03 => Some(Self::RebuildRequired),
+            0x04 => Some(Self::Rebuilding),
+            0x05 => Some(Self::Invalid),
+            _ => None,
+        }
+    }
+}
+
+/// Closed reason for a vector-projection rebuild.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum VectorProjectionRebuildReasonV1 {
+    /// Retained commit age exceeded the compiler-sealed limit.
+    ReplayAge,
+    /// Retained encoded commit bytes exceeded the compiler-sealed limit.
+    ReplayBytes,
+    /// Head-to-durable sequence distance exceeded the compiler-sealed limit.
+    ReplayBacklog,
+    /// The exact model/layout definition changed under a successor contract.
+    DefinitionChanged,
+}
+
+impl VectorProjectionRebuildReasonV1 {
+    /// Stable durable semantic tag.
+    #[must_use]
+    pub const fn tag(self) -> u8 {
+        match self {
+            Self::ReplayAge => 0x01,
+            Self::ReplayBytes => 0x02,
+            Self::ReplayBacklog => 0x03,
+            Self::DefinitionChanged => 0x04,
+        }
+    }
+
+    /// Decodes one stable durable semantic tag.
+    #[must_use]
+    pub const fn from_tag(tag: u8) -> Option<Self> {
+        match tag {
+            0x01 => Some(Self::ReplayAge),
+            0x02 => Some(Self::ReplayBytes),
+            0x03 => Some(Self::ReplayBacklog),
+            0x04 => Some(Self::DefinitionChanged),
+            _ => None,
+        }
+    }
+}
+
+/// Compiler-sealed positive replay limits persisted with vector control.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct VectorProjectionReplayLimitsV1 {
+    age_seconds: u64,
+    bytes: u64,
+    backlog: u64,
+}
+
+impl VectorProjectionReplayLimitsV1 {
+    /// Constructs positive limits. Compiler maxima remain enforced by IR;
+    /// storage independently refuses the unsafe zero sentinel.
+    pub const fn new(age_seconds: u64, bytes: u64, backlog: u64) -> Option<Self> {
+        if age_seconds == 0 || bytes == 0 || backlog == 0 {
+            return None;
+        }
+        Some(Self {
+            age_seconds,
+            bytes,
+            backlog,
+        })
+    }
+
+    /// Maximum retained replay age.
+    #[must_use]
+    pub const fn age_seconds(self) -> u64 {
+        self.age_seconds
+    }
+
+    /// Maximum retained encoded bytes.
+    #[must_use]
+    pub const fn bytes(self) -> u64 {
+        self.bytes
+    }
+
+    /// Maximum retained sequence backlog.
+    #[must_use]
+    pub const fn backlog(self) -> u64 {
+        self.backlog
+    }
+}
 
 /// Pure-read port for one exact authoritative vector-observation row.
 ///
@@ -181,6 +307,207 @@ pub struct VectorObservationTargetV1 {
     partition_key: PartitionKey,
     entity_type: EntityTypeId,
     vector_field: FieldId,
+}
+
+/// Stable logical identity of one compiler-declared vector projection.
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct VectorProjectionSourceV1 {
+    lineage: ContractLineage,
+    entity_type: EntityTypeId,
+    vector_field: FieldId,
+}
+
+impl VectorProjectionSourceV1 {
+    /// Constructs a source identity from compiler-owned stable IDs.
+    #[must_use]
+    pub const fn new(
+        lineage: ContractLineage,
+        entity_type: EntityTypeId,
+        vector_field: FieldId,
+    ) -> Self {
+        Self {
+            lineage,
+            entity_type,
+            vector_field,
+        }
+    }
+
+    /// Contract lineage owning this projection.
+    #[must_use]
+    pub const fn lineage(&self) -> &ContractLineage {
+        &self.lineage
+    }
+
+    /// Compiler-assigned entity identity.
+    #[must_use]
+    pub const fn entity_type(&self) -> EntityTypeId {
+        self.entity_type
+    }
+
+    /// Compiler-assigned vector field identity.
+    #[must_use]
+    pub const fn vector_field(&self) -> FieldId {
+        self.vector_field
+    }
+}
+
+/// Durable control for one vector projection and its current generation.
+///
+/// `Ready` is the only lifecycle whose frontier participates in retention.
+/// Every rebuild state is therefore detached by construction rather than by a
+/// second fallible administration write.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StoredVectorProjectionControlV1 {
+    source: VectorProjectionSourceV1,
+    generation: ProjectionGeneration,
+    definition_fingerprint: [u8; 32],
+    lifecycle: VectorProjectionLifecycleV1,
+    published_frontier: FrontierPosition,
+    rebuild_snapshot_frontier: Option<FrontierPosition>,
+    rebuild_reason: Option<VectorProjectionRebuildReasonV1>,
+    limits: VectorProjectionReplayLimitsV1,
+}
+
+impl StoredVectorProjectionControlV1 {
+    /// Constructs and validates one complete durable control record.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        source: VectorProjectionSourceV1,
+        generation: ProjectionGeneration,
+        definition_fingerprint: [u8; 32],
+        lifecycle: VectorProjectionLifecycleV1,
+        published_frontier: FrontierPosition,
+        rebuild_snapshot_frontier: Option<FrontierPosition>,
+        rebuild_reason: Option<VectorProjectionRebuildReasonV1>,
+        limits: VectorProjectionReplayLimitsV1,
+    ) -> Result<Self, StorageValueError> {
+        let rebuild = matches!(
+            lifecycle,
+            VectorProjectionLifecycleV1::RebuildRequired | VectorProjectionLifecycleV1::Rebuilding
+        );
+        if rebuild != rebuild_reason.is_some()
+            || (lifecycle == VectorProjectionLifecycleV1::Rebuilding)
+                != rebuild_snapshot_frontier.is_some()
+            || lifecycle == VectorProjectionLifecycleV1::Building
+                && published_frontier != FrontierPosition::BeforeFirst
+        {
+            return Err(StorageValueError::InvalidShape);
+        }
+        Ok(Self {
+            source,
+            generation,
+            definition_fingerprint,
+            lifecycle,
+            published_frontier,
+            rebuild_snapshot_frontier,
+            rebuild_reason,
+            limits,
+        })
+    }
+
+    /// Creates the first detached, unpublished generation.
+    #[must_use]
+    pub fn initial(
+        source: VectorProjectionSourceV1,
+        definition_fingerprint: [u8; 32],
+        limits: VectorProjectionReplayLimitsV1,
+    ) -> Self {
+        Self {
+            source,
+            generation: ProjectionGeneration::first(),
+            definition_fingerprint,
+            lifecycle: VectorProjectionLifecycleV1::Building,
+            published_frontier: FrontierPosition::BeforeFirst,
+            rebuild_snapshot_frontier: None,
+            rebuild_reason: None,
+            limits,
+        }
+    }
+
+    /// Stable logical source.
+    #[must_use]
+    pub const fn source(&self) -> &VectorProjectionSourceV1 {
+        &self.source
+    }
+
+    /// Never-reused generation.
+    #[must_use]
+    pub const fn generation(&self) -> ProjectionGeneration {
+        self.generation
+    }
+
+    /// Exact derived-layout/model fingerprint.
+    #[must_use]
+    pub const fn definition_fingerprint(&self) -> &[u8; 32] {
+        &self.definition_fingerprint
+    }
+
+    /// Current durable lifecycle.
+    #[must_use]
+    pub const fn lifecycle(&self) -> VectorProjectionLifecycleV1 {
+        self.lifecycle
+    }
+
+    /// Last completely published frontier. It never advances during rebuild.
+    #[must_use]
+    pub const fn published_frontier(&self) -> FrontierPosition {
+        self.published_frontier
+    }
+
+    /// Stable snapshot frontier selected for a rebuilding generation.
+    #[must_use]
+    pub const fn rebuild_snapshot_frontier(&self) -> Option<FrontierPosition> {
+        self.rebuild_snapshot_frontier
+    }
+
+    /// Closed rebuild reason, present only in rebuild states.
+    #[must_use]
+    pub const fn rebuild_reason(&self) -> Option<VectorProjectionRebuildReasonV1> {
+        self.rebuild_reason
+    }
+
+    /// Compiler-sealed replay limits.
+    #[must_use]
+    pub const fn limits(&self) -> VectorProjectionReplayLimitsV1 {
+        self.limits
+    }
+
+    /// Whether this control contributes its frontier to retention.
+    #[must_use]
+    pub const fn retention_attached(&self) -> bool {
+        matches!(self.lifecycle, VectorProjectionLifecycleV1::Ready)
+    }
+}
+
+/// Compare-and-set result for one durable vector-control transition.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum VectorProjectionControlWriteResultV1 {
+    /// Replacement was durably applied.
+    Applied,
+    /// Current state differed from the caller's exact expected state.
+    CompareMismatch,
+    /// Current state already equals the requested replacement.
+    Unchanged,
+}
+
+/// Durable control repository. Implementations must compare and replace in one
+/// transaction so detachment and `RebuildRequired` are one fact.
+pub trait VectorProjectionControlRepository {
+    /// Reads one exact logical source.
+    fn read_vector_projection_control(
+        &self,
+        source: &VectorProjectionSourceV1,
+    ) -> Result<Option<StoredVectorProjectionControlV1>, StorageError>;
+
+    /// Atomically compares and replaces one exact logical source.
+    fn compare_and_set_vector_projection_control(
+        &self,
+        expected: Option<&StoredVectorProjectionControlV1>,
+        replacement: &StoredVectorProjectionControlV1,
+    ) -> Result<VectorProjectionControlWriteResultV1, StorageError>;
+
+    /// Returns every attached control frontier for retention calculation.
+    fn attached_vector_projection_frontiers(&self) -> Result<Vec<FrontierPosition>, StorageError>;
 }
 
 impl VectorObservationTargetV1 {
@@ -1516,5 +1843,89 @@ mod index_page_tests {
             .is_err()
         );
         assert!(VectorEvidenceIndexPageV1::new(&target(), Vec::new(), None, true, 0).is_ok());
+    }
+}
+
+#[cfg(test)]
+mod projection_control_tests {
+    use super::*;
+
+    fn source() -> VectorProjectionSourceV1 {
+        VectorProjectionSourceV1::new(
+            ContractLineage::new("vectors").expect("lineage"),
+            EntityTypeId::new(2).expect("entity"),
+            FieldId::new(4).expect("field"),
+        )
+    }
+
+    fn limits() -> VectorProjectionReplayLimitsV1 {
+        VectorProjectionReplayLimitsV1::new(60, 1_024, 10).expect("limits")
+    }
+
+    #[test]
+    fn only_ready_control_contributes_to_retention() {
+        let initial = StoredVectorProjectionControlV1::initial(source(), [0x11; 32], limits());
+        assert!(!initial.retention_attached());
+        crate::encode_vector_projection_control_v1(&initial).expect("control codec");
+
+        let ready = StoredVectorProjectionControlV1::new(
+            source(),
+            ProjectionGeneration::first(),
+            [0x11; 32],
+            VectorProjectionLifecycleV1::Ready,
+            FrontierPosition::AppliedThrough(CommitSequence::new(7).expect("sequence")),
+            None,
+            None,
+            limits(),
+        )
+        .expect("ready");
+        assert!(ready.retention_attached());
+
+        let detached = StoredVectorProjectionControlV1::new(
+            source(),
+            ProjectionGeneration::new(2).expect("generation"),
+            [0x22; 32],
+            VectorProjectionLifecycleV1::RebuildRequired,
+            ready.published_frontier(),
+            None,
+            Some(VectorProjectionRebuildReasonV1::ReplayBacklog),
+            limits(),
+        )
+        .expect("detached");
+        assert!(!detached.retention_attached());
+        assert_eq!(detached.published_frontier(), ready.published_frontier());
+    }
+
+    #[test]
+    fn rebuild_shape_is_closed_and_limits_are_positive() {
+        assert!(VectorProjectionReplayLimitsV1::new(0, 1, 1).is_none());
+        assert!(
+            StoredVectorProjectionControlV1::new(
+                source(),
+                ProjectionGeneration::first(),
+                [0; 32],
+                VectorProjectionLifecycleV1::Ready,
+                FrontierPosition::BeforeFirst,
+                None,
+                Some(VectorProjectionRebuildReasonV1::ReplayAge),
+                limits(),
+            )
+            .is_err()
+        );
+        assert!(
+            StoredVectorProjectionControlV1::new(
+                source(),
+                ProjectionGeneration::new(2).expect("generation"),
+                [0; 32],
+                VectorProjectionLifecycleV1::Rebuilding,
+                FrontierPosition::BeforeFirst,
+                Some(FrontierPosition::AppliedThrough(
+                    CommitSequence::new(9).expect("sequence")
+                )),
+                Some(VectorProjectionRebuildReasonV1::DefinitionChanged),
+                limits(),
+            )
+            .is_ok()
+        );
     }
 }

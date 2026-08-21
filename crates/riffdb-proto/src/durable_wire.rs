@@ -957,8 +957,15 @@ shape!(VECTOR_HEALTH_OBSERVATION [
     string(1, MAX_TEXT_ID_BYTES),
     repeated_message(2, 256, &VECTOR_HEALTH_FIELD),
 ]);
+shape!(VECTOR_PROJECTION_FRONTIER []);
+shape!(VECTOR_PROJECTION_CONTROL [
+    string(1, MAX_TEXT_ID_BYTES),
+    fixed_bytes(5, 32),
+    message(7, &VECTOR_PROJECTION_FRONTIER),
+    message(8, &VECTOR_PROJECTION_FRONTIER),
+]);
 
-const ROOTS: [&Shape; 88] = [
+const ROOTS: [&Shape; 89] = [
     &ROOT_EMPTY,
     &ROOT_DATABASE_ID,
     &ROOT_OPTIONAL_UNIT_FIELD_TWO,
@@ -1058,6 +1065,7 @@ const ROOTS: [&Shape; 88] = [
     &VECTOR_OBSERVATION,
     &VECTOR_EVIDENCE_INDEX,
     &VECTOR_HEALTH_OBSERVATION,
+    &VECTOR_PROJECTION_CONTROL,
 ];
 
 pub(crate) fn payload(record_index: usize, input: &[u8]) -> Result<(), DurablePreflightError> {

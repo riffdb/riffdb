@@ -226,8 +226,16 @@ queries use an explicit projected source and freshness declaration. The
 running server synchronizes compiler-owned vector sources after checked
 contract activation, including the first deployment into an empty database;
 no daemon restart is required. A successor that would reuse incompatible
-derived state fails closed until its declared rebuild lifecycle publishes a
-replacement generation. See the
+derived state allocates a distinct durable generation and fails closed until
+its rebuild publishes a complete replacement. Rebuild captures one bounded
+authoritative entity snapshot, applies the retained commit tail, checkpoints
+the candidate, and only then publishes `Ready`; a partial snapshot is never
+queryable. The compiler-owned replay age, byte, and backlog ceilings detach an
+over-budget generation from retention and trigger the same snapshot-plus-tail
+path. `Building`, `RebuildRequired`, and `Rebuilding` are typed temporary
+states, not permission to serve the previous generation. Only `Ready` controls
+hold commit-log retention. A crash or restart resumes from the durable control
+record without claiming a frontier beyond the exact checkpoint. See the
 [RiffQL language reference](../riffql/LANGUAGE.md#nearest-neighbor-bindings-alpha).
 
 ## Revision-checked workflow transitions

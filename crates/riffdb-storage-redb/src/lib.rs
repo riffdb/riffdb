@@ -144,6 +144,7 @@ pub fn query_execute_census_v1() -> QueryExecuteCensusV1 {
 }
 mod transient;
 mod validated_prefix;
+mod vector_projection_control;
 
 pub use backup::{
     RedbOfflineBackup, RedbOfflineRestore, read_history_incarnation, stamp_history_incarnation,

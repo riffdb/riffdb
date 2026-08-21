@@ -3,13 +3,15 @@
 use riffdb_proto::storage::v1 as wire;
 use riffdb_types::{
     CommitSequence, ContractLineage, EmbeddingMetadata, EntityTypeId, EntityVersion, FieldId,
-    PartitionKey, ProvenanceId,
+    FrontierPosition, PartitionKey, ProjectionGeneration, ProvenanceId,
 };
 
 use crate::{
     EncodedPageItem, StoredVectorEmbeddingWriteV1, StoredVectorEvidenceV1,
-    VectorEvidenceIndexEntryV1, VectorHealthFieldObservationV1, VectorHealthObservationV1,
-    VectorObservationCountsV1, VectorObservationTargetV1,
+    StoredVectorProjectionControlV1, VectorEvidenceIndexEntryV1, VectorHealthFieldObservationV1,
+    VectorHealthObservationV1, VectorObservationCountsV1, VectorObservationTargetV1,
+    VectorProjectionLifecycleV1, VectorProjectionRebuildReasonV1, VectorProjectionReplayLimitsV1,
+    VectorProjectionSourceV1,
 };
 
 use super::{
@@ -23,6 +25,107 @@ pub(super) const VECTOR_OBSERVATION: &str = "riffdb.storage.v1.StoredVectorObser
 pub(super) const VECTOR_HEALTH_OBSERVATION: &str =
     "riffdb.storage.v1.StoredVectorHealthObservationV1";
 pub(super) const VECTOR_EVIDENCE_INDEX: &str = "riffdb.storage.v1.StoredVectorEvidenceIndexV1";
+pub(super) const VECTOR_PROJECTION_CONTROL: &str =
+    "riffdb.storage.v1.StoredVectorProjectionControlV1";
+
+fn frontier_to_proto(value: FrontierPosition) -> wire::StoredVectorProjectionFrontierV1 {
+    wire::StoredVectorProjectionFrontierV1 {
+        applied_through: match value {
+            FrontierPosition::BeforeFirst => None,
+            FrontierPosition::AppliedThrough(sequence) => Some(sequence.get()),
+        },
+    }
+}
+
+fn frontier_from_proto(
+    value: wire::StoredVectorProjectionFrontierV1,
+) -> Result<FrontierPosition, DurableCodecError> {
+    value
+        .applied_through
+        .map_or(Ok(FrontierPosition::BeforeFirst), |sequence| {
+            CommitSequence::new(sequence)
+                .map(FrontierPosition::AppliedThrough)
+                .ok_or_else(DurableCodecError::corrupt)
+        })
+}
+
+fn control_to_proto(
+    value: &StoredVectorProjectionControlV1,
+) -> wire::StoredVectorProjectionControlV1 {
+    wire::StoredVectorProjectionControlV1 {
+        contract_lineage: value.source().lineage().as_str().to_owned(),
+        entity_type_id: value.source().entity_type().get(),
+        vector_field_id: value.source().vector_field().get(),
+        generation: value.generation().get(),
+        definition_fingerprint: value.definition_fingerprint().to_vec(),
+        lifecycle: i32::from(value.lifecycle().tag()),
+        published_frontier: Some(frontier_to_proto(value.published_frontier())),
+        rebuild_snapshot_frontier: value.rebuild_snapshot_frontier().map(frontier_to_proto),
+        rebuild_reason: value.rebuild_reason().map(|reason| i32::from(reason.tag())),
+        replay_age_seconds: value.limits().age_seconds(),
+        replay_bytes: value.limits().bytes(),
+        replay_backlog: value.limits().backlog(),
+    }
+}
+
+fn control_from_proto(
+    value: wire::StoredVectorProjectionControlV1,
+) -> Result<StoredVectorProjectionControlV1, DurableCodecError> {
+    let lifecycle = u8::try_from(value.lifecycle)
+        .ok()
+        .and_then(VectorProjectionLifecycleV1::from_tag)
+        .ok_or_else(DurableCodecError::corrupt)?;
+    let rebuild_reason = value
+        .rebuild_reason
+        .map(|reason| {
+            u8::try_from(reason)
+                .ok()
+                .and_then(VectorProjectionRebuildReasonV1::from_tag)
+                .ok_or_else(DurableCodecError::corrupt)
+        })
+        .transpose()?;
+    storage_result(StoredVectorProjectionControlV1::new(
+        VectorProjectionSourceV1::new(
+            ContractLineage::new(value.contract_lineage)
+                .map_err(|_| DurableCodecError::corrupt())?,
+            EntityTypeId::new(value.entity_type_id).ok_or_else(DurableCodecError::corrupt)?,
+            FieldId::new(value.vector_field_id).ok_or_else(DurableCodecError::corrupt)?,
+        ),
+        ProjectionGeneration::new(value.generation).ok_or_else(DurableCodecError::corrupt)?,
+        fixed(value.definition_fingerprint)?,
+        lifecycle,
+        frontier_from_proto(require(value.published_frontier)?)?,
+        value
+            .rebuild_snapshot_frontier
+            .map(frontier_from_proto)
+            .transpose()?,
+        rebuild_reason,
+        VectorProjectionReplayLimitsV1::new(
+            value.replay_age_seconds,
+            value.replay_bytes,
+            value.replay_backlog,
+        )
+        .ok_or_else(DurableCodecError::corrupt)?,
+    ))
+}
+
+/// Encodes one authoritative vector projection control record.
+pub fn encode_vector_projection_control_v1(
+    value: &StoredVectorProjectionControlV1,
+) -> Result<CanonicalStoredEnvelopeV1, DurableCodecError> {
+    encode_message(VECTOR_PROJECTION_CONTROL, &control_to_proto(value))
+}
+
+/// Decodes and validates one authoritative vector projection control record.
+pub fn decode_vector_projection_control_v1(
+    encoded: &[u8],
+) -> Result<EncodedPageItem<StoredVectorProjectionControlV1>, DurableCodecError> {
+    decode_message::<wire::StoredVectorProjectionControlV1, _, _>(
+        VECTOR_PROJECTION_CONTROL,
+        encoded,
+        control_from_proto,
+    )
+}
 
 fn embedding_to_proto(value: &StoredVectorEmbeddingWriteV1) -> wire::StoredVectorEmbeddingWriteV1 {
     wire::StoredVectorEmbeddingWriteV1 {

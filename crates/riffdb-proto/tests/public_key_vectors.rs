@@ -167,6 +167,7 @@ fn contextual_result(kind: &str, bytes: Vec<u8>, owner: u32) -> bool {
                 row_policy: None,
                 export: None,
                 reimport: None,
+                vector_inspection: None,
             }),
         })
         .is_ok(),

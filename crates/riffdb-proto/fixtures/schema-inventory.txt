@@ -122,6 +122,7 @@ files
     import riffdb/storage/v1/application.proto
   riffdb/storage/v1/vector_health_observation_v1.proto
   riffdb/storage/v1/vector_observation_v1.proto
+  riffdb/storage/v1/vector_projection_control_v1.proto
   riffdb/storage/v1/workflow_service_values_v3.proto
     import riffdb/storage/v1/application.proto
     import riffdb/storage/v1/command_segment_v1.proto
@@ -1451,6 +1452,21 @@ messages
     6 source_stale_entities optional uint64
     7 model_counts repeated .riffdb.storage.v1.StoredVectorModelCountV1
     8 revision_sequence optional uint64
+  riffdb.storage.v1.StoredVectorProjectionControlV1 fields=12
+    1 contract_lineage optional string
+    2 entity_type_id optional uint32
+    3 vector_field_id optional uint32
+    4 generation optional uint64
+    5 definition_fingerprint optional bytes
+    6 lifecycle optional .riffdb.storage.v1.StoredVectorProjectionLifecycleV1
+    7 published_frontier optional .riffdb.storage.v1.StoredVectorProjectionFrontierV1
+    8 rebuild_snapshot_frontier optional .riffdb.storage.v1.StoredVectorProjectionFrontierV1
+    9 rebuild_reason optional .riffdb.storage.v1.StoredVectorProjectionRebuildReasonV1 proto3-optional oneof=_rebuild_reason
+    10 replay_age_seconds optional uint64
+    11 replay_bytes optional uint64
+    12 replay_backlog optional uint64
+  riffdb.storage.v1.StoredVectorProjectionFrontierV1 fields=1
+    1 applied_through optional uint64 proto3-optional oneof=_applied_through
   riffdb.storage.v1.TenantScopeV1 fields=2
     1 global optional .riffdb.storage.v1.UnitV1 oneof=scope
     2 tenant_id optional string oneof=scope
@@ -1670,7 +1686,7 @@ messages
     4 scope optional .riffdb.v1.CapabilityApplicationReimportScope
   riffdb.v1.CapabilityExportGrant fields=1
     1 applications repeated .riffdb.v1.CapabilityApplicationExportGrant
-  riffdb.v1.CapabilityGrant fields=9
+  riffdb.v1.CapabilityGrant fields=10
     1 tenant_scope optional .riffdb.v1.TenantScope
     2 partition_scope optional .riffdb.v1.PartitionScope
     3 permissions repeated .riffdb.v1.CapabilityPermission
@@ -1680,10 +1696,11 @@ messages
     7 row_policy optional .riffdb.v1.CapabilityRowPolicyGrant
     8 export optional .riffdb.v1.CapabilityExportGrant
     9 reimport optional .riffdb.v1.CapabilityApplicationReimportGrant
+    10 vector_inspection optional .riffdb.v1.CapabilityVectorInspectionGrant
   riffdb.v1.CapabilityIdentity fields=2
     1 capability_id optional bytes
     2 revision optional uint64
-  riffdb.v1.CapabilityPermission fields=31
+  riffdb.v1.CapabilityPermission fields=32
     1 validate_contract optional .riffdb.v1.Unit oneof=permission
     2 read_contract optional .riffdb.v1.Unit oneof=permission
     3 explain_command optional .riffdb.v1.LineageScopedStableId oneof=permission
@@ -1715,6 +1732,7 @@ messages
     29 watch_named_query optional .riffdb.v1.ReactiveOperationPermission oneof=permission
     30 consume_contextual_subscription optional .riffdb.v1.ReactiveOperationPermission oneof=permission
     31 install_application optional string oneof=permission
+    32 inspect_vector_state optional .riffdb.v1.Unit oneof=permission
   riffdb.v1.CapabilityPrincipalFact fields=2
     1 name optional string
     2 value optional .riffdb.v1.Value
@@ -1730,6 +1748,14 @@ messages
   riffdb.v1.CapabilityTransition fields=2
     1 identity optional .riffdb.v1.CapabilityIdentity
     2 administration_sequence optional uint64
+  riffdb.v1.CapabilityVectorInspectionGrant fields=2
+    1 application_role_hash optional bytes
+    2 targets repeated .riffdb.v1.CapabilityVectorInspectionTarget
+  riffdb.v1.CapabilityVectorInspectionTarget fields=4
+    1 contract_lineage optional string
+    2 entity_type_id optional uint32
+    3 field_id optional uint32
+    4 allow_counts optional bool
   riffdb.v1.CheckContractMigrationRequest fields=4
     1 request_id optional bytes
     2 operation_id optional bytes
@@ -3086,6 +3112,19 @@ enums
     0 STORED_COMMAND_AUDIT_MEMBER_UNSPECIFIED
     1 STORED_COMMAND_AUDIT_MEMBER_STARTED
     2 STORED_COMMAND_AUDIT_MEMBER_TERMINAL
+  riffdb.storage.v1.StoredVectorProjectionLifecycleV1 values=6
+    0 STORED_VECTOR_PROJECTION_LIFECYCLE_V1_UNSPECIFIED
+    1 STORED_VECTOR_PROJECTION_LIFECYCLE_V1_BUILDING
+    2 STORED_VECTOR_PROJECTION_LIFECYCLE_V1_READY
+    3 STORED_VECTOR_PROJECTION_LIFECYCLE_V1_REBUILD_REQUIRED
+    4 STORED_VECTOR_PROJECTION_LIFECYCLE_V1_REBUILDING
+    5 STORED_VECTOR_PROJECTION_LIFECYCLE_V1_INVALID
+  riffdb.storage.v1.StoredVectorProjectionRebuildReasonV1 values=5
+    0 STORED_VECTOR_PROJECTION_REBUILD_REASON_V1_UNSPECIFIED
+    1 STORED_VECTOR_PROJECTION_REBUILD_REASON_V1_REPLAY_AGE
+    2 STORED_VECTOR_PROJECTION_REBUILD_REASON_V1_REPLAY_BYTES
+    3 STORED_VECTOR_PROJECTION_REBUILD_REASON_V1_REPLAY_BACKLOG
+    4 STORED_VECTOR_PROJECTION_REBUILD_REASON_V1_DEFINITION_CHANGED
   riffdb.v1.ActorKind values=4
     0 ACTOR_KIND_UNSPECIFIED
     1 ACTOR_KIND_HUMAN
@@ -3205,7 +3244,7 @@ enums
     0 CAPABILITY_CREATE_MODE_UNSPECIFIED
     1 CAPABILITY_CREATE_MODE_NORMAL
     2 CAPABILITY_CREATE_MODE_BOOTSTRAP
-  riffdb.v1.CapabilityPermissionKind values=32
+  riffdb.v1.CapabilityPermissionKind values=33
     0 CAPABILITY_PERMISSION_KIND_UNSPECIFIED
     1 CAPABILITY_PERMISSION_KIND_VALIDATE_CONTRACT
     2 CAPABILITY_PERMISSION_KIND_READ_CONTRACT
@@ -3238,6 +3277,7 @@ enums
     29 CAPABILITY_PERMISSION_KIND_WATCH_NAMED_QUERY
     30 CAPABILITY_PERMISSION_KIND_CONSUME_CONTEXTUAL_SUBSCRIPTION
     31 CAPABILITY_PERMISSION_KIND_INSTALL_APPLICATION
+    32 CAPABILITY_PERMISSION_KIND_INSPECT_VECTOR_STATE
   riffdb.v1.CapabilityRowPolicyOperation values=5
     0 CAPABILITY_ROW_POLICY_OPERATION_UNSPECIFIED
     1 CAPABILITY_ROW_POLICY_OPERATION_READ

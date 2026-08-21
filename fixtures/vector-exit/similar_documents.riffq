@@ -1,0 +1,22 @@
+query SimilarDocuments(
+    $organization_id: Document.organization_id,
+    $query_vector: Document.embedding,
+    $k: Limit,
+) {
+    source projected Document.embedding
+    freshness causal inherit_session_commit true max_wait_ms 5000
+
+    many documents from Document
+        where organization_id == $organization_id
+        nearest(embedding, $query_vector, $k)
+
+    return Found {
+        documents: documents {
+            organization_id
+            document_id
+            title
+        }
+    }
+
+    outcomes Found
+}

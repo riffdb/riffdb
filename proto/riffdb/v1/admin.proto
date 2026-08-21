@@ -136,6 +136,7 @@ enum CapabilityPermissionKind {
   CAPABILITY_PERMISSION_KIND_WATCH_NAMED_QUERY = 29;
   CAPABILITY_PERMISSION_KIND_CONSUME_CONTEXTUAL_SUBSCRIPTION = 30;
   CAPABILITY_PERMISSION_KIND_INSTALL_APPLICATION = 31;
+  CAPABILITY_PERMISSION_KIND_INSPECT_VECTOR_STATE = 32;
 }
 
 message LineageScopedStableId {
@@ -188,6 +189,7 @@ message CapabilityPermission {
     ReactiveOperationPermission watch_named_query = 29;
     ReactiveOperationPermission consume_contextual_subscription = 30;
     string install_application = 31;
+    Unit inspect_vector_state = 32;
   }
 }
 
@@ -275,6 +277,18 @@ message CapabilityApplicationReimportGrant {
   CapabilityApplicationReimportScope scope = 4;
 }
 
+message CapabilityVectorInspectionTarget {
+  string contract_lineage = 1;
+  uint32 entity_type_id = 2;
+  uint32 field_id = 3;
+  bool allow_counts = 4;
+}
+
+message CapabilityVectorInspectionGrant {
+  bytes application_role_hash = 1;
+  repeated CapabilityVectorInspectionTarget targets = 2;
+}
+
 message CapabilityGrant {
   TenantScope tenant_scope = 1;
   PartitionScope partition_scope = 2;
@@ -285,6 +299,7 @@ message CapabilityGrant {
   CapabilityRowPolicyGrant row_policy = 7;
   CapabilityExportGrant export = 8;
   CapabilityApplicationReimportGrant reimport = 9;
+  CapabilityVectorInspectionGrant vector_inspection = 10;
 }
 
 message CreateCapabilityRequest {

@@ -79,7 +79,12 @@ These limits are part of the POC release posture, not hidden roadmap promises.
 - Production `nearest()` requires one explicit compiler-owned projected source
   and `available`, causal, or duration-bounded freshness. The exact adapter
   admits current-policy rows before ranking and enforces the shared 500-row
-  ceiling. Multi-source vector queries, vector joins/aggregates, and
+  ceiling. Vector projection generations rebuild from a stable authoritative
+  snapshot plus retained tail and publish only after an exact checkpoint.
+  Compiler-owned replay age/byte/backlog ceilings detach over-budget
+  generations from retention; building or rebuilding is a typed refusal, and
+  restart never overclaims the persisted frontier. Multi-source vector
+  queries, vector joins/aggregates, and
   production ANN routing remain deferred and never fall back to row-store
   scans or mixed snapshots.
 - Reactive applications are partition-local and bounded. P8 does not provide

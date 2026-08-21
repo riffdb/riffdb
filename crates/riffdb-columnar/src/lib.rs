@@ -76,7 +76,7 @@ pub use definition::{
     ColumnarProjectionDefinition, DefinitionError, DefinitionFingerprint, LAYOUT_VERSION,
     ProviderDescriptorError, RegisteredDefinition, VectorAnnConfig, VectorProviderProfileV1,
 };
-pub use engine::{ColumnarEngine, OpenOptions};
+pub use engine::{ColumnarEngine, ColumnarSnapshotRebuild, OpenOptions};
 pub use error::{ColumnarError, StorageFailure};
 pub use outcome::{
     ColumnarOutcome, DegradedReason, ProjectionBuilding, ProjectionDegraded, ProjectionInvalid,

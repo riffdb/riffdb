@@ -122,7 +122,7 @@ pub struct ReactiveOperationPermission {
 pub struct CapabilityPermission {
     #[prost(
         oneof = "capability_permission::Permission",
-        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31"
+        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32"
     )]
     pub permission: ::core::option::Option<capability_permission::Permission>,
 }
@@ -192,6 +192,8 @@ pub mod capability_permission {
         ConsumeContextualSubscription(super::ReactiveOperationPermission),
         #[prost(string, tag = "31")]
         InstallApplication(::prost::alloc::string::String),
+        #[prost(message, tag = "32")]
+        InspectVectorState(super::Unit),
     }
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -290,6 +292,24 @@ pub struct CapabilityApplicationReimportGrant {
     #[prost(enumeration = "CapabilityApplicationReimportScope", tag = "4")]
     pub scope: i32,
 }
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct CapabilityVectorInspectionTarget {
+    #[prost(string, tag = "1")]
+    pub contract_lineage: ::prost::alloc::string::String,
+    #[prost(uint32, tag = "2")]
+    pub entity_type_id: u32,
+    #[prost(uint32, tag = "3")]
+    pub field_id: u32,
+    #[prost(bool, tag = "4")]
+    pub allow_counts: bool,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct CapabilityVectorInspectionGrant {
+    #[prost(bytes = "vec", tag = "1")]
+    pub application_role_hash: ::prost::alloc::vec::Vec<u8>,
+    #[prost(message, repeated, tag = "2")]
+    pub targets: ::prost::alloc::vec::Vec<CapabilityVectorInspectionTarget>,
+}
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct CapabilityGrant {
     #[prost(message, optional, tag = "1")]
@@ -310,6 +330,8 @@ pub struct CapabilityGrant {
     pub export: ::core::option::Option<CapabilityExportGrant>,
     #[prost(message, optional, tag = "9")]
     pub reimport: ::core::option::Option<CapabilityApplicationReimportGrant>,
+    #[prost(message, optional, tag = "10")]
+    pub vector_inspection: ::core::option::Option<CapabilityVectorInspectionGrant>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct CreateCapabilityRequest {
@@ -1234,6 +1256,7 @@ pub enum CapabilityPermissionKind {
     WatchNamedQuery = 29,
     ConsumeContextualSubscription = 30,
     InstallApplication = 31,
+    InspectVectorState = 32,
 }
 impl CapabilityPermissionKind {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -1284,6 +1307,7 @@ impl CapabilityPermissionKind {
                 "CAPABILITY_PERMISSION_KIND_CONSUME_CONTEXTUAL_SUBSCRIPTION"
             }
             Self::InstallApplication => "CAPABILITY_PERMISSION_KIND_INSTALL_APPLICATION",
+            Self::InspectVectorState => "CAPABILITY_PERMISSION_KIND_INSPECT_VECTOR_STATE",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
@@ -1352,6 +1376,9 @@ impl CapabilityPermissionKind {
             }
             "CAPABILITY_PERMISSION_KIND_INSTALL_APPLICATION" => {
                 Some(Self::InstallApplication)
+            }
+            "CAPABILITY_PERMISSION_KIND_INSPECT_VECTOR_STATE" => {
+                Some(Self::InspectVectorState)
             }
             _ => None,
         }

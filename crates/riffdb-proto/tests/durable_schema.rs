@@ -389,6 +389,10 @@ fn storage_source_import_and_type_inventory_is_exact() {
                 vec![],
             ),
             (
+                "riffdb/storage/v1/vector_projection_control_v1.proto".to_owned(),
+                vec![],
+            ),
+            (
                 "riffdb/storage/v1/workflow_service_values_v3.proto".to_owned(),
                 vec![
                     "riffdb/storage/v1/application.proto",
@@ -411,8 +415,8 @@ fn storage_source_import_and_type_inventory_is_exact() {
             .iter()
             .map(|file| file.message_type.len())
             .sum::<usize>(),
-        176,
-        "175 semantic messages plus the unchanged StoredEnvelope"
+        178,
+        "177 semantic messages plus the unchanged StoredEnvelope"
     );
     assert_eq!(
         descriptors
@@ -420,7 +424,7 @@ fn storage_source_import_and_type_inventory_is_exact() {
             .iter()
             .map(|file| file.enum_type.len())
             .sum::<usize>(),
-        22
+        24
     );
     assert!(
         descriptors
@@ -441,9 +445,9 @@ fn storage_source_import_and_type_inventory_is_exact() {
 
 #[test]
 fn closed_registry_order_and_schema_hashes_are_exactly_derived() {
-    assert_eq!(CURRENT_RECORD_SCHEMA_COUNT, 70);
-    assert_eq!(READABLE_RECORD_SCHEMA_COUNT, 93);
-    assert_eq!(WRITABLE_RECORD_SCHEMA_COUNT, 70);
+    assert_eq!(CURRENT_RECORD_SCHEMA_COUNT, 71);
+    assert_eq!(READABLE_RECORD_SCHEMA_COUNT, 94);
+    assert_eq!(WRITABLE_RECORD_SCHEMA_COUNT, 71);
     assert_eq!(
         CURRENT_RECORD_SCHEMAS
             .iter()
@@ -525,6 +529,7 @@ fn closed_registry_order_and_schema_hashes_are_exactly_derived() {
     readable_names.push("riffdb.storage.v1.StoredVectorObservationV1".to_owned());
     readable_names.push("riffdb.storage.v1.StoredVectorEvidenceIndexV1".to_owned());
     readable_names.push("riffdb.storage.v1.StoredVectorHealthObservationV1".to_owned());
+    readable_names.push("riffdb.storage.v1.StoredVectorProjectionControlV1".to_owned());
     readable_names.push("riffdb.storage.v1.CapabilityRecordV1".to_owned());
     readable_names.push("riffdb.storage.v1.CapabilityRecordV1".to_owned());
     readable_names.push("riffdb.storage.v1.CapabilityTokenLookupV1".to_owned());
@@ -587,6 +592,7 @@ fn closed_registry_order_and_schema_hashes_are_exactly_derived() {
     writable_names.push("riffdb.storage.v1.StoredVectorObservationV1".to_owned());
     writable_names.push("riffdb.storage.v1.StoredVectorEvidenceIndexV1".to_owned());
     writable_names.push("riffdb.storage.v1.StoredVectorHealthObservationV1".to_owned());
+    writable_names.push("riffdb.storage.v1.StoredVectorProjectionControlV1".to_owned());
     assert_eq!(
         READABLE_RECORD_SCHEMAS
             .iter()
@@ -714,8 +720,8 @@ fn closed_registry_order_and_schema_hashes_are_exactly_derived() {
 #[test]
 fn generated_registry_fixtures_freeze_exact_membership_and_hashes() {
     let legacy = registry_fixture_entries(LEGACY_REGISTRY_FIXTURE, 26);
-    let readable = registry_fixture_entries(READABLE_REGISTRY_FIXTURE, 93);
-    let writable = registry_fixture_entries(WRITABLE_REGISTRY_FIXTURE, 70);
+    let readable = registry_fixture_entries(READABLE_REGISTRY_FIXTURE, 94);
+    let writable = registry_fixture_entries(WRITABLE_REGISTRY_FIXTURE, 71);
 
     assert_eq!(legacy, readable[..legacy.len()]);
     assert_eq!(
@@ -1012,6 +1018,8 @@ fn semantic_optional_wire_presence_is_exact() {
         "StoredValidatedPrefixCheckpointV1.previous_checkpoint_hash",
         "StoredVectorEvidenceIndexV1.newest_source_write_sequence",
         "StoredVectorEvidenceV1.newest_source_write_sequence",
+        "StoredVectorProjectionControlV1.rebuild_reason",
+        "StoredVectorProjectionFrontierV1.applied_through",
     ]
     .into_iter()
     .map(|suffix| format!("riffdb.storage.v1.{suffix}"))
@@ -1193,6 +1201,8 @@ fn closed_oneof_and_enum_registries_are_exact() {
             ("ServiceIngressKindV1", "SERVICE_INGRESS_KIND_UNSPECIFIED=0,SERVICE_INGRESS_KIND_GRPC=1,SERVICE_INGRESS_KIND_MCP_HTTP=2,SERVICE_INGRESS_KIND_IN_PROCESS_TEST_COMPARISON=3"),
             ("ServiceOperationV1", "SERVICE_OPERATION_UNSPECIFIED=0,SERVICE_OPERATION_VALIDATE_CONTRACT=1,SERVICE_OPERATION_EXPLAIN_COMMAND=2,SERVICE_OPERATION_DEPLOY_CONTRACT=3,SERVICE_OPERATION_GET_ACTIVE_CONTRACT=4,SERVICE_OPERATION_GET_CONTRACT_VERSION=5,SERVICE_OPERATION_EXECUTE_COMMAND=6,SERVICE_OPERATION_RESOLVE_COMMAND_OUTCOME=7,SERVICE_OPERATION_GET_ENTITY=8,SERVICE_OPERATION_SCAN_INDEX=9,SERVICE_OPERATION_QUERY_PROJECTION=10,SERVICE_OPERATION_GET_PROJECTION_STATUS=11,SERVICE_OPERATION_GET_COMMIT=12,SERVICE_OPERATION_SCAN_COMMITS=13,SERVICE_OPERATION_SUBSCRIBE_TO_COMMITS=14,SERVICE_OPERATION_TRACE_PROVENANCE=15,SERVICE_OPERATION_GET_HEALTH=16,SERVICE_OPERATION_GET_STATISTICS=17,SERVICE_OPERATION_CREATE_CAPABILITY=18,SERVICE_OPERATION_REVOKE_CAPABILITY=19,SERVICE_OPERATION_LIST_PENDING_OUTBOX_DELIVERIES=20,SERVICE_OPERATION_DISCOVER_COMMAND_TOOLS=21,SERVICE_OPERATION_DISCOVER_RESOURCES=22,SERVICE_OPERATION_DESCRIBE_CONTRACT=23,SERVICE_OPERATION_CHECK_QUERY=24,SERVICE_OPERATION_EXPLAIN_QUERY=25,SERVICE_OPERATION_EXECUTE_QUERY=26,SERVICE_OPERATION_DEPLOY_QUERY_MODULE=27"),
             ("StoredCommandAuditMemberV1", "STORED_COMMAND_AUDIT_MEMBER_UNSPECIFIED=0,STORED_COMMAND_AUDIT_MEMBER_STARTED=1,STORED_COMMAND_AUDIT_MEMBER_TERMINAL=2"),
+            ("StoredVectorProjectionLifecycleV1", "STORED_VECTOR_PROJECTION_LIFECYCLE_V1_UNSPECIFIED=0,STORED_VECTOR_PROJECTION_LIFECYCLE_V1_BUILDING=1,STORED_VECTOR_PROJECTION_LIFECYCLE_V1_READY=2,STORED_VECTOR_PROJECTION_LIFECYCLE_V1_REBUILD_REQUIRED=3,STORED_VECTOR_PROJECTION_LIFECYCLE_V1_REBUILDING=4,STORED_VECTOR_PROJECTION_LIFECYCLE_V1_INVALID=5"),
+            ("StoredVectorProjectionRebuildReasonV1", "STORED_VECTOR_PROJECTION_REBUILD_REASON_V1_UNSPECIFIED=0,STORED_VECTOR_PROJECTION_REBUILD_REASON_V1_REPLAY_AGE=1,STORED_VECTOR_PROJECTION_REBUILD_REASON_V1_REPLAY_BYTES=2,STORED_VECTOR_PROJECTION_REBUILD_REASON_V1_REPLAY_BACKLOG=3,STORED_VECTOR_PROJECTION_REBUILD_REASON_V1_DEFINITION_CHANGED=4"),
         ]
         .into_iter()
         .map(|(name, values)| (name.to_owned(), values.to_owned()))

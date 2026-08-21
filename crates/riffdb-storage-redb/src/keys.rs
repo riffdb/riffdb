@@ -7,7 +7,7 @@
 
 use riffdb_storage_api::{
     EntityTarget, IdempotencyIdentityKey, PartitionIndexTarget,
-    StructurallyDecodedIndexRangePrefixV1, VectorObservationTargetV1,
+    StructurallyDecodedIndexRangePrefixV1, VectorObservationTargetV1, VectorProjectionSourceV1,
 };
 use riffdb_types::{
     AdministrationSequence, CapabilityId, CapabilityTokenDigest, CommitSequence,
@@ -701,6 +701,80 @@ pub(crate) fn decode_vector_health_observation_key(
     Ok(lineage)
 }
 
+/// Encodes one stable vector-projection control identity.
+pub(crate) fn encode_vector_projection_control_key(
+    source: &VectorProjectionSourceV1,
+) -> Result<Vec<u8>, PhysicalKeyError> {
+    let lineage = source.lineage().as_bytes();
+    let lineage_len = u16::try_from(lineage.len()).map_err(|_| PhysicalKeyError::InvalidLength)?;
+    let capacity = 2_usize
+        .checked_add(lineage.len())
+        .and_then(|value| value.checked_add(8))
+        .ok_or(PhysicalKeyError::InvalidLength)?;
+    let mut encoded = Vec::with_capacity(capacity);
+    encoded.extend_from_slice(&lineage_len.to_be_bytes());
+    encoded.extend_from_slice(lineage);
+    encoded.extend_from_slice(&source.entity_type().get().to_be_bytes());
+    encoded.extend_from_slice(&source.vector_field().get().to_be_bytes());
+    if encoded.len() != capacity {
+        return Err(PhysicalKeyError::InvalidLength);
+    }
+    Ok(encoded)
+}
+
+/// Decodes one canonical vector-projection control identity.
+pub(crate) fn decode_vector_projection_control_key(
+    bytes: &[u8],
+) -> Result<VectorProjectionSourceV1, PhysicalKeyError> {
+    let lineage_len = usize::from(u16::from_be_bytes(
+        bytes
+            .get(..2)
+            .ok_or(PhysicalKeyError::InvalidLength)?
+            .try_into()
+            .map_err(|_| PhysicalKeyError::InvalidLength)?,
+    ));
+    let lineage_end = 2_usize
+        .checked_add(lineage_len)
+        .ok_or(PhysicalKeyError::InvalidLength)?;
+    let entity_end = lineage_end
+        .checked_add(4)
+        .ok_or(PhysicalKeyError::InvalidLength)?;
+    let field_end = entity_end
+        .checked_add(4)
+        .ok_or(PhysicalKeyError::InvalidLength)?;
+    if field_end != bytes.len() || lineage_len == 0 || lineage_len > MAX_CONTRACT_LINEAGE_BYTES {
+        return Err(PhysicalKeyError::InvalidLength);
+    }
+    let lineage = ContractLineage::new(
+        std::str::from_utf8(
+            bytes
+                .get(2..lineage_end)
+                .ok_or(PhysicalKeyError::InvalidLength)?,
+        )
+        .map_err(|_| PhysicalKeyError::InvalidComponent)?,
+    )
+    .map_err(|_| PhysicalKeyError::InvalidComponent)?;
+    let entity_type = EntityTypeId::new(u32::from_be_bytes(
+        bytes
+            .get(lineage_end..entity_end)
+            .ok_or(PhysicalKeyError::InvalidLength)?
+            .try_into()
+            .map_err(|_| PhysicalKeyError::InvalidLength)?,
+    ))
+    .ok_or(PhysicalKeyError::InvalidComponent)?;
+    let vector_field = riffdb_types::FieldId::new(u32::from_be_bytes(
+        bytes
+            .get(entity_end..field_end)
+            .ok_or(PhysicalKeyError::InvalidLength)?
+            .try_into()
+            .map_err(|_| PhysicalKeyError::InvalidLength)?,
+    ))
+    .ok_or(PhysicalKeyError::InvalidComponent)?;
+    let source = VectorProjectionSourceV1::new(lineage, entity_type, vector_field);
+    require_canonical(bytes, &encode_vector_projection_control_key(&source)?)?;
+    Ok(source)
+}
+
 pub(crate) fn encode_vector_evidence_index_prefix(
     target: &VectorObservationTargetV1,
 ) -> Result<Vec<u8>, PhysicalKeyError> {
@@ -1019,6 +1093,26 @@ mod tests {
         trailing.push(0);
         assert_eq!(
             decode_vector_health_observation_key(&trailing),
+            Err(PhysicalKeyError::InvalidLength)
+        );
+    }
+
+    #[test]
+    fn vector_projection_control_key_round_trips_source_identity() {
+        let source = VectorProjectionSourceV1::new(
+            ContractLineage::new("vectors").expect("lineage"),
+            EntityTypeId::new(7).expect("entity type"),
+            riffdb_types::FieldId::new(9).expect("vector field"),
+        );
+        let encoded = encode_vector_projection_control_key(&source).expect("encode control key");
+        assert_eq!(
+            decode_vector_projection_control_key(&encoded).expect("decode control key"),
+            source
+        );
+        let mut trailing = encoded;
+        trailing.push(0);
+        assert_eq!(
+            decode_vector_projection_control_key(&trailing),
             Err(PhysicalKeyError::InvalidLength)
         );
     }

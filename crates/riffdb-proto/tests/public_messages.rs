@@ -91,6 +91,7 @@ fn grant() -> v1::CapabilityGrant {
         row_policy: None,
         export: None,
         reimport: None,
+        vector_inspection: None,
     }
 }
 

@@ -151,6 +151,72 @@ pub(crate) fn contextual_status(
     )
 }
 
+pub(crate) fn inspect_vector_state(
+    response: app_v1::InspectVectorStateResponse,
+) -> Result<McpToolResult, ResponseConversionError> {
+    use app_v1::inspect_vector_state_response::Result;
+
+    match response.result.ok_or(ResponseConversionError)? {
+        Result::StalenessSummary(report) => compose(
+            32,
+            McpFixedResultBranch::VectorStalenessSummary,
+            Some(payload_from(&serde_json::json!({
+                "total_entities": report.total_entities.to_string(),
+                "stale_count": report.stale_count.to_string(),
+                "stale_entity_count_threshold": report.stale_entity_count_threshold.to_string(),
+                "slo_breached": report.slo_breached,
+            }))?),
+        ),
+        Result::ModelVersionSummary(report) => compose(
+            32,
+            McpFixedResultBranch::VectorModelVersionSummary,
+            Some(payload_from(&serde_json::json!({
+                "current_count": report.current_count.to_string(),
+                "outdated_count": report.outdated_count.to_string(),
+            }))?),
+        ),
+        Result::StaleEntities(page) => compose(
+            32,
+            McpFixedResultBranch::VectorStaleEntities,
+            Some(payload_from(&serde_json::json!({
+                "items": page.items.into_iter().map(|item| serde_json::json!({
+                    "entity_key": lower_hex(&item.entity_key),
+                    "newest_source_write": item.newest_source_write.to_string(),
+                    "embedding_write": item.embedding_write.map(|value| value.to_string()),
+                })).collect::<Vec<_>>(),
+                "next_cursor": encode_vector_cursor(page.next_cursor)?,
+                "observed_frontier": page.observed_frontier.map(|value| value.to_string()),
+            }))?),
+        ),
+        Result::OutdatedModelEntities(page) => compose(
+            32,
+            McpFixedResultBranch::VectorOutdatedModelEntities,
+            Some(payload_from(&serde_json::json!({
+                "items": page.items.into_iter().map(|item| serde_json::json!({
+                    "entity_key": lower_hex(&item.entity_key),
+                    "model": item.model,
+                    "model_version": item.model_version,
+                    "embedding_write": item.embedding_write.to_string(),
+                })).collect::<Vec<_>>(),
+                "next_cursor": encode_vector_cursor(page.next_cursor)?,
+                "observed_frontier": page.observed_frontier.map(|value| value.to_string()),
+            }))?),
+        ),
+    }
+}
+
+fn encode_vector_cursor(
+    cursor: Option<Vec<u8>>,
+) -> Result<Option<String>, ResponseConversionError> {
+    cursor
+        .map(|cursor| {
+            let cursor: [u8; riffdb_api_mcp::MCP_CURSOR_BYTES] =
+                cursor.try_into().map_err(|_| ResponseConversionError)?;
+            Ok(encode_mcp_cursor(cursor))
+        })
+        .transpose()
+}
+
 pub(crate) fn contextual_next(
     response: v1::ConsumeContextualSubscriptionResponse,
 ) -> Result<McpToolResult, ResponseConversionError> {
@@ -3080,6 +3146,56 @@ mod tests {
                 features: Vec::new(),
                 has_more: false,
                 next_cursor: None,
+            })
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn vector_inspection_preserves_typed_page_and_rejects_bad_cursor() {
+        let response = app_v1::InspectVectorStateResponse {
+            result: Some(
+                app_v1::inspect_vector_state_response::Result::StaleEntities(
+                    app_v1::VectorStalenessPage {
+                        items: vec![app_v1::VectorStalenessItem {
+                            entity_key: vec![0xab, 0xcd],
+                            newest_source_write: 12,
+                            embedding_write: Some(9),
+                        }],
+                        next_cursor: Some(vec![7; riffdb_api_mcp::MCP_CURSOR_BYTES]),
+                        observed_frontier: Some(12),
+                    },
+                ),
+            ),
+        };
+        let result = inspect_vector_state(response).expect("vector response converts");
+        assert_eq!(
+            result,
+            McpToolResult::from_serializable(&serde_json::json!({
+                "stale_entities": {
+                    "items": [{
+                        "entity_key": "abcd",
+                        "newest_source_write": "12",
+                        "embedding_write": "9",
+                    }],
+                    "next_cursor": "07".repeat(riffdb_api_mcp::MCP_CURSOR_BYTES),
+                    "observed_frontier": "12",
+                }
+            }))
+            .expect("expected MCP result")
+        );
+
+        assert!(
+            inspect_vector_state(app_v1::InspectVectorStateResponse {
+                result: Some(
+                    app_v1::inspect_vector_state_response::Result::StaleEntities(
+                        app_v1::VectorStalenessPage {
+                            items: Vec::new(),
+                            next_cursor: Some(vec![0; riffdb_api_mcp::MCP_CURSOR_BYTES - 1]),
+                            observed_frontier: None,
+                        },
+                    ),
+                ),
             })
             .is_err()
         );
