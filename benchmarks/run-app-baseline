@@ -35,6 +35,11 @@ task_tmp_root="${RIFFDB_TMP_ROOT:-$HOME/tmp}"
 mkdir -p "$task_tmp_root"
 export TMPDIR="$task_tmp_root"
 
+cargo_target_directory() {
+    cargo +1.97.0 metadata --format-version 1 --no-deps "$@" \
+        | jq -er '.target_directory | select(type == "string" and length > 0)'
+}
+
 # --self-test: build riffdbd and run the full app-baseline --workspace suite,
 # including the kill -9 dead-peer e2e (RUN_RIFFDB_DEAD_PEER=1).
 if [[ "${1:-}" == "--self-test" ]]; then
@@ -87,7 +92,7 @@ if [[ "${1:-}" == "--self-test" ]]; then
     rm -f "$receipt_fixture"
     rm -f "$host_fixture"
     cargo +1.97.0 build --locked --release -p riffdb-server --bin riffdbd
-    riffdbd_bin="$repo_root/target/release/riffdbd"
+    riffdbd_bin="$(cargo_target_directory)/release/riffdbd"
     [[ -x "$riffdbd_bin" ]] || {
         printf 'self-test: riffdbd missing after build: %s\n' "$riffdbd_bin" >&2
         exit 1
@@ -872,13 +877,13 @@ fi
 if ((skip_riffdb == 0)); then
     printf 'building riffdbd (release)\n'
     cargo +1.97.0 build --locked --release -p riffdb-server --bin riffdbd
-    export RIFFDB_APP_BASELINE_RIFFDBD_BIN="$repo_root/target/release/riffdbd"
+    export RIFFDB_APP_BASELINE_RIFFDBD_BIN="$(cargo_target_directory)/release/riffdbd"
 fi
 
 printf 'building app-baseline runner\n'
 cargo +1.97.0 build --release --manifest-path examples/app-baseline/Cargo.toml -p riffdb-app-baseline
 
-runner=examples/app-baseline/target/release/riffdb-app-baseline
+runner="$(cargo_target_directory --manifest-path examples/app-baseline/Cargo.toml)/release/riffdb-app-baseline"
 if [[ ! -x "$runner" ]]; then
     runner="$(find examples/app-baseline/target target -type f -name riffdb-app-baseline 2>/dev/null | head -n1 || true)"
     [[ -n "$runner" && -x "$runner" ]] || {
