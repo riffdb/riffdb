@@ -75,8 +75,11 @@ pub(crate) const VECTOR_OBSERVATIONS: TableDefinition<&[u8], &[u8]> =
 /// Authoritative partition-ordered vector evidence index (ADR-0136).
 pub(crate) const VECTOR_EVIDENCE_INDEX: TableDefinition<&[u8], &[u8]> =
     TableDefinition::new("vector_evidence_index");
+/// Authoritative vector projection lifecycle and retention controls (ADR-0136).
+pub(crate) const VECTOR_PROJECTION_CONTROLS: TableDefinition<&[u8], &[u8]> =
+    TableDefinition::new("vector_projection_controls");
 
-pub(crate) const TABLE_NAMES: [&str; 38] = [
+pub(crate) const TABLE_NAMES: [&str; 39] = [
     "meta",
     "contract_bundles",
     "catalog_active",
@@ -115,9 +118,10 @@ pub(crate) const TABLE_NAMES: [&str; 38] = [
     "vector_evidence",
     "vector_observations",
     "vector_evidence_index",
+    "vector_projection_controls",
 ];
 
-pub(crate) const BYTE_TABLES: [TableDefinition<&[u8], &[u8]>; 36] = [
+pub(crate) const BYTE_TABLES: [TableDefinition<&[u8], &[u8]>; 37] = [
     CONTRACT_BUNDLES,
     CATALOG_ACTIVE,
     QUERY_MODULES,
@@ -154,6 +158,7 @@ pub(crate) const BYTE_TABLES: [TableDefinition<&[u8], &[u8]>; 36] = [
     VECTOR_EVIDENCE,
     VECTOR_OBSERVATIONS,
     VECTOR_EVIDENCE_INDEX,
+    VECTOR_PROJECTION_CONTROLS,
 ];
 
 pub(crate) const META_FORMAT_VERSION: &str = "format_version";
@@ -234,6 +239,7 @@ pub(crate) fn create_all_tables(tx: &WriteTransaction) -> Result<(), TableError>
     drop(tx.open_table(VECTOR_EVIDENCE)?);
     drop(tx.open_table(VECTOR_OBSERVATIONS)?);
     drop(tx.open_table(VECTOR_EVIDENCE_INDEX)?);
+    drop(tx.open_table(VECTOR_PROJECTION_CONTROLS)?);
     Ok(())
 }
 
@@ -286,10 +292,11 @@ mod tests {
             VECTOR_EVIDENCE.name(),
             VECTOR_OBSERVATIONS.name(),
             VECTOR_EVIDENCE_INDEX.name(),
+            VECTOR_PROJECTION_CONTROLS.name(),
         ];
 
         assert_eq!(definition_names, TABLE_NAMES);
-        assert_eq!(TABLE_NAMES.len(), 38);
+        assert_eq!(TABLE_NAMES.len(), 39);
         assert_eq!(
             TABLE_NAMES.into_iter().collect::<BTreeSet<_>>().len(),
             TABLE_NAMES.len()

@@ -3483,6 +3483,135 @@ pub struct StoredVectorObservationV1 {
     #[prost(uint64, tag = "8")]
     pub revision_sequence: u64,
 }
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct StoredVectorProjectionFrontierV1 {
+    #[prost(uint64, optional, tag = "1")]
+    pub applied_through: ::core::option::Option<u64>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct StoredVectorProjectionControlV1 {
+    #[prost(string, tag = "1")]
+    pub contract_lineage: ::prost::alloc::string::String,
+    #[prost(uint32, tag = "2")]
+    pub entity_type_id: u32,
+    #[prost(uint32, tag = "3")]
+    pub vector_field_id: u32,
+    #[prost(uint64, tag = "4")]
+    pub generation: u64,
+    #[prost(bytes = "vec", tag = "5")]
+    pub definition_fingerprint: ::prost::alloc::vec::Vec<u8>,
+    #[prost(enumeration = "StoredVectorProjectionLifecycleV1", tag = "6")]
+    pub lifecycle: i32,
+    #[prost(message, optional, tag = "7")]
+    pub published_frontier: ::core::option::Option<StoredVectorProjectionFrontierV1>,
+    #[prost(message, optional, tag = "8")]
+    pub rebuild_snapshot_frontier: ::core::option::Option<
+        StoredVectorProjectionFrontierV1,
+    >,
+    #[prost(enumeration = "StoredVectorProjectionRebuildReasonV1", optional, tag = "9")]
+    pub rebuild_reason: ::core::option::Option<i32>,
+    #[prost(uint64, tag = "10")]
+    pub replay_age_seconds: u64,
+    #[prost(uint64, tag = "11")]
+    pub replay_bytes: u64,
+    #[prost(uint64, tag = "12")]
+    pub replay_backlog: u64,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum StoredVectorProjectionLifecycleV1 {
+    Unspecified = 0,
+    Building = 1,
+    Ready = 2,
+    RebuildRequired = 3,
+    Rebuilding = 4,
+    Invalid = 5,
+}
+impl StoredVectorProjectionLifecycleV1 {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "STORED_VECTOR_PROJECTION_LIFECYCLE_V1_UNSPECIFIED",
+            Self::Building => "STORED_VECTOR_PROJECTION_LIFECYCLE_V1_BUILDING",
+            Self::Ready => "STORED_VECTOR_PROJECTION_LIFECYCLE_V1_READY",
+            Self::RebuildRequired => {
+                "STORED_VECTOR_PROJECTION_LIFECYCLE_V1_REBUILD_REQUIRED"
+            }
+            Self::Rebuilding => "STORED_VECTOR_PROJECTION_LIFECYCLE_V1_REBUILDING",
+            Self::Invalid => "STORED_VECTOR_PROJECTION_LIFECYCLE_V1_INVALID",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "STORED_VECTOR_PROJECTION_LIFECYCLE_V1_UNSPECIFIED" => {
+                Some(Self::Unspecified)
+            }
+            "STORED_VECTOR_PROJECTION_LIFECYCLE_V1_BUILDING" => Some(Self::Building),
+            "STORED_VECTOR_PROJECTION_LIFECYCLE_V1_READY" => Some(Self::Ready),
+            "STORED_VECTOR_PROJECTION_LIFECYCLE_V1_REBUILD_REQUIRED" => {
+                Some(Self::RebuildRequired)
+            }
+            "STORED_VECTOR_PROJECTION_LIFECYCLE_V1_REBUILDING" => Some(Self::Rebuilding),
+            "STORED_VECTOR_PROJECTION_LIFECYCLE_V1_INVALID" => Some(Self::Invalid),
+            _ => None,
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum StoredVectorProjectionRebuildReasonV1 {
+    Unspecified = 0,
+    ReplayAge = 1,
+    ReplayBytes = 2,
+    ReplayBacklog = 3,
+    DefinitionChanged = 4,
+}
+impl StoredVectorProjectionRebuildReasonV1 {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "STORED_VECTOR_PROJECTION_REBUILD_REASON_V1_UNSPECIFIED",
+            Self::ReplayAge => "STORED_VECTOR_PROJECTION_REBUILD_REASON_V1_REPLAY_AGE",
+            Self::ReplayBytes => {
+                "STORED_VECTOR_PROJECTION_REBUILD_REASON_V1_REPLAY_BYTES"
+            }
+            Self::ReplayBacklog => {
+                "STORED_VECTOR_PROJECTION_REBUILD_REASON_V1_REPLAY_BACKLOG"
+            }
+            Self::DefinitionChanged => {
+                "STORED_VECTOR_PROJECTION_REBUILD_REASON_V1_DEFINITION_CHANGED"
+            }
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "STORED_VECTOR_PROJECTION_REBUILD_REASON_V1_UNSPECIFIED" => {
+                Some(Self::Unspecified)
+            }
+            "STORED_VECTOR_PROJECTION_REBUILD_REASON_V1_REPLAY_AGE" => {
+                Some(Self::ReplayAge)
+            }
+            "STORED_VECTOR_PROJECTION_REBUILD_REASON_V1_REPLAY_BYTES" => {
+                Some(Self::ReplayBytes)
+            }
+            "STORED_VECTOR_PROJECTION_REBUILD_REASON_V1_REPLAY_BACKLOG" => {
+                Some(Self::ReplayBacklog)
+            }
+            "STORED_VECTOR_PROJECTION_REBUILD_REASON_V1_DEFINITION_CHANGED" => {
+                Some(Self::DefinitionChanged)
+            }
+            _ => None,
+        }
+    }
+}
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct StoredPendingAdmissionV3 {
     #[prost(message, optional, tag = "1")]

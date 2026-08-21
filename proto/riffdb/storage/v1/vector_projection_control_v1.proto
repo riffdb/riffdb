@@ -1,0 +1,43 @@
+syntax = "proto3";
+
+package riffdb.storage.v1;
+
+// BeforeFirst is represented by an absent applied_through value; presence of
+// this wrapper distinguishes a selected BeforeFirst snapshot from no snapshot.
+message StoredVectorProjectionFrontierV1 {
+  optional uint64 applied_through = 1;
+}
+
+enum StoredVectorProjectionLifecycleV1 {
+  STORED_VECTOR_PROJECTION_LIFECYCLE_V1_UNSPECIFIED = 0;
+  STORED_VECTOR_PROJECTION_LIFECYCLE_V1_BUILDING = 1;
+  STORED_VECTOR_PROJECTION_LIFECYCLE_V1_READY = 2;
+  STORED_VECTOR_PROJECTION_LIFECYCLE_V1_REBUILD_REQUIRED = 3;
+  STORED_VECTOR_PROJECTION_LIFECYCLE_V1_REBUILDING = 4;
+  STORED_VECTOR_PROJECTION_LIFECYCLE_V1_INVALID = 5;
+}
+
+enum StoredVectorProjectionRebuildReasonV1 {
+  STORED_VECTOR_PROJECTION_REBUILD_REASON_V1_UNSPECIFIED = 0;
+  STORED_VECTOR_PROJECTION_REBUILD_REASON_V1_REPLAY_AGE = 1;
+  STORED_VECTOR_PROJECTION_REBUILD_REASON_V1_REPLAY_BYTES = 2;
+  STORED_VECTOR_PROJECTION_REBUILD_REASON_V1_REPLAY_BACKLOG = 3;
+  STORED_VECTOR_PROJECTION_REBUILD_REASON_V1_DEFINITION_CHANGED = 4;
+}
+
+// Authoritative lifecycle and retention identity for one compiler-declared
+// vector projection. Ready is the only retention-attached lifecycle.
+message StoredVectorProjectionControlV1 {
+  string contract_lineage = 1;
+  uint32 entity_type_id = 2;
+  uint32 vector_field_id = 3;
+  uint64 generation = 4;
+  bytes definition_fingerprint = 5;
+  StoredVectorProjectionLifecycleV1 lifecycle = 6;
+  StoredVectorProjectionFrontierV1 published_frontier = 7;
+  StoredVectorProjectionFrontierV1 rebuild_snapshot_frontier = 8;
+  optional StoredVectorProjectionRebuildReasonV1 rebuild_reason = 9;
+  uint64 replay_age_seconds = 10;
+  uint64 replay_bytes = 11;
+  uint64 replay_backlog = 12;
+}

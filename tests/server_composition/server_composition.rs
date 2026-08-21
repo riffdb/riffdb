@@ -26,10 +26,10 @@ use riffdb_client_rust::generated::legal_spend::{
 };
 use riffdb_client_rust::{
     AttemptBudget, BearerCredential, BootstrapCallMetadata,
-    BootstrapCredential as TransportBootstrapCredential, CallMetadata, RiffDbClient,
-    generate_request_id,
+    BootstrapCredential as TransportBootstrapCredential, CallMetadata, CanonicalVector,
+    RiffDbClient, StableApplicationClient, VectorStateInspectionResult, generate_request_id,
 };
-use riffdb_proto::{decimal_from_proto, v1};
+use riffdb_proto::{app::v1 as app_v1, decimal_from_proto, v1};
 use riffdb_types::DecimalSpec;
 use tokio::time::timeout;
 use tonic::transport::Endpoint;
@@ -64,6 +64,17 @@ const PROJECTION_WAIT_NANOS: u64 = 5_000_000_000;
 const CAPABILITY_KEY_DOCUMENT: &[u8] = b"riffdb-capability-digest-keys-v1\n7:000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f\n";
 const IDEMPOTENCY_KEY_DOCUMENT: &[u8] = b"riffdb-idempotency-digest-keys-v1\n9:202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f\n";
 const BUDGET_CONTRACT: &str = include_str!("../../contracts/examples/budget.riff");
+const VECTOR_DOCUMENTS_CONTRACT: &str = include_str!("../../fixtures/vector-exit/documents.riff");
+const VECTOR_DOCUMENTS_QUERY: &str =
+    include_str!("../../fixtures/vector-exit/similar_documents.riffq");
+
+#[allow(dead_code, unreachable_pub)]
+mod vector_documents {
+    include!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../fixtures/vector-exit/generated-client.rs"
+    ));
+}
 
 type TestResult<T> = Result<T, Box<dyn Error + Send + Sync>>;
 
@@ -283,6 +294,216 @@ async fn real_process_hosts_policy_filtered_mcp_and_stops_on_sigterm() -> TestRe
     assert_mcp_projection_ready(mcp_projection.body_text()?)?;
 
     drop(client);
+    process.signal_sigterm()?;
+    process.wait_for_successful_exit(PROCESS_STOP_TIMEOUT)?;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn remote_generated_vector_client_writes_inspects_and_queries_exact_projection()
+-> TestResult<()> {
+    use vector_documents::{
+        CONTRACT_BUNDLE_HASH, CreateEmbeddedDocumentInput, CreateEmbeddedDocumentOutcome,
+        QUERY_MODULE_HASH, SimilarDocumentsParams, SimilarDocumentsResult, VectorDocumentsClient,
+    };
+
+    let temporary = TemporaryDirectory::new()?;
+    let database_path = temporary.path().join("vector.redb");
+    let capability_keys_path = temporary.path().join("vector-capability.keys");
+    let idempotency_keys_path = temporary.path().join("vector-idempotency.keys");
+    let bootstrap_path = temporary.path().join("vector-bootstrap.credential");
+    write_protected_file(&capability_keys_path, CAPABILITY_KEY_DOCUMENT)?;
+    write_protected_file(&idempotency_keys_path, IDEMPOTENCY_KEY_DOCUMENT)?;
+    let generated_bootstrap =
+        generate_bootstrap_credential(BOOTSTRAP_UNIX_MILLISECONDS, &SystemEntropy)?;
+    write_protected_file(
+        &bootstrap_path,
+        generated_bootstrap.render_document().expose_secret(),
+    )?;
+    drop(generated_bootstrap);
+    let retained_bootstrap = load_bootstrap_credential_file(&bootstrap_path)?;
+
+    let reservation = TcpListener::bind("127.0.0.1:0")?;
+    let mcp_address = reservation.local_addr()?;
+    drop(reservation);
+    let mcp_audience = format!("http://{mcp_address}{MCP_ROUTE}");
+    let mut process = ServerProcess::spawn(
+        &database_path,
+        &capability_keys_path,
+        &idempotency_keys_path,
+        mcp_address,
+    )?;
+    let grpc_address = process.wait_for_ready_address()?;
+    process.close_stdin()?;
+
+    let mut administration = connect(grpc_address).await?;
+    let bootstrap = bounded_rpc(
+        "vector bootstrap capability creation",
+        administration.create_bootstrap_capability(
+            vector_bootstrap_request(&retained_bootstrap, &mcp_audience)?,
+            &bootstrap_metadata(&retained_bootstrap)?,
+        ),
+    )
+    .await?;
+    assert_created_bootstrap(bootstrap)?;
+    let metadata = CallMetadata::authenticated(bearer_credential(&retained_bootstrap)?);
+    let deployed = bounded_rpc(
+        "vector contract deployment",
+        administration.deploy_contract(
+            v1::DeployContractRequest {
+                request_id: fresh_request_id_bytes()?,
+                source: VECTOR_DOCUMENTS_CONTRACT.to_owned(),
+                expected_active_version: None,
+                expected_active_bundle_hash: Vec::new(),
+                expected_candidate_bundle_hash: CONTRACT_BUNDLE_HASH.to_vec(),
+            },
+            &metadata,
+        ),
+    )
+    .await?;
+    let Some(v1::deploy_contract_response::Result::Activated(contract)) = deployed.result else {
+        return Err(test_failure("vector contract was not activated"));
+    };
+    if contract.bundle_hash != CONTRACT_BUNDLE_HASH {
+        return Err(test_failure(
+            "vector contract identity diverged from generated client",
+        ));
+    }
+    let module = bounded_rpc(
+        "vector query module deployment",
+        administration.deploy_query_module(
+            app_v1::DeployQueryModuleRequest {
+                contract: Some(app_v1::ContractSelector {
+                    lineage: vector_documents::CONTRACT_LINEAGE.to_owned(),
+                    version: vector_documents::CONTRACT_VERSION,
+                    bundle_hash: CONTRACT_BUNDLE_HASH.to_vec(),
+                }),
+                module_name: "vector_documents".to_owned(),
+                module_version: 1,
+                queries: vec![app_v1::NamedQuerySource {
+                    name: "SimilarDocuments".to_owned(),
+                    source: VECTOR_DOCUMENTS_QUERY.to_owned(),
+                }],
+                request_id: fresh_request_id_bytes()?,
+                expected_active: Some(
+                    app_v1::deploy_query_module_request::ExpectedActive::AbsentActive(true),
+                ),
+            },
+            &metadata,
+        ),
+    )
+    .await?;
+    if module.outcome != app_v1::QueryModuleDeploymentOutcome::Activated as i32
+        || module
+            .module
+            .as_ref()
+            .is_none_or(|descriptor| descriptor.module_hash != QUERY_MODULE_HASH)
+    {
+        return Err(test_failure(
+            "vector query module identity diverged from generated client",
+        ));
+    }
+
+    let endpoint = Endpoint::from_shared(format!("http://{grpc_address}"))?
+        .connect_timeout(RPC_TIMEOUT)
+        .timeout(RPC_TIMEOUT);
+    let stable = bounded_rpc(
+        "stable vector application connection",
+        StableApplicationClient::connect(endpoint),
+    )
+    .await?;
+    let mut application = VectorDocumentsClient::new(stable, metadata.clone(), one_attempt());
+    let organization_id = "11111111-1111-4111-8111-111111111111".to_owned();
+    let document_id = "22222222-2222-4222-8222-222222222222".to_owned();
+    let embedding = CanonicalVector::new(vec![1.0, 0.0, 0.0, 0.0])?;
+    let created = bounded_rpc(
+        "generated embedded-document command",
+        application.create_embedded_document(CreateEmbeddedDocumentInput::for_embedding(
+            "bounded vector exit body".to_owned(),
+            "Vector exit".to_owned(),
+            embedding.clone(),
+            document_id.clone(),
+            "wp596-vector-exit-create".to_owned(),
+            organization_id.clone(),
+        )),
+    )
+    .await?;
+    let CreateEmbeddedDocumentOutcome::Created { document } = created.outcome else {
+        return Err(test_failure(
+            "generated embedding command did not create its document",
+        ));
+    };
+    if created.replayed || document.document_id != document_id || document.embedding != embedding {
+        return Err(test_failure(
+            "generated embedding command did not preserve canonical typed values",
+        ));
+    }
+    let commit = created
+        .commit_sequence
+        .ok_or_else(|| test_failure("generated embedding command omitted its commit"))?;
+
+    let staleness = bounded_rpc(
+        "generated vector staleness inspection",
+        application.inspect_document_embedding_staleness(organization_id.clone(), 50, None),
+    )
+    .await?;
+    if !matches!(
+        staleness,
+        VectorStateInspectionResult::StalenessSummary(summary)
+            if summary.total_entities == 1 && summary.stale_count == 0 && !summary.slo_breached
+    ) {
+        return Err(test_failure(
+            "generated vector inspection did not report current authoritative evidence",
+        ));
+    }
+
+    let nearest = bounded_rpc(
+        "generated exact nearest query",
+        application.similar_documents_after_commit(
+            SimilarDocumentsParams {
+                organization_id: organization_id.clone(),
+                query_vector: embedding,
+                k: 1,
+            },
+            commit,
+        ),
+    )
+    .await?;
+    let SimilarDocumentsResult::Found(found) = nearest.value;
+    if found.documents.len() != 1
+        || found.documents[0].document_id != document_id
+        || nearest.application_head < commit
+    {
+        return Err(test_failure(
+            "generated exact nearest result was not fenced to the embedding commit",
+        ));
+    }
+
+    let health = bounded_rpc(
+        "vector health after generated write",
+        administration.health(
+            v1::HealthRequest {
+                request_id: Some(fresh_request_id_bytes()?),
+            },
+            &metadata,
+        ),
+    )
+    .await?;
+    let Some(v1::health_response::Result::Authenticated(report)) = health.result.as_ref() else {
+        return Err(test_failure(
+            "vector Health omitted its authenticated report",
+        ));
+    };
+    if component_status(report, v1::HealthComponentKind::VectorStaleness)?
+        != v1::HealthComponentStatus::Healthy
+    {
+        return Err(test_failure(
+            "authoritative vector staleness health was not healthy after the generated write",
+        ));
+    }
+
+    drop(application);
+    drop(administration);
     process.signal_sigterm()?;
     process.wait_for_successful_exit(PROCESS_STOP_TIMEOUT)?;
     Ok(())
@@ -757,6 +978,86 @@ fn bootstrap_request(
             row_policy: None,
             export: None,
             reimport: None,
+            vector_inspection: None,
+        }),
+    })
+}
+
+fn vector_bootstrap_request(
+    credential: &RetainedBootstrapCredential,
+    mcp_audience: &str,
+) -> TestResult<v1::CreateCapabilityRequest> {
+    use v1::capability_permission::Permission;
+
+    let lineage = vector_documents::CONTRACT_LINEAGE.to_owned();
+    let role_hash = [0x77; 32];
+    let mut audiences = vec![GRPC_AUDIENCE.to_owned(), mcp_audience.to_owned()];
+    audiences.sort_unstable();
+    Ok(v1::CreateCapabilityRequest {
+        request_id: fresh_request_id_bytes()?,
+        mode: v1::CapabilityCreateMode::Bootstrap as i32,
+        capability_id: credential.capability_id().into_bytes().to_vec(),
+        principal_id: "wp596-vector-maintainer".to_owned(),
+        actor_kind: v1::ActorKind::Human as i32,
+        requested_lifetime_seconds: CAPABILITY_LIFETIME_SECONDS,
+        audiences,
+        grant: Some(v1::CapabilityGrant {
+            tenant_scope: Some(v1::TenantScope {
+                scope: Some(v1::tenant_scope::Scope::Global(v1::Unit {})),
+            }),
+            partition_scope: Some(v1::PartitionScope {
+                scope: Some(v1::partition_scope::Scope::All(v1::Unit {})),
+            }),
+            permissions: vec![
+                v1::CapabilityPermission {
+                    permission: Some(Permission::DeployContract(v1::Unit {})),
+                },
+                v1::CapabilityPermission {
+                    permission: Some(Permission::InvokeCommand(v1::LineageScopedStableId {
+                        contract_lineage: lineage.clone(),
+                        stable_id: 1,
+                    })),
+                },
+                v1::CapabilityPermission {
+                    permission: Some(Permission::ReadHealth(v1::Unit {})),
+                },
+                v1::CapabilityPermission {
+                    permission: Some(Permission::AdministerCapabilities(v1::Unit {})),
+                },
+                v1::CapabilityPermission {
+                    permission: Some(Permission::ExecuteNamedQuery(v1::NamedQueryPermission {
+                        contract_lineage: lineage.clone(),
+                        query_module_hash: vector_documents::QUERY_MODULE_HASH.to_vec(),
+                        query_name: "SimilarDocuments".to_owned(),
+                    })),
+                },
+                v1::CapabilityPermission {
+                    permission: Some(Permission::ApplicationRoleIdentity(role_hash.to_vec())),
+                },
+                v1::CapabilityPermission {
+                    permission: Some(Permission::InspectVectorState(v1::Unit {})),
+                },
+            ],
+            field_visibility: vec![v1::EntityFieldVisibility {
+                contract_lineage: lineage,
+                entity_type_id: 1,
+                field_ids: vec![1, 2, 3, 4, 5],
+                secret_field_ids: Vec::new(),
+            }],
+            max_scan_rows: 500,
+            approval_required: Vec::new(),
+            row_policy: None,
+            export: None,
+            reimport: None,
+            vector_inspection: Some(v1::CapabilityVectorInspectionGrant {
+                application_role_hash: role_hash.to_vec(),
+                targets: vec![v1::CapabilityVectorInspectionTarget {
+                    contract_lineage: vector_documents::CONTRACT_LINEAGE.to_owned(),
+                    entity_type_id: 1,
+                    field_id: 3,
+                    allow_counts: true,
+                }],
+            }),
         }),
     })
 }
@@ -914,6 +1215,13 @@ impl ServerProcess {
                     .parent()
                     .expect("test database has parent")
                     .join("backups"),
+            )
+            .arg("--projections-root")
+            .arg(
+                database_path
+                    .parent()
+                    .expect("test database has parent")
+                    .join("projections"),
             )
             .arg("--capability-keys")
             .arg(capability_keys_path)

@@ -2393,14 +2393,15 @@ mod tests {
         let golden_digest: [u8; SHA256_BYTES] = Sha256::digest(&encoded).into();
         // Encoding includes presence-tagged history, retention watermark, and
         // exact physical-restore-range fields and this release's compatibility
-        // fixture digest;
+        // fixture digest. The latter intentionally rotates when the writable
+        // registry gains a durable record, including vector projection control;
         // recompute whenever the durable layout of this fixture changes intentionally.
         // Printed on failure so the new golden can be pasted deliberately.
         assert_eq!(
             golden_digest,
             [
-                76, 89, 229, 217, 62, 222, 103, 239, 5, 156, 27, 82, 77, 30, 176, 79, 156, 139, 7,
-                72, 131, 210, 105, 40, 23, 156, 171, 169, 140, 216, 252, 173,
+                77, 251, 18, 193, 163, 35, 63, 216, 174, 140, 203, 47, 149, 52, 116, 136, 20, 118,
+                145, 187, 207, 96, 172, 196, 206, 94, 102, 208, 130, 183, 44, 11,
             ],
             "manifest v1 encoding is a durable compatibility boundary"
         );

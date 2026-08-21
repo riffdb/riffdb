@@ -22,9 +22,13 @@ use riffdb_storage_api::{
     AuthoritativeScanReader, CommitScanPageV1, CommitScanRequest, EntityTarget,
     IdempotencyIdentity, StorageError, StorageErrorKind, StorageScanLimit, StoredCommitRecordV1,
     StoredDurableEventV1, StoredEntityRecordV1, StoredOutcomeV1, StoredProvenanceRecordV1,
+    StoredVectorProjectionControlV1, VectorProjectionControlRepository,
+    VectorProjectionControlWriteResultV1, VectorProjectionLifecycleV1,
+    VectorProjectionRebuildReasonV1, VectorProjectionReplayLimitsV1, VectorProjectionSourceV1,
 };
 use riffdb_types::{
-    CommitSequence, EntityKey, EventId, FieldId, FrontierPosition, ProjectionFrontier, ProvenanceId,
+    CommitSequence, EntityKey, EventId, FieldId, FrontierPosition, ProjectionFrontier,
+    ProjectionGeneration, ProvenanceId,
 };
 
 use crate::config::ConfiguredProjection;
@@ -113,14 +117,24 @@ impl fmt::Debug for ServerColumnarApplySource {
 pub(crate) struct ColumnarEngineSlot {
     engine: Mutex<ColumnarEngine>,
     definition: RegisteredDefinition,
+    generation: Option<ProjectionGeneration>,
 }
 
 impl ColumnarEngineSlot {
     fn new(engine: ColumnarEngine) -> Self {
+        Self::with_generation(engine, None)
+    }
+
+    fn new_vector(engine: ColumnarEngine, generation: ProjectionGeneration) -> Self {
+        Self::with_generation(engine, Some(generation))
+    }
+
+    fn with_generation(engine: ColumnarEngine, generation: Option<ProjectionGeneration>) -> Self {
         let definition = engine.definition().clone();
         Self {
             engine: Mutex::new(engine),
             definition,
+            generation,
         }
     }
 
@@ -128,6 +142,10 @@ impl ColumnarEngineSlot {
     #[must_use]
     pub(crate) fn definition(&self) -> &RegisteredDefinition {
         &self.definition
+    }
+
+    pub(crate) const fn generation(&self) -> Option<ProjectionGeneration> {
+        self.generation
     }
 
     /// Locks the engine briefly for apply or observe snapshot capture.
@@ -145,6 +163,7 @@ impl fmt::Debug for ColumnarEngineSlot {
         formatter
             .debug_struct("ColumnarEngineSlot")
             .field("name", &self.definition.name())
+            .field("generation", &self.generation)
             .finish()
     }
 }
@@ -155,9 +174,36 @@ pub(crate) struct ColumnarRuntime {
     notifier: ColumnarNotifier,
     names: RwLock<Vec<String>>,
     configured_names: BTreeSet<String>,
+    vector_registrations: RwLock<BTreeMap<String, VectorProjectionRegistration>>,
     projections_root: PathBuf,
     history_incarnation: u64,
     apply_source: ServerColumnarApplySource,
+}
+
+#[derive(Clone)]
+pub(crate) struct VectorProjectionRegistration {
+    source: VectorProjectionSourceV1,
+    limits: VectorProjectionReplayLimitsV1,
+    definition_fingerprint: [u8; 32],
+    definition: RegisteredDefinition,
+}
+
+impl VectorProjectionRegistration {
+    pub(crate) const fn source(&self) -> &VectorProjectionSourceV1 {
+        &self.source
+    }
+
+    pub(crate) const fn limits(&self) -> VectorProjectionReplayLimitsV1 {
+        self.limits
+    }
+
+    pub(crate) const fn definition_fingerprint(&self) -> &[u8; 32] {
+        &self.definition_fingerprint
+    }
+
+    pub(crate) fn definition(&self) -> &RegisteredDefinition {
+        &self.definition
+    }
 }
 
 impl ColumnarRuntime {
@@ -173,6 +219,7 @@ impl ColumnarRuntime {
             notifier: ColumnarNotifier::from_names(Vec::new()),
             names: RwLock::new(Vec::new()),
             configured_names: BTreeSet::new(),
+            vector_registrations: RwLock::new(BTreeMap::new()),
             projections_root,
             history_incarnation,
             apply_source: ServerColumnarApplySource::new(storage),
@@ -206,6 +253,7 @@ impl ColumnarRuntime {
         let mut names =
             Vec::with_capacity(projections.len() + bundle.schema().vector_production_specs().len());
         let mut configured_names = BTreeSet::new();
+        let mut vector_registrations = BTreeMap::new();
         for configured in projections {
             let name = configured.name().to_owned();
             if engines.contains_key(&name) {
@@ -235,14 +283,21 @@ impl ColumnarRuntime {
             if engines.contains_key(&name) {
                 return Err(ColumnarRegistrationError::duplicate_name(name));
             }
-            let definition = resolve_production_vector_projection(bundle, entity, &name)?;
-            let directory = projection_directory(projections_root, &name);
+            let registration = resolve_vector_registration(bundle, entity, spec, &name)?;
+            let control = reconcile_vector_control(&storage, &registration)?;
+            let definition = registration.definition().clone();
+            let directory =
+                vector_generation_directory(projections_root, &name, control.generation());
             let engine = ColumnarEngine::open(
                 definition,
                 OpenOptions::new(directory).with_history_incarnation(history_incarnation),
             )
             .map_err(|error| ColumnarRegistrationError::open(name.clone(), error))?;
-            engines.insert(name.clone(), Arc::new(ColumnarEngineSlot::new(engine)));
+            engines.insert(
+                name.clone(),
+                Arc::new(ColumnarEngineSlot::new_vector(engine, control.generation())),
+            );
+            vector_registrations.insert(name.clone(), registration);
             names.push(name);
         }
         names.sort();
@@ -252,6 +307,7 @@ impl ColumnarRuntime {
             notifier,
             names: RwLock::new(names),
             configured_names,
+            vector_registrations: RwLock::new(vector_registrations),
             projections_root: projections_root.to_path_buf(),
             history_incarnation,
             apply_source: ServerColumnarApplySource::new(storage),
@@ -293,11 +349,60 @@ impl ColumnarRuntime {
             .map_err(|_| ColumnarPortError::Unavailable)
     }
 
-    fn engine(&self, name: &str) -> Result<Option<Arc<ColumnarEngineSlot>>, ColumnarPortError> {
+    pub(crate) fn engine(
+        &self,
+        name: &str,
+    ) -> Result<Option<Arc<ColumnarEngineSlot>>, ColumnarPortError> {
         self.engines
             .read()
             .map(|engines| engines.get(name).cloned())
             .map_err(|_| ColumnarPortError::Unavailable)
+    }
+
+    pub(crate) fn vector_registrations(
+        &self,
+    ) -> Result<Vec<(String, VectorProjectionRegistration)>, ColumnarPortError> {
+        self.vector_registrations
+            .read()
+            .map(|registrations| {
+                registrations
+                    .iter()
+                    .map(|(name, registration)| (name.clone(), registration.clone()))
+                    .collect()
+            })
+            .map_err(|_| ColumnarPortError::Unavailable)
+    }
+
+    fn vector_registration(
+        &self,
+        name: &str,
+    ) -> Result<Option<VectorProjectionRegistration>, ColumnarPortError> {
+        self.vector_registrations
+            .read()
+            .map(|registrations| registrations.get(name).cloned())
+            .map_err(|_| ColumnarPortError::Unavailable)
+    }
+
+    pub(crate) fn replace_vector_engine(
+        &self,
+        name: &str,
+        engine: ColumnarEngine,
+        generation: ProjectionGeneration,
+    ) -> Result<(), ColumnarPortError> {
+        let replacement = Arc::new(ColumnarEngineSlot::new_vector(engine, generation));
+        let mut engines = self
+            .engines
+            .write()
+            .map_err(|_| ColumnarPortError::Unavailable)?;
+        if !engines.contains_key(name) {
+            return Err(ColumnarPortError::Integrity);
+        }
+        engines.insert(name.to_owned(), replacement);
+        Ok(())
+    }
+
+    pub(crate) fn projections_root(&self) -> &Path {
+        &self.projections_root
     }
 
     /// Reconciles compiler-declared vector projections after catalog activation.
@@ -329,8 +434,48 @@ impl ColumnarRuntime {
             }
             desired.insert(
                 name.clone(),
-                resolve_production_vector_projection(bundle, entity, &name)?,
+                resolve_vector_registration(bundle, entity, spec, &name)?,
             );
+        }
+
+        let previous_registrations = self
+            .vector_registrations
+            .read()
+            .map_err(|_| ColumnarRegistrationError::synchronization())?
+            .clone();
+        for (name, registration) in &previous_registrations {
+            if desired.contains_key(name) {
+                continue;
+            }
+            if let Some(control) = self
+                .storage()
+                .read_vector_projection_control(registration.source())
+                .map_err(|error| ColumnarRegistrationError::storage(error.into(), name.clone()))?
+            {
+                let invalid = StoredVectorProjectionControlV1::new(
+                    registration.source().clone(),
+                    control.generation(),
+                    *control.definition_fingerprint(),
+                    VectorProjectionLifecycleV1::Invalid,
+                    control.published_frontier(),
+                    None,
+                    None,
+                    control.limits(),
+                )
+                .map_err(|_| ColumnarRegistrationError::definition(name.clone()))?;
+                match self
+                    .storage()
+                    .compare_and_set_vector_projection_control(Some(&control), &invalid)
+                    .map_err(|error| {
+                        ColumnarRegistrationError::storage(error.into(), name.clone())
+                    })? {
+                    VectorProjectionControlWriteResultV1::Applied
+                    | VectorProjectionControlWriteResultV1::Unchanged => {}
+                    VectorProjectionControlWriteResultV1::CompareMismatch => {
+                        return Err(ColumnarRegistrationError::synchronization());
+                    }
+                }
+            }
         }
 
         let existing = self
@@ -338,20 +483,25 @@ impl ColumnarRuntime {
             .read()
             .map_err(|_| ColumnarRegistrationError::synchronization())?;
         let mut additions = Vec::new();
-        for (name, definition) in &desired {
-            if let Some(slot) = existing.get(name) {
-                if slot.definition().fingerprint() != definition.fingerprint() {
-                    return Err(ColumnarRegistrationError::definition(name.clone()));
-                }
+        for (name, registration) in &desired {
+            let control = reconcile_vector_control(self.storage(), registration)?;
+            if let Some(slot) = existing.get(name)
+                && slot.definition().fingerprint() == registration.definition().fingerprint()
+                && slot.generation() == Some(control.generation())
+            {
                 continue;
             }
-            let directory = projection_directory(&self.projections_root, name);
+            let directory =
+                vector_generation_directory(&self.projections_root, name, control.generation());
             let engine = ColumnarEngine::open(
-                definition.clone(),
+                registration.definition().clone(),
                 OpenOptions::new(directory).with_history_incarnation(self.history_incarnation),
             )
             .map_err(|error| ColumnarRegistrationError::open(name.clone(), error))?;
-            additions.push((name.clone(), Arc::new(ColumnarEngineSlot::new(engine))));
+            additions.push((
+                name.clone(),
+                Arc::new(ColumnarEngineSlot::new_vector(engine, control.generation())),
+            ));
         }
         drop(existing);
 
@@ -362,7 +512,7 @@ impl ColumnarRuntime {
         engines
             .retain(|name, _| self.configured_names.contains(name) || desired.contains_key(name));
         for (name, slot) in additions {
-            engines.entry(name).or_insert(slot);
+            engines.insert(name, slot);
         }
         let names = engines.keys().cloned().collect::<Vec<_>>();
         self.notifier
@@ -372,6 +522,10 @@ impl ColumnarRuntime {
             .names
             .write()
             .map_err(|_| ColumnarRegistrationError::synchronization())? = names;
+        *self
+            .vector_registrations
+            .write()
+            .map_err(|_| ColumnarRegistrationError::synchronization())? = desired;
         Ok(())
     }
 
@@ -431,6 +585,92 @@ fn resolve_production_vector_projection(
         bundle,
     )
     .map_err(|_| ColumnarRegistrationError::definition(name))
+}
+
+fn resolve_vector_registration(
+    bundle: &ContractBundle,
+    entity: &riffdb_contract_ir::EntitySchema,
+    spec: &riffdb_contract_ir::VectorProductionSpecV1,
+    name: &str,
+) -> Result<VectorProjectionRegistration, ColumnarRegistrationError> {
+    let definition = resolve_production_vector_projection(bundle, entity, name)?;
+    let limits = VectorProjectionReplayLimitsV1::new(
+        spec.replay_age_seconds(),
+        spec.replay_bytes(),
+        spec.replay_backlog(),
+    )
+    .ok_or_else(|| ColumnarRegistrationError::definition(name))?;
+    Ok(VectorProjectionRegistration {
+        source: VectorProjectionSourceV1::new(
+            bundle.lineage().clone(),
+            spec.entity(),
+            spec.field(),
+        ),
+        limits,
+        // The complete canonical bundle hash is deliberately conservative:
+        // every compiler-visible successor gets a distinct derived generation
+        // rather than risking reuse across model or replay-descriptor changes.
+        definition_fingerprint: *bundle.bundle_hash().as_bytes(),
+        definition,
+    })
+}
+
+fn reconcile_vector_control(
+    storage: &SharedRedbOperationalPorts,
+    registration: &VectorProjectionRegistration,
+) -> Result<StoredVectorProjectionControlV1, ColumnarRegistrationError> {
+    let current = storage
+        .read_vector_projection_control(registration.source())
+        .map_err(|error| ColumnarRegistrationError::storage(error.into(), "production-vector"))?;
+    let replacement = match current.as_ref() {
+        None => StoredVectorProjectionControlV1::initial(
+            registration.source().clone(),
+            registration.definition_fingerprint,
+            registration.limits,
+        ),
+        Some(control)
+            if control.definition_fingerprint() == registration.definition_fingerprint()
+                && control.limits() == registration.limits() =>
+        {
+            return Ok(control.clone());
+        }
+        Some(control) => StoredVectorProjectionControlV1::new(
+            registration.source().clone(),
+            control
+                .generation()
+                .checked_next()
+                .ok_or_else(|| ColumnarRegistrationError::definition("production-vector"))?,
+            registration.definition_fingerprint,
+            VectorProjectionLifecycleV1::RebuildRequired,
+            control.published_frontier(),
+            None,
+            Some(VectorProjectionRebuildReasonV1::DefinitionChanged),
+            registration.limits,
+        )
+        .map_err(|_| ColumnarRegistrationError::definition("production-vector"))?,
+    };
+    match storage
+        .compare_and_set_vector_projection_control(current.as_ref(), &replacement)
+        .map_err(|error| ColumnarRegistrationError::storage(error.into(), "production-vector"))?
+    {
+        VectorProjectionControlWriteResultV1::Applied
+        | VectorProjectionControlWriteResultV1::Unchanged => Ok(replacement),
+        VectorProjectionControlWriteResultV1::CompareMismatch => {
+            let observed = storage
+                .read_vector_projection_control(registration.source())
+                .map_err(|error| {
+                    ColumnarRegistrationError::storage(error.into(), "production-vector")
+                })?
+                .ok_or_else(ColumnarRegistrationError::synchronization)?;
+            if observed.definition_fingerprint() == registration.definition_fingerprint()
+                && observed.limits() == registration.limits()
+            {
+                Ok(observed)
+            } else {
+                Err(ColumnarRegistrationError::synchronization())
+            }
+        }
+    }
 }
 
 fn production_column_type_supported(value_type: &ValueType) -> bool {
@@ -533,6 +773,45 @@ impl VectorProjectionPort for ServerColumnarProjectionPort {
         &self,
         request: VectorProjectionRequest,
     ) -> Result<VectorProjectionResult, VectorProjectionPortError> {
+        if let Some(registration) = self
+            .runtime
+            .vector_registration(request.source_name())
+            .map_err(map_vector_port_error)?
+        {
+            let control = self
+                .runtime
+                .storage()
+                .read_vector_projection_control(registration.source())
+                .map_err(|error| match error.kind() {
+                    StorageErrorKind::Unavailable => VectorProjectionPortError::Unavailable,
+                    _ => VectorProjectionPortError::Integrity,
+                })?
+                .ok_or(VectorProjectionPortError::Integrity)?;
+            if control.definition_fingerprint() != registration.definition_fingerprint() {
+                return Err(VectorProjectionPortError::Integrity);
+            }
+            let slot = self
+                .runtime
+                .engine(request.source_name())
+                .map_err(map_vector_port_error)?
+                .ok_or(VectorProjectionPortError::Integrity)?;
+            if slot.generation() != Some(control.generation()) {
+                return Err(VectorProjectionPortError::Rebuilding);
+            }
+            match control.lifecycle() {
+                VectorProjectionLifecycleV1::Building => {
+                    return Err(VectorProjectionPortError::Building);
+                }
+                VectorProjectionLifecycleV1::RebuildRequired
+                | VectorProjectionLifecycleV1::Rebuilding => {
+                    return Err(VectorProjectionPortError::Rebuilding);
+                }
+                VectorProjectionLifecycleV1::Invalid => {
+                    return Err(VectorProjectionPortError::Integrity);
+                }
+                VectorProjectionLifecycleV1::Ready => {}
+            }
+        }
         let observation = self
             .observe(request.source_name())
             .map_err(map_vector_port_error)?;
@@ -896,6 +1175,16 @@ fn first_projection_name(projections: &[ConfiguredProjection]) -> String {
 
 fn projection_directory(projections_root: &Path, name: &str) -> PathBuf {
     projections_root.join(name)
+}
+
+pub(crate) fn vector_generation_directory(
+    projections_root: &Path,
+    name: &str,
+    generation: ProjectionGeneration,
+) -> PathBuf {
+    projections_root
+        .join(name)
+        .join(format!("generation-{:020}", generation.get()))
 }
 
 fn resolve_configured_projection(
@@ -1273,6 +1562,215 @@ contract VectorBoard version 1 {
         assert_eq!(slot.definition().name(), "Document.embedding");
         assert_eq!(slot.definition().entity_name(), "Document");
         assert_eq!(slot.definition().projected_fields().len(), 2);
+    }
+
+    #[test]
+    fn production_vector_snapshot_generation_becomes_ready_only_after_checkpoint() {
+        let (runtime, _scope) = production_vector_runtime("production-vector-rebuild");
+        let registration = runtime
+            .vector_registration("Document.embedding")
+            .expect("registration lock")
+            .expect("vector registration");
+        let building = runtime
+            .storage()
+            .read_vector_projection_control(registration.source())
+            .expect("read building control")
+            .expect("building control");
+        assert_eq!(building.lifecycle(), VectorProjectionLifecycleV1::Building);
+        assert!(!building.retention_attached());
+
+        assert!(crate::columnar_worker::run_one_test_pass(&runtime));
+
+        let ready = runtime
+            .storage()
+            .read_vector_projection_control(registration.source())
+            .expect("read ready control")
+            .expect("ready control");
+        assert_eq!(ready.lifecycle(), VectorProjectionLifecycleV1::Ready);
+        assert!(ready.retention_attached());
+        let engine = runtime
+            .engine("Document.embedding")
+            .expect("engine registry")
+            .expect("ready vector engine");
+        assert_eq!(
+            engine
+                .lock_engine()
+                .expect("engine lock")
+                .durable_frontier()
+                .position(),
+            ready.published_frontier()
+        );
+    }
+
+    #[test]
+    fn detached_and_rebuilding_vector_controls_resume_without_frontier_overclaim() {
+        let (runtime, _scope) = production_vector_runtime("production-vector-resume");
+        let registration = runtime
+            .vector_registration("Document.embedding")
+            .expect("registration lock")
+            .expect("vector registration");
+        assert!(crate::columnar_worker::run_one_test_pass(&runtime));
+        let first_ready = runtime
+            .storage()
+            .read_vector_projection_control(registration.source())
+            .expect("read first generation")
+            .expect("first generation");
+
+        let detached = StoredVectorProjectionControlV1::new(
+            registration.source().clone(),
+            first_ready
+                .generation()
+                .checked_next()
+                .expect("next generation"),
+            *first_ready.definition_fingerprint(),
+            VectorProjectionLifecycleV1::RebuildRequired,
+            first_ready.published_frontier(),
+            None,
+            Some(VectorProjectionRebuildReasonV1::ReplayBacklog),
+            first_ready.limits(),
+        )
+        .expect("detached control");
+        assert_eq!(
+            runtime
+                .storage()
+                .compare_and_set_vector_projection_control(Some(&first_ready), &detached)
+                .expect("detach"),
+            VectorProjectionControlWriteResultV1::Applied
+        );
+        assert!(
+            runtime
+                .storage()
+                .attached_vector_projection_frontiers()
+                .expect("retention frontiers")
+                .is_empty()
+        );
+        assert!(crate::columnar_worker::run_one_test_pass(&runtime));
+        let second_ready = runtime
+            .storage()
+            .read_vector_projection_control(registration.source())
+            .expect("read second generation")
+            .expect("second generation");
+        assert_eq!(second_ready.lifecycle(), VectorProjectionLifecycleV1::Ready);
+        assert_eq!(second_ready.generation(), detached.generation());
+
+        let rebuilding = StoredVectorProjectionControlV1::new(
+            registration.source().clone(),
+            second_ready
+                .generation()
+                .checked_next()
+                .expect("next generation"),
+            *second_ready.definition_fingerprint(),
+            VectorProjectionLifecycleV1::Rebuilding,
+            second_ready.published_frontier(),
+            Some(FrontierPosition::BeforeFirst),
+            Some(VectorProjectionRebuildReasonV1::ReplayBytes),
+            second_ready.limits(),
+        )
+        .expect("rebuilding control");
+        assert_eq!(
+            runtime
+                .storage()
+                .compare_and_set_vector_projection_control(Some(&second_ready), &rebuilding)
+                .expect("persist rebuilding"),
+            VectorProjectionControlWriteResultV1::Applied
+        );
+        assert!(crate::columnar_worker::run_one_test_pass(&runtime));
+        let recovered = runtime
+            .storage()
+            .read_vector_projection_control(registration.source())
+            .expect("read recovered generation")
+            .expect("recovered generation");
+        assert_eq!(recovered.lifecycle(), VectorProjectionLifecycleV1::Ready);
+        assert_eq!(recovered.generation(), rebuilding.generation());
+        assert_eq!(
+            runtime
+                .engine("Document.embedding")
+                .expect("engine registry")
+                .expect("recovered engine")
+                .generation(),
+            Some(recovered.generation())
+        );
+    }
+
+    #[test]
+    fn persisted_vector_rebuild_resumes_after_storage_reopen_without_overclaim() {
+        let (runtime, scope) = production_vector_runtime("production-vector-reopen");
+        let registration = runtime
+            .vector_registration("Document.embedding")
+            .expect("registration lock")
+            .expect("vector registration");
+        assert!(crate::columnar_worker::run_one_test_pass(&runtime));
+        let ready = runtime
+            .storage()
+            .read_vector_projection_control(registration.source())
+            .expect("read ready generation")
+            .expect("ready generation");
+        let rebuilding = StoredVectorProjectionControlV1::new(
+            registration.source().clone(),
+            ready.generation().checked_next().expect("next generation"),
+            *ready.definition_fingerprint(),
+            VectorProjectionLifecycleV1::Rebuilding,
+            ready.published_frontier(),
+            Some(ready.published_frontier()),
+            Some(VectorProjectionRebuildReasonV1::ReplayAge),
+            ready.limits(),
+        )
+        .expect("rebuilding control");
+        assert_eq!(
+            runtime
+                .storage()
+                .compare_and_set_vector_projection_control(Some(&ready), &rebuilding)
+                .expect("persist rebuilding generation"),
+            VectorProjectionControlWriteResultV1::Applied
+        );
+        drop(runtime);
+
+        let store = RedbStore::open(scope.path().join("db.redb")).expect("reopen database");
+        let ports = open_operational(store);
+        let storage =
+            SharedRedbOperationalPorts::new(ports, None).expect("share reopened operational ports");
+        let reopened = ColumnarRuntime::open(storage, &[], &scope.path().join("projections"), 1)
+            .expect("reopen vector runtime");
+        let persisted = reopened
+            .storage()
+            .read_vector_projection_control(registration.source())
+            .expect("read persisted rebuilding generation")
+            .expect("persisted rebuilding generation");
+        assert_eq!(
+            persisted.lifecycle(),
+            VectorProjectionLifecycleV1::Rebuilding
+        );
+        assert_eq!(persisted.generation(), rebuilding.generation());
+        assert_eq!(persisted.published_frontier(), ready.published_frontier());
+        assert!(
+            reopened
+                .storage()
+                .attached_vector_projection_frontiers()
+                .expect("detached retention frontiers")
+                .is_empty()
+        );
+
+        assert!(crate::columnar_worker::run_one_test_pass(&reopened));
+        let recovered = reopened
+            .storage()
+            .read_vector_projection_control(registration.source())
+            .expect("read recovered generation")
+            .expect("recovered generation");
+        assert_eq!(recovered.lifecycle(), VectorProjectionLifecycleV1::Ready);
+        assert_eq!(recovered.generation(), rebuilding.generation());
+        let engine = reopened
+            .engine("Document.embedding")
+            .expect("engine registry")
+            .expect("recovered engine");
+        assert_eq!(engine.generation(), Some(recovered.generation()));
+        assert_eq!(
+            engine
+                .lock_engine()
+                .expect("engine lock")
+                .durable_frontier()
+                .position(),
+            recovered.published_frontier()
+        );
     }
 
     #[test]

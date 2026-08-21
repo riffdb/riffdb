@@ -27,7 +27,7 @@
   "writable_format_upgrade_receipt_versions": [1],
   "readable_format_marker_versions": [1],
   "writable_format_marker_versions": [1],
-  "record_registry_digest": "84542f62cfa34505d788e8fb825cd424eacb1b495bda5b53f953f66896773337",
+  "record_registry_digest": "4d7c8033e0da061e70600caf949cf6e305f6cd4bf937128b58e6f577233d5c4a",
   "readable_records": [
     {"record_type":"riffdb.storage.v1.StoredStorageFormatVersionV1","tag":1,"revision":1,"schema_hash":"07371c0b9eba9bfcad3118b345064b3d33a20a13641c6bde017e5c99dc6020ab"},
     {"record_type":"riffdb.storage.v1.StoredDatabaseIdentityV1","tag":2,"revision":1,"schema_hash":"de6f4f35fa52ca7664a85d9ffaa0041c506f3c5eb22632ba0ecd757dc6df1dea"},
@@ -117,6 +117,7 @@
     {"record_type":"riffdb.storage.v1.StoredVectorObservationV1","tag":62,"revision":1,"schema_hash":"5a2c5973e57ea3f0100f786aa48699f04fac2e97a9d1d622b49af45e40417652"},
     {"record_type":"riffdb.storage.v1.StoredVectorEvidenceIndexV1","tag":63,"revision":1,"schema_hash":"6129c2ee589159eab28081ba3d2aff16de85e67a80e6d86d9bc265957d1e7d4e"},
     {"record_type":"riffdb.storage.v1.StoredVectorHealthObservationV1","tag":64,"revision":1,"schema_hash":"e81d1192d1b88efa8e5f2a5c1fbe27dce511429f3e636b50800bd10d81fbf4a2"},
+    {"record_type":"riffdb.storage.v1.StoredVectorProjectionControlV1","tag":65,"revision":1,"schema_hash":"b869020aa2f32bd878a31d87d7b6f52094c59a5e441155beb8b51dbba4e574d2"},
     {"record_type":"riffdb.storage.v1.CapabilityRecordV1","tag":18,"revision":1,"schema_hash":"cb42c4ebbce8280123f8b34d4dcde74ca9483406847531f34d5fb3f18d40b342"},
     {"record_type":"riffdb.storage.v1.CapabilityRecordV1","tag":18,"revision":2,"schema_hash":"dee2398ebbc71824471fe5a5f96fcbebdde09e511fe6c11531c2b30210f9e6bf"},
     {"record_type":"riffdb.storage.v1.CapabilityTokenLookupV1","tag":19,"revision":1,"schema_hash":"e00696f3d2c110c5b2b99685e7987f7204d2f9576f8b41c5fcd5a894c746bc86"},
@@ -193,9 +194,10 @@
     {"record_type":"riffdb.storage.v1.StoredVectorEvidenceV1","tag":61,"revision":1,"schema_hash":"de3451baade7dbe010de8f4bf227dbf267931cf9dafef170fde952b14a16d84f"},
     {"record_type":"riffdb.storage.v1.StoredVectorObservationV1","tag":62,"revision":1,"schema_hash":"5a2c5973e57ea3f0100f786aa48699f04fac2e97a9d1d622b49af45e40417652"},
     {"record_type":"riffdb.storage.v1.StoredVectorEvidenceIndexV1","tag":63,"revision":1,"schema_hash":"6129c2ee589159eab28081ba3d2aff16de85e67a80e6d86d9bc265957d1e7d4e"},
-    {"record_type":"riffdb.storage.v1.StoredVectorHealthObservationV1","tag":64,"revision":1,"schema_hash":"e81d1192d1b88efa8e5f2a5c1fbe27dce511429f3e636b50800bd10d81fbf4a2"}
+    {"record_type":"riffdb.storage.v1.StoredVectorHealthObservationV1","tag":64,"revision":1,"schema_hash":"e81d1192d1b88efa8e5f2a5c1fbe27dce511429f3e636b50800bd10d81fbf4a2"},
+    {"record_type":"riffdb.storage.v1.StoredVectorProjectionControlV1","tag":65,"revision":1,"schema_hash":"b869020aa2f32bd878a31d87d7b6f52094c59a5e441155beb8b51dbba4e574d2"}
   ],
-  "compatibility_fixture_digest": "2c85de8dd75bb1dbece03fcddc582ac9fa93f7dd7bfa8b9fd2b09e531a0c8bba",
+  "compatibility_fixture_digest": "e73ed52b24cbea60eed52d83ba520e7d0d9855d51d658aab0e0aa1e2763a11e0",
   "upgrade_table": "compatibility/release-pairs-v1.json",
   "physical_format_inventory": "compatibility/physical-formats-v1.json",
   "backup_required_before_upgrade": true,

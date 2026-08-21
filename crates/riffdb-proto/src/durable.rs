@@ -12,9 +12,9 @@ use crate::envelope::{PayloadValidationError, RecordRegistry, RecordSchema};
 use crate::storage::v1;
 
 /// Number of durable semantic payload tuples accepted while opening or migrating storage.
-pub const READABLE_RECORD_SCHEMA_COUNT: usize = 93;
+pub const READABLE_RECORD_SCHEMA_COUNT: usize = 94;
 /// Number of durable semantic roles accepted for current writes.
-pub const WRITABLE_RECORD_SCHEMA_COUNT: usize = 70;
+pub const WRITABLE_RECORD_SCHEMA_COUNT: usize = 71;
 /// Number of durable semantic roles accepted for current writes.
 pub const CURRENT_RECORD_SCHEMA_COUNT: usize = WRITABLE_RECORD_SCHEMA_COUNT;
 
@@ -306,6 +306,14 @@ const VECTOR_HEALTH_OBSERVATION_V1_SCHEMA_HASH_BYTES: &[u8; 32] = include_bytes!
 const VECTOR_HEALTH_OBSERVATION_V1_RECORD_BOUND_BYTES: &[u8; 8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/fixtures/durable-vector-health-observation-v1-record-bound.bin"
+));
+const VECTOR_PROJECTION_CONTROL_V1_SCHEMA_HASH_BYTES: &[u8; 32] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/fixtures/durable-vector-projection-control-v1-schema-hash.bin"
+));
+const VECTOR_PROJECTION_CONTROL_V1_RECORD_BOUND_BYTES: &[u8; 8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/fixtures/durable-vector-projection-control-v1-record-bound.bin"
 ));
 const VECTOR_EVIDENCE_INDEX_V1_SCHEMA_HASH_BYTES: &[u8; 32] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -1540,6 +1548,27 @@ const VECTOR_HEALTH_OBSERVATION_V1_RECORD_SCHEMA: RecordSchema<'static> =
     )
     .with_compact_identity(64, 1);
 
+const VECTOR_PROJECTION_CONTROL_V1_RECORD_SCHEMA: RecordSchema<'static> =
+    RecordSchema::new_current(
+        "riffdb.storage.v1.StoredVectorProjectionControlV1",
+        SchemaHash::from_bytes(*VECTOR_PROJECTION_CONTROL_V1_SCHEMA_HASH_BYTES),
+        u32::from_be_bytes([
+            VECTOR_PROJECTION_CONTROL_V1_RECORD_BOUND_BYTES[0],
+            VECTOR_PROJECTION_CONTROL_V1_RECORD_BOUND_BYTES[1],
+            VECTOR_PROJECTION_CONTROL_V1_RECORD_BOUND_BYTES[2],
+            VECTOR_PROJECTION_CONTROL_V1_RECORD_BOUND_BYTES[3],
+        ]) as usize,
+        u32::from_be_bytes([
+            VECTOR_PROJECTION_CONTROL_V1_RECORD_BOUND_BYTES[4],
+            VECTOR_PROJECTION_CONTROL_V1_RECORD_BOUND_BYTES[5],
+            VECTOR_PROJECTION_CONTROL_V1_RECORD_BOUND_BYTES[6],
+            VECTOR_PROJECTION_CONTROL_V1_RECORD_BOUND_BYTES[7],
+        ]) as usize,
+        preflight_payload::<88>,
+        validate_payload::<88, v1::StoredVectorProjectionControlV1>,
+    )
+    .with_compact_identity(65, 1);
+
 mod sealed {
     pub trait ReadableRecordMessage {}
     pub trait WritableRecordMessage: ReadableRecordMessage {}
@@ -1719,6 +1748,10 @@ readable_message!(
     VECTOR_HEALTH_OBSERVATION_V1_RECORD_SCHEMA
 );
 readable_message!(
+    v1::StoredVectorProjectionControlV1,
+    VECTOR_PROJECTION_CONTROL_V1_RECORD_SCHEMA
+);
+readable_message!(
     v1::StoredApplicationExportOperationV1,
     APPLICATION_EXPORT_OPERATION_V1_RECORD_SCHEMA
 );
@@ -1848,6 +1881,7 @@ writable_message!(v1::StoredVectorEvidenceV1);
 writable_message!(v1::StoredVectorObservationV1);
 writable_message!(v1::StoredVectorEvidenceIndexV1);
 writable_message!(v1::StoredVectorHealthObservationV1);
+writable_message!(v1::StoredVectorProjectionControlV1);
 writable_message!(v1::StoredRetentionWatermarkV1);
 writable_message!(v1::StoredRetentionHoldsV1);
 writable_message!(v1::StoredHistoryTombstoneV1);
@@ -2059,6 +2093,7 @@ pub static READABLE_RECORD_SCHEMAS: [RecordSchema<'static>; READABLE_RECORD_SCHE
     VECTOR_OBSERVATION_V1_RECORD_SCHEMA,
     VECTOR_EVIDENCE_INDEX_V1_RECORD_SCHEMA,
     VECTOR_HEALTH_OBSERVATION_V1_RECORD_SCHEMA,
+    VECTOR_PROJECTION_CONTROL_V1_RECORD_SCHEMA,
     PRE_WP280_CAPABILITY_RECORD_SCHEMA,
     PRE_WP416_CAPABILITY_RECORD_SCHEMA,
     PRE_WP416_CAPABILITY_TOKEN_LOOKUP_RECORD_SCHEMA,
@@ -2138,6 +2173,7 @@ pub static WRITABLE_RECORD_SCHEMAS: [RecordSchema<'static>; WRITABLE_RECORD_SCHE
     VECTOR_OBSERVATION_V1_RECORD_SCHEMA,
     VECTOR_EVIDENCE_INDEX_V1_RECORD_SCHEMA,
     VECTOR_HEALTH_OBSERVATION_V1_RECORD_SCHEMA,
+    VECTOR_PROJECTION_CONTROL_V1_RECORD_SCHEMA,
 ];
 
 /// Current durable schemas. `current` is exactly synonymous with writable roles.

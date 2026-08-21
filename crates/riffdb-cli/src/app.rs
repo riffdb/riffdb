@@ -9030,6 +9030,22 @@ fn application_role_grant_to_proto(grant: &CapabilityGrantV1) -> Result<v1::Capa
             })
         })
         .transpose()?;
+    let vector_inspection =
+        grant
+            .internal_vector_inspection()
+            .map(|inspection| v1::CapabilityVectorInspectionGrant {
+                application_role_hash: inspection.application_role_hash().as_bytes().to_vec(),
+                targets: inspection
+                    .targets()
+                    .iter()
+                    .map(|target| v1::CapabilityVectorInspectionTarget {
+                        contract_lineage: target.lineage().as_str().to_owned(),
+                        entity_type_id: target.entity_type().get(),
+                        field_id: target.field().get(),
+                        allow_counts: target.allow_counts(),
+                    })
+                    .collect(),
+            });
     Ok(v1::CapabilityGrant {
         tenant_scope: Some(tenant_scope),
         partition_scope: Some(partition_scope),
@@ -9062,6 +9078,7 @@ fn application_role_grant_to_proto(grant: &CapabilityGrantV1) -> Result<v1::Capa
         row_policy,
         export: None,
         reimport: None,
+        vector_inspection,
     })
 }
 
@@ -9072,6 +9089,9 @@ fn application_role_permission_to_proto(
     let permission = match permission {
         CapabilityPermissionV1::Unparameterized(CapabilityPermissionKindV1::ReadContract) => {
             Permission::ReadContract(v1::Unit {})
+        }
+        CapabilityPermissionV1::Unparameterized(CapabilityPermissionKindV1::InspectVectorState) => {
+            Permission::InspectVectorState(v1::Unit {})
         }
         CapabilityPermissionV1::Unparameterized(_) => {
             unreachable!("application roles infer only contract-description access")
@@ -9264,6 +9284,24 @@ struct CapabilityGrantInput {
     export: Option<CapabilityExportGrantInput>,
     #[serde(default)]
     reimport: Option<CapabilityApplicationReimportGrantInput>,
+    #[serde(default)]
+    vector_inspection: Option<CapabilityVectorInspectionGrantInput>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CapabilityVectorInspectionGrantInput {
+    application_role_hash: String,
+    targets: Vec<CapabilityVectorInspectionTargetInput>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CapabilityVectorInspectionTargetInput {
+    contract_lineage: String,
+    entity_type_id: u32,
+    field_id: u32,
+    allow_counts: bool,
 }
 
 #[derive(Deserialize)]
@@ -9380,6 +9418,7 @@ enum CapabilityPermissionInput {
     InstallApplication {
         contract_lineage: String,
     },
+    InspectVectorState {},
     InvokeCommand {
         contract_lineage: String,
         stable_id: u32,
@@ -9477,6 +9516,7 @@ enum CapabilityPermissionKindInput {
     ExecuteNamedQuery,
     MigrateContract,
     InstallApplication,
+    InspectVectorState,
     ConsumeEventStream,
     SeekEventStreamConsumer,
     WatchNamedQuery,
@@ -9721,6 +9761,7 @@ fn capability_grant(input: CapabilityGrantInput) -> Result<v1::CapabilityGrant, 
         row_policy,
         export,
         reimport,
+        vector_inspection,
     } = input;
     let tenant_scope = match tenant_scope {
         TenantScopeInput::Global {} => v1::TenantScope {
@@ -9860,6 +9901,29 @@ fn capability_grant(input: CapabilityGrantInput) -> Result<v1::CapabilityGrant, 
             })
         })
         .transpose()?;
+    let vector_inspection = vector_inspection
+        .map(|inspection| {
+            Ok(v1::CapabilityVectorInspectionGrant {
+                application_role_hash: parse_lower_hash(&inspection.application_role_hash)?
+                    .to_vec(),
+                targets: inspection
+                    .targets
+                    .into_iter()
+                    .map(|target| {
+                        if target.entity_type_id == 0 || target.field_id == 0 {
+                            return Err(());
+                        }
+                        Ok(v1::CapabilityVectorInspectionTarget {
+                            contract_lineage: target.contract_lineage,
+                            entity_type_id: target.entity_type_id,
+                            field_id: target.field_id,
+                            allow_counts: target.allow_counts,
+                        })
+                    })
+                    .collect::<Result<Vec<_>, ()>>()?,
+            })
+        })
+        .transpose()?;
     Ok(v1::CapabilityGrant {
         tenant_scope: Some(tenant_scope),
         partition_scope: Some(partition_scope),
@@ -9870,6 +9934,7 @@ fn capability_grant(input: CapabilityGrantInput) -> Result<v1::CapabilityGrant, 
         row_policy,
         export,
         reimport,
+        vector_inspection,
     })
 }
 
@@ -9904,6 +9969,9 @@ fn capability_permission(input: CapabilityPermissionInput) -> Result<v1::Capabil
                 return Err(());
             }
             Permission::InstallApplication(contract_lineage)
+        }
+        CapabilityPermissionInput::InspectVectorState {} => {
+            Permission::InspectVectorState(v1::Unit {})
         }
         CapabilityPermissionInput::InvokeCommand {
             contract_lineage,
@@ -10086,6 +10154,9 @@ const fn permission_kind(input: CapabilityPermissionKindInput) -> i32 {
         }
         CapabilityPermissionKindInput::InstallApplication => {
             v1::CapabilityPermissionKind::InstallApplication as i32
+        }
+        CapabilityPermissionKindInput::InspectVectorState => {
+            v1::CapabilityPermissionKind::InspectVectorState as i32
         }
         CapabilityPermissionKindInput::ConsumeEventStream => {
             v1::CapabilityPermissionKind::ConsumeEventStream as i32
@@ -12932,6 +13003,7 @@ mod tests {
                 row_policy: None,
                 export: None,
                 reimport: None,
+                vector_inspection: None,
             }),
         }
     }

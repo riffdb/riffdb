@@ -13,14 +13,16 @@ use riffdb_types::{
     CapabilityApplicationReimportGrantV1, CapabilityApplicationReimportScopeV1,
     CapabilityExportGrantV1, CapabilityId, CapabilityPrincipalFactV1, CapabilityPrincipalFactsV1,
     CapabilityRowPolicyBindingV1, CapabilityRowPolicyGrantV1, CapabilityRowPolicyOperationV1,
-    ContractLineage, ContractMigrationOperationId, DatabaseId, EntityKey, EntityTypeId,
-    EventConsumerName, IndexEntryKey, MAX_ACTOR_ID_BYTES, MAX_APPLICATION_EXPORT_MODULES,
+    CapabilityVectorInspectionGrantV1, CapabilityVectorInspectionTargetV1, ContractLineage,
+    ContractMigrationOperationId, DatabaseId, EntityKey, EntityTypeId, EventConsumerName, FieldId,
+    IndexEntryKey, MAX_ACTOR_ID_BYTES, MAX_APPLICATION_EXPORT_MODULES,
     MAX_CAPABILITY_APPLICATION_EXPORT_GRANTS, MAX_CAPABILITY_AUDIENCES,
     MAX_CAPABILITY_FIELD_VISIBILITY, MAX_CAPABILITY_LIFETIME_SECONDS, MAX_CAPABILITY_PARTITIONS,
     MAX_CAPABILITY_PAYLOAD_BYTES, MAX_CAPABILITY_PERMISSIONS, MAX_CAPABILITY_ROW_POLICY_BINDINGS,
-    MAX_COMMAND_CONFLICT_KEYS_V1, MAX_CONTRACT_LINEAGE_BYTES, MAX_IDEMPOTENCY_KEY_BYTES,
-    MAX_KEY_BYTES, MAX_PRINCIPAL_FACTS_V1, MAX_PROJECTION_GROUP_COMPONENTS, MAX_TENANT_ID_BYTES,
-    OfflineMaintenanceOperationId, PartitionKey, ProvenanceId, RequestId, RowPolicyName, Timestamp,
+    MAX_CAPABILITY_VECTOR_INSPECTION_TARGETS, MAX_COMMAND_CONFLICT_KEYS_V1,
+    MAX_CONTRACT_LINEAGE_BYTES, MAX_IDEMPOTENCY_KEY_BYTES, MAX_KEY_BYTES, MAX_PRINCIPAL_FACTS_V1,
+    MAX_PROJECTION_GROUP_COMPONENTS, MAX_TENANT_ID_BYTES, OfflineMaintenanceOperationId,
+    PartitionKey, ProvenanceId, RequestId, RowPolicyName, Timestamp,
     canonical_application_export_page_preimage, hash_application_export_manifest,
     hash_application_export_page, hash_application_export_receipt,
     hash_application_installation_plan, hash_application_installation_receipt,
@@ -2878,6 +2880,7 @@ fn permission_key(
         v1::capability_permission::Permission::InstallApplication(lineage) => {
             (31, lineage.as_str(), 0, &[], "")
         }
+        v1::capability_permission::Permission::InspectVectorState(_) => (32, "", 0, &[], ""),
     };
     if key.0 >= 3
         && matches!(key.0, 3 | 5 | 6 | 7 | 8 | 9)
@@ -3272,7 +3275,69 @@ fn capability_grant_semantic_bytes(grant: &v1::CapabilityGrant) -> Result<usize,
         validate_capability_row_policy(grant.row_policy.as_ref())?,
         validate_capability_export(grant.export.as_ref())?,
         validate_capability_reimport(grant.reimport.as_ref())?,
+        validate_capability_vector_inspection(grant.vector_inspection.as_ref())?,
     ])
+}
+
+fn validate_capability_vector_inspection(
+    inspection: Option<&v1::CapabilityVectorInspectionGrant>,
+) -> Result<usize, PublicWireError> {
+    let Some(inspection) = inspection else {
+        return Ok(0);
+    };
+    let role_hash = ApplicationRoleHash::from_bytes(
+        inspection
+            .application_role_hash
+            .as_slice()
+            .try_into()
+            .map_err(|_| PublicWireError::InvalidIdentity)?,
+    );
+    if inspection.targets.is_empty()
+        || inspection.targets.len() > MAX_CAPABILITY_VECTOR_INSPECTION_TARGETS
+    {
+        return Err(PublicWireError::TooManyItems);
+    }
+    let mut previous: Option<(&str, u32, u32)> = None;
+    let targets = inspection
+        .targets
+        .iter()
+        .map(|target| {
+            if !valid_bounded_text(&target.contract_lineage, MAX_CONTRACT_LINEAGE_BYTES)
+                || target.entity_type_id == 0
+                || target.field_id == 0
+            {
+                return Err(PublicWireError::InvalidIdentity);
+            }
+            let key = (
+                target.contract_lineage.as_str(),
+                target.entity_type_id,
+                target.field_id,
+            );
+            if previous.is_some_and(|prior| prior >= key) {
+                return Err(PublicWireError::NonCanonical);
+            }
+            previous = Some(key);
+            Ok(CapabilityVectorInspectionTargetV1::new(
+                ContractLineage::new(target.contract_lineage.clone())
+                    .map_err(|_| PublicWireError::InvalidIdentity)?,
+                EntityTypeId::new(target.entity_type_id).ok_or(PublicWireError::InvalidIdentity)?,
+                FieldId::new(target.field_id).ok_or(PublicWireError::InvalidIdentity)?,
+                target.allow_counts,
+            ))
+        })
+        .collect::<Result<Vec<_>, PublicWireError>>()?;
+    CapabilityVectorInspectionGrantV1::new(role_hash, targets)
+        .map_err(|_| PublicWireError::InvalidIdentity)?;
+    inspection
+        .targets
+        .iter()
+        .try_fold(36usize, |total, target| {
+            checked_capability_sum([
+                total,
+                framed_capability_bytes(target.contract_lineage.len())?,
+                9,
+            ])
+        })
 }
 
 fn validate_capability_grant(grant: Option<&v1::CapabilityGrant>) -> Result<(), PublicWireError> {

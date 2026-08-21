@@ -73,6 +73,7 @@ const STORAGE_SOURCES: &[&str] = &[
     "riffdb/storage/v1/vector_evidence_index_v1.proto",
     "riffdb/storage/v1/vector_health_observation_v1.proto",
     "riffdb/storage/v1/vector_observation_v1.proto",
+    "riffdb/storage/v1/vector_projection_control_v1.proto",
     "riffdb/storage/v1/workflow_service_values_v3.proto",
     "riffdb/storage/v1/capability_installation.proto",
     "riffdb/storage/v1/capability_row_policy.proto",
@@ -119,6 +120,7 @@ const PRODUCTION_SOURCES: &[&str] = &[
     "riffdb/storage/v1/vector_evidence_index_v1.proto",
     "riffdb/storage/v1/vector_health_observation_v1.proto",
     "riffdb/storage/v1/vector_observation_v1.proto",
+    "riffdb/storage/v1/vector_projection_control_v1.proto",
     "riffdb/storage/v1/workflow_service_values_v3.proto",
     "riffdb/storage/v1/capability_installation.proto",
     "riffdb/storage/v1/capability_row_policy.proto",
@@ -633,6 +635,11 @@ const DURABLE_RECORDS: &[DurableRecord] = &[
         "StoredVectorHealthObservationV1",
         PayloadBound::Document,
     ),
+    durable(
+        "vector_projection_control_v1.proto",
+        "StoredVectorProjectionControlV1",
+        PayloadBound::Tiny,
+    ),
 ];
 
 const LEGACY_DURABLE_RECORD_COUNT: usize = 26;
@@ -948,10 +955,16 @@ fn main() -> Result<(), Box<dyn Error>> {
         "fixtures/proto/public-key-envelope-vectors.txt",
         public_key_envelope_vectors().as_bytes(),
     )?;
+    let public_client_vectors = public_client_vectors(&production)?;
     write_artifact(
         &output_root,
         "fixtures/proto/public-client-vectors.txt",
-        public_client_vectors(&production)?.as_bytes(),
+        public_client_vectors.as_bytes(),
+    )?;
+    write_artifact(
+        &output_root,
+        "crates/riffdb-proto/fixtures/public-client-vectors.txt",
+        public_client_vectors.as_bytes(),
     )?;
     write_artifact(
         &output_root,
@@ -1108,6 +1121,11 @@ fn main() -> Result<(), Box<dyn Error>> {
         .get(current_v1_record_count + 58)
         .ok_or_else(|| {
             io::Error::other("durable vector-health-observation-v1 registry is incomplete")
+        })?;
+    let vector_projection_control_record = durable_registry
+        .get(current_v1_record_count + 59)
+        .ok_or_else(|| {
+            io::Error::other("durable vector-projection-control-v1 registry is incomplete")
         })?;
     write_artifact(
         &output_root,
@@ -1536,6 +1554,26 @@ fn main() -> Result<(), Box<dyn Error>> {
     )?;
     write_artifact(
         &output_root,
+        "fixtures/proto/durable-vector-projection-control-v1-schema-hash.bin",
+        &vector_projection_control_record.schema_hash,
+    )?;
+    write_artifact(
+        &output_root,
+        "fixtures/proto/durable-vector-projection-control-v1-record-bound.bin",
+        &durable_record_bounds(std::slice::from_ref(vector_projection_control_record)),
+    )?;
+    write_artifact(
+        &output_root,
+        "crates/riffdb-proto/fixtures/durable-vector-projection-control-v1-schema-hash.bin",
+        &vector_projection_control_record.schema_hash,
+    )?;
+    write_artifact(
+        &output_root,
+        "crates/riffdb-proto/fixtures/durable-vector-projection-control-v1-record-bound.bin",
+        &durable_record_bounds(std::slice::from_ref(vector_projection_control_record)),
+    )?;
+    write_artifact(
+        &output_root,
         "fixtures/proto/durable-event-policy-command-authority-v5-schema-hashes.bin",
         &durable_schema_hashes(event_policy_command_authority_records),
     )?;
@@ -1821,9 +1859,9 @@ struct BuiltDurableRecord {
 fn build_durable_registry(
     storage: &FileDescriptorSet,
 ) -> Result<Vec<BuiltDurableRecord>, Box<dyn Error>> {
-    if DURABLE_RECORDS.len() != 88 {
+    if DURABLE_RECORDS.len() != 89 {
         return Err(
-            io::Error::other("readable durable registry must contain exactly 88 records").into(),
+            io::Error::other("readable durable registry must contain exactly 89 records").into(),
         );
     }
     if storage.file.len() != STORAGE_SOURCES.len()
@@ -1847,9 +1885,9 @@ fn build_durable_registry(
         .iter()
         .map(|file| file.enum_type.len())
         .sum::<usize>();
-    if message_count != 176 || enum_count != 22 {
+    if message_count != 178 || enum_count != 24 {
         return Err(io::Error::other(format!(
-            "storage schema must contain exactly 176 messages and 22 enums; found {message_count} messages and {enum_count} enums"
+            "storage schema must contain exactly 178 messages and 24 enums; found {message_count} messages and {enum_count} enums"
         ))
         .into());
     }
@@ -2167,6 +2205,9 @@ fn durable_writable_registry_fixture(
     let vector_health_observation = records.get(current_v1_record_count + 58).ok_or_else(|| {
         io::Error::other("durable registry is missing StoredVectorHealthObservationV1")
     })?;
+    let vector_projection_control = records.get(current_v1_record_count + 59).ok_or_else(|| {
+        io::Error::other("durable registry is missing StoredVectorProjectionControlV1")
+    })?;
     let writable = legacy[..8]
         .iter()
         .chain(std::iter::once(v2))
@@ -2207,10 +2248,11 @@ fn durable_writable_registry_fixture(
         .chain(std::iter::once(vector_evidence))
         .chain(std::iter::once(vector_observation))
         .chain(std::iter::once(vector_evidence_index))
-        .chain(std::iter::once(vector_health_observation));
+        .chain(std::iter::once(vector_health_observation))
+        .chain(std::iter::once(vector_projection_control));
 
     let mut output = String::from("riffdb-durable-writable-registry-v1\n");
-    let _ = writeln!(output, "records {}", current_v1_record_count + 41);
+    let _ = writeln!(output, "records {}", current_v1_record_count + 42);
     for record in writable {
         let _ = write!(output, "{} schema-hash=", record.record_type);
         for byte in record.schema_hash {
@@ -5747,6 +5789,7 @@ fn public_capability_grant() -> v1::CapabilityGrant {
         row_policy: None,
         export: None,
         reimport: None,
+        vector_inspection: None,
     }
 }
 

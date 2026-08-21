@@ -53,9 +53,11 @@ use riffdb_storage_api::{
     StoredCapabilityRecordV1, StoredCommitRecordV1, StoredContractBundleV1,
     StoredContractMigrationEdgeV1, StoredDurableEventV1, StoredEntityRecordV1, StoredOutcomeV1,
     StoredProvenanceRecordV1, StoredQueryModuleV1, StoredReactiveModuleV1,
-    UndeliveredOutboxStatusScanRequestV1, UndeliveredOutboxStatusScanV1, VectorEvidenceIndexPageV1,
-    VectorEvidenceIndexRepository, VectorEvidenceIndexScanRequestV1, VectorObservationCountsV1,
-    VectorObservationRepository, VectorObservationTargetV1,
+    StoredVectorProjectionControlV1, UndeliveredOutboxStatusScanRequestV1,
+    UndeliveredOutboxStatusScanV1, VectorEvidenceIndexPageV1, VectorEvidenceIndexRepository,
+    VectorEvidenceIndexScanRequestV1, VectorObservationCountsV1, VectorObservationRepository,
+    VectorObservationTargetV1, VectorProjectionControlRepository,
+    VectorProjectionControlWriteResultV1, VectorProjectionSourceV1,
 };
 use riffdb_storage_redb::{RedbOperationalPorts, RedbSharedPorts};
 use riffdb_types::{
@@ -1095,6 +1097,33 @@ impl ApplicationExportSnapshotPort for SharedRedbOperationalPorts {
         self.cell.with_mut(|ports| {
             ApplicationExportSnapshotPort::capture_application_export_snapshot(ports, lineage)
         })
+    }
+}
+
+impl VectorProjectionControlRepository for SharedRedbOperationalPorts {
+    fn read_vector_projection_control(
+        &self,
+        source: &VectorProjectionSourceV1,
+    ) -> Result<Option<StoredVectorProjectionControlV1>, StorageError> {
+        VectorProjectionControlRepository::read_vector_projection_control(&self.shared, source)
+    }
+
+    fn compare_and_set_vector_projection_control(
+        &self,
+        expected: Option<&StoredVectorProjectionControlV1>,
+        replacement: &StoredVectorProjectionControlV1,
+    ) -> Result<VectorProjectionControlWriteResultV1, StorageError> {
+        VectorProjectionControlRepository::compare_and_set_vector_projection_control(
+            &self.shared,
+            expected,
+            replacement,
+        )
+    }
+
+    fn attached_vector_projection_frontiers(
+        &self,
+    ) -> Result<Vec<riffdb_types::FrontierPosition>, StorageError> {
+        VectorProjectionControlRepository::attached_vector_projection_frontiers(&self.shared)
     }
 }
 

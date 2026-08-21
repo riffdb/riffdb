@@ -3,7 +3,9 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use riffdb_storage_api::{AuthoritativePointReader, AuthoritativeScanReader};
+use riffdb_storage_api::{
+    AuthoritativePointReader, AuthoritativeScanReader, MAX_SCAN_PAGE_ENTRIES, StoredEntityRecordV1,
+};
 use riffdb_types::{FrontierPosition, ProjectionFrontier};
 
 use crate::apply::{ApplyProgress, ApplyState};
@@ -13,7 +15,91 @@ use crate::error::ColumnarError;
 use crate::hooks::ColumnarTestController;
 use crate::outcome::{ColumnarOutcome, ProjectionBuilding, ProjectionReady};
 use crate::query::{ColumnarQueryRequest, QueryResult, query_snapshot};
-use crate::store::ColumnarSnapshot;
+use crate::store::{
+    ColumnarSnapshot, LiveRow, OrgKey, PrimaryKeyBytes, WorkingState, project_cells,
+};
+
+/// Bounded-page builder for one complete authoritative snapshot generation.
+///
+/// Pages remain private until [`Self::install`] atomically replaces an engine's
+/// published state. A failed or interrupted build therefore cannot expose a
+/// partial generation or advance its frontier.
+pub struct ColumnarSnapshotRebuild {
+    definition: RegisteredDefinition,
+    working: WorkingState,
+}
+
+impl ColumnarSnapshotRebuild {
+    /// Starts a private generation for one exact registered definition.
+    #[must_use]
+    pub fn new(definition: RegisteredDefinition) -> Self {
+        Self {
+            definition,
+            working: WorkingState::default(),
+        }
+    }
+
+    /// Adds one storage-bounded authoritative entity page.
+    pub fn apply_page(&mut self, records: &[StoredEntityRecordV1]) -> Result<(), ColumnarError> {
+        if records.len() > MAX_SCAN_PAGE_ENTRIES {
+            return Err(ColumnarError::Integrity(
+                "snapshot page exceeds storage bound",
+            ));
+        }
+        for record in records {
+            if record.target().entity_type_id() != self.definition.entity_type_id() {
+                return Err(ColumnarError::Integrity("snapshot entity type mismatch"));
+            }
+            let (org_value, cells) = project_cells(
+                record.fields().fields(),
+                self.definition.projected_fields(),
+                self.definition.org_scope_field(),
+            )?;
+            let org = OrgKey::from_value(&org_value)?;
+            let key =
+                PrimaryKeyBytes::from_entity_key_bytes(record.target().key().as_bytes().to_vec());
+            let row = LiveRow {
+                entity_version: record.entity_version(),
+                cells,
+            };
+            if let Some(existing) = self
+                .working
+                .delta
+                .get(&org)
+                .and_then(|delta| delta.get(&key))
+                && existing.entity_version != row.entity_version
+            {
+                return Err(ColumnarError::Integrity("duplicate snapshot entity"));
+            }
+            self.working.upsert_live(org, key, row);
+        }
+        Ok(())
+    }
+
+    /// Atomically publishes the complete private generation at its exact
+    /// authoritative snapshot frontier.
+    pub fn install(
+        mut self,
+        engine: &mut ColumnarEngine,
+        frontier: FrontierPosition,
+    ) -> Result<(), ColumnarError> {
+        if self.definition.fingerprint() != engine.definition.fingerprint() {
+            return Err(ColumnarError::Integrity("snapshot definition mismatch"));
+        }
+        self.working.processed = frontier;
+        let published = Arc::new(self.working.to_snapshot(frontier));
+        engine.apply = ApplyState {
+            definition: self.definition,
+            working: self.working,
+            published,
+            deferred: std::collections::BTreeMap::new(),
+            #[cfg(test)]
+            publish_observer: None,
+        };
+        engine.has_published = true;
+        Ok(())
+    }
+}
 
 /// Options for opening a columnar projection directory.
 #[derive(Clone, Debug)]

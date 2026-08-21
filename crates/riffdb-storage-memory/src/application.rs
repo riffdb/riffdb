@@ -34,14 +34,15 @@ use riffdb_storage_api::{
     StorageValueError, StoredAdmissionStateV1, StoredCommitRecordV1, StoredDurableEventV1,
     StoredEntityRecordV1, StoredEventRouteV1, StoredExecutionFailedV1, StoredIndexEpochV1,
     StoredOutcomeV1, StoredPendingAdmissionV1, StoredProvenanceRecordV1, StoredVectorEvidenceV1,
-    TransactionCurrentPolicyRequestV1, TransactionCurrentPolicyStateV1, TransactionCurrentState,
-    TransactionCurrentStateBuilder, TransactionCurrentVectorEvidenceV1,
-    TransactionLocalCommandBatch, UniqueIndexOccupancy, UniqueOccupancyKind,
-    UnpublishedAuditedBatchV1, ValidationReadRequest, VectorEvidenceIndexEntryV1,
-    VectorEvidenceIndexPageV1, VectorEvidenceIndexRepository, VectorEvidenceIndexScanRequestV1,
-    VectorEvidenceReadRequestV1, VectorHealthObservationV1, VectorObservationCountsV1,
-    VectorObservationRepository, VectorObservationTargetV1, derive_event_hash_v1,
-    encode_vector_evidence_index_v1,
+    StoredVectorProjectionControlV1, TransactionCurrentPolicyRequestV1,
+    TransactionCurrentPolicyStateV1, TransactionCurrentState, TransactionCurrentStateBuilder,
+    TransactionCurrentVectorEvidenceV1, TransactionLocalCommandBatch, UniqueIndexOccupancy,
+    UniqueOccupancyKind, UnpublishedAuditedBatchV1, ValidationReadRequest,
+    VectorEvidenceIndexEntryV1, VectorEvidenceIndexPageV1, VectorEvidenceIndexRepository,
+    VectorEvidenceIndexScanRequestV1, VectorEvidenceReadRequestV1, VectorHealthObservationV1,
+    VectorObservationCountsV1, VectorObservationRepository, VectorObservationTargetV1,
+    VectorProjectionControlRepository, VectorProjectionControlWriteResultV1,
+    VectorProjectionSourceV1, derive_event_hash_v1, encode_vector_evidence_index_v1,
 };
 use riffdb_types::{CommitSequence, EventId, FrontierPosition, ProvenanceId};
 
@@ -159,6 +160,64 @@ impl VectorEvidenceIndexRepository for MemoryOperationalPorts {
                     }
                     _ => storage_error(StorageErrorKind::InvariantViolation),
                 })
+        })
+    }
+}
+
+impl VectorProjectionControlRepository for MemoryOperationalPorts {
+    fn read_vector_projection_control(
+        &self,
+        source: &VectorProjectionSourceV1,
+    ) -> Result<Option<StoredVectorProjectionControlV1>, StorageError> {
+        self.read(|state| {
+            Ok(state
+                .vector_projection_controls
+                .binary_search_by(|control| control.source().cmp(source))
+                .ok()
+                .map(|index| state.vector_projection_controls[index].clone()))
+        })
+    }
+
+    fn compare_and_set_vector_projection_control(
+        &self,
+        expected: Option<&StoredVectorProjectionControlV1>,
+        replacement: &StoredVectorProjectionControlV1,
+    ) -> Result<VectorProjectionControlWriteResultV1, StorageError> {
+        if expected.is_some_and(|expected| expected.source() != replacement.source()) {
+            return Err(storage_error(StorageErrorKind::InvariantViolation));
+        }
+        self.apply_exclusive_mut(|state| {
+            let position = state
+                .vector_projection_controls
+                .binary_search_by(|control| control.source().cmp(replacement.source()));
+            let current = position
+                .as_ref()
+                .ok()
+                .map(|index| &state.vector_projection_controls[*index]);
+            if current == Some(replacement) {
+                return Ok(VectorProjectionControlWriteResultV1::Unchanged);
+            }
+            if current != expected {
+                return Ok(VectorProjectionControlWriteResultV1::CompareMismatch);
+            }
+            match position {
+                Ok(index) => state.vector_projection_controls[index] = replacement.clone(),
+                Err(index) => state
+                    .vector_projection_controls
+                    .insert(index, replacement.clone()),
+            }
+            Ok(VectorProjectionControlWriteResultV1::Applied)
+        })
+    }
+
+    fn attached_vector_projection_frontiers(&self) -> Result<Vec<FrontierPosition>, StorageError> {
+        self.read(|state| {
+            Ok(state
+                .vector_projection_controls
+                .iter()
+                .filter(|control| control.retention_attached())
+                .map(StoredVectorProjectionControlV1::published_frontier)
+                .collect())
         })
     }
 }

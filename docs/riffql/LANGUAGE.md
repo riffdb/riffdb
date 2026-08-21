@@ -174,6 +174,12 @@ query SimilarDocuments(
   compiler-bounded duration. `freshness bounded max_lag_ms N` compares trusted
   logical timestamps at the authoritative head and projection frontier; it
   never estimates elapsed time from sequence distance or process wall time.
+- A vector source is queryable only while its durable generation is `Ready`
+  and exactly matches the compiler-owned definition. Initial build, successor
+  rebuild, replay-budget detachment, and restart recovery return typed
+  building/rebuilding failures; they never silently serve the previous or a
+  partially rebuilt generation. A successful result's frontier is the exact
+  durable checkpoint frontier of that generation.
 - The first production form is intentionally one nearest `many` binding with
   equality-parameter scalar predicates and fields from that entity. Mixed
   authoritative/projected bindings, dependent relations, aggregates, and

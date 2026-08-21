@@ -2168,6 +2168,7 @@ mod tests {
                 row_policy: None,
                 export: None,
                 reimport: None,
+                vector_inspection: None,
             }),
         }
     }

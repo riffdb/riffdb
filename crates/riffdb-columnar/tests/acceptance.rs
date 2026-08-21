@@ -12,12 +12,74 @@ use riffdb_types::{
 
 use riffdb_columnar::{
     AggregateOp, CheckpointError, ColumnPredicate, ColumnarEngine, ColumnarError, ColumnarOutcome,
-    ColumnarProjectionDefinition, ColumnarQueryRequest, ColumnarTestBoundary,
-    ColumnarTestController, GroupBySpec, OpenOptions, OrderSpec, QueryBudget, QueryError,
-    QueryResult, RegisteredDefinition, SortDirection,
+    ColumnarProjectionDefinition, ColumnarQueryRequest, ColumnarSnapshotRebuild,
+    ColumnarTestBoundary, ColumnarTestController, GroupBySpec, OpenOptions, OrderSpec, QueryBudget,
+    QueryError, QueryResult, RegisteredDefinition, SortDirection,
 };
 
 use common::*;
+
+#[test]
+fn authoritative_snapshot_rebuild_is_private_until_exact_publication() {
+    let bundle = compile_bundle();
+    let definition = register_ticket_board(&bundle);
+    let mut engine = open_engine(definition.clone(), "snapshot-rebuild");
+    let mut source = HistorySource::default();
+    let org = uuid(0x10);
+    push_ticket_create(
+        &mut source,
+        &mut Oracle::default(),
+        &bundle,
+        1,
+        org,
+        1,
+        1,
+        "one",
+        5,
+    );
+    push_ticket_create(
+        &mut source,
+        &mut Oracle::default(),
+        &bundle,
+        2,
+        org,
+        2,
+        1,
+        "two",
+        7,
+    );
+
+    assert!(matches!(
+        engine.outcome(FrontierPosition::AppliedThrough(
+            CommitSequence::new(2).expect("head")
+        )),
+        ColumnarOutcome::Building(_)
+    ));
+    let records = source.entities.values().cloned().collect::<Vec<_>>();
+    let mut rebuild = ColumnarSnapshotRebuild::new(definition);
+    rebuild.apply_page(&records).expect("bounded page");
+    assert!(matches!(
+        engine.outcome(FrontierPosition::AppliedThrough(
+            CommitSequence::new(2).expect("head")
+        )),
+        ColumnarOutcome::Building(_)
+    ));
+
+    rebuild
+        .install(
+            &mut engine,
+            FrontierPosition::AppliedThrough(CommitSequence::new(2).expect("frontier")),
+        )
+        .expect("atomic install");
+    let rows = engine
+        .published_snapshot()
+        .merged_org(&riffdb_columnar::OrgKey::from_value(&CanonicalValue::Uuid(org)).expect("org"));
+    assert_eq!(rows.len(), 2);
+    assert_eq!(
+        engine.published_frontier_position(),
+        FrontierPosition::AppliedThrough(CommitSequence::new(2).expect("frontier"))
+    );
+}
 
 #[test]
 fn acceptance_reference_match_at_published_frontier() {

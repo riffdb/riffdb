@@ -1033,6 +1033,13 @@ fn predicates_match(
 ) -> Result<bool, QueryError> {
     for predicate in predicates {
         let field = predicate_field(predicate);
+        // `snapshot.merged_org` already selected this exact canonical scope.
+        // The compiler retains the symbolic partition predicate for policy and
+        // explainability, but evaluating it again as a projected column would
+        // reject key-only organization fields as unknown.
+        if field == definition.org_scope_field() {
+            continue;
+        }
         let idx = projected_field_index(definition, field)?;
         let cell = &row.cells[idx];
         let ok = match predicate {

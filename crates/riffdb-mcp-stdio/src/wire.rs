@@ -28,6 +28,7 @@ pub(crate) enum FixedGrpcRequest {
     Health(v1::HealthRequest),
     DescribeContract(app_v1::DescribeContractRequest),
     ApplicationCatalog(app_v1::GetApplicationCatalogRequest),
+    InspectVectorState(app_v1::InspectVectorStateRequest),
     CheckQuery(app_v1::CheckQueryRequest),
     ExplainQuery(app_v1::ExplainQueryRequest),
     ExecuteQuery(app_v1::ExecuteQueryRequest),
@@ -210,6 +211,26 @@ pub(crate) fn fixed_request_to_proto(
             contract: contract.and_then(symbolic_contract_selection_to_proto),
             limit: u32::from(limit),
             cursor: cursor.map(|cursor| URL_SAFE_NO_PAD.encode(cursor)),
+            request_id,
+        }),
+        McpFixedToolRequest::InspectVectorState {
+            contract,
+            entity,
+            field,
+            partition,
+            outdated_models,
+            page,
+        } => FixedGrpcRequest::InspectVectorState(app_v1::InspectVectorStateRequest {
+            contract: symbolic_contract_selection_to_proto(contract),
+            entity,
+            field,
+            partition: Some(submitted_value_to_proto(partition)?),
+            kind: if outdated_models {
+                app_v1::VectorStateInspectionKind::OutdatedModelEntities as i32
+            } else {
+                app_v1::VectorStateInspectionKind::StaleEntities as i32
+            },
+            page: Some(page_to_proto(page)),
             request_id,
         }),
         McpFixedToolRequest::CheckQuery { contract, source } => {

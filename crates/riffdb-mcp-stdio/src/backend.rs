@@ -1107,6 +1107,12 @@ impl PublicGrpcMcpBackend {
                     .await
                     .authenticated_client_result(&self.client_activity)?,
             ),
+            FixedGrpcRequest::InspectVectorState(request) => response::inspect_vector_state(
+                client
+                    .inspect_vector_state(request, &self.metadata)
+                    .await
+                    .authenticated_client_result(&self.client_activity)?,
+            ),
             FixedGrpcRequest::CheckQuery(request) => response::check_query(
                 client
                     .check_query(request, &self.metadata)
@@ -2109,6 +2115,16 @@ fn application_result_value(value: ApplicationValue) -> Result<serde_json::Value
             "{currency}:{}",
             application_result_value(*amount)?
         ))),
+        ApplicationValue::Vector(value) => value
+            .components()
+            .iter()
+            .map(|component| {
+                serde_json::Number::from_f64(f64::from(*component))
+                    .map(serde_json::Value::Number)
+                    .ok_or(McpBackendError::InvalidResponse)
+            })
+            .collect::<Result<Vec<_>, _>>()
+            .map(serde_json::Value::Array),
         ApplicationValue::List(values) => values
             .into_iter()
             .map(application_result_value)

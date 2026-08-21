@@ -2895,6 +2895,7 @@ async fn execute_projected_vector_named_query(
         &program,
         document.as_ref(),
         module_hash,
+        plan_hash,
         observed,
         Arc::clone(bundle.enum_variant_names()),
         entity,
@@ -2953,8 +2954,11 @@ async fn execute_vector_projection_with_freshness(
                 drop(registration);
                 return Ok(result);
             }
-            Err(VectorProjectionPortError::FreshnessUnsatisfied)
-                if Instant::now() < wait_deadline => {}
+            Err(
+                VectorProjectionPortError::FreshnessUnsatisfied
+                | VectorProjectionPortError::Building
+                | VectorProjectionPortError::Rebuilding,
+            ) if Instant::now() < wait_deadline => {}
             Err(error) => {
                 drop(registration);
                 return Err(vector_projection_failure(
@@ -3018,6 +3022,7 @@ fn vector_projection_response(
     program: &QueryAccessProgramV1,
     document: &Document,
     module_hash: QueryModuleHash,
+    plan_hash: QueryPlanHash,
     observed: crate::VectorProjectionResult,
     enum_variant_names: SharedEnumVariantNames,
     entity: &riffdb_contract_ir::EntitySchema,
@@ -3063,11 +3068,7 @@ fn vector_projection_response(
         return None;
     };
     Some(ExecuteSymbolicQueryResult {
-        identity: SymbolicQueryIdentity::from_named_plan(
-            program,
-            module_hash,
-            program.identity().hash(),
-        ),
+        identity: SymbolicQueryIdentity::from_named_plan(program, module_hash, plan_hash),
         outcome: document.body.outcome.as_ref()?.value.as_str().to_owned(),
         application_head: epoch.get(),
         fields: BTreeMap::from([(result_name, SymbolicResultField::Many(rows))]),

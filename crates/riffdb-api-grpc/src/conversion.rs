@@ -93,13 +93,13 @@ use riffdb_types::{
     CapabilityApplicationReimportScopeV1, CapabilityExportGrantV1, CapabilityGrantV1, CapabilityId,
     CapabilityPermissionKindV1, CapabilityPermissionV1, CapabilityPermissionsV1,
     CapabilityPrincipalFactV1, CapabilityPrincipalFactsV1, CapabilityRowPolicyBindingV1,
-    CapabilityRowPolicyGrantV1, CapabilityRowPolicyOperationV1, CommandId, CommitSequence,
-    ContractBundleHash, ContractLineage, ContractMigrationApplyConfirmation,
-    ContractMigrationOperationId, ContractMigrationOperationKind, ContractVersion, CurrencyCode,
-    Date, EntityFieldVisibilityV1, EntityKey, EntityTypeId, EnumTypeId, EnumVariantId,
-    EventConsumerName, EventLeaseToken, FieldId, FrontierPosition, GeneratedArtifactHash,
-    IdempotencyKey, IndexEpochPosition, IndexId, MigrationBundleHash,
-    OfflineMaintenanceOperationId, OfflineMaintenanceOperationKind,
+    CapabilityRowPolicyGrantV1, CapabilityRowPolicyOperationV1, CapabilityVectorInspectionGrantV1,
+    CapabilityVectorInspectionTargetV1, CommandId, CommitSequence, ContractBundleHash,
+    ContractLineage, ContractMigrationApplyConfirmation, ContractMigrationOperationId,
+    ContractMigrationOperationKind, ContractVersion, CurrencyCode, Date, EntityFieldVisibilityV1,
+    EntityKey, EntityTypeId, EnumTypeId, EnumVariantId, EventConsumerName, EventLeaseToken,
+    FieldId, FrontierPosition, GeneratedArtifactHash, IdempotencyKey, IndexEpochPosition, IndexId,
+    MigrationBundleHash, OfflineMaintenanceOperationId, OfflineMaintenanceOperationKind,
     OfflineMaintenanceReplacementConfirmation, PartitionKey, PartitionScopeV1, ProjectionId,
     ProvenanceId, QueryModuleHash, QueryOperationName, ReactiveModuleHash, ReactiveOperationName,
     RequestId, RevocationReasonCodeV1, RowPolicyName, SchemaHash, ScopedPartitionV1, TenantId,
@@ -5047,6 +5047,7 @@ pub fn capability_grant_from_proto(
     let row_policy = grant.row_policy;
     let export = grant.export;
     let reimport = grant.reimport;
+    let vector_inspection = grant.vector_inspection;
     let tenant_scope = tenant_scope_from_proto(grant.tenant_scope.ok_or_else(invalid_request)?)?;
     let partition_scope =
         partition_scope_from_proto(grant.partition_scope.ok_or_else(invalid_request)?)?;
@@ -5207,40 +5208,73 @@ pub fn capability_grant_from_proto(
                 .map_err(|_| invalid_request())?
         }
     };
-    let Some(reimport) = reimport else {
+    let grant = match reimport {
+        None => grant,
+        Some(reimport) => {
+            let scope = match v1::CapabilityApplicationReimportScope::try_from(reimport.scope)
+                .map_err(|_| invalid_request())?
+            {
+                v1::CapabilityApplicationReimportScope::PrincipalFiltered => {
+                    CapabilityApplicationReimportScopeV1::PrincipalFiltered
+                }
+                v1::CapabilityApplicationReimportScope::WholeApplication => {
+                    CapabilityApplicationReimportScopeV1::WholeApplication
+                }
+                v1::CapabilityApplicationReimportScope::Unspecified => {
+                    return Err(invalid_request());
+                }
+            };
+            grant
+                .with_reimport(CapabilityApplicationReimportGrantV1::new(
+                    ContractLineage::new(reimport.contract_lineage)
+                        .map_err(|_| invalid_request())?,
+                    ApplicationInstallationCampaignId::from_bytes(
+                        reimport
+                            .campaign_id
+                            .as_slice()
+                            .try_into()
+                            .map_err(|_| invalid_request())?,
+                    )
+                    .map_err(|_| invalid_request())?,
+                    riffdb_types::ApplicationPortabilityManifestHash::from_bytes(
+                        reimport
+                            .portability_manifest_hash
+                            .as_slice()
+                            .try_into()
+                            .map_err(|_| invalid_request())?,
+                    ),
+                    scope,
+                ))
+                .map_err(|_| invalid_request())?
+        }
+    };
+    let Some(vector_inspection) = vector_inspection else {
         return Ok(grant);
     };
-    let scope = match v1::CapabilityApplicationReimportScope::try_from(reimport.scope)
-        .map_err(|_| invalid_request())?
-    {
-        v1::CapabilityApplicationReimportScope::PrincipalFiltered => {
-            CapabilityApplicationReimportScopeV1::PrincipalFiltered
-        }
-        v1::CapabilityApplicationReimportScope::WholeApplication => {
-            CapabilityApplicationReimportScopeV1::WholeApplication
-        }
-        v1::CapabilityApplicationReimportScope::Unspecified => return Err(invalid_request()),
-    };
-    grant
-        .with_reimport(CapabilityApplicationReimportGrantV1::new(
-            ContractLineage::new(reimport.contract_lineage).map_err(|_| invalid_request())?,
-            ApplicationInstallationCampaignId::from_bytes(
-                reimport
-                    .campaign_id
-                    .as_slice()
-                    .try_into()
-                    .map_err(|_| invalid_request())?,
-            )
+    let role_hash = ApplicationRoleHash::from_bytes(
+        vector_inspection
+            .application_role_hash
+            .as_slice()
+            .try_into()
             .map_err(|_| invalid_request())?,
-            riffdb_types::ApplicationPortabilityManifestHash::from_bytes(
-                reimport
-                    .portability_manifest_hash
-                    .as_slice()
-                    .try_into()
-                    .map_err(|_| invalid_request())?,
-            ),
-            scope,
-        ))
+    );
+    let targets = vector_inspection
+        .targets
+        .into_iter()
+        .map(|target| {
+            Ok(CapabilityVectorInspectionTargetV1::new(
+                ContractLineage::new(target.contract_lineage).map_err(|_| invalid_request())?,
+                EntityTypeId::new(target.entity_type_id).ok_or_else(invalid_request)?,
+                FieldId::new(target.field_id).ok_or_else(invalid_request)?,
+                target.allow_counts,
+            ))
+        })
+        .collect::<Result<Vec<_>, Status>>()?;
+    grant
+        .with_vector_inspection(
+            CapabilityVectorInspectionGrantV1::new(role_hash, targets)
+                .map_err(|_| invalid_request())?,
+        )
         .map_err(|_| invalid_request())
 }
 
@@ -5913,6 +5947,9 @@ fn capability_permission_from_proto(
         Permission::InstallApplication(lineage) => Ok(CapabilityPermissionV1::InstallApplication(
             ContractLineage::new(lineage).map_err(|_| invalid_request())?,
         )),
+        Permission::InspectVectorState(_) => {
+            unparameterized(CapabilityPermissionKindV1::InspectVectorState)
+        }
         Permission::InvokeCommand(value) => {
             let (lineage, id) = lineage_scoped_id(value)?;
             Ok(CapabilityPermissionV1::InvokeCommand(
@@ -6140,6 +6177,9 @@ fn capability_permission_kind_from_proto(value: i32) -> Result<CapabilityPermiss
         v1::CapabilityPermissionKind::InstallApplication => {
             Ok(CapabilityPermissionKindV1::InstallApplication)
         }
+        v1::CapabilityPermissionKind::InspectVectorState => {
+            Ok(CapabilityPermissionKindV1::InspectVectorState)
+        }
         v1::CapabilityPermissionKind::Unspecified => Err(invalid_request()),
     }
 }
@@ -6218,6 +6258,7 @@ mod tests {
             }),
             export: None,
             reimport: None,
+            vector_inspection: None,
         };
         let grant = capability_grant_from_proto(request.clone()).expect("checked public V4 grant");
 
@@ -6232,6 +6273,66 @@ mod tests {
             .expect("row policy")
             .application_role_hash = vec![0x24; 32];
         assert!(capability_grant_from_proto(substituted).is_err());
+    }
+
+    #[test]
+    fn vector_inspection_capability_crosses_public_transport_only_when_role_bound() {
+        let role_hash = vec![0x45; 32];
+        let mut request = v1::CapabilityGrant {
+            tenant_scope: Some(v1::TenantScope {
+                scope: Some(v1::tenant_scope::Scope::Global(v1::Unit {})),
+            }),
+            partition_scope: Some(v1::PartitionScope {
+                scope: Some(v1::partition_scope::Scope::All(v1::Unit {})),
+            }),
+            permissions: vec![
+                v1::CapabilityPermission {
+                    permission: Some(
+                        v1::capability_permission::Permission::ApplicationRoleIdentity(
+                            role_hash.clone(),
+                        ),
+                    ),
+                },
+                v1::CapabilityPermission {
+                    permission: Some(v1::capability_permission::Permission::InspectVectorState(
+                        v1::Unit {},
+                    )),
+                },
+            ],
+            field_visibility: vec![v1::EntityFieldVisibility {
+                contract_lineage: "Vectors".to_owned(),
+                entity_type_id: 2,
+                field_ids: vec![7],
+                secret_field_ids: Vec::new(),
+            }],
+            max_scan_rows: 64,
+            approval_required: Vec::new(),
+            row_policy: None,
+            export: None,
+            reimport: None,
+            vector_inspection: Some(v1::CapabilityVectorInspectionGrant {
+                application_role_hash: role_hash,
+                targets: vec![v1::CapabilityVectorInspectionTarget {
+                    contract_lineage: "Vectors".to_owned(),
+                    entity_type_id: 2,
+                    field_id: 7,
+                    allow_counts: true,
+                }],
+            }),
+        };
+        let checked = capability_grant_from_proto(request.clone()).expect("exact V8 grant");
+        let inspection = checked
+            .internal_vector_inspection()
+            .expect("vector inspection extension");
+        assert_eq!(inspection.targets().len(), 1);
+        assert!(inspection.targets()[0].allow_counts());
+
+        request
+            .vector_inspection
+            .as_mut()
+            .expect("inspection")
+            .application_role_hash = vec![0x54; 32];
+        assert!(capability_grant_from_proto(request).is_err());
     }
 
     #[test]
@@ -6275,6 +6376,7 @@ mod tests {
                 }],
             }),
             reimport: None,
+            vector_inspection: None,
         };
         let checked = capability_grant_from_proto(principal.clone())
             .expect("principal-filtered export grant");
@@ -6313,6 +6415,7 @@ mod tests {
                 }],
             }),
             reimport: None,
+            vector_inspection: None,
         };
         capability_grant_from_proto(whole.clone()).expect("whole-application export grant");
         whole.tenant_scope = Some(v1::TenantScope {
@@ -6345,6 +6448,7 @@ mod tests {
                     .collect(),
             }),
             reimport: None,
+            vector_inspection: None,
         };
         assert!(capability_grant_from_proto(over_bound).is_err());
     }
@@ -6390,6 +6494,7 @@ mod tests {
                 portability_manifest_hash: manifest_hash.clone(),
                 scope: v1::CapabilityApplicationReimportScope::WholeApplication as i32,
             }),
+            vector_inspection: None,
         };
         let checked = capability_grant_from_proto(request.clone()).expect("exact V7 grant");
         let reimport = checked.internal_reimport().expect("reimport extension");

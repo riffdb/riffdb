@@ -1360,6 +1360,7 @@ fn pruned_history_bootstrap_request(
             row_policy: None,
             export: None,
             reimport: None,
+            vector_inspection: None,
         }),
     })
 }
@@ -1409,6 +1410,7 @@ fn consumer_capability_request(module_hash: &[u8]) -> TestResult<v1::CreateCapab
             row_policy: None,
             export: None,
             reimport: None,
+            vector_inspection: None,
         }),
     })
 }
@@ -1717,6 +1719,7 @@ fn bootstrap_request(
             row_policy: None,
             export: None,
             reimport: None,
+            vector_inspection: None,
         }),
     })
 }
@@ -1772,6 +1775,7 @@ fn explicit_partition_capability_request() -> TestResult<v1::CreateCapabilityReq
             row_policy: None,
             export: None,
             reimport: None,
+            vector_inspection: None,
         }),
     })
 }

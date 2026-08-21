@@ -974,6 +974,9 @@ impl AdminAuditCheckpoint {
             vector_evidence_index: _,
             vector_observations: _,
             vector_health_observations: _,
+            // Asynchronous vector controller state is outside one fused
+            // administration/audit mutation and must not roll back with it.
+            vector_projection_controls: _,
             entity_commits: _,
             index_entries: _,
             index_epochs: _,

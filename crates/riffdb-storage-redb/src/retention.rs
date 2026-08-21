@@ -17,7 +17,8 @@ use riffdb_storage_api::{
     compute_max_permissible_watermark, history_tombstone_chain_root,
     proto_codec::{
         current_record_registry_digest, decode_history_tombstone_v1, decode_projection_control_v1,
-        decode_retention_holds_v1, decode_retention_watermark_v1, encode_history_tombstone_v1,
+        decode_retention_holds_v1, decode_retention_watermark_v1,
+        decode_vector_projection_control_v1, encode_history_tombstone_v1,
         encode_retention_holds_v1, encode_retention_watermark_v1,
     },
 };
@@ -911,6 +912,30 @@ fn min_projection_durable_frontier(
             None => frontier,
             Some(existing) => existing.min(frontier),
         });
+    }
+    let vector_controls = transaction
+        .open_table(crate::layout::VECTOR_PROJECTION_CONTROLS)
+        .map_err(table_error)?;
+    for entry in vector_controls.iter().map_err(precommit_storage_error)? {
+        let (key, encoded) = entry.map_err(precommit_storage_error)?;
+        let source = crate::keys::decode_vector_projection_control_key(key.value())
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+        let control = decode_vector_projection_control_v1(encoded.value())
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?
+            .into_parts()
+            .0;
+        if control.source() != &source || !control.retention_attached() {
+            if control.source() != &source {
+                return Err(storage_error(StorageErrorKind::InvariantViolation));
+            }
+            continue;
+        }
+        any = true;
+        let frontier = match control.published_frontier() {
+            FrontierPosition::BeforeFirst => 0,
+            FrontierPosition::AppliedThrough(sequence) => sequence.get(),
+        };
+        min_frontier = Some(min_frontier.map_or(frontier, |existing| existing.min(frontier)));
     }
     Ok(if any { min_frontier } else { None })
 }

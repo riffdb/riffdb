@@ -7,11 +7,22 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
-use riffdb_columnar::{ColumnarError, frontier_lag_sequences};
+use riffdb_columnar::{
+    ColumnarEngine, ColumnarError, ColumnarSnapshotRebuild, OpenOptions, frontier_lag_sequences,
+};
 use riffdb_observability::{MetricRegistry, RequiredGauge};
+use riffdb_storage_api::{
+    ApplicationExportSnapshotPort, ApplicationExportSourceRecordV1, AuthoritativeScanReader,
+    CommitScanPageV1, CommitScanRequest, StorageError, StorageErrorKind, StorageScanLimit,
+    StoredVectorProjectionControlV1, VectorProjectionControlRepository,
+    VectorProjectionControlWriteResultV1, VectorProjectionLifecycleV1,
+    VectorProjectionRebuildReasonV1,
+};
 use riffdb_types::FrontierPosition;
 
-use crate::columnar_adapter::{ColumnarRuntime, is_holdback_active};
+use crate::columnar_adapter::{
+    ColumnarRuntime, VectorProjectionRegistration, is_holdback_active, vector_generation_directory,
+};
 
 const WORKER_POLL_INTERVAL: Duration = Duration::from_millis(25);
 const CHECKPOINT_COMMIT_CADENCE: u64 = 4096;
@@ -185,6 +196,273 @@ impl ColumnarWorkerState {
     }
 }
 
+fn maintain_vector_generations(runtime: &ColumnarRuntime) -> Result<(), ColumnarWorkerError> {
+    for (name, registration) in runtime.vector_registrations().map_err(map_port_error)? {
+        let control = runtime
+            .storage()
+            .read_vector_projection_control(registration.source())
+            .map_err(map_storage_error)?
+            .ok_or(ColumnarWorkerError::Integrity)?;
+        if control.definition_fingerprint() != registration.definition_fingerprint()
+            || control.limits() != registration.limits()
+        {
+            return Err(ColumnarWorkerError::Integrity);
+        }
+        match control.lifecycle() {
+            VectorProjectionLifecycleV1::Invalid => continue,
+            VectorProjectionLifecycleV1::Building
+            | VectorProjectionLifecycleV1::RebuildRequired
+            | VectorProjectionLifecycleV1::Rebuilding => {
+                rebuild_vector_generation(runtime, &name, &registration, control)?;
+            }
+            VectorProjectionLifecycleV1::Ready => {
+                let slot = runtime
+                    .engine(&name)
+                    .map_err(map_port_error)?
+                    .ok_or(ColumnarWorkerError::Integrity)?;
+                let durable = slot
+                    .lock_engine()
+                    .map_err(map_port_error)?
+                    .durable_frontier()
+                    .position();
+                if slot.generation() != Some(control.generation())
+                    || durable != control.published_frontier()
+                {
+                    let detached = detached_control(
+                        &control,
+                        VectorProjectionRebuildReasonV1::DefinitionChanged,
+                    )?;
+                    compare_control(runtime, Some(&control), &detached)?;
+                    rebuild_vector_generation(runtime, &name, &registration, detached)?;
+                    continue;
+                }
+                if let Some(reason) = replay_budget_breach(runtime, &control)? {
+                    let detached = detached_control(&control, reason)?;
+                    compare_control(runtime, Some(&control), &detached)?;
+                    rebuild_vector_generation(runtime, &name, &registration, detached)?;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn detached_control(
+    control: &StoredVectorProjectionControlV1,
+    reason: VectorProjectionRebuildReasonV1,
+) -> Result<StoredVectorProjectionControlV1, ColumnarWorkerError> {
+    StoredVectorProjectionControlV1::new(
+        control.source().clone(),
+        control
+            .generation()
+            .checked_next()
+            .ok_or(ColumnarWorkerError::Integrity)?,
+        *control.definition_fingerprint(),
+        VectorProjectionLifecycleV1::RebuildRequired,
+        control.published_frontier(),
+        None,
+        Some(reason),
+        control.limits(),
+    )
+    .map_err(|_| ColumnarWorkerError::Integrity)
+}
+
+fn compare_control(
+    runtime: &ColumnarRuntime,
+    expected: Option<&StoredVectorProjectionControlV1>,
+    replacement: &StoredVectorProjectionControlV1,
+) -> Result<(), ColumnarWorkerError> {
+    match runtime
+        .storage()
+        .compare_and_set_vector_projection_control(expected, replacement)
+        .map_err(map_storage_error)?
+    {
+        VectorProjectionControlWriteResultV1::Applied
+        | VectorProjectionControlWriteResultV1::Unchanged => Ok(()),
+        VectorProjectionControlWriteResultV1::CompareMismatch => {
+            Err(ColumnarWorkerError::Unavailable)
+        }
+    }
+}
+
+fn rebuild_vector_generation(
+    runtime: &ColumnarRuntime,
+    name: &str,
+    registration: &VectorProjectionRegistration,
+    mut control: StoredVectorProjectionControlV1,
+) -> Result<(), ColumnarWorkerError> {
+    let snapshot = runtime
+        .storage()
+        .capture_application_export_snapshot(registration.source().lineage())
+        .map_err(map_storage_error)?;
+    let snapshot_frontier = snapshot.binding().application_frontier().map_or(
+        FrontierPosition::BeforeFirst,
+        FrontierPosition::AppliedThrough,
+    );
+    if matches!(
+        control.lifecycle(),
+        VectorProjectionLifecycleV1::RebuildRequired | VectorProjectionLifecycleV1::Rebuilding
+    ) {
+        let rebuilding = StoredVectorProjectionControlV1::new(
+            control.source().clone(),
+            control.generation(),
+            *control.definition_fingerprint(),
+            VectorProjectionLifecycleV1::Rebuilding,
+            control.published_frontier(),
+            Some(snapshot_frontier),
+            control.rebuild_reason(),
+            control.limits(),
+        )
+        .map_err(|_| ColumnarWorkerError::Integrity)?;
+        compare_control(runtime, Some(&control), &rebuilding)?;
+        control = rebuilding;
+    }
+
+    let directory =
+        vector_generation_directory(runtime.projections_root(), name, control.generation());
+    let mut successor = ColumnarEngine::open(
+        registration.definition().clone(),
+        OpenOptions::new(directory).with_history_incarnation(runtime.history_incarnation()),
+    )
+    .map_err(ColumnarWorkerError::Apply)?;
+    let mut rebuild = ColumnarSnapshotRebuild::new(registration.definition().clone());
+    let limit = StorageScanLimit::new(500).ok_or(ColumnarWorkerError::Integrity)?;
+    let mut continuation: Option<Box<[u8]>> = None;
+    loop {
+        let page = snapshot
+            .read_application_export_entity_page(
+                registration.source().entity_type(),
+                continuation.as_deref(),
+                limit,
+            )
+            .map_err(map_storage_error)?;
+        let records = page
+            .records()
+            .iter()
+            .map(|record| match record {
+                ApplicationExportSourceRecordV1::Entity(entity) => Ok((**entity).clone()),
+                _ => Err(ColumnarWorkerError::Integrity),
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        rebuild
+            .apply_page(&records)
+            .map_err(ColumnarWorkerError::Apply)?;
+        if page.exact_end() {
+            break;
+        }
+        continuation = page.continuation().map(Into::into);
+    }
+    rebuild
+        .install(&mut successor, snapshot_frontier)
+        .map_err(ColumnarWorkerError::Apply)?;
+    successor
+        .apply_available(runtime.apply_source())
+        .map_err(ColumnarWorkerError::Apply)?;
+    successor.checkpoint().map_err(ColumnarWorkerError::Apply)?;
+    let published = successor.durable_frontier().position();
+    let ready = StoredVectorProjectionControlV1::new(
+        control.source().clone(),
+        control.generation(),
+        *control.definition_fingerprint(),
+        VectorProjectionLifecycleV1::Ready,
+        published,
+        None,
+        None,
+        control.limits(),
+    )
+    .map_err(|_| ColumnarWorkerError::Integrity)?;
+    compare_control(runtime, Some(&control), &ready)?;
+    runtime
+        .replace_vector_engine(name, successor, control.generation())
+        .map_err(map_port_error)?;
+    let _ = runtime.notifier().notify(name);
+    Ok(())
+}
+
+fn replay_budget_breach(
+    runtime: &ColumnarRuntime,
+    control: &StoredVectorProjectionControlV1,
+) -> Result<Option<VectorProjectionRebuildReasonV1>, ColumnarWorkerError> {
+    let head = read_head(runtime)?;
+    let backlog = sequences_advanced(control.published_frontier(), head);
+    if backlog > control.limits().backlog() {
+        return Ok(Some(VectorProjectionRebuildReasonV1::ReplayBacklog));
+    }
+    if backlog == 0 {
+        return Ok(None);
+    }
+    let limit = StorageScanLimit::new(64).ok_or(ColumnarWorkerError::Integrity)?;
+    let mut request = match control.published_frontier() {
+        FrontierPosition::BeforeFirst => CommitScanRequest::initial(limit),
+        FrontierPosition::AppliedThrough(sequence) => {
+            CommitScanRequest::initial_after(sequence, limit)
+        }
+    };
+    let mut encoded_bytes = 0u64;
+    let mut first_seconds = None;
+    let mut last_seconds = None;
+    loop {
+        let page = runtime
+            .apply_source()
+            .scan_commits(request)
+            .map_err(map_storage_error)?;
+        for record in page.records() {
+            encoded_bytes = encoded_bytes
+                .checked_add(
+                    u64::try_from(record.encoded_content_charge().get())
+                        .map_err(|_| ColumnarWorkerError::Integrity)?,
+                )
+                .ok_or(ColumnarWorkerError::Integrity)?;
+            if encoded_bytes > control.limits().bytes() {
+                return Ok(Some(VectorProjectionRebuildReasonV1::ReplayBytes));
+            }
+            let seconds = record.value().logical_time().timestamp().seconds();
+            first_seconds.get_or_insert(seconds);
+            last_seconds = Some(seconds);
+        }
+        match page {
+            CommitScanPageV1::Page {
+                next_after,
+                inclusive_upper,
+                ..
+            } => {
+                let FrontierPosition::AppliedThrough(upper) = inclusive_upper else {
+                    return Err(ColumnarWorkerError::Integrity);
+                };
+                request = CommitScanRequest::continuing(next_after, upper, limit)
+                    .map_err(|_| ColumnarWorkerError::Integrity)?;
+            }
+            CommitScanPageV1::ExactEnd { .. } => break,
+        }
+    }
+    let age = match (first_seconds, last_seconds) {
+        (Some(first), Some(last)) => last
+            .checked_sub(first)
+            .and_then(|seconds| u64::try_from(seconds).ok())
+            .ok_or(ColumnarWorkerError::Integrity)?,
+        (None, None) => 0,
+        _ => return Err(ColumnarWorkerError::Integrity),
+    };
+    if age > control.limits().age_seconds() {
+        return Ok(Some(VectorProjectionRebuildReasonV1::ReplayAge));
+    }
+    Ok(None)
+}
+
+fn map_storage_error(error: StorageError) -> ColumnarWorkerError {
+    match error.kind() {
+        StorageErrorKind::Unavailable => ColumnarWorkerError::Unavailable,
+        _ => ColumnarWorkerError::Integrity,
+    }
+}
+
+const fn map_port_error(error: riffdb_service::ColumnarPortError) -> ColumnarWorkerError {
+    match error {
+        riffdb_service::ColumnarPortError::Unavailable => ColumnarWorkerError::Unavailable,
+        riffdb_service::ColumnarPortError::Integrity => ColumnarWorkerError::Integrity,
+    }
+}
+
 fn run_columnar_pass(
     runtime: &ColumnarRuntime,
     metrics: Option<&MetricRegistry>,
@@ -193,6 +471,7 @@ fn run_columnar_pass(
     runtime
         .synchronize_active_vector_projections()
         .map_err(|_| ColumnarWorkerError::Registration)?;
+    maintain_vector_generations(runtime)?;
     state.polls_since_checkpoint = state.polls_since_checkpoint.saturating_add(1);
     let force_checkpoint = state.polls_since_checkpoint >= CHECKPOINT_POLL_CADENCE;
     if force_checkpoint {
@@ -202,6 +481,11 @@ fn run_columnar_pass(
     let apply_source = runtime.apply_source();
     let head = read_head(runtime)?;
     let mut max_lag = 0u64;
+    let vector_registrations = runtime
+        .vector_registrations()
+        .map_err(map_port_error)?
+        .into_iter()
+        .collect::<BTreeMap<_, _>>();
 
     for (name, slot) in runtime
         .engines()
@@ -239,8 +523,15 @@ fn run_columnar_pass(
                 force_checkpoint || catchup.commits_since_checkpoint >= CHECKPOINT_COMMIT_CADENCE;
             if should_checkpoint {
                 match engine.checkpoint() {
-                    Ok(_) => {
+                    Ok(manifest) => {
                         catchup.commits_since_checkpoint = 0;
+                        if let Some(registration) = vector_registrations.get(&name) {
+                            record_vector_durable_frontier(
+                                runtime,
+                                registration,
+                                manifest.durable_frontier,
+                            )?;
+                        }
                     }
                     Err(error) if is_holdback_active(&error) => {
                         // HoldbackActive: retry after the next apply pull.
@@ -259,6 +550,41 @@ fn run_columnar_pass(
         metrics.set_required_gauge(RequiredGauge::ProjectionLagCommits, max_lag);
     }
     Ok(())
+}
+
+#[cfg(test)]
+pub(crate) fn run_one_test_pass(runtime: &ColumnarRuntime) -> bool {
+    let mut state = ColumnarWorkerState::new(runtime);
+    run_columnar_pass(runtime, None, &mut state).is_ok()
+}
+
+fn record_vector_durable_frontier(
+    runtime: &ColumnarRuntime,
+    registration: &VectorProjectionRegistration,
+    frontier: FrontierPosition,
+) -> Result<(), ColumnarWorkerError> {
+    let current = runtime
+        .storage()
+        .read_vector_projection_control(registration.source())
+        .map_err(map_storage_error)?
+        .ok_or(ColumnarWorkerError::Integrity)?;
+    if current.lifecycle() != VectorProjectionLifecycleV1::Ready
+        || current.definition_fingerprint() != registration.definition_fingerprint()
+    {
+        return Err(ColumnarWorkerError::Integrity);
+    }
+    let replacement = StoredVectorProjectionControlV1::new(
+        current.source().clone(),
+        current.generation(),
+        *current.definition_fingerprint(),
+        VectorProjectionLifecycleV1::Ready,
+        frontier,
+        None,
+        None,
+        current.limits(),
+    )
+    .map_err(|_| ColumnarWorkerError::Integrity)?;
+    compare_control(runtime, Some(&current), &replacement)
 }
 
 fn read_head(runtime: &ColumnarRuntime) -> Result<FrontierPosition, ColumnarWorkerError> {
