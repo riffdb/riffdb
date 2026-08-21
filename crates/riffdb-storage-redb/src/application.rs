@@ -36,8 +36,8 @@ use riffdb_storage_api::{
     TransactionLocalCommandBatch, UniqueIndexOccupancy, UniqueOccupancyKind,
     UnpublishedAuditedBatchV1, ValidationReadRequest, VectorEvidenceIndexEntryV1,
     VectorEvidenceIndexPageV1, VectorEvidenceIndexRepository, VectorEvidenceIndexScanRequestV1,
-    VectorEvidenceReadRequestV1, VectorObservationRepository, VectorObservationTargetV1,
-    encode_capsule_command_record_set_v1,
+    VectorEvidenceReadRequestV1, VectorHealthObservationV1, VectorObservationRepository,
+    VectorObservationTargetV1, encode_capsule_command_record_set_v1,
 };
 use riffdb_types::{CommitSequence, EventId, ProvenanceId};
 
@@ -50,10 +50,11 @@ use crate::codec::{
     decode_database_identity_v1, decode_entity_record_v1, decode_history_incarnation_v1,
     decode_idempotency_record_v1, decode_index_entry_v2, decode_index_epoch_v1,
     decode_pending_admission_v1, decode_vector_evidence_index_v1, decode_vector_evidence_v1,
-    decode_vector_observation_v1, encode_commit_record_v1, encode_durable_event_v1,
-    encode_event_route_v1, encode_execution_failed_v1, encode_outbox_intent_v1,
-    encode_pending_admission_v1, encode_provenance_record_v1, encode_stored_outcome_v1,
-    encode_vector_evidence_index_v1, encode_vector_observation_v1,
+    decode_vector_health_observation_v1, decode_vector_observation_v1, encode_commit_record_v1,
+    encode_durable_event_v1, encode_event_route_v1, encode_execution_failed_v1,
+    encode_outbox_intent_v1, encode_pending_admission_v1, encode_provenance_record_v1,
+    encode_stored_outcome_v1, encode_vector_evidence_index_v1, encode_vector_health_observation_v1,
+    encode_vector_observation_v1,
 };
 use crate::command_authority::{command_member_at, command_member_at_access};
 use crate::error::{codec_error, precommit_storage_error, table_error};
@@ -64,7 +65,8 @@ use crate::keys::{
     encode_audit_by_request_key, encode_audit_key, encode_contract_bundle_key, encode_entity_key,
     encode_event_key, encode_event_route_key, encode_idempotency_key, encode_index_entry_key,
     encode_partition_index_key, encode_provenance_key, encode_vector_evidence_index_key,
-    encode_vector_evidence_key, encode_vector_observation_key,
+    encode_vector_evidence_key, encode_vector_health_observation_key,
+    encode_vector_observation_key,
 };
 use crate::layout::{
     COMMITS, CONTRACT_BUNDLES, ENTITIES, EVENT_ROUTES, EVENTS, IDEMPOTENCY, IDEMPOTENCY_PENDING,
@@ -469,6 +471,18 @@ impl VectorObservationRepository for RedbOperationalPorts {
         self.begin_composite_read()?
             .read_value(JournalTable::VectorObservations, &key)?
             .map(|bytes| decode_vector_observation_v1(&bytes).map(decoded_value))
+            .transpose()
+    }
+
+    fn read_vector_health_observation(
+        &self,
+        lineage: &riffdb_types::ContractLineage,
+    ) -> Result<Option<VectorHealthObservationV1>, StorageError> {
+        let key = encode_vector_health_observation_key(lineage)
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+        self.begin_composite_read()?
+            .read_value(JournalTable::VectorObservations, &key)?
+            .map(|bytes| decode_vector_health_observation_v1(&bytes).map(decoded_value))
             .transpose()
     }
 }
@@ -1939,13 +1953,13 @@ fn apply_vector_observation(
     let key = encode_vector_observation_key(&target)
         .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
     let current_bytes = access.read_command_value(JournalTable::VectorObservations, &key)?;
-    let mut observation = current_bytes
+    let prior_observation = current_bytes
         .as_deref()
         .map(|value| decode_vector_observation_v1(value).map(decoded_value))
-        .transpose()?
-        .unwrap_or_else(|| {
-            riffdb_storage_api::VectorObservationCountsV1::empty(target.clone(), sequence)
-        });
+        .transpose()?;
+    let mut observation = prior_observation.clone().unwrap_or_else(|| {
+        riffdb_storage_api::VectorObservationCountsV1::empty(target.clone(), sequence)
+    });
     if observation.target() != &target {
         return Err(storage_error(StorageErrorKind::InvariantViolation));
     }
@@ -1972,6 +1986,36 @@ fn apply_vector_observation(
             encoded,
         )?;
     }
+
+    let health_key = encode_vector_health_observation_key(target.lineage())
+        .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+    let health_current_bytes =
+        access.read_command_value(JournalTable::VectorObservations, &health_key)?;
+    let mut health = health_current_bytes
+        .as_deref()
+        .map(|value| decode_vector_health_observation_v1(value).map(decoded_value))
+        .transpose()?
+        .unwrap_or_else(|| VectorHealthObservationV1::empty(target.lineage().clone(), sequence));
+    health
+        .apply_partition(
+            target.entity_type(),
+            target.vector_field(),
+            transition.stale_entity_count_threshold(),
+            prior_observation.as_ref(),
+            (observation.total_entities() != 0).then_some(&observation),
+            sequence,
+        )
+        .map_err(|error| match error {
+            StorageValueError::LimitExceeded => storage_error(StorageErrorKind::LimitExceeded),
+            _ => storage_error(StorageErrorKind::InvariantViolation),
+        })?;
+    let health_encoded = encode_vector_health_observation_v1(&health)?;
+    access.put_proven_command_value(
+        JournalTable::VectorObservations,
+        health_key,
+        health_current_bytes,
+        health_encoded,
+    )?;
     Ok(())
 }
 
@@ -3102,7 +3146,8 @@ mod tests {
     use riffdb_query_executor::{QueryExecutionPort, VectorInspectionTargetV1};
     use riffdb_storage_api::{
         DatabaseInitializationPort, StorageScanLimit, VectorEvidenceIndexEntryV1,
-        VectorEvidenceIndexScanRequestV1, VectorObservationCountsV1,
+        VectorEvidenceIndexScanRequestV1, VectorHealthFieldObservationV1,
+        VectorHealthObservationV1, VectorObservationCountsV1,
     };
     use riffdb_types::{
         AggregateTypeId, ContractLineage, DatabaseId, EntityKeyBuilder, EntityTypeId, FieldId,
@@ -3164,6 +3209,25 @@ mod tests {
         .expect("observation");
         let key = encode_vector_observation_key(&present).expect("observation key");
         let value = encode_vector_observation_v1(&expected).expect("observation value");
+        let health = VectorHealthObservationV1::from_parts(
+            present.lineage().clone(),
+            vec![
+                VectorHealthFieldObservationV1::from_parts(
+                    present.entity_type(),
+                    present.vector_field(),
+                    3,
+                    1,
+                    0,
+                )
+                .expect("field health"),
+            ],
+            CommitSequence::new(11).expect("revision"),
+        )
+        .expect("health");
+        let health_key = encode_vector_health_observation_key(present.lineage())
+            .expect("health observation key");
+        let health_value =
+            encode_vector_health_observation_v1(&health).expect("health observation value");
         let transaction = store
             .shared
             .database
@@ -3176,6 +3240,9 @@ mod tests {
             table
                 .insert(key.as_slice(), value.as_bytes())
                 .expect("insert observation");
+            table
+                .insert(health_key.as_slice(), health_value.as_bytes())
+                .expect("insert health observation");
         }
         transaction.commit().expect("commit observation");
 
@@ -3190,6 +3257,12 @@ mod tests {
                 .read_vector_observation(&absent)
                 .expect("read absent observation"),
             None
+        );
+        assert_eq!(
+            ports
+                .read_vector_health_observation(present.lineage())
+                .expect("read health observation"),
+            Some(health)
         );
     }
 

@@ -88,12 +88,16 @@ artifacts=(
     fixtures/proto/durable-vector-observation-v1-schema-hash.bin
     fixtures/proto/durable-vector-evidence-index-v1-record-bound.bin
     fixtures/proto/durable-vector-evidence-index-v1-schema-hash.bin
+    fixtures/proto/durable-vector-health-observation-v1-record-bound.bin
+    fixtures/proto/durable-vector-health-observation-v1-schema-hash.bin
     crates/riffdb-proto/fixtures/durable-vector-evidence-v1-record-bound.bin
     crates/riffdb-proto/fixtures/durable-vector-evidence-v1-schema-hash.bin
     crates/riffdb-proto/fixtures/durable-vector-observation-v1-record-bound.bin
     crates/riffdb-proto/fixtures/durable-vector-observation-v1-schema-hash.bin
     crates/riffdb-proto/fixtures/durable-vector-evidence-index-v1-record-bound.bin
     crates/riffdb-proto/fixtures/durable-vector-evidence-index-v1-schema-hash.bin
+    crates/riffdb-proto/fixtures/durable-vector-health-observation-v1-record-bound.bin
+    crates/riffdb-proto/fixtures/durable-vector-health-observation-v1-schema-hash.bin
     fixtures/proto/durable-validated-prefix-checkpoint-v1-record-bound.bin
     fixtures/proto/durable-validated-prefix-checkpoint-v1-schema-hash.bin
     fixtures/proto/durable-retention-watermark-v1-record-bound.bin
@@ -127,6 +131,7 @@ artifacts=(
     fixtures/proto/durable-writable-registry.txt
     crates/riffdb-proto/fixtures/durable-readable-registry.txt
     crates/riffdb-proto/fixtures/durable-writable-registry.txt
+    crates/riffdb-proto/fixtures/public-schema-hashes.txt
     fixtures/proto/durable-wire-vectors.txt
     fixtures/proto/durable-wire-vectors-v2.txt
     fixtures/proto/operation-schema-catalog-full-v1.bin

@@ -39,8 +39,9 @@ use riffdb_storage_api::{
     TransactionLocalCommandBatch, UniqueIndexOccupancy, UniqueOccupancyKind,
     UnpublishedAuditedBatchV1, ValidationReadRequest, VectorEvidenceIndexEntryV1,
     VectorEvidenceIndexPageV1, VectorEvidenceIndexRepository, VectorEvidenceIndexScanRequestV1,
-    VectorEvidenceReadRequestV1, VectorObservationCountsV1, VectorObservationRepository,
-    VectorObservationTargetV1, derive_event_hash_v1, encode_vector_evidence_index_v1,
+    VectorEvidenceReadRequestV1, VectorHealthObservationV1, VectorObservationCountsV1,
+    VectorObservationRepository, VectorObservationTargetV1, derive_event_hash_v1,
+    encode_vector_evidence_index_v1,
 };
 use riffdb_types::{CommitSequence, EventId, FrontierPosition, ProvenanceId};
 
@@ -62,6 +63,7 @@ struct ApplicationOverlay {
     vector_evidence: Vec<StoredVectorEvidenceV1>,
     vector_evidence_index: Vec<VectorEvidenceIndexEntryV1>,
     vector_observations: Vec<VectorObservationCountsV1>,
+    vector_health_observations: Vec<VectorHealthObservationV1>,
     entity_commits: Vec<EntityCommitIndexRow>,
     index_entries: Vec<MemoryIndexEntry>,
     index_epochs: Vec<StoredIndexEpochV1>,
@@ -90,6 +92,19 @@ impl VectorObservationRepository for MemoryOperationalPorts {
                 .binary_search_by(|row| row.target().cmp(target))
                 .ok()
                 .map(|index| state.vector_observations[index].clone()))
+        })
+    }
+
+    fn read_vector_health_observation(
+        &self,
+        lineage: &riffdb_types::ContractLineage,
+    ) -> Result<Option<VectorHealthObservationV1>, StorageError> {
+        self.read(|state| {
+            Ok(state
+                .vector_health_observations
+                .binary_search_by(|row| row.lineage().cmp(lineage))
+                .ok()
+                .map(|index| state.vector_health_observations[index].clone()))
         })
     }
 }
@@ -160,6 +175,7 @@ impl ApplicationOverlay {
             vector_evidence: state.vector_evidence.clone(),
             vector_evidence_index: state.vector_evidence_index.clone(),
             vector_observations: state.vector_observations.clone(),
+            vector_health_observations: state.vector_health_observations.clone(),
             entity_commits: state.entity_commits.clone(),
             index_entries: state.index_entries.clone(),
             index_epochs: state.index_epochs.clone(),
@@ -185,6 +201,7 @@ impl ApplicationOverlay {
         state.vector_evidence = self.vector_evidence;
         state.vector_evidence_index = self.vector_evidence_index;
         state.vector_observations = self.vector_observations;
+        state.vector_health_observations = self.vector_health_observations;
         state.entity_commits = self.entity_commits;
         state.index_entries = self.index_entries;
         state.index_epochs = self.index_epochs;
@@ -2000,6 +2017,9 @@ fn apply_vector_evidence(
         let observation_position = overlay
             .vector_observations
             .binary_search_by(|row| row.target().cmp(&observation_target));
+        let prior_observation = observation_position
+            .ok()
+            .map(|index| overlay.vector_observations[index].clone());
         let mut observation = match observation_position {
             Ok(index) => overlay.vector_observations[index].clone(),
             Err(_) => VectorObservationCountsV1::empty(observation_target.clone(), sequence),
@@ -2012,6 +2032,8 @@ fn apply_vector_evidence(
                 sequence,
             )
             .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+        let successor_observation =
+            (observation.total_entities() != 0).then(|| observation.clone());
         match (observation.total_entities(), observation_position) {
             (0, Ok(index)) => {
                 overlay.vector_observations.remove(index);
@@ -2019,6 +2041,29 @@ fn apply_vector_evidence(
             (0, Err(_)) => return Err(storage_error(StorageErrorKind::InvariantViolation)),
             (_, Ok(index)) => overlay.vector_observations[index] = observation,
             (_, Err(index)) => overlay.vector_observations.insert(index, observation),
+        }
+
+        let lineage = observation_target.lineage();
+        let health_position = overlay
+            .vector_health_observations
+            .binary_search_by(|row| row.lineage().cmp(lineage));
+        let mut health = match health_position {
+            Ok(index) => overlay.vector_health_observations[index].clone(),
+            Err(_) => VectorHealthObservationV1::empty(lineage.clone(), sequence),
+        };
+        health
+            .apply_partition(
+                observation_target.entity_type(),
+                observation_target.vector_field(),
+                transition.stale_entity_count_threshold(),
+                prior_observation.as_ref(),
+                successor_observation.as_ref(),
+                sequence,
+            )
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+        match health_position {
+            Ok(index) => overlay.vector_health_observations[index] = health,
+            Err(index) => overlay.vector_health_observations.insert(index, health),
         }
 
         let position = overlay.vector_evidence.binary_search_by(|row| {
@@ -2852,11 +2897,27 @@ mod tests {
             CommitSequence::new(11).expect("revision"),
         )
         .expect("observation");
+        let health = VectorHealthObservationV1::from_parts(
+            present.lineage().clone(),
+            vec![
+                riffdb_storage_api::VectorHealthFieldObservationV1::from_parts(
+                    present.entity_type(),
+                    present.vector_field(),
+                    3,
+                    1,
+                    0,
+                )
+                .expect("field health"),
+            ],
+            CommitSequence::new(11).expect("revision"),
+        )
+        .expect("health");
         ports
             .acquire()
             .expect("seed access")
             .write(|state| {
                 state.vector_observations.push(expected.clone());
+                state.vector_health_observations.push(health.clone());
                 Ok(())
             })
             .expect("seed observation");
@@ -2872,6 +2933,12 @@ mod tests {
                 .read_vector_observation(&absent)
                 .expect("read absent observation"),
             None
+        );
+        assert_eq!(
+            ports
+                .read_vector_health_observation(present.lineage())
+                .expect("read health observation"),
+            Some(health)
         );
     }
 

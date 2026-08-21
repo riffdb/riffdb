@@ -973,6 +973,7 @@ impl AdminAuditCheckpoint {
             vector_evidence: _,
             vector_evidence_index: _,
             vector_observations: _,
+            vector_health_observations: _,
             entity_commits: _,
             index_entries: _,
             index_epochs: _,

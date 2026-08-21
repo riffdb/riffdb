@@ -586,6 +586,7 @@ where
                 transitions.push(
                     VectorEvidenceTransitionPlanV1::delete(
                         prior,
+                        vector_spec.stale_entity_count_threshold(),
                         provenance_id,
                         evaluated.plan().clone(),
                     )
@@ -615,6 +616,7 @@ where
                     target.target().clone(),
                     partition.clone(),
                     target.vector_field(),
+                    vector_spec.stale_entity_count_threshold(),
                     next_entity_version(mutation)?,
                     current_evidence.get(target),
                     source_changed,

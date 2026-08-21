@@ -11,7 +11,7 @@ use crate::{
     VectorEvidenceIndexEntryV1, VectorEvidenceMutationV1, VectorEvidenceTransitionPlanV1,
 };
 
-use super::vector_evidence::VECTOR_OBSERVATION;
+use super::vector_evidence::{VECTOR_HEALTH_OBSERVATION, VECTOR_OBSERVATION};
 use super::{
     COMMIT, CanonicalStoredEnvelopeV1, DurableCodecError, DurableCodecErrorKind, ENTITY, EVENT,
     EVENT_ROUTE, INDEX_ENTRY, INDEX_EPOCH, OUTCOME_V3, PROVENANCE_V2, binding_to_proto,
@@ -571,6 +571,13 @@ pub fn command_write_set_upper_bound_with_vector_evidence_v1(
                     .checked_mul(maximum_vector_observation_charge().ok()?)?,
             )
         })
+        .and_then(|value| {
+            value.checked_add(if vector_evidence.is_empty() {
+                0
+            } else {
+                maximum_vector_health_observation_charge().ok()?
+            })
+        })
         .ok_or_else(DurableCodecError::invariant)?,
         index_entries: sum_sizes(index_entries.iter().filter_map(|mutation| match mutation {
             IndexEntryMutationV1::Delete(_) => None,
@@ -1038,6 +1045,23 @@ fn maximum_vector_observation_charge() -> Result<usize, DurableCodecError> {
         .checked_add(sum_sizes(repeated_models)?)
         .ok_or_else(DurableCodecError::invariant)?;
     sizing_charge_len(VECTOR_OBSERVATION, payload)
+}
+
+fn maximum_vector_health_observation_charge() -> Result<usize, DurableCodecError> {
+    let field = sum_proto_fields([
+        varint_field_len(1, u32::MAX),
+        varint_field_len(2, u32::MAX),
+        varint_field_len(3, MAXIMUM_WIDTH_U64),
+        varint_field_len(4, MAXIMUM_WIDTH_U64),
+        varint_field_len(5, MAXIMUM_WIDTH_U64),
+    ])?;
+    let repeated_fields =
+        (0..crate::MAX_VECTOR_FIELDS_PER_HEALTH_OBSERVATION).map(|_| message_field_len(2, field));
+    let payload = bytes_field_len(1, riffdb_types::MAX_CONTRACT_LINEAGE_BYTES)?
+        .checked_add(sum_sizes(repeated_fields)?)
+        .and_then(|value| value.checked_add(varint_field_len(3, MAXIMUM_WIDTH_U64).ok()?))
+        .ok_or_else(DurableCodecError::invariant)?;
+    sizing_charge_len(VECTOR_HEALTH_OBSERVATION, payload)
 }
 
 fn key_len(field_number: u32, wire_type: prost::encoding::WireType) -> usize {

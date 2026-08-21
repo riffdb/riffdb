@@ -120,6 +120,7 @@ files
     import riffdb/storage/v1/vector_evidence_v1.proto
   riffdb/storage/v1/vector_evidence_v1.proto
     import riffdb/storage/v1/application.proto
+  riffdb/storage/v1/vector_health_observation_v1.proto
   riffdb/storage/v1/vector_observation_v1.proto
   riffdb/storage/v1/workflow_service_values_v3.proto
     import riffdb/storage/v1/application.proto
@@ -1427,6 +1428,16 @@ messages
     8 schema_binding optional .riffdb.storage.v1.DurableKeySchemaBindingV1
     9 provenance_id optional bytes
     10 plan optional .riffdb.storage.v1.ExecutablePlanRefV1
+  riffdb.storage.v1.StoredVectorHealthFieldObservationV1 fields=5
+    1 entity_type_id optional uint32
+    2 vector_field_id optional uint32
+    3 stale_entity_count_threshold optional uint64
+    4 partition_count optional uint64
+    5 breached_partition_count optional uint64
+  riffdb.storage.v1.StoredVectorHealthObservationV1 fields=3
+    1 contract_lineage optional string
+    2 fields repeated .riffdb.storage.v1.StoredVectorHealthFieldObservationV1
+    3 revision_sequence optional uint64
   riffdb.storage.v1.StoredVectorModelCountV1 fields=3
     1 model_identity optional string
     2 model_version optional string

@@ -3,9 +3,11 @@
 use riffdb_storage_api::{
     DurableKeySchemaBindingV1, EntityTarget, ExecutablePlanRef, StorageValueError,
     StoredVectorEmbeddingWriteV1, StoredVectorEvidenceV1, VectorEvidenceIndexEntryV1,
-    VectorEvidenceTransitionPlanV1, VectorObservationCountsV1, decode_vector_evidence_index_v1,
-    decode_vector_evidence_v1, decode_vector_observation_v1, encode_vector_evidence_index_v1,
-    encode_vector_evidence_v1, encode_vector_observation_v1,
+    VectorEvidenceTransitionPlanV1, VectorHealthObservationV1, VectorObservationCountsV1,
+    VectorObservationTargetV1, decode_vector_evidence_index_v1, decode_vector_evidence_v1,
+    decode_vector_health_observation_v1, decode_vector_observation_v1,
+    encode_vector_evidence_index_v1, encode_vector_evidence_v1,
+    encode_vector_health_observation_v1, encode_vector_observation_v1,
 };
 use riffdb_types::{
     AggregateTypeId, CommandId, CommitSequence, ContractBundleHash, ContractLineage,
@@ -244,6 +246,7 @@ fn transition_classification_is_exact_for_create_update_and_delete() {
         target(),
         partition(),
         FieldId::new(4).expect("vector field"),
+        3,
         EntityVersion::first(),
         None,
         true,
@@ -269,6 +272,7 @@ fn transition_classification_is_exact_for_create_update_and_delete() {
         target(),
         partition(),
         FieldId::new(4).expect("vector field"),
+        3,
         EntityVersion::new(2).expect("entity version"),
         Some(&prior),
         false,
@@ -293,7 +297,7 @@ fn transition_classification_is_exact_for_create_update_and_delete() {
     let riffdb_storage_api::VectorEvidenceMutationV1::Put(successor) = successor else {
         panic!("update must materialize a put");
     };
-    let delete = VectorEvidenceTransitionPlanV1::delete(&successor, provenance(), plan)
+    let delete = VectorEvidenceTransitionPlanV1::delete(&successor, 3, provenance(), plan)
         .expect("delete transition");
     let delete_classes = delete
         .classification_transition(CommitSequence::new(9).expect("sequence"))
@@ -312,6 +316,7 @@ fn maintained_counts_apply_the_same_transition_classification() {
         target(),
         partition(),
         FieldId::new(4).expect("vector field"),
+        3,
         EntityVersion::first(),
         None,
         true,
@@ -342,6 +347,7 @@ fn maintained_counts_apply_the_same_transition_classification() {
         target(),
         partition(),
         FieldId::new(4).expect("vector field"),
+        3,
         EntityVersion::new(2).expect("entity version"),
         Some(&prior),
         false,
@@ -370,7 +376,7 @@ fn maintained_counts_apply_the_same_transition_classification() {
     let riffdb_storage_api::VectorEvidenceMutationV1::Put(embedded) = embedded else {
         panic!("embedding transition must materialize a put");
     };
-    let delete = VectorEvidenceTransitionPlanV1::delete(&embedded, provenance(), plan)
+    let delete = VectorEvidenceTransitionPlanV1::delete(&embedded, 3, provenance(), plan)
         .expect("delete transition");
     let delete_sequence = CommitSequence::new(9).expect("sequence");
     counts
@@ -384,4 +390,72 @@ fn maintained_counts_apply_the_same_transition_classification() {
     assert_eq!(counts.total_entities(), 0);
     assert_eq!(counts.source_stale_entities(), 0);
     assert_eq!(counts.model_count(&metadata()), 0);
+}
+
+#[test]
+fn lineage_health_tracks_strict_partition_thresholds_and_round_trips() {
+    let lineage = ContractLineage::new("vector-evidence").expect("lineage");
+    let entity = EntityTypeId::first();
+    let field = FieldId::new(4).expect("vector field");
+    let first = CommitSequence::new(5).expect("sequence");
+    let second = CommitSequence::new(6).expect("sequence");
+    let first_counts = VectorObservationCountsV1::from_parts(
+        VectorObservationTargetV1::new(lineage.clone(), partition(), entity, field),
+        1,
+        1,
+        vec![],
+        first,
+    )
+    .expect("first observation");
+    let mut second_partition = PartitionKeyBuilder::new(AggregateTypeId::first());
+    second_partition
+        .push_str("org-b")
+        .expect("partition component");
+    let second_counts = VectorObservationCountsV1::from_parts(
+        VectorObservationTargetV1::new(
+            lineage.clone(),
+            second_partition.finish().expect("partition"),
+            entity,
+            field,
+        ),
+        2,
+        2,
+        vec![],
+        second,
+    )
+    .expect("second observation");
+    let mut health = VectorHealthObservationV1::empty(lineage, first);
+    health
+        .apply_partition(entity, field, 1, None, Some(&first_counts), first)
+        .expect("threshold equality is healthy");
+    health
+        .apply_partition(entity, field, 1, None, Some(&second_counts), second)
+        .expect("second partition");
+    let field_health = health.fields().next().expect("field health");
+    assert_eq!(field_health.partition_count(), 2);
+    assert_eq!(field_health.breached_partition_count(), 1);
+    assert!(health.any_partition_breached());
+
+    let wire_probe = riffdb_proto::storage::v1::StoredVectorHealthObservationV1 {
+        contract_lineage: "vector-evidence".to_owned(),
+        fields: vec![
+            riffdb_proto::storage::v1::StoredVectorHealthFieldObservationV1 {
+                entity_type_id: 1,
+                vector_field_id: 4,
+                stale_entity_count_threshold: 1,
+                partition_count: 2,
+                breached_partition_count: 1,
+            },
+        ],
+        revision_sequence: 6,
+    };
+    riffdb_proto::durable::encode_current_message(&wire_probe).expect("wire health encoding");
+    let encoded = encode_vector_health_observation_v1(&health).expect("encode health");
+    let decoded = decode_vector_health_observation_v1(encoded.as_bytes()).expect("decode health");
+    assert_eq!(decoded.value(), &health);
+
+    health
+        .apply_partition(entity, field, 1, Some(&second_counts), None, second)
+        .expect("delete breached partition");
+    assert!(!health.any_partition_breached());
 }

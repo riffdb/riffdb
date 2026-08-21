@@ -25,7 +25,8 @@ use crate::codec::{
     decode_event_route_v1, decode_history_incarnation_v1, decode_idempotency_record_v1,
     decode_index_entry_v2, decode_index_epoch_v1, decode_pending_admission_v1,
     decode_provenance_record_v1, decode_record_registry_v2, decode_service_audit_request_index_v1,
-    decode_vector_evidence_index_v1, decode_vector_evidence_v1, decode_vector_observation_v1,
+    decode_vector_evidence_index_v1, decode_vector_evidence_v1,
+    decode_vector_health_observation_v1, decode_vector_observation_v1,
 };
 use crate::error::{precommit_storage_error, storage_error, table_error};
 use crate::journal::{JournalFrame, read_value};
@@ -33,7 +34,8 @@ use crate::keys::{
     decode_application_sequence_key, decode_audit_by_request_key, decode_audit_key,
     decode_entity_key, decode_event_key, decode_event_route_key, decode_idempotency_key,
     decode_index_entry_key, decode_partition_index_key, decode_provenance_key,
-    decode_vector_evidence_index_key, decode_vector_evidence_key, decode_vector_observation_key,
+    decode_vector_evidence_index_key, decode_vector_evidence_key,
+    decode_vector_health_observation_key, decode_vector_observation_key,
 };
 use crate::layout::{
     AUDIT, AUDIT_BY_REQUEST, COMMITS, ENTITIES, ENTITY_CHAIN_HEADS, EVENT_ROUTES, EVENTS,
@@ -806,11 +808,21 @@ fn validate_canonical_entry(
             }
         }
         CompositeTableV1::VectorObservations => {
-            let physical = decode_vector_observation_key(key).map_err(invalid_shape)?;
-            if let Some(value) = value {
-                let decoded = decode_vector_observation_v1(value).map_err(invalid_shape)?;
-                if decoded.value().target() != &physical {
-                    return Err(StorageValueError::IdentityMismatch);
+            if let Ok(lineage) = decode_vector_health_observation_key(key) {
+                if let Some(value) = value {
+                    let decoded =
+                        decode_vector_health_observation_v1(value).map_err(invalid_shape)?;
+                    if decoded.value().lineage() != &lineage {
+                        return Err(StorageValueError::IdentityMismatch);
+                    }
+                }
+            } else {
+                let physical = decode_vector_observation_key(key).map_err(invalid_shape)?;
+                if let Some(value) = value {
+                    let decoded = decode_vector_observation_v1(value).map_err(invalid_shape)?;
+                    if decoded.value().target() != &physical {
+                        return Err(StorageValueError::IdentityMismatch);
+                    }
                 }
             }
         }

@@ -71,6 +71,7 @@ const STORAGE_SOURCES: &[&str] = &[
     "riffdb/storage/v1/retention_watermark_v1.proto",
     "riffdb/storage/v1/vector_evidence_v1.proto",
     "riffdb/storage/v1/vector_evidence_index_v1.proto",
+    "riffdb/storage/v1/vector_health_observation_v1.proto",
     "riffdb/storage/v1/vector_observation_v1.proto",
     "riffdb/storage/v1/workflow_service_values_v3.proto",
     "riffdb/storage/v1/capability_installation.proto",
@@ -116,6 +117,7 @@ const PRODUCTION_SOURCES: &[&str] = &[
     "riffdb/storage/v1/retention_watermark_v1.proto",
     "riffdb/storage/v1/vector_evidence_v1.proto",
     "riffdb/storage/v1/vector_evidence_index_v1.proto",
+    "riffdb/storage/v1/vector_health_observation_v1.proto",
     "riffdb/storage/v1/vector_observation_v1.proto",
     "riffdb/storage/v1/workflow_service_values_v3.proto",
     "riffdb/storage/v1/capability_installation.proto",
@@ -626,6 +628,11 @@ const DURABLE_RECORDS: &[DurableRecord] = &[
         "StoredVectorEvidenceIndexV1",
         PayloadBound::Tiny,
     ),
+    durable(
+        "vector_health_observation_v1.proto",
+        "StoredVectorHealthObservationV1",
+        PayloadBound::Document,
+    ),
 ];
 
 const LEGACY_DURABLE_RECORD_COUNT: usize = 26;
@@ -925,10 +932,16 @@ fn main() -> Result<(), Box<dyn Error>> {
         "fixtures/proto/schema-inventory.txt",
         inventory(&production).as_bytes(),
     )?;
+    let public_schema_hashes = public_schema_hashes(&production);
     write_artifact(
         &output_root,
         "fixtures/proto/public-schema-hashes.txt",
-        public_schema_hashes(&production).as_bytes(),
+        public_schema_hashes.as_bytes(),
+    )?;
+    write_artifact(
+        &output_root,
+        "crates/riffdb-proto/fixtures/public-schema-hashes.txt",
+        public_schema_hashes.as_bytes(),
     )?;
     write_artifact(
         &output_root,
@@ -1090,6 +1103,11 @@ fn main() -> Result<(), Box<dyn Error>> {
         .get(current_v1_record_count + 57)
         .ok_or_else(|| {
             io::Error::other("durable vector-evidence-index-v1 registry is incomplete")
+        })?;
+    let vector_health_observation_record = durable_registry
+        .get(current_v1_record_count + 58)
+        .ok_or_else(|| {
+            io::Error::other("durable vector-health-observation-v1 registry is incomplete")
         })?;
     write_artifact(
         &output_root,
@@ -1498,6 +1516,26 @@ fn main() -> Result<(), Box<dyn Error>> {
     )?;
     write_artifact(
         &output_root,
+        "fixtures/proto/durable-vector-health-observation-v1-schema-hash.bin",
+        &vector_health_observation_record.schema_hash,
+    )?;
+    write_artifact(
+        &output_root,
+        "fixtures/proto/durable-vector-health-observation-v1-record-bound.bin",
+        &durable_record_bounds(std::slice::from_ref(vector_health_observation_record)),
+    )?;
+    write_artifact(
+        &output_root,
+        "crates/riffdb-proto/fixtures/durable-vector-health-observation-v1-schema-hash.bin",
+        &vector_health_observation_record.schema_hash,
+    )?;
+    write_artifact(
+        &output_root,
+        "crates/riffdb-proto/fixtures/durable-vector-health-observation-v1-record-bound.bin",
+        &durable_record_bounds(std::slice::from_ref(vector_health_observation_record)),
+    )?;
+    write_artifact(
+        &output_root,
         "fixtures/proto/durable-event-policy-command-authority-v5-schema-hashes.bin",
         &durable_schema_hashes(event_policy_command_authority_records),
     )?;
@@ -1783,9 +1821,9 @@ struct BuiltDurableRecord {
 fn build_durable_registry(
     storage: &FileDescriptorSet,
 ) -> Result<Vec<BuiltDurableRecord>, Box<dyn Error>> {
-    if DURABLE_RECORDS.len() != 87 {
+    if DURABLE_RECORDS.len() != 88 {
         return Err(
-            io::Error::other("readable durable registry must contain exactly 87 records").into(),
+            io::Error::other("readable durable registry must contain exactly 88 records").into(),
         );
     }
     if storage.file.len() != STORAGE_SOURCES.len()
@@ -1809,9 +1847,9 @@ fn build_durable_registry(
         .iter()
         .map(|file| file.enum_type.len())
         .sum::<usize>();
-    if message_count != 174 || enum_count != 22 {
+    if message_count != 176 || enum_count != 22 {
         return Err(io::Error::other(format!(
-            "storage schema must contain exactly 174 messages and 22 enums; found {message_count} messages and {enum_count} enums"
+            "storage schema must contain exactly 176 messages and 22 enums; found {message_count} messages and {enum_count} enums"
         ))
         .into());
     }
@@ -2126,6 +2164,9 @@ fn durable_writable_registry_fixture(
     let vector_evidence_index = records.get(current_v1_record_count + 57).ok_or_else(|| {
         io::Error::other("durable registry is missing StoredVectorEvidenceIndexV1")
     })?;
+    let vector_health_observation = records.get(current_v1_record_count + 58).ok_or_else(|| {
+        io::Error::other("durable registry is missing StoredVectorHealthObservationV1")
+    })?;
     let writable = legacy[..8]
         .iter()
         .chain(std::iter::once(v2))
@@ -2165,10 +2206,11 @@ fn durable_writable_registry_fixture(
         .chain(std::iter::once(registry_v2))
         .chain(std::iter::once(vector_evidence))
         .chain(std::iter::once(vector_observation))
-        .chain(std::iter::once(vector_evidence_index));
+        .chain(std::iter::once(vector_evidence_index))
+        .chain(std::iter::once(vector_health_observation));
 
     let mut output = String::from("riffdb-durable-writable-registry-v1\n");
-    let _ = writeln!(output, "records {}", current_v1_record_count + 40);
+    let _ = writeln!(output, "records {}", current_v1_record_count + 41);
     for record in writable {
         let _ = write!(output, "{} schema-hash=", record.record_type);
         for byte in record.schema_hash {

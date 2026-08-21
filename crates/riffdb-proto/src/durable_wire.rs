@@ -952,8 +952,13 @@ shape!(VECTOR_EVIDENCE_INDEX [
     bytes(5, MAX_KEY_BYTES),
     message(8, &VECTOR_EMBEDDING_WRITE),
 ]);
+shape!(VECTOR_HEALTH_FIELD []);
+shape!(VECTOR_HEALTH_OBSERVATION [
+    string(1, MAX_TEXT_ID_BYTES),
+    repeated_message(2, 256, &VECTOR_HEALTH_FIELD),
+]);
 
-const ROOTS: [&Shape; 87] = [
+const ROOTS: [&Shape; 88] = [
     &ROOT_EMPTY,
     &ROOT_DATABASE_ID,
     &ROOT_OPTIONAL_UNIT_FIELD_TWO,
@@ -1052,6 +1057,7 @@ const ROOTS: [&Shape; 87] = [
     &VECTOR_EVIDENCE,
     &VECTOR_OBSERVATION,
     &VECTOR_EVIDENCE_INDEX,
+    &VECTOR_HEALTH_OBSERVATION,
 ];
 
 pub(crate) fn payload(record_index: usize, input: &[u8]) -> Result<(), DurablePreflightError> {
