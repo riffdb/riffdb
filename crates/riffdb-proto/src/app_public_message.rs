@@ -419,7 +419,7 @@ app_message!(
     Some(riffdb_errors::ApplicationOperation::ExecuteQuery),
     MAX_PUBLIC_REQUEST_BYTES,
     100,
-    &[5],
+    &[5, 8],
     &[2, 3],
     |value: &app_v1::ExecuteQueryRequest| {
         validate_request_id(&value.request_id)?;
@@ -442,14 +442,23 @@ app_message!(
         {
             return Err(PublicWireError::InvalidBytes);
         }
-        validate_parameters(&value.parameters)
+        validate_parameters(&value.parameters)?;
+        match value.accepted_result_encodings.as_slice() {
+            [] => {}
+            [legacy] if *legacy == app_v1::NamedResultEncoding::LegacyRecords as i32 => {}
+            [legacy, compact]
+                if *legacy == app_v1::NamedResultEncoding::LegacyRecords as i32
+                    && *compact == app_v1::NamedResultEncoding::CompactV1 as i32 => {}
+            _ => return Err(PublicWireError::InvalidEnum),
+        }
+        Ok(())
     }
 );
 app_message!(
     app_v1::ExecuteQueryResponse,
     None,
     MAX_PUBLIC_RESPONSE_BYTES,
-    5,
+    7,
     &[4],
     &[],
     |value: &app_v1::ExecuteQueryResponse| {
@@ -460,43 +469,95 @@ app_message!(
                 .ok_or(PublicWireError::MissingRequiredField)?,
         )?;
         if !valid_name(&value.outcome)
-            || value.fields.len() > MAX_QUERY_ITEMS
             || value
                 .next_cursor
                 .as_deref()
                 .is_some_and(|cursor| cursor.is_empty() || cursor.len() > MAX_CURSOR_BYTES)
-            || value
-                .fields
-                .windows(2)
-                .any(|pair| pair[0].name >= pair[1].name)
         {
             return Err(PublicWireError::NonCanonical);
         }
-        let mut rows = 0usize;
-        for field in &value.fields {
-            if !valid_name(&field.name)
-                || app_v1::ResultCardinality::try_from(field.cardinality)
-                    .ok()
-                    .is_none_or(|kind| kind == app_v1::ResultCardinality::Unspecified)
+        match app_v1::NamedResultEncoding::try_from(value.selected_result_encoding) {
+            Ok(app_v1::NamedResultEncoding::Unspecified)
+            | Ok(app_v1::NamedResultEncoding::LegacyRecords)
+                if value.compact_result.is_none() =>
             {
-                return Err(PublicWireError::InvalidEnum);
+                validate_legacy_result_fields(&value.fields)
             }
-            rows = rows
-                .checked_add(field.records.len())
-                .ok_or(PublicWireError::TooManyItems)?;
-            for record in &field.records {
-                if !valid_name(&record.entity) {
-                    return Err(PublicWireError::InvalidBytes);
-                }
-                validate_parameters(&record.fields)?;
+            Ok(app_v1::NamedResultEncoding::CompactV1) if value.fields.is_empty() => {
+                validate_compact_result_field(
+                    value
+                        .compact_result
+                        .as_ref()
+                        .ok_or(PublicWireError::MissingRequiredField)?,
+                )
             }
+            Ok(_) => Err(PublicWireError::InconsistentFields),
+            Err(_) => Err(PublicWireError::InvalidEnum),
         }
-        if rows > MAX_QUERY_ROWS {
-            return Err(PublicWireError::TooManyItems);
-        }
-        Ok(())
     }
 );
+
+fn validate_legacy_result_fields(fields: &[app_v1::ResultField]) -> Result<(), PublicWireError> {
+    if fields.len() > MAX_QUERY_ITEMS || fields.windows(2).any(|pair| pair[0].name >= pair[1].name)
+    {
+        return Err(PublicWireError::NonCanonical);
+    }
+    let mut rows = 0usize;
+    for field in fields {
+        if !valid_name(&field.name)
+            || app_v1::ResultCardinality::try_from(field.cardinality)
+                .ok()
+                .is_none_or(|kind| kind == app_v1::ResultCardinality::Unspecified)
+        {
+            return Err(PublicWireError::InvalidEnum);
+        }
+        rows = rows
+            .checked_add(field.records.len())
+            .ok_or(PublicWireError::TooManyItems)?;
+        for record in &field.records {
+            if !valid_name(&record.entity) {
+                return Err(PublicWireError::InvalidBytes);
+            }
+            validate_parameters(&record.fields)?;
+        }
+    }
+    if rows > MAX_QUERY_ROWS {
+        return Err(PublicWireError::TooManyItems);
+    }
+    Ok(())
+}
+
+fn validate_compact_result_field(
+    field: &app_v1::CompactResultField,
+) -> Result<(), PublicWireError> {
+    let cardinality = app_v1::ResultCardinality::try_from(field.cardinality)
+        .map_err(|_| PublicWireError::InvalidEnum)?;
+    if cardinality == app_v1::ResultCardinality::Unspecified
+        || !valid_name(&field.name)
+        || !valid_name(&field.entity)
+        || field.fields.is_empty()
+        || field.fields.len() > MAX_QUERY_ITEMS
+        || field.fields.iter().any(|name| !valid_name(name))
+        || field.rows.len() > MAX_QUERY_ROWS
+        || (cardinality == app_v1::ResultCardinality::One && field.rows.len() != 1)
+        || (cardinality == app_v1::ResultCardinality::Maybe && field.rows.len() > 1)
+    {
+        return Err(PublicWireError::InvalidBytes);
+    }
+    let mut names = BTreeSet::new();
+    if field.fields.iter().any(|name| !names.insert(name)) {
+        return Err(PublicWireError::NonCanonical);
+    }
+    for row in &field.rows {
+        if row.values.len() != field.fields.len() {
+            return Err(PublicWireError::InconsistentFields);
+        }
+        for value in &row.values {
+            validate_value(value).map_err(|_| PublicWireError::InvalidValue)?;
+        }
+    }
+    Ok(())
+}
 
 fn validate_named_sources(values: &[app_v1::NamedQuerySource]) -> Result<(), PublicWireError> {
     if values.is_empty() || values.len() > MAX_QUERY_ITEMS {
@@ -896,6 +957,88 @@ mod tests {
         assert_eq!(
             empty_span.validate_structure(),
             Err(PublicWireError::InvalidValue)
+        );
+    }
+
+    #[test]
+    fn compact_named_result_negotiation_is_closed_and_width_checked() {
+        let mut request = app_v1::ExecuteQueryRequest {
+            contract: Some(selector()),
+            module_hash: None,
+            parameters: Vec::new(),
+            cursor: None,
+            minimum_application_head: None,
+            accepted_result_encodings: vec![
+                app_v1::NamedResultEncoding::LegacyRecords as i32,
+                app_v1::NamedResultEncoding::CompactV1 as i32,
+            ],
+            request_id: vec![0x77; 16],
+            query: Some(app_v1::execute_query_request::Query::QueryName(
+                "BoardPage".to_owned(),
+            )),
+        };
+        assert_eq!(request.validate_structure(), Ok(()));
+        request.accepted_result_encodings.reverse();
+        assert_eq!(
+            request.validate_structure(),
+            Err(PublicWireError::InvalidEnum)
+        );
+
+        let identity = app_v1::QueryIdentity {
+            contract_lineage: "ReactiveBoundary".to_owned(),
+            contract_version: 1,
+            contract_bundle_hash: vec![0x11; 32],
+            query_name: Some("BoardPage".to_owned()),
+            plan_hash: vec![0x22; 32],
+            module_hash: Some(vec![0x33; 32]),
+        };
+        let mut response = app_v1::ExecuteQueryResponse {
+            identity: Some(identity),
+            outcome: "Found".to_owned(),
+            application_head: 9,
+            fields: Vec::new(),
+            next_cursor: None,
+            selected_result_encoding: app_v1::NamedResultEncoding::CompactV1 as i32,
+            compact_result: Some(app_v1::CompactResultField {
+                name: "tickets".to_owned(),
+                cardinality: app_v1::ResultCardinality::Many as i32,
+                entity: "Ticket".to_owned(),
+                fields: vec!["ticket_id".to_owned(), "title".to_owned()],
+                rows: vec![app_v1::CompactResultRow {
+                    values: vec![
+                        crate::v1::Value {
+                            kind: Some(crate::v1::value::Kind::UuidValue(vec![0x44; 16])),
+                        },
+                        crate::v1::Value {
+                            kind: Some(crate::v1::value::Kind::StringValue(
+                                "covered".to_owned(),
+                            )),
+                        },
+                    ],
+                }],
+            }),
+        };
+        assert_eq!(response.validate_structure(), Ok(()));
+        response.fields.push(app_v1::ResultField {
+            name: "tickets".to_owned(),
+            cardinality: app_v1::ResultCardinality::Many as i32,
+            records: Vec::new(),
+        });
+        assert_eq!(
+            response.validate_structure(),
+            Err(PublicWireError::InconsistentFields)
+        );
+        response.fields.clear();
+        response
+            .compact_result
+            .as_mut()
+            .expect("compact")
+            .rows[0]
+            .values
+            .pop();
+        assert_eq!(
+            response.validate_structure(),
+            Err(PublicWireError::InconsistentFields)
         );
     }
 }

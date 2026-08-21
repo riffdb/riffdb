@@ -192,6 +192,14 @@ messages
     1 identity optional .riffdb.app.v1.QueryIdentity proto3-optional oneof=_identity
     2 schema optional .riffdb.app.v1.QuerySchema proto3-optional oneof=_schema
     3 diagnostics repeated .riffdb.app.v1.Diagnostic
+  riffdb.app.v1.CompactResultField fields=5
+    1 name optional string
+    2 cardinality optional .riffdb.app.v1.ResultCardinality
+    3 entity optional string
+    4 fields repeated string
+    5 rows repeated .riffdb.app.v1.CompactResultRow
+  riffdb.app.v1.CompactResultRow fields=1
+    1 values repeated .riffdb.v1.Value
   riffdb.app.v1.ContractSelector fields=3
     1 lineage optional string
     2 version optional uint64
@@ -248,7 +256,7 @@ messages
     6 invalid optional .riffdb.app.v1.ProjectedQueryInvalid oneof=outcome
     7 ready_packed optional .riffdb.app.v1.ProjectedReadyPacked oneof=outcome
     8 ready_aggregates optional .riffdb.app.v1.ProjectedReadyAggregates oneof=outcome
-  riffdb.app.v1.ExecuteQueryRequest fields=8
+  riffdb.app.v1.ExecuteQueryRequest fields=9
     1 contract optional .riffdb.app.v1.ContractSelector proto3-optional oneof=_contract
     2 source optional string oneof=query
     3 query_name optional string oneof=query
@@ -256,13 +264,16 @@ messages
     5 parameters repeated .riffdb.app.v1.Parameter
     6 cursor optional string proto3-optional oneof=_cursor
     7 minimum_application_head optional uint64 proto3-optional oneof=_minimum_application_head
+    8 accepted_result_encodings repeated .riffdb.app.v1.NamedResultEncoding
     100 request_id optional bytes
-  riffdb.app.v1.ExecuteQueryResponse fields=5
+  riffdb.app.v1.ExecuteQueryResponse fields=7
     1 identity optional .riffdb.app.v1.QueryIdentity
     2 outcome optional string
     3 application_head optional uint64
     4 fields repeated .riffdb.app.v1.ResultField
     5 next_cursor optional string proto3-optional oneof=_next_cursor
+    6 selected_result_encoding optional .riffdb.app.v1.NamedResultEncoding
+    7 compact_result optional .riffdb.app.v1.CompactResultField proto3-optional oneof=_compact_result
   riffdb.app.v1.ExplainQueryRequest fields=5
     1 contract optional .riffdb.app.v1.ContractSelector proto3-optional oneof=_contract
     2 source optional string oneof=query
@@ -2738,6 +2749,10 @@ enums
     5 APPLICATION_RECOVERY_ACTION_REFRESH_CONTRACT
     6 APPLICATION_RECOVERY_ACTION_CONTACT_OPERATOR
     7 APPLICATION_RECOVERY_ACTION_NONE
+  riffdb.app.v1.NamedResultEncoding values=3
+    0 NAMED_RESULT_ENCODING_UNSPECIFIED
+    1 NAMED_RESULT_ENCODING_LEGACY_RECORDS
+    2 NAMED_RESULT_ENCODING_COMPACT_V1
   riffdb.app.v1.ProjectedAggregateOp values=5
     0 PROJECTED_AGGREGATE_OP_UNSPECIFIED
     1 PROJECTED_AGGREGATE_OP_COUNT

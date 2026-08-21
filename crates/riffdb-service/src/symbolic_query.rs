@@ -36,6 +36,7 @@ use riffdb_policy::{
     resolve_authorized_query_row_policy_context,
 };
 use riffdb_query_compiler::{PlannerDiagnostic, compile_query};
+pub use riffdb_query_executor::CoveredQueryResultV1;
 use riffdb_query_executor::{
     QueryAggregateCell, QueryAggregateRow, QueryContinuation, QueryExecutionError,
     QueryOwnedSnapshot, QueryParameters, QueryResultValue, QueryRow,
@@ -1040,6 +1041,7 @@ pub struct NamedSymbolicQueryRequest {
     parameters: SymbolicQueryParameters,
     cursor: Option<CursorToken>,
     minimum_application_head: Option<u64>,
+    accepts_compact_result_v1: bool,
 }
 
 impl NamedSymbolicQueryRequest {
@@ -1060,6 +1062,7 @@ impl NamedSymbolicQueryRequest {
             parameters,
             cursor: None,
             minimum_application_head: None,
+            accepts_compact_result_v1: false,
         })
     }
 
@@ -1074,6 +1077,13 @@ impl NamedSymbolicQueryRequest {
     #[must_use]
     pub const fn with_minimum_application_head(mut self, minimum: u64) -> Self {
         self.minimum_application_head = Some(minimum);
+        self
+    }
+
+    /// Advertises support for the additive compact named-result encoding.
+    #[must_use]
+    pub const fn accepting_compact_result_v1(mut self) -> Self {
+        self.accepts_compact_result_v1 = true;
         self
     }
 
@@ -1309,6 +1319,7 @@ pub struct ExecuteSymbolicQueryResult {
     outcome: String,
     application_head: u64,
     fields: BTreeMap<String, SymbolicResultField>,
+    compact_result: Option<CoveredQueryResultV1>,
     enum_variant_names: SharedEnumVariantNames,
     next_cursor: Option<CursorToken>,
 }
@@ -1336,6 +1347,7 @@ impl ExecuteSymbolicQueryResult {
             outcome: "Ok".to_owned(),
             application_head: 0,
             fields: BTreeMap::new(),
+            compact_result: None,
             enum_variant_names: Arc::new(BTreeMap::new()),
             next_cursor: None,
         }
@@ -1345,11 +1357,23 @@ impl ExecuteSymbolicQueryResult {
         program: &QueryAccessProgramV1,
         snapshot: QueryOwnedSnapshot,
         enum_variant_names: SharedEnumVariantNames,
+        retain_compact: bool,
     ) -> Self {
         let application_head = snapshot.application_head();
         let outcome = snapshot.outcome().to_owned();
-        let fields = snapshot
-            .into_fields()
+        let (mut fields, covered_result) = snapshot.into_result_parts();
+        let compact_result = if retain_compact {
+            covered_result
+        } else {
+            // Legacy/ad-hoc callers retain the exact symbolic response model.
+            // Rebuild only here; the compact generated path never pays maps.
+            if let Some(covered) = covered_result {
+                let (name, value) = covered.into_named_value();
+                fields.insert(name, value);
+            }
+            None
+        };
+        let fields = fields
             .into_iter()
             .map(|(name, value)| {
                 let value = match value {
@@ -1381,6 +1405,7 @@ impl ExecuteSymbolicQueryResult {
             outcome,
             application_head,
             fields,
+            compact_result,
             enum_variant_names,
             next_cursor: None,
         }
@@ -1392,7 +1417,7 @@ impl ExecuteSymbolicQueryResult {
         snapshot: QueryOwnedSnapshot,
         enum_variant_names: SharedEnumVariantNames,
     ) -> Self {
-        let mut result = Self::from_snapshot(program, snapshot, enum_variant_names);
+        let mut result = Self::from_snapshot(program, snapshot, enum_variant_names, false);
         result.identity = SymbolicQueryIdentity::from_named(program, module_hash);
         result
     }
@@ -1421,6 +1446,12 @@ impl ExecuteSymbolicQueryResult {
         &self.fields
     }
 
+    /// Positional named result selected by representation negotiation.
+    #[must_use]
+    pub const fn compact_result(&self) -> Option<&CoveredQueryResultV1> {
+        self.compact_result.as_ref()
+    }
+
     /// Consumes the result into identity metadata and owned fields for transport.
     #[must_use]
     pub fn into_response_parts(
@@ -1430,6 +1461,7 @@ impl ExecuteSymbolicQueryResult {
         String,
         u64,
         BTreeMap<String, SymbolicResultField>,
+        Option<CoveredQueryResultV1>,
         SharedEnumVariantNames,
         Option<CursorToken>,
     ) {
@@ -1438,6 +1470,7 @@ impl ExecuteSymbolicQueryResult {
             self.outcome,
             self.application_head,
             self.fields,
+            self.compact_result,
             self.enum_variant_names,
             self.next_cursor,
         )
@@ -1458,6 +1491,7 @@ impl ExecuteSymbolicQueryResult {
             outcome,
             application_head,
             fields,
+            compact_result: None,
             enum_variant_names,
             next_cursor: None,
         }
@@ -2598,6 +2632,7 @@ async fn execute_named_query(
         request.parameters,
         request.cursor,
         request.minimum_application_head,
+        request.accepts_compact_result_v1,
     )
     .await
 }
@@ -2926,6 +2961,7 @@ fn exact_result_response(
         outcome: document.body.outcome.as_ref()?.value.as_str().to_owned(),
         application_head: epoch.get(),
         fields,
+        compact_result: None,
         enum_variant_names,
         next_cursor: None,
     })
@@ -3086,7 +3122,7 @@ pub(crate) async fn execute_reimport_observation(
 }
 
 fn query_snapshot_item_count(snapshot: &QueryOwnedSnapshot) -> Option<u64> {
-    snapshot.fields().values().try_fold(0_u64, |total, field| {
+    let named = snapshot.fields().values().try_fold(0_u64, |total, field| {
         let count = match field {
             QueryResultValue::One(_) | QueryResultValue::AggregateOne(_) => 1,
             QueryResultValue::Maybe(value) => u64::from(value.is_some()),
@@ -3094,6 +3130,9 @@ fn query_snapshot_item_count(snapshot: &QueryOwnedSnapshot) -> Option<u64> {
             QueryResultValue::AggregateMany(values) => u64::try_from(values.len()).ok()?,
         };
         total.checked_add(count)
+    })?;
+    snapshot.covered_result().map_or(Some(named), |covered| {
+        named.checked_add(u64::try_from(covered.rows().len()).ok()?)
     })
 }
 
@@ -3225,6 +3264,7 @@ async fn execute_query(
         request.parameters,
         request.cursor,
         request.minimum_application_head,
+        false,
     )
     .await
 }
@@ -3251,6 +3291,7 @@ async fn execute_compiled_query(
     submitted: SymbolicQueryParameters,
     cursor: Option<CursorToken>,
     minimum_application_head: Option<u64>,
+    retain_compact_result: bool,
 ) -> ServiceResult<ExecuteSymbolicQueryResult> {
     const OPERATION: ServiceOperationV1 = ServiceOperationV1::ExecuteQuery;
     if program.steps().len() > MAX_SYMBOLIC_QUERY_STEPS {
@@ -3463,6 +3504,7 @@ async fn execute_compiled_query(
         &program,
         snapshot,
         Arc::clone(bundle.enum_variant_names()),
+        retain_compact_result && module_hash.is_some(),
     );
     if let Some(module_hash) = module_hash {
         result.identity = SymbolicQueryIdentity::from_named_plan(
@@ -4544,6 +4586,7 @@ mod reimport_observation_tests {
             outcome: "Found".to_owned(),
             application_head: head,
             fields: BTreeMap::from([("ticket".to_owned(), SymbolicResultField::One(record))]),
+            compact_result: None,
             enum_variant_names: Arc::new(BTreeMap::new()),
             next_cursor: None,
         }

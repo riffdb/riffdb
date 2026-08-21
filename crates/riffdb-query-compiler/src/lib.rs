@@ -11,14 +11,14 @@ use std::num::NonZeroU32;
 
 use riffdb_contract_ir::{IndexFieldEncodingV1, TextKeyProfileV1, ValueType, ValueTypeTag};
 use riffdb_query_ir::{
-    AccessDirection, AuthorizationEntityAccess, EntitySymbol, ExactTextOperatorSetV1,
-    ExactTextOrderSetV1, ExactTextPlanFamilyErrorV1, ExactTextPlanFamilyV1,
-    MAX_OPERATIONAL_PRESENCE_PARAMETERS, OperationalPlanMemberV1, OperationalQueryFamilyV1,
-    ProjectionResultSetPlanError, ProjectionResultSetPlanV1, ProjectionResultSetPlanV2,
-    ProjectionResultSetPlanV2Error, QueryAccessKind, QueryAccessProgramV1, QueryAccessStep,
-    QueryLiteral, QueryPredicate, QueryPredicateOperator, QueryPredicateValue, QueryRowLimit,
-    ResultSetOutputShapeV1, ResultSetWindowBoundsV2, ResultSetWindowV1, SymbolicCatalog,
-    resolve_query_surface,
+    AccessDirection, AuthorizationEntityAccess, CoveredResultFieldV1, CoveredResultLayoutV1,
+    CoveredResultSourceV1, EntitySymbol, ExactTextOperatorSetV1, ExactTextOrderSetV1,
+    ExactTextPlanFamilyErrorV1, ExactTextPlanFamilyV1, MAX_OPERATIONAL_PRESENCE_PARAMETERS,
+    OperationalPlanMemberV1, OperationalQueryFamilyV1, ProjectionResultSetPlanError,
+    ProjectionResultSetPlanV1, ProjectionResultSetPlanV2, ProjectionResultSetPlanV2Error,
+    QueryAccessKind, QueryAccessProgramV1, QueryAccessStep, QueryLiteral, QueryPredicate,
+    QueryPredicateOperator, QueryPredicateValue, QueryRowLimit, ResultSetOutputShapeV1,
+    ResultSetWindowBoundsV2, ResultSetWindowV1, SymbolicCatalog, resolve_query_surface,
 };
 use riffdb_riffql_syntax::{
     AggregateFunction, BinaryOperator, Cardinality, Direction, Document, Expression,
@@ -1432,6 +1432,21 @@ impl<'a> Planner<'a> {
             }
 
             let row_limit = row_limit(binding, self.document)?;
+            let mut cover_required_fields = comparisons
+                .iter()
+                .map(|comparison| comparison.field.to_owned())
+                .collect::<BTreeSet<_>>();
+            if let Some(fields) = selections.get(binding.name.value.as_str()) {
+                cover_required_fields.extend(fields.iter().cloned());
+            }
+            if let Some(fields) = dependency_fields.get(binding.name.value.as_str()) {
+                cover_required_fields.extend(fields.iter().cloned());
+            }
+            for order in &binding.order {
+                if let Some(field) = path_field(&order.path.value) {
+                    cover_required_fields.insert(field.to_owned());
+                }
+            }
             let (access, index_id) = if let Some(nearest) = &binding.nearest {
                 // ADR-0091: nearest clause produces a Nearest access kind.
                 let vector_field_name = nearest.field.value.as_str();
@@ -1510,6 +1525,7 @@ impl<'a> Planner<'a> {
                     &self.binding_maximum_rows,
                     self.document,
                     maximum_rows,
+                    &cover_required_fields,
                 )?
             };
             let predicates = self.normalize_predicates(&comparisons)?;
@@ -1561,6 +1577,73 @@ impl<'a> Planner<'a> {
                 .into_iter()
                 .map(str::to_owned)
                 .collect::<Vec<_>>();
+            let covered_result_layout = match &access {
+                QueryAccessKind::Index { index, .. }
+                    if surface.aggregates().is_empty()
+                        && self.document.body.bindings.len() == 1
+                        && binding.cardinality.value == Cardinality::Many
+                        && binding_results.len() == 1
+                        && dependency_fields
+                            .get(binding.name.value.as_str())
+                            .is_none_or(BTreeSet::is_empty)
+                        && !self.catalog.internal_has_read_policy(entity.name()) =>
+                {
+                    entity.index(index).and_then(|index_symbol| {
+                        (!index_symbol.cover_fields().is_empty()
+                            && index_covers_fields(entity, index_symbol, &cover_required_fields))
+                        .then(|| {
+                            cover_required_fields
+                                .iter()
+                                .map(|name| {
+                                    let field = entity.field(name)?;
+                                    let source = if let Some(position) = index_symbol
+                                        .fields()
+                                        .iter()
+                                        .position(|candidate| candidate == name)
+                                    {
+                                        CoveredResultSourceV1::IndexKey(
+                                            u16::try_from(position).ok()?,
+                                        )
+                                    } else if let Some(position) = entity
+                                        .primary_key()
+                                        .iter()
+                                        .position(|candidate| candidate == name)
+                                    {
+                                        CoveredResultSourceV1::EntityKey(
+                                            u16::try_from(position).ok()?,
+                                        )
+                                    } else if index_symbol.cover_fields().contains(name) {
+                                        CoveredResultSourceV1::Cover
+                                    } else {
+                                        return None;
+                                    };
+                                    CoveredResultFieldV1::checked(
+                                        name.clone(),
+                                        field.internal_id(),
+                                        source,
+                                    )
+                                })
+                                .collect::<Option<Vec<_>>>()
+                                .and_then(|fields| {
+                                    CoveredResultLayoutV1::checked(
+                                        entity.name().to_owned(),
+                                        index_symbol.name().to_owned(),
+                                        fields,
+                                        index_symbol
+                                            .cover_fields()
+                                            .iter()
+                                            .map(|name| {
+                                                entity.field(name).map(|field| field.internal_id())
+                                            })
+                                            .collect::<Option<Vec<_>>>()?,
+                                    )
+                                })
+                        })
+                        .flatten()
+                    })
+                }
+                _ => None,
+            };
             let step = QueryAccessStep::checked(
                 binding.name.value.as_str().to_owned(),
                 entity.name().to_owned(),
@@ -1595,6 +1678,7 @@ impl<'a> Planner<'a> {
                         .map(|symbol| symbol.internal_key_schema().clone()),
                     QueryAccessKind::Nearest { .. } => None,
                 },
+                covered_result_layout,
             )
             .ok_or_else(internal)?;
             cost.add_step(entity, &step)?;
@@ -2288,6 +2372,7 @@ fn choose_access(
     binding_maximum_rows: &BTreeMap<&str, u64>,
     document: &Document,
     maximum_rows: u64,
+    cover_required_fields: &BTreeSet<String>,
 ) -> Result<(QueryAccessKind, Option<riffdb_types::IndexId>), PlannerDiagnostics> {
     let collection_dependencies = comparisons
         .iter()
@@ -2443,6 +2528,7 @@ fn choose_access(
         ));
     }
 
+    let mut first_compatible = None;
     for index in entity.indexes() {
         if !operational_predicates_supported(index, comparisons) {
             continue;
@@ -2503,7 +2589,7 @@ fn choose_access(
         {
             continue;
         }
-        return Ok((
+        let candidate = (
             QueryAccessKind::Index {
                 index: index.name().to_owned(),
                 fields: index.fields().to_vec(),
@@ -2513,7 +2599,19 @@ fn choose_access(
                 },
             },
             Some(index.internal_id()),
-        ));
+        );
+        if !index.cover_fields().is_empty()
+            && index_covers_fields(entity, index, cover_required_fields)
+        {
+            return Ok(candidate);
+        }
+        if first_compatible.is_none() {
+            first_compatible = Some(candidate);
+        }
+    }
+
+    if let Some(candidate) = first_compatible {
+        return Ok(candidate);
     }
 
     Err(one(
@@ -2523,6 +2621,18 @@ fn choose_access(
         "no declared index proves the requested bounded order",
         suggested_index(entity, comparisons, binding),
     ))
+}
+
+fn index_covers_fields(
+    entity: &EntitySymbol,
+    index: &riffdb_query_ir::IndexSymbol,
+    required: &BTreeSet<String>,
+) -> bool {
+    required.iter().all(|field| {
+        entity.primary_key().contains(field)
+            || index.fields().contains(field)
+            || index.cover_fields().contains(field)
+    })
 }
 
 fn suggested_index(

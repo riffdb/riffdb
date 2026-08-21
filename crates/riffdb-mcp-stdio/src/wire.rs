@@ -256,6 +256,7 @@ pub(crate) fn fixed_request_to_proto(
                     })
                     .transpose()?,
                 minimum_application_head: None,
+                accepted_result_encodings: Vec::new(),
                 request_id,
             })
         }

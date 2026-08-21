@@ -247,6 +247,8 @@ pub enum ExecuteSymbolicQueryInvocation {
 pub fn execute_symbolic_query_request_from_proto(
     request: app_v1::ExecuteQueryRequest,
 ) -> Result<(RequestId, ExecuteSymbolicQueryInvocation), Status> {
+    let accepts_compact_result_v1 =
+        accepts_compact_named_result_v1(&request.accepted_result_encodings)?;
     let request_id = request_id_from_bytes(&request.request_id)?;
     let contract = symbolic_contract_selector_from_proto(request.contract)?;
     let module_hash = optional_query_module_hash(request.module_hash)?;
@@ -284,11 +286,28 @@ pub fn execute_symbolic_query_request_from_proto(
             if let Some(minimum) = minimum_application_head {
                 request = request.with_minimum_application_head(minimum);
             }
+            if accepts_compact_result_v1 {
+                request = request.accepting_compact_result_v1();
+            }
             ExecuteSymbolicQueryInvocation::Named(request)
         }
         _ => return Err(invalid_request()),
     };
     Ok((request_id, invocation))
+}
+
+fn accepts_compact_named_result_v1(values: &[i32]) -> Result<bool, Status> {
+    match values {
+        [] => Ok(false),
+        [legacy] if *legacy == app_v1::NamedResultEncoding::LegacyRecords as i32 => Ok(false),
+        [legacy, compact]
+            if *legacy == app_v1::NamedResultEncoding::LegacyRecords as i32
+                && *compact == app_v1::NamedResultEncoding::CompactV1 as i32 =>
+        {
+            Ok(true)
+        }
+        _ => Err(invalid_request()),
+    }
 }
 
 fn symbolic_parameters_from_proto(
@@ -695,18 +714,62 @@ fn name_symbolic_enum_values(
 pub fn execute_symbolic_query_result_to_proto(
     result: ExecuteSymbolicQueryResult,
 ) -> Result<app_v1::ExecuteQueryResponse, Status> {
-    let (identity, outcome, application_head, fields, enum_names, next_cursor) =
+    let (identity, outcome, application_head, fields, compact_result, enum_names, next_cursor) =
         result.into_response_parts();
+    if !fields.is_empty() && compact_result.is_some() {
+        return Err(invalid_service_response());
+    }
     let fields = fields
         .into_iter()
         .map(|(name, field)| symbolic_field_into_proto(&enum_names, name, field))
         .collect::<Result<Vec<_>, _>>()?;
+    let (selected_result_encoding, compact_result) = match compact_result {
+        Some(compact) => (
+            app_v1::NamedResultEncoding::CompactV1,
+            Some(compact_result_into_proto(&enum_names, compact)?),
+        ),
+        None => (app_v1::NamedResultEncoding::LegacyRecords, None),
+    };
     Ok(app_v1::ExecuteQueryResponse {
         identity: Some(symbolic_identity_to_proto(&identity)),
         outcome,
         application_head,
         fields,
         next_cursor: next_cursor.map(|cursor| URL_SAFE_NO_PAD.encode(cursor.as_bytes())),
+        selected_result_encoding: selected_result_encoding as i32,
+        compact_result,
+    })
+}
+
+fn compact_result_into_proto(
+    enum_names: &riffdb_service::SharedEnumVariantNames,
+    compact: riffdb_service::CoveredQueryResultV1,
+) -> Result<app_v1::CompactResultField, Status> {
+    let (name, entity, fields, rows) = compact.into_parts();
+    let width = fields.len();
+    let rows = rows
+        .into_iter()
+        .map(|values| {
+            if values.len() != width {
+                return Err(invalid_service_response());
+            }
+            let values = values
+                .into_iter()
+                .map(|value| {
+                    let mut value = canonical_value_into_public(value)?;
+                    name_symbolic_enum_values(enum_names, &mut value)?;
+                    Ok(value)
+                })
+                .collect::<Result<Vec<_>, Status>>()?;
+            Ok(app_v1::CompactResultRow { values })
+        })
+        .collect::<Result<Vec<_>, Status>>()?;
+    Ok(app_v1::CompactResultField {
+        name,
+        cardinality: app_v1::ResultCardinality::Many as i32,
+        entity: entity.to_string(),
+        fields: fields.into_iter().map(|field| field.to_string()).collect(),
+        rows,
     })
 }
 
@@ -6527,6 +6590,7 @@ mod tests {
                 parameters: Vec::new(),
                 cursor: None,
                 minimum_application_head: Some(42),
+                accepted_result_encodings: Vec::new(),
             })
             .expect("positive fence");
         let ExecuteSymbolicQueryInvocation::Named(request) = invocation else {
@@ -6571,6 +6635,7 @@ mod tests {
             parameters: Vec::new(),
             cursor: None,
             minimum_application_head: Some(0),
+            accepted_result_encodings: Vec::new(),
         });
         let Err(status) = result else {
             panic!("zero fence must fail closed")
@@ -7201,9 +7266,8 @@ mod tests {
     /// Frozen encoded `ExecuteQueryResponse` bytes for a multi-row symbolic result
     /// covering enums, uuids, and representative scalar field types.
     ///
-    /// Literal hex captured by the independent reviewer from the REAL parent binary's
-    /// `execute_symbolic_query_result_to_proto` at `15325d36e862c51c4d10b3d1b920ea9d6044d13e`
-    /// (588 bytes). Transcript: flip one byte of the literal → observe failure → restore.
+    /// ADR-0133 advances the parent shape by one explicit legacy-encoding tag;
+    /// all pre-existing result bytes remain an exact prefix (590 bytes total).
     #[test]
     fn symbolic_execute_response_proto_bytes_match_parent_golden() {
         use std::sync::Arc;
@@ -7313,8 +7377,8 @@ mod tests {
             .expect("convert")
             .encode_to_vec();
 
-        // Frozen parent output (15325d3); not re-encoded at test time.
-        const GOLDEN_HEX: &str = "0a600a0a7469636b65746465736b10011a20abababababababababababababababababababababababababababababababab220c426f6172645469636b6574732a20cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd1205466f756e64184d22de030a077469636b65747310031ae8010a0c0a06616374697665120210010a0c0a04626c6f6212044202dead0a0b0a05636f756e741202202a0a140a0a637265617465645f6f6e1206520408c0b8020a160a066c6162656c73120c6a0a0a033a01610a033a01620a120a046d657461120a72080a0608011a02180d0a0a0a046e6f7465120208000a160a06737461747573120c620a080410011a044f70656e0a1f0a097469636b65745f696412124a10111111111111111111111111111111110a140a057469746c65120b3a09626f6172642d726f770a180a0a757064617465645f6174120a5a080880c49fd50c107b12065469636b65741ae5010a0c0a06616374697665120210010a0c0a04626c6f6212044202dead0a0b0a05636f756e741202202a0a140a0a637265617465645f6f6e1206520408c0b8020a160a066c6162656c73120c6a0a0a033a01610a033a01620a120a046d657461120a72080a0608011a02180d0a0a0a046e6f7465120208000a160a06737461747573120c620a080410011a044f70656e0a1f0a097469636b65745f696412124a10222222222222222222222222222222220a110a057469746c6512083a067365636f6e640a180a0a757064617465645f6174120a5a080880c49fd50c107b12065469636b6574";
+        // Frozen ADR-0133 legacy-arm output; not re-encoded at test time.
+        const GOLDEN_HEX: &str = "0a600a0a7469636b65746465736b10011a20abababababababababababababababababababababababababababababababab220c426f6172645469636b6574732a20cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd1205466f756e64184d22de030a077469636b65747310031ae8010a0c0a06616374697665120210010a0c0a04626c6f6212044202dead0a0b0a05636f756e741202202a0a140a0a637265617465645f6f6e1206520408c0b8020a160a066c6162656c73120c6a0a0a033a01610a033a01620a120a046d657461120a72080a0608011a02180d0a0a0a046e6f7465120208000a160a06737461747573120c620a080410011a044f70656e0a1f0a097469636b65745f696412124a10111111111111111111111111111111110a140a057469746c65120b3a09626f6172642d726f770a180a0a757064617465645f6174120a5a080880c49fd50c107b12065469636b65741ae5010a0c0a06616374697665120210010a0c0a04626c6f6212044202dead0a0b0a05636f756e741202202a0a140a0a637265617465645f6f6e1206520408c0b8020a160a066c6162656c73120c6a0a0a033a01610a033a01620a120a046d657461120a72080a0608011a02180d0a0a0a046e6f7465120208000a160a06737461747573120c620a080410011a044f70656e0a1f0a097469636b65745f696412124a10222222222222222222222222222222220a110a057469746c6512083a067365636f6e640a180a0a757064617465645f6174120a5a080880c49fd50c107b12065469636b65743001";
         let golden = hex_decode(GOLDEN_HEX);
         assert_eq!(
             encoded,

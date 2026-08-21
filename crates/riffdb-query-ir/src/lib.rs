@@ -25,9 +25,10 @@ pub use exact_text::*;
 pub use live::*;
 pub use operational::*;
 pub use plan::{
-    AccessDirection, AuthorizationEntityAccess, QueryAccessKind, QueryAccessProgramV1,
-    QueryAccessStep, QueryLiteral, QueryPlanExplain, QueryPlanIdentity, QueryPredicate,
-    QueryPredicateOperator, QueryPredicateValue, QueryRowLimit,
+    AccessDirection, AuthorizationEntityAccess, CoveredResultFieldV1, CoveredResultLayoutV1,
+    CoveredResultSourceV1, QueryAccessKind, QueryAccessProgramV1, QueryAccessStep, QueryLiteral,
+    QueryPlanExplain, QueryPlanIdentity, QueryPredicate, QueryPredicateOperator,
+    QueryPredicateValue, QueryRowLimit,
 };
 pub use reactive::*;
 pub use resolver::{
@@ -53,6 +54,8 @@ pub const QUERY_IR_VERSION_SECRET_OUTPUT_V1: u32 = 4;
 pub const QUERY_IR_VERSION_EXACT_RESULT_SET_V1: u32 = 5;
 /// Canonical exact result-set IR with one compiler-bound typed equality filter.
 pub const QUERY_IR_VERSION_EXACT_FILTERED_RESULT_SET_V1: u32 = 6;
+/// Canonical ordinary/operational query IR with a sealed covered-result layout.
+pub const QUERY_IR_VERSION_COVERED_RESULT_V1: u32 = 7;
 /// Maximum public query schema and canonical IR bytes.
 pub const MAX_QUERY_ARTIFACT_BYTES: usize = 4_194_304;
 /// Maximum source-map entries.

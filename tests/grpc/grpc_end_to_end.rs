@@ -3188,6 +3188,7 @@ async fn execute_query_records_five_residual_read_pipeline_stages() {
         parameters: Vec::new(),
         cursor: None,
         minimum_application_head: None,
+        accepted_result_encodings: Vec::new(),
         request_id: request_id(1).into_bytes().to_vec(),
         query: Some(app_v1::execute_query_request::Query::Source(
             "query Q { return Ok { x: 1 } outcomes Ok }".to_owned(),

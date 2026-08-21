@@ -14,9 +14,9 @@ use std::sync::Arc;
 
 use riffdb_policy::{AuthorizedProjectedRowAdmissionV1, AuthorizedQueryRowPolicyContextV1};
 use riffdb_query_ir::{
-    NamedTypeSchema, OperationalAggregateFunctionV1, OperationalAggregateV1, PageBound,
-    QueryAccessKind, QueryAccessProgramV1, QueryAccessStep, QueryLiteral, QueryPredicateOperator,
-    QueryPredicateValue, QueryRowLimit,
+    CoveredResultLayoutV1, NamedTypeSchema, OperationalAggregateFunctionV1, OperationalAggregateV1,
+    PageBound, QueryAccessKind, QueryAccessProgramV1, QueryAccessStep, QueryLiteral,
+    QueryPredicateOperator, QueryPredicateValue, QueryRowLimit,
 };
 use riffdb_riffql_syntax::Cardinality;
 use riffdb_types::{
@@ -469,6 +469,47 @@ fn encode_complete_prefixes(
 
 /// Owned result of one bounded index access inside the current read view.
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CoveredResultBatch {
+    layout: CoveredResultLayoutV1,
+    rows: Vec<Vec<CanonicalValue>>,
+    epoch: u64,
+    scanned_rows: u64,
+    point_reads: u64,
+    continuation: Option<Vec<u8>>,
+}
+
+impl CoveredResultBatch {
+    /// Constructs one adapter-owned sealed positional result.
+    #[doc(hidden)]
+    pub fn checked(
+        layout: CoveredResultLayoutV1,
+        rows: Vec<Vec<CanonicalValue>>,
+        epoch: u64,
+        scanned_rows: u64,
+        point_reads: u64,
+        continuation: Option<Vec<u8>>,
+    ) -> Option<Self> {
+        let width = layout.fields().len();
+        (width > 0
+            && width <= MAX_QUERY_ROW_FIELDS
+            && rows.len() as u64 <= scanned_rows
+            && rows.iter().all(|row| row.len() == width)
+            && continuation.as_ref().is_none_or(|value| {
+                !value.is_empty() && value.len() <= MAX_QUERY_CONTINUATION_BYTES
+            }))
+        .then_some(Self {
+            layout,
+            rows,
+            epoch,
+            scanned_rows,
+            point_reads,
+            continuation,
+        })
+    }
+}
+
+/// Owned result of one bounded index access inside the current read view.
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct QueryScanPage {
     rows: Vec<QueryRow>,
     epoch: u64,
@@ -705,6 +746,22 @@ pub trait QueryReadView {
         policy: Option<&AuthorizedQueryRowPolicyContextV1>,
     ) -> Result<QueryScanPage, Self::Error>;
 
+    /// Executes one compiler-sealed covered positional index step.
+    ///
+    /// `None` means this adapter cannot prove the exact cover. The executor
+    /// treats that as an integrity failure for a marked plan; it never falls
+    /// back to entity hydration.
+    fn scan_covered(
+        &mut self,
+        _step: &QueryAccessStep,
+        _predicates: &[BoundPredicate],
+        _limit: u64,
+        _after: Option<&[u8]>,
+        _policy: Option<&AuthorizedQueryRowPolicyContextV1>,
+    ) -> Result<Option<CoveredResultBatch>, Self::Error> {
+        Ok(None)
+    }
+
     /// Executes one nearest-neighbor search step (ADR-0091, VEC-005).
     ///
     /// The adapter scans the org-partitioned rows for the vector field,
@@ -940,6 +997,62 @@ pub struct QueryAggregateRow {
     fields: BTreeMap<Arc<str>, QueryAggregateCell>,
 }
 
+/// One whole compiler-sealed named result retained positionally until the
+/// service selects legacy or compact public carriage.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CoveredQueryResultV1 {
+    result_name: String,
+    entity: Arc<str>,
+    fields: Vec<Arc<str>>,
+    rows: Vec<Vec<CanonicalValue>>,
+}
+
+impl CoveredQueryResultV1 {
+    /// Exact top-level result field name.
+    #[must_use]
+    pub fn result_name(&self) -> &str {
+        &self.result_name
+    }
+
+    /// Exact contract entity name.
+    #[must_use]
+    pub fn entity(&self) -> &str {
+        &self.entity
+    }
+
+    /// Ordered selected field names carried once.
+    #[must_use]
+    pub fn fields(&self) -> impl ExactSizeIterator<Item = &str> {
+        self.fields.iter().map(Arc::as_ref)
+    }
+
+    /// Bounded positional canonical rows.
+    #[must_use]
+    pub fn rows(&self) -> &[Vec<CanonicalValue>] {
+        &self.rows
+    }
+
+    /// Consumes the sealed result without constructing name-addressed rows.
+    #[must_use]
+    pub fn into_parts(self) -> (String, Arc<str>, Vec<Arc<str>>, Vec<Vec<CanonicalValue>>) {
+        (self.result_name, self.entity, self.fields, self.rows)
+    }
+
+    /// Converts to the legacy named-map value only for a legacy public caller.
+    #[doc(hidden)]
+    pub fn into_named_value(self) -> (String, QueryResultValue) {
+        let rows = self
+            .rows
+            .into_iter()
+            .map(|values| QueryRow {
+                entity: Arc::clone(&self.entity),
+                fields: self.fields.iter().cloned().zip(values).collect(),
+            })
+            .collect::<Vec<_>>();
+        (self.result_name, QueryResultValue::Many(rows))
+    }
+}
+
 impl QueryAggregateRow {
     /// Query-local aggregate symbol.
     #[must_use]
@@ -968,6 +1081,7 @@ pub struct QueryOwnedSnapshot {
     index_epochs: BTreeMap<String, u64>,
     outcome: String,
     fields: BTreeMap<String, QueryResultValue>,
+    covered_result: Option<CoveredQueryResultV1>,
     continuation_binding: Option<String>,
     continuation: Option<Vec<u8>>,
 }
@@ -997,6 +1111,12 @@ impl QueryOwnedSnapshot {
         &self.fields
     }
 
+    /// Compiler-sealed positional result, when retained without generic maps.
+    #[must_use]
+    pub const fn covered_result(&self) -> Option<&CoveredQueryResultV1> {
+        self.covered_result.as_ref()
+    }
+
     /// Opaque lower continuation to be bound into the public cursor.
     #[must_use]
     pub fn continuation(&self) -> Option<&[u8]> {
@@ -1011,8 +1131,24 @@ impl QueryOwnedSnapshot {
 
     /// Consumes the snapshot into its name-addressed result fields.
     #[must_use]
-    pub fn into_fields(self) -> BTreeMap<String, QueryResultValue> {
+    pub fn into_fields(mut self) -> BTreeMap<String, QueryResultValue> {
+        if let Some(covered) = self.covered_result.take() {
+            let (name, value) = covered.into_named_value();
+            self.fields.insert(name, value);
+        }
         self.fields
+    }
+
+    /// Consumes the snapshot while retaining a positional result without map conversion.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn into_result_parts(
+        self,
+    ) -> (
+        BTreeMap<String, QueryResultValue>,
+        Option<CoveredQueryResultV1>,
+    ) {
+        (self.fields, self.covered_result)
     }
 }
 
@@ -1154,6 +1290,9 @@ fn execute_operational_page_in_snapshot_with_policy<V: QueryReadView>(
     if aggregates != program.surface().aggregates() {
         return Err(QueryExecutionError::InvalidProgram);
     }
+    if program.steps().len() == 1 && program.steps()[0].covered_result_layout().is_some() {
+        return execute_covered_page_in_snapshot(program, parameters, prior, view, policy);
+    }
     let mut fuel = QueryExecutionFuel::from_cost(program.cost());
     let mut bindings = BTreeMap::<String, Vec<QueryRow>>::new();
     let mut result_fields = BTreeMap::new();
@@ -1234,6 +1373,7 @@ fn execute_operational_page_in_snapshot_with_policy<V: QueryReadView>(
                             index_epochs,
                             outcome,
                             fields: BTreeMap::new(),
+                            covered_result: None,
                             continuation_binding: None,
                             continuation: None,
                         },
@@ -1254,12 +1394,66 @@ fn execute_operational_page_in_snapshot_with_policy<V: QueryReadView>(
             }
             riffdb_query_ir::QueryAccessKind::Index { index, .. } => {
                 let predicates = bind_predicates(step, parameters, &bindings)?;
-                let page = view
-                    .scan(step, &predicates, limit, after, policy)
-                    .map_err(|error| map_view_error(view, &error))?;
+                let (page, predicates_already_applied) =
+                    if let Some(expected_layout) = step.covered_result_layout() {
+                        let batch = view
+                            .scan_covered(step, &predicates, limit, after, policy)
+                            .map_err(|error| map_view_error(view, &error))?
+                            .ok_or(QueryExecutionError::BackendIntegrity)?;
+                        if &batch.layout != expected_layout
+                            || batch.rows.len() as u64 > limit
+                            || batch.scanned_rows > MAX_QUERY_SCANNED_ROWS
+                            || batch.point_reads != 0
+                            || batch
+                                .continuation
+                                .as_ref()
+                                .is_some_and(|value| value.len() > MAX_QUERY_CONTINUATION_BYTES)
+                        {
+                            return Err(QueryExecutionError::InvalidProgram);
+                        }
+                        let entity = Arc::<str>::from(expected_layout.entity());
+                        let rows = batch
+                            .rows
+                            .into_iter()
+                            .map(|values| {
+                                if values.len() != expected_layout.fields().len() {
+                                    return Err(QueryExecutionError::InvalidProgram);
+                                }
+                                let fields = expected_layout
+                                    .fields()
+                                    .iter()
+                                    .zip(values)
+                                    .map(|(field, value)| (Arc::<str>::from(field.name()), value))
+                                    .collect::<BTreeMap<_, _>>();
+                                QueryRow::from_shared(Arc::clone(&entity), fields)
+                                    .ok_or(QueryExecutionError::InvalidProgram)
+                            })
+                            .collect::<Result<Vec<_>, _>>()?;
+                        (
+                            QueryScanPage {
+                                rows,
+                                epoch: batch.epoch,
+                                scanned_rows: batch.scanned_rows,
+                                point_reads: batch.point_reads,
+                                continuation: batch.continuation,
+                            },
+                            true,
+                        )
+                    } else {
+                        (
+                            view.scan(step, &predicates, limit, after, policy)
+                                .map_err(|error| map_view_error(view, &error))?,
+                            false,
+                        )
+                    };
                 if page.scanned_rows > MAX_QUERY_SCANNED_ROWS
                     || page.rows.len() as u64 > limit
-                    || page.point_reads != page.rows.len() as u64
+                    || page.point_reads
+                        != if predicates_already_applied {
+                            0
+                        } else {
+                            page.rows.len() as u64
+                        }
                     || page.rows.len() as u64 > page.scanned_rows
                     || page
                         .continuation
@@ -1283,7 +1477,10 @@ fn execute_operational_page_in_snapshot_with_policy<V: QueryReadView>(
                     continuation_binding = Some(step.binding().to_owned());
                     continuation = page.continuation;
                 }
-                (page.rows, Some(predicates))
+                (
+                    page.rows,
+                    (!predicates_already_applied).then_some(predicates),
+                )
             }
             riffdb_query_ir::QueryAccessKind::Nearest { .. } => {
                 // WP-593: exact KNN execution path. The adapter applies the
@@ -1338,6 +1535,7 @@ fn execute_operational_page_in_snapshot_with_policy<V: QueryReadView>(
                     index_epochs,
                     outcome,
                     fields: BTreeMap::new(),
+                    covered_result: None,
                     continuation_binding: None,
                     continuation: None,
                 },
@@ -1439,6 +1637,141 @@ fn execute_operational_page_in_snapshot_with_policy<V: QueryReadView>(
             index_epochs,
             outcome: default_outcome.to_owned(),
             fields: result_fields,
+            covered_result: None,
+            continuation_binding,
+            continuation,
+        },
+    )
+}
+
+fn execute_covered_page_in_snapshot<V: QueryReadView>(
+    program: &QueryAccessProgramV1,
+    parameters: &QueryParameters,
+    prior: Option<&QueryContinuation>,
+    view: &mut V,
+    policy: Option<&AuthorizedQueryRowPolicyContextV1>,
+) -> Result<QueryOwnedSnapshot, QueryExecutionError> {
+    let [step] = program.steps() else {
+        return Err(QueryExecutionError::InvalidProgram);
+    };
+    let layout = step
+        .covered_result_layout()
+        .ok_or(QueryExecutionError::InvalidProgram)?;
+    let QueryAccessKind::Index { index, .. } = step.access() else {
+        return Err(QueryExecutionError::InvalidProgram);
+    };
+    if step.cardinality() != Cardinality::Many
+        || step.result_names().len() != 1
+        || !step.dependencies().is_empty()
+        || !program.surface().aggregates().is_empty()
+    {
+        return Err(QueryExecutionError::InvalidProgram);
+    }
+    let mut fuel = QueryExecutionFuel::from_cost(program.cost());
+    fuel.step()?;
+    let limit = resolve_row_limit(step, parameters)?;
+    let after = prior
+        .filter(|cursor| cursor.binding == step.binding())
+        .map(|cursor| cursor.lower.as_slice());
+    let predicates = bind_predicates(step, parameters, &BTreeMap::new())?;
+    let batch = view
+        .scan_covered(step, &predicates, limit, after, policy)
+        .map_err(|error| map_view_error(view, &error))?
+        .ok_or(QueryExecutionError::BackendIntegrity)?;
+    if &batch.layout != layout
+        || batch.rows.len() as u64 > limit
+        || batch.rows.len() as u64 > batch.scanned_rows
+        || batch.scanned_rows > MAX_QUERY_SCANNED_ROWS
+        || batch.point_reads != 0
+        || batch
+            .continuation
+            .as_ref()
+            .is_some_and(|value| value.len() > MAX_QUERY_CONTINUATION_BYTES)
+        || batch
+            .rows
+            .iter()
+            .any(|row| row.len() != layout.fields().len())
+    {
+        return Err(QueryExecutionError::InvalidProgram);
+    }
+    fuel.scans(batch.scanned_rows)?;
+    fuel.intermediates(
+        u64::try_from(batch.rows.len()).map_err(|_| QueryExecutionError::BoundExceeded)?,
+    )?;
+    let selected_positions = step
+        .selected_fields()
+        .iter()
+        .map(|selected| {
+            layout
+                .fields()
+                .binary_search_by(|field| field.name().cmp(selected))
+                .map_err(|_| QueryExecutionError::InvalidProgram)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let rows = batch
+        .rows
+        .into_iter()
+        .map(|values| {
+            let mut values = values.into_iter().map(Some).collect::<Vec<_>>();
+            selected_positions
+                .iter()
+                .map(|position| {
+                    values
+                        .get_mut(*position)
+                        .and_then(Option::take)
+                        .ok_or(QueryExecutionError::InvalidProgram)
+                })
+                .collect::<Result<Vec<_>, _>>()
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let projected = u64::try_from(rows.len())
+        .ok()
+        .and_then(|rows| rows.checked_mul(step.selected_fields().len() as u64))
+        .ok_or(QueryExecutionError::BoundExceeded)?;
+    fuel.projected_values(projected)?;
+
+    let mut index_epochs = BTreeMap::new();
+    let mut epoch_key = String::with_capacity(step.entity().len() + 1 + index.len());
+    epoch_key.push_str(step.entity());
+    epoch_key.push('.');
+    epoch_key.push_str(index);
+    index_epochs.insert(epoch_key, batch.epoch);
+    if let Some(prior) = prior {
+        if step.cursor_parameter().is_none() || prior.index_epochs != index_epochs {
+            return Err(if step.cursor_parameter().is_none() {
+                QueryExecutionError::InvalidContinuation
+            } else {
+                QueryExecutionError::StaleCursor
+            });
+        }
+    }
+    let continuation = batch.continuation;
+    let continuation_binding = continuation.as_ref().map(|_| step.binding().to_owned());
+    let default_outcome = program
+        .surface()
+        .schemas()
+        .results()
+        .first()
+        .map(|branch| branch.name())
+        .unwrap_or("Result")
+        .to_owned();
+    finish_snapshot(
+        &mut fuel,
+        QueryOwnedSnapshot {
+            application_head: view.application_head(),
+            index_epochs,
+            outcome: default_outcome,
+            fields: BTreeMap::new(),
+            covered_result: Some(CoveredQueryResultV1 {
+                result_name: step.result_names()[0].clone(),
+                entity: Arc::<str>::from(step.entity()),
+                fields: step
+                    .selected_fields()
+                    .iter()
+                    .map(|field| Arc::<str>::from(field.as_str()))
+                    .collect(),
+                rows,
+            }),
             continuation_binding,
             continuation,
         },
@@ -1797,6 +2130,31 @@ fn encoded_snapshot_bytes(snapshot: &QueryOwnedSnapshot) -> Result<u64, QueryExe
             }
         }
     }
+    if let Some(covered) = &snapshot.covered_result {
+        bytes = bytes
+            .checked_add(covered.result_name.len() as u64)
+            .and_then(|value| value.checked_add(covered.entity.len() as u64))
+            .and_then(|value| value.checked_add(128))
+            .ok_or(QueryExecutionError::BoundExceeded)?;
+        for field in &covered.fields {
+            bytes = bytes
+                .checked_add(field.len() as u64)
+                .and_then(|value| value.checked_add(32))
+                .ok_or(QueryExecutionError::BoundExceeded)?;
+        }
+        for row in &covered.rows {
+            for value in row {
+                bytes = bytes
+                    .checked_add(
+                        canonical_value_encoded_len(value)
+                            .map_err(|_| QueryExecutionError::InvalidProgram)?
+                            as u64,
+                    )
+                    .and_then(|value| value.checked_add(32))
+                    .ok_or(QueryExecutionError::BoundExceeded)?;
+            }
+        }
+    }
     if snapshot.continuation.is_some() {
         bytes = bytes
             .checked_add(48)
@@ -2096,8 +2454,36 @@ fn predicates_match(
     row: &QueryRow,
     predicates: &[BoundPredicate],
 ) -> Result<bool, QueryExecutionError> {
+    predicate_values_match(row.entity(), predicates, |name| row.field(name))
+}
+
+/// Applies the one authoritative predicate implementation to a sealed
+/// positional covered row before storage admits it to a batch.
+#[doc(hidden)]
+pub fn covered_row_matches_predicates_v1(
+    layout: &CoveredResultLayoutV1,
+    values: &[CanonicalValue],
+    predicates: &[BoundPredicate],
+) -> Result<bool, QueryExecutionError> {
+    if values.len() != layout.fields().len() {
+        return Err(QueryExecutionError::InvalidProgram);
+    }
+    predicate_values_match(layout.entity(), predicates, |name| {
+        layout
+            .fields()
+            .binary_search_by(|field| field.name().cmp(name))
+            .ok()
+            .and_then(|position| values.get(position))
+    })
+}
+
+fn predicate_values_match<'a>(
+    entity: &str,
+    predicates: &[BoundPredicate],
+    mut field: impl FnMut(&str) -> Option<&'a CanonicalValue>,
+) -> Result<bool, QueryExecutionError> {
     for predicate in predicates {
-        let actual = row.field(&predicate.field);
+        let actual = field(&predicate.field);
         let unary = match predicate.operator {
             QueryPredicateOperator::IsNull => Some(matches!(actual, Some(CanonicalValue::Null))),
             QueryPredicateOperator::IsNotNull => {
@@ -2113,7 +2499,7 @@ fn predicates_match(
             continue;
         }
         let actual = actual.ok_or_else(|| QueryExecutionError::MissingField {
-            entity: row.entity.to_string(),
+            entity: entity.to_owned(),
             field: predicate.field.clone(),
         })?;
         let matches = match predicate.operator {

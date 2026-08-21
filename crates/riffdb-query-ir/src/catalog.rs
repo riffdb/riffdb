@@ -60,6 +60,7 @@ pub struct IndexSymbol {
     id: IndexId,
     name: String,
     fields: Vec<String>,
+    cover_fields: Vec<String>,
     encodings: Vec<IndexFieldEncodingV1>,
     key_schema: KeySchema,
 }
@@ -107,6 +108,12 @@ impl IndexSymbol {
     #[must_use]
     pub fn fields(&self) -> &[String] {
         &self.fields
+    }
+
+    /// Compiler-owned covered field names in declared order.
+    #[must_use]
+    pub fn cover_fields(&self) -> &[String] {
+        &self.cover_fields
     }
 
     /// Compiler-owned encoding for each logical field.
@@ -386,10 +393,22 @@ impl SymbolicCatalog {
                             .ok_or_else(|| invariant("index references an absent field"))
                     })
                     .collect::<Result<Vec<_>, _>>()?;
+                let cover_names = index
+                    .cover_fields()
+                    .iter()
+                    .map(|id| {
+                        entity
+                            .record()
+                            .field(*id)
+                            .map(|field| field.name().to_owned())
+                            .ok_or_else(|| invariant("index cover references an absent field"))
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
                 let symbol = IndexSymbol {
                     id: index.id(),
                     name: index.name().to_owned(),
                     fields: component_names,
+                    cover_fields: cover_names,
                     encodings: index.encodings().to_vec(),
                     key_schema: index.key_schema().clone(),
                 };
@@ -564,6 +583,15 @@ impl SymbolicCatalog {
     #[must_use]
     pub fn row_policies(&self) -> impl ExactSizeIterator<Item = &RowPolicySymbol> {
         self.row_policies.values()
+    }
+
+    /// Whether an exact entity has a compiled read policy.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn internal_has_read_policy(&self, entity: &str) -> bool {
+        self.row_policies.values().any(|policy| {
+            policy.entity == entity && policy.operations.contains(&RowPolicyOperationV1::Read)
+        })
     }
 
     /// Resolves one compiler-visible principal-fact schema.

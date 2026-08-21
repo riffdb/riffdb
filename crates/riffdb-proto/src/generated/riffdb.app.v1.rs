@@ -150,6 +150,8 @@ pub struct ExecuteQueryRequest {
     pub cursor: ::core::option::Option<::prost::alloc::string::String>,
     #[prost(uint64, optional, tag = "7")]
     pub minimum_application_head: ::core::option::Option<u64>,
+    #[prost(enumeration = "NamedResultEncoding", repeated, tag = "8")]
+    pub accepted_result_encodings: ::prost::alloc::vec::Vec<i32>,
     #[prost(bytes = "vec", tag = "100")]
     pub request_id: ::prost::alloc::vec::Vec<u8>,
     #[prost(oneof = "execute_query_request::Query", tags = "2, 3")]
@@ -182,6 +184,24 @@ pub struct ResultField {
     pub records: ::prost::alloc::vec::Vec<ResultRecord>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
+pub struct CompactResultRow {
+    #[prost(message, repeated, tag = "1")]
+    pub values: ::prost::alloc::vec::Vec<super::super::v1::Value>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct CompactResultField {
+    #[prost(string, tag = "1")]
+    pub name: ::prost::alloc::string::String,
+    #[prost(enumeration = "ResultCardinality", tag = "2")]
+    pub cardinality: i32,
+    #[prost(string, tag = "3")]
+    pub entity: ::prost::alloc::string::String,
+    #[prost(string, repeated, tag = "4")]
+    pub fields: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+    #[prost(message, repeated, tag = "5")]
+    pub rows: ::prost::alloc::vec::Vec<CompactResultRow>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ExecuteQueryResponse {
     #[prost(message, optional, tag = "1")]
     pub identity: ::core::option::Option<QueryIdentity>,
@@ -193,6 +213,10 @@ pub struct ExecuteQueryResponse {
     pub fields: ::prost::alloc::vec::Vec<ResultField>,
     #[prost(string, optional, tag = "5")]
     pub next_cursor: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(enumeration = "NamedResultEncoding", tag = "6")]
+    pub selected_result_encoding: i32,
+    #[prost(message, optional, tag = "7")]
+    pub compact_result: ::core::option::Option<CompactResultField>,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct DescribeContractRequest {
@@ -1034,6 +1058,35 @@ impl ResultCardinality {
             "RESULT_CARDINALITY_ONE" => Some(Self::One),
             "RESULT_CARDINALITY_MAYBE" => Some(Self::Maybe),
             "RESULT_CARDINALITY_MANY" => Some(Self::Many),
+            _ => None,
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum NamedResultEncoding {
+    Unspecified = 0,
+    LegacyRecords = 1,
+    CompactV1 = 2,
+}
+impl NamedResultEncoding {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "NAMED_RESULT_ENCODING_UNSPECIFIED",
+            Self::LegacyRecords => "NAMED_RESULT_ENCODING_LEGACY_RECORDS",
+            Self::CompactV1 => "NAMED_RESULT_ENCODING_COMPACT_V1",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "NAMED_RESULT_ENCODING_UNSPECIFIED" => Some(Self::Unspecified),
+            "NAMED_RESULT_ENCODING_LEGACY_RECORDS" => Some(Self::LegacyRecords),
+            "NAMED_RESULT_ENCODING_COMPACT_V1" => Some(Self::CompactV1),
             _ => None,
         }
     }

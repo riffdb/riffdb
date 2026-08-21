@@ -4516,6 +4516,7 @@ async fn query_command(
                             parameters: Vec::new(),
                             cursor: None,
                             minimum_application_head: None,
+                            accepted_result_encodings: Vec::new(),
                             request_id,
                         },
                         &metadata,
@@ -5173,6 +5174,7 @@ async fn execute_query_cli(
                 parameters,
                 cursor,
                 minimum_application_head,
+                accepted_result_encodings: Vec::new(),
                 request_id,
             },
             metadata,
@@ -5224,6 +5226,7 @@ async fn execute_named_query_cli(
                 parameters,
                 cursor,
                 minimum_application_head,
+                accepted_result_encodings: Vec::new(),
                 request_id,
             },
             metadata,
@@ -12151,6 +12154,8 @@ mod tests {
             application_head: 1,
             fields: Vec::new(),
             next_cursor: None,
+            selected_result_encoding: app_v1::NamedResultEncoding::LegacyRecords as i32,
+            compact_result: None,
         };
         let result = query_execution_json(&response).expect("query JSON");
         assert_eq!(
