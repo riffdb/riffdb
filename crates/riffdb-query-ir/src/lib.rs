@@ -4,6 +4,7 @@
 
 mod catalog;
 mod diagnostic;
+mod exact_predicate;
 mod exact_text;
 mod live;
 mod operational;
@@ -21,6 +22,7 @@ pub use catalog::{
 pub use diagnostic::{
     QueryDiagnostic, QueryDiagnosticCode, QueryDiagnosticStage, QueryDiagnostics,
 };
+pub use exact_predicate::*;
 pub use exact_text::*;
 pub use live::*;
 pub use operational::*;
@@ -58,6 +60,8 @@ pub const QUERY_IR_VERSION_EXACT_FILTERED_RESULT_SET_V1: u32 = 6;
 pub const QUERY_IR_VERSION_COVERED_RESULT_V1: u32 = 7;
 /// Canonical nearest-query IR with one compiler-owned projected source.
 pub const QUERY_IR_VERSION_PROJECTED_VECTOR_V1: u32 = 8;
+/// Canonical exact predicate and independent-order semantic IR.
+pub const QUERY_IR_VERSION_EXACT_PREDICATE_V1: u32 = 9;
 /// Maximum public query schema and canonical IR bytes.
 pub const MAX_QUERY_ARTIFACT_BYTES: usize = 4_194_304;
 /// Maximum source-map entries.

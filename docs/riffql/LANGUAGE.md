@@ -83,8 +83,13 @@ and ordering match the query. When one is absent, add the compiler-suggested
 bounded index to the contract rather than filtering or sorting in application
 code.
 
-The v1 expression set is `==`, `!=`, `<`, `<=`, `>`, `>=`, bounded `in`,
-`&&`, and `||`. It has no mutation, SQL escape, function call, recursion,
+The ordinary operational expression set is `==`, `!=`, `<`, `<=`, `>`, `>=`,
+bounded `in`, `&&`, and `||`. Exact-result language V6 additionally recognizes
+bounded `not_in`, `starts_with`, `ends_with`, and `contains` while compiling a
+provider-independent semantic family. See
+[Exact Predicate and Order Families](EXACT-PREDICATES.md) for its stricter
+shape and current activation status. RiffQL has no mutation, SQL escape,
+function call, recursion,
 loop, callback, clock, randomness, network, filesystem, group-by, unrestricted
 scan, or arbitrary join.
 

@@ -2,8 +2,10 @@
 
 //! Deterministic type checking, authorization analysis, and bounded planning for RiffQL v1.
 
+mod exact_predicate;
 mod reactive;
 
+pub use exact_predicate::*;
 pub use reactive::*;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -2397,6 +2399,7 @@ fn predicate_operator(
             QueryPredicateOperator::GreaterEqual
         }
         SourcePredicateOperator::Binary(BinaryOperator::In) => QueryPredicateOperator::In,
+        SourcePredicateOperator::Binary(BinaryOperator::NotIn) => return Err(internal()),
         SourcePredicateOperator::Binary(BinaryOperator::Prefix) => QueryPredicateOperator::Prefix,
         SourcePredicateOperator::Binary(
             BinaryOperator::StartsWith | BinaryOperator::EndsWith | BinaryOperator::Contains,

@@ -12,6 +12,8 @@ pub const RIFFQL_LANGUAGE_VERSION_SECRET_OUTPUT_V1: u32 = 3;
 pub const RIFFQL_LANGUAGE_VERSION_EXACT_RESULT_SET_V1: u32 = 4;
 /// Compiler-owned projected vector source and freshness declarations.
 pub const RIFFQL_LANGUAGE_VERSION_PROJECTED_VECTOR_V1: u32 = 5;
+/// Compiler-declared exact predicate and independent-order families.
+pub const RIFFQL_LANGUAGE_VERSION_EXACT_PREDICATE_V1: u32 = 6;
 /// Maximum compiler-declared causal projection wait.
 pub const MAX_PROJECTED_CAUSAL_WAIT_MS: u32 = 30_000;
 /// Maximum compiler-declared bounded projection lag.
@@ -367,6 +369,8 @@ pub enum BinaryOperator {
     GreaterEqual,
     /// Membership in a submitted set.
     In,
+    /// Non-membership in a submitted set within the authorized universe.
+    NotIn,
     /// Canonical leading-byte text-key match.
     Prefix,
     /// Exact binary UTF-8 leading-byte match through an ADR-0131 provider.
