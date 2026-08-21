@@ -37,6 +37,13 @@ struct Args {
     clients: Vec<usize>,
     postgres_url: Option<String>,
     bounded_session_shadow: bool,
+    bounded_session_first: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SynchronousTransportShape {
+    Unary,
+    BoundedSession,
 }
 
 #[derive(Debug, Default)]
@@ -120,6 +127,20 @@ fn main() -> Result<(), String> {
 
     let mut cells = Vec::new();
     for &clients in &args.clients {
+        let bounded_session_first = if args.bounded_session_shadow && args.bounded_session_first {
+            let (restarted, measured) = measure_bounded_session_shape(
+                &runtime,
+                session,
+                &expected,
+                clients,
+                args.samples_per_client,
+                args.warmup_per_client,
+            )?;
+            session = restarted;
+            Some(measured)
+        } else {
+            None
+        };
         let synchronous_memory_before = process_memory_json(session.child_pid())?;
         let synchronous = run_synchronous_shape(
             &session.backend,
@@ -148,40 +169,19 @@ fn main() -> Result<(), String> {
             .map_err(|error| error.to_string())?;
         session = restarted;
 
-        let bounded_session = if args.bounded_session_shadow {
-            let bounded_memory_before = process_memory_json(session.child_pid())?;
-            let mut backend = session
-                .backend
-                .fresh_bounded_session()
-                .map_err(|error| error.to_string())?;
-            let measured = run_synchronous_shape(
-                &backend,
+        let bounded_session = if let Some(measured) = bounded_session_first {
+            Some(measured)
+        } else if args.bounded_session_shadow {
+            let (restarted, measured) = measure_bounded_session_shape(
+                &runtime,
+                session,
                 &expected,
                 clients,
                 args.samples_per_client,
                 args.warmup_per_client,
             )?;
-            backend.close_bounded_session();
-            let bounded_memory_after = process_memory_json(session.child_pid())?;
-            let (restarted, bounded_server) = runtime
-                .block_on(session.restart_for_measurement())
-                .map_err(|error| error.to_string())?;
             session = restarted;
-            Some(json!({
-                "shape": shape_json(&measured),
-                "server_read_stages": read_stages_json(&bounded_server),
-                "server_query_execute_windows": query_execute_json(
-                    bounded_server.query_execute.as_ref(),
-                ),
-                "server_memory_kib": {
-                    "before": bounded_memory_before,
-                    "after": bounded_memory_after,
-                },
-                "bookkeeping": {
-                    "classification": "accepted_adr_0127_diagnostic_shape_not_perf_018_evidence",
-                    "session_open_note": "one catalog authentication precedes measured operations; no query-stage sample is attributed to session establishment",
-                },
-            }))
+            Some(measured)
         } else {
             None
         };
@@ -211,6 +211,7 @@ fn main() -> Result<(), String> {
             },
             "bounded_session_shadow": bounded_session,
             "bookkeeping": {
+                "bounded_session_order": if args.bounded_session_first { "before_unary" } else { "after_async" },
                 "bridge_only_classification": "measurement_artifact_not_product_gain",
                 "asynchronous_call_classification": "customer_paid_product_path",
                 "server_stage_note": "same operation/process generation; includes declared warmup samples",
@@ -279,6 +280,45 @@ fn main() -> Result<(), String> {
     Ok(())
 }
 
+fn measure_bounded_session_shape(
+    runtime: &tokio::runtime::Runtime,
+    session: RiffDbServerSession,
+    expected: &TicketRow,
+    clients: usize,
+    samples_per_client: usize,
+    warmup_per_client: usize,
+) -> Result<(RiffDbServerSession, Value), String> {
+    let memory_before = process_memory_json(session.child_pid())?;
+    let measured = run_synchronous_transport_shape(
+        &session.backend,
+        expected,
+        clients,
+        samples_per_client,
+        warmup_per_client,
+        SynchronousTransportShape::BoundedSession,
+    )?;
+    let memory_after = process_memory_json(session.child_pid())?;
+    let (restarted, server) = runtime
+        .block_on(session.restart_for_measurement())
+        .map_err(|error| error.to_string())?;
+    Ok((
+        restarted,
+        json!({
+            "shape": shape_json(&measured),
+            "server_read_stages": read_stages_json(&server),
+            "server_query_execute_windows": query_execute_json(server.query_execute.as_ref()),
+            "server_memory_kib": {
+                "before": memory_before,
+                "after": memory_after,
+            },
+            "bookkeeping": {
+                "classification": "accepted_adr_0127_diagnostic_shape_not_perf_018_evidence",
+                "session_open_note": "one catalog authentication precedes measured operations; no query-stage sample is attributed to session establishment",
+            },
+        }),
+    ))
+}
+
 fn run_postgres_safe_app_twin(
     url: &str,
     dataset: &SeedDataset,
@@ -326,13 +366,37 @@ fn run_synchronous_shape(
     samples_per_client: usize,
     warmup_per_client: usize,
 ) -> Result<ShapeResult, String> {
+    run_synchronous_transport_shape(
+        prototype,
+        expected,
+        clients,
+        samples_per_client,
+        warmup_per_client,
+        SynchronousTransportShape::Unary,
+    )
+}
+
+fn run_synchronous_transport_shape(
+    prototype: &RiffDbPublicBackend,
+    expected: &TicketRow,
+    clients: usize,
+    samples_per_client: usize,
+    warmup_per_client: usize,
+    transport_shape: SynchronousTransportShape,
+) -> Result<ShapeResult, String> {
     let sessions = (0..clients)
-        .map(|_| prototype.fresh_session().map_err(|error| error.to_string()))
+        .map(|_| {
+            let result = match transport_shape {
+                SynchronousTransportShape::Unary => prototype.fresh_session(),
+                SynchronousTransportShape::BoundedSession => prototype.fresh_bounded_session(),
+            };
+            result.map_err(|error| error.to_string())
+        })
         .collect::<Result<Vec<_>, _>>()?;
     let ready = Arc::new(Barrier::new(clients + 1));
     let expected = Arc::new(expected.clone());
     let mut workers = Vec::with_capacity(clients);
-    for backend in sessions {
+    for mut backend in sessions {
         let ready = Arc::clone(&ready);
         let expected = Arc::clone(&expected);
         workers.push(thread::spawn(
@@ -351,6 +415,12 @@ fn run_synchronous_shape(
                         .map_err(|error| error.to_string())?;
                     require_expected(result.value.as_ref(), &expected)?;
                     histograms.record(result.timing);
+                }
+                match transport_shape {
+                    SynchronousTransportShape::Unary => {}
+                    SynchronousTransportShape::BoundedSession => {
+                        backend.close_bounded_session();
+                    }
                 }
                 Ok(histograms)
             },
@@ -548,6 +618,7 @@ fn parse_args() -> Result<Args, String> {
     let mut clients = CLIENT_POINTS.to_vec();
     let mut postgres_url = None;
     let mut bounded_session_shadow = false;
+    let mut bounded_session_first = false;
     let mut arguments = env::args_os().skip(1);
     while let Some(argument) = arguments.next() {
         let argument = argument
@@ -627,12 +698,14 @@ fn parse_args() -> Result<Args, String> {
                 );
             }
             "--bounded-session-shadow" => bounded_session_shadow = true,
+            "--bounded-session-first" => bounded_session_first = true,
             "--help" | "-h" => {
                 return Err(
                     "usage: riffdb-client-transport-diagnostic --riffdbd-bin PATH \
                      [--output PATH] [--scale smoke|full] \
                      [--clients 1,8,32] \
                      [--bounded-session-shadow] \
+                     [--bounded-session-first] \
                      [--postgres-url URL] \
                      [--samples-per-client 1..10000] [--warmup-per-client 0..1000]"
                         .to_owned(),
@@ -642,6 +715,9 @@ fn parse_args() -> Result<Args, String> {
         }
     }
     let riffdbd_bin = riffdbd_bin.ok_or_else(|| "--riffdbd-bin is required".to_owned())?;
+    if bounded_session_first && !bounded_session_shadow {
+        return Err("--bounded-session-first requires --bounded-session-shadow".to_owned());
+    }
     if !riffdbd_bin.is_file() {
         return Err(format!(
             "riffdbd binary not found: {}",
@@ -657,6 +733,7 @@ fn parse_args() -> Result<Args, String> {
         clients,
         postgres_url,
         bounded_session_shadow,
+        bounded_session_first,
     })
 }
 
