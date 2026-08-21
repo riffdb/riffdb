@@ -300,6 +300,13 @@ borrowed_codec!(
     encode_vector_evidence_v1,
     decode_vector_evidence_v1
 );
+borrowed_codec!(
+    encode_vector_observation_v1,
+    decode_vector_observation_v1,
+    storage::VectorObservationCountsV1,
+    encode_vector_observation_v1,
+    decode_vector_observation_v1
+);
 
 pub(crate) fn decode_entity_record_v1_profiled(
     encoded: &[u8],
