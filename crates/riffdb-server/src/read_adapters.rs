@@ -28,13 +28,15 @@ use riffdb_service::{
     AuthoritativeOutcomeRequest, AuthoritativeOutcomeSelectorRef, AuthoritativeOutcomeSnapshot,
     AuthoritativeProvenanceSnapshot, AuthoritativeReactiveEventWindow,
     AuthoritativeReactiveEventWindowRequest, AuthoritativeReadError, AuthoritativeReadPort,
-    AuthoritativeSchemaBinding, BoxPortCapacityPermit, CapabilityRevokeTargetSnapshot,
-    CatalogExecutablePlanRequest, CatalogReadPort, CommandDurability, CommitNotificationSource,
-    ContractVersionReadPermit, DeclaredOutcomeView, DurableEventView, ExactNamedQueryRequest,
-    OutcomeLocatorDigestEvidence, PortAdmissionError, PortDriverStopped, PortFuture,
-    PresentCapabilityRevokeTargetSnapshot, ProvenanceClaimsView, QueryModuleReadError,
-    QueryModuleReadPort, ReactiveModuleReadError, ReactiveModuleReadPort, RequestControl,
-    ResolvedNamedQuery,
+    AuthoritativeSchemaBinding, AuthoritativeVectorEvidencePage,
+    AuthoritativeVectorEvidenceRequest, AuthoritativeVectorEvidenceRow,
+    AuthoritativeVectorObservation, AuthoritativeVectorTarget, BoxPortCapacityPermit,
+    CapabilityRevokeTargetSnapshot, CatalogExecutablePlanRequest, CatalogReadPort,
+    CommandDurability, CommitNotificationSource, ContractVersionReadPermit, DeclaredOutcomeView,
+    DurableEventView, ExactNamedQueryRequest, OutcomeLocatorDigestEvidence, PortAdmissionError,
+    PortDriverStopped, PortFuture, PresentCapabilityRevokeTargetSnapshot, ProvenanceClaimsView,
+    QueryModuleReadError, QueryModuleReadPort, ReactiveModuleReadError, ReactiveModuleReadPort,
+    RequestControl, ResolvedNamedQuery,
 };
 use riffdb_storage_api::{
     ActiveCatalogPointerV1, AdmissionLookupResultV1, AdmissionRepository, AuthoritativePointReader,
@@ -46,7 +48,8 @@ use riffdb_storage_api::{
     IndexPartitionFilterScope, IndexRangePrefixBuilder, IndexRangeTarget, QueryModuleRepository,
     ReactiveModuleRepository, ReadableDigestKey, ReadableIdempotencyDigestInventory, StorageError,
     StorageErrorKind, StorageScanLimit, StoredAdmissionStateV1, StoredCommitRecordV1,
-    StoredPendingAdmissionV1, StoredProvenanceRecordV1,
+    StoredPendingAdmissionV1, StoredProvenanceRecordV1, VectorEvidenceIndexRepository,
+    VectorEvidenceIndexScanRequestV1, VectorObservationRepository, VectorObservationTargetV1,
 };
 #[cfg(test)]
 use riffdb_types::QueryOperationName;
@@ -745,6 +748,16 @@ impl fmt::Debug for ServerCatalogReadPort {
 
 /// Authoritative service reads driven through narrow storage and catalog operations.
 pub(crate) struct ServerAuthoritativeReadPort {
+    vector_observation: BlockingPortExecutor<
+        AuthoritativeVectorTarget,
+        Option<AuthoritativeVectorObservation>,
+        AuthoritativeReadError,
+    >,
+    vector_evidence: BlockingPortExecutor<
+        AuthoritativeVectorEvidenceRequest,
+        AuthoritativeVectorEvidencePage,
+        AuthoritativeReadError,
+    >,
     application_head: BlockingPortExecutor<(), FrontierPosition, AuthoritativeReadError>,
     event_replay: BlockingPortExecutor<
         AuthoritativeEventReplayRequest,
@@ -810,6 +823,70 @@ impl ServerAuthoritativeReadPort {
         notifications: FirstCommitNotificationHub,
         driver: &BlockingPortDriver,
     ) -> Self {
+        let vector_observation_storage = storage.clone();
+        let vector_observation = driver.executor(move |target: AuthoritativeVectorTarget| {
+            let lower = VectorObservationTargetV1::new(
+                target.lineage().clone(),
+                target.partition_key().clone(),
+                target.entity_type(),
+                target.vector_field(),
+            );
+            vector_observation_storage
+                .read_vector_observation(&lower)
+                .map_err(map_storage_error)
+                .map(|value| {
+                    value.map(|value| {
+                        AuthoritativeVectorObservation::new(
+                            target,
+                            value.total_entities(),
+                            value.source_stale_entities(),
+                            value
+                                .model_counts()
+                                .map(|(metadata, count)| (metadata.clone(), count))
+                                .collect(),
+                            value.revision(),
+                        )
+                    })
+                })
+        });
+
+        let vector_evidence_storage = storage.clone();
+        let vector_evidence =
+            driver.executor(move |request: AuthoritativeVectorEvidenceRequest| {
+                let target = VectorObservationTargetV1::new(
+                    request.target().lineage().clone(),
+                    request.target().partition_key().clone(),
+                    request.target().entity_type(),
+                    request.target().vector_field(),
+                );
+                let limit = StorageScanLimit::new(request.limit().get().get())
+                    .ok_or(AuthoritativeReadError::Integrity)?;
+                let lower =
+                    VectorEvidenceIndexScanRequestV1::new(target, request.after().cloned(), limit)
+                        .map_err(|_| AuthoritativeReadError::Integrity)?;
+                let page = vector_evidence_storage
+                    .scan_vector_evidence_index(&lower)
+                    .map_err(map_storage_error)?;
+                let rows = page
+                    .entries()
+                    .iter()
+                    .map(|entry| {
+                        AuthoritativeVectorEvidenceRow::new(
+                            entry.entity_key().clone(),
+                            entry.newest_source_write(),
+                            entry
+                                .embedding_write()
+                                .map(|write| (write.sequence(), write.metadata().clone())),
+                        )
+                    })
+                    .collect();
+                Ok(AuthoritativeVectorEvidencePage::new(
+                    rows,
+                    page.continuation().cloned(),
+                    page.exact_end(),
+                ))
+            });
+
         let entity_storage = storage.clone();
         let entity = driver.executor(move |request| read_entity(&entity_storage, request));
 
@@ -949,6 +1026,8 @@ impl ServerAuthoritativeReadPort {
         });
 
         Self {
+            vector_observation,
+            vector_evidence,
             application_head,
             event_replay,
             reactive_event_window,
@@ -965,6 +1044,36 @@ impl ServerAuthoritativeReadPort {
 }
 
 impl AuthoritativeReadPort for ServerAuthoritativeReadPort {
+    fn reserve_vector_observation<'a>(
+        &'a self,
+        control: &'a RequestControl,
+    ) -> PortFuture<
+        'a,
+        BoxPortCapacityPermit<
+            AuthoritativeVectorTarget,
+            Option<AuthoritativeVectorObservation>,
+            AuthoritativeReadError,
+        >,
+        PortAdmissionError,
+    > {
+        ready_port_reservation(self.vector_observation.reserve_async(control))
+    }
+
+    fn reserve_vector_evidence<'a>(
+        &'a self,
+        control: &'a RequestControl,
+    ) -> PortFuture<
+        'a,
+        BoxPortCapacityPermit<
+            AuthoritativeVectorEvidenceRequest,
+            AuthoritativeVectorEvidencePage,
+            AuthoritativeReadError,
+        >,
+        PortAdmissionError,
+    > {
+        ready_port_reservation(self.vector_evidence.reserve_async(control))
+    }
+
     fn reserve_application_head<'a>(
         &'a self,
         control: &'a RequestControl,

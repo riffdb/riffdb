@@ -35,7 +35,8 @@ use riffdb_storage_api::{
     StoredCapabilityRecordV1, StoredCommitRecordV1, StoredContractBundleV1,
     StoredContractMigrationEdgeV1, StoredDurableEventV1, StoredEntityRecordV1, StoredOutcomeV1,
     StoredProvenanceRecordV1, StoredQueryModuleV1, UndeliveredOutboxStatusScanRequestV1,
-    UndeliveredOutboxStatusScanV1, VectorObservationCountsV1, VectorObservationRepository,
+    UndeliveredOutboxStatusScanV1, VectorEvidenceIndexPageV1, VectorEvidenceIndexRepository,
+    VectorEvidenceIndexScanRequestV1, VectorObservationCountsV1, VectorObservationRepository,
     VectorObservationTargetV1,
 };
 use riffdb_types::{
@@ -278,6 +279,15 @@ impl VectorObservationRepository for RedbSharedPorts {
         target: &VectorObservationTargetV1,
     ) -> Result<Option<VectorObservationCountsV1>, StorageError> {
         VectorObservationRepository::read_vector_observation(&self.operational(), target)
+    }
+}
+
+impl VectorEvidenceIndexRepository for RedbSharedPorts {
+    fn scan_vector_evidence_index(
+        &self,
+        request: &VectorEvidenceIndexScanRequestV1,
+    ) -> Result<VectorEvidenceIndexPageV1, StorageError> {
+        VectorEvidenceIndexRepository::scan_vector_evidence_index(&self.operational(), request)
     }
 }
 
