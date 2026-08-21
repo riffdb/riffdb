@@ -30,7 +30,7 @@ contract Docs version 1 {
     field title: string<256>
     field body: string<65536>
     field nearest: u64
-    vector_field embedding(3, cosine, (title, body), staleness_slo 60)
+    vector_field embedding(3, cosine, (title, body), staleness_slo 60, model "embed-v1", current_version "2026-08-21", replay_age_seconds 86400, replay_bytes 1073741824, replay_backlog 100000)
     index by_doc (org_id, doc_id)
   }
   aggregate Documents {
@@ -46,6 +46,9 @@ query SimilarDocuments(
     $org_id: Document.org_id,
     $query_vec: Document.embedding,
 ) {
+    source projected Document.embedding
+    freshness available
+
     many results from Document
         where org_id == $org_id
         nearest(embedding, $query_vec, 10)
@@ -67,6 +70,9 @@ query SimilarDocuments(
     $org_id: Document.org_id,
     $query_vec: Document.embedding,
 ) {
+    source projected Document.embedding
+    freshness available
+
     many results from Document
         where doc_id == $org_id
         nearest(embedding, $query_vec, 10)
@@ -312,6 +318,9 @@ query SimilarDocuments(
     $query_vec: Document.embedding,
     $k: Limit,
 ) {
+    source projected Document.embedding
+    freshness available
+
     many results from Document
         where org_id == $org_id
         nearest(embedding, $query_vec, $k)
@@ -541,17 +550,19 @@ query NearestField(
         .expect("a field named nearest compiles through the full query pipeline");
 }
 
-// ─── Fuel charge (S1/N7): examined rows are charged against shared scan fuel ───
+// ─── Production source boundary ───
 
-/// A two-step query: one indexed listing page plus one nearest step. The
-/// static cost funds the listing at its take-derived budget and the nearest
-/// step at the partition-scan ceiling; both runtime reports are charged
-/// against the SAME scan-fuel pool.
+/// A historical two-step nearest shape. Production projected nearest is
+/// intentionally a single-provider query and cannot silently mix its derived
+/// snapshot with an authoritative listing.
 const LISTING_AND_NEAREST_QUERY: &str = r#"
 query ListingAndSimilar(
     $org_id: Document.org_id,
     $query_vec: Document.embedding,
 ) {
+    source projected Document.embedding
+    freshness available
+
     many listing from Document
         where org_id == $org_id
         order by doc_id asc
@@ -564,116 +575,59 @@ query ListingAndSimilar(
 }
 "#;
 
-/// Answers both the indexed scan and the nearest step with configurable
-/// self-reported scan work.
-struct TwoStepView {
-    scan_scanned: u64,
-    nearest_scanned: u64,
-}
-
-impl QueryReadView for TwoStepView {
-    type Error = ();
-
-    fn fault(&self, (): &Self::Error) -> riffdb_query_executor::QueryBackendFault {
-        riffdb_query_executor::QueryBackendFault::Integrity
-    }
-
-    fn application_head(&self) -> u64 {
-        1
-    }
-
-    fn point(
-        &mut self,
-        _step: &QueryAccessStep,
-        _predicates: &[BoundPredicate],
-        _policy: Option<&riffdb_policy::AuthorizedQueryRowPolicyContextV1>,
-    ) -> Result<Option<QueryRow>, Self::Error> {
-        Err(())
-    }
-
-    fn dependent_point_batch(
-        &mut self,
-        _step: &QueryAccessStep,
-        _predicates: &[Vec<BoundPredicate>],
-        _policy: Option<&riffdb_policy::AuthorizedQueryRowPolicyContextV1>,
-    ) -> Result<Vec<Option<QueryRow>>, Self::Error> {
-        Err(())
-    }
-
-    fn scan(
-        &mut self,
-        _step: &QueryAccessStep,
-        _predicates: &[BoundPredicate],
-        _limit: u64,
-        _after: Option<&[u8]>,
-        _policy: Option<&riffdb_policy::AuthorizedQueryRowPolicyContextV1>,
-    ) -> Result<QueryScanPage, Self::Error> {
-        QueryScanPage::reported(vec![result_row()], 1, self.scan_scanned, 1, None).ok_or(())
-    }
-
-    fn nearest(
-        &mut self,
-        _step: &QueryAccessStep,
-        _predicates: &[BoundPredicate],
-        _k: u32,
-        _policy: Option<&riffdb_policy::AuthorizedQueryRowPolicyContextV1>,
-    ) -> Result<QueryNearestPage, Self::Error> {
-        Ok(QueryNearestPage {
-            rows: vec![result_row()],
-            scanned_rows: self.nearest_scanned,
-        })
-    }
-}
-
-fn listing_and_nearest_program() -> riffdb_query_ir::QueryAccessProgramV1 {
+#[test]
+fn projected_nearest_rejects_mixed_authoritative_bindings() {
     let bundle = compile_contract_source(CONTRACT).expect("vector contract compiles");
     let catalog = SymbolicCatalog::from_bundle(&bundle).expect("catalog");
-    compile_query(
+    let diagnostics = compile_query(
         &parse_query(LISTING_AND_NEAREST_QUERY).expect("parse"),
         &catalog,
     )
-    .expect("program")
-}
-
-/// S1/N7 runtime side, the charge itself: the nearest step's examined rows
-/// are genuinely burned against the shared scan fuel. Each step's report is
-/// individually within the per-page ceiling — the refusal guard passes both
-/// times — but the CUMULATIVE charge exceeds the plan-funded budget, so the
-/// execution must die of `FuelExhausted`. Deleting the nearest arm's
-/// `fuel.scans(page.scanned_rows)` makes this execution succeed, which is
-/// exactly the deletion the previous refusal-only tests could not observe.
-#[test]
-fn nearest_scan_work_is_charged_against_shared_fuel() {
-    let program = listing_and_nearest_program();
-    // Precondition for the arithmetic below: the plan funds strictly less
-    // than two full-ceiling scans (listing is funded at its take-derived
-    // budget, nearest at the ceiling).
-    assert!(
-        program.cost().scanned_index_rows() + program.cost().access_steps()
-            < 2 * MAX_QUERY_SCANNED_ROWS,
-        "plan must fund less than two full-ceiling scans"
-    );
-    let mut view = TwoStepView {
-        scan_scanned: MAX_QUERY_SCANNED_ROWS,
-        nearest_scanned: MAX_QUERY_SCANNED_ROWS,
-    };
-    let error = execute_in_snapshot(&program, &parameters(), &mut view)
-        .expect_err("two guard-passing full-ceiling reports must exhaust the shared scan fuel");
-    assert!(
-        matches!(error, QueryExecutionError::FuelExhausted),
-        "expected FuelExhausted, found {error:?}"
+    .expect_err("mixed authoritative/projected bindings must fail closed");
+    let diagnostic = &diagnostics.as_slice()[0];
+    assert_eq!(diagnostic.code(), PlannerDiagnosticCode::Cardinality);
+    assert_eq!(
+        diagnostic.summary(),
+        "projected nearest requires exactly one nearest collection binding and no aggregates"
     );
 }
 
-/// The complement: honest per-step reports fit the same budget, so the
-/// charge is not an overcount.
 #[test]
-fn honest_two_step_reports_stay_within_the_funded_budget() {
-    let program = listing_and_nearest_program();
-    let mut view = TwoStepView {
-        scan_scanned: 1,
-        nearest_scanned: MAX_QUERY_SCANNED_ROWS,
-    };
-    execute_in_snapshot(&program, &parameters(), &mut view)
-        .expect("honest reports are funded by the static charge");
+fn production_nearest_requires_an_explicit_projected_source() {
+    let bundle = compile_contract_source(CONTRACT).expect("vector contract compiles");
+    let catalog = SymbolicCatalog::from_bundle(&bundle).expect("catalog");
+    let source = NEAREST_QUERY.replace(
+        "    source projected Document.embedding\n    freshness available\n\n",
+        "",
+    );
+    let diagnostics = compile_query(&parse_query(&source).expect("parse"), &catalog)
+        .expect_err("source-less nearest must fail closed");
+    assert_eq!(
+        diagnostics.as_slice()[0].code(),
+        PlannerDiagnosticCode::Unindexed
+    );
+    assert_eq!(
+        diagnostics.as_slice()[0].summary(),
+        "production nearest requires an explicit projected source and freshness policy"
+    );
+}
+
+#[test]
+fn projected_source_must_match_the_ranked_vector_field_exactly() {
+    let bundle = compile_contract_source(CONTRACT).expect("vector contract compiles");
+    let catalog = SymbolicCatalog::from_bundle(&bundle).expect("catalog");
+    let source = NEAREST_QUERY.replace(
+        "source projected Document.embedding",
+        "source projected Document.title",
+    );
+    let diagnostics = compile_query(&parse_query(&source).expect("parse"), &catalog)
+        .expect_err("mismatched projected source must fail closed");
+    assert_eq!(
+        diagnostics.as_slice()[0].code(),
+        PlannerDiagnosticCode::Unindexed
+    );
+    assert_eq!(
+        diagnostics.as_slice()[0].summary(),
+        "projected source does not match the nearest entity and vector field"
+    );
 }

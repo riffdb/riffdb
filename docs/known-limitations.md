@@ -56,30 +56,32 @@ These limits are part of the POC release posture, not hidden roadmap promises.
   presentation.
 - There is no general SQL surface, arbitrary transaction callback, analytical
   join engine, distributed transaction, replication, failover, or consensus.
-- Vector search remains partially compile-complete but is not application-reachable end
-  to end. The low-level native and typed Protobuf value branches, gRPC and
+- Vector search's exact tier is application-reachable through named RiffQL,
+  while the approximate tier remains pre-release work. The native and typed Protobuf value branches, gRPC and
   hosted MCP conversions, and CLI numeric component arrays now preserve finite
   binary32 vectors without bytes punning. Contract IR V15 now seals one exact
   model identity/current version and bounded replay ceilings per production
   vector field. A compiler-sealed `embed` command now atomically persists the
   entity vector and authoritative model/version/write-sequence evidence;
   generic `set` cannot bypass that evidence. Generated Rust, Go, TypeScript,
-  and Python models now expose exact-dimension vector values and
-  contract-sealed model constructors. The remaining end-to-end gap is the
-  public staleness/model operation and production projected-nearest adapter,
-  not target-language vector assembly.
+  and Python models expose exact-dimension vector values and contract-sealed
+  model constructors. Generated clients also expose the bounded symbolic
+  staleness/model inspection operation.
 - Vector staleness now has v1 count semantics: a declared positive stale-entity
   threshold breaches only when `stale_count > threshold`; duration-based
   semantics are future work. Authoritative embedding and source-field write
   evidence now persists atomically, and paginated staleness/model-version DTOs
-  exist, but no public operation currently enumerates them. The dedicated
-  `vector_staleness` health component is emitted
-  as `unavailable` rather than being overloaded onto `projection` or reported
-  healthy without an observer.
-- No production storage adapter serves `nearest()` execution — both row stores
-  refuse the step as a typed error. Vector projection lifecycle integration,
-  policy-before-ranking production reachability, parameterized K, and the ANN
-  tier/recall contract remain deferred.
+  exist and the public symbolic operation enumerates them under an exact role
+  grant, bounded page, current policy, and snapshot-bound cursor. The dedicated
+  `vector_staleness` health component is maintained from authoritative
+  observations rather than being overloaded onto `projection`; missing or
+  invalid observer state remains unavailable.
+- Production `nearest()` requires one explicit compiler-owned projected source
+  and `available`, causal, or duration-bounded freshness. The exact adapter
+  admits current-policy rows before ranking and enforces the shared 500-row
+  ceiling. Multi-source vector queries, vector joins/aggregates, and
+  production ANN routing remain deferred and never fall back to row-store
+  scans or mixed snapshots.
 - Reactive applications are partition-local and bounded. P8 does not provide
   raw CDC, global or cross-partition order, physical time-based event
   retention, exactly-once external effects, event-sourced reconstruction,

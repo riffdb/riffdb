@@ -120,6 +120,29 @@ fn service_dependency_graph_has_no_storage_runtime_or_transport_edge() {
 }
 
 #[test]
+fn projected_vector_release_revalidates_authority_after_ranked_provider_work() {
+    let execution = SYMBOLIC_QUERY_SOURCE
+        .split_once("async fn execute_projected_vector_named_query(")
+        .expect("projected vector service path")
+        .1
+        .split_once("async fn execute_vector_projection_with_freshness(")
+        .expect("projected vector helper boundary")
+        .0;
+    let provider = execution
+        .find("execute_vector_projection_with_freshness(")
+        .expect("compiler-owned projected provider execution");
+    let release = execution
+        .find("// Safe point 3: no ranked values cross the boundary under stale authority.")
+        .expect("post-ranking authority safe point");
+    let response = execution
+        .find("vector_projection_response(")
+        .expect("ranked response release");
+    assert!(provider < release && release < response);
+    assert!(execution.contains("release_authorization.application_role_hash() != policy_shape"));
+    assert!(execution.contains("release_policy_identity != row_policy_identity"));
+}
+
+#[test]
 fn grpc_context_construction_fixes_ingress_and_hides_policy_claim_vocabulary() {
     let constructor = CONTEXT_SOURCE
         .split_once("pub const fn from_authenticated_grpc(")

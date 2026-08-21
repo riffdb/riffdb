@@ -14,16 +14,17 @@ use riffdb_query_ir::{
     AccessDirection, AuthorizationEntityAccess, CoveredResultFieldV1, CoveredResultLayoutV1,
     CoveredResultSourceV1, EntitySymbol, ExactTextOperatorSetV1, ExactTextOrderSetV1,
     ExactTextPlanFamilyErrorV1, ExactTextPlanFamilyV1, MAX_OPERATIONAL_PRESENCE_PARAMETERS,
-    OperationalPlanMemberV1, OperationalQueryFamilyV1, ProjectionResultSetPlanError,
-    ProjectionResultSetPlanV1, ProjectionResultSetPlanV2, ProjectionResultSetPlanV2Error,
-    QueryAccessKind, QueryAccessProgramV1, QueryAccessStep, QueryLiteral, QueryPredicate,
-    QueryPredicateOperator, QueryPredicateValue, QueryRowLimit, ResultSetOutputShapeV1,
-    ResultSetWindowBoundsV2, ResultSetWindowV1, SymbolicCatalog, resolve_query_surface,
+    OperationalPlanMemberV1, OperationalQueryFamilyV1, ProjectedVectorFreshnessV1,
+    ProjectedVectorSourceV1, ProjectionResultSetPlanError, ProjectionResultSetPlanV1,
+    ProjectionResultSetPlanV2, ProjectionResultSetPlanV2Error, QueryAccessKind,
+    QueryAccessProgramV1, QueryAccessStep, QueryLiteral, QueryPredicate, QueryPredicateOperator,
+    QueryPredicateValue, QueryRowLimit, ResultSetOutputShapeV1, ResultSetWindowBoundsV2,
+    ResultSetWindowV1, SymbolicCatalog, resolve_query_surface,
 };
 use riffdb_riffql_syntax::{
     AggregateFunction, BinaryOperator, Cardinality, Direction, Document, Expression,
-    FieldSelection, Literal, Path, RIFFQL_LANGUAGE_VERSION_EXACT_RESULT_SET_V1, Span, Spanned,
-    TypeReference, UnaryOperator,
+    FieldSelection, Literal, Path, ProjectedFreshness, RIFFQL_LANGUAGE_VERSION_EXACT_RESULT_SET_V1,
+    Span, Spanned, TypeReference, UnaryOperator,
 };
 use riffdb_types::{
     EXACT_TEXT_PROVIDER_STATE_SCHEMA_HASH_V1, EXACT_TEXT_PROVIDER_STATE_SCHEMA_HASH_V2,
@@ -1384,6 +1385,7 @@ impl<'a> Planner<'a> {
         mut self,
         surface: riffdb_query_ir::ResolvedQueryV1,
     ) -> Result<QueryAccessProgramV1, PlannerDiagnostics> {
+        let projected_source = compile_projected_vector_source(self.document, self.catalog)?;
         let mut partition_parameter: Option<String> = None;
         let selections = selected_fields(self.document);
         let dependency_fields = dependency_fields(self.document);
@@ -1725,18 +1727,33 @@ impl<'a> Planner<'a> {
             .collect::<Result<Vec<_>, _>>()?;
         cost.add_aggregates(surface.aggregates(), self.catalog)?;
         let cost = cost.finish(steps.len())?;
-        QueryAccessProgramV1::checked(
-            self.catalog.identity().clone(),
-            surface,
-            self.document
-                .name
-                .as_ref()
-                .map(|name| name.value.as_str().to_owned()),
-            partition_parameter.ok_or_else(internal)?,
-            steps,
-            authorization,
-            cost,
-        )
+        let name = self
+            .document
+            .name
+            .as_ref()
+            .map(|name| name.value.as_str().to_owned());
+        let partition_parameter = partition_parameter.ok_or_else(internal)?;
+        match projected_source {
+            Some(source) => QueryAccessProgramV1::checked_projected(
+                self.catalog.identity().clone(),
+                surface,
+                name,
+                partition_parameter,
+                steps,
+                authorization,
+                cost,
+                source,
+            ),
+            None => QueryAccessProgramV1::checked(
+                self.catalog.identity().clone(),
+                surface,
+                name,
+                partition_parameter,
+                steps,
+                authorization,
+                cost,
+            ),
+        }
         .ok_or_else(internal)
     }
 
@@ -1956,6 +1973,137 @@ impl<'a> Planner<'a> {
             TypeReference::Set(_) | TypeReference::Cursor | TypeReference::Limit => None,
         }
     }
+}
+
+fn compile_projected_vector_source(
+    document: &Document,
+    catalog: &SymbolicCatalog,
+) -> Result<Option<ProjectedVectorSourceV1>, PlannerDiagnostics> {
+    let nearest = document
+        .body
+        .bindings
+        .iter()
+        .filter(|binding| binding.nearest.is_some())
+        .collect::<Vec<_>>();
+    let Some(source) = &document.projected_source else {
+        if let Some(binding) = nearest.first() {
+            return Err(one(
+                PlannerDiagnosticCode::Unindexed,
+                binding.nearest.as_ref().expect("filtered").span,
+                vec![binding.entity.value.as_str().to_owned()],
+                "production nearest requires an explicit projected source and freshness policy",
+                None,
+            ));
+        }
+        return Ok(None);
+    };
+    if nearest.len() != 1
+        || document.body.bindings.len() != 1
+        || !document.body.aggregates.is_empty()
+    {
+        return Err(one(
+            PlannerDiagnosticCode::Cardinality,
+            source.path.span,
+            Vec::new(),
+            "projected nearest requires exactly one nearest collection binding and no aggregates",
+            None,
+        ));
+    }
+    let binding = nearest[0];
+    if binding.cardinality.value != Cardinality::Many {
+        return Err(one(
+            PlannerDiagnosticCode::Cardinality,
+            binding.cardinality.span,
+            vec![binding.name.value.as_str().to_owned()],
+            "projected nearest requires one bounded many binding",
+            None,
+        ));
+    }
+    let [source_entity, source_field] = source.path.value.0.as_slice() else {
+        return Err(one(
+            PlannerDiagnosticCode::Unindexed,
+            source.path.span,
+            Vec::new(),
+            "projected source must be the exact Entity.vector_field path",
+            None,
+        ));
+    };
+    let nearest_clause = binding.nearest.as_ref().expect("counted above");
+    if comparisons(&binding.predicate.value).iter().any(|term| {
+        !term.operator.is_binary(BinaryOperator::Equal)
+            || !matches!(term.value, Some(Expression::Parameter(_)))
+    }) {
+        return Err(one(
+            PlannerDiagnosticCode::Cardinality,
+            binding.predicate.span,
+            vec![binding.name.value.as_str().to_owned()],
+            "projected nearest v1 accepts only compiler-typed equality parameters",
+            None,
+        ));
+    }
+    if source_entity.value != binding.entity.value
+        || source_field.value != nearest_clause.field.value
+    {
+        return Err(one(
+            PlannerDiagnosticCode::Unindexed,
+            source.path.span,
+            vec![
+                source_entity.value.as_str().to_owned(),
+                source_field.value.as_str().to_owned(),
+            ],
+            "projected source does not match the nearest entity and vector field",
+            None,
+        ));
+    }
+    let entity = catalog
+        .entity(source_entity.value.as_str())
+        .ok_or_else(internal)?;
+    let field = entity.field(source_field.value.as_str()).ok_or_else(|| {
+        one(
+            PlannerDiagnosticCode::Unindexed,
+            source_field.span,
+            vec![
+                source_entity.value.as_str().to_owned(),
+                source_field.value.as_str().to_owned(),
+            ],
+            "projected source field is absent from the exact contract",
+            None,
+        )
+    })?;
+    if field.value_type().vector_dimension().is_none() || !field.is_production_vector() {
+        return Err(one(
+            PlannerDiagnosticCode::Unindexed,
+            source_field.span,
+            vec![
+                source_entity.value.as_str().to_owned(),
+                source_field.value.as_str().to_owned(),
+            ],
+            "projected source is not a production-capable vector field",
+            None,
+        ));
+    }
+    let freshness = match source.freshness.value {
+        ProjectedFreshness::Available => ProjectedVectorFreshnessV1::Available,
+        ProjectedFreshness::Causal {
+            inherit_session_commit,
+            max_wait_ms,
+        } => ProjectedVectorFreshnessV1::Causal {
+            inherit_session_commit,
+            max_wait_ms,
+        },
+        ProjectedFreshness::Bounded { max_lag_ms } => {
+            ProjectedVectorFreshnessV1::Bounded { max_lag_ms }
+        }
+    };
+    ProjectedVectorSourceV1::checked(
+        entity.name().to_owned(),
+        field.name().to_owned(),
+        entity.internal_id(),
+        field.internal_id(),
+        freshness,
+    )
+    .map(Some)
+    .ok_or_else(internal)
 }
 
 fn compact_result_type_supported(value_type: &ValueType) -> bool {

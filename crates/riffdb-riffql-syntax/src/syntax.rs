@@ -10,6 +10,12 @@ pub const RIFFQL_LANGUAGE_VERSION_OPERATIONAL_V1: u32 = 2;
 pub const RIFFQL_LANGUAGE_VERSION_SECRET_OUTPUT_V1: u32 = 3;
 /// Exact indexed result-set language version.
 pub const RIFFQL_LANGUAGE_VERSION_EXACT_RESULT_SET_V1: u32 = 4;
+/// Compiler-owned projected vector source and freshness declarations.
+pub const RIFFQL_LANGUAGE_VERSION_PROJECTED_VECTOR_V1: u32 = 5;
+/// Maximum compiler-declared causal projection wait.
+pub const MAX_PROJECTED_CAUSAL_WAIT_MS: u32 = 30_000;
+/// Maximum compiler-declared bounded projection lag.
+pub const MAX_PROJECTED_LAG_MS: u64 = 86_400_000;
 
 /// Checked half-open UTF-8 byte span.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -79,8 +85,38 @@ pub struct Document {
     pub name: Option<Spanned<Identifier>>,
     /// Declared typed parameters.
     pub parameters: Vec<Parameter>,
+    /// Exact compiler-owned projection source and freshness policy.
+    pub projected_source: Option<ProjectedSource>,
     /// Query body.
     pub body: QueryBody,
+}
+
+/// One explicit vector-projection source selected by symbolic contract path.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProjectedSource {
+    /// Exact `Entity.field` source path.
+    pub path: Spanned<Path>,
+    /// Compiler-owned freshness behavior; never a request parameter.
+    pub freshness: Spanned<ProjectedFreshness>,
+}
+
+/// Closed source-level projection freshness registry (ADR-0136).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ProjectedFreshness {
+    /// Serve the currently published generation and report its frontier.
+    Available,
+    /// Require the inherited session commit when present, with a bounded wait.
+    Causal {
+        /// Whether the generated client/session commit is inherited.
+        inherit_session_commit: bool,
+        /// Compiler-bounded wait in milliseconds.
+        max_wait_ms: u32,
+    },
+    /// Require a trusted elapsed-time lag observation within this bound.
+    Bounded {
+        /// Maximum elapsed projection lag in milliseconds.
+        max_lag_ms: u64,
+    },
 }
 
 /// Typed query parameter.

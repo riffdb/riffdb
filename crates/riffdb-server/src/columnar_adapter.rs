@@ -1,6 +1,6 @@
 //! Server-side columnar apply source and published projection port.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -8,12 +8,14 @@ use std::sync::{Arc, Mutex};
 use riffdb_catalog::ActiveCatalogSnapshot;
 use riffdb_columnar::{
     CheckpointError, ColumnarEngine, ColumnarError, ColumnarOutcome, ColumnarProjectionDefinition,
-    OpenOptions, RegisteredDefinition,
+    NearestCandidate, NearestCandidateAdmission, NearestQueryAdmissionError, NearestQueryRequest,
+    OpenOptions, QueryBudget, QueryError, RegisteredDefinition,
 };
-use riffdb_contract_ir::ContractBundle;
+use riffdb_contract_ir::{ContractBundle, ExpressionKind, ValueType, ValueTypeTag};
 use riffdb_service::{
     ColumnarLifecycle, ColumnarNotifier, ColumnarObservation, ColumnarPortError,
-    ColumnarProjectionPort,
+    ColumnarProjectionPort, VectorProjectionPort, VectorProjectionPortError,
+    VectorProjectionRequest, VectorProjectionResult,
 };
 use riffdb_storage_api::{
     AuthoritativeIndexScanPage, AuthoritativeIndexScanRequest, AuthoritativePointReader,
@@ -22,7 +24,7 @@ use riffdb_storage_api::{
     StoredDurableEventV1, StoredEntityRecordV1, StoredOutcomeV1, StoredProvenanceRecordV1,
 };
 use riffdb_types::{
-    CommitSequence, EventId, FieldId, FrontierPosition, ProjectionFrontier, ProvenanceId,
+    CommitSequence, EntityKey, EventId, FieldId, FrontierPosition, ProjectionFrontier, ProvenanceId,
 };
 
 use crate::config::ConfiguredProjection;
@@ -179,26 +181,50 @@ impl ColumnarRuntime {
         projections_root: &Path,
         history_incarnation: u64,
     ) -> Result<Arc<Self>, ColumnarRegistrationError> {
-        if projections.is_empty() {
-            return Ok(Self::empty(storage, history_incarnation));
-        }
         let active = ActiveCatalogSnapshot::read(&storage).map_err(|error| {
             ColumnarRegistrationError::storage(error, first_projection_name(projections))
         })?;
         let Some(active) = active else {
+            if projections.is_empty() {
+                return Ok(Self::empty(storage, history_incarnation));
+            }
             return Err(ColumnarRegistrationError::no_active_catalog(
                 first_projection_name(projections),
             ));
         };
         let bundle = active.bundle().bundle();
         let mut engines = BTreeMap::new();
-        let mut names = Vec::with_capacity(projections.len());
+        let mut names =
+            Vec::with_capacity(projections.len() + bundle.schema().vector_production_specs().len());
         for configured in projections {
             let name = configured.name().to_owned();
             if engines.contains_key(&name) {
                 return Err(ColumnarRegistrationError::duplicate_name(name));
             }
             let definition = resolve_configured_projection(configured, bundle)?;
+            let directory = projection_directory(projections_root, &name);
+            let engine = ColumnarEngine::open(
+                definition,
+                OpenOptions::new(directory).with_history_incarnation(history_incarnation),
+            )
+            .map_err(|error| ColumnarRegistrationError::open(name.clone(), error))?;
+            engines.insert(name.clone(), Arc::new(ColumnarEngineSlot::new(engine)));
+            names.push(name);
+        }
+        for spec in bundle.schema().vector_production_specs() {
+            let entity = bundle
+                .schema()
+                .entity(spec.entity())
+                .ok_or_else(|| ColumnarRegistrationError::definition("production-vector"))?;
+            let vector = entity
+                .record()
+                .field(spec.field())
+                .ok_or_else(|| ColumnarRegistrationError::definition("production-vector"))?;
+            let name = format!("{}.{}", entity.name(), vector.name());
+            if engines.contains_key(&name) {
+                return Err(ColumnarRegistrationError::duplicate_name(name));
+            }
+            let definition = resolve_production_vector_projection(bundle, entity, &name)?;
             let directory = projection_directory(projections_root, &name);
             let engine = ColumnarEngine::open(
                 definition,
@@ -258,6 +284,67 @@ impl ColumnarRuntime {
     /// Reads the frozen application commit head without holding an engine lock.
     pub(crate) fn read_application_head(&self) -> Result<FrontierPosition, ColumnarPortError> {
         read_application_head(self.storage())
+    }
+}
+
+fn resolve_production_vector_projection(
+    bundle: &ContractBundle,
+    entity: &riffdb_contract_ir::EntitySchema,
+    name: &str,
+) -> Result<RegisteredDefinition, ColumnarRegistrationError> {
+    let aggregate = bundle
+        .schema()
+        .aggregate_for_entity(entity.id())
+        .ok_or_else(|| ColumnarRegistrationError::definition(name))?;
+    let partition = aggregate
+        .keys()
+        .expressions()
+        .get(aggregate.keys().partition_expression())
+        .ok_or_else(|| ColumnarRegistrationError::definition(name))?;
+    let ExpressionKind::SchemaField { entity_type, field } = partition.kind() else {
+        return Err(ColumnarRegistrationError::definition(name));
+    };
+    if *entity_type != entity.id() || entity.record().field(*field).is_none() {
+        return Err(ColumnarRegistrationError::definition(name));
+    }
+    let projected_fields = entity
+        .record()
+        .fields()
+        .iter()
+        .filter(|field| !entity.primary_key_fields().contains(&field.id()))
+        .filter(|field| production_column_type_supported(field.value_type()))
+        .map(|field| field.id())
+        .collect::<Vec<_>>();
+    RegisteredDefinition::register(
+        ColumnarProjectionDefinition {
+            name: name.to_owned(),
+            entity_name: entity.name().to_owned(),
+            projected_fields,
+            org_scope_field: *field,
+        },
+        bundle,
+    )
+    .map_err(|_| ColumnarRegistrationError::definition(name))
+}
+
+fn production_column_type_supported(value_type: &ValueType) -> bool {
+    match value_type.tag() {
+        ValueTypeTag::Bool
+        | ValueTypeTag::I64
+        | ValueTypeTag::U64
+        | ValueTypeTag::String
+        | ValueTypeTag::Uuid
+        | ValueTypeTag::Enum
+        | ValueTypeTag::Timestamp
+        | ValueTypeTag::Date
+        | ValueTypeTag::Decimal
+        | ValueTypeTag::Money
+        | ValueTypeTag::Bytes
+        | ValueTypeTag::Vector => true,
+        ValueTypeTag::Optional => value_type
+            .optional_inner()
+            .is_some_and(production_column_type_supported),
+        ValueTypeTag::List | ValueTypeTag::Record => false,
     }
 }
 
@@ -328,6 +415,225 @@ impl ColumnarProjectionPort for ServerColumnarProjectionPort {
 
     fn known_names(&self) -> &[String] {
         self.runtime.names()
+    }
+}
+
+impl VectorProjectionPort for ServerColumnarProjectionPort {
+    fn execute(
+        &self,
+        request: VectorProjectionRequest,
+    ) -> Result<VectorProjectionResult, VectorProjectionPortError> {
+        let observation = self
+            .observe(request.source_name())
+            .map_err(map_vector_port_error)?;
+        match observation.lifecycle() {
+            Some(ColumnarLifecycle::Building) => return Err(VectorProjectionPortError::Building),
+            Some(ColumnarLifecycle::Rebuilding { .. }) => {
+                return Err(VectorProjectionPortError::Rebuilding);
+            }
+            Some(ColumnarLifecycle::Degraded { .. }) => {
+                return Err(VectorProjectionPortError::Degraded);
+            }
+            Some(ColumnarLifecycle::Invalid { .. }) => {
+                return Err(VectorProjectionPortError::Integrity);
+            }
+            Some(ColumnarLifecycle::Ready) | None => {}
+        }
+        if !observation.has_published()
+            || observation.definition().entity_type_id() != request.entity()
+            || !observation
+                .definition()
+                .projected_fields()
+                .contains(&request.field())
+        {
+            return Err(VectorProjectionPortError::Integrity);
+        }
+        let FrontierPosition::AppliedThrough(epoch) = observation.published_frontier().position()
+        else {
+            return Err(VectorProjectionPortError::Building);
+        };
+        if request
+            .minimum_epoch()
+            .is_some_and(|minimum| epoch < minimum)
+        {
+            return Err(VectorProjectionPortError::FreshnessUnsatisfied);
+        }
+        if let Some(max_lag_ms) = request.max_lag_ms() {
+            let FrontierPosition::AppliedThrough(head) = observation.head().position() else {
+                return Err(VectorProjectionPortError::FreshnessUnsatisfied);
+            };
+            if trusted_commit_lag_ms(self.runtime.storage(), epoch, head)? > max_lag_ms {
+                return Err(VectorProjectionPortError::FreshnessUnsatisfied);
+            }
+        }
+        let target = riffdb_query_executor::VectorInspectionTargetV1::new(
+            request.lineage().clone(),
+            request.partition().clone(),
+            request.entity(),
+            request.field(),
+            None,
+            std::num::NonZeroU16::new(500).expect("fixed inspection bound is nonzero"),
+        );
+        let evidence = riffdb_query_executor::QueryExecutionPort::inspect_vector_evidence(
+            self.runtime.storage(),
+            &target,
+            request.row_policy().map(Arc::as_ref),
+        )
+        .map_err(map_vector_execution_error)?;
+        if !evidence.exact_end()
+            || evidence.frontier() != Some(epoch)
+            || evidence.stale_entities() > request.stale_entity_threshold()
+        {
+            return Err(VectorProjectionPortError::FreshnessUnsatisfied);
+        }
+        let candidates = evidence
+            .candidates()
+            .iter()
+            .map(|candidate| candidate.entity_key().clone())
+            .collect::<BTreeSet<_>>();
+        if let Some(admission) = evidence.admission()
+            && !admission.covers(request.entity(), &candidates)
+        {
+            return Err(VectorProjectionPortError::Integrity);
+        }
+        let current = evidence
+            .candidates()
+            .iter()
+            .filter(|candidate| {
+                candidate
+                    .embedding_write()
+                    .is_some_and(|(_, metadata)| metadata == request.current_model())
+            })
+            .map(|candidate| candidate.entity_key().clone())
+            .collect::<BTreeSet<_>>();
+        let mut admission = ProductionVectorAdmission {
+            entity: request.entity(),
+            key_schema: observation.definition().primary_key_schema(),
+            current,
+            policy: evidence.admission(),
+        };
+        let nearest_request = NearestQueryRequest {
+            org_scope: request.partition_value().clone(),
+            vector_field: request.field(),
+            query_vector: request.query_vector().clone(),
+            k: request.k(),
+            metric: request.metric(),
+            predicates: request.predicates().to_vec(),
+            budget: QueryBudget {
+                max_scanned_rows: 500,
+                max_group_cardinality: 1,
+            },
+        };
+        let nearest = riffdb_columnar::nearest_query_snapshot_with_admission(
+            observation.definition(),
+            observation.snapshot().as_ref(),
+            &nearest_request,
+            &mut admission,
+        )
+        .map_err(map_vector_nearest_error)?;
+        Ok(VectorProjectionResult::new(
+            nearest,
+            observation.published_frontier().clone(),
+            observation.head().clone(),
+        ))
+    }
+}
+
+fn trusted_commit_lag_ms(
+    storage: &SharedRedbOperationalPorts,
+    frontier: CommitSequence,
+    head: CommitSequence,
+) -> Result<u64, VectorProjectionPortError> {
+    if head < frontier {
+        return Err(VectorProjectionPortError::Integrity);
+    }
+    if head == frontier {
+        return Ok(0);
+    }
+    let frontier_time = AuthoritativePointReader::read_commit(storage, frontier)
+        .map_err(|_| VectorProjectionPortError::Unavailable)?
+        .ok_or(VectorProjectionPortError::Integrity)?
+        .logical_time()
+        .timestamp();
+    let head_time = AuthoritativePointReader::read_commit(storage, head)
+        .map_err(|_| VectorProjectionPortError::Unavailable)?
+        .ok_or(VectorProjectionPortError::Integrity)?
+        .logical_time()
+        .timestamp();
+    if head_time < frontier_time {
+        return Err(VectorProjectionPortError::Integrity);
+    }
+    trusted_timestamp_lag_ms(frontier_time, head_time)
+}
+
+fn trusted_timestamp_lag_ms(
+    frontier_time: riffdb_types::Timestamp,
+    head_time: riffdb_types::Timestamp,
+) -> Result<u64, VectorProjectionPortError> {
+    let to_nanos = |timestamp: riffdb_types::Timestamp| {
+        i128::from(timestamp.seconds())
+            .checked_mul(1_000_000_000)
+            .and_then(|value| value.checked_add(i128::from(timestamp.nanoseconds())))
+    };
+    let total_nanos = to_nanos(head_time)
+        .and_then(|head| to_nanos(frontier_time).and_then(|frontier| head.checked_sub(frontier)))
+        .and_then(|value| u64::try_from(value).ok())
+        .ok_or(VectorProjectionPortError::Integrity)?;
+    Ok(total_nanos.div_ceil(1_000_000))
+}
+
+struct ProductionVectorAdmission<'a> {
+    entity: riffdb_types::EntityTypeId,
+    key_schema: &'a riffdb_contract_ir::KeySchema,
+    current: BTreeSet<EntityKey>,
+    policy: Option<&'a riffdb_policy::AuthorizedProjectedRowAdmissionV1>,
+}
+
+impl NearestCandidateAdmission for ProductionVectorAdmission<'_> {
+    type Error = ();
+
+    fn admit(&mut self, candidate: NearestCandidate<'_>) -> Result<bool, Self::Error> {
+        if candidate.entity_type_id() != self.entity {
+            return Err(());
+        }
+        let key = self
+            .key_schema
+            .encode_entity(candidate.primary_key())
+            .map_err(|_| ())?;
+        Ok(self.current.contains(&key) && self.policy.is_none_or(|policy| policy.admits(&key)))
+    }
+}
+
+const fn map_vector_port_error(error: ColumnarPortError) -> VectorProjectionPortError {
+    match error {
+        ColumnarPortError::Unavailable => VectorProjectionPortError::Unavailable,
+        ColumnarPortError::Integrity => VectorProjectionPortError::Integrity,
+    }
+}
+
+fn map_vector_execution_error(
+    error: riffdb_query_executor::QueryExecutionError,
+) -> VectorProjectionPortError {
+    match error {
+        riffdb_query_executor::QueryExecutionError::BackendUnavailable => {
+            VectorProjectionPortError::Unavailable
+        }
+        riffdb_query_executor::QueryExecutionError::BackendLimitExceeded
+        | riffdb_query_executor::QueryExecutionError::BoundExceeded
+        | riffdb_query_executor::QueryExecutionError::FuelExhausted => {
+            VectorProjectionPortError::Unavailable
+        }
+        _ => VectorProjectionPortError::Integrity,
+    }
+}
+
+fn map_vector_nearest_error(error: NearestQueryAdmissionError<()>) -> VectorProjectionPortError {
+    match error {
+        NearestQueryAdmissionError::Admission(()) => VectorProjectionPortError::Integrity,
+        NearestQueryAdmissionError::Query(
+            QueryError::ScanBudgetExceeded { .. } | QueryError::GroupCardinalityExceeded { .. },
+        ) => VectorProjectionPortError::Unavailable,
+        NearestQueryAdmissionError::Query(_) => VectorProjectionPortError::Integrity,
     }
 }
 
@@ -637,6 +943,22 @@ contract AdapterBoard version 1 {
 }
 "#;
 
+    const PRODUCTION_VECTOR_CONTRACT: &str = r#"
+contract VectorBoard version 1 {
+  entity Document {
+    key (organization_id: uuid, document_id: uuid)
+    field title: string<64>
+    vector_field embedding(4, cosine, (title), staleness_slo 60, model "embed-v1", current_version "2026-08-21", replay_age_seconds 86400, replay_bytes 1073741824, replay_backlog 100000)
+  }
+
+  aggregate Documents {
+    root Document
+    partition_by organization_id
+    conflict_key (organization_id, document_id)
+  }
+}
+"#;
+
     /// Whole-directory scope for one adapter test: database, its journal
     /// side files, and the projections root all live inside it and are
     /// removed on `Drop` — pass, fail, or panic.
@@ -757,6 +1079,52 @@ contract AdapterBoard version 1 {
         (runtime, scope)
     }
 
+    fn production_vector_runtime(label: &str) -> (Arc<ColumnarRuntime>, tempfile::TempDir) {
+        let scope = adapter_scope(label);
+        let database_path = scope.path().join("db.redb");
+        let projections_root = scope.path().join("projections");
+        std::fs::create_dir_all(&projections_root).expect("create projections root");
+        let mut store = RedbStore::open(&database_path).expect("create adapter database");
+        let database_id = DatabaseId::from_bytes(uuid_bytes(0x12)).expect("database id");
+        assert_eq!(
+            store
+                .initialize_database(database_id)
+                .expect("initialize adapter database"),
+            DatabaseInitializationResult::Installed(database_id)
+        );
+        let checked = ValidatedContractBundle::from_compiler_bundle(
+            riffdb_contract_compiler::compile_contract_source(PRODUCTION_VECTOR_CONTRACT)
+                .expect("compile production vector contract"),
+        )
+        .expect("validate production vector contract");
+        let mut ports = open_operational(store);
+        let stored = checked.to_stored().expect("encode adapter bundle");
+        let activation = ports
+            .activate_catalog(&CatalogActivationIntentV1::new(
+                None,
+                stored,
+                RequestId::from_bytes(uuid_bytes(0x22)).expect("request id"),
+                AuditPrincipalV1::new(
+                    ActorId::new("adapter-test").expect("actor"),
+                    ActorKind::Human,
+                    CapabilityId::from_bytes(uuid_bytes(0x32)).expect("capability"),
+                    std::num::NonZeroU64::MIN,
+                ),
+                Timestamp::new(1_700_200_001, 0).expect("timestamp"),
+                None,
+            ))
+            .expect("activate production vector catalog");
+        assert!(matches!(
+            activation,
+            CatalogActivationResult::Activated { .. }
+        ));
+        let storage =
+            SharedRedbOperationalPorts::new(ports, None).expect("share adapter operational ports");
+        let runtime = ColumnarRuntime::open(storage, &[], &projections_root, 1)
+            .expect("open production vector runtime");
+        (runtime, scope)
+    }
+
     fn board_query() -> ColumnarQueryRequest {
         ColumnarQueryRequest {
             org_scope: CanonicalValue::Uuid(uuid_bytes(0x41)),
@@ -768,6 +1136,33 @@ contract AdapterBoard version 1 {
             aggregate: None,
             budget: QueryBudget::default(),
         }
+    }
+
+    #[test]
+    fn production_vector_contract_registers_exact_symbolic_projection_automatically() {
+        let (runtime, _scope) = production_vector_runtime("production-vector");
+        assert_eq!(runtime.names(), &["Document.embedding"]);
+        let slot = runtime
+            .engines()
+            .get("Document.embedding")
+            .expect("compiler-owned vector projection");
+        assert_eq!(slot.definition().name(), "Document.embedding");
+        assert_eq!(slot.definition().entity_name(), "Document");
+        assert_eq!(slot.definition().projected_fields().len(), 2);
+    }
+
+    #[test]
+    fn bounded_vector_freshness_uses_elapsed_time_across_second_boundaries() {
+        let frontier = Timestamp::new(1, 900_000_000).expect("frontier time");
+        let head = Timestamp::new(2, 100_000_001).expect("head time");
+        assert_eq!(
+            trusted_timestamp_lag_ms(frontier, head).expect("trusted lag"),
+            201
+        );
+        assert_eq!(
+            trusted_timestamp_lag_ms(head, frontier),
+            Err(VectorProjectionPortError::Integrity)
+        );
     }
 
     /// Transcript (b) — serve-under-lock is impossible, proven live in both

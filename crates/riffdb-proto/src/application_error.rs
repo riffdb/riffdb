@@ -277,6 +277,9 @@ const fn proto_code(value: DomainCode) -> app_v1::ApplicationErrorCode {
         DomainCode::ProjectionDiverged => app_v1::ApplicationErrorCode::ProjectionDiverged,
         DomainCode::SnapshotRetired => app_v1::ApplicationErrorCode::SnapshotRetired,
         DomainCode::FreshnessUnsatisfied => app_v1::ApplicationErrorCode::FreshnessUnsatisfied,
+        DomainCode::ProjectedSourceRequired => {
+            app_v1::ApplicationErrorCode::ProjectedSourceRequired
+        }
     }
 }
 
@@ -307,6 +310,7 @@ fn domain_code(value: i32) -> Result<DomainCode, ApplicationErrorWireError> {
         Ok(Wire::ProjectionDiverged) => Ok(DomainCode::ProjectionDiverged),
         Ok(Wire::SnapshotRetired) => Ok(DomainCode::SnapshotRetired),
         Ok(Wire::FreshnessUnsatisfied) => Ok(DomainCode::FreshnessUnsatisfied),
+        Ok(Wire::ProjectedSourceRequired) => Ok(DomainCode::ProjectedSourceRequired),
         Ok(Wire::Unspecified) | Err(_) => Err(ApplicationErrorWireError::UnknownCode),
     }
 }

@@ -6,6 +6,7 @@ const MANIFEST: &str = include_str!("../Cargo.toml");
 const LOCKFILE: &str = include_str!("../../../Cargo.lock");
 const LIFECYCLE_SERVICE: &str = include_str!("../src/lifecycle_service.rs");
 const LIFECYCLE: &str = include_str!("../src/lifecycle.rs");
+const COLUMNAR_ADAPTER: &str = include_str!("../src/columnar_adapter.rs");
 
 fn rust_sources(root: &std::path::Path) -> Vec<(std::path::PathBuf, String)> {
     fn visit(root: &std::path::Path, sources: &mut Vec<(std::path::PathBuf, String)>) {
@@ -55,6 +56,29 @@ fn lifecycle_wrappers_cover_the_symbolic_catalog_surface() {
         );
     }
     assert!(LIFECYCLE_SERVICE.contains(") -> ApplicationCatalogResult => DescribeContract;"));
+}
+
+#[test]
+fn production_vector_adapter_admits_current_authoritative_rows_before_ranking() {
+    let execution = COLUMNAR_ADAPTER
+        .split_once("impl VectorProjectionPort for ServerColumnarProjectionPort")
+        .expect("production vector projection port")
+        .1
+        .split_once("fn trusted_commit_lag_ms(")
+        .expect("vector execution boundary")
+        .0;
+    let evidence = execution
+        .find("inspect_vector_evidence(")
+        .expect("authoritative candidate and policy evidence");
+    let admission = execution
+        .find("ProductionVectorAdmission")
+        .expect("current-model candidate admission");
+    let ranking = execution
+        .find("nearest_query_snapshot_with_admission(")
+        .expect("admission-aware ranking");
+    assert!(evidence < admission && admission < ranking);
+    assert!(execution.contains("NonZeroU16::new(500)"));
+    assert!(!execution.contains("nearest_query_snapshot("));
 }
 
 fn locked_version(package: &str) -> &'static str {

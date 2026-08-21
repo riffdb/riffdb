@@ -182,6 +182,7 @@ pub struct ServiceProviders {
     pub(crate) contextual_causation: Option<ContextualCausationTokenCodec>,
     pub(crate) columnar: Option<Arc<dyn ColumnarProjectionPort>>,
     pub(crate) exact_text: Option<Arc<dyn crate::ExactTextProjectionPort>>,
+    pub(crate) vector_projection: Option<Arc<dyn crate::VectorProjectionPort>>,
 }
 
 impl ServiceProviders {
@@ -236,6 +237,7 @@ impl ServiceProviders {
             contextual_causation: None,
             columnar: None,
             exact_text: None,
+            vector_projection: None,
         }
     }
 
@@ -302,6 +304,16 @@ impl ServiceProviders {
     #[must_use]
     pub fn with_exact_text(mut self, exact_text: Arc<dyn crate::ExactTextProjectionPort>) -> Self {
         self.exact_text = Some(exact_text);
+        self
+    }
+
+    /// Installs the compiler-owned projected-vector provider.
+    #[must_use]
+    pub fn with_vector_projection(
+        mut self,
+        vector_projection: Arc<dyn crate::VectorProjectionPort>,
+    ) -> Self {
+        self.vector_projection = Some(vector_projection);
         self
     }
 

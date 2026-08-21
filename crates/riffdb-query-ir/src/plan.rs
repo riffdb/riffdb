@@ -12,6 +12,97 @@ use crate::{
 const PROGRAM_MAGIC: &[u8] = b"RIFFDB-QUERY-ACCESS-PROGRAM\0";
 const INDEX_GENERATION_MODEL_V2: &[u8] = b"PARTITION-INDEX-GENERATION-V2\0";
 
+/// Closed compiler-owned freshness policy for one projected vector query.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ProjectedVectorFreshnessV1 {
+    /// Serve the current published generation.
+    Available,
+    /// Inherit the submitted read-after-commit fence when requested.
+    Causal {
+        /// Whether an available session fence is required.
+        inherit_session_commit: bool,
+        /// Maximum wait in milliseconds.
+        max_wait_ms: u32,
+    },
+    /// Require a trusted elapsed-time lag observation.
+    Bounded {
+        /// Maximum elapsed lag in milliseconds.
+        max_lag_ms: u64,
+    },
+}
+
+/// Exact compiler-selected vector projection source.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProjectedVectorSourceV1 {
+    entity: String,
+    field: String,
+    entity_id: EntityTypeId,
+    field_id: FieldId,
+    freshness: ProjectedVectorFreshnessV1,
+}
+
+impl ProjectedVectorSourceV1 {
+    /// Constructs one checked symbolic/stable source identity.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn checked(
+        entity: String,
+        field: String,
+        entity_id: EntityTypeId,
+        field_id: FieldId,
+        freshness: ProjectedVectorFreshnessV1,
+    ) -> Option<Self> {
+        if entity.is_empty() || field.is_empty() {
+            return None;
+        }
+        Some(Self {
+            entity,
+            field,
+            entity_id,
+            field_id,
+            freshness,
+        })
+    }
+
+    /// Exact symbolic `Entity.field` source name.
+    #[must_use]
+    pub fn name(&self) -> String {
+        format!("{}.{}", self.entity, self.field)
+    }
+
+    /// Entity source name.
+    #[must_use]
+    pub fn entity(&self) -> &str {
+        &self.entity
+    }
+
+    /// Vector-field source name.
+    #[must_use]
+    pub fn field(&self) -> &str {
+        &self.field
+    }
+
+    /// Stable entity identity.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn internal_entity_id(&self) -> EntityTypeId {
+        self.entity_id
+    }
+
+    /// Stable vector-field identity.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn internal_field_id(&self) -> FieldId {
+        self.field_id
+    }
+
+    /// Compiler-owned freshness policy.
+    #[must_use]
+    pub const fn freshness(&self) -> ProjectedVectorFreshnessV1 {
+        self.freshness
+    }
+}
+
 /// One compiler-owned positional field in a sealed covered-result layout.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CoveredResultSourceV1 {
@@ -817,6 +908,7 @@ pub struct QueryAccessProgramV1 {
     contract: ExactContractIdentity,
     surface: ResolvedQueryV1,
     name: Option<String>,
+    projected_source: Option<ProjectedVectorSourceV1>,
     partition_parameter: String,
     steps: Vec<QueryAccessStep>,
     authorization: Vec<AuthorizationEntityAccess>,
@@ -853,6 +945,54 @@ impl QueryAccessProgramV1 {
         authorization: Vec<AuthorizationEntityAccess>,
         cost: QueryCostVectorV1,
     ) -> Option<Self> {
+        Self::checked_with_projected_source(
+            contract,
+            surface,
+            name,
+            partition_parameter,
+            steps,
+            authorization,
+            cost,
+            None,
+        )
+    }
+
+    /// Constructs a program bound to one explicit projected vector source.
+    #[doc(hidden)]
+    #[allow(clippy::too_many_arguments)]
+    pub fn checked_projected(
+        contract: ExactContractIdentity,
+        surface: ResolvedQueryV1,
+        name: Option<String>,
+        partition_parameter: String,
+        steps: Vec<QueryAccessStep>,
+        authorization: Vec<AuthorizationEntityAccess>,
+        cost: QueryCostVectorV1,
+        projected_source: ProjectedVectorSourceV1,
+    ) -> Option<Self> {
+        Self::checked_with_projected_source(
+            contract,
+            surface,
+            name,
+            partition_parameter,
+            steps,
+            authorization,
+            cost,
+            Some(projected_source),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn checked_with_projected_source(
+        contract: ExactContractIdentity,
+        surface: ResolvedQueryV1,
+        name: Option<String>,
+        partition_parameter: String,
+        steps: Vec<QueryAccessStep>,
+        authorization: Vec<AuthorizationEntityAccess>,
+        cost: QueryCostVectorV1,
+        projected_source: Option<ProjectedVectorSourceV1>,
+    ) -> Option<Self> {
         if surface.contract() != &contract
             || partition_parameter.is_empty()
             || steps.is_empty()
@@ -864,7 +1004,9 @@ impl QueryAccessProgramV1 {
         {
             return None;
         }
-        let ir_version = if steps
+        let ir_version = if projected_source.is_some() {
+            crate::QUERY_IR_VERSION_PROJECTED_VECTOR_V1
+        } else if steps
             .iter()
             .any(|step| step.covered_result_layout.is_some())
         {
@@ -883,6 +1025,7 @@ impl QueryAccessProgramV1 {
             &steps,
             &authorization,
             cost,
+            projected_source.as_ref(),
         )?;
         let identity = QueryPlanIdentity(hash_query_plan(&canonical_bytes));
         let explain = build_explain(&partition_parameter, &steps, &authorization, cost);
@@ -890,6 +1033,7 @@ impl QueryAccessProgramV1 {
             contract,
             surface,
             name,
+            projected_source,
             partition_parameter,
             steps,
             authorization,
@@ -918,6 +1062,12 @@ impl QueryAccessProgramV1 {
         self.name.as_deref()
     }
 
+    /// Exact projected source, when this program uses derived vector state.
+    #[must_use]
+    pub const fn projected_source(&self) -> Option<&ProjectedVectorSourceV1> {
+        self.projected_source.as_ref()
+    }
+
     /// One parameter routing every access to the same partition.
     #[must_use]
     pub fn partition_parameter(&self) -> &str {
@@ -933,7 +1083,9 @@ impl QueryAccessProgramV1 {
     /// Least-sufficient executable IR identity for this exact program.
     #[must_use]
     pub fn ir_version(&self) -> u32 {
-        if self
+        if self.projected_source.is_some() {
+            crate::QUERY_IR_VERSION_PROJECTED_VECTOR_V1
+        } else if self
             .steps
             .iter()
             .any(|step| step.covered_result_layout.is_some())
@@ -998,6 +1150,7 @@ fn encode_program(
     steps: &[QueryAccessStep],
     authorization: &[AuthorizationEntityAccess],
     cost: QueryCostVectorV1,
+    projected_source: Option<&ProjectedVectorSourceV1>,
 ) -> Option<Vec<u8>> {
     let mut out = Vec::new();
     out.extend_from_slice(PROGRAM_MAGIC);
@@ -1011,6 +1164,30 @@ fn encode_program(
     write_count(&mut out, surface.canonical_bytes.len())?;
     out.extend_from_slice(surface.canonical_bytes);
     write_text(&mut out, surface.name.unwrap_or(""))?;
+    if surface.ir_version == crate::QUERY_IR_VERSION_PROJECTED_VECTOR_V1 {
+        let source = projected_source?;
+        write_text(&mut out, source.entity())?;
+        write_text(&mut out, source.field())?;
+        out.extend_from_slice(&source.internal_entity_id().get().to_be_bytes());
+        out.extend_from_slice(&source.internal_field_id().get().to_be_bytes());
+        match source.freshness() {
+            ProjectedVectorFreshnessV1::Available => out.push(1),
+            ProjectedVectorFreshnessV1::Causal {
+                inherit_session_commit,
+                max_wait_ms,
+            } => {
+                out.push(2);
+                out.push(u8::from(inherit_session_commit));
+                out.extend_from_slice(&max_wait_ms.to_be_bytes());
+            }
+            ProjectedVectorFreshnessV1::Bounded { max_lag_ms } => {
+                out.push(3);
+                out.extend_from_slice(&max_lag_ms.to_be_bytes());
+            }
+        }
+    } else if projected_source.is_some() {
+        return None;
+    }
     write_text(&mut out, partition_parameter)?;
     write_count(&mut out, steps.len())?;
     for step in steps {

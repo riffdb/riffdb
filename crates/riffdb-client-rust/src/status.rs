@@ -312,7 +312,8 @@ const fn code_for_application(code: ApplicationErrorCode) -> Code {
         | ApplicationErrorCode::HistoryPruned
         | ApplicationErrorCode::ProjectionDiverged
         | ApplicationErrorCode::SnapshotRetired
-        | ApplicationErrorCode::FreshnessUnsatisfied => Code::FailedPrecondition,
+        | ApplicationErrorCode::FreshnessUnsatisfied
+        | ApplicationErrorCode::ProjectedSourceRequired => Code::FailedPrecondition,
         ApplicationErrorCode::ResponseTooLarge | ApplicationErrorCode::Overloaded => {
             Code::ResourceExhausted
         }

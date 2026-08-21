@@ -141,6 +141,9 @@ query SimilarDocuments(
     $query_vec: Document.embedding,
     $k: Limit,
 ) {
+    source projected Document.embedding
+    freshness causal inherit_session_commit true max_wait_ms 500
+
     many results from Document
         where org_id == $org_id
         nearest(embedding, $query_vec, $k)
@@ -160,12 +163,31 @@ query SimilarDocuments(
   not compile (`RDB-QP002`).
 - The static plan cost charges the full 500-row partition-scan ceiling, not
   K: exact nearest search examines the whole partition.
+- Production execution requires the exact compiler-owned
+  `source projected Entity.vector_field` declaration. The source must match
+  the nearest binding and a production-capable contract vector field; it is
+  never selected from a request or inferred from whichever projection happens
+  to exist.
+- `freshness available` serves the currently published generation and reports
+  its frontier. `freshness causal inherit_session_commit true max_wait_ms N`
+  waits for the generated client's scoped commit fence for at most the
+  compiler-bounded duration. `freshness bounded max_lag_ms N` compares trusted
+  logical timestamps at the authoritative head and projection frontier; it
+  never estimates elapsed time from sequence distance or process wall time.
+- The first production form is intentionally one nearest `many` binding with
+  equality-parameter scalar predicates and fields from that entity. Mixed
+  authoritative/projected bindings, dependent relations, aggregates, and
+  multiple vector sources fail at compile time rather than mixing snapshots.
+- Current row policy filters the complete bounded candidate set before scalar
+  predicates, distance calculation, ranking, K, counts, or output. The same
+  capability and policy identity is revalidated before release.
 - `nearest` is a contextual word, not reserved — a contract field named
   `nearest` remains fully queryable.
 
-The compiled plan is real, but no production storage adapter serves nearest
-steps yet; see [Known Limitations](../known-limitations.md) for the exact
-reachability boundary.
+The production exact tier uses the automatically registered `Entity.field`
+columnar projection and the shared 500-row admission ceiling. The approximate
+tier remains a separate alpha follow-on; see
+[Known Limitations](../known-limitations.md).
 
 ## Accepted application-profile target
 
