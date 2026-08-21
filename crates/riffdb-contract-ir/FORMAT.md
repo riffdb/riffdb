@@ -622,6 +622,18 @@ Fields below are listed in exact byte order. A collection field includes its cou
 | 3 | `row_threshold` | u32 rows per organization (1..=65536) |
 | 4 | `recall_target_bps` | u32 basis points (1..=10000) |
 
+### VectorProductionSpecV1
+
+| # | Field | Encoding |
+|---:|---|---|
+| 1 | `entity` | EntityTypeId |
+| 2 | `field` | FieldId |
+| 3 | `model_identity` | string (1..=256 bytes) |
+| 4 | `current_model_version` | string (1..=256 bytes) |
+| 5 | `replay_age_seconds` | u64 (1..=31536000) |
+| 6 | `replay_bytes` | u64 (1..=1099511627776) |
+| 7 | `replay_backlog` | u64 (1..=100000000) |
+
 ### EntitySchema
 
 | # | Field | Encoding |

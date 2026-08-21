@@ -1200,6 +1200,69 @@ contract Search version 1 {
 }
 
 #[test]
+fn parses_atomic_production_vector_clause_with_exact_values() {
+    let source = r#"
+contract Search version 1 {
+  entity Document {
+    key (id: uuid)
+    field title: string<256>
+    vector_field embedding(128, cosine, (title), staleness_slo 60, model "embed-v1", current_version "2026-08-21", replay_age_seconds 86400, replay_bytes 1073741824, replay_backlog 100000)
+  }
+}
+"#;
+    let document = parse_contract(source).expect("production vector declaration parses");
+    let Declaration::Entity(entity) = &document.contract.value.declarations[0].value else {
+        panic!("entity declaration");
+    };
+    let production = entity
+        .items
+        .iter()
+        .find_map(|item| match &item.value {
+            EntityItem::VectorField(field) => field.production.as_ref(),
+            _ => None,
+        })
+        .expect("production clause retained in AST");
+    assert_eq!(production.model_identity.value, "\"embed-v1\"");
+    assert_eq!(production.current_model_version.value, "\"2026-08-21\"");
+    assert_eq!(production.replay_age_seconds.value, "86400");
+    assert_eq!(production.replay_bytes.value, "1073741824");
+    assert_eq!(production.replay_backlog.value, "100000");
+}
+
+#[test]
+fn production_vector_clause_is_atomic() {
+    let source = r#"
+contract Invalid version 1 {
+  entity Document {
+    key (id: uuid)
+    field title: string<256>
+    vector_field embedding(128, cosine, (title), staleness_slo 60, model "embed-v1", current_version "2026-08-21")
+  }
+}
+"#;
+    parse_contract(source).expect_err("partial production authority must be unrepresentable");
+}
+
+#[test]
+fn wrong_production_vector_keyword_is_rejected_at_its_span() {
+    let source = r#"
+contract Invalid version 1 {
+  entity Document {
+    key (id: uuid)
+    field title: string<256>
+    vector_field embedding(128, cosine, (title), staleness_slo 60, provider "embed-v1", current_version "2026-08-21", replay_age_seconds 86400, replay_bytes 1024, replay_backlog 100)
+  }
+}
+"#;
+    let diagnostics = parse_contract(source).expect_err("wrong model keyword must fail");
+    let start = source.find("provider").expect("keyword span");
+    assert_eq!(
+        diagnostics.as_slice()[0].span(),
+        Span::new(start, start + "provider".len()).expect("span")
+    );
+}
+
+#[test]
 fn wrong_ann_keyword_is_rejected_at_its_span() {
     let source = r#"
 contract Invalid version 1 {

@@ -138,6 +138,7 @@ pub(crate) fn vector_field_item(
     source_fields: Vec<Spanned<String>>,
     slo_keyword: Spanned<String>,
     staleness_slo: Spanned<String>,
+    production: Option<VectorProductionDeclaration>,
     ann: Option<VectorAnnDeclaration>,
     lo: usize,
     hi: usize,
@@ -155,11 +156,50 @@ pub(crate) fn vector_field_item(
             metric,
             source_fields,
             staleness_slo,
+            production: production.map(Box::new),
             ann,
         }),
         lo,
         hi,
     ))
+}
+
+/// Builds the atomic production-vector clause while keeping its vocabulary
+/// contextual outside `vector_field(...)`.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn vector_production_declaration(
+    model_keyword: Spanned<String>,
+    model_identity: Spanned<String>,
+    version_keyword: Spanned<String>,
+    current_model_version: Spanned<String>,
+    age_keyword: Spanned<String>,
+    replay_age_seconds: Spanned<String>,
+    bytes_keyword: Spanned<String>,
+    replay_bytes: Spanned<String>,
+    backlog_keyword: Spanned<String>,
+    replay_backlog: Spanned<String>,
+) -> Result<VectorProductionDeclaration, SyntaxDiagnostic> {
+    for (keyword, expected) in [
+        (&model_keyword, "model"),
+        (&version_keyword, "current_version"),
+        (&age_keyword, "replay_age_seconds"),
+        (&bytes_keyword, "replay_bytes"),
+        (&backlog_keyword, "replay_backlog"),
+    ] {
+        if keyword.value != expected {
+            return Err(SyntaxDiagnostic::new(
+                SyntaxDiagnosticCode::InvalidToken,
+                keyword.span,
+            ));
+        }
+    }
+    Ok(VectorProductionDeclaration {
+        model_identity,
+        current_model_version,
+        replay_age_seconds,
+        replay_bytes,
+        replay_backlog,
+    })
 }
 
 /// Builds the optional ANN clause while keeping its vocabulary contextual.

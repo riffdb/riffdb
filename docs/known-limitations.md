@@ -56,13 +56,15 @@ These limits are part of the POC release posture, not hidden roadmap promises.
   presentation.
 - There is no general SQL surface, arbitrary transaction callback, analytical
   join engine, distributed transaction, replication, failover, or consensus.
-- Vector search remains compile-complete but is not application-reachable end
+- Vector search remains partially compile-complete but is not application-reachable end
   to end. The low-level native and typed Protobuf value branches, gRPC and
   hosted MCP conversions, and CLI numeric component arrays now preserve finite
-  binary32 vectors without bytes punning. Stable generated Rust, Go, and Python
-  application models still exclude vector fields, and authoritative embedding
-  persistence does not yet consume the required model identity/version or
-  stamp embedding provenance and write-sequence evidence.
+  binary32 vectors without bytes punning. Contract IR V15 now seals one exact
+  model identity/current version and bounded replay ceilings per production
+  vector field. Stable generated Rust, Go, TypeScript, and Python application
+  models still exclude vector fields, and authoritative embedding persistence
+  does not yet consume that descriptor or stamp embedding provenance and
+  write-sequence evidence.
 - Vector staleness now has v1 count semantics: a declared positive stale-entity
   threshold breaches only when `stale_count > threshold`; duration-based
   semantics are future work. Paginated staleness and model-version DTOs exist,

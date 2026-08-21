@@ -136,6 +136,9 @@ entity Document {
     field title: string<256>
     field body: string<65536>
     vector_field embedding(1536, cosine, (title, body), staleness_slo 60,
+        model "text-embedding-3-small", current_version "2026-08-21",
+        replay_age_seconds 86400, replay_bytes 1073741824,
+        replay_backlog 100000,
         ann_threshold 256, recall_target_bps 9500)
 }
 ```
@@ -152,6 +155,15 @@ bundle, where it is part of the contract's durable identity:
   observer breaches the SLO only when `stale_count > staleness_slo`; equality
   does not breach it. Duration-based or clock-based staleness is a named future
   amendment, not a v1 interpretation of this declaration.
+- The production clause is atomic: `model`, `current_version`,
+  `replay_age_seconds`, `replay_bytes`, and `replay_backlog` must all appear in
+  that order or all be absent. Model strings are nonempty and at most 256
+  bytes. Replay limits are positive and compiler-bounded (one year, one TiB,
+  and 100,000,000 sequences respectively). They are projection retention
+  ceilings, not request parameters.
+- Omitting the production clause preserves legacy exact-vector bundle bytes,
+  but that field cannot back a production `nearest` query. A production clause
+  selects contract IR V15; earlier vector and ANN records remain byte-frozen.
 - The optional ANN clause is atomic: `ann_threshold` and
   `recall_target_bps` must appear together in that order. The threshold is
   1 to 65,536 rows per organization. Search remains exact at or below the
@@ -170,10 +182,11 @@ path.
 
 Typed vector values now cross the low-level native, Protobuf, gRPC, hosted MCP,
 and CLI conversion boundaries with finite-component and exact-dimension checks.
-Complete application embedding ingress is not yet available: authoritative
-storage still lacks the required model identity/version consumer, and stable
-generated application facades do not expose vector fields. The production
-staleness observer and `nearest()` storage path are also absent — see
+The compiler now seals production model and replay identity, but complete
+application embedding ingress is not yet available: authoritative storage does
+not yet persist the corresponding evidence, and stable generated application
+facades do not expose vector fields. The production staleness observer and
+`nearest()` storage path are also absent — see
 [Known Limitations](../known-limitations.md).
 
 ## Revision-checked workflow transitions
