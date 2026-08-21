@@ -35,6 +35,7 @@ use riffdb_storage_api::{
     TransactionCurrentState, TransactionCurrentStateBuilder, TransactionCurrentVectorEvidenceV1,
     TransactionLocalCommandBatch, UniqueIndexOccupancy, UniqueOccupancyKind,
     UnpublishedAuditedBatchV1, ValidationReadRequest, VectorEvidenceIndexEntryV1,
+    VectorEvidenceIndexPageV1, VectorEvidenceIndexRepository, VectorEvidenceIndexScanRequestV1,
     VectorEvidenceReadRequestV1, VectorObservationRepository, VectorObservationTargetV1,
     encode_capsule_command_record_set_v1,
 };
@@ -59,9 +60,9 @@ use crate::error::{codec_error, precommit_storage_error, table_error};
 use crate::hooks::RedbTestOperation;
 use crate::journal::{JournalCodecError, JournalMutation, JournalTable};
 use crate::keys::{
-    decode_index_entry_key, encode_application_sequence_key, encode_audit_by_request_key,
-    encode_audit_key, encode_contract_bundle_key, encode_entity_key, encode_event_key,
-    encode_event_route_key, encode_idempotency_key, encode_index_entry_key,
+    decode_index_entry_key, decode_vector_evidence_index_key, encode_application_sequence_key,
+    encode_audit_by_request_key, encode_audit_key, encode_contract_bundle_key, encode_entity_key,
+    encode_event_key, encode_event_route_key, encode_idempotency_key, encode_index_entry_key,
     encode_partition_index_key, encode_provenance_key, encode_vector_evidence_index_key,
     encode_vector_evidence_key, encode_vector_observation_key,
 };
@@ -465,10 +466,79 @@ impl VectorObservationRepository for RedbOperationalPorts {
     ) -> Result<Option<riffdb_storage_api::VectorObservationCountsV1>, StorageError> {
         let key = encode_vector_observation_key(target)
             .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
-        self.begin_read()?
+        self.begin_composite_read()?
             .read_value(JournalTable::VectorObservations, &key)?
             .map(|bytes| decode_vector_observation_v1(&bytes).map(decoded_value))
             .transpose()
+    }
+}
+
+impl VectorEvidenceIndexRepository for RedbOperationalPorts {
+    fn scan_vector_evidence_index(
+        &self,
+        request: &VectorEvidenceIndexScanRequestV1,
+    ) -> Result<VectorEvidenceIndexPageV1, StorageError> {
+        let prefix = crate::keys::encode_vector_evidence_index_prefix(request.target())
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+        let upper = exclusive_prefix_end(&prefix)
+            .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
+        let start = request
+            .after()
+            .map_or_else(
+                || Ok(prefix.clone()),
+                |after| crate::keys::encode_vector_evidence_index_key(request.target(), after),
+            )
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+        let limit = usize::from(request.limit().get());
+        let rows = self.begin_composite_read()?.read_range(
+            JournalTable::VectorEvidenceIndex,
+            &start,
+            &upper,
+            limit.saturating_add(2),
+        )?;
+        let mut entries = Vec::with_capacity(limit);
+        let mut encoded_bytes = 0usize;
+        let mut more = false;
+        for (key, value) in rows {
+            let (target, entity_key) = decode_vector_evidence_index_key(&key)
+                .map_err(|_| storage_error(StorageErrorKind::CorruptData))?;
+            if request.after().is_some_and(|after| after == &entity_key) {
+                continue;
+            }
+            if entries.len() == limit {
+                more = true;
+                break;
+            }
+            let decoded = decode_vector_evidence_index_v1(&value)?;
+            if decoded.value().target() != &target
+                || decoded.value().entity_key() != &entity_key
+                || &target != request.target()
+            {
+                return Err(storage_error(StorageErrorKind::CorruptData));
+            }
+            encoded_bytes = encoded_bytes
+                .checked_add(decoded.encoded_content_charge().get())
+                .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
+            entries.push(decoded.into_parts().0);
+        }
+        let continuation = more.then(|| {
+            entries
+                .last()
+                .expect("non-exact page is nonempty")
+                .entity_key()
+                .clone()
+        });
+        VectorEvidenceIndexPageV1::new(
+            request.target(),
+            entries,
+            continuation,
+            !more,
+            encoded_bytes,
+        )
+        .map_err(|error| match error {
+            StorageValueError::LimitExceeded => storage_error(StorageErrorKind::LimitExceeded),
+            _ => storage_error(StorageErrorKind::InvariantViolation),
+        })
     }
 }
 
@@ -3027,13 +3097,17 @@ fn decoded_value<T>(item: riffdb_storage_api::EncodedPageItem<T>) -> T {
 
 #[cfg(test)]
 mod tests {
-    use riffdb_storage_api::{DatabaseInitializationPort, VectorObservationCountsV1};
+    use riffdb_storage_api::{
+        DatabaseInitializationPort, StorageScanLimit, VectorEvidenceIndexEntryV1,
+        VectorEvidenceIndexScanRequestV1, VectorObservationCountsV1,
+    };
     use riffdb_types::{
-        AggregateTypeId, ContractLineage, DatabaseId, EntityTypeId, FieldId, PartitionKeyBuilder,
+        AggregateTypeId, ContractLineage, DatabaseId, EntityKeyBuilder, EntityTypeId, FieldId,
+        PartitionKeyBuilder,
     };
 
     use super::*;
-    use crate::layout::VECTOR_OBSERVATIONS;
+    use crate::layout::{VECTOR_EVIDENCE_INDEX, VECTOR_OBSERVATIONS};
     use crate::store::RedbStore;
 
     fn vector_observation_target(partition: u64) -> VectorObservationTargetV1 {
@@ -3047,6 +3121,19 @@ mod tests {
             EntityTypeId::new(7).expect("entity type"),
             FieldId::new(8).expect("vector field"),
         )
+    }
+
+    fn vector_index_entry(value: u64) -> VectorEvidenceIndexEntryV1 {
+        let mut key = EntityKeyBuilder::new(EntityTypeId::new(7).expect("entity type"));
+        key.push_u64(value).expect("entity key");
+        VectorEvidenceIndexEntryV1::from_parts(
+            vector_observation_target(1),
+            key.finish().expect("entity key"),
+            CommitSequence::new(value).expect("sequence"),
+            Some(CommitSequence::new(value).expect("source sequence")),
+            None,
+        )
+        .expect("index entry")
     }
 
     #[test]
@@ -3101,6 +3188,65 @@ mod tests {
                 .expect("read absent observation"),
             None
         );
+    }
+
+    #[test]
+    fn vector_evidence_index_repository_pages_over_the_published_composite_view() {
+        let scope = crate::test_path::ScopedDirectory::new("vector-evidence-index-read");
+        let path = scope.join("db.redb");
+        let mut store = RedbStore::open(&path).expect("open store");
+        store
+            .initialize_database(
+                DatabaseId::from_unix_milliseconds_and_random(1, [0x72; 10]).expect("database ID"),
+            )
+            .expect("initialize store");
+        let ports = RedbOperationalPorts {
+            shared: Arc::clone(&store.shared),
+        };
+        let transaction = store
+            .shared
+            .database
+            .begin_write()
+            .expect("write transaction");
+        {
+            let mut table = transaction
+                .open_table(VECTOR_EVIDENCE_INDEX)
+                .expect("index table");
+            for entry in [vector_index_entry(1), vector_index_entry(2)] {
+                let key = crate::keys::encode_vector_evidence_index_key(
+                    entry.target(),
+                    entry.entity_key(),
+                )
+                .expect("index key");
+                let value = encode_vector_evidence_index_v1(&entry).expect("index value");
+                table
+                    .insert(key.as_slice(), value.as_bytes())
+                    .expect("insert index row");
+            }
+        }
+        transaction.commit().expect("commit index rows");
+
+        let limit = StorageScanLimit::new(1).expect("limit");
+        let first_request =
+            VectorEvidenceIndexScanRequestV1::new(vector_observation_target(1), None, limit)
+                .expect("request");
+        let first = ports
+            .scan_vector_evidence_index(&first_request)
+            .expect("first page");
+        assert_eq!(first.entries().len(), 1);
+        assert!(!first.exact_end());
+        let second_request = VectorEvidenceIndexScanRequestV1::new(
+            vector_observation_target(1),
+            first.continuation().cloned(),
+            limit,
+        )
+        .expect("request");
+        let second = ports
+            .scan_vector_evidence_index(&second_request)
+            .expect("second page");
+        assert_eq!(second.entries().len(), 1);
+        assert!(second.exact_end());
+        assert!(first.entries()[0].entity_key() < second.entries()[0].entity_key());
     }
 
     fn generation_target(index: u32) -> PartitionIndexTarget {

@@ -38,8 +38,9 @@ use riffdb_storage_api::{
     TransactionCurrentStateBuilder, TransactionCurrentVectorEvidenceV1,
     TransactionLocalCommandBatch, UniqueIndexOccupancy, UniqueOccupancyKind,
     UnpublishedAuditedBatchV1, ValidationReadRequest, VectorEvidenceIndexEntryV1,
+    VectorEvidenceIndexPageV1, VectorEvidenceIndexRepository, VectorEvidenceIndexScanRequestV1,
     VectorEvidenceReadRequestV1, VectorObservationCountsV1, VectorObservationRepository,
-    VectorObservationTargetV1, derive_event_hash_v1,
+    VectorObservationTargetV1, derive_event_hash_v1, encode_vector_evidence_index_v1,
 };
 use riffdb_types::{CommitSequence, EventId, FrontierPosition, ProvenanceId};
 
@@ -89,6 +90,60 @@ impl VectorObservationRepository for MemoryOperationalPorts {
                 .binary_search_by(|row| row.target().cmp(target))
                 .ok()
                 .map(|index| state.vector_observations[index].clone()))
+        })
+    }
+}
+
+impl VectorEvidenceIndexRepository for MemoryOperationalPorts {
+    fn scan_vector_evidence_index(
+        &self,
+        request: &VectorEvidenceIndexScanRequestV1,
+    ) -> Result<VectorEvidenceIndexPageV1, StorageError> {
+        self.read(|state| {
+            let target = request.target();
+            let start = state.vector_evidence_index.partition_point(|row| {
+                row.target() < target
+                    || row.target() == target
+                        && request
+                            .after()
+                            .is_some_and(|after| row.entity_key() <= after)
+            });
+            let limit = usize::from(request.limit().get());
+            let mut entries = Vec::with_capacity(limit);
+            let mut encoded_bytes = 0usize;
+            let mut exact_end = true;
+            for row in state.vector_evidence_index.iter().skip(start) {
+                if row.target() != target {
+                    break;
+                }
+                if entries.len() == limit {
+                    exact_end = false;
+                    break;
+                }
+                encoded_bytes = encoded_bytes
+                    .checked_add(
+                        encode_vector_evidence_index_v1(row)
+                            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?
+                            .encoded_content_charge()
+                            .get(),
+                    )
+                    .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
+                entries.push(row.clone());
+            }
+            let continuation = (!exact_end).then(|| {
+                entries
+                    .last()
+                    .expect("non-exact page is nonempty")
+                    .entity_key()
+                    .clone()
+            });
+            VectorEvidenceIndexPageV1::new(target, entries, continuation, exact_end, encoded_bytes)
+                .map_err(|error| match error {
+                    StorageValueError::LimitExceeded => {
+                        storage_error(StorageErrorKind::LimitExceeded)
+                    }
+                    _ => storage_error(StorageErrorKind::InvariantViolation),
+                })
         })
     }
 }
@@ -2771,6 +2826,19 @@ mod tests {
         )
     }
 
+    fn vector_index_entry(value: u64) -> VectorEvidenceIndexEntryV1 {
+        let mut key = EntityKeyBuilder::new(EntityTypeId::new(7).expect("entity type"));
+        key.push_u64(value).expect("entity key");
+        VectorEvidenceIndexEntryV1::from_parts(
+            vector_observation_target(1),
+            key.finish().expect("entity key"),
+            CommitSequence::new(value).expect("sequence"),
+            Some(CommitSequence::new(value).expect("source sequence")),
+            None,
+        )
+        .expect("index entry")
+    }
+
     #[test]
     fn vector_observation_repository_reads_one_exact_row_without_scanning() {
         let ports = operational_ports(bundle());
@@ -2805,6 +2873,40 @@ mod tests {
                 .expect("read absent observation"),
             None
         );
+    }
+
+    #[test]
+    fn vector_evidence_index_repository_pages_in_entity_key_order() {
+        let ports = operational_ports(bundle());
+        ports
+            .acquire()
+            .expect("seed access")
+            .write(|state| {
+                state.vector_evidence_index = vec![vector_index_entry(1), vector_index_entry(2)];
+                Ok(())
+            })
+            .expect("seed index");
+        let limit = StorageScanLimit::new(1).expect("limit");
+        let first_request =
+            VectorEvidenceIndexScanRequestV1::new(vector_observation_target(1), None, limit)
+                .expect("request");
+        let first = ports
+            .scan_vector_evidence_index(&first_request)
+            .expect("first page");
+        assert_eq!(first.entries().len(), 1);
+        assert!(!first.exact_end());
+        let second_request = VectorEvidenceIndexScanRequestV1::new(
+            vector_observation_target(1),
+            first.continuation().cloned(),
+            limit,
+        )
+        .expect("request");
+        let second = ports
+            .scan_vector_evidence_index(&second_request)
+            .expect("second page");
+        assert_eq!(second.entries().len(), 1);
+        assert!(second.exact_end());
+        assert!(first.entries()[0].entity_key() < second.entries()[0].entity_key());
     }
 
     fn filtered_range() -> IndexRangeTarget {
