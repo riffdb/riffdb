@@ -33,7 +33,7 @@ use crate::keys::{decode_application_sequence_key, decode_audit_key};
 use crate::layout::{
     AUDIT, AUDIT_BY_REQUEST, COMMITS, ENTITIES, ENTITY_CHAIN_HEADS, EVENT_ROUTES, EVENTS,
     IDEMPOTENCY, IDEMPOTENCY_PENDING, INDEX_EPOCHS, META, PROVENANCE, SECONDARY_INDEXES,
-    VECTOR_EVIDENCE, VECTOR_OBSERVATIONS,
+    VECTOR_EVIDENCE, VECTOR_EVIDENCE_INDEX, VECTOR_OBSERVATIONS,
 };
 
 const FILE_MAGIC: [u8; 8] = *b"RDBJRN01";
@@ -256,10 +256,11 @@ pub(crate) enum JournalTable {
     EntityChainHeads = 14,
     VectorEvidence = 15,
     VectorObservations = 16,
+    VectorEvidenceIndex = 17,
 }
 
 impl JournalTable {
-    pub(crate) const ALL: [Self; 16] = [
+    pub(crate) const ALL: [Self; 17] = [
         Self::Meta,
         Self::Entities,
         Self::SecondaryIndexes,
@@ -276,6 +277,7 @@ impl JournalTable {
         Self::EntityChainHeads,
         Self::VectorEvidence,
         Self::VectorObservations,
+        Self::VectorEvidenceIndex,
     ];
 
     pub(crate) const fn label(self) -> &'static str {
@@ -296,6 +298,7 @@ impl JournalTable {
             Self::EntityChainHeads => "entity_chain_heads",
             Self::VectorEvidence => "vector_evidence",
             Self::VectorObservations => "vector_observations",
+            Self::VectorEvidenceIndex => "vector_evidence_index",
         }
     }
 
@@ -317,6 +320,7 @@ impl JournalTable {
             14 => Ok(Self::EntityChainHeads),
             15 => Ok(Self::VectorEvidence),
             16 => Ok(Self::VectorObservations),
+            17 => Ok(Self::VectorEvidenceIndex),
             _ => Err(JournalCodecError::UnknownTable),
         }
     }
@@ -339,6 +343,7 @@ impl JournalTable {
             Self::EntityChainHeads => riffdb_storage_api::CompositeTableV1::EntityChainHeads,
             Self::VectorEvidence => riffdb_storage_api::CompositeTableV1::VectorEvidence,
             Self::VectorObservations => riffdb_storage_api::CompositeTableV1::VectorObservations,
+            Self::VectorEvidenceIndex => riffdb_storage_api::CompositeTableV1::VectorEvidenceIndex,
         }
     }
 }
@@ -858,7 +863,8 @@ fn service_audit_mutation_is_closed(mutation: &JournalMutation) -> bool {
         | JournalTable::Commits
         | JournalTable::EntityChainHeads
         | JournalTable::VectorEvidence
-        | JournalTable::VectorObservations => false,
+        | JournalTable::VectorObservations
+        | JournalTable::VectorEvidenceIndex => false,
     }
 }
 
@@ -2845,6 +2851,9 @@ pub(crate) fn apply_mutation(
         JournalTable::VectorObservations => {
             apply_byte_mutation(transaction, VECTOR_OBSERVATIONS, mutation)
         }
+        JournalTable::VectorEvidenceIndex => {
+            apply_byte_mutation(transaction, VECTOR_EVIDENCE_INDEX, mutation)
+        }
     }
 }
 
@@ -2968,6 +2977,13 @@ pub(crate) fn apply_validated_composite_mutation(
         CompositeTableV1::VectorObservations => apply_byte_mutation_parts(
             transaction,
             VECTOR_OBSERVATIONS,
+            mutation.key(),
+            mutation.value(),
+            mutation.expected_hash(),
+        ),
+        CompositeTableV1::VectorEvidenceIndex => apply_byte_mutation_parts(
+            transaction,
+            VECTOR_EVIDENCE_INDEX,
             mutation.key(),
             mutation.value(),
             mutation.expected_hash(),
@@ -3112,6 +3128,7 @@ pub(crate) fn read_value(
         JournalTable::EntityChainHeads => ENTITY_CHAIN_HEADS,
         JournalTable::VectorEvidence => VECTOR_EVIDENCE,
         JournalTable::VectorObservations => VECTOR_OBSERVATIONS,
+        JournalTable::VectorEvidenceIndex => VECTOR_EVIDENCE_INDEX,
     };
     transaction
         .open_table(definition)
@@ -3152,6 +3169,7 @@ pub(crate) fn read_write_value(
         JournalTable::EntityChainHeads => ENTITY_CHAIN_HEADS,
         JournalTable::VectorEvidence => VECTOR_EVIDENCE,
         JournalTable::VectorObservations => VECTOR_OBSERVATIONS,
+        JournalTable::VectorEvidenceIndex => VECTOR_EVIDENCE_INDEX,
     };
     transaction
         .open_table(definition)
@@ -3181,6 +3199,7 @@ pub(crate) const fn byte_table_definition(
         JournalTable::EntityChainHeads => Some(ENTITY_CHAIN_HEADS),
         JournalTable::VectorEvidence => Some(VECTOR_EVIDENCE),
         JournalTable::VectorObservations => Some(VECTOR_OBSERVATIONS),
+        JournalTable::VectorEvidenceIndex => Some(VECTOR_EVIDENCE_INDEX),
     }
 }
 

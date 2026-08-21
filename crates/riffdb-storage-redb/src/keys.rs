@@ -640,6 +640,68 @@ pub(crate) fn decode_vector_observation_key(
     Ok(target)
 }
 
+pub(crate) fn encode_vector_evidence_index_prefix(
+    target: &VectorObservationTargetV1,
+) -> Result<Vec<u8>, PhysicalKeyError> {
+    let target = encode_vector_observation_key(target)?;
+    let target_len = u32::try_from(target.len()).map_err(|_| PhysicalKeyError::SizeOverflow)?;
+    let mut encoded = Vec::with_capacity(
+        4_usize
+            .checked_add(target.len())
+            .ok_or(PhysicalKeyError::SizeOverflow)?,
+    );
+    encoded.extend_from_slice(&target_len.to_be_bytes());
+    encoded.extend_from_slice(&target);
+    Ok(encoded)
+}
+
+pub(crate) fn encode_vector_evidence_index_key(
+    target: &VectorObservationTargetV1,
+    entity_key: &EntityKey,
+) -> Result<Vec<u8>, PhysicalKeyError> {
+    if entity_key.entity_type_id() != target.entity_type() {
+        return Err(PhysicalKeyError::InvalidComponent);
+    }
+    let mut encoded = encode_vector_evidence_index_prefix(target)?;
+    encoded
+        .try_reserve(entity_key.as_bytes().len())
+        .map_err(|_| PhysicalKeyError::SizeOverflow)?;
+    encoded.extend_from_slice(entity_key.as_bytes());
+    Ok(encoded)
+}
+
+pub(crate) fn decode_vector_evidence_index_key(
+    bytes: &[u8],
+) -> Result<(VectorObservationTargetV1, EntityKey), PhysicalKeyError> {
+    let target_len = usize::try_from(u32::from_be_bytes(
+        bytes
+            .get(..4)
+            .ok_or(PhysicalKeyError::InvalidLength)?
+            .try_into()
+            .map_err(|_| PhysicalKeyError::InvalidLength)?,
+    ))
+    .map_err(|_| PhysicalKeyError::SizeOverflow)?;
+    let target_end = 4_usize
+        .checked_add(target_len)
+        .ok_or(PhysicalKeyError::SizeOverflow)?;
+    if target_len == 0 || target_end >= bytes.len() {
+        return Err(PhysicalKeyError::InvalidLength);
+    }
+    let target = decode_vector_observation_key(
+        bytes
+            .get(4..target_end)
+            .ok_or(PhysicalKeyError::InvalidLength)?,
+    )?;
+    let entity_key = decode_entity_key(
+        bytes
+            .get(target_end..)
+            .ok_or(PhysicalKeyError::InvalidLength)?,
+    )?;
+    let canonical = encode_vector_evidence_index_key(&target, &entity_key)?;
+    require_canonical(bytes, &canonical)?;
+    Ok((target, entity_key))
+}
+
 pub(crate) fn encode_index_entry_key(key: &IndexEntryKey) -> &[u8] {
     key.as_bytes()
 }
@@ -881,6 +943,41 @@ mod tests {
             decode_vector_observation_key(&trailing),
             Err(PhysicalKeyError::InvalidLength)
         );
+    }
+
+    #[test]
+    fn vector_evidence_index_key_is_prefix_ordered_and_canonical() {
+        let mut partition =
+            riffdb_types::PartitionKeyBuilder::new(riffdb_types::AggregateTypeId::first());
+        partition.push_str("org-a").expect("partition component");
+        let target = VectorObservationTargetV1::new(
+            ContractLineage::new("vectors").expect("lineage"),
+            partition.finish().expect("partition"),
+            EntityTypeId::new(7).expect("entity type"),
+            riffdb_types::FieldId::new(9).expect("vector field"),
+        );
+        let mut entity_key_bytes = vec![0x45, 0x01, 0, 0, 0, 7];
+        entity_key_bytes.extend_from_slice(&[0x5a; 16]);
+        let entity_key = EntityKey::new(entity_key_bytes).expect("entity key");
+        let prefix = encode_vector_evidence_index_prefix(&target).expect("prefix");
+        let encoded = encode_vector_evidence_index_key(&target, &entity_key).expect("encode");
+        assert!(encoded.starts_with(&prefix));
+        assert_eq!(
+            decode_vector_evidence_index_key(&encoded).expect("decode"),
+            (target.clone(), entity_key.clone())
+        );
+
+        let mut wrong_type_bytes = vec![0x45, 0x01, 0, 0, 0, 8];
+        wrong_type_bytes.extend_from_slice(&[0x5a; 16]);
+        let wrong_type = EntityKey::new(wrong_type_bytes).expect("entity key");
+        assert_eq!(
+            encode_vector_evidence_index_key(&target, &wrong_type),
+            Err(PhysicalKeyError::InvalidComponent)
+        );
+
+        let mut malformed_frame = encoded;
+        malformed_frame[3] = malformed_frame[3].saturating_add(1);
+        assert!(decode_vector_evidence_index_key(&malformed_frame).is_err());
     }
 
     #[test]

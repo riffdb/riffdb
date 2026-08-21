@@ -8,7 +8,7 @@ use crate::{
     AtomicCommandRecordSet, CommandWriteClassBreakdownV1, CommitIntent, DurabilityMode,
     DurableKeySchemaBindingV1, EncodedWriteSetUpperBound, EntityMutation, IndexEntryMutationV1,
     IndexEpochAdvanceV1, MAX_STAGED_WRITE_BYTES, StoredReadDependenciesV1,
-    VectorEvidenceMutationV1, VectorEvidenceTransitionPlanV1,
+    VectorEvidenceIndexEntryV1, VectorEvidenceMutationV1, VectorEvidenceTransitionPlanV1,
 };
 
 use super::vector_evidence::VECTOR_OBSERVATION;
@@ -19,8 +19,8 @@ use super::{
     encode_application_sequence_allocator_v1, encode_commit_record_v1, encode_durable_event_v1,
     encode_entity_record_v1, encode_event_route_v1, encode_index_entry_v2, encode_index_epoch_v1,
     encode_outbox_intent_v1, encode_provenance_record_v1, encode_stored_outcome_v1,
-    encode_vector_evidence_v1, entity_target_to_proto, identity_to_proto, plan_to_proto,
-    storage_result, timestamp_to_proto,
+    encode_vector_evidence_index_v1, encode_vector_evidence_v1, entity_target_to_proto,
+    identity_to_proto, plan_to_proto, storage_result, timestamp_to_proto,
 };
 
 const OUTBOX_INTENT: &str = "riffdb.storage.v1.StoredOutboxIntentV2";
@@ -548,8 +548,18 @@ pub fn command_write_set_upper_bound_with_vector_evidence_v1(
                 riffdb_types::CommitSequence::new(MAXIMUM_WIDTH_U64)
                     .expect("maximum nonzero commit sequence is valid"),
             ) {
-                Ok(VectorEvidenceMutationV1::Put(value)) => encode_vector_evidence_v1(&value)
-                    .map(|envelope| envelope.encoded_content_charge().get()),
+                Ok(VectorEvidenceMutationV1::Put(value)) => {
+                    let primary = encode_vector_evidence_v1(&value)?
+                        .encoded_content_charge()
+                        .get();
+                    let index = storage_result(VectorEvidenceIndexEntryV1::from_evidence(&value))?;
+                    let index = encode_vector_evidence_index_v1(&index)?
+                        .encoded_content_charge()
+                        .get();
+                    primary
+                        .checked_add(index)
+                        .ok_or_else(DurableCodecError::invariant)
+                }
                 Ok(VectorEvidenceMutationV1::Delete { .. }) => Ok(0),
                 Err(error) => Err(DurableCodecError::from_storage_value(error)),
             }

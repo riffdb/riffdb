@@ -971,6 +971,7 @@ impl AdminAuditCheckpoint {
             admissions: _,
             entities: _,
             vector_evidence: _,
+            vector_evidence_index: _,
             vector_observations: _,
             entity_commits: _,
             index_entries: _,
