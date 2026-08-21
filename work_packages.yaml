@@ -13151,6 +13151,15 @@ work_packages:
       authorization bypass, or target-language runtime semantics.
     scale: Decoding remains one bounded u64 parse with no collection, allocation, retry, scan, or
       retained state; registry acceptance adds one finite installed-package transport exchange.
+  closure:
+    status: complete
+    evidence: docs/getting-started/PACKAGE-INSTALLATION.md
+    decision: The TypeScript runtime uses a dedicated non-negative-u64 decoder for the application
+      frontier while every positive-only protocol identity retains its strict decoder. Unit and
+      immutable development-registry acceptance prove an empty-domain query returns 0n through the
+      installed package, malformed and out-of-range values fail closed, and the corrected bytes
+      were published under the immutable development build recorded by the package matrix. The
+      implementation merged in c617e0ba and its WP-631 registry entry merged through 1aabfac5.
   human_review_triggers: *id001
 - id: WP-632
   name: Frozen-client transport attribution and asynchronous shadow diagnostic
@@ -14466,6 +14475,19 @@ work_packages:
       work, rows, columns, values, response bytes, continuation, SDK decode, and diagnostics are
       statically bounded; execution materializes only the requested page and creates no full-state
       cache or full-population result.
+  closure:
+    status: complete
+    evidence: docs/performance/wp-654-covering-compact-closure.md
+    decision: The retained V14 candidate improves BoardPage450 56.2 percent on the workstation,
+      41.2 percent on N1, and 41.9 percent on E2, but remains 1.87x and 1.78x paired safe-
+      application PostgreSQL on the cloud profiles; the combined 1.10x gate therefore fails
+      honestly. ADR-0133 independent activation retains compact carriage after isolated legacy-arm
+      controls prove 28.1, 29.7, and 31.5 percent customer-path wins, and retains compiler-owned
+      covering production after it improves the declared read on every profile while seed,
+      bounded write amplification, startup/recovery validation, compatibility, and four-language
+      semantic gates remain intact. A later move-only decode experiment was removed after an E2
+      control regressed beyond five percent. WP-623 owns release qualification of the unchanged
+      retained artifact; WP-654 claims no alpha performance pass.
   human_review_triggers: *id001
 - id: WP-655
   name: External adapter ownership and neutral exact-result conformance
