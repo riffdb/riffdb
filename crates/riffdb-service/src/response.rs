@@ -6,8 +6,8 @@ use std::fmt;
 use riffdb_contract_ir::{CommandExplain, GeneratedSchemaArtifact};
 use riffdb_query_executor::{QueryAggregateCell, QueryAggregateRow, QueryResultValue, QueryRow};
 use riffdb_types::{
-    AdmittedActorContext, CanonicalRecord, CanonicalValue, ContractLineage, ProjectionIdentity,
-    ServiceAuditTargetV1, TenantScope,
+    AdmittedActorContext, CanonicalRecord, CanonicalValue, CommitSequence, ContractLineage,
+    ProjectionIdentity, ServiceAuditTargetV1, TenantScope,
 };
 
 use crate::{
@@ -32,9 +32,9 @@ use crate::{
     GetApplicationReimportResultV1, GetCommitResult, GetContractMigrationOperationResult,
     GetContractVersionResult, GetEntityResult, GetOfflineMaintenanceOperationResult,
     GetProjectionStatusResult, GetReactiveWakeupResult, HealthReport, HealthResult, IndexRowView,
-    IndexScanFence, JournaledCommandResult, ListPendingOutboxDeliveriesResult,
-    LiveQueryPatchOperation, LiveQueryUpdate, NamedQueryToolDescriptor,
-    NamedQueryToolSchemaArtifact, NormalCreateCapabilityResult,
+    IndexScanFence, InspectVectorStateResult, JournaledCommandResult,
+    ListPendingOutboxDeliveriesResult, LiveQueryPatchOperation, LiveQueryUpdate,
+    NamedQueryToolDescriptor, NamedQueryToolSchemaArtifact, NormalCreateCapabilityResult,
     OfflineMaintenanceOperationObservation, OfflineMaintenanceStartResult, OperationSchemaArtifact,
     OperationSchemaCatalog, OperationSchemaCatalogIdentity, OperationSchemaIdentity,
     OutboxDeliverySummary, Page, ProjectionPageFence, ProjectionRow, ProjectionStatusSnapshot,
@@ -44,7 +44,8 @@ use crate::{
     ScanIndexResult, SchemaBoundOutcomeRecord, SchemaBoundOutcomeValue, ServiceFailure,
     StatisticsResult, SubscribeToCommitsResult, SymbolicDiagnostic, SymbolicEvent,
     SymbolicEventField, SymbolicQueryIdentity, SymbolicQuerySchema, SymbolicResultField,
-    SymbolicResultRecord, TailEventsResult, TraceProvenanceResult, WatchLiveNamedQueryResult,
+    SymbolicResultRecord, TailEventsResult, TraceProvenanceResult, VectorModelVersionItem,
+    VectorStalenessItem, WatchLiveNamedQueryResult,
 };
 
 /// Exact POC ceiling for one API-neutral unary result or visible stream item.
@@ -193,6 +194,68 @@ impl ServiceResponseCharge for () {
         &self,
     ) -> Result<ServiceResponseChargeV1, ServiceResponseChargeOverflow> {
         Ok(ChargeAccumulator::message().finish())
+    }
+}
+
+impl sealed::Sealed for Option<CommitSequence> {}
+
+impl ServiceResponseCharge for Option<CommitSequence> {
+    fn service_response_charge_v1(
+        &self,
+    ) -> Result<ServiceResponseChargeV1, ServiceResponseChargeOverflow> {
+        let mut charge = ChargeAccumulator::message();
+        if self.is_some() {
+            charge.fields(1)?;
+        }
+        Ok(charge.finish())
+    }
+}
+
+impl sealed::Sealed for VectorStalenessItem {}
+
+impl ServiceResponseCharge for VectorStalenessItem {
+    fn service_response_charge_v1(
+        &self,
+    ) -> Result<ServiceResponseChargeV1, ServiceResponseChargeOverflow> {
+        let mut charge = ChargeAccumulator::message();
+        charge.bytes(self.entity_key().as_bytes().len())?;
+        charge.fields(1)?;
+        if self.embedding_write().is_some() {
+            charge.fields(1)?;
+        }
+        Ok(charge.finish())
+    }
+}
+
+impl sealed::Sealed for VectorModelVersionItem {}
+
+impl ServiceResponseCharge for VectorModelVersionItem {
+    fn service_response_charge_v1(
+        &self,
+    ) -> Result<ServiceResponseChargeV1, ServiceResponseChargeOverflow> {
+        let mut charge = ChargeAccumulator::message();
+        charge.bytes(self.entity_key().as_bytes().len())?;
+        charge.bytes(self.metadata().model_identity().len())?;
+        charge.bytes(self.metadata().model_version().len())?;
+        charge.fields(1)?;
+        Ok(charge.finish())
+    }
+}
+
+impl sealed::Sealed for InspectVectorStateResult {}
+
+impl ServiceResponseCharge for InspectVectorStateResult {
+    fn service_response_charge_v1(
+        &self,
+    ) -> Result<ServiceResponseChargeV1, ServiceResponseChargeOverflow> {
+        let mut charge = ChargeAccumulator::message();
+        match self {
+            InspectVectorStateResult::StalenessSummary(_) => charge.fields(4)?,
+            InspectVectorStateResult::ModelVersionSummary(_) => charge.fields(2)?,
+            InspectVectorStateResult::StaleEntities(page) => charge.nested(page)?,
+            InspectVectorStateResult::OutdatedModelEntities(page) => charge.nested(page)?,
+        }
+        Ok(charge.finish())
     }
 }
 

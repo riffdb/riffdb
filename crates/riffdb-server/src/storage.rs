@@ -296,6 +296,14 @@ impl QueryExecutionPort for SharedRedbOperationalPorts {
     ) -> Result<AuthorizedProjectedRowAdmissionV1, QueryExecutionError> {
         QueryExecutionPort::authorize_projected_candidates(&self.shared, entity, candidates, policy)
     }
+
+    fn inspect_vector_evidence(
+        &self,
+        target: &riffdb_query_executor::VectorInspectionTargetV1,
+        policy: Option<&AuthorizedQueryRowPolicyContextV1>,
+    ) -> Result<riffdb_query_executor::VectorInspectionSnapshotV1, QueryExecutionError> {
+        QueryExecutionPort::inspect_vector_evidence(&self.shared, target, policy)
+    }
 }
 
 impl fmt::Debug for SharedRedbOperationalPorts {

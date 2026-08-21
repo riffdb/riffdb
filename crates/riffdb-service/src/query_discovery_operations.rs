@@ -1,6 +1,6 @@
 //! Authoritative query, projection, and policy-filtered discovery orchestration.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::future::{Future, poll_fn};
 use std::pin::Pin;
 use std::sync::Arc;
@@ -23,8 +23,9 @@ use riffdb_policy::{
     AuthorizedOperation, CommandToolCandidate, DiscoveryResource, DiscoveryVisibility,
     EntitySchemaCandidate, FixedToolCandidate, MAX_DISCOVERY_PAGE_ITEMS, NamedQueryToolCandidate,
     OperationRequest, OperationTenantScope, OutputClassification, PartitionConstraint,
-    ResourceDiscoveryVisibility,
+    ResourceDiscoveryVisibility, resolve_authorized_vector_inspection_row_policy_context,
 };
+use riffdb_query_executor::{VectorInspectionSnapshotV1, VectorInspectionTargetV1};
 use riffdb_query_module::generate_mcp_tools;
 use riffdb_types::{
     CanonicalRecord, CanonicalValue, ContractLineage, EntityKey, FieldId, FrontierPosition,
@@ -45,18 +46,21 @@ use crate::{
     DiscoverResourcesResult, DiscoveryCatalogFence, DiscoveryRepresentation, EntityView,
     FieldSelection, FixedToolKind, GetEntityRequest, GetEntityResult, GetProjectionStatusRequest,
     GetProjectionStatusResult, GetReactiveWakeupResult, IndexRowView, IndexScanCursorLookup,
-    IndexScanCursorPolicy, IndexScanCursorState, IndexScanFence, InternalDefect,
-    NamedQueryToolDescriptor, NamedQueryToolSchemaArtifact, OperationSchemaCatalog, Page,
-    PageLimit, PortAdmissionError, PortDriverStopped, ProjectionCursorLookup,
-    ProjectionCursorPolicy, ProjectionCursorState, ProjectionPageFence, ProjectionPortError,
-    ProjectionPortReady, ProjectionPortRequest, ProjectionPortResult, ProjectionStateFence,
-    QueryApplication, QueryProjectionReady, QueryProjectionRequest, QueryProjectionResult,
-    ReactiveWakeupGeneration, RequestContext, ResourceDescriptor, ResourceDiscoveryCursorLookup,
-    ResourceDiscoveryCursorState, ResourceDiscoveryCursorVisibility, RiffDbService,
-    RiffDbServiceInner, ScanIndexRequest, ScanIndexResult, ServiceAuditTargetMap, ServiceFailure,
-    ServiceFuture, ServiceResult, ServiceTelemetryEvent, SubmittedValue, ensure_response_budget,
-    fit_full_command_discovery_page_items, fit_full_resource_discovery_page_items, fit_page_items,
-    fit_sparse_page_items,
+    IndexScanCursorPolicy, IndexScanCursorState, IndexScanFence, InspectVectorStateRequest,
+    InspectVectorStateResult, InternalDefect, NamedQueryToolDescriptor,
+    NamedQueryToolSchemaArtifact, OperationSchemaCatalog, Page, PageLimit, PortAdmissionError,
+    PortDriverStopped, ProjectionCursorLookup, ProjectionCursorPolicy, ProjectionCursorState,
+    ProjectionPageFence, ProjectionPortError, ProjectionPortReady, ProjectionPortRequest,
+    ProjectionPortResult, ProjectionStateFence, QueryApplication, QueryProjectionReady,
+    QueryProjectionRequest, QueryProjectionResult, ReactiveWakeupGeneration, RequestContext,
+    ResourceDescriptor, ResourceDiscoveryCursorLookup, ResourceDiscoveryCursorState,
+    ResourceDiscoveryCursorVisibility, RiffDbService, RiffDbServiceInner, ScanIndexRequest,
+    ScanIndexResult, ServiceAuditTargetMap, ServiceFailure, ServiceFuture, ServiceResult,
+    ServiceTelemetryEvent, SubmittedValue, VectorInspectionCursorLookup,
+    VectorInspectionCursorState, VectorModelVersionItem, VectorModelVersionPage,
+    VectorModelVersionReport, VectorStalenessItem, VectorStalenessPage, VectorStalenessReport,
+    VectorStateInspectionKind, ensure_response_budget, fit_full_command_discovery_page_items,
+    fit_full_resource_discovery_page_items, fit_page_items, fit_sparse_page_items,
 };
 use crate::{CursorAccessError, CursorContractIdentity};
 
@@ -158,6 +162,20 @@ impl QueryApplication for RiffDbService {
             ServiceOperationV1::GetProjectionStatus,
             ingress,
             async move { get_projection_status(service, context, request).await },
+        )
+    }
+
+    fn inspect_vector_state(
+        &self,
+        context: RequestContext,
+        request: InspectVectorStateRequest,
+    ) -> ServiceFuture<'_, InspectVectorStateResult> {
+        let service = Arc::clone(&self.inner);
+        let ingress = context.ingress();
+        self.spawn_operation(
+            ServiceOperationV1::InspectVectorState,
+            ingress,
+            async move { inspect_vector_state(service, context, request).await },
         )
     }
 }
@@ -482,6 +500,261 @@ async fn get_entity(
         return Err(finish_failure(&service, &context, &begun, failure).await);
     }
     finish_success(&service, &context, &begun).await?;
+    Ok(result)
+}
+
+async fn inspect_vector_state(
+    service: Arc<RiffDbServiceInner>,
+    context: RequestContext,
+    request: InspectVectorStateRequest,
+) -> ServiceResult<InspectVectorStateResult> {
+    const OPERATION: ServiceOperationV1 = ServiceOperationV1::InspectVectorState;
+    let bundle =
+        prepare_selected_contract(&service, &context, &ContractSelection::Active, OPERATION)
+            .await?;
+    let contract = bundle.bundle();
+    if contract.lineage() != request.contract_lineage() {
+        return Err(validation_failure(ValidationCode::InvalidValue));
+    }
+    let entity = contract
+        .schema()
+        .entities()
+        .iter()
+        .find(|entity| entity.name() == request.entity().as_str())
+        .ok_or_else(|| validation_failure(ValidationCode::InvalidValue))?;
+    let field = entity
+        .record()
+        .fields()
+        .iter()
+        .find(|field| field.name() == request.field().as_str())
+        .ok_or_else(|| validation_failure(ValidationCode::UnknownField))?;
+    let vector = contract
+        .schema()
+        .vector_field_spec(entity.id(), field.id())
+        .ok_or_else(|| validation_failure(ValidationCode::InvalidValue))?;
+    let production = contract
+        .schema()
+        .vector_production_spec(entity.id(), field.id())
+        .ok_or_else(|| validation_failure(ValidationCode::InvalidValue))?;
+    let aggregate = contract
+        .schema()
+        .aggregate_for_entity(entity.id())
+        .ok_or_else(|| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?;
+    let partition_component = aggregate
+        .keys()
+        .partition_schema()
+        .components()
+        .first()
+        .ok_or_else(|| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?;
+    let partition_value = match materialize_submitted_value(
+        contract.schema(),
+        partition_component.value_type(),
+        request.partition(),
+        Vec::new(),
+    ) {
+        Ok(value) => value,
+        Err(SubmittedValueMaterializationError::Public(error)) => return Err(error.into()),
+        Err(SubmittedValueMaterializationError::Integrity) => {
+            return Err(service.internal_failure(OPERATION, InternalDefect::ProofMismatch));
+        }
+    };
+    let partition = aggregate
+        .keys()
+        .partition_schema()
+        .encode_partition(std::slice::from_ref(&partition_value))
+        .map_err(|_| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?;
+    let protected = contract
+        .row_policies()
+        .policies()
+        .iter()
+        .any(|policy| policy.entity() == entity.id());
+    let counts_requested = !protected;
+    if counts_requested && request.page().cursor().is_some() {
+        return Err(validation_failure(ValidationCode::InvalidValue));
+    }
+    let policy_request = OperationRequest::inspect_vector_state(
+        contract.lineage().clone(),
+        entity.id(),
+        field.id(),
+        OperationTenantScope::global_only(),
+        partition.clone(),
+        request.page().limit().get(),
+        counts_requested,
+    );
+    let targets = ServiceAuditTargetMap::symbolic_query(
+        contract.lineage().clone(),
+        contract.contract_version(),
+    )
+    .map_err(|_| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?;
+    let begun = service
+        .begin_invocation(&context, policy_request, targets, AuditScope::StandardRead)
+        .await?;
+    let initial = begun.reauthorize(&service, &context).await?;
+    let Some((effective_limit, capability_identity, role_hash)) = vector_inspection_authorization(
+        &service,
+        &initial,
+        contract.lineage(),
+        entity.id(),
+        field.id(),
+        &partition,
+        request.page().limit(),
+    ) else {
+        let failure = service.internal_failure(OPERATION, InternalDefect::ProofMismatch);
+        return Err(finish_failure(&service, &context, &begun, failure).await);
+    };
+    let row_policy =
+        resolve_authorized_vector_inspection_row_policy_context(&initial, contract, entity.id())
+            .map_err(|_| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?;
+    if protected != row_policy.is_some() || counts_requested == row_policy.is_some() {
+        let failure = service.internal_failure(OPERATION, InternalDefect::ProofMismatch);
+        return Err(finish_failure(&service, &context, &begun, failure).await);
+    }
+    let cursor_lookup = VectorInspectionCursorLookup::new(
+        CursorContractIdentity::new(
+            contract.lineage().clone(),
+            contract.contract_version(),
+            bundle.bundle_hash(),
+        ),
+        entity.id(),
+        field.id(),
+        partition.clone(),
+        request.kind(),
+        production.metadata().clone(),
+        request.page().limit(),
+    );
+    let prior = match request.page().cursor() {
+        Some(token) => match service.cursors.resolve_vector_inspection(
+            token,
+            context.principal().principal_id(),
+            &cursor_lookup,
+        ) {
+            Ok(state) => Some(state),
+            Err(CursorAccessError::InvalidCursor) => {
+                return Err(
+                    finish_failure(&service, &context, &begun, invalid_cursor_failure()).await,
+                );
+            }
+            Err(CursorAccessError::Unavailable) => {
+                let failure = cursor_unavailable_failure(&service);
+                return Err(finish_failure(&service, &context, &begun, failure).await);
+            }
+        },
+        None => None,
+    };
+    if prior.as_deref().is_some_and(|prior| {
+        prior.capability_identity() != capability_identity
+            || prior.role_hash() != role_hash
+            || prior.history_incarnation() != service.identity.history_incarnation()
+            || prior.effective_limit() != effective_limit
+    }) {
+        return Err(begun.finish_authorization_denial(&service, &context).await);
+    }
+    let executor = service
+        .providers
+        .query_executor
+        .as_ref()
+        .ok_or_else(|| service.internal_failure(OPERATION, InternalDefect::LowerIntegrity))?;
+    let lower_target = VectorInspectionTargetV1::new(
+        contract.lineage().clone(),
+        partition.clone(),
+        entity.id(),
+        field.id(),
+        prior.as_deref().map(|state| state.after().clone()),
+        std::num::NonZeroU16::new(crate::MAX_PAGE_ITEMS)
+            .ok_or_else(|| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?,
+    );
+    let snapshot = executor
+        .inspect_vector_evidence(&lower_target, row_policy.as_ref())
+        .map_err(|error| crate::symbolic_query::execution_failure(&service, OPERATION, error))?;
+    if prior.as_deref().is_some_and(|prior| {
+        prior.observation_revision() != snapshot.revision()
+            || prior.snapshot_frontier() != snapshot.frontier()
+    }) {
+        return Err(finish_failure(&service, &context, &begun, invalid_cursor_failure()).await);
+    }
+    let current = begun.reauthorize(&service, &context).await?;
+    let Some((return_limit, return_identity, return_role_hash)) = vector_inspection_authorization(
+        &service,
+        &current,
+        contract.lineage(),
+        entity.id(),
+        field.id(),
+        &partition,
+        request.page().limit(),
+    ) else {
+        let failure = service.internal_failure(OPERATION, InternalDefect::ProofMismatch);
+        return Err(finish_failure(&service, &context, &begun, failure).await);
+    };
+    if return_identity != capability_identity
+        || return_role_hash != role_hash
+        || return_limit != effective_limit
+    {
+        return Err(begun.finish_authorization_denial(&service, &context).await);
+    }
+
+    let (result, cursor_guard) = if counts_requested {
+        if !snapshot.candidates().is_empty() && snapshot.total_entities() == 0 {
+            let failure = lower_integrity_failure(&service, OPERATION);
+            return Err(finish_failure(&service, &context, &begun, failure).await);
+        }
+        match request.kind() {
+            VectorStateInspectionKind::StaleEntities => {
+                let report = VectorStalenessReport::new(
+                    snapshot.total_entities(),
+                    snapshot.stale_entities(),
+                    vector.stale_entity_count_threshold(),
+                )
+                .map_err(|_| service.internal_failure(OPERATION, InternalDefect::LowerIntegrity))?;
+                (InspectVectorStateResult::StalenessSummary(report), None)
+            }
+            VectorStateInspectionKind::OutdatedModelEntities => {
+                let mut current_count = 0_u64;
+                let mut outdated_count = 0_u64;
+                for (metadata, count) in snapshot.model_counts() {
+                    let destination = if metadata == production.metadata() {
+                        &mut current_count
+                    } else {
+                        &mut outdated_count
+                    };
+                    *destination = destination.checked_add(count).ok_or_else(|| {
+                        service.internal_failure(OPERATION, InternalDefect::LowerIntegrity)
+                    })?;
+                }
+                (
+                    InspectVectorStateResult::ModelVersionSummary(VectorModelVersionReport::new(
+                        current_count,
+                        outdated_count,
+                    )),
+                    None,
+                )
+            }
+        }
+    } else {
+        match vector_inspection_page(
+            &service,
+            &context,
+            request.kind(),
+            entity.id(),
+            production.metadata(),
+            effective_limit,
+            capability_identity,
+            role_hash,
+            cursor_lookup,
+            snapshot,
+        ) {
+            Ok(result) => result,
+            Err(failure) => {
+                return Err(finish_failure(&service, &context, &begun, failure).await);
+            }
+        }
+    };
+    if let Err(failure) = ensure_response_budget(&result) {
+        return Err(finish_failure(&service, &context, &begun, failure).await);
+    }
+    finish_success(&service, &context, &begun).await?;
+    if let Some(guard) = cursor_guard {
+        guard.publish();
+    }
     Ok(result)
 }
 
@@ -2899,6 +3172,251 @@ fn preparation_failure(
             service.internal_failure(operation, InternalDefect::ProofMismatch)
         }
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn vector_inspection_page<'a>(
+    service: &'a RiffDbServiceInner,
+    context: &RequestContext,
+    kind: VectorStateInspectionKind,
+    entity: riffdb_types::EntityTypeId,
+    current_model: &riffdb_types::EmbeddingMetadata,
+    effective_limit: PageLimit,
+    capability_identity: (riffdb_types::CapabilityId, std::num::NonZeroU64),
+    role_hash: riffdb_types::ApplicationRoleHash,
+    cursor_lookup: VectorInspectionCursorLookup,
+    snapshot: VectorInspectionSnapshotV1,
+) -> ServiceResult<(
+    InspectVectorStateResult,
+    Option<crate::CursorPublicationGuard<'a>>,
+)> {
+    const OPERATION: ServiceOperationV1 = ServiceOperationV1::InspectVectorState;
+    let candidate_keys = snapshot
+        .candidates()
+        .iter()
+        .map(|candidate| candidate.entity_key().clone())
+        .collect::<BTreeSet<_>>();
+    let admission = snapshot
+        .admission()
+        .ok_or_else(|| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?;
+    if !admission.covers(entity, &candidate_keys) {
+        return Err(service.internal_failure(OPERATION, InternalDefect::LowerIntegrity));
+    }
+    match kind {
+        VectorStateInspectionKind::StaleEntities => {
+            let mut visible = Vec::new();
+            for candidate in snapshot.candidates() {
+                if !admission.admits(candidate.entity_key()) {
+                    continue;
+                }
+                let Some(source) = candidate.newest_source_write() else {
+                    continue;
+                };
+                let embedding = candidate.embedding_write().map(|write| write.0);
+                if embedding.is_some_and(|embedding| source <= embedding) {
+                    continue;
+                }
+                let item =
+                    VectorStalenessItem::new(candidate.entity_key().clone(), source, embedding)
+                        .map_err(|_| {
+                            service.internal_failure(OPERATION, InternalDefect::LowerIntegrity)
+                        })?;
+                visible.push((candidate.entity_key().clone(), item));
+            }
+            let (items, after) = fit_vector_inspection_items(
+                service,
+                effective_limit,
+                visible,
+                snapshot.continuation(),
+                snapshot.exact_end(),
+                snapshot.revision(),
+            )?;
+            let guard = register_vector_inspection_cursor(
+                service,
+                context,
+                cursor_lookup,
+                after,
+                &snapshot,
+                capability_identity,
+                role_hash,
+                effective_limit,
+            )?;
+            let next = guard.as_ref().map(crate::CursorPublicationGuard::token);
+            let page = VectorStalenessPage::new_sparse_progress(
+                effective_limit,
+                items,
+                next,
+                snapshot.revision(),
+            )
+            .map_err(|_| service.internal_failure(OPERATION, InternalDefect::LowerIntegrity))?;
+            Ok((InspectVectorStateResult::StaleEntities(page), guard))
+        }
+        VectorStateInspectionKind::OutdatedModelEntities => {
+            let mut visible = Vec::new();
+            for candidate in snapshot.candidates() {
+                if !admission.admits(candidate.entity_key()) {
+                    continue;
+                }
+                let Some((sequence, metadata)) = candidate.embedding_write() else {
+                    continue;
+                };
+                if metadata == current_model {
+                    continue;
+                }
+                visible.push((
+                    candidate.entity_key().clone(),
+                    VectorModelVersionItem::new(
+                        candidate.entity_key().clone(),
+                        metadata.clone(),
+                        *sequence,
+                    ),
+                ));
+            }
+            let (items, after) = fit_vector_inspection_items(
+                service,
+                effective_limit,
+                visible,
+                snapshot.continuation(),
+                snapshot.exact_end(),
+                snapshot.revision(),
+            )?;
+            let guard = register_vector_inspection_cursor(
+                service,
+                context,
+                cursor_lookup,
+                after,
+                &snapshot,
+                capability_identity,
+                role_hash,
+                effective_limit,
+            )?;
+            let next = guard.as_ref().map(crate::CursorPublicationGuard::token);
+            let page = VectorModelVersionPage::new_sparse_progress(
+                effective_limit,
+                items,
+                next,
+                snapshot.revision(),
+            )
+            .map_err(|_| service.internal_failure(OPERATION, InternalDefect::LowerIntegrity))?;
+            Ok((InspectVectorStateResult::OutdatedModelEntities(page), guard))
+        }
+    }
+}
+
+fn fit_vector_inspection_items<T: crate::ServiceResponseCharge + Clone>(
+    service: &RiffDbServiceInner,
+    effective_limit: PageLimit,
+    visible: Vec<(EntityKey, T)>,
+    lower_continuation: Option<&EntityKey>,
+    exact_end: bool,
+    fence: Option<riffdb_types::CommitSequence>,
+) -> ServiceResult<(Vec<T>, Option<EntityKey>)> {
+    const OPERATION: ServiceOperationV1 = ServiceOperationV1::InspectVectorState;
+    let visible_limit = visible.len().min(usize::from(effective_limit.get().get()));
+    let has_more_before_fit = visible.len() > visible_limit || !exact_end;
+    let initial_items = visible
+        .iter()
+        .take(visible_limit)
+        .map(|(_, item)| item.clone())
+        .collect::<Vec<_>>();
+    let fit = fit_sparse_page_items(&initial_items, &fence, has_more_before_fit)?;
+    if fit.item_count() == 0 && !initial_items.is_empty() {
+        return Err(ServiceFailure::ResponseTooLarge);
+    }
+    let after =
+        if fit.item_count() < visible_limit {
+            visible
+                .get(fit.item_count().saturating_sub(1))
+                .map(|(key, _)| key.clone())
+        } else if visible.len() > visible_limit {
+            visible
+                .get(visible_limit.saturating_sub(1))
+                .map(|(key, _)| key.clone())
+        } else if !exact_end {
+            Some(lower_continuation.cloned().ok_or_else(|| {
+                service.internal_failure(OPERATION, InternalDefect::LowerIntegrity)
+            })?)
+        } else {
+            None
+        };
+    let items = visible
+        .into_iter()
+        .take(fit.item_count())
+        .map(|(_, item)| item)
+        .collect();
+    Ok((items, after))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn register_vector_inspection_cursor<'a>(
+    service: &'a RiffDbServiceInner,
+    context: &RequestContext,
+    lookup: VectorInspectionCursorLookup,
+    after: Option<EntityKey>,
+    snapshot: &VectorInspectionSnapshotV1,
+    capability_identity: (riffdb_types::CapabilityId, std::num::NonZeroU64),
+    role_hash: riffdb_types::ApplicationRoleHash,
+    effective_limit: PageLimit,
+) -> ServiceResult<Option<crate::CursorPublicationGuard<'a>>> {
+    const OPERATION: ServiceOperationV1 = ServiceOperationV1::InspectVectorState;
+    let Some(after) = after else {
+        return Ok(None);
+    };
+    let state = VectorInspectionCursorState::new(
+        after,
+        snapshot.revision(),
+        snapshot.frontier(),
+        capability_identity.0,
+        capability_identity.1,
+        role_hash,
+        service.identity.history_incarnation(),
+        effective_limit,
+    )
+    .map_err(|_| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?;
+    service
+        .cursors
+        .register_vector_inspection_unpublished(context.principal().principal_id(), lookup, state)
+        .map(Some)
+        .map_err(|_| cursor_unavailable_failure(service))
+}
+
+fn vector_inspection_authorization(
+    service: &RiffDbServiceInner,
+    authorization: &AuthorizedOperation,
+    lineage: &ContractLineage,
+    entity: riffdb_types::EntityTypeId,
+    field: FieldId,
+    partition: &PartitionKey,
+    requested_limit: PageLimit,
+) -> Option<(
+    PageLimit,
+    (riffdb_types::CapabilityId, std::num::NonZeroU64),
+    riffdb_types::ApplicationRoleHash,
+)> {
+    let obligations = authorization.obligations();
+    let mask = obligations.field_mask()?;
+    let row_limit = obligations.row_limit()?;
+    let exact_partition = ScopedPartitionV1::new(lineage.clone(), partition.clone());
+    let effective_limit = PageLimit::new(requested_limit.get().get().min(row_limit.get())).ok()?;
+    if authorization.database_id() != service.identity.database_id()
+        || authorization.environment() != service.identity.environment()
+        || authorization.operation() != ServiceOperationV1::InspectVectorState
+        || obligations.effective_tenant_scope() != &TenantScope::Global
+        || obligations.partition_constraint() != Some(&PartitionConstraint::Exact(exact_partition))
+        || obligations.output_classification()
+            != OutputClassification::PolicyFilteredApplicationData
+        || obligations.validated_approval().is_some()
+        || mask.lineage() != lineage
+        || mask.entity_type_id() != entity
+        || mask.fields() != [field]
+    {
+        return None;
+    }
+    Some((
+        effective_limit,
+        authorization.internal_capability_identity(),
+        authorization.internal_application_role_hash()?,
+    ))
 }
 
 fn entity_authorization(

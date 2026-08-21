@@ -2820,14 +2820,14 @@ mod tests {
                 }
             }
         }
-        assert_eq!(kinds.len(), 29);
+        assert_eq!(kinds.len(), 30);
         assert_eq!(
             kinds
                 .into_iter()
                 .map(CapabilityPermissionKindV1::tag)
                 .collect::<Vec<_>>(),
             (1..=24)
-                .chain([0x1b, 0x1c, 0x1d, 0x1e, 0x1f])
+                .chain([0x1b, 0x1c, 0x1d, 0x1e, 0x1f, 0x20])
                 .collect::<Vec<_>>()
         );
     }

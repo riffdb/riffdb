@@ -888,6 +888,12 @@ mod tests {
             riffdb_service::GetProjectionStatusRequest,
             riffdb_service::GetProjectionStatusResult
         );
+        denied_operation!(
+            inspect_vector_state,
+            RequestContext,
+            riffdb_service::InspectVectorStateRequest,
+            riffdb_service::InspectVectorStateResult
+        );
     }
 
     impl EventServiceApplication for ClosedApplicationService {

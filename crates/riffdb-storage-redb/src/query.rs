@@ -16,6 +16,7 @@ use riffdb_query_executor::{
     BoundPredicate, CoveredResultBatch, MAX_QUERY_SCANNED_ROWS, QueryBackendFault,
     QueryContinuation, QueryExecutionError, QueryExecutionPort, QueryExecutionRequest,
     QueryNearestPage, QueryOwnedSnapshot, QueryParameters, QueryReadView, QueryRow, QueryScanPage,
+    VectorInspectionCandidateV1, VectorInspectionSnapshotV1, VectorInspectionTargetV1,
     covered_row_matches_predicates_v1, execute_in_snapshot, execute_page_in_snapshot,
     execute_policy_operational_page_in_snapshot, execute_policy_page_in_snapshot,
     validate_query_execution_group,
@@ -24,16 +25,22 @@ use riffdb_query_ir::{
     AccessDirection, CoveredResultSourceV1, QueryAccessKind, QueryAccessProgramV1, QueryAccessStep,
     QueryPredicateOperator,
 };
-use riffdb_storage_api::{EntityTarget, PartitionIndexTarget, StorageError, StorageErrorKind};
+use riffdb_storage_api::{
+    EntityTarget, PartitionIndexTarget, StorageError, StorageErrorKind, VectorObservationTargetV1,
+};
 use riffdb_types::{CanonicalValue, EntityKey, EntityTypeId, FieldId, IndexEntryKey};
 
 use crate::codec::{
     decode_entity_record_v1, decode_entity_record_v1_profiled, decode_index_entry_v2,
-    decode_index_epoch_v1,
+    decode_index_epoch_v1, decode_vector_evidence_index_v1, decode_vector_observation_v1,
 };
 use crate::error::storage_error;
 use crate::journal::JournalTable;
-use crate::keys::{decode_index_entry_key, encode_entity_key, encode_partition_index_key};
+use crate::keys::{
+    decode_index_entry_key, decode_vector_evidence_index_key, encode_entity_key,
+    encode_partition_index_key, encode_vector_evidence_index_key,
+    encode_vector_evidence_index_prefix, encode_vector_observation_key,
+};
 use crate::store::{RedbOperationalPorts, RedbReadAccess};
 
 const PUBLICATION_OUTER_LOCK: usize = 0;
@@ -450,6 +457,176 @@ impl QueryExecutionPort for RedbOperationalPorts {
         policy
             .authorize_projected_candidates(entity, observations)
             .map_err(|_| QueryExecutionError::BackendIntegrity)
+    }
+
+    fn inspect_vector_evidence(
+        &self,
+        target: &VectorInspectionTargetV1,
+        policy: Option<&AuthorizedQueryRowPolicyContextV1>,
+    ) -> Result<VectorInspectionSnapshotV1, QueryExecutionError> {
+        let lower_target = VectorObservationTargetV1::new(
+            target.lineage().clone(),
+            target.partition().clone(),
+            target.entity(),
+            target.field(),
+        );
+        if target
+            .after()
+            .is_some_and(|after| after.entity_type_id() != target.entity())
+        {
+            return Err(QueryExecutionError::InvalidProgram);
+        }
+        let transaction = self
+            .begin_composite_read()
+            .map_err(map_storage_query_error)?;
+        let frontier = transaction
+            .application_frontier()
+            .map_err(map_storage_query_error)?;
+        let observation_key = encode_vector_observation_key(&lower_target)
+            .map_err(|_| QueryExecutionError::BackendIntegrity)?;
+        let observation = transaction
+            .read_value(JournalTable::VectorObservations, &observation_key)
+            .map_err(map_storage_query_error)?
+            .map(|bytes| {
+                decode_vector_observation_v1(&bytes)
+                    .map(|decoded| decoded.into_parts().0)
+                    .map_err(map_storage_query_error)
+            })
+            .transpose()?;
+        if observation
+            .as_ref()
+            .is_some_and(|observation| observation.target() != &lower_target)
+        {
+            return Err(QueryExecutionError::BackendIntegrity);
+        }
+
+        let prefix = encode_vector_evidence_index_prefix(&lower_target)
+            .map_err(|_| QueryExecutionError::BackendIntegrity)?;
+        let upper = exclusive_prefix_end(&prefix).ok_or(QueryExecutionError::BackendIntegrity)?;
+        let start = target
+            .after()
+            .map_or_else(
+                || Ok(prefix.clone()),
+                |after| encode_vector_evidence_index_key(&lower_target, after),
+            )
+            .map_err(|_| QueryExecutionError::BackendIntegrity)?;
+        let limit = usize::from(target.limit().get());
+        let rows = transaction
+            .read_range(
+                JournalTable::VectorEvidenceIndex,
+                &start,
+                &upper,
+                limit.saturating_add(2),
+            )
+            .map_err(map_storage_query_error)?;
+        let mut candidates = Vec::with_capacity(limit);
+        let mut more = false;
+        for (key, value) in rows {
+            let (decoded_target, entity_key) = decode_vector_evidence_index_key(&key)
+                .map_err(|_| QueryExecutionError::BackendIntegrity)?;
+            if target.after().is_some_and(|after| after == &entity_key) {
+                continue;
+            }
+            if candidates.len() == limit {
+                more = true;
+                break;
+            }
+            let entry = decode_vector_evidence_index_v1(&value)
+                .map_err(map_storage_query_error)?
+                .into_parts()
+                .0;
+            if decoded_target != lower_target
+                || entry.target() != &lower_target
+                || entry.entity_key() != &entity_key
+            {
+                return Err(QueryExecutionError::BackendIntegrity);
+            }
+            candidates.push(VectorInspectionCandidateV1::new(
+                entity_key,
+                entry.newest_source_write(),
+                entry
+                    .embedding_write()
+                    .map(|write| (write.sequence(), write.metadata().clone())),
+            ));
+        }
+        let continuation = more.then(|| {
+            candidates
+                .last()
+                .expect("non-exact bounded vector page is nonempty")
+                .entity_key()
+                .clone()
+        });
+        let admission = match policy {
+            Some(policy) => {
+                let mut observations = Vec::with_capacity(candidates.len());
+                for candidate in &candidates {
+                    let key = candidate.entity_key();
+                    let entity_target = EntityTarget::new(target.entity(), key.clone())
+                        .map_err(|_| QueryExecutionError::BackendIntegrity)?;
+                    let Some(encoded) = transaction
+                        .read_value(JournalTable::Entities, encode_entity_key(key))
+                        .map_err(map_storage_query_error)?
+                    else {
+                        observations
+                            .push(ProjectedPolicyCandidateObservationV1::missing(key.clone()));
+                        continue;
+                    };
+                    let record = decode_entity_record_v1(&encoded)
+                        .map_err(map_storage_query_error)?
+                        .into_parts()
+                        .0;
+                    if record.target() != &entity_target {
+                        return Err(QueryExecutionError::BackendIntegrity);
+                    }
+                    let lookups = policy
+                        .relationship_lookups(target.entity(), record.fields())
+                        .map_err(|_| QueryExecutionError::BackendIntegrity)?;
+                    let evidence = lookups
+                        .iter()
+                        .map(|lookup| {
+                            authoritative_indexed_relationship_exists(&transaction, lookup)
+                        })
+                        .collect::<Result<Vec<_>, _>>()
+                        .map_err(map_storage_query_error)?;
+                    observations.push(ProjectedPolicyCandidateObservationV1::current(
+                        key.clone(),
+                        record.fields().clone(),
+                        evidence,
+                    ));
+                }
+                Some(
+                    policy
+                        .authorize_projected_candidates(target.entity(), observations)
+                        .map_err(|_| QueryExecutionError::BackendIntegrity)?,
+                )
+            }
+            None => None,
+        };
+        let (total_entities, stale_entities, model_counts, revision) = observation.map_or_else(
+            || (0, 0, BTreeMap::new(), None),
+            |observation| {
+                (
+                    observation.total_entities(),
+                    observation.source_stale_entities(),
+                    observation
+                        .model_counts()
+                        .map(|(metadata, count)| (metadata.clone(), count))
+                        .collect(),
+                    Some(observation.revision()),
+                )
+            },
+        );
+        Ok(VectorInspectionSnapshotV1::new(
+            total_entities,
+            stale_entities,
+            model_counts,
+            revision,
+            frontier,
+            candidates,
+            continuation,
+            !more,
+            admission,
+        ))
     }
 
     fn execute_operational_query_page(

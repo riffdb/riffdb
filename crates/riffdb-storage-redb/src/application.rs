@@ -3097,6 +3097,9 @@ fn decoded_value<T>(item: riffdb_storage_api::EncodedPageItem<T>) -> T {
 
 #[cfg(test)]
 mod tests {
+    use std::num::NonZeroU16;
+
+    use riffdb_query_executor::{QueryExecutionPort, VectorInspectionTargetV1};
     use riffdb_storage_api::{
         DatabaseInitializationPort, StorageScanLimit, VectorEvidenceIndexEntryV1,
         VectorEvidenceIndexScanRequestV1, VectorObservationCountsV1,
@@ -3247,6 +3250,83 @@ mod tests {
         assert_eq!(second.entries().len(), 1);
         assert!(second.exact_end());
         assert!(first.entries()[0].entity_key() < second.entries()[0].entity_key());
+    }
+
+    #[test]
+    fn vector_inspection_reads_counts_evidence_and_frontier_from_one_snapshot() {
+        let scope = crate::test_path::ScopedDirectory::new("vector-inspection-snapshot");
+        let path = scope.join("db.redb");
+        let mut store = RedbStore::open(&path).expect("open store");
+        store
+            .initialize_database(
+                DatabaseId::from_unix_milliseconds_and_random(1, [0x73; 10]).expect("database ID"),
+            )
+            .expect("initialize store");
+        let ports = RedbOperationalPorts {
+            shared: Arc::clone(&store.shared),
+        };
+        let target = vector_observation_target(1);
+        let observation = VectorObservationCountsV1::from_parts(
+            target.clone(),
+            2,
+            2,
+            Vec::new(),
+            CommitSequence::new(2).expect("revision"),
+        )
+        .expect("observation");
+        let transaction = store
+            .shared
+            .database
+            .begin_write()
+            .expect("write transaction");
+        {
+            let mut observations = transaction
+                .open_table(VECTOR_OBSERVATIONS)
+                .expect("observation table");
+            let key = encode_vector_observation_key(&target).expect("observation key");
+            let value = encode_vector_observation_v1(&observation).expect("observation value");
+            observations
+                .insert(key.as_slice(), value.as_bytes())
+                .expect("insert observation");
+        }
+        {
+            let mut index = transaction
+                .open_table(VECTOR_EVIDENCE_INDEX)
+                .expect("index table");
+            for entry in [vector_index_entry(1), vector_index_entry(2)] {
+                let key = crate::keys::encode_vector_evidence_index_key(
+                    entry.target(),
+                    entry.entity_key(),
+                )
+                .expect("index key");
+                let value = encode_vector_evidence_index_v1(&entry).expect("index value");
+                index
+                    .insert(key.as_slice(), value.as_bytes())
+                    .expect("insert index row");
+            }
+        }
+        transaction.commit().expect("commit snapshot facts");
+
+        let request = VectorInspectionTargetV1::new(
+            target.lineage().clone(),
+            target.partition_key().clone(),
+            target.entity_type(),
+            target.vector_field(),
+            None,
+            NonZeroU16::new(1).expect("limit"),
+        );
+        let snapshot = QueryExecutionPort::inspect_vector_evidence(&ports, &request, None)
+            .expect("inspect snapshot");
+        assert_eq!(snapshot.total_entities(), 2);
+        assert_eq!(snapshot.stale_entities(), 2);
+        assert_eq!(
+            snapshot.revision(),
+            Some(CommitSequence::new(2).expect("revision"))
+        );
+        assert_eq!(snapshot.candidates().len(), 1);
+        assert!(!snapshot.exact_end());
+        assert!(snapshot.continuation().is_some());
+        assert!(snapshot.admission().is_none());
     }
 
     fn generation_target(index: u32) -> PartitionIndexTarget {

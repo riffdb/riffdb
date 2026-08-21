@@ -171,6 +171,14 @@ impl QueryExecutionPort for RedbSharedPorts {
             policy,
         )
     }
+
+    fn inspect_vector_evidence(
+        &self,
+        target: &riffdb_query_executor::VectorInspectionTargetV1,
+        policy: Option<&AuthorizedQueryRowPolicyContextV1>,
+    ) -> Result<riffdb_query_executor::VectorInspectionSnapshotV1, QueryExecutionError> {
+        QueryExecutionPort::inspect_vector_evidence(&self.operational(), target, policy)
+    }
 }
 
 impl AdmissionRepository for RedbSharedPorts {

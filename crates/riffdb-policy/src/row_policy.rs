@@ -936,6 +936,125 @@ pub fn resolve_authorized_query_row_policy_context(
     }))
 }
 
+/// Resolves current-row policy for one exact authorized vector inspection.
+///
+/// Unlike named-query resolution, the accessed entity is not supplied by an
+/// application-shaped access program. It is recovered from the already
+/// authorized closed operation and must match the compiler bundle and the
+/// service-resolved entity exactly.
+#[doc(hidden)]
+pub fn resolve_authorized_vector_inspection_row_policy_context(
+    authorization: &AuthorizedOperation,
+    bundle: &ContractBundle,
+    entity: EntityTypeId,
+) -> Result<Option<AuthorizedQueryRowPolicyContextV1>, QueryRowPolicyContextErrorV1> {
+    let requirement = authorization
+        .request()
+        .vector_inspection_requirement()
+        .ok_or(QueryRowPolicyContextErrorV1::StaleOrInconsistentAuthority)?;
+    if requirement.lineage != bundle.lineage() || requirement.entity_type_id != entity {
+        return Err(QueryRowPolicyContextErrorV1::StaleOrInconsistentAuthority);
+    }
+    let protected = bundle
+        .row_policies()
+        .policies()
+        .iter()
+        .any(|policy| policy.entity() == entity);
+    let Some(authority) = authorization.internal_row_policy_authority() else {
+        return if protected {
+            Err(QueryRowPolicyContextErrorV1::MissingReadBinding)
+        } else {
+            Ok(None)
+        };
+    };
+    let binding = authority
+        .internal_grant()
+        .bindings()
+        .iter()
+        .find(|binding| binding.lineage() == bundle.lineage() && binding.entity_type() == entity);
+    let Some(binding) = binding else {
+        return if protected {
+            Err(QueryRowPolicyContextErrorV1::MissingReadBinding)
+        } else {
+            Ok(None)
+        };
+    };
+    if !binding
+        .operations()
+        .contains(&CapabilityRowPolicyOperationV1::Read)
+    {
+        return Err(QueryRowPolicyContextErrorV1::MissingReadBinding);
+    }
+    let policy = bundle
+        .row_policies()
+        .policies()
+        .iter()
+        .find(|policy| policy.name() == binding.policy_name().as_str() && policy.entity() == entity)
+        .cloned()
+        .ok_or(QueryRowPolicyContextErrorV1::StaleOrInconsistentAuthority)?;
+    let mut relationships = BTreeMap::new();
+    for rule in policy
+        .rules()
+        .iter()
+        .filter(|rule| rule.operation() == RowPolicyOperationV1::Read)
+    {
+        for node in rule.nodes() {
+            let RowPolicyExpressionNodeV1::IndexedExists {
+                target_entity,
+                index_id,
+                ..
+            } = node
+            else {
+                continue;
+            };
+            let target = bundle
+                .schema()
+                .entity(*target_entity)
+                .ok_or(QueryRowPolicyContextErrorV1::InvalidRelationshipPlan)?;
+            let index = target
+                .indexes()
+                .iter()
+                .find(|index| index.id() == *index_id)
+                .ok_or(QueryRowPolicyContextErrorV1::InvalidRelationshipPlan)?;
+            let aggregate = bundle
+                .schema()
+                .aggregate_for_entity(*target_entity)
+                .ok_or(QueryRowPolicyContextErrorV1::InvalidRelationshipPlan)?;
+            let root = bundle
+                .schema()
+                .entity(aggregate.root())
+                .ok_or(QueryRowPolicyContextErrorV1::InvalidRelationshipPlan)?;
+            relationships.insert(
+                (*target_entity, *index_id),
+                AuthorizedRelationshipPlanV1 {
+                    target_entity: *target_entity,
+                    index_id: *index_id,
+                    index_schema: index.key_schema().clone(),
+                    partition_schema: aggregate.keys().partition_schema().clone(),
+                    partition_width: root.primary_key_fields().len(),
+                },
+            );
+        }
+    }
+    let entity_schema = bundle
+        .schema()
+        .entity(entity)
+        .ok_or(QueryRowPolicyContextErrorV1::InvalidRelationshipPlan)?;
+    Ok(Some(AuthorizedQueryRowPolicyContextV1 {
+        authority: Some(authority.clone()),
+        principal: authority.internal_principal().clone(),
+        policies: BTreeMap::from([(
+            entity,
+            AuthorizedEntityPolicyV1 {
+                policy,
+                relationships,
+                primary_key_fields: entity_schema.primary_key_fields().to_vec(),
+                primary_key: entity_schema.primary_key().clone(),
+            },
+        )]),
+    }))
+}
+
 /// Resolves the complete read-policy context for a principal-filtered export.
 ///
 /// The entity set comes only from the exact immutable compiler bundle. A
