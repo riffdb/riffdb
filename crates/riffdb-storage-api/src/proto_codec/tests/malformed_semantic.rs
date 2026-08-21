@@ -791,3 +791,75 @@ fn capability_v6_secret_extension_is_required_canonical_and_matched() {
         .expect("the canonical V6 record decodes");
     assert_eq!(decoded.value(), &value);
 }
+
+/// ADR-0136: the V8 vector-inspection successor is useful only when its
+/// compiler-owned role, permission, visible field, and canonical target set
+/// agree. Durable decode must reject wire records that try to separate any of
+/// those facts.
+#[test]
+fn capability_v8_vector_inspection_is_required_canonical_and_role_bound() {
+    const CAPABILITY_V8: &str = "riffdb.storage.v1.CapabilityRecordV8";
+    let value = sample::capability_record_with_vector_inspection();
+    let canonical = encode_capability_record_v1(&value).expect("inspection capability encodes");
+    let message = payload_message::<wire::CapabilityRecordV8>(canonical.as_bytes());
+
+    let mut missing = message.clone();
+    missing.vector_inspection = None;
+    assert_corrupt(decode_capability_record_v1(&checked_envelope(
+        CAPABILITY_V8,
+        &missing,
+    )));
+
+    let mut empty = message.clone();
+    empty
+        .vector_inspection
+        .as_mut()
+        .expect("inspection extension")
+        .targets
+        .clear();
+    assert_corrupt(decode_capability_record_v1(&checked_envelope(
+        CAPABILITY_V8,
+        &empty,
+    )));
+
+    let mut duplicate = message.clone();
+    {
+        let targets = &mut duplicate
+            .vector_inspection
+            .as_mut()
+            .expect("inspection extension")
+            .targets;
+        targets.push(targets[0].clone());
+    }
+    assert_corrupt(decode_capability_record_v1(&checked_envelope(
+        CAPABILITY_V8,
+        &duplicate,
+    )));
+
+    let mut wrong_role = message.clone();
+    wrong_role
+        .vector_inspection
+        .as_mut()
+        .expect("inspection extension")
+        .application_role_hash[0] ^= 1;
+    assert_corrupt(decode_capability_record_v1(&checked_envelope(
+        CAPABILITY_V8,
+        &wrong_role,
+    )));
+
+    let mut invisible = message.clone();
+    invisible
+        .vector_inspection
+        .as_mut()
+        .expect("inspection extension")
+        .targets[0]
+        .field_id = 999;
+    assert_corrupt(decode_capability_record_v1(&checked_envelope(
+        CAPABILITY_V8,
+        &invisible,
+    )));
+
+    let decoded = decode_capability_record_v1(&checked_envelope(CAPABILITY_V8, &message))
+        .expect("canonical V8 decodes");
+    assert_eq!(decoded.value(), &value);
+}

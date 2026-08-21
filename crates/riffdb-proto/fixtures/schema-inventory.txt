@@ -36,6 +36,14 @@ files
     import riffdb/storage/v1/capability_installation.proto
     import riffdb/storage/v1/capability_migration.proto
     import riffdb/storage/v1/capability_row_policy.proto
+  riffdb/storage/v1/capability_vector_inspection.proto
+    import riffdb/storage/v1/capability.proto
+    import riffdb/storage/v1/capability_export.proto
+    import riffdb/storage/v1/capability_installation.proto
+    import riffdb/storage/v1/capability_migration.proto
+    import riffdb/storage/v1/capability_reimport.proto
+    import riffdb/storage/v1/capability_row_policy.proto
+    import riffdb/storage/v1/capability_secret.proto
   riffdb/storage/v1/catalog.proto
     import riffdb/storage/v1/common.proto
   riffdb/storage/v1/command_capsule_v1.proto
@@ -568,6 +576,15 @@ messages
     5 export optional .riffdb.storage.v1.CapabilityExportGrantExtensionV1
     6 secret optional .riffdb.storage.v1.CapabilitySecretGrantExtensionV1
     7 reimport optional .riffdb.storage.v1.CapabilityApplicationReimportGrantV1
+  riffdb.storage.v1.CapabilityRecordV8 fields=8
+    1 base optional .riffdb.storage.v1.CapabilityRecordV1
+    2 migration optional .riffdb.storage.v1.CapabilityMigrationGrantExtensionV1
+    3 installation optional .riffdb.storage.v1.CapabilityInstallationGrantExtensionV1
+    4 row_policy optional .riffdb.storage.v1.CapabilityRowPolicyGrantExtensionV1
+    5 export optional .riffdb.storage.v1.CapabilityExportGrantExtensionV1
+    6 secret optional .riffdb.storage.v1.CapabilitySecretGrantExtensionV1
+    7 reimport optional .riffdb.storage.v1.CapabilityApplicationReimportGrantV1
+    8 vector_inspection optional .riffdb.storage.v1.CapabilityVectorInspectionGrantV1
   riffdb.storage.v1.CapabilityRowPolicyBindingV1 fields=4
     1 contract_lineage optional string
     2 policy_name optional string
@@ -589,6 +606,14 @@ messages
     3 digest optional bytes
   riffdb.storage.v1.CapabilityTokenLookupV1 fields=1
     1 capability_id optional bytes
+  riffdb.storage.v1.CapabilityVectorInspectionGrantV1 fields=2
+    1 application_role_hash optional bytes
+    2 targets repeated .riffdb.storage.v1.CapabilityVectorInspectionTargetV1
+  riffdb.storage.v1.CapabilityVectorInspectionTargetV1 fields=4
+    1 contract_lineage optional string
+    2 entity_type_id optional uint32
+    3 field_id optional uint32
+    4 allow_counts optional bool
   riffdb.storage.v1.CommandAuditTargetV1 fields=2
     1 contract_lineage optional string
     2 command_id optional uint32

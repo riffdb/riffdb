@@ -78,6 +78,7 @@ const STORAGE_SOURCES: &[&str] = &[
     "riffdb/storage/v1/capability_export.proto",
     "riffdb/storage/v1/capability_secret.proto",
     "riffdb/storage/v1/capability_reimport.proto",
+    "riffdb/storage/v1/capability_vector_inspection.proto",
 ];
 const PRODUCTION_SOURCES: &[&str] = &[
     "riffdb/app/v1/application.proto",
@@ -122,6 +123,7 @@ const PRODUCTION_SOURCES: &[&str] = &[
     "riffdb/storage/v1/capability_export.proto",
     "riffdb/storage/v1/capability_secret.proto",
     "riffdb/storage/v1/capability_reimport.proto",
+    "riffdb/storage/v1/capability_vector_inspection.proto",
     "riffdb/v1/admin.proto",
     "riffdb/v1/command.proto",
     "riffdb/v1/commit.proto",
@@ -605,6 +607,11 @@ const DURABLE_RECORDS: &[DurableRecord] = &[
         PayloadBound::Document,
     ),
     durable(
+        "capability_vector_inspection.proto",
+        "CapabilityRecordV8",
+        PayloadBound::Document,
+    ),
+    durable(
         "vector_evidence_v1.proto",
         "StoredVectorEvidenceV1",
         PayloadBound::Tiny,
@@ -1069,14 +1076,17 @@ fn main() -> Result<(), Box<dyn Error>> {
     let capability_v7_record = durable_registry
         .get(current_v1_record_count + 53)
         .ok_or_else(|| io::Error::other("durable capability-v7 registry is incomplete"))?;
-    let vector_evidence_record = durable_registry
+    let capability_v8_record = durable_registry
         .get(current_v1_record_count + 54)
+        .ok_or_else(|| io::Error::other("durable capability-v8 registry is incomplete"))?;
+    let vector_evidence_record = durable_registry
+        .get(current_v1_record_count + 55)
         .ok_or_else(|| io::Error::other("durable vector-evidence-v1 registry is incomplete"))?;
     let vector_observation_record = durable_registry
-        .get(current_v1_record_count + 55)
+        .get(current_v1_record_count + 56)
         .ok_or_else(|| io::Error::other("durable vector-observation-v1 registry is incomplete"))?;
     let vector_evidence_index_record = durable_registry
-        .get(current_v1_record_count + 56)
+        .get(current_v1_record_count + 57)
         .ok_or_else(|| {
             io::Error::other("durable vector-evidence-index-v1 registry is incomplete")
         })?;
@@ -1404,6 +1414,26 @@ fn main() -> Result<(), Box<dyn Error>> {
         &output_root,
         "fixtures/proto/durable-capability-v7-record-bound.bin",
         &durable_record_bounds(std::slice::from_ref(capability_v7_record)),
+    )?;
+    write_artifact(
+        &output_root,
+        "fixtures/proto/durable-capability-v8-schema-hash.bin",
+        &capability_v8_record.schema_hash,
+    )?;
+    write_artifact(
+        &output_root,
+        "fixtures/proto/durable-capability-v8-record-bound.bin",
+        &durable_record_bounds(std::slice::from_ref(capability_v8_record)),
+    )?;
+    write_artifact(
+        &output_root,
+        "crates/riffdb-proto/fixtures/durable-capability-v8-schema-hash.bin",
+        &capability_v8_record.schema_hash,
+    )?;
+    write_artifact(
+        &output_root,
+        "crates/riffdb-proto/fixtures/durable-capability-v8-record-bound.bin",
+        &durable_record_bounds(std::slice::from_ref(capability_v8_record)),
     )?;
     write_artifact(
         &output_root,
@@ -1752,9 +1782,9 @@ struct BuiltDurableRecord {
 fn build_durable_registry(
     storage: &FileDescriptorSet,
 ) -> Result<Vec<BuiltDurableRecord>, Box<dyn Error>> {
-    if DURABLE_RECORDS.len() != 86 {
+    if DURABLE_RECORDS.len() != 87 {
         return Err(
-            io::Error::other("readable durable registry must contain exactly 86 records").into(),
+            io::Error::other("readable durable registry must contain exactly 87 records").into(),
         );
     }
     if storage.file.len() != STORAGE_SOURCES.len()
@@ -1778,9 +1808,9 @@ fn build_durable_registry(
         .iter()
         .map(|file| file.enum_type.len())
         .sum::<usize>();
-    if message_count != 171 || enum_count != 22 {
+    if message_count != 174 || enum_count != 22 {
         return Err(io::Error::other(format!(
-            "storage schema must contain exactly 171 messages and 22 enums; found {message_count} messages and {enum_count} enums"
+            "storage schema must contain exactly 174 messages and 22 enums; found {message_count} messages and {enum_count} enums"
         ))
         .into());
     }
@@ -2083,13 +2113,16 @@ fn durable_writable_registry_fixture(
     let capability_v7 = records
         .get(current_v1_record_count + 53)
         .ok_or_else(|| io::Error::other("durable registry is missing CapabilityRecordV7"))?;
-    let vector_evidence = records
+    let capability_v8 = records
         .get(current_v1_record_count + 54)
+        .ok_or_else(|| io::Error::other("durable registry is missing CapabilityRecordV8"))?;
+    let vector_evidence = records
+        .get(current_v1_record_count + 55)
         .ok_or_else(|| io::Error::other("durable registry is missing StoredVectorEvidenceV1"))?;
     let vector_observation = records
-        .get(current_v1_record_count + 55)
+        .get(current_v1_record_count + 56)
         .ok_or_else(|| io::Error::other("durable registry is missing StoredVectorObservationV1"))?;
-    let vector_evidence_index = records.get(current_v1_record_count + 56).ok_or_else(|| {
+    let vector_evidence_index = records.get(current_v1_record_count + 57).ok_or_else(|| {
         io::Error::other("durable registry is missing StoredVectorEvidenceIndexV1")
     })?;
     let writable = legacy[..8]
@@ -2127,13 +2160,14 @@ fn durable_writable_registry_fixture(
         .chain(event_policy_command_authority.iter())
         .chain(std::iter::once(capability_v6))
         .chain(std::iter::once(capability_v7))
+        .chain(std::iter::once(capability_v8))
         .chain(std::iter::once(registry_v2))
         .chain(std::iter::once(vector_evidence))
         .chain(std::iter::once(vector_observation))
         .chain(std::iter::once(vector_evidence_index));
 
     let mut output = String::from("riffdb-durable-writable-registry-v1\n");
-    let _ = writeln!(output, "records {}", current_v1_record_count + 39);
+    let _ = writeln!(output, "records {}", current_v1_record_count + 40);
     for record in writable {
         let _ = write!(output, "{} schema-hash=", record.record_type);
         for byte in record.schema_hash {

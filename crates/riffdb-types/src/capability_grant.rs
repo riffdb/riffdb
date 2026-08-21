@@ -19,6 +19,8 @@ pub const MAX_CAPABILITY_FIELD_VISIBILITY: usize = 65_535;
 pub const MAX_CAPABILITY_ROW_POLICY_BINDINGS: usize = 1_024;
 /// Maximum lineage-scoped application export grants carried by one capability.
 pub const MAX_CAPABILITY_APPLICATION_EXPORT_GRANTS: usize = 256;
+/// Maximum exact vector-inspection targets carried by one application role.
+pub const MAX_CAPABILITY_VECTOR_INSPECTION_TARGETS: usize = 256;
 /// Maximum semantic bytes in one complete durable capability payload.
 pub const MAX_CAPABILITY_PAYLOAD_BYTES: usize = 1024 * 1024;
 
@@ -116,6 +118,8 @@ pub enum CapabilityPermissionKindV1 {
     ConsumeContextualSubscription,
     /// Install or upgrade one exact application lineage.
     InstallApplication,
+    /// Inspect one exact compiler-declared vector field.
+    InspectVectorState,
 }
 
 impl CapabilityPermissionKindV1 {
@@ -154,6 +158,7 @@ impl CapabilityPermissionKindV1 {
             Self::WatchNamedQuery => 0x1d,
             Self::ConsumeContextualSubscription => 0x1e,
             Self::InstallApplication => 0x1f,
+            Self::InspectVectorState => 0x20,
         }
     }
 
@@ -192,6 +197,7 @@ impl CapabilityPermissionKindV1 {
             0x1d => Some(Self::WatchNamedQuery),
             0x1e => Some(Self::ConsumeContextualSubscription),
             0x1f => Some(Self::InstallApplication),
+            0x20 => Some(Self::InspectVectorState),
             _ => None,
         }
     }
@@ -1073,6 +1079,155 @@ impl fmt::Debug for CapabilityApplicationReimportGrantV1 {
     }
 }
 
+/// One exact compiler-selected vector field and its count-disclosure posture.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CapabilityVectorInspectionTargetV1 {
+    lineage: ContractLineage,
+    entity_type: EntityTypeId,
+    field: FieldId,
+    allow_counts: bool,
+}
+
+impl CapabilityVectorInspectionTargetV1 {
+    /// Constructs an exact symbolic vector target lowered to stable contract IDs.
+    #[must_use]
+    pub const fn new(
+        lineage: ContractLineage,
+        entity_type: EntityTypeId,
+        field: FieldId,
+        allow_counts: bool,
+    ) -> Self {
+        Self {
+            lineage,
+            entity_type,
+            field,
+            allow_counts,
+        }
+    }
+
+    fn canonical_key(&self) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        append_lineage(&mut bytes, &self.lineage);
+        bytes.extend_from_slice(&self.entity_type.to_be_bytes());
+        bytes.extend_from_slice(&self.field.to_be_bytes());
+        bytes
+    }
+
+    /// Exact contract lineage.
+    #[must_use]
+    pub const fn lineage(&self) -> &ContractLineage {
+        &self.lineage
+    }
+
+    /// Exact stable entity identity.
+    #[must_use]
+    pub const fn entity_type(&self) -> EntityTypeId {
+        self.entity_type
+    }
+
+    /// Exact stable vector-field identity.
+    #[must_use]
+    pub const fn field(&self) -> FieldId {
+        self.field
+    }
+
+    /// Whether whole-partition maintained counts may be disclosed.
+    #[must_use]
+    pub const fn allow_counts(&self) -> bool {
+        self.allow_counts
+    }
+
+    fn narrows(&self, parent: &Self) -> bool {
+        self.lineage == parent.lineage
+            && self.entity_type == parent.entity_type
+            && self.field == parent.field
+            && (!self.allow_counts || parent.allow_counts)
+    }
+}
+
+/// Complete exact vector-inspection authority carried only by CapabilityRecordV8.
+#[derive(Clone, Eq, PartialEq)]
+pub struct CapabilityVectorInspectionGrantV1 {
+    application_role_hash: ApplicationRoleHash,
+    targets: Arc<[CapabilityVectorInspectionTargetV1]>,
+}
+
+impl CapabilityVectorInspectionGrantV1 {
+    /// Constructs one role-bound, canonical, nonempty target set.
+    pub fn new(
+        application_role_hash: ApplicationRoleHash,
+        mut targets: Vec<CapabilityVectorInspectionTargetV1>,
+    ) -> Result<Self, CapabilityGrantError> {
+        if targets.is_empty() {
+            return Err(CapabilityGrantError::Empty);
+        }
+        if targets.len() > MAX_CAPABILITY_VECTOR_INSPECTION_TARGETS {
+            return Err(CapabilityGrantError::LimitExceeded);
+        }
+        targets.sort_by_key(CapabilityVectorInspectionTargetV1::canonical_key);
+        if targets
+            .windows(2)
+            .any(|pair| pair[0].canonical_key() == pair[1].canonical_key())
+        {
+            return Err(CapabilityGrantError::Duplicate);
+        }
+        Ok(Self {
+            application_role_hash,
+            targets: targets.into(),
+        })
+    }
+
+    /// Exact compiled application-role identity.
+    #[must_use]
+    pub const fn application_role_hash(&self) -> ApplicationRoleHash {
+        self.application_role_hash
+    }
+
+    /// Canonical exact vector targets.
+    #[must_use]
+    pub fn targets(&self) -> &[CapabilityVectorInspectionTargetV1] {
+        &self.targets
+    }
+
+    /// Finds one exact target without exposing a broader wildcard.
+    #[must_use]
+    pub fn target(
+        &self,
+        lineage: &ContractLineage,
+        entity_type: EntityTypeId,
+        field: FieldId,
+    ) -> Option<&CapabilityVectorInspectionTargetV1> {
+        self.targets.iter().find(|target| {
+            target.lineage() == lineage
+                && target.entity_type() == entity_type
+                && target.field() == field
+        })
+    }
+
+    /// True only when every child target and count posture is equal or narrower.
+    #[must_use]
+    pub fn is_narrowing_of(&self, parent: &Self) -> bool {
+        self.application_role_hash == parent.application_role_hash
+            && self.targets.iter().all(|child| {
+                parent
+                    .targets
+                    .binary_search_by_key(&child.canonical_key(), |target| target.canonical_key())
+                    .ok()
+                    .is_some_and(|index| child.narrows(&parent.targets[index]))
+            })
+    }
+}
+
+impl fmt::Debug for CapabilityVectorInspectionGrantV1 {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("CapabilityVectorInspectionGrantV1")
+            .field("application_role_hash", &self.application_role_hash)
+            .field("target_count", &self.targets.len())
+            .finish()
+    }
+}
+
 /// Complete bounded v1 grant persisted with a capability.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CapabilityGrantV1 {
@@ -1085,6 +1240,7 @@ pub struct CapabilityGrantV1 {
     row_policy: Option<CapabilityRowPolicyGrantV1>,
     export: Option<CapabilityExportGrantV1>,
     reimport: Option<CapabilityApplicationReimportGrantV1>,
+    vector_inspection: Option<CapabilityVectorInspectionGrantV1>,
 }
 
 impl CapabilityGrantV1 {
@@ -1141,6 +1297,7 @@ impl CapabilityGrantV1 {
             row_policy: None,
             export: None,
             reimport: None,
+            vector_inspection: None,
         };
         validate_capability_payload_bytes(value.semantic_bytes()?)?;
         Ok(value)
@@ -1214,6 +1371,17 @@ impl CapabilityGrantV1 {
             })
             .count();
         if matching_roles != 1 || all_roles != 1 {
+            return Err(CapabilityGrantError::InvalidShape);
+        }
+        if self.vector_inspection.as_ref().is_some_and(|inspection| {
+            inspection.targets().iter().any(|target| {
+                target.allow_counts()
+                    && row_policy.bindings().iter().any(|binding| {
+                        binding.lineage() == target.lineage()
+                            && binding.entity_type() == target.entity_type()
+                    })
+            })
+        }) {
             return Err(CapabilityGrantError::InvalidShape);
         }
         self.row_policy = Some(row_policy);
@@ -1291,6 +1459,76 @@ impl CapabilityGrantV1 {
         self.reimport.as_ref()
     }
 
+    /// Adds exact V8 vector-inspection authority after checking role, permission,
+    /// field visibility, and row-policy count-disclosure prerequisites.
+    pub fn with_vector_inspection(
+        mut self,
+        inspection: CapabilityVectorInspectionGrantV1,
+    ) -> Result<Self, CapabilityGrantError> {
+        if self.vector_inspection.is_some()
+            || !self
+                .permissions
+                .contains_exact(&CapabilityPermissionV1::unparameterized(
+                    CapabilityPermissionKindV1::InspectVectorState,
+                )?)
+        {
+            return Err(CapabilityGrantError::InvalidShape);
+        }
+        let matching_roles = self
+            .permissions
+            .as_slice()
+            .iter()
+            .filter(|permission| {
+                matches!(
+                    permission,
+                    CapabilityPermissionV1::ApplicationRoleIdentity(hash)
+                        if *hash == inspection.application_role_hash()
+                )
+            })
+            .count();
+        let all_roles = self
+            .permissions
+            .as_slice()
+            .iter()
+            .filter(|permission| {
+                matches!(
+                    permission,
+                    CapabilityPermissionV1::ApplicationRoleIdentity(_)
+                )
+            })
+            .count();
+        if matching_roles != 1 || all_roles != 1 {
+            return Err(CapabilityGrantError::InvalidShape);
+        }
+        for target in inspection.targets() {
+            let visible = self.field_visibility.iter().any(|entry| {
+                entry.lineage() == target.lineage()
+                    && entry.entity_type() == target.entity_type()
+                    && (entry.fields().binary_search(&target.field()).is_ok()
+                        || entry.secret_fields().binary_search(&target.field()).is_ok())
+            });
+            let row_limited = self.row_policy.as_ref().is_some_and(|row_policy| {
+                row_policy.bindings().iter().any(|binding| {
+                    binding.lineage() == target.lineage()
+                        && binding.entity_type() == target.entity_type()
+                })
+            });
+            if !visible || (target.allow_counts() && row_limited) {
+                return Err(CapabilityGrantError::InvalidShape);
+            }
+        }
+        self.vector_inspection = Some(inspection);
+        validate_capability_payload_bytes(self.semantic_bytes()?)?;
+        Ok(self)
+    }
+
+    /// Exact trusted vector-inspection extension, absent for V1 through V7 capabilities.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn internal_vector_inspection(&self) -> Option<&CapabilityVectorInspectionGrantV1> {
+        self.vector_inspection.as_ref()
+    }
+
     /// Returns the complete checked v1 semantic grant byte count.
     pub fn semantic_bytes(&self) -> Result<usize, CapabilityGrantError> {
         let base = capability_grant_semantic_bytes_parts(
@@ -1312,13 +1550,33 @@ impl CapabilityGrantV1 {
                 .ok_or(CapabilityGrantError::SizeOverflow)?,
             None => with_row_policy,
         };
-        match &self.reimport {
+        let with_reimport = match &self.reimport {
             Some(extension) => with_export
                 .checked_add(reimport_semantic_bytes(extension)?)
+                .ok_or(CapabilityGrantError::SizeOverflow)?,
+            None => with_export,
+        };
+        match &self.vector_inspection {
+            Some(extension) => with_reimport
+                .checked_add(vector_inspection_semantic_bytes(extension)?)
                 .ok_or(CapabilityGrantError::SizeOverflow),
-            None => Ok(with_export),
+            None => Ok(with_reimport),
         }
     }
+}
+
+fn vector_inspection_semantic_bytes(
+    extension: &CapabilityVectorInspectionGrantV1,
+) -> Result<usize, CapabilityGrantError> {
+    extension
+        .targets()
+        .iter()
+        .try_fold(36usize, |total, target| {
+            total
+                .checked_add(framed_capability_bytes(target.lineage().as_bytes().len())?)
+                .and_then(|value| value.checked_add(9))
+                .ok_or(CapabilityGrantError::SizeOverflow)
+        })
 }
 
 fn reimport_semantic_bytes(
@@ -1503,12 +1761,12 @@ mod tests {
 
     #[test]
     fn permission_tags_are_closed_and_stable() {
-        for tag in 1..=31 {
+        for tag in 1..=32 {
             let kind = CapabilityPermissionKindV1::from_tag(tag).expect("known tag");
             assert_eq!(kind.tag(), tag);
         }
         assert_eq!(CapabilityPermissionKindV1::from_tag(0), None);
-        assert_eq!(CapabilityPermissionKindV1::from_tag(32), None);
+        assert_eq!(CapabilityPermissionKindV1::from_tag(33), None);
     }
 
     #[test]
@@ -1531,6 +1789,12 @@ mod tests {
         assert_eq!(
             CapabilityPermissionV1::unparameterized(CapabilityPermissionKindV1::ConsumeEventStream),
             Err(CapabilityGrantError::InvalidShape)
+        );
+        assert!(
+            CapabilityPermissionV1::unparameterized(
+                CapabilityPermissionKindV1::InspectVectorState,
+            )
+            .is_ok()
         );
         assert!(
             CapabilityPermissionV1::unparameterized(CapabilityPermissionKindV1::ExecuteAdHocQuery)
@@ -1564,6 +1828,82 @@ mod tests {
                 .canonical_key()
                 .windows(32)
                 .any(|window| window == [7; 32])
+        );
+    }
+
+    #[test]
+    fn vector_inspection_is_role_field_and_count_bound() {
+        let lineage = ContractLineage::new("ticketdesk").expect("lineage");
+        let role = ApplicationRoleHash::from_bytes([9; 32]);
+        let entity = EntityTypeId::first();
+        let field = FieldId::first();
+        let permissions = CapabilityPermissionsV1::new(vec![
+            CapabilityPermissionV1::ApplicationRoleIdentity(role),
+            CapabilityPermissionV1::unparameterized(CapabilityPermissionKindV1::InspectVectorState)
+                .expect("inspection permission"),
+        ])
+        .expect("permissions");
+        let grant = CapabilityGrantV1::new(
+            TenantScope::Global,
+            PartitionScopeV1::All,
+            permissions,
+            vec![
+                EntityFieldVisibilityV1::new(lineage.clone(), entity, vec![field])
+                    .expect("visibility"),
+            ],
+            NonZeroU16::new(50).expect("limit"),
+            Vec::new(),
+        )
+        .expect("grant");
+        let counts = CapabilityVectorInspectionTargetV1::new(lineage.clone(), entity, field, true);
+        let inspection =
+            CapabilityVectorInspectionGrantV1::new(role, vec![counts.clone()]).expect("inspection");
+        let granted = grant
+            .clone()
+            .with_vector_inspection(inspection)
+            .expect("vector inspection grant");
+        assert!(
+            granted
+                .internal_vector_inspection()
+                .and_then(|value| value.target(&lineage, entity, field))
+                .is_some_and(CapabilityVectorInspectionTargetV1::allow_counts)
+        );
+
+        let narrowed = CapabilityVectorInspectionGrantV1::new(
+            role,
+            vec![CapabilityVectorInspectionTargetV1::new(
+                lineage.clone(),
+                entity,
+                field,
+                false,
+            )],
+        )
+        .expect("narrowed");
+        assert!(
+            narrowed.is_narrowing_of(
+                granted
+                    .internal_vector_inspection()
+                    .expect("parent inspection")
+            )
+        );
+
+        let row_policy = CapabilityRowPolicyGrantV1::new(
+            role,
+            CapabilityPrincipalFactsV1::empty(),
+            vec![
+                CapabilityRowPolicyBindingV1::new(
+                    lineage,
+                    RowPolicyName::new("ticket_visibility").expect("policy"),
+                    entity,
+                    vec![CapabilityRowPolicyOperationV1::Read],
+                )
+                .expect("binding"),
+            ],
+        )
+        .expect("row policy");
+        assert_eq!(
+            granted.with_row_policy(row_policy),
+            Err(CapabilityGrantError::InvalidShape)
         );
     }
 
@@ -1614,7 +1954,7 @@ mod tests {
         let query_name = QueryOperationName::new("TicketPage").expect("query name");
         let reactive_module = ReactiveModuleHash::from_bytes([4; 32]);
         let reactive_name = ReactiveOperationName::new("TicketActivity").expect("reactive name");
-        let mut values = (1..=31)
+        let mut values = (1..=32)
             .filter_map(CapabilityPermissionKindV1::from_tag)
             .filter_map(|kind| CapabilityPermissionV1::unparameterized(kind).ok())
             .collect::<Vec<_>>();
@@ -1651,10 +1991,11 @@ mod tests {
                 reactive_name.clone(),
             ),
             CapabilityPermissionV1::ConsumeContextualSubscription(
-                lineage,
+                lineage.clone(),
                 reactive_module,
                 reactive_name,
             ),
+            CapabilityPermissionV1::InstallApplication(lineage.clone()),
         ]);
 
         let permissions = CapabilityPermissionsV1::new(values).expect("complete permission set");

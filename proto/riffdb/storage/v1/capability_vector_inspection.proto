@@ -1,0 +1,37 @@
+syntax = "proto3";
+
+package riffdb.storage.v1;
+
+import "riffdb/storage/v1/capability.proto";
+import "riffdb/storage/v1/capability_export.proto";
+import "riffdb/storage/v1/capability_installation.proto";
+import "riffdb/storage/v1/capability_migration.proto";
+import "riffdb/storage/v1/capability_reimport.proto";
+import "riffdb/storage/v1/capability_row_policy.proto";
+import "riffdb/storage/v1/capability_secret.proto";
+
+// One exact compiler-declared vector field and its count-disclosure posture.
+message CapabilityVectorInspectionTargetV1 {
+  string contract_lineage = 1;
+  uint32 entity_type_id = 2;
+  uint32 field_id = 3;
+  bool allow_counts = 4;
+}
+
+// Role-bound exact vector-inspection authority.
+message CapabilityVectorInspectionGrantV1 {
+  bytes application_role_hash = 1;
+  repeated CapabilityVectorInspectionTargetV1 targets = 2;
+}
+
+// Additive vector-inspection successor; V1 through V7 remain byte-frozen.
+message CapabilityRecordV8 {
+  CapabilityRecordV1 base = 1;
+  CapabilityMigrationGrantExtensionV1 migration = 2;
+  CapabilityInstallationGrantExtensionV1 installation = 3;
+  CapabilityRowPolicyGrantExtensionV1 row_policy = 4;
+  CapabilityExportGrantExtensionV1 export = 5;
+  CapabilitySecretGrantExtensionV1 secret = 6;
+  CapabilityApplicationReimportGrantV1 reimport = 7;
+  CapabilityVectorInspectionGrantV1 vector_inspection = 8;
+}

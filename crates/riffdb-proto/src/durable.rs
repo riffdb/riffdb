@@ -12,9 +12,9 @@ use crate::envelope::{PayloadValidationError, RecordRegistry, RecordSchema};
 use crate::storage::v1;
 
 /// Number of durable semantic payload tuples accepted while opening or migrating storage.
-pub const READABLE_RECORD_SCHEMA_COUNT: usize = 91;
+pub const READABLE_RECORD_SCHEMA_COUNT: usize = 92;
 /// Number of durable semantic roles accepted for current writes.
-pub const WRITABLE_RECORD_SCHEMA_COUNT: usize = 68;
+pub const WRITABLE_RECORD_SCHEMA_COUNT: usize = 69;
 /// Number of durable semantic roles accepted for current writes.
 pub const CURRENT_RECORD_SCHEMA_COUNT: usize = WRITABLE_RECORD_SCHEMA_COUNT;
 
@@ -154,6 +154,14 @@ const CAPABILITY_V7_SCHEMA_HASH_BYTES: &[u8; 32] = include_bytes!(concat!(
 const CAPABILITY_V7_RECORD_BOUND_BYTES: &[u8; 8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/fixtures/durable-capability-v7-record-bound.bin"
+));
+const CAPABILITY_V8_SCHEMA_HASH_BYTES: &[u8; 32] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/fixtures/durable-capability-v8-schema-hash.bin"
+));
+const CAPABILITY_V8_RECORD_BOUND_BYTES: &[u8; 8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/fixtures/durable-capability-v8-record-bound.bin"
 ));
 const VALIDATED_PREFIX_CHECKPOINT_V1_SCHEMA_HASH_BYTES: &[u8; 32] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -880,6 +888,26 @@ const CAPABILITY_V7_RECORD_SCHEMA: RecordSchema<'static> = RecordSchema::new_cur
 )
 .with_compact_identity(18, 8);
 
+const CAPABILITY_V8_RECORD_SCHEMA: RecordSchema<'static> = RecordSchema::new_current(
+    "riffdb.storage.v1.CapabilityRecordV8",
+    SchemaHash::from_bytes(*CAPABILITY_V8_SCHEMA_HASH_BYTES),
+    u32::from_be_bytes([
+        CAPABILITY_V8_RECORD_BOUND_BYTES[0],
+        CAPABILITY_V8_RECORD_BOUND_BYTES[1],
+        CAPABILITY_V8_RECORD_BOUND_BYTES[2],
+        CAPABILITY_V8_RECORD_BOUND_BYTES[3],
+    ]) as usize,
+    u32::from_be_bytes([
+        CAPABILITY_V8_RECORD_BOUND_BYTES[4],
+        CAPABILITY_V8_RECORD_BOUND_BYTES[5],
+        CAPABILITY_V8_RECORD_BOUND_BYTES[6],
+        CAPABILITY_V8_RECORD_BOUND_BYTES[7],
+    ]) as usize,
+    preflight_payload::<83>,
+    validate_payload::<83, v1::CapabilityRecordV8>,
+)
+.with_compact_identity(18, 9);
+
 const VALIDATED_PREFIX_CHECKPOINT_V1_RECORD_SCHEMA: RecordSchema<'static> =
     RecordSchema::new_current(
         "riffdb.storage.v1.StoredValidatedPrefixCheckpointV1",
@@ -1438,8 +1466,8 @@ const VECTOR_EVIDENCE_V1_RECORD_SCHEMA: RecordSchema<'static> = RecordSchema::ne
         VECTOR_EVIDENCE_V1_RECORD_BOUND_BYTES[6],
         VECTOR_EVIDENCE_V1_RECORD_BOUND_BYTES[7],
     ]) as usize,
-    preflight_payload::<83>,
-    validate_payload::<83, v1::StoredVectorEvidenceV1>,
+    preflight_payload::<84>,
+    validate_payload::<84, v1::StoredVectorEvidenceV1>,
 )
 .with_compact_identity(61, 1);
 
@@ -1458,8 +1486,8 @@ const VECTOR_OBSERVATION_V1_RECORD_SCHEMA: RecordSchema<'static> = RecordSchema:
         VECTOR_OBSERVATION_V1_RECORD_BOUND_BYTES[6],
         VECTOR_OBSERVATION_V1_RECORD_BOUND_BYTES[7],
     ]) as usize,
-    preflight_payload::<84>,
-    validate_payload::<84, v1::StoredVectorObservationV1>,
+    preflight_payload::<85>,
+    validate_payload::<85, v1::StoredVectorObservationV1>,
 )
 .with_compact_identity(62, 1);
 
@@ -1478,8 +1506,8 @@ const VECTOR_EVIDENCE_INDEX_V1_RECORD_SCHEMA: RecordSchema<'static> = RecordSche
         VECTOR_EVIDENCE_INDEX_V1_RECORD_BOUND_BYTES[6],
         VECTOR_EVIDENCE_INDEX_V1_RECORD_BOUND_BYTES[7],
     ]) as usize,
-    preflight_payload::<85>,
-    validate_payload::<85, v1::StoredVectorEvidenceIndexV1>,
+    preflight_payload::<86>,
+    validate_payload::<86, v1::StoredVectorEvidenceIndexV1>,
 )
 .with_compact_identity(63, 1);
 
@@ -1647,6 +1675,7 @@ readable_message!(v1::StoredDurableEventV2, DURABLE_EVENT_V2_RECORD_SCHEMA);
 readable_message!(v1::CapabilityRecordV5, CAPABILITY_V5_RECORD_SCHEMA);
 readable_message!(v1::CapabilityRecordV6, CAPABILITY_V6_RECORD_SCHEMA);
 readable_message!(v1::CapabilityRecordV7, CAPABILITY_V7_RECORD_SCHEMA);
+readable_message!(v1::CapabilityRecordV8, CAPABILITY_V8_RECORD_SCHEMA);
 readable_message!(v1::StoredVectorEvidenceV1, VECTOR_EVIDENCE_V1_RECORD_SCHEMA);
 readable_message!(
     v1::StoredVectorObservationV1,
@@ -1781,6 +1810,7 @@ writable_message!(v1::CapabilityRecordV4);
 writable_message!(v1::CapabilityRecordV5);
 writable_message!(v1::CapabilityRecordV6);
 writable_message!(v1::CapabilityRecordV7);
+writable_message!(v1::CapabilityRecordV8);
 writable_message!(v1::StoredVectorEvidenceV1);
 writable_message!(v1::StoredVectorObservationV1);
 writable_message!(v1::StoredVectorEvidenceIndexV1);
@@ -1990,6 +2020,7 @@ pub static READABLE_RECORD_SCHEMAS: [RecordSchema<'static>; READABLE_RECORD_SCHE
     COMMAND_SEGMENT_V4_RECORD_SCHEMA,
     CAPABILITY_V6_RECORD_SCHEMA,
     CAPABILITY_V7_RECORD_SCHEMA,
+    CAPABILITY_V8_RECORD_SCHEMA,
     VECTOR_EVIDENCE_V1_RECORD_SCHEMA,
     VECTOR_OBSERVATION_V1_RECORD_SCHEMA,
     VECTOR_EVIDENCE_INDEX_V1_RECORD_SCHEMA,
@@ -2066,6 +2097,7 @@ pub static WRITABLE_RECORD_SCHEMAS: [RecordSchema<'static>; WRITABLE_RECORD_SCHE
     COMMAND_SEGMENT_V4_RECORD_SCHEMA,
     CAPABILITY_V6_RECORD_SCHEMA,
     CAPABILITY_V7_RECORD_SCHEMA,
+    CAPABILITY_V8_RECORD_SCHEMA,
     REGISTRY_V2_RECORD_SCHEMA,
     VECTOR_EVIDENCE_V1_RECORD_SCHEMA,
     VECTOR_OBSERVATION_V1_RECORD_SCHEMA,

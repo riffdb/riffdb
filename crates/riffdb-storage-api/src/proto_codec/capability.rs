@@ -10,9 +10,10 @@ use riffdb_types::{
     CapabilityApplicationReimportGrantV1, CapabilityApplicationReimportScopeV1,
     CapabilityExportGrantV1, CapabilityGrantError, CapabilityId, CapabilityPrincipalFactsV1,
     CapabilityRowPolicyBindingV1, CapabilityRowPolicyGrantV1, CapabilityRowPolicyOperationV1,
-    CapabilityTokenDigest, CommandId, ContractLineage, DatabaseId, DigestKeyId, EntityTypeId,
-    Environment, FieldId, IndexId, PartitionKey, ProjectionId, QueryModuleHash, QueryOperationName,
-    ReactiveModuleHash, ReactiveOperationName, RequestId, RowPolicyName,
+    CapabilityTokenDigest, CapabilityVectorInspectionGrantV1, CapabilityVectorInspectionTargetV1,
+    CommandId, ContractLineage, DatabaseId, DigestKeyId, EntityTypeId, Environment, FieldId,
+    IndexId, PartitionKey, ProjectionId, QueryModuleHash, QueryOperationName, ReactiveModuleHash,
+    ReactiveOperationName, RequestId, RowPolicyName,
 };
 
 use crate::{
@@ -37,6 +38,7 @@ const RECORD_V4: &str = "riffdb.storage.v1.CapabilityRecordV4";
 const RECORD_V5: &str = "riffdb.storage.v1.CapabilityRecordV5";
 const RECORD_V6: &str = "riffdb.storage.v1.CapabilityRecordV6";
 const RECORD_V7: &str = "riffdb.storage.v1.CapabilityRecordV7";
+const RECORD_V8: &str = "riffdb.storage.v1.CapabilityRecordV8";
 const LOOKUP: &str = "riffdb.storage.v1.CapabilityTokenLookupV1";
 const BOOTSTRAP: &str = "riffdb.storage.v1.CapabilityBootstrapMarkerV1";
 const ADMINISTRATION: &str = "riffdb.storage.v1.CapabilityAdministrationAuditV1";
@@ -628,6 +630,50 @@ fn grant_to_proto_with_extensions(
     (legacy, extension, installation, row_policy, export)
 }
 
+fn vector_inspection_to_proto(
+    value: &CapabilityVectorInspectionGrantV1,
+) -> wire::CapabilityVectorInspectionGrantV1 {
+    wire::CapabilityVectorInspectionGrantV1 {
+        application_role_hash: value.application_role_hash().as_bytes().to_vec(),
+        targets: value
+            .targets()
+            .iter()
+            .map(|target| wire::CapabilityVectorInspectionTargetV1 {
+                contract_lineage: target.lineage().as_str().to_owned(),
+                entity_type_id: target.entity_type().get(),
+                field_id: target.field().get(),
+                allow_counts: target.allow_counts(),
+            })
+            .collect(),
+    }
+}
+
+fn vector_inspection_from_proto(
+    value: wire::CapabilityVectorInspectionGrantV1,
+) -> Result<CapabilityVectorInspectionGrantV1, DurableCodecError> {
+    let raw = value
+        .targets
+        .into_iter()
+        .map(|target| {
+            Ok(CapabilityVectorInspectionTargetV1::new(
+                ContractLineage::new(target.contract_lineage)
+                    .map_err(|_| DurableCodecError::corrupt())?,
+                EntityTypeId::new(target.entity_type_id).ok_or_else(DurableCodecError::corrupt)?,
+                FieldId::new(target.field_id).ok_or_else(DurableCodecError::corrupt)?,
+                target.allow_counts,
+            ))
+        })
+        .collect::<Result<Vec<_>, DurableCodecError>>()?;
+    let extension = grant_result(CapabilityVectorInspectionGrantV1::new(
+        ApplicationRoleHash::from_bytes(fixed(value.application_role_hash)?),
+        raw.clone(),
+    ))?;
+    if extension.targets() != raw {
+        return Err(DurableCodecError::corrupt());
+    }
+    Ok(extension)
+}
+
 fn grant_from_proto(
     value: wire::CapabilityGrantV1,
 ) -> Result<CapabilityGrantV1, DurableCodecError> {
@@ -906,6 +952,51 @@ fn lifecycle_from_proto(
     }
 }
 
+fn apply_reimport_extension(
+    grant: CapabilityGrantV1,
+    reimport: wire::CapabilityApplicationReimportGrantV1,
+) -> Result<CapabilityGrantV1, DurableCodecError> {
+    let scope = u8::try_from(reimport.scope)
+        .ok()
+        .and_then(CapabilityApplicationReimportScopeV1::from_tag)
+        .ok_or_else(DurableCodecError::corrupt)?;
+    grant_result(
+        grant.with_reimport(CapabilityApplicationReimportGrantV1::new(
+            ContractLineage::new(reimport.contract_lineage)
+                .map_err(|_| DurableCodecError::corrupt())?,
+            ApplicationInstallationCampaignId::from_bytes(fixed(reimport.campaign_id)?)
+                .map_err(|_| DurableCodecError::corrupt())?,
+            ApplicationPortabilityManifestHash::from_bytes(fixed(
+                reimport.portability_manifest_hash,
+            )?),
+            scope,
+        )),
+    )
+}
+
+fn replace_record_grant(
+    record: StoredCapabilityRecordV1,
+    grant: CapabilityGrantV1,
+) -> Result<StoredCapabilityRecordV1, DurableCodecError> {
+    StoredCapabilityRecordV1::from_stored_parts(
+        record.capability_id(),
+        record.revision(),
+        record.token_digest(),
+        record.database_id(),
+        record.environment().clone(),
+        record.principal_id().clone(),
+        record.actor_kind(),
+        record.audiences().to_vec(),
+        record.issued_at(),
+        record.expires_at(),
+        record.creation_sequence(),
+        record.creation_request_id(),
+        grant,
+        record.lifecycle().clone(),
+    )
+    .map_err(|_| DurableCodecError::corrupt())
+}
+
 /// Encodes one complete durable capability record.
 pub fn encode_capability_record_v1(
     value: &StoredCapabilityRecordV1,
@@ -932,6 +1023,29 @@ pub fn encode_capability_record_v1(
         grant: Some(grant),
         lifecycle: Some(lifecycle_to_proto(value.lifecycle())),
     };
+    if let Some(vector_inspection) = value.grant().internal_vector_inspection() {
+        let reimport = value.grant().internal_reimport().map(|reimport| {
+            wire::CapabilityApplicationReimportGrantV1 {
+                contract_lineage: reimport.lineage().as_str().to_owned(),
+                campaign_id: reimport.campaign_id().as_bytes().to_vec(),
+                portability_manifest_hash: reimport.portability_manifest_hash().as_bytes().to_vec(),
+                scope: i32::from(reimport.scope().tag()),
+            }
+        });
+        return encode_message(
+            RECORD_V8,
+            &wire::CapabilityRecordV8 {
+                base: Some(base),
+                migration,
+                installation,
+                row_policy,
+                export,
+                secret: secret_extension_from_grant(value.grant()),
+                reimport,
+                vector_inspection: Some(vector_inspection_to_proto(vector_inspection)),
+            },
+        );
+    }
     if let Some(reimport) = value.grant().internal_reimport() {
         return encode_message(
             RECORD_V7,
@@ -1151,6 +1265,25 @@ pub fn decode_capability_record_v1(
                 record.lifecycle().clone(),
             )
             .map_err(|_| DurableCodecError::corrupt())?
+        }
+        RECORD_V8 => {
+            let value = wire::CapabilityRecordV8::decode(decoded.payload())
+                .map_err(|_| DurableCodecError::corrupt())?;
+            let vector_inspection =
+                vector_inspection_from_proto(require(value.vector_inspection)?)?;
+            let record = record_from_proto(
+                require(value.base)?,
+                value.migration,
+                value.installation,
+                value.row_policy,
+                value.export,
+            )?;
+            let mut grant = apply_secret_extension(record.grant().clone(), value.secret)?;
+            if let Some(reimport) = value.reimport {
+                grant = apply_reimport_extension(grant, reimport)?;
+            }
+            grant = grant_result(grant.with_vector_inspection(vector_inspection))?;
+            replace_record_grant(record, grant)?
         }
         _ => {
             return Err(DurableCodecError::new(
