@@ -31,10 +31,11 @@ use riffdb_client_rust::{
     StableApplicationClient,
 };
 use riffdb_ticketdesk::{
-    AddProjectMemberInput, AttachLabelInput, CloseTicketWithCommentInput, CreateCommentInput,
-    CreateLabelInput, CreateOrganizationInput, CreateProjectInput, CreateTicketInput,
-    CreateUserInput, GetTicketParams, GetTicketResult, OpenTicketWithLabelsInput,
-    SwapMemberRolesInput, TicketDeskClient, TicketPageParams,
+    AddProjectMemberInput, AttachLabelInput, BoardPage50Params, BoardPage50Result,
+    BoardPage200Params, BoardPage200Result, BoardPage450Params, BoardPage450Result,
+    CloseTicketWithCommentInput, CreateCommentInput, CreateLabelInput, CreateOrganizationInput,
+    CreateProjectInput, CreateTicketInput, CreateUserInput, GetTicketParams, GetTicketResult,
+    OpenTicketWithLabelsInput, SwapMemberRolesInput, TicketDeskClient, TicketPageParams,
 };
 use tonic::transport::Endpoint;
 
@@ -66,9 +67,9 @@ pub use server::{
 const DEFAULT_SEED_CONCURRENCY: usize = 128;
 const MAX_SEED_CONCURRENCY: usize = 128;
 const TICKETDESK_APPLICATION_LOCK_HASH: [u8; 32] = [
-    0xde, 0xb8, 0xd2, 0xfb, 0xc8, 0x87, 0x4a, 0x90, 0x13, 0xc6, 0x28, 0xb8, 0x9f, 0x19, 0xf8,
-    0xda, 0x40, 0xdb, 0x2f, 0x31, 0xbd, 0xa6, 0x25, 0x29, 0xae, 0xaf, 0xe4, 0x76, 0xba, 0x9e,
-    0xe8, 0x0a,
+    0xf4, 0x8d, 0x43, 0xb9, 0x5f, 0x60, 0xd2, 0xc9, 0xb9, 0x4d, 0x12, 0x99, 0x80, 0x03, 0x6e,
+    0x00, 0x94, 0x01, 0xbe, 0x04, 0xbc, 0x58, 0x66, 0x9b, 0xfe, 0x89, 0x30, 0x88, 0x8e, 0x93,
+    0xc8, 0x5d,
 ];
 
 /// Public symbolic application backend.
@@ -913,40 +914,89 @@ impl AppBackend for RiffDbPublicBackend {
         // Static BoardPage50/200/450 only. take 500 (static or runtime Limit)
         // trips MAX_QUERY_SCANNED_ROWS=500 via continuation probe (scan 501 →
         // RDB-INTERNAL-0001; incident 019fbf5b-1a64-7877-94c3-47d7a0763539).
-        // Named via deployed module hash (not the stale generated-client hash).
-        let query_name = match limit {
-            50 => "BoardPage50",
-            200 => "BoardPage200",
-            450 => "BoardPage450",
-            other => {
-                return Err(RiffDbError::Application {
+        self.block_on(async {
+            let organization = uuid_text(organization_id);
+            let project = uuid_text(project_id);
+            let status = status_name(status).to_owned();
+            let mut client = self.ticketdesk();
+            match limit {
+                50 => match client
+                    .board_page50(BoardPage50Params {
+                        organization_id: organization,
+                        project_id: project,
+                        status,
+                    })
+                    .await
+                    .map_err(map_app)?
+                {
+                    BoardPage50Result::Found(found) => found
+                        .tickets
+                        .into_iter()
+                        .map(|row| generated_board_row(
+                            organization_id,
+                            row.ticket_id,
+                            row.project_id,
+                            row.reporter_id,
+                            row.assignee_id,
+                            row.status,
+                            row.title,
+                        ))
+                        .collect(),
+                },
+                200 => match client
+                    .board_page200(BoardPage200Params {
+                        organization_id: organization,
+                        project_id: project,
+                        status,
+                    })
+                    .await
+                    .map_err(map_app)?
+                {
+                    BoardPage200Result::Found(found) => found
+                        .tickets
+                        .into_iter()
+                        .map(|row| generated_board_row(
+                            organization_id,
+                            row.ticket_id,
+                            row.project_id,
+                            row.reporter_id,
+                            row.assignee_id,
+                            row.status,
+                            row.title,
+                        ))
+                        .collect(),
+                },
+                450 => match client
+                    .board_page450(BoardPage450Params {
+                        organization_id: organization,
+                        project_id: project,
+                        status,
+                    })
+                    .await
+                    .map_err(map_app)?
+                {
+                    BoardPage450Result::Found(found) => found
+                        .tickets
+                        .into_iter()
+                        .map(|row| generated_board_row(
+                            organization_id,
+                            row.ticket_id,
+                            row.project_id,
+                            row.reporter_id,
+                            row.assignee_id,
+                            row.status,
+                            row.title,
+                        ))
+                        .collect(),
+                },
+                other => Err(RiffDbError::Application {
                     code: "RDB-INTERNAL-0001".to_owned(),
                     detail: format!(
                         "board_page limit {other} has no static BoardPage query \
                          (only 50/200/450; take 500 trips MAX_QUERY_SCANNED_ROWS via continuation probe)"
                     ),
-                });
+                }),
             }
-        };
-        self.block_on(async {
-            let mut parameters = BTreeMap::new();
-            parameters.insert(
-                "organization_id".to_owned(),
-                ApplicationValue::Uuid(ApplicationUuid::from_bytes(organization_id)),
-            );
-            parameters.insert(
-                "project_id".to_owned(),
-                ApplicationValue::Uuid(ApplicationUuid::from_bytes(project_id)),
-            );
-            parameters.insert(
-                "status".to_owned(),
-                ApplicationValue::Enum(status_name(status).to_owned()),
-            );
-            let result = self.execute_named(query_name, parameters).await?;
-            if result.outcome != "Found" {
-                return Ok(Vec::new());
-            }
-            decode_ticket_list_field(&result, "tickets", organization_id)
         })
     }
 
@@ -1395,6 +1445,26 @@ fn parse_status_name(name: &str) -> Result<TicketStatus, RiffDbError> {
         "InProgress" => Ok(TicketStatus::InProgress),
         _ => Err(RiffDbError::Decode),
     }
+}
+
+fn generated_board_row(
+    organization_id: UuidBytes,
+    ticket_id: String,
+    project_id: String,
+    reporter_id: String,
+    assignee_id: String,
+    status: String,
+    title: String,
+) -> Result<TicketRow, RiffDbError> {
+    Ok(TicketRow {
+        organization_id,
+        ticket_id: parse_uuid_text(&ticket_id)?,
+        project_id: parse_uuid_text(&project_id)?,
+        reporter_id: parse_uuid_text(&reporter_id)?,
+        assignee_id: parse_uuid_text(&assignee_id)?,
+        status: parse_status_name(&status)?,
+        title,
+    })
 }
 
 fn status_name(status: TicketStatus) -> &'static str {

@@ -19,8 +19,8 @@ use riffdb_client_rust::{
     ApplicationEventPullDisposition, ApplicationLiveQueryUpdate, ApplicationReactiveOperation,
     ApplicationRecord, ApplicationValue, AttemptBudget, BearerCredential, CallMetadata,
     ClientError, DatabaseAlias, DetailsFreeStatus, EventConsumerOptions, LiveQueryCursor,
-    NamedQuery, PublicError, QueryOptions, StableApplicationClient, TraceParent,
-    load_protected_bearer_credential,
+    NamedQuery, PublicError, QueryOptions, StableApplicationClient, TraceParent, app_v1,
+    load_protected_bearer_credential, raise_query_result, raise_value as raise_wire_value,
 };
 use riffdb_config::{
     CanonicalHttpsEndpoint, ProtectedFilePath, TlsClientConfig, TlsServerIdentity,
@@ -197,13 +197,23 @@ impl NativeSyncClient {
     fn execute_named_query(&self, py: Python<'_>, request: &str) -> PyResult<String> {
         let request = parse_query(request)?;
         let mut client = self.client()?;
-        let result = py
-            .detach(|| {
-                self.runtime
-                    .block_on(client.execute_named_query(request, &self.metadata))
-            })
-            .map_err(application_client_error)?;
-        render_query_result(result)
+        if request.accept_compact_result {
+            let result = py
+                .detach(|| {
+                    self.runtime
+                        .block_on(client.execute_named_query_wire(request.query, &self.metadata))
+                })
+                .map_err(application_client_error)?;
+            render_wire_query_result(result)
+        } else {
+            let result = py
+                .detach(|| {
+                    self.runtime
+                        .block_on(client.execute_named_query(request.query, &self.metadata))
+                })
+                .map_err(application_client_error)?;
+            render_query_result(result)
+        }
     }
 
     fn execute_command(&self, py: Python<'_>, request: &str) -> PyResult<String> {
@@ -334,11 +344,19 @@ impl NativeAsyncClient {
         let mut client = self.client()?;
         let metadata = self.metadata.clone();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let result = client
-                .execute_named_query(request, &metadata)
-                .await
-                .map_err(application_client_error)?;
-            render_query_result(result)
+            if request.accept_compact_result {
+                let result = client
+                    .execute_named_query_wire(request.query, &metadata)
+                    .await
+                    .map_err(application_client_error)?;
+                render_wire_query_result(result)
+            } else {
+                let result = client
+                    .execute_named_query(request.query, &metadata)
+                    .await
+                    .map_err(application_client_error)?;
+                render_query_result(result)
+            }
         })
     }
 
@@ -611,6 +629,13 @@ struct QueryRequest {
     parameters: BTreeMap<String, Value>,
     cursor: Option<String>,
     read_after_commit: Option<u64>,
+    #[serde(default)]
+    accept_compact_result: bool,
+}
+
+struct ParsedQuery {
+    query: NamedQuery,
+    accept_compact_result: bool,
 }
 
 #[derive(Deserialize)]
@@ -944,7 +969,7 @@ fn parse_live_query(source: &str) -> PyResult<ParsedLiveQuery> {
     })
 }
 
-fn parse_query(source: &str) -> PyResult<NamedQuery> {
+fn parse_query(source: &str) -> PyResult<ParsedQuery> {
     let request: QueryRequest = parse_json(source)?;
     let bundle_hash = parse_hash(&request.contract_bundle_hash)?;
     let module_hash = parse_hash(&request.module_hash)?;
@@ -962,7 +987,8 @@ fn parse_query(source: &str) -> PyResult<NamedQuery> {
     if let Some(sequence) = request.read_after_commit {
         options = options.read_after_commit(sequence);
     }
-    NamedQuery::new(
+    let accept_compact_result = request.accept_compact_result;
+    let query = NamedQuery::new(
         ApplicationContract::Exact {
             lineage: request.contract_lineage,
             version: request.contract_version,
@@ -974,7 +1000,11 @@ fn parse_query(source: &str) -> PyResult<NamedQuery> {
         None,
     )
     .and_then(|query| query.expect_plan_hash(plan_hash).with_options(options))
-    .map_err(application_client_error)
+    .map_err(application_client_error)?;
+    Ok(ParsedQuery {
+        query,
+        accept_compact_result,
+    })
 }
 
 struct ParsedCommand {
@@ -1188,6 +1218,58 @@ fn render_query_result(result: riffdb_client_rust::NamedQueryResult) -> PyResult
         },
         "application_head": result.application_head,
         "next_cursor": result.next_cursor,
+    }))
+}
+
+fn render_wire_query_result(response: app_v1::ExecuteQueryResponse) -> PyResult<String> {
+    if response.selected_result_encoding != app_v1::NamedResultEncoding::CompactV1 as i32 {
+        return render_query_result(
+            raise_query_result(response).map_err(application_client_error)?,
+        );
+    }
+    if !response.fields.is_empty() {
+        return Err(native_error("protocol_error", None));
+    }
+    let identity = response
+        .identity
+        .ok_or_else(|| native_error("protocol_error", None))?;
+    let compact = response
+        .compact_result
+        .ok_or_else(|| native_error("protocol_error", None))?;
+    let rows = compact
+        .rows
+        .into_iter()
+        .map(|row| {
+            row.values
+                .into_iter()
+                .map(|value| {
+                    raise_wire_value(value)
+                        .map(value_to_json)
+                        .map_err(application_client_error)
+                })
+                .collect::<PyResult<Vec<_>>>()
+        })
+        .collect::<PyResult<Vec<_>>>()?;
+    serialize(&json!({
+        "value": {
+            "$riffdb_compact": {
+                "outcome": response.outcome,
+                "result_name": compact.name,
+                "entity": compact.entity,
+                "fields": compact.fields,
+                "rows": rows,
+            }
+        },
+        "identity": {
+            "contract_lineage": identity.contract_lineage,
+            "contract_version": identity.contract_version,
+            "contract_bundle_hash": hex(&identity.contract_bundle_hash),
+            "module_hash": identity.module_hash.as_deref().map(hex).ok_or_else(|| native_error("protocol_error", None))?,
+            "query_name": identity.query_name.ok_or_else(|| native_error("protocol_error", None))?,
+            "plan_hash": hex(&identity.plan_hash),
+        },
+        "application_head": response.application_head,
+        "next_cursor": response.next_cursor,
     }))
 }
 

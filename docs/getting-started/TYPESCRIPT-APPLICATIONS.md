@@ -47,6 +47,13 @@ compiler-owned schemas. The runtime rejects a response before returning it if
 its identity, cardinality, outcome, symbolic fields, wire field identities, or
 value types differ.
 
+For a named page fully proven by an explicit covering index, the generated
+request negotiates driver V2 compact carriage. Its operation-specific decoder
+checks the exact compiler-owned entity and field order, then constructs typed
+rows directly from bounded positional values. Application code cannot select
+the index, schema, or ordinal and receives the same result type when a legacy
+named-record response is used.
+
 Exact decimals and money never pass through a JavaScript `number`. Use the
 first-party constructors instead of manually encoding coefficient bytes:
 

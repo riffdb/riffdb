@@ -362,20 +362,30 @@ export class DriverGeneratedApplicationTransport {
         const result = await this.driver.invoke(operation, encodeDriverRecord(request.parameters, request.parameterSchema), {
             ...(options.cursor === undefined ? {} : { cursor: options.cursor }),
             ...(options.readAfterCommit === undefined ? {} : { readAfterCommit: options.readAfterCommit }),
+            ...(request.compactDecoder === undefined ? {} : { acceptCompactResult: true }),
         });
         if (result.applicationHead === undefined)
             throw new Error("RiffDB driver omitted the query frontier");
-        const outcome = driverOutcome(result.value);
-        const resultSchema = request.resultSchemas[outcome];
-        if (resultSchema === undefined)
-            throw new Error("RiffDB driver returned an unknown query outcome");
-        const value = decodeDriverValue(result.value, {
-            kind: "record",
-            fields: [
-                { name: "outcome", schema: { kind: "enum" } },
-                ...recordFields(resultSchema),
-            ],
-        });
+        let value;
+        if (result.compact !== undefined) {
+            if (request.compactDecoder === undefined || result.value !== undefined)
+                throw new Error("RiffDB driver returned an unexpected compact result");
+            value = request.compactDecoder(result.compact);
+        }
+        else {
+            const raw = requireDriverValue(result);
+            const outcome = driverOutcome(raw);
+            const resultSchema = request.resultSchemas[outcome];
+            if (resultSchema === undefined)
+                throw new Error("RiffDB driver returned an unknown query outcome");
+            value = decodeDriverValue(raw, {
+                kind: "record",
+                fields: [
+                    { name: "outcome", schema: { kind: "enum" } },
+                    ...recordFields(resultSchema),
+                ],
+            });
+        }
         return {
             identity: {
                 contractLineage: request.contractLineage,
@@ -394,7 +404,7 @@ export class DriverGeneratedApplicationTransport {
         validateIdentity(request);
         const operation = requireDriverOperation(request.driverOperation);
         const result = await this.driver.invoke(operation, encodeDriverRecord(request.input, request.inputSchema), { maximumAttempts: boundedInteger(attemptBudget, 1, 10) });
-        return decodeDriverCommandResult(request, result.value, result.applicationHead, result.cursor, result.replayed);
+        return decodeDriverCommandResult(request, requireDriverValue(result), result.applicationHead, result.cursor, result.replayed);
     }
     async executeCommandBatch(request, inputs, concurrency, checkpoint, attemptBudget) {
         validateIdentity(request);
@@ -422,7 +432,7 @@ export class DriverGeneratedApplicationTransport {
             input.in_flight_limit = driverU64(BigInt(inFlightLimit));
             input.lease_seconds = driverU64(BigInt(leaseSeconds));
             const result = await this.driver.invoke(requireReactiveDriverOperation(request, "next"), input, { deadlineMillis: Math.max(1, maximumWaitMs), ...(options.signal === undefined ? {} : { signal: options.signal }) });
-            yield decodeDriverEventBatch(result.value);
+            yield decodeDriverEventBatch(requireDriverValue(result));
         }
     }
     async acknowledgeEvent(request, delivery) {
@@ -436,16 +446,17 @@ export class DriverGeneratedApplicationTransport {
         const input = reactiveDriverInput(request);
         input.checkpoint = { type: "string", value: expectBoundedString(checkpoint, 256) };
         const result = await this.driver.invoke(requireReactiveDriverOperation(request, "seek"), input);
-        return decodeDriverMutationResult(result.value);
+        return decodeDriverMutationResult(requireDriverValue(result));
     }
     async eventConsumerStatus(request) {
         const result = await this.driver.invoke(requireReactiveDriverOperation(request, "status"), reactiveDriverInput(request));
-        return result.value.type === "null" ? undefined : decodeDriverConsumerStatus(result.value);
+        const value = requireDriverValue(result);
+        return value.type === "null" ? undefined : decodeDriverConsumerStatus(value);
     }
     async consumeContextualSubscription(request, maximumWaitMs = 30_000, signal) {
         const wait = boundedInteger(maximumWaitMs, 0, 30_000);
         const result = await this.driver.invoke(requireReactiveDriverOperation(request, "next"), reactiveDriverInput(request), { deadlineMillis: Math.max(1, wait), ...(signal === undefined ? {} : { signal }) });
-        return decodeDriverContextualBatch(result.value);
+        return decodeDriverContextualBatch(requireDriverValue(result));
     }
     async acknowledgeContextualItem(request, item) {
         return this.mutateDriverLease("ack", request, item.delivery);
@@ -467,7 +478,7 @@ export class DriverGeneratedApplicationTransport {
         input.causation_token = { type: "string", value: expectBoundedString(reaction.causationToken, 16_384) };
         input.input = encodeDriverValue(command.input, command.inputSchema);
         const result = await this.driver.invoke(requireReactiveDriverOperation(request, action), input);
-        return decodeDriverCommandResult(command, result.value, result.applicationHead, result.cursor, result.replayed);
+        return decodeDriverCommandResult(command, requireDriverValue(result), result.applicationHead, result.cursor, result.replayed);
     }
     async *watchNamedQuery(request) {
         validateDriverReactiveRequest(request);
@@ -477,7 +488,7 @@ export class DriverGeneratedApplicationTransport {
             if (cursor !== undefined)
                 input.cursor = { type: "string", value: expectBoundedString(cursor, 16_384) };
             const result = await this.driver.invoke(requireReactiveDriverOperation(request, "watch"), input, { ...(cursor === undefined ? {} : { cursor }), ...(request.signal === undefined ? {} : { signal: request.signal }) });
-            const update = decodeDriverLiveUpdate(result.value, result.applicationHead, result.cursor);
+            const update = decodeDriverLiveUpdate(requireDriverValue(result), result.applicationHead, result.cursor);
             yield update;
             if (update.type === "terminal")
                 return;
@@ -492,7 +503,7 @@ export class DriverGeneratedApplicationTransport {
         if (action === "nack")
             input.retry_delay_nanos = driverU64(retryDelayNanos ?? 0n);
         const result = await this.driver.invoke(requireReactiveDriverOperation(request, action), input);
-        return decodeDriverMutationResult(result.value);
+        return decodeDriverMutationResult(requireDriverValue(result));
     }
 }
 function validateDriverReactiveRequest(value) {
@@ -866,6 +877,12 @@ function driverOutcome(value) {
     if (outcome?.type !== "enum")
         throw new Error("RiffDB driver returned no declared outcome");
     return expectSymbol(outcome.value);
+}
+function requireDriverValue(result) {
+    if (result.value === undefined || result.compact !== undefined) {
+        throw new Error("RiffDB driver returned an unexpected compact result");
+    }
+    return result.value;
 }
 function decodeDriverCommandResult(request, value, commitSequence, outcomeUri, replayed) {
     const outcome = driverOutcome(value);

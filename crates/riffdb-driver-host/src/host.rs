@@ -14,15 +14,17 @@ use riffdb_client_rust::{
     ApplicationEventMutationResult, ApplicationEventPullDisposition, ApplicationLiveQueryUpdate,
     ApplicationReactiveOperation, ApplicationRecord, ApplicationUuid, ApplicationValue,
     AttemptBudget, CallMetadata, EventConsumerOptions, LiveQueryCursor, LiveQueryPatchOperation,
-    NamedQuery, QueryOptions, StableApplicationClient,
+    NamedQuery, QueryOptions, StableApplicationClient, app_v1,
+    raise_query_result as raise_wire_query_result, raise_value as raise_wire_value,
 };
 use riffdb_config::TlsClientConfig;
 use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore, watch};
 
 use crate::catalog::{ApplicationCatalog, OperationKind, OperationSpec, ReactiveKind};
 use crate::protocol::{
-    DRIVER_PROTOCOL_VERSION, DriverBatchItem, DriverBatchOutcome, DriverDecimal, DriverMoney,
-    DriverRequest, DriverResponse, DriverTimestamp, DriverValue, InvokeOptions,
+    DRIVER_PROTOCOL_VERSION, DRIVER_PROTOCOL_VERSION_V1, DriverBatchItem, DriverBatchOutcome,
+    DriverDecimal, DriverMoney, DriverRequest, DriverResponse, DriverTimestamp, DriverValue,
+    InvokeOptions,
 };
 
 /// Exact alpha host build identity.
@@ -203,8 +205,10 @@ impl DriverHost {
                 "restart_handshake",
             );
         };
-        if *protocol_version != DRIVER_PROTOCOL_VERSION
-            || application_manifest_hash != &self.inner.catalog.application_manifest_hash()
+        if !matches!(
+            *protocol_version,
+            DRIVER_PROTOCOL_VERSION_V1 | DRIVER_PROTOCOL_VERSION
+        ) || application_manifest_hash != &self.inner.catalog.application_manifest_hash()
             || operation_catalog_hash != &self.inner.catalog.catalog_hash()
             || contract_lineage != self.inner.catalog.contract_lineage()
             || *contract_version != self.inner.catalog.contract_version()
@@ -228,7 +232,7 @@ impl DriverHost {
         }
         DriverResponse::Handshake {
             request_id: request_id.clone(),
-            protocol_version: DRIVER_PROTOCOL_VERSION,
+            protocol_version: *protocol_version,
             driver_identity: DRIVER_IDENTITY.to_owned(),
             application_manifest_hash: self.inner.catalog.application_manifest_hash(),
             operation_catalog_hash: self.inner.catalog.catalog_hash(),
@@ -602,6 +606,17 @@ impl DriverHost {
         let mut client = self.inner.pool.select();
         match spec.kind() {
             OperationKind::Command => {
+                if options.accept_compact_result {
+                    return local_error(
+                        Some(request_id),
+                        Some(spec.public_name().to_owned()),
+                        "RDB-INPUT-0101",
+                        "input",
+                        "application input is invalid",
+                        false,
+                        "correct_request",
+                    );
+                }
                 let command = match ApplicationCommand::new(
                     spec.symbol(),
                     Some(self.inner.catalog.contract_version()),
@@ -637,6 +652,7 @@ impl DriverHost {
                 }
             }
             OperationKind::Query => {
+                let accept_compact_result = options.accept_compact_result;
                 let contract = ApplicationContract::Exact {
                     lineage: self.inner.catalog.contract_lineage().to_owned(),
                     version: self.inner.catalog.contract_version(),
@@ -666,47 +682,88 @@ impl DriverHost {
                     Ok(query) => query,
                     Err(error) => return application_error(request_id, spec, error, false),
                 };
-                match client
-                    .execute_named_query(query, &self.inner.metadata)
-                    .await
-                {
-                    Ok(result) => {
-                        let mut fields = BTreeMap::from([(
-                            "outcome".to_owned(),
-                            DriverValue::Enum(result.outcome),
-                        )]);
-                        for (name, field) in result.fields {
-                            let value = match field.cardinality {
-                                ApplicationCardinality::One => field
-                                    .records
-                                    .into_iter()
-                                    .next()
-                                    .map(raise_record)
-                                    .unwrap_or(DriverValue::Null),
-                                ApplicationCardinality::Maybe => field
-                                    .records
-                                    .into_iter()
-                                    .next()
-                                    .map(raise_record)
-                                    .unwrap_or(DriverValue::Null),
-                                ApplicationCardinality::Many => DriverValue::List(
-                                    field.records.into_iter().map(raise_record).collect(),
-                                ),
+                if accept_compact_result {
+                    match client
+                        .execute_named_query_wire(query, &self.inner.metadata)
+                        .await
+                    {
+                        Ok(response)
+                            if response.selected_result_encoding
+                                == app_v1::NamedResultEncoding::CompactV1 as i32 =>
+                        {
+                            let compact = match response.compact_result {
+                                Some(compact) if response.fields.is_empty() => compact,
+                                _ => {
+                                    return application_error(
+                                        request_id,
+                                        spec,
+                                        ApplicationClientError::InvalidResponse,
+                                        false,
+                                    );
+                                }
                             };
-                            fields.insert(name, value);
+                            let rows = compact
+                                .rows
+                                .into_iter()
+                                .map(|row| {
+                                    row.values
+                                        .into_iter()
+                                        .map(|value| {
+                                            raise_wire_value(value).map(raise_value).map_err(|_| ())
+                                        })
+                                        .collect::<Result<Vec<_>, _>>()
+                                })
+                                .collect::<Result<Vec<_>, _>>();
+                            let rows = match rows {
+                                Ok(rows) => rows,
+                                Err(()) => {
+                                    return application_error(
+                                        request_id,
+                                        spec,
+                                        ApplicationClientError::InvalidResponse,
+                                        false,
+                                    );
+                                }
+                            };
+                            DriverResponse::CompactQueryResult {
+                                request_id,
+                                outcome: response.outcome,
+                                result_name: compact.name,
+                                entity: compact.entity,
+                                fields: compact.fields,
+                                rows,
+                                application_head: response.application_head,
+                                cursor: response.next_cursor,
+                            }
                         }
-                        DriverResponse::Result {
-                            request_id,
-                            value: DriverValue::Record(fields),
-                            application_head: Some(result.application_head),
-                            cursor: result.next_cursor,
-                            replayed: false,
-                        }
+                        Ok(response) => match raise_wire_query_result(response) {
+                            Ok(result) => legacy_query_response(request_id, result),
+                            Err(error) => application_error(request_id, spec, error, false),
+                        },
+                        Err(error) => application_error(request_id, spec, error, false),
                     }
-                    Err(error) => application_error(request_id, spec, error, false),
+                } else {
+                    match client
+                        .execute_named_query(query, &self.inner.metadata)
+                        .await
+                    {
+                        Ok(result) => legacy_query_response(request_id, result),
+                        Err(error) => application_error(request_id, spec, error, false),
+                    }
                 }
             }
             OperationKind::Reactive => {
+                if options.accept_compact_result {
+                    return local_error(
+                        Some(request_id),
+                        Some(spec.public_name().to_owned()),
+                        "RDB-INPUT-0101",
+                        "input",
+                        "application input is invalid",
+                        false,
+                        "correct_request",
+                    );
+                }
                 self.execute_reactive(request_id, spec, application_input, options, &mut client)
                     .await
             }
@@ -964,6 +1021,34 @@ impl DriverHost {
             },
             Err(error) => application_error(request_id, spec, error, action.starts_with("react_")),
         }
+    }
+}
+
+fn legacy_query_response(
+    request_id: String,
+    result: riffdb_client_rust::NamedQueryResult,
+) -> DriverResponse {
+    let mut fields = BTreeMap::from([("outcome".to_owned(), DriverValue::Enum(result.outcome))]);
+    for (name, field) in result.fields {
+        let value = match field.cardinality {
+            ApplicationCardinality::One | ApplicationCardinality::Maybe => field
+                .records
+                .into_iter()
+                .next()
+                .map(raise_record)
+                .unwrap_or(DriverValue::Null),
+            ApplicationCardinality::Many => {
+                DriverValue::List(field.records.into_iter().map(raise_record).collect())
+            }
+        };
+        fields.insert(name, value);
+    }
+    DriverResponse::Result {
+        request_id,
+        value: DriverValue::Record(fields),
+        application_head: Some(result.application_head),
+        cursor: result.next_cursor,
+        replayed: false,
     }
 }
 

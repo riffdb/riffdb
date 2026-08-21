@@ -15,6 +15,11 @@ SyncApplicationTransport, Timestamp, TypedCommandResult, TypedQueryResult, Workf
 )
 from riffdb_application._binding import decode_variant, encode_record
 
+def _compact_tag(value: object, tag: str, keys: frozenset[str]) -> dict[str, object]:
+    if not isinstance(value, dict) or value.get("$riffdb") != tag or frozenset(value) != keys:
+        raise ValueError("invalid RiffDB compact value")
+    return value
+
 CONTRACT_LINEAGE: Final[str] = "AdapterRowPolicyConformance"
 CONTRACT_VERSION: Final[int] = 1
 CONTRACT_BUNDLE_HASH: Final[str] = "72bb73113b25e9ad21b0c7634965f69d7f301a728c19de01fc962438d731b40b"

@@ -1010,9 +1010,7 @@ mod tests {
                             kind: Some(crate::v1::value::Kind::UuidValue(vec![0x44; 16])),
                         },
                         crate::v1::Value {
-                            kind: Some(crate::v1::value::Kind::StringValue(
-                                "covered".to_owned(),
-                            )),
+                            kind: Some(crate::v1::value::Kind::StringValue("covered".to_owned())),
                         },
                     ],
                 }],
@@ -1029,11 +1027,7 @@ mod tests {
             Err(PublicWireError::InconsistentFields)
         );
         response.fields.clear();
-        response
-            .compact_result
-            .as_mut()
-            .expect("compact")
-            .rows[0]
+        response.compact_result.as_mut().expect("compact").rows[0]
             .values
             .pop();
         assert_eq!(

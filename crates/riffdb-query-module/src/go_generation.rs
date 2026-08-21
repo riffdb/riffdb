@@ -9,7 +9,8 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 use crate::generation::{
-    generated_query_driver_operations, workflow_revision_bindings, workflow_success_outcome_name,
+    RustCompactResultShape, generated_query_driver_operations, rust_compact_result_shape,
+    workflow_revision_bindings, workflow_success_outcome_name,
 };
 use crate::{QueryModule, generate_mcp_commands, generate_mcp_reactive_tools};
 
@@ -283,6 +284,17 @@ fn emit_query_methods(
         )
         .unwrap();
         writeln!(output, "var {name}Operation = riffdb.Operation{{Name: \"{operation}\", InputSchemaHash: \"{schema_hash}\"}}").unwrap();
+        let compact_shape = query.plan().common_covered_result().and_then(
+            |(result_name, layout, selected_fields)| {
+                rust_compact_result_shape(
+                    query.plan().schemas(),
+                    &result_name,
+                    &layout,
+                    &selected_fields,
+                    contract,
+                )
+            },
+        );
         writeln!(output, "func decode{name}Result(value riffdb.Value) ({name}Result, error) {{ fields, err := riffdb.RecordFields(value); if err != nil {{ return nil, err }}; outcomeValue, err := requiredField(fields, \"outcome\"); if err != nil {{ return nil, err }}; outcome, err := riffdb.EnumValue(outcomeValue); if err != nil {{ return nil, err }}; var raw riffdb.Value; switch outcome {{").unwrap();
         for branch in query.plan().schemas().results() {
             let branch_name = format!("{name}{}", go_public(branch.name()));
@@ -299,6 +311,9 @@ fn emit_query_methods(
             output.push_str("return result, nil\n");
         }
         output.push_str("default: return nil, errors.New(\"RiffDB driver returned unknown query outcome\") } }\n");
+        if let Some(shape) = compact_shape.as_ref() {
+            emit_go_compact_query_decoder(output, name.as_str(), shape, contract);
+        }
         writeln!(output, "func (client *Client) {name}(ctx context.Context, parameters {name}Params, options QueryOptions) (QueryResult[{name}Result], error) {{ input := map[string]riffdb.Value{{}}").unwrap();
         for parameter in query.plan().schemas().parameters() {
             let field = go_public(parameter.name());
@@ -334,7 +349,87 @@ fn emit_query_methods(
                 .unwrap();
             }
         }
-        writeln!(output, "response, err := client.session.Invoke(ctx, {name}Operation, input, options); if err != nil {{ return QueryResult[{name}Result]{{}}, err }}; if response.ApplicationHead == nil {{ return QueryResult[{name}Result]{{}}, errors.New(\"RiffDB driver omitted query frontier\") }}; value, err := decode{name}Result(response.Value); if err != nil {{ return QueryResult[{name}Result]{{}}, err }}; identity := QueryIdentity{{ContractLineage: ContractLineage, ContractVersion: ContractVersion, ContractBundleHash: ContractBundleHash, ModuleHash: QueryModuleHash, QueryName: {source_name:?}, PlanHash: {name}QueryPlanHash}}; return QueryResult[{name}Result]{{Value: value, Identity: identity, ApplicationHead: *response.ApplicationHead, NextCursor: response.Cursor}}, nil }}\n").unwrap();
+        let compact_option = if compact_shape.is_some() {
+            "options.AcceptCompactResult = true; "
+        } else {
+            ""
+        };
+        let decoder = if compact_shape.is_some() {
+            format!(
+                "var value {name}Result; if response.Compact != nil {{ value, err = decode{name}Compact(response.Compact) }} else {{ value, err = decode{name}Result(response.Value) }}"
+            )
+        } else {
+            format!("value, err := decode{name}Result(response.Value)")
+        };
+        writeln!(output, "{compact_option}response, err := client.session.Invoke(ctx, {name}Operation, input, options); if err != nil {{ return QueryResult[{name}Result]{{}}, err }}; if response.ApplicationHead == nil {{ return QueryResult[{name}Result]{{}}, errors.New(\"RiffDB driver omitted query frontier\") }}; {decoder}; if err != nil {{ return QueryResult[{name}Result]{{}}, err }}; identity := QueryIdentity{{ContractLineage: ContractLineage, ContractVersion: ContractVersion, ContractBundleHash: ContractBundleHash, ModuleHash: QueryModuleHash, QueryName: {source_name:?}, PlanHash: {name}QueryPlanHash}}; return QueryResult[{name}Result]{{Value: value, Identity: identity, ApplicationHead: *response.ApplicationHead, NextCursor: response.Cursor}}, nil }}\n").unwrap();
+    }
+}
+
+fn emit_go_compact_query_decoder(
+    output: &mut String,
+    name: &str,
+    shape: &RustCompactResultShape,
+    contract: &ContractBundle,
+) {
+    let fields = shape
+        .fields
+        .iter()
+        .map(|field| format!("{:?}", field.name))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let branch = format!("{name}{}", go_public(&shape.outcome));
+    let rows_type = format!(
+        "[]struct {{ {} }}",
+        shape
+            .result_fields
+            .iter()
+            .map(|field| format!(
+                "{} {}",
+                go_public(&field.name),
+                go_type(&field.value_type, contract)
+            ))
+            .collect::<Vec<_>>()
+            .join("; ")
+    );
+    writeln!(output, "func decode{name}Compact(value *riffdb.CompactQueryResult) ({name}Result, error) {{ if value == nil || value.Outcome != {:?} || value.ResultName != {:?} || value.Entity != {:?} || len(value.Fields) != {} || len(value.Rows) > {} {{ return nil, errors.New(\"RiffDB driver returned invalid compact result\") }}; expected := []string{{{fields}}}; for index := range expected {{ if value.Fields[index] != expected[index] {{ return nil, errors.New(\"RiffDB driver returned invalid compact result\") }} }}; rows := make({rows_type}, 0, len(value.Rows)); for _, rawRow := range value.Rows {{ if len(rawRow) != len(expected) {{ return nil, errors.New(\"RiffDB driver returned invalid compact result\") }}; var row struct {{ {} }}; var err error", shape.outcome, shape.result_name, shape.entity, shape.fields.len(), shape.maximum_rows, shape.result_fields.iter().map(|field| format!("{} {}", go_public(&field.name), go_type(&field.value_type, contract))).collect::<Vec<_>>().join("; ")).unwrap();
+    for (index, field) in shape.fields.iter().enumerate() {
+        writeln!(
+            output,
+            "row.{field}, err = {decode}; if err != nil {{ return nil, err }}",
+            field = go_public(&field.name),
+            decode =
+                go_decode_compact_expr(&format!("rawRow[{index}]"), &field.value_type, contract)
+        )
+        .unwrap();
+    }
+    writeln!(
+        output,
+        "rows = append(rows, row) }}; return {branch}{{Outcome: {:?}, {}: rows}}, nil }}",
+        shape.outcome,
+        go_public(&shape.result_name)
+    )
+    .unwrap();
+}
+
+fn go_decode_compact_expr(value: &str, ty: &ValueType, contract: &ContractBundle) -> String {
+    if let Some(inner) = ty.optional_inner() {
+        return format!(
+            "riffdb.DecodeOptional({value}, func(item riffdb.Value) ({}, error) {{ return {} }})",
+            go_type(inner, contract),
+            go_decode_compact_expr("item", inner, contract)
+        );
+    }
+    match ty.tag() {
+        ValueTypeTag::String => format!("func() (string, error) {{ result, err := riffdb.StringValue({value}); if err != nil || len(result) > {} {{ return \"\", errors.New(\"invalid RiffDB compact value\") }}; return result, nil }}()", ty.byte_bound().expect("string bound")),
+        ValueTypeTag::Enum => {
+            let enumeration = contract.schema().enumeration(ty.enum_type_id().expect("enum identity")).expect("validated enum");
+            let name = go_public(enumeration.name());
+            let cases = enumeration.variants().iter().map(|variant| format!("{:?}", variant.name())).collect::<Vec<_>>().join(", ");
+            format!("func() ({name}, error) {{ result, err := riffdb.EnumValue({value}); if err != nil {{ return \"\", err }}; switch result {{ case {cases}: return {name}(result), nil; default: return \"\", errors.New(\"invalid RiffDB compact enum\") }} }}()")
+        }
+        ValueTypeTag::Bool | ValueTypeTag::I64 | ValueTypeTag::U64 | ValueTypeTag::Timestamp | ValueTypeTag::Date | ValueTypeTag::Uuid => decode_expr(value, ty, contract),
+        ValueTypeTag::Optional => unreachable!("handled above"),
+        _ => "func() (string, error) { return \"\", errors.New(\"unsupported RiffDB compact value\") }()".to_owned(),
     }
 }
 

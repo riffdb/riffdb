@@ -23,7 +23,7 @@ import (
 )
 
 const (
-	ProtocolVersion   = uint32(1)
+	ProtocolVersion   = uint32(2)
 	ValueRegistryHash = "8660841ce2055895ba4e1999836b0be11792651c7dcf166f21cf1b43c0dd86af"
 	ErrorRegistryHash = "b94d685ecbc18f2369a2bfa1a53139d06100699c4ee41b31c86d6a7e17039850"
 	maxFrameBytes     = 1_048_576
@@ -339,10 +339,11 @@ type Operation struct {
 }
 
 type Options struct {
-	Deadline        time.Duration
-	MaximumAttempts uint32
-	ReadAfterCommit *uint64
-	Cursor          string
+	Deadline            time.Duration
+	MaximumAttempts     uint32
+	ReadAfterCommit     *uint64
+	Cursor              string
+	AcceptCompactResult bool
 }
 
 func (options Options) wire() (wireOptions, error) {
@@ -358,11 +359,20 @@ func (options Options) wire() (wireOptions, error) {
 		return wireOptions{}, errors.New("invalid RiffDB driver invocation options")
 	}
 	deadlineMillis := deadline.Milliseconds()
-	return wireOptions{DeadlineMillis: uint64(deadlineMillis), MaximumAttempts: attempts, ReadAfterCommit: options.ReadAfterCommit, Cursor: optionalString(options.Cursor)}, nil
+	return wireOptions{DeadlineMillis: uint64(deadlineMillis), MaximumAttempts: attempts, ReadAfterCommit: options.ReadAfterCommit, Cursor: optionalString(options.Cursor), AcceptCompactResult: options.AcceptCompactResult}, nil
+}
+
+type CompactQueryResult struct {
+	Outcome    string
+	ResultName string
+	Entity     string
+	Fields     []string
+	Rows       [][]Value
 }
 
 type Result struct {
 	Value           Value
+	Compact         *CompactQueryResult
 	ApplicationHead *uint64
 	Cursor          string
 	Replayed        bool
@@ -620,10 +630,11 @@ func newSessionRequestPrefix() string {
 }
 
 type wireOptions struct {
-	DeadlineMillis  uint64  `json:"deadline_millis"`
-	MaximumAttempts uint32  `json:"maximum_attempts"`
-	ReadAfterCommit *uint64 `json:"read_after_commit"`
-	Cursor          *string `json:"cursor"`
+	DeadlineMillis      uint64  `json:"deadline_millis"`
+	MaximumAttempts     uint32  `json:"maximum_attempts"`
+	ReadAfterCommit     *uint64 `json:"read_after_commit"`
+	Cursor              *string `json:"cursor"`
+	AcceptCompactResult bool    `json:"accept_compact_result"`
 }
 type handshakeRequest struct {
 	Type                    string `json:"type"`
@@ -686,6 +697,17 @@ type resultResponse struct {
 	Cursor          *string `json:"cursor"`
 	Replayed        bool    `json:"replayed"`
 }
+type compactQueryResultResponse struct {
+	Type            string    `json:"type"`
+	RequestID       string    `json:"request_id"`
+	Outcome         string    `json:"outcome"`
+	ResultName      string    `json:"result_name"`
+	Entity          string    `json:"entity"`
+	Fields          []string  `json:"fields"`
+	Rows            [][]Value `json:"rows"`
+	ApplicationHead uint64    `json:"application_head"`
+	Cursor          *string   `json:"cursor"`
+}
 type batchResponse struct {
 	Type      string `json:"type"`
 	RequestID string `json:"request_id"`
@@ -729,6 +751,39 @@ func decodeEnvelope(body []byte) ([]byte, error) {
 	return body, nil
 }
 func decodeResult(body []byte) (Result, error) {
+	var header struct {
+		Type string `json:"type"`
+	}
+	if json.Unmarshal(body, &header) != nil {
+		return Result{}, errors.New("RiffDB driver returned an invalid result")
+	}
+	if header.Type == "compact_query_result" {
+		var response compactQueryResultResponse
+		if json.Unmarshal(body, &response) != nil || !symbolPattern.MatchString(response.Outcome) || !symbolPattern.MatchString(response.ResultName) || !symbolPattern.MatchString(response.Entity) || len(response.Fields) < 1 || len(response.Fields) > maxCollection || len(response.Rows) > maxCollection || (response.Cursor != nil && len(*response.Cursor) > 16_384) {
+			return Result{}, errors.New("RiffDB driver returned an invalid compact result")
+		}
+		for index, field := range response.Fields {
+			if !symbolPattern.MatchString(field) || (index > 0 && response.Fields[index-1] >= field) {
+				return Result{}, errors.New("RiffDB driver returned an invalid compact result")
+			}
+		}
+		for _, row := range response.Rows {
+			if len(row) != len(response.Fields) {
+				return Result{}, errors.New("RiffDB driver returned an invalid compact result")
+			}
+			for _, value := range row {
+				if validateValue(value, 0) != nil {
+					return Result{}, errors.New("RiffDB driver returned an invalid compact result")
+				}
+			}
+		}
+		compact := &CompactQueryResult{Outcome: response.Outcome, ResultName: response.ResultName, Entity: response.Entity, Fields: response.Fields, Rows: response.Rows}
+		result := Result{Compact: compact, ApplicationHead: &response.ApplicationHead}
+		if response.Cursor != nil {
+			result.Cursor = *response.Cursor
+		}
+		return result, nil
+	}
 	var response resultResponse
 	if json.Unmarshal(body, &response) != nil || response.Type != "result" || validateValue(response.Value, 0) != nil || (response.Cursor != nil && len(*response.Cursor) > 16_384) {
 		return Result{}, errors.New("RiffDB driver returned an invalid result")

@@ -65,6 +65,10 @@ query PatchableTickets(
 }
 "#;
 
+fn contract_without_cover() -> String {
+    CONTRACT.replace(" cover (title, reporter_id, assignee_id)", "")
+}
+
 struct FakeView {
     head: u64,
     rows: BTreeMap<String, Vec<QueryRow>>,
@@ -80,7 +84,7 @@ struct FakeView {
 
 #[test]
 fn live_plans_bind_exact_points_and_keep_scans_conservative() {
-    let bundle = compile_contract_source(CONTRACT).expect("contract");
+    let bundle = compile_contract_source(&contract_without_cover()).expect("contract");
     let catalog = SymbolicCatalog::from_bundle(&bundle).expect("catalog");
     let exact =
         compile_query(&parse_query(EXACT_TICKET).expect("query"), &catalog).expect("exact program");
@@ -226,7 +230,7 @@ impl QueryReadView for FakeView {
 
 #[test]
 fn all_accesses_use_one_owned_snapshot_and_respect_cardinality() {
-    let bundle = compile_contract_source(CONTRACT).expect("contract");
+    let bundle = compile_contract_source(&contract_without_cover()).expect("contract");
     let catalog = SymbolicCatalog::from_bundle(&bundle).expect("catalog");
     let program =
         compile_query(&parse_query(TICKET_PAGE).expect("query"), &catalog).expect("program");
@@ -445,7 +449,7 @@ fn all_accesses_use_one_owned_snapshot_and_respect_cardinality() {
 
 #[test]
 fn continuation_resumes_the_named_binding_and_rejects_a_stale_epoch() {
-    let bundle = compile_contract_source(CONTRACT).expect("contract");
+    let bundle = compile_contract_source(&contract_without_cover()).expect("contract");
     let catalog = SymbolicCatalog::from_bundle(&bundle).expect("catalog");
     let program =
         compile_query(&parse_query(PROJECT_MEMBERS).expect("query"), &catalog).expect("program");
@@ -524,7 +528,7 @@ fn continuation_resumes_the_named_binding_and_rejects_a_stale_epoch() {
 
 #[test]
 fn exact_enum_symbols_execute_as_internal_canonical_values() {
-    let bundle = compile_contract_source(CONTRACT).expect("contract");
+    let bundle = compile_contract_source(&contract_without_cover()).expect("contract");
     let catalog = SymbolicCatalog::from_bundle(&bundle).expect("catalog");
     let status = catalog.enumeration("TicketStatus").expect("status enum");
     let open = CanonicalValue::Enum {
@@ -644,7 +648,7 @@ impl QueryReadView for ReportedWorkView {
 
 #[test]
 fn backend_work_is_reconciled_with_whole_query_fuel_before_release() {
-    let bundle = compile_contract_source(CONTRACT).expect("contract");
+    let bundle = compile_contract_source(&contract_without_cover()).expect("contract");
     let catalog = SymbolicCatalog::from_bundle(&bundle).expect("catalog");
     let program =
         compile_query(&parse_query(OPEN_TICKETS).expect("query"), &catalog).expect("program");
@@ -862,7 +866,7 @@ fn open_status_value(catalog: &SymbolicCatalog) -> CanonicalValue {
 fn max_page_take_executes_with_continuation_probe_against_full_range() {
     use riffdb_query_executor::max_query_page_take;
 
-    let bundle = compile_contract_source(CONTRACT).expect("contract");
+    let bundle = compile_contract_source(&contract_without_cover()).expect("contract");
     let catalog = SymbolicCatalog::from_bundle(&bundle).expect("catalog");
     let program =
         compile_query(&parse_query(STATIC_MAX_PAGE).expect("query"), &catalog).expect("program");
@@ -896,7 +900,7 @@ fn max_page_take_executes_with_continuation_probe_against_full_range() {
 fn parameterized_limit_over_max_page_take_is_invalid_parameter_with_zero_scan() {
     use riffdb_query_executor::{MAX_QUERY_SCANNED_ROWS, max_query_page_take};
 
-    let bundle = compile_contract_source(CONTRACT).expect("contract");
+    let bundle = compile_contract_source(&contract_without_cover()).expect("contract");
     let catalog = SymbolicCatalog::from_bundle(&bundle).expect("catalog");
     let program =
         compile_query(&parse_query(PARAM_PAGE).expect("query"), &catalog).expect("program");
@@ -953,7 +957,7 @@ fn parameterized_limit_over_max_page_take_is_invalid_parameter_with_zero_scan() 
 fn scan_ceiling_breach_is_bound_exceeded_not_internal() {
     use riffdb_query_executor::MAX_QUERY_SCANNED_ROWS;
 
-    let bundle = compile_contract_source(CONTRACT).expect("contract");
+    let bundle = compile_contract_source(&contract_without_cover()).expect("contract");
     let catalog = SymbolicCatalog::from_bundle(&bundle).expect("catalog");
     let program =
         compile_query(&parse_query(OPEN_TICKETS).expect("query"), &catalog).expect("program");
@@ -996,7 +1000,7 @@ fn scan_ceiling_breach_is_bound_exceeded_not_internal() {
 /// controller comparison against the pre-change baseline; does not gate CI.
 #[test]
 fn report_only_board_scale_materialize_project_loop() {
-    let bundle = compile_contract_source(CONTRACT).expect("contract");
+    let bundle = compile_contract_source(&contract_without_cover()).expect("contract");
     let catalog = SymbolicCatalog::from_bundle(&bundle).expect("catalog");
     // take 499 so the closed program admits a 450-row board page.
     let program =

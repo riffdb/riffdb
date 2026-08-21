@@ -74,6 +74,50 @@ test("an empty-database query preserves application frontier zero", async () => 
         await fixture.close();
     }
 });
+test("compact query results preserve compiler order and reject malformed rows", async () => {
+    const fixture = await DriverFixture.start((request) => request.type === "invoke" ? {
+        type: "compact_query_result", request_id: request.request_id,
+        outcome: "Found", result_name: "tickets", entity: "Ticket",
+        fields: ["ticket_id", "project_id", "title"],
+        rows: [[
+                { type: "uuid", value: "018f0f79-7b5e-7c03-9b12-b16f57a4c998" },
+                { type: "uuid", value: "018f0f79-7b5e-7c03-9b12-b16f57a4c999" },
+                { type: "string", value: "Cannot sign in" },
+            ]],
+        application_head: 17, cursor: "rfcur_17",
+    } : undefined);
+    const transport = await DriverApplicationTransport.connect({ socketPath: fixture.path, identity });
+    try {
+        const result = await transport.invoke({ name: "ticketdesk_board_page450", inputSchemaHash: HASH }, {}, { acceptCompactResult: true });
+        assert.deepEqual(result.compact?.fields, ["ticket_id", "project_id", "title"]);
+        assert.equal(result.compact?.rows.length, 1);
+        assert.equal(result.applicationHead, 17n);
+        assert.equal(result.cursor, "rfcur_17");
+        assert.match(fixture.lastRequest, /"accept_compact_result":true/u);
+    }
+    finally {
+        await transport.shutdown();
+        await fixture.close();
+    }
+    for (const response of [
+        { fields: ["ticket_id", "ticket_id"], rows: [[{ type: "null" }, { type: "null" }]] },
+        { fields: ["ticket_id", "title"], rows: [[{ type: "null" }]] },
+    ]) {
+        const malformed = await DriverFixture.start((request) => request.type === "invoke" ? {
+            type: "compact_query_result", request_id: request.request_id,
+            outcome: "Found", result_name: "tickets", entity: "Ticket",
+            application_head: 17, cursor: null, ...response,
+        } : undefined);
+        const client = await DriverApplicationTransport.connect({ socketPath: malformed.path, identity });
+        try {
+            await assert.rejects(client.invoke({ name: "ticketdesk_board_page450", inputSchemaHash: HASH }, {}, { acceptCompactResult: true }), /invalid compact result/u);
+        }
+        finally {
+            await client.shutdown();
+            await malformed.close();
+        }
+    }
+});
 test("concurrent sessions use distinct driver request identities", async () => {
     const requestIds = new Set();
     const fixture = await DriverFixture.start((request) => {

@@ -253,8 +253,20 @@ impl StableApplicationClient {
         query: NamedQuery,
         metadata: &CallMetadata,
     ) -> Result<NamedQueryResult, ApplicationClientError> {
+        let response = self.execute_named_query_wire(query, metadata).await?;
+        raise_query_result(response)
+    }
+
+    /// Executes one named query while retaining its validated negotiated wire
+    /// arm for first-party generated-language adapters.
+    #[doc(hidden)]
+    pub async fn execute_named_query_wire(
+        &mut self,
+        query: NamedQuery,
+        metadata: &CallMetadata,
+    ) -> Result<app_v1::ExecuteQueryResponse, ApplicationClientError> {
         self.inner
-            .execute_named_application_query(query, metadata)
+            .execute_named_application_query_wire(query, metadata)
             .await
     }
 
@@ -266,11 +278,28 @@ impl StableApplicationClient {
         metadata: &CallMetadata,
     ) -> Result<TypedQueryResult<Q::Output>, ApplicationClientError> {
         let query = query.named_query(options)?;
-        let result = self.execute_named_query(query, metadata).await?;
-        let application_head = result.application_head;
-        let next_cursor = result.next_cursor.clone();
-        let identity = result.identity.clone();
-        let value = Q::decode_result(result)?;
+        let response = self.execute_named_query_wire(query, metadata).await?;
+        let application_head = response.application_head;
+        let next_cursor = response.next_cursor.clone();
+        let identity = query_response_identity(&response)?;
+        let value = match app_v1::NamedResultEncoding::try_from(response.selected_result_encoding) {
+            Ok(app_v1::NamedResultEncoding::CompactV1) => {
+                if !response.fields.is_empty() {
+                    return Err(ApplicationClientError::InvalidResponse);
+                }
+                Q::decode_compact_result(
+                    response.outcome,
+                    response
+                        .compact_result
+                        .ok_or(ApplicationClientError::InvalidResponse)?,
+                )?
+            }
+            Ok(app_v1::NamedResultEncoding::LegacyRecords)
+            | Ok(app_v1::NamedResultEncoding::Unspecified) => {
+                Q::decode_result(raise_query_result(response)?)?
+            }
+            Err(_) => return Err(ApplicationClientError::InvalidResponse),
+        };
         Ok(TypedQueryResult {
             value,
             identity,
@@ -1432,6 +1461,17 @@ impl RiffDbClient {
         query: NamedQuery,
         metadata: &CallMetadata,
     ) -> Result<NamedQueryResult, ApplicationClientError> {
+        let response = self
+            .execute_named_application_query_wire(query, metadata)
+            .await?;
+        raise_query_result(response)
+    }
+
+    async fn execute_named_application_query_wire(
+        &mut self,
+        query: NamedQuery,
+        metadata: &CallMetadata,
+    ) -> Result<app_v1::ExecuteQueryResponse, ApplicationClientError> {
         let expected_contract = query.contract.clone();
         let expected_name = query.name.clone();
         let expected_module_hash = query.module_hash;
@@ -1474,7 +1514,7 @@ impl RiffDbClient {
             expected_module_hash,
             expected_plan_hash,
         )?;
-        raise_query_result(response)
+        Ok(response)
     }
 
     /// Executes one symbolic command with bounded retry and no kernel-shaped caller input.
@@ -1752,9 +1792,11 @@ pub(crate) fn lower_value(value: ApplicationValue) -> Result<v1::Value, Applicat
     Ok(v1::Value { kind: Some(kind) })
 }
 
-fn raise_query_result(
+#[doc(hidden)]
+pub fn raise_query_result(
     response: app_v1::ExecuteQueryResponse,
 ) -> Result<NamedQueryResult, ApplicationClientError> {
+    let identity = query_response_identity(&response)?;
     let selected_encoding =
         app_v1::NamedResultEncoding::try_from(response.selected_result_encoding)
             .map_err(|_| ApplicationClientError::InvalidResponse)?;
@@ -1776,38 +1818,45 @@ fn raise_query_result(
             )?
         }
     };
-    let identity = response
-        .identity
-        .ok_or(ApplicationClientError::InvalidResponse)?;
-    let module_hash: [u8; 32] = identity
-        .module_hash
-        .ok_or(ApplicationClientError::InvalidResponse)?
-        .try_into()
-        .map_err(|_| ApplicationClientError::InvalidResponse)?;
-    let contract_bundle_hash = identity
-        .contract_bundle_hash
-        .try_into()
-        .map_err(|_| ApplicationClientError::InvalidResponse)?;
-    let plan_hash = identity
-        .plan_hash
-        .try_into()
-        .map_err(|_| ApplicationClientError::InvalidResponse)?;
-    let query_name = identity
-        .query_name
-        .ok_or(ApplicationClientError::InvalidResponse)?;
     Ok(NamedQueryResult {
         outcome: response.outcome,
         application_head: response.application_head,
         fields,
         next_cursor: response.next_cursor,
-        identity: QueryResponseIdentity {
-            contract_lineage: identity.contract_lineage,
-            contract_version: identity.contract_version,
-            contract_bundle_hash,
-            module_hash,
-            query_name,
-            plan_hash,
-        },
+        identity,
+    })
+}
+
+fn query_response_identity(
+    response: &app_v1::ExecuteQueryResponse,
+) -> Result<QueryResponseIdentity, ApplicationClientError> {
+    let identity = response
+        .identity
+        .as_ref()
+        .ok_or(ApplicationClientError::InvalidResponse)?;
+    Ok(QueryResponseIdentity {
+        contract_lineage: identity.contract_lineage.clone(),
+        contract_version: identity.contract_version,
+        contract_bundle_hash: identity
+            .contract_bundle_hash
+            .as_slice()
+            .try_into()
+            .map_err(|_| ApplicationClientError::InvalidResponse)?,
+        module_hash: identity
+            .module_hash
+            .as_deref()
+            .ok_or(ApplicationClientError::InvalidResponse)?
+            .try_into()
+            .map_err(|_| ApplicationClientError::InvalidResponse)?,
+        query_name: identity
+            .query_name
+            .clone()
+            .ok_or(ApplicationClientError::InvalidResponse)?,
+        plan_hash: identity
+            .plan_hash
+            .as_slice()
+            .try_into()
+            .map_err(|_| ApplicationClientError::InvalidResponse)?,
     })
 }
 
@@ -1910,7 +1959,8 @@ fn raise_compact_query_field(
     )]))
 }
 
-pub(crate) fn raise_value(value: v1::Value) -> Result<ApplicationValue, ApplicationClientError> {
+#[doc(hidden)]
+pub fn raise_value(value: v1::Value) -> Result<ApplicationValue, ApplicationClientError> {
     use v1::value::Kind;
     match value.kind.ok_or(ApplicationClientError::InvalidResponse)? {
         Kind::NullValue(_) => Ok(ApplicationValue::Null),

@@ -1324,6 +1324,17 @@ pub struct ExecuteSymbolicQueryResult {
     next_cursor: Option<CursorToken>,
 }
 
+/// Owned symbolic-query response components in transport assembly order.
+pub type SymbolicQueryResponseParts = (
+    SymbolicQueryIdentity,
+    String,
+    u64,
+    BTreeMap<String, SymbolicResultField>,
+    Option<CoveredQueryResultV1>,
+    SharedEnumVariantNames,
+    Option<CursorToken>,
+);
+
 impl ExecuteSymbolicQueryResult {
     /// Minimal success result for transport residual-stage harnesses.
     ///
@@ -1454,17 +1465,7 @@ impl ExecuteSymbolicQueryResult {
 
     /// Consumes the result into identity metadata and owned fields for transport.
     #[must_use]
-    pub fn into_response_parts(
-        self,
-    ) -> (
-        SymbolicQueryIdentity,
-        String,
-        u64,
-        BTreeMap<String, SymbolicResultField>,
-        Option<CoveredQueryResultV1>,
-        SharedEnumVariantNames,
-        Option<CursorToken>,
-    ) {
+    pub fn into_response_parts(self) -> SymbolicQueryResponseParts {
         (
             self.identity,
             self.outcome,

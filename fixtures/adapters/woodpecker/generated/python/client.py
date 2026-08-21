@@ -15,6 +15,11 @@ SyncApplicationTransport, Timestamp, TypedCommandResult, TypedQueryResult, Workf
 )
 from riffdb_application._binding import decode_variant, encode_record
 
+def _compact_tag(value: object, tag: str, keys: frozenset[str]) -> dict[str, object]:
+    if not isinstance(value, dict) or value.get("$riffdb") != tag or frozenset(value) != keys:
+        raise ValueError("invalid RiffDB compact value")
+    return value
+
 CONTRACT_LINEAGE: Final[str] = "WoodpeckerScheduler"
 CONTRACT_VERSION: Final[int] = 1
 CONTRACT_BUNDLE_HASH: Final[str] = "b04d95a61cbce874231418078b4aae38005bc2621f7f10b0f0bc49c724b08ceb"

@@ -46,6 +46,8 @@ pub use application::{
     QueryOptions, QueryResponseIdentity, StableApplicationClient, TypedCommandResult,
     TypedQueryResult,
 };
+#[doc(hidden)]
+pub use application::{raise_query_result, raise_value};
 pub use capability::{
     BootstrapCapabilityCreateTemplate, CapabilityCreateTemplateError,
     NormalCapabilityCreateTemplate,

@@ -47,6 +47,12 @@ results, exact decimals/money, reactive iterators, lease operations, and live
 query cursors. `context.Context` cancellation propagates to the Rust host; a
 cancelled command is never reported as failed when its outcome is uncertain.
 
+Eligible covering named queries use the negotiated driver V2 compact result.
+The generated method validates its exact compiler-owned positional layout and
+constructs the same typed result directly, without a per-row map or exposed
+ordinal. The runtime retains legacy named-record decoding for compatible
+servers and rejects malformed or mixed response shapes.
+
 The starter connects with the driver socket plus the host's public handshake
 identity. Those hashes are substitution checks, not authority. Do not put a
 credential, remote endpoint, raw method name, numeric compiler ID, field mask,

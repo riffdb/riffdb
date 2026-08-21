@@ -64,7 +64,7 @@ use riffdb_query_compiler::{
     exact_text_artifact_invariant,
 };
 use riffdb_query_ir::{
-    AuthorizationEntityAccess, NamedQuerySchemas, OperationalQueryFamilyV1,
+    AuthorizationEntityAccess, CoveredResultLayoutV1, NamedQuerySchemas, OperationalQueryFamilyV1,
     QUERY_IR_VERSION_COVERED_RESULT_V1, QUERY_IR_VERSION_EXACT_FILTERED_RESULT_SET_V1,
     QUERY_IR_VERSION_EXACT_RESULT_SET_V1, QUERY_IR_VERSION_OPERATIONAL_AGGREGATE_V1,
     QUERY_IR_VERSION_OPERATIONAL_V1, QUERY_IR_VERSION_SECRET_OUTPUT_V1, QUERY_IR_VERSION_V1,
@@ -224,6 +224,58 @@ impl CompiledNamedQueryPlan {
                 .iter()
                 .any(|member| program_has_cover(member.program())),
             Self::ExactTextResultV1(_) => false,
+        }
+    }
+
+    /// Exact positional layout shared by every selectable program, when the
+    /// generated operation may decode compact carriage directly.
+    #[must_use]
+    pub fn common_covered_result_layout(&self) -> Option<CoveredResultLayoutV1> {
+        let layout = |program: &QueryAccessProgramV1| {
+            if program.steps().len() != 1 {
+                return None;
+            }
+            program.steps()[0].covered_result_layout().cloned()
+        };
+        match self {
+            Self::V1(program) => layout(program),
+            Self::OperationalV1(family) => {
+                let first = layout(family.members().first()?.program())?;
+                family
+                    .members()
+                    .iter()
+                    .all(|member| layout(member.program()).as_ref() == Some(&first))
+                    .then_some(first)
+            }
+            Self::ExactTextResultV1(_) => None,
+        }
+    }
+
+    /// Exact public result-field name and positional layout shared by every
+    /// selectable program, when generated compact decoding is sound.
+    #[must_use]
+    pub fn common_covered_result(&self) -> Option<(String, CoveredResultLayoutV1, Vec<String>)> {
+        let result = |program: &QueryAccessProgramV1| {
+            if program.steps().len() != 1 || program.steps()[0].result_names().len() != 1 {
+                return None;
+            }
+            Some((
+                program.steps()[0].result_names()[0].clone(),
+                program.steps()[0].covered_result_layout()?.clone(),
+                program.steps()[0].selected_fields().to_vec(),
+            ))
+        };
+        match self {
+            Self::V1(program) => result(program),
+            Self::OperationalV1(family) => {
+                let first = result(family.members().first()?.program())?;
+                family
+                    .members()
+                    .iter()
+                    .all(|member| result(member.program()).as_ref() == Some(&first))
+                    .then_some(first)
+            }
+            Self::ExactTextResultV1(_) => None,
         }
     }
 
