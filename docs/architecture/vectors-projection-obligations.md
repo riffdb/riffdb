@@ -47,7 +47,13 @@ not production reachability and must not be credited as completing WP-596.
 | Complete application ingress for embeddings (VEC-002) | PENDING | The native value, Protobuf field 15, generated gRPC boundary, hosted MCP conversion, and CLI conversion are reachable and bounded. Stable generated Rust, Go, and Python application facades still exclude vector fields, and no end-to-end path persists the required authoritative embedding/model-version evidence. Low-level transport staging is not complete ingress. |
 | Production nearest-query reachability | PENDING | The exact columnar engine and compiler-owned policy context exist, but no production adapter joins them. Adding an implicit projection lookup would be unsafe when zero, one, or multiple projections contain the field and would silently mix authoritative and projected snapshots in a multi-step program. Redb/memory refusal remains the correct behavior until a versioned projected-source/freshness contract is accepted. |
 
-## Decisions required before further WP-596 implementation
+## Proposed resolution awaiting exact acceptance
+
+[ADR-0136](../../adr/0136-authoritative-vector-evidence-and-projected-nearest.md)
+now proposes one coherent resolution for all six decisions below. It remains
+`Proposed`; this ledger therefore continues to classify every affected row as
+pending, and the fail-closed production behavior must remain unchanged until a
+maintainer accepts the exact ADR text.
 
 1. **Projected nearest query contract:** versioned projected-source identity,
    freshness (`Causal`/`Bounded`/`Available`), frontier/lifecycle result shape,
@@ -69,6 +75,14 @@ not production reachability and must not be credited as completing WP-596.
 6. **Staleness/model public operation:** after the durable and current-model
    decisions, the API-neutral paginated operations and parity-preserving
    gRPC/MCP schemas.
+
+The proposed resolution uses an authoritative per-vector-field evidence record
+rather than modifying frozen entity V1 bytes; derives one explicit
+`Entity.field` projection identity; requires contract-current model and replay
+budgets; applies transaction-current ADR-0111 policy admission to the complete
+projection candidate set before all vector work; and exposes symbolic bounded
+inspection rather than numeric field IDs. These statements describe the
+proposal only, not available behavior.
 
 ## What this means
 
