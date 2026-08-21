@@ -47,10 +47,10 @@ use crate::codec::{
     IdempotencyRecordV1, decode_application_sequence_allocator_v1, decode_capability_record_v1,
     decode_database_identity_v1, decode_entity_record_v1, decode_history_incarnation_v1,
     decode_idempotency_record_v1, decode_index_entry_v2, decode_index_epoch_v1,
-    decode_pending_admission_v1, decode_vector_evidence_v1, encode_commit_record_v1,
-    encode_durable_event_v1, encode_event_route_v1, encode_execution_failed_v1,
-    encode_outbox_intent_v1, encode_pending_admission_v1, encode_provenance_record_v1,
-    encode_stored_outcome_v1,
+    decode_pending_admission_v1, decode_vector_evidence_v1, decode_vector_observation_v1,
+    encode_commit_record_v1, encode_durable_event_v1, encode_event_route_v1,
+    encode_execution_failed_v1, encode_outbox_intent_v1, encode_pending_admission_v1,
+    encode_provenance_record_v1, encode_stored_outcome_v1, encode_vector_observation_v1,
 };
 use crate::command_authority::{command_member_at, command_member_at_access};
 use crate::error::{codec_error, precommit_storage_error, table_error};
@@ -61,6 +61,7 @@ use crate::keys::{
     encode_audit_key, encode_contract_bundle_key, encode_entity_key, encode_event_key,
     encode_event_route_key, encode_idempotency_key, encode_index_entry_key,
     encode_partition_index_key, encode_provenance_key, encode_vector_evidence_key,
+    encode_vector_observation_key,
 };
 use crate::layout::{
     COMMITS, CONTRACT_BUNDLES, ENTITIES, EVENT_ROUTES, EVENTS, IDEMPOTENCY, IDEMPOTENCY_PENDING,
@@ -1758,6 +1759,7 @@ fn apply_vector_evidence(
     {
         return Err(storage_error(StorageErrorKind::InvariantViolation));
     }
+    let sequence = records.commit().commit_sequence();
     for ((transition, mutation), bytes) in records
         .vector_evidence_transitions()
         .iter()
@@ -1774,6 +1776,7 @@ fn apply_vector_evidence(
         if !transition.matches_current(current.as_ref()) {
             return Err(storage_error(StorageErrorKind::InvariantViolation));
         }
+        apply_vector_observation(access, transition, sequence)?;
         match (mutation, bytes, current_bytes) {
             (riffdb_storage_api::VectorEvidenceMutationV1::Put(_), Some(bytes), current) => {
                 access.put_proven_command_value(
@@ -1788,6 +1791,55 @@ fn apply_vector_evidence(
             }
             _ => return Err(storage_error(StorageErrorKind::InvariantViolation)),
         }
+    }
+    Ok(())
+}
+
+/// Maintains one partition/field observation from the exact evidence
+/// predecessor already proven in this command's exclusive write transaction.
+/// The observation mutation shares the entity/evidence journal transition, so
+/// neither state can become visible without the other.
+fn apply_vector_observation(
+    access: &RedbWriteAccess,
+    transition: &riffdb_storage_api::VectorEvidenceTransitionPlanV1,
+    sequence: CommitSequence,
+) -> Result<(), StorageError> {
+    let target = transition.observation_target();
+    let key = encode_vector_observation_key(&target)
+        .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+    let current_bytes = access.read_command_value(JournalTable::VectorObservations, &key)?;
+    let mut observation = current_bytes
+        .as_deref()
+        .map(|value| decode_vector_observation_v1(value).map(decoded_value))
+        .transpose()?
+        .unwrap_or_else(|| {
+            riffdb_storage_api::VectorObservationCountsV1::empty(target.clone(), sequence)
+        });
+    if observation.target() != &target {
+        return Err(storage_error(StorageErrorKind::InvariantViolation));
+    }
+    let classification = transition
+        .classification_transition(sequence)
+        .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+    observation
+        .apply(&classification, sequence)
+        .map_err(|error| match error {
+            StorageValueError::LimitExceeded => storage_error(StorageErrorKind::LimitExceeded),
+            _ => storage_error(StorageErrorKind::InvariantViolation),
+        })?;
+    if observation.total_entities() == 0 {
+        let Some(current) = current_bytes else {
+            return Err(storage_error(StorageErrorKind::InvariantViolation));
+        };
+        access.delete_proven_command_value(JournalTable::VectorObservations, key, current)?;
+    } else {
+        let encoded = encode_vector_observation_v1(&observation)?;
+        access.put_proven_command_value(
+            JournalTable::VectorObservations,
+            key,
+            current_bytes,
+            encoded,
+        )?;
     }
     Ok(())
 }

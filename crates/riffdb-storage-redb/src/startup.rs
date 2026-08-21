@@ -55,7 +55,7 @@ use crate::layout::{
     META_RETENTION_WATERMARK, META_VALIDATED_PREFIX_CHECKPOINT, OUTBOX, OUTBOX_STATUS,
     PROJECTION_APPLIED, PROJECTION_FRONTIER, PROJECTION_STATE, PROVENANCE, QUERY_MODULE_ACTIVE,
     QUERY_MODULES, REACTIVE_MODULES, RETIRED_ENTITIES, SECONDARY_INDEXES, TABLE_NAMES,
-    VECTOR_EVIDENCE,
+    VECTOR_EVIDENCE, VECTOR_OBSERVATIONS,
 };
 use crate::store::{
     PRE_APPLICATION_EXPORT_REGISTRY_DIGEST, PRE_APPLICATION_INSTALLATION_REGISTRY_DIGEST,
@@ -63,20 +63,21 @@ use crate::store::{
     PRE_ENTITY_REFERENCE_REGISTRY_DIGEST, PRE_EVENT_ROUTE_REGISTRY_DIGEST,
     PRE_HISTORY_INCARNATION_REGISTRY_DIGEST, PRE_INDEX_GENERATION_REGISTRY_DIGEST,
     PRE_RETENTION_WATERMARK_REGISTRY_DIGEST, PRE_VALIDATED_PREFIX_CHECKPOINT_REGISTRY_DIGEST,
-    PRE_VECTOR_EVIDENCE_REGISTRY_DIGEST, PRE_WP417_REACTIVE_CONSUMER_REGISTRY_DIGEST,
-    RedbDormantPorts, RedbStore, SharedRedb,
+    PRE_VECTOR_EVIDENCE_REGISTRY_DIGEST, PRE_VECTOR_OBSERVATION_REGISTRY_DIGEST,
+    PRE_WP417_REACTIVE_CONSUMER_REGISTRY_DIGEST, RedbDormantPorts, RedbStore, SharedRedb,
 };
 
 static NEXT_OPEN_SESSION: AtomicU64 = AtomicU64::new(1);
 // The V1 validated-prefix checkpoint permanently covers the original table set.
 // Additive tables are validated separately and never inferred from that proof.
 const STRUCTURAL_TABLE_COUNT: usize = 28;
-const ADDITIVE_STRUCTURAL_TABLE_COUNT: usize = 6;
+const ADDITIVE_STRUCTURAL_TABLE_COUNT: usize = 7;
 const STARTUP_TABLE_COUNT: usize = STRUCTURAL_TABLE_COUNT + ADDITIVE_STRUCTURAL_TABLE_COUNT;
 
 fn startup_registry_is_supported(digest: riffdb_types::SchemaHash) -> bool {
     digest == riffdb_storage_api::proto_codec::current_record_registry_digest()
         || digest == riffdb_types::SchemaHash::from_bytes(PRE_VECTOR_EVIDENCE_REGISTRY_DIGEST)
+        || digest == riffdb_types::SchemaHash::from_bytes(PRE_VECTOR_OBSERVATION_REGISTRY_DIGEST)
         || digest == riffdb_types::SchemaHash::from_bytes(PRE_EVENT_ROUTE_REGISTRY_DIGEST)
         || digest == riffdb_types::SchemaHash::from_bytes(PRE_ENTITY_REFERENCE_REGISTRY_DIGEST)
         || digest == riffdb_types::SchemaHash::from_bytes(PRE_CONTRACT_MIGRATION_REGISTRY_DIGEST)
@@ -1234,6 +1235,7 @@ impl RedbStructuralEvidenceSession {
             table_len(transaction, APPLICATION_INSTALLATION_CAMPAIGNS)?,
             table_len(transaction, APPLICATION_EXPORT_OPERATIONS)?,
             table_len(transaction, VECTOR_EVIDENCE)?,
+            table_len(transaction, VECTOR_OBSERVATIONS)?,
         ];
         if additive_counts != self.additive_structural_counts {
             return Err(corrupt());
@@ -2222,6 +2224,9 @@ impl RedbStructuralEvidenceSession {
                     33 => transaction
                         .open_table(VECTOR_EVIDENCE)
                         .map_err(table_error)?,
+                    34 => transaction
+                        .open_table(VECTOR_OBSERVATIONS)
+                        .map_err(table_error)?,
                     _ => return Err(invariant()),
                 };
                 let range = self.open_structural_phase_range(phase, table)?;
@@ -2316,6 +2321,7 @@ fn inspect_table_row_from_bytes(
         31 => inspect_application_installation_campaign_row(key, value),
         32 => inspect_application_export_operation_row(key, value),
         33 => inspect_vector_evidence_row(transaction, key, value),
+        34 => inspect_vector_observation_row(key, value),
         _ => Err(invariant()),
     }
 }
@@ -2399,6 +2405,19 @@ fn inspect_vector_evidence_row(
         return Ok(Some(authoritative(
             StructuralFindingCode::CrossLinkMismatch,
         )));
+    }
+    Ok(None)
+}
+
+fn inspect_vector_observation_row(
+    key: &[u8],
+    value: &[u8],
+) -> Result<Option<StructuralFinding>, StorageError> {
+    let target = keys::decode_vector_observation_key(key).map_err(|_| corrupt())?;
+    let decoded = riffdb_storage_api::decode_vector_observation_v1(value)
+        .map_err(crate::error::codec_error)?;
+    if decoded.value().target() != &target {
+        return Err(corrupt());
     }
     Ok(None)
 }
@@ -2749,6 +2768,7 @@ fn collect_startup_snapshot(
         table_len(transaction, APPLICATION_INSTALLATION_CAMPAIGNS)?,
         table_len(transaction, APPLICATION_EXPORT_OPERATIONS)?,
         table_len(transaction, VECTOR_EVIDENCE)?,
+        table_len(transaction, VECTOR_OBSERVATIONS)?,
     ];
     let total = counts
         .iter()

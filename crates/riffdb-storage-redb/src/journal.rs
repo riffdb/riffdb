@@ -33,7 +33,7 @@ use crate::keys::{decode_application_sequence_key, decode_audit_key};
 use crate::layout::{
     AUDIT, AUDIT_BY_REQUEST, COMMITS, ENTITIES, ENTITY_CHAIN_HEADS, EVENT_ROUTES, EVENTS,
     IDEMPOTENCY, IDEMPOTENCY_PENDING, INDEX_EPOCHS, META, PROVENANCE, SECONDARY_INDEXES,
-    VECTOR_EVIDENCE,
+    VECTOR_EVIDENCE, VECTOR_OBSERVATIONS,
 };
 
 const FILE_MAGIC: [u8; 8] = *b"RDBJRN01";
@@ -255,10 +255,11 @@ pub(crate) enum JournalTable {
     AuditByRequest = 13,
     EntityChainHeads = 14,
     VectorEvidence = 15,
+    VectorObservations = 16,
 }
 
 impl JournalTable {
-    pub(crate) const ALL: [Self; 15] = [
+    pub(crate) const ALL: [Self; 16] = [
         Self::Meta,
         Self::Entities,
         Self::SecondaryIndexes,
@@ -274,6 +275,7 @@ impl JournalTable {
         Self::AuditByRequest,
         Self::EntityChainHeads,
         Self::VectorEvidence,
+        Self::VectorObservations,
     ];
 
     pub(crate) const fn label(self) -> &'static str {
@@ -293,6 +295,7 @@ impl JournalTable {
             Self::AuditByRequest => "audit_by_request",
             Self::EntityChainHeads => "entity_chain_heads",
             Self::VectorEvidence => "vector_evidence",
+            Self::VectorObservations => "vector_observations",
         }
     }
 
@@ -313,6 +316,7 @@ impl JournalTable {
             13 => Ok(Self::AuditByRequest),
             14 => Ok(Self::EntityChainHeads),
             15 => Ok(Self::VectorEvidence),
+            16 => Ok(Self::VectorObservations),
             _ => Err(JournalCodecError::UnknownTable),
         }
     }
@@ -334,6 +338,7 @@ impl JournalTable {
             Self::AuditByRequest => riffdb_storage_api::CompositeTableV1::AuditByRequest,
             Self::EntityChainHeads => riffdb_storage_api::CompositeTableV1::EntityChainHeads,
             Self::VectorEvidence => riffdb_storage_api::CompositeTableV1::VectorEvidence,
+            Self::VectorObservations => riffdb_storage_api::CompositeTableV1::VectorObservations,
         }
     }
 }
@@ -852,7 +857,8 @@ fn service_audit_mutation_is_closed(mutation: &JournalMutation) -> bool {
         | JournalTable::Provenance
         | JournalTable::Commits
         | JournalTable::EntityChainHeads
-        | JournalTable::VectorEvidence => false,
+        | JournalTable::VectorEvidence
+        | JournalTable::VectorObservations => false,
     }
 }
 
@@ -2836,6 +2842,9 @@ pub(crate) fn apply_mutation(
             apply_byte_mutation(transaction, ENTITY_CHAIN_HEADS, mutation)
         }
         JournalTable::VectorEvidence => apply_byte_mutation(transaction, VECTOR_EVIDENCE, mutation),
+        JournalTable::VectorObservations => {
+            apply_byte_mutation(transaction, VECTOR_OBSERVATIONS, mutation)
+        }
     }
 }
 
@@ -2952,6 +2961,13 @@ pub(crate) fn apply_validated_composite_mutation(
         CompositeTableV1::VectorEvidence => apply_byte_mutation_parts(
             transaction,
             VECTOR_EVIDENCE,
+            mutation.key(),
+            mutation.value(),
+            mutation.expected_hash(),
+        ),
+        CompositeTableV1::VectorObservations => apply_byte_mutation_parts(
+            transaction,
+            VECTOR_OBSERVATIONS,
             mutation.key(),
             mutation.value(),
             mutation.expected_hash(),
@@ -3095,6 +3111,7 @@ pub(crate) fn read_value(
         JournalTable::AuditByRequest => AUDIT_BY_REQUEST,
         JournalTable::EntityChainHeads => ENTITY_CHAIN_HEADS,
         JournalTable::VectorEvidence => VECTOR_EVIDENCE,
+        JournalTable::VectorObservations => VECTOR_OBSERVATIONS,
     };
     transaction
         .open_table(definition)
@@ -3134,6 +3151,7 @@ pub(crate) fn read_write_value(
         JournalTable::AuditByRequest => AUDIT_BY_REQUEST,
         JournalTable::EntityChainHeads => ENTITY_CHAIN_HEADS,
         JournalTable::VectorEvidence => VECTOR_EVIDENCE,
+        JournalTable::VectorObservations => VECTOR_OBSERVATIONS,
     };
     transaction
         .open_table(definition)
@@ -3162,6 +3180,7 @@ pub(crate) const fn byte_table_definition(
         JournalTable::AuditByRequest => Some(AUDIT_BY_REQUEST),
         JournalTable::EntityChainHeads => Some(ENTITY_CHAIN_HEADS),
         JournalTable::VectorEvidence => Some(VECTOR_EVIDENCE),
+        JournalTable::VectorObservations => Some(VECTOR_OBSERVATIONS),
     }
 }
 

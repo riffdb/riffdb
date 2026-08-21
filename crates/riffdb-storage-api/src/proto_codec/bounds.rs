@@ -11,6 +11,7 @@ use crate::{
     VectorEvidenceMutationV1, VectorEvidenceTransitionPlanV1,
 };
 
+use super::vector_evidence::VECTOR_OBSERVATION;
 use super::{
     COMMIT, CanonicalStoredEnvelopeV1, DurableCodecError, DurableCodecErrorKind, ENTITY, EVENT,
     EVENT_ROUTE, INDEX_ENTRY, INDEX_EPOCH, OUTCOME_V3, PROVENANCE_V2, binding_to_proto,
@@ -553,6 +554,13 @@ pub fn command_write_set_upper_bound_with_vector_evidence_v1(
                 Err(error) => Err(DurableCodecError::from_storage_value(error)),
             }
         }))?)
+        .and_then(|value| {
+            value.checked_add(
+                vector_evidence
+                    .len()
+                    .checked_mul(maximum_vector_observation_charge().ok()?)?,
+            )
+        })
         .ok_or_else(DurableCodecError::invariant)?,
         index_entries: sum_sizes(index_entries.iter().filter_map(|mutation| match mutation {
             IndexEntryMutationV1::Delete(_) => None,
@@ -993,6 +1001,33 @@ fn sizing_charge_len(
         .ok_or_else(DurableCodecError::invariant)?;
     riffdb_proto::envelope::maximum_encoded_compact_record_bytes(schema, payload_len)
         .map_err(DurableCodecError::from_encode_envelope)
+}
+
+/// Maximum canonical envelope charge for one maintained vector-observation
+/// row. The row is rewritten atomically with evidence, so its full bounded
+/// post-image belongs to the pre-sequence reservation even when this command
+/// changes only one model count.
+fn maximum_vector_observation_charge() -> Result<usize, DurableCodecError> {
+    let model_count = sum_proto_fields([
+        bytes_field_len(1, riffdb_types::EmbeddingMetadata::MAX_MODEL_STRING_LEN),
+        bytes_field_len(2, riffdb_types::EmbeddingMetadata::MAX_MODEL_STRING_LEN),
+        varint_field_len(3, MAXIMUM_WIDTH_U64),
+    ])?;
+    let repeated_models =
+        (0..crate::MAX_VECTOR_MODELS_PER_OBSERVATION).map(|_| message_field_len(7, model_count));
+    let fixed = sum_proto_fields([
+        bytes_field_len(1, riffdb_types::MAX_CONTRACT_LINEAGE_BYTES),
+        bytes_field_len(2, riffdb_types::MAX_KEY_BYTES),
+        varint_field_len(3, u32::MAX),
+        varint_field_len(4, u32::MAX),
+        varint_field_len(5, MAXIMUM_WIDTH_U64),
+        varint_field_len(6, MAXIMUM_WIDTH_U64),
+        varint_field_len(8, MAXIMUM_WIDTH_U64),
+    ])?;
+    let payload = fixed
+        .checked_add(sum_sizes(repeated_models)?)
+        .ok_or_else(DurableCodecError::invariant)?;
+    sizing_charge_len(VECTOR_OBSERVATION, payload)
 }
 
 fn key_len(field_number: u32, wire_type: prost::encoding::WireType) -> usize {

@@ -69,8 +69,11 @@ pub(crate) const APPLICATION_EXPORT_OPERATIONS: TableDefinition<&[u8], &[u8]> =
 /// Authoritative per-entity vector source/model evidence (ADR-0136).
 pub(crate) const VECTOR_EVIDENCE: TableDefinition<&[u8], &[u8]> =
     TableDefinition::new("vector_evidence");
+/// Authoritative maintained vector counts (ADR-0136).
+pub(crate) const VECTOR_OBSERVATIONS: TableDefinition<&[u8], &[u8]> =
+    TableDefinition::new("vector_observations");
 
-pub(crate) const TABLE_NAMES: [&str; 36] = [
+pub(crate) const TABLE_NAMES: [&str; 37] = [
     "meta",
     "contract_bundles",
     "catalog_active",
@@ -107,9 +110,10 @@ pub(crate) const TABLE_NAMES: [&str; 36] = [
     "application_export_operations",
     "validated_prefix_entity_heads",
     "vector_evidence",
+    "vector_observations",
 ];
 
-pub(crate) const BYTE_TABLES: [TableDefinition<&[u8], &[u8]>; 34] = [
+pub(crate) const BYTE_TABLES: [TableDefinition<&[u8], &[u8]>; 35] = [
     CONTRACT_BUNDLES,
     CATALOG_ACTIVE,
     QUERY_MODULES,
@@ -144,6 +148,7 @@ pub(crate) const BYTE_TABLES: [TableDefinition<&[u8], &[u8]>; 34] = [
     APPLICATION_INSTALLATION_CAMPAIGNS,
     APPLICATION_EXPORT_OPERATIONS,
     VECTOR_EVIDENCE,
+    VECTOR_OBSERVATIONS,
 ];
 
 pub(crate) const META_FORMAT_VERSION: &str = "format_version";
@@ -222,6 +227,7 @@ pub(crate) fn create_all_tables(tx: &WriteTransaction) -> Result<(), TableError>
     drop(tx.open_table(APPLICATION_INSTALLATION_CAMPAIGNS)?);
     drop(tx.open_table(APPLICATION_EXPORT_OPERATIONS)?);
     drop(tx.open_table(VECTOR_EVIDENCE)?);
+    drop(tx.open_table(VECTOR_OBSERVATIONS)?);
     Ok(())
 }
 
@@ -272,10 +278,11 @@ mod tests {
             APPLICATION_EXPORT_OPERATIONS.name(),
             VALIDATED_PREFIX_ENTITY_HEADS.name(),
             VECTOR_EVIDENCE.name(),
+            VECTOR_OBSERVATIONS.name(),
         ];
 
         assert_eq!(definition_names, TABLE_NAMES);
-        assert_eq!(TABLE_NAMES.len(), 36);
+        assert_eq!(TABLE_NAMES.len(), 37);
         assert_eq!(
             TABLE_NAMES.into_iter().collect::<BTreeSet<_>>().len(),
             TABLE_NAMES.len()
