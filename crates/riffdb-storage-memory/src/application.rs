@@ -35,8 +35,10 @@ use riffdb_storage_api::{
     StoredEntityRecordV1, StoredEventRouteV1, StoredExecutionFailedV1, StoredIndexEpochV1,
     StoredOutcomeV1, StoredPendingAdmissionV1, StoredProvenanceRecordV1, StoredVectorEvidenceV1,
     TransactionCurrentPolicyRequestV1, TransactionCurrentPolicyStateV1, TransactionCurrentState,
-    TransactionCurrentStateBuilder, TransactionLocalCommandBatch, UniqueIndexOccupancy,
-    UniqueOccupancyKind, UnpublishedAuditedBatchV1, ValidationReadRequest, derive_event_hash_v1,
+    TransactionCurrentStateBuilder, TransactionCurrentVectorEvidenceV1,
+    TransactionLocalCommandBatch, UniqueIndexOccupancy, UniqueOccupancyKind,
+    UnpublishedAuditedBatchV1, ValidationReadRequest, VectorEvidenceReadRequestV1,
+    derive_event_hash_v1,
 };
 use riffdb_types::{CommitSequence, EventId, FrontierPosition, ProvenanceId};
 
@@ -729,6 +731,25 @@ fn transaction_current_policy_state(
         relationship_exists.push(exists);
     }
     TransactionCurrentPolicyStateV1::new(request, capability, relationship_exists)
+        .map_err(materialization_value)
+}
+
+fn transaction_current_vector_evidence(
+    rows: &[StoredVectorEvidenceV1],
+    request: &VectorEvidenceReadRequestV1,
+) -> Result<TransactionCurrentVectorEvidenceV1, StorageError> {
+    let observations = request
+        .targets()
+        .iter()
+        .map(|target| {
+            rows.binary_search_by(|row| {
+                (row.target(), row.vector_field()).cmp(&(target.target(), target.vector_field()))
+            })
+            .ok()
+            .map(|position| rows[position].clone())
+        })
+        .collect();
+    TransactionCurrentVectorEvidenceV1::new(request.clone(), observations)
         .map_err(materialization_value)
 }
 
@@ -1499,6 +1520,16 @@ macro_rules! impl_candidate_chain {
                 request: &TransactionCurrentPolicyRequestV1,
             ) -> Result<TransactionCurrentPolicyStateV1, StorageError> {
                 transaction_current_policy_state(&self.prior.core, request)
+            }
+
+            fn read_transaction_current_vector_evidence(
+                &self,
+                request: &VectorEvidenceReadRequestV1,
+            ) -> Result<TransactionCurrentVectorEvidenceV1, StorageError> {
+                transaction_current_vector_evidence(
+                    &self.prior.core.overlay.vector_evidence,
+                    request,
+                )
             }
 
             fn plan_validated(

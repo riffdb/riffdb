@@ -503,7 +503,7 @@ fn command_index_derivation_preserves_the_sealed_storage_progression_chain() {
         "match checked.read_affected_epoch_current()",
         "pub(super) fn reserve_capacity(self)",
         "fn prepare_sequence_free_write_set(",
-        "let shape = match ValidatedCommandWriteSetShapeV1::new(",
+        "let shape = match ValidatedCommandWriteSetShapeV1::new_with_vector_evidence(",
         "fn classify_sequence_free_write_set_sizing(",
         "Ok(EncodedWriteSetUpperBoundResultV1::Fits(bound))",
         "EncodedWriteSetUpperBoundResultV1::ExceedsAcceptedAggregateCap(_codec_origin)",
@@ -540,10 +540,10 @@ fn command_index_derivation_preserves_the_sealed_storage_progression_chain() {
     }
 
     let semantic_validation = production
-        .find("let shape = match ValidatedCommandWriteSetShapeV1::new(")
+        .find("let shape = match ValidatedCommandWriteSetShapeV1::new_with_vector_evidence(")
         .expect("sequence-free semantic shape validation");
     let codec_sizing = production
-        .find("match classify_sequence_free_write_set_sizing(command_write_set_upper_bound_v1(")
+        .find("command_write_set_upper_bound_with_vector_evidence_v1(")
         .expect("sequence-free codec sizing");
     let frozen_plan = production
         .find("CommandWriteSetPlanV1::from_validated_shape(shape, bound)")

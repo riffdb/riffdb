@@ -31,9 +31,10 @@ use riffdb_storage_api::{
     StorageError, StorageErrorKind, StorageValueError, StoredAdmissionStateV1,
     StoredCommandCapsuleV2, StoredCommandSegmentV1, StoredEventRouteV1, StoredExecutionFailedV1,
     StoredIndexEpochV1, StoredOutboxIntentV1, StoredOutcomeV1, StoredPendingAdmissionV1,
-    TransactionCurrentPolicyRequestV1, TransactionCurrentPolicyStateV1, TransactionCurrentState,
-    TransactionCurrentStateBuilder, TransactionLocalCommandBatch, UniqueIndexOccupancy,
-    UniqueOccupancyKind, UnpublishedAuditedBatchV1, ValidationReadRequest,
+    StoredVectorEvidenceV1, TransactionCurrentPolicyRequestV1, TransactionCurrentPolicyStateV1,
+    TransactionCurrentState, TransactionCurrentStateBuilder, TransactionCurrentVectorEvidenceV1,
+    TransactionLocalCommandBatch, UniqueIndexOccupancy, UniqueOccupancyKind,
+    UnpublishedAuditedBatchV1, ValidationReadRequest, VectorEvidenceReadRequestV1,
     encode_capsule_command_record_set_v1,
 };
 use riffdb_types::{CommitSequence, EventId, ProvenanceId};
@@ -1346,6 +1347,13 @@ macro_rules! impl_candidate_chain {
                 transaction_current_policy_state(&self.prior.core, request)
             }
 
+            fn read_transaction_current_vector_evidence(
+                &self,
+                request: &VectorEvidenceReadRequestV1,
+            ) -> Result<TransactionCurrentVectorEvidenceV1, StorageError> {
+                transaction_current_vector_evidence(&self.prior.core, request)
+            }
+
             fn plan_validated(
                 self,
                 affected_targets: AffectedIndexEpochTargets,
@@ -2615,6 +2623,31 @@ fn transaction_current_policy_state(
         relationship_exists.push(exists);
     }
     TransactionCurrentPolicyStateV1::new(request, capability, relationship_exists)
+        .map_err(materialization_value)
+}
+
+fn transaction_current_vector_evidence(
+    core: &BatchCore,
+    request: &VectorEvidenceReadRequestV1,
+) -> Result<TransactionCurrentVectorEvidenceV1, StorageError> {
+    let mut observations = Vec::with_capacity(request.targets().len());
+    for target in request.targets() {
+        let key = encode_vector_evidence_key(target.target().key(), target.vector_field())
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+        let observation = core
+            .access
+            .read_command_value(JournalTable::VectorEvidence, &key)?
+            .map(|bytes| {
+                let row: StoredVectorEvidenceV1 = decoded_value(decode_vector_evidence_v1(&bytes)?);
+                if row.target() != target.target() || row.vector_field() != target.vector_field() {
+                    return Err(storage_error(StorageErrorKind::CorruptData));
+                }
+                Ok(row)
+            })
+            .transpose()?;
+        observations.push(observation);
+    }
+    TransactionCurrentVectorEvidenceV1::new(request.clone(), observations)
         .map_err(materialization_value)
 }
 

@@ -388,6 +388,14 @@ pub(crate) enum HirEffect {
         value: HirExpressionRoot,
         reveals: Vec<HirSecretReveal>,
     },
+    Embed {
+        target_span: Span,
+        binding: BindingId,
+        field: FieldId,
+        value: HirExpressionRoot,
+        model_identity: HirExpressionRoot,
+        model_version: HirExpressionRoot,
+    },
     Emit {
         event_id: EventTypeId,
         event_span: Span,
@@ -2442,6 +2450,17 @@ fn lower_commands(
                         ));
                         continue;
                     };
+                    if entity
+                        .vector_fields
+                        .iter()
+                        .any(|vector| vector.field_id == field.id && vector.production.is_some())
+                    {
+                        diagnostics.push(CompilerDiagnostic::new(
+                            CompilerDiagnosticCode::InvalidMutation,
+                            set.target.span,
+                        ));
+                        continue;
+                    }
                     if invocation_class != CommandInvocationClass::Reimport
                         && workflows.iter().any(|workflow| {
                             workflow.entity_id == binding.entity_id
@@ -2470,6 +2489,92 @@ fn lower_commands(
                         field: field.id,
                         value,
                         reveals,
+                    });
+                }
+                Effect::Embed(embed) => {
+                    let Some((binding_name, field_name)) = path_pair(&embed.target.value) else {
+                        diagnostics.push(CompilerDiagnostic::new(
+                            CompilerDiagnosticCode::InvalidMutation,
+                            embed.target.span,
+                        ));
+                        continue;
+                    };
+                    let Some(binding) = binding_by_name.get(binding_name).copied() else {
+                        diagnostics.push(CompilerDiagnostic::new(
+                            CompilerDiagnosticCode::UnknownName,
+                            embed.target.span,
+                        ));
+                        continue;
+                    };
+                    if binding.collection_local && !collection_local {
+                        diagnostics.push(CompilerDiagnostic::new(
+                            CompilerDiagnosticCode::InvalidMutation,
+                            embed.target.span,
+                        ));
+                        continue;
+                    }
+                    let Some(entity) = entities
+                        .iter()
+                        .find(|entity| entity.id == binding.entity_id)
+                    else {
+                        continue;
+                    };
+                    let Some(field) = entity.fields.iter().find(|field| field.name == field_name)
+                    else {
+                        diagnostics.push(CompilerDiagnostic::new(
+                            CompilerDiagnosticCode::UnknownName,
+                            embed.target.span,
+                        ));
+                        continue;
+                    };
+                    if !entity
+                        .vector_fields
+                        .iter()
+                        .any(|vector| vector.field_id == field.id && vector.production.is_some())
+                    {
+                        diagnostics.push(CompilerDiagnostic::new(
+                            CompilerDiagnosticCode::InvalidMutation,
+                            embed.target.span,
+                        ));
+                        continue;
+                    }
+                    let Some(value) = lower_root(
+                        &mut resolver,
+                        &embed.value,
+                        Some(&field.value_type),
+                        false,
+                        diagnostics,
+                    ) else {
+                        continue;
+                    };
+                    let model_type =
+                        ValueType::string(riffdb_types::EmbeddingMetadata::MAX_MODEL_STRING_LEN)
+                            .expect("the shared embedding metadata bound is a valid string bound");
+                    let Some(model_identity) = lower_root(
+                        &mut resolver,
+                        &embed.model_identity,
+                        Some(&model_type),
+                        false,
+                        diagnostics,
+                    ) else {
+                        continue;
+                    };
+                    let Some(model_version) = lower_root(
+                        &mut resolver,
+                        &embed.model_version,
+                        Some(&model_type),
+                        false,
+                        diagnostics,
+                    ) else {
+                        continue;
+                    };
+                    effects.push(HirEffect::Embed {
+                        target_span: embed.target.span,
+                        binding: binding.id,
+                        field: field.id,
+                        value,
+                        model_identity,
+                        model_version,
                     });
                 }
                 Effect::Emit(emit) => {
@@ -2877,7 +2982,9 @@ fn lower_commands(
                             roots,
                         )
                     }
-                    HirEffect::Set { .. } | HirEffect::Emit { .. } => continue,
+                    HirEffect::Set { .. } | HirEffect::Embed { .. } | HirEffect::Emit { .. } => {
+                        continue;
+                    }
                 };
             if roots.iter().any(|root| {
                 !matches!(

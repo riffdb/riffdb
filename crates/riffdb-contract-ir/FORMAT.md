@@ -160,6 +160,7 @@ Expression constants use exactly `u32 canonical_document_byte_length || canonica
 | `0x04` | return |
 | `0x05` | workflow transition |
 | `0x06` | workflow lease |
+| `0x07` | set production embedding |
 
 ### Service-owned command value
 
@@ -377,6 +378,7 @@ Each row lists all bytes immediately following the tag, in byte order. `empty` m
 | `0x04` | return | `outcome`: OutcomeConstruction |
 | `0x05` | workflow transition | `binding`: BindingId as u32; `state_field`: FieldId as u32; `source_states`: u32 count + EnumVariantId[]; `destination`: EnumVariantId as u32; `expected_revision`: ExprId as u32; `stale`: OutcomeConstruction; `illegal`: OutcomeConstruction |
 | `0x06` | workflow lease | `binding`: BindingId as u32; `fields`: WorkflowLeaseFields; `operation`: tagged WorkflowLeaseOperation |
+| `0x07` | set production embedding | `binding`: BindingId as u32; `field`: FieldId as u32; `value`: ExprId as u32; `model_identity`: ExprId as u32; `model_version`: ExprId as u32 |
 
 ### WorkflowLeaseOperation
 

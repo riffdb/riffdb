@@ -12,7 +12,7 @@ use riffdb_contract_compiler::compile_contract_source;
 use riffdb_contract_ir::{
     BUNDLE_FORMAT_VERSION_V12, BUNDLE_FORMAT_VERSION_V15, ContractBundle,
     EXECUTABLE_IR_VERSION_V12, EXECUTABLE_IR_VERSION_V15, GRAMMAR_VERSION_V12, GRAMMAR_VERSION_V15,
-    ValueTypeTag,
+    Instruction, ValueTypeTag,
 };
 
 fn vector_contract(dimension: u32) -> String {
@@ -49,6 +49,117 @@ contract Docs version 1 {{
 }}
 "#
     )
+}
+
+fn embedding_command_contract(effect: &str, production: bool) -> String {
+    let production = if production {
+        r#", model "embed-v1", current_version "2026-08-21", replay_age_seconds 86400, replay_bytes 1073741824, replay_backlog 100000"#
+    } else {
+        ""
+    };
+    format!(
+        r#"
+contract Docs version 1 {{
+  entity Document {{
+    key (org_id: uuid, doc_id: uuid)
+    field title: string<256>
+    vector_field embedding(128, cosine, (title), staleness_slo 60{production})
+  }}
+
+  aggregate Documents {{
+    root Document
+    partition_by org_id
+    conflict_key (org_id, doc_id)
+  }}
+
+  command SetDocumentEmbedding {{
+    input request_id: string<128>
+    input org_id: uuid
+    input doc_id: uuid
+    input embedding: vector<128>
+    input submitted_model: string<256>
+    input submitted_version: string<256>
+    idempotency_key request_id
+    mutate Document(org_id, doc_id) as doc else Missing {{ doc_id: doc_id }}
+    {effect}
+    return Embedded {{ document: doc }}
+  }}
+}}
+"#
+    )
+}
+
+#[test]
+fn production_embedding_command_lowers_to_one_v15_instruction_and_round_trips() {
+    let source = embedding_command_contract(
+        "embed doc.embedding = embedding from (submitted_model, submitted_version)",
+        true,
+    );
+    let bundle = compile_contract_source(&source).expect("production embedding command compiles");
+    assert_eq!(bundle.ir_version(), EXECUTABLE_IR_VERSION_V15);
+    let instruction = bundle.commands()[0]
+        .instructions()
+        .iter()
+        .find(|instruction| matches!(instruction, Instruction::SetEmbedding { .. }))
+        .expect("one compiler-sealed embedding instruction");
+    let Instruction::SetEmbedding {
+        binding,
+        field,
+        value,
+        model_identity,
+        model_version,
+    } = instruction
+    else {
+        unreachable!();
+    };
+    assert_eq!(binding.get(), 0);
+    assert_ne!(value, model_identity);
+    assert_ne!(model_identity, model_version);
+    let document = &bundle.schema().entities()[0];
+    assert_eq!(
+        field.get(),
+        document
+            .record()
+            .fields()
+            .iter()
+            .find(|candidate| candidate.name() == "embedding")
+            .expect("embedding field")
+            .id()
+            .get()
+    );
+    let decoded = ContractBundle::decode(bundle.canonical_bytes()).expect("V15 command decodes");
+    assert_eq!(decoded.bundle_hash(), bundle.bundle_hash());
+    assert!(matches!(
+        decoded.commands()[0].instructions()[0],
+        Instruction::SetEmbedding { .. }
+    ));
+}
+
+#[test]
+fn production_vectors_reject_generic_set_and_nonproduction_embed_at_the_target_span() {
+    for (effect, production) in [
+        ("set doc.embedding = embedding", true),
+        (
+            "embed doc.embedding = embedding from (submitted_model, submitted_version)",
+            false,
+        ),
+    ] {
+        let source = embedding_command_contract(effect, production);
+        let diagnostics =
+            compile_contract_source(&source).expect_err("unsafe vector write rejects");
+        let diagnostic = diagnostics
+            .semantic()
+            .unwrap_or_else(|| panic!("semantic diagnostic: {diagnostics}"))
+            .as_slice()
+            .iter()
+            .find(|diagnostic| diagnostic.code().as_str() == "RDB-C013")
+            .unwrap_or_else(|| panic!("invalid mutation diagnostic: {diagnostics}"));
+        let span = diagnostic.primary_span();
+        assert_eq!(
+            &source[span.start() as usize..span.end() as usize],
+            "doc.embedding"
+        );
+    }
 }
 
 #[test]
@@ -167,6 +278,36 @@ fn checked_in_ann_fixture_pins_v12_bytes_and_hash() {
     let decoded = ContractBundle::decode(expected_bytes).expect("checked-in V12 fixture decodes");
     assert_eq!(decoded.bundle_hash(), compiled.bundle_hash());
     assert_eq!(decoded.schema().vector_ann_specs().len(), 1);
+}
+
+#[test]
+fn checked_in_production_embedding_fixture_pins_v15_bytes_hash_and_instruction() {
+    let source = include_str!("../../../fixtures/compiler/production-embedding/contract.riff");
+    let expected_bytes =
+        include_bytes!("../../../fixtures/compiler/production-embedding/bundle.bin");
+    let expected_hash =
+        include_str!("../../../fixtures/compiler/production-embedding/bundle-hash.txt").trim_end();
+    let expected_explain =
+        include_str!("../../../fixtures/compiler/production-embedding/command-explain.txt");
+    let compiled = compile_contract_source(source).expect("fixture compiles");
+    assert_eq!(compiled.canonical_bytes(), expected_bytes);
+    let rendered_hash: String = compiled
+        .bundle_hash()
+        .as_bytes()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    assert_eq!(rendered_hash, expected_hash);
+    let decoded = ContractBundle::decode(expected_bytes).expect("checked-in V15 fixture decodes");
+    assert_eq!(decoded.bundle_hash(), compiled.bundle_hash());
+    assert!(matches!(
+        decoded.commands()[0].instructions()[0],
+        Instruction::SetEmbedding { .. }
+    ));
+    assert_eq!(
+        riffdb_contract_ir::CommandExplain::from_plan(&decoded.commands()[0]).render_text(),
+        expected_explain
+    );
 }
 
 #[test]

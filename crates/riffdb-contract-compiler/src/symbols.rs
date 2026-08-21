@@ -630,6 +630,7 @@ fn allocate_command_symbols(
                 }
             }
             riffdb_contract_syntax::ast::Effect::Set(_)
+            | riffdb_contract_syntax::ast::Effect::Embed(_)
             | riffdb_contract_syntax::ast::Effect::Emit(_) => Vec::new(),
         };
         for rejection in rejections {

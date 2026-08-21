@@ -32,6 +32,13 @@ enum RawInstruction {
         field: FieldId,
         value: ExprId,
     },
+    SetEmbedding {
+        binding: BindingId,
+        field: FieldId,
+        value: ExprId,
+        model_identity: ExprId,
+        model_version: ExprId,
+    },
     WorkflowTransition {
         binding: BindingId,
         state_field: FieldId,
@@ -224,7 +231,7 @@ fn lower_command(
     occurrences.extend(command.effects.iter().flat_map(|effect| match effect {
         HirEffect::WorkflowTransition { stale, illegal, .. } => vec![stale, illegal],
         HirEffect::WorkflowLease { operation, .. } => lease_hir_outcomes(operation),
-        HirEffect::Set { .. } | HirEffect::Emit { .. } => Vec::new(),
+        HirEffect::Set { .. } | HirEffect::Embed { .. } | HirEffect::Emit { .. } => Vec::new(),
     }));
     occurrences.push(&command.success);
     let secret_reveals = lower_secret_reveals(command, &occurrences);
@@ -241,7 +248,7 @@ fn lower_command(
             let additional = match effect {
                 HirEffect::WorkflowTransition { .. } => 2,
                 HirEffect::WorkflowLease { operation, .. } => lease_hir_outcomes(operation).len(),
-                HirEffect::Set { .. } | HirEffect::Emit { .. } => 0,
+                HirEffect::Set { .. } | HirEffect::Embed { .. } | HirEffect::Emit { .. } => 0,
             };
             count.checked_add(additional)
         })
@@ -420,6 +427,19 @@ fn lower_command(
                 binding,
                 field,
                 value,
+            },
+            RawInstruction::SetEmbedding {
+                binding,
+                field,
+                value,
+                model_identity,
+                model_version,
+            } => Instruction::SetEmbedding {
+                binding,
+                field,
+                value,
+                model_identity,
+                model_version,
             },
             RawInstruction::WorkflowTransition {
                 binding,
@@ -690,6 +710,7 @@ fn lower_secret_reveals(command: &HirCommand, outcomes: &[&HirOutcome]) -> Vec<S
                     },
                 )
             })),
+            HirEffect::Embed { .. } => {}
             HirEffect::Emit {
                 event_id, fields, ..
             } => {
@@ -1312,6 +1333,20 @@ fn command_instructions(
                 field: *field,
                 value: value.id,
             }),
+            HirEffect::Embed {
+                binding,
+                field,
+                value,
+                model_identity,
+                model_version,
+                ..
+            } => effects.push(RawInstruction::SetEmbedding {
+                binding: *binding,
+                field: *field,
+                value: value.id,
+                model_identity: model_identity.id,
+                model_version: model_version.id,
+            }),
             HirEffect::Emit {
                 event_id,
                 fields,
@@ -1486,6 +1521,12 @@ fn collect_influential_roots(
         match instruction {
             RawInstruction::Require { predicate, .. } => roots.push(*predicate),
             RawInstruction::SetField { value, .. } => roots.push(*value),
+            RawInstruction::SetEmbedding {
+                value,
+                model_identity,
+                model_version,
+                ..
+            } => roots.extend([*value, *model_identity, *model_version]),
             RawInstruction::WorkflowTransition {
                 expected_revision, ..
             } => roots.push(*expected_revision),

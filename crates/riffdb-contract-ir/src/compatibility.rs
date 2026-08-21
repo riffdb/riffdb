@@ -1318,6 +1318,41 @@ fn existing_instruction_compatible(
                 next_plan.expressions(),
                 *right_value,
             )?),
+        (
+            Instruction::SetEmbedding {
+                binding: left_binding,
+                field: left_field,
+                value: left_value,
+                model_identity: left_model_identity,
+                model_version: left_model_version,
+            },
+            Instruction::SetEmbedding {
+                binding: right_binding,
+                field: right_field,
+                value: right_value,
+                model_identity: right_model_identity,
+                model_version: right_model_version,
+            },
+        ) => Ok(left_binding == right_binding
+            && left_field == right_field
+            && expression_trees_equal(
+                old_plan.expressions(),
+                *left_value,
+                next_plan.expressions(),
+                *right_value,
+            )?
+            && expression_trees_equal(
+                old_plan.expressions(),
+                *left_model_identity,
+                next_plan.expressions(),
+                *right_model_identity,
+            )?
+            && expression_trees_equal(
+                old_plan.expressions(),
+                *left_model_version,
+                next_plan.expressions(),
+                *right_model_version,
+            )?),
         (Instruction::EmitEvent(left), Instruction::EmitEvent(right)) => {
             event_constructions_compatible(
                 old_plan.expressions(),

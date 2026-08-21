@@ -26,8 +26,8 @@ fn lexes_every_reserved_keyword() {
         "release expire fence owner expires_at ",
         "fencing_token attempts duration_seconds service uuid_v7 transaction_time on revision ",
         "stale illegal unavailable invalid exhausted expired active input idempotency_key read mutate create as else ",
-        "require set emit return bool i64 u64 timestamp date uuid decimal money string bytes ",
-        "optional list true false null"
+        "require set embed emit return bool i64 u64 timestamp date uuid decimal money string bytes ",
+        "vector optional list true false null"
     );
     let expected = vec![
         Token::Contract,
@@ -96,6 +96,7 @@ fn lexes_every_reserved_keyword() {
         Token::Else,
         Token::Require,
         Token::Set,
+        Token::Embed,
         Token::Emit,
         Token::Return,
         Token::Bool,
@@ -108,6 +109,7 @@ fn lexes_every_reserved_keyword() {
         Token::Money,
         Token::String,
         Token::Bytes,
+        Token::Vector,
         Token::Optional,
         Token::List,
         Token::True,

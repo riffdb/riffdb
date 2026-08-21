@@ -6,8 +6,8 @@ use std::sync::Arc;
 use crate::StoredEventPolicyAnchorV1;
 use riffdb_types::{
     AdmittedActorContext, ApprovalId, CanonicalInputHash, CanonicalRecord, ConflictKeyHash,
-    ContractVersion, EntityVersion, EventTypeId, ExecutionFailureCode, IndexEntryKey, LogicalTime,
-    MAX_COMMIT_INTENT_SEMANTIC_BYTES, MAX_EVALUATED_COMMAND_SEMANTIC_BYTES, OutcomeId,
+    ContractVersion, EntityVersion, EventTypeId, ExecutionFailureCode, FieldId, IndexEntryKey,
+    LogicalTime, MAX_COMMIT_INTENT_SEMANTIC_BYTES, MAX_EVALUATED_COMMAND_SEMANTIC_BYTES, OutcomeId,
     PartitionKey, PartitionKeyHash, ProvenanceId, ProvenanceReason, RequestId, SourceCommit,
     SourceRepository, encode_canonical_record, hash_partition_key,
 };
@@ -677,6 +677,55 @@ pub struct EventIntent {
     policy_anchor: Option<StoredEventPolicyAnchorV1>,
 }
 
+/// One compiler-sealed production embedding write before commit sequencing.
+#[derive(Clone, Eq, PartialEq)]
+pub struct EmbeddingWriteIntentV1 {
+    target: EntityTarget,
+    vector_field: FieldId,
+    metadata: riffdb_types::EmbeddingMetadata,
+}
+
+impl EmbeddingWriteIntentV1 {
+    /// Binds one declared vector field to caller-supplied, validated model metadata.
+    pub fn new(
+        target: EntityTarget,
+        vector_field: FieldId,
+        metadata: riffdb_types::EmbeddingMetadata,
+    ) -> Self {
+        Self {
+            target,
+            vector_field,
+            metadata,
+        }
+    }
+
+    /// Borrows the mutated entity target.
+    #[must_use]
+    pub const fn target(&self) -> &EntityTarget {
+        &self.target
+    }
+
+    /// Returns the compiler-declared vector field.
+    #[must_use]
+    pub const fn vector_field(&self) -> FieldId {
+        self.vector_field
+    }
+
+    /// Borrows the exact submitted model identity and version.
+    #[must_use]
+    pub const fn metadata(&self) -> &riffdb_types::EmbeddingMetadata {
+        &self.metadata
+    }
+
+    fn semantic_bytes(&self) -> Result<usize, StorageValueError> {
+        self.target
+            .semantic_bytes()?
+            .checked_add(4 + 4 + self.metadata.model_identity().len())
+            .and_then(|value| value.checked_add(4 + self.metadata.model_version().len()))
+            .ok_or(StorageValueError::SizeOverflow)
+    }
+}
+
 impl EventIntent {
     /// Constructs a bounded event intent before its stable event ID exists.
     pub fn new(
@@ -805,6 +854,7 @@ pub struct EvaluatedCommand {
     validation_request: ValidationReadRequest,
     read_dependencies: ReadDependencies,
     mutations: Vec<EntityMutation>,
+    embedding_writes: Vec<EmbeddingWriteIntentV1>,
     event_intents: Vec<EventIntent>,
     outcome: DeclaredOutcome,
     semantic_bytes: usize,
@@ -820,6 +870,7 @@ pub struct EvaluatedCommandBuilder<'snapshot> {
     snapshot: &'snapshot ReadSnapshot,
     budget: EvaluationBudget,
     mutations: Vec<EntityMutation>,
+    embedding_writes: Vec<EmbeddingWriteIntentV1>,
     event_intents: Vec<EventIntent>,
     outcome: Option<DeclaredOutcome>,
     prior_mutation_key: Option<Vec<u8>>,
@@ -846,6 +897,7 @@ impl<'snapshot> EvaluatedCommandBuilder<'snapshot> {
             snapshot,
             budget,
             mutations: Vec::new(),
+            embedding_writes: Vec::new(),
             event_intents: Vec::new(),
             outcome: None,
             prior_mutation_key: None,
@@ -900,6 +952,30 @@ impl<'snapshot> EvaluatedCommandBuilder<'snapshot> {
         Ok(())
     }
 
+    /// Charges and retains one canonically ordered production embedding write.
+    pub fn push_embedding_write(
+        &mut self,
+        write: EmbeddingWriteIntentV1,
+    ) -> Result<(), StorageValueError> {
+        if self.embedding_writes.len() >= self.budget.maximum_mutations
+            || self.embedding_writes.last().is_some_and(|prior| {
+                (prior.target(), prior.vector_field()) >= (write.target(), write.vector_field())
+            })
+        {
+            return Err(StorageValueError::NonCanonicalOrder);
+        }
+        let next = self
+            .semantic_bytes
+            .checked_add(write.semantic_bytes()?)
+            .ok_or(StorageValueError::SizeOverflow)?;
+        if next > self.budget.maximum_semantic_bytes {
+            return Err(StorageValueError::LimitExceeded);
+        }
+        self.embedding_writes.push(write);
+        self.semantic_bytes = next;
+        Ok(())
+    }
+
     /// Charges and retains the command's one terminal declared outcome.
     pub fn set_outcome(&mut self, outcome: DeclaredOutcome) -> Result<(), StorageValueError> {
         if self.outcome.is_some() {
@@ -920,9 +996,10 @@ impl<'snapshot> EvaluatedCommandBuilder<'snapshot> {
     /// Finishes through the existing checked `EvaluatedCommand` constructor.
     pub fn finish(self) -> Result<EvaluatedCommand, StorageValueError> {
         let outcome = self.outcome.ok_or(StorageValueError::InvalidShape)?;
-        let evaluated = EvaluatedCommand::new(
+        let evaluated = EvaluatedCommand::new_with_embedding_writes(
             self.snapshot,
             self.mutations,
+            self.embedding_writes,
             self.event_intents,
             outcome,
             self.budget,
@@ -938,6 +1015,25 @@ impl EvaluatedCommand {
     pub fn new(
         snapshot: &ReadSnapshot,
         mutations: Vec<EntityMutation>,
+        event_intents: Vec<EventIntent>,
+        outcome: DeclaredOutcome,
+        budget: EvaluationBudget,
+    ) -> Result<Self, StorageValueError> {
+        Self::new_with_embedding_writes(
+            snapshot,
+            mutations,
+            Vec::new(),
+            event_intents,
+            outcome,
+            budget,
+        )
+    }
+
+    /// Constructs a checked runtime result including production embedding writes.
+    pub fn new_with_embedding_writes(
+        snapshot: &ReadSnapshot,
+        mutations: Vec<EntityMutation>,
+        embedding_writes: Vec<EmbeddingWriteIntentV1>,
         event_intents: Vec<EventIntent>,
         outcome: DeclaredOutcome,
         budget: EvaluationBudget,
@@ -958,12 +1054,27 @@ impl EvaluatedCommand {
             let key = validate_evaluated_mutation(snapshot, mutation, prior.as_deref())?;
             prior = Some(key);
         }
+        if embedding_writes.len() > budget.maximum_mutations
+            || embedding_writes.windows(2).any(|pair| {
+                (pair[0].target(), pair[0].vector_field())
+                    >= (pair[1].target(), pair[1].vector_field())
+            })
+            || embedding_writes.iter().any(|write| {
+                mutations
+                    .iter()
+                    .find(|mutation| mutation.target() == write.target())
+                    .is_none_or(EntityMutation::is_delete)
+            })
+        {
+            return Err(StorageValueError::IdentityMismatch);
+        }
 
         let semantic_bytes = evaluated_semantic_bytes(
             snapshot.plan(),
             &validation_request,
             snapshot.read_dependencies(),
             &mutations,
+            &embedding_writes,
             &event_intents,
             &outcome,
         )?;
@@ -975,6 +1086,7 @@ impl EvaluatedCommand {
             validation_request,
             read_dependencies: snapshot.read_dependencies().clone(),
             mutations,
+            embedding_writes,
             event_intents,
             outcome,
             semantic_bytes,
@@ -1003,6 +1115,12 @@ impl EvaluatedCommand {
     #[must_use]
     pub fn mutations(&self) -> &[EntityMutation] {
         &self.mutations
+    }
+
+    /// Borrows production embedding writes in canonical target/field order.
+    #[must_use]
+    pub fn embedding_writes(&self) -> &[EmbeddingWriteIntentV1] {
+        &self.embedding_writes
     }
 
     /// Borrows event intents in deterministic occurrence order.
@@ -1305,6 +1423,7 @@ fn evaluated_semantic_bytes(
     request: &ValidationReadRequest,
     dependencies: &ReadDependencies,
     mutations: &[EntityMutation],
+    embedding_writes: &[EmbeddingWriteIntentV1],
     events: &[EventIntent],
     outcome: &DeclaredOutcome,
 ) -> Result<usize, StorageValueError> {
@@ -1312,6 +1431,11 @@ fn evaluated_semantic_bytes(
     for mutation in mutations {
         total = total
             .checked_add(mutation.semantic_bytes()?)
+            .ok_or(StorageValueError::SizeOverflow)?;
+    }
+    for write in embedding_writes {
+        total = total
+            .checked_add(write.semantic_bytes()?)
             .ok_or(StorageValueError::SizeOverflow)?;
     }
     for event in events {
@@ -1332,7 +1456,7 @@ fn evaluated_fixed_semantic_bytes(
     plan.semantic_bytes()
         .and_then(|value| value.checked_add(request.semantic_bytes().ok()?))
         .and_then(|value| value.checked_add(dependencies.semantic_bytes().ok()?))
-        .and_then(|value| value.checked_add(4 + 4))
+        .and_then(|value| value.checked_add(4 + 4 + 4))
         .ok_or(StorageValueError::SizeOverflow)
 }
 
@@ -1430,6 +1554,7 @@ redacted_debug!(
     PreEvaluationCommitContext,
     EntityPostImage,
     EntityMutation,
+    EmbeddingWriteIntentV1,
     EventIntent,
     DeclaredOutcome,
     EvaluatedCommand,
@@ -1518,6 +1643,96 @@ mod tests {
             maximum_semantic_bytes,
             ..EvaluationBudget::v1()
         }
+    }
+
+    fn embedding_metadata() -> riffdb_types::EmbeddingMetadata {
+        riffdb_types::EmbeddingMetadata::new("embedder-a", "v1").expect("embedding metadata")
+    }
+
+    #[test]
+    fn evaluated_command_retains_only_embedding_intents_bound_to_live_mutations() {
+        let plan = plan();
+        let mutation_target = target(1);
+        let snapshot = absent_snapshot(&plan, std::slice::from_ref(&mutation_target));
+        let post_image = EntityPostImage::new(
+            mutation_target.clone(),
+            plan.contract_version(),
+            CanonicalRecord::new(Vec::new()).expect("empty record"),
+        )
+        .expect("post image");
+        let mutation = EntityMutation::Create(post_image);
+        let write = EmbeddingWriteIntentV1::new(
+            mutation_target.clone(),
+            FieldId::new(1).expect("field"),
+            embedding_metadata(),
+        );
+
+        let evaluated = EvaluatedCommand::new_with_embedding_writes(
+            &snapshot,
+            vec![mutation],
+            vec![write.clone()],
+            Vec::new(),
+            outcome(0),
+            EvaluationBudget::v1(),
+        )
+        .expect("embedding command");
+        assert_eq!(evaluated.embedding_writes(), &[write]);
+
+        let legacy = EvaluatedCommand::new(
+            &snapshot,
+            evaluated.mutations().to_vec(),
+            Vec::new(),
+            outcome(0),
+            EvaluationBudget::v1(),
+        )
+        .expect("legacy constructor");
+        assert!(legacy.embedding_writes().is_empty());
+
+        assert_eq!(
+            EvaluatedCommand::new_with_embedding_writes(
+                &snapshot,
+                Vec::new(),
+                vec![EmbeddingWriteIntentV1::new(
+                    mutation_target,
+                    FieldId::new(1).expect("field"),
+                    embedding_metadata(),
+                )],
+                Vec::new(),
+                outcome(0),
+                EvaluationBudget::v1(),
+            ),
+            Err(StorageValueError::IdentityMismatch)
+        );
+    }
+
+    #[test]
+    fn embedding_intents_are_canonical_bounded_and_redacted() {
+        let plan = plan();
+        let first_target = target(1);
+        let second_target = target(2);
+        let snapshot = absent_snapshot(&plan, &[first_target.clone(), second_target.clone()]);
+        let mut builder =
+            EvaluatedCommandBuilder::new(&snapshot, EvaluationBudget::v1()).expect("builder");
+        let second = EmbeddingWriteIntentV1::new(
+            second_target,
+            FieldId::new(1).expect("field"),
+            embedding_metadata(),
+        );
+        builder
+            .push_embedding_write(second.clone())
+            .expect("first embedding intent");
+        let retained_charge = builder.semantic_bytes;
+        assert_eq!(
+            builder.push_embedding_write(EmbeddingWriteIntentV1::new(
+                first_target,
+                FieldId::new(1).expect("field"),
+                embedding_metadata(),
+            )),
+            Err(StorageValueError::NonCanonicalOrder)
+        );
+        assert_eq!(builder.embedding_writes, vec![second.clone()]);
+        assert_eq!(builder.semantic_bytes, retained_charge);
+        assert_eq!(format!("{second:?}"), "EmbeddingWriteIntentV1([REDACTED])");
     }
 
     #[test]

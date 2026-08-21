@@ -11,7 +11,7 @@ use crate::{
     AtomicCommandRecordSet, CommandWriteSetChargeV1, CommandWriteSetPlanV1, CommitIntent,
     DurabilityMode, MAX_STAGED_COMMANDS, MAX_STAGED_WRITE_BYTES, ReadSnapshot, SnapshotRequest,
     StorageError, StorageErrorKind, StorageValueError, StoredExecutionFailedV1, StoredOutcomeV1,
-    TransactionCurrentState,
+    TransactionCurrentState, TransactionCurrentVectorEvidenceV1, VectorEvidenceReadRequestV1,
 };
 
 /// One compiler-derived exact index-existence observation needed by row policy.
@@ -783,6 +783,21 @@ pub trait CommandCandidateAwaitingValidation: Sized {
         &self,
         _request: &TransactionCurrentPolicyRequestV1,
     ) -> Result<TransactionCurrentPolicyStateV1, StorageError> {
+        Err(StorageError::new(
+            StorageErrorKind::InvariantViolation,
+            None,
+        ))
+    }
+
+    /// Reads authoritative vector evidence from this exact write transaction.
+    ///
+    /// The default is deliberately fail-closed so a storage adapter cannot
+    /// accept production vector writes without participating in their atomic
+    /// predecessor proof.
+    fn read_transaction_current_vector_evidence(
+        &self,
+        _request: &VectorEvidenceReadRequestV1,
+    ) -> Result<TransactionCurrentVectorEvidenceV1, StorageError> {
         Err(StorageError::new(
             StorageErrorKind::InvariantViolation,
             None,

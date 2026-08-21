@@ -1,0 +1,25 @@
+
+contract ProductionEmbeddingShape version 1 {
+  entity Document {
+    key (org_id: uuid, doc_id: uuid)
+    field title: string<256>
+    vector_field embedding(4, cosine, (title), staleness_slo 60, model "embed-v1", current_version "2026-08-21", replay_age_seconds 86400, replay_bytes 1073741824, replay_backlog 100000)
+  }
+  aggregate Documents {
+    root Document
+    partition_by org_id
+    conflict_key (org_id, doc_id)
+  }
+  command SetDocumentEmbedding {
+    input request_id: string<128>
+    input org_id: uuid
+    input doc_id: uuid
+    input embedding: vector<4>
+    input submitted_model: string<256>
+    input submitted_version: string<256>
+    idempotency_key request_id
+    mutate Document(org_id, doc_id) as document else Missing {}
+    embed document.embedding = embedding from (submitted_model, submitted_version)
+    return Embedded { document: document }
+  }
+}

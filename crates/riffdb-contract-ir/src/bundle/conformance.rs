@@ -859,6 +859,17 @@ fn tagged_union_registry_is_closed_in_tag_order() {
                         "workflow lease",
                         vec!["binding", "fields", "operation"]
                     ),
+                    (
+                        0x07,
+                        "set production embedding",
+                        vec![
+                            "binding",
+                            "field",
+                            "value",
+                            "model_identity",
+                            "model_version",
+                        ],
+                    ),
                 ],
             ),
             (
@@ -973,6 +984,10 @@ fn checked_bundle_fixtures_exercise_the_registered_layout_families() {
                 "../../../../fixtures/compiler/root-validation/field-dependent-bundle-v2.bin"
             ),
         ),
+        (
+            "production embedding v15",
+            include_bytes!("../../../../fixtures/compiler/production-embedding/bundle.bin"),
+        ),
     ];
 
     let decoded = FIXTURES
@@ -1002,6 +1017,10 @@ fn checked_bundle_fixtures_exercise_the_registered_layout_families() {
             .iter()
             .all(|bundle| !bundle.commands().is_empty())
     );
+    assert!(matches!(
+        decoded[5].commands()[0].instructions()[0],
+        Instruction::SetEmbedding { .. }
+    ));
     assert!(decoded[3].commands()[0].root_validation_reads().len() == 1);
 }
 

@@ -1,0 +1,14 @@
+command:1
+execution:IdempotentMutation
+expression:0 type=ValueType(Uuid) op=input-field:2
+expression:1 type=ValueType(Uuid) op=input-field:1
+expression:2 type=ValueType(Vector(VectorDimension(4))) op=input-field:3
+expression:3 type=ValueType(String(256)) op=input-field:5
+expression:4 type=ValueType(String(256)) op=input-field:6
+expression:5 type=ValueType(Record(Entity(EntityTypeId(1)))) op=complete-binding:0
+partition:expr=0 purpose=Partition(AggregateTypeId(1)) components=1
+conflict:0 purpose=Conflict(AggregateTypeId(1)) expressions=[0,1]
+binding:0 mode=Mutate entity=1 complete=true reads=[]
+write:0:4
+outcome:1 fields=[]
+outcome:2 fields=[1:ValueType(Record(Entity(EntityTypeId(1))))]

@@ -8,6 +8,143 @@ use riffdb_types::{
 
 use crate::{DurableKeySchemaBindingV1, EntityTarget, ExecutablePlanRef, StorageValueError};
 
+/// One compiler-derived authoritative evidence key read during command finalization.
+#[derive(Clone, Eq, Ord, PartialEq, PartialOrd)]
+pub struct VectorEvidenceReadTargetV1 {
+    target: EntityTarget,
+    vector_field: FieldId,
+}
+
+impl VectorEvidenceReadTargetV1 {
+    /// Constructs one exact production vector evidence key.
+    #[must_use]
+    pub const fn new(target: EntityTarget, vector_field: FieldId) -> Self {
+        Self {
+            target,
+            vector_field,
+        }
+    }
+
+    /// Borrows the exact entity target.
+    #[must_use]
+    pub const fn target(&self) -> &EntityTarget {
+        &self.target
+    }
+
+    /// Returns the stable vector field identity.
+    #[must_use]
+    pub const fn vector_field(&self) -> FieldId {
+        self.vector_field
+    }
+}
+
+impl fmt::Debug for VectorEvidenceReadTargetV1 {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("VectorEvidenceReadTargetV1([REDACTED])")
+    }
+}
+
+/// Bounded canonical current-evidence request derived from mutated vector specs.
+#[derive(Clone, Eq, PartialEq)]
+pub struct VectorEvidenceReadRequestV1 {
+    targets: Vec<VectorEvidenceReadTargetV1>,
+}
+
+impl VectorEvidenceReadRequestV1 {
+    /// Retains exact keys only after proving count, uniqueness, and order.
+    pub fn new(targets: Vec<VectorEvidenceReadTargetV1>) -> Result<Self, StorageValueError> {
+        if targets.len() > crate::MAX_VALIDATION_TARGETS {
+            return Err(StorageValueError::LimitExceeded);
+        }
+        if targets.windows(2).any(|pair| pair[0] >= pair[1]) {
+            return Err(StorageValueError::NonCanonicalOrder);
+        }
+        Ok(Self { targets })
+    }
+
+    /// Borrows keys in canonical entity-target/field order.
+    #[must_use]
+    pub fn targets(&self) -> &[VectorEvidenceReadTargetV1] {
+        &self.targets
+    }
+}
+
+impl fmt::Debug for VectorEvidenceReadRequestV1 {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("VectorEvidenceReadRequestV1")
+            .field("target_count", &self.targets.len())
+            .finish()
+    }
+}
+
+/// Complete transaction-current evidence observations for one canonical request.
+#[derive(Clone, Eq, PartialEq)]
+pub struct TransactionCurrentVectorEvidenceV1 {
+    request: VectorEvidenceReadRequestV1,
+    observations: Vec<Option<StoredVectorEvidenceV1>>,
+}
+
+impl TransactionCurrentVectorEvidenceV1 {
+    /// Joins every present row to its exact requested physical identity.
+    pub fn new(
+        request: VectorEvidenceReadRequestV1,
+        observations: Vec<Option<StoredVectorEvidenceV1>>,
+    ) -> Result<Self, StorageValueError> {
+        if request.targets().len() != observations.len()
+            || request
+                .targets()
+                .iter()
+                .zip(&observations)
+                .any(|(target, observation)| {
+                    observation.as_ref().is_some_and(|row| {
+                        row.target() != target.target()
+                            || row.vector_field() != target.vector_field()
+                    })
+                })
+        {
+            return Err(StorageValueError::IdentityMismatch);
+        }
+        Ok(Self {
+            request,
+            observations,
+        })
+    }
+
+    /// Returns the exact observed predecessor for a requested key.
+    #[must_use]
+    pub fn get(&self, target: &VectorEvidenceReadTargetV1) -> Option<&StoredVectorEvidenceV1> {
+        self.request
+            .targets()
+            .binary_search(target)
+            .ok()
+            .and_then(|position| self.observations[position].as_ref())
+    }
+
+    /// Borrows the complete canonical request.
+    #[must_use]
+    pub const fn request(&self) -> &VectorEvidenceReadRequestV1 {
+        &self.request
+    }
+}
+
+impl fmt::Debug for TransactionCurrentVectorEvidenceV1 {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("TransactionCurrentVectorEvidenceV1")
+            .field("target_count", &self.request.targets().len())
+            .field(
+                "present_count",
+                &self
+                    .observations
+                    .iter()
+                    .filter(|value| value.is_some())
+                    .count(),
+            )
+            .finish()
+    }
+}
+
 /// Sequence-free authoritative transition for one production vector field.
 ///
 /// This is retained in the pre-sequence write plan. `source_changed` and

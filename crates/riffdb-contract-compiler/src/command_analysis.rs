@@ -270,6 +270,41 @@ fn validate_command(
                     .initialized_fields
                     .insert(*field);
             }
+            HirEffect::Embed {
+                target_span,
+                binding,
+                field,
+                value,
+                model_identity,
+                model_version,
+            } => {
+                let Some(state) = states.get(binding) else {
+                    diagnostics.push(CompilerDiagnostic::new(
+                        CompilerDiagnosticCode::UnknownName,
+                        *target_span,
+                    ));
+                    continue;
+                };
+                if state.mode == BindingMode::Read
+                    || state.key_fields.contains(field)
+                    || !written.insert((*binding, *field))
+                {
+                    diagnostics.push(CompilerDiagnostic::new(
+                        CompilerDiagnosticCode::InvalidMutation,
+                        *target_span,
+                    ));
+                    continue;
+                }
+                for root in [value, model_identity, model_version] {
+                    validate_create_reads(command, &states, root, diagnostics);
+                    influential_roots.push(root);
+                }
+                states
+                    .get_mut(binding)
+                    .expect("binding state exists")
+                    .initialized_fields
+                    .insert(*field);
+            }
             HirEffect::Emit { fields, .. } => {
                 validate_create_object_reads(command, &states, fields, diagnostics);
                 influential_roots.extend(fields.iter().map(|field| &field.value));
@@ -494,6 +529,47 @@ fn validate_secret_flows(
                     diagnostics,
                 );
             }
+            HirEffect::Embed {
+                target_span,
+                binding,
+                field,
+                value,
+                model_identity,
+                model_version,
+            } => {
+                let destination_is_secret = command
+                    .bindings
+                    .iter()
+                    .find(|candidate| candidate.id == *binding)
+                    .and_then(|binding| hir.entity(binding.entity_id))
+                    .and_then(|entity| {
+                        entity
+                            .fields
+                            .iter()
+                            .find(|candidate| candidate.id == *field)
+                    })
+                    .is_some_and(|field| field.secret_span.is_some());
+                validate_secret_flow(
+                    hir,
+                    command,
+                    value,
+                    &[],
+                    *target_span,
+                    destination_is_secret,
+                    diagnostics,
+                );
+                for metadata in [model_identity, model_version] {
+                    validate_secret_flow(
+                        hir,
+                        command,
+                        metadata,
+                        &[],
+                        *target_span,
+                        false,
+                        diagnostics,
+                    );
+                }
+            }
             HirEffect::Emit { fields, .. } => {
                 for field in fields {
                     validate_secret_flow(
@@ -635,6 +711,12 @@ fn validate_unique_conflicts(
                 value,
                 ..
             } => Some(((*binding, *field), value)),
+            HirEffect::Embed {
+                binding,
+                field,
+                value,
+                ..
+            } => Some(((*binding, *field), value)),
             HirEffect::Emit { .. } => None,
             HirEffect::WorkflowTransition { .. } | HirEffect::WorkflowLease { .. } => None,
         })
@@ -700,6 +782,12 @@ fn validate_relationship_reads(
         .iter()
         .filter_map(|effect| match effect {
             HirEffect::Set {
+                binding,
+                field,
+                value,
+                ..
+            } => Some(((*binding, *field), value)),
+            HirEffect::Embed {
                 binding,
                 field,
                 value,
@@ -796,6 +884,7 @@ fn validate_binding_ownership(command: &HirCommand, diagnostics: &mut Vec<Compil
         .first()
         .map_or(command.span, |effect| match effect {
             HirEffect::Set { target_span, .. } => *target_span,
+            HirEffect::Embed { target_span, .. } => *target_span,
             HirEffect::Emit { event_span, .. } => *event_span,
             HirEffect::WorkflowTransition {
                 transition_span, ..

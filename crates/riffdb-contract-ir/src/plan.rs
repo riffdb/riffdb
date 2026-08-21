@@ -13,7 +13,7 @@ use riffdb_types::{
 use crate::{
     BindingId, CommandInputSchema, ExprId, ExpressionArena, ExpressionKind, FieldSchema,
     IrValidationError, KeyPurpose, KeySchema, RecordSchema, RecordTypeRef, RootValidationReadId,
-    SchemaIr, ValueTypeTag, checked_len, validate_source_name,
+    SchemaIr, ValueType, ValueTypeTag, checked_len, validate_source_name,
 };
 
 /// Maximum bindings, instructions, fields, or outcomes in one owner.
@@ -1019,6 +1019,19 @@ pub enum Instruction {
         /// Typed right-hand expression.
         value: ExprId,
     },
+    /// Set one production vector with explicit caller-submitted model evidence.
+    SetEmbedding {
+        /// Mutable binding.
+        binding: BindingId,
+        /// Compiler-declared production vector field.
+        field: FieldId,
+        /// Typed vector expression.
+        value: ExprId,
+        /// Bounded exact model identity expression.
+        model_identity: ExprId,
+        /// Bounded exact model version expression.
+        model_version: ExprId,
+    },
     /// Check exact revision and legal state, then assign one declared state.
     WorkflowTransition {
         /// Mutable workflow entity binding.
@@ -1056,6 +1069,7 @@ impl Instruction {
         match self {
             Self::Require { .. } => crate::format_registry::instruction::REQUIRE,
             Self::SetField { .. } => crate::format_registry::instruction::SET_FIELD,
+            Self::SetEmbedding { .. } => crate::format_registry::instruction::SET_EMBEDDING,
             Self::WorkflowTransition { .. } => {
                 crate::format_registry::instruction::WORKFLOW_TRANSITION
             }
@@ -1947,6 +1961,7 @@ impl CommandPlan {
                     matches!(
                         instruction,
                         Instruction::SetField { .. }
+                            | Instruction::SetEmbedding { .. }
                             | Instruction::WorkflowTransition { .. }
                             | Instruction::EmitEvent(_)
                     )
@@ -2305,7 +2320,7 @@ fn validate_secret_reveals(
                 field,
                 value,
             } => {
-                let destination = bindings
+                let destination_binding = bindings
                     .iter()
                     .find(|candidate| candidate.id() == *binding)
                     .ok_or(IrValidationError::InvalidReference {
@@ -2317,8 +2332,36 @@ fn validate_secret_reveals(
                         field: *field,
                     },
                     *value,
-                    schema.is_secret_field(destination.entity_type(), *field),
+                    schema.is_secret_field(destination_binding.entity_type(), *field),
                 ));
+            }
+            Instruction::SetEmbedding {
+                binding,
+                field,
+                value,
+                model_identity,
+                model_version,
+            } => {
+                let destination_binding = bindings
+                    .iter()
+                    .find(|candidate| candidate.id() == *binding)
+                    .ok_or(IrValidationError::InvalidReference {
+                        kind: "secret reveal destination binding",
+                    })?;
+                let destination = SecretRevealDestinationV1::EntityField {
+                    binding: *binding,
+                    field: *field,
+                };
+                flows.push((
+                    destination,
+                    *value,
+                    schema.is_secret_field(destination_binding.entity_type(), *field),
+                ));
+                // Model identity is persisted as non-secret evidence metadata.
+                // Reusing the entity-field destination makes the existing exact
+                // secret-flow proof reject any undeclared bound-secret source.
+                flows.push((destination, *model_identity, false));
+                flows.push((destination, *model_version, false));
             }
             Instruction::WorkflowTransition { stale, illegal, .. } => {
                 append_outcome_secret_flows(&mut flows, stale);
@@ -2721,6 +2764,12 @@ fn derive_relationship_checks(
                 field,
                 value,
             } => Some(((*binding, *field), *value)),
+            Instruction::SetEmbedding {
+                binding,
+                field,
+                value,
+                ..
+            } => Some(((*binding, *field), *value)),
             Instruction::Require { .. }
             | Instruction::WorkflowTransition { .. }
             | Instruction::WorkflowLease { .. }
@@ -2865,6 +2914,12 @@ fn derive_unique_conflicts(
                 binding,
                 field,
                 value,
+            } => Some(((*binding, *field), *value)),
+            Instruction::SetEmbedding {
+                binding,
+                field,
+                value,
+                ..
             } => Some(((*binding, *field), *value)),
             Instruction::Require { .. }
             | Instruction::WorkflowTransition { .. }
@@ -3029,7 +3084,9 @@ fn worst_case_index_derivation(
 ) -> Result<WorstCaseIndexDerivation, IrValidationError> {
     let mut assigned_fields = vec![BTreeSet::new(); bindings.len()];
     for instruction in instructions {
-        if let Instruction::SetField { binding, field, .. } = instruction {
+        if let Instruction::SetField { binding, field, .. }
+        | Instruction::SetEmbedding { binding, field, .. } = instruction
+        {
             assigned_fields
                 .get_mut(binding.get() as usize)
                 .ok_or(IrValidationError::InvalidReference {
@@ -3311,7 +3368,7 @@ fn validate_declared_constructions(
                     arena,
                 )?;
             }
-            Instruction::SetField { .. } => {}
+            Instruction::SetField { .. } | Instruction::SetEmbedding { .. } => {}
             Instruction::WorkflowTransition { stale, illegal, .. } => {
                 validate_outcome(stale, false)?;
                 validate_outcome(illegal, false)?;
@@ -3566,6 +3623,16 @@ fn validate_collection_expression_uses(
                 reject_outcome(outcome)?;
             }
             Instruction::SetField { value, .. } => reject(*value)?,
+            Instruction::SetEmbedding {
+                value,
+                model_identity,
+                model_version,
+                ..
+            } => {
+                reject(*value)?;
+                reject(*model_identity)?;
+                reject(*model_version)?;
+            }
             Instruction::WorkflowTransition {
                 expected_revision,
                 stale,
@@ -4566,6 +4633,9 @@ fn validate_instruction_stream(
                     .ok_or(IrValidationError::InvalidReference { kind: "set field" })?;
                 if binding_plan.mode == BindingMode::Read
                     || entity.primary_key_fields().contains(field)
+                    || schema
+                        .vector_production_spec(binding_plan.entity_type, *field)
+                        .is_some()
                     || !assigned.insert((*binding, *field))
                     || arena.get(*value).is_none_or(|node| {
                         !destination
@@ -4575,6 +4645,77 @@ fn validate_instruction_stream(
                 {
                     return Err(IrValidationError::InvalidInstructionStream {
                         reason: "invalid, duplicate, key-field, or immutable set",
+                    });
+                }
+                initialized[binding.get() as usize].insert(*field);
+            }
+            Instruction::SetEmbedding {
+                binding,
+                field,
+                value,
+                model_identity,
+                model_version,
+            } => {
+                effect_seen = true;
+                for expression in [*value, *model_identity, *model_version] {
+                    ensure_initialized_reads(arena, expression, bindings, schema, &initialized)?;
+                }
+                let binding_plan = bindings.get(binding.get() as usize).ok_or(
+                    IrValidationError::InvalidReference {
+                        kind: "embedding binding",
+                    },
+                )?;
+                let entity = schema.entity(binding_plan.entity_type).ok_or(
+                    IrValidationError::InvalidReference {
+                        kind: "embedding entity",
+                    },
+                )?;
+                let destination =
+                    entity
+                        .record()
+                        .field(*field)
+                        .ok_or(IrValidationError::InvalidReference {
+                            kind: "embedding field",
+                        })?;
+                let model_type =
+                    ValueType::string(riffdb_types::EmbeddingMetadata::MAX_MODEL_STRING_LEN)?;
+                let model_identity_input = arena.get(*model_identity).and_then(|node| {
+                    if let ExpressionKind::InputField(field) = node.kind() {
+                        Some(*field)
+                    } else {
+                        None
+                    }
+                });
+                let model_version_input = arena.get(*model_version).and_then(|node| {
+                    if let ExpressionKind::InputField(field) = node.kind() {
+                        Some(*field)
+                    } else {
+                        None
+                    }
+                });
+                if binding_plan.mode == BindingMode::Read
+                    || entity.primary_key_fields().contains(field)
+                    || !assigned.insert((*binding, *field))
+                    || schema
+                        .vector_production_spec(binding_plan.entity_type, *field)
+                        .is_none()
+                    || arena.get(*value).is_none_or(|node| {
+                        !destination
+                            .value_type()
+                            .accepts_contextual(node.result_type())
+                    })
+                    || arena
+                        .get(*model_identity)
+                        .is_none_or(|node| !model_type.accepts_contextual(node.result_type()))
+                    || arena
+                        .get(*model_version)
+                        .is_none_or(|node| !model_type.accepts_contextual(node.result_type()))
+                    || model_identity_input.is_none()
+                    || model_version_input.is_none()
+                    || model_identity_input == model_version_input
+                {
+                    return Err(IrValidationError::InvalidInstructionStream {
+                        reason: "invalid, duplicate, key-field, non-production, or immutable embedding",
                     });
                 }
                 initialized[binding.get() as usize].insert(*field);
@@ -4968,6 +5109,16 @@ fn validate_read_dependencies(
                 }
             }
             Instruction::SetField { value, .. } => include(*value)?,
+            Instruction::SetEmbedding {
+                value,
+                model_identity,
+                model_version,
+                ..
+            } => {
+                include(*value)?;
+                include(*model_identity)?;
+                include(*model_version)?;
+            }
             Instruction::WorkflowTransition {
                 expected_revision,
                 stale,
@@ -5105,6 +5256,16 @@ fn validate_root_validation_expression_uses(
                 }
             }
             Instruction::SetField { value, .. } => reject(*value)?,
+            Instruction::SetEmbedding {
+                value,
+                model_identity,
+                model_version,
+                ..
+            } => {
+                reject(*value)?;
+                reject(*model_identity)?;
+                reject(*model_version)?;
+            }
             Instruction::WorkflowTransition {
                 expected_revision,
                 stale,
@@ -5180,6 +5341,12 @@ fn validate_command_expression_reachability(
                 roots.extend(reject.payload.fields.iter().map(|field| field.expression));
             }
             Instruction::SetField { value, .. } => roots.push(*value),
+            Instruction::SetEmbedding {
+                value,
+                model_identity,
+                model_version,
+                ..
+            } => roots.extend([*value, *model_identity, *model_version]),
             Instruction::WorkflowTransition {
                 expected_revision,
                 stale,
@@ -5307,6 +5474,16 @@ fn validate_idempotency(
                 }
             }
             Instruction::SetField { value, .. } => collect(*value)?,
+            Instruction::SetEmbedding {
+                value,
+                model_identity,
+                model_version,
+                ..
+            } => {
+                collect(*value)?;
+                collect(*model_identity)?;
+                collect(*model_version)?;
+            }
             Instruction::WorkflowTransition {
                 expected_revision,
                 stale,

@@ -61,15 +61,17 @@ These limits are part of the POC release posture, not hidden roadmap promises.
   hosted MCP conversions, and CLI numeric component arrays now preserve finite
   binary32 vectors without bytes punning. Contract IR V15 now seals one exact
   model identity/current version and bounded replay ceilings per production
-  vector field. Stable generated Rust, Go, TypeScript, and Python application
-  models still exclude vector fields, and authoritative embedding persistence
-  does not yet consume that descriptor or stamp embedding provenance and
-  write-sequence evidence.
+  vector field. A compiler-sealed `embed` command now atomically persists the
+  entity vector and authoritative model/version/write-sequence evidence;
+  generic `set` cannot bypass that evidence. Stable generated Rust, Go,
+  TypeScript, and Python application models still exclude vector fields, so
+  generated-client embedding ingress is not yet complete.
 - Vector staleness now has v1 count semantics: a declared positive stale-entity
   threshold breaches only when `stale_count > threshold`; duration-based
-  semantics are future work. Paginated staleness and model-version DTOs exist,
-  but no authoritative storage producer or public operation currently
-  enumerates them. The dedicated `vector_staleness` health component is emitted
+  semantics are future work. Authoritative embedding and source-field write
+  evidence now persists atomically, and paginated staleness/model-version DTOs
+  exist, but no public operation currently enumerates them. The dedicated
+  `vector_staleness` health component is emitted
   as `unavailable` rather than being overloaded onto `projection` or reported
   healthy without an observer.
 - No production storage adapter serves `nearest()` execution — both row stores

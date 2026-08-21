@@ -9,15 +9,16 @@ use riffdb_contract_ir::{
     BUNDLE_FORMAT_VERSION_V4, BUNDLE_FORMAT_VERSION_V5, BUNDLE_FORMAT_VERSION_V6,
     BUNDLE_FORMAT_VERSION_V7, BUNDLE_FORMAT_VERSION_V8, BUNDLE_FORMAT_VERSION_V9,
     BUNDLE_FORMAT_VERSION_V10, BUNDLE_FORMAT_VERSION_V11, BUNDLE_FORMAT_VERSION_V12,
-    BUNDLE_FORMAT_VERSION_V13, BUNDLE_FORMAT_VERSION_V14, CommandPlan, ContractBundle,
-    EXECUTABLE_IR_VERSION_V1, EXECUTABLE_IR_VERSION_V2, EXECUTABLE_IR_VERSION_V3,
+    BUNDLE_FORMAT_VERSION_V13, BUNDLE_FORMAT_VERSION_V14, BUNDLE_FORMAT_VERSION_V15, CommandPlan,
+    ContractBundle, EXECUTABLE_IR_VERSION_V1, EXECUTABLE_IR_VERSION_V2, EXECUTABLE_IR_VERSION_V3,
     EXECUTABLE_IR_VERSION_V4, EXECUTABLE_IR_VERSION_V5, EXECUTABLE_IR_VERSION_V6,
     EXECUTABLE_IR_VERSION_V7, EXECUTABLE_IR_VERSION_V8, EXECUTABLE_IR_VERSION_V9,
     EXECUTABLE_IR_VERSION_V10, EXECUTABLE_IR_VERSION_V11, EXECUTABLE_IR_VERSION_V12,
-    EXECUTABLE_IR_VERSION_V13, EXECUTABLE_IR_VERSION_V14, GRAMMAR_VERSION_V1, GRAMMAR_VERSION_V2,
-    GRAMMAR_VERSION_V3, GRAMMAR_VERSION_V4, GRAMMAR_VERSION_V5, GRAMMAR_VERSION_V6,
-    GRAMMAR_VERSION_V7, GRAMMAR_VERSION_V8, GRAMMAR_VERSION_V9, GRAMMAR_VERSION_V10,
-    GRAMMAR_VERSION_V11, GRAMMAR_VERSION_V12, GRAMMAR_VERSION_V13, GRAMMAR_VERSION_V14,
+    EXECUTABLE_IR_VERSION_V13, EXECUTABLE_IR_VERSION_V14, EXECUTABLE_IR_VERSION_V15,
+    GRAMMAR_VERSION_V1, GRAMMAR_VERSION_V2, GRAMMAR_VERSION_V3, GRAMMAR_VERSION_V4,
+    GRAMMAR_VERSION_V5, GRAMMAR_VERSION_V6, GRAMMAR_VERSION_V7, GRAMMAR_VERSION_V8,
+    GRAMMAR_VERSION_V9, GRAMMAR_VERSION_V10, GRAMMAR_VERSION_V11, GRAMMAR_VERSION_V12,
+    GRAMMAR_VERSION_V13, GRAMMAR_VERSION_V14, GRAMMAR_VERSION_V15,
     MCP_COMMAND_NAME_REGISTRY_VERSION_V2, McpCommandToolNameV2,
 };
 use riffdb_storage_api::{
@@ -470,6 +471,10 @@ fn validate_supported_versions(bundle: &ContractBundle) -> Result<(), CatalogErr
             BUNDLE_FORMAT_VERSION_V14,
             GRAMMAR_VERSION_V14,
             EXECUTABLE_IR_VERSION_V14
+        ) | (
+            BUNDLE_FORMAT_VERSION_V15,
+            GRAMMAR_VERSION_V15,
+            EXECUTABLE_IR_VERSION_V15
         )
     ) {
         return Err(CatalogError::new(
@@ -514,7 +519,46 @@ fn validate_command_registry(bundle: &ContractBundle) -> Result<(), CatalogError
 
 #[cfg(test)]
 mod tests {
+    use riffdb_contract_compiler::compile_contract_source;
+
     use super::*;
+
+    #[test]
+    fn production_embedding_v15_crosses_the_catalog_version_boundary() {
+        let compiled = compile_contract_source(
+            r#"
+contract CatalogEmbedding version 1 {
+  entity Document {
+    key (org_id: uuid, doc_id: uuid)
+    field title: string<256>
+    vector_field embedding(4, cosine, (title), staleness_slo 60, model "embed-v1", current_version "2026-08-21", replay_age_seconds 86400, replay_bytes 1073741824, replay_backlog 100000)
+  }
+  aggregate Documents { root Document partition_by org_id conflict_key (org_id, doc_id) }
+  command SetDocumentEmbedding {
+    input request_id: string<128>
+    input org_id: uuid
+    input doc_id: uuid
+    input embedding: vector<4>
+    input submitted_model: string<256>
+    input submitted_version: string<256>
+    idempotency_key request_id
+    mutate Document(org_id, doc_id) as doc else Missing {}
+    embed doc.embedding = embedding from (submitted_model, submitted_version)
+    return Embedded { document: doc }
+  }
+}
+"#,
+        )
+        .expect("V15 production embedding contract compiles");
+        let validated = ValidatedContractBundle::from_compiler_bundle(compiled)
+            .expect("V15 bundle crosses the catalog trust boundary");
+        assert_eq!(
+            validated.bundle().format_version(),
+            BUNDLE_FORMAT_VERSION_V15
+        );
+        assert_eq!(validated.bundle().grammar_version(), GRAMMAR_VERSION_V15);
+        assert_eq!(validated.bundle().ir_version(), EXECUTABLE_IR_VERSION_V15);
+    }
 
     #[test]
     fn secret_reveal_v11_bundle_is_catalog_validated_with_exact_plan_metadata() {

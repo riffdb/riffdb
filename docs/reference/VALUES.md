@@ -53,9 +53,11 @@ contract field's declared dimension. A vector is never represented as bytes or
 another value kind. Canonical durable value encoding uses the internal tag
 `0x0e`; that tag is not an application-facing spelling.
 
-The low-level transport branch does not by itself provide complete embedding
-persistence or stable generated application-facade support. See
-[Known Limitations](../known-limitations.md).
+A production vector field can be mutated only by a compiled `embed` effect.
+That effect binds the canonical vector to exact compiler-declared model
+identity/version evidence in the same authoritative commit; ordinary `set`
+cannot target the field. Stable generated application facades do not yet expose
+vector fields. See [Known Limitations](../known-limitations.md).
 
 ## Limits
 
