@@ -1426,16 +1426,35 @@ fn uuid_text(bytes: UuidBytes) -> String {
 }
 
 fn parse_uuid_text(text: &str) -> Result<UuidBytes, RiffDbError> {
-    if text.len() != 36 {
+    let bytes = text.as_bytes();
+    if bytes.len() != 36
+        || [8, 13, 18, 23]
+            .into_iter()
+            .any(|index| bytes[index] != b'-')
+    {
         return Err(RiffDbError::Decode);
     }
     let mut out = [0_u8; 16];
-    let positions = [0, 2, 4, 6, 9, 11, 14, 16, 19, 21, 24, 26, 28, 30, 32, 34];
-    for (index, start) in positions.into_iter().enumerate() {
-        out[index] =
-            u8::from_str_radix(&text[start..start + 2], 16).map_err(|_| RiffDbError::Decode)?;
+    let mut source = 0_usize;
+    for byte in &mut out {
+        if matches!(source, 8 | 13 | 18 | 23) {
+            source = source.saturating_add(1);
+        }
+        let high = hex_nibble(bytes[source]).ok_or(RiffDbError::Decode)?;
+        let low = hex_nibble(bytes[source + 1]).ok_or(RiffDbError::Decode)?;
+        *byte = (high << 4) | low;
+        source = source.saturating_add(2);
     }
     Ok(out)
+}
+
+fn hex_nibble(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
 }
 
 fn parse_status_name(name: &str) -> Result<TicketStatus, RiffDbError> {
@@ -1641,7 +1660,26 @@ impl Error for RiffDbError {}
 mod tests {
     use riffdb_app_baseline_core::{AppBackend, LoadErrorClass};
 
-    use super::{RiffDbError, RiffDbPublicBackend};
+    use super::{RiffDbError, RiffDbPublicBackend, parse_uuid_text};
+
+    #[test]
+    fn generated_uuid_text_parser_preserves_binary_identity() {
+        let expected = [
+            0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x01, 0x23, 0x45, 0x67, 0x89,
+            0xab, 0xcd, 0xef,
+        ];
+        assert_eq!(
+            parse_uuid_text("01234567-89ab-cdef-0123-456789abcdef")
+                .expect("lowercase UUID text must decode"),
+            expected
+        );
+        assert_eq!(
+            parse_uuid_text("01234567-89AB-CDEF-0123-456789ABCDEF")
+                .expect("uppercase UUID text must decode"),
+            expected
+        );
+        assert!(parse_uuid_text("0123456789ab-cdef-0123-456789abcdef").is_err());
+    }
 
     fn application_error(code: &str) -> RiffDbError {
         RiffDbError::Application {

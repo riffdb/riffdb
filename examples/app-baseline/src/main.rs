@@ -3163,16 +3163,13 @@ impl Args {
         if !(1..=32).contains(&reps) {
             return Err("--reps must be 1..=32".to_owned());
         }
-        let diagnostic_sample_ceiling = env::var_os(
-            "RIFFDB_APP_BASELINE_QUERY_EXECUTE_DIAGNOSTICS",
-        )
-        .is_some_and(|value| value == "1")
-        .then_some(1_024)
-        .unwrap_or(100);
+        let diagnostic_sample_ceiling =
+            env::var_os("RIFFDB_APP_BASELINE_QUERY_EXECUTE_DIAGNOSTICS")
+                .is_some_and(|value| value == "1")
+                .then_some(1_024)
+                .unwrap_or(100);
         if !(1..=diagnostic_sample_ceiling).contains(&samples) {
-            return Err(format!(
-                "--samples must be 1..={diagnostic_sample_ceiling}"
-            ));
+            return Err(format!("--samples must be 1..={diagnostic_sample_ceiling}"));
         }
         if warmups > 20 {
             return Err("--warmup must be <= 20".to_owned());

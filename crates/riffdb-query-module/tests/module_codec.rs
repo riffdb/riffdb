@@ -167,6 +167,8 @@ fn covered_result_module_uses_v7_and_round_trips_exactly() {
     assert!(rust.contains("response.rows.len() > 450usize"));
     assert!(rust.contains("let [value_0, value_1, value_2, value_3, value_4, value_5]"));
     assert!(rust.contains("(1, 1, \"Open\") => \"Open\".to_owned()"));
+    assert!(rust.contains("ApplicationUuid::from_bytes(bytes).into_string()"));
+    assert!(!rust.contains("Ok(format!(\"{:02x}{:02x}"));
     assert!(!rust.contains("decode_compact_result(outcome: String, response: app_v1::CompactResultField) -> Result<Self::Output, ApplicationClientError> {\n        let mut fields = BTreeMap"));
 
     let typescript = generate_typescript_client(&module, &bundle);

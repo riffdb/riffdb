@@ -13,7 +13,7 @@
         "path": "generated/riffdb.contract.bundle"
       },
       {
-        "content_hash": "89b67840c5a87c3ddd82bad3819d2f4eecd96a24709ebef982ab30ec7fc6b3f7",
+        "content_hash": "9c2869bc851ac7291e039caaca1bc98280a9f59422f058e1f1ca258ca3ce0841",
         "kind": "rust",
         "path": "generated/rust/client.rs"
       },
@@ -39,7 +39,7 @@
       }
     ],
     "language_version": 2,
-    "lock_hash": "0ed93b612660d214db72f495004283d312af49bdfe32992895d008b1a01a7016",
+    "lock_hash": "fd22eb7b79d9a569e1a75b64a81bee8b3d6b0981a1a63a4d1483e8cb056386fa",
     "manifest_hash": "056552dcab3671faa51024c1f4c2e5efca0e58abb4c65b3147a428f57e0c6038",
     "module_hash": "cab493c1344cfc048e031f6e1d9620f1250f8eafca128e7064c0c4bc9eaf4f86",
     "plan_or_family_hash": "8b9f18dca09bee268a7e1dbfe61b468165d27fcc0447a76e8e879a00f282d740",
@@ -62,7 +62,7 @@
         "path": "generated/riffdb.contract.bundle"
       },
       {
-        "content_hash": "2e272c262fce449d3da49c013720d48cf8986f2f752bc4146c39b3de49068674",
+        "content_hash": "03af75f7dfbe715e647e1f89957677739a36be73b7eaf5268a38c1b3c7b5a940",
         "kind": "rust",
         "path": "generated/rust/client.rs"
       },
@@ -88,7 +88,7 @@
       }
     ],
     "language_version": 2,
-    "lock_hash": "41b2753e6c49f0287b34e7e374c170692400c7e2f553eca98d868720e465e9d3",
+    "lock_hash": "863612b63015ee6b7a64859b3377c985ef7086e8c55ab71cf6f10b40eab01544",
     "manifest_hash": "8b253be83f997b08c24c6b824940666c8c9b9fb485478df61439728ad28cfd8b",
     "module_hash": "43d4a0c523b923068a513e4be001bae315cc1c9bbd97ea00bdcab70fca164358",
     "plan_or_family_hash": "ccbdeae5d9c65a6ea89c4d38fc7f85c4df3aaebb35d5a0fc6860824314a4668d",
@@ -111,7 +111,7 @@
         "path": "generated/riffdb.contract.bundle"
       },
       {
-        "content_hash": "9f672f13b79387a6a6b7fe692a56cd7e0fc17608635809976fe6a45e3b5bb78b",
+        "content_hash": "d9cf6de241e1ecc0d775b27fbde15ba634a64b73fe945b58c0192938debf0b16",
         "kind": "rust",
         "path": "generated/rust/client.rs"
       },
@@ -137,7 +137,7 @@
       }
     ],
     "language_version": 1,
-    "lock_hash": "f849a2bc295499120a072f8b50861500754cdbad53638db3a1ad3550e728140b",
+    "lock_hash": "6f1c5c28a8b887836e960c125fe9c5f99ded7ee021d16d211168ce84368e67f8",
     "manifest_hash": "305102c6bc5579ed66ba46faedf13cee8eb18a1f979f0f39861054766fd22805",
     "module_hash": "825131a339e1180e68cefaaa46d97f8f06d64211b65f2a14c3a29ebe0441ecae",
     "plan_or_family_hash": "90296b54d2b9635d2d15336d7a76d226fb3b49f1ac9047377c7338ff30658f7f",
@@ -216,11 +216,11 @@
         "84ccb0a6009a88afa583bf300c6a0df57d7ed931fd0825686e73382d2fff7605",
         "4d0245689b82f7498d0fc5189cca42dea82c76354b17e6b10fce1eed598c77c5",
         "ca4a0d3bdef9c76f46c9ef0d2a381767095c128ead5bc89cbeaabea62fcafa76",
-        "9240f9a547721e58adb48ea719f60d8a47d764ee391316cb833d387057b70652",
+        "3399505ea20ab600646d9656bbd4b491c91007368ab72c148717f4a90f297892",
         "23501adcaba876c018c9231d832ef9417031639e10527556f130c6c00d300537"
       ],
       "contract_bundle_hash": "0e7d234414fd9da7ca189b1f96038b7d05c033503fe76a3c96e24a603021c7bf",
-      "lock_hash": "b48f922d1bdeb45453f604a1a81c1a002ee3a3f6264004cd7a66d36856d1e62d",
+      "lock_hash": "772dd6e978143e9cf58e8230159d84579bc5bbf1270fb9b5e974d4721183f8d3",
       "manifest_hash": "8eb9e714737e86065d145cab0db1b5c1fc1d8b94c3e7daa3468b45ed1771d874",
       "module_hashes": [
         "f594471a8843b1e30effbb50cb4b75f239482926128ffb59c71675bae6a1c8bb"
@@ -241,11 +241,11 @@
         "cdf6f1e85c52100ffb5990a537aebf78f0be32a00526dddb1a920ce92a72cf06",
         "07ff79663d3cc3a531e32d2f5636c4ce33649ecf90fa4b3a5848472c2eaf112b",
         "63270188c5062547e48bbd5b30399c821085a3ce60a97495be1afe99e328a4e2",
-        "0bf2f1a3e27cff21a31fb76f5fcb8f1f419f8267eabb6b3a14c04d7661694c81",
+        "2dba01ae3318c1e53e63b9b230015a6f9d754431d6f4f75c6cb15d7787fb95d8",
         "dea92a7939e91d4955b1dfa4f4389395940207f2dd5045fd6485cca6d372c5a5"
       ],
       "contract_bundle_hash": "7cae1122f8daad0469b74e1e40473f7cfcd9ea8474c39e1ddc510218b2ac0999",
-      "lock_hash": "faafab6f45909900dad6cbb44e31a32f0c704a79e4179dd0efd328021a937928",
+      "lock_hash": "c4952daab2fc0c648121bbb7b05c058716176afd2d2ca6e35713a13bf79684c1",
       "manifest_hash": "4c852f0993c06f6e007e3f41ba34c0fc0474c78483fdab89d752642e7b24a121",
       "module_hashes": [
         "c30959d45f028bb8f7eb452f9368c32cd05dd19d4b524a60f01935fcb473c0b7"

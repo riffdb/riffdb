@@ -889,6 +889,23 @@ impl QueryReadView for RedbQueryView<'_> {
         let mut entries = Vec::<(IndexEntryKey, Vec<CanonicalValue>)>::new();
         let mut inspected = 0usize;
         let mut partition_candidates = 0usize;
+        // CanonicalRecord already stores fields in stable-ID order. Normalize
+        // the compiler witness once, rather than allocating and sorting two
+        // temporary ID vectors for every candidate row.
+        let mut expected_cover_ids = layout.internal_cover_field_ids().to_vec();
+        expected_cover_ids.sort_unstable();
+        let layout_cover_positions = layout
+            .fields()
+            .iter()
+            .map(|field| match field.internal_source() {
+                CoveredResultSourceV1::Cover => expected_cover_ids
+                    .binary_search(&field.internal_field_id())
+                    .map_err(|_| invariant()),
+                CoveredResultSourceV1::IndexKey(_) | CoveredResultSourceV1::EntityKey(_) => {
+                    Ok(usize::MAX)
+                }
+            })
+            .collect::<Result<Vec<_>, _>>()?;
         let mut prefixes = riffdb_query_executor::bound_index_prefix_bytes_v1(step, predicates)
             .map_err(|_| invariant())?;
         prefixes.sort_unstable();
@@ -962,16 +979,13 @@ impl QueryReadView for RedbQueryView<'_> {
                 {
                     return Err(corrupt());
                 }
-                let mut actual_cover_ids = stored
-                    .covered_values()
-                    .fields()
-                    .iter()
-                    .map(|(field_id, _)| *field_id)
-                    .collect::<Vec<_>>();
-                let mut expected_cover_ids = layout.internal_cover_field_ids().to_vec();
-                actual_cover_ids.sort_unstable();
-                expected_cover_ids.sort_unstable();
-                if actual_cover_ids != expected_cover_ids {
+                let covered_fields = stored.covered_values().fields();
+                if covered_fields.len() != expected_cover_ids.len()
+                    || covered_fields
+                        .iter()
+                        .zip(&expected_cover_ids)
+                        .any(|((actual, _), expected)| actual != expected)
+                {
                     return Err(corrupt());
                 }
                 let decoded_key = schema.decode_index(&entry_key).map_err(|_| corrupt())?;
@@ -982,7 +996,8 @@ impl QueryReadView for RedbQueryView<'_> {
                 let values = layout
                     .fields()
                     .iter()
-                    .map(|field| match field.internal_source() {
+                    .zip(&layout_cover_positions)
+                    .map(|(field, cover_position)| match field.internal_source() {
                         CoveredResultSourceV1::IndexKey(position) => decoded_key
                             .values()
                             .get(usize::from(position))
@@ -992,12 +1007,8 @@ impl QueryReadView for RedbQueryView<'_> {
                             .get(usize::from(position))
                             .cloned()
                             .ok_or_else(corrupt),
-                        CoveredResultSourceV1::Cover => stored
-                            .covered_values()
-                            .fields()
-                            .binary_search_by_key(&field.internal_field_id(), |(id, _)| *id)
-                            .ok()
-                            .and_then(|position| stored.covered_values().fields().get(position))
+                        CoveredResultSourceV1::Cover => covered_fields
+                            .get(*cover_position)
                             .map(|(_, value)| value.clone())
                             .ok_or_else(corrupt),
                     })

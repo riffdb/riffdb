@@ -342,8 +342,8 @@ fn decode_wire_u64(value: v1::Value) -> Result<u64, GeneratedCommandError> { if 
 fn decode_wire_string(value: v1::Value) -> Result<String, GeneratedCommandError> { if let Some(WireKind::StringValue(value)) = value.kind { Ok(value) } else { Err(GeneratedCommandError::InvalidOutcomeShape) } }
 fn decode_wire_uuid(value: v1::Value) -> Result<String, GeneratedCommandError> {
     let Some(WireKind::UuidValue(bytes)) = value.kind else { return Err(GeneratedCommandError::InvalidOutcomeShape); };
-    if bytes.len() != 16 { return Err(GeneratedCommandError::InvalidOutcomeShape); }
-    Ok(format!("{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}", bytes[0],bytes[1],bytes[2],bytes[3],bytes[4],bytes[5],bytes[6],bytes[7],bytes[8],bytes[9],bytes[10],bytes[11],bytes[12],bytes[13],bytes[14],bytes[15]))
+    let bytes: [u8; 16] = bytes.try_into().map_err(|_| GeneratedCommandError::InvalidOutcomeShape)?;
+    Ok(ApplicationUuid::from_bytes(bytes).into_string())
 }
 fn decode_wire_enum(value: v1::Value) -> Result<String, GeneratedCommandError> { if let Some(WireKind::EnumValue(value)) = value.kind { if value.name.is_empty() { Err(GeneratedCommandError::InvalidOutcomeShape) } else { Ok(value.name) } } else { Err(GeneratedCommandError::InvalidOutcomeShape) } }
 fn decode_wire_bytes(value: v1::Value) -> Result<Vec<u8>, GeneratedCommandError> { if let Some(WireKind::BytesValue(value)) = value.kind { Ok(value) } else { Err(GeneratedCommandError::InvalidOutcomeShape) } }
