@@ -72,8 +72,11 @@ pub(crate) const VECTOR_EVIDENCE: TableDefinition<&[u8], &[u8]> =
 /// Authoritative maintained vector counts (ADR-0136).
 pub(crate) const VECTOR_OBSERVATIONS: TableDefinition<&[u8], &[u8]> =
     TableDefinition::new("vector_observations");
+/// Authoritative partition-ordered vector evidence index (ADR-0136).
+pub(crate) const VECTOR_EVIDENCE_INDEX: TableDefinition<&[u8], &[u8]> =
+    TableDefinition::new("vector_evidence_index");
 
-pub(crate) const TABLE_NAMES: [&str; 37] = [
+pub(crate) const TABLE_NAMES: [&str; 38] = [
     "meta",
     "contract_bundles",
     "catalog_active",
@@ -111,9 +114,10 @@ pub(crate) const TABLE_NAMES: [&str; 37] = [
     "validated_prefix_entity_heads",
     "vector_evidence",
     "vector_observations",
+    "vector_evidence_index",
 ];
 
-pub(crate) const BYTE_TABLES: [TableDefinition<&[u8], &[u8]>; 35] = [
+pub(crate) const BYTE_TABLES: [TableDefinition<&[u8], &[u8]>; 36] = [
     CONTRACT_BUNDLES,
     CATALOG_ACTIVE,
     QUERY_MODULES,
@@ -149,6 +153,7 @@ pub(crate) const BYTE_TABLES: [TableDefinition<&[u8], &[u8]>; 35] = [
     APPLICATION_EXPORT_OPERATIONS,
     VECTOR_EVIDENCE,
     VECTOR_OBSERVATIONS,
+    VECTOR_EVIDENCE_INDEX,
 ];
 
 pub(crate) const META_FORMAT_VERSION: &str = "format_version";
@@ -228,6 +233,7 @@ pub(crate) fn create_all_tables(tx: &WriteTransaction) -> Result<(), TableError>
     drop(tx.open_table(APPLICATION_EXPORT_OPERATIONS)?);
     drop(tx.open_table(VECTOR_EVIDENCE)?);
     drop(tx.open_table(VECTOR_OBSERVATIONS)?);
+    drop(tx.open_table(VECTOR_EVIDENCE_INDEX)?);
     Ok(())
 }
 
@@ -279,10 +285,11 @@ mod tests {
             VALIDATED_PREFIX_ENTITY_HEADS.name(),
             VECTOR_EVIDENCE.name(),
             VECTOR_OBSERVATIONS.name(),
+            VECTOR_EVIDENCE_INDEX.name(),
         ];
 
         assert_eq!(definition_names, TABLE_NAMES);
-        assert_eq!(TABLE_NAMES.len(), 37);
+        assert_eq!(TABLE_NAMES.len(), 38);
         assert_eq!(
             TABLE_NAMES.into_iter().collect::<BTreeSet<_>>().len(),
             TABLE_NAMES.len()

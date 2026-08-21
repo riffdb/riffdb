@@ -3100,7 +3100,7 @@ mod tests {
         assert_eq!(sample.mutation_census()[0].table(), "meta");
         assert_eq!(
             sample.mutation_census().last().map(|entry| entry.table()),
-            Some("vector_observations")
+            Some("vector_evidence_index")
         );
         let observed_mutations = sample
             .mutation_census()

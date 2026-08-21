@@ -37,9 +37,9 @@ use riffdb_storage_api::{
     TransactionCurrentPolicyRequestV1, TransactionCurrentPolicyStateV1, TransactionCurrentState,
     TransactionCurrentStateBuilder, TransactionCurrentVectorEvidenceV1,
     TransactionLocalCommandBatch, UniqueIndexOccupancy, UniqueOccupancyKind,
-    UnpublishedAuditedBatchV1, ValidationReadRequest, VectorEvidenceReadRequestV1,
-    VectorObservationCountsV1, VectorObservationRepository, VectorObservationTargetV1,
-    derive_event_hash_v1,
+    UnpublishedAuditedBatchV1, ValidationReadRequest, VectorEvidenceIndexEntryV1,
+    VectorEvidenceReadRequestV1, VectorObservationCountsV1, VectorObservationRepository,
+    VectorObservationTargetV1, derive_event_hash_v1,
 };
 use riffdb_types::{CommitSequence, EventId, FrontierPosition, ProvenanceId};
 
@@ -59,6 +59,7 @@ struct ApplicationOverlay {
     admissions: Vec<StoredAdmissionStateV1>,
     entities: Vec<StoredEntityRecordV1>,
     vector_evidence: Vec<StoredVectorEvidenceV1>,
+    vector_evidence_index: Vec<VectorEvidenceIndexEntryV1>,
     vector_observations: Vec<VectorObservationCountsV1>,
     entity_commits: Vec<EntityCommitIndexRow>,
     index_entries: Vec<MemoryIndexEntry>,
@@ -102,6 +103,7 @@ impl ApplicationOverlay {
             admissions: state.admissions.clone(),
             entities: state.entities.clone(),
             vector_evidence: state.vector_evidence.clone(),
+            vector_evidence_index: state.vector_evidence_index.clone(),
             vector_observations: state.vector_observations.clone(),
             entity_commits: state.entity_commits.clone(),
             index_entries: state.index_entries.clone(),
@@ -126,6 +128,7 @@ impl ApplicationOverlay {
         state.admissions = self.admissions;
         state.entities = self.entities;
         state.vector_evidence = self.vector_evidence;
+        state.vector_evidence_index = self.vector_evidence_index;
         state.vector_observations = self.vector_observations;
         state.entity_commits = self.entity_commits;
         state.index_entries = self.index_entries;
@@ -1944,7 +1947,7 @@ fn apply_vector_evidence(
             .binary_search_by(|row| row.target().cmp(&observation_target));
         let mut observation = match observation_position {
             Ok(index) => overlay.vector_observations[index].clone(),
-            Err(_) => VectorObservationCountsV1::empty(observation_target, sequence),
+            Err(_) => VectorObservationCountsV1::empty(observation_target.clone(), sequence),
         };
         observation
             .apply(
@@ -1972,6 +1975,17 @@ fn apply_vector_evidence(
         if !transition.matches_current(current) {
             return Err(storage_error(StorageErrorKind::InvariantViolation));
         }
+        let index_position = overlay.vector_evidence_index.binary_search_by(|row| {
+            row.target()
+                .cmp(&observation_target)
+                .then_with(|| row.entity_key().cmp(mutation.target().key()))
+        });
+        match (current, index_position) {
+            (Some(evidence), Ok(index))
+                if overlay.vector_evidence_index[index].matches_evidence(evidence) => {}
+            (None, Err(_)) => {}
+            _ => return Err(storage_error(StorageErrorKind::InvariantViolation)),
+        }
         match (mutation, position) {
             (riffdb_storage_api::VectorEvidenceMutationV1::Put(value), Ok(index)) => {
                 overlay.vector_evidence[index] = value.as_ref().clone();
@@ -1983,6 +1997,26 @@ fn apply_vector_evidence(
             }
             (riffdb_storage_api::VectorEvidenceMutationV1::Delete { .. }, Ok(index)) => {
                 overlay.vector_evidence.remove(index);
+            }
+            (riffdb_storage_api::VectorEvidenceMutationV1::Delete { .. }, Err(_)) => {
+                return Err(storage_error(StorageErrorKind::InvariantViolation));
+            }
+        }
+        match (mutation, index_position) {
+            (riffdb_storage_api::VectorEvidenceMutationV1::Put(value), Ok(index)) => {
+                overlay.vector_evidence_index[index] =
+                    VectorEvidenceIndexEntryV1::from_evidence(value)
+                        .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+            }
+            (riffdb_storage_api::VectorEvidenceMutationV1::Put(value), Err(index)) => {
+                overlay.vector_evidence_index.insert(
+                    index,
+                    VectorEvidenceIndexEntryV1::from_evidence(value)
+                        .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?,
+                );
+            }
+            (riffdb_storage_api::VectorEvidenceMutationV1::Delete { .. }, Ok(index)) => {
+                overlay.vector_evidence_index.remove(index);
             }
             (riffdb_storage_api::VectorEvidenceMutationV1::Delete { .. }, Err(_)) => {
                 return Err(storage_error(StorageErrorKind::InvariantViolation));

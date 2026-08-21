@@ -138,6 +138,7 @@ const fn journal_table(table: CompositeTableV1) -> crate::journal::JournalTable 
         CompositeTableV1::EntityChainHeads => crate::journal::JournalTable::EntityChainHeads,
         CompositeTableV1::VectorEvidence => crate::journal::JournalTable::VectorEvidence,
         CompositeTableV1::VectorObservations => crate::journal::JournalTable::VectorObservations,
+        CompositeTableV1::VectorEvidenceIndex => crate::journal::JournalTable::VectorEvidenceIndex,
     }
 }
 

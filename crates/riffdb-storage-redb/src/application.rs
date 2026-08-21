@@ -34,8 +34,9 @@ use riffdb_storage_api::{
     StoredVectorEvidenceV1, TransactionCurrentPolicyRequestV1, TransactionCurrentPolicyStateV1,
     TransactionCurrentState, TransactionCurrentStateBuilder, TransactionCurrentVectorEvidenceV1,
     TransactionLocalCommandBatch, UniqueIndexOccupancy, UniqueOccupancyKind,
-    UnpublishedAuditedBatchV1, ValidationReadRequest, VectorEvidenceReadRequestV1,
-    VectorObservationRepository, VectorObservationTargetV1, encode_capsule_command_record_set_v1,
+    UnpublishedAuditedBatchV1, ValidationReadRequest, VectorEvidenceIndexEntryV1,
+    VectorEvidenceReadRequestV1, VectorObservationRepository, VectorObservationTargetV1,
+    encode_capsule_command_record_set_v1,
 };
 use riffdb_types::{CommitSequence, EventId, ProvenanceId};
 
@@ -47,10 +48,11 @@ use crate::codec::{
     IdempotencyRecordV1, decode_application_sequence_allocator_v1, decode_capability_record_v1,
     decode_database_identity_v1, decode_entity_record_v1, decode_history_incarnation_v1,
     decode_idempotency_record_v1, decode_index_entry_v2, decode_index_epoch_v1,
-    decode_pending_admission_v1, decode_vector_evidence_v1, decode_vector_observation_v1,
-    encode_commit_record_v1, encode_durable_event_v1, encode_event_route_v1,
-    encode_execution_failed_v1, encode_outbox_intent_v1, encode_pending_admission_v1,
-    encode_provenance_record_v1, encode_stored_outcome_v1, encode_vector_observation_v1,
+    decode_pending_admission_v1, decode_vector_evidence_index_v1, decode_vector_evidence_v1,
+    decode_vector_observation_v1, encode_commit_record_v1, encode_durable_event_v1,
+    encode_event_route_v1, encode_execution_failed_v1, encode_outbox_intent_v1,
+    encode_pending_admission_v1, encode_provenance_record_v1, encode_stored_outcome_v1,
+    encode_vector_evidence_index_v1, encode_vector_observation_v1,
 };
 use crate::command_authority::{command_member_at, command_member_at_access};
 use crate::error::{codec_error, precommit_storage_error, table_error};
@@ -60,8 +62,8 @@ use crate::keys::{
     decode_index_entry_key, encode_application_sequence_key, encode_audit_by_request_key,
     encode_audit_key, encode_contract_bundle_key, encode_entity_key, encode_event_key,
     encode_event_route_key, encode_idempotency_key, encode_index_entry_key,
-    encode_partition_index_key, encode_provenance_key, encode_vector_evidence_key,
-    encode_vector_observation_key,
+    encode_partition_index_key, encode_provenance_key, encode_vector_evidence_index_key,
+    encode_vector_evidence_key, encode_vector_observation_key,
 };
 use crate::layout::{
     COMMITS, CONTRACT_BUNDLES, ENTITIES, EVENT_ROUTES, EVENTS, IDEMPOTENCY, IDEMPOTENCY_PENDING,
@@ -1791,6 +1793,7 @@ fn apply_vector_evidence(
             return Err(storage_error(StorageErrorKind::InvariantViolation));
         }
         apply_vector_observation(access, transition, sequence)?;
+        apply_vector_evidence_index(access, transition, mutation, current.as_ref())?;
         match (mutation, bytes, current_bytes) {
             (riffdb_storage_api::VectorEvidenceMutationV1::Put(_), Some(bytes), current) => {
                 access.put_proven_command_value(
@@ -1804,6 +1807,50 @@ fn apply_vector_evidence(
                 access.delete_proven_command_value(JournalTable::VectorEvidence, key, current)?;
             }
             _ => return Err(storage_error(StorageErrorKind::InvariantViolation)),
+        }
+    }
+    Ok(())
+}
+
+/// Maintains the authoritative partition-ordered reciprocal index in the same
+/// journal transaction as its primary evidence row and observation counters.
+fn apply_vector_evidence_index(
+    access: &RedbWriteAccess,
+    transition: &riffdb_storage_api::VectorEvidenceTransitionPlanV1,
+    mutation: &riffdb_storage_api::VectorEvidenceMutationV1,
+    current: Option<&StoredVectorEvidenceV1>,
+) -> Result<(), StorageError> {
+    let target = transition.observation_target();
+    let key = encode_vector_evidence_index_key(&target, mutation.target().key())
+        .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+    let current_bytes = access.read_command_value(JournalTable::VectorEvidenceIndex, &key)?;
+    let current_index = current_bytes
+        .as_deref()
+        .map(|value| decode_vector_evidence_index_v1(value).map(decoded_value))
+        .transpose()?;
+    match (current, current_index.as_ref()) {
+        (Some(evidence), Some(index)) if index.matches_evidence(evidence) => {}
+        (None, None) => {}
+        _ => return Err(storage_error(StorageErrorKind::InvariantViolation)),
+    }
+
+    match mutation {
+        riffdb_storage_api::VectorEvidenceMutationV1::Put(value) => {
+            let successor = VectorEvidenceIndexEntryV1::from_evidence(value)
+                .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+            let encoded = encode_vector_evidence_index_v1(&successor)?;
+            access.put_proven_command_value(
+                JournalTable::VectorEvidenceIndex,
+                key,
+                current_bytes,
+                encoded,
+            )?;
+        }
+        riffdb_storage_api::VectorEvidenceMutationV1::Delete { .. } => {
+            let Some(current) = current_bytes else {
+                return Err(storage_error(StorageErrorKind::InvariantViolation));
+            };
+            access.delete_proven_command_value(JournalTable::VectorEvidenceIndex, key, current)?;
         }
     }
     Ok(())

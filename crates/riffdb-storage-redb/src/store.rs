@@ -64,7 +64,8 @@ use crate::layout::{
     META_FORMAT_VERSION, META_HISTORY_INCARNATION, META_INDEX_EPOCH_ROWS_REPAIRED, META_KEYS,
     META_RECORD_REGISTRY, META_RETENTION_HOLDS, META_RETENTION_WATERMARK,
     META_VALIDATED_PREFIX_CHECKPOINT, OUTBOX, SECONDARY_INDEXES, TABLE_NAMES,
-    VALIDATED_PREFIX_ENTITY_HEADS, VECTOR_EVIDENCE, VECTOR_OBSERVATIONS, create_all_tables,
+    VALIDATED_PREFIX_ENTITY_HEADS, VECTOR_EVIDENCE, VECTOR_EVIDENCE_INDEX, VECTOR_OBSERVATIONS,
+    create_all_tables,
 };
 use crate::media::{DynStorageBackend, JournalMedia, RealJournalMedia, RedbStorageMedia};
 use crate::transient::{
@@ -3092,7 +3093,105 @@ fn install_vector_observations_table(shared: &SharedRedb) -> Result<(), StorageE
             .open_table(VECTOR_OBSERVATIONS)
             .map_err(table_error)?,
     );
-    shared.commit_durable(transaction)
+    drop(
+        transaction
+            .open_table(VECTOR_EVIDENCE_INDEX)
+            .map_err(table_error)?,
+    );
+    shared.commit_durable(transaction)?;
+    backfill_vector_evidence_index(shared)
+}
+
+fn backfill_vector_evidence_index(shared: &SharedRedb) -> Result<(), StorageError> {
+    let mut after: Option<Vec<u8>> = None;
+    loop {
+        let mut transaction = shared.database.begin_write().map_err(transaction_error)?;
+        transaction.set_two_phase_commit(true);
+        transaction
+            .set_durability(Durability::Immediate)
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+        let evidence = transaction
+            .open_table(VECTOR_EVIDENCE)
+            .map_err(table_error)?;
+        let mut index = transaction
+            .open_table(VECTOR_EVIDENCE_INDEX)
+            .map_err(table_error)?;
+        let mut rows = 0usize;
+        let mut bytes = 0usize;
+        let mut changed = false;
+        let mut last_key = after.clone();
+        let mut scan = match after.as_deref() {
+            Some(after_key) => evidence
+                .range::<&[u8]>((Excluded(after_key), Unbounded))
+                .map_err(precommit_storage_error)?,
+            None => evidence.iter().map_err(precommit_storage_error)?,
+        };
+        for row in &mut scan {
+            let (key, value) = row.map_err(precommit_storage_error)?;
+            let primary_key = key.value().to_vec();
+            let decoded = riffdb_storage_api::decode_vector_evidence_v1(value.value())
+                .map_err(crate::error::codec_error)?;
+            let evidence_row = decoded.value();
+            let target = riffdb_storage_api::VectorObservationTargetV1::new(
+                evidence_row.schema_binding().lineage().clone(),
+                evidence_row.partition_key().clone(),
+                evidence_row.target().entity_type_id(),
+                evidence_row.vector_field(),
+            );
+            let index_key =
+                crate::keys::encode_vector_evidence_index_key(&target, evidence_row.target().key())
+                    .map_err(|_| storage_error(StorageErrorKind::CorruptData))?;
+            let index_row =
+                riffdb_storage_api::VectorEvidenceIndexEntryV1::from_evidence(evidence_row)
+                    .map_err(|_| storage_error(StorageErrorKind::CorruptData))?;
+            let encoded = riffdb_storage_api::encode_vector_evidence_index_v1(&index_row)
+                .map_err(crate::error::codec_error)?;
+            if let Some(existing) = index
+                .get(index_key.as_slice())
+                .map_err(precommit_storage_error)?
+            {
+                let existing =
+                    riffdb_storage_api::decode_vector_evidence_index_v1(existing.value())
+                        .map_err(crate::error::codec_error)?;
+                if existing.value() != &index_row {
+                    return Err(storage_error(StorageErrorKind::CorruptData));
+                }
+            } else {
+                index
+                    .insert(index_key.as_slice(), encoded.as_bytes())
+                    .map_err(precommit_storage_error)?;
+                changed = true;
+            }
+            bytes = bytes
+                .checked_add(value.value().len())
+                .and_then(|total| total.checked_add(encoded.as_bytes().len()))
+                .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
+            rows = rows
+                .checked_add(1)
+                .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
+            last_key = Some(primary_key);
+            if rows >= FORMAT_MIGRATION_MAX_ROWS || bytes >= FORMAT_MIGRATION_MAX_BYTES {
+                break;
+            }
+        }
+        drop(scan);
+        drop(index);
+        drop(evidence);
+        if rows == 0 {
+            return transaction.abort().map_err(precommit_storage_error);
+        }
+        if changed {
+            shared.before_test_commit(RedbTestOperation::StorageFormatMigrationBatch)?;
+            shared.commit_durable(transaction)?;
+            shared.after_test_commit(RedbTestOperation::StorageFormatMigrationBatch)?;
+        } else {
+            transaction.abort().map_err(precommit_storage_error)?;
+        }
+        after = last_key;
+        if rows < FORMAT_MIGRATION_MAX_ROWS && bytes < FORMAT_MIGRATION_MAX_BYTES {
+            return Ok(());
+        }
+    }
 }
 
 fn install_validated_prefix_entity_heads_table(shared: &SharedRedb) -> Result<(), StorageError> {
@@ -6935,9 +7034,17 @@ fn classify_table_names(
     if tables == expected {
         return Ok(LayoutState::Initialized);
     }
-    // The immediate predecessor lacks only authoritative vector observations.
-    // Its registry is advanced only after this empty table is installed.
-    let mut pre_vector_observations = expected.clone();
+    // The immediate predecessor lacks only the authoritative reciprocal
+    // evidence index. Its registry is advanced only after this empty table is
+    // installed. The same migration transaction is idempotent for databases
+    // that already installed vector observations before a crash.
+    let mut pre_vector_index = expected.clone();
+    pre_vector_index.remove("vector_evidence_index");
+    if tables == pre_vector_index {
+        return Ok(LayoutState::Initialized);
+    }
+    // The earlier predecessor lacks observations and their reciprocal index.
+    let mut pre_vector_observations = pre_vector_index;
     pre_vector_observations.remove("vector_observations");
     if tables == pre_vector_observations {
         return Ok(LayoutState::Initialized);
@@ -7249,6 +7356,9 @@ mod tests {
             transaction
                 .delete_table(crate::layout::VECTOR_OBSERVATIONS)
                 .expect("remove later observation table");
+            transaction
+                .delete_table(crate::layout::VECTOR_EVIDENCE_INDEX)
+                .expect("remove later evidence index table");
             let predecessor = encode_record_registry_v2(SchemaHash::from_bytes(
                 PRE_APPLICATION_EXPORT_REGISTRY_DIGEST,
             ))
@@ -7316,6 +7426,9 @@ mod tests {
             transaction
                 .delete_table(crate::layout::VECTOR_OBSERVATIONS)
                 .expect("remove later observation table");
+            transaction
+                .delete_table(crate::layout::VECTOR_EVIDENCE_INDEX)
+                .expect("remove later evidence index table");
             let predecessor = encode_record_registry_v2(SchemaHash::from_bytes(
                 PRE_VECTOR_EVIDENCE_REGISTRY_DIGEST,
             ))
@@ -7380,6 +7493,9 @@ mod tests {
             transaction
                 .delete_table(crate::layout::VECTOR_OBSERVATIONS)
                 .expect("remove successor table");
+            transaction
+                .delete_table(crate::layout::VECTOR_EVIDENCE_INDEX)
+                .expect("remove successor evidence index table");
             let predecessor = encode_record_registry_v2(SchemaHash::from_bytes(
                 PRE_VECTOR_OBSERVATION_REGISTRY_DIGEST,
             ))
@@ -7403,6 +7519,13 @@ mod tests {
             transaction
                 .open_table(crate::layout::VECTOR_OBSERVATIONS)
                 .expect("vector observations table")
+                .is_empty()
+                .expect("table length")
+        );
+        assert!(
+            transaction
+                .open_table(crate::layout::VECTOR_EVIDENCE_INDEX)
+                .expect("vector evidence index table")
                 .is_empty()
                 .expect("table length")
         );

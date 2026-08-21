@@ -55,7 +55,7 @@ use crate::layout::{
     META_RETENTION_WATERMARK, META_VALIDATED_PREFIX_CHECKPOINT, OUTBOX, OUTBOX_STATUS,
     PROJECTION_APPLIED, PROJECTION_FRONTIER, PROJECTION_STATE, PROVENANCE, QUERY_MODULE_ACTIVE,
     QUERY_MODULES, REACTIVE_MODULES, RETIRED_ENTITIES, SECONDARY_INDEXES, TABLE_NAMES,
-    VECTOR_EVIDENCE, VECTOR_OBSERVATIONS,
+    VECTOR_EVIDENCE, VECTOR_EVIDENCE_INDEX, VECTOR_OBSERVATIONS,
 };
 use crate::store::{
     PRE_APPLICATION_EXPORT_REGISTRY_DIGEST, PRE_APPLICATION_INSTALLATION_REGISTRY_DIGEST,
@@ -71,7 +71,7 @@ static NEXT_OPEN_SESSION: AtomicU64 = AtomicU64::new(1);
 // The V1 validated-prefix checkpoint permanently covers the original table set.
 // Additive tables are validated separately and never inferred from that proof.
 const STRUCTURAL_TABLE_COUNT: usize = 28;
-const ADDITIVE_STRUCTURAL_TABLE_COUNT: usize = 7;
+const ADDITIVE_STRUCTURAL_TABLE_COUNT: usize = 8;
 const STARTUP_TABLE_COUNT: usize = STRUCTURAL_TABLE_COUNT + ADDITIVE_STRUCTURAL_TABLE_COUNT;
 
 fn startup_registry_is_supported(digest: riffdb_types::SchemaHash) -> bool {
@@ -1236,6 +1236,7 @@ impl RedbStructuralEvidenceSession {
             table_len(transaction, APPLICATION_EXPORT_OPERATIONS)?,
             table_len(transaction, VECTOR_EVIDENCE)?,
             table_len(transaction, VECTOR_OBSERVATIONS)?,
+            table_len(transaction, VECTOR_EVIDENCE_INDEX)?,
         ];
         if additive_counts != self.additive_structural_counts {
             return Err(corrupt());
@@ -2227,6 +2228,9 @@ impl RedbStructuralEvidenceSession {
                     34 => transaction
                         .open_table(VECTOR_OBSERVATIONS)
                         .map_err(table_error)?,
+                    35 => transaction
+                        .open_table(VECTOR_EVIDENCE_INDEX)
+                        .map_err(table_error)?,
                     _ => return Err(invariant()),
                 };
                 let range = self.open_structural_phase_range(phase, table)?;
@@ -2322,6 +2326,7 @@ fn inspect_table_row_from_bytes(
         32 => inspect_application_export_operation_row(key, value),
         33 => inspect_vector_evidence_row(transaction, key, value),
         34 => inspect_vector_observation_row(key, value),
+        35 => inspect_vector_evidence_index_row(transaction, key, value),
         _ => Err(invariant()),
     }
 }
@@ -2377,6 +2382,30 @@ fn inspect_vector_evidence_row(
     if evidence.target().key() != &entity_key || evidence.vector_field() != field {
         return Err(corrupt());
     }
+    let index_target = riffdb_storage_api::VectorObservationTargetV1::new(
+        evidence.schema_binding().lineage().clone(),
+        evidence.partition_key().clone(),
+        evidence.target().entity_type_id(),
+        evidence.vector_field(),
+    );
+    let index_key = keys::encode_vector_evidence_index_key(&index_target, &entity_key)
+        .map_err(|_| corrupt())?;
+    let index = transaction
+        .open_table(VECTOR_EVIDENCE_INDEX)
+        .map_err(table_error)?;
+    let Some(index_bytes) = index
+        .get(index_key.as_slice())
+        .map_err(precommit_storage_error)?
+    else {
+        return Ok(Some(authoritative(StructuralFindingCode::MissingCrossLink)));
+    };
+    let index_entry = riffdb_storage_api::decode_vector_evidence_index_v1(index_bytes.value())
+        .map_err(crate::error::codec_error)?;
+    if !index_entry.value().matches_evidence(evidence) {
+        return Ok(Some(authoritative(
+            StructuralFindingCode::CrossLinkMismatch,
+        )));
+    }
     let entities = transaction.open_table(ENTITIES).map_err(table_error)?;
     let Some(entity_bytes) = entities
         .get(entity_key.as_bytes())
@@ -2402,6 +2431,40 @@ fn inspect_vector_evidence_row(
         || entity.entity_version() != evidence.entity_version()
         || !embedding_matches
     {
+        return Ok(Some(authoritative(
+            StructuralFindingCode::CrossLinkMismatch,
+        )));
+    }
+    Ok(None)
+}
+
+fn inspect_vector_evidence_index_row(
+    transaction: &ReadTransaction,
+    key: &[u8],
+    value: &[u8],
+) -> Result<Option<StructuralFinding>, StorageError> {
+    let (target, entity_key) =
+        keys::decode_vector_evidence_index_key(key).map_err(|_| corrupt())?;
+    let decoded = riffdb_storage_api::decode_vector_evidence_index_v1(value)
+        .map_err(crate::error::codec_error)?;
+    let index = decoded.value();
+    if index.target() != &target || index.entity_key() != &entity_key {
+        return Err(corrupt());
+    }
+    let evidence_key = keys::encode_vector_evidence_key(&entity_key, target.vector_field())
+        .map_err(|_| corrupt())?;
+    let evidence_table = transaction
+        .open_table(VECTOR_EVIDENCE)
+        .map_err(table_error)?;
+    let Some(evidence_bytes) = evidence_table
+        .get(evidence_key.as_slice())
+        .map_err(precommit_storage_error)?
+    else {
+        return Ok(Some(authoritative(StructuralFindingCode::MissingCrossLink)));
+    };
+    let evidence = riffdb_storage_api::decode_vector_evidence_v1(evidence_bytes.value())
+        .map_err(crate::error::codec_error)?;
+    if !index.matches_evidence(evidence.value()) {
         return Ok(Some(authoritative(
             StructuralFindingCode::CrossLinkMismatch,
         )));
@@ -2769,6 +2832,7 @@ fn collect_startup_snapshot(
         table_len(transaction, APPLICATION_EXPORT_OPERATIONS)?,
         table_len(transaction, VECTOR_EVIDENCE)?,
         table_len(transaction, VECTOR_OBSERVATIONS)?,
+        table_len(transaction, VECTOR_EVIDENCE_INDEX)?,
     ];
     let total = counts
         .iter()
