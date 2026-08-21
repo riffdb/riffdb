@@ -4,7 +4,7 @@
 //! [`riffdb_types::ProjectionIdentity`]. Fixed at process startup for CP2;
 //! no registry synchronization is required.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::fmt;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -113,6 +113,42 @@ impl ColumnarNotifier {
                 changed: Condvar::new(),
             }),
         }
+    }
+
+    /// Synchronizes the compiler-owned active projection-name registry.
+    ///
+    /// Retired names are epoch-woken and remain only while existing waiters
+    /// drain. Newly active names become registerable before the caller
+    /// publishes their corresponding engine slots.
+    pub fn synchronize_names(
+        &self,
+        names: impl IntoIterator<Item = String>,
+    ) -> Result<(), ColumnarNotificationError> {
+        let desired = names.into_iter().collect::<BTreeSet<_>>();
+        let mut state = self.lock_state()?;
+        for (name, tracked) in &mut state.names {
+            if desired.contains(name) {
+                tracked.active = true;
+            } else if tracked.active {
+                tracked.active = false;
+                tracked.epoch = tracked.epoch.checked_add(1).ok_or_else(|| {
+                    ColumnarNotificationError::new(ColumnarNotificationErrorKind::Integrity)
+                })?;
+            }
+        }
+        state
+            .names
+            .retain(|_, tracked| tracked.active || tracked.waiters != 0);
+        for name in desired {
+            state.names.entry(name).or_insert(NameWaitState {
+                epoch: 0,
+                waiters: 0,
+                active: true,
+            });
+        }
+        drop(state);
+        self.inner.changed.notify_all();
+        Ok(())
     }
 
     /// Registers one bounded waiter before the caller performs its published observation.
@@ -443,6 +479,29 @@ mod tests {
             registration.wait(Instant::now()).expect("known wait"),
             ColumnarWake::Notified
         );
+    }
+
+    #[test]
+    fn registry_sync_wakes_retired_waiters_and_activates_new_names() {
+        let notifier = notifier_for("old");
+        let retired = notifier.register("old".to_owned()).expect("registration");
+        notifier
+            .synchronize_names(["new".to_owned()])
+            .expect("registry synchronization");
+        assert_eq!(
+            retired.wait(Instant::now()).expect("retirement wake"),
+            ColumnarWake::Notified
+        );
+        assert_eq!(
+            notifier
+                .register("old".to_owned())
+                .expect_err("retired name")
+                .kind(),
+            ColumnarNotificationErrorKind::Integrity
+        );
+        let active = notifier.register("new".to_owned()).expect("new name");
+        drop(active);
+        assert_eq!(notifier.lock_state().expect("state").names.len(), 1);
     }
 
     #[test]

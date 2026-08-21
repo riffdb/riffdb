@@ -222,7 +222,12 @@ application surface also exposes bounded symbolic stale/outdated inspection
 for the exact vector field when its role declares that authority. The
 authoritative observer maintains the distinct `vector_staleness` health
 component without scanning entities during a probe. Production exact-nearest
-queries use an explicit projected source and freshness declaration; see the
+queries use an explicit projected source and freshness declaration. The
+running server synchronizes compiler-owned vector sources after checked
+contract activation, including the first deployment into an empty database;
+no daemon restart is required. A successor that would reuse incompatible
+derived state fails closed until its declared rebuild lifecycle publishes a
+replacement generation. See the
 [RiffQL language reference](../riffql/LANGUAGE.md#nearest-neighbor-bindings-alpha).
 
 ## Revision-checked workflow transitions
