@@ -52,6 +52,9 @@ All temporary build/test roots honor `RIFFDB_TMP_ROOT` and default to
 | `riffdb.app-baseline-resilience/v1` | process/failpoint recovery cells |
 | `riffdb.app-baseline-language-conformance-result/v1` | generated-client semantic/boundary result |
 | `riffdb.app-baseline-alpha-matrix/v1` | required cells and evidence hashes |
+| `riffdb.app-baseline-qualified-candidate/v1` | clean source, lock, harness, runner, and daemon identity attached to an evidentiary report |
+| `riffdb.wp-623-performance-qualification-manifest/v1` | content-addressed workstation/cloud qualification inventory |
+| `riffdb.wp-623-performance-qualification/v1` | derived gate ratios and exact qualified source identity |
 
 Adding optional fields is compatible within v1. Removing/renaming a field,
 changing units, changing a percentile population, changing an operation mix,
@@ -73,12 +76,47 @@ The full matrix is eligible only when:
 - the generated Rust, TypeScript, and Python surfaces pass boundary checks and
   agree on the canonical semantic observation.
 
-`--require-stable` additionally requires bounded host-validity inventories
-before and after the measured phases. A process outside the harness crossing
+`--require-stable` additionally requires an exact clean source tree and bounded
+host-validity inventories before and after every measured run, including
+sample-based parity runs. A process outside the harness crossing
 the frozen CPU or I/O threshold yields the typed reason
 `host_interference`; a preflight refusal skips measurement, while a postflight
 finding preserves the raw result but makes it non-evidentiary. Process arguments
-are never retained.
+are never retained. Successful reports bind the source revision, `Cargo.lock`,
+benchmark harness, built runner, and `riffdbd` digests; evidence from a nearby
+binary or a dirty checkout cannot be substituted later.
+
+## WP-623 dual-profile qualification
+
+The final optimized alpha candidate must pass on both a workstation with local
+NVMe and a general-purpose cloud VM with ordinary persistent block storage.
+Each profile retains four reports from one exact clean source revision:
+
+- full safe-application PostgreSQL parity, three repetitions;
+- full minimal PostgreSQL parity, reported as the conventional floor;
+- counterbalanced interactive load at 1, 8, 32, and 128 clients, three
+  90-second post-warmup repetitions; and
+- the matching write-only sweep.
+
+The safe-application report is the gate comparator. Every common unary
+scenario must be at most `1.10x`, the full seed must remain at most `5.0x`, and
+the interactive 32-client cell must provide at least `0.90x` PostgreSQL
+throughput with at most `1.25x` PostgreSQL p95. Minimal PostgreSQL is verified
+for identical durability, source, host, storage, stability, and correctness,
+but does not replace the safe-application gate.
+
+The retained manifest is checked with:
+
+```bash
+./scripts/check-wp623-performance-qualification \
+  --manifest release/evidence/wp-623/manifest-v1.json \
+  --output release/evidence/wp-623/qualification-v1.json
+```
+
+The verifier rejects an omitted hardware class or report, hash or source
+identity mismatch, dirty source, interference, instability, shortened window,
+client/workload/transport/durability drift, incomplete matrix, correctness
+failure, missing ratio, or failed gate. A digest alone never qualifies a run.
 
 ## WP-552 evidence status
 
