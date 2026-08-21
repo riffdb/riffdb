@@ -22,8 +22,8 @@ def _compact_tag(value: object, tag: str, keys: frozenset[str]) -> dict[str, obj
 
 CONTRACT_LINEAGE: Final[str] = "BetterAuthAcceptance"
 CONTRACT_VERSION: Final[int] = 1
-CONTRACT_BUNDLE_HASH: Final[str] = "b886957491e9fbfce56e76b7fe37a3fb95b1732526d616a5b4eee0f32ac1d7c2"
-QUERY_MODULE_HASH: Final[str] = "63602b2a357b28ba9a1c0cf412ee3351e6e752d97bc2d0acf3f096f383727317"
+CONTRACT_BUNDLE_HASH: Final[str] = "c1376f90ceda166ba326ed7e389d3c474224f18d07740b3d5e299cafc94e94d4"
+QUERY_MODULE_HASH: Final[str] = "fdf5340bae520590d297856e698dd6f097d9c120c5e0f265db82f650f948145f"
 
 class SessionState(StrEnum):
     ACTIVE = "Active"
@@ -74,91 +74,7 @@ class VerificationToken:
     organization_id: UUID
     verification_token_id: UUID
 
-ADMIN_USERS_CONTAINS_ASC_QUERY_PLAN_HASH: Final[str] = "a762b10801301b7812c87f7c5ba0bf574061166327bb634f1dc70397f1e0ee83"
-
-@dataclass(frozen=True, slots=True, kw_only=True)
-class AdminUsersContainsAscParams:
-    organization_id: UUID
-    needle: str
-    user_id: UUID | None = None
-    limit: Annotated[int, "u64"] | None = None
-    offset: Annotated[int, "u64"] | None = None
-
-@dataclass(frozen=True, slots=True, kw_only=True)
-class AdminUsersContainsAscFoundUsers:
-    organization_id: UUID
-    user_id: UUID
-    email: str
-
-@dataclass(frozen=True, slots=True, kw_only=True)
-class AdminUsersContainsAscFoundTotal:
-    value: Annotated[int, "u64"]
-
-@dataclass(frozen=True, slots=True, kw_only=True)
-class AdminUsersContainsAscFound:
-    users: tuple[AdminUsersContainsAscFoundUsers, ...]
-    total: AdminUsersContainsAscFoundTotal
-    outcome: Literal["Found"] = field(default="Found", init=False)
-
-AdminUsersContainsAscResult: TypeAlias = AdminUsersContainsAscFound
-
-ADMIN_USERS_ENDS_WITH_DESC_QUERY_PLAN_HASH: Final[str] = "50ec67530a2d1bcb47106b3c694683cb1a8e3ba0a150d91bcb6606f5056a21e2"
-
-@dataclass(frozen=True, slots=True, kw_only=True)
-class AdminUsersEndsWithDescParams:
-    organization_id: UUID
-    needle: str
-    user_id: UUID | None = None
-    limit: Annotated[int, "u64"] | None = None
-    offset: Annotated[int, "u64"] | None = None
-
-@dataclass(frozen=True, slots=True, kw_only=True)
-class AdminUsersEndsWithDescFoundUsers:
-    organization_id: UUID
-    user_id: UUID
-    email: str
-
-@dataclass(frozen=True, slots=True, kw_only=True)
-class AdminUsersEndsWithDescFoundTotal:
-    value: Annotated[int, "u64"]
-
-@dataclass(frozen=True, slots=True, kw_only=True)
-class AdminUsersEndsWithDescFound:
-    users: tuple[AdminUsersEndsWithDescFoundUsers, ...]
-    total: AdminUsersEndsWithDescFoundTotal
-    outcome: Literal["Found"] = field(default="Found", init=False)
-
-AdminUsersEndsWithDescResult: TypeAlias = AdminUsersEndsWithDescFound
-
-ADMIN_USERS_STARTS_WITH_ASC_QUERY_PLAN_HASH: Final[str] = "e9cb7aa873a6c46fb488186880d30d6f13c943ac0cd0924d88cc497407562aec"
-
-@dataclass(frozen=True, slots=True, kw_only=True)
-class AdminUsersStartsWithAscParams:
-    organization_id: UUID
-    needle: str
-    user_id: UUID | None = None
-    limit: Annotated[int, "u64"] | None = None
-    offset: Annotated[int, "u64"] | None = None
-
-@dataclass(frozen=True, slots=True, kw_only=True)
-class AdminUsersStartsWithAscFoundUsers:
-    organization_id: UUID
-    user_id: UUID
-    email: str
-
-@dataclass(frozen=True, slots=True, kw_only=True)
-class AdminUsersStartsWithAscFoundTotal:
-    value: Annotated[int, "u64"]
-
-@dataclass(frozen=True, slots=True, kw_only=True)
-class AdminUsersStartsWithAscFound:
-    users: tuple[AdminUsersStartsWithAscFoundUsers, ...]
-    total: AdminUsersStartsWithAscFoundTotal
-    outcome: Literal["Found"] = field(default="Found", init=False)
-
-AdminUsersStartsWithAscResult: TypeAlias = AdminUsersStartsWithAscFound
-
-GET_SESSION_QUERY_PLAN_HASH: Final[str] = "c97fd558f7405806589985b97ab5f0bd3f4d3e6faa8ac8d76aa39e1720889f22"
+GET_SESSION_QUERY_PLAN_HASH: Final[str] = "14da730fc589d7ef19c9ed976c7215cf2e35d6005a5fc10f36c0601af3a1189c"
 GET_SESSION_SECRET_OUTPUTS: Final[tuple[tuple[str, str, str], ...]] = (
     ("GetSession", "Session", "token_digest"),
 )
@@ -190,7 +106,7 @@ class GetSessionMissing:
 
 GetSessionResult: TypeAlias = GetSessionFound | GetSessionMissing
 
-GET_USER_QUERY_PLAN_HASH: Final[str] = "147a7d21bcab6ebd6c50b23c183dccdf246033a6ecfb48147f6f1c5ea32e7513"
+GET_USER_QUERY_PLAN_HASH: Final[str] = "346ee23a55e1d112448626ae9968816cd0100de7a378fb80e0f4653da35051a8"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class GetUserParams:
@@ -221,7 +137,7 @@ class ConsumeVerificationTokenInput:
     organization_id: UUID
     verification_token_id: UUID
 
-CONSUME_VERIFICATION_TOKEN_PLAN_HASH: Final[str] = "5bf3667548c9b575d30fb38696d10dcb7390676baf38842e0311e1d8b095a7a3"
+CONSUME_VERIFICATION_TOKEN_PLAN_HASH: Final[str] = "d3e6b696c3909e8d19de9441e0c25c410656e0daa40b9e7a6bc8738d62ff17dc"
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ConsumeVerificationTokenVerificationTokenExpired:
     outcome: Literal["VerificationTokenExpired"] = field(default="VerificationTokenExpired", init=False)
@@ -247,7 +163,7 @@ class CreateUserAccountSessionsInput:
     signups: tuple[SignupGraphInput, ...]
     request_id: UUID
 
-CREATE_USER_ACCOUNT_SESSIONS_PLAN_HASH: Final[str] = "fd6ce31e145903dbc199e9806cf81fba2394f7660f377dc81bca4dcc2d875559"
+CREATE_USER_ACCOUNT_SESSIONS_PLAN_HASH: Final[str] = "e35be7f9877e51a21f27f7371679dfaedb2cbdabad7e13c228ecacbe612c1126"
 @dataclass(frozen=True, slots=True, kw_only=True)
 class CreateUserAccountSessionsSignupUserExists:
     outcome: Literal["SignupUserExists"] = field(default="SignupUserExists", init=False)
@@ -272,7 +188,7 @@ class DeleteUsersInput:
     request_id: UUID
     organization_id: UUID
 
-DELETE_USERS_PLAN_HASH: Final[str] = "54eec6d32dd3a1114a8764f3f146a7b042f8a1f3148dd037b77fadad3c385e89"
+DELETE_USERS_PLAN_HASH: Final[str] = "8b97f43474cf0ff07c3831985bf5150af485762356d05ecef79dc666b6431307"
 @dataclass(frozen=True, slots=True, kw_only=True)
 class DeleteUsersDeleteUserMissing:
     outcome: Literal["DeleteUserMissing"] = field(default="DeleteUserMissing", init=False)
@@ -296,7 +212,7 @@ class IssueVerificationTokenInput:
     organization_id: UUID
     verification_token_id: UUID
 
-ISSUE_VERIFICATION_TOKEN_PLAN_HASH: Final[str] = "05e8755b06d61a85f29c0665f878bfe6a7f8ba7fdb737632076a79c4ad936c3d"
+ISSUE_VERIFICATION_TOKEN_PLAN_HASH: Final[str] = "9d226908f0f69a90f763b7dc7829b5fe9ff717a36f9f607a3162c0f0faed75ba"
 @dataclass(frozen=True, slots=True, kw_only=True)
 class IssueVerificationTokenVerificationTokenExists:
     outcome: Literal["VerificationTokenExists"] = field(default="VerificationTokenExists", init=False)
@@ -323,7 +239,7 @@ class RefreshSessionInput:
     expected_revision: Annotated[int, "u64"]
     successor_token_digest: str
 
-REFRESH_SESSION_PLAN_HASH: Final[str] = "d80d951f7636752c16ca549f5b74956c6104fc0140039bbf502185c92f070e11"
+REFRESH_SESSION_PLAN_HASH: Final[str] = "bec158663a6511372e7f497f3d0ed5ae9ffa45a0a39b7b54d71a817d9fd31067"
 @dataclass(frozen=True, slots=True, kw_only=True)
 class RefreshSessionSessionRefreshed:
     session: Session
@@ -355,7 +271,7 @@ class RevokeSessionInput:
     organization_id: UUID
     expected_revision: Annotated[int, "u64"]
 
-REVOKE_SESSION_PLAN_HASH: Final[str] = "6fc475f3da640fc4b4e6f4d8eae0d900269f8d7860ba520a1593c7f14e8281c5"
+REVOKE_SESSION_PLAN_HASH: Final[str] = "309062f50ee35eea4b2ab7393c8a3be74547a3d7e05995eb6b8c6cecc9f39813"
 @dataclass(frozen=True, slots=True, kw_only=True)
 class RevokeSessionSessionRevoked:
     session: Session
@@ -379,42 +295,6 @@ class BetterAuthAcceptanceClient:
     def __init__(self, transport: SyncApplicationTransport, command_attempts: AttemptBudget) -> None:
         self._transport = transport
         self._command_attempts = command_attempts
-
-    def admin_users_contains_asc(self, parameters: AdminUsersContainsAscParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[AdminUsersContainsAscResult]:
-        raw = self._transport._execute_named_query(
-            contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
-            contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
-            query_name="AdminUsersContainsAsc", plan_hash=ADMIN_USERS_CONTAINS_ASC_QUERY_PLAN_HASH,
-            parameters=encode_record(parameters), options=options,
-        )
-        outcomes = {
-            "Found": AdminUsersContainsAscFound,
-        }
-        return raw._map_value(lambda value: decode_variant(outcomes, value))
-
-    def admin_users_ends_with_desc(self, parameters: AdminUsersEndsWithDescParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[AdminUsersEndsWithDescResult]:
-        raw = self._transport._execute_named_query(
-            contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
-            contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
-            query_name="AdminUsersEndsWithDesc", plan_hash=ADMIN_USERS_ENDS_WITH_DESC_QUERY_PLAN_HASH,
-            parameters=encode_record(parameters), options=options,
-        )
-        outcomes = {
-            "Found": AdminUsersEndsWithDescFound,
-        }
-        return raw._map_value(lambda value: decode_variant(outcomes, value))
-
-    def admin_users_starts_with_asc(self, parameters: AdminUsersStartsWithAscParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[AdminUsersStartsWithAscResult]:
-        raw = self._transport._execute_named_query(
-            contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
-            contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
-            query_name="AdminUsersStartsWithAsc", plan_hash=ADMIN_USERS_STARTS_WITH_ASC_QUERY_PLAN_HASH,
-            parameters=encode_record(parameters), options=options,
-        )
-        outcomes = {
-            "Found": AdminUsersStartsWithAscFound,
-        }
-        return raw._map_value(lambda value: decode_variant(outcomes, value))
 
     def get_session(self, parameters: GetSessionParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[GetSessionResult]:
         raw = self._transport._execute_named_query(
@@ -589,42 +469,6 @@ class AsyncBetterAuthAcceptanceClient:
     def __init__(self, transport: AsyncApplicationTransport, command_attempts: AttemptBudget) -> None:
         self._transport = transport
         self._command_attempts = command_attempts
-
-    async def admin_users_contains_asc(self, parameters: AdminUsersContainsAscParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[AdminUsersContainsAscResult]:
-        raw = await self._transport._execute_named_query(
-            contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
-            contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
-            query_name="AdminUsersContainsAsc", plan_hash=ADMIN_USERS_CONTAINS_ASC_QUERY_PLAN_HASH,
-            parameters=encode_record(parameters), options=options,
-        )
-        outcomes = {
-            "Found": AdminUsersContainsAscFound,
-        }
-        return raw._map_value(lambda value: decode_variant(outcomes, value))
-
-    async def admin_users_ends_with_desc(self, parameters: AdminUsersEndsWithDescParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[AdminUsersEndsWithDescResult]:
-        raw = await self._transport._execute_named_query(
-            contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
-            contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
-            query_name="AdminUsersEndsWithDesc", plan_hash=ADMIN_USERS_ENDS_WITH_DESC_QUERY_PLAN_HASH,
-            parameters=encode_record(parameters), options=options,
-        )
-        outcomes = {
-            "Found": AdminUsersEndsWithDescFound,
-        }
-        return raw._map_value(lambda value: decode_variant(outcomes, value))
-
-    async def admin_users_starts_with_asc(self, parameters: AdminUsersStartsWithAscParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[AdminUsersStartsWithAscResult]:
-        raw = await self._transport._execute_named_query(
-            contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
-            contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
-            query_name="AdminUsersStartsWithAsc", plan_hash=ADMIN_USERS_STARTS_WITH_ASC_QUERY_PLAN_HASH,
-            parameters=encode_record(parameters), options=options,
-        )
-        outcomes = {
-            "Found": AdminUsersStartsWithAscFound,
-        }
-        return raw._map_value(lambda value: decode_variant(outcomes, value))
 
     async def get_session(self, parameters: GetSessionParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[GetSessionResult]:
         raw = await self._transport._execute_named_query(

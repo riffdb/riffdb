@@ -5,7 +5,7 @@ use riffdb_client_rust::{ApplicationCardinality, ApplicationClientError, Applica
 pub use riffdb_client_rust::QueryOptions;
 use riffdb_client_rust::v1::value::Kind as WireKind;
 
-pub const QUERY_MODULE_HASH: [u8; 32] = [0xf3, 0xa8, 0x5c, 0x2b, 0x47, 0x31, 0x68, 0xd7, 0x92, 0xf8, 0x82, 0x92, 0x89, 0xfc, 0xdd, 0xcb, 0xc2, 0x5b, 0xbe, 0x4d, 0x48, 0xe5, 0x5b, 0x9c, 0x93, 0xae, 0xe2, 0x31, 0x85, 0x58, 0xcd, 0x38];
+pub const QUERY_MODULE_HASH: [u8; 32] = [0x2d, 0xa4, 0x2e, 0x51, 0x0a, 0x3b, 0xa3, 0x2b, 0x14, 0xaf, 0x31, 0xe1, 0x14, 0xa6, 0x71, 0x48, 0x15, 0x62, 0x02, 0xd6, 0x50, 0x23, 0x66, 0xae, 0x01, 0x5e, 0x0c, 0x7a, 0xd9, 0x14, 0xa4, 0x5b];
 pub const CONTRACT_LINEAGE: &str = "AdapterOperationalConformance";
 pub const CONTRACT_VERSION: u64 = 1;
 
@@ -26,6 +26,282 @@ pub struct MoneyValue {
 pub struct TimestampValue {
     pub seconds: i64,
     pub nanos: u32,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ExactDocumentsContainsAscParams {
+    pub site_id: String,
+    pub needle: String,
+    pub document_id: Option<String>,
+    pub limit: u64,
+    pub offset: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ExactDocumentsContainsAscFoundDocuments {
+    pub site_id: String,
+    pub document_id: String,
+    pub title: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ExactDocumentsContainsAscFoundTotal {
+    pub value: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ExactDocumentsContainsAscFound {
+    pub documents: Vec<ExactDocumentsContainsAscFoundDocuments>,
+    pub total: ExactDocumentsContainsAscFoundTotal,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ExactDocumentsContainsAscResult {
+    Found(Box<ExactDocumentsContainsAscFound>),
+}
+
+pub const EXACT_DOCUMENTS_CONTAINS_ASC_QUERY_PLAN_HASH: [u8; 32] = [0x23, 0x1a, 0x3e, 0x06, 0xe5, 0xbb, 0x5c, 0x19, 0x15, 0xa6, 0x92, 0xfc, 0x80, 0x4d, 0xc1, 0x95, 0x20, 0x7b, 0x99, 0xdc, 0xbd, 0x32, 0x5c, 0x69, 0xeb, 0x8a, 0xe9, 0x80, 0x4b, 0xa6, 0xfb, 0x6b];
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ExactDocumentsContainsAscQuery(pub ExactDocumentsContainsAscParams);
+impl GeneratedQuery for ExactDocumentsContainsAscQuery {
+    type Output = ExactDocumentsContainsAscResult;
+
+    fn named_query(self, options: QueryOptions) -> Result<NamedQuery, ApplicationClientError> {
+        let mut parameters = BTreeMap::new();
+        parameters.insert("site_id".to_owned(), ApplicationValue::Uuid(ApplicationUuid::from_text(self.0.site_id)?));
+        parameters.insert("needle".to_owned(), ApplicationValue::String(self.0.needle));
+        parameters.insert("document_id".to_owned(), match self.0.document_id { Some(value) => ApplicationValue::Uuid(ApplicationUuid::from_text(value)?), None => ApplicationValue::Null });
+        parameters.insert("limit".to_owned(), ApplicationValue::U64(self.0.limit));
+        parameters.insert("offset".to_owned(), ApplicationValue::U64(self.0.offset));
+        NamedQuery::new(
+            ApplicationContract::Exact {
+                lineage: CONTRACT_LINEAGE.to_owned(),
+                version: CONTRACT_VERSION,
+                bundle_hash: Some(CONTRACT_BUNDLE_HASH),
+            },
+            "ExactDocumentsContainsAsc",
+            Some(QUERY_MODULE_HASH),
+            parameters,
+            None,
+        )?.expect_plan_hash(EXACT_DOCUMENTS_CONTAINS_ASC_QUERY_PLAN_HASH).with_options(options)
+    }
+
+    fn decode_result(mut response: NamedQueryResult) -> Result<Self::Output, ApplicationClientError> {
+        let outcome = response.outcome.clone();
+        match outcome.as_str() {
+            "Found" => {
+                let decoded = ExactDocumentsContainsAscFound {
+                    documents: many_result_records(take_result_field(&mut response.fields, "documents")?)?.into_iter().map(decode_exact_documents_contains_asc_found_documents_record).collect::<Result<Vec<_>, _>>()?,
+                    total: decode_exact_documents_contains_asc_found_total_record(one_result_record(take_result_field(&mut response.fields, "total")?)?)?,
+                };
+                if !response.fields.is_empty() { return Err(ApplicationClientError::InvalidResponse); }
+                Ok(ExactDocumentsContainsAscResult::Found(Box::new(decoded)))
+            },
+            _ => Err(ApplicationClientError::InvalidResponse),
+        }
+    }
+}
+
+fn decode_exact_documents_contains_asc_found_documents_record(mut record: ApplicationRecord) -> Result<ExactDocumentsContainsAscFoundDocuments, ApplicationClientError> {
+    let value = ExactDocumentsContainsAscFoundDocuments {
+        site_id: application_uuid(take_application_value(&mut record.fields, "site_id")?)?,
+        document_id: application_uuid(take_application_value(&mut record.fields, "document_id")?)?,
+        title: application_string(take_application_value(&mut record.fields, "title")?)?,
+    };
+    if !record.fields.is_empty() { return Err(ApplicationClientError::InvalidResponse); }
+    Ok(value)
+}
+
+fn decode_exact_documents_contains_asc_found_total_record(mut record: ApplicationRecord) -> Result<ExactDocumentsContainsAscFoundTotal, ApplicationClientError> {
+    let value = ExactDocumentsContainsAscFoundTotal {
+        value: application_u64(take_application_value(&mut record.fields, "value")?)?,
+    };
+    if !record.fields.is_empty() { return Err(ApplicationClientError::InvalidResponse); }
+    Ok(value)
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ExactDocumentsEndsWithDescParams {
+    pub site_id: String,
+    pub needle: String,
+    pub document_id: Option<String>,
+    pub limit: u64,
+    pub offset: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ExactDocumentsEndsWithDescFoundDocuments {
+    pub site_id: String,
+    pub document_id: String,
+    pub title: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ExactDocumentsEndsWithDescFoundTotal {
+    pub value: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ExactDocumentsEndsWithDescFound {
+    pub documents: Vec<ExactDocumentsEndsWithDescFoundDocuments>,
+    pub total: ExactDocumentsEndsWithDescFoundTotal,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ExactDocumentsEndsWithDescResult {
+    Found(Box<ExactDocumentsEndsWithDescFound>),
+}
+
+pub const EXACT_DOCUMENTS_ENDS_WITH_DESC_QUERY_PLAN_HASH: [u8; 32] = [0x79, 0x3b, 0x31, 0x32, 0xac, 0xdf, 0x55, 0x12, 0xfa, 0x01, 0x2d, 0xca, 0x17, 0x9e, 0x70, 0x32, 0x51, 0x34, 0x87, 0xf2, 0xa6, 0xc8, 0xce, 0x2c, 0xf3, 0x76, 0xbd, 0x78, 0x8d, 0x8c, 0x3d, 0x8b];
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ExactDocumentsEndsWithDescQuery(pub ExactDocumentsEndsWithDescParams);
+impl GeneratedQuery for ExactDocumentsEndsWithDescQuery {
+    type Output = ExactDocumentsEndsWithDescResult;
+
+    fn named_query(self, options: QueryOptions) -> Result<NamedQuery, ApplicationClientError> {
+        let mut parameters = BTreeMap::new();
+        parameters.insert("site_id".to_owned(), ApplicationValue::Uuid(ApplicationUuid::from_text(self.0.site_id)?));
+        parameters.insert("needle".to_owned(), ApplicationValue::String(self.0.needle));
+        parameters.insert("document_id".to_owned(), match self.0.document_id { Some(value) => ApplicationValue::Uuid(ApplicationUuid::from_text(value)?), None => ApplicationValue::Null });
+        parameters.insert("limit".to_owned(), ApplicationValue::U64(self.0.limit));
+        parameters.insert("offset".to_owned(), ApplicationValue::U64(self.0.offset));
+        NamedQuery::new(
+            ApplicationContract::Exact {
+                lineage: CONTRACT_LINEAGE.to_owned(),
+                version: CONTRACT_VERSION,
+                bundle_hash: Some(CONTRACT_BUNDLE_HASH),
+            },
+            "ExactDocumentsEndsWithDesc",
+            Some(QUERY_MODULE_HASH),
+            parameters,
+            None,
+        )?.expect_plan_hash(EXACT_DOCUMENTS_ENDS_WITH_DESC_QUERY_PLAN_HASH).with_options(options)
+    }
+
+    fn decode_result(mut response: NamedQueryResult) -> Result<Self::Output, ApplicationClientError> {
+        let outcome = response.outcome.clone();
+        match outcome.as_str() {
+            "Found" => {
+                let decoded = ExactDocumentsEndsWithDescFound {
+                    documents: many_result_records(take_result_field(&mut response.fields, "documents")?)?.into_iter().map(decode_exact_documents_ends_with_desc_found_documents_record).collect::<Result<Vec<_>, _>>()?,
+                    total: decode_exact_documents_ends_with_desc_found_total_record(one_result_record(take_result_field(&mut response.fields, "total")?)?)?,
+                };
+                if !response.fields.is_empty() { return Err(ApplicationClientError::InvalidResponse); }
+                Ok(ExactDocumentsEndsWithDescResult::Found(Box::new(decoded)))
+            },
+            _ => Err(ApplicationClientError::InvalidResponse),
+        }
+    }
+}
+
+fn decode_exact_documents_ends_with_desc_found_documents_record(mut record: ApplicationRecord) -> Result<ExactDocumentsEndsWithDescFoundDocuments, ApplicationClientError> {
+    let value = ExactDocumentsEndsWithDescFoundDocuments {
+        site_id: application_uuid(take_application_value(&mut record.fields, "site_id")?)?,
+        document_id: application_uuid(take_application_value(&mut record.fields, "document_id")?)?,
+        title: application_string(take_application_value(&mut record.fields, "title")?)?,
+    };
+    if !record.fields.is_empty() { return Err(ApplicationClientError::InvalidResponse); }
+    Ok(value)
+}
+
+fn decode_exact_documents_ends_with_desc_found_total_record(mut record: ApplicationRecord) -> Result<ExactDocumentsEndsWithDescFoundTotal, ApplicationClientError> {
+    let value = ExactDocumentsEndsWithDescFoundTotal {
+        value: application_u64(take_application_value(&mut record.fields, "value")?)?,
+    };
+    if !record.fields.is_empty() { return Err(ApplicationClientError::InvalidResponse); }
+    Ok(value)
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ExactDocumentsStartsWithAscParams {
+    pub site_id: String,
+    pub needle: String,
+    pub document_id: Option<String>,
+    pub limit: u64,
+    pub offset: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ExactDocumentsStartsWithAscFoundDocuments {
+    pub site_id: String,
+    pub document_id: String,
+    pub title: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ExactDocumentsStartsWithAscFoundTotal {
+    pub value: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ExactDocumentsStartsWithAscFound {
+    pub documents: Vec<ExactDocumentsStartsWithAscFoundDocuments>,
+    pub total: ExactDocumentsStartsWithAscFoundTotal,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ExactDocumentsStartsWithAscResult {
+    Found(Box<ExactDocumentsStartsWithAscFound>),
+}
+
+pub const EXACT_DOCUMENTS_STARTS_WITH_ASC_QUERY_PLAN_HASH: [u8; 32] = [0x4d, 0x2c, 0x98, 0xbb, 0xa6, 0x48, 0x82, 0x50, 0x4a, 0xc8, 0x16, 0x5e, 0x45, 0x7d, 0x29, 0xb2, 0xe8, 0xc2, 0xae, 0xaa, 0x2d, 0x5e, 0x37, 0x00, 0x5d, 0xc7, 0xc8, 0xe8, 0xd2, 0x72, 0x2b, 0xd3];
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ExactDocumentsStartsWithAscQuery(pub ExactDocumentsStartsWithAscParams);
+impl GeneratedQuery for ExactDocumentsStartsWithAscQuery {
+    type Output = ExactDocumentsStartsWithAscResult;
+
+    fn named_query(self, options: QueryOptions) -> Result<NamedQuery, ApplicationClientError> {
+        let mut parameters = BTreeMap::new();
+        parameters.insert("site_id".to_owned(), ApplicationValue::Uuid(ApplicationUuid::from_text(self.0.site_id)?));
+        parameters.insert("needle".to_owned(), ApplicationValue::String(self.0.needle));
+        parameters.insert("document_id".to_owned(), match self.0.document_id { Some(value) => ApplicationValue::Uuid(ApplicationUuid::from_text(value)?), None => ApplicationValue::Null });
+        parameters.insert("limit".to_owned(), ApplicationValue::U64(self.0.limit));
+        parameters.insert("offset".to_owned(), ApplicationValue::U64(self.0.offset));
+        NamedQuery::new(
+            ApplicationContract::Exact {
+                lineage: CONTRACT_LINEAGE.to_owned(),
+                version: CONTRACT_VERSION,
+                bundle_hash: Some(CONTRACT_BUNDLE_HASH),
+            },
+            "ExactDocumentsStartsWithAsc",
+            Some(QUERY_MODULE_HASH),
+            parameters,
+            None,
+        )?.expect_plan_hash(EXACT_DOCUMENTS_STARTS_WITH_ASC_QUERY_PLAN_HASH).with_options(options)
+    }
+
+    fn decode_result(mut response: NamedQueryResult) -> Result<Self::Output, ApplicationClientError> {
+        let outcome = response.outcome.clone();
+        match outcome.as_str() {
+            "Found" => {
+                let decoded = ExactDocumentsStartsWithAscFound {
+                    documents: many_result_records(take_result_field(&mut response.fields, "documents")?)?.into_iter().map(decode_exact_documents_starts_with_asc_found_documents_record).collect::<Result<Vec<_>, _>>()?,
+                    total: decode_exact_documents_starts_with_asc_found_total_record(one_result_record(take_result_field(&mut response.fields, "total")?)?)?,
+                };
+                if !response.fields.is_empty() { return Err(ApplicationClientError::InvalidResponse); }
+                Ok(ExactDocumentsStartsWithAscResult::Found(Box::new(decoded)))
+            },
+            _ => Err(ApplicationClientError::InvalidResponse),
+        }
+    }
+}
+
+fn decode_exact_documents_starts_with_asc_found_documents_record(mut record: ApplicationRecord) -> Result<ExactDocumentsStartsWithAscFoundDocuments, ApplicationClientError> {
+    let value = ExactDocumentsStartsWithAscFoundDocuments {
+        site_id: application_uuid(take_application_value(&mut record.fields, "site_id")?)?,
+        document_id: application_uuid(take_application_value(&mut record.fields, "document_id")?)?,
+        title: application_string(take_application_value(&mut record.fields, "title")?)?,
+    };
+    if !record.fields.is_empty() { return Err(ApplicationClientError::InvalidResponse); }
+    Ok(value)
+}
+
+fn decode_exact_documents_starts_with_asc_found_total_record(mut record: ApplicationRecord) -> Result<ExactDocumentsStartsWithAscFoundTotal, ApplicationClientError> {
+    let value = ExactDocumentsStartsWithAscFoundTotal {
+        value: application_u64(take_application_value(&mut record.fields, "value")?)?,
+    };
+    if !record.fields.is_empty() { return Err(ApplicationClientError::InvalidResponse); }
+    Ok(value)
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -968,6 +1244,45 @@ impl AdapterOperationalConformanceClient {
     pub const fn bounded_session_enabled(&self) -> bool { self.client.bounded_session_enabled() }
     /// Closes the optional bounded session and returns to unary transport.
     pub fn close_bounded_session(&mut self) { self.client.close_bounded_session(); }
+
+    /// Executes the generated `ExactDocumentsContainsAsc` named query.
+    pub async fn exact_documents_contains_asc(&mut self, parameters: ExactDocumentsContainsAscParams) -> Result<ExactDocumentsContainsAscResult, ApplicationClientError> {
+        Ok(self.exact_documents_contains_asc_with_options(parameters, QueryOptions::new()).await?.value)
+    }
+    /// Executes `ExactDocumentsContainsAsc` against a snapshot at or after the supplied command commit.
+    pub async fn exact_documents_contains_asc_after_commit(&mut self, parameters: ExactDocumentsContainsAscParams, commit_sequence: u64) -> Result<TypedQueryResult<ExactDocumentsContainsAscResult>, ApplicationClientError> {
+        self.exact_documents_contains_asc_with_options(parameters, QueryOptions::new().read_after_commit(commit_sequence)).await
+    }
+    /// Executes `ExactDocumentsContainsAsc` with generated pagination or read-fence options.
+    pub async fn exact_documents_contains_asc_with_options(&mut self, parameters: ExactDocumentsContainsAscParams, options: QueryOptions) -> Result<TypedQueryResult<ExactDocumentsContainsAscResult>, ApplicationClientError> {
+        self.client.execute_generated_query(ExactDocumentsContainsAscQuery(parameters), options, &self.metadata).await
+    }
+
+    /// Executes the generated `ExactDocumentsEndsWithDesc` named query.
+    pub async fn exact_documents_ends_with_desc(&mut self, parameters: ExactDocumentsEndsWithDescParams) -> Result<ExactDocumentsEndsWithDescResult, ApplicationClientError> {
+        Ok(self.exact_documents_ends_with_desc_with_options(parameters, QueryOptions::new()).await?.value)
+    }
+    /// Executes `ExactDocumentsEndsWithDesc` against a snapshot at or after the supplied command commit.
+    pub async fn exact_documents_ends_with_desc_after_commit(&mut self, parameters: ExactDocumentsEndsWithDescParams, commit_sequence: u64) -> Result<TypedQueryResult<ExactDocumentsEndsWithDescResult>, ApplicationClientError> {
+        self.exact_documents_ends_with_desc_with_options(parameters, QueryOptions::new().read_after_commit(commit_sequence)).await
+    }
+    /// Executes `ExactDocumentsEndsWithDesc` with generated pagination or read-fence options.
+    pub async fn exact_documents_ends_with_desc_with_options(&mut self, parameters: ExactDocumentsEndsWithDescParams, options: QueryOptions) -> Result<TypedQueryResult<ExactDocumentsEndsWithDescResult>, ApplicationClientError> {
+        self.client.execute_generated_query(ExactDocumentsEndsWithDescQuery(parameters), options, &self.metadata).await
+    }
+
+    /// Executes the generated `ExactDocumentsStartsWithAsc` named query.
+    pub async fn exact_documents_starts_with_asc(&mut self, parameters: ExactDocumentsStartsWithAscParams) -> Result<ExactDocumentsStartsWithAscResult, ApplicationClientError> {
+        Ok(self.exact_documents_starts_with_asc_with_options(parameters, QueryOptions::new()).await?.value)
+    }
+    /// Executes `ExactDocumentsStartsWithAsc` against a snapshot at or after the supplied command commit.
+    pub async fn exact_documents_starts_with_asc_after_commit(&mut self, parameters: ExactDocumentsStartsWithAscParams, commit_sequence: u64) -> Result<TypedQueryResult<ExactDocumentsStartsWithAscResult>, ApplicationClientError> {
+        self.exact_documents_starts_with_asc_with_options(parameters, QueryOptions::new().read_after_commit(commit_sequence)).await
+    }
+    /// Executes `ExactDocumentsStartsWithAsc` with generated pagination or read-fence options.
+    pub async fn exact_documents_starts_with_asc_with_options(&mut self, parameters: ExactDocumentsStartsWithAscParams, options: QueryOptions) -> Result<TypedQueryResult<ExactDocumentsStartsWithAscResult>, ApplicationClientError> {
+        self.client.execute_generated_query(ExactDocumentsStartsWithAscQuery(parameters), options, &self.metadata).await
+    }
 
     /// Executes the generated `GetAuthSession` named query.
     pub async fn get_auth_session(&mut self, parameters: GetAuthSessionParams) -> Result<GetAuthSessionResult, ApplicationClientError> {

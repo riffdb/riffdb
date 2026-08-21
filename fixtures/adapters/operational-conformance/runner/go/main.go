@@ -106,6 +106,43 @@ func run() error {
 	if !ok || len(draftPage.Documents) != 1 {
 		return errors.New("Payload null predicate page")
 	}
+	limitOne := uint32(1)
+	offsetOne := uint64(1)
+	offsetZero := uint64(0)
+	contains, err := client.ExactDocumentsContainsAsc(ctx, generated.ExactDocumentsContainsAscParams{
+		SiteId: id(30), Needle: "Alpha", Limit: &limitOne, Offset: &offsetOne,
+	}, generated.QueryOptions{})
+	if err != nil {
+		return err
+	}
+	containsPage, ok := contains.Value.(generated.ExactDocumentsContainsAscFound)
+	if !ok || containsPage.Total.Value != 2 || len(containsPage.Documents) != 1 ||
+		containsPage.Documents[0].Title != "Alpha Published" {
+		return errors.New("generic contains page with exact total and numeric offset")
+	}
+	filterDocument := id(31)
+	startsWith, err := client.ExactDocumentsStartsWithAsc(ctx, generated.ExactDocumentsStartsWithAscParams{
+		SiteId: id(30), Needle: "Alpha", DocumentId: &filterDocument, Offset: &offsetZero,
+	}, generated.QueryOptions{})
+	if err != nil {
+		return err
+	}
+	startsWithPage, ok := startsWith.Value.(generated.ExactDocumentsStartsWithAscFound)
+	if !ok || startsWithPage.Total.Value != 1 || len(startsWithPage.Documents) != 1 ||
+		startsWithPage.Documents[0].DocumentId != id(31) {
+		return errors.New("generic starts-with page with typed optional filter")
+	}
+	endsWith, err := client.ExactDocumentsEndsWithDesc(ctx, generated.ExactDocumentsEndsWithDescParams{
+		SiteId: id(30), Needle: "Guide", Limit: &limitOne, Offset: &offsetOne,
+	}, generated.QueryOptions{})
+	if err != nil {
+		return err
+	}
+	endsWithPage, ok := endsWith.Value.(generated.ExactDocumentsEndsWithDescFound)
+	if !ok || endsWithPage.Total.Value != 2 || len(endsWithPage.Documents) != 1 ||
+		endsWithPage.Documents[0].Title != "Beta Guide" {
+		return errors.New("generic ends-with page with descending order and numeric offset")
+	}
 
 	queued := "queued"
 	pipelines, err := client.ListPipelines(ctx, generated.ListPipelinesParams{
@@ -139,6 +176,7 @@ func observation(language string) map[string]any {
 		"schema": "riffdb.adapter-operational-observation/v1", "language": language,
 		"catalog_preflight": true, "optional_filters": true, "stable_cursor": true,
 		"null_predicate": true, "binary_prefix": true, "exact_aggregates": true,
+		"exact_text_family": true, "exact_total": true, "numeric_offset": true,
 		"adapters":            []string{"mlflow", "openfga", "better-auth", "woodpecker"},
 		"regression_adapters": []string{"payload"},
 	}

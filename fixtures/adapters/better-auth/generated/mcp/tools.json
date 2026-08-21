@@ -1,5 +1,5 @@
 {
-  "application_manifest_hash": "239d1d8fada56f8339db7a639f30b1fef07986ada9eeacf7acf5c8672fff7c86",
+  "application_manifest_hash": "6c3edb5c5e208f3cbade3548c2bf6002eb79b31a80dbd8ea1d01acd02d84879e",
   "commands": [
     {
       "annotations": {
@@ -8,7 +8,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "contract_bundle_hash": "b886957491e9fbfce56e76b7fe37a3fb95b1732526d616a5b4eee0f32ac1d7c2",
+      "contract_bundle_hash": "c1376f90ceda166ba326ed7e389d3c474224f18d07740b3d5e299cafc94e94d4",
       "description": "Execute the exact ConsumeVerificationToken compiled command from contract BetterAuthAcceptance.",
       "input_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -37,7 +37,7 @@
       },
       "name": "better_auth_acceptance_consume_verification_token",
       "operation_name": "ConsumeVerificationToken",
-      "plan_hash": "5bf3667548c9b575d30fb38696d10dcb7390676baf38842e0311e1d8b095a7a3",
+      "plan_hash": "d3e6b696c3909e8d19de9441e0c25c410656e0daa40b9e7a6bc8738d62ff17dc",
       "result_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "oneOf": [
@@ -112,7 +112,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "contract_bundle_hash": "b886957491e9fbfce56e76b7fe37a3fb95b1732526d616a5b4eee0f32ac1d7c2",
+      "contract_bundle_hash": "c1376f90ceda166ba326ed7e389d3c474224f18d07740b3d5e299cafc94e94d4",
       "description": "Execute the exact CreateUserAccountSessions compiled command from contract BetterAuthAcceptance.",
       "input_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -179,7 +179,7 @@
       },
       "name": "better_auth_acceptance_create_user_account_sessions",
       "operation_name": "CreateUserAccountSessions",
-      "plan_hash": "fd6ce31e145903dbc199e9806cf81fba2394f7660f377dc81bca4dcc2d875559",
+      "plan_hash": "e35be7f9877e51a21f27f7371679dfaedb2cbdabad7e13c228ecacbe612c1126",
       "result_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "oneOf": [
@@ -246,7 +246,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "contract_bundle_hash": "b886957491e9fbfce56e76b7fe37a3fb95b1732526d616a5b4eee0f32ac1d7c2",
+      "contract_bundle_hash": "c1376f90ceda166ba326ed7e389d3c474224f18d07740b3d5e299cafc94e94d4",
       "description": "Execute the exact DeleteUsers compiled command from contract BetterAuthAcceptance.",
       "input_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -276,7 +276,7 @@
       },
       "name": "better_auth_acceptance_delete_users",
       "operation_name": "DeleteUsers",
-      "plan_hash": "54eec6d32dd3a1114a8764f3f146a7b042f8a1f3148dd037b77fadad3c385e89",
+      "plan_hash": "8b97f43474cf0ff07c3831985bf5150af485762356d05ecef79dc666b6431307",
       "result_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "oneOf": [
@@ -330,7 +330,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "contract_bundle_hash": "b886957491e9fbfce56e76b7fe37a3fb95b1732526d616a5b4eee0f32ac1d7c2",
+      "contract_bundle_hash": "c1376f90ceda166ba326ed7e389d3c474224f18d07740b3d5e299cafc94e94d4",
       "description": "Execute the exact IssueVerificationToken compiled command from contract BetterAuthAcceptance.",
       "input_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -367,7 +367,7 @@
       },
       "name": "better_auth_acceptance_issue_verification_token",
       "operation_name": "IssueVerificationToken",
-      "plan_hash": "05e8755b06d61a85f29c0665f878bfe6a7f8ba7fdb737632076a79c4ad936c3d",
+      "plan_hash": "9d226908f0f69a90f763b7dc7829b5fe9ff717a36f9f607a3162c0f0faed75ba",
       "result_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "oneOf": [
@@ -433,7 +433,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "contract_bundle_hash": "b886957491e9fbfce56e76b7fe37a3fb95b1732526d616a5b4eee0f32ac1d7c2",
+      "contract_bundle_hash": "c1376f90ceda166ba326ed7e389d3c474224f18d07740b3d5e299cafc94e94d4",
       "description": "Execute the exact RefreshSession compiled command from contract BetterAuthAcceptance.",
       "input_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -470,7 +470,7 @@
       },
       "name": "better_auth_acceptance_refresh_session",
       "operation_name": "RefreshSession",
-      "plan_hash": "d80d951f7636752c16ca549f5b74956c6104fc0140039bbf502185c92f070e11",
+      "plan_hash": "bec158663a6511372e7f497f3d0ed5ae9ffa45a0a39b7b54d71a817d9fd31067",
       "result_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "oneOf": [
@@ -583,7 +583,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "contract_bundle_hash": "b886957491e9fbfce56e76b7fe37a3fb95b1732526d616a5b4eee0f32ac1d7c2",
+      "contract_bundle_hash": "c1376f90ceda166ba326ed7e389d3c474224f18d07740b3d5e299cafc94e94d4",
       "description": "Execute the exact RevokeSession compiled command from contract BetterAuthAcceptance.",
       "input_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -616,7 +616,7 @@
       },
       "name": "better_auth_acceptance_revoke_session",
       "operation_name": "RevokeSession",
-      "plan_hash": "6fc475f3da640fc4b4e6f4d8eae0d900269f8d7860ba520a1593c7f14e8281c5",
+      "plan_hash": "309062f50ee35eea4b2ab7393c8a3be74547a3d7e05995eb6b8c6cecc9f39813",
       "result_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "oneOf": [
@@ -742,7 +742,7 @@
         ],
         "type": "object"
       },
-      "module_hash": "63602b2a357b28ba9a1c0cf412ee3351e6e752d97bc2d0acf3f096f383727317",
+      "module_hash": "fdf5340bae520590d297856e698dd6f097d9c120c5e0f265db82f650f948145f",
       "name": "better_auth_acceptance_get_session",
       "operation_name": "GetSession",
       "result_schema": {
@@ -820,318 +820,6 @@
         "openWorldHint": false,
         "readOnlyHint": true
       },
-      "description": "Execute the exact AdminUsersContainsAsc named query from immutable module better_auth_acceptance.",
-      "input_schema": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "additionalProperties": false,
-        "properties": {
-          "limit": {
-            "maximum": 499,
-            "minimum": 1,
-            "type": "integer"
-          },
-          "needle": {
-            "type": "string"
-          },
-          "offset": {
-            "type": "string"
-          },
-          "organization_id": {
-            "type": "string"
-          },
-          "user_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          }
-        },
-        "required": [
-          "organization_id",
-          "needle"
-        ],
-        "type": "object"
-      },
-      "module_hash": "63602b2a357b28ba9a1c0cf412ee3351e6e752d97bc2d0acf3f096f383727317",
-      "name": "better_auth_acceptance_admin_users_contains_asc",
-      "operation_name": "AdminUsersContainsAsc",
-      "result_schema": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "oneOf": [
-          {
-            "additionalProperties": false,
-            "properties": {
-              "outcome": {
-                "const": "Found",
-                "type": "string"
-              },
-              "total": {
-                "additionalProperties": false,
-                "properties": {
-                  "value": {
-                    "type": "string"
-                  }
-                },
-                "required": [
-                  "value"
-                ],
-                "type": "object"
-              },
-              "users": {
-                "items": {
-                  "additionalProperties": false,
-                  "properties": {
-                    "email": {
-                      "type": "string"
-                    },
-                    "organization_id": {
-                      "type": "string"
-                    },
-                    "user_id": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "organization_id",
-                    "user_id",
-                    "email"
-                  ],
-                  "type": "object"
-                },
-                "maxItems": 499,
-                "type": "array"
-              }
-            },
-            "required": [
-              "outcome",
-              "users",
-              "total"
-            ],
-            "type": "object"
-          }
-        ]
-      },
-      "title": "Run AdminUsersContainsAsc"
-    },
-    {
-      "annotations": {
-        "destructiveHint": false,
-        "idempotentHint": true,
-        "openWorldHint": false,
-        "readOnlyHint": true
-      },
-      "description": "Execute the exact AdminUsersEndsWithDesc named query from immutable module better_auth_acceptance.",
-      "input_schema": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "additionalProperties": false,
-        "properties": {
-          "limit": {
-            "maximum": 499,
-            "minimum": 1,
-            "type": "integer"
-          },
-          "needle": {
-            "type": "string"
-          },
-          "offset": {
-            "type": "string"
-          },
-          "organization_id": {
-            "type": "string"
-          },
-          "user_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          }
-        },
-        "required": [
-          "organization_id",
-          "needle"
-        ],
-        "type": "object"
-      },
-      "module_hash": "63602b2a357b28ba9a1c0cf412ee3351e6e752d97bc2d0acf3f096f383727317",
-      "name": "better_auth_acceptance_admin_users_ends_with_desc",
-      "operation_name": "AdminUsersEndsWithDesc",
-      "result_schema": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "oneOf": [
-          {
-            "additionalProperties": false,
-            "properties": {
-              "outcome": {
-                "const": "Found",
-                "type": "string"
-              },
-              "total": {
-                "additionalProperties": false,
-                "properties": {
-                  "value": {
-                    "type": "string"
-                  }
-                },
-                "required": [
-                  "value"
-                ],
-                "type": "object"
-              },
-              "users": {
-                "items": {
-                  "additionalProperties": false,
-                  "properties": {
-                    "email": {
-                      "type": "string"
-                    },
-                    "organization_id": {
-                      "type": "string"
-                    },
-                    "user_id": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "organization_id",
-                    "user_id",
-                    "email"
-                  ],
-                  "type": "object"
-                },
-                "maxItems": 499,
-                "type": "array"
-              }
-            },
-            "required": [
-              "outcome",
-              "users",
-              "total"
-            ],
-            "type": "object"
-          }
-        ]
-      },
-      "title": "Run AdminUsersEndsWithDesc"
-    },
-    {
-      "annotations": {
-        "destructiveHint": false,
-        "idempotentHint": true,
-        "openWorldHint": false,
-        "readOnlyHint": true
-      },
-      "description": "Execute the exact AdminUsersStartsWithAsc named query from immutable module better_auth_acceptance.",
-      "input_schema": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "additionalProperties": false,
-        "properties": {
-          "limit": {
-            "maximum": 499,
-            "minimum": 1,
-            "type": "integer"
-          },
-          "needle": {
-            "type": "string"
-          },
-          "offset": {
-            "type": "string"
-          },
-          "organization_id": {
-            "type": "string"
-          },
-          "user_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          }
-        },
-        "required": [
-          "organization_id",
-          "needle"
-        ],
-        "type": "object"
-      },
-      "module_hash": "63602b2a357b28ba9a1c0cf412ee3351e6e752d97bc2d0acf3f096f383727317",
-      "name": "better_auth_acceptance_admin_users_starts_with_asc",
-      "operation_name": "AdminUsersStartsWithAsc",
-      "result_schema": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "oneOf": [
-          {
-            "additionalProperties": false,
-            "properties": {
-              "outcome": {
-                "const": "Found",
-                "type": "string"
-              },
-              "total": {
-                "additionalProperties": false,
-                "properties": {
-                  "value": {
-                    "type": "string"
-                  }
-                },
-                "required": [
-                  "value"
-                ],
-                "type": "object"
-              },
-              "users": {
-                "items": {
-                  "additionalProperties": false,
-                  "properties": {
-                    "email": {
-                      "type": "string"
-                    },
-                    "organization_id": {
-                      "type": "string"
-                    },
-                    "user_id": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "organization_id",
-                    "user_id",
-                    "email"
-                  ],
-                  "type": "object"
-                },
-                "maxItems": 499,
-                "type": "array"
-              }
-            },
-            "required": [
-              "outcome",
-              "users",
-              "total"
-            ],
-            "type": "object"
-          }
-        ]
-      },
-      "title": "Run AdminUsersStartsWithAsc"
-    },
-    {
-      "annotations": {
-        "destructiveHint": false,
-        "idempotentHint": true,
-        "openWorldHint": false,
-        "readOnlyHint": true
-      },
       "description": "Execute the exact GetUser named query from immutable module better_auth_acceptance.",
       "input_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -1150,7 +838,7 @@
         ],
         "type": "object"
       },
-      "module_hash": "63602b2a357b28ba9a1c0cf412ee3351e6e752d97bc2d0acf3f096f383727317",
+      "module_hash": "fdf5340bae520590d297856e698dd6f097d9c120c5e0f265db82f650f948145f",
       "name": "better_auth_acceptance_get_user",
       "operation_name": "GetUser",
       "result_schema": {

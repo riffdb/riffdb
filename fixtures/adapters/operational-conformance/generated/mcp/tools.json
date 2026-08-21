@@ -1,5 +1,5 @@
 {
-  "application_manifest_hash": "dae9d0f190cc960751843c7ea76e9206daeb3510c92cc0122982500c5440f862",
+  "application_manifest_hash": "f74efa06870411de34d48be0ecb7693b50f5d8c23332607aee54bbd72f30be41",
   "commands": [
     {
       "annotations": {
@@ -488,6 +488,318 @@
         "openWorldHint": false,
         "readOnlyHint": true
       },
+      "description": "Execute the exact ExactDocumentsContainsAsc named query from immutable module adapter_operational_conformance.",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "document_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "limit": {
+            "maximum": 499,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "needle": {
+            "type": "string"
+          },
+          "offset": {
+            "type": "string"
+          },
+          "site_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "site_id",
+          "needle"
+        ],
+        "type": "object"
+      },
+      "module_hash": "2da42e510a3ba32b14af31e114a67148156202d6502366ae015e0c7ad914a45b",
+      "name": "adapter_operational_conformance_exact_documents_contains_asc",
+      "operation_name": "ExactDocumentsContainsAsc",
+      "result_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "documents": {
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "document_id": {
+                      "type": "string"
+                    },
+                    "site_id": {
+                      "type": "string"
+                    },
+                    "title": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "site_id",
+                    "document_id",
+                    "title"
+                  ],
+                  "type": "object"
+                },
+                "maxItems": 499,
+                "type": "array"
+              },
+              "outcome": {
+                "const": "Found",
+                "type": "string"
+              },
+              "total": {
+                "additionalProperties": false,
+                "properties": {
+                  "value": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "value"
+                ],
+                "type": "object"
+              }
+            },
+            "required": [
+              "outcome",
+              "documents",
+              "total"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "title": "Run ExactDocumentsContainsAsc"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "Execute the exact ExactDocumentsEndsWithDesc named query from immutable module adapter_operational_conformance.",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "document_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "limit": {
+            "maximum": 499,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "needle": {
+            "type": "string"
+          },
+          "offset": {
+            "type": "string"
+          },
+          "site_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "site_id",
+          "needle"
+        ],
+        "type": "object"
+      },
+      "module_hash": "2da42e510a3ba32b14af31e114a67148156202d6502366ae015e0c7ad914a45b",
+      "name": "adapter_operational_conformance_exact_documents_ends_with_desc",
+      "operation_name": "ExactDocumentsEndsWithDesc",
+      "result_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "documents": {
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "document_id": {
+                      "type": "string"
+                    },
+                    "site_id": {
+                      "type": "string"
+                    },
+                    "title": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "site_id",
+                    "document_id",
+                    "title"
+                  ],
+                  "type": "object"
+                },
+                "maxItems": 499,
+                "type": "array"
+              },
+              "outcome": {
+                "const": "Found",
+                "type": "string"
+              },
+              "total": {
+                "additionalProperties": false,
+                "properties": {
+                  "value": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "value"
+                ],
+                "type": "object"
+              }
+            },
+            "required": [
+              "outcome",
+              "documents",
+              "total"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "title": "Run ExactDocumentsEndsWithDesc"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "Execute the exact ExactDocumentsStartsWithAsc named query from immutable module adapter_operational_conformance.",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "document_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "limit": {
+            "maximum": 499,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "needle": {
+            "type": "string"
+          },
+          "offset": {
+            "type": "string"
+          },
+          "site_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "site_id",
+          "needle"
+        ],
+        "type": "object"
+      },
+      "module_hash": "2da42e510a3ba32b14af31e114a67148156202d6502366ae015e0c7ad914a45b",
+      "name": "adapter_operational_conformance_exact_documents_starts_with_asc",
+      "operation_name": "ExactDocumentsStartsWithAsc",
+      "result_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "documents": {
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "document_id": {
+                      "type": "string"
+                    },
+                    "site_id": {
+                      "type": "string"
+                    },
+                    "title": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "site_id",
+                    "document_id",
+                    "title"
+                  ],
+                  "type": "object"
+                },
+                "maxItems": 499,
+                "type": "array"
+              },
+              "outcome": {
+                "const": "Found",
+                "type": "string"
+              },
+              "total": {
+                "additionalProperties": false,
+                "properties": {
+                  "value": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "value"
+                ],
+                "type": "object"
+              }
+            },
+            "required": [
+              "outcome",
+              "documents",
+              "total"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "title": "Run ExactDocumentsStartsWithAsc"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
       "description": "Execute the exact GetAuthSession named query from immutable module adapter_operational_conformance.",
       "input_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -510,7 +822,7 @@
         ],
         "type": "object"
       },
-      "module_hash": "f3a85c2b473168d792f8829289fcddcbc25bbe4d48e55b9c93aee2318558cd38",
+      "module_hash": "2da42e510a3ba32b14af31e114a67148156202d6502366ae015e0c7ad914a45b",
       "name": "adapter_operational_conformance_get_auth_session",
       "operation_name": "GetAuthSession",
       "result_schema": {
@@ -596,7 +908,7 @@
         ],
         "type": "object"
       },
-      "module_hash": "f3a85c2b473168d792f8829289fcddcbc25bbe4d48e55b9c93aee2318558cd38",
+      "module_hash": "2da42e510a3ba32b14af31e114a67148156202d6502366ae015e0c7ad914a45b",
       "name": "adapter_operational_conformance_list_draft_documents",
       "operation_name": "ListDraftDocuments",
       "result_schema": {
@@ -692,7 +1004,7 @@
         ],
         "type": "object"
       },
-      "module_hash": "f3a85c2b473168d792f8829289fcddcbc25bbe4d48e55b9c93aee2318558cd38",
+      "module_hash": "2da42e510a3ba32b14af31e114a67148156202d6502366ae015e0c7ad914a45b",
       "name": "adapter_operational_conformance_list_fga_tuples",
       "operation_name": "ListFgaTuples",
       "result_schema": {
@@ -785,7 +1097,7 @@
         ],
         "type": "object"
       },
-      "module_hash": "f3a85c2b473168d792f8829289fcddcbc25bbe4d48e55b9c93aee2318558cd38",
+      "module_hash": "2da42e510a3ba32b14af31e114a67148156202d6502366ae015e0c7ad914a45b",
       "name": "adapter_operational_conformance_list_pipelines",
       "operation_name": "ListPipelines",
       "result_schema": {
@@ -854,7 +1166,7 @@
         ],
         "type": "object"
       },
-      "module_hash": "f3a85c2b473168d792f8829289fcddcbc25bbe4d48e55b9c93aee2318558cd38",
+      "module_hash": "2da42e510a3ba32b14af31e114a67148156202d6502366ae015e0c7ad914a45b",
       "name": "adapter_operational_conformance_metric_dashboard",
       "operation_name": "MetricDashboard",
       "result_schema": {
@@ -959,7 +1271,7 @@
         ],
         "type": "object"
       },
-      "module_hash": "f3a85c2b473168d792f8829289fcddcbc25bbe4d48e55b9c93aee2318558cd38",
+      "module_hash": "2da42e510a3ba32b14af31e114a67148156202d6502366ae015e0c7ad914a45b",
       "name": "adapter_operational_conformance_search_documents",
       "operation_name": "SearchDocuments",
       "result_schema": {

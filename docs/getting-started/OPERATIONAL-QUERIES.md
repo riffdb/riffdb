@@ -99,24 +99,23 @@ ordinal selection. Any second filter, disjunction, caller-selected field or
 operator, or other unsupported predicate is a source-spanned compiler error
 rather than a request-time filter or ignored condition.
 
-## Better Auth admin profile
+## Framework-neutral exact-result proof
 
-The retained Better Auth adapter demonstrates a separate least-authority
-`BetterAuthAdmin` role and three generated methods:
+The retained operational fixture exposes a generic `Document` query family for
+binary UTF-8 contains, starts-with, and ends-with matching. The family combines
+one typed optional document filter, deterministic ascending and descending
+orders, bounded limit and numeric offset, and a complete exact total. Its
+generated Rust, Go, TypeScript, Python, CLI, and MCP surfaces prove the RiffDB
+semantics without embedding an external framework's schema, route, role, or
+application policy in this repository.
 
-- `AdminUsersContainsAsc`;
-- `AdminUsersStartsWithAsc`; and
-- `AdminUsersEndsWithDesc`.
-
-Each method accepts only an organization, a bounded nonempty search value, an
-optional typed user ID, a bounded limit, and a bounded numeric offset. The
-server applies the current `UserAdminAccess` row policy before constructing
-postings, exact totals, or ordinals. The generated TypeScript host exposes a
-real `GET /admin/users` route but contains no predicate AST, result filter,
-sort, count, or page-walk loop. Binary UTF-8 ordering and matching are
-case-sensitive byte semantics; this profile does not promise Unicode folding,
-locale collation, regex, wildcard search, BM25, facets, or cross-provider
-composition.
+Framework integrations own their generated profile and route-level acceptance
+in their own repositories. They pin a RiffDB build and prove that their public
+API delegates to generated named methods without client-side filtering,
+sorting, counting, page walking, raw query construction, or storage access.
+RiffDB keeps the generic compiler, provider, policy, transport, and conformance
+surface; it does not ship a Better Auth admin route or generated Better Auth
+admin SDK.
 
 ## CLI and MCP
 
@@ -131,15 +130,14 @@ The retained acceptance corpus is:
 ./scripts/adapter-operational-query-acceptance --all-languages
 ```
 
-It deploys exact applications over verified TLS, seeds through compiled
+It deploys one exact application over verified TLS, seeds through compiled
 commands, and checks OpenFGA tuple filtering, an MLflow exact metric dashboard,
-Payload binary-prefix and null pages, a Woodpecker state queue, and Better Auth
-session/admin operations through Rust, Go, TypeScript, Python, CLI, and
-generated MCP schemas. The Better Auth phase proves every declared text/order
-shape, direct offset boundaries, exact totals, optional-filter null/present
-forms, Unicode byte boundaries, concurrent current snapshots, organization
-isolation, role separation, and revocation. The accepted-alpha observation
-inventory names OpenFGA, MLflow, Better Auth, and Woodpecker; Payload is
-reported separately as a post-alpha regression. The corpus also proves a
-malformed cursor fails closed and scans the application runners for kernel,
-storage, numeric-ID, raw-transaction, and client-filter escape hatches.
+Payload binary-prefix and null pages, a Woodpecker state queue, a typed session
+lookup, and the framework-neutral exact-result family through Rust, Go,
+TypeScript, Python, CLI, and generated MCP schemas. The exact-result phase
+proves all three binary-text operators, both declared order directions, direct
+offset boundaries, complete totals, and optional-filter null/present forms.
+The corpus also proves a malformed cursor fails closed and scans the
+application runners for kernel, storage, numeric-ID, raw-transaction, and
+client-filter escape hatches. External adapter repositories own their separate
+route-level compatibility matrices.

@@ -28,35 +28,22 @@ generic capabilities:
 
 It is a workload shape, not a bundled framework adapter.
 
-## Better Auth admin users
+## Repository ownership boundary
 
-The retained Better Auth acceptance application is a compiled adapter profile,
-not RiffDB-owned authentication. Its ordinary application role owns account,
-session, and verification commands. A distinct read-only `BetterAuthAdmin`
-role owns only three generated admin-user queries and must carry the declared
-`administer_users` principal fact. RiffDB does not create end-user sessions,
-interpret sign-in state, or implement OAuth for either role.
+Framework-specific contracts, profiles, generated SDKs, route hosts, and route-
+level compatibility tests belong to the integration repository that owns the
+adapter. That repository pins an immutable RiffDB release and records its
+framework version, enabled plugin/model surface, generated identities, and
+acceptance observations. RiffDB does not copy those artifacts into its own
+source tree.
 
-The TypeScript acceptance host serves `GET /admin/users` using generated named
-methods for contains/ascending, starts-with/ascending, and ends-with/descending
-email searches. Each method has one optional typed user-ID filter, a bounded
-limit, and a bounded direct offset; page and exact total come from one current,
-policy-filtered provider epoch. A transient building or freshness lifecycle
-outcome may be retried only under a fixed host budget. The adapter never
-downloads a broader page to filter, sort, count, or walk locally.
-
-Run the real public-TLS profile with:
-
-```bash
-./scripts/adapter-cascade-acceptance --all-languages
-```
-
-The gate includes cross-organization seed data, an ordinary role attempting
-the admin method, explicit admin revocation, concurrent generated writes,
-Unicode binary-UTF-8 boundaries, offset boundaries, and static application-
-boundary checks. Search remains exact binary UTF-8 and case-sensitive; locale
-folding, regex, wildcard, scoring, facets, and cross-provider composition are
-not available in this alpha profile.
+The RiffDB repository retains framework-neutral fixtures for the compiler,
+providers, authorization, generated transports, and cross-language semantics.
+For exact result sets, the generic `Document` corpus proves contains, starts-
+with, ends-with, typed optional filtering, deterministic orders, bounded direct
+offset, and complete exact total. An adapter can depend on that public
+capability, but neither its route vocabulary nor its userland policy becomes a
+RiffDB feature.
 
 ## Keyless upstream retries
 
