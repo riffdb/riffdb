@@ -1,8 +1,8 @@
 # ADR-0134: Compiler-Declared Exact Predicate and Independent Order Families
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Direction approved:** 20 August 2026 (maintainer, in session)
-- **Exact text accepted:** No
+- **Exact text accepted:** Yes — 2026-08-21 (maintainer, as written)
 - **Decision deadline:** Before WP-656 changes RiffQL predicate syntax, exact-
   result IR, provider-state formats, or generated query surfaces
 - **Requires:** ADR-0002, ADR-0051, ADR-0052, ADR-0053, ADR-0055, ADR-0108,
@@ -10,8 +10,8 @@
 - **Defines or blocks:** WP-656 through WP-658 and completion of external
   framework exact-result acceptance
 
-Direction approval permits this paper draft only. This ADR is not authoritative
-until the maintainer accepts its exact text and changes the status to Accepted.
+The maintainer accepted this exact text on 2026-08-21. This ADR is now
+authoritative.
 
 ## Context
 

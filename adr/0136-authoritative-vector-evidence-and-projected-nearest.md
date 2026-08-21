@@ -1,8 +1,8 @@
 # ADR-0136: Authoritative Vector Evidence and Production Projected Nearest
 
-- **Status:** Proposed
-- **Direction approved:** No
-- **Exact text accepted:** No
+- **Status:** Accepted
+- **Direction approved:** 2026-08-21 (maintainer, in session)
+- **Exact text accepted:** Yes — 2026-08-21 (maintainer, as written)
 - **Decision deadline:** Before WP-596 writes vector evidence, changes contract
   or query IR, or makes `nearest` production-reachable
 - **Requires:** ADR-0002, ADR-0005, ADR-0011, ADR-0038, ADR-0040,
