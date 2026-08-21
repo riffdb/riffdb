@@ -2,7 +2,7 @@ use std::fmt::Write;
 
 use crate::{
     AggregateFunction, BinaryOperator, Cardinality, Direction, Document, Expression,
-    FieldSelection, Literal, Path, Selection, TypeReference, UnaryOperator,
+    FieldSelection, Literal, Path, ProjectedFreshness, Selection, TypeReference, UnaryOperator,
 };
 
 /// Emits the canonical, idempotent RiffQL source spelling for the document version.
@@ -30,6 +30,31 @@ pub fn format_query(document: &Document) -> String {
         output.push_str(") {\n");
     } else {
         output.push_str("{\n");
+    }
+    if let Some(source) = &document.projected_source {
+        writeln!(
+            output,
+            "    source projected {}",
+            format_path(&source.path.value)
+        )
+        .expect("String writes cannot fail");
+        match source.freshness.value {
+            ProjectedFreshness::Available => output.push_str("    freshness available\n\n"),
+            ProjectedFreshness::Causal {
+                inherit_session_commit,
+                max_wait_ms,
+            } => {
+                writeln!(
+                    output,
+                    "    freshness causal inherit_session_commit {inherit_session_commit} max_wait_ms {max_wait_ms}\n"
+                )
+                .expect("String writes cannot fail");
+            }
+            ProjectedFreshness::Bounded { max_lag_ms } => {
+                writeln!(output, "    freshness bounded max_lag_ms {max_lag_ms}\n")
+                    .expect("String writes cannot fail");
+            }
+        }
     }
     for binding in &document.body.bindings {
         let cardinality = match binding.cardinality.value {

@@ -68,14 +68,15 @@ use riffdb_query_ir::{
     AuthorizationEntityAccess, CoveredResultLayoutV1, NamedQuerySchemas, OperationalQueryFamilyV1,
     QUERY_IR_VERSION_COVERED_RESULT_V1, QUERY_IR_VERSION_EXACT_FILTERED_RESULT_SET_V1,
     QUERY_IR_VERSION_EXACT_RESULT_SET_V1, QUERY_IR_VERSION_OPERATIONAL_AGGREGATE_V1,
-    QUERY_IR_VERSION_OPERATIONAL_V1, QUERY_IR_VERSION_SECRET_OUTPUT_V1, QUERY_IR_VERSION_V1,
-    QueryAccessProgramV1, QuerySourceMap, SecretOutputRequirement, SourceSymbolKind,
-    SymbolicCatalog,
+    QUERY_IR_VERSION_OPERATIONAL_V1, QUERY_IR_VERSION_PROJECTED_VECTOR_V1,
+    QUERY_IR_VERSION_SECRET_OUTPUT_V1, QUERY_IR_VERSION_V1, QueryAccessProgramV1, QuerySourceMap,
+    SecretOutputRequirement, SourceSymbolKind, SymbolicCatalog,
 };
 use riffdb_riffql_syntax::{
     Document, MAX_IDENTIFIER_BYTES, MAX_SOURCE_BYTES, ParseDiagnostics, RIFFQL_LANGUAGE_VERSION,
     RIFFQL_LANGUAGE_VERSION_EXACT_RESULT_SET_V1, RIFFQL_LANGUAGE_VERSION_OPERATIONAL_V1,
-    RIFFQL_LANGUAGE_VERSION_SECRET_OUTPUT_V1, format_query, parse_query,
+    RIFFQL_LANGUAGE_VERSION_PROJECTED_VECTOR_V1, RIFFQL_LANGUAGE_VERSION_SECRET_OUTPUT_V1,
+    format_query, parse_query,
 };
 use riffdb_types::{
     ContractBundleHash, ContractLineage, ContractVersion, QueryCostVectorV1, QueryModuleHash,
@@ -105,6 +106,8 @@ pub const QUERY_MODULE_FORMAT_VERSION_EXACT_RESULT_SET_V1: u32 = 5;
 pub const QUERY_MODULE_FORMAT_VERSION_EXACT_FILTERED_RESULT_SET_V1: u32 = 6;
 /// Additive module codec carrying compiler-sealed covered-result layouts.
 pub const QUERY_MODULE_FORMAT_VERSION_COVERED_RESULT_V1: u32 = 7;
+/// Additive module codec carrying compiler-owned projected vector sources.
+pub const QUERY_MODULE_FORMAT_VERSION_PROJECTED_VECTOR_V1: u32 = 8;
 /// Maximum queries retained in one immutable module.
 pub const MAX_MODULE_QUERIES: usize = 4_096;
 /// Maximum canonical bytes for one immutable module.
@@ -663,7 +666,15 @@ impl QueryModule {
     /// Canonical module codec selected by its contained plan kinds.
     #[must_use]
     pub fn format_version(&self) -> u32 {
-        if self
+        if self.queries.iter().any(|query| {
+            query
+                .plan()
+                .representative_program()
+                .projected_source()
+                .is_some()
+        }) {
+            QUERY_MODULE_FORMAT_VERSION_PROJECTED_VECTOR_V1
+        } else if self
             .queries
             .iter()
             .any(|query| query.plan().has_covered_result_layout())
@@ -1013,7 +1024,16 @@ fn encode_module(
     let covered_result = queries
         .iter()
         .any(|query| query.plan().has_covered_result_layout());
-    let format_version = if covered_result {
+    let projected_vector = queries.iter().any(|query| {
+        query
+            .plan()
+            .representative_program()
+            .projected_source()
+            .is_some()
+    });
+    let format_version = if projected_vector {
+        QUERY_MODULE_FORMAT_VERSION_PROJECTED_VECTOR_V1
+    } else if covered_result {
         QUERY_MODULE_FORMAT_VERSION_COVERED_RESULT_V1
     } else if exact_filtered_result {
         QUERY_MODULE_FORMAT_VERSION_EXACT_FILTERED_RESULT_SET_V1
@@ -1037,7 +1057,9 @@ fn encode_module(
     output.extend_from_slice(&contract.contract_version().get().to_be_bytes());
     output.extend_from_slice(contract.bundle_hash().as_bytes());
     output.extend_from_slice(
-        &if exact_result {
+        &if projected_vector {
+            RIFFQL_LANGUAGE_VERSION_PROJECTED_VECTOR_V1
+        } else if exact_result {
             RIFFQL_LANGUAGE_VERSION_EXACT_RESULT_SET_V1
         } else if secret_output {
             RIFFQL_LANGUAGE_VERSION_SECRET_OUTPUT_V1
@@ -1049,7 +1071,9 @@ fn encode_module(
         .to_be_bytes(),
     );
     output.extend_from_slice(
-        &if covered_result {
+        &if projected_vector {
+            QUERY_IR_VERSION_PROJECTED_VECTOR_V1
+        } else if covered_result {
             QUERY_IR_VERSION_COVERED_RESULT_V1
         } else if exact_filtered_result {
             QUERY_IR_VERSION_EXACT_FILTERED_RESULT_SET_V1
@@ -1072,7 +1096,7 @@ fn encode_module(
         write_text(&mut output, query.name())?;
         write_bytes(&mut output, query.canonical_source().as_bytes())?;
         output.extend_from_slice(query.source_hash().as_bytes());
-        if covered_result || operational || secret_output || exact_result {
+        if projected_vector || covered_result || operational || secret_output || exact_result {
             output.push(match query.plan() {
                 CompiledNamedQueryPlan::V1(_) => 1,
                 CompiledNamedQueryPlan::OperationalV1(_) => 2,
@@ -1125,6 +1149,7 @@ fn decode_candidate(bytes: &[u8]) -> Result<DecodedCandidate, QueryModuleError> 
             | QUERY_MODULE_FORMAT_VERSION_EXACT_RESULT_SET_V1
             | QUERY_MODULE_FORMAT_VERSION_EXACT_FILTERED_RESULT_SET_V1
             | QUERY_MODULE_FORMAT_VERSION_COVERED_RESULT_V1
+            | QUERY_MODULE_FORMAT_VERSION_PROJECTED_VECTOR_V1
     ) {
         return Err(QueryModuleError::new(
             QueryModuleErrorKind::UnsupportedVersion,
@@ -1174,6 +1199,10 @@ fn decode_candidate(bytes: &[u8]) -> Result<DecodedCandidate, QueryModuleError> 
                     | RIFFQL_LANGUAGE_VERSION_EXACT_RESULT_SET_V1
             ) && ir_version == QUERY_IR_VERSION_COVERED_RESULT_V1
         }
+        QUERY_MODULE_FORMAT_VERSION_PROJECTED_VECTOR_V1 => {
+            language_version == RIFFQL_LANGUAGE_VERSION_PROJECTED_VECTOR_V1
+                && ir_version == QUERY_IR_VERSION_PROJECTED_VECTOR_V1
+        }
         _ => false,
     };
     if !versions_match {
@@ -1207,7 +1236,8 @@ fn decode_candidate(bytes: &[u8]) -> Result<DecodedCandidate, QueryModuleError> 
                 QUERY_MODULE_FORMAT_VERSION_SECRET_OUTPUT_V1
                 | QUERY_MODULE_FORMAT_VERSION_EXACT_RESULT_SET_V1
                 | QUERY_MODULE_FORMAT_VERSION_EXACT_FILTERED_RESULT_SET_V1
-                | QUERY_MODULE_FORMAT_VERSION_COVERED_RESULT_V1 => 10,
+                | QUERY_MODULE_FORMAT_VERSION_COVERED_RESULT_V1
+                | QUERY_MODULE_FORMAT_VERSION_PROJECTED_VECTOR_V1 => 10,
                 QUERY_MODULE_FORMAT_VERSION_OPERATIONAL_AGGREGATE_V1 => 9,
                 _ => 7,
             };

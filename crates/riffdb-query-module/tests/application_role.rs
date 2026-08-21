@@ -104,6 +104,9 @@ query SimilarDocuments(
     $org_id: Document.org_id,
     $query_vec: Document.embedding,
 ) {
+    source projected Document.embedding
+    freshness available
+
     many results from Document
         where org_id == $org_id
         nearest(embedding, $query_vec, 10)

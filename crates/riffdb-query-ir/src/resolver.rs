@@ -15,8 +15,9 @@ use crate::{
     NamedParameterSchema, NamedQuerySchemas, NamedResultBranchSchema, NamedTypeSchema,
     OperationalAggregateFunctionV1, OperationalAggregateGroupKeyV1, OperationalAggregateMeasureV1,
     OperationalAggregateV1, PageBound, QUERY_IR_VERSION_OPERATIONAL_AGGREGATE_V1,
-    QUERY_IR_VERSION_SECRET_OUTPUT_V1, QUERY_IR_VERSION_V1, QueryDiagnostic, QueryDiagnosticCode,
-    QueryDiagnosticStage, QueryDiagnostics, SymbolicCatalog, page_take_within_scan_bound,
+    QUERY_IR_VERSION_PROJECTED_VECTOR_V1, QUERY_IR_VERSION_SECRET_OUTPUT_V1, QUERY_IR_VERSION_V1,
+    QueryDiagnostic, QueryDiagnosticCode, QueryDiagnosticStage, QueryDiagnostics, SymbolicCatalog,
+    page_take_within_scan_bound,
 };
 
 const IR_MAGIC: &[u8] = b"RIFFDB-QUERY-SURFACE\0";
@@ -242,6 +243,7 @@ pub struct ResolvedQueryV1 {
     bindings: Vec<BindingSymbol>,
     aggregates: Vec<OperationalAggregateV1>,
     secret_outputs: Vec<SecretOutputRequirement>,
+    projected: bool,
     schemas: NamedQuerySchemas,
     source_map: QuerySourceMap,
     canonical_bytes: Vec<u8>,
@@ -257,6 +259,7 @@ impl std::fmt::Debug for ResolvedQueryV1 {
             .field("bindings", &self.bindings)
             .field("aggregates", &self.aggregates)
             .field("secret_outputs", &self.secret_outputs)
+            .field("projected", &self.projected)
             .field("schemas", &self.schemas)
             .field("source_map_entries", &self.source_map.0.len())
             .field("canonical_length", &self.canonical_bytes.len())
@@ -268,7 +271,9 @@ impl ResolvedQueryV1 {
     /// Query IR version.
     #[must_use]
     pub fn ir_version(&self) -> u32 {
-        if self.secret_outputs.is_empty() {
+        if self.projected {
+            QUERY_IR_VERSION_PROJECTED_VECTOR_V1
+        } else if self.secret_outputs.is_empty() {
             // Declaration-free member access programs retain their original
             // V1 identity. Operational and aggregate versions belong to the
             // enclosing family codec, not this member program.
@@ -762,6 +767,7 @@ impl<'a> Resolver<'a> {
             bindings: binding_symbols,
             aggregates: aggregate_symbols,
             secret_outputs: self.secret_outputs,
+            projected: document.projected_source.is_some(),
             schemas,
             source_map: QuerySourceMap(self.source_map),
             canonical_bytes,
@@ -1579,7 +1585,9 @@ fn canonical_surface(
     );
     bytes.extend_from_slice(IR_MAGIC);
     bytes.extend_from_slice(
-        &if !secret_outputs.is_empty() {
+        &if document.projected_source.is_some() {
+            QUERY_IR_VERSION_PROJECTED_VECTOR_V1
+        } else if !secret_outputs.is_empty() {
             QUERY_IR_VERSION_SECRET_OUTPUT_V1
         } else if aggregates.is_empty() {
             QUERY_IR_VERSION_V1

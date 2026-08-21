@@ -473,8 +473,9 @@ impl ProductionGraphBuilder {
         };
         // Columnar apply readiness folds into aggregate operational health.
         let columnar_status = columnar_worker.status();
-        let columnar: Arc<dyn ColumnarProjectionPort> =
-            Arc::new(ServerColumnarProjectionPort::new(columnar_runtime));
+        let columnar_adapter = Arc::new(ServerColumnarProjectionPort::new(columnar_runtime));
+        let columnar: Arc<dyn ColumnarProjectionPort> = columnar_adapter.clone();
+        let vector_projection: Arc<dyn riffdb_service::VectorProjectionPort> = columnar_adapter;
         let initial_exact_generation = exact_generation_from_process(&server_generation);
         let exact_runtime = match ExactTextRuntime::open(
             storage.clone(),
@@ -595,6 +596,7 @@ impl ProductionGraphBuilder {
         .with_live_query_clock(live_query_clock)
         .with_columnar(columnar)
         .with_exact_text(exact_text)
+        .with_vector_projection(vector_projection)
         .with_offline_maintenance(offline_maintenance)
         .with_contract_migration(migration)
         .with_application_installation(installation);

@@ -218,8 +218,12 @@ also has a field-specific constructor that fills the contract-sealed model
 identity and version; generated constants and accessors keep that evidence
 inspectable without asking application code to duplicate it. Direct input
 construction remains checked by the same server authority. The production
-staleness enumeration/health observer and `nearest()` storage path are still
-absent — see [Known Limitations](../known-limitations.md).
+application surface also exposes bounded symbolic stale/outdated inspection
+for the exact vector field when its role declares that authority. The
+authoritative observer maintains the distinct `vector_staleness` health
+component without scanning entities during a probe. Production exact-nearest
+queries use an explicit projected source and freshness declaration; see the
+[RiffQL language reference](../riffql/LANGUAGE.md#nearest-neighbor-bindings-alpha).
 
 ## Revision-checked workflow transitions
 

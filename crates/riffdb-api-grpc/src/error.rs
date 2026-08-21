@@ -112,7 +112,8 @@ pub const fn application_grpc_code(code: ApplicationErrorCode) -> Code {
         | ApplicationErrorCode::HistoryPruned
         | ApplicationErrorCode::ProjectionDiverged
         | ApplicationErrorCode::SnapshotRetired
-        | ApplicationErrorCode::FreshnessUnsatisfied => Code::FailedPrecondition,
+        | ApplicationErrorCode::FreshnessUnsatisfied
+        | ApplicationErrorCode::ProjectedSourceRequired => Code::FailedPrecondition,
         ApplicationErrorCode::ResponseTooLarge | ApplicationErrorCode::Overloaded => {
             Code::ResourceExhausted
         }

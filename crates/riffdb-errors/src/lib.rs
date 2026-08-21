@@ -125,10 +125,12 @@ pub enum ApplicationErrorCode {
     SnapshotRetired,
     /// No servable exact snapshot satisfies the requested freshness floor.
     FreshnessUnsatisfied,
+    /// A retained nearest plan predates the required compiler-owned source declaration.
+    ProjectedSourceRequired,
 }
 
 /// Complete v1 application error code registry in stable wire order.
-pub const APPLICATION_ERROR_CODES: [ApplicationErrorCode; 24] = [
+pub const APPLICATION_ERROR_CODES: [ApplicationErrorCode; 25] = [
     ApplicationErrorCode::InvalidRequest,
     ApplicationErrorCode::InputInvalid,
     ApplicationErrorCode::AuthorizationDenied,
@@ -153,6 +155,7 @@ pub const APPLICATION_ERROR_CODES: [ApplicationErrorCode; 24] = [
     ApplicationErrorCode::ProjectionDiverged,
     ApplicationErrorCode::SnapshotRetired,
     ApplicationErrorCode::FreshnessUnsatisfied,
+    ApplicationErrorCode::ProjectedSourceRequired,
 ];
 
 impl ApplicationErrorCode {
@@ -203,6 +206,7 @@ impl ApplicationErrorCode {
             Self::ProjectionDiverged => "RDB-PROJECTION-0101",
             Self::SnapshotRetired => "RDB-PROJECTION-0102",
             Self::FreshnessUnsatisfied => "RDB-PROJECTION-0103",
+            Self::ProjectedSourceRequired => "RDB-PROJECTION-0104",
         }
     }
 
@@ -236,6 +240,9 @@ impl ApplicationErrorCode {
             Self::ProjectionDiverged => "query projections cannot prove one common snapshot",
             Self::SnapshotRetired => "the requested query snapshot has been retired",
             Self::FreshnessUnsatisfied => "no query snapshot satisfies the requested freshness",
+            Self::ProjectedSourceRequired => {
+                "nearest query requires a compiler-owned projected source"
+            }
         }
     }
 
@@ -253,6 +260,7 @@ impl ApplicationErrorCode {
             | Self::ProjectionDiverged
             | Self::SnapshotRetired
             | Self::FreshnessUnsatisfied => ApplicationErrorCategory::Query,
+            Self::ProjectedSourceRequired => ApplicationErrorCategory::Query,
             Self::ModuleUnavailable => ApplicationErrorCategory::Module,
             Self::CursorInvalid => ApplicationErrorCategory::Cursor,
             Self::ResponseTooLarge => ApplicationErrorCategory::Resource,
@@ -284,6 +292,7 @@ impl ApplicationErrorCode {
             | Self::HistoryIncarnationMismatch
             | Self::HistoryPruned
             | Self::SnapshotRetired => ApplicationRecoveryAction::CorrectRequest,
+            Self::ProjectedSourceRequired => ApplicationRecoveryAction::RefreshContract,
             Self::AuthorizationDenied | Self::CapabilityRevoked => {
                 ApplicationRecoveryAction::ObtainPermission
             }
@@ -319,6 +328,7 @@ impl ApplicationErrorCode {
             Self::QueryUnavailable | Self::ModuleUnavailable => {
                 &[ApplicationFixCode::PinActiveModule]
             }
+            Self::ProjectedSourceRequired => &[ApplicationFixCode::PinActiveModule],
             Self::CursorInvalid => &[ApplicationFixCode::RestartFromFirstPage],
             Self::SnapshotRetired => &[ApplicationFixCode::RestartFromFirstPage],
             Self::ResponseTooLarge | Self::IdempotencyKeyReuse => {
@@ -1379,6 +1389,7 @@ impl PublicError {
                     | ApplicationErrorCode::ProjectionDiverged
                     | ApplicationErrorCode::SnapshotRetired
                     | ApplicationErrorCode::FreshnessUnsatisfied
+                    | ApplicationErrorCode::ProjectedSourceRequired
             ),
             PublicErrorKind::AuthorizationDenied => matches!(
                 code,
@@ -1743,7 +1754,7 @@ mod tests {
         assert_eq!(KINDS[9], PublicErrorKind::HistoryIncarnationMismatch);
         assert_eq!(KINDS[10], PublicErrorKind::HistoryPruned);
         assert_eq!(KINDS[11], PublicErrorKind::Overloaded);
-        assert_eq!(APPLICATION_ERROR_CODES.len(), 24);
+        assert_eq!(APPLICATION_ERROR_CODES.len(), 25);
         assert_eq!(
             APPLICATION_ERROR_CODES[18],
             ApplicationErrorCode::HistoryIncarnationMismatch
@@ -1767,6 +1778,10 @@ mod tests {
         assert_eq!(
             APPLICATION_ERROR_CODES[23],
             ApplicationErrorCode::FreshnessUnsatisfied
+        );
+        assert_eq!(
+            APPLICATION_ERROR_CODES[24],
+            ApplicationErrorCode::ProjectedSourceRequired
         );
 
         for (kind, (code, message, class, recovery_action)) in KINDS.into_iter().zip(expected) {

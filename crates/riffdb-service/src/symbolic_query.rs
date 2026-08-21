@@ -3,7 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::num::NonZeroU16;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use riffdb_application::{ReimportObservation, ReimportObservationResult};
 pub use riffdb_catalog::{
@@ -16,6 +16,7 @@ use riffdb_catalog::{
     PreparedQueryModuleActivation, PreparedReactiveModulePublication, ValidatedQueryModule,
     ValidatedReactiveModule,
 };
+use riffdb_columnar::ColumnPredicate;
 use riffdb_commit::{
     ControlPlaneExecutionErrorKind, ControlPlaneTerminalAudit,
     QueryModuleDeploymentOutcome as CoordinatorQueryModuleDeploymentOutcome,
@@ -42,7 +43,8 @@ use riffdb_query_executor::{
     QueryOwnedSnapshot, QueryParameters, QueryResultValue, QueryRow,
 };
 use riffdb_query_ir::{
-    NamedTypeSchema, QueryAccessKind, QueryAccessProgramV1, QueryDiagnostic, SymbolicCatalog,
+    NamedTypeSchema, ProjectedVectorFreshnessV1, QueryAccessKind, QueryAccessProgramV1,
+    QueryDiagnostic, QueryPredicateOperator, QueryPredicateValue, SymbolicCatalog,
     resolve_query_surface,
 };
 use riffdb_query_module::{CompiledNamedQuery, NamedQuerySource, QueryModuleCandidate};
@@ -51,9 +53,10 @@ use riffdb_riffql_syntax::{
 };
 use riffdb_types::{
     CanonicalValue, CommitSequence, ContractBundleHash, ContractLineage, ContractVersion,
-    ExactTextProfileV1, FieldId, QueryModuleHash, QueryModuleName, QueryModuleVersion,
-    QueryOperationName, QueryPlanHash, ReactiveModuleHash, ServiceAuditLinkV1, ServiceAuditPhaseV1,
-    ServiceOperationV1, encode_canonical_value, hash_generated_artifact, hash_query_parameters,
+    ExactTextProfileV1, FieldId, FrontierPosition, QueryModuleHash, QueryModuleName,
+    QueryModuleVersion, QueryOperationName, QueryPlanHash, ReactiveModuleHash, ServiceAuditLinkV1,
+    ServiceAuditPhaseV1, ServiceOperationV1, encode_canonical_value, hash_generated_artifact,
+    hash_query_parameters,
 };
 
 use crate::command_operations::{SubmittedValueMaterializationError, materialize_submitted_value};
@@ -69,7 +72,7 @@ use crate::{
     ExactTextProjectionRequest, ExactTextProjectionResult, InternalDefect, QueryCursorLookup,
     QueryCursorState, ReadPipelineStage, RequestContext, RiffDbService, RiffDbServiceInner,
     ServiceAuditTargetMap, ServiceFailure, ServiceFuture, ServiceResult, ServiceTelemetryEvent,
-    SourceName, SubmittedEnum, SubmittedValue,
+    SourceName, SubmittedEnum, SubmittedValue, VectorProjectionPortError, VectorProjectionRequest,
 };
 
 /// Stricter application-surface source ceiling.
@@ -2618,6 +2621,32 @@ async fn execute_named_query(
             ApplicationErrorCode::QueryInvalid,
         )
     })?;
+    if program.projected_source().is_some() {
+        return execute_projected_vector_named_query(
+            service,
+            context,
+            bundle,
+            program,
+            query.shared_document(),
+            module_hash,
+            query.plan().identity(),
+            query_name,
+            request.parameters,
+            request.cursor,
+            request.minimum_application_head,
+        )
+        .await;
+    }
+    if program
+        .steps()
+        .iter()
+        .any(|step| matches!(step.access(), QueryAccessKind::Nearest { .. }))
+    {
+        return Err(application_validation_failure(
+            ValidationCode::InvalidValue,
+            ApplicationErrorCode::ProjectedSourceRequired,
+        ));
+    }
     let aggregates: Arc<[riffdb_query_ir::OperationalAggregateV1]> = query
         .operational_family()
         .map_or_else(|| Arc::from([]), |family| Arc::from(family.aggregates()));
@@ -2640,6 +2669,412 @@ async fn execute_named_query(
         request.accepts_compact_result_v1,
     )
     .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn execute_projected_vector_named_query(
+    service: Arc<RiffDbServiceInner>,
+    context: RequestContext,
+    bundle: riffdb_catalog::ValidatedContractBundle,
+    program: Arc<QueryAccessProgramV1>,
+    document: Arc<Document>,
+    module_hash: QueryModuleHash,
+    plan_hash: QueryPlanHash,
+    query_name: QueryOperationName,
+    submitted: SymbolicQueryParameters,
+    cursor: Option<CursorToken>,
+    minimum_application_head: Option<u64>,
+) -> ServiceResult<ExecuteSymbolicQueryResult> {
+    const OPERATION: ServiceOperationV1 = ServiceOperationV1::ExecuteQuery;
+    if cursor.is_some() || program.steps().len() != 1 {
+        return Err(application_validation_failure(
+            ValidationCode::InvalidValue,
+            ApplicationErrorCode::CursorInvalid,
+        ));
+    }
+    let source = program
+        .projected_source()
+        .ok_or_else(|| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?;
+    let parameters = materialize_query_parameters(
+        &service,
+        OPERATION,
+        bundle.bundle(),
+        document.as_ref(),
+        &submitted,
+    )?;
+    let target = application_query_target_with_identity(
+        bundle.bundle(),
+        &program,
+        &parameters,
+        context.ingress(),
+        plan_hash,
+        program.cost(),
+        None,
+    )
+    .ok_or_else(|| validation_failure(ValidationCode::InvalidValue))?;
+    let operation_request = OperationRequest::execute_named_query(
+        bundle.lineage().clone(),
+        module_hash,
+        query_name,
+        target,
+    )
+    .map_err(|_| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?;
+    let begun = begin_symbolic(&service, &context, &bundle, operation_request, OPERATION).await?;
+    let execution_authorization = begun
+        .reauthorize_read(&service, &context)
+        .await?
+        .into_application_query()
+        .ok_or_else(|| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?;
+    let row_policy =
+        resolve_authorized_query_row_policy_context(&execution_authorization, bundle.bundle())
+            .map_err(|_| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?
+            .map(Arc::new);
+    let policy_shape = execution_authorization.application_role_hash();
+    let row_policy_identity = row_policy
+        .as_deref()
+        .map(|policy| {
+            policy
+                .internal_capability_identity()
+                .ok_or_else(|| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))
+        })
+        .transpose()?;
+    let step = &program.steps()[0];
+    let entity = bundle
+        .bundle()
+        .schema()
+        .entity(source.internal_entity_id())
+        .ok_or_else(|| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?;
+    let vector_spec = bundle
+        .bundle()
+        .schema()
+        .vector_field_spec(source.internal_entity_id(), source.internal_field_id())
+        .ok_or_else(|| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?;
+    let production = bundle
+        .bundle()
+        .schema()
+        .vector_production_spec(source.internal_entity_id(), source.internal_field_id())
+        .ok_or_else(|| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?;
+    let partition_value = parameters
+        .get(program.partition_parameter())
+        .cloned()
+        .ok_or_else(|| validation_failure(ValidationCode::InvalidValue))?;
+    let aggregate = bundle
+        .bundle()
+        .schema()
+        .aggregate_for_entity(source.internal_entity_id())
+        .ok_or_else(|| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?;
+    let partition = aggregate
+        .keys()
+        .partition_schema()
+        .encode_partition(std::slice::from_ref(&partition_value))
+        .map_err(|_| validation_failure(ValidationCode::InvalidValue))?;
+    let (vector_parameter, maximum_k) = match step.access() {
+        QueryAccessKind::Nearest {
+            vector_parameter,
+            k,
+            ..
+        } => (vector_parameter, *k),
+        _ => return Err(service.internal_failure(OPERATION, InternalDefect::ProofMismatch)),
+    };
+    let query_vector = match parameters.get(vector_parameter) {
+        Some(CanonicalValue::Vector(vector)) => vector.clone(),
+        _ => return Err(validation_failure(ValidationCode::TypeMismatch)),
+    };
+    let k = match step.row_limit() {
+        riffdb_query_ir::QueryRowLimit::Literal(value) => *value,
+        riffdb_query_ir::QueryRowLimit::Parameter { name, default } => parameters
+            .get(name)
+            .and_then(|value| match value {
+                CanonicalValue::U64(value) => Some(*value),
+                _ => None,
+            })
+            .or(*default)
+            .ok_or_else(|| validation_failure(ValidationCode::InvalidValue))?,
+    };
+    let k = u32::try_from(k)
+        .ok()
+        .filter(|k| *k > 0 && *k <= maximum_k)
+        .ok_or_else(|| validation_failure(ValidationCode::InvalidValue))?;
+    let access = program
+        .internal_entity_access(step.entity())
+        .ok_or_else(|| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?;
+    let predicates = step
+        .predicates()
+        .iter()
+        .map(|predicate| {
+            if predicate.operator() != QueryPredicateOperator::Equal {
+                return None;
+            }
+            let QueryPredicateValue::Parameter(parameter) = predicate.value() else {
+                return None;
+            };
+            Some(ColumnPredicate::Eq {
+                field: access.internal_field_id(predicate.field())?,
+                value: parameters.get(parameter)?.clone(),
+            })
+        })
+        .collect::<Option<Vec<_>>>()
+        .ok_or_else(|| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?;
+    let (minimum_epoch, max_lag_ms) = match source.freshness() {
+        ProjectedVectorFreshnessV1::Available => (None, None),
+        ProjectedVectorFreshnessV1::Causal {
+            inherit_session_commit,
+            ..
+        } if inherit_session_commit => match minimum_application_head {
+            Some(value) => (
+                Some(
+                    CommitSequence::new(value)
+                        .ok_or_else(|| validation_failure(ValidationCode::InvalidValue))?,
+                ),
+                None,
+            ),
+            None => (None, None),
+        },
+        ProjectedVectorFreshnessV1::Causal { .. } => (None, None),
+        ProjectedVectorFreshnessV1::Bounded { max_lag_ms } => (None, Some(max_lag_ms)),
+    };
+    let request = VectorProjectionRequest::new(
+        source.name(),
+        bundle.lineage().clone(),
+        partition,
+        partition_value,
+        source.internal_entity_id(),
+        source.internal_field_id(),
+        production.metadata().clone(),
+        vector_spec.stale_entity_count_threshold(),
+        query_vector,
+        k,
+        vector_spec.metric(),
+        predicates,
+        row_policy,
+        minimum_epoch,
+        max_lag_ms,
+    );
+    let Some(provider) = service.providers.vector_projection.as_ref() else {
+        let failure = PublicError::storage_unavailable().into();
+        return Err(finish_failure(&service, &context, &begun, failure).await);
+    };
+    let observed = match execute_vector_projection_with_freshness(
+        &service,
+        &context,
+        &begun,
+        provider.as_ref(),
+        request,
+        &source.freshness(),
+    )
+    .await
+    {
+        Ok(result) => result,
+        Err(failure) => {
+            return Err(finish_failure(&service, &context, &begun, failure).await);
+        }
+    };
+    // Safe point 3: no ranked values cross the boundary under stale authority.
+    let release_authorization = begun
+        .reauthorize_read(&service, &context)
+        .await?
+        .into_application_query()
+        .ok_or_else(|| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?;
+    let release_policy =
+        resolve_authorized_query_row_policy_context(&release_authorization, bundle.bundle())
+            .map_err(|_| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?;
+    let release_policy_identity = release_policy
+        .as_ref()
+        .map(|policy| {
+            policy
+                .internal_capability_identity()
+                .ok_or_else(|| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))
+        })
+        .transpose()?;
+    if release_authorization.application_role_hash() != policy_shape
+        || release_policy_identity != row_policy_identity
+    {
+        return Err(begun.finish_authorization_denial(&service, &context).await);
+    }
+    let result = vector_projection_response(
+        &program,
+        document.as_ref(),
+        module_hash,
+        observed,
+        Arc::clone(bundle.enum_variant_names()),
+        entity,
+    )
+    .ok_or_else(|| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?;
+    finish_success(&service, &context, &begun).await?;
+    Ok(result)
+}
+
+async fn execute_vector_projection_with_freshness(
+    service: &RiffDbServiceInner,
+    context: &RequestContext,
+    begun: &crate::orchestration::BegunInvocation,
+    provider: &dyn crate::VectorProjectionPort,
+    request: VectorProjectionRequest,
+    freshness: &ProjectedVectorFreshnessV1,
+) -> ServiceResult<crate::VectorProjectionResult> {
+    const MAX_OBSERVATIONS: usize = 64;
+    let ProjectedVectorFreshnessV1::Causal { max_wait_ms, .. } = freshness else {
+        return provider.execute(request).map_err(|error| {
+            vector_projection_failure(service, ServiceOperationV1::ExecuteQuery, error)
+        });
+    };
+    if request.minimum_epoch().is_none() {
+        return provider.execute(request).map_err(|error| {
+            vector_projection_failure(service, ServiceOperationV1::ExecuteQuery, error)
+        });
+    }
+    let Some(columnar) = service.providers.columnar.as_ref() else {
+        return Err(PublicError::storage_unavailable().into());
+    };
+    let wait_deadline = (Instant::now() + Duration::from_millis(u64::from(*max_wait_ms)))
+        .min(context.control().deadline());
+    let cancellation = columnar.notifier().cancellation();
+
+    for _ in 0..MAX_OBSERVATIONS {
+        if context.control().is_cancelled() {
+            return Err(ServiceFailure::Cancelled);
+        }
+        let registration = columnar
+            .notifier()
+            .register(request.source_name().to_owned())
+            .map_err(|error| match error.kind() {
+                crate::columnar_notification::ColumnarNotificationErrorKind::WaiterCapacityExceeded => {
+                    PublicError::storage_unavailable().into()
+                }
+                crate::columnar_notification::ColumnarNotificationErrorKind::Integrity => {
+                    service.internal_failure(
+                        ServiceOperationV1::ExecuteQuery,
+                        InternalDefect::LowerIntegrity,
+                    )
+                }
+            })?;
+        match provider.execute(request.clone()) {
+            Ok(result) => {
+                drop(registration);
+                return Ok(result);
+            }
+            Err(VectorProjectionPortError::FreshnessUnsatisfied)
+                if Instant::now() < wait_deadline => {}
+            Err(error) => {
+                drop(registration);
+                return Err(vector_projection_failure(
+                    service,
+                    ServiceOperationV1::ExecuteQuery,
+                    error,
+                ));
+            }
+        }
+        let wake = registration
+            .wait_controlled(wait_deadline, &cancellation)
+            .map_err(|_| {
+                service.internal_failure(
+                    ServiceOperationV1::ExecuteQuery,
+                    InternalDefect::LowerIntegrity,
+                )
+            })?;
+        match wake {
+            crate::ColumnarWake::Cancelled => return Err(ServiceFailure::Cancelled),
+            crate::ColumnarWake::TimedOut => {
+                return Err(vector_projection_failure(
+                    service,
+                    ServiceOperationV1::ExecuteQuery,
+                    VectorProjectionPortError::FreshnessUnsatisfied,
+                ));
+            }
+            crate::ColumnarWake::Notified => {
+                begun.reauthorize_read(service, context).await?;
+            }
+        }
+    }
+    Err(vector_projection_failure(
+        service,
+        ServiceOperationV1::ExecuteQuery,
+        VectorProjectionPortError::FreshnessUnsatisfied,
+    ))
+}
+
+fn vector_projection_failure(
+    service: &RiffDbServiceInner,
+    operation: ServiceOperationV1,
+    error: VectorProjectionPortError,
+) -> ServiceFailure {
+    let code = match error {
+        VectorProjectionPortError::FreshnessUnsatisfied => {
+            Some(ApplicationErrorCode::FreshnessUnsatisfied)
+        }
+        VectorProjectionPortError::Degraded => Some(ApplicationErrorCode::QueryUnavailable),
+        VectorProjectionPortError::Building
+        | VectorProjectionPortError::Rebuilding
+        | VectorProjectionPortError::Unavailable => Some(ApplicationErrorCode::QueryUnavailable),
+        VectorProjectionPortError::Integrity => None,
+    };
+    code.map_or_else(
+        || service.internal_failure(operation, InternalDefect::ProofMismatch),
+        |code| application_validation_failure(ValidationCode::InvalidValue, code),
+    )
+}
+
+fn vector_projection_response(
+    program: &QueryAccessProgramV1,
+    document: &Document,
+    module_hash: QueryModuleHash,
+    observed: crate::VectorProjectionResult,
+    enum_variant_names: SharedEnumVariantNames,
+    entity: &riffdb_contract_ir::EntitySchema,
+) -> Option<ExecuteSymbolicQueryResult> {
+    let step = program.steps().first()?;
+    let result_name = selection_result_name(
+        &document.body.selection,
+        &document.body.bindings[0].name.value,
+    )?;
+    let (nearest, frontier, _head) = observed.into_parts();
+    let mut names = BTreeMap::new();
+    for name in step.selected_fields() {
+        let field = entity
+            .record()
+            .fields()
+            .iter()
+            .find(|field| field.name() == name)?;
+        names.insert(field.id(), name.as_str());
+    }
+    let rows = nearest
+        .rows
+        .into_iter()
+        .map(|row| {
+            let mut fields = BTreeMap::new();
+            for (field, value) in nearest
+                .primary_key_fields
+                .iter()
+                .zip(row.primary_key)
+                .chain(nearest.projected_fields.iter().zip(row.cells))
+            {
+                if let Some(name) = names.get(field) {
+                    fields.insert(Arc::<str>::from(*name), value);
+                }
+            }
+            (fields.len() == names.len()).then_some(SymbolicResultRecord {
+                entity: Arc::from(step.entity()),
+                fields,
+                exact_decimals: BTreeMap::new(),
+            })
+        })
+        .collect::<Option<Vec<_>>>()?;
+    let FrontierPosition::AppliedThrough(epoch) = frontier.position() else {
+        return None;
+    };
+    Some(ExecuteSymbolicQueryResult {
+        identity: SymbolicQueryIdentity::from_named_plan(
+            program,
+            module_hash,
+            program.identity().hash(),
+        ),
+        outcome: document.body.outcome.as_ref()?.value.as_str().to_owned(),
+        application_head: epoch.get(),
+        fields: BTreeMap::from([(result_name, SymbolicResultField::Many(rows))]),
+        compact_result: None,
+        enum_variant_names,
+        next_cursor: None,
+    })
 }
 
 #[allow(clippy::too_many_arguments)]

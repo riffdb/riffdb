@@ -11924,7 +11924,9 @@ work_packages:
     crates/riffdb-server/**, crates/riffdb-columnar/**, crates/riffdb-projection/**,
     crates/riffdb-riffql-syntax/**, crates/riffdb-query-ir/**,
     crates/riffdb-query-compiler/**, crates/riffdb-query-executor/**, docs/**, tests/**,
-    release/**]
+    # Maintainer-authorized path expansion 2026-08-21: generated vector
+    # inspection facades rotate exact example locks and checked-in clients.
+    examples/**, release/**]
   deliverables:
   - VEC-001 amended to define the v1 staleness SLO as a declared stale-entity count threshold;
     duration-based staleness remains a named future amendment

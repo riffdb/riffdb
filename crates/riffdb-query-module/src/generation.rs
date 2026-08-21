@@ -4083,6 +4083,7 @@ fn emit_typescript_application_errors(output: &mut String) {
   "RDB-PROJECTION-0101": ["query projections cannot prove one common snapshot", "query", "retry", ["retry_later"]],
   "RDB-PROJECTION-0102": ["the requested query snapshot has been retired", "query", "correct_request", ["restart_from_first_page"]],
   "RDB-PROJECTION-0103": ["no query snapshot satisfies the requested freshness", "query", "retry", ["retry_later"]],
+  "RDB-PROJECTION-0104": ["nearest query requires a compiler-owned projected source", "query", "refresh_contract", ["pin_active_module"]],
 } as const;
 
 export type ApplicationErrorCode = keyof typeof APPLICATION_ERROR_REGISTRY;
@@ -4891,6 +4892,9 @@ mod tests {
                 $org_id: Document.org_id,
                 $query_vec: Document.embedding,
             ) {
+                source projected Document.embedding
+                freshness available
+
                 many results from Document
                     where org_id == $org_id
                     nearest(embedding, $query_vec, 10)

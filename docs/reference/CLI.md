@@ -494,11 +494,12 @@ Commands:
   explain
   run
   run-named
-  watch      Receives one closed update from an exact generated live named query
+  watch           Receives one closed update from an exact generated live named query
   deploy
   module
   repl
-  projected  Executes one org-scoped projected columnar query under a freshness policy
+  inspect-vector  Inspects authoritative vector freshness or model-version state
+  projected       Executes one org-scoped projected columnar query under a freshness policy
 
 Options:
       --config <PATH>
@@ -1883,6 +1884,46 @@ Options:
       --max-attempts <1..10>
       --credential-file <PATH>
   -h, --help                               Print help
+```
+
+#### `riffdb query inspect-vector`
+
+```text
+Inspects authoritative vector freshness or model-version state
+
+Usage: riffdb query inspect-vector [OPTIONS] --partition <JSON_VALUE> <ENTITY> <FIELD>
+
+Arguments:
+  <ENTITY>  Symbolic entity name that owns the maintained vector field
+  <FIELD>   Symbolic maintained vector field name
+
+Options:
+      --config <PATH>
+
+      --partition <JSON_VALUE>
+          Exact partition value as typed InputValue JSON
+      --endpoint <HTTP_OR_HTTPS_ENDPOINT>
+
+      --kind <KIND>
+          Whether to inspect stale evidence or outdated model versions [default: stale] [possible values: stale, outdated]
+      --database <DATABASE>
+
+      --limit <ROWS>
+          Maximum returned entity items when row policy forbids summary counts
+      --cursor-hex <HEX>
+          Opaque continuation cursor as lower-hex bytes
+      --output <human|json>
+          [possible values: human, json]
+      --contract-lineage <LINEAGE>
+
+      --max-attempts <1..10>
+
+      --contract-version <VERSION>
+
+      --credential-file <PATH>
+
+  -h, --help
+          Print help
 ```
 
 #### `riffdb query projected`

@@ -3,11 +3,12 @@ use crate::{
     AggregateBinding, AggregateFunction, AggregateMeasure, BinaryOperator, Binding, Cardinality,
     DiagnosticCode, Direction, Document, Expression, FieldSelection, Identifier, Literal,
     MAX_AGGREGATE_BINDINGS, MAX_AGGREGATE_GROUP_KEYS, MAX_AGGREGATE_MEASURES, MAX_BINDINGS,
-    MAX_COLLECTION_ITEMS, MAX_NESTING, MAX_SYNTAX_ITEMS, OrderTerm, Parameter, ParseDiagnostic,
-    ParseDiagnostics, Path, QueryBody, RIFFQL_LANGUAGE_VERSION,
+    MAX_COLLECTION_ITEMS, MAX_NESTING, MAX_PROJECTED_CAUSAL_WAIT_MS, MAX_PROJECTED_LAG_MS,
+    MAX_SYNTAX_ITEMS, OrderTerm, Parameter, ParseDiagnostic, ParseDiagnostics, Path,
+    ProjectedFreshness, ProjectedSource, QueryBody, RIFFQL_LANGUAGE_VERSION,
     RIFFQL_LANGUAGE_VERSION_EXACT_RESULT_SET_V1, RIFFQL_LANGUAGE_VERSION_OPERATIONAL_V1,
-    RIFFQL_LANGUAGE_VERSION_SECRET_OUTPUT_V1, Selection, Span, Spanned, Take, TypeReference,
-    UnaryOperator,
+    RIFFQL_LANGUAGE_VERSION_PROJECTED_VECTOR_V1, RIFFQL_LANGUAGE_VERSION_SECRET_OUTPUT_V1,
+    Selection, Span, Spanned, Take, TypeReference, UnaryOperator,
 };
 
 /// Parses one UTF-8 RiffQL source document in a supported language version.
@@ -83,6 +84,11 @@ impl Parser {
             (None, Vec::new())
         };
         self.expect(TokenKind::LeftBrace)?;
+        let projected_source = if self.peek_word("source") {
+            Some(self.projected_source()?)
+        } else {
+            None
+        };
         let mut bindings = Vec::new();
         while self.peek_word("one") || self.peek_word("maybe") || self.peek_word("many") {
             if bindings.len() == MAX_BINDINGS {
@@ -136,7 +142,9 @@ impl Parser {
             selection,
             outcomes,
         };
-        let language_version = if body_uses_exact_result_set(&body) {
+        let language_version = if projected_source.is_some() {
+            RIFFQL_LANGUAGE_VERSION_PROJECTED_VECTOR_V1
+        } else if body_uses_exact_result_set(&body) {
             RIFFQL_LANGUAGE_VERSION_EXACT_RESULT_SET_V1
         } else if selection_uses_secret_output(&body.selection) {
             RIFFQL_LANGUAGE_VERSION_SECRET_OUTPUT_V1
@@ -154,7 +162,100 @@ impl Parser {
             language_version,
             name,
             parameters,
+            projected_source,
             body,
+        })
+    }
+
+    fn projected_source(&mut self) -> Result<ProjectedSource, ParseDiagnostics> {
+        self.expect_word("source")?;
+        self.expect_word("projected")?;
+        let path_start = self.current_start();
+        let path = self.path()?;
+        let path = Spanned {
+            value: path,
+            span: self.span_from(path_start),
+        };
+        self.expect_word("freshness")?;
+        let freshness_start = self.current_start();
+        let freshness = if self.take_word("available").is_some() {
+            ProjectedFreshness::Available
+        } else if self.take_word("causal").is_some() {
+            self.expect_word("inherit_session_commit")?;
+            let inherit = self.literal()?;
+            let Literal::Boolean(inherit_session_commit) = inherit.value else {
+                return Err(ParseDiagnostics::one(ParseDiagnostic::new(
+                    DiagnosticCode::UnexpectedToken,
+                    inherit.span,
+                    "inherit_session_commit must be true or false",
+                    Some("use `inherit_session_commit true` for generated clients"),
+                )));
+            };
+            self.expect_word("max_wait_ms")?;
+            let wait = self.literal()?;
+            let wait_span = wait.span;
+            let Literal::Unsigned(wait) = wait.value else {
+                return Err(ParseDiagnostics::one(ParseDiagnostic::new(
+                    DiagnosticCode::UnexpectedToken,
+                    wait_span,
+                    "max_wait_ms must be a positive integer literal",
+                    None,
+                )));
+            };
+            let max_wait_ms = wait
+                .parse::<u32>()
+                .ok()
+                .filter(|value| *value > 0 && *value <= MAX_PROJECTED_CAUSAL_WAIT_MS);
+            let Some(max_wait_ms) = max_wait_ms else {
+                return Err(ParseDiagnostics::one(ParseDiagnostic::new(
+                    DiagnosticCode::InvalidToken,
+                    wait_span,
+                    "max_wait_ms exceeds the compiler projection-wait bound",
+                    Some("use a value from 1 through 30000"),
+                )));
+            };
+            ProjectedFreshness::Causal {
+                inherit_session_commit,
+                max_wait_ms,
+            }
+        } else if self.take_word("bounded").is_some() {
+            self.expect_word("max_lag_ms")?;
+            let lag = self.literal()?;
+            let lag_span = lag.span;
+            let Literal::Unsigned(lag) = lag.value else {
+                return Err(ParseDiagnostics::one(ParseDiagnostic::new(
+                    DiagnosticCode::UnexpectedToken,
+                    lag_span,
+                    "max_lag_ms must be a positive integer literal",
+                    None,
+                )));
+            };
+            let max_lag_ms = lag
+                .parse::<u64>()
+                .ok()
+                .filter(|value| *value > 0 && *value <= MAX_PROJECTED_LAG_MS);
+            let Some(max_lag_ms) = max_lag_ms else {
+                return Err(ParseDiagnostics::one(ParseDiagnostic::new(
+                    DiagnosticCode::InvalidToken,
+                    lag_span,
+                    "max_lag_ms exceeds the compiler projection-lag bound",
+                    Some("use a value from 1 through 86400000"),
+                )));
+            };
+            ProjectedFreshness::Bounded { max_lag_ms }
+        } else {
+            return Err(self.error(
+                DiagnosticCode::UnexpectedToken,
+                "expected available, causal, or bounded projection freshness",
+                None,
+            ));
+        };
+        Ok(ProjectedSource {
+            path,
+            freshness: Spanned {
+                value: freshness,
+                span: self.span_from(freshness_start),
+            },
         })
     }
 

@@ -19,6 +19,7 @@ pub struct FieldSymbol {
     value_type: ValueType,
     key: bool,
     secret: bool,
+    production_vector: bool,
 }
 
 impl FieldSymbol {
@@ -44,6 +45,12 @@ impl FieldSymbol {
     #[must_use]
     pub const fn is_secret(&self) -> bool {
         self.secret
+    }
+
+    /// Whether the exact contract declares this vector field production-capable.
+    #[must_use]
+    pub const fn is_production_vector(&self) -> bool {
+        self.production_vector
     }
 
     /// Compiler-internal stable identity.
@@ -375,6 +382,10 @@ impl SymbolicCatalog {
                     value_type: field.value_type().clone(),
                     key: key_ids.contains(&field.id()),
                     secret: bundle.schema().is_secret_field(entity.id(), field.id()),
+                    production_vector: bundle
+                        .schema()
+                        .vector_production_spec(entity.id(), field.id())
+                        .is_some(),
                 };
                 if fields.insert(symbol.name.clone(), symbol).is_some() {
                     return Err(invariant("duplicate exact-contract field"));

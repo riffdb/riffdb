@@ -28,8 +28,9 @@ use riffdb_policy::{
 };
 use riffdb_types::{
     ApplicationRoleHash, CanonicalRecord, CanonicalValue, CapabilityId, CommandId, CommitSequence,
-    ContractBundleHash, ContractLineage, ContractMigrationOperationId, ContractVersion, EntityKey,
-    FrontierPosition, PartitionKey, PlanHash, ProjectionGeneration,
+    ContractBundleHash, ContractLineage, ContractMigrationOperationId, ContractVersion,
+    DistanceMetric, EmbeddingMetadata, EntityKey, EntityTypeId, FieldId, FrontierPosition,
+    PartitionKey, PlanHash, ProjectionFrontier, ProjectionGeneration,
     ProjectionProviderDescriptorHash, QueryModuleHash, QueryOperationName, ReactiveModuleHash,
     RequestId,
 };
@@ -1308,6 +1309,201 @@ pub trait ColumnarProjectionPort: Send + Sync {
 
     /// Startup-fixed known projection names.
     fn known_names(&self) -> &[String];
+}
+
+/// One compiler-owned exact-nearest request over a named vector projection.
+#[derive(Clone)]
+pub struct VectorProjectionRequest {
+    source_name: String,
+    lineage: ContractLineage,
+    partition: PartitionKey,
+    partition_value: CanonicalValue,
+    entity: EntityTypeId,
+    field: FieldId,
+    current_model: EmbeddingMetadata,
+    stale_entity_threshold: u64,
+    query_vector: riffdb_types::CanonicalVector,
+    k: u32,
+    metric: DistanceMetric,
+    predicates: Vec<riffdb_columnar::ColumnPredicate>,
+    row_policy: Option<Arc<AuthorizedQueryRowPolicyContextV1>>,
+    minimum_epoch: Option<CommitSequence>,
+    max_lag_ms: Option<u64>,
+}
+
+impl VectorProjectionRequest {
+    /// Constructs a request from one exact compiled source and authorized partition.
+    #[doc(hidden)]
+    #[allow(clippy::too_many_arguments)]
+    #[must_use]
+    pub fn new(
+        source_name: String,
+        lineage: ContractLineage,
+        partition: PartitionKey,
+        partition_value: CanonicalValue,
+        entity: EntityTypeId,
+        field: FieldId,
+        current_model: EmbeddingMetadata,
+        stale_entity_threshold: u64,
+        query_vector: riffdb_types::CanonicalVector,
+        k: u32,
+        metric: DistanceMetric,
+        predicates: Vec<riffdb_columnar::ColumnPredicate>,
+        row_policy: Option<Arc<AuthorizedQueryRowPolicyContextV1>>,
+        minimum_epoch: Option<CommitSequence>,
+        max_lag_ms: Option<u64>,
+    ) -> Self {
+        Self {
+            source_name,
+            lineage,
+            partition,
+            partition_value,
+            entity,
+            field,
+            current_model,
+            stale_entity_threshold,
+            query_vector,
+            k,
+            metric,
+            predicates,
+            row_policy,
+            minimum_epoch,
+            max_lag_ms,
+        }
+    }
+
+    /// Exact compiler-selected `Entity.field` source.
+    pub fn source_name(&self) -> &str {
+        &self.source_name
+    }
+    /// Contract lineage owning the evidence prefix.
+    pub const fn lineage(&self) -> &ContractLineage {
+        &self.lineage
+    }
+    /// Exact encoded aggregate partition.
+    pub const fn partition(&self) -> &PartitionKey {
+        &self.partition
+    }
+    /// Typed partition value used by the projected engine.
+    pub const fn partition_value(&self) -> &CanonicalValue {
+        &self.partition_value
+    }
+    /// Stable entity identity.
+    pub const fn entity(&self) -> EntityTypeId {
+        self.entity
+    }
+    /// Stable vector-field identity.
+    pub const fn field(&self) -> FieldId {
+        self.field
+    }
+    /// Exact current model identity and version.
+    pub const fn current_model(&self) -> &EmbeddingMetadata {
+        &self.current_model
+    }
+    /// Strict stale-entity health threshold.
+    pub const fn stale_entity_threshold(&self) -> u64 {
+        self.stale_entity_threshold
+    }
+    /// Submitted dimension-checked query vector.
+    pub const fn query_vector(&self) -> &riffdb_types::CanonicalVector {
+        &self.query_vector
+    }
+    /// Bound top-K result count.
+    pub const fn k(&self) -> u32 {
+        self.k
+    }
+    /// Contract-declared metric.
+    pub const fn metric(&self) -> DistanceMetric {
+        self.metric
+    }
+    /// Compiler-lowered scalar filters.
+    pub fn predicates(&self) -> &[riffdb_columnar::ColumnPredicate] {
+        &self.predicates
+    }
+    /// Current row-policy authority, when protected.
+    pub const fn row_policy(&self) -> Option<&Arc<AuthorizedQueryRowPolicyContextV1>> {
+        self.row_policy.as_ref()
+    }
+    /// Optional causal lower frontier.
+    pub const fn minimum_epoch(&self) -> Option<CommitSequence> {
+        self.minimum_epoch
+    }
+    /// Optional trusted duration-lag ceiling.
+    pub const fn max_lag_ms(&self) -> Option<u64> {
+        self.max_lag_ms
+    }
+}
+
+impl fmt::Debug for VectorProjectionRequest {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("VectorProjectionRequest([REDACTED])")
+    }
+}
+
+/// One exact-nearest result bound to a published projection frontier.
+#[derive(Clone, Debug)]
+pub struct VectorProjectionResult {
+    nearest: riffdb_columnar::NearestQueryResult,
+    frontier: ProjectionFrontier,
+    head: ProjectionFrontier,
+}
+
+impl VectorProjectionResult {
+    /// Constructs one checked provider result.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn new(
+        nearest: riffdb_columnar::NearestQueryResult,
+        frontier: ProjectionFrontier,
+        head: ProjectionFrontier,
+    ) -> Self {
+        Self {
+            nearest,
+            frontier,
+            head,
+        }
+    }
+    /// Exact ranked rows and honest scan work.
+    pub const fn nearest(&self) -> &riffdb_columnar::NearestQueryResult {
+        &self.nearest
+    }
+    /// Consumes the result into its exact parts.
+    #[doc(hidden)]
+    pub fn into_parts(
+        self,
+    ) -> (
+        riffdb_columnar::NearestQueryResult,
+        ProjectionFrontier,
+        ProjectionFrontier,
+    ) {
+        (self.nearest, self.frontier, self.head)
+    }
+}
+
+/// Closed projected-vector lifecycle, capacity, or integrity failure.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum VectorProjectionPortError {
+    /// Projection has no published generation yet.
+    Building,
+    /// Projection is rebuilding.
+    Rebuilding,
+    /// Required causal or exact-frontier freshness is unavailable.
+    FreshnessUnsatisfied,
+    /// Projection is degraded beyond its contract threshold.
+    Degraded,
+    /// Bounded capacity or provider state is temporarily unavailable.
+    Unavailable,
+    /// Source, evidence, policy proof, or snapshot failed integrity.
+    Integrity,
+}
+
+/// Least-authority production vector projection execution boundary.
+pub trait VectorProjectionPort: Send + Sync {
+    /// Executes one compiler-owned exact-nearest request.
+    fn execute(
+        &self,
+        request: VectorProjectionRequest,
+    ) -> Result<VectorProjectionResult, VectorProjectionPortError>;
 }
 
 /// One compiler-owned exact-provider request constructed only after current authorization.

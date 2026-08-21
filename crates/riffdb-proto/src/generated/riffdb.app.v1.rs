@@ -855,6 +855,7 @@ pub enum ApplicationErrorCode {
     ProjectionDiverged = 22,
     SnapshotRetired = 23,
     FreshnessUnsatisfied = 24,
+    ProjectedSourceRequired = 25,
 }
 impl ApplicationErrorCode {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -892,6 +893,9 @@ impl ApplicationErrorCode {
             Self::ProjectionDiverged => "APPLICATION_ERROR_CODE_PROJECTION_DIVERGED",
             Self::SnapshotRetired => "APPLICATION_ERROR_CODE_SNAPSHOT_RETIRED",
             Self::FreshnessUnsatisfied => "APPLICATION_ERROR_CODE_FRESHNESS_UNSATISFIED",
+            Self::ProjectedSourceRequired => {
+                "APPLICATION_ERROR_CODE_PROJECTED_SOURCE_REQUIRED"
+            }
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
@@ -937,6 +941,9 @@ impl ApplicationErrorCode {
             "APPLICATION_ERROR_CODE_SNAPSHOT_RETIRED" => Some(Self::SnapshotRetired),
             "APPLICATION_ERROR_CODE_FRESHNESS_UNSATISFIED" => {
                 Some(Self::FreshnessUnsatisfied)
+            }
+            "APPLICATION_ERROR_CODE_PROJECTED_SOURCE_REQUIRED" => {
+                Some(Self::ProjectedSourceRequired)
             }
             _ => None,
         }

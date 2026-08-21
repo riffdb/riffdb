@@ -4,9 +4,10 @@
 
 use riffdb_contract_compiler::compile_contract_source;
 use riffdb_query_module::{
-    NamedQuerySource, QueryModule, QueryModuleCandidate, QueryModuleName, QueryModuleVersion,
-    generate_go_application_client, generate_python_application_client,
-    generate_rust_application_client, generate_typescript_application_client,
+    NamedQuerySource, QUERY_MODULE_FORMAT_VERSION_PROJECTED_VECTOR_V1, QueryModule,
+    QueryModuleCandidate, QueryModuleName, QueryModuleVersion, generate_go_application_client,
+    generate_python_application_client, generate_rust_application_client,
+    generate_typescript_application_client,
 };
 
 const CONTRACT: &str = r#"
@@ -57,6 +58,23 @@ query GetDocument(
 }
 "#;
 
+const NEAREST_QUERY: &str = r#"
+query SimilarDocuments(
+    $org_id: Document.org_id,
+    $query_vector: Document.embedding,
+    $k: Limit,
+) {
+    source projected Document.embedding
+    freshness causal inherit_session_commit true max_wait_ms 500
+
+    many documents from Document
+        where org_id == $org_id
+        nearest(embedding, $query_vector, $k)
+    return Found { documents: documents { title } }
+    outcomes Found
+}
+"#;
+
 fn application() -> (riffdb_contract_ir::ContractBundle, QueryModule) {
     let contract = compile_contract_source(CONTRACT).expect("vector contract compiles");
     let candidate = QueryModuleCandidate::new(
@@ -67,6 +85,32 @@ fn application() -> (riffdb_contract_ir::ContractBundle, QueryModule) {
     .expect("module candidate");
     let module = QueryModule::compile(candidate, &contract).expect("query module");
     (contract, module)
+}
+
+#[test]
+fn projected_nearest_module_round_trips_with_its_successor_identity() {
+    let contract = compile_contract_source(CONTRACT).expect("vector contract compiles");
+    let candidate = QueryModuleCandidate::new(
+        QueryModuleName::new("docs_nearest").expect("module name"),
+        QueryModuleVersion::new(1).expect("module version"),
+        vec![NamedQuerySource::new("SimilarDocuments", NEAREST_QUERY).expect("query source")],
+    )
+    .expect("module candidate");
+    let module = QueryModule::compile(candidate, &contract).expect("projected module compiles");
+    assert_eq!(
+        module.format_version(),
+        QUERY_MODULE_FORMAT_VERSION_PROJECTED_VECTOR_V1
+    );
+    let query = module.query("SimilarDocuments").expect("named query");
+    let source = query
+        .plan()
+        .representative_program()
+        .projected_source()
+        .expect("projected source");
+    assert_eq!(source.name(), "Document.embedding");
+    let decoded = QueryModule::decode_and_validate(module.canonical_bytes(), &contract)
+        .expect("successor module decodes");
+    assert_eq!(decoded.canonical_bytes(), module.canonical_bytes());
 }
 
 /// Every generator emits a typed canonical vector rather than omitting or
