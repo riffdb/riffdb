@@ -83,6 +83,27 @@ interface CommandRequest<I, R> {
     readonly decodeError: (value: unknown) => Error;
     readonly outcomeType?: R;
 }
+interface VectorInspectionRequest<P, R> {
+    readonly driverOperation?: DriverOperation;
+    readonly contractLineage: string;
+    readonly contractVersion: number;
+    readonly contractBundleHash: string;
+    readonly entity: string;
+    readonly field: string;
+    readonly inspectionKind: "staleness" | "model_versions";
+    readonly partition: P;
+    readonly partitionSchema: ApplicationValueSchema;
+    readonly limit: number;
+    readonly resultType?: R;
+}
+interface VectorInspectionOptions {
+    readonly cursor?: string;
+}
+interface TypedVectorInspectionResult<T> {
+    readonly value: T;
+    readonly applicationHead?: bigint;
+    readonly nextCursor?: string;
+}
 export interface QueryResponseIdentity {
     readonly contractLineage: string;
     readonly contractVersion: number;
@@ -223,6 +244,7 @@ export declare class CliApplicationTransport {
     constructor(options: CliApplicationTransportOptions);
     executeNamedQuery<P, R>(request: NamedQueryRequest<P, R>, options?: QueryOptions): Promise<TypedQueryResult<R>>;
     executeCommand<I, R>(request: CommandRequest<I, R>, attemptBudget: number): Promise<TypedCommandResult<R>>;
+    executeVectorInspection<P, R>(request: VectorInspectionRequest<P, R>, options?: VectorInspectionOptions): Promise<TypedVectorInspectionResult<R>>;
     consumeEventStream<P, E>(request: ReactiveConsumerRequest<P>, options?: ReactiveConsumerOptions): AsyncIterable<ReactiveConsumerBatch<E>>;
     acknowledgeEvent<P>(request: ReactiveConsumerRequest<P>, delivery: ReactiveEventDelivery<unknown>): Promise<ReactiveEventMutationResult>;
     negativeAcknowledgeEvent<P>(request: ReactiveConsumerRequest<P>, delivery: ReactiveEventDelivery<unknown>, retryDelayMs?: number): Promise<ReactiveEventMutationResult>;
@@ -258,6 +280,7 @@ export declare class DriverGeneratedApplicationTransport {
     constructor(driver: DriverApplicationTransport);
     executeNamedQuery<P, R>(request: NamedQueryRequest<P, R>, options?: QueryOptions): Promise<TypedQueryResult<R>>;
     executeCommand<I, R>(request: CommandRequest<I, R>, attemptBudget: number): Promise<TypedCommandResult<R>>;
+    executeVectorInspection<P, R>(request: VectorInspectionRequest<P, R>, options?: VectorInspectionOptions): Promise<TypedVectorInspectionResult<R>>;
     executeCommandBatch<I, R>(request: CommandRequest<I, R>, inputs: ReadonlyArray<I>, concurrency: number, checkpoint: number, attemptBudget: number): Promise<{
         readonly items: ReadonlyArray<{
             readonly index: number;

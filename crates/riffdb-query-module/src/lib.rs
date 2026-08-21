@@ -41,10 +41,11 @@ pub use application_source::{
 pub use exact_text::*;
 pub use exact_text_result_set::*;
 pub use generation::{
-    GeneratedMcpCommand, GeneratedMcpReactiveTool, GeneratedMcpTool, McpToolGenerationError,
-    generate_mcp_commands, generate_mcp_reactive_tools, generate_mcp_tools,
+    GeneratedMcpCommand, GeneratedMcpReactiveTool, GeneratedMcpTool, GeneratedVectorInspectionTool,
+    McpToolGenerationError, generate_mcp_commands, generate_mcp_reactive_tools, generate_mcp_tools,
     generate_rust_application_client, generate_rust_client, generate_sdk_only_query_tools,
     generate_typescript_application_client, generate_typescript_client,
+    generate_vector_inspection_tools,
 };
 pub use go_generation::{generate_go_application_client, generate_go_client};
 pub use projection_result_set::*;

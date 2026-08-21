@@ -11917,6 +11917,10 @@ work_packages:
     # Rust/Go/TypeScript/Python embedding inputs and the shared closed driver
     # registry must carry the canonical vector value those facades emit.
     crates/riffdb-query-module/**, crates/riffdb-driver-host/**, clients/**,
+    # Maintainer-authorized path expansion: the generated Python binding uses
+    # the first-party native bridge, which must map the same closed inspection
+    # operation instead of reimplementing protocol or authorization in Python.
+    crates/riffdb-client-python-native/**,
     crates/riffdb-server/**, crates/riffdb-columnar/**, crates/riffdb-projection/**,
     crates/riffdb-riffql-syntax/**, crates/riffdb-query-ir/**,
     crates/riffdb-query-compiler/**, crates/riffdb-query-executor/**, docs/**, tests/**,

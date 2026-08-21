@@ -166,6 +166,15 @@ def encode_record(value: object) -> dict[str, dict[str, object]]:
         raise InvalidInput("generated application input is invalid") from None
 
 
+def encode_value(value: object, annotation: object) -> dict[str, object]:
+    try:
+        return _encode_typed(value, annotation)
+    except (KeyError, TypeError, ValueError, OverflowError):
+        from . import InvalidInput
+
+        raise InvalidInput("generated application input is invalid") from None
+
+
 def encode_reactive_record(
     value: object,
     schema: dict[str, dict[str, object]],

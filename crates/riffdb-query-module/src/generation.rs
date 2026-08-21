@@ -36,17 +36,18 @@ pub(crate) struct EmbeddingCommandFacade {
 }
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
-struct VectorInspectionFacade {
-    entity: String,
-    field: String,
-    partition_type: ValueType,
+pub(crate) struct VectorInspectionFacade {
+    pub(crate) entity: String,
+    pub(crate) field: String,
+    pub(crate) partition_type: ValueType,
+    pub(crate) source_queries: Vec<String>,
 }
 
-fn vector_inspection_facades(
+pub(crate) fn vector_inspection_facades(
     module: &QueryModule,
     contract: &ContractBundle,
 ) -> Vec<VectorInspectionFacade> {
-    let mut facades = BTreeSet::new();
+    let mut facades = BTreeMap::<(String, String, ValueType), BTreeSet<String>>::new();
     for query in module.queries() {
         for step in query.plan().representative_program().steps() {
             let QueryAccessKind::Nearest { vector_field, .. } = step.access() else {
@@ -63,14 +64,27 @@ fn vector_inspection_facades(
             let partition_type = aggregate.keys().partition_schema().components()[0]
                 .value_type()
                 .clone();
-            facades.insert(VectorInspectionFacade {
-                entity: entity.name().to_owned(),
-                field: vector_field.clone(),
-                partition_type,
-            });
+            facades
+                .entry((
+                    entity.name().to_owned(),
+                    vector_field.clone(),
+                    partition_type,
+                ))
+                .or_default()
+                .insert(query.name().to_owned());
         }
     }
-    facades.into_iter().collect()
+    facades
+        .into_iter()
+        .map(
+            |((entity, field, partition_type), source_queries)| VectorInspectionFacade {
+                entity,
+                field,
+                partition_type,
+                source_queries: source_queries.into_iter().collect(),
+            },
+        )
+        .collect()
 }
 
 pub(crate) fn embedding_command_facades(
@@ -251,6 +265,29 @@ pub struct GeneratedMcpCommand {
     pub contract_bundle_hash: [u8; 32],
     /// Exact command plan identity.
     pub plan_hash: [u8; 32],
+}
+
+/// One compiler-owned generated symbolic vector-state inspection operation.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GeneratedVectorInspectionTool {
+    /// Stable compiler-owned local operation name.
+    pub name: String,
+    /// Symbolic contract entity.
+    pub entity: String,
+    /// Symbolic vector field.
+    pub field: String,
+    /// Closed inspection kind (`staleness` or `model_versions`).
+    pub inspection_kind: String,
+    /// Named nearest queries whose exact role grants derive this authority.
+    pub source_queries: Vec<String>,
+    /// Exact immutable query-module identity for every source query.
+    pub module_hash: [u8; 32],
+    /// Exact contract bundle identity.
+    pub contract_bundle_hash: [u8; 32],
+    /// Canonical input JSON Schema.
+    pub input_schema: String,
+    /// Canonical closed result JSON Schema.
+    pub result_schema: String,
 }
 
 /// One compiler-owned generated MCP operation for a reactive stream or watch.
@@ -685,6 +722,134 @@ pub fn generate_sdk_only_query_tools(
                     .is_some_and(|query| !query.plan().secret_outputs().is_empty())
             })
             .collect()
+    })
+}
+
+/// Generates deterministic symbolic vector-state operations for every nearest
+/// source in this exact query module. The source-query list is retained so the
+/// shared driver catalog can expose an operation only when the selected role
+/// contains at least one compiler-derived inspection grant.
+pub fn generate_vector_inspection_tools(
+    module: &QueryModule,
+    contract: &ContractBundle,
+) -> Result<Vec<GeneratedVectorInspectionTool>, McpToolGenerationError> {
+    let mut names = BTreeSet::new();
+    let mut tools = Vec::new();
+    for facade in vector_inspection_facades(module, contract) {
+        let input = json!({
+            "$schema": MCP_SCHEMA_DIALECT,
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+                "partition": mcp_contract_type_schema(&facade.partition_type, contract),
+                "limit": {"type": "integer", "minimum": 1, "maximum": 500},
+            },
+            "required": ["partition", "limit"],
+        });
+        for (inspection_kind, suffix, result) in [
+            ("staleness", "staleness", vector_staleness_result_schema()),
+            (
+                "model_versions",
+                "model_versions",
+                vector_model_versions_result_schema(),
+            ),
+        ] {
+            let name = format!(
+                "{}_inspect_{}_{}_{}",
+                snake(module.name().as_str()),
+                snake(&facade.entity),
+                snake(&facade.field),
+                suffix,
+            );
+            if !names.insert(name.clone()) {
+                return Err(McpToolGenerationError::NameCollision);
+            }
+            tools.push(GeneratedVectorInspectionTool {
+                name,
+                entity: facade.entity.clone(),
+                field: facade.field.clone(),
+                inspection_kind: inspection_kind.to_owned(),
+                source_queries: facade.source_queries.clone(),
+                module_hash: *module.identity().as_bytes(),
+                contract_bundle_hash: *contract.bundle_hash().as_bytes(),
+                input_schema: serde_json::to_string(&input)
+                    .map_err(|_| McpToolGenerationError::InvalidSchema)?,
+                result_schema: serde_json::to_string(&result)
+                    .map_err(|_| McpToolGenerationError::InvalidSchema)?,
+            });
+        }
+    }
+    Ok(tools)
+}
+
+fn vector_staleness_result_schema() -> Value {
+    json!({
+        "$schema": MCP_SCHEMA_DIALECT,
+        "oneOf": [
+            {
+                "type": "object", "additionalProperties": false,
+                "properties": {
+                    "kind": {"const": "staleness_summary"},
+                    "total_entities": {"type": "integer", "minimum": 0},
+                    "stale_count": {"type": "integer", "minimum": 0},
+                    "stale_entity_count_threshold": {"type": "integer", "minimum": 0},
+                    "slo_breached": {"type": "boolean"},
+                },
+                "required": ["kind", "total_entities", "stale_count", "stale_entity_count_threshold", "slo_breached"],
+            },
+            {
+                "type": "object", "additionalProperties": false,
+                "properties": {
+                    "kind": {"const": "stale_entities"},
+                    "items": {"type": "array", "maxItems": 500, "items": {
+                        "type": "object", "additionalProperties": false,
+                        "properties": {
+                            "entity_key": {"type": "string"},
+                            "newest_source_write": {"type": "integer", "minimum": 1},
+                            "embedding_write": {"type": ["integer", "null"], "minimum": 1},
+                        },
+                        "required": ["entity_key", "newest_source_write", "embedding_write"],
+                    }},
+                    "observed_frontier": {"type": ["integer", "null"], "minimum": 1},
+                },
+                "required": ["kind", "items", "observed_frontier"],
+            },
+        ],
+    })
+}
+
+fn vector_model_versions_result_schema() -> Value {
+    json!({
+        "$schema": MCP_SCHEMA_DIALECT,
+        "oneOf": [
+            {
+                "type": "object", "additionalProperties": false,
+                "properties": {
+                    "kind": {"const": "model_version_summary"},
+                    "current_count": {"type": "integer", "minimum": 0},
+                    "outdated_count": {"type": "integer", "minimum": 0},
+                },
+                "required": ["kind", "current_count", "outdated_count"],
+            },
+            {
+                "type": "object", "additionalProperties": false,
+                "properties": {
+                    "kind": {"const": "outdated_model_entities"},
+                    "items": {"type": "array", "maxItems": 500, "items": {
+                        "type": "object", "additionalProperties": false,
+                        "properties": {
+                            "entity_key": {"type": "string"},
+                            "model": {"type": "string", "maxLength": 256},
+                            "model_version": {"type": "string", "maxLength": 256},
+                            "embedding_write": {"type": "integer", "minimum": 1},
+                        },
+                        "required": ["entity_key", "model", "model_version", "embedding_write"],
+                    }},
+                    "observed_frontier": {"type": ["integer", "null"], "minimum": 1},
+                },
+                "required": ["kind", "items", "observed_frontier"],
+            },
+        ],
     })
 }
 
@@ -3022,6 +3187,16 @@ pub fn generate_typescript_client(module: &QueryModule, contract: &ContractBundl
             )
         })
         .collect::<BTreeMap<_, _>>();
+    let vector_driver_operations = generate_vector_inspection_tools(module, contract)
+        .expect("validated nearest sources have distinct inspection names")
+        .into_iter()
+        .map(|operation| {
+            (
+                (operation.entity, operation.field, operation.inspection_kind),
+                (operation.name, json_schema_hash(&operation.input_schema)),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
     let mut output = String::new();
     writeln!(output, "// @generated by riffdb-query-module; do not edit.").expect("string");
     writeln!(
@@ -3083,7 +3258,15 @@ pub fn generate_typescript_client(module: &QueryModule, contract: &ContractBundl
          export interface CommandBatchResult<T> {{ readonly items: ReadonlyArray<CommandBatchItem<T>>; readonly checkpoint: number; }}\n\
          export interface ApplicationTransport {{\n  executeNamedQuery<P, R>(request: NamedQueryRequest<P, R>, options?: QueryOptions): Promise<TypedQueryResult<R>>;\n  \
          executeCommand<I, R>(request: CommandRequest<I, R>, attemptBudget: number): Promise<TypedCommandResult<R>>;\n  \
-         executeCommandBatch?<I, R>(request: CommandRequest<I, R>, inputs: ReadonlyArray<I>, concurrency: number, checkpoint: number, attemptBudget: number): Promise<CommandBatchResult<R>>;\n}}\n"
+         executeCommandBatch?<I, R>(request: CommandRequest<I, R>, inputs: ReadonlyArray<I>, concurrency: number, checkpoint: number, attemptBudget: number): Promise<CommandBatchResult<R>>;\n  \
+         executeVectorInspection?<P, R>(request: VectorInspectionRequest<P, R>, options?: VectorInspectionOptions): Promise<TypedVectorInspectionResult<R>>;\n}}\n\
+         export interface VectorInspectionRequest<P, R> {{ readonly driverOperation: DriverOperationIdentity; readonly contractLineage: typeof CONTRACT_LINEAGE; readonly contractVersion: typeof CONTRACT_VERSION; readonly contractBundleHash: typeof CONTRACT_BUNDLE_HASH; readonly entity: string; readonly field: string; readonly inspectionKind: \"staleness\" | \"model_versions\"; readonly partition: P; readonly partitionSchema: ApplicationValueSchema; readonly limit: number; readonly resultType?: R; }}\n\
+         export interface VectorInspectionOptions {{ readonly cursor?: string; }}\n\
+         export interface TypedVectorInspectionResult<T> {{ readonly value: T; readonly applicationHead?: bigint; readonly nextCursor?: string; }}\n\
+         export interface VectorStalenessItem {{ readonly entityKey: Uint8Array; readonly newestSourceWrite: bigint; readonly embeddingWrite: bigint | null; }}\n\
+         export type VectorStalenessResult = {{ readonly kind: \"staleness_summary\"; readonly totalEntities: bigint; readonly staleCount: bigint; readonly staleEntityCountThreshold: bigint; readonly sloBreached: boolean }} | {{ readonly kind: \"stale_entities\"; readonly items: ReadonlyArray<VectorStalenessItem>; readonly observedFrontier: bigint | null }};\n\
+         export interface VectorModelVersionItem {{ readonly entityKey: Uint8Array; readonly model: string; readonly modelVersion: string; readonly embeddingWrite: bigint; }}\n\
+         export type VectorModelVersionResult = {{ readonly kind: \"model_version_summary\"; readonly currentCount: bigint; readonly outdatedCount: bigint }} | {{ readonly kind: \"outdated_model_entities\"; readonly items: ReadonlyArray<VectorModelVersionItem>; readonly observedFrontier: bigint | null }};\n"
     )
     .expect("string");
     output.push_str(
@@ -3378,7 +3561,13 @@ function compactTimestamp(value: CompactApplicationValue): { readonly seconds: b
         )
         .expect("string");
     }
-    emit_typescript_client_facade(&mut output, module, &commands);
+    emit_typescript_client_facade(
+        &mut output,
+        module,
+        &commands,
+        contract,
+        &vector_driver_operations,
+    );
     output
 }
 
@@ -3897,7 +4086,7 @@ fn emit_typescript_application_errors(output: &mut String) {
 } as const;
 
 export type ApplicationErrorCode = keyof typeof APPLICATION_ERROR_REGISTRY;
-export type ApplicationOperation = "DescribeContract" | "CheckQuery" | "ExplainQuery" | "ExecuteQuery" | "DeployQueryModule" | "GetQueryModule" | "ExecuteCommand" | "BatchCommand";
+export type ApplicationOperation = "DescribeContract" | "CheckQuery" | "ExplainQuery" | "ExecuteQuery" | "DeployQueryModule" | "GetQueryModule" | "ExecuteCommand" | "BatchCommand" | "InspectVectorState";
 export type ApplicationErrorCategory = typeof APPLICATION_ERROR_REGISTRY[ApplicationErrorCode][1];
 export type ApplicationRecoveryAction = typeof APPLICATION_ERROR_REGISTRY[ApplicationErrorCode][2];
 export type ApplicationFixCode = typeof APPLICATION_ERROR_REGISTRY[ApplicationErrorCode][3][number];
@@ -3928,7 +4117,7 @@ export class RiffDbApplicationError extends Error {
 
 const APPLICATION_OPERATIONS: ReadonlySet<string> = new Set([
   "DescribeContract", "CheckQuery", "ExplainQuery", "ExecuteQuery",
-  "DeployQueryModule", "GetQueryModule", "ExecuteCommand", "BatchCommand",
+  "DeployQueryModule", "GetQueryModule", "ExecuteCommand", "BatchCommand", "InspectVectorState",
 ]);
 const SAFE_SYMBOL = /^[A-Za-z0-9_.-]{1,256}$/;
 const UUID_V7 = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -3983,6 +4172,8 @@ fn emit_typescript_client_facade(
     output: &mut String,
     module: &QueryModule,
     commands: &[&CommandPlan],
+    contract: &ContractBundle,
+    vector_driver_operations: &BTreeMap<(String, String, String), (String, String)>,
 ) {
     let client_name = format!("{}Client", pascal(module.contract_lineage().as_str()));
     writeln!(
@@ -4066,6 +4257,38 @@ fn emit_typescript_client_facade(
             function = camel(name),
         )
         .expect("string");
+    }
+    for inspection in vector_inspection_facades(module, contract) {
+        let method = format!(
+            "inspect{}{}",
+            pascal(&inspection.entity),
+            pascal(&inspection.field)
+        );
+        let partition_type = ts_contract_type(&inspection.partition_type, contract);
+        let partition_schema = ts_contract_value_schema(&inspection.partition_type, contract);
+        for (kind, suffix, result_type) in [
+            ("staleness", "Staleness", "VectorStalenessResult"),
+            (
+                "model_versions",
+                "ModelVersions",
+                "VectorModelVersionResult",
+            ),
+        ] {
+            let (operation, schema_hash) = vector_driver_operations
+                .get(&(
+                    inspection.entity.clone(),
+                    inspection.field.clone(),
+                    kind.to_owned(),
+                ))
+                .expect("generated vector inspection operation");
+            writeln!(
+                output,
+                "  public async {method}{suffix}(partition: {partition_type}, limit = 50, options: VectorInspectionOptions = {{}}): Promise<TypedVectorInspectionResult<{result_type}>> {{\n    if (!Number.isInteger(limit) || limit < 1 || limit > 500) throw new Error(\"invalid vector inspection limit\");\n    if (this.transport.executeVectorInspection === undefined) throw new Error(\"RiffDB transport does not support vector inspection\");\n    return this.transport.executeVectorInspection<{partition_type}, {result_type}>({{ driverOperation: {{ name: {operation:?}, inputSchemaHash: {schema_hash:?} }}, contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, contractBundleHash: CONTRACT_BUNDLE_HASH, entity: {entity:?}, field: {field:?}, inspectionKind: {kind:?}, partition, partitionSchema: {partition_schema}, limit }}, options);\n  }}\n",
+                entity = inspection.entity,
+                field = inspection.field,
+            )
+            .expect("string");
+        }
     }
     writeln!(output, "}}").expect("string");
 }
@@ -4688,6 +4911,9 @@ mod tests {
         .expect("module");
 
         let generated = generate_rust_client(&module, &contract);
+        let generated_typescript = generate_typescript_client(&module, &contract);
+        let generated_go = crate::generate_go_client(&module, &contract);
+        let generated_python = generate_python_client(&module, &contract).expect("Python");
 
         assert!(generated.contains("VectorStateInspectionResult"));
         assert!(generated.contains("pub async fn inspect_document_embedding_staleness("));
@@ -4697,6 +4923,16 @@ mod tests {
         assert!(generated.contains("VectorStateInspectionKind::Stale"));
         assert!(generated.contains("VectorStateInspectionKind::OutdatedModel"));
         assert!(generated.contains("ApplicationContract::Exact"));
+        assert!(generated_typescript.contains("inspectDocumentEmbeddingStaleness("));
+        assert!(generated_typescript.contains("inspectDocumentEmbeddingModelVersions("));
+        assert!(generated_typescript.contains("executeVectorInspection"));
+        assert!(generated_go.contains("InspectDocumentEmbeddingStaleness("));
+        assert!(generated_go.contains("InspectDocumentEmbeddingModelVersions("));
+        assert!(generated_go.contains("InspectDocumentEmbeddingStalenessOperation"));
+        assert!(generated_python.contains("def inspect_document_embedding_staleness("));
+        assert!(generated_python.contains("def inspect_document_embedding_model_versions("));
+        assert!(generated_python.contains("inspection_kind=\"staleness\""));
+        assert!(generated_python.contains("inspection_kind=\"model_versions\""));
     }
 
     #[test]

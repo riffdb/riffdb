@@ -154,6 +154,62 @@ class QueryOptions:
 
 
 @dataclass(frozen=True, slots=True)
+class VectorInspectionOptions:
+    cursor: bytes | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class VectorStalenessItem:
+    entity_key: bytes
+    newest_source_write: int
+    embedding_write: int | None
+
+
+@dataclass(frozen=True, slots=True)
+class VectorStalenessSummary:
+    total_entities: int
+    stale_count: int
+    stale_entity_count_threshold: int
+    slo_breached: bool
+
+
+@dataclass(frozen=True, slots=True)
+class VectorStaleEntities:
+    items: tuple[VectorStalenessItem, ...]
+    observed_frontier: int
+
+
+@dataclass(frozen=True, slots=True)
+class VectorModelVersionItem:
+    entity_key: bytes
+    model: str
+    model_version: str
+    embedding_write: int
+
+
+@dataclass(frozen=True, slots=True)
+class VectorModelVersionSummary:
+    current_count: int
+    outdated_count: int
+
+
+@dataclass(frozen=True, slots=True)
+class VectorOutdatedModelEntities:
+    items: tuple[VectorModelVersionItem, ...]
+    observed_frontier: int
+
+
+VectorStalenessResult = VectorStalenessSummary | VectorStaleEntities
+VectorModelVersionResult = VectorModelVersionSummary | VectorOutdatedModelEntities
+
+
+@dataclass(frozen=True, slots=True)
+class TypedVectorInspectionResult(Generic[T]):
+    value: T
+    next_cursor: bytes | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class VerifiedTlsConfig:
     endpoint: str
     trust_root: str
@@ -474,6 +530,29 @@ class SyncApplicationTransport:
         except BaseException as error:
             raise _translate_native(error) from None
 
+    def _inspect_vector_state(
+        self, **request: object
+    ) -> TypedVectorInspectionResult[VectorStalenessResult | VectorModelVersionResult]:
+        self._require_open()
+        options = request.pop("options")
+        assert isinstance(options, VectorInspectionOptions)
+        request["cursor"] = None if options.cursor is None else options.cursor.hex()
+        try:
+            encoded = json.dumps(request, separators=(",", ":"))
+            return _vector_inspection_result(
+                json.loads(self._client.inspect_vector_state(encoded))
+            )
+        except (
+            ProtocolError,
+            InvalidInput,
+            RiffDbApplicationError,
+            ConnectionFailure,
+            OutcomeUnknown,
+        ):
+            raise
+        except BaseException as error:
+            raise _translate_native(error) from None
+
     def _command_batch(
         self,
         inputs: Sequence[T],
@@ -567,6 +646,29 @@ class AsyncApplicationTransport:
             if result.plan_hash != expected_plan or result.contract_version != expected_version:
                 raise ProtocolError("RiffDB application identity mismatch")
             return result
+        except (
+            ProtocolError,
+            InvalidInput,
+            RiffDbApplicationError,
+            ConnectionFailure,
+            OutcomeUnknown,
+        ):
+            raise
+        except BaseException as error:
+            raise _translate_native(error) from None
+
+    async def _inspect_vector_state(
+        self, **request: object
+    ) -> TypedVectorInspectionResult[VectorStalenessResult | VectorModelVersionResult]:
+        self._require_open()
+        options = request.pop("options")
+        assert isinstance(options, VectorInspectionOptions)
+        request["cursor"] = None if options.cursor is None else options.cursor.hex()
+        try:
+            encoded = json.dumps(request, separators=(",", ":"))
+            return _vector_inspection_result(
+                json.loads(await self._client.inspect_vector_state(encoded))
+            )
         except (
             ProtocolError,
             InvalidInput,
@@ -892,6 +994,115 @@ def _command_result(value: object) -> TypedCommandResult[dict[str, object]]:
     )
 
 
+def _vector_inspection_result(
+    value: object,
+) -> TypedVectorInspectionResult[VectorStalenessResult | VectorModelVersionResult]:
+    if not isinstance(value, dict) or not isinstance(value.get("kind"), str):
+        raise ProtocolError("invalid RiffDB vector inspection response")
+    try:
+        kind = value["kind"]
+        if kind == "staleness_summary":
+            expected = {
+                "kind",
+                "total_entities",
+                "stale_count",
+                "stale_entity_count_threshold",
+                "slo_breached",
+            }
+            if set(value) != expected:
+                raise ValueError
+            result: VectorStalenessResult | VectorModelVersionResult = VectorStalenessSummary(
+                total_entities=_vector_u64(value["total_entities"]),
+                stale_count=_vector_u64(value["stale_count"]),
+                stale_entity_count_threshold=_vector_u64(
+                    value["stale_entity_count_threshold"]
+                ),
+                slo_breached=_vector_bool(value["slo_breached"]),
+            )
+            cursor = None
+        elif kind == "model_version_summary":
+            expected = {"kind", "current_count", "outdated_count"}
+            if set(value) != expected:
+                raise ValueError
+            result = VectorModelVersionSummary(
+                current_count=_vector_u64(value["current_count"]),
+                outdated_count=_vector_u64(value["outdated_count"]),
+            )
+            cursor = None
+        elif kind in {"stale_entities", "outdated_model_entities"}:
+            expected = {"kind", "items", "next_cursor", "observed_frontier"}
+            if set(value) != expected or not isinstance(value["items"], list):
+                raise ValueError
+            cursor_value = value["next_cursor"]
+            cursor = None if cursor_value is None else _vector_hex_bytes(cursor_value)
+            if kind == "stale_entities":
+                items = tuple(
+                    VectorStalenessItem(
+                        entity_key=_vector_hex_bytes(item["entity_key"]),
+                        newest_source_write=_vector_u64(item["newest_source_write"]),
+                        embedding_write=(
+                            None
+                            if item["embedding_write"] is None
+                            else _vector_u64(item["embedding_write"])
+                        ),
+                    )
+                    for item in value["items"]
+                    if isinstance(item, dict)
+                    and set(item)
+                    == {"entity_key", "newest_source_write", "embedding_write"}
+                )
+                if len(items) != len(value["items"]):
+                    raise ValueError
+                result = VectorStaleEntities(
+                    items, _vector_u64(value["observed_frontier"])
+                )
+            else:
+                model_items = tuple(
+                    VectorModelVersionItem(
+                        entity_key=_vector_hex_bytes(item["entity_key"]),
+                        model=_vector_string(item["model"]),
+                        model_version=_vector_string(item["model_version"]),
+                        embedding_write=_vector_u64(item["embedding_write"]),
+                    )
+                    for item in value["items"]
+                    if isinstance(item, dict)
+                    and set(item)
+                    == {"entity_key", "model", "model_version", "embedding_write"}
+                )
+                if len(model_items) != len(value["items"]):
+                    raise ValueError
+                result = VectorOutdatedModelEntities(
+                    model_items, _vector_u64(value["observed_frontier"])
+                )
+        else:
+            raise ValueError
+        return TypedVectorInspectionResult(result, cursor)
+    except (KeyError, TypeError, ValueError, OverflowError):
+        raise ProtocolError("invalid RiffDB vector inspection response") from None
+
+
+def _vector_u64(value: object) -> int:
+    if type(value) is not int or not 0 <= value <= (1 << 64) - 1:
+        raise ValueError
+    return value
+
+
+def _vector_bool(value: object) -> bool:
+    if type(value) is not bool:
+        raise ValueError
+    return value
+
+
+def _vector_string(value: object) -> str:
+    if type(value) is not str:
+        raise ValueError
+    return value
+
+
+def _vector_hex_bytes(value: object) -> bytes:
+    return bytes.fromhex(_vector_string(value))
+
+
 def _validate_batch(inputs: Sequence[object], options: CommandBatchOptions) -> None:
     if (
         not 1 <= len(inputs) <= 4096
@@ -978,6 +1189,16 @@ __all__ = [
     "TraceParent",
     "TypedCommandResult",
     "TypedQueryResult",
+    "TypedVectorInspectionResult",
     "VerifiedTlsConfig",
+    "VectorInspectionOptions",
+    "VectorModelVersionItem",
+    "VectorModelVersionResult",
+    "VectorModelVersionSummary",
+    "VectorOutdatedModelEntities",
+    "VectorStaleEntities",
+    "VectorStalenessItem",
+    "VectorStalenessResult",
+    "VectorStalenessSummary",
     "WorkflowSuccessorRevision",
 ]

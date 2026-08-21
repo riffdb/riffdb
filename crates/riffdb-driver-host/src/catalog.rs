@@ -10,7 +10,7 @@ const MAX_ARTIFACT_BYTES: usize = 8 * 1024 * 1024;
 const MAX_OPERATIONS: usize = 4_096;
 
 /// Exact generated application operation class.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum OperationKind {
     /// Compiled command.
     Command,
@@ -18,6 +18,17 @@ pub enum OperationKind {
     Query,
     /// Generated reactive action.
     Reactive,
+    /// Compiler-derived symbolic vector-state inspection.
+    VectorInspection,
+}
+
+/// Closed vector-state population selected by a generated operation.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub enum VectorInspectionKind {
+    /// Missing or source-stale embeddings.
+    Staleness,
+    /// Embeddings produced by a non-current model version.
+    ModelVersions,
 }
 
 /// Closed generated reactive operation class.
@@ -44,6 +55,33 @@ pub struct OperationSpec {
     reactive_kind: Option<ReactiveKind>,
     reactive_action: Option<String>,
     reaction: Option<ReactionSpec>,
+    vector_target: Option<VectorInspectionSpec>,
+}
+
+/// Compiler-sealed symbolic vector inspection target.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VectorInspectionSpec {
+    entity: String,
+    field: String,
+    kind: VectorInspectionKind,
+}
+
+impl VectorInspectionSpec {
+    /// Symbolic contract entity.
+    #[must_use]
+    pub fn entity(&self) -> &str {
+        &self.entity
+    }
+    /// Symbolic vector field.
+    #[must_use]
+    pub fn field(&self) -> &str {
+        &self.field
+    }
+    /// Closed inspection population.
+    #[must_use]
+    pub const fn kind(&self) -> VectorInspectionKind {
+        self.kind
+    }
 }
 
 /// Exact generated contextual reaction target.
@@ -123,6 +161,11 @@ impl OperationSpec {
     pub const fn reaction(&self) -> Option<&ReactionSpec> {
         self.reaction.as_ref()
     }
+    /// Compiler-sealed vector target when this is an inspection operation.
+    #[must_use]
+    pub const fn vector_target(&self) -> Option<&VectorInspectionSpec> {
+        self.vector_target.as_ref()
+    }
 }
 
 /// Exact application-only dispatch catalog.
@@ -196,10 +239,13 @@ impl ApplicationCatalog {
             tools.schema.as_str(),
             "riffdb-generated-application-operations/v2"
                 | "riffdb-generated-application-operations/v3"
+                | "riffdb-generated-application-operations/v4"
         ) || (tools.schema == "riffdb-generated-application-operations/v2"
-            && !tools.sdk_tools.is_empty())
+            && (!tools.sdk_tools.is_empty() || !tools.vector_tools.is_empty()))
             || (tools.schema == "riffdb-generated-application-operations/v3"
-                && tools.sdk_tools.is_empty())
+                && (tools.sdk_tools.is_empty() || !tools.vector_tools.is_empty()))
+            || (tools.schema == "riffdb-generated-application-operations/v4"
+                && tools.vector_tools.is_empty())
             || lock.exact_manifest_hash != tools.application_manifest_hash
             || manifest.contract.lineage != lock.contract.lineage
             || manifest.contract.version != lock.contract.version
@@ -303,6 +349,7 @@ impl ApplicationCatalog {
                     reactive_kind: None,
                     reactive_action: None,
                     reaction: None,
+                    vector_target: None,
                 },
             )?;
         }
@@ -331,6 +378,7 @@ impl ApplicationCatalog {
                     reactive_kind: None,
                     reactive_action: None,
                     reaction: None,
+                    vector_target: None,
                 },
             )?;
         }
@@ -382,6 +430,64 @@ impl ApplicationCatalog {
                         (None, None, None) => None,
                         _ => return Err(CatalogError::InvalidArtifact),
                     },
+                    vector_target: None,
+                },
+            )?;
+        }
+        let mut found_vector_targets = BTreeSet::new();
+        for vector in tools.vector_tools {
+            if parse_hash(&vector.contract_bundle_hash)? != bundle_hash
+                || vector.source_queries.is_empty()
+                || vector.source_queries.len() > MAX_OPERATIONS
+                || vector.entity.is_empty()
+                || vector.entity.len() > 256
+                || vector.field.is_empty()
+                || vector.field.len() > 256
+            {
+                return Err(CatalogError::InvalidArtifact);
+            }
+            let module_hash = parse_hash(&vector.module_hash)?;
+            let mut source_queries = BTreeSet::new();
+            for query in vector.source_queries {
+                let identity = (module_hash, query);
+                if !available_queries.contains_key(&identity)
+                    || !source_queries.insert(identity.clone())
+                {
+                    return Err(CatalogError::IdentityMismatch);
+                }
+            }
+            if !source_queries
+                .iter()
+                .any(|identity| queries.contains_key(identity))
+            {
+                continue;
+            }
+            let kind = match vector.inspection_kind.as_str() {
+                "staleness" => VectorInspectionKind::Staleness,
+                "model_versions" => VectorInspectionKind::ModelVersions,
+                _ => return Err(CatalogError::InvalidArtifact),
+            };
+            if !found_vector_targets.insert((vector.entity.clone(), vector.field.clone(), kind)) {
+                return Err(CatalogError::DuplicateOperation);
+            }
+            insert_operation(
+                &mut operations,
+                OperationArtifact {
+                    public_name: vector.name,
+                    symbol: format!("{}.{}", vector.entity, vector.field),
+                    kind: OperationKind::VectorInspection,
+                    module_hash: Some(module_hash),
+                    plan_hash: None,
+                    input_schema: vector.input_schema,
+                    result_schema: vector.result_schema,
+                    reactive_kind: None,
+                    reactive_action: None,
+                    reaction: None,
+                    vector_target: Some(VectorInspectionSpec {
+                        entity: vector.entity,
+                        field: vector.field,
+                        kind,
+                    }),
                 },
             )?;
         }
@@ -591,6 +697,8 @@ struct GeneratedCatalog {
     sdk_tools: Vec<GeneratedTool>,
     commands: Vec<GeneratedCommand>,
     reactive_tools: Vec<GeneratedReactiveTool>,
+    #[serde(default)]
+    vector_tools: Vec<GeneratedVectorTool>,
 }
 #[derive(Deserialize)]
 struct GeneratedTool {
@@ -623,6 +731,19 @@ struct GeneratedReactiveTool {
     result_schema: Value,
 }
 
+#[derive(Deserialize)]
+struct GeneratedVectorTool {
+    name: String,
+    entity: String,
+    field: String,
+    inspection_kind: String,
+    source_queries: Vec<String>,
+    module_hash: String,
+    contract_bundle_hash: String,
+    input_schema: Value,
+    result_schema: Value,
+}
+
 struct OperationArtifact {
     public_name: String,
     symbol: String,
@@ -634,6 +755,7 @@ struct OperationArtifact {
     reactive_kind: Option<ReactiveKind>,
     reactive_action: Option<String>,
     reaction: Option<ReactionSpec>,
+    vector_target: Option<VectorInspectionSpec>,
 }
 
 fn insert_operation(
@@ -651,6 +773,7 @@ fn insert_operation(
         reactive_kind,
         reactive_action,
         reaction,
+        vector_target,
     } = operation;
     if public_name.is_empty()
         || public_name.len() > 256
@@ -673,6 +796,7 @@ fn insert_operation(
         reactive_kind,
         reactive_action,
         reaction,
+        vector_target,
     };
     if operations.insert(public_name, spec).is_some() {
         return Err(CatalogError::DuplicateOperation);

@@ -19,7 +19,8 @@ use riffdb_client_rust::{
     ApplicationEventPullDisposition, ApplicationLiveQueryUpdate, ApplicationReactiveOperation,
     ApplicationRecord, ApplicationValue, AttemptBudget, BearerCredential, CallMetadata,
     ClientError, DatabaseAlias, DetailsFreeStatus, EventConsumerOptions, LiveQueryCursor,
-    NamedQuery, PublicError, QueryOptions, StableApplicationClient, TraceParent, app_v1,
+    NamedQuery, PublicError, QueryOptions, StableApplicationClient, TraceParent,
+    VectorStateInspection, VectorStateInspectionKind, VectorStateInspectionResult, app_v1,
     load_protected_bearer_credential, raise_query_result, raise_value as raise_wire_value,
 };
 use riffdb_config::{
@@ -232,6 +233,18 @@ impl NativeSyncClient {
         render_command_result(result)
     }
 
+    fn inspect_vector_state(&self, py: Python<'_>, request: &str) -> PyResult<String> {
+        let request = parse_vector_inspection(request)?;
+        let mut client = self.client()?;
+        let result = py
+            .detach(|| {
+                self.runtime
+                    .block_on(client.inspect_vector_state(request.inspection, &self.metadata))
+            })
+            .map_err(application_client_error)?;
+        render_vector_inspection(result)
+    }
+
     fn close(&self) -> PyResult<()> {
         self.client
             .lock()
@@ -375,6 +388,23 @@ impl NativeAsyncClient {
                 .map_err(application_client_error)?;
             validate_command_identity(&request.expected, &result)?;
             render_command_result(result)
+        })
+    }
+
+    fn inspect_vector_state<'py>(
+        &self,
+        py: Python<'py>,
+        request: String,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let request = parse_vector_inspection(&request)?;
+        let mut client = self.client()?;
+        let metadata = self.metadata.clone();
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let result = client
+                .inspect_vector_state(request.inspection, &metadata)
+                .await
+                .map_err(application_client_error)?;
+            render_vector_inspection(result)
         })
     }
 
@@ -636,6 +666,24 @@ struct QueryRequest {
 struct ParsedQuery {
     query: NamedQuery,
     accept_compact_result: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct VectorInspectionRequest {
+    contract_lineage: String,
+    contract_version: u64,
+    contract_bundle_hash: String,
+    entity: String,
+    field: String,
+    inspection_kind: String,
+    partition: Value,
+    limit: u32,
+    cursor: Option<String>,
+}
+
+struct ParsedVectorInspection {
+    inspection: VectorStateInspection,
 }
 
 #[derive(Deserialize)]
@@ -1007,6 +1055,34 @@ fn parse_query(source: &str) -> PyResult<ParsedQuery> {
     })
 }
 
+fn parse_vector_inspection(source: &str) -> PyResult<ParsedVectorInspection> {
+    let request: VectorInspectionRequest = parse_json(source)?;
+    let bundle_hash = parse_hash(&request.contract_bundle_hash)?;
+    let mut budget = ValueBudget::default();
+    let partition = parse_value(request.partition, 0, &mut budget)?;
+    let kind = match request.inspection_kind.as_str() {
+        "staleness" => VectorStateInspectionKind::Stale,
+        "model_versions" => VectorStateInspectionKind::OutdatedModel,
+        _ => return Err(native_error("invalid_input", None)),
+    };
+    let mut inspection = VectorStateInspection::new(
+        ApplicationContract::Exact {
+            lineage: request.contract_lineage,
+            version: request.contract_version,
+            bundle_hash: Some(bundle_hash),
+        },
+        request.entity,
+        request.field,
+        partition,
+        kind,
+        request.limit,
+    );
+    if let Some(cursor) = request.cursor {
+        inspection = inspection.after(parse_hex(&cursor)?);
+    }
+    Ok(ParsedVectorInspection { inspection })
+}
+
 struct ParsedCommand {
     command: ApplicationCommand,
     attempts: AttemptBudget,
@@ -1237,6 +1313,45 @@ fn render_query_result(result: riffdb_client_rust::NamedQueryResult) -> PyResult
         "application_head": result.application_head,
         "next_cursor": result.next_cursor,
     }))
+}
+
+fn render_vector_inspection(result: VectorStateInspectionResult) -> PyResult<String> {
+    let value = match result {
+        VectorStateInspectionResult::StalenessSummary(summary) => json!({
+            "kind": "staleness_summary",
+            "total_entities": summary.total_entities,
+            "stale_count": summary.stale_count,
+            "stale_entity_count_threshold": summary.stale_entity_count_threshold,
+            "slo_breached": summary.slo_breached,
+        }),
+        VectorStateInspectionResult::StaleEntities(page) => json!({
+            "kind": "stale_entities",
+            "items": page.items.into_iter().map(|item| json!({
+                "entity_key": hex(&item.entity_key),
+                "newest_source_write": item.newest_source_write,
+                "embedding_write": item.embedding_write,
+            })).collect::<Vec<_>>(),
+            "next_cursor": page.next_cursor.as_deref().map(hex),
+            "observed_frontier": page.observed_frontier,
+        }),
+        VectorStateInspectionResult::ModelVersionSummary(summary) => json!({
+            "kind": "model_version_summary",
+            "current_count": summary.current_count,
+            "outdated_count": summary.outdated_count,
+        }),
+        VectorStateInspectionResult::OutdatedModelEntities(page) => json!({
+            "kind": "outdated_model_entities",
+            "items": page.items.into_iter().map(|item| json!({
+                "entity_key": hex(&item.entity_key),
+                "model": item.model,
+                "model_version": item.model_version,
+                "embedding_write": item.embedding_write,
+            })).collect::<Vec<_>>(),
+            "next_cursor": page.next_cursor.as_deref().map(hex),
+            "observed_frontier": page.observed_frontier,
+        }),
+    };
+    serialize(&value)
 }
 
 fn render_wire_query_result(response: app_v1::ExecuteQueryResponse) -> PyResult<String> {
