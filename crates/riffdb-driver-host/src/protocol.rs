@@ -136,6 +136,8 @@ pub enum DriverValue {
     Decimal(DriverDecimal),
     /// Currency-qualified exact decimal.
     Money(DriverMoney),
+    /// Canonical binary32 vector encoded as exact component bit patterns.
+    Vector(DriverVector),
     /// Ordered bounded values.
     List(Vec<Self>),
     /// Name-addressed bounded record.
@@ -172,6 +174,14 @@ pub struct DriverMoney {
     pub currency: String,
     /// Exact amount.
     pub amount: DriverDecimal,
+}
+
+/// Exact bounded vector carriage without JSON floating-point ambiguity.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct DriverVector {
+    /// IEEE 754 binary32 component bit patterns in declaration order.
+    pub component_bits: Vec<u32>,
 }
 
 /// Closed target-language response.
@@ -880,6 +890,19 @@ fn validate_values<'a>(
                 return Err(ProtocolError::InvalidBounds);
             }
             DriverValue::Decimal(decimal) if decimal.coefficient.len() > 1_366 => {
+                return Err(ProtocolError::InvalidBounds);
+            }
+            DriverValue::Vector(vector)
+                if riffdb_types::CanonicalVector::new(
+                    vector
+                        .component_bits
+                        .iter()
+                        .copied()
+                        .map(f32::from_bits)
+                        .collect(),
+                )
+                .is_err() =>
+            {
                 return Err(ProtocolError::InvalidBounds);
             }
             _ => {}

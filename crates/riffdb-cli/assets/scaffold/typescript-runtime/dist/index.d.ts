@@ -2,6 +2,9 @@ import { DriverApplicationTransport, type DriverApplicationError, type DriverCom
 export type ApplicationValueSchema = {
     readonly kind: "bool" | "i64" | "u64" | "string" | "uuid" | "bytes" | "date" | "timestamp" | "cursor" | "limit";
 } | {
+    readonly kind: "vector";
+    readonly dimension: number;
+} | {
     readonly kind: "decimal";
     readonly precision?: number;
     readonly scale?: number;

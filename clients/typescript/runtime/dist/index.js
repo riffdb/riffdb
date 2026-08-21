@@ -859,6 +859,10 @@ function encodeDriverValue(value, schema) {
                 throw new Error("generated RiffDB money currency does not match");
             return { type: "money", value: { currency, amount: encodeDriverDecimal(money.amount, schema) } };
         }
+        case "vector": return {
+            type: "vector",
+            value: { component_bits: encodeVectorBits(value, schema.dimension) },
+        };
         case "limit": return { type: "u64", value: String(boundedInteger(value, 1, 500)) };
     }
 }
@@ -985,6 +989,10 @@ function decodeDriverValue(value, schema) {
         case "money":
             if (value.type === "money" && value.value.currency === schema.currency)
                 return { currency: value.value.currency, amount: decodeDriverDecimal(value.value.amount, schema) };
+            break;
+        case "vector":
+            if (value.type === "vector")
+                return decodeVectorBits(value.value.component_bits, schema.dimension);
             break;
         case "limit":
             if (value.type === "u64")
@@ -1203,6 +1211,7 @@ function encodeValue(value, schema) {
             }
             return { $timestamp: { seconds: seconds.toString(), nanos } };
         }
+        case "vector": return { $vector: encodeVector(value, schema.dimension) };
         case "limit":
             if (!Number.isInteger(value) || value < 1 || value > 500) {
                 throw new Error("invalid limit input");
@@ -1273,6 +1282,7 @@ function decodeTagged(value) {
             currency: expectCurrency(input.currency),
             amount: decodeDecimal(exactObject(input.amount)),
         };
+        case "vector": return decodeVector(input.components, undefined);
         case "list":
             if (!Array.isArray(input.values))
                 return fail();
@@ -1378,6 +1388,7 @@ function decodePlain(value, schema) {
                 amount: normalizeDecodedDecimal(input.amount, schema.precision, schema.scale),
             };
         }
+        case "vector": return decodeVector(value, schema.dimension);
         default: break;
     }
     return fail();
@@ -1572,6 +1583,10 @@ function encodeCliReactiveValue(value, schema) {
                 })(),
             };
         }
+        case "vector": return {
+            type: "vector",
+            components: encodeVector(value, schema.dimension),
+        };
         case "limit":
             return { type: "u64", value: String(boundedInteger(value, 1, 500)) };
         case "optional":
@@ -1579,6 +1594,54 @@ function encodeCliReactiveValue(value, schema) {
         case "record":
             throw new Error("invalid reactive parameter schema");
     }
+}
+function encodeVector(value, dimension) {
+    if (!Array.isArray(value) || !Number.isInteger(dimension) || dimension < 1
+        || dimension > 4_096 || value.length !== dimension)
+        return fail();
+    return value.map((component) => {
+        if (typeof component !== "number" || !Number.isFinite(component))
+            return fail();
+        const rounded = Math.fround(component === 0 ? 0 : component);
+        if (!Number.isFinite(rounded))
+            return fail();
+        return rounded;
+    });
+}
+function encodeVectorBits(value, dimension) {
+    const vector = encodeVector(value, dimension);
+    const float = new Float32Array(1);
+    const bits = new Uint32Array(float.buffer);
+    return vector.map((component) => {
+        float[0] = component;
+        return bits[0];
+    });
+}
+function decodeVectorBits(value, dimension) {
+    if (!Array.isArray(value) || value.length !== dimension)
+        return fail();
+    const float = new Float32Array(1);
+    const bits = new Uint32Array(float.buffer);
+    return value.map((componentBits) => {
+        bits[0] = boundedInteger(componentBits, 0, 4_294_967_295);
+        const component = float[0];
+        if (!Number.isFinite(component))
+            return fail();
+        return component === 0 ? 0 : component;
+    });
+}
+function decodeVector(value, dimension) {
+    if (!Array.isArray(value) || value.length < 1 || value.length > 4_096
+        || (dimension !== undefined && value.length !== dimension))
+        return fail();
+    return value.map((component) => {
+        if (typeof component !== "number" || !Number.isFinite(component))
+            return fail();
+        const rounded = Math.fround(component);
+        if (!Number.isFinite(rounded) || rounded !== component)
+            return fail();
+        return component === 0 ? 0 : component;
+    });
 }
 function decodeReactiveConsumerStatus(value) {
     const status = exactObject(value);

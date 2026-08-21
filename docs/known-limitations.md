@@ -63,9 +63,11 @@ These limits are part of the POC release posture, not hidden roadmap promises.
   model identity/current version and bounded replay ceilings per production
   vector field. A compiler-sealed `embed` command now atomically persists the
   entity vector and authoritative model/version/write-sequence evidence;
-  generic `set` cannot bypass that evidence. Stable generated Rust, Go,
-  TypeScript, and Python application models still exclude vector fields, so
-  generated-client embedding ingress is not yet complete.
+  generic `set` cannot bypass that evidence. Generated Rust, Go, TypeScript,
+  and Python models now expose exact-dimension vector values and
+  contract-sealed model constructors. The remaining end-to-end gap is the
+  public staleness/model operation and production projected-nearest adapter,
+  not target-language vector assembly.
 - Vector staleness now has v1 count semantics: a declared positive stale-entity
   threshold breaches only when `stale_count > threshold`; duration-based
   semantics are future work. Authoritative embedding and source-field write

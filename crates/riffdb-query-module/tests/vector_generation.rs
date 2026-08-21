@@ -1,14 +1,6 @@
 #![forbid(unsafe_code)]
 
-//! Generators over a vector-bearing contract (M4 fix round).
-//!
-//! Before this round the Rust/Go/TS/Python generators panicked on
-//! contract-declared input: `vector_field` emits a vector-typed field into
-//! the entity record, and the record recursion hit
-//! `ValueTypeTag::Vector => unreachable!()`. These tests red on any
-//! reintroduced panic and pin the chosen behavior: vector fields are
-//! excluded from generated client models until the wire protocol carries a
-//! distinct vector variant.
+//! Generated application facades over ADR-0136's production embedding write.
 
 use riffdb_contract_compiler::compile_contract_source;
 use riffdb_query_module::{
@@ -23,12 +15,26 @@ contract Docs version 1 {
     key (org_id: uuid, doc_id: uuid)
     field title: string<256>
     field body: string<65536>
-    vector_field embedding(128, cosine, (title, body), staleness_slo 60)
+    vector_field embedding(4, cosine, (title, body), staleness_slo 60,
+        model "embed-v1", current_version "2026-08-21",
+        replay_age_seconds 86400, replay_bytes 1073741824, replay_backlog 100000)
   }
   aggregate Documents {
     root Document
     partition_by org_id
     conflict_key (org_id, doc_id)
+  }
+  command SetDocumentEmbedding {
+    input request_id: string<128>
+    input org_id: uuid
+    input doc_id: uuid
+    input embedding: vector<4>
+    input submitted_model: string<256>
+    input submitted_version: string<256>
+    idempotency_key request_id
+    mutate Document(org_id, doc_id) as document else Missing {}
+    embed document.embedding = embedding from (submitted_model, submitted_version)
+    return Embedded { document: document }
   }
 }
 "#;
@@ -63,61 +69,45 @@ fn application() -> (riffdb_contract_ir::ContractBundle, QueryModule) {
     (contract, module)
 }
 
-/// Every generator must produce an artifact for a vector-bearing contract
-/// without panicking, and the non-vector fields must survive.
+/// Every generator emits a typed canonical vector rather than omitting or
+/// punning the production field.
 #[test]
-fn generators_do_not_panic_on_a_vector_bearing_entity() {
+fn generators_emit_typed_vector_entity_and_command_models() {
     let (contract, module) = application();
 
     let rust = generate_rust_application_client(&module, &contract, &[]);
     assert!(rust.contains("pub struct Document"));
-    assert!(rust.contains("title"));
+    assert!(rust.contains("pub embedding: CanonicalVector"));
+    assert!(rust.contains("pub struct SetDocumentEmbeddingInput"));
+    assert!(rust.contains("wire_vector(&self.embedding, 4)?"));
+    assert!(rust.contains("pub const EMBEDDING_MODEL_IDENTITY: &'static str = \"embed-v1\""));
+    assert!(rust.contains("pub fn for_embedding("));
+    assert!(!rust.contains("for_embedding(request_id: String, org_id: ApplicationUuid, doc_id: ApplicationUuid, embedding: CanonicalVector, submitted_model"));
 
     let go = generate_go_application_client(&module, &contract, &[]);
     assert!(go.contains("type Document struct"));
-    assert!(go.contains("Title"));
+    assert!(go.contains("Embedding []float32"));
+    assert!(go.contains("riffdb.VectorFrom(input.Embedding)"));
+    assert!(go.contains("len(input.Embedding) != 4"));
+    assert!(go.contains("const SetDocumentEmbeddingEmbeddingModelIdentity = \"embed-v1\""));
+    assert!(go.contains(
+        "func NewSetDocumentEmbeddingForEmbedding(input SetDocumentEmbeddingForEmbeddingInput)"
+    ));
 
     let typescript = generate_typescript_application_client(&module, &contract, &[]);
     assert!(typescript.contains("GetDocument"));
+    assert!(typescript.contains("readonly embedding: ReadonlyArray<number>"));
+    assert!(typescript.contains(r#""dimension":4,"kind":"vector""#));
+    assert!(typescript.contains("SET_DOCUMENT_EMBEDDING_EMBEDDING_MODEL_IDENTITY = \"embed-v1\""));
+    assert!(typescript.contains("setDocumentEmbeddingForEmbedding(input: Omit<SetDocumentEmbeddingInput, \"submitted_model\" | \"submitted_version\">)"));
 
     let python =
         generate_python_application_client(&module, &contract, &[]).expect("Python client");
     assert!(python.contains("title"));
-}
-
-/// The chosen fail-closed shape: vector fields do not appear in generated
-/// entity models (no wire variant exists to carry them), and no generator
-/// emits a punned or panicking accessor for them.
-#[test]
-fn vector_fields_are_excluded_from_generated_entity_models() {
-    let (contract, module) = application();
-
-    let rust = generate_rust_application_client(&module, &contract, &[]);
+    assert!(python.contains("embedding: Annotated[tuple[float, ...], \"vector<4>\"]"));
     assert!(
-        !rust.contains("embedding"),
-        "generated Rust client must not model the vector field"
+        python
+            .contains("SET_DOCUMENT_EMBEDDING_EMBEDDING_MODEL_IDENTITY: Final[str] = \"embed-v1\"")
     );
-
-    let go = generate_go_application_client(&module, &contract, &[]);
-    assert!(
-        !go.contains("Embedding"),
-        "generated Go client must not model the vector field"
-    );
-    assert!(
-        !go.contains("riffdbUnsupportedVectorField"),
-        "the undefined-identifier guard must never reach an emitted artifact"
-    );
-
-    let typescript = generate_typescript_application_client(&module, &contract, &[]);
-    assert!(
-        !typescript.contains("embedding"),
-        "generated TypeScript client must not model the vector field"
-    );
-
-    let python =
-        generate_python_application_client(&module, &contract, &[]).expect("Python client");
-    assert!(
-        !python.contains("embedding"),
-        "generated Python client must not model the vector field"
-    );
+    assert!(python.contains("def set_document_embedding_for_embedding(*,"));
 }

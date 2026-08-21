@@ -12,8 +12,8 @@ use riffdb_riffql_syntax::{FieldSelection, Selection};
 
 use crate::QueryModule;
 use crate::generation::{
-    RustCompactResultShape, rust_compact_result_shape, workflow_revision_bindings,
-    workflow_success_outcome_name,
+    RustCompactResultShape, embedding_command_facades, rust_compact_result_shape,
+    workflow_revision_bindings, workflow_success_outcome_name,
 };
 
 /// Source symbol responsible for one Python name collision.
@@ -392,10 +392,6 @@ pub fn generate_python_client(
                 .record()
                 .fields()
                 .iter()
-                // Vector fields are excluded from generated client models
-                // until the wire protocol carries a distinct vector variant
-                // (VEC-002 ingress, deferred).
-                .filter(|field| field.value_type().tag() != ValueTypeTag::Vector)
                 .map(|field| (field.name(), field.value_type())),
             contract,
         );
@@ -552,6 +548,7 @@ pub fn generate_python_client(
                 .map(|field| (field.name(), field.value_type())),
             contract,
         );
+        emit_python_embedding_constructors(&mut output, command, contract);
         writeln!(
             output,
             "{}_PLAN_HASH: Final[str] = {:?}",
@@ -599,6 +596,73 @@ pub fn generate_python_client(
         output.pop();
     }
     Ok(output)
+}
+
+fn emit_python_embedding_constructors(
+    output: &mut String,
+    command: &riffdb_contract_ir::CommandPlan,
+    contract: &ContractBundle,
+) {
+    let command_name = pascal(command.name());
+    for facade in embedding_command_facades(command, contract) {
+        let field_constant = screaming_snake(&facade.vector_field_name);
+        let prefix = screaming_snake(command.name());
+        writeln!(
+            output,
+            "{prefix}_{field_constant}_MODEL_IDENTITY: Final[str] = {:?}\n{prefix}_{field_constant}_MODEL_VERSION: Final[str] = {:?}",
+            facade.model_identity, facade.model_version
+        )
+        .expect("String writes cannot fail");
+        let function = python_identifier(&format!(
+            "{}_for_{}",
+            command.name(),
+            facade.vector_field_name
+        ));
+        writeln!(output, "def {function}(*,").expect("String writes cannot fail");
+        for field in command.input().record().fields().iter().filter(|field| {
+            field.name() != facade.model_input_name && field.name() != facade.version_input_name
+        }) {
+            writeln!(
+                output,
+                "    {}: {},",
+                python_identifier(field.name()),
+                python_contract_type(field.value_type(), contract)
+            )
+            .expect("String writes cannot fail");
+        }
+        writeln!(
+            output,
+            ") -> {command_name}Input:\n    return {command_name}Input("
+        )
+        .expect("String writes cannot fail");
+        for field in command.input().record().fields() {
+            let field_name = python_identifier(field.name());
+            if field.name() == facade.model_input_name {
+                writeln!(
+                    output,
+                    "        {field_name}={prefix}_{field_constant}_MODEL_IDENTITY,"
+                )
+                .expect("String writes cannot fail");
+            } else if field.name() == facade.version_input_name {
+                writeln!(
+                    output,
+                    "        {field_name}={prefix}_{field_constant}_MODEL_VERSION,"
+                )
+                .expect("String writes cannot fail");
+            } else {
+                writeln!(output, "        {field_name}={field_name},")
+                    .expect("String writes cannot fail");
+            }
+        }
+        writeln!(output, "    )\n").expect("String writes cannot fail");
+        writeln!(
+            output,
+            "def {function}_model(value: {command_name}Input) -> tuple[str, str]:\n    return (value.{}, value.{})\n",
+            python_identifier(&facade.model_input_name),
+            python_identifier(&facade.version_input_name),
+        )
+        .expect("String writes cannot fail");
+    }
 }
 
 /// Generates one complete Python application module including native-backed
@@ -958,6 +1022,9 @@ fn python_reactive_schema(type_name: &str, contract: &ContractBundle) -> serde_j
     if let Some(currency) = money_type_currency(type_name) {
         return serde_json::json!({"kind":"money", "precision":38, "scale":2, "currency":currency});
     }
+    if let Some(dimension) = vector_type_dimension(type_name) {
+        return serde_json::json!({"kind":"vector", "dimension":dimension});
+    }
     let kind = if type_name.starts_with("bytes<") {
         "bytes"
     } else if type_name.starts_with("string<") || type_name == "cursor" {
@@ -983,6 +1050,14 @@ fn money_type_currency(type_name: &str) -> Option<String> {
         .map(str::to_owned)
 }
 
+fn vector_type_dimension(type_name: &str) -> Option<u32> {
+    type_name
+        .strip_prefix("vector<")?
+        .strip_suffix('>')?
+        .parse()
+        .ok()
+}
+
 fn python_reactive_type(type_name: &str, contract: &ContractBundle) -> String {
     if contract
         .schema()
@@ -1000,6 +1075,9 @@ fn python_reactive_type(type_name: &str, contract: &ContractBundle) -> String {
     }
     if type_name.starts_with("bytes<") {
         return "bytes".to_owned();
+    }
+    if let Some(dimension) = vector_type_dimension(type_name) {
+        return format!("Annotated[tuple[float, ...], \"vector<{dimension}>\"]");
     }
     if type_name.starts_with("string<") {
         return "str".to_owned();
@@ -1352,6 +1430,10 @@ fn python_named_type(
             "timestamp" => "Timestamp".to_owned(),
             "date" => "RiffDate".to_owned(),
             value if value.starts_with("bytes<") => "bytes".to_owned(),
+            value if value.starts_with("vector<") => format!(
+                "Annotated[tuple[float, ...], \"vector<{}>\"]",
+                vector_type_dimension(value).expect("vector dimension")
+            ),
             value if value.starts_with("decimal<") => "Decimal".to_owned(),
             value if value.starts_with("money<") => "Money".to_owned(),
             value
@@ -1409,9 +1491,13 @@ fn python_contract_type(value_type: &ValueType, contract: &ContractBundle) -> St
             _ => "str".to_owned(),
         },
         ValueTypeTag::String => "str".to_owned(),
-        // Vector fields are excluded from generated models; an honest Python
-        // annotation is still emitted rather than panicking the generator.
-        ValueTypeTag::Vector => "tuple[float, ...]".to_owned(),
+        ValueTypeTag::Vector => format!(
+            "Annotated[tuple[float, ...], \"vector<{}>\"]",
+            value_type
+                .vector_dimension()
+                .expect("vector dimension")
+                .get()
+        ),
         ValueTypeTag::Optional | ValueTypeTag::List => {
             unreachable!("handled above")
         }

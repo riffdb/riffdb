@@ -56,8 +56,13 @@ another value kind. Canonical durable value encoding uses the internal tag
 A production vector field can be mutated only by a compiled `embed` effect.
 That effect binds the canonical vector to exact compiler-declared model
 identity/version evidence in the same authoritative commit; ordinary `set`
-cannot target the field. Stable generated application facades do not yet expose
-vector fields. See [Known Limitations](../known-limitations.md).
+cannot target the field. Generated application facades expose vectors as
+`CanonicalVector` in Rust, `[]float32` in Go, `ReadonlyArray<number>` in
+TypeScript, and an exact-dimension annotated tuple in Python. Field-specific
+generated constructors supply the declared model identity/version and expose
+those values for inspection. The shared driver registry carries exact binary32
+component bits rather than relying on ambiguous JSON floating-point spelling.
+See [Known Limitations](../known-limitations.md).
 
 ## Limits
 

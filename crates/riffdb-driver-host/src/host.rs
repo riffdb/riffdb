@@ -24,14 +24,16 @@ use crate::catalog::{ApplicationCatalog, OperationKind, OperationSpec, ReactiveK
 use crate::protocol::{
     DRIVER_PROTOCOL_VERSION, DRIVER_PROTOCOL_VERSION_V1, DriverBatchItem, DriverBatchOutcome,
     DriverDecimal, DriverMoney, DriverRequest, DriverResponse, DriverTimestamp, DriverValue,
-    InvokeOptions,
+    DriverVector, InvokeOptions,
 };
 
 /// Exact alpha host build identity.
 pub const DRIVER_IDENTITY: &str = concat!("riffdb-driverd/", env!("CARGO_PKG_VERSION"));
 /// Exact alpha application-value registry identity.
 pub const DRIVER_VALUE_REGISTRY_HASH: &str =
-    "8660841ce2055895ba4e1999836b0be11792651c7dcf166f21cf1b43c0dd86af";
+    "8e1681ddf5e6a82e7fa646f9737128ad7e36f54f8b5846ac6e33e732125407e5";
+#[cfg(test)]
+const DRIVER_VALUE_REGISTRY_DESCRIPTION: &str = "riffdb-driver-value-registry-v2:null,bool,i64,u64,string,uuid,enum,bytes,date,timestamp,decimal,money,vector<f32bits[1..4096]>,list,record";
 /// Exact alpha structured-error registry identity.
 pub const DRIVER_ERROR_REGISTRY_HASH: &str =
     "b94d685ecbc18f2369a2bfa1a53139d06100699c4ee41b31c86d6a7e17039850";
@@ -1356,6 +1358,15 @@ fn lower_value(value: DriverValue) -> Result<ApplicationValue, DriverHostError> 
                 precision: value.amount.precision,
             }),
         }),
+        DriverValue::Vector(value) => riffdb_types::CanonicalVector::new(
+            value
+                .component_bits
+                .into_iter()
+                .map(f32::from_bits)
+                .collect(),
+        )
+        .map(ApplicationValue::Vector)
+        .map_err(|_| DriverHostError::InvalidValue),
         DriverValue::List(values) => values
             .into_iter()
             .map(lower_value)
@@ -1396,6 +1407,14 @@ fn raise_value(value: ApplicationValue) -> DriverValue {
         ApplicationValue::Timestamp { seconds, nanos } => DriverValue::Timestamp(DriverTimestamp {
             seconds: seconds.to_string(),
             nanos,
+        }),
+        ApplicationValue::Vector(value) => DriverValue::Vector(DriverVector {
+            component_bits: value
+                .components()
+                .iter()
+                .copied()
+                .map(f32::to_bits)
+                .collect(),
         }),
         ApplicationValue::List(values) => {
             DriverValue::List(values.into_iter().map(raise_value).collect())
@@ -1947,7 +1966,19 @@ fn raise_live_update(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fmt::Write as _;
+
+    use sha2::{Digest as _, Sha256};
     use tonic::transport::Endpoint;
+
+    #[test]
+    fn value_registry_hash_receipts_the_exact_vector_successor() {
+        let mut actual = String::with_capacity(64);
+        for byte in Sha256::digest(DRIVER_VALUE_REGISTRY_DESCRIPTION) {
+            write!(actual, "{byte:02x}").expect("string write");
+        }
+        assert_eq!(actual, DRIVER_VALUE_REGISTRY_HASH);
+    }
 
     #[test]
     fn reactive_poll_reserves_bounded_processing_time_after_caller_wait() {

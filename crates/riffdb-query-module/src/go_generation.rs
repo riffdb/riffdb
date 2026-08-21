@@ -9,8 +9,8 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 use crate::generation::{
-    RustCompactResultShape, generated_query_driver_operations, rust_compact_result_shape,
-    workflow_revision_bindings, workflow_success_outcome_name,
+    RustCompactResultShape, embedding_command_facades, generated_query_driver_operations,
+    rust_compact_result_shape, workflow_revision_bindings, workflow_success_outcome_name,
 };
 use crate::{QueryModule, generate_mcp_commands, generate_mcp_reactive_tools};
 
@@ -218,9 +218,11 @@ fn emit_command_types(output: &mut String, contract: &ContractBundle) {
             )
             .unwrap();
         }
+        writeln!(output, "}}").unwrap();
+        emit_go_embedding_constructors(output, command, contract);
         writeln!(
             output,
-            "}}\ntype {name}Outcome interface {{ is{name}Outcome() }}"
+            "type {name}Outcome interface {{ is{name}Outcome() }}"
         )
         .unwrap();
         for outcome in command.outcomes() {
@@ -238,6 +240,65 @@ fn emit_command_types(output: &mut String, contract: &ContractBundle) {
             writeln!(output, "}}\nfunc ({outcome_name}) is{name}Outcome() {{}}\n").unwrap();
         }
     }
+}
+
+fn emit_go_embedding_constructors(
+    output: &mut String,
+    command: &riffdb_contract_ir::CommandPlan,
+    contract: &ContractBundle,
+) {
+    let command_name = go_public(command.name());
+    let facades = embedding_command_facades(command, contract);
+    if facades.is_empty() {
+        return;
+    }
+    for facade in facades {
+        let field_name = go_public(&facade.vector_field_name);
+        let declared_name = format!("{command_name}For{field_name}Input");
+        let identity_constant = format!("{command_name}{field_name}ModelIdentity");
+        let version_constant = format!("{command_name}{field_name}ModelVersion");
+        writeln!(
+            output,
+            "const {identity_constant} = {:?}\nconst {version_constant} = {:?}",
+            facade.model_identity, facade.model_version
+        )
+        .unwrap();
+        writeln!(output, "type {declared_name} struct {{").unwrap();
+        for field in command.input().record().fields().iter().filter(|field| {
+            field.name() != facade.model_input_name && field.name() != facade.version_input_name
+        }) {
+            writeln!(
+                output,
+                "\t{} {}",
+                go_public(field.name()),
+                go_type(field.value_type(), contract)
+            )
+            .unwrap();
+        }
+        writeln!(
+            output,
+            "}}\nfunc New{command_name}For{field_name}(input {declared_name}) {command_name}Input {{\n\treturn {command_name}Input{{"
+        )
+        .unwrap();
+        for field in command.input().record().fields() {
+            let public = go_public(field.name());
+            if field.name() == facade.model_input_name {
+                writeln!(output, "\t\t{public}: {identity_constant},").unwrap();
+            } else if field.name() == facade.version_input_name {
+                writeln!(output, "\t\t{public}: {version_constant},").unwrap();
+            } else {
+                writeln!(output, "\t\t{public}: input.{public},").unwrap();
+            }
+        }
+        writeln!(
+            output,
+            "\t}}\n}}\nfunc (input {command_name}Input) {field_name}ModelIdentity() string {{ return input.{} }}\nfunc (input {command_name}Input) {field_name}ModelVersion() string {{ return input.{} }}",
+            go_public(&facade.model_input_name),
+            go_public(&facade.version_input_name)
+        )
+        .unwrap();
+    }
+    output.push('\n');
 }
 
 fn emit_entity_codecs(output: &mut String, contract: &ContractBundle) {
@@ -427,7 +488,7 @@ fn go_decode_compact_expr(value: &str, ty: &ValueType, contract: &ContractBundle
             let cases = enumeration.variants().iter().map(|variant| format!("{:?}", variant.name())).collect::<Vec<_>>().join(", ");
             format!("func() ({name}, error) {{ result, err := riffdb.EnumValue({value}); if err != nil {{ return \"\", err }}; switch result {{ case {cases}: return {name}(result), nil; default: return \"\", errors.New(\"invalid RiffDB compact enum\") }} }}()")
         }
-        ValueTypeTag::Bool | ValueTypeTag::I64 | ValueTypeTag::U64 | ValueTypeTag::Timestamp | ValueTypeTag::Date | ValueTypeTag::Uuid => decode_expr(value, ty, contract),
+        ValueTypeTag::Bool | ValueTypeTag::I64 | ValueTypeTag::U64 | ValueTypeTag::Timestamp | ValueTypeTag::Date | ValueTypeTag::Uuid | ValueTypeTag::Vector => decode_expr(value, ty, contract),
         ValueTypeTag::Optional => unreachable!("handled above"),
         _ => "func() (string, error) { return \"\", errors.New(\"unsupported RiffDB compact value\") }()".to_owned(),
     }
@@ -472,15 +533,15 @@ fn emit_command_methods(
             .unwrap();
         }
         output.push_str("} }\n");
-        let collection_validation = if let Some(expansion) = command.collection_expansion() {
+        let mut input_checks = Vec::new();
+        if let Some(expansion) = command.collection_expansion() {
             let field = command
                 .input()
                 .record()
                 .field(expansion.input_field())
                 .expect("validated collection input field");
-            writeln!(
-                output,
-                "func validate{name}Input(input {name}Input) error {{ if len(input.{field}) < {minimum} || len(input.{field}) > {maximum} {{ return errors.New({message:?}) }}; return nil }}",
+            input_checks.push(format!(
+                "if len(input.{field}) < {minimum} || len(input.{field}) > {maximum} {{ return errors.New({message:?}) }}",
                 field = go_public(field.name()),
                 minimum = expansion.minimum_elements(),
                 maximum = expansion.maximum_elements(),
@@ -489,13 +550,38 @@ fn emit_command_methods(
                     command.name(),
                     field.name()
                 ),
+            ));
+        }
+        for field in command.input().record().fields() {
+            if field.value_type().tag() == ValueTypeTag::Vector {
+                input_checks.push(format!(
+                    "if len(input.{field}) != {dimension} {{ return errors.New({message:?}) }}",
+                    field = go_public(field.name()),
+                    dimension = field
+                        .value_type()
+                        .vector_dimension()
+                        .expect("vector dimension")
+                        .get(),
+                    message = format!(
+                        "invalid vector dimension for {}.{}",
+                        command.name(),
+                        field.name()
+                    ),
+                ));
+            }
+        }
+        let collection_validation = if input_checks.is_empty() {
+            String::new()
+        } else {
+            writeln!(
+                output,
+                "func validate{name}Input(input {name}Input) error {{ {}; return nil }}",
+                input_checks.join("; ")
             )
             .unwrap();
             format!(
                 "if err := validate{name}Input(input); err != nil {{ return CommandResult[{name}Outcome]{{}}, err }}; "
             )
-        } else {
-            String::new()
         };
         let raw_declaration = if command
             .outcomes()
@@ -564,7 +650,7 @@ fn emit_command_methods(
         } else {
             ", WorkflowRevisions: workflowRevisions".to_owned()
         };
-        let batch_collection_validation = if command.collection_expansion().is_some() {
+        let batch_collection_validation = if !input_checks.is_empty() {
             format!(
                 "if err := validate{name}Input(input); err != nil {{ return BatchResult[{name}Outcome]{{}}, err }}; "
             )
@@ -952,16 +1038,11 @@ fn go_snake(value: &str) -> String {
     output.trim_matches('_').to_owned()
 }
 
-/// Wire-model fields of an entity record. Vector fields are excluded from
-/// generated Go clients until the wire protocol carries a distinct vector
-/// variant (VEC-002 ingress, deferred).
+/// Wire-model fields of an entity record, including canonical vectors.
 fn go_wire_model_fields(
     record: &riffdb_contract_ir::RecordSchema,
 ) -> impl Iterator<Item = &riffdb_contract_ir::FieldSchema> {
-    record
-        .fields()
-        .iter()
-        .filter(|field| field.value_type().tag() != ValueTypeTag::Vector)
+    record.fields().iter()
 }
 
 fn go_type(value: &ValueType, contract: &ContractBundle) -> String {
@@ -992,8 +1073,6 @@ fn go_type(value: &ValueType, contract: &ContractBundle) -> String {
             ),
             _ => "map[string]riffdb.Value".into(),
         },
-        // Vector fields are excluded from generated models; an honest Go model
-        // type is still emitted rather than panicking the generator.
         ValueTypeTag::Vector => "[]float32".into(),
         ValueTypeTag::Optional | ValueTypeTag::List => unreachable!(),
     }
@@ -1036,11 +1115,7 @@ fn encode_expr(value: &str, ty: &ValueType, contract: &ContractBundle) -> String
             ),
             _ => format!("riffdb.Record({value})"),
         },
-        // Vector fields are excluded from generated models. The identifier
-        // below is intentionally undefined in the Go SDK: if a generated
-        // artifact ever contains it, the artifact fails Go compilation loudly
-        // instead of shipping punned or silently absent vector data.
-        ValueTypeTag::Vector => format!("riffdbUnsupportedVectorField({value})"),
+        ValueTypeTag::Vector => format!("riffdb.VectorFrom({value})"),
         ValueTypeTag::Optional | ValueTypeTag::List => unreachable!(),
     }
 }
@@ -1099,10 +1174,9 @@ fn decode_expr(value: &str, ty: &ValueType, contract: &ContractBundle) -> String
             ),
             _ => format!("riffdb.RecordFields({value})"),
         },
-        // Vector fields are excluded from generated models; a typed runtime
-        // error is generated rather than panicking the generator.
         ValueTypeTag::Vector => format!(
-            "func() ([]float32, error) {{ _ = {value}; return nil, errors.New(\"RiffDB generated Go clients do not support vector fields yet\") }}()"
+            "func() ([]float32, error) {{ result, err := riffdb.VectorValue({value}); if err != nil || len(result) != {} {{ return nil, errors.New(\"invalid RiffDB vector value\") }}; return result, nil }}()",
+            ty.vector_dimension().expect("vector dimension").get()
         ),
         ValueTypeTag::Optional | ValueTypeTag::List => unreachable!(),
     }
@@ -1117,6 +1191,7 @@ fn go_named_type(value: &NamedTypeSchema, contract: &ContractBundle) -> String {
             "timestamp" => "riffdb.Instant".into(),
             "date" => "int32".into(),
             name if name.starts_with("bytes<") => "[]byte".into(),
+            name if name.starts_with("vector<") => "[]float32".into(),
             name if name.starts_with("decimal<") => "riffdb.ExactDecimal".into(),
             name if name.starts_with("money<") => "riffdb.ExactMoney".into(),
             name => contract
@@ -1185,6 +1260,7 @@ fn encode_named_expr(value: &str, ty: &NamedTypeSchema, contract: &ContractBundl
             "timestamp" => format!("riffdb.TimestampFrom({value})"),
             "date" => format!("riffdb.Date({value})"),
             name if name.starts_with("bytes<") => format!("riffdb.BytesFrom({value})"),
+            name if name.starts_with("vector<") => format!("riffdb.VectorFrom({value})"),
             name if name.starts_with("decimal<") => format!("riffdb.DecimalFrom({value})"),
             name if name.starts_with("money<") => format!("riffdb.MoneyFrom({value})"),
             name if contract
@@ -1235,6 +1311,7 @@ fn decode_named_expr(value: &str, ty: &NamedTypeSchema, contract: &ContractBundl
             "timestamp" => format!("riffdb.TimestampValue({value})"),
             "date" => format!("riffdb.DateValue({value})"),
             name if name.starts_with("bytes<") => format!("riffdb.BytesValue({value})"),
+            name if name.starts_with("vector<") => format!("riffdb.VectorValue({value})"),
             name if name.starts_with("decimal<") => decimal_type_parts(name).map_or_else(
                 || format!("riffdb.DecimalValue({value})"),
                 |(precision, scale)| {

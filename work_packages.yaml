@@ -11902,6 +11902,10 @@ work_packages:
     crates/riffdb-storage-redb/**, crates/riffdb-proto/**, crates/riffdb-api-grpc/**,
     crates/riffdb-api-mcp/**, crates/riffdb-mcp-stdio/**, crates/riffdb-cli/**,
     crates/riffdb-client-rust/**,
+    # Coordinator-authorized 2026-08-21: ADR-0136 requires generated
+    # Rust/Go/TypeScript/Python embedding inputs and the shared closed driver
+    # registry must carry the canonical vector value those facades emit.
+    crates/riffdb-query-module/**, crates/riffdb-driver-host/**, clients/**,
     crates/riffdb-server/**, crates/riffdb-columnar/**, crates/riffdb-projection/**,
     crates/riffdb-riffql-syntax/**, crates/riffdb-query-ir/**,
     crates/riffdb-query-compiler/**, crates/riffdb-query-executor/**, docs/**, tests/**,

@@ -48,6 +48,7 @@ class Values:
     when: Timestamp
     day: RiffDate
     payload: bytes
+    embedding: Annotated[tuple[float, ...], "vector<4>"]
 
 
 class ReactiveState(StrEnum):
@@ -87,11 +88,16 @@ class RuntimeTests(unittest.TestCase):
             when=Timestamp(-(2**63), 999_999_999),
             day=RiffDate(-(2**31)),
             payload=b"\x00\xff",
+            embedding=(0.0, 1.5, -2.25, 0.5),
         )
         encoded = encode_record(value)
         self.assertEqual(encoded["signed"], {"kind": "i64", "value": -(2**63)})
         self.assertEqual(encoded["unsigned"], {"kind": "u64", "value": 2**64 - 1})
         self.assertNotIn("float", json.dumps(encoded))
+        self.assertEqual(
+            encoded["embedding"],
+            {"kind": "vector", "components": [0.0, 1.5, -2.25, 0.5]},
+        )
         for field in encoded.values():
             _native.validate_bridge_value(json.dumps(field))
 
@@ -114,10 +120,35 @@ class RuntimeTests(unittest.TestCase):
                 "when": {"$riffdb": "timestamp", "seconds": 1, "nanos": 2},
                 "day": {"$riffdb": "date", "value": 3},
                 "payload": {"$riffdb": "bytes", "value": "00ff"},
+                "embedding": {
+                    "$riffdb": "vector",
+                    "components": [0.0, 1.5, -2.25, 0.5],
+                },
             },
         )
         self.assertEqual(value.amount, Decimal("-0.01"))
         self.assertEqual(value.payload, b"\x00\xff")
+        self.assertEqual(value.embedding, (0.0, 1.5, -2.25, 0.5))
+
+        with self.assertRaises(ProtocolError):
+            decode_record(
+                Values,
+                {
+                    "signed": 0,
+                    "unsigned": 0,
+                    "identifier": {"$riffdb": "uuid", "value": str(UUID(int=0))},
+                    "amount": {"$riffdb": "decimal", "coefficient": "00", "scale": 0},
+                    "money": {
+                        "$riffdb": "money",
+                        "currency": "USD",
+                        "amount": {"$riffdb": "decimal", "coefficient": "00", "scale": 0},
+                    },
+                    "when": {"$riffdb": "timestamp", "seconds": 0, "nanos": 0},
+                    "day": {"$riffdb": "date", "value": 0},
+                    "payload": {"$riffdb": "bytes", "value": ""},
+                    "embedding": {"$riffdb": "vector", "components": [1.0]},
+                },
+            )
 
     def test_reactive_parameters_pin_decimal_and_enum_identity(self) -> None:
         encoded = encode_reactive_record(

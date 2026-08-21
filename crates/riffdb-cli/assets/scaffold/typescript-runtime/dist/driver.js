@@ -13,7 +13,7 @@ let nextSession = 0;
 /** Exact alpha driver protocol generation. */
 export const DRIVER_PROTOCOL_VERSION = 2;
 /** Exact tagged value registry compiled into `riffdb-driverd`. */
-export const DRIVER_VALUE_REGISTRY_HASH = "8660841ce2055895ba4e1999836b0be11792651c7dcf166f21cf1b43c0dd86af";
+export const DRIVER_VALUE_REGISTRY_HASH = "8e1681ddf5e6a82e7fa646f9737128ad7e36f54f8b5846ac6e33e732125407e5";
 /** Exact structured-error registry compiled into `riffdb-driverd`. */
 export const DRIVER_ERROR_REGISTRY_HASH = "b94d685ecbc18f2369a2bfa1a53139d06100699c4ee41b31c86d6a7e17039850";
 export function exactDecimal(value, precision, scale) {
@@ -653,6 +653,14 @@ function validateDriverValue(value, depth) {
         const money = exactObject(item.value);
         boundedPattern(money.currency, /^[A-Z]{3}$/);
         validateDecimal(money.amount);
+        return item;
+    }
+    if (type === "vector") {
+        const vector = exactObject(item.value);
+        if (Object.keys(vector).length !== 1 || !Array.isArray(vector.component_bits) || vector.component_bits.length < 1
+            || vector.component_bits.length > MAX_COLLECTION_ITEMS)
+            throw new Error("invalid RiffDB driver vector");
+        vector.component_bits.forEach((bits) => boundedInteger(bits, 0, 4_294_967_295));
         return item;
     }
     if (type === "list" && Array.isArray(item.value) && item.value.length <= MAX_COLLECTION_ITEMS) {

@@ -99,6 +99,7 @@ process.stdout.write(JSON.stringify({
                 bytes: Uint8Array.from([115, 97, 102, 101]),
                 date: 1,
                 timestamp: { seconds: -1n, nanos: 999_999_999 },
+                embedding: [0, 1.5, -2.25, 0.5],
             },
             idempotencyKey: "scalar-command",
             inputSchema: {
@@ -111,6 +112,7 @@ process.stdout.write(JSON.stringify({
                     { name: "bytes", schema: { kind: "bytes" } },
                     { name: "date", schema: { kind: "date" } },
                     { name: "timestamp", schema: { kind: "timestamp" } },
+                    { name: "embedding", schema: { kind: "vector", dimension: 4 } },
                 ],
             },
             outcomeSchemas: {
@@ -138,6 +140,7 @@ process.stdout.write(JSON.stringify({
         assert.deepEqual(encoded.timestamp, {
             $timestamp: { seconds: "-1", nanos: 999_999_999 },
         });
+        assert.deepEqual(encoded.embedding, { $vector: [0, 1.5, -2.25, 0.5] });
     }
     finally {
         await rm(directory, { recursive: true, force: true });

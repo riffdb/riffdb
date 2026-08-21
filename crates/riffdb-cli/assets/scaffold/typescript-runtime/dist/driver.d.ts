@@ -1,7 +1,7 @@
 /** Exact alpha driver protocol generation. */
 export declare const DRIVER_PROTOCOL_VERSION: 2;
 /** Exact tagged value registry compiled into `riffdb-driverd`. */
-export declare const DRIVER_VALUE_REGISTRY_HASH: "8660841ce2055895ba4e1999836b0be11792651c7dcf166f21cf1b43c0dd86af";
+export declare const DRIVER_VALUE_REGISTRY_HASH: "8e1681ddf5e6a82e7fa646f9737128ad7e36f54f8b5846ac6e33e732125407e5";
 /** Exact structured-error registry compiled into `riffdb-driverd`. */
 export declare const DRIVER_ERROR_REGISTRY_HASH: "b94d685ecbc18f2369a2bfa1a53139d06100699c4ee41b31c86d6a7e17039850";
 export type DriverValue = {
@@ -22,6 +22,9 @@ export type DriverValue = {
     readonly type: "money";
     readonly value: DriverMoney;
 } | {
+    readonly type: "vector";
+    readonly value: DriverVector;
+} | {
     readonly type: "list";
     readonly value: ReadonlyArray<DriverValue>;
 } | {
@@ -40,6 +43,9 @@ export interface DriverDecimal {
 export interface DriverMoney {
     readonly currency: string;
     readonly amount: DriverDecimal;
+}
+export interface DriverVector {
+    readonly component_bits: ReadonlyArray<number>;
 }
 export interface ExactDecimalValue {
     readonly coefficientTwosComplement: Uint8Array;
