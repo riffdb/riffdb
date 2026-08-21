@@ -4026,6 +4026,7 @@ pub enum FixedToolKind {
     ContextualNack = 28,
     ContextualStatus = 29,
     ContextualReact = 30,
+    InspectVectorState = 31,
 }
 impl FixedToolKind {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -4067,6 +4068,7 @@ impl FixedToolKind {
             Self::ContextualNack => "FIXED_TOOL_KIND_CONTEXTUAL_NACK",
             Self::ContextualStatus => "FIXED_TOOL_KIND_CONTEXTUAL_STATUS",
             Self::ContextualReact => "FIXED_TOOL_KIND_CONTEXTUAL_REACT",
+            Self::InspectVectorState => "FIXED_TOOL_KIND_INSPECT_VECTOR_STATE",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
@@ -4107,6 +4109,7 @@ impl FixedToolKind {
             "FIXED_TOOL_KIND_CONTEXTUAL_NACK" => Some(Self::ContextualNack),
             "FIXED_TOOL_KIND_CONTEXTUAL_STATUS" => Some(Self::ContextualStatus),
             "FIXED_TOOL_KIND_CONTEXTUAL_REACT" => Some(Self::ContextualReact),
+            "FIXED_TOOL_KIND_INSPECT_VECTOR_STATE" => Some(Self::InspectVectorState),
             _ => None,
         }
     }

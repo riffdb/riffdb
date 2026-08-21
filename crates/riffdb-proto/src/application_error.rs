@@ -218,6 +218,7 @@ const fn proto_operation(value: DomainOperation) -> app_v1::ApplicationOperation
         DomainOperation::ExecuteProjectedQuery => {
             app_v1::ApplicationOperation::ExecuteProjectedQuery
         }
+        DomainOperation::InspectVectorState => app_v1::ApplicationOperation::InspectVectorState,
     }
 }
 
@@ -238,6 +239,9 @@ fn domain_operation(value: i32) -> Result<DomainOperation, ApplicationErrorWireE
         Ok(app_v1::ApplicationOperation::BatchCommand) => Ok(DomainOperation::BatchCommand),
         Ok(app_v1::ApplicationOperation::ExecuteProjectedQuery) => {
             Ok(DomainOperation::ExecuteProjectedQuery)
+        }
+        Ok(app_v1::ApplicationOperation::InspectVectorState) => {
+            Ok(DomainOperation::InspectVectorState)
         }
         Ok(app_v1::ApplicationOperation::Unspecified) | Err(_) => {
             Err(ApplicationErrorWireError::UnknownOperation)

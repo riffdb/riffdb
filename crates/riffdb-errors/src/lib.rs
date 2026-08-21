@@ -50,6 +50,8 @@ pub enum ApplicationOperation {
     BatchCommand,
     /// Execute one projected columnar query under a freshness policy.
     ExecuteProjectedQuery,
+    /// Inspect authoritative vector evidence through symbolic contract names.
+    InspectVectorState,
 }
 
 impl ApplicationOperation {
@@ -67,6 +69,7 @@ impl ApplicationOperation {
             Self::ExecuteCommand => "ExecuteCommand",
             Self::BatchCommand => "BatchCommand",
             Self::ExecuteProjectedQuery => "ExecuteProjectedQuery",
+            Self::InspectVectorState => "InspectVectorState",
         }
     }
 }

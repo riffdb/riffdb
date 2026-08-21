@@ -247,6 +247,47 @@ impl StableApplicationClient {
         raise_application_catalog_preflight(response, &expected)
     }
 
+    /// Inspects one compiler-declared production vector field through the
+    /// symbolic, policy-filtered application operation.
+    pub async fn inspect_vector_state(
+        &mut self,
+        request: VectorStateInspection,
+        metadata: &CallMetadata,
+    ) -> Result<VectorStateInspectionResult, ApplicationClientError> {
+        request.validate()?;
+        let request_id = Vec::from(
+            generate_request_id()
+                .map_err(|_| ApplicationClientError::IdentifierUnavailable)?
+                .into_bytes(),
+        );
+        let response = self
+            .inner
+            .inspect_vector_state(
+                app_v1::InspectVectorStateRequest {
+                    contract: lower_contract(request.contract),
+                    entity: request.entity,
+                    field: request.field,
+                    partition: Some(lower_value(request.partition)?),
+                    kind: match request.kind {
+                        VectorStateInspectionKind::Stale => {
+                            app_v1::VectorStateInspectionKind::StaleEntities as i32
+                        }
+                        VectorStateInspectionKind::OutdatedModel => {
+                            app_v1::VectorStateInspectionKind::OutdatedModelEntities as i32
+                        }
+                    },
+                    page: Some(v1::PageRequest {
+                        limit: Some(request.limit),
+                        cursor: request.cursor,
+                    }),
+                    request_id,
+                },
+                metadata,
+            )
+            .await?;
+        VectorStateInspectionResult::try_from(response)
+    }
+
     /// Executes one exact named module query.
     pub async fn execute_named_query(
         &mut self,
@@ -1112,6 +1153,227 @@ pub enum ApplicationValue {
     List(Vec<Self>),
     /// Name-addressed record.
     Record(BTreeMap<String, Self>),
+}
+
+/// Closed population selected by an authoritative vector-state inspection.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum VectorStateInspectionKind {
+    /// Source-newer or missing embedding evidence.
+    Stale,
+    /// Embeddings produced by a non-current declared model version.
+    OutdatedModel,
+}
+
+/// One symbolic bounded vector-state inspection request.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VectorStateInspection {
+    contract: ApplicationContract,
+    entity: String,
+    field: String,
+    partition: ApplicationValue,
+    kind: VectorStateInspectionKind,
+    limit: u32,
+    cursor: Option<Vec<u8>>,
+}
+
+impl VectorStateInspection {
+    /// Creates one initial bounded inspection page.
+    #[must_use]
+    pub fn new(
+        contract: ApplicationContract,
+        entity: impl Into<String>,
+        field: impl Into<String>,
+        partition: ApplicationValue,
+        kind: VectorStateInspectionKind,
+        limit: u32,
+    ) -> Self {
+        Self {
+            contract,
+            entity: entity.into(),
+            field: field.into(),
+            partition,
+            kind,
+            limit,
+            cursor: None,
+        }
+    }
+
+    /// Continues from one opaque server-issued cursor.
+    #[must_use]
+    pub fn after(mut self, cursor: Vec<u8>) -> Self {
+        self.cursor = Some(cursor);
+        self
+    }
+
+    fn validate(&self) -> Result<(), ApplicationClientError> {
+        validate_contract(&self.contract)?;
+        if self.entity.is_empty()
+            || self.entity.len() > 256
+            || self.field.is_empty()
+            || self.field.len() > 256
+            || self.limit == 0
+            || self.limit > 500
+            || self
+                .cursor
+                .as_ref()
+                .is_some_and(|cursor| cursor.len() != 16)
+        {
+            return Err(ApplicationClientError::InvalidInput);
+        }
+        Ok(())
+    }
+}
+
+/// Whole-partition staleness summary, returned only when policy permits counts.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct VectorStalenessSummary {
+    /// Total live entities covered by the authoritative observation.
+    pub total_entities: u64,
+    /// Source-stale live entities.
+    pub stale_count: u64,
+    /// Strict declared count threshold.
+    pub stale_entity_count_threshold: u64,
+    /// Whether `stale_count` strictly exceeds the threshold.
+    pub slo_breached: bool,
+}
+
+/// Whole-partition model-version summary, returned only when policy permits counts.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct VectorModelVersionSummary {
+    /// Embeddings carrying the current declared model identity and version.
+    pub current_count: u64,
+    /// Embeddings carrying another retained model identity or version.
+    pub outdated_count: u64,
+}
+
+/// One policy-visible stale entity observation.
+#[derive(Clone, Eq, PartialEq)]
+pub struct VectorStalenessItem {
+    /// Opaque canonical entity key bytes.
+    pub entity_key: Vec<u8>,
+    /// Newest declared source-field write.
+    pub newest_source_write: u64,
+    /// Last embedding write, or absence when no embedding exists.
+    pub embedding_write: Option<u64>,
+}
+
+impl fmt::Debug for VectorStalenessItem {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("VectorStalenessItem")
+            .field("entity_key", &"[REDACTED]")
+            .field("newest_source_write", &self.newest_source_write)
+            .field("embedding_write", &self.embedding_write)
+            .finish()
+    }
+}
+
+/// One policy-visible outdated model observation.
+#[derive(Clone, Eq, PartialEq)]
+pub struct VectorModelVersionItem {
+    /// Opaque canonical entity key bytes.
+    pub entity_key: Vec<u8>,
+    /// Bounded model identity.
+    pub model: String,
+    /// Bounded model version.
+    pub model_version: String,
+    /// Authoritative embedding write sequence.
+    pub embedding_write: u64,
+}
+
+impl fmt::Debug for VectorModelVersionItem {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("VectorModelVersionItem")
+            .field("entity_key", &"[REDACTED]")
+            .field("model", &"[REDACTED]")
+            .field("model_version", &"[REDACTED]")
+            .field("embedding_write", &self.embedding_write)
+            .finish()
+    }
+}
+
+/// One bounded policy-filtered vector-state page.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VectorInspectionPage<T> {
+    /// Visible canonical items.
+    pub items: Vec<T>,
+    /// Opaque continuation cursor.
+    pub next_cursor: Option<Vec<u8>>,
+    /// Authoritative observation frontier, when one exists.
+    pub observed_frontier: Option<u64>,
+}
+
+/// Closed response shape. Count summaries and row-policy-filtered pages cannot
+/// be confused or silently substituted.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum VectorStateInspectionResult {
+    /// Whole-partition staleness counts.
+    StalenessSummary(VectorStalenessSummary),
+    /// Policy-filtered stale entities.
+    StaleEntities(VectorInspectionPage<VectorStalenessItem>),
+    /// Whole-partition model-version counts.
+    ModelVersionSummary(VectorModelVersionSummary),
+    /// Policy-filtered outdated embeddings.
+    OutdatedModelEntities(VectorInspectionPage<VectorModelVersionItem>),
+}
+
+impl TryFrom<app_v1::InspectVectorStateResponse> for VectorStateInspectionResult {
+    type Error = ApplicationClientError;
+
+    fn try_from(response: app_v1::InspectVectorStateResponse) -> Result<Self, Self::Error> {
+        use app_v1::inspect_vector_state_response::Result;
+        Ok(
+            match response
+                .result
+                .ok_or(ApplicationClientError::InvalidResponse)?
+            {
+                Result::StalenessSummary(report) => {
+                    Self::StalenessSummary(VectorStalenessSummary {
+                        total_entities: report.total_entities,
+                        stale_count: report.stale_count,
+                        stale_entity_count_threshold: report.stale_entity_count_threshold,
+                        slo_breached: report.slo_breached,
+                    })
+                }
+                Result::StaleEntities(page) => Self::StaleEntities(VectorInspectionPage {
+                    items: page
+                        .items
+                        .into_iter()
+                        .map(|item| VectorStalenessItem {
+                            entity_key: item.entity_key,
+                            newest_source_write: item.newest_source_write,
+                            embedding_write: item.embedding_write,
+                        })
+                        .collect(),
+                    next_cursor: page.next_cursor,
+                    observed_frontier: page.observed_frontier,
+                }),
+                Result::ModelVersionSummary(report) => {
+                    Self::ModelVersionSummary(VectorModelVersionSummary {
+                        current_count: report.current_count,
+                        outdated_count: report.outdated_count,
+                    })
+                }
+                Result::OutdatedModelEntities(page) => {
+                    Self::OutdatedModelEntities(VectorInspectionPage {
+                        items: page
+                            .items
+                            .into_iter()
+                            .map(|item| VectorModelVersionItem {
+                                entity_key: item.entity_key,
+                                model: item.model,
+                                model_version: item.model_version,
+                                embedding_write: item.embedding_write,
+                            })
+                            .collect(),
+                        next_cursor: page.next_cursor,
+                        observed_frontier: page.observed_frontier,
+                    })
+                }
+            },
+        )
+    }
 }
 
 /// Active or exact symbolic contract selection.

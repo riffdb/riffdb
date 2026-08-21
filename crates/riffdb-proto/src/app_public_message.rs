@@ -2,7 +2,7 @@
 
 use std::collections::BTreeSet;
 
-use riffdb_types::MAX_CONTRACT_LINEAGE_BYTES;
+use riffdb_types::{EmbeddingMetadata, EntityKey, MAX_CONTRACT_LINEAGE_BYTES};
 
 use crate::app::v1 as app_v1;
 use crate::public_message::{
@@ -24,6 +24,7 @@ const MAX_APPLICATION_CATALOG_PAGE_ITEMS: usize = 100;
 const MAX_APPLICATION_CATALOG_PATH_COMPONENTS: usize = 8;
 const MAX_APPLICATION_CATALOG_TEXT_BYTES: usize = 256;
 const MAX_APPLICATION_CATALOG_FEATURES: usize = 6;
+const VECTOR_CURSOR_BYTES: usize = 16;
 
 fn preflight(
     input: &[u8],
@@ -76,6 +77,73 @@ fn validate_request_id(value: &[u8]) -> Result<(), PublicWireError> {
     } else {
         Err(PublicWireError::InvalidIdentity)
     }
+}
+
+fn validate_vector_page_request(value: &crate::v1::PageRequest) -> Result<(), PublicWireError> {
+    if value.limit.is_some_and(|limit| limit == 0 || limit > 500)
+        || value
+            .cursor
+            .as_deref()
+            .is_some_and(|cursor| cursor.len() != VECTOR_CURSOR_BYTES)
+    {
+        return Err(PublicWireError::InvalidValue);
+    }
+    Ok(())
+}
+
+fn validate_vector_staleness_page(
+    value: &app_v1::VectorStalenessPage,
+) -> Result<(), PublicWireError> {
+    if value.items.len() > MAX_QUERY_ROWS
+        || value
+            .next_cursor
+            .as_deref()
+            .is_some_and(|cursor| cursor.len() != VECTOR_CURSOR_BYTES)
+        || value.observed_frontier == Some(0)
+    {
+        return Err(PublicWireError::InvalidValue);
+    }
+    for item in &value.items {
+        let key = EntityKey::from_bytes(item.entity_key.clone())
+            .map_err(|_| PublicWireError::InvalidIdentity)?;
+        if key.as_bytes().is_empty()
+            || item.newest_source_write == 0
+            || item.embedding_write == Some(0)
+            || item
+                .embedding_write
+                .is_some_and(|embedding| item.newest_source_write <= embedding)
+        {
+            return Err(PublicWireError::InvalidValue);
+        }
+    }
+    Ok(())
+}
+
+fn validate_vector_model_page(
+    value: &app_v1::VectorModelVersionPage,
+) -> Result<(), PublicWireError> {
+    if value.items.len() > MAX_QUERY_ROWS
+        || value
+            .next_cursor
+            .as_deref()
+            .is_some_and(|cursor| cursor.len() != VECTOR_CURSOR_BYTES)
+        || value.observed_frontier == Some(0)
+    {
+        return Err(PublicWireError::InvalidValue);
+    }
+    for item in &value.items {
+        EntityKey::from_bytes(item.entity_key.clone())
+            .map_err(|_| PublicWireError::InvalidIdentity)?;
+        if item.model.is_empty()
+            || item.model.len() > EmbeddingMetadata::MAX_MODEL_STRING_LEN
+            || item.model_version.is_empty()
+            || item.model_version.len() > EmbeddingMetadata::MAX_MODEL_STRING_LEN
+            || item.embedding_write == 0
+        {
+            return Err(PublicWireError::InvalidValue);
+        }
+    }
+    Ok(())
 }
 
 fn validate_selector(value: &app_v1::ContractSelector) -> Result<(), PublicWireError> {
@@ -704,12 +772,9 @@ app_message!(
     &[],
     |value: &app_v1::DeployReactiveModuleRequest| {
         validate_request_id(&value.request_id)?;
-        validate_selector(
-            value
-                .contract
-                .as_ref()
-                .ok_or(PublicWireError::MissingRequiredField)?,
-        )?;
+        if let Some(contract) = value.contract.as_ref() {
+            validate_selector(contract)?;
+        }
         if value.source.is_empty() || value.source.len() > MAX_REACTIVE_SOURCE_BYTES {
             return Err(PublicWireError::InvalidBytes);
         }
@@ -765,12 +830,9 @@ app_message!(
     &[],
     |value: &app_v1::GetQueryModuleRequest| {
         validate_request_id(&value.request_id)?;
-        validate_selector(
-            value
-                .contract
-                .as_ref()
-                .ok_or(PublicWireError::MissingRequiredField)?,
-        )?;
+        if let Some(contract) = value.contract.as_ref() {
+            validate_selector(contract)?;
+        }
         if value
             .module_hash
             .as_deref()
@@ -830,6 +892,76 @@ app_message!(
             return Err(PublicWireError::MissingRequiredField);
         }
         Ok(())
+    }
+);
+app_message!(
+    app_v1::InspectVectorStateRequest,
+    Some(riffdb_errors::ApplicationOperation::InspectVectorState),
+    MAX_PUBLIC_REQUEST_BYTES,
+    100,
+    &[],
+    &[],
+    |value: &app_v1::InspectVectorStateRequest| {
+        validate_request_id(&value.request_id)?;
+        if let Some(contract) = value.contract.as_ref() {
+            validate_selector(contract)?;
+        }
+        if !valid_name(&value.entity) || !valid_name(&value.field) {
+            return Err(PublicWireError::InvalidBytes);
+        }
+        validate_value(
+            value
+                .partition
+                .as_ref()
+                .ok_or(PublicWireError::MissingRequiredField)?,
+        )
+        .map_err(|_| PublicWireError::InvalidValue)?;
+        match app_v1::VectorStateInspectionKind::try_from(value.kind) {
+            Ok(app_v1::VectorStateInspectionKind::StaleEntities)
+            | Ok(app_v1::VectorStateInspectionKind::OutdatedModelEntities) => {}
+            Ok(app_v1::VectorStateInspectionKind::Unspecified) | Err(_) => {
+                return Err(PublicWireError::InvalidValue);
+            }
+        }
+        validate_vector_page_request(
+            value
+                .page
+                .as_ref()
+                .ok_or(PublicWireError::MissingRequiredField)?,
+        )
+    }
+);
+app_message!(
+    app_v1::InspectVectorStateResponse,
+    None,
+    MAX_PUBLIC_RESPONSE_BYTES,
+    4,
+    &[],
+    &[1, 2, 3, 4],
+    |value: &app_v1::InspectVectorStateResponse| {
+        match value
+            .result
+            .as_ref()
+            .ok_or(PublicWireError::MissingRequiredField)?
+        {
+            app_v1::inspect_vector_state_response::Result::StalenessSummary(report) => {
+                if report.stale_count > report.total_entities
+                    || report.stale_entity_count_threshold == 0
+                    || report.slo_breached
+                        != (report.stale_count > report.stale_entity_count_threshold)
+                {
+                    return Err(PublicWireError::InconsistentFields);
+                }
+                Ok(())
+            }
+            app_v1::inspect_vector_state_response::Result::StaleEntities(page) => {
+                validate_vector_staleness_page(page)
+            }
+            app_v1::inspect_vector_state_response::Result::ModelVersionSummary(_) => Ok(()),
+            app_v1::inspect_vector_state_response::Result::OutdatedModelEntities(page) => {
+                validate_vector_model_page(page)
+            }
+        }
     }
 );
 
@@ -1035,6 +1167,61 @@ mod tests {
             Err(PublicWireError::InconsistentFields)
         );
     }
+
+    #[test]
+    fn vector_inspection_wire_shape_is_symbolic_bounded_and_closed() {
+        let mut request = app_v1::InspectVectorStateRequest {
+            contract: Some(selector()),
+            entity: "Document".to_owned(),
+            field: "embedding".to_owned(),
+            partition: Some(crate::v1::Value {
+                kind: Some(crate::v1::value::Kind::StringValue("org-a".to_owned())),
+            }),
+            kind: app_v1::VectorStateInspectionKind::StaleEntities as i32,
+            page: Some(crate::v1::PageRequest {
+                limit: Some(20),
+                cursor: None,
+            }),
+            request_id: vec![0x77; 16],
+        };
+        assert_eq!(request.validate_structure(), Ok(()));
+        request.contract = None;
+        assert_eq!(
+            request.validate_structure(),
+            Ok(()),
+            "an absent selector means the active contract"
+        );
+        request.page.as_mut().expect("page").limit = Some(501);
+        assert_eq!(
+            request.validate_structure(),
+            Err(PublicWireError::InvalidValue)
+        );
+
+        let response = app_v1::InspectVectorStateResponse {
+            result: Some(
+                app_v1::inspect_vector_state_response::Result::StalenessSummary(
+                    app_v1::VectorStalenessReport {
+                        total_entities: 8,
+                        stale_count: 3,
+                        stale_entity_count_threshold: 2,
+                        slo_breached: true,
+                    },
+                ),
+            ),
+        };
+        assert_eq!(response.validate_structure(), Ok(()));
+        let mut inconsistent = response;
+        let Some(app_v1::inspect_vector_state_response::Result::StalenessSummary(report)) =
+            inconsistent.result.as_mut()
+        else {
+            panic!("summary");
+        };
+        report.slo_breached = false;
+        assert_eq!(
+            inconsistent.validate_structure(),
+            Err(PublicWireError::InconsistentFields)
+        );
+    }
 }
 
 #[cfg(test)]
@@ -1099,6 +1286,22 @@ mod ready_packed_preflight_pins {
         assert!(
             decode_public_message::<app_v1::ExecuteProjectedQueryResponse>(&bytes).is_ok(),
             "a single ready_aggregates arm must decode"
+        );
+    }
+}
+
+#[cfg(test)]
+mod vector_inspection_preflight_pins {
+    use super::*;
+    use crate::public_message::decode_public_message;
+
+    #[test]
+    fn duplicate_vector_result_arms_are_rejected() {
+        // staleness_summary (field 1) plus model_version_summary (field 3).
+        let bytes = [0x0a, 0x00, 0x1a, 0x00];
+        assert!(
+            decode_public_message::<app_v1::InspectVectorStateResponse>(&bytes).is_err(),
+            "multiple result arms must fail before prost merge"
         );
     }
 }

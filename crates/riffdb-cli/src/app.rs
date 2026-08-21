@@ -58,7 +58,7 @@ use crate::cli::{
     DemoCommand, EntityCommand, EventCommand, EventConsumerArgs, ExportCommand, ExportScope,
     MigrationCommand, OutputMode, ProjectMigrationCommand, ProjectionCommand, QueryCommand,
     ReimportCommand, ReimportScope, RetentionCommand, RetentionHoldCommand, RevocationReason,
-    RoleActorKind, RoleCommand, ServerCommand, StorageCommand, TopLevel,
+    RoleActorKind, RoleCommand, ServerCommand, StorageCommand, TopLevel, VectorInspectionKind,
 };
 use crate::config::{EffectiveConfig, Environment, ProcessEnvironment, resolve};
 use crate::credential::{
@@ -4137,6 +4137,7 @@ async fn query_command(
         QueryCommand::Deploy { .. } => CommandIdentity::QueryDeploy,
         QueryCommand::Module { .. } => CommandIdentity::QueryModule,
         QueryCommand::Repl { .. } => CommandIdentity::QueryRepl,
+        QueryCommand::InspectVector { .. } => CommandIdentity::QueryInspectVector,
     };
     let metadata = match required_metadata(identity, config, environment) {
         Ok(metadata) => metadata,
@@ -4176,6 +4177,75 @@ async fn query_command(
                         "catalog": response.symbolic_catalog,
                     }),
                 ),
+                Err(error) => client_error(identity, &error),
+            }
+        }
+        QueryCommand::InspectVector {
+            entity,
+            field,
+            partition,
+            kind,
+            limit,
+            cursor_hex,
+            contract,
+        } => {
+            let contract = match symbolic_contract_selection(contract) {
+                Ok(contract) => contract,
+                Err(()) => return invalid_input(identity),
+            };
+            let partition = match serde_json::from_str::<crate::value::InputValue>(&partition) {
+                Ok(partition) => match partition.into_proto() {
+                    Ok(partition) => partition,
+                    Err(_) => return invalid_input(identity),
+                },
+                Err(_) => return invalid_input(identity),
+            };
+            let limit = match limit {
+                Some(limit) => match parse_nonzero_u32(&limit) {
+                    Ok(limit) => limit,
+                    Err(()) => return invalid_input(identity),
+                },
+                None => 50,
+            };
+            let cursor = match cursor_hex {
+                Some(cursor) => match parse_opaque_hex(&cursor, MAX_OPAQUE_TOKEN_BYTES) {
+                    Ok(cursor) => Some(cursor),
+                    Err(()) => return invalid_input(identity),
+                },
+                None => None,
+            };
+            let page = Some(v1::PageRequest {
+                limit: Some(limit),
+                cursor,
+            });
+            let request_id = match request_id() {
+                Ok(request_id) => request_id,
+                Err(error) => return client_error(identity, &error),
+            };
+            let kind = match kind {
+                VectorInspectionKind::Stale => {
+                    app_v1::VectorStateInspectionKind::StaleEntities as i32
+                }
+                VectorInspectionKind::Outdated => {
+                    app_v1::VectorStateInspectionKind::OutdatedModelEntities as i32
+                }
+            };
+            match client
+                .inspect_vector_state(
+                    app_v1::InspectVectorStateRequest {
+                        contract,
+                        entity,
+                        field,
+                        partition: Some(partition),
+                        kind,
+                        page,
+                        request_id,
+                    },
+                    &metadata,
+                )
+                .await
+            {
+                Ok(response) => render_vector_inspection(identity, response),
                 Err(error) => client_error(identity, &error),
             }
         }
@@ -10814,6 +10884,51 @@ fn render_query_check(identity: CommandIdentity, response: app_v1::CheckQueryRes
     }
 }
 
+fn render_vector_inspection(
+    identity: CommandIdentity,
+    response: app_v1::InspectVectorStateResponse,
+) -> Terminal {
+    use app_v1::inspect_vector_state_response::Result;
+
+    let value = match response.result {
+        Some(Result::StalenessSummary(report)) => serde_json::json!({
+            "kind": "staleness_summary",
+            "total_entities": report.total_entities.to_string(),
+            "stale_count": report.stale_count.to_string(),
+            "stale_entity_count_threshold": report.stale_entity_count_threshold.to_string(),
+            "slo_breached": report.slo_breached,
+        }),
+        Some(Result::StaleEntities(page)) => serde_json::json!({
+            "kind": "stale_entities",
+            "items": page.items.into_iter().map(|item| serde_json::json!({
+                "entity_key": hex(&item.entity_key),
+                "newest_source_write": item.newest_source_write.to_string(),
+                "embedding_write": item.embedding_write.map(|sequence| sequence.to_string()),
+            })).collect::<Vec<_>>(),
+            "next_cursor": page.next_cursor.as_deref().map(hex),
+            "observed_frontier": page.observed_frontier.map(|sequence| sequence.to_string()),
+        }),
+        Some(Result::ModelVersionSummary(report)) => serde_json::json!({
+            "kind": "model_version_summary",
+            "current_count": report.current_count.to_string(),
+            "outdated_count": report.outdated_count.to_string(),
+        }),
+        Some(Result::OutdatedModelEntities(page)) => serde_json::json!({
+            "kind": "outdated_model_entities",
+            "items": page.items.into_iter().map(|item| serde_json::json!({
+                "entity_key": hex(&item.entity_key),
+                "model": item.model,
+                "model_version": item.model_version,
+                "embedding_write": item.embedding_write.to_string(),
+            })).collect::<Vec<_>>(),
+            "next_cursor": page.next_cursor.as_deref().map(hex),
+            "observed_frontier": page.observed_frontier.map(|sequence| sequence.to_string()),
+        }),
+        None => return invalid_input(identity),
+    };
+    success(identity, "inspected", &value)
+}
+
 fn render_query_explain(
     identity: CommandIdentity,
     response: app_v1::ExplainQueryResponse,
@@ -11133,6 +11248,9 @@ const fn command_identity(command: &TopLevel) -> CommandIdentity {
         TopLevel::Query {
             command: QueryCommand::Repl { .. },
         } => CommandIdentity::QueryRepl,
+        TopLevel::Query {
+            command: QueryCommand::InspectVector { .. },
+        } => CommandIdentity::QueryInspectVector,
         TopLevel::Role {
             command: RoleCommand::Check { .. },
         } => CommandIdentity::RoleCheck,

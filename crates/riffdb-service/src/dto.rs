@@ -43,7 +43,7 @@ use riffdb_types::{
 
 use crate::{
     BootstrapRequestContext, CursorToken, PageLimit, PreBootstrapLifecycle, RequestContext,
-    SubmittedRecord, SubmittedValue,
+    SubmittedRecord, SubmittedValue, SymbolicContractSelector,
 };
 
 /// Maximum bytes accepted in one structurally decoded service request.
@@ -8092,6 +8092,8 @@ pub enum FixedToolKind {
     ContextualStatus,
     /// Contextual reaction execution.
     ContextualReact,
+    /// Symbolic authoritative vector-evidence inspection.
+    InspectVectorState,
 }
 
 impl FixedToolKind {
@@ -8127,6 +8129,7 @@ impl FixedToolKind {
             FixedToolCandidate::ContextualNack => Self::ContextualNack,
             FixedToolCandidate::ContextualStatus => Self::ContextualStatus,
             FixedToolCandidate::ContextualReact => Self::ContextualReact,
+            FixedToolCandidate::InspectVectorState => Self::InspectVectorState,
         }
     }
 
@@ -8164,6 +8167,7 @@ impl FixedToolKind {
             Self::ContextualNack => 28,
             Self::ContextualStatus => 29,
             Self::ContextualReact => 30,
+            Self::InspectVectorState => 32,
         }
     }
 }
@@ -11237,8 +11241,8 @@ pub enum VectorStateInspectionKind {
 /// exact active contract and compiler-derived `InspectVectorState` role grant.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct InspectVectorStateRequest {
-    /// Application contract lineage that owns the symbols.
-    contract_lineage: ContractLineage,
+    /// Exact or active application contract selection that owns the symbols.
+    contract: SymbolicContractSelector,
     /// Source-level entity name.
     entity: SourceName,
     /// Source-level vector field name.
@@ -11255,7 +11259,7 @@ impl InspectVectorStateRequest {
     /// Creates one symbolic vector-state inspection request.
     #[must_use]
     pub const fn new(
-        contract_lineage: ContractLineage,
+        contract: SymbolicContractSelector,
         entity: SourceName,
         field: SourceName,
         partition: SubmittedValue,
@@ -11263,7 +11267,7 @@ impl InspectVectorStateRequest {
         page: PageRequest,
     ) -> Self {
         Self {
-            contract_lineage,
+            contract,
             entity,
             field,
             partition,
@@ -11272,10 +11276,10 @@ impl InspectVectorStateRequest {
         }
     }
 
-    /// Borrows the application contract lineage.
+    /// Borrows the exact or active application contract selection.
     #[must_use]
-    pub const fn contract_lineage(&self) -> &ContractLineage {
-        &self.contract_lineage
+    pub const fn contract(&self) -> &SymbolicContractSelector {
+        &self.contract
     }
 
     /// Borrows the source-level entity name.
@@ -11563,14 +11567,21 @@ mod vector_observability_tests {
     #[test]
     fn inspection_request_is_symbolic_and_missing_embedding_is_stale() {
         let request = InspectVectorStateRequest::new(
-            ContractLineage::new("ticketdesk").expect("lineage"),
+            SymbolicContractSelector::from_selection(ContractSelection::Exact {
+                lineage: ContractLineage::new("ticketdesk").expect("lineage"),
+                version: ContractVersion::new(1).expect("version"),
+            }),
             SourceName::new("Ticket").expect("entity"),
             SourceName::new("embedding").expect("field"),
             SubmittedValue::String(riffdb_types::CanonicalString::new("org-a").expect("partition")),
             VectorStateInspectionKind::StaleEntities,
             PageRequest::new(PageLimit::new(20).expect("page limit"), None),
         );
-        assert_eq!(request.contract_lineage().as_str(), "ticketdesk");
+        assert!(matches!(
+            request.contract().selection(),
+            ContractSelection::Exact { lineage, version }
+                if lineage.as_str() == "ticketdesk" && version.get() == 1
+        ));
         assert_eq!(request.entity().as_str(), "Ticket");
         assert_eq!(request.field().as_str(), "embedding");
         assert!(matches!(request.partition(), SubmittedValue::String(_)));

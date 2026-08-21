@@ -1386,6 +1386,11 @@ fn expected_enum_values() -> BTreeSet<String> {
             "FIXED_TOOL_KIND_CONTEXTUAL_REACT",
         ),
         (
+            "riffdb.v1.FixedToolKind",
+            31,
+            "FIXED_TOOL_KIND_INSPECT_VECTOR_STATE",
+        ),
+        (
             "riffdb.v1.HealthComponentKind",
             6,
             "HEALTH_COMPONENT_KIND_VECTOR_STALENESS",

@@ -468,7 +468,7 @@ fn service_inventory_and_completed_phase_zero_messages_are_exact() {
         }
     }
     methods.sort();
-    assert_eq!(methods.len(), 67);
+    assert_eq!(methods.len(), 68);
     let descriptor_order = descriptors
         .file
         .iter()
@@ -496,6 +496,7 @@ fn service_inventory_and_completed_phase_zero_messages_are_exact() {
             "DeployReactiveModule",
             "GetQueryModule",
             "ExecuteProjectedQuery",
+            "InspectVectorState",
         ]
     );
     assert_eq!(descriptor_order["ApplicationSessionService"], vec!["Open"]);

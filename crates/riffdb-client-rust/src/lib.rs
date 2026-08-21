@@ -44,7 +44,9 @@ pub use application::{
     GeneratedBatchItem, GeneratedBatchOptions, GeneratedBatchProgress, GeneratedBatchResult,
     IdempotentTransportBatchError, MAX_GENERATED_BATCH_CONCURRENCY, NamedQuery, NamedQueryResult,
     QueryOptions, QueryResponseIdentity, StableApplicationClient, TypedCommandResult,
-    TypedQueryResult,
+    TypedQueryResult, VectorInspectionPage, VectorModelVersionItem, VectorModelVersionSummary,
+    VectorStalenessItem, VectorStalenessSummary, VectorStateInspection, VectorStateInspectionKind,
+    VectorStateInspectionResult,
 };
 #[doc(hidden)]
 pub use application::{raise_query_result, raise_value};

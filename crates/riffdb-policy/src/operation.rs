@@ -274,11 +274,13 @@ pub enum FixedToolCandidate {
     ContextualStatus,
     /// `riffdb_contextual_react`.
     ContextualReact,
+    /// `riffdb_vector_inspect`.
+    InspectVectorState,
 }
 
 impl FixedToolCandidate {
     /// The exact SPEC POC fixed-tool inventory in stable presentation order.
-    pub const ALL: [Self; 30] = [
+    pub const ALL: [Self; 31] = [
         Self::ValidateContract,
         Self::GetActiveContract,
         Self::ExplainCommand,
@@ -309,6 +311,7 @@ impl FixedToolCandidate {
         Self::ContextualNack,
         Self::ContextualStatus,
         Self::ContextualReact,
+        Self::InspectVectorState,
     ];
 }
 
@@ -2454,6 +2457,7 @@ pub(crate) const fn fixed_tool_permission_kind(
         | FixedToolCandidate::ContextualNack
         | FixedToolCandidate::ContextualStatus
         | FixedToolCandidate::ContextualReact => Kind::ConsumeContextualSubscription,
+        FixedToolCandidate::InspectVectorState => Kind::InspectVectorState,
     }
 }
 

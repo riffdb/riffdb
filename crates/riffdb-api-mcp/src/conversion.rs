@@ -551,6 +551,21 @@ pub enum McpFixedToolRequest {
         /// Optional opaque catalog continuation.
         cursor: Option<[u8; crate::MCP_CURSOR_BYTES]>,
     },
+    /// `riffdb_vector_inspect`.
+    InspectVectorState {
+        /// Exact application contract selection.
+        contract: McpContractSelection,
+        /// Symbolic entity name.
+        entity: String,
+        /// Symbolic vector-field name.
+        field: String,
+        /// Typed single partition component.
+        partition: McpSubmittedValue,
+        /// Closed inspection population.
+        outdated_models: bool,
+        /// Bounded page controls.
+        page: McpPageRequest,
+    },
     /// `riffdb_query_check`.
     CheckQuery {
         /// Active by default or an exact contract selection.
@@ -1043,6 +1058,30 @@ pub fn decode_fixed_tool_request(
                     .map_err(conversion)?,
             })
         }
+        32 => {
+            let request: RawVectorInspection = arguments.deserialize().map_err(conversion)?;
+            let outdated_models = match request.kind.as_str() {
+                "stale_entities" => false,
+                "outdated_model_entities" => true,
+                _ => return Err(McpConversionError),
+            };
+            Ok(McpFixedToolRequest::InspectVectorState {
+                contract: request.contract.try_into()?,
+                entity: request.entity,
+                field: request.field,
+                partition: request.partition.try_into()?,
+                outdated_models,
+                page: McpPageRequest {
+                    cursor: request
+                        .cursor
+                        .as_deref()
+                        .map(crate::decode_mcp_cursor)
+                        .transpose()
+                        .map_err(conversion)?,
+                    limit: request.limit.unwrap_or(100),
+                },
+            })
+        }
         _ => Err(McpConversionError),
     }
 }
@@ -1370,6 +1409,14 @@ pub enum McpFixedResultBranch {
     ContextualReactionCompleted,
     /// Symbolic application-catalog page completed.
     ApplicationCatalogPage,
+    /// Whole-partition staleness summary.
+    VectorStalenessSummary,
+    /// Policy-filtered stale-entity page.
+    VectorStaleEntities,
+    /// Whole-partition model-version summary.
+    VectorModelVersionSummary,
+    /// Policy-filtered outdated-model page.
+    VectorOutdatedModelEntities,
 }
 
 impl McpFixedResultBranch {
@@ -1415,6 +1462,10 @@ impl McpFixedResultBranch {
             Self::ContextualStatusCompleted => 29,
             Self::ContextualReactionCompleted => 30,
             Self::ApplicationCatalogPage => 31,
+            Self::VectorStalenessSummary
+            | Self::VectorStaleEntities
+            | Self::VectorModelVersionSummary
+            | Self::VectorOutdatedModelEntities => 32,
         }
     }
 
@@ -1447,6 +1498,10 @@ impl McpFixedResultBranch {
             | Self::CommitScanPage
             | Self::OutboxPage
             | Self::ApplicationCatalogPage => "page",
+            Self::VectorStalenessSummary => "staleness_summary",
+            Self::VectorStaleEntities => "stale_entities",
+            Self::VectorModelVersionSummary => "model_version_summary",
+            Self::VectorOutdatedModelEntities => "outdated_model_entities",
             Self::ProjectionReady => "ready",
             Self::ProjectionWaitTimedOut => "wait_timed_out",
             Self::ProjectionDegraded => "degraded",
@@ -1610,6 +1665,18 @@ struct RawSymbolicDescribe {
 #[serde(deny_unknown_fields)]
 struct RawApplicationCatalog {
     contract: Option<RawContractSelection>,
+    limit: Option<u16>,
+    cursor: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawVectorInspection {
+    contract: RawContractSelection,
+    entity: String,
+    field: String,
+    partition: RawTaggedValue,
+    kind: String,
     limit: Option<u16>,
     cursor: Option<String>,
 }
@@ -2255,6 +2322,35 @@ mod tests {
             .is_err(),
             "opaque catalog cursors have one canonical lowercase spelling"
         );
+
+        let vector = decode_fixed_tool_request(
+            32,
+            &arguments(json!({
+                "contract": {"exact": {"contract_lineage":"Vectors", "contract_version":"3"}},
+                "entity": "Document",
+                "field": "embedding",
+                "partition": {"kind":"string", "value":"org-a"},
+                "kind": "outdated_model_entities",
+                "limit": 20
+            })),
+        )
+        .expect("vector inspection request");
+        let McpFixedToolRequest::InspectVectorState {
+            entity,
+            field,
+            partition,
+            outdated_models,
+            page,
+            ..
+        } = vector
+        else {
+            panic!("wrong vector inspection request");
+        };
+        assert_eq!(entity, "Document");
+        assert_eq!(field, "embedding");
+        assert_eq!(partition, McpSubmittedValue::String("org-a".to_owned()));
+        assert!(outdated_models);
+        assert_eq!(page.limit(), 20);
     }
 
     #[test]
