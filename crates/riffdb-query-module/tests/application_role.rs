@@ -94,6 +94,85 @@ fn exact_application() -> (
 }
 
 #[test]
+fn nearest_query_derives_exact_role_bound_vector_inspection() {
+    let contract = compile_contract_source(include_str!(
+        "../../../fixtures/compiler/production-embedding/contract.riff"
+    ))
+    .expect("production vector contract");
+    let query_source = r#"
+query SimilarDocuments(
+    $org_id: Document.org_id,
+    $query_vec: Document.embedding,
+) {
+    many results from Document
+        where org_id == $org_id
+        nearest(embedding, $query_vec, 10)
+    return Found { results: results { title } }
+    outcomes Found
+}
+"#;
+    let module = QueryModule::compile(
+        QueryModuleCandidate::new(
+            QueryModuleName::new("documents").expect("module name"),
+            QueryModuleVersion::new(1).expect("module version"),
+            vec![NamedQuerySource::new("SimilarDocuments", query_source).expect("query")],
+        )
+        .expect("candidate"),
+        &contract,
+    )
+    .expect("module");
+    let source = r#"{
+  "application": "documents",
+  "contract": {"lineage": "ProductionEmbeddingShape", "source": "contract.riff", "version": 1},
+  "generation": {"go": "generated/go/client.go", "mcp": "generated/mcp/tools.json", "python": "generated/python/client.py", "rust": "generated/rust/client.rs", "typescript": "generated/typescript/client.ts"},
+  "migrations": [],
+  "query_modules": [{"name": "documents", "queries": [{"name": "SimilarDocuments", "source": "queries/similar_documents.riffq"}], "version": 1}],
+  "reactive_modules": [],
+  "roles": [{"agent_subscriptions": [], "commands": ["SetDocumentEmbedding"], "environment": "development", "event_streams": [], "name": "DocumentAgent", "queries": ["SimilarDocuments"], "row_policies": [], "tenant_scope": "global", "watch_queries": []}],
+  "schema": "riffdb.application-source/v6",
+  "seed_inputs": []
+}"#;
+    let exact = ApplicationSourceManifest::parse(source)
+        .expect("source")
+        .exact_manifest_v2(&contract, std::slice::from_ref(&module), &[])
+        .expect("exact manifest");
+    let role = compile_application_role(
+        &exact,
+        "DocumentAgent",
+        None,
+        &contract,
+        std::slice::from_ref(&module),
+    )
+    .expect("compiled role");
+
+    assert_eq!(role.vector_inspections().len(), 1);
+    let target = &role.vector_inspections()[0];
+    assert_eq!(target.entity(), "Document");
+    assert_eq!(target.field(), "embedding");
+    assert!(target.allow_counts());
+    assert!(
+        role.internal_grant()
+            .permissions()
+            .contains_kind(CapabilityPermissionKindV1::InspectVectorState)
+    );
+    let inspection = role
+        .internal_grant()
+        .internal_vector_inspection()
+        .expect("exact V8 extension");
+    assert_eq!(inspection.application_role_hash(), role.identity());
+    assert_eq!(inspection.targets().len(), 1);
+    assert_eq!(inspection.targets()[0].field(), target.internal_field_id());
+
+    let rebound = role
+        .bind_principal_facts_for(
+            &ActorId::new("agent:documents").expect("principal"),
+            CapabilityPrincipalFactsV1::empty(),
+        )
+        .expect("bound grant");
+    assert_eq!(rebound.internal_vector_inspection(), Some(inspection));
+}
+
+#[test]
 fn v4_role_identity_covers_symbolic_policy_and_fact_schema() {
     let contract = compile_contract_source(include_str!(
         "../../../fixtures/compiler/row-policy/valid/document-access.riff"

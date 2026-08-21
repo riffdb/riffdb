@@ -11901,6 +11901,10 @@ work_packages:
     # operation and decision path to authorize the exact symbolic vector
     # projection before inspection and again before result release.
     crates/riffdb-policy/**,
+    # Coordinator-authorized 2026-08-21: the new closed application-service
+    # operation must retain the existing fixed-cardinality metric label rather
+    # than disappear from production observability.
+    crates/riffdb-observability/**,
     crates/riffdb-service/**, crates/riffdb-commit/**, crates/riffdb-runtime/**,
     crates/riffdb-storage-api/**, crates/riffdb-storage-memory/**,
     crates/riffdb-storage-redb/**, crates/riffdb-proto/**, crates/riffdb-api-grpc/**,

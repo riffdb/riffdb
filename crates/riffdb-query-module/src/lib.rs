@@ -26,8 +26,8 @@ pub use application_manifest::{
 pub use application_role::{
     ApplicationRoleError, ApplicationRoleErrorKind, ApplicationRoleFactSchema,
     ApplicationRoleOperation, ApplicationRoleOperationKind, ApplicationRolePolicy,
-    ApplicationRoleSecretOutput, CompiledApplicationRole, compile_application_role,
-    compile_application_role_v2,
+    ApplicationRoleSecretOutput, ApplicationRoleVectorInspection, CompiledApplicationRole,
+    compile_application_role, compile_application_role_v2,
 };
 pub use application_source::{
     APPLICATION_SOURCE_SCHEMA_V1, APPLICATION_SOURCE_SCHEMA_V2, APPLICATION_SOURCE_SCHEMA_V3,
