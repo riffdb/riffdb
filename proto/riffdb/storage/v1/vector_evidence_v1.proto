@@ -1,0 +1,26 @@
+syntax = "proto3";
+
+package riffdb.storage.v1;
+
+import "riffdb/storage/v1/application.proto";
+
+// Exact model evidence attached to one authoritative vector write.
+message StoredVectorEmbeddingWriteV1 {
+  uint64 commit_sequence = 1;
+  string model_identity = 2;
+  string model_version = 3;
+}
+
+// Nonduplicating authoritative evidence for one live entity vector field.
+message StoredVectorEvidenceV1 {
+  EntityTargetV1 target = 1;
+  bytes partition_key = 2;
+  uint32 vector_field_id = 3;
+  uint64 entity_version = 4;
+  uint64 evidence_sequence = 5;
+  optional uint64 newest_source_write_sequence = 6;
+  StoredVectorEmbeddingWriteV1 embedding_write = 7;
+  DurableKeySchemaBindingV1 schema_binding = 8;
+  bytes provenance_id = 9;
+  ExecutablePlanRefV1 plan = 10;
+}

@@ -76,6 +76,10 @@ artifacts=(
     fixtures/proto/durable-capability-v5-schema-hash.bin
     fixtures/proto/durable-capability-v7-record-bound.bin
     fixtures/proto/durable-capability-v7-schema-hash.bin
+    fixtures/proto/durable-vector-evidence-v1-record-bound.bin
+    fixtures/proto/durable-vector-evidence-v1-schema-hash.bin
+    crates/riffdb-proto/fixtures/durable-vector-evidence-v1-record-bound.bin
+    crates/riffdb-proto/fixtures/durable-vector-evidence-v1-schema-hash.bin
     fixtures/proto/durable-validated-prefix-checkpoint-v1-record-bound.bin
     fixtures/proto/durable-validated-prefix-checkpoint-v1-schema-hash.bin
     fixtures/proto/durable-retention-watermark-v1-record-bound.bin
@@ -107,6 +111,8 @@ artifacts=(
     fixtures/proto/durable-registry.txt
     fixtures/proto/durable-schema-hashes.bin
     fixtures/proto/durable-writable-registry.txt
+    crates/riffdb-proto/fixtures/durable-readable-registry.txt
+    crates/riffdb-proto/fixtures/durable-writable-registry.txt
     fixtures/proto/durable-wire-vectors.txt
     fixtures/proto/durable-wire-vectors-v2.txt
     fixtures/proto/operation-schema-catalog-full-v1.bin

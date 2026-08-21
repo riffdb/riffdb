@@ -621,7 +621,8 @@ impl DurableFormatManifest {
     }
 }
 
-/// Returns this binary's exact generated durable-format manifest.
+/// Returns this binary's exact generated durable-format manifest, including
+/// every append-only authoritative side-record schema in the fixture corpus.
 #[must_use]
 pub fn current_durable_format_manifest() -> DurableFormatManifest {
     let compatibility_fixture_digest = CompatibilityFixtureDigest::from_bytes(
