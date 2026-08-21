@@ -13,15 +13,21 @@ use std::time::Duration;
 
 use riffdb_policy::{AuthorizedQueryRowPolicyContextV1, MAX_PROJECTED_POLICY_CANDIDATES_V1};
 use riffdb_projection::{
-    ExactTextPartitionIndexV2, ExactTextPartitionIndexV3, MAX_EXACT_TEXT_CHECKPOINT_BYTES_V3,
+    ExactPredicatePartitionIndexV4, ExactPredicateProviderBindingV1, ExactPredicateProviderRowV1,
+    ExactTextPartitionIndexV2, ExactTextPartitionIndexV3, MAX_EXACT_PREDICATE_CHECKPOINT_BYTES_V4,
     ProviderEpochObservationV1, ProviderLifecycleV1, ResultSetEpochContextV1,
     ResultSetEpochRequirementV1, negotiate_result_set_epoch_v1,
 };
 use riffdb_query_executor::{
     ExactTextResultSetV1, QueryExecutionError, QueryExecutionPort,
-    execute_exact_text_filtered_result_set_v1, execute_exact_text_result_set_v1,
+    execute_exact_predicate_result_set_v1, execute_exact_text_filtered_result_set_v1,
+    execute_exact_text_result_set_v1,
+};
+use riffdb_query_ir::{
+    ExactComparisonProfileV1, ExactPredicateNodeV1, ExactReferenceCellV1, ExactScalarV1,
 };
 use riffdb_service::{
+    ExactPredicateProjectionPort, ExactPredicateProjectionRequest, ExactPredicateProjectionResult,
     ExactTextProjectionPort, ExactTextProjectionPortError, ExactTextProjectionRequest,
     ExactTextProjectionResult, ExactTextProjectionRow,
 };
@@ -50,11 +56,12 @@ const CHECKPOINT_LENGTH_OFFSET: usize = CHECKPOINT_SLOT_OFFSET + SLOT_KEY_BYTES;
 const CHECKPOINT_HEADER_BYTES: usize = CHECKPOINT_LENGTH_OFFSET + 4;
 const CHECKPOINT_DIGEST_BYTES: usize = 32;
 const MAX_ACTIVATION_CHECKPOINT_BYTES: usize =
-    CHECKPOINT_HEADER_BYTES + MAX_EXACT_TEXT_CHECKPOINT_BYTES_V3 + CHECKPOINT_DIGEST_BYTES;
+    CHECKPOINT_HEADER_BYTES + MAX_EXACT_PREDICATE_CHECKPOINT_BYTES_V4 + CHECKPOINT_DIGEST_BYTES;
 
 type SlotKey = Vec<u8>;
 type ExactTextSourceRow = (String, Option<CanonicalValue>, CanonicalRecord);
 type ExactTextSourceRows = BTreeMap<riffdb_types::EntityKey, ExactTextSourceRow>;
+type ExactPredicateSourceRows = Vec<ExactPredicateProviderRowV1>;
 
 struct ExactTextRegistration {
     query: Arc<riffdb_query_module::CompiledExactTextResultSetV1>,
@@ -62,6 +69,52 @@ struct ExactTextRegistration {
     partition_value: CanonicalValue,
     policy_shape: riffdb_types::ApplicationRoleHash,
     row_policy: Option<Arc<AuthorizedQueryRowPolicyContextV1>>,
+}
+
+struct ExactPredicateRegistration {
+    query: Arc<riffdb_query_module::CompiledExactPredicateResultSetV1>,
+    partition_key: PartitionKey,
+    partition_value: CanonicalValue,
+    policy_shape: riffdb_types::ApplicationRoleHash,
+    row_policy: Option<Arc<AuthorizedQueryRowPolicyContextV1>>,
+}
+
+impl ExactPredicateRegistration {
+    fn from_request(request: &ExactPredicateProjectionRequest) -> Self {
+        Self {
+            query: Arc::clone(request.query()),
+            partition_key: request.partition_key().clone(),
+            partition_value: request.partition_value().clone(),
+            policy_shape: request.policy_shape(),
+            row_policy: request.row_policy().cloned(),
+        }
+    }
+
+    fn key(&self) -> SlotKey {
+        slot_key(
+            self.query.identity(),
+            hash_partition_key(self.partition_key.as_bytes()),
+            self.policy_shape,
+            self.row_policy_identity(),
+        )
+    }
+
+    fn row_policy_identity(&self) -> Option<(CapabilityId, NonZeroU64)> {
+        self.row_policy
+            .as_deref()
+            .and_then(AuthorizedQueryRowPolicyContextV1::internal_capability_identity)
+    }
+
+    fn matches(&self, request: &ExactPredicateProjectionRequest) -> bool {
+        self.query.identity() == request.query().identity()
+            && self.partition_key == *request.partition_key()
+            && self.partition_value == *request.partition_value()
+            && self.policy_shape == request.policy_shape()
+            && self.row_policy_identity()
+                == request
+                    .row_policy()
+                    .and_then(|policy| policy.internal_capability_identity())
+    }
 }
 
 impl ExactTextRegistration {
@@ -154,6 +207,23 @@ struct ExactTextSlot {
     state: Mutex<ExactTextSlotState>,
 }
 
+enum ExactPredicateSlotState {
+    Building,
+    Rebuilding(ProjectionGeneration),
+    Ready(Box<ExactPredicatePartitionIndexV4>),
+    Unavailable {
+        observed_head: CommitSequence,
+        prior_generation: ProjectionGeneration,
+    },
+    IntegrityFailure,
+}
+
+struct ExactPredicateSlot {
+    registration: ExactPredicateRegistration,
+    checkpoint: PathBuf,
+    state: Mutex<ExactPredicateSlotState>,
+}
+
 impl ExactTextSlot {
     fn new(registration: ExactTextRegistration, checkpoint: PathBuf) -> Self {
         Self {
@@ -164,13 +234,25 @@ impl ExactTextSlot {
     }
 }
 
+impl ExactPredicateSlot {
+    fn new(registration: ExactPredicateRegistration, checkpoint: PathBuf) -> Self {
+        Self {
+            registration,
+            checkpoint,
+            state: Mutex::new(ExactPredicateSlotState::Building),
+        }
+    }
+}
+
 /// Dynamic exact providers registered only from immutable compiled named plans.
 pub(crate) struct ExactTextRuntime {
     storage: SharedRedbOperationalPorts,
     root: PathBuf,
+    predicate_root: PathBuf,
     history_incarnation: u64,
     initial_generation: ProjectionGeneration,
     slots: Mutex<BTreeMap<SlotKey, Arc<ExactTextSlot>>>,
+    predicate_slots: Mutex<BTreeMap<SlotKey, Arc<ExactPredicateSlot>>>,
 }
 
 impl ExactTextRuntime {
@@ -182,12 +264,16 @@ impl ExactTextRuntime {
     ) -> Result<Arc<Self>, ExactTextRuntimeOpenError> {
         let root = projections_root.join("exact-text-v2");
         fs::create_dir_all(&root).map_err(|_| ExactTextRuntimeOpenError)?;
+        let predicate_root = projections_root.join("exact-predicate-v4");
+        fs::create_dir_all(&predicate_root).map_err(|_| ExactTextRuntimeOpenError)?;
         Ok(Arc::new(Self {
             storage,
             root,
+            predicate_root,
             history_incarnation,
             initial_generation,
             slots: Mutex::new(BTreeMap::new()),
+            predicate_slots: Mutex::new(BTreeMap::new()),
         }))
     }
 
@@ -219,6 +305,40 @@ impl ExactTextRuntime {
         }
         let checkpoint = self.root.join(format!("{}.rxts", hex(&key)));
         let slot = Arc::new(ExactTextSlot::new(registration, checkpoint));
+        slots.insert(key, Arc::clone(&slot));
+        Ok(slot)
+    }
+
+    fn registered_predicate_slots(
+        &self,
+    ) -> Result<Vec<Arc<ExactPredicateSlot>>, ExactTextProjectionPortError> {
+        self.predicate_slots
+            .lock()
+            .map(|slots| slots.values().cloned().collect())
+            .map_err(|_| ExactTextProjectionPortError::Integrity)
+    }
+
+    fn predicate_slot_for(
+        &self,
+        request: &ExactPredicateProjectionRequest,
+    ) -> Result<Arc<ExactPredicateSlot>, ExactTextProjectionPortError> {
+        let registration = ExactPredicateRegistration::from_request(request);
+        let key = registration.key();
+        let mut slots = self
+            .predicate_slots
+            .lock()
+            .map_err(|_| ExactTextProjectionPortError::Integrity)?;
+        if let Some(slot) = slots.get(&key) {
+            if !slot.registration.matches(request) {
+                return Err(ExactTextProjectionPortError::Integrity);
+            }
+            return Ok(Arc::clone(slot));
+        }
+        if slots.len() >= MAX_REGISTERED_EXACT_PARTITIONS {
+            return Err(ExactTextProjectionPortError::Unavailable);
+        }
+        let checkpoint = self.predicate_root.join(format!("{}.rxps", hex(&key)));
+        let slot = Arc::new(ExactPredicateSlot::new(registration, checkpoint));
         slots.insert(key, Arc::clone(&slot));
         Ok(slot)
     }
@@ -361,6 +481,131 @@ impl ExactTextProjectionPort for ExactTextRuntime {
     }
 }
 
+impl ExactPredicateProjectionPort for ExactTextRuntime {
+    fn execute(
+        &self,
+        request: ExactPredicateProjectionRequest,
+    ) -> Result<ExactPredicateProjectionResult, ExactTextProjectionPortError> {
+        let policy_mode = request
+            .query()
+            .program()
+            .provider_requirement()
+            .policy_mode();
+        let policy_binding_is_exact = match policy_mode {
+            ProjectionProviderPolicyModeV1::PartitionAligned => request.row_policy().is_none(),
+            ProjectionProviderPolicyModeV1::BoundedRowAdmission => request.row_policy().is_some(),
+            ProjectionProviderPolicyModeV1::PolicySubpartition => false,
+        };
+        if !policy_binding_is_exact {
+            return Err(ExactTextProjectionPortError::Integrity);
+        }
+        let head = read_application_head(&self.storage)
+            .map_err(|_| ExactTextProjectionPortError::Unavailable)?;
+        let FrontierPosition::AppliedThrough(head) = head else {
+            return Err(ExactTextProjectionPortError::Building);
+        };
+        let slot = self.predicate_slot_for(&request)?;
+        let state = slot
+            .state
+            .lock()
+            .map_err(|_| ExactTextProjectionPortError::Integrity)?;
+        let provider = match &*state {
+            ExactPredicateSlotState::Building => {
+                return Err(ExactTextProjectionPortError::Building);
+            }
+            ExactPredicateSlotState::Rebuilding(_) => {
+                return Err(ExactTextProjectionPortError::Rebuilding);
+            }
+            ExactPredicateSlotState::IntegrityFailure => {
+                return Err(ExactTextProjectionPortError::Integrity);
+            }
+            ExactPredicateSlotState::Unavailable { .. } => {
+                return Err(ExactTextProjectionPortError::Unavailable);
+            }
+            ExactPredicateSlotState::Ready(provider) => provider,
+        };
+        if provider.binding().frontier() != head {
+            return Err(ExactTextProjectionPortError::FreshnessUnsatisfied);
+        }
+        let descriptor = request
+            .query()
+            .program()
+            .provider_descriptor()
+            .map_err(|_| ExactTextProjectionPortError::Integrity)?;
+        let participant = ProviderEpochObservationV1::new(
+            descriptor.digest(),
+            descriptor.state_identity().schema_hash(),
+            self.history_incarnation,
+            provider.binding().generation(),
+            head,
+            head,
+            ProviderLifecycleV1::Ready,
+        )
+        .map_err(|_| ExactTextProjectionPortError::Integrity)?;
+        let proof = negotiate_result_set_epoch_v1(
+            ResultSetEpochContextV1::new(request.query().identity(), request.policy_shape()),
+            &[participant],
+            request.minimum_epoch().map_or(
+                ResultSetEpochRequirementV1::Latest,
+                ResultSetEpochRequirementV1::AtLeast,
+            ),
+        )
+        .map_err(map_epoch_error)?;
+        let result = execute_exact_predicate_result_set_v1(
+            request.query().identity(),
+            request.query().program(),
+            &proof,
+            provider,
+            request.parameters(),
+            request.member(),
+            request.offset(),
+            request.limit(),
+        )
+        .map_err(|_| ExactTextProjectionPortError::Integrity)?;
+        let binding = result.binding();
+        let rows = result
+            .rows()
+            .iter()
+            .map(|row| ExactTextProjectionRow::new(row.key().clone(), row.output().clone()))
+            .collect();
+        Ok(ExactPredicateProjectionResult::new(
+            rows,
+            result.exact_total(),
+            binding.frontier(),
+            binding.generation(),
+            binding.descriptor(),
+            binding.history_incarnation(),
+        ))
+    }
+}
+
+fn map_epoch_error(error: riffdb_projection::ResultSetEpochError) -> ExactTextProjectionPortError {
+    match error {
+        riffdb_projection::ResultSetEpochError::EpochExpired => {
+            ExactTextProjectionPortError::SnapshotRetired
+        }
+        riffdb_projection::ResultSetEpochError::FreshnessUnavailable => {
+            ExactTextProjectionPortError::FreshnessUnsatisfied
+        }
+        riffdb_projection::ResultSetEpochError::Diverged
+        | riffdb_projection::ResultSetEpochError::IncarnationMismatch => {
+            ExactTextProjectionPortError::Diverged
+        }
+        riffdb_projection::ResultSetEpochError::Rebuilding => {
+            ExactTextProjectionPortError::Rebuilding
+        }
+        riffdb_projection::ResultSetEpochError::Unavailable
+        | riffdb_projection::ResultSetEpochError::Retired => {
+            ExactTextProjectionPortError::Unavailable
+        }
+        riffdb_projection::ResultSetEpochError::EmptyParticipants
+        | riffdb_projection::ResultSetEpochError::TooManyParticipants
+        | riffdb_projection::ResultSetEpochError::InvalidInterval => {
+            ExactTextProjectionPortError::Integrity
+        }
+    }
+}
+
 impl fmt::Debug for ExactTextRuntime {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str("ExactTextRuntime([DERIVED_AUTHORITY])")
@@ -475,6 +720,65 @@ fn refresh_registered_slots(runtime: &ExactTextRuntime) -> Result<(), ()> {
             }
         }
     }
+    refresh_registered_predicate_slots(runtime)?;
+    Ok(())
+}
+
+fn refresh_registered_predicate_slots(runtime: &ExactTextRuntime) -> Result<(), ()> {
+    let slots = runtime.registered_predicate_slots().map_err(|_| ())?;
+    for slot in slots {
+        let head = read_application_head(&runtime.storage).map_err(|_| ())?;
+        let FrontierPosition::AppliedThrough(head) = head else {
+            continue;
+        };
+        let prior_generation = {
+            let mut state = slot.state.lock().map_err(|_| ())?;
+            match &*state {
+                ExactPredicateSlotState::Ready(provider)
+                    if provider.binding().frontier() == head =>
+                {
+                    continue;
+                }
+                ExactPredicateSlotState::Ready(provider) => {
+                    let generation = provider.binding().generation();
+                    *state = ExactPredicateSlotState::Rebuilding(generation);
+                    Some(generation)
+                }
+                ExactPredicateSlotState::Rebuilding(generation) => Some(*generation),
+                ExactPredicateSlotState::Building => None,
+                ExactPredicateSlotState::Unavailable {
+                    observed_head,
+                    prior_generation,
+                } => {
+                    if *observed_head == head {
+                        continue;
+                    }
+                    let generation = *prior_generation;
+                    *state = ExactPredicateSlotState::Rebuilding(generation);
+                    Some(generation)
+                }
+                ExactPredicateSlotState::IntegrityFailure => continue,
+            }
+        };
+        match rebuild_predicate_slot(runtime, &slot, head, prior_generation) {
+            Ok(Some(provider)) => {
+                let mut state = slot.state.lock().map_err(|_| ())?;
+                *state = ExactPredicateSlotState::Ready(Box::new(provider));
+            }
+            Ok(None) | Err(RebuildFailure::Transient) => {}
+            Err(RebuildFailure::Capacity(prior_generation)) => {
+                let mut state = slot.state.lock().map_err(|_| ())?;
+                *state = ExactPredicateSlotState::Unavailable {
+                    observed_head: head,
+                    prior_generation,
+                };
+            }
+            Err(RebuildFailure::Integrity) => {
+                let mut state = slot.state.lock().map_err(|_| ())?;
+                *state = ExactPredicateSlotState::IntegrityFailure;
+            }
+        }
+    }
     Ok(())
 }
 
@@ -551,6 +855,202 @@ fn rebuild_slot(
     )
     .map_err(|_| RebuildFailure::Transient)?;
     Ok(Some(provider))
+}
+
+fn rebuild_predicate_slot(
+    runtime: &ExactTextRuntime,
+    slot: &ExactPredicateSlot,
+    head: CommitSequence,
+    prior_generation: Option<ProjectionGeneration>,
+) -> Result<Option<ExactPredicatePartitionIndexV4>, RebuildFailure> {
+    if prior_generation.is_none()
+        && let Some(bytes) = read_checkpoint(&slot.checkpoint)?
+        && let Ok(provider_bytes) = decode_activation_checkpoint(
+            &bytes,
+            &slot.registration.key(),
+            runtime.history_incarnation,
+        )
+        && let Ok(recovered) = ExactPredicatePartitionIndexV4::from_checkpoint_bytes(provider_bytes)
+        && recovered.binding().plan() == slot.registration.query.identity()
+        && recovered.binding().policy_shape() == slot.registration.policy_shape
+        && recovered.binding().partition()
+            == hash_partition_key(slot.registration.partition_key.as_bytes())
+    {
+        if recovered.binding().frontier() == head {
+            return Ok(Some(recovered));
+        }
+        return rebuild_predicate_slot(runtime, slot, head, Some(recovered.binding().generation()));
+    }
+    let generation = prior_generation
+        .map_or(
+            Some(runtime.initial_generation),
+            ProjectionGeneration::checked_next,
+        )
+        .ok_or(RebuildFailure::Integrity)?;
+    let rows = read_complete_predicate_partition(runtime, &slot.registration, head, generation)?;
+    let binding = ExactPredicateProviderBindingV1::new(
+        slot.registration.query.identity(),
+        slot.registration.query.program(),
+        slot.registration.policy_shape,
+        hash_partition_key(slot.registration.partition_key.as_bytes()),
+        runtime.history_incarnation,
+        generation,
+        head,
+    )
+    .map_err(|_| RebuildFailure::Integrity)?;
+    let provider = ExactPredicatePartitionIndexV4::rebuild(
+        binding,
+        slot.registration.query.program().clone(),
+        rows,
+    )
+    .map_err(|error| match error {
+        riffdb_projection::ExactPredicateProviderErrorV1::BoundExceeded
+        | riffdb_projection::ExactPredicateProviderErrorV1::StateAmplification
+        | riffdb_projection::ExactPredicateProviderErrorV1::FuelExhausted => {
+            RebuildFailure::Capacity(generation)
+        }
+        _ => RebuildFailure::Integrity,
+    })?;
+    persist_predicate_checkpoint(
+        &slot.checkpoint,
+        &slot.registration.key(),
+        runtime.history_incarnation,
+        &provider,
+    )
+    .map_err(|_| RebuildFailure::Transient)?;
+    Ok(Some(provider))
+}
+
+fn read_complete_predicate_partition(
+    runtime: &ExactTextRuntime,
+    registration: &ExactPredicateRegistration,
+    expected_head: CommitSequence,
+    generation: ProjectionGeneration,
+) -> Result<ExactPredicateSourceRows, RebuildFailure> {
+    let access_program = registration.query.representative_program();
+    let step = access_program
+        .steps()
+        .first()
+        .ok_or(RebuildFailure::Integrity)?;
+    if access_program.steps().len() != 1 {
+        return Err(RebuildFailure::Integrity);
+    }
+    let index_id = step.internal_index_id().ok_or(RebuildFailure::Integrity)?;
+    let key_schema = step
+        .internal_index_key_schema()
+        .ok_or(RebuildFailure::Integrity)?;
+    let mut prefix = IndexRangePrefixBuilder::new(index_id);
+    push_index_component(&mut prefix, &registration.partition_value)?;
+    let target = IndexRangeTarget::new(registration.partition_key.clone(), prefix.finish());
+    let limit = StorageScanLimit::new(REBUILD_PAGE_ROWS).ok_or(RebuildFailure::Integrity)?;
+    let access = access_program
+        .internal_entity_access(step.entity())
+        .ok_or(RebuildFailure::Integrity)?;
+    let output_fields = step
+        .selected_fields()
+        .iter()
+        .map(|name| {
+            access
+                .internal_field_id(name)
+                .ok_or(RebuildFailure::Integrity)
+        })
+        .collect::<Result<BTreeSet<FieldId>, _>>()?;
+    let referenced_profiles = predicate_referenced_profiles(registration.query.program())?;
+    let maximum_candidates = usize::try_from(
+        registration
+            .query
+            .program()
+            .provider_requirement()
+            .max_candidates(),
+    )
+    .map_err(|_| RebuildFailure::Integrity)?
+    .min(MAX_PROJECTED_POLICY_CANDIDATES_V1);
+    let mut rows = BTreeMap::new();
+    let mut candidates = BTreeSet::new();
+    let mut observed_entries = 0_usize;
+    let mut after = None;
+    loop {
+        let request = AuthoritativeIndexScanRequest::new(target.clone(), after, limit)
+            .map_err(|_| RebuildFailure::Integrity)?;
+        let page = AuthoritativeScanReader::scan_index(&runtime.storage, request)
+            .map_err(|_| RebuildFailure::Transient)?;
+        for item in page.entries() {
+            observed_entries = observed_entries
+                .checked_add(1)
+                .ok_or(RebuildFailure::Capacity(generation))?;
+            if observed_entries > maximum_candidates {
+                return Err(RebuildFailure::Capacity(generation));
+            }
+            let decoded = key_schema
+                .decode_index(item.value().key())
+                .map_err(|_| RebuildFailure::Integrity)?;
+            let entity_key = decoded.entity_key().clone();
+            if !candidates.insert(entity_key.clone()) {
+                return Err(RebuildFailure::Integrity);
+            }
+            let target = EntityTarget::new(step.internal_entity_id(), entity_key.clone())
+                .map_err(|_| RebuildFailure::Integrity)?;
+            let record = AuthoritativePointReader::read_entity(&runtime.storage, &target)
+                .map_err(|_| RebuildFailure::Transient)?
+                .ok_or(RebuildFailure::Transient)?;
+            let values = record
+                .fields()
+                .fields()
+                .iter()
+                .cloned()
+                .collect::<BTreeMap<_, _>>();
+            let fields = referenced_profiles
+                .iter()
+                .map(|(field, profile)| {
+                    exact_reference_cell(values.get(field), *profile).map(|cell| (*field, cell))
+                })
+                .collect::<Result<BTreeMap<_, _>, _>>()?;
+            let output = CanonicalRecord::new(
+                record
+                    .fields()
+                    .fields()
+                    .iter()
+                    .filter(|(field, _)| output_fields.contains(field))
+                    .cloned()
+                    .collect(),
+            )
+            .map_err(|_| RebuildFailure::Integrity)?;
+            if output.len() != output_fields.len()
+                || rows
+                    .insert(
+                        entity_key.clone(),
+                        ExactPredicateProviderRowV1::new(entity_key, fields, output),
+                    )
+                    .is_some()
+            {
+                return Err(RebuildFailure::Integrity);
+            }
+        }
+        match page {
+            AuthoritativeIndexScanPage::Page { next_after, .. } => after = Some(next_after),
+            AuthoritativeIndexScanPage::ExactEnd { .. } => break,
+        }
+    }
+    if let Some(policy) = registration.row_policy.as_deref() {
+        let ordered_candidates = candidates.iter().cloned().collect::<Vec<_>>();
+        let admission = QueryExecutionPort::authorize_projected_candidates(
+            &runtime.storage,
+            step.internal_entity_id(),
+            &ordered_candidates,
+            policy,
+        )
+        .map_err(|error| map_policy_admission_error(error, generation))?;
+        if !admission.covers(step.internal_entity_id(), &candidates) {
+            return Err(RebuildFailure::Integrity);
+        }
+        rows.retain(|key, _| admission.admits(key));
+    }
+    if read_application_head(&runtime.storage).map_err(|_| RebuildFailure::Transient)?
+        != FrontierPosition::AppliedThrough(expected_head)
+    {
+        return Err(RebuildFailure::Transient);
+    }
+    Ok(rows.into_values().collect())
 }
 
 fn recover_provider(
@@ -724,6 +1224,99 @@ fn map_policy_admission_error(
     }
 }
 
+fn predicate_referenced_profiles(
+    program: &riffdb_query_ir::ExactPredicateProgramV1,
+) -> Result<BTreeMap<FieldId, ExactComparisonProfileV1>, RebuildFailure> {
+    fn insert(
+        profiles: &mut BTreeMap<FieldId, ExactComparisonProfileV1>,
+        field: FieldId,
+        profile: ExactComparisonProfileV1,
+    ) -> Result<(), RebuildFailure> {
+        if profiles
+            .insert(field, profile)
+            .is_some_and(|prior| prior != profile)
+        {
+            return Err(RebuildFailure::Integrity);
+        }
+        Ok(())
+    }
+    fn visit(
+        node: &ExactPredicateNodeV1,
+        profiles: &mut BTreeMap<FieldId, ExactComparisonProfileV1>,
+    ) -> Result<(), RebuildFailure> {
+        match node {
+            ExactPredicateNodeV1::Leaf(leaf) => insert(profiles, leaf.field(), leaf.profile()),
+            ExactPredicateNodeV1::When { child, .. } => visit(child, profiles),
+            ExactPredicateNodeV1::And(children) | ExactPredicateNodeV1::Or(children) => {
+                for child in children {
+                    visit(child, profiles)?;
+                }
+                Ok(())
+            }
+        }
+    }
+    let mut profiles = BTreeMap::new();
+    visit(program.predicate(), &mut profiles)?;
+    for order in program.orders() {
+        for term in order.terms() {
+            insert(&mut profiles, term.field(), term.profile())?;
+        }
+    }
+    Ok(profiles)
+}
+
+fn exact_reference_cell(
+    value: Option<&CanonicalValue>,
+    profile: ExactComparisonProfileV1,
+) -> Result<ExactReferenceCellV1, RebuildFailure> {
+    let Some(value) = value else {
+        return Ok(ExactReferenceCellV1::Missing);
+    };
+    if matches!(value, CanonicalValue::Null) {
+        return Ok(ExactReferenceCellV1::Null);
+    }
+    let scalar = match value {
+        CanonicalValue::Bool(value) => ExactScalarV1::Bool(*value),
+        CanonicalValue::I64(value) => ExactScalarV1::I64(*value),
+        CanonicalValue::U64(value) => ExactScalarV1::U64(*value),
+        CanonicalValue::Decimal(value) => ExactScalarV1::Decimal {
+            coefficient: value.coefficient(),
+            scale: value.spec().scale(),
+        },
+        CanonicalValue::Money(value) => ExactScalarV1::Money {
+            currency: *value.currency().as_bytes(),
+            coefficient: value.amount().coefficient(),
+            scale: value.amount().spec().scale(),
+        },
+        CanonicalValue::String(value) => ExactScalarV1::String(value.as_str().to_owned()),
+        CanonicalValue::Bytes(value) => ExactScalarV1::Bytes(value.as_bytes().to_vec()),
+        CanonicalValue::Timestamp(value) => {
+            let nanos = i128::from(value.seconds())
+                .checked_mul(1_000_000_000)
+                .and_then(|seconds| seconds.checked_add(i128::from(value.nanoseconds())))
+                .ok_or(RebuildFailure::Integrity)?;
+            ExactScalarV1::Timestamp(nanos)
+        }
+        CanonicalValue::Date(value) => ExactScalarV1::Date(value.days_since_unix_epoch()),
+        CanonicalValue::Uuid(value) => ExactScalarV1::Uuid(*value),
+        CanonicalValue::Enum {
+            type_id,
+            variant_id,
+        } => ExactScalarV1::Enum {
+            type_id: type_id.get(),
+            variant_id: variant_id.get(),
+        },
+        CanonicalValue::Null
+        | CanonicalValue::List(_)
+        | CanonicalValue::Record(_)
+        | CanonicalValue::Vector(_) => return Err(RebuildFailure::Integrity),
+    };
+    if scalar.profile() != profile {
+        return Err(RebuildFailure::Integrity);
+    }
+    Ok(ExactReferenceCellV1::Value(scalar))
+}
+
 fn push_index_component(
     builder: &mut IndexRangePrefixBuilder,
     value: &CanonicalValue,
@@ -775,6 +1368,36 @@ fn persist_checkpoint(
     .sync_all()
 }
 
+fn persist_predicate_checkpoint(
+    path: &Path,
+    slot_key: &[u8],
+    history_incarnation: u64,
+    provider: &ExactPredicatePartitionIndexV4,
+) -> Result<(), std::io::Error> {
+    let pending = path.with_extension("pending");
+    let provider_bytes = provider
+        .to_checkpoint_bytes()
+        .map_err(|_| std::io::Error::other("exact predicate checkpoint integrity"))?;
+    if provider_bytes.len() > MAX_EXACT_PREDICATE_CHECKPOINT_BYTES_V4 {
+        return Err(std::io::Error::other("exact predicate checkpoint capacity"));
+    }
+    let bytes = encode_activation_checkpoint(slot_key, history_incarnation, &provider_bytes)
+        .map_err(|_| std::io::Error::other("exact predicate checkpoint integrity"))?;
+    let mut file = OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .write(true)
+        .open(&pending)?;
+    file.write_all(&bytes)?;
+    file.sync_all()?;
+    fs::rename(&pending, path)?;
+    File::open(
+        path.parent()
+            .ok_or_else(|| std::io::Error::other("checkpoint parent"))?,
+    )?
+    .sync_all()
+}
+
 fn read_checkpoint(path: &Path) -> Result<Option<Vec<u8>>, RebuildFailure> {
     let mut file = match File::open(path) {
         Ok(file) => file,
@@ -799,7 +1422,8 @@ fn encode_activation_checkpoint(
     history_incarnation: u64,
     provider: &[u8],
 ) -> Result<Vec<u8>, RebuildFailure> {
-    if slot_key.len() != SLOT_KEY_BYTES || provider.len() > MAX_EXACT_TEXT_CHECKPOINT_BYTES_V3 {
+    if slot_key.len() != SLOT_KEY_BYTES || provider.len() > MAX_EXACT_PREDICATE_CHECKPOINT_BYTES_V4
+    {
         return Err(RebuildFailure::Integrity);
     }
     let provider_length = u32::try_from(provider.len()).map_err(|_| RebuildFailure::Integrity)?;
@@ -849,7 +1473,7 @@ fn decode_activation_checkpoint<'a>(
     let digest_end = provider_end
         .checked_add(CHECKPOINT_DIGEST_BYTES)
         .ok_or(RebuildFailure::Integrity)?;
-    if provider_length > MAX_EXACT_TEXT_CHECKPOINT_BYTES_V3 || digest_end != bytes.len() {
+    if provider_length > MAX_EXACT_PREDICATE_CHECKPOINT_BYTES_V4 || digest_end != bytes.len() {
         return Err(RebuildFailure::Integrity);
     }
     let expected = hash(HashDomain::ExactResultCheckpoint, &bytes[..provider_end]);
@@ -1019,6 +1643,7 @@ mod tests {
             );
         }
         assert!(execute.contains("execute_exact_text_result_set_v1"));
+        assert!(execute.contains("execute_exact_predicate_result_set_v1"));
         assert!(execute.contains("policy_binding_is_exact"));
         assert!(execute.contains("request.row_policy().is_some()"));
     }
@@ -1033,13 +1658,13 @@ mod tests {
             worker
                 .matches("AuthoritativeScanReader::scan_index")
                 .count(),
-            1
+            2
         );
         assert_eq!(
             production_source()
                 .matches("AuthoritativeScanReader::scan_index")
                 .count(),
-            1
+            2
         );
     }
 
@@ -1073,6 +1698,38 @@ mod tests {
                 < rebuild
                     .find("ExactTextPartitionIndexV2::rebuild")
                     .expect("provider build")
+        );
+
+        let predicate_reader = production_source()
+            .split_once("fn read_complete_predicate_partition")
+            .expect("predicate partition reader")
+            .1
+            .split_once("fn recover_provider")
+            .expect("predicate reader boundary")
+            .0;
+        let admission = predicate_reader
+            .find("authorize_projected_candidates")
+            .expect("predicate policy admission");
+        let retain = predicate_reader
+            .find("rows.retain")
+            .expect("predicate deny before provider build");
+        assert!(admission < retain);
+        assert!(predicate_reader.contains("observed_entries > maximum_candidates"));
+
+        let predicate_rebuild = production_source()
+            .split_once("fn rebuild_predicate_slot")
+            .expect("predicate rebuild")
+            .1
+            .split_once("fn read_complete_predicate_partition")
+            .expect("predicate rebuild boundary")
+            .0;
+        assert!(
+            predicate_rebuild
+                .find("read_complete_predicate_partition")
+                .expect("predicate admission")
+                < predicate_rebuild
+                    .find("ExactPredicatePartitionIndexV4::rebuild")
+                    .expect("predicate provider build")
         );
     }
 

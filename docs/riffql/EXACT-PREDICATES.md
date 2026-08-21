@@ -64,12 +64,28 @@ source-spanned diagnostic. There is no partial family and no runtime scan.
 ## Current activation status
 
 WP-656 makes V6 source, semantic IR V9, and query-module V9 compilable and
-reproducible. The compiler seals optional-family members, comparison profiles,
-policy mode, exact-count and ordinal requirements, and static work/state
-bounds. Existing V1–V8 source, plan, and module identities remain byte-exact.
+reproducible. WP-657 adds rebuildable provider-state format V4. The compiler
+seals optional-family members, comparison profiles, policy mode, exact-count
+and ordinal requirements, independent order layouts, and static work/state
+bounds into its provider identity. Existing V1–V8 source, plan, module, and V1
+through V3 provider identities remain byte-exact.
 
-The V6 physical indexed-set provider and public execution surfaces belong to
-WP-657 and WP-658. Until those packages activate, application traffic must use
-the existing narrow exact-text result form. A V6 query never degrades to an
-authoritative scan, client-side filter or sort, page walk, materialized full
-population, or a nearby older provider.
+V4 builds one policy-aligned partition in the background. Equality, range,
+set, state, and exact-text postings combine inside that provider. Each declared
+order has its own bounded ordinal index; exact count and offset selection use
+bitset rank/select rather than walking skipped rows or pages. Bounded row-level
+policy admission happens before a row can enter the provider universe, so a
+denied row cannot affect complements, counts, ordering, ordinals, diagnostics,
+or lifecycle selection.
+
+The shared public service, transports, and generated clients remain owned by
+WP-658. Until that package activates, application traffic must use the existing
+narrow exact-text result form. A V6 query never degrades to an authoritative
+request-time scan, client-side filter or sort, page walk, materialized full
+population, cross-provider identifier transfer, or a nearby older provider.
+
+Provider rebuilds are currently bounded full-partition rebuilds after an
+authoritative frontier change. This is derived work, not request work, and is
+limited by the compiler-declared candidate and amplification ceilings. A later
+implementation may incrementally maintain the same V4 identity without
+changing query semantics.

@@ -233,6 +233,12 @@ pub fn compile_exact_predicate_query_v1(
             u64::try_from(predicate_fields.len() + order_fields.len() + 1)
                 .map_err(|_| diagnostic(primary, "exact predicate provider work is invalid"))?,
         )
+        .and_then(|work| {
+            work.checked_mul(
+                u64::try_from(riffdb_types::MAX_EXACT_TEXT_VALUE_BYTES_V1)
+                    .expect("fixed exact-text value bound fits u64"),
+            )
+        })
         .ok_or_else(|| diagnostic(primary, "exact predicate provider work is invalid"))?;
     let requirement = ExactProviderRequirementV1::new(policy_mode, max_candidates, work, 65_536)
         .map_err(|_| diagnostic(primary, "exact predicate provider requirement is invalid"))?;

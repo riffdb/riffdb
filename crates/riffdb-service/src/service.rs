@@ -182,6 +182,7 @@ pub struct ServiceProviders {
     pub(crate) contextual_causation: Option<ContextualCausationTokenCodec>,
     pub(crate) columnar: Option<Arc<dyn ColumnarProjectionPort>>,
     pub(crate) exact_text: Option<Arc<dyn crate::ExactTextProjectionPort>>,
+    pub(crate) exact_predicate: Option<Arc<dyn crate::ExactPredicateProjectionPort>>,
     pub(crate) vector_projection: Option<Arc<dyn crate::VectorProjectionPort>>,
 }
 
@@ -237,6 +238,7 @@ impl ServiceProviders {
             contextual_causation: None,
             columnar: None,
             exact_text: None,
+            exact_predicate: None,
             vector_projection: None,
         }
     }
@@ -304,6 +306,16 @@ impl ServiceProviders {
     #[must_use]
     pub fn with_exact_text(mut self, exact_text: Arc<dyn crate::ExactTextProjectionPort>) -> Self {
         self.exact_text = Some(exact_text);
+        self
+    }
+
+    /// Installs the indexed exact predicate/count/ordinal provider.
+    #[must_use]
+    pub fn with_exact_predicate(
+        mut self,
+        exact_predicate: Arc<dyn crate::ExactPredicateProjectionPort>,
+    ) -> Self {
+        self.exact_predicate = Some(exact_predicate);
         self
     }
 

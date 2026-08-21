@@ -4,8 +4,14 @@ use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::error::Error;
 use std::fmt;
+use std::num::NonZeroU32;
 
-use riffdb_types::{FieldId, ProjectionProviderPolicyModeV1, QueryPlanHash, hash_query_plan};
+use riffdb_types::{
+    EXACT_PREDICATE_PROVIDER_STATE_SCHEMA_HASH_V4, FieldId, ProjectionProviderCapabilitiesV1,
+    ProjectionProviderDescriptorV1, ProjectionProviderKindV1, ProjectionProviderPolicyModeV1,
+    ProjectionProviderPostureV1, ProjectionProviderStateIdentityV1,
+    ProjectionProviderStaticBoundsV1, QueryPlanHash, hash_query_plan,
+};
 
 /// Canonical exact predicate/order program identity.
 pub const EXACT_PREDICATE_PROGRAM_VERSION_V1: u16 = 1;
@@ -272,6 +278,18 @@ impl ExactPredicateLeafV1 {
     pub const fn operator(&self) -> ExactPredicateOperatorV1 {
         self.operator
     }
+
+    /// Frozen scalar comparison profile.
+    #[must_use]
+    pub const fn profile(&self) -> ExactComparisonProfileV1 {
+        self.profile
+    }
+
+    /// Compiler-owned parameter slot, absent only for state predicates.
+    #[must_use]
+    pub const fn value(&self) -> Option<ExactValueSlotV1> {
+        self.value
+    }
 }
 
 /// Bounded normalized Boolean predicate.
@@ -333,6 +351,24 @@ impl ExactOrderTermV1 {
     pub const fn field(self) -> FieldId {
         self.field
     }
+
+    /// Frozen scalar comparison profile.
+    #[must_use]
+    pub const fn profile(self) -> ExactComparisonProfileV1 {
+        self.profile
+    }
+
+    /// Fixed direction for this term.
+    #[must_use]
+    pub const fn direction(self) -> ExactOrderDirectionV1 {
+        self.direction
+    }
+
+    /// Whether this term belongs to the complete ascending key suffix.
+    #[must_use]
+    pub const fn is_key_tie_breaker(self) -> bool {
+        self.key_tie_breaker
+    }
 }
 
 /// One independent complete total order.
@@ -361,7 +397,7 @@ impl ExactOrderProgramV1 {
         Ok(Self { terms })
     }
 
-    /// Complete compiler-owned order terms.
+    /// Compiler-resolved complete total-order terms.
     #[must_use]
     pub fn terms(&self) -> &[ExactOrderTermV1] {
         &self.terms
@@ -563,6 +599,70 @@ impl ExactPredicateProgramV1 {
         &self.orders
     }
 
+    /// Complete normalized predicate tree.
+    #[must_use]
+    pub const fn predicate(&self) -> &ExactPredicateNodeV1 {
+        &self.predicate
+    }
+
+    /// Number of compiler-declared optional-presence bits.
+    #[must_use]
+    pub const fn presence_parameter_count(&self) -> u8 {
+        self.presence_parameter_count
+    }
+
+    /// Whether execution returns the whole-result cardinality.
+    #[must_use]
+    pub const fn exact_count(&self) -> bool {
+        self.exact_count
+    }
+
+    /// Maximum zero-based ordinal accepted by this program.
+    #[must_use]
+    pub const fn max_offset(&self) -> u32 {
+        self.max_offset
+    }
+
+    /// Maximum page rows accepted by this program.
+    #[must_use]
+    pub const fn max_limit(&self) -> u16 {
+        self.max_limit
+    }
+
+    /// Deterministically derives the additive V4 physical-provider contract.
+    pub fn provider_descriptor(
+        &self,
+    ) -> Result<ProjectionProviderDescriptorV1, ExactPredicateProgramErrorV1> {
+        ProjectionProviderDescriptorV1::new(
+            ProjectionProviderKindV1::ExactText,
+            ProjectionProviderPostureV1::Exact,
+            ProjectionProviderCapabilitiesV1::CANDIDATE
+                | ProjectionProviderCapabilitiesV1::FILTER
+                | ProjectionProviderCapabilitiesV1::ORDER
+                | ProjectionProviderCapabilitiesV1::MEASURE
+                | ProjectionProviderCapabilitiesV1::WINDOW
+                | ProjectionProviderCapabilitiesV1::OUTPUT,
+            self.provider_requirement.policy_mode,
+            ProjectionProviderStaticBoundsV1 {
+                max_candidates: self.provider_requirement.max_candidates,
+                max_output_rows: u32::from(self.max_limit),
+                max_measures: u16::from(self.exact_count),
+                max_input_bytes: MAX_EXACT_PREDICATE_PROGRAM_BYTES_V1 as u32,
+                max_work_units: self.provider_requirement.max_work_units,
+                max_state_bytes_per_row: self.provider_requirement.max_state_bytes_per_row,
+                max_diagnostic_bytes: 4_096,
+                retained_epochs: 8_192,
+                max_catchup_lag: 100,
+                max_epoch_lease_steps: 1_024,
+            },
+            ProjectionProviderStateIdentityV1::new(
+                NonZeroU32::new(4).expect("fixed provider layout is nonzero"),
+                EXACT_PREDICATE_PROVIDER_STATE_SCHEMA_HASH_V4,
+            ),
+        )
+        .map_err(|_| ExactPredicateProgramErrorV1::InvalidProviderRequirement)
+    }
+
     /// Complete provider capability and amplification requirement.
     #[must_use]
     pub const fn provider_requirement(&self) -> ExactProviderRequirementV1 {
@@ -689,6 +789,8 @@ pub enum ExactPredicateProgramErrorV1 {
     InvalidWindow,
     /// Bytes are malformed, unknown, trailing, or noncanonical.
     InvalidEncoding,
+    /// Compiler-owned physical provider descriptor is inconsistent.
+    InvalidProviderRequirement,
 }
 
 impl fmt::Display for ExactPredicateProgramErrorV1 {

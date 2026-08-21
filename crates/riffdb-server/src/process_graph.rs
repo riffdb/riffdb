@@ -38,10 +38,10 @@ use riffdb_service::{
     AuthoritativeReadPort, BuildInfo, CapabilityTokenIssuer, CatalogReadPort,
     ColumnarProjectionPort, ContractMigrationApplication, CurrentPolicyPort, CursorMonotonicClock,
     CursorTokenGenerator, EventConsumerClock, EventConsumerPort, EventLeaseTokenSource,
-    ExactTextProjectionPort, OperationalStatusPort, ProjectionQueryPort, QueryModuleReadPort,
-    ReactiveModuleReadPort, RequestDeadlineScheduler, RiffDbServiceActivator, ServiceDiagnostics,
-    ServiceExecutors, ServiceHealthHooks, ServiceIdentity, ServiceJobSpawner,
-    ServiceProcessMetadata, ServiceProviders, ServiceTelemetry,
+    ExactPredicateProjectionPort, ExactTextProjectionPort, OperationalStatusPort,
+    ProjectionQueryPort, QueryModuleReadPort, ReactiveModuleReadPort, RequestDeadlineScheduler,
+    RiffDbServiceActivator, ServiceDiagnostics, ServiceExecutors, ServiceHealthHooks,
+    ServiceIdentity, ServiceJobSpawner, ServiceProcessMetadata, ServiceProviders, ServiceTelemetry,
 };
 use riffdb_storage_api::{
     OutboxDestinationIdV1, OutboxPageLimit, ReadableDigestKey, ReadableIdempotencyDigestInventory,
@@ -508,7 +508,8 @@ impl ProductionGraphBuilder {
                 ));
             }
         };
-        let exact_text: Arc<dyn ExactTextProjectionPort> = exact_runtime;
+        let exact_text: Arc<dyn ExactTextProjectionPort> = exact_runtime.clone();
+        let exact_predicate: Arc<dyn ExactPredicateProjectionPort> = exact_runtime;
 
         let executors = ServiceExecutors::new(
             coordinator.administration_audit_executor(),
@@ -596,6 +597,7 @@ impl ProductionGraphBuilder {
         .with_live_query_clock(live_query_clock)
         .with_columnar(columnar)
         .with_exact_text(exact_text)
+        .with_exact_predicate(exact_predicate)
         .with_vector_projection(vector_projection)
         .with_offline_maintenance(offline_maintenance)
         .with_contract_migration(migration)

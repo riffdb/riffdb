@@ -26,6 +26,7 @@ use riffdb_policy::{
     OfflineMaintenanceAuthorizationRequest, OfflineMaintenanceDecision, OperationRequest,
     ProvenanceSelector,
 };
+use riffdb_query_ir::{ExactParameterValueV1, ExactPredicateFamilyMemberV1};
 use riffdb_types::{
     ApplicationRoleHash, CanonicalRecord, CanonicalValue, CapabilityId, CommandId, CommitSequence,
     ContractBundleHash, ContractLineage, ContractMigrationOperationId, ContractVersion,
@@ -1757,6 +1758,198 @@ pub trait ExactTextProjectionPort: Send + Sync {
         &self,
         request: ExactTextProjectionRequest,
     ) -> Result<ExactTextProjectionResult, ExactTextProjectionPortError>;
+}
+
+/// One compiler-owned exact-predicate request constructed after current authorization.
+#[derive(Clone)]
+pub struct ExactPredicateProjectionRequest {
+    query: Arc<riffdb_query_module::CompiledExactPredicateResultSetV1>,
+    partition_key: PartitionKey,
+    partition_value: CanonicalValue,
+    policy_shape: ApplicationRoleHash,
+    row_policy: Option<Arc<AuthorizedQueryRowPolicyContextV1>>,
+    parameters: std::collections::BTreeMap<u16, ExactParameterValueV1>,
+    member: ExactPredicateFamilyMemberV1,
+    offset: u32,
+    limit: std::num::NonZeroU16,
+    minimum_epoch: Option<CommitSequence>,
+}
+
+impl ExactPredicateProjectionRequest {
+    /// Seals service-materialized values to one immutable compiled predicate program.
+    #[doc(hidden)]
+    #[allow(clippy::too_many_arguments)]
+    #[must_use]
+    pub fn new(
+        query: Arc<riffdb_query_module::CompiledExactPredicateResultSetV1>,
+        partition_key: PartitionKey,
+        partition_value: CanonicalValue,
+        policy_shape: ApplicationRoleHash,
+        row_policy: Option<Arc<AuthorizedQueryRowPolicyContextV1>>,
+        parameters: std::collections::BTreeMap<u16, ExactParameterValueV1>,
+        member: ExactPredicateFamilyMemberV1,
+        offset: u32,
+        limit: std::num::NonZeroU16,
+        minimum_epoch: Option<CommitSequence>,
+    ) -> Self {
+        Self {
+            query,
+            partition_key,
+            partition_value,
+            policy_shape,
+            row_policy,
+            parameters,
+            member,
+            offset,
+            limit,
+            minimum_epoch,
+        }
+    }
+
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn query(&self) -> &Arc<riffdb_query_module::CompiledExactPredicateResultSetV1> {
+        &self.query
+    }
+
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn partition_key(&self) -> &PartitionKey {
+        &self.partition_key
+    }
+
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn partition_value(&self) -> &CanonicalValue {
+        &self.partition_value
+    }
+
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn policy_shape(&self) -> ApplicationRoleHash {
+        self.policy_shape
+    }
+
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn row_policy(&self) -> Option<&Arc<AuthorizedQueryRowPolicyContextV1>> {
+        self.row_policy.as_ref()
+    }
+
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn parameters(&self) -> &std::collections::BTreeMap<u16, ExactParameterValueV1> {
+        &self.parameters
+    }
+
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn member(&self) -> ExactPredicateFamilyMemberV1 {
+        self.member
+    }
+
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn offset(&self) -> u32 {
+        self.offset
+    }
+
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn limit(&self) -> std::num::NonZeroU16 {
+        self.limit
+    }
+
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn minimum_epoch(&self) -> Option<CommitSequence> {
+        self.minimum_epoch
+    }
+}
+
+impl fmt::Debug for ExactPredicateProjectionRequest {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("ExactPredicateProjectionRequest([REDACTED])")
+    }
+}
+
+/// One exact predicate page/count observation from one provider epoch.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ExactPredicateProjectionResult {
+    rows: Vec<ExactTextProjectionRow>,
+    exact_total: u64,
+    epoch: CommitSequence,
+    generation: ProjectionGeneration,
+    provider: ProjectionProviderDescriptorHash,
+    history_incarnation: u64,
+}
+
+impl ExactPredicateProjectionResult {
+    #[doc(hidden)]
+    #[allow(clippy::too_many_arguments)]
+    #[must_use]
+    pub fn new(
+        rows: Vec<ExactTextProjectionRow>,
+        exact_total: u64,
+        epoch: CommitSequence,
+        generation: ProjectionGeneration,
+        provider: ProjectionProviderDescriptorHash,
+        history_incarnation: u64,
+    ) -> Self {
+        Self {
+            rows,
+            exact_total,
+            epoch,
+            generation,
+            provider,
+            history_incarnation,
+        }
+    }
+
+    /// Bounded ordered output rows.
+    #[must_use]
+    pub fn rows(&self) -> &[ExactTextProjectionRow] {
+        &self.rows
+    }
+
+    /// Exact admitted cardinality before the ordinal window.
+    #[must_use]
+    pub const fn exact_total(&self) -> u64 {
+        self.exact_total
+    }
+
+    /// Shared count/page epoch.
+    #[must_use]
+    pub const fn epoch(&self) -> CommitSequence {
+        self.epoch
+    }
+
+    /// Never-reused provider generation.
+    #[must_use]
+    pub const fn generation(&self) -> ProjectionGeneration {
+        self.generation
+    }
+
+    /// Pinned provider descriptor digest.
+    #[must_use]
+    pub const fn provider(&self) -> ProjectionProviderDescriptorHash {
+        self.provider
+    }
+
+    /// Authoritative history incarnation.
+    #[must_use]
+    pub const fn history_incarnation(&self) -> u64 {
+        self.history_incarnation
+    }
+}
+
+/// Least-authority exact predicate derived-result execution boundary.
+pub trait ExactPredicateProjectionPort: Send + Sync {
+    /// Executes one compiler-owned request without authoritative request-time reads.
+    fn execute(
+        &self,
+        request: ExactPredicateProjectionRequest,
+    ) -> Result<ExactPredicateProjectionResult, ExactTextProjectionPortError>;
 }
 
 /// Closed payload-free outbox-status source failure.

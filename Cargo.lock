@@ -1988,6 +1988,7 @@ dependencies = [
  "riffdb-contract-compiler",
  "riffdb-contract-ir",
  "riffdb-invariant",
+ "riffdb-query-ir",
  "riffdb-storage-api",
  "riffdb-types",
 ]
