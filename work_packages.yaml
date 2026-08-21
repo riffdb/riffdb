@@ -11901,7 +11901,8 @@ work_packages:
     crates/riffdb-client-rust/**,
     crates/riffdb-server/**, crates/riffdb-columnar/**, crates/riffdb-projection/**,
     crates/riffdb-riffql-syntax/**, crates/riffdb-query-ir/**,
-    crates/riffdb-query-compiler/**, crates/riffdb-query-executor/**, docs/**, tests/**]
+    crates/riffdb-query-compiler/**, crates/riffdb-query-executor/**, docs/**, tests/**,
+    release/**]
   deliverables:
   - VEC-001 amended to define the v1 staleness SLO as a declared stale-entity count threshold;
     duration-based staleness remains a named future amendment

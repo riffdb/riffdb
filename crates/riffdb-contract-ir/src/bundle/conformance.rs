@@ -304,6 +304,18 @@ fn ordered_layout_registry_has_one_closed_witness_slot_per_layout() {
             vec!["entity", "field", "row_threshold", "recall_target_bps"],
         ),
         (
+            "VectorProductionSpecV1",
+            vec![
+                "entity",
+                "field",
+                "model_identity",
+                "current_model_version",
+                "replay_age_seconds",
+                "replay_bytes",
+                "replay_backlog",
+            ],
+        ),
+        (
             "EntitySchema",
             vec![
                 "id",
@@ -628,6 +640,10 @@ fn ordered_layout_registry_has_one_closed_witness_slot_per_layout() {
         ("VectorFieldSpecV1", "vector contract front-door fixture"),
         ("SecretFieldSpecV1", "secret contract front-door fixture"),
         ("VectorAnnSpecV1", "vector ANN contract front-door fixture"),
+        (
+            "VectorProductionSpecV1",
+            "production vector contract front-door fixture",
+        ),
         ("EntitySchema", "command schema closure fixture"),
         ("EventSchema", "projection source fixture"),
         ("EventPartitionSchema", "partitioned event fixture"),
@@ -1732,6 +1748,9 @@ fn schema_extension_markers_are_unique_and_strictly_descending() {
         super::VECTOR_FIELD_SPEC_SCHEMA_EXTENSION,
         super::INDEX_FIELD_ENCODING_EXTENSION,
         super::SECRET_FIELD_SPEC_SCHEMA_EXTENSION,
+        super::VECTOR_ANN_SPEC_SCHEMA_EXTENSION,
+        super::INDEX_COVER_FIELDS_EXTENSION,
+        super::VECTOR_PRODUCTION_SPEC_SCHEMA_EXTENSION,
     ];
     for pair in markers.windows(2) {
         assert!(

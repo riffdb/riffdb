@@ -24,6 +24,7 @@ use crate::diagnostic::{CompilerDiagnostic, CompilerDiagnosticCode, CompilerDiag
 use crate::expression_lowering::{
     BindingExpressionScope, CollectionElementExpressionScope, ExpressionLowerer, ExpressionScope,
 };
+use crate::literal::decode_json_string_lexeme;
 use crate::symbols::GenesisSymbols;
 use crate::typecheck::ResolvedTypes;
 
@@ -197,7 +198,17 @@ pub(crate) struct HirVectorField {
     pub(crate) stale_entity_count_threshold: u64,
     pub(crate) ann_row_threshold: Option<u32>,
     pub(crate) recall_target_bps: Option<u32>,
+    pub(crate) production: Option<HirVectorProduction>,
     pub(crate) span: Span,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct HirVectorProduction {
+    pub(crate) model_identity: String,
+    pub(crate) current_model_version: String,
+    pub(crate) replay_age_seconds: u64,
+    pub(crate) replay_bytes: u64,
+    pub(crate) replay_backlog: u64,
 }
 
 impl HirEntity {
@@ -1123,6 +1134,89 @@ fn lower_entities(
                         (threshold, recall)
                     }
                 };
+                let production = vector_field.production.as_ref().and_then(|production| {
+                    let model_identity =
+                        decode_json_string_lexeme(&production.model_identity.value);
+                    let current_model_version =
+                        decode_json_string_lexeme(&production.current_model_version.value);
+                    let replay_age_seconds =
+                        production.replay_age_seconds.value.parse::<u64>().ok();
+                    let replay_bytes = production.replay_bytes.value.parse::<u64>().ok();
+                    let replay_backlog = production.replay_backlog.value.parse::<u64>().ok();
+
+                    let candidates = [
+                        (
+                            model_identity.as_ref().is_some_and(|value| {
+                                !value.is_empty()
+                                    && value.len()
+                                        <= riffdb_types::EmbeddingMetadata::MAX_MODEL_STRING_LEN
+                            }),
+                            production.model_identity.span,
+                        ),
+                        (
+                            current_model_version.as_ref().is_some_and(|value| {
+                                !value.is_empty()
+                                    && value.len()
+                                        <= riffdb_types::EmbeddingMetadata::MAX_MODEL_STRING_LEN
+                            }),
+                            production.current_model_version.span,
+                        ),
+                        (
+                            replay_age_seconds.is_some_and(|value| {
+                                (1..=riffdb_contract_ir::MAX_VECTOR_REPLAY_AGE_SECONDS)
+                                    .contains(&value)
+                            }),
+                            production.replay_age_seconds.span,
+                        ),
+                        (
+                            replay_bytes.is_some_and(|value| {
+                                (1..=riffdb_contract_ir::MAX_VECTOR_REPLAY_BYTES).contains(&value)
+                            }),
+                            production.replay_bytes.span,
+                        ),
+                        (
+                            replay_backlog.is_some_and(|value| {
+                                (1..=riffdb_contract_ir::MAX_VECTOR_REPLAY_BACKLOG).contains(&value)
+                            }),
+                            production.replay_backlog.span,
+                        ),
+                    ];
+                    for (is_valid, span) in candidates {
+                        if !is_valid {
+                            valid = false;
+                            diagnostics.push(CompilerDiagnostic::new(
+                                CompilerDiagnosticCode::BoundExceeded,
+                                span,
+                            ));
+                        }
+                    }
+                    if !valid {
+                        return None;
+                    }
+                    let (
+                        Some(model_identity),
+                        Some(current_model_version),
+                        Some(replay_age_seconds),
+                        Some(replay_bytes),
+                        Some(replay_backlog),
+                    ) = (
+                        model_identity,
+                        current_model_version,
+                        replay_age_seconds,
+                        replay_bytes,
+                        replay_backlog,
+                    )
+                    else {
+                        return None;
+                    };
+                    Some(HirVectorProduction {
+                        model_identity,
+                        current_model_version,
+                        replay_age_seconds,
+                        replay_bytes,
+                        replay_backlog,
+                    })
+                });
                 // Source fields must be non-empty and each must resolve to an entity field.
                 if vector_field.source_fields.is_empty() {
                     valid = false;
@@ -1193,6 +1287,7 @@ fn lower_entities(
                         stale_entity_count_threshold,
                         ann_row_threshold,
                         recall_target_bps,
+                        production,
                         span: item.span,
                     });
                 }

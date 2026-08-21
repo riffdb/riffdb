@@ -1323,6 +1323,7 @@ pub struct SchemaIr {
     delete_policies: Vec<DeletePolicySchemaV1>,
     vector_field_specs: Vec<VectorFieldSpecV1>,
     vector_ann_specs: Vec<VectorAnnSpecV1>,
+    vector_production_specs: Vec<VectorProductionSpecV1>,
     secret_field_specs: Vec<SecretFieldSpecV1>,
 }
 
@@ -1335,6 +1336,12 @@ pub(crate) const MAX_VECTOR_SOURCE_FIELDS: usize = 1_024;
 pub const MAX_VECTOR_ANN_THRESHOLD_ROWS_PER_ORG: u32 = 65_536;
 /// Integer denominator for declared ANN recall targets.
 pub const VECTOR_RECALL_BASIS_POINTS: u32 = 10_000;
+/// Maximum replay age accepted for one production vector projection.
+pub const MAX_VECTOR_REPLAY_AGE_SECONDS: u64 = 31_536_000;
+/// Maximum retained replay bytes accepted for one production vector projection.
+pub const MAX_VECTOR_REPLAY_BYTES: u64 = 1_099_511_627_776;
+/// Maximum retained sequence backlog accepted for one production vector projection.
+pub const MAX_VECTOR_REPLAY_BACKLOG: u64 = 100_000_000;
 
 /// Search configuration for one contract-declared vector field
 /// (ADR-0091 / WP-591): the distance metric, the source fields whose edits
@@ -1428,6 +1435,111 @@ impl VectorFieldSpecV1 {
     #[must_use]
     pub const fn stale_entity_count_threshold(&self) -> u64 {
         self.stale_entity_count_threshold
+    }
+}
+
+/// Production model and replay identity for one vector field (ADR-0136).
+///
+/// This is a distinct successor record so every pre-V15 `VectorFieldSpecV1`
+/// byte remains frozen.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VectorProductionSpecV1 {
+    entity: EntityTypeId,
+    field: FieldId,
+    metadata: riffdb_types::EmbeddingMetadata,
+    replay_age_seconds: u64,
+    replay_bytes: u64,
+    replay_backlog: u64,
+}
+
+impl VectorProductionSpecV1 {
+    /// Constructs one complete production projection declaration.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        entity: EntityTypeId,
+        field: FieldId,
+        model_identity: impl Into<String>,
+        current_model_version: impl Into<String>,
+        replay_age_seconds: u64,
+        replay_bytes: u64,
+        replay_backlog: u64,
+    ) -> Result<Self, IrValidationError> {
+        let metadata = riffdb_types::EmbeddingMetadata::new(model_identity, current_model_version)
+            .ok_or(IrValidationError::InvalidText {
+                kind: "vector production model identity",
+            })?;
+        for (kind, actual, maximum) in [
+            (
+                "vector replay age seconds",
+                replay_age_seconds,
+                MAX_VECTOR_REPLAY_AGE_SECONDS,
+            ),
+            ("vector replay bytes", replay_bytes, MAX_VECTOR_REPLAY_BYTES),
+            (
+                "vector replay backlog",
+                replay_backlog,
+                MAX_VECTOR_REPLAY_BACKLOG,
+            ),
+        ] {
+            if actual == 0 {
+                return Err(IrValidationError::BelowMinimum {
+                    kind,
+                    actual: 0,
+                    minimum: 1,
+                });
+            }
+            if actual > maximum {
+                return Err(IrValidationError::LimitExceeded {
+                    kind,
+                    actual: usize::try_from(actual).unwrap_or(usize::MAX),
+                    maximum: usize::try_from(maximum).unwrap_or(usize::MAX),
+                });
+            }
+        }
+        Ok(Self {
+            entity,
+            field,
+            metadata,
+            replay_age_seconds,
+            replay_bytes,
+            replay_backlog,
+        })
+    }
+
+    /// Owning entity type.
+    #[must_use]
+    pub const fn entity(&self) -> EntityTypeId {
+        self.entity
+    }
+
+    /// Owning vector field.
+    #[must_use]
+    pub const fn field(&self) -> FieldId {
+        self.field
+    }
+
+    /// Exact compiler-sealed current model identity and version.
+    #[must_use]
+    pub const fn metadata(&self) -> &riffdb_types::EmbeddingMetadata {
+        &self.metadata
+    }
+
+    /// Maximum retained replay age in seconds.
+    #[must_use]
+    pub const fn replay_age_seconds(&self) -> u64 {
+        self.replay_age_seconds
+    }
+
+    /// Maximum retained replay bytes.
+    #[must_use]
+    pub const fn replay_bytes(&self) -> u64 {
+        self.replay_bytes
+    }
+
+    /// Maximum retained sequence backlog.
+    #[must_use]
+    pub const fn replay_backlog(&self) -> u64 {
+        self.replay_backlog
     }
 }
 
@@ -1771,6 +1883,7 @@ impl SchemaIr {
             delete_policies,
             vector_field_specs: Vec::new(),
             vector_ann_specs: Vec::new(),
+            vector_production_specs: Vec::new(),
             secret_field_specs: Vec::new(),
         };
         result.validate_enum_references()?;
@@ -1896,6 +2009,56 @@ impl SchemaIr {
             .binary_search_by_key(&(entity, field), |spec| (spec.entity, spec.field))
             .ok()
             .map(|index| &self.vector_ann_specs[index])
+    }
+
+    /// Attaches complete production vector declarations. Every entry must
+    /// name an existing vector-field spec.
+    pub fn with_vector_production_specs(
+        mut self,
+        mut specs: Vec<VectorProductionSpecV1>,
+    ) -> Result<Self, IrValidationError> {
+        checked_len(
+            "vector production specs",
+            specs.len(),
+            MAX_DECLARATIONS_PER_KIND,
+        )?;
+        specs.sort_unstable_by_key(|spec| (spec.entity, spec.field));
+        if specs
+            .windows(2)
+            .any(|pair| pair[0].entity == pair[1].entity && pair[0].field == pair[1].field)
+        {
+            return Err(IrValidationError::NonCanonicalOrder {
+                kind: "duplicate vector production spec",
+            });
+        }
+        for spec in &specs {
+            if self.vector_field_spec(spec.entity, spec.field).is_none() {
+                return Err(IrValidationError::InvalidReference {
+                    kind: "vector production spec field",
+                });
+            }
+        }
+        self.vector_production_specs = specs;
+        Ok(self)
+    }
+
+    /// Production vector declarations in canonical `(entity, field)` order.
+    #[must_use]
+    pub fn vector_production_specs(&self) -> &[VectorProductionSpecV1] {
+        &self.vector_production_specs
+    }
+
+    /// Resolves the production declaration for one vector field.
+    #[must_use]
+    pub fn vector_production_spec(
+        &self,
+        entity: EntityTypeId,
+        field: FieldId,
+    ) -> Option<&VectorProductionSpecV1> {
+        self.vector_production_specs
+            .binary_search_by_key(&(entity, field), |spec| (spec.entity, spec.field))
+            .ok()
+            .map(|index| &self.vector_production_specs[index])
     }
 
     /// Attaches checked secret-field classifications (ADR-0118), validating
@@ -2068,6 +2231,11 @@ impl SchemaIr {
             .iter()
             .flat_map(EntitySchema::indexes)
             .any(|index| !index.cover_fields().is_empty())
+    }
+    /// Whether this schema requires V15 production vector metadata.
+    #[must_use]
+    pub fn requires_ir_v15(&self) -> bool {
+        !self.vector_production_specs.is_empty()
     }
     /// Resolves an entity.
     #[must_use]

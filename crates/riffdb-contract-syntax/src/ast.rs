@@ -362,10 +362,32 @@ pub struct VectorFieldDeclaration {
     pub source_fields: Vec<Spanned<String>>,
     /// Positive stale-entity count threshold lexeme.
     pub staleness_slo: Spanned<String>,
+    /// Optional production projection declaration. Legacy vector fields
+    /// without this atomic clause remain decodable but cannot back a
+    /// production `nearest` query (ADR-0136).
+    pub production: Option<Box<VectorProductionDeclaration>>,
     /// Optional approximate-nearest-neighbor configuration. Its two fields
     /// are syntactically atomic: an ANN threshold can never exist without a
     /// declared recall target.
     pub ann: Option<VectorAnnDeclaration>,
+}
+
+/// Compiler-owned production projection and model declaration (ADR-0136).
+///
+/// All fields are syntactically atomic so a source cannot express a model
+/// identity without the replay ceilings needed to bound its projection.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VectorProductionDeclaration {
+    /// Application-owned embedding model identity.
+    pub model_identity: Spanned<String>,
+    /// Contract-current embedding model version.
+    pub current_model_version: Spanned<String>,
+    /// Maximum retained replay age in seconds.
+    pub replay_age_seconds: Spanned<String>,
+    /// Maximum retained replay bytes.
+    pub replay_bytes: Spanned<String>,
+    /// Maximum retained sequence backlog.
+    pub replay_backlog: Spanned<String>,
 }
 
 /// Compiler-owned approximate-nearest-neighbor configuration (ADR-0091).

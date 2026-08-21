@@ -73,6 +73,8 @@ pub const BUNDLE_FORMAT_VERSION_V12: u32 = 12;
 pub const BUNDLE_FORMAT_VERSION_V13: u32 = 13;
 /// Bundle framing containing compiler-declared covering-index fields.
 pub const BUNDLE_FORMAT_VERSION_V14: u32 = 14;
+/// Bundle framing containing production vector model and replay metadata.
+pub const BUNDLE_FORMAT_VERSION_V15: u32 = 15;
 /// Canonical grammar version represented by a bundle.
 pub const GRAMMAR_VERSION_V1: u32 = 1;
 /// Contract grammar containing compiled workflows and service-owned values.
@@ -101,6 +103,8 @@ pub const GRAMMAR_VERSION_V12: u32 = 12;
 pub const GRAMMAR_VERSION_V13: u32 = 13;
 /// Contract grammar containing explicit finite covering-index declarations.
 pub const GRAMMAR_VERSION_V14: u32 = 14;
+/// Contract grammar containing production vector declarations.
+pub const GRAMMAR_VERSION_V15: u32 = 15;
 /// Executable IR version represented by a bundle.
 pub const EXECUTABLE_IR_VERSION_V1: u32 = 1;
 /// Executable IR containing compiled workflow transitions and service values.
@@ -129,6 +133,8 @@ pub const EXECUTABLE_IR_VERSION_V12: u32 = 12;
 pub const EXECUTABLE_IR_VERSION_V13: u32 = 13;
 /// Executable IR containing ordered covering-index field layouts.
 pub const EXECUTABLE_IR_VERSION_V14: u32 = 14;
+/// Executable IR containing production vector model and replay metadata.
+pub const EXECUTABLE_IR_VERSION_V15: u32 = 15;
 
 const RELATIONSHIP_SCHEMA_EXTENSION: u32 = 0xffff_fffe;
 const UNIQUE_KEY_SCHEMA_EXTENSION: u32 = 0xffff_fffd;
@@ -140,6 +146,7 @@ const INDEX_COVER_FIELDS_EXTENSION: u32 = 0xffff_fff6;
 // the secret extension takes the next clean value.
 const SECRET_FIELD_SPEC_SCHEMA_EXTENSION: u32 = 0xffff_fff8;
 const VECTOR_ANN_SPEC_SCHEMA_EXTENSION: u32 = 0xffff_fff7;
+const VECTOR_PRODUCTION_SPEC_SCHEMA_EXTENSION: u32 = 0xffff_fff5;
 // The second word cannot be a valid following source-name length. Keeping the
 // extension magic eight bytes wide prevents a future stable event ID equal to
 // the first word from being misread as a partition extension.
@@ -1055,7 +1062,9 @@ impl ContractBundle {
         mcp_command_names: McpCommandNameRegistryV2,
         compatibility: CompatibilityReport,
     ) -> Result<Self, IrValidationError> {
-        let version = if schema.requires_ir_v14() {
+        let version = if schema.requires_ir_v15() {
+            BUNDLE_FORMAT_VERSION_V15
+        } else if schema.requires_ir_v14() {
             BUNDLE_FORMAT_VERSION_V14
         } else if schema.requires_ir_v13() || commands.iter().any(CommandPlan::requires_ir_v13) {
             BUNDLE_FORMAT_VERSION_V13
@@ -1183,6 +1192,10 @@ impl ContractBundle {
                 BUNDLE_FORMAT_VERSION_V14,
                 GRAMMAR_VERSION_V14,
                 EXECUTABLE_IR_VERSION_V14
+            ) | (
+                BUNDLE_FORMAT_VERSION_V15,
+                GRAMMAR_VERSION_V15,
+                EXECUTABLE_IR_VERSION_V15
             )
         ) || (ir_version < EXECUTABLE_IR_VERSION_V2
             && (!workflows.is_empty() || commands.iter().any(CommandPlan::requires_ir_v2)))
@@ -1205,6 +1218,7 @@ impl ContractBundle {
             || (ir_version < EXECUTABLE_IR_VERSION_V13
                 && (schema.requires_ir_v13() || commands.iter().any(CommandPlan::requires_ir_v13)))
             || (ir_version < EXECUTABLE_IR_VERSION_V14 && schema.requires_ir_v14())
+            || (ir_version < EXECUTABLE_IR_VERSION_V15 && schema.requires_ir_v15())
             || (ir_version >= EXECUTABLE_IR_VERSION_V6
                 && commands
                     .iter()
@@ -2678,6 +2692,19 @@ fn encode_schema(writer: &mut Writer, schema: &SchemaIr) -> Result<(), IrValidat
             writer.u32(spec.recall_target_bps())?;
         }
     }
+    if !schema.vector_production_specs().is_empty() {
+        writer.u32(VECTOR_PRODUCTION_SPEC_SCHEMA_EXTENSION)?;
+        writer.u32(schema.vector_production_specs().len() as u32)?;
+        for spec in schema.vector_production_specs() {
+            writer.u32(spec.entity().get())?;
+            writer.u32(spec.field().get())?;
+            writer.string(spec.metadata().model_identity())?;
+            writer.string(spec.metadata().model_version())?;
+            writer.u64(spec.replay_age_seconds())?;
+            writer.u64(spec.replay_bytes())?;
+            writer.u64(spec.replay_backlog())?;
+        }
+    }
     Ok(())
 }
 
@@ -3715,6 +3742,10 @@ fn decode_bundle(bytes: &[u8]) -> Result<ContractBundle, IrValidationError> {
             BUNDLE_FORMAT_VERSION_V14,
             GRAMMAR_VERSION_V14,
             EXECUTABLE_IR_VERSION_V14
+        ) | (
+            BUNDLE_FORMAT_VERSION_V15,
+            GRAMMAR_VERSION_V15,
+            EXECUTABLE_IR_VERSION_V15
         )
     ) {
         return Err(IrValidationError::UnsupportedVersion {
@@ -4308,6 +4339,27 @@ fn decode_schema(reader: &mut Reader<'_>) -> Result<SchemaIr, IrValidationError>
             )?);
         }
     }
+    let mut vector_production_specs = Vec::new();
+    if reader.remaining() >= 4 && reader.peek_u32()? == VECTOR_PRODUCTION_SPEC_SCHEMA_EXTENSION {
+        let _marker = reader.u32()?;
+        let spec_count = decode_len(
+            reader,
+            "vector production specs",
+            crate::MAX_DECLARATIONS_PER_KIND,
+        )?;
+        vector_production_specs.reserve(spec_count);
+        for _ in 0..spec_count {
+            vector_production_specs.push(crate::VectorProductionSpecV1::new(
+                decode_entity_id(reader)?,
+                decode_field_id(reader)?,
+                reader.string(riffdb_types::EmbeddingMetadata::MAX_MODEL_STRING_LEN)?,
+                reader.string(riffdb_types::EmbeddingMetadata::MAX_MODEL_STRING_LEN)?,
+                reader.u64()?,
+                reader.u64()?,
+                reader.u64()?,
+            )?);
+        }
+    }
     SchemaIr::with_integrity_and_delete_policies(
         entities,
         events,
@@ -4319,7 +4371,8 @@ fn decode_schema(reader: &mut Reader<'_>) -> Result<SchemaIr, IrValidationError>
     )?
     .with_vector_field_specs(vector_field_specs)?
     .with_secret_field_specs(secret_field_specs)?
-    .with_vector_ann_specs(vector_ann_specs)
+    .with_vector_ann_specs(vector_ann_specs)?
+    .with_vector_production_specs(vector_production_specs)
 }
 
 fn decode_entity_schema(reader: &mut Reader<'_>) -> Result<EntitySchema, IrValidationError> {

@@ -10,7 +10,8 @@
 
 use riffdb_contract_compiler::compile_contract_source;
 use riffdb_contract_ir::{
-    BUNDLE_FORMAT_VERSION_V12, ContractBundle, EXECUTABLE_IR_VERSION_V12, GRAMMAR_VERSION_V12,
+    BUNDLE_FORMAT_VERSION_V12, BUNDLE_FORMAT_VERSION_V15, ContractBundle,
+    EXECUTABLE_IR_VERSION_V12, EXECUTABLE_IR_VERSION_V15, GRAMMAR_VERSION_V12, GRAMMAR_VERSION_V15,
     ValueTypeTag,
 };
 
@@ -27,6 +28,96 @@ contract Docs version 1 {{
 }}
 "#
     )
+}
+
+fn production_vector_contract(
+    model: &str,
+    version: &str,
+    replay_age_seconds: u64,
+    replay_bytes: u64,
+    replay_backlog: u64,
+) -> String {
+    format!(
+        r#"
+contract Docs version 1 {{
+  entity Document {{
+    key (org_id: uuid, doc_id: uuid)
+    field title: string<256>
+    field body: string<65536>
+    vector_field embedding(128, cosine, (title, body), staleness_slo 60, model "{model}", current_version "{version}", replay_age_seconds {replay_age_seconds}, replay_bytes {replay_bytes}, replay_backlog {replay_backlog})
+  }}
+}}
+"#
+    )
+}
+
+#[test]
+fn production_vector_configuration_allocates_v15_and_round_trips() {
+    let source = production_vector_contract(
+        "text-embedding-3-small",
+        "2026-08-21",
+        86_400,
+        1_073_741_824,
+        100_000,
+    );
+    let bundle = compile_contract_source(&source).expect("production vector compiles");
+    assert_eq!(bundle.format_version(), BUNDLE_FORMAT_VERSION_V15);
+    assert_eq!(bundle.grammar_version(), GRAMMAR_VERSION_V15);
+    assert_eq!(bundle.ir_version(), EXECUTABLE_IR_VERSION_V15);
+    let spec = &bundle.schema().vector_production_specs()[0];
+    assert_eq!(spec.metadata().model_identity(), "text-embedding-3-small");
+    assert_eq!(spec.metadata().model_version(), "2026-08-21");
+    assert_eq!(spec.replay_age_seconds(), 86_400);
+    assert_eq!(spec.replay_bytes(), 1_073_741_824);
+    assert_eq!(spec.replay_backlog(), 100_000);
+
+    let decoded = ContractBundle::decode(bundle.canonical_bytes()).expect("V15 decodes");
+    assert_eq!(
+        decoded.schema().vector_production_specs(),
+        bundle.schema().vector_production_specs()
+    );
+    assert_eq!(decoded.bundle_hash(), bundle.bundle_hash());
+}
+
+#[test]
+fn production_vector_bounds_are_source_spanned() {
+    for (age, bytes, backlog, rejected) in [
+        (0, 1024, 100, "0"),
+        (86_400, 0, 100, "0"),
+        (86_400, 1024, 0, "0"),
+        (
+            riffdb_contract_ir::MAX_VECTOR_REPLAY_AGE_SECONDS + 1,
+            1024,
+            100,
+            "31536001",
+        ),
+    ] {
+        let source = production_vector_contract("model", "v1", age, bytes, backlog);
+        let diagnostics = compile_contract_source(&source).expect_err("invalid replay bound");
+        let diagnostic = &diagnostics
+            .semantic()
+            .expect("semantic diagnostic")
+            .as_slice()[0];
+        assert_eq!(diagnostic.code().as_str(), "RDB-C020");
+        let span = diagnostic.primary_span();
+        assert_eq!(
+            &source[span.start() as usize..span.end() as usize],
+            rejected
+        );
+    }
+}
+
+#[test]
+fn production_vector_model_identity_is_bounded_and_nonempty() {
+    for model in [String::new(), "x".repeat(257)] {
+        let source = production_vector_contract(&model, "v1", 1, 1, 1);
+        let diagnostics = compile_contract_source(&source).expect_err("invalid model identity");
+        let diagnostic = &diagnostics
+            .semantic()
+            .expect("semantic diagnostic")
+            .as_slice()[0];
+        assert_eq!(diagnostic.code().as_str(), "RDB-C020");
+    }
 }
 
 fn vector_ann_contract(threshold: u32, recall_target_bps: u32) -> String {

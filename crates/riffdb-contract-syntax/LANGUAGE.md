@@ -217,6 +217,7 @@ EntityItem: Spanned<EntityItem> = {
     <lo:@L> "vector_field" <name:Identifier> "(" <dimension:UnsignedInteger> ","
         <metric:VectorMetric> "," "(" <source_fields:IdentifierList> ")" ","
         <slo_keyword:Identifier> <staleness_slo:UnsignedInteger>
+        <production:VectorProductionClause?>
         <ann:VectorAnnClause?> ")" <hi:@R>
         =>? parser::grammar_result(parser::vector_field_item(
             name,
@@ -225,6 +226,7 @@ EntityItem: Spanned<EntityItem> = {
             source_fields,
             slo_keyword,
             staleness_slo,
+            production,
             ann,
             lo,
             hi,
@@ -240,6 +242,26 @@ EntityItem: Spanned<EntityItem> = {
         => parser::spanned(EntityItem::DeletePolicy(DeletePolicyDeclaration::Cascade {
             relationships,
         }), lo, hi),
+};
+
+VectorProductionClause: VectorProductionDeclaration = {
+    "," <model_keyword:Identifier> <model_identity:StringLiteral>
+        "," <version_keyword:Identifier> <current_model_version:StringLiteral>
+        "," <age_keyword:Identifier> <replay_age_seconds:UnsignedInteger>
+        "," <bytes_keyword:Identifier> <replay_bytes:UnsignedInteger>
+        "," <backlog_keyword:Identifier> <replay_backlog:UnsignedInteger>
+        =>? parser::grammar_result(parser::vector_production_declaration(
+            model_keyword,
+            model_identity,
+            version_keyword,
+            current_model_version,
+            age_keyword,
+            replay_age_seconds,
+            bytes_keyword,
+            replay_bytes,
+            backlog_keyword,
+            replay_backlog,
+        )),
 };
 
 CascadeRelationship: Spanned<CascadeRelationshipDeclaration> = {
@@ -903,6 +925,11 @@ Identifier: Spanned<String> = {
 
 UnsignedInteger: Spanned<String> = {
     <lo:@L> <value:"unsigned integer literal"> <hi:@R>
+        => parser::spanned(value, lo, hi),
+};
+
+StringLiteral: Spanned<String> = {
+    <lo:@L> <value:"string literal"> <hi:@R>
         => parser::spanned(value, lo, hi),
 };
 

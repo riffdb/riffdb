@@ -1071,6 +1071,15 @@ layout!(VECTOR_ANN_SPEC_LAYOUT, "VectorAnnSpecV1", {
     "row_threshold" => "u32 rows per organization (1..=65536)",
     "recall_target_bps" => "u32 basis points (1..=10000)",
 });
+layout!(VECTOR_PRODUCTION_SPEC_LAYOUT, "VectorProductionSpecV1", {
+    "entity" => "EntityTypeId",
+    "field" => "FieldId",
+    "model_identity" => "string (1..=256 bytes)",
+    "current_model_version" => "string (1..=256 bytes)",
+    "replay_age_seconds" => "u64 (1..=31536000)",
+    "replay_bytes" => "u64 (1..=1099511627776)",
+    "replay_backlog" => "u64 (1..=100000000)",
+});
 layout!(ENTITY_LAYOUT, "EntitySchema", {
     "id" => "u32",
     "name" => "string",
@@ -1405,6 +1414,7 @@ pub(crate) const FORMAT_LAYOUTS: &[FormatLayout] = &[
     VECTOR_FIELD_SPEC_LAYOUT,
     SECRET_FIELD_SPEC_LAYOUT,
     VECTOR_ANN_SPEC_LAYOUT,
+    VECTOR_PRODUCTION_SPEC_LAYOUT,
     ENTITY_LAYOUT,
     EVENT_LAYOUT,
     EVENT_PARTITION_LAYOUT,
@@ -2304,7 +2314,7 @@ mod tests {
         // (or a witness list both sides also append to) would make that
         // merge pass silently. Re-run this test after any merge touching the
         // registry.
-        assert_eq!(FORMAT_LAYOUTS.len(), 62);
+        assert_eq!(FORMAT_LAYOUTS.len(), 63);
         for layout in FORMAT_LAYOUTS {
             assert!(!layout.fields.is_empty(), "{}", layout.name);
             assert!(
