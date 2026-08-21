@@ -14555,3 +14555,400 @@ work_packages:
       matching population or walk skipped pages, and no framework-specific runtime branch enters
       RiffDB.
   human_review_triggers: *id001
+- id: WP-656
+  name: Exact-result predicate and independent-order semantic closure
+  depends_on: [WP-645, WP-652, WP-655]
+  objective: After exact acceptance of ADR-0134, freeze one generic compiler-declared exact-result
+    predicate and independent total-order model covering the bounded operational operator algebra,
+    without provider activation, runtime query structure, framework-specific artifacts, or a scan
+    fallback.
+  requirements: [OQ-001, OQ-002, OQ-003, OQ-004, OQ-005, OQ-006, OQ-009,
+    OQ-010, OQ-015, OQ-017, OQ-019, OQ-021, OQ-022, OQ-024, OQ-026, OQ-027,
+    OQ-028, OQ-029]
+  required_adrs: [ADR-0002, ADR-0051, ADR-0052, ADR-0053, ADR-0055, ADR-0108,
+    ADR-0111, ADR-0124, ADR-0130, ADR-0131, ADR-0134]
+  allowed_paths: [SPEC.md, work_packages.yaml, adr/README.md,
+    adr/0134-compiler-declared-exact-predicate-and-order-families.md,
+    release/version-topology-v1.json, crates/riffdb-types/**,
+    crates/riffdb-riffql-syntax/**, crates/riffdb-query-ir/**,
+    crates/riffdb-query-compiler/**, crates/riffdb-query-module/**,
+    crates/riffdb-catalog/**, fixtures/**, fuzz/**, tests/**, scripts/**,
+    docs/SUMMARY.md, docs/riffql/**, docs/architecture/**,
+    docs/getting-started/OPERATIONAL-QUERIES.md]
+  deliverables:
+  - Accepted ADR-0134 SPEC clarification and public RiffQL documentation for independent search,
+    filter, and order dimensions; equality/inequality, scalar ranges, bounded in/not_in,
+    null/existence, exact text, conjunction, and compiler-capped disjunction retain one closed
+    typed truth model and add no public query AST
+  - Canonical bounded predicate/order semantic IR with stable field, operator, value-slot,
+    comparison/text-profile, Boolean-edge, direction, missing/null-placement, complete ascending
+    entity-key tie-breaker, measure, and ordinal identities
+  - Finite family compilation across every optional-presence, disjunction, and declared
+    operator/order member, with source-spanned rejection when any member lacks a complete provider,
+    policy, type, index, exact-count, ordinal, state-amplification, or work proof
+  - Least-sufficient source-language, query-IR, plan/module/hash/lock, and generated-schema identity
+    successors plus ADR-0124 topology entries and byte-exact retained fixtures for every existing
+    narrow exact-result artifact
+  - An independent bounded reference evaluator and randomized semantic corpus freezing null/missing,
+    empty and duplicate set, canonical set order, range edge, text-profile, Boolean, mixed-direction,
+    and unique-tie-breaker behavior before production provider code
+  - Architecture negatives proving callers cannot submit fields, raw operators, predicates, order
+    tuples, providers, scans, costs, policy choices, or fallbacks and that this package adds no
+    Better Auth artifact, provider runtime, durable provider state, or cross-provider bridge
+  acceptance_commands:
+  - cargo +1.97.0 test -p riffdb-types -p riffdb-riffql-syntax -p riffdb-query-ir -p riffdb-query-compiler -p riffdb-query-module -p riffdb-catalog --all-features
+  - cargo +nightly-2026-07-12 fuzz run riffql_parser -- -max_total_time=60
+  - ./scripts/check-version-topology
+  - ./scripts/check-generated
+  - ./scripts/check-requirement-coverage
+  - ./scripts/handbook check
+  - cargo +1.97.0 fmt --all -- --check
+  - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: Every source-admitted predicate and order family member has one canonical independently
+    evaluated semantic identity and a complete statically bounded provider requirement; all old
+    artifacts remain byte-exact and readable; and no runtime provider, framework branch, public
+    query structure, scan, or fallback is introduced.
+  standing_design_tests:
+    interface_safety: Application callers receive only finite generated operations and typed
+      bounded values; compilation owns every field, operator, Boolean edge, order, tie-breaker,
+      policy mode, provider requirement, cost, and freshness shape, and one unsupported member
+      rejects the complete family.
+    scale: Predicate leaves, Boolean depth and branches, presence combinations, set elements and
+      bytes, order terms, family members, provider requirements, reference work, diagnostics, and
+      artifacts are compiler bounded; the semantic model assumes neither a full result nor
+      co-located authoritative storage.
+  human_review_triggers: *id001
+- id: WP-657
+  name: Indexed exact-result set algebra and ordinal provider
+  depends_on: [WP-647, WP-656]
+  objective: Implement ADR-0134's provider-owned indexed predicate combination, independent total
+    orders, exact cardinality, and direct ordinal selection under one authorized epoch, using an
+    additive rebuildable provider-state identity and no authoritative request-time scan,
+    materialize-all, page walk, or client shaping.
+  requirements: [OQ-003, OQ-004, OQ-005, OQ-006, OQ-009, OQ-010, OQ-017,
+    OQ-019, OQ-020, OQ-021, OQ-022, OQ-024, OQ-026, OQ-027, OQ-028, OQ-029]
+  required_adrs: [ADR-0038, ADR-0051, ADR-0053, ADR-0055, ADR-0086, ADR-0108,
+    ADR-0111, ADR-0124, ADR-0129, ADR-0130, ADR-0131, ADR-0134]
+  allowed_paths: [SPEC.md, work_packages.yaml, release/version-topology-v1.json,
+    crates/riffdb-types/**, crates/riffdb-query-ir/**,
+    crates/riffdb-query-compiler/**, crates/riffdb-query-module/**,
+    crates/riffdb-catalog/**, crates/riffdb-projection/**,
+    crates/riffdb-query-executor/**, crates/riffdb-policy/**,
+    crates/riffdb-storage-api/**, crates/riffdb-storage-memory/**,
+    crates/riffdb-storage-redb/**, crates/riffdb-service/**,
+    crates/riffdb-server/**, fixtures/**, fuzz/**, tests/**, scripts/**,
+    docs/SUMMARY.md, docs/riffql/**, docs/architecture/**,
+    docs/getting-started/OPERATIONAL-QUERIES.md]
+  deliverables:
+  - A new exact-provider state identity binding the complete normalized predicate program,
+    comparison/text profiles, independent total-order layouts, authorized universe, exact-count and
+    ordinal capabilities, static work/state amplification, partition, policy shape, generation,
+    frontier, incarnation, plan, and checksum without reinterpreting V1 through V3 checkpoints
+  - Provider-owned bounded indexed-set execution for equality/inequality, ranges, bounded in/not_in,
+    null/existence, exact text, conjunction, and capped disjunction, including authorized complement
+    and independent mixed-direction order tuples with the complete ascending entity-key tie-breaker
+  - Exact count and direct rank/select-style ordinal seek over the fully combined predicate at one
+    provider epoch, returning only the bounded page and never scanning authoritative entities,
+    walking skipped rows/pages, sorting request results, materializing all matches, or fetching
+    non-output rows outside separately declared bounded policy evidence
+  - Partition-scoped and policy-aligned provider activation plus bounded-row-admission negatives
+    proving unauthorized rows cannot affect candidate sets, complement universes, counts, order,
+    ordinals, continuations, work class, diagnostics, or lifecycle selection
+  - Canonical rebuild, catch-up, persistence, restart, corruption, compaction, cancellation,
+    retention, mixed-version refusal, and migration receipts with descriptor/layout validation once
+    per provider-plan generation and epoch proof once per opened result set
+  - Independent randomized equivalence and architecture evidence for search-by-one-field/order-by-
+    another, every activated operator/type/state profile, optional and disjunctive families,
+    zero/end/beyond-end offsets, concurrent writes, maximum bounds, and forbidden scan/fallback/
+    cross-provider transfer paths
+  acceptance_commands:
+  - cargo +1.97.0 test -p riffdb-types -p riffdb-query-ir -p riffdb-query-compiler -p riffdb-query-module -p riffdb-catalog -p riffdb-projection -p riffdb-query-executor -p riffdb-policy -p riffdb-storage-api -p riffdb-storage-memory -p riffdb-storage-redb -p riffdb-service -p riffdb-server --all-features
+  - ./scripts/check-version-topology
+  - ./scripts/check-generated
+  - ./scripts/check-requirement-coverage
+  - ./scripts/check-workspace-policy
+  - ./scripts/handbook check
+  - cargo +1.97.0 fmt --all -- --check
+  - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: Every compiler-admitted predicate/order member equals the independent evaluator at one
+    authorized epoch, exact count and ordinal selection use only declared indexed work, existing
+    checkpoints remain readable and byte-exact, lifecycle and corruption fail closed, and no
+    request-time scan, population materialization, page walk, client shaping, or provider bridge
+    exists.
+  standing_design_tests:
+    interface_safety: The runtime accepts only compiler-sealed plan/member identities and typed
+      values; it cannot accept caller structure, switch providers, omit a predicate or order term,
+      widen the complement universe, weaken policy/freshness, or substitute scans and fallbacks.
+    scale: Provider state, write amplification, indexed-set operands, probes, words/segments,
+      rank/select work, policy candidates, offsets, pages, outputs, rebuild work, waits, and
+      diagnostics are statically bounded per declared partition/profile and no matching-population
+      allocation is permitted.
+  human_review_triggers: *id001
+- id: WP-658
+  name: Generic robust exact-query surfaces and external handoff
+  depends_on: [WP-635, WP-655, WP-657]
+  objective: Activate ADR-0134's robust exact-result families through the shared service, transports,
+    generated Rust, Go, TypeScript, and Python SDKs, CLI, and MCP using only framework-neutral
+    fixtures, then publish an immutable generic capability receipt for external adapter acceptance
+    without importing any framework schema, profile, route, or runtime into RiffDB.
+  requirements: [OQ-001, OQ-003, OQ-004, OQ-005, OQ-006, OQ-015, OQ-016,
+    OQ-019, OQ-020, OQ-021, OQ-022, OQ-026, OQ-027, OQ-028, OQ-029, OQ-030,
+    API-001, MCP-001, MCP-020, MCP-021, MCP-023, MCP-025, MCP-026, MCP-040,
+    MCP-043, MCP-045, MCP-049]
+  required_adrs: [ADR-0040, ADR-0051, ADR-0052, ADR-0053, ADR-0055, ADR-0074,
+    ADR-0106, ADR-0108, ADR-0111, ADR-0117, ADR-0120, ADR-0124, ADR-0128,
+    ADR-0130, ADR-0131, ADR-0133, ADR-0134]
+  allowed_paths: [SPEC.md, work_packages.yaml, proto/**,
+    fixtures/adapters/operational-conformance/**, fixtures/adapters/conformance/**,
+    fixtures/application-parity/**, fixtures/query-modules/**, fixtures/export/**,
+    crates/riffdb-types/**, crates/riffdb-query-ir/**,
+    crates/riffdb-query-compiler/**, crates/riffdb-query-module/**,
+    crates/riffdb-query-executor/**, crates/riffdb-catalog/**,
+    crates/riffdb-projection/**, crates/riffdb-policy/**,
+    crates/riffdb-storage-api/**, crates/riffdb-storage-memory/**,
+    crates/riffdb-storage-redb/**, crates/riffdb-service/**,
+    crates/riffdb-proto/**, crates/riffdb-api-grpc/**,
+    crates/riffdb-api-mcp/**, crates/riffdb-client-rust/**,
+    crates/riffdb-codegen-rust/**, crates/riffdb-codegen-typescript/**,
+    crates/riffdb-codegen-go/**, crates/riffdb-codegen-python/**,
+    crates/riffdb-driver-host/**, crates/riffdb-cli/**,
+    crates/riffdb-mcp-stdio/**, crates/riffdb-server/**, clients/**,
+    templates/**, examples/**, tests/**, scripts/**, release/**,
+    docs/SUMMARY.md, docs/riffql/**, docs/getting-started/**,
+    docs/integrations/**, docs/reference/**]
+  deliverables:
+  - Shared application-service, gRPC, CLI, MCP, Rust, Go, TypeScript, and Python activation for
+    finite generated exact-result operations whose search, filters, independent order, exact total,
+    ordinal page, policy, provider epoch, plan identity, bounds, and typed failures remain identical
+    on every surface
+  - A framework-neutral entity/query corpus covering search-by-one-field/order-by-another;
+    equality/inequality, range, bounded in/not_in, null/existence, prefix/suffix/substring,
+    multi-filter conjunction, capped disjunction, ascending/descending mixed order, and deterministic
+    key tie-breaking, with no caller-supplied field/operator/order or raw query structure
+  - Adversarial generated-client evidence for optional combinations, empty/duplicate/maximum sets,
+    null/missing, Unicode, offset zero/end/beyond-end/maximum, exact total, concurrent writes,
+    authorization, tenant isolation, revocation, readiness, divergence, retired snapshots,
+    saturation, malformed responses, and legacy/new mixed-version behavior
+  - Static and runtime boundary checks forbidding generated or handwritten client filtering,
+    sorting, counting, cursor/page walks, provider selection, storage access, query ASTs, framework
+    names, and per-row descriptor/epoch/layout proof construction
+  - Handbook guidance teaching application authors to create bounded named `.riffql` documents and
+    declared provider indexes, regenerate typed SDK methods, understand finite family/storage costs,
+    and use cursor pagination when cross-request snapshot stability is required
+  - One immutable development publication and generic capability manifest suitable for external
+    adapter pinning, explicitly recording that real framework route evidence remains owned and
+    release-gating in the external repository and is not proved by RiffDB's neutral corpus
+  acceptance_commands:
+  - ./scripts/adapter-operational-query-acceptance --all-languages
+  - ./scripts/driver-development-registry-acceptance --all-ecosystems
+  - ./scripts/driver-conformance --all-languages --remote
+  - ./scripts/check-application-bindings
+  - ./scripts/check-version-topology
+  - ./scripts/check-generated
+  - ./scripts/check-requirement-coverage
+  - ./scripts/check-workspace-policy
+  - ./scripts/handbook check
+  - cargo +1.97.0 fmt --all -- --check
+  - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: Every public RiffDB surface returns the same exact authorized page and total for the
+    complete generic operator/order matrix without client shaping or caller structure, the immutable
+    publication is reproducible, and the repository contains no framework-specific profile, route,
+    SDK, runtime, or false claim that outstanding external route acceptance has completed.
+  standing_design_tests:
+    interface_safety: Applications and adapters receive only generated finite methods or closed
+      generated member choices with typed bounded values; they cannot select fields, raw operators,
+      Boolean/order structure, providers, policy, cost, fallback, or freshness, and no transport
+      exposes a generic unsafe query object.
+    scale: Inputs, family choices, request/response bytes, provider work, page/offset, generated
+      decode, buffers, waits, retries, diagnostics, and publication artifacts remain compiler or
+      protocol bounded; no client or server surface retains or materializes the matching population.
+  human_review_triggers: *id001
+- id: WP-659
+  name: Packed compiler-bound named-result carriage
+  depends_on: [WP-654]
+  objective: After exact acceptance of ADR-0135, reuse the existing bounded canonical-column
+    codec for compiler-covered named-query results, decode it directly in all generated clients,
+    and activate it only if the complete cloud large-result and no-regression gates pass.
+  requirements: [API-001, QRY-001, QRY-002, QRY-003, QRY-004, QRY-006,
+    QRY-007, QRY-008, QRY-009, PERF-002, PERF-008, PERF-018]
+  required_adrs: [ADR-0040, ADR-0055, ADR-0056, ADR-0074, ADR-0123,
+    ADR-0124, ADR-0127, ADR-0130, ADR-0131, ADR-0133, ADR-0135]
+  allowed_paths: [work_packages.yaml, adr/README.md,
+    adr/0135-packed-compiled-result-carriage.md, proto/**,
+    crates/riffdb-types/**, crates/riffdb-proto/**,
+    crates/riffdb-query-module/**, crates/riffdb-service/**,
+    crates/riffdb-api-grpc/**, crates/riffdb-client-rust/**,
+    crates/riffdb-client-python-native/**, crates/riffdb-driver-host/**,
+    crates/riffdb-cli/**, crates/riffdb-api-mcp/**,
+    crates/riffdb-mcp-stdio/**, clients/**, examples/**, fixtures/**,
+    tests/**, scripts/**, benchmarks/**, release/**, docs/SUMMARY.md,
+    docs/reference/**, docs/getting-started/**, docs/performance/**]
+  deliverables:
+  - Additive negotiated PACKED_V1 named-result response reusing the exact ProjectedReadyPacked
+    canonical-cell and offset rules, with strict parent preflight, response charging, exclusive-arm
+    validation, golden descriptors, and old/new client/server compatibility
+  - Compiler-layout-bound Rust, Go, TypeScript, and Python generated decoders that construct typed
+    rows directly from bounded column slices without generic Value, ApplicationValue, symbolic map,
+    exposed ordinal, caller schema, or partial-result release
+  - Unary and bounded-session parity for outcomes, identities, heads, cursors, authorization,
+    revocation, cancellation, malformed messages, and every canonical value/type edge
+  - Paired workstation, N1, and E2 BoardPage50/200/450 evidence plus the complete ordinary read,
+    unary write, c32 mixed, seed, startup, recovery, backup/restore, memory, and generated-size
+    no-regression matrix required by ADR-0135
+  - Value-free failed-activation receipt and removal of production selection if either cloud
+    BoardPage450 misses 1.10x safe PostgreSQL, any profile misses the 30-percent compact-relative
+    improvement, or an existing semantic/performance gate regresses
+  acceptance_commands:
+  - cargo +1.97.0 test -p riffdb-types -p riffdb-proto -p riffdb-query-module -p riffdb-service -p riffdb-api-grpc -p riffdb-client-rust -p riffdb-client-python-native -p riffdb-driver-host --all-features
+  - ./scripts/generate-proto --check
+  - ./scripts/check-generated
+  - ./scripts/check-application-bindings
+  - ./scripts/driver-conformance --all-languages
+  - ./scripts/check-workspace-policy
+  - ./scripts/check-requirement-coverage
+  - ./scripts/handbook check
+  - cargo +1.97.0 fmt --all -- --check
+  - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: The packed arm is byte/semantically identical to legacy and compact results across
+    every generated language, malformed or unauthorized responses fail closed, BoardPage450 meets
+    both cloud 1.10x gates and every 30-percent candidate threshold, and no ordinary operation,
+    durability, compatibility, resource, or tail gate regresses; otherwise packed selection is
+    removed and WP-623 receives only the failed-candidate receipt.
+  standing_design_tests:
+    interface_safety: Applications still invoke only compiler-fixed generated named queries and
+      cannot select packing, layout, ordinals, types, provider, index, validation, policy,
+      freshness, consistency, or fallback; every response arm proves the same exact operation.
+    scale: Rows, columns, offsets, cells, bytes, buffers, allocations, decode work, output objects,
+      waits, diagnostics, and fixtures are compiler/protocol bounded per request and no process-
+      lifetime or data-population cache is introduced.
+  human_review_triggers: *id001
+- id: WP-660
+  name: Single-owner bounded application-session mechanics
+  depends_on: [WP-644, WP-649, WP-650]
+  objective: Reimplement ADR-0127's already accepted optional application session so the common
+    one-owner, one-in-flight generated-operation path does not pay multiplexing maps, oneshots, or
+    response-router task hops, while retaining the existing bounded multiplexed path whenever
+    concurrent in-flight work actually requires it and changing no operation semantics.
+  requirements: [API-001, PERF-005, PERF-008, PERF-018, NET-001, NET-002,
+    NET-003, NET-004, DRV-001, DRV-002, DRV-003, DRV-004, DRV-005, DRV-006]
+  required_adrs: [ADR-0040, ADR-0055, ADR-0056, ADR-0105, ADR-0106,
+    ADR-0123, ADR-0127, ADR-0132]
+  allowed_paths: [work_packages.yaml, crates/riffdb-client-rust/**,
+    crates/riffdb-api-grpc/**, crates/riffdb-server/**,
+    crates/riffdb-observability/**, examples/app-baseline/**,
+    benchmarks/**, tests/**, scripts/**, docs/performance/**,
+    docs/SUMMARY.md, docs/reference/**, docs/getting-started/**]
+  deliverables:
+  - One exclusive single-owner session state machine that owns its bounded request sender and
+    response stream, permits exactly one live operation, validates monotonically increasing
+    correlation and exact response kind inline, and uses no pending map, per-call oneshot, response
+    router task, shared mutable authority, or implicit ordering/freshness promise
+  - Automatic use only by an exclusive generated-client handle; cloning, concurrent calls, or
+    configured in-flight capacity above one retains ADR-0127's existing bounded multiplexed state
+    machine rather than weakening cancellation, out-of-order, capacity, or uncertainty behavior
+  - Deterministic cancellation, stream-loss, revocation, expiry, application-drift, malformed-
+    response, reconnect, read-after-commit, command-uncertainty, and graceful-shutdown equivalence
+    between unary, exclusive session, and multiplexed session paths
+  - Back-to-back c1/c8 mechanics receipts on N1 and E2 and full candidate c32/unary/seed controls;
+    the exclusive path must improve point-read mean at least 20 percent on both hosts, then the
+    complete ADR-0127 activation gates decide whether any default or PERF-018 amendment is proposed
+  - Value-free failed-candidate closure if the mechanics threshold misses; no authentication,
+    authorization, task-containment, protocol, or comparator change may be credited to a benchmark
+    artifact or retained after a semantic/no-regression failure
+  acceptance_commands:
+  - cargo +1.97.0 test -p riffdb-client-rust -p riffdb-api-grpc -p riffdb-server --all-features
+  - cargo +1.97.0 test --manifest-path examples/app-baseline/Cargo.toml --workspace
+  - ./scripts/recovery_full
+  - ./scripts/check-workspace-policy
+  - ./scripts/check-requirement-coverage
+  - ./scripts/handbook check
+  - cargo +1.97.0 fmt --all -- --check
+  - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: The exclusive state machine is semantically indistinguishable from ordinary unary and
+    ADR-0127 multiplexed operations, remains bounded and fail closed at every lifecycle edge, and
+    improves c1 exact point-read mean at least twenty percent on both cloud profiles without a
+    greater-than-five-percent regression; only a subsequent complete ADR-0127 gate pass and human
+    PERF-018 amendment may change the generated-client default.
+  standing_design_tests:
+    interface_safety: The optimization accepts only one existing generated named operation at a
+      time and cannot cache authority, create a transaction, infer ordering/freshness, relax
+      durability, change retry/uncertainty, select storage, or expose raw protocol structure.
+    scale: Exactly one request, response, correlation, cancellation record, and bounded pair of
+      transport buffers exist per exclusive session; all concurrent or cloned use routes to the
+      existing finite multiplexed implementation rather than growing hidden state.
+  closure:
+    status: complete_without_production_activation
+    evidence: docs/performance/wp-660-exclusive-session-closure.md
+    decision: The one-owner candidate improved generated GetTicket mean 26.32 percent on N1 but
+      regressed 8.24 percent on E2, failing the required 20-percent-on-both and five-percent-no-
+      regression mechanics gates. The candidate was removed. The package also corrected the
+      diagnostic so bounded-session workers retain the selected transport; the existing ADR-0127
+      multiplexer then improved c1 mean 25.38 percent on N1 and 33.27 percent on E2. Those short
+      cells are an existence proof only and authorize no release activation or PERF-018 change.
+  human_review_triggers: *id001
+- id: WP-661
+  name: Corrected bounded-session activation and comparator decision
+  depends_on: [WP-644, WP-649, WP-650, WP-660]
+  objective: Re-evaluate ADR-0127's existing bounded application session after correcting the
+    diagnostic topology that silently replaced selected sessions with unary worker connections,
+    then either remove release selection again or produce the complete semantic and paired
+    performance evidence required before a human PERF-018 comparator amendment.
+  requirements: [API-001, PERF-005, PERF-008, PERF-018, NET-001, NET-002,
+    NET-003, NET-004, DRV-001, DRV-002, DRV-003, DRV-004, DRV-005, DRV-006]
+  required_adrs: [ADR-0040, ADR-0055, ADR-0056, ADR-0105, ADR-0106,
+    ADR-0123, ADR-0127, ADR-0132]
+  allowed_paths: [work_packages.yaml, SPEC.md,
+    crates/riffdb-client-rust/**, crates/riffdb-api-grpc/**,
+    crates/riffdb-server/**, crates/riffdb-observability/**,
+    examples/app-baseline/**, benchmarks/**, tests/**, scripts/**,
+    release/**, docs/performance/**, docs/SUMMARY.md, docs/reference/**,
+    docs/getting-started/**]
+  deliverables:
+  - A regression test and diagnostic topology assertion proving every bounded-session worker owns
+    and measures its selected stream instead of opening a fresh unary connection, with unary,
+    asynchronous, and session cells remaining distinct and non-evidentiary until activation
+  - Back-to-back c1/c8/c32 unary and bounded-session mechanics receipts on N1 and E2 using one exact
+    release artifact, including client latency/throughput, server stages, process memory, session
+    establishment exclusion, and fixed transport/in-flight identities
+  - Complete ADR-0127 semantic equivalence for queries and commands under cancellation, stream
+    loss, malformed/duplicate correlation, overload, revocation, expiry, application drift,
+    read-after-commit, command uncertainty, reconnect, and graceful shutdown
+  - Same-run safe-application PostgreSQL candidate sweeps proving at least 15-percent c1 and
+    10-percent c8 RiffDB-over-unary improvement on both hosts; at c32, at least 0.90x PostgreSQL
+    throughput, at most 1.25x PostgreSQL p95, and no greater-than-five-percent absolute regression
+  - Every representative session-shaped unary scenario at most 1.10x same-run PostgreSQL p50,
+    unchanged seed at most 5.0x, and no read/write/seed/tail/resource regression beyond five percent
+    where a stricter gate does not apply
+  - If and only if every gate passes, an exact proposed PERF-018 amendment freezing protocol,
+    client, connections, maximum in-flight, retry, dataset, weights, and comparator shapes; no
+    default or release evidence changes without separate exact human acceptance
+  acceptance_commands:
+  - cargo +1.97.0 test -p riffdb-client-rust -p riffdb-api-grpc -p riffdb-server --all-features
+  - cargo +1.97.0 test --manifest-path examples/app-baseline/Cargo.toml --workspace
+  - ./scripts/recovery_full
+  - ./scripts/check-workspace-policy
+  - ./scripts/check-requirement-coverage
+  - ./scripts/handbook check
+  - cargo +1.97.0 fmt --all -- --check
+  - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: The corrected bounded session passes every ADR-0127 semantic and two-profile
+    performance gate and is presented for an exact human PERF-018 amendment; otherwise unary
+    remains the release default, the failed activation is receipted, and no comparator or public
+    default changes.
+  standing_design_tests:
+    interface_safety: The session accepts only existing generated named operations and cannot cache
+      authority, create a transaction, infer order or freshness, change durability or uncertainty,
+      select storage, or expose protocol structure; every operation retains all current safe points.
+    scale: Correlations, live operations, request and response bytes, cancellation records, queues,
+      tasks, waits, retries, telemetry, and evidence are capped by the accepted session and harness
+      ceilings independently of history, database size, completed operations, or client runtime.
+  closure:
+    status: complete_without_release_activation
+    evidence: docs/performance/wp-661-bounded-session-activation.md
+    decision: Correct transport selection made the existing bounded session materially faster on
+      N1, but counterbalanced E2 observations ranged from a 13.1-percent c1 regression to a
+      0.8-percent gain and from a 9.6-percent c8 regression to a 10.2-percent gain. The required
+      stable 15-percent c1 and 10-percent c8 improvements on both hosts therefore fail before the
+      PostgreSQL release sweep. Unary remains the default, PERF-018 is unchanged, and only the
+      non-evidentiary diagnostic topology correction is retained.
+  human_review_triggers: *id001

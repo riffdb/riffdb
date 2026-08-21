@@ -152,6 +152,8 @@ direction, merged draft, or implementation choice.
 | [0131](0131-exact-indexed-text-cardinality-and-ordinal-windowing.md) | Exact Indexed Text Matching, Cardinality, and Ordinal Windowing | Accepted |
 | [0132](0132-bounded-journal-fence-pipeline.md) | Bounded Journal Fence Pipeline and Ordered Durable-Prefix Publication | Accepted |
 | [0133](0133-compiler-planned-covering-result-batches.md) | Compiler-Planned Covering Result Batches and Compact Named-Query Carriage | Accepted |
+| [0134](0134-compiler-declared-exact-predicate-and-order-families.md) | Compiler-Declared Exact Predicate and Independent Order Families | Proposed |
+| [0135](0135-packed-compiled-result-carriage.md) | Packed Compiler-Bound Named-Result Carriage | Proposed |
 
 The human architecture review on 2026-07-12 approved the direction represented
 by ADR-0001 through ADR-0012. The human maintainer accepted ADR-0001 through
