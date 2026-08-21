@@ -640,6 +640,67 @@ pub(crate) fn decode_vector_observation_key(
     Ok(target)
 }
 
+const VECTOR_HEALTH_OBSERVATION_KEY_PREFIX: [u8; 5] = [0, 0, b'V', b'H', 1];
+
+/// Encodes the disjoint lineage-wide vector-health row in the observation table.
+/// A normal observation begins with a nonzero lineage length, so the zero
+/// prefix cannot collide with any valid partition observation key.
+pub(crate) fn encode_vector_health_observation_key(
+    lineage: &ContractLineage,
+) -> Result<Vec<u8>, PhysicalKeyError> {
+    let lineage = lineage.as_bytes();
+    let lineage_len = u16::try_from(lineage.len()).map_err(|_| PhysicalKeyError::InvalidLength)?;
+    let capacity = VECTOR_HEALTH_OBSERVATION_KEY_PREFIX
+        .len()
+        .checked_add(2 + lineage.len())
+        .ok_or(PhysicalKeyError::InvalidLength)?;
+    let mut encoded = Vec::with_capacity(capacity);
+    encoded.extend_from_slice(&VECTOR_HEALTH_OBSERVATION_KEY_PREFIX);
+    encoded.extend_from_slice(&lineage_len.to_be_bytes());
+    encoded.extend_from_slice(lineage);
+    if encoded.len() != capacity {
+        return Err(PhysicalKeyError::InvalidLength);
+    }
+    Ok(encoded)
+}
+
+/// Decodes one exact lineage-wide vector-health observation key.
+pub(crate) fn decode_vector_health_observation_key(
+    bytes: &[u8],
+) -> Result<ContractLineage, PhysicalKeyError> {
+    if !bytes.starts_with(&VECTOR_HEALTH_OBSERVATION_KEY_PREFIX) {
+        return Err(PhysicalKeyError::InvalidComponent);
+    }
+    let length_start = VECTOR_HEALTH_OBSERVATION_KEY_PREFIX.len();
+    let lineage_start = length_start
+        .checked_add(2)
+        .ok_or(PhysicalKeyError::InvalidLength)?;
+    let lineage_len = usize::from(u16::from_be_bytes(
+        bytes
+            .get(length_start..lineage_start)
+            .ok_or(PhysicalKeyError::InvalidLength)?
+            .try_into()
+            .map_err(|_| PhysicalKeyError::InvalidLength)?,
+    ));
+    let lineage_end = lineage_start
+        .checked_add(lineage_len)
+        .ok_or(PhysicalKeyError::InvalidLength)?;
+    if lineage_end != bytes.len() || lineage_len == 0 || lineage_len > MAX_CONTRACT_LINEAGE_BYTES {
+        return Err(PhysicalKeyError::InvalidLength);
+    }
+    let lineage = ContractLineage::new(
+        std::str::from_utf8(
+            bytes
+                .get(lineage_start..lineage_end)
+                .ok_or(PhysicalKeyError::InvalidLength)?,
+        )
+        .map_err(|_| PhysicalKeyError::InvalidComponent)?,
+    )
+    .map_err(|_| PhysicalKeyError::InvalidComponent)?;
+    require_canonical(bytes, &encode_vector_health_observation_key(&lineage)?)?;
+    Ok(lineage)
+}
+
 pub(crate) fn encode_vector_evidence_index_prefix(
     target: &VectorObservationTargetV1,
 ) -> Result<Vec<u8>, PhysicalKeyError> {
@@ -941,6 +1002,23 @@ mod tests {
         trailing.push(0);
         assert_eq!(
             decode_vector_observation_key(&trailing),
+            Err(PhysicalKeyError::InvalidLength)
+        );
+    }
+
+    #[test]
+    fn vector_health_key_is_disjoint_and_round_trips_lineage() {
+        let lineage = ContractLineage::new("vectors").expect("lineage");
+        let encoded = encode_vector_health_observation_key(&lineage).expect("encode health key");
+        assert_eq!(
+            decode_vector_health_observation_key(&encoded).expect("decode health key"),
+            lineage
+        );
+        assert!(decode_vector_observation_key(&encoded).is_err());
+        let mut trailing = encoded;
+        trailing.push(0);
+        assert_eq!(
+            decode_vector_health_observation_key(&trailing),
             Err(PhysicalKeyError::InvalidLength)
         );
     }

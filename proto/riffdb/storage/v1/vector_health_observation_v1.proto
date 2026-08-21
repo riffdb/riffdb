@@ -1,0 +1,22 @@
+syntax = "proto3";
+
+package riffdb.storage.v1;
+
+// One vector field's maintained partition/SLO classification. Entries are
+// canonically ordered by (entity_type_id, vector_field_id).
+message StoredVectorHealthFieldObservationV1 {
+  uint32 entity_type_id = 1;
+  uint32 vector_field_id = 2;
+  uint64 stale_entity_count_threshold = 3;
+  uint64 partition_count = 4;
+  uint64 breached_partition_count = 5;
+}
+
+// Database-local authoritative vector-health observation for one lineage.
+// The record is updated atomically with every affected partition observation;
+// health reads this bounded summary rather than scanning application rows.
+message StoredVectorHealthObservationV1 {
+  string contract_lineage = 1;
+  repeated StoredVectorHealthFieldObservationV1 fields = 2;
+  uint64 revision_sequence = 3;
+}

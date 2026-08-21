@@ -8,7 +8,8 @@ use riffdb_types::{
 
 use crate::{
     EncodedPageItem, StoredVectorEmbeddingWriteV1, StoredVectorEvidenceV1,
-    VectorEvidenceIndexEntryV1, VectorObservationCountsV1, VectorObservationTargetV1,
+    VectorEvidenceIndexEntryV1, VectorHealthFieldObservationV1, VectorHealthObservationV1,
+    VectorObservationCountsV1, VectorObservationTargetV1,
 };
 
 use super::{
@@ -19,6 +20,8 @@ use super::{
 
 pub(super) const VECTOR_EVIDENCE: &str = "riffdb.storage.v1.StoredVectorEvidenceV1";
 pub(super) const VECTOR_OBSERVATION: &str = "riffdb.storage.v1.StoredVectorObservationV1";
+pub(super) const VECTOR_HEALTH_OBSERVATION: &str =
+    "riffdb.storage.v1.StoredVectorHealthObservationV1";
 pub(super) const VECTOR_EVIDENCE_INDEX: &str = "riffdb.storage.v1.StoredVectorEvidenceIndexV1";
 
 fn embedding_to_proto(value: &StoredVectorEmbeddingWriteV1) -> wire::StoredVectorEmbeddingWriteV1 {
@@ -160,6 +163,69 @@ pub fn decode_vector_observation_v1(
         VECTOR_OBSERVATION,
         encoded,
         observation_from_proto,
+    )
+}
+
+fn health_observation_to_proto(
+    value: &VectorHealthObservationV1,
+) -> wire::StoredVectorHealthObservationV1 {
+    wire::StoredVectorHealthObservationV1 {
+        contract_lineage: value.lineage().as_str().to_owned(),
+        fields: value
+            .fields()
+            .map(|field| wire::StoredVectorHealthFieldObservationV1 {
+                entity_type_id: field.entity_type().get(),
+                vector_field_id: field.vector_field().get(),
+                stale_entity_count_threshold: field.stale_entity_count_threshold(),
+                partition_count: field.partition_count(),
+                breached_partition_count: field.breached_partition_count(),
+            })
+            .collect(),
+        revision_sequence: value.revision().get(),
+    }
+}
+
+fn health_observation_from_proto(
+    value: wire::StoredVectorHealthObservationV1,
+) -> Result<VectorHealthObservationV1, DurableCodecError> {
+    let fields = value
+        .fields
+        .into_iter()
+        .map(|field| {
+            storage_result(VectorHealthFieldObservationV1::from_parts(
+                EntityTypeId::new(field.entity_type_id).ok_or_else(DurableCodecError::corrupt)?,
+                FieldId::new(field.vector_field_id).ok_or_else(DurableCodecError::corrupt)?,
+                field.stale_entity_count_threshold,
+                field.partition_count,
+                field.breached_partition_count,
+            ))
+        })
+        .collect::<Result<Vec<_>, DurableCodecError>>()?;
+    storage_result(VectorHealthObservationV1::from_parts(
+        ContractLineage::new(value.contract_lineage).map_err(|_| DurableCodecError::corrupt())?,
+        fields,
+        CommitSequence::new(value.revision_sequence).ok_or_else(DurableCodecError::corrupt)?,
+    ))
+}
+
+/// Encodes one lineage-wide maintained vector-health observation.
+pub fn encode_vector_health_observation_v1(
+    value: &VectorHealthObservationV1,
+) -> Result<CanonicalStoredEnvelopeV1, DurableCodecError> {
+    encode_message(
+        VECTOR_HEALTH_OBSERVATION,
+        &health_observation_to_proto(value),
+    )
+}
+
+/// Decodes and validates one lineage-wide vector-health observation.
+pub fn decode_vector_health_observation_v1(
+    encoded: &[u8],
+) -> Result<EncodedPageItem<VectorHealthObservationV1>, DurableCodecError> {
+    decode_message::<wire::StoredVectorHealthObservationV1, _, _>(
+        VECTOR_HEALTH_OBSERVATION,
+        encoded,
+        health_observation_from_proto,
     )
 }
 

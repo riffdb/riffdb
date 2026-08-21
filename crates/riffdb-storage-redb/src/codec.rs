@@ -308,6 +308,13 @@ borrowed_codec!(
     decode_vector_observation_v1
 );
 borrowed_codec!(
+    encode_vector_health_observation_v1,
+    decode_vector_health_observation_v1,
+    storage::VectorHealthObservationV1,
+    encode_vector_health_observation_v1,
+    decode_vector_health_observation_v1
+);
+borrowed_codec!(
     encode_vector_evidence_index_v1,
     decode_vector_evidence_index_v1,
     storage::VectorEvidenceIndexEntryV1,

@@ -288,6 +288,13 @@ impl VectorObservationRepository for RedbSharedPorts {
     ) -> Result<Option<VectorObservationCountsV1>, StorageError> {
         VectorObservationRepository::read_vector_observation(&self.operational(), target)
     }
+
+    fn read_vector_health_observation(
+        &self,
+        lineage: &ContractLineage,
+    ) -> Result<Option<riffdb_storage_api::VectorHealthObservationV1>, StorageError> {
+        VectorObservationRepository::read_vector_health_observation(&self.operational(), lineage)
+    }
 }
 
 impl VectorEvidenceIndexRepository for RedbSharedPorts {

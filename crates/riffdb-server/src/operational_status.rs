@@ -7,12 +7,14 @@
 
 use std::fmt;
 
+use riffdb_catalog::ValidatedContractBundle;
 use riffdb_service::{
     BoxPortCapacityPermit, ComponentHealth, HealthComponentKind, HealthComponentStatus,
     OperationalHealthSnapshot, OperationalStatisticsSnapshot, OperationalStatusError,
     OperationalStatusPort, PortAdmissionError, PortCapacityPermit, PortFuture, PortReceipt,
     RequestControl, port_completion_channel,
 };
+use riffdb_storage_api::{CatalogRepository, VectorObservationRepository};
 
 use crate::columnar_worker::{ColumnarWorkerReadiness, ColumnarWorkerStatus};
 use crate::notifications::{FirstCommitNotificationHub, NotificationStatusError};
@@ -20,12 +22,22 @@ use crate::outbox_adapter::{NoDestinationOutboxHealth, OutboxDerivedReadiness};
 use crate::projection_worker::{ProjectionWorkerReadiness, ProjectionWorkerStatus};
 use crate::runtime_support::{RuntimeRoutingState, RuntimeStopReason};
 use crate::startup::ValidatedAllocatorCapacity;
+use crate::storage::SharedRedbOperationalPorts;
 
 /// Startup recovery state retained separately from authoritative readiness.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum OutboxRecoveryReadiness {
     Ready,
     Degraded,
+}
+
+/// Exact aggregate vector-health classification for the active contract.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum VectorStalenessReadiness {
+    NotApplicable,
+    Healthy,
+    Degraded,
+    Unavailable,
 }
 
 /// Process-local status assembled from checked startup and monotonic routing state.
@@ -37,10 +49,32 @@ pub(crate) struct ProductionOperationalStatusPort {
     outbox: NoDestinationOutboxHealth,
     projection: ProjectionWorkerStatus,
     columnar: ColumnarWorkerStatus,
+    vector_storage: Option<SharedRedbOperationalPorts>,
 }
 
 impl ProductionOperationalStatusPort {
-    pub(crate) fn new(
+    pub(crate) fn new_with_vector_storage(
+        allocator_capacity: ValidatedAllocatorCapacity,
+        runtime: RuntimeRoutingState,
+        notifications: FirstCommitNotificationHub,
+        outbox: NoDestinationOutboxHealth,
+        projection: ProjectionWorkerStatus,
+        columnar: ColumnarWorkerStatus,
+        vector_storage: SharedRedbOperationalPorts,
+    ) -> Self {
+        Self {
+            allocator_capacity,
+            runtime,
+            notifications,
+            outbox,
+            projection,
+            columnar,
+            vector_storage: Some(vector_storage),
+        }
+    }
+
+    #[cfg(test)]
+    fn new(
         allocator_capacity: ValidatedAllocatorCapacity,
         runtime: RuntimeRoutingState,
         notifications: FirstCommitNotificationHub,
@@ -55,6 +89,7 @@ impl ProductionOperationalStatusPort {
             outbox,
             projection,
             columnar,
+            vector_storage: None,
         }
     }
 }
@@ -75,6 +110,7 @@ impl OperationalStatusPort for ProductionOperationalStatusPort {
                 outbox: self.outbox.clone(),
                 projection: self.projection.clone(),
                 columnar: self.columnar.clone(),
+                vector_storage: self.vector_storage.clone(),
             })
                 as BoxPortCapacityPermit<(), OperationalHealthSnapshot, OperationalStatusError>
         });
@@ -121,6 +157,7 @@ struct OperationalHealthPermit {
     outbox: NoDestinationOutboxHealth,
     projection: ProjectionWorkerStatus,
     columnar: ColumnarWorkerStatus,
+    vector_storage: Option<SharedRedbOperationalPorts>,
 }
 
 impl PortCapacityPermit<(), OperationalHealthSnapshot, OperationalStatusError>
@@ -137,6 +174,10 @@ impl PortCapacityPermit<(), OperationalHealthSnapshot, OperationalStatusError>
             self.outbox.readiness(),
             self.projection.readiness(),
             self.columnar.readiness(),
+            self.vector_storage.as_ref().map_or(
+                VectorStalenessReadiness::NotApplicable,
+                vector_staleness_readiness,
+            ),
         );
         let (completion, receipt) = port_completion_channel();
         completion.complete(result);
@@ -150,6 +191,7 @@ fn required_health_snapshot(
     outbox: OutboxDerivedReadiness,
     projection: ProjectionWorkerReadiness,
     columnar: ColumnarWorkerReadiness,
+    vector_staleness: VectorStalenessReadiness,
 ) -> Result<OperationalHealthSnapshot, OperationalStatusError> {
     let runtime_running = runtime_stop.is_none();
     let storage_status = required_component_status(runtime_running);
@@ -184,14 +226,88 @@ fn required_health_snapshot(
     };
     let projection_status = worst_component_status(projection_status, columnar_status);
 
-    OperationalHealthSnapshot::new(vec![
+    let mut components = vec![
         ComponentHealth::new(HealthComponentKind::AuthoritativeStorage, storage_status),
         ComponentHealth::new(HealthComponentKind::Catalog, catalog_status),
         ComponentHealth::new(HealthComponentKind::CommitCoordinator, coordinator_status),
         ComponentHealth::new(HealthComponentKind::Outbox, outbox_status),
         ComponentHealth::new(HealthComponentKind::Projection, projection_status),
-    ])
-    .map_err(|_| OperationalStatusError::Integrity)
+    ];
+    if vector_staleness != VectorStalenessReadiness::NotApplicable {
+        let status = match (runtime_running, vector_staleness) {
+            (false, _) | (true, VectorStalenessReadiness::Unavailable) => {
+                HealthComponentStatus::Unavailable
+            }
+            (true, VectorStalenessReadiness::Degraded) => HealthComponentStatus::Degraded,
+            (true, VectorStalenessReadiness::Healthy) => {
+                if projection_status == HealthComponentStatus::Healthy {
+                    HealthComponentStatus::Healthy
+                } else {
+                    HealthComponentStatus::Degraded
+                }
+            }
+            (true, VectorStalenessReadiness::NotApplicable) => unreachable!(),
+        };
+        components.push(ComponentHealth::new(
+            HealthComponentKind::VectorStaleness,
+            status,
+        ));
+    }
+    OperationalHealthSnapshot::new(components).map_err(|_| OperationalStatusError::Integrity)
+}
+
+/// Resolves the active vector contract and its maintained global observation
+/// through exact keyed reads only. Any missing, stale, malformed, or
+/// inconsistent proof fails closed as `Unavailable`; no probe scans data.
+fn vector_staleness_readiness(storage: &SharedRedbOperationalPorts) -> VectorStalenessReadiness {
+    let Ok(Some(active)) = CatalogRepository::read_active_catalog(storage) else {
+        return VectorStalenessReadiness::NotApplicable;
+    };
+    let Ok(Some(stored)) = CatalogRepository::read_contract_bundle(
+        storage,
+        active.lineage(),
+        active.contract_version(),
+    ) else {
+        return VectorStalenessReadiness::Unavailable;
+    };
+    let Ok(bundle) = ValidatedContractBundle::from_stored(&stored) else {
+        return VectorStalenessReadiness::Unavailable;
+    };
+    let specs = bundle.bundle().schema().vector_field_specs();
+    if specs.is_empty() {
+        return VectorStalenessReadiness::NotApplicable;
+    }
+    let Ok(Some(observation)) =
+        VectorObservationRepository::read_vector_health_observation(storage, active.lineage())
+    else {
+        return VectorStalenessReadiness::Unavailable;
+    };
+    if observation.lineage() != active.lineage() {
+        return VectorStalenessReadiness::Unavailable;
+    }
+    // Absent field summaries are canonical zero-partition observations. A
+    // present summary must name an exact active spec; an extra or drifted
+    // threshold fails closed.
+    let exact = observation.fields().all(|field| {
+        specs
+            .binary_search_by(|spec| {
+                spec.entity()
+                    .cmp(&field.entity_type())
+                    .then_with(|| spec.field().cmp(&field.vector_field()))
+            })
+            .ok()
+            .and_then(|index| specs.get(index))
+            .is_some_and(|spec| {
+                field.stale_entity_count_threshold() == spec.stale_entity_count_threshold()
+            })
+    });
+    if !exact {
+        VectorStalenessReadiness::Unavailable
+    } else if observation.any_partition_breached() {
+        VectorStalenessReadiness::Degraded
+    } else {
+        VectorStalenessReadiness::Healthy
+    }
 }
 
 const fn required_component_status(healthy: bool) -> HealthComponentStatus {
@@ -329,6 +445,7 @@ mod tests {
                 OutboxDerivedReadiness::Ready,
                 ProjectionWorkerReadiness::Ready,
                 ColumnarWorkerReadiness::Ready,
+                VectorStalenessReadiness::NotApplicable,
             )
             .expect("fixed health shape");
             assert_eq!(snapshot.components().len(), 5);
@@ -393,6 +510,7 @@ mod tests {
             OutboxDerivedReadiness::Ready,
             ProjectionWorkerReadiness::Ready,
             ColumnarWorkerReadiness::Ready,
+            VectorStalenessReadiness::NotApplicable,
         )
         .expect("vector-free health snapshot");
         assert!(
@@ -411,6 +529,53 @@ mod tests {
                 .expect("build metadata"),
         );
         assert_eq!(report.status(), HealthStatus::Ready);
+    }
+
+    #[test]
+    fn vector_health_is_present_and_fails_closed_by_observer_state() {
+        for (readiness, expected) in [
+            (
+                VectorStalenessReadiness::Healthy,
+                HealthComponentStatus::Healthy,
+            ),
+            (
+                VectorStalenessReadiness::Degraded,
+                HealthComponentStatus::Degraded,
+            ),
+            (
+                VectorStalenessReadiness::Unavailable,
+                HealthComponentStatus::Unavailable,
+            ),
+        ] {
+            let snapshot = required_health_snapshot(
+                ValidatedAllocatorCapacity::Available,
+                None,
+                OutboxDerivedReadiness::Ready,
+                ProjectionWorkerReadiness::Ready,
+                ColumnarWorkerReadiness::Ready,
+                readiness,
+            )
+            .expect("vector health snapshot");
+            assert_eq!(snapshot.components().len(), 6);
+            assert_eq!(
+                status(&snapshot, HealthComponentKind::VectorStaleness),
+                expected
+            );
+        }
+
+        let snapshot = required_health_snapshot(
+            ValidatedAllocatorCapacity::Available,
+            None,
+            OutboxDerivedReadiness::Ready,
+            ProjectionWorkerReadiness::Degraded,
+            ColumnarWorkerReadiness::Ready,
+            VectorStalenessReadiness::Healthy,
+        )
+        .expect("projection-degraded vector health snapshot");
+        assert_eq!(
+            status(&snapshot, HealthComponentKind::VectorStaleness),
+            HealthComponentStatus::Degraded
+        );
     }
 
     /// Falsifiability: drop the `worst_component_status` fold (report only the
@@ -441,6 +606,7 @@ mod tests {
                 OutboxDerivedReadiness::Ready,
                 ProjectionWorkerReadiness::Ready,
                 columnar,
+                VectorStalenessReadiness::NotApplicable,
             )
             .expect("fixed health shape");
             assert_eq!(
@@ -461,6 +627,7 @@ mod tests {
             OutboxDerivedReadiness::Ready,
             ProjectionWorkerReadiness::Degraded,
             ColumnarWorkerReadiness::Ready,
+            VectorStalenessReadiness::NotApplicable,
         )
         .expect("fixed health shape");
         assert_eq!(
@@ -486,6 +653,7 @@ mod tests {
                 OutboxDerivedReadiness::Ready,
                 ProjectionWorkerReadiness::Ready,
                 ColumnarWorkerReadiness::Ready,
+                VectorStalenessReadiness::NotApplicable,
             )
             .expect("fixed health shape");
             assert!(

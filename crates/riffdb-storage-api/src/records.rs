@@ -3988,6 +3988,7 @@ mod tests {
                 target,
                 partition,
                 FieldId::new(1).expect("vector field"),
+                3,
                 EntityVersion::first(),
                 None,
                 true,

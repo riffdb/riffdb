@@ -18,8 +18,8 @@ use riffdb_storage_api::{
     ApplicationSequenceAllocator, CommandSegmentDigestV1, CommittedEntityTransitionV1,
     DatabaseIdentityProbe, DatabaseIdentityProbePort, DatabaseInitializationPort,
     DatabaseInitializationResult, DeferredCommandFence, EntityChainHeadV1, EntityChainStateV1,
-    HISTORY_INCARNATION_INITIAL, StorageError, StorageErrorKind, StorageFormatVersion,
-    StoredIndexEpochV1,
+    HISTORY_INCARNATION_INITIAL, MAX_VECTOR_MODELS_PER_OBSERVATION, StorageError, StorageErrorKind,
+    StorageFormatVersion, StoredIndexEpochV1,
     proto_codec::{
         decode_administration_sequence_allocator_v1, decode_application_sequence_allocator_v1,
         decode_database_identity_v1, decode_history_incarnation_v1, decode_record_registry_v2,
@@ -30,8 +30,8 @@ use riffdb_storage_api::{
     },
 };
 use riffdb_types::{
-    AdministrationSequence, CommitSequence, DatabaseId, DualFrontier, IndexEpoch, IndexId,
-    SchemaHash,
+    AdministrationSequence, CommitSequence, DatabaseId, DualFrontier, EmbeddingMetadata,
+    IndexEpoch, IndexId, SchemaHash,
 };
 
 use crate::codec::{
@@ -54,8 +54,10 @@ use crate::gate::{ExclusiveGate, ExclusiveLease};
 use crate::hooks::{RedbTestController, RedbTestOperation};
 use crate::keys::{
     decode_application_sequence_key, decode_audit_by_request_key, decode_audit_key,
-    decode_index_range_prefix_key, decode_partition_index_key, encode_audit_by_request_key,
-    encode_audit_by_request_prefix, encode_event_route_key, encode_partition_index_key,
+    decode_index_range_prefix_key, decode_partition_index_key, decode_vector_evidence_index_key,
+    encode_audit_by_request_key, encode_audit_by_request_prefix, encode_event_route_key,
+    encode_partition_index_key, encode_vector_health_observation_key,
+    encode_vector_observation_key,
 };
 use crate::layout::{
     AUDIT, AUDIT_BY_REQUEST, BYTE_TABLES, COMMITS, ENTITIES, ENTITY_CHAIN_HEADS, EVENT_ROUTES,
@@ -946,6 +948,7 @@ enum RegistryMigration {
     ApplicationExportOperation,
     VectorEvidence,
     VectorObservations,
+    VectorHealthObservations,
 }
 
 const FORMAT_MIGRATION_MAX_ROWS: usize = 500;
@@ -1028,6 +1031,12 @@ pub(crate) const PRE_VECTOR_EVIDENCE_REGISTRY_DIGEST: [u8; 32] = [
 pub(crate) const PRE_VECTOR_OBSERVATION_REGISTRY_DIGEST: [u8; 32] = [
     0x4f, 0xa3, 0xad, 0xb5, 0x26, 0x57, 0x49, 0x1f, 0xde, 0x9f, 0x97, 0xb0, 0x90, 0xa7, 0x40, 0xe3,
     0x20, 0xe5, 0x19, 0x12, 0x89, 0xf5, 0xe6, 0x98, 0x0a, 0xc6, 0x61, 0x09, 0xb3, 0x9a, 0x9d, 0x5b,
+];
+/// Registry digest immediately before the lineage-wide vector-health
+/// observation became writable.
+pub(crate) const PRE_VECTOR_HEALTH_OBSERVATION_REGISTRY_DIGEST: [u8; 32] = [
+    0x6b, 0x17, 0x4a, 0x49, 0xe8, 0x30, 0xcd, 0x9c, 0x05, 0x7a, 0xef, 0xd7, 0x17, 0x94, 0x92, 0x7c,
+    0xc9, 0x99, 0xa3, 0xa7, 0x13, 0xdb, 0x62, 0x75, 0x71, 0x21, 0x3c, 0x56, 0x96, 0xac, 0xc5, 0x72,
 ];
 
 /// Last observed redb repair progress in basis points (0..=10_000), for recovery telemetry.
@@ -1485,6 +1494,10 @@ impl RedbStore {
                     == &SchemaHash::from_bytes(PRE_VECTOR_OBSERVATION_REGISTRY_DIGEST)
                 {
                     RegistryMigration::VectorObservations
+                } else if observed.value()
+                    == &SchemaHash::from_bytes(PRE_VECTOR_HEALTH_OBSERVATION_REGISTRY_DIGEST)
+                {
+                    RegistryMigration::VectorHealthObservations
                 } else {
                     return Err(storage_error(StorageErrorKind::IncompatibleFormat));
                 }
@@ -1718,6 +1731,20 @@ impl RedbStore {
             publish_record_registry(
                 &self.shared,
                 SchemaHash::from_bytes(PRE_VECTOR_OBSERVATION_REGISTRY_DIGEST),
+                SchemaHash::from_bytes(PRE_VECTOR_HEALTH_OBSERVATION_REGISTRY_DIGEST),
+            )?;
+        }
+        if format == StorageFormatVersion::V2
+            && (matches!(
+                registry_migration,
+                RegistryMigration::VectorHealthObservations
+            ) || observed_registry_digest(&self.shared)?
+                == SchemaHash::from_bytes(PRE_VECTOR_HEALTH_OBSERVATION_REGISTRY_DIGEST))
+        {
+            backfill_vector_observations_and_health(&self.shared)?;
+            publish_record_registry(
+                &self.shared,
+                SchemaHash::from_bytes(PRE_VECTOR_HEALTH_OBSERVATION_REGISTRY_DIGEST),
                 riffdb_storage_api::proto_codec::current_record_registry_digest(),
             )?;
         }
@@ -3192,6 +3219,198 @@ fn backfill_vector_evidence_index(shared: &SharedRedb) -> Result<(), StorageErro
             return Ok(());
         }
     }
+}
+
+fn active_vector_specs_for_migration(
+    shared: &SharedRedb,
+) -> Result<crate::startup::ActiveVectorSpecsForMigration, StorageError> {
+    crate::startup::active_vector_specs_for_migration(shared)
+}
+
+/// Upgrades the pre-health vector registry by reconstructing every missing
+/// partition observation from the authoritative evidence index and then one
+/// lineage-wide health row. The reconstruction is deterministic and
+/// idempotent: an interrupted committed migration can be replayed, while any
+/// conflicting pre-existing row refuses before the registry marker advances.
+fn backfill_vector_observations_and_health(shared: &SharedRedb) -> Result<(), StorageError> {
+    let active = active_vector_specs_for_migration(shared)?;
+    let mut transaction = shared.database.begin_write().map_err(transaction_error)?;
+    transaction.set_two_phase_commit(true);
+    transaction
+        .set_durability(Durability::Immediate)
+        .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+    let index = transaction
+        .open_table(VECTOR_EVIDENCE_INDEX)
+        .map_err(table_error)?;
+    let mut observations = transaction
+        .open_table(VECTOR_OBSERVATIONS)
+        .map_err(table_error)?;
+    let mut current_target: Option<riffdb_storage_api::VectorObservationTargetV1> = None;
+    let mut total = 0_u64;
+    let mut stale = 0_u64;
+    let mut models = BTreeMap::<EmbeddingMetadata, u64>::new();
+    let mut revision: Option<CommitSequence> = None;
+
+    {
+        let mut flush = |target: Option<riffdb_storage_api::VectorObservationTargetV1>,
+                         total: u64,
+                         stale: u64,
+                         models: &mut BTreeMap<EmbeddingMetadata, u64>,
+                         revision: Option<CommitSequence>|
+         -> Result<(), StorageError> {
+            let Some(target) = target else {
+                return Ok(());
+            };
+            let revision = revision.ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?;
+            let rebuilt = riffdb_storage_api::VectorObservationCountsV1::from_parts(
+                target.clone(),
+                total,
+                stale,
+                std::mem::take(models).into_iter().collect(),
+                revision,
+            )
+            .map_err(|_| storage_error(StorageErrorKind::CorruptData))?;
+            let key = encode_vector_observation_key(&target)
+                .map_err(|_| storage_error(StorageErrorKind::CorruptData))?;
+            if let Some(existing) = observations
+                .get(key.as_slice())
+                .map_err(precommit_storage_error)?
+            {
+                let existing = riffdb_storage_api::decode_vector_observation_v1(existing.value())
+                    .map_err(crate::error::codec_error)?;
+                if existing.value() != &rebuilt {
+                    return Err(storage_error(StorageErrorKind::CorruptData));
+                }
+            } else {
+                let encoded = riffdb_storage_api::encode_vector_observation_v1(&rebuilt)
+                    .map_err(crate::error::codec_error)?;
+                observations
+                    .insert(key.as_slice(), encoded.as_bytes())
+                    .map_err(precommit_storage_error)?;
+            }
+            Ok(())
+        };
+
+        for row in index.iter().map_err(precommit_storage_error)? {
+            let (key, value) = row.map_err(precommit_storage_error)?;
+            let entry = riffdb_storage_api::decode_vector_evidence_index_v1(value.value())
+                .map_err(crate::error::codec_error)?
+                .into_parts()
+                .0;
+            let (physical_target, physical_entity_key) =
+                decode_vector_evidence_index_key(key.value())
+                    .map_err(|_| storage_error(StorageErrorKind::CorruptData))?;
+            if physical_target != *entry.target() || physical_entity_key != *entry.entity_key() {
+                return Err(storage_error(StorageErrorKind::CorruptData));
+            }
+            if current_target
+                .as_ref()
+                .is_some_and(|target| target != entry.target())
+            {
+                flush(current_target.take(), total, stale, &mut models, revision)?;
+                total = 0;
+                stale = 0;
+                revision = None;
+            }
+            if current_target.is_none() {
+                current_target = Some(entry.target().clone());
+            }
+            total = total
+                .checked_add(1)
+                .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
+            if entry.source_stale() {
+                stale = stale
+                    .checked_add(1)
+                    .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
+            }
+            if let Some(embedding) = entry.embedding_write() {
+                if !models.contains_key(embedding.metadata())
+                    && models.len() == MAX_VECTOR_MODELS_PER_OBSERVATION
+                {
+                    return Err(storage_error(StorageErrorKind::LimitExceeded));
+                }
+                let count = models.entry(embedding.metadata().clone()).or_default();
+                *count = count
+                    .checked_add(1)
+                    .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
+            }
+            revision = Some(revision.map_or(entry.evidence_sequence(), |current| {
+                current.max(entry.evidence_sequence())
+            }));
+        }
+        flush(current_target.take(), total, stale, &mut models, revision)?;
+    }
+    drop(index);
+
+    let mut health: Option<riffdb_storage_api::VectorHealthObservationV1> = None;
+    for row in observations.iter().map_err(precommit_storage_error)? {
+        let (key, value) = row.map_err(precommit_storage_error)?;
+        if crate::keys::decode_vector_health_observation_key(key.value()).is_ok() {
+            continue;
+        }
+        let observation = riffdb_storage_api::decode_vector_observation_v1(value.value())
+            .map_err(crate::error::codec_error)?
+            .into_parts()
+            .0;
+        let Some((lineage, specs)) = active.as_ref() else {
+            return Err(storage_error(StorageErrorKind::CorruptData));
+        };
+        if observation.target().lineage() != lineage {
+            return Err(storage_error(StorageErrorKind::CorruptData));
+        }
+        let threshold = specs
+            .get(&(
+                observation.target().entity_type(),
+                observation.target().vector_field(),
+            ))
+            .copied()
+            .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?;
+        let summary = health.get_or_insert_with(|| {
+            riffdb_storage_api::VectorHealthObservationV1::empty(
+                lineage.clone(),
+                observation.revision(),
+            )
+        });
+        let summary_revision = summary.revision().max(observation.revision());
+        summary
+            .apply_partition(
+                observation.target().entity_type(),
+                observation.target().vector_field(),
+                threshold,
+                None,
+                Some(&observation),
+                summary_revision,
+            )
+            .map_err(|_| storage_error(StorageErrorKind::CorruptData))?;
+    }
+    if let Some(health) = health {
+        let (lineage, _) = active
+            .as_ref()
+            .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?;
+        let key = encode_vector_health_observation_key(lineage)
+            .map_err(|_| storage_error(StorageErrorKind::CorruptData))?;
+        let encoded = riffdb_storage_api::encode_vector_health_observation_v1(&health)
+            .map_err(crate::error::codec_error)?;
+        if let Some(existing) = observations
+            .get(key.as_slice())
+            .map_err(precommit_storage_error)?
+        {
+            let existing =
+                riffdb_storage_api::decode_vector_health_observation_v1(existing.value())
+                    .map_err(crate::error::codec_error)?;
+            if existing.value() != &health {
+                return Err(storage_error(StorageErrorKind::CorruptData));
+            }
+        } else {
+            observations
+                .insert(key.as_slice(), encoded.as_bytes())
+                .map_err(precommit_storage_error)?;
+        }
+    }
+    drop(observations);
+    shared.before_test_commit(RedbTestOperation::StorageFormatMigrationBatch)?;
+    shared.commit_durable(transaction)?;
+    shared.after_test_commit(RedbTestOperation::StorageFormatMigrationBatch)
 }
 
 fn install_validated_prefix_entity_heads_table(shared: &SharedRedb) -> Result<(), StorageError> {
@@ -7526,6 +7745,67 @@ mod tests {
             transaction
                 .open_table(crate::layout::VECTOR_EVIDENCE_INDEX)
                 .expect("vector evidence index table")
+                .is_empty()
+                .expect("table length")
+        );
+        let metadata = transaction.open_table(META).expect("metadata");
+        let encoded = metadata
+            .get(META_RECORD_REGISTRY)
+            .expect("registry read")
+            .expect("registry");
+        assert_eq!(
+            *decode_record_registry_v2(encoded.value())
+                .expect("decode registry")
+                .value(),
+            riffdb_storage_api::proto_codec::current_record_registry_digest()
+        );
+    }
+
+    #[test]
+    fn pre_vector_health_registry_publishes_only_after_health_backfill() {
+        let scope = crate::test_path::ScopedDirectory::new("pre-vector-health-registry");
+        let path = scope.join("db.redb");
+        let mut store = RedbStore::open(&path).expect("open");
+        let database_id = DatabaseId::from_bytes({
+            let mut bytes = [0x24; 16];
+            bytes[6] = 0x74;
+            bytes[8] = 0xa4;
+            bytes
+        })
+        .expect("database");
+        store.initialize_database(database_id).expect("initialize");
+        {
+            let mut transaction = store
+                .shared
+                .database
+                .begin_write()
+                .expect("begin predecessor write");
+            transaction
+                .set_durability(Durability::Immediate)
+                .expect("durability");
+            let predecessor = encode_record_registry_v2(SchemaHash::from_bytes(
+                PRE_VECTOR_HEALTH_OBSERVATION_REGISTRY_DIGEST,
+            ))
+            .expect("predecessor registry");
+            transaction
+                .open_table(META)
+                .expect("metadata")
+                .insert(META_RECORD_REGISTRY, predecessor.as_bytes())
+                .expect("pin predecessor registry");
+            transaction.commit().expect("commit predecessor fixture");
+        }
+        drop(store);
+
+        let reopened = RedbStore::open(&path).expect("migrate predecessor");
+        let transaction = reopened
+            .shared
+            .database
+            .begin_read()
+            .expect("read migrated database");
+        assert!(
+            transaction
+                .open_table(crate::layout::VECTOR_OBSERVATIONS)
+                .expect("vector observation table")
                 .is_empty()
                 .expect("table length")
         );

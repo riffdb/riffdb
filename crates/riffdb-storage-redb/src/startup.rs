@@ -1,6 +1,6 @@
 //! Exclusive read-only startup evidence over one immutable redb snapshot.
 
-use std::collections::{BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt;
 use std::ops::Bound::{Excluded, Included, Unbounded};
 use std::sync::Arc;
@@ -14,7 +14,7 @@ use riffdb_catalog::{
     CatalogIndexMigrationApplied, CatalogIndexMigrationBackend, CatalogIndexMigrationBundleRequest,
     CatalogIndexMigrationBundleResponse, CatalogIndexMigrationCompletion,
     CatalogIndexMigrationInstruction, CatalogIndexMigrationPendingBatch, CatalogIndexMigrationScan,
-    CatalogIndexMigrationScanRequest,
+    CatalogIndexMigrationScanRequest, ValidatedContractBundle,
 };
 use riffdb_storage_api::{
     ApplicationSequenceAllocator, CapabilityLifecycleV1, DormantPortBundle, EvidencePageLimit,
@@ -30,8 +30,8 @@ use riffdb_storage_api::{
 };
 use riffdb_types::{
     CommitSequence, ContractBundleHash, ContractLineage, ContractMigrationOperationId,
-    ContractVersion, DatabaseId, FrontierPosition, MigrationBundleHash, hash_contract_bundle,
-    hash_query_module, hash_reactive_module, hash_reactive_source,
+    ContractVersion, DatabaseId, EntityTypeId, FieldId, FrontierPosition, MigrationBundleHash,
+    hash_contract_bundle, hash_query_module, hash_reactive_module, hash_reactive_source,
 };
 
 use crate::codec::{self, IdempotencyRecordV1};
@@ -63,8 +63,9 @@ use crate::store::{
     PRE_ENTITY_REFERENCE_REGISTRY_DIGEST, PRE_EVENT_ROUTE_REGISTRY_DIGEST,
     PRE_HISTORY_INCARNATION_REGISTRY_DIGEST, PRE_INDEX_GENERATION_REGISTRY_DIGEST,
     PRE_RETENTION_WATERMARK_REGISTRY_DIGEST, PRE_VALIDATED_PREFIX_CHECKPOINT_REGISTRY_DIGEST,
-    PRE_VECTOR_EVIDENCE_REGISTRY_DIGEST, PRE_VECTOR_OBSERVATION_REGISTRY_DIGEST,
-    PRE_WP417_REACTIVE_CONSUMER_REGISTRY_DIGEST, RedbDormantPorts, RedbStore, SharedRedb,
+    PRE_VECTOR_EVIDENCE_REGISTRY_DIGEST, PRE_VECTOR_HEALTH_OBSERVATION_REGISTRY_DIGEST,
+    PRE_VECTOR_OBSERVATION_REGISTRY_DIGEST, PRE_WP417_REACTIVE_CONSUMER_REGISTRY_DIGEST,
+    RedbDormantPorts, RedbStore, SharedRedb,
 };
 
 static NEXT_OPEN_SESSION: AtomicU64 = AtomicU64::new(1);
@@ -78,6 +79,8 @@ fn startup_registry_is_supported(digest: riffdb_types::SchemaHash) -> bool {
     digest == riffdb_storage_api::proto_codec::current_record_registry_digest()
         || digest == riffdb_types::SchemaHash::from_bytes(PRE_VECTOR_EVIDENCE_REGISTRY_DIGEST)
         || digest == riffdb_types::SchemaHash::from_bytes(PRE_VECTOR_OBSERVATION_REGISTRY_DIGEST)
+        || digest
+            == riffdb_types::SchemaHash::from_bytes(PRE_VECTOR_HEALTH_OBSERVATION_REGISTRY_DIGEST)
         || digest == riffdb_types::SchemaHash::from_bytes(PRE_EVENT_ROUTE_REGISTRY_DIGEST)
         || digest == riffdb_types::SchemaHash::from_bytes(PRE_ENTITY_REFERENCE_REGISTRY_DIGEST)
         || digest == riffdb_types::SchemaHash::from_bytes(PRE_CONTRACT_MIGRATION_REGISTRY_DIGEST)
@@ -92,6 +95,57 @@ fn startup_registry_is_supported(digest: riffdb_types::SchemaHash) -> bool {
         || digest
             == riffdb_types::SchemaHash::from_bytes(PRE_APPLICATION_INSTALLATION_REGISTRY_DIGEST)
         || digest == riffdb_types::SchemaHash::from_bytes(PRE_APPLICATION_EXPORT_REGISTRY_DIGEST)
+}
+
+/// Resolves active vector-field SLOs for the predecessor observation
+/// migration. Catalog interpretation remains confined to startup; the store
+/// receives only checked stable identities and thresholds.
+pub(crate) type ActiveVectorSpecsForMigration =
+    Option<(ContractLineage, BTreeMap<(EntityTypeId, FieldId), u64>)>;
+
+pub(crate) fn active_vector_specs_for_migration(
+    shared: &SharedRedb,
+) -> Result<ActiveVectorSpecsForMigration, StorageError> {
+    let transaction = shared.database.begin_read().map_err(transaction_error)?;
+    let active_table = transaction
+        .open_table(CATALOG_ACTIVE)
+        .map_err(table_error)?;
+    let Some(active_bytes) = active_table
+        .get(CATALOG_ACTIVE_KEY.as_slice())
+        .map_err(precommit_storage_error)?
+    else {
+        return Ok(None);
+    };
+    let active = codec::decode_active_catalog_pointer_v1(active_bytes.value())?
+        .into_parts()
+        .0;
+    let bundle_key = keys::encode_contract_bundle_key(active.lineage(), active.contract_version())
+        .map_err(|_| storage_error(StorageErrorKind::CorruptData))?;
+    let bundles = transaction
+        .open_table(CONTRACT_BUNDLES)
+        .map_err(table_error)?;
+    let bundle_bytes = bundles
+        .get(bundle_key.as_slice())
+        .map_err(precommit_storage_error)?
+        .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?;
+    let stored = codec::decode_contract_bundle_v1(bundle_bytes.value())?
+        .into_parts()
+        .0;
+    let validated = ValidatedContractBundle::from_stored(&stored)
+        .map_err(|_| storage_error(StorageErrorKind::CorruptData))?;
+    let specs = validated
+        .bundle()
+        .schema()
+        .vector_field_specs()
+        .iter()
+        .map(|spec| {
+            (
+                (spec.entity(), spec.field()),
+                spec.stale_entity_count_threshold(),
+            )
+        })
+        .collect();
+    Ok(Some((active.lineage().clone(), specs)))
 }
 
 fn exclusive_prefix_end(prefix: &[u8]) -> Option<Vec<u8>> {
@@ -2325,7 +2379,7 @@ fn inspect_table_row_from_bytes(
         31 => inspect_application_installation_campaign_row(key, value),
         32 => inspect_application_export_operation_row(key, value),
         33 => inspect_vector_evidence_row(transaction, key, value),
-        34 => inspect_vector_observation_row(key, value),
+        34 => inspect_vector_observation_row(transaction, key, value),
         35 => inspect_vector_evidence_index_row(transaction, key, value),
         _ => Err(invariant()),
     }
@@ -2473,14 +2527,138 @@ fn inspect_vector_evidence_index_row(
 }
 
 fn inspect_vector_observation_row(
+    transaction: &ReadTransaction,
     key: &[u8],
     value: &[u8],
 ) -> Result<Option<StructuralFinding>, StorageError> {
+    if let Ok(lineage) = keys::decode_vector_health_observation_key(key) {
+        let decoded = riffdb_storage_api::decode_vector_health_observation_v1(value)
+            .map_err(crate::error::codec_error)?;
+        let health = decoded.value();
+        if health.lineage() != &lineage {
+            return Err(corrupt());
+        }
+        let mut expected = health
+            .fields()
+            .map(|field| {
+                (
+                    (field.entity_type(), field.vector_field()),
+                    (field.stale_entity_count_threshold(), 0_u64, 0_u64),
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        let table = transaction
+            .open_table(VECTOR_OBSERVATIONS)
+            .map_err(table_error)?;
+        for row in table.iter().map_err(precommit_storage_error)? {
+            let (row_key, row_value) = row.map_err(precommit_storage_error)?;
+            if keys::decode_vector_health_observation_key(row_key.value()).is_ok() {
+                continue;
+            }
+            let target =
+                keys::decode_vector_observation_key(row_key.value()).map_err(|_| corrupt())?;
+            if target.lineage() != &lineage {
+                continue;
+            }
+            let observation = riffdb_storage_api::decode_vector_observation_v1(row_value.value())
+                .map_err(crate::error::codec_error)?;
+            let observation = observation.value();
+            if observation.target() != &target || observation.total_entities() == 0 {
+                return Ok(Some(authoritative(
+                    StructuralFindingCode::CrossLinkMismatch,
+                )));
+            }
+            let Some((threshold, partitions, breached)) =
+                expected.get_mut(&(target.entity_type(), target.vector_field()))
+            else {
+                return Ok(Some(authoritative(StructuralFindingCode::MissingCrossLink)));
+            };
+            *partitions = partitions.checked_add(1).ok_or_else(corrupt)?;
+            if observation.source_stale_entities() > *threshold {
+                *breached = breached.checked_add(1).ok_or_else(corrupt)?;
+            }
+        }
+        let exact = health.fields().all(|field| {
+            expected
+                .get(&(field.entity_type(), field.vector_field()))
+                .is_some_and(|(_, partitions, breached)| {
+                    *partitions == field.partition_count()
+                        && *breached == field.breached_partition_count()
+                })
+        });
+        return Ok((!exact).then(|| authoritative(StructuralFindingCode::CrossLinkMismatch)));
+    }
     let target = keys::decode_vector_observation_key(key).map_err(|_| corrupt())?;
     let decoded = riffdb_storage_api::decode_vector_observation_v1(value)
         .map_err(crate::error::codec_error)?;
-    if decoded.value().target() != &target {
+    let observation = decoded.value();
+    if observation.target() != &target || observation.total_entities() == 0 {
         return Err(corrupt());
+    }
+    let health_key =
+        keys::encode_vector_health_observation_key(target.lineage()).map_err(|_| corrupt())?;
+    let health_table = transaction
+        .open_table(VECTOR_OBSERVATIONS)
+        .map_err(table_error)?;
+    let Some(health_bytes) = health_table
+        .get(health_key.as_slice())
+        .map_err(precommit_storage_error)?
+    else {
+        return Ok(Some(authoritative(StructuralFindingCode::MissingCrossLink)));
+    };
+    let health = riffdb_storage_api::decode_vector_health_observation_v1(health_bytes.value())
+        .map_err(crate::error::codec_error)?;
+    if !health.value().fields().any(|field| {
+        field.entity_type() == target.entity_type() && field.vector_field() == target.vector_field()
+    }) {
+        return Ok(Some(authoritative(StructuralFindingCode::MissingCrossLink)));
+    }
+
+    let prefix = keys::encode_vector_evidence_index_prefix(&target).map_err(|_| corrupt())?;
+    let upper = exclusive_prefix_end(&prefix).ok_or_else(corrupt)?;
+    let index_table = transaction
+        .open_table(VECTOR_EVIDENCE_INDEX)
+        .map_err(table_error)?;
+    let mut total = 0_u64;
+    let mut stale = 0_u64;
+    let mut models = BTreeMap::new();
+    for row in index_table
+        .range::<&[u8]>((Included(prefix.as_slice()), Excluded(upper.as_slice())))
+        .map_err(precommit_storage_error)?
+    {
+        let (index_key, index_value) = row.map_err(precommit_storage_error)?;
+        let (index_target, entity_key) =
+            keys::decode_vector_evidence_index_key(index_key.value()).map_err(|_| corrupt())?;
+        let entry = riffdb_storage_api::decode_vector_evidence_index_v1(index_value.value())
+            .map_err(crate::error::codec_error)?;
+        let entry = entry.value();
+        if index_target != target || entry.target() != &target || entry.entity_key() != &entity_key
+        {
+            return Ok(Some(authoritative(
+                StructuralFindingCode::CrossLinkMismatch,
+            )));
+        }
+        total = total.checked_add(1).ok_or_else(corrupt)?;
+        if entry.source_stale() {
+            stale = stale.checked_add(1).ok_or_else(corrupt)?;
+        }
+        if let Some(embedding) = entry.embedding_write() {
+            let count = models.entry(embedding.metadata().clone()).or_insert(0_u64);
+            *count = count.checked_add(1).ok_or_else(corrupt)?;
+        }
+    }
+    let expected = riffdb_storage_api::VectorObservationCountsV1::from_parts(
+        target,
+        total,
+        stale,
+        models.into_iter().collect(),
+        observation.revision(),
+    )
+    .map_err(|_| corrupt())?;
+    if &expected != observation {
+        return Ok(Some(authoritative(
+            StructuralFindingCode::CrossLinkMismatch,
+        )));
     }
     Ok(None)
 }

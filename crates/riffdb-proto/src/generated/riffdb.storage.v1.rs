@@ -3433,6 +3433,28 @@ pub struct StoredVectorEvidenceV1 {
     #[prost(message, optional, tag = "10")]
     pub plan: ::core::option::Option<ExecutablePlanRefV1>,
 }
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct StoredVectorHealthFieldObservationV1 {
+    #[prost(uint32, tag = "1")]
+    pub entity_type_id: u32,
+    #[prost(uint32, tag = "2")]
+    pub vector_field_id: u32,
+    #[prost(uint64, tag = "3")]
+    pub stale_entity_count_threshold: u64,
+    #[prost(uint64, tag = "4")]
+    pub partition_count: u64,
+    #[prost(uint64, tag = "5")]
+    pub breached_partition_count: u64,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct StoredVectorHealthObservationV1 {
+    #[prost(string, tag = "1")]
+    pub contract_lineage: ::prost::alloc::string::String,
+    #[prost(message, repeated, tag = "2")]
+    pub fields: ::prost::alloc::vec::Vec<StoredVectorHealthFieldObservationV1>,
+    #[prost(uint64, tag = "3")]
+    pub revision_sequence: u64,
+}
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct StoredVectorModelCountV1 {
     #[prost(string, tag = "1")]

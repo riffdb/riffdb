@@ -528,13 +528,14 @@ impl ProductionGraphBuilder {
         ));
         let outbox = Arc::new(ServerOutboxStatusPort::new(storage.clone(), &blocking));
         let operational: Arc<dyn OperationalStatusPort> =
-            Arc::new(ProductionOperationalStatusPort::new(
+            Arc::new(ProductionOperationalStatusPort::new_with_vector_storage(
                 allocator_capacity,
                 runtime.clone(),
                 notifications.clone(),
                 outbox_health,
                 projection_status,
                 columnar_status,
+                storage.clone(),
             ));
         let health: Arc<dyn ServiceHealthHooks> = Arc::new(
             ProductionObservabilityHealthHooks::new(runtime.clone(), observability.clone()),

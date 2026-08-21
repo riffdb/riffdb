@@ -19,6 +19,13 @@ use crate::{
 /// cannot grow one authoritative counter record without bound.
 pub const MAX_VECTOR_MODELS_PER_OBSERVATION: usize = 256;
 
+/// Maximum vector fields represented in one lineage-wide health observation.
+///
+/// The contract compiler is already bounded below this ceiling. Keeping the
+/// durable summary independently bounded prevents a corrupt record from
+/// turning an authenticated health probe into unbounded allocation.
+pub const MAX_VECTOR_FIELDS_PER_HEALTH_OBSERVATION: usize = 256;
+
 /// Pure-read port for one exact authoritative vector-observation row.
 ///
 /// Callers supply a compiler-derived partition/field identity; there is no
@@ -29,6 +36,15 @@ pub trait VectorObservationRepository {
         &self,
         target: &VectorObservationTargetV1,
     ) -> Result<Option<VectorObservationCountsV1>, crate::StorageError>;
+
+    /// Reads the maintained lineage-wide health summary in one exact lookup.
+    ///
+    /// This is deliberately not expressible as a scan: operational health must
+    /// remain bounded independently of entity and partition cardinality.
+    fn read_vector_health_observation(
+        &self,
+        lineage: &ContractLineage,
+    ) -> Result<Option<VectorHealthObservationV1>, crate::StorageError>;
 }
 
 /// Pure-read port for one exact partition-ordered authoritative evidence index.
@@ -390,6 +406,233 @@ impl VectorObservationCountsV1 {
     }
 }
 
+/// Canonical lineage-wide partition/SLO counts for one vector field.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VectorHealthFieldObservationV1 {
+    entity_type: EntityTypeId,
+    vector_field: FieldId,
+    stale_entity_count_threshold: u64,
+    partition_count: u64,
+    breached_partition_count: u64,
+}
+
+impl VectorHealthFieldObservationV1 {
+    /// Reconstructs one checked durable field summary.
+    pub fn from_parts(
+        entity_type: EntityTypeId,
+        vector_field: FieldId,
+        stale_entity_count_threshold: u64,
+        partition_count: u64,
+        breached_partition_count: u64,
+    ) -> Result<Self, StorageValueError> {
+        if stale_entity_count_threshold == 0 || breached_partition_count > partition_count {
+            return Err(StorageValueError::InvalidShape);
+        }
+        Ok(Self {
+            entity_type,
+            vector_field,
+            stale_entity_count_threshold,
+            partition_count,
+            breached_partition_count,
+        })
+    }
+
+    /// Stable entity identity.
+    #[must_use]
+    pub const fn entity_type(&self) -> EntityTypeId {
+        self.entity_type
+    }
+
+    /// Stable vector-field identity.
+    #[must_use]
+    pub const fn vector_field(&self) -> FieldId {
+        self.vector_field
+    }
+
+    /// Contract-owned strict stale-entity threshold.
+    #[must_use]
+    pub const fn stale_entity_count_threshold(&self) -> u64 {
+        self.stale_entity_count_threshold
+    }
+
+    /// Number of nonempty logical partitions for this field.
+    #[must_use]
+    pub const fn partition_count(&self) -> u64 {
+        self.partition_count
+    }
+
+    /// Number of partitions strictly over the declared threshold.
+    #[must_use]
+    pub const fn breached_partition_count(&self) -> u64 {
+        self.breached_partition_count
+    }
+
+    const fn is_breached(&self) -> bool {
+        self.breached_partition_count != 0
+    }
+}
+
+/// Authoritative bounded health observation for every populated vector field
+/// in one contract lineage.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VectorHealthObservationV1 {
+    lineage: ContractLineage,
+    fields: BTreeMap<(EntityTypeId, FieldId), VectorHealthFieldObservationV1>,
+    revision: CommitSequence,
+}
+
+impl VectorHealthObservationV1 {
+    /// Reconstructs a canonical persisted health observation.
+    pub fn from_parts(
+        lineage: ContractLineage,
+        fields: Vec<VectorHealthFieldObservationV1>,
+        revision: CommitSequence,
+    ) -> Result<Self, StorageValueError> {
+        if fields.len() > MAX_VECTOR_FIELDS_PER_HEALTH_OBSERVATION
+            || fields.windows(2).any(|pair| {
+                (pair[0].entity_type(), pair[0].vector_field())
+                    >= (pair[1].entity_type(), pair[1].vector_field())
+            })
+        {
+            return Err(StorageValueError::InvalidShape);
+        }
+        Ok(Self {
+            lineage,
+            fields: fields
+                .into_iter()
+                .map(|field| ((field.entity_type(), field.vector_field()), field))
+                .collect(),
+            revision,
+        })
+    }
+
+    /// Creates the first empty summary immediately before one vector transition.
+    #[must_use]
+    pub const fn empty(lineage: ContractLineage, revision: CommitSequence) -> Self {
+        Self {
+            lineage,
+            fields: BTreeMap::new(),
+            revision,
+        }
+    }
+
+    /// Applies one partition observation transition under the compiler-owned threshold.
+    pub fn apply_partition(
+        &mut self,
+        entity_type: EntityTypeId,
+        vector_field: FieldId,
+        stale_entity_count_threshold: u64,
+        prior: Option<&VectorObservationCountsV1>,
+        successor: Option<&VectorObservationCountsV1>,
+        revision: CommitSequence,
+    ) -> Result<(), StorageValueError> {
+        if stale_entity_count_threshold == 0 || revision < self.revision {
+            return Err(StorageValueError::InvalidShape);
+        }
+        let key = (entity_type, vector_field);
+        if prior.is_some_and(|observation| {
+            observation.target().lineage() != &self.lineage
+                || observation.target().entity_type() != entity_type
+                || observation.target().vector_field() != vector_field
+        }) || successor.is_some_and(|observation| {
+            observation.target().lineage() != &self.lineage
+                || observation.target().entity_type() != entity_type
+                || observation.target().vector_field() != vector_field
+        }) {
+            return Err(StorageValueError::IdentityMismatch);
+        }
+        if !self.fields.contains_key(&key) {
+            if prior.is_some_and(|observation| observation.total_entities() != 0)
+                || self.fields.len() == MAX_VECTOR_FIELDS_PER_HEALTH_OBSERVATION
+            {
+                return Err(StorageValueError::InvalidShape);
+            }
+            self.fields.insert(
+                key,
+                VectorHealthFieldObservationV1::from_parts(
+                    entity_type,
+                    vector_field,
+                    stale_entity_count_threshold,
+                    0,
+                    0,
+                )?,
+            );
+        }
+        let field = self
+            .fields
+            .get_mut(&key)
+            .ok_or(StorageValueError::InvalidShape)?;
+        if field.stale_entity_count_threshold != stale_entity_count_threshold {
+            return Err(StorageValueError::IdentityMismatch);
+        }
+
+        let prior_present = prior.is_some_and(|value| value.total_entities() != 0);
+        let prior_breached = prior.is_some_and(|value| {
+            value.total_entities() != 0
+                && value.source_stale_entities() > stale_entity_count_threshold
+        });
+        let successor_present = successor.is_some_and(|value| value.total_entities() != 0);
+        let successor_breached = successor.is_some_and(|value| {
+            value.total_entities() != 0
+                && value.source_stale_entities() > stale_entity_count_threshold
+        });
+
+        field.partition_count =
+            apply_boolean_delta(field.partition_count, prior_present, successor_present)?;
+        field.breached_partition_count = apply_boolean_delta(
+            field.breached_partition_count,
+            prior_breached,
+            successor_breached,
+        )?;
+        if field.breached_partition_count > field.partition_count {
+            return Err(StorageValueError::InvalidShape);
+        }
+        self.revision = revision;
+        Ok(())
+    }
+
+    /// Contract lineage covered by this observation.
+    #[must_use]
+    pub const fn lineage(&self) -> &ContractLineage {
+        &self.lineage
+    }
+
+    /// Canonically ordered field summaries.
+    pub fn fields(&self) -> impl ExactSizeIterator<Item = &VectorHealthFieldObservationV1> {
+        self.fields.values()
+    }
+
+    /// Last vector-affecting command incorporated into the summary.
+    #[must_use]
+    pub const fn revision(&self) -> CommitSequence {
+        self.revision
+    }
+
+    /// Whether any populated partition is strictly over its field threshold.
+    #[must_use]
+    pub fn any_partition_breached(&self) -> bool {
+        self.fields
+            .values()
+            .any(VectorHealthFieldObservationV1::is_breached)
+    }
+}
+
+fn apply_boolean_delta(
+    current: u64,
+    prior: bool,
+    successor: bool,
+) -> Result<u64, StorageValueError> {
+    match (prior, successor) {
+        (false, true) => current
+            .checked_add(1)
+            .ok_or(StorageValueError::SizeOverflow),
+        (true, false) => current
+            .checked_sub(1)
+            .ok_or(StorageValueError::InvalidShape),
+        _ => Ok(current),
+    }
+}
+
 /// Canonical partition-ordered index row for one authoritative vector-evidence
 /// record.
 ///
@@ -724,6 +967,7 @@ pub struct VectorEvidenceTransitionPlanV1 {
     target: EntityTarget,
     partition_key: PartitionKey,
     vector_field: FieldId,
+    stale_entity_count_threshold: u64,
     entity_version: EntityVersion,
     prior_source_write: Option<CommitSequence>,
     prior_embedding_write: Option<StoredVectorEmbeddingWriteV1>,
@@ -743,6 +987,7 @@ impl VectorEvidenceTransitionPlanV1 {
         target: EntityTarget,
         partition_key: PartitionKey,
         vector_field: FieldId,
+        stale_entity_count_threshold: u64,
         entity_version: EntityVersion,
         prior: Option<&StoredVectorEvidenceV1>,
         source_changed: bool,
@@ -751,7 +996,7 @@ impl VectorEvidenceTransitionPlanV1 {
         provenance_id: ProvenanceId,
         plan: ExecutablePlanRef,
     ) -> Result<Self, StorageValueError> {
-        if !source_changed && embedding_changed.is_none() {
+        if (!source_changed && embedding_changed.is_none()) || stale_entity_count_threshold == 0 {
             return Err(StorageValueError::InvalidShape);
         }
         if !schema_binding.matches_plan(&plan)
@@ -767,6 +1012,7 @@ impl VectorEvidenceTransitionPlanV1 {
             target,
             partition_key,
             vector_field,
+            stale_entity_count_threshold,
             entity_version,
             prior_source_write: prior.and_then(StoredVectorEvidenceV1::newest_source_write),
             prior_embedding_write: prior
@@ -785,13 +1031,18 @@ impl VectorEvidenceTransitionPlanV1 {
     /// Constructs the checked removal paired with one entity deletion.
     pub fn delete(
         prior: &StoredVectorEvidenceV1,
+        stale_entity_count_threshold: u64,
         provenance_id: ProvenanceId,
         plan: ExecutablePlanRef,
     ) -> Result<Self, StorageValueError> {
+        if stale_entity_count_threshold == 0 {
+            return Err(StorageValueError::InvalidShape);
+        }
         Ok(Self {
             target: prior.target().clone(),
             partition_key: prior.partition_key().clone(),
             vector_field: prior.vector_field(),
+            stale_entity_count_threshold,
             entity_version: prior.entity_version(),
             prior_source_write: prior.newest_source_write(),
             prior_embedding_write: prior.embedding_write().cloned(),
@@ -815,6 +1066,12 @@ impl VectorEvidenceTransitionPlanV1 {
     #[must_use]
     pub const fn vector_field(&self) -> FieldId {
         self.vector_field
+    }
+
+    /// Compiler-owned strict stale-entity threshold for health maintenance.
+    #[must_use]
+    pub const fn stale_entity_count_threshold(&self) -> u64 {
+        self.stale_entity_count_threshold
     }
 
     /// Returns the stable partitioned observation identity maintained with
