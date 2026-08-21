@@ -7,7 +7,10 @@ use riffdb_types::{
     FieldId, PartitionKey, ProvenanceId,
 };
 
-use crate::{DurableKeySchemaBindingV1, EntityTarget, ExecutablePlanRef, StorageValueError};
+use crate::{
+    DurableKeySchemaBindingV1, EntityTarget, ExecutablePlanRef, MAX_SCAN_PAGE_BYTES,
+    MAX_SCAN_PAGE_ENTRIES, StorageError, StorageScanLimit, StorageValueError,
+};
 
 /// Maximum distinct live embedding model revisions retained in one logical
 /// partition/field observation row.
@@ -26,6 +29,133 @@ pub trait VectorObservationRepository {
         &self,
         target: &VectorObservationTargetV1,
     ) -> Result<Option<VectorObservationCountsV1>, crate::StorageError>;
+}
+
+/// Pure-read port for one exact partition-ordered authoritative evidence index.
+///
+/// This lower boundary is deliberately policy-neutral. The application service
+/// must apply the compiler-derived row policy before releasing any entry or
+/// minting a public continuation.
+pub trait VectorEvidenceIndexRepository {
+    /// Reads one bounded ascending page from the exact declared partition/field.
+    fn scan_vector_evidence_index(
+        &self,
+        request: &VectorEvidenceIndexScanRequestV1,
+    ) -> Result<VectorEvidenceIndexPageV1, StorageError>;
+}
+
+/// One bounded ascending scan request over a symbolic service-resolved target.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VectorEvidenceIndexScanRequestV1 {
+    target: VectorObservationTargetV1,
+    after: Option<EntityKey>,
+    limit: StorageScanLimit,
+}
+
+impl VectorEvidenceIndexScanRequestV1 {
+    /// Checks continuation identity and retains the fixed storage scan bound.
+    pub fn new(
+        target: VectorObservationTargetV1,
+        after: Option<EntityKey>,
+        limit: StorageScanLimit,
+    ) -> Result<Self, StorageValueError> {
+        if after
+            .as_ref()
+            .is_some_and(|key| key.entity_type_id() != target.entity_type())
+        {
+            return Err(StorageValueError::IdentityMismatch);
+        }
+        Ok(Self {
+            target,
+            after,
+            limit,
+        })
+    }
+
+    /// Exact partitioned vector-field identity.
+    #[must_use]
+    pub const fn target(&self) -> &VectorObservationTargetV1 {
+        &self.target
+    }
+
+    /// Exclusive entity-key continuation.
+    #[must_use]
+    pub const fn after(&self) -> Option<&EntityKey> {
+        self.after.as_ref()
+    }
+
+    /// Checked maximum returned rows.
+    #[must_use]
+    pub const fn limit(&self) -> StorageScanLimit {
+        self.limit
+    }
+}
+
+/// One exact bounded page from the authoritative reciprocal evidence index.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VectorEvidenceIndexPageV1 {
+    entries: Vec<VectorEvidenceIndexEntryV1>,
+    continuation: Option<EntityKey>,
+    exact_end: bool,
+    encoded_bytes: usize,
+}
+
+impl VectorEvidenceIndexPageV1 {
+    /// Checks target reciprocity, canonical order, row/byte bounds, and exact-end shape.
+    pub fn new(
+        target: &VectorObservationTargetV1,
+        entries: Vec<VectorEvidenceIndexEntryV1>,
+        continuation: Option<EntityKey>,
+        exact_end: bool,
+        encoded_bytes: usize,
+    ) -> Result<Self, StorageValueError> {
+        if entries.len() > MAX_SCAN_PAGE_ENTRIES || encoded_bytes > MAX_SCAN_PAGE_BYTES {
+            return Err(StorageValueError::LimitExceeded);
+        }
+        let continuation_valid = match (continuation.as_ref(), entries.last()) {
+            (None, _) => exact_end,
+            (Some(continuation), Some(last)) => !exact_end && continuation == last.entity_key(),
+            (Some(_), None) => false,
+        };
+        if entries.iter().any(|entry| entry.target() != target)
+            || entries
+                .windows(2)
+                .any(|pair| pair[0].entity_key() >= pair[1].entity_key())
+            || !continuation_valid
+        {
+            return Err(StorageValueError::IdentityMismatch);
+        }
+        Ok(Self {
+            entries,
+            continuation,
+            exact_end,
+            encoded_bytes,
+        })
+    }
+
+    /// Canonically ordered index rows.
+    #[must_use]
+    pub fn entries(&self) -> &[VectorEvidenceIndexEntryV1] {
+        &self.entries
+    }
+
+    /// Exclusive continuation for the next lower page.
+    #[must_use]
+    pub const fn continuation(&self) -> Option<&EntityKey> {
+        self.continuation.as_ref()
+    }
+
+    /// Whether this page proved exact end of the target prefix.
+    #[must_use]
+    pub const fn exact_end(&self) -> bool {
+        self.exact_end
+    }
+
+    /// Exact retained envelope bytes decoded for returned rows.
+    #[must_use]
+    pub const fn encoded_bytes(&self) -> usize {
+        self.encoded_bytes
+    }
 }
 
 /// Stable logical identity for maintained vector counts and ordered indexes.
@@ -1071,5 +1201,63 @@ impl fmt::Debug for StoredVectorEvidenceV1 {
             .field("provenance_id", &self.provenance_id)
             .field("plan", &self.plan)
             .finish()
+    }
+}
+
+#[cfg(test)]
+mod index_page_tests {
+    use super::*;
+    use riffdb_types::{AggregateTypeId, EntityKeyBuilder, PartitionKeyBuilder};
+
+    fn target() -> VectorObservationTargetV1 {
+        let mut partition = PartitionKeyBuilder::new(AggregateTypeId::first());
+        partition.push_str("org-a").expect("partition");
+        VectorObservationTargetV1::new(
+            ContractLineage::new("vectors").expect("lineage"),
+            partition.finish().expect("partition"),
+            EntityTypeId::new(7).expect("entity type"),
+            FieldId::new(9).expect("field"),
+        )
+    }
+
+    fn entry(value: u64) -> VectorEvidenceIndexEntryV1 {
+        let mut key = EntityKeyBuilder::new(EntityTypeId::new(7).expect("entity type"));
+        key.push_u64(value).expect("key");
+        VectorEvidenceIndexEntryV1::from_parts(
+            target(),
+            key.finish().expect("key"),
+            CommitSequence::new(value).expect("sequence"),
+            Some(CommitSequence::new(value).expect("sequence")),
+            None,
+        )
+        .expect("index entry")
+    }
+
+    #[test]
+    fn page_requires_canonical_order_and_exact_continuation() {
+        let first = entry(1);
+        let second = entry(2);
+        let continuation = second.entity_key().clone();
+        let page = VectorEvidenceIndexPageV1::new(
+            &target(),
+            vec![first.clone(), second.clone()],
+            Some(continuation.clone()),
+            false,
+            10,
+        )
+        .expect("bounded page");
+        assert_eq!(page.continuation(), Some(&continuation));
+        assert!(!page.exact_end());
+        assert!(
+            VectorEvidenceIndexPageV1::new(
+                &target(),
+                vec![second, first],
+                Some(continuation),
+                false,
+                10,
+            )
+            .is_err()
+        );
+        assert!(VectorEvidenceIndexPageV1::new(&target(), Vec::new(), None, true, 0).is_ok());
     }
 }
