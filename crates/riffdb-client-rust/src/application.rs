@@ -2034,25 +2034,16 @@ pub fn raise_value(value: v1::Value) -> Result<ApplicationValue, ApplicationClie
 }
 
 fn format_uuid_text(bytes: &[u8; 16]) -> String {
-    format!(
-        "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
-        bytes[0],
-        bytes[1],
-        bytes[2],
-        bytes[3],
-        bytes[4],
-        bytes[5],
-        bytes[6],
-        bytes[7],
-        bytes[8],
-        bytes[9],
-        bytes[10],
-        bytes[11],
-        bytes[12],
-        bytes[13],
-        bytes[14],
-        bytes[15],
-    )
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut output = String::with_capacity(36);
+    for (index, byte) in bytes.iter().copied().enumerate() {
+        if matches!(index, 4 | 6 | 8 | 10) {
+            output.push('-');
+        }
+        output.push(char::from(HEX[usize::from(byte >> 4)]));
+        output.push(char::from(HEX[usize::from(byte & 0x0f)]));
+    }
+    output
 }
 
 fn parse_uuid(value: &str) -> Result<[u8; 16], ApplicationClientError> {
