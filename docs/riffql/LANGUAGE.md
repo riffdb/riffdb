@@ -190,9 +190,12 @@ query SimilarDocuments(
 - `nearest` is a contextual word, not reserved — a contract field named
   `nearest` remains fully queryable.
 
-The production exact tier uses the automatically registered `Entity.field`
-columnar projection and the shared 500-row admission ceiling. The approximate
-tier remains a separate alpha follow-on; see
+The production path uses the automatically registered `Entity.field` columnar
+projection and the shared 500-row admission ceiling. If the contract declares
+`ann_threshold` and `recall_target_bps`, the server uses exact search at or
+below that per-organization threshold and first-party HNSW strictly above it.
+The choice and recall floor are compiler-owned; neither is a request option.
+See [Vector Search](../getting-started/VECTOR-SEARCH.md) and
 [Known Limitations](../known-limitations.md).
 
 ## Accepted application-profile target

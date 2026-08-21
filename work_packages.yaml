@@ -11838,6 +11838,14 @@ work_packages:
   - Durable vector graphs are intentionally absent in the POC. The first-party graph is
     deterministically rebuilt from the org-scoped visible snapshot, so compaction correctness
     is measured as recall at a frozen frontier rather than byte equality.
+  closure:
+    status: complete
+    evidence: docs/performance/wp-594-vector-ann.md
+    decision: The first-party deterministic HNSW tier, compiler-owned threshold and recall
+      declarations, per-organization and policy isolation, exact small-partition routing, and
+      frozen-frontier recall evidence are merged in commit 5dcc6e8f. WP-596 subsequently wired
+      the same registered definition into the production projected-nearest path without adding
+      a caller-selectable tier.
   human_review_triggers: *id001
 - id: WP-595
   name: Vectors pillar acceptance — end-to-end evidence and handbook graduation
@@ -11872,8 +11880,15 @@ work_packages:
       no silent staleness, no policy bypass, no recall opt-out.
     scale: Evidence harnesses bounded and replayable per seed.
   deferred:
-  - NOT STARTED. WP-596 supplies the exact-tier production prerequisites and WP-594 supplies
-    the approximate tier; the obligation map remains the authoritative pending evidence list.
+  - Durable vector graphs remain outside the POC; the accepted approximate graph is rebuilt
+    ephemerally from one policy-admitted organization snapshot.
+  closure:
+    status: complete
+    evidence: docs/architecture/wp-595-vector-acceptance.md
+    decision: The acceptance ledger binds every VEC-005/VEC-007/VEC-008/VEC-010/VEC-011
+      obligation to semantic tests from WP-594 and WP-596, and the public handbook now teaches
+      the actual automatic exact/ANN routing, staleness inspection, freshness, and typed
+      correction paths without exposing tier selection or raw storage identities.
   human_review_triggers: *id001
 - id: WP-596
   name: Vectors prerequisites completion — typed ingress, staleness, exact-tier reachability
