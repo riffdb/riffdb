@@ -9,8 +9,8 @@
     "typescript"
   ],
   "contract_bundle_hash": "b1fc11175728c747e70ab0713792ebcf7d76ad1687466d4899d33d680286d676",
-  "portability_manifest_sha256": "1e1c095003d421e1f2166247317c98b8f261765b8f1fd134edeb216a75ee6f33",
-  "reimport_receipt_sha256": "baf95521b3faea2c13a6d1659d89e7675f6da09b7b87cb6c790376e239cc4834",
+  "portability_manifest_sha256": "bda6c096b54972b49e1fedeadc1573f54bf044c8e33a6c4542f74a61c04bebbd",
+  "reimport_receipt_sha256": "c6f3e94141adf78fe49bf28fc8331c444355c0658b606a5b8e59852de12c4785",
   "operation_observation_sha256": "03cb002d55f9c4dfd9cc058d2abd5f374f318d41a0ec8bc1f98ed3751ad9aa70",
   "secrets_included": false
 }
