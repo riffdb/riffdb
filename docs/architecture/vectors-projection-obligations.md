@@ -1,7 +1,7 @@
 # Vector Projection — ADR-0086 Obligation Map
 
-**Work package:** WP-593 baseline, updated through WP-594 and WP-596
-**Status:** honest proven-vs-pending ledger. The original WP-593 revision
+**Work package:** WP-593 baseline, closed through WP-594, WP-595, and WP-596
+**Status:** completed acceptance ledger. The original WP-593 revision
 claimed every unamended ADR-0086 obligation was discharged; an independent
 audit classified 0 of its 13 rows as proven. This ledger states exactly what
 automated tests prove now and what remains pending. A row is **PROVEN** only
@@ -76,13 +76,13 @@ freshness, evidence, policy, model, or lifecycle proof is unavailable.
    decisions, the API-neutral paginated operations and parity-preserving
    gRPC/MCP schemas.
 
-The accepted resolution uses an authoritative per-vector-field evidence record
+The implemented resolution uses an authoritative per-vector-field evidence record
 rather than modifying frozen entity V1 bytes; derives one explicit
 `Entity.field` projection identity; requires contract-current model and replay
 budgets; applies transaction-current ADR-0111 policy admission to the complete
 projection candidate set before all vector work; and exposes symbolic bounded
 inspection rather than numeric field IDs. These statements describe the
-accepted design, not yet available behavior.
+production path exercised by the named tests above.
 
 ## What this means
 

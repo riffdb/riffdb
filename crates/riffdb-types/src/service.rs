@@ -750,7 +750,7 @@ mod tests {
 
     #[test]
     fn service_operation_registry_is_exact_and_closed() {
-        let expected: Vec<u8> = (0x01..=0x38).collect();
+        let expected: Vec<u8> = (0x01..=0x39).collect();
         assert_eq!(
             ServiceOperationV1::ALL
                 .into_iter()

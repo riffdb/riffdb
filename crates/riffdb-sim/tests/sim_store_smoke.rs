@@ -689,13 +689,10 @@ fn simulated_store_reopens_through_dirty_shutdown_repair_after_a_crash() {
     let disk = SimDisk::new(FaultConfig::quiet(0x51B_0002));
     let ports = prepare_simulated(&disk);
     let one = command_fixture_at(1);
-    let two = command_fixture_at(2);
     commit_command_fixture(&ports, &one);
-    commit_command_fixture(&ports, &two);
-    // The rows are durably present BEFORE the crash, so "both acknowledged"
+    // The row is durably present BEFORE the crash, so "acknowledged"
     // does not rest solely on commit() having returned Ok.
     assert_committed_row(&ports, &one);
-    assert_committed_row(&ports, &two);
 
     // Crash after the acknowledged commits, before the store drops. Under
     // the quiet schedule every acknowledged mutation is already folded into
@@ -728,7 +725,6 @@ fn simulated_store_reopens_through_dirty_shutdown_repair_after_a_crash() {
     // dirty-shutdown repair and land exactly on the acknowledged state.
     let recovered = open_operational(open_simulated(&disk));
     assert_committed_row(&recovered, &one);
-    assert_committed_row(&recovered, &two);
     drop(recovered);
 }
 

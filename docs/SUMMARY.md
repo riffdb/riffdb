@@ -14,6 +14,7 @@
 - [Agent Application Quickstart](getting-started/AGENT-APPLICATION-QUICKSTART.md)
 - [Build a Symbolic Application](getting-started/SYMBOLIC-APPLICATIONS.md)
 - [Inspect an Application](getting-started/INSPECTION.md)
+- [Vector Search](getting-started/VECTOR-SEARCH.md)
 
 # Tutorials
 
@@ -93,6 +94,7 @@
 - [System Overview](architecture/OVERVIEW.md)
 - [Command Execution Path](architecture/COMMAND-PATH.md)
 - [Composite Read Views](architecture/COMPOSITE-READ-VIEWS.md)
+- [Vector Acceptance Evidence](architecture/wp-595-vector-acceptance.md)
 - [Deployable Application Alpha Plan](architecture/DEPLOYABLE-APPLICATION-ALPHA.md)
   - [Alpha Architecture Freeze](architecture/DEPLOYABLE-APPLICATION-ALPHA-FREEZE.md)
   - [WP-598 Framework Profile Verification](architecture/WP-598-FRAMEWORK-PROFILE-VERIFICATION.md)
