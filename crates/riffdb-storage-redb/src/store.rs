@@ -64,7 +64,7 @@ use crate::layout::{
     META_FORMAT_VERSION, META_HISTORY_INCARNATION, META_INDEX_EPOCH_ROWS_REPAIRED, META_KEYS,
     META_RECORD_REGISTRY, META_RETENTION_HOLDS, META_RETENTION_WATERMARK,
     META_VALIDATED_PREFIX_CHECKPOINT, OUTBOX, SECONDARY_INDEXES, TABLE_NAMES,
-    VALIDATED_PREFIX_ENTITY_HEADS, create_all_tables,
+    VALIDATED_PREFIX_ENTITY_HEADS, VECTOR_EVIDENCE, create_all_tables,
 };
 use crate::media::{DynStorageBackend, JournalMedia, RealJournalMedia, RedbStorageMedia};
 use crate::transient::{
@@ -943,6 +943,7 @@ enum RegistryMigration {
     ApplicationInstallationCampaign,
     EntityTransitions,
     ApplicationExportOperation,
+    VectorEvidence,
 }
 
 const FORMAT_MIGRATION_MAX_ROWS: usize = 500;
@@ -1015,6 +1016,11 @@ pub(crate) const PRE_ENTITY_TRANSITIONS_REGISTRY_DIGEST: [u8; 32] = [
 pub(crate) const PRE_APPLICATION_EXPORT_REGISTRY_DIGEST: [u8; 32] = [
     0x6e, 0xb5, 0x25, 0xfe, 0xdb, 0x4d, 0x6a, 0x17, 0xd0, 0x31, 0x87, 0x16, 0x4f, 0x03, 0xa5, 0x2c,
     0x33, 0x95, 0x4a, 0x8c, 0x14, 0x5a, 0x00, 0xd3, 0x37, 0xa0, 0xe7, 0x9c, 0x49, 0xa5, 0x9d, 0xd3,
+];
+/// Registry digest immediately before authoritative vector evidence became writable.
+pub(crate) const PRE_VECTOR_EVIDENCE_REGISTRY_DIGEST: [u8; 32] = [
+    0xdb, 0x0b, 0x95, 0x3f, 0xb7, 0x11, 0xa8, 0xc9, 0x13, 0x51, 0x9d, 0x91, 0xa0, 0xc0, 0x59, 0xde,
+    0x73, 0x66, 0xb8, 0xd1, 0x28, 0xd5, 0xee, 0x7f, 0x88, 0xd3, 0x38, 0x3a, 0x28, 0x80, 0xaf, 0x81,
 ];
 
 /// Last observed redb repair progress in basis points (0..=10_000), for recovery telemetry.
@@ -1464,6 +1470,10 @@ impl RedbStore {
                     == &SchemaHash::from_bytes(PRE_APPLICATION_EXPORT_REGISTRY_DIGEST)
                 {
                     RegistryMigration::ApplicationExportOperation
+                } else if observed.value()
+                    == &SchemaHash::from_bytes(PRE_VECTOR_EVIDENCE_REGISTRY_DIGEST)
+                {
+                    RegistryMigration::VectorEvidence
                 } else {
                     return Err(storage_error(StorageErrorKind::IncompatibleFormat));
                 }
@@ -1673,6 +1683,18 @@ impl RedbStore {
             publish_record_registry(
                 &self.shared,
                 SchemaHash::from_bytes(PRE_APPLICATION_EXPORT_REGISTRY_DIGEST),
+                SchemaHash::from_bytes(PRE_VECTOR_EVIDENCE_REGISTRY_DIGEST),
+            )?;
+        }
+        if format == StorageFormatVersion::V2
+            && (matches!(registry_migration, RegistryMigration::VectorEvidence)
+                || observed_registry_digest(&self.shared)?
+                    == SchemaHash::from_bytes(PRE_VECTOR_EVIDENCE_REGISTRY_DIGEST))
+        {
+            install_vector_evidence_table(&self.shared)?;
+            publish_record_registry(
+                &self.shared,
+                SchemaHash::from_bytes(PRE_VECTOR_EVIDENCE_REGISTRY_DIGEST),
                 riffdb_storage_api::proto_codec::current_record_registry_digest(),
             )?;
         }
@@ -3020,6 +3042,19 @@ fn install_application_export_operation_table(shared: &SharedRedb) -> Result<(),
     drop(
         transaction
             .open_table(crate::layout::APPLICATION_EXPORT_OPERATIONS)
+            .map_err(table_error)?,
+    );
+    shared.commit_durable(transaction)
+}
+
+fn install_vector_evidence_table(shared: &SharedRedb) -> Result<(), StorageError> {
+    let mut transaction = shared.database.begin_write().map_err(transaction_error)?;
+    transaction
+        .set_durability(Durability::Immediate)
+        .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+    drop(
+        transaction
+            .open_table(VECTOR_EVIDENCE)
             .map_err(table_error)?,
     );
     shared.commit_durable(transaction)
@@ -6865,10 +6900,17 @@ fn classify_table_names(
     if tables == expected {
         return Ok(LayoutState::Initialized);
     }
+    // The immediate predecessor lacks only authoritative vector evidence. Its
+    // registry is advanced only after this empty table is installed.
+    let mut pre_vector_evidence = expected.clone();
+    pre_vector_evidence.remove("vector_evidence");
+    if tables == pre_vector_evidence {
+        return Ok(LayoutState::Initialized);
+    }
     // The immediate predecessor lacks only the additive checkpoint-head proof
     // table. It is installed before startup validation without a registry
     // rotation because its values reuse the frozen EntityChainHeadV1 codec.
-    let mut pre_checkpoint_entity_heads = expected.clone();
+    let mut pre_checkpoint_entity_heads = pre_vector_evidence.clone();
     pre_checkpoint_entity_heads.remove("validated_prefix_entity_heads");
     if tables == pre_checkpoint_entity_heads {
         return Ok(LayoutState::InitializedWithoutValidatedPrefixEntityHeads);
@@ -6878,7 +6920,7 @@ fn classify_table_names(
     // Accept the same registry predecessor with the additive proof table
     // already installed as well: table installation and registry publication
     // are separate crash boundaries.
-    let mut pre_application_export_with_checkpoint_heads = expected.clone();
+    let mut pre_application_export_with_checkpoint_heads = pre_vector_evidence;
     pre_application_export_with_checkpoint_heads.remove("application_export_operations");
     if tables == pre_application_export_with_checkpoint_heads {
         return Ok(LayoutState::Initialized);
@@ -7159,6 +7201,9 @@ mod tests {
             transaction
                 .delete_table(crate::layout::APPLICATION_EXPORT_OPERATIONS)
                 .expect("remove successor table");
+            transaction
+                .delete_table(crate::layout::VECTOR_EVIDENCE)
+                .expect("remove later successor table");
             let predecessor = encode_record_registry_v2(SchemaHash::from_bytes(
                 PRE_APPLICATION_EXPORT_REGISTRY_DIGEST,
             ))
@@ -7182,6 +7227,70 @@ mod tests {
             transaction
                 .open_table(crate::layout::APPLICATION_EXPORT_OPERATIONS)
                 .expect("export operation table")
+                .is_empty()
+                .expect("table length")
+        );
+        let metadata = transaction.open_table(META).expect("metadata");
+        let encoded = metadata
+            .get(META_RECORD_REGISTRY)
+            .expect("registry read")
+            .expect("registry");
+        assert_eq!(
+            *decode_record_registry_v2(encoded.value())
+                .expect("decode registry")
+                .value(),
+            riffdb_storage_api::proto_codec::current_record_registry_digest()
+        );
+    }
+
+    #[test]
+    fn pre_vector_registry_installs_evidence_table_before_publication() {
+        let scope = crate::test_path::ScopedDirectory::new("pre-vector-registry");
+        let path = scope.join("db.redb");
+        let mut store = RedbStore::open(&path).expect("open");
+        let database_id = DatabaseId::from_bytes({
+            let mut bytes = [0x22; 16];
+            bytes[6] = 0x72;
+            bytes[8] = 0xa2;
+            bytes
+        })
+        .expect("database");
+        store.initialize_database(database_id).expect("initialize");
+        {
+            let mut transaction = store
+                .shared
+                .database
+                .begin_write()
+                .expect("begin predecessor write");
+            transaction
+                .set_durability(Durability::Immediate)
+                .expect("durability");
+            transaction
+                .delete_table(crate::layout::VECTOR_EVIDENCE)
+                .expect("remove successor table");
+            let predecessor = encode_record_registry_v2(SchemaHash::from_bytes(
+                PRE_VECTOR_EVIDENCE_REGISTRY_DIGEST,
+            ))
+            .expect("predecessor registry");
+            transaction
+                .open_table(META)
+                .expect("metadata")
+                .insert(META_RECORD_REGISTRY, predecessor.as_bytes())
+                .expect("pin predecessor registry");
+            transaction.commit().expect("commit predecessor fixture");
+        }
+        drop(store);
+
+        let reopened = RedbStore::open(&path).expect("migrate predecessor");
+        let transaction = reopened
+            .shared
+            .database
+            .begin_read()
+            .expect("read migrated database");
+        assert!(
+            transaction
+                .open_table(crate::layout::VECTOR_EVIDENCE)
+                .expect("vector evidence table")
                 .is_empty()
                 .expect("table length")
         );

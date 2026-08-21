@@ -55,6 +55,7 @@ use crate::layout::{
     META_RETENTION_WATERMARK, META_VALIDATED_PREFIX_CHECKPOINT, OUTBOX, OUTBOX_STATUS,
     PROJECTION_APPLIED, PROJECTION_FRONTIER, PROJECTION_STATE, PROVENANCE, QUERY_MODULE_ACTIVE,
     QUERY_MODULES, REACTIVE_MODULES, RETIRED_ENTITIES, SECONDARY_INDEXES, TABLE_NAMES,
+    VECTOR_EVIDENCE,
 };
 use crate::store::{
     PRE_APPLICATION_EXPORT_REGISTRY_DIGEST, PRE_APPLICATION_INSTALLATION_REGISTRY_DIGEST,
@@ -62,18 +63,20 @@ use crate::store::{
     PRE_ENTITY_REFERENCE_REGISTRY_DIGEST, PRE_EVENT_ROUTE_REGISTRY_DIGEST,
     PRE_HISTORY_INCARNATION_REGISTRY_DIGEST, PRE_INDEX_GENERATION_REGISTRY_DIGEST,
     PRE_RETENTION_WATERMARK_REGISTRY_DIGEST, PRE_VALIDATED_PREFIX_CHECKPOINT_REGISTRY_DIGEST,
-    PRE_WP417_REACTIVE_CONSUMER_REGISTRY_DIGEST, RedbDormantPorts, RedbStore, SharedRedb,
+    PRE_VECTOR_EVIDENCE_REGISTRY_DIGEST, PRE_WP417_REACTIVE_CONSUMER_REGISTRY_DIGEST,
+    RedbDormantPorts, RedbStore, SharedRedb,
 };
 
 static NEXT_OPEN_SESSION: AtomicU64 = AtomicU64::new(1);
 // The V1 validated-prefix checkpoint permanently covers the original table set.
 // Additive tables are validated separately and never inferred from that proof.
 const STRUCTURAL_TABLE_COUNT: usize = 28;
-const ADDITIVE_STRUCTURAL_TABLE_COUNT: usize = 5;
+const ADDITIVE_STRUCTURAL_TABLE_COUNT: usize = 6;
 const STARTUP_TABLE_COUNT: usize = STRUCTURAL_TABLE_COUNT + ADDITIVE_STRUCTURAL_TABLE_COUNT;
 
 fn startup_registry_is_supported(digest: riffdb_types::SchemaHash) -> bool {
     digest == riffdb_storage_api::proto_codec::current_record_registry_digest()
+        || digest == riffdb_types::SchemaHash::from_bytes(PRE_VECTOR_EVIDENCE_REGISTRY_DIGEST)
         || digest == riffdb_types::SchemaHash::from_bytes(PRE_EVENT_ROUTE_REGISTRY_DIGEST)
         || digest == riffdb_types::SchemaHash::from_bytes(PRE_ENTITY_REFERENCE_REGISTRY_DIGEST)
         || digest == riffdb_types::SchemaHash::from_bytes(PRE_CONTRACT_MIGRATION_REGISTRY_DIGEST)
@@ -1230,6 +1233,7 @@ impl RedbStructuralEvidenceSession {
             table_len(transaction, EVENT_CONSUMER_DELIVERIES)?,
             table_len(transaction, APPLICATION_INSTALLATION_CAMPAIGNS)?,
             table_len(transaction, APPLICATION_EXPORT_OPERATIONS)?,
+            table_len(transaction, VECTOR_EVIDENCE)?,
         ];
         if additive_counts != self.additive_structural_counts {
             return Err(corrupt());
@@ -2212,6 +2216,12 @@ impl RedbStructuralEvidenceSession {
                     31 => transaction
                         .open_table(APPLICATION_INSTALLATION_CAMPAIGNS)
                         .map_err(table_error)?,
+                    32 => transaction
+                        .open_table(APPLICATION_EXPORT_OPERATIONS)
+                        .map_err(table_error)?,
+                    33 => transaction
+                        .open_table(VECTOR_EVIDENCE)
+                        .map_err(table_error)?,
                     _ => return Err(invariant()),
                 };
                 let range = self.open_structural_phase_range(phase, table)?;
@@ -2304,6 +2314,8 @@ fn inspect_table_row_from_bytes(
         29 => inspect_event_consumer_row(transaction, context.database_id, key, value),
         30 => inspect_event_consumer_delivery_row(transaction, key, value),
         31 => inspect_application_installation_campaign_row(key, value),
+        32 => inspect_application_export_operation_row(key, value),
+        33 => inspect_vector_evidence_row(transaction, key, value),
         _ => Err(invariant()),
     }
 }
@@ -2331,6 +2343,62 @@ fn inspect_application_installation_campaign_row(
             .map_err(crate::error::codec_error)?;
     if key != decoded.value().campaign_id().as_bytes() {
         return Err(corrupt());
+    }
+    Ok(None)
+}
+
+fn inspect_application_export_operation_row(
+    key: &[u8],
+    value: &[u8],
+) -> Result<Option<StructuralFinding>, StorageError> {
+    let decoded = riffdb_storage_api::decode_application_export_operation_v1(value)
+        .map_err(crate::error::codec_error)?;
+    if key != decoded.value().operation_id().as_bytes() {
+        return Err(corrupt());
+    }
+    Ok(None)
+}
+
+fn inspect_vector_evidence_row(
+    transaction: &ReadTransaction,
+    key: &[u8],
+    value: &[u8],
+) -> Result<Option<StructuralFinding>, StorageError> {
+    let (entity_key, field) = keys::decode_vector_evidence_key(key).map_err(|_| corrupt())?;
+    let decoded =
+        riffdb_storage_api::decode_vector_evidence_v1(value).map_err(crate::error::codec_error)?;
+    let evidence = decoded.value();
+    if evidence.target().key() != &entity_key || evidence.vector_field() != field {
+        return Err(corrupt());
+    }
+    let entities = transaction.open_table(ENTITIES).map_err(table_error)?;
+    let Some(entity_bytes) = entities
+        .get(entity_key.as_bytes())
+        .map_err(precommit_storage_error)?
+    else {
+        return Ok(Some(authoritative(StructuralFindingCode::MissingCrossLink)));
+    };
+    let entity = riffdb_storage_api::decode_entity_record_v1(entity_bytes.value())
+        .map_err(crate::error::codec_error)?;
+    let entity = entity.value();
+    let vector_value = entity
+        .fields()
+        .fields()
+        .binary_search_by_key(&field, |(field, _)| *field)
+        .ok()
+        .map(|position| &entity.fields().fields()[position].1);
+    let embedding_matches = matches!(
+        (vector_value, evidence.embedding_write()),
+        (Some(riffdb_types::CanonicalValue::Vector(_)), Some(_))
+            | (Some(riffdb_types::CanonicalValue::Null), None)
+    );
+    if entity.target() != evidence.target()
+        || entity.entity_version() != evidence.entity_version()
+        || !embedding_matches
+    {
+        return Ok(Some(authoritative(
+            StructuralFindingCode::CrossLinkMismatch,
+        )));
     }
     Ok(None)
 }
@@ -2680,6 +2748,7 @@ fn collect_startup_snapshot(
         table_len(transaction, EVENT_CONSUMER_DELIVERIES)?,
         table_len(transaction, APPLICATION_INSTALLATION_CAMPAIGNS)?,
         table_len(transaction, APPLICATION_EXPORT_OPERATIONS)?,
+        table_len(transaction, VECTOR_EVIDENCE)?,
     ];
     let total = counts
         .iter()

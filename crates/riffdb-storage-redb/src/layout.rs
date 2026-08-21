@@ -66,8 +66,11 @@ pub(crate) const APPLICATION_INSTALLATION_CAMPAIGNS: TableDefinition<&[u8], &[u8
     TableDefinition::new("application_installation_campaigns");
 pub(crate) const APPLICATION_EXPORT_OPERATIONS: TableDefinition<&[u8], &[u8]> =
     TableDefinition::new("application_export_operations");
+/// Authoritative per-entity vector source/model evidence (ADR-0136).
+pub(crate) const VECTOR_EVIDENCE: TableDefinition<&[u8], &[u8]> =
+    TableDefinition::new("vector_evidence");
 
-pub(crate) const TABLE_NAMES: [&str; 35] = [
+pub(crate) const TABLE_NAMES: [&str; 36] = [
     "meta",
     "contract_bundles",
     "catalog_active",
@@ -103,9 +106,10 @@ pub(crate) const TABLE_NAMES: [&str; 35] = [
     "application_installation_campaigns",
     "application_export_operations",
     "validated_prefix_entity_heads",
+    "vector_evidence",
 ];
 
-pub(crate) const BYTE_TABLES: [TableDefinition<&[u8], &[u8]>; 33] = [
+pub(crate) const BYTE_TABLES: [TableDefinition<&[u8], &[u8]>; 34] = [
     CONTRACT_BUNDLES,
     CATALOG_ACTIVE,
     QUERY_MODULES,
@@ -139,6 +143,7 @@ pub(crate) const BYTE_TABLES: [TableDefinition<&[u8], &[u8]>; 33] = [
     EVENT_CONSUMER_DELIVERIES,
     APPLICATION_INSTALLATION_CAMPAIGNS,
     APPLICATION_EXPORT_OPERATIONS,
+    VECTOR_EVIDENCE,
 ];
 
 pub(crate) const META_FORMAT_VERSION: &str = "format_version";
@@ -216,6 +221,7 @@ pub(crate) fn create_all_tables(tx: &WriteTransaction) -> Result<(), TableError>
     drop(tx.open_table(EVENT_CONSUMER_DELIVERIES)?);
     drop(tx.open_table(APPLICATION_INSTALLATION_CAMPAIGNS)?);
     drop(tx.open_table(APPLICATION_EXPORT_OPERATIONS)?);
+    drop(tx.open_table(VECTOR_EVIDENCE)?);
     Ok(())
 }
 
@@ -265,10 +271,11 @@ mod tests {
             APPLICATION_INSTALLATION_CAMPAIGNS.name(),
             APPLICATION_EXPORT_OPERATIONS.name(),
             VALIDATED_PREFIX_ENTITY_HEADS.name(),
+            VECTOR_EVIDENCE.name(),
         ];
 
         assert_eq!(definition_names, TABLE_NAMES);
-        assert_eq!(TABLE_NAMES.len(), 35);
+        assert_eq!(TABLE_NAMES.len(), 36);
         assert_eq!(
             TABLE_NAMES.into_iter().collect::<BTreeSet<_>>().len(),
             TABLE_NAMES.len()
