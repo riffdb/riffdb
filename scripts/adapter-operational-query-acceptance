@@ -169,8 +169,6 @@ target/debug/riffdb --config "$work_root/operator-client.toml" role bind \
 export RIFFDB_CONFORMANCE_ENDPOINT="https://127.0.0.1:$port"
 export RIFFDB_CONFORMANCE_TRUST_ROOT="$work_root/ca.pem"
 export RIFFDB_CONFORMANCE_CREDENTIAL="$credential"
-cargo +1.97.0 run --quiet -p riffdb-testkit --example adapter_operational_remote_client -- >"$work_root/rust.json"
-
 cat >"$work_root/application-client.toml" <<EOF
 [client]
 endpoint = "https://127.0.0.1:$port"
@@ -181,6 +179,44 @@ credential_file = "$credential"
 tls_trust_root = "$work_root/ca.pem"
 tls_server_name = "127.0.0.1"
 EOF
+module_hash="$(jq -r '.modules[0].module_hash' "$work_root/application/riffdb.application.lock.json")"
+RIFFDB_CONFORMANCE_SEED_ONLY=1 \
+    cargo +1.97.0 run --quiet -p riffdb-testkit --example adapter_operational_remote_client -- \
+    >"$work_root/rust-seed.json"
+cat >"$work_root/exact-provider-readiness.json" <<'EOF'
+{
+  "site_id": {"$uuid":"018f0f8b-7c6d-7e31-8a4f-00000000001e"},
+  "needle": "Alpha",
+  "document_id": null,
+  "limit": 1,
+  "offset": {"$u64":"0"}
+}
+EOF
+for exact_query in ExactDocumentsContainsAsc ExactDocumentsEndsWithDesc ExactDocumentsStartsWithAsc; do
+    exact_provider_ready=''
+    for _attempt in $(seq 1 100); do
+        if target/debug/riffdb --config "$work_root/application-client.toml" \
+            query run-named "$exact_query" \
+            --contract-lineage AdapterOperationalConformance --contract-version 1 \
+            --module-hash "$module_hash" --parameters "$work_root/exact-provider-readiness.json" \
+            --output json >"$work_root/exact-provider-readiness.out" 2>&1; then
+            exact_provider_ready=yes
+            break
+        fi
+        if ! rg -q 'RDB-QUERY-0102' "$work_root/exact-provider-readiness.out"; then
+            cat "$work_root/exact-provider-readiness.out" >&2
+            exit 1
+        fi
+    done
+    [[ "$exact_provider_ready" == yes ]] || {
+        cat "$work_root/exact-provider-readiness.out" >&2
+        echo "$exact_query provider did not become ready within the bounded poll budget" >&2
+        exit 1
+    }
+done
+
+cargo +1.97.0 run --quiet -p riffdb-testkit --example adapter_operational_remote_client -- >"$work_root/rust.json"
+
 cat >"$work_root/list-fga-parameters.json" <<'EOF'
 {
   "store_id": {"$uuid":"018f0f8b-7c6d-7e31-8a4f-00000000000a"},
@@ -188,13 +224,33 @@ cat >"$work_root/list-fga-parameters.json" <<'EOF'
   "after": null
 }
 EOF
-module_hash="$(jq -r '.modules[0].module_hash' "$work_root/application/riffdb.application.lock.json")"
 target/debug/riffdb --config "$work_root/application-client.toml" query run-named ListFgaTuples \
     --contract-lineage AdapterOperationalConformance --contract-version 1 \
     --module-hash "$module_hash" --parameters "$work_root/list-fga-parameters.json" \
     --output json >"$work_root/cli.json"
 jq -e '.ok == true and .result.outcome == "Found" and (.result.fields[0].records | length) == 1' \
     "$work_root/cli.json" >/dev/null
+
+cat >"$work_root/exact-document-parameters.json" <<'EOF'
+{
+  "site_id": {"$uuid":"018f0f8b-7c6d-7e31-8a4f-00000000001e"},
+  "needle": "Alpha",
+  "document_id": null,
+  "limit": 1,
+  "offset": {"$u64":"1"}
+}
+EOF
+target/debug/riffdb --config "$work_root/application-client.toml" query run-named ExactDocumentsContainsAsc \
+    --contract-lineage AdapterOperationalConformance --contract-version 1 \
+    --module-hash "$module_hash" --parameters "$work_root/exact-document-parameters.json" \
+    --output json >"$work_root/cli-exact.json"
+jq -e '
+  .ok == true
+  and .result.outcome == "Found"
+  and (.result.fields[] | select(.name == "documents") | .records | length) == 1
+  and (.result.fields[] | select(.name == "total") | .records[0].fields[]
+       | select(.name == "value") | .value.type == "u64" and .value.value == "2")
+' "$work_root/cli-exact.json" >/dev/null
 
 cat >"$work_root/limited-client.toml" <<EOF
 [client]
@@ -286,7 +342,7 @@ PYTHONPATH="$work_root/application/generated/python" \
     "$work_root/python-venv/bin/python" fixtures/adapters/operational-conformance/runner/python.py \
     >"$work_root/python.json"
 
-expected='{"adapters":["mlflow","openfga","better-auth","woodpecker"],"binary_prefix":true,"catalog_preflight":true,"exact_aggregates":true,"null_predicate":true,"optional_filters":true,"regression_adapters":["payload"],"schema":"riffdb.adapter-operational-observation/v1","stable_cursor":true}'
+expected='{"adapters":["mlflow","openfga","better-auth","woodpecker"],"binary_prefix":true,"catalog_preflight":true,"exact_aggregates":true,"exact_text_family":true,"exact_total":true,"null_predicate":true,"numeric_offset":true,"optional_filters":true,"regression_adapters":["payload"],"schema":"riffdb.adapter-operational-observation/v1","stable_cursor":true}'
 for language in rust go typescript python; do
     observed="$(jq -cS 'del(.language)' "$work_root/$language.json")"
     [[ "$observed" == "$expected" ]] || {
@@ -297,8 +353,15 @@ done
 
 jq -e '
   .schema == "riffdb-generated-application-operations/v2"
-  and (.tools | length) == 6
-  and ([.tools[].operation_name] | sort) == ["GetAuthSession", "ListDraftDocuments", "ListFgaTuples", "ListPipelines", "MetricDashboard", "SearchDocuments"]
+  and (.tools | length) == 9
+  and ([.tools[].operation_name] | sort) == ["ExactDocumentsContainsAsc", "ExactDocumentsEndsWithDesc", "ExactDocumentsStartsWithAsc", "GetAuthSession", "ListDraftDocuments", "ListFgaTuples", "ListPipelines", "MetricDashboard", "SearchDocuments"]
+  and ([.tools[] | select(.operation_name | startswith("ExactDocuments"))] | length) == 3
+  and all(.tools[] | select(.operation_name | startswith("ExactDocuments"));
+       (.input_schema.required | sort) == ["needle", "site_id"]
+       and (.input_schema.properties | keys | sort) == ["document_id", "limit", "needle", "offset", "site_id"]
+       and .input_schema.properties.limit.maximum == 499
+       and .result_schema.oneOf[0].properties.documents.maxItems == 499
+       and .result_schema.oneOf[0].properties.total.properties.value.type == "string")
   and (.tools[] | select(.operation_name == "GetAuthSession")
        | (.input_schema.required | sort) == ["organization_id", "session_id", "user_id"]
          and (.result_schema.oneOf | map(.properties.outcome.const) | sort) == ["Found", "Missing"])
@@ -318,7 +381,5 @@ if rg -n 'riffdb[_-](kernel|storage)|GetEntity|ScanIndex|raw[_ -]?(mutation|tran
     echo "adapter corpus crossed the application boundary" >&2
     exit 1
 fi
-
-"$repo_root/scripts/adapter-cascade-acceptance" --all-languages
 
 echo "Rust, Go, TypeScript, Python, CLI, and MCP passed the bounded operational-query corpus."

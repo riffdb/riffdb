@@ -91,6 +91,9 @@ async fn run_async() -> TestResult<()> {
         AttemptBudget::new(3).ok_or("attempt budget")?,
     );
     seed(&mut client).await?;
+    if std::env::var_os("RIFFDB_CONFORMANCE_SEED_ONLY").is_some() {
+        return Ok(());
+    }
     verify_queries(&mut client).await?;
 
     println!(
@@ -104,6 +107,9 @@ async fn run_async() -> TestResult<()> {
             "null_predicate": true,
             "binary_prefix": true,
             "exact_aggregates": true,
+            "exact_text_family": true,
+            "exact_total": true,
+            "numeric_offset": true,
             "adapters": ["mlflow", "openfga", "better-auth", "woodpecker"],
             "regression_adapters": ["payload"],
         })
@@ -155,6 +161,24 @@ async fn seed(client: &mut generated::AdapterOperationalConformanceClient) -> Te
                     title: "Alpha Published".to_owned(),
                     published_at: Some(generated::TimestampValue {
                         seconds: 1_700_000_000,
+                        nanos: 0,
+                    }),
+                },
+                generated::Document {
+                    site_id: id(30),
+                    document_id: id(33),
+                    title: "Beta Guide".to_owned(),
+                    published_at: Some(generated::TimestampValue {
+                        seconds: 1_700_000_100,
+                        nanos: 0,
+                    }),
+                },
+                generated::Document {
+                    site_id: id(30),
+                    document_id: id(34),
+                    title: "Gamma Guide".to_owned(),
+                    published_at: Some(generated::TimestampValue {
+                        seconds: 1_700_000_200,
                         nanos: 0,
                     }),
                 },
@@ -239,6 +263,55 @@ async fn verify_queries(
         .await?;
     let generated::ListDraftDocumentsResult::Found(drafts) = drafts;
     expect(drafts.documents.len() == 1, "Payload null predicate")?;
+
+    let contains = client
+        .exact_documents_contains_asc(generated::ExactDocumentsContainsAscParams {
+            site_id: id(30),
+            needle: "Alpha".to_owned(),
+            document_id: None,
+            limit: 1,
+            offset: 1,
+        })
+        .await?;
+    let generated::ExactDocumentsContainsAscResult::Found(contains) = contains;
+    expect(
+        contains.total.value == 2
+            && contains.documents.len() == 1
+            && contains.documents[0].title == "Alpha Published",
+        "generic contains page retains full exact total across numeric offset",
+    )?;
+    let starts_with = client
+        .exact_documents_starts_with_asc(generated::ExactDocumentsStartsWithAscParams {
+            site_id: id(30),
+            needle: "Alpha".to_owned(),
+            document_id: Some(id(31)),
+            limit: 25,
+            offset: 0,
+        })
+        .await?;
+    let generated::ExactDocumentsStartsWithAscResult::Found(starts_with) = starts_with;
+    expect(
+        starts_with.total.value == 1
+            && starts_with.documents.len() == 1
+            && starts_with.documents[0].document_id == id(31),
+        "generic starts-with page applies the typed optional filter",
+    )?;
+    let ends_with = client
+        .exact_documents_ends_with_desc(generated::ExactDocumentsEndsWithDescParams {
+            site_id: id(30),
+            needle: "Guide".to_owned(),
+            document_id: None,
+            limit: 1,
+            offset: 1,
+        })
+        .await?;
+    let generated::ExactDocumentsEndsWithDescResult::Found(ends_with) = ends_with;
+    expect(
+        ends_with.total.value == 2
+            && ends_with.documents.len() == 1
+            && ends_with.documents[0].title == "Beta Guide",
+        "generic ends-with page uses descending value order and direct ordinal seek",
+    )?;
 
     let queued = client
         .list_pipelines(generated::ListPipelinesParams {

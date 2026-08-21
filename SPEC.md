@@ -7738,12 +7738,14 @@ behavior:
   enumerated family of typed optional search, filter, total order, limit, and
   offset inputs. No request may carry a field/index/provider name, arbitrary
   operator, predicate/order/facet AST, cost hint, or consistency downgrade.
-- `OQ-030`: Rust, Go, TypeScript, Python, CLI, and MCP MUST share exact-text,
-  count, ordinal, snapshot, policy, error, and boundary fixtures. A real Better
-  Auth admin profile MUST prove contains/starts-with/ends-with, declared filters
-  and sorts, numeric offset, exact total, concurrent-write snapshot behavior,
-  and tenant/authorization isolation with no adapter-side filter, count, sort,
-  page walk, or query AST.
+- `OQ-030`: Rust, Go, TypeScript, Python, CLI, and MCP MUST share framework-
+  neutral exact-text, count, ordinal, snapshot, policy, error, and boundary
+  fixtures. A real Better Auth admin profile MUST prove contains/starts-with/
+  ends-with, declared filters and sorts, numeric offset, exact total,
+  concurrent-write snapshot behavior, and tenant/authorization isolation with
+  no adapter-side filter, count, sort, page walk, or query AST, but that profile,
+  its generated clients, route host, and route-level evidence MUST live in the
+  owning external adapter repository rather than the RiffDB repository.
 
 ### 24.5.5 Compiled workflow concurrency
 

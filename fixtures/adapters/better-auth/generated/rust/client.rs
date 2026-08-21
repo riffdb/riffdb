@@ -5,11 +5,11 @@ use riffdb_client_rust::{ApplicationCardinality, ApplicationClientError, Applica
 pub use riffdb_client_rust::QueryOptions;
 use riffdb_client_rust::v1::value::Kind as WireKind;
 
-pub const QUERY_MODULE_HASH: [u8; 32] = [0x63, 0x60, 0x2b, 0x2a, 0x35, 0x7b, 0x28, 0xba, 0x9a, 0x1c, 0x0c, 0xf4, 0x12, 0xee, 0x33, 0x51, 0xe6, 0xe7, 0x52, 0xd9, 0x7b, 0xc2, 0xd0, 0xac, 0xf3, 0xf0, 0x96, 0xf3, 0x83, 0x72, 0x73, 0x17];
+pub const QUERY_MODULE_HASH: [u8; 32] = [0xfd, 0xf5, 0x34, 0x0b, 0xae, 0x52, 0x05, 0x90, 0xd2, 0x97, 0x85, 0x6e, 0x69, 0x8d, 0xd6, 0xf0, 0x97, 0xd9, 0xc1, 0x20, 0xc5, 0xe0, 0xf2, 0x65, 0xdb, 0x82, 0xf6, 0x50, 0xf9, 0x48, 0x14, 0x5f];
 pub const CONTRACT_LINEAGE: &str = "BetterAuthAcceptance";
 pub const CONTRACT_VERSION: u64 = 1;
 
-pub const CONTRACT_BUNDLE_HASH: [u8; 32] = [0xb8, 0x86, 0x95, 0x74, 0x91, 0xe9, 0xfb, 0xfc, 0xe5, 0x6e, 0x76, 0xb7, 0xfe, 0x37, 0xa3, 0xfb, 0x95, 0xb1, 0x73, 0x25, 0x26, 0xd6, 0x16, 0xa5, 0xb4, 0xee, 0xe0, 0xf3, 0x2a, 0xc1, 0xd7, 0xc2];
+pub const CONTRACT_BUNDLE_HASH: [u8; 32] = [0xc1, 0x37, 0x6f, 0x90, 0xce, 0xda, 0x16, 0x6b, 0xa3, 0x26, 0xed, 0x7e, 0x38, 0x9d, 0x3c, 0x47, 0x42, 0x24, 0xf1, 0x8d, 0x07, 0x74, 0x0b, 0x3d, 0x5e, 0x29, 0x9c, 0xaf, 0xc9, 0x4e, 0x94, 0xd4];
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DecimalValue {
@@ -26,282 +26,6 @@ pub struct MoneyValue {
 pub struct TimestampValue {
     pub seconds: i64,
     pub nanos: u32,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct AdminUsersContainsAscParams {
-    pub organization_id: String,
-    pub needle: String,
-    pub user_id: Option<String>,
-    pub limit: u64,
-    pub offset: u64,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct AdminUsersContainsAscFoundUsers {
-    pub organization_id: String,
-    pub user_id: String,
-    pub email: String,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct AdminUsersContainsAscFoundTotal {
-    pub value: u64,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct AdminUsersContainsAscFound {
-    pub users: Vec<AdminUsersContainsAscFoundUsers>,
-    pub total: AdminUsersContainsAscFoundTotal,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum AdminUsersContainsAscResult {
-    Found(Box<AdminUsersContainsAscFound>),
-}
-
-pub const ADMIN_USERS_CONTAINS_ASC_QUERY_PLAN_HASH: [u8; 32] = [0xa7, 0x62, 0xb1, 0x08, 0x01, 0x30, 0x1b, 0x78, 0x12, 0xc8, 0x7f, 0x7c, 0x5b, 0xa0, 0xbf, 0x57, 0x40, 0x61, 0x16, 0x63, 0x27, 0xbb, 0x63, 0x4f, 0x1d, 0xc7, 0x03, 0x97, 0xf1, 0xe0, 0xee, 0x83];
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct AdminUsersContainsAscQuery(pub AdminUsersContainsAscParams);
-impl GeneratedQuery for AdminUsersContainsAscQuery {
-    type Output = AdminUsersContainsAscResult;
-
-    fn named_query(self, options: QueryOptions) -> Result<NamedQuery, ApplicationClientError> {
-        let mut parameters = BTreeMap::new();
-        parameters.insert("organization_id".to_owned(), ApplicationValue::Uuid(ApplicationUuid::from_text(self.0.organization_id)?));
-        parameters.insert("needle".to_owned(), ApplicationValue::String(self.0.needle));
-        parameters.insert("user_id".to_owned(), match self.0.user_id { Some(value) => ApplicationValue::Uuid(ApplicationUuid::from_text(value)?), None => ApplicationValue::Null });
-        parameters.insert("limit".to_owned(), ApplicationValue::U64(self.0.limit));
-        parameters.insert("offset".to_owned(), ApplicationValue::U64(self.0.offset));
-        NamedQuery::new(
-            ApplicationContract::Exact {
-                lineage: CONTRACT_LINEAGE.to_owned(),
-                version: CONTRACT_VERSION,
-                bundle_hash: Some(CONTRACT_BUNDLE_HASH),
-            },
-            "AdminUsersContainsAsc",
-            Some(QUERY_MODULE_HASH),
-            parameters,
-            None,
-        )?.expect_plan_hash(ADMIN_USERS_CONTAINS_ASC_QUERY_PLAN_HASH).with_options(options)
-    }
-
-    fn decode_result(mut response: NamedQueryResult) -> Result<Self::Output, ApplicationClientError> {
-        let outcome = response.outcome.clone();
-        match outcome.as_str() {
-            "Found" => {
-                let decoded = AdminUsersContainsAscFound {
-                    users: many_result_records(take_result_field(&mut response.fields, "users")?)?.into_iter().map(decode_admin_users_contains_asc_found_users_record).collect::<Result<Vec<_>, _>>()?,
-                    total: decode_admin_users_contains_asc_found_total_record(one_result_record(take_result_field(&mut response.fields, "total")?)?)?,
-                };
-                if !response.fields.is_empty() { return Err(ApplicationClientError::InvalidResponse); }
-                Ok(AdminUsersContainsAscResult::Found(Box::new(decoded)))
-            },
-            _ => Err(ApplicationClientError::InvalidResponse),
-        }
-    }
-}
-
-fn decode_admin_users_contains_asc_found_users_record(mut record: ApplicationRecord) -> Result<AdminUsersContainsAscFoundUsers, ApplicationClientError> {
-    let value = AdminUsersContainsAscFoundUsers {
-        organization_id: application_uuid(take_application_value(&mut record.fields, "organization_id")?)?,
-        user_id: application_uuid(take_application_value(&mut record.fields, "user_id")?)?,
-        email: application_string(take_application_value(&mut record.fields, "email")?)?,
-    };
-    if !record.fields.is_empty() { return Err(ApplicationClientError::InvalidResponse); }
-    Ok(value)
-}
-
-fn decode_admin_users_contains_asc_found_total_record(mut record: ApplicationRecord) -> Result<AdminUsersContainsAscFoundTotal, ApplicationClientError> {
-    let value = AdminUsersContainsAscFoundTotal {
-        value: application_u64(take_application_value(&mut record.fields, "value")?)?,
-    };
-    if !record.fields.is_empty() { return Err(ApplicationClientError::InvalidResponse); }
-    Ok(value)
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct AdminUsersEndsWithDescParams {
-    pub organization_id: String,
-    pub needle: String,
-    pub user_id: Option<String>,
-    pub limit: u64,
-    pub offset: u64,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct AdminUsersEndsWithDescFoundUsers {
-    pub organization_id: String,
-    pub user_id: String,
-    pub email: String,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct AdminUsersEndsWithDescFoundTotal {
-    pub value: u64,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct AdminUsersEndsWithDescFound {
-    pub users: Vec<AdminUsersEndsWithDescFoundUsers>,
-    pub total: AdminUsersEndsWithDescFoundTotal,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum AdminUsersEndsWithDescResult {
-    Found(Box<AdminUsersEndsWithDescFound>),
-}
-
-pub const ADMIN_USERS_ENDS_WITH_DESC_QUERY_PLAN_HASH: [u8; 32] = [0x50, 0xec, 0x67, 0x53, 0x0a, 0x2d, 0x1b, 0xcb, 0x47, 0x10, 0x6b, 0x3c, 0x69, 0x46, 0x83, 0xcb, 0x1a, 0x8e, 0x3b, 0xa0, 0xa1, 0x50, 0xd9, 0x1b, 0xcb, 0x66, 0x06, 0xf5, 0x05, 0x6a, 0x21, 0xe2];
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct AdminUsersEndsWithDescQuery(pub AdminUsersEndsWithDescParams);
-impl GeneratedQuery for AdminUsersEndsWithDescQuery {
-    type Output = AdminUsersEndsWithDescResult;
-
-    fn named_query(self, options: QueryOptions) -> Result<NamedQuery, ApplicationClientError> {
-        let mut parameters = BTreeMap::new();
-        parameters.insert("organization_id".to_owned(), ApplicationValue::Uuid(ApplicationUuid::from_text(self.0.organization_id)?));
-        parameters.insert("needle".to_owned(), ApplicationValue::String(self.0.needle));
-        parameters.insert("user_id".to_owned(), match self.0.user_id { Some(value) => ApplicationValue::Uuid(ApplicationUuid::from_text(value)?), None => ApplicationValue::Null });
-        parameters.insert("limit".to_owned(), ApplicationValue::U64(self.0.limit));
-        parameters.insert("offset".to_owned(), ApplicationValue::U64(self.0.offset));
-        NamedQuery::new(
-            ApplicationContract::Exact {
-                lineage: CONTRACT_LINEAGE.to_owned(),
-                version: CONTRACT_VERSION,
-                bundle_hash: Some(CONTRACT_BUNDLE_HASH),
-            },
-            "AdminUsersEndsWithDesc",
-            Some(QUERY_MODULE_HASH),
-            parameters,
-            None,
-        )?.expect_plan_hash(ADMIN_USERS_ENDS_WITH_DESC_QUERY_PLAN_HASH).with_options(options)
-    }
-
-    fn decode_result(mut response: NamedQueryResult) -> Result<Self::Output, ApplicationClientError> {
-        let outcome = response.outcome.clone();
-        match outcome.as_str() {
-            "Found" => {
-                let decoded = AdminUsersEndsWithDescFound {
-                    users: many_result_records(take_result_field(&mut response.fields, "users")?)?.into_iter().map(decode_admin_users_ends_with_desc_found_users_record).collect::<Result<Vec<_>, _>>()?,
-                    total: decode_admin_users_ends_with_desc_found_total_record(one_result_record(take_result_field(&mut response.fields, "total")?)?)?,
-                };
-                if !response.fields.is_empty() { return Err(ApplicationClientError::InvalidResponse); }
-                Ok(AdminUsersEndsWithDescResult::Found(Box::new(decoded)))
-            },
-            _ => Err(ApplicationClientError::InvalidResponse),
-        }
-    }
-}
-
-fn decode_admin_users_ends_with_desc_found_users_record(mut record: ApplicationRecord) -> Result<AdminUsersEndsWithDescFoundUsers, ApplicationClientError> {
-    let value = AdminUsersEndsWithDescFoundUsers {
-        organization_id: application_uuid(take_application_value(&mut record.fields, "organization_id")?)?,
-        user_id: application_uuid(take_application_value(&mut record.fields, "user_id")?)?,
-        email: application_string(take_application_value(&mut record.fields, "email")?)?,
-    };
-    if !record.fields.is_empty() { return Err(ApplicationClientError::InvalidResponse); }
-    Ok(value)
-}
-
-fn decode_admin_users_ends_with_desc_found_total_record(mut record: ApplicationRecord) -> Result<AdminUsersEndsWithDescFoundTotal, ApplicationClientError> {
-    let value = AdminUsersEndsWithDescFoundTotal {
-        value: application_u64(take_application_value(&mut record.fields, "value")?)?,
-    };
-    if !record.fields.is_empty() { return Err(ApplicationClientError::InvalidResponse); }
-    Ok(value)
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct AdminUsersStartsWithAscParams {
-    pub organization_id: String,
-    pub needle: String,
-    pub user_id: Option<String>,
-    pub limit: u64,
-    pub offset: u64,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct AdminUsersStartsWithAscFoundUsers {
-    pub organization_id: String,
-    pub user_id: String,
-    pub email: String,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct AdminUsersStartsWithAscFoundTotal {
-    pub value: u64,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct AdminUsersStartsWithAscFound {
-    pub users: Vec<AdminUsersStartsWithAscFoundUsers>,
-    pub total: AdminUsersStartsWithAscFoundTotal,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum AdminUsersStartsWithAscResult {
-    Found(Box<AdminUsersStartsWithAscFound>),
-}
-
-pub const ADMIN_USERS_STARTS_WITH_ASC_QUERY_PLAN_HASH: [u8; 32] = [0xe9, 0xcb, 0x7a, 0xa8, 0x73, 0xa6, 0xc4, 0x6f, 0xb4, 0x88, 0x18, 0x68, 0x80, 0xd3, 0x0d, 0x6f, 0x13, 0xc9, 0x43, 0xac, 0x0c, 0xd0, 0x92, 0x4d, 0x88, 0xcc, 0x49, 0x74, 0x07, 0x56, 0x2a, 0xec];
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct AdminUsersStartsWithAscQuery(pub AdminUsersStartsWithAscParams);
-impl GeneratedQuery for AdminUsersStartsWithAscQuery {
-    type Output = AdminUsersStartsWithAscResult;
-
-    fn named_query(self, options: QueryOptions) -> Result<NamedQuery, ApplicationClientError> {
-        let mut parameters = BTreeMap::new();
-        parameters.insert("organization_id".to_owned(), ApplicationValue::Uuid(ApplicationUuid::from_text(self.0.organization_id)?));
-        parameters.insert("needle".to_owned(), ApplicationValue::String(self.0.needle));
-        parameters.insert("user_id".to_owned(), match self.0.user_id { Some(value) => ApplicationValue::Uuid(ApplicationUuid::from_text(value)?), None => ApplicationValue::Null });
-        parameters.insert("limit".to_owned(), ApplicationValue::U64(self.0.limit));
-        parameters.insert("offset".to_owned(), ApplicationValue::U64(self.0.offset));
-        NamedQuery::new(
-            ApplicationContract::Exact {
-                lineage: CONTRACT_LINEAGE.to_owned(),
-                version: CONTRACT_VERSION,
-                bundle_hash: Some(CONTRACT_BUNDLE_HASH),
-            },
-            "AdminUsersStartsWithAsc",
-            Some(QUERY_MODULE_HASH),
-            parameters,
-            None,
-        )?.expect_plan_hash(ADMIN_USERS_STARTS_WITH_ASC_QUERY_PLAN_HASH).with_options(options)
-    }
-
-    fn decode_result(mut response: NamedQueryResult) -> Result<Self::Output, ApplicationClientError> {
-        let outcome = response.outcome.clone();
-        match outcome.as_str() {
-            "Found" => {
-                let decoded = AdminUsersStartsWithAscFound {
-                    users: many_result_records(take_result_field(&mut response.fields, "users")?)?.into_iter().map(decode_admin_users_starts_with_asc_found_users_record).collect::<Result<Vec<_>, _>>()?,
-                    total: decode_admin_users_starts_with_asc_found_total_record(one_result_record(take_result_field(&mut response.fields, "total")?)?)?,
-                };
-                if !response.fields.is_empty() { return Err(ApplicationClientError::InvalidResponse); }
-                Ok(AdminUsersStartsWithAscResult::Found(Box::new(decoded)))
-            },
-            _ => Err(ApplicationClientError::InvalidResponse),
-        }
-    }
-}
-
-fn decode_admin_users_starts_with_asc_found_users_record(mut record: ApplicationRecord) -> Result<AdminUsersStartsWithAscFoundUsers, ApplicationClientError> {
-    let value = AdminUsersStartsWithAscFoundUsers {
-        organization_id: application_uuid(take_application_value(&mut record.fields, "organization_id")?)?,
-        user_id: application_uuid(take_application_value(&mut record.fields, "user_id")?)?,
-        email: application_string(take_application_value(&mut record.fields, "email")?)?,
-    };
-    if !record.fields.is_empty() { return Err(ApplicationClientError::InvalidResponse); }
-    Ok(value)
-}
-
-fn decode_admin_users_starts_with_asc_found_total_record(mut record: ApplicationRecord) -> Result<AdminUsersStartsWithAscFoundTotal, ApplicationClientError> {
-    let value = AdminUsersStartsWithAscFoundTotal {
-        value: application_u64(take_application_value(&mut record.fields, "value")?)?,
-    };
-    if !record.fields.is_empty() { return Err(ApplicationClientError::InvalidResponse); }
-    Ok(value)
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -358,7 +82,7 @@ pub enum GetSessionResult {
     Missing(Box<GetSessionMissing>),
 }
 
-pub const GET_SESSION_QUERY_PLAN_HASH: [u8; 32] = [0xc9, 0x7f, 0xd5, 0x58, 0xf7, 0x40, 0x58, 0x06, 0x58, 0x99, 0x85, 0xb9, 0x7a, 0xb5, 0xf0, 0xbd, 0x3f, 0x4d, 0x3e, 0x6f, 0xaa, 0x8a, 0xc8, 0xd7, 0x6a, 0xa3, 0x9e, 0x17, 0x20, 0x88, 0x9f, 0x22];
+pub const GET_SESSION_QUERY_PLAN_HASH: [u8; 32] = [0x14, 0xda, 0x73, 0x0f, 0xc5, 0x89, 0xd7, 0xef, 0x19, 0xc9, 0xed, 0x97, 0x6c, 0x72, 0x15, 0xcf, 0x2e, 0x35, 0xd6, 0x00, 0x5a, 0x5f, 0xc1, 0x0f, 0x36, 0xc0, 0x60, 0x1a, 0xf3, 0xa1, 0x18, 0x9c];
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct GetSessionQuery(pub GetSessionParams);
 impl GeneratedQuery for GetSessionQuery {
@@ -444,7 +168,7 @@ pub enum GetUserResult {
     Missing(Box<GetUserMissing>),
 }
 
-pub const GET_USER_QUERY_PLAN_HASH: [u8; 32] = [0x14, 0x7a, 0x7d, 0x21, 0xbc, 0xab, 0x6e, 0xbd, 0x6c, 0x50, 0xb2, 0x3c, 0x18, 0x3d, 0xcc, 0xdf, 0x24, 0x60, 0x33, 0xa6, 0xec, 0xfb, 0x48, 0x14, 0x7f, 0x6f, 0x1c, 0x5e, 0xa3, 0x2e, 0x75, 0x13];
+pub const GET_USER_QUERY_PLAN_HASH: [u8; 32] = [0x34, 0x6e, 0xe2, 0x3a, 0x55, 0xe1, 0xd1, 0x12, 0x44, 0x86, 0x26, 0xae, 0x99, 0x68, 0x81, 0x6c, 0xd0, 0x10, 0x0d, 0xe7, 0xa3, 0x78, 0xfb, 0x80, 0xe0, 0xf4, 0x65, 0x3d, 0xa3, 0x50, 0x51, 0xa8];
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct GetUserQuery(pub GetUserParams);
 impl GeneratedQuery for GetUserQuery {
@@ -701,7 +425,7 @@ pub enum ConsumeVerificationTokenOutcome {
     VerificationTokenAlreadyConsumed,
 }
 
-const CONSUME_VERIFICATION_TOKEN_PLAN_HASH: [u8; 32] = [0x5b, 0xf3, 0x66, 0x75, 0x48, 0xc9, 0xb5, 0x75, 0xd3, 0x0f, 0xb3, 0x86, 0x96, 0xd1, 0x0d, 0xcb, 0x73, 0x90, 0x67, 0x6b, 0xaf, 0x38, 0x84, 0x2e, 0x03, 0x11, 0xe1, 0xd8, 0xb0, 0x95, 0xa7, 0xa3];
+const CONSUME_VERIFICATION_TOKEN_PLAN_HASH: [u8; 32] = [0xd3, 0xe6, 0xb6, 0x96, 0xc3, 0x90, 0x9e, 0x8d, 0x19, 0xde, 0x94, 0x41, 0xe0, 0xc2, 0x5c, 0x41, 0x06, 0x56, 0xe0, 0xda, 0xa4, 0x0b, 0x9e, 0x7a, 0x6b, 0xc8, 0x73, 0x8d, 0x62, 0xff, 0x17, 0xdc];
 impl GeneratedCommand for ConsumeVerificationTokenInput {
     type Outcome = ConsumeVerificationTokenOutcome;
 
@@ -763,7 +487,7 @@ pub enum CreateUserAccountSessionsOutcome {
     UserAccountSessionsCreated,
 }
 
-const CREATE_USER_ACCOUNT_SESSIONS_PLAN_HASH: [u8; 32] = [0xfd, 0x6c, 0xe3, 0x1e, 0x14, 0x59, 0x03, 0xdb, 0xc1, 0x99, 0xe9, 0x80, 0x6c, 0xf8, 0x1f, 0xba, 0x23, 0x94, 0xf7, 0x66, 0x0f, 0x37, 0x7d, 0xc8, 0x1b, 0xca, 0x4d, 0xcc, 0x2d, 0x87, 0x55, 0x59];
+const CREATE_USER_ACCOUNT_SESSIONS_PLAN_HASH: [u8; 32] = [0xe3, 0x5b, 0xe7, 0xf9, 0x87, 0x7e, 0x51, 0xa2, 0x1f, 0x27, 0xf7, 0x37, 0x16, 0x79, 0xdf, 0xae, 0xdb, 0x2c, 0xbd, 0xab, 0xad, 0x7e, 0x13, 0xc2, 0x28, 0xec, 0xac, 0xbe, 0x61, 0x2c, 0x11, 0x26];
 impl GeneratedCommand for CreateUserAccountSessionsInput {
     type Outcome = CreateUserAccountSessionsOutcome;
 
@@ -816,7 +540,7 @@ pub enum DeleteUsersOutcome {
     CascadeLimitExceeded,
 }
 
-const DELETE_USERS_PLAN_HASH: [u8; 32] = [0x54, 0xee, 0xc6, 0xd3, 0x2d, 0xd3, 0xa1, 0x11, 0x4a, 0x87, 0x64, 0xf3, 0xf1, 0x46, 0xa7, 0xb0, 0x42, 0xf8, 0xa1, 0xf3, 0x14, 0x8d, 0xd0, 0x37, 0xb7, 0x7f, 0xad, 0xad, 0x3c, 0x38, 0x5e, 0x89];
+const DELETE_USERS_PLAN_HASH: [u8; 32] = [0x8b, 0x97, 0xf4, 0x34, 0x74, 0xcf, 0x0f, 0xf0, 0x7c, 0x38, 0x31, 0x98, 0x5b, 0xf5, 0x15, 0x0a, 0xf4, 0x85, 0x76, 0x23, 0x56, 0xd0, 0x5e, 0xce, 0xf7, 0x9d, 0xc6, 0x66, 0xb6, 0x43, 0x13, 0x07];
 impl GeneratedCommand for DeleteUsersInput {
     type Outcome = DeleteUsersOutcome;
 
@@ -876,7 +600,7 @@ pub enum IssueVerificationTokenOutcome {
     VerificationTokenUserMissing,
 }
 
-const ISSUE_VERIFICATION_TOKEN_PLAN_HASH: [u8; 32] = [0x05, 0xe8, 0x75, 0x5b, 0x06, 0xd6, 0x1a, 0x85, 0xf2, 0x9c, 0x06, 0x65, 0xf8, 0x78, 0xbf, 0xe6, 0xa7, 0xf8, 0xba, 0x7f, 0xdb, 0x73, 0x76, 0x32, 0x07, 0x6a, 0x79, 0xc4, 0xad, 0x93, 0x6c, 0x3d];
+const ISSUE_VERIFICATION_TOKEN_PLAN_HASH: [u8; 32] = [0x9d, 0x22, 0x69, 0x08, 0xf0, 0xf6, 0x9a, 0x90, 0xf7, 0x63, 0xb7, 0xdc, 0x78, 0x29, 0xb5, 0xfe, 0x9f, 0xf7, 0x17, 0xa3, 0x6f, 0x9f, 0x60, 0x7a, 0x31, 0x62, 0xc0, 0xf0, 0xfa, 0xed, 0x75, 0xba];
 impl GeneratedCommand for IssueVerificationTokenInput {
     type Outcome = IssueVerificationTokenOutcome;
 
@@ -948,7 +672,7 @@ pub enum RefreshSessionOutcome {
     RefreshSessionRevoked,
 }
 
-const REFRESH_SESSION_PLAN_HASH: [u8; 32] = [0xd8, 0x0d, 0x95, 0x1f, 0x76, 0x36, 0x75, 0x2c, 0x16, 0xca, 0x54, 0x9f, 0x5b, 0x74, 0x95, 0x6c, 0x61, 0x04, 0xfc, 0x01, 0x40, 0x03, 0x9b, 0xbf, 0x50, 0x21, 0x85, 0xc9, 0x2f, 0x07, 0x0e, 0x11];
+const REFRESH_SESSION_PLAN_HASH: [u8; 32] = [0xbe, 0xc1, 0x58, 0x66, 0x3a, 0x65, 0x11, 0x37, 0x2e, 0x7f, 0x49, 0x7f, 0x3d, 0x0e, 0xd5, 0xae, 0x9f, 0xfa, 0x45, 0xa0, 0xa3, 0x9b, 0x7b, 0x54, 0xd7, 0x1a, 0x81, 0x7d, 0x9f, 0xd3, 0x10, 0x67];
 impl GeneratedCommand for RefreshSessionInput {
     type Outcome = RefreshSessionOutcome;
 
@@ -1024,7 +748,7 @@ pub enum RevokeSessionOutcome {
     SessionAlreadyRevoked,
 }
 
-const REVOKE_SESSION_PLAN_HASH: [u8; 32] = [0x6f, 0xc4, 0x75, 0xf3, 0xda, 0x64, 0x0f, 0xc4, 0xb4, 0xe6, 0xf4, 0xd8, 0xea, 0xe0, 0xd9, 0x00, 0x26, 0x9f, 0x8d, 0x78, 0x60, 0xba, 0x52, 0x0a, 0x15, 0x93, 0xc7, 0xf1, 0x4e, 0x82, 0x81, 0xc5];
+const REVOKE_SESSION_PLAN_HASH: [u8; 32] = [0x30, 0x90, 0x62, 0xf5, 0x0e, 0xe3, 0x5e, 0xea, 0x4b, 0x2a, 0xb7, 0x39, 0x3c, 0x8a, 0x3b, 0xe7, 0x45, 0x47, 0xa3, 0xd7, 0xe0, 0x59, 0x95, 0xeb, 0x6b, 0x8c, 0x6c, 0xec, 0xc9, 0xf3, 0x98, 0x13];
 impl GeneratedCommand for RevokeSessionInput {
     type Outcome = RevokeSessionOutcome;
 
@@ -1096,45 +820,6 @@ impl BetterAuthAcceptanceClient {
     pub const fn bounded_session_enabled(&self) -> bool { self.client.bounded_session_enabled() }
     /// Closes the optional bounded session and returns to unary transport.
     pub fn close_bounded_session(&mut self) { self.client.close_bounded_session(); }
-
-    /// Executes the generated `AdminUsersContainsAsc` named query.
-    pub async fn admin_users_contains_asc(&mut self, parameters: AdminUsersContainsAscParams) -> Result<AdminUsersContainsAscResult, ApplicationClientError> {
-        Ok(self.admin_users_contains_asc_with_options(parameters, QueryOptions::new()).await?.value)
-    }
-    /// Executes `AdminUsersContainsAsc` against a snapshot at or after the supplied command commit.
-    pub async fn admin_users_contains_asc_after_commit(&mut self, parameters: AdminUsersContainsAscParams, commit_sequence: u64) -> Result<TypedQueryResult<AdminUsersContainsAscResult>, ApplicationClientError> {
-        self.admin_users_contains_asc_with_options(parameters, QueryOptions::new().read_after_commit(commit_sequence)).await
-    }
-    /// Executes `AdminUsersContainsAsc` with generated pagination or read-fence options.
-    pub async fn admin_users_contains_asc_with_options(&mut self, parameters: AdminUsersContainsAscParams, options: QueryOptions) -> Result<TypedQueryResult<AdminUsersContainsAscResult>, ApplicationClientError> {
-        self.client.execute_generated_query(AdminUsersContainsAscQuery(parameters), options, &self.metadata).await
-    }
-
-    /// Executes the generated `AdminUsersEndsWithDesc` named query.
-    pub async fn admin_users_ends_with_desc(&mut self, parameters: AdminUsersEndsWithDescParams) -> Result<AdminUsersEndsWithDescResult, ApplicationClientError> {
-        Ok(self.admin_users_ends_with_desc_with_options(parameters, QueryOptions::new()).await?.value)
-    }
-    /// Executes `AdminUsersEndsWithDesc` against a snapshot at or after the supplied command commit.
-    pub async fn admin_users_ends_with_desc_after_commit(&mut self, parameters: AdminUsersEndsWithDescParams, commit_sequence: u64) -> Result<TypedQueryResult<AdminUsersEndsWithDescResult>, ApplicationClientError> {
-        self.admin_users_ends_with_desc_with_options(parameters, QueryOptions::new().read_after_commit(commit_sequence)).await
-    }
-    /// Executes `AdminUsersEndsWithDesc` with generated pagination or read-fence options.
-    pub async fn admin_users_ends_with_desc_with_options(&mut self, parameters: AdminUsersEndsWithDescParams, options: QueryOptions) -> Result<TypedQueryResult<AdminUsersEndsWithDescResult>, ApplicationClientError> {
-        self.client.execute_generated_query(AdminUsersEndsWithDescQuery(parameters), options, &self.metadata).await
-    }
-
-    /// Executes the generated `AdminUsersStartsWithAsc` named query.
-    pub async fn admin_users_starts_with_asc(&mut self, parameters: AdminUsersStartsWithAscParams) -> Result<AdminUsersStartsWithAscResult, ApplicationClientError> {
-        Ok(self.admin_users_starts_with_asc_with_options(parameters, QueryOptions::new()).await?.value)
-    }
-    /// Executes `AdminUsersStartsWithAsc` against a snapshot at or after the supplied command commit.
-    pub async fn admin_users_starts_with_asc_after_commit(&mut self, parameters: AdminUsersStartsWithAscParams, commit_sequence: u64) -> Result<TypedQueryResult<AdminUsersStartsWithAscResult>, ApplicationClientError> {
-        self.admin_users_starts_with_asc_with_options(parameters, QueryOptions::new().read_after_commit(commit_sequence)).await
-    }
-    /// Executes `AdminUsersStartsWithAsc` with generated pagination or read-fence options.
-    pub async fn admin_users_starts_with_asc_with_options(&mut self, parameters: AdminUsersStartsWithAscParams, options: QueryOptions) -> Result<TypedQueryResult<AdminUsersStartsWithAscResult>, ApplicationClientError> {
-        self.client.execute_generated_query(AdminUsersStartsWithAscQuery(parameters), options, &self.metadata).await
-    }
 
     /// Executes the generated `GetSession` named query.
     pub async fn get_session(&mut self, parameters: GetSessionParams) -> Result<GetSessionResult, ApplicationClientError> {

@@ -7,6 +7,9 @@ from uuid import UUID
 from client import (
     AdapterOperationalConformanceClient,
     AuthSessionState,
+    ExactDocumentsContainsAscParams,
+    ExactDocumentsEndsWithDescParams,
+    ExactDocumentsStartsWithAscParams,
     GetAuthSessionFound,
     GetAuthSessionParams,
     ListDraftDocumentsParams,
@@ -73,6 +76,44 @@ def main() -> None:
         ).value
         require(len(drafts.documents) == 1, "Payload null predicate page")
 
+        contains = client.exact_documents_contains_asc(
+            ExactDocumentsContainsAscParams(
+                site_id=uid(30), needle="Alpha", limit=1, offset=1
+            )
+        ).value
+        require(contains.total.value == 2, "generic contains exact total")
+        require(
+            len(contains.documents) == 1
+            and contains.documents[0].title == "Alpha Published",
+            "generic contains numeric offset",
+        )
+        starts_with = client.exact_documents_starts_with_asc(
+            ExactDocumentsStartsWithAscParams(
+                site_id=uid(30),
+                needle="Alpha",
+                document_id=uid(31),
+                limit=25,
+                offset=0,
+            )
+        ).value
+        require(
+            starts_with.total.value == 1
+            and len(starts_with.documents) == 1
+            and starts_with.documents[0].document_id == uid(31),
+            "generic starts-with typed optional filter",
+        )
+        ends_with = client.exact_documents_ends_with_desc(
+            ExactDocumentsEndsWithDescParams(
+                site_id=uid(30), needle="Guide", limit=1, offset=1
+            )
+        ).value
+        require(ends_with.total.value == 2, "generic ends-with exact total")
+        require(
+            len(ends_with.documents) == 1
+            and ends_with.documents[0].title == "Beta Guide",
+            "generic ends-with descending ordinal",
+        )
+
         pipelines = client.list_pipelines(
             ListPipelinesParams(organization_id=uid(40), state="queued")
         ).value
@@ -103,6 +144,9 @@ def main() -> None:
                 "null_predicate": True,
                 "binary_prefix": True,
                 "exact_aggregates": True,
+                "exact_text_family": True,
+                "exact_total": True,
+                "numeric_offset": True,
                 "adapters": ["mlflow", "openfga", "better-auth", "woodpecker"],
                 "regression_adapters": ["payload"],
             },

@@ -19,6 +19,9 @@
       "name": "adapter_operational_conformance",
       "version": 1,
       "queries": [
+        { "name": "ExactDocumentsContainsAsc", "source": "riffdb/queries/exact_documents_contains_asc.riffq" },
+        { "name": "ExactDocumentsEndsWithDesc", "source": "riffdb/queries/exact_documents_ends_with_desc.riffq" },
+        { "name": "ExactDocumentsStartsWithAsc", "source": "riffdb/queries/exact_documents_starts_with_asc.riffq" },
         { "name": "ListFgaTuples", "source": "riffdb/queries/list_fga_tuples.riffq" },
         { "name": "MetricDashboard", "source": "riffdb/queries/metric_dashboard.riffq" },
         { "name": "SearchDocuments", "source": "riffdb/queries/search_documents.riffq" },
@@ -35,6 +38,9 @@
       "environment": "development",
       "tenant_scope": "global",
       "queries": [
+        "ExactDocumentsContainsAsc",
+        "ExactDocumentsEndsWithDesc",
+        "ExactDocumentsStartsWithAsc",
         "ListFgaTuples",
         "MetricDashboard",
         "SearchDocuments",

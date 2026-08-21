@@ -23,7 +23,7 @@ def _compact_tag(value: object, tag: str, keys: frozenset[str]) -> dict[str, obj
 CONTRACT_LINEAGE: Final[str] = "AdapterOperationalConformance"
 CONTRACT_VERSION: Final[int] = 1
 CONTRACT_BUNDLE_HASH: Final[str] = "b1fc11175728c747e70ab0713792ebcf7d76ad1687466d4899d33d680286d676"
-QUERY_MODULE_HASH: Final[str] = "f3a85c2b473168d792f8829289fcddcbc25bbe4d48e55b9c93aee2318558cd38"
+QUERY_MODULE_HASH: Final[str] = "2da42e510a3ba32b14af31e114a67148156202d6502366ae015e0c7ad914a45b"
 
 class AuthSessionState(StrEnum):
     AUTH_ACTIVE = "AuthActive"
@@ -82,6 +82,90 @@ class AuthSignupInput:
     session_id: UUID
     token_digest: str
     organization_id: UUID
+
+EXACT_DOCUMENTS_CONTAINS_ASC_QUERY_PLAN_HASH: Final[str] = "231a3e06e5bb5c1915a692fc804dc195207b99dcbd325c69eb8ae9804ba6fb6b"
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ExactDocumentsContainsAscParams:
+    site_id: UUID
+    needle: str
+    document_id: UUID | None = None
+    limit: Annotated[int, "u64"] | None = None
+    offset: Annotated[int, "u64"] | None = None
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ExactDocumentsContainsAscFoundDocuments:
+    site_id: UUID
+    document_id: UUID
+    title: str
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ExactDocumentsContainsAscFoundTotal:
+    value: Annotated[int, "u64"]
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ExactDocumentsContainsAscFound:
+    documents: tuple[ExactDocumentsContainsAscFoundDocuments, ...]
+    total: ExactDocumentsContainsAscFoundTotal
+    outcome: Literal["Found"] = field(default="Found", init=False)
+
+ExactDocumentsContainsAscResult: TypeAlias = ExactDocumentsContainsAscFound
+
+EXACT_DOCUMENTS_ENDS_WITH_DESC_QUERY_PLAN_HASH: Final[str] = "793b3132acdf5512fa012dca179e7032513487f2a6c8ce2cf376bd788d8c3d8b"
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ExactDocumentsEndsWithDescParams:
+    site_id: UUID
+    needle: str
+    document_id: UUID | None = None
+    limit: Annotated[int, "u64"] | None = None
+    offset: Annotated[int, "u64"] | None = None
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ExactDocumentsEndsWithDescFoundDocuments:
+    site_id: UUID
+    document_id: UUID
+    title: str
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ExactDocumentsEndsWithDescFoundTotal:
+    value: Annotated[int, "u64"]
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ExactDocumentsEndsWithDescFound:
+    documents: tuple[ExactDocumentsEndsWithDescFoundDocuments, ...]
+    total: ExactDocumentsEndsWithDescFoundTotal
+    outcome: Literal["Found"] = field(default="Found", init=False)
+
+ExactDocumentsEndsWithDescResult: TypeAlias = ExactDocumentsEndsWithDescFound
+
+EXACT_DOCUMENTS_STARTS_WITH_ASC_QUERY_PLAN_HASH: Final[str] = "4d2c98bba64882504ac8165e457d29b2e8c2aeaa2d5e37005dc7c8e8d2722bd3"
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ExactDocumentsStartsWithAscParams:
+    site_id: UUID
+    needle: str
+    document_id: UUID | None = None
+    limit: Annotated[int, "u64"] | None = None
+    offset: Annotated[int, "u64"] | None = None
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ExactDocumentsStartsWithAscFoundDocuments:
+    site_id: UUID
+    document_id: UUID
+    title: str
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ExactDocumentsStartsWithAscFoundTotal:
+    value: Annotated[int, "u64"]
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ExactDocumentsStartsWithAscFound:
+    documents: tuple[ExactDocumentsStartsWithAscFoundDocuments, ...]
+    total: ExactDocumentsStartsWithAscFoundTotal
+    outcome: Literal["Found"] = field(default="Found", init=False)
+
+ExactDocumentsStartsWithAscResult: TypeAlias = ExactDocumentsStartsWithAscFound
 
 GET_AUTH_SESSION_QUERY_PLAN_HASH: Final[str] = "fba7a6f37adeb8772673da8337cf1b3f6e43644e59613224c1f55385d7a4b884"
 
@@ -303,6 +387,42 @@ class AdapterOperationalConformanceClient:
         self._transport = transport
         self._command_attempts = command_attempts
 
+    def exact_documents_contains_asc(self, parameters: ExactDocumentsContainsAscParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ExactDocumentsContainsAscResult]:
+        raw = self._transport._execute_named_query(
+            contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
+            contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
+            query_name="ExactDocumentsContainsAsc", plan_hash=EXACT_DOCUMENTS_CONTAINS_ASC_QUERY_PLAN_HASH,
+            parameters=encode_record(parameters), options=options,
+        )
+        outcomes = {
+            "Found": ExactDocumentsContainsAscFound,
+        }
+        return raw._map_value(lambda value: decode_variant(outcomes, value))
+
+    def exact_documents_ends_with_desc(self, parameters: ExactDocumentsEndsWithDescParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ExactDocumentsEndsWithDescResult]:
+        raw = self._transport._execute_named_query(
+            contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
+            contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
+            query_name="ExactDocumentsEndsWithDesc", plan_hash=EXACT_DOCUMENTS_ENDS_WITH_DESC_QUERY_PLAN_HASH,
+            parameters=encode_record(parameters), options=options,
+        )
+        outcomes = {
+            "Found": ExactDocumentsEndsWithDescFound,
+        }
+        return raw._map_value(lambda value: decode_variant(outcomes, value))
+
+    def exact_documents_starts_with_asc(self, parameters: ExactDocumentsStartsWithAscParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ExactDocumentsStartsWithAscResult]:
+        raw = self._transport._execute_named_query(
+            contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
+            contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
+            query_name="ExactDocumentsStartsWithAsc", plan_hash=EXACT_DOCUMENTS_STARTS_WITH_ASC_QUERY_PLAN_HASH,
+            parameters=encode_record(parameters), options=options,
+        )
+        outcomes = {
+            "Found": ExactDocumentsStartsWithAscFound,
+        }
+        return raw._map_value(lambda value: decode_variant(outcomes, value))
+
     def get_auth_session(self, parameters: GetAuthSessionParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[GetAuthSessionResult]:
         raw = self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
@@ -496,6 +616,42 @@ class AsyncAdapterOperationalConformanceClient:
     def __init__(self, transport: AsyncApplicationTransport, command_attempts: AttemptBudget) -> None:
         self._transport = transport
         self._command_attempts = command_attempts
+
+    async def exact_documents_contains_asc(self, parameters: ExactDocumentsContainsAscParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ExactDocumentsContainsAscResult]:
+        raw = await self._transport._execute_named_query(
+            contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
+            contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
+            query_name="ExactDocumentsContainsAsc", plan_hash=EXACT_DOCUMENTS_CONTAINS_ASC_QUERY_PLAN_HASH,
+            parameters=encode_record(parameters), options=options,
+        )
+        outcomes = {
+            "Found": ExactDocumentsContainsAscFound,
+        }
+        return raw._map_value(lambda value: decode_variant(outcomes, value))
+
+    async def exact_documents_ends_with_desc(self, parameters: ExactDocumentsEndsWithDescParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ExactDocumentsEndsWithDescResult]:
+        raw = await self._transport._execute_named_query(
+            contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
+            contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
+            query_name="ExactDocumentsEndsWithDesc", plan_hash=EXACT_DOCUMENTS_ENDS_WITH_DESC_QUERY_PLAN_HASH,
+            parameters=encode_record(parameters), options=options,
+        )
+        outcomes = {
+            "Found": ExactDocumentsEndsWithDescFound,
+        }
+        return raw._map_value(lambda value: decode_variant(outcomes, value))
+
+    async def exact_documents_starts_with_asc(self, parameters: ExactDocumentsStartsWithAscParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ExactDocumentsStartsWithAscResult]:
+        raw = await self._transport._execute_named_query(
+            contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
+            contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
+            query_name="ExactDocumentsStartsWithAsc", plan_hash=EXACT_DOCUMENTS_STARTS_WITH_ASC_QUERY_PLAN_HASH,
+            parameters=encode_record(parameters), options=options,
+        )
+        outcomes = {
+            "Found": ExactDocumentsStartsWithAscFound,
+        }
+        return raw._map_value(lambda value: decode_variant(outcomes, value))
 
     async def get_auth_session(self, parameters: GetAuthSessionParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[GetAuthSessionResult]:
         raw = await self._transport._execute_named_query(

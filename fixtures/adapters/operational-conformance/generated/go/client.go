@@ -8,7 +8,7 @@ import (
 	riffdb "riffdb.dev/application"
 )
 
-const QueryModuleHash = "f3a85c2b473168d792f8829289fcddcbc25bbe4d48e55b9c93aee2318558cd38"
+const QueryModuleHash = "2da42e510a3ba32b14af31e114a67148156202d6502366ae015e0c7ad914a45b"
 const ContractLineage = "AdapterOperationalConformance"
 const ContractVersion uint64 = 1
 const ContractBundleHash = "b1fc11175728c747e70ab0713792ebcf7d76ad1687466d4899d33d680286d676"
@@ -81,6 +81,54 @@ type AuthSignupInput struct {
 	TokenDigest string
 	OrganizationId string
 }
+
+type ExactDocumentsContainsAscParams struct {
+	SiteId string
+	Needle string
+	DocumentId *string
+	Limit *uint32
+	Offset *uint64
+}
+
+type ExactDocumentsContainsAscResult interface { isExactDocumentsContainsAscResult() }
+type ExactDocumentsContainsAscFound struct {
+	Outcome string
+	Documents []struct { SiteId string; DocumentId string; Title string }
+	Total struct { Value uint64 }
+}
+func (ExactDocumentsContainsAscFound) isExactDocumentsContainsAscResult() {}
+
+type ExactDocumentsEndsWithDescParams struct {
+	SiteId string
+	Needle string
+	DocumentId *string
+	Limit *uint32
+	Offset *uint64
+}
+
+type ExactDocumentsEndsWithDescResult interface { isExactDocumentsEndsWithDescResult() }
+type ExactDocumentsEndsWithDescFound struct {
+	Outcome string
+	Documents []struct { SiteId string; DocumentId string; Title string }
+	Total struct { Value uint64 }
+}
+func (ExactDocumentsEndsWithDescFound) isExactDocumentsEndsWithDescResult() {}
+
+type ExactDocumentsStartsWithAscParams struct {
+	SiteId string
+	Needle string
+	DocumentId *string
+	Limit *uint32
+	Offset *uint64
+}
+
+type ExactDocumentsStartsWithAscResult interface { isExactDocumentsStartsWithAscResult() }
+type ExactDocumentsStartsWithAscFound struct {
+	Outcome string
+	Documents []struct { SiteId string; DocumentId string; Title string }
+	Total struct { Value uint64 }
+}
+func (ExactDocumentsStartsWithAscFound) isExactDocumentsStartsWithAscResult() {}
 
 type GetAuthSessionParams struct {
 	OrganizationId string
@@ -345,6 +393,54 @@ raw, err = requiredField(fields, "session_id"); if err != nil { return result, e
 raw, err = requiredField(fields, "token_digest"); if err != nil { return result, err }; result.TokenDigest, err = riffdb.StringValue(raw); if err != nil { return result, err }
 raw, err = requiredField(fields, "organization_id"); if err != nil { return result, err }; result.OrganizationId, err = riffdb.UUIDValue(raw); if err != nil { return result, err }
 return result, nil }
+
+const ExactDocumentsContainsAscQueryPlanHash = "231a3e06e5bb5c1915a692fc804dc195207b99dcbd325c69eb8ae9804ba6fb6b"
+var ExactDocumentsContainsAscOperation = riffdb.Operation{Name: "adapter_operational_conformance_exact_documents_contains_asc", InputSchemaHash: "8dff1ab8827f2eb67e53d45320c86e7194a5080003f9b8640ce8d54593ad7445"}
+func decodeExactDocumentsContainsAscResult(value riffdb.Value) (ExactDocumentsContainsAscResult, error) { fields, err := riffdb.RecordFields(value); if err != nil { return nil, err }; outcomeValue, err := requiredField(fields, "outcome"); if err != nil { return nil, err }; outcome, err := riffdb.EnumValue(outcomeValue); if err != nil { return nil, err }; var raw riffdb.Value; switch outcome {
+case "Found": result := ExactDocumentsContainsAscFound{Outcome: outcome}
+raw, err = requiredField(fields, "documents"); if err != nil { return nil, err }; result.Documents, err = riffdb.DecodeValues(raw, func(item riffdb.Value) (struct { SiteId string; DocumentId string; Title string }, error) { return func() (struct { SiteId string; DocumentId string; Title string }, error) { fields, err := riffdb.RecordFields(item); if err != nil { return struct { SiteId string; DocumentId string; Title string }{}, err }; var result struct { SiteId string; DocumentId string; Title string }; var raw riffdb.Value; raw, err = requiredField(fields, "site_id"); if err != nil { return result, err }; result.SiteId, err = riffdb.UUIDValue(raw); if err != nil { return result, err }; raw, err = requiredField(fields, "document_id"); if err != nil { return result, err }; result.DocumentId, err = riffdb.UUIDValue(raw); if err != nil { return result, err }; raw, err = requiredField(fields, "title"); if err != nil { return result, err }; result.Title, err = riffdb.StringValue(raw); if err != nil { return result, err }; return result, nil }() }); if err != nil { return nil, err }
+raw, err = requiredField(fields, "total"); if err != nil { return nil, err }; result.Total, err = func() (struct { Value uint64 }, error) { fields, err := riffdb.RecordFields(raw); if err != nil { return struct { Value uint64 }{}, err }; var result struct { Value uint64 }; var raw riffdb.Value; raw, err = requiredField(fields, "value"); if err != nil { return result, err }; result.Value, err = riffdb.U64Value(raw); if err != nil { return result, err }; return result, nil }(); if err != nil { return nil, err }
+return result, nil
+default: return nil, errors.New("RiffDB driver returned unknown query outcome") } }
+func (client *Client) ExactDocumentsContainsAsc(ctx context.Context, parameters ExactDocumentsContainsAscParams, options QueryOptions) (QueryResult[ExactDocumentsContainsAscResult], error) { input := map[string]riffdb.Value{}
+input["site_id"] = riffdb.UUID(parameters.SiteId)
+input["needle"] = riffdb.String(parameters.Needle)
+if parameters.DocumentId != nil { input["document_id"] = riffdb.Optional(parameters.DocumentId, func(item string) riffdb.Value { return riffdb.UUID(item) }) }
+if parameters.Limit != nil { input["limit"] = riffdb.U64(uint64(*parameters.Limit)) }
+if parameters.Offset != nil { input["offset"] = riffdb.U64(*parameters.Offset) }
+response, err := client.session.Invoke(ctx, ExactDocumentsContainsAscOperation, input, options); if err != nil { return QueryResult[ExactDocumentsContainsAscResult]{}, err }; if response.ApplicationHead == nil { return QueryResult[ExactDocumentsContainsAscResult]{}, errors.New("RiffDB driver omitted query frontier") }; value, err := decodeExactDocumentsContainsAscResult(response.Value); if err != nil { return QueryResult[ExactDocumentsContainsAscResult]{}, err }; identity := QueryIdentity{ContractLineage: ContractLineage, ContractVersion: ContractVersion, ContractBundleHash: ContractBundleHash, ModuleHash: QueryModuleHash, QueryName: "ExactDocumentsContainsAsc", PlanHash: ExactDocumentsContainsAscQueryPlanHash}; return QueryResult[ExactDocumentsContainsAscResult]{Value: value, Identity: identity, ApplicationHead: *response.ApplicationHead, NextCursor: response.Cursor}, nil }
+
+const ExactDocumentsEndsWithDescQueryPlanHash = "793b3132acdf5512fa012dca179e7032513487f2a6c8ce2cf376bd788d8c3d8b"
+var ExactDocumentsEndsWithDescOperation = riffdb.Operation{Name: "adapter_operational_conformance_exact_documents_ends_with_desc", InputSchemaHash: "8dff1ab8827f2eb67e53d45320c86e7194a5080003f9b8640ce8d54593ad7445"}
+func decodeExactDocumentsEndsWithDescResult(value riffdb.Value) (ExactDocumentsEndsWithDescResult, error) { fields, err := riffdb.RecordFields(value); if err != nil { return nil, err }; outcomeValue, err := requiredField(fields, "outcome"); if err != nil { return nil, err }; outcome, err := riffdb.EnumValue(outcomeValue); if err != nil { return nil, err }; var raw riffdb.Value; switch outcome {
+case "Found": result := ExactDocumentsEndsWithDescFound{Outcome: outcome}
+raw, err = requiredField(fields, "documents"); if err != nil { return nil, err }; result.Documents, err = riffdb.DecodeValues(raw, func(item riffdb.Value) (struct { SiteId string; DocumentId string; Title string }, error) { return func() (struct { SiteId string; DocumentId string; Title string }, error) { fields, err := riffdb.RecordFields(item); if err != nil { return struct { SiteId string; DocumentId string; Title string }{}, err }; var result struct { SiteId string; DocumentId string; Title string }; var raw riffdb.Value; raw, err = requiredField(fields, "site_id"); if err != nil { return result, err }; result.SiteId, err = riffdb.UUIDValue(raw); if err != nil { return result, err }; raw, err = requiredField(fields, "document_id"); if err != nil { return result, err }; result.DocumentId, err = riffdb.UUIDValue(raw); if err != nil { return result, err }; raw, err = requiredField(fields, "title"); if err != nil { return result, err }; result.Title, err = riffdb.StringValue(raw); if err != nil { return result, err }; return result, nil }() }); if err != nil { return nil, err }
+raw, err = requiredField(fields, "total"); if err != nil { return nil, err }; result.Total, err = func() (struct { Value uint64 }, error) { fields, err := riffdb.RecordFields(raw); if err != nil { return struct { Value uint64 }{}, err }; var result struct { Value uint64 }; var raw riffdb.Value; raw, err = requiredField(fields, "value"); if err != nil { return result, err }; result.Value, err = riffdb.U64Value(raw); if err != nil { return result, err }; return result, nil }(); if err != nil { return nil, err }
+return result, nil
+default: return nil, errors.New("RiffDB driver returned unknown query outcome") } }
+func (client *Client) ExactDocumentsEndsWithDesc(ctx context.Context, parameters ExactDocumentsEndsWithDescParams, options QueryOptions) (QueryResult[ExactDocumentsEndsWithDescResult], error) { input := map[string]riffdb.Value{}
+input["site_id"] = riffdb.UUID(parameters.SiteId)
+input["needle"] = riffdb.String(parameters.Needle)
+if parameters.DocumentId != nil { input["document_id"] = riffdb.Optional(parameters.DocumentId, func(item string) riffdb.Value { return riffdb.UUID(item) }) }
+if parameters.Limit != nil { input["limit"] = riffdb.U64(uint64(*parameters.Limit)) }
+if parameters.Offset != nil { input["offset"] = riffdb.U64(*parameters.Offset) }
+response, err := client.session.Invoke(ctx, ExactDocumentsEndsWithDescOperation, input, options); if err != nil { return QueryResult[ExactDocumentsEndsWithDescResult]{}, err }; if response.ApplicationHead == nil { return QueryResult[ExactDocumentsEndsWithDescResult]{}, errors.New("RiffDB driver omitted query frontier") }; value, err := decodeExactDocumentsEndsWithDescResult(response.Value); if err != nil { return QueryResult[ExactDocumentsEndsWithDescResult]{}, err }; identity := QueryIdentity{ContractLineage: ContractLineage, ContractVersion: ContractVersion, ContractBundleHash: ContractBundleHash, ModuleHash: QueryModuleHash, QueryName: "ExactDocumentsEndsWithDesc", PlanHash: ExactDocumentsEndsWithDescQueryPlanHash}; return QueryResult[ExactDocumentsEndsWithDescResult]{Value: value, Identity: identity, ApplicationHead: *response.ApplicationHead, NextCursor: response.Cursor}, nil }
+
+const ExactDocumentsStartsWithAscQueryPlanHash = "4d2c98bba64882504ac8165e457d29b2e8c2aeaa2d5e37005dc7c8e8d2722bd3"
+var ExactDocumentsStartsWithAscOperation = riffdb.Operation{Name: "adapter_operational_conformance_exact_documents_starts_with_asc", InputSchemaHash: "8dff1ab8827f2eb67e53d45320c86e7194a5080003f9b8640ce8d54593ad7445"}
+func decodeExactDocumentsStartsWithAscResult(value riffdb.Value) (ExactDocumentsStartsWithAscResult, error) { fields, err := riffdb.RecordFields(value); if err != nil { return nil, err }; outcomeValue, err := requiredField(fields, "outcome"); if err != nil { return nil, err }; outcome, err := riffdb.EnumValue(outcomeValue); if err != nil { return nil, err }; var raw riffdb.Value; switch outcome {
+case "Found": result := ExactDocumentsStartsWithAscFound{Outcome: outcome}
+raw, err = requiredField(fields, "documents"); if err != nil { return nil, err }; result.Documents, err = riffdb.DecodeValues(raw, func(item riffdb.Value) (struct { SiteId string; DocumentId string; Title string }, error) { return func() (struct { SiteId string; DocumentId string; Title string }, error) { fields, err := riffdb.RecordFields(item); if err != nil { return struct { SiteId string; DocumentId string; Title string }{}, err }; var result struct { SiteId string; DocumentId string; Title string }; var raw riffdb.Value; raw, err = requiredField(fields, "site_id"); if err != nil { return result, err }; result.SiteId, err = riffdb.UUIDValue(raw); if err != nil { return result, err }; raw, err = requiredField(fields, "document_id"); if err != nil { return result, err }; result.DocumentId, err = riffdb.UUIDValue(raw); if err != nil { return result, err }; raw, err = requiredField(fields, "title"); if err != nil { return result, err }; result.Title, err = riffdb.StringValue(raw); if err != nil { return result, err }; return result, nil }() }); if err != nil { return nil, err }
+raw, err = requiredField(fields, "total"); if err != nil { return nil, err }; result.Total, err = func() (struct { Value uint64 }, error) { fields, err := riffdb.RecordFields(raw); if err != nil { return struct { Value uint64 }{}, err }; var result struct { Value uint64 }; var raw riffdb.Value; raw, err = requiredField(fields, "value"); if err != nil { return result, err }; result.Value, err = riffdb.U64Value(raw); if err != nil { return result, err }; return result, nil }(); if err != nil { return nil, err }
+return result, nil
+default: return nil, errors.New("RiffDB driver returned unknown query outcome") } }
+func (client *Client) ExactDocumentsStartsWithAsc(ctx context.Context, parameters ExactDocumentsStartsWithAscParams, options QueryOptions) (QueryResult[ExactDocumentsStartsWithAscResult], error) { input := map[string]riffdb.Value{}
+input["site_id"] = riffdb.UUID(parameters.SiteId)
+input["needle"] = riffdb.String(parameters.Needle)
+if parameters.DocumentId != nil { input["document_id"] = riffdb.Optional(parameters.DocumentId, func(item string) riffdb.Value { return riffdb.UUID(item) }) }
+if parameters.Limit != nil { input["limit"] = riffdb.U64(uint64(*parameters.Limit)) }
+if parameters.Offset != nil { input["offset"] = riffdb.U64(*parameters.Offset) }
+response, err := client.session.Invoke(ctx, ExactDocumentsStartsWithAscOperation, input, options); if err != nil { return QueryResult[ExactDocumentsStartsWithAscResult]{}, err }; if response.ApplicationHead == nil { return QueryResult[ExactDocumentsStartsWithAscResult]{}, errors.New("RiffDB driver omitted query frontier") }; value, err := decodeExactDocumentsStartsWithAscResult(response.Value); if err != nil { return QueryResult[ExactDocumentsStartsWithAscResult]{}, err }; identity := QueryIdentity{ContractLineage: ContractLineage, ContractVersion: ContractVersion, ContractBundleHash: ContractBundleHash, ModuleHash: QueryModuleHash, QueryName: "ExactDocumentsStartsWithAsc", PlanHash: ExactDocumentsStartsWithAscQueryPlanHash}; return QueryResult[ExactDocumentsStartsWithAscResult]{Value: value, Identity: identity, ApplicationHead: *response.ApplicationHead, NextCursor: response.Cursor}, nil }
 
 const GetAuthSessionQueryPlanHash = "fba7a6f37adeb8772673da8337cf1b3f6e43644e59613224c1f55385d7a4b884"
 var GetAuthSessionOperation = riffdb.Operation{Name: "adapter_operational_conformance_get_auth_session", InputSchemaHash: "a55572d0b3289623e7ca9f5303a08fe2ab6d96a74525e9cd89996d56b0335eb9"}

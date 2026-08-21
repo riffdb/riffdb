@@ -14033,17 +14033,13 @@ work_packages:
   closure:
     status: complete
     evidence: docs/getting-started/OPERATIONAL-QUERIES.md
-    decision: The retained Better Auth application now exposes a distinct read-only
-      BetterAuthAdmin role and three generated TypeScript methods for exact contains,
-      starts-with, and ends-with searches with compiler-declared orders, one typed optional user
-      filter, bounded limit/offset, and exact total. A real public-TLS GET /admin/users route proves
-      empty and multi-page windows, offset boundaries, maximum values, binary-UTF8 Unicode
-      boundaries, optional-filter null/present forms, concurrent current snapshots,
-      cross-organization isolation, ordinary-role denial, and revocation without adapter-side
-      filtering, sorting, counting, page walking, query structure, or RiffDB-owned identity/session
-      behavior. Protected exact-provider activation now reaches transaction-current row admission
-      through the shared redb read port before any posting, count, or ordinal state is built; the
-      missing delegation remains fail closed and has a public end-to-end regression.
+    ownership_correction: WP-655
+    decision: WP-648 proved the external adapter route against the generic exact-text, exact-count,
+      ordinal, snapshot, and policy surface. WP-655 corrects artifact ownership by removing the
+      copied admin profile, generated methods, and route host from RiffDB; the owning external
+      adapter repository retains responsibility for the real route matrix. RiffDB keeps neutral
+      cross-language exact-result evidence and the generic redb transaction-current row-admission
+      fix, which remains fail closed before any protected posting, count, or ordinal state is built.
   standing_design_tests:
     interface_safety: The adapter receives only generated named methods and typed bounded values;
       it cannot select fields, operators, indexes, providers, policy, freshness, count semantics,
@@ -14470,4 +14466,70 @@ work_packages:
       work, rows, columns, values, response bytes, continuation, SDK decode, and diagnostics are
       statically bounded; execution materializes only the requested page and creates no full-state
       cache or full-population result.
+  human_review_triggers: *id001
+- id: WP-655
+  name: External adapter ownership and neutral exact-result conformance
+  depends_on: [WP-647, WP-648, WP-652]
+  objective: Correct the repository boundary after WP-648 by retaining only generic exact-text,
+    exact-count, ordinal-pagination, policy, and transport behavior in RiffDB, moving real Better
+    Auth admin profile and route acceptance ownership to its external adapter repository, and
+    preserving the same semantic proof through a framework-neutral generated-client corpus.
+  requirements: [OQ-027, OQ-028, OQ-029, OQ-030]
+  required_adrs: [ADR-0055, ADR-0074, ADR-0111, ADR-0117, ADR-0120, ADR-0124,
+    ADR-0128, ADR-0130, ADR-0131]
+  allowed_paths: [SPEC.md, work_packages.yaml,
+    fixtures/adapters/better-auth/**, fixtures/adapters/operational-conformance/**,
+    fixtures/adapters/conformance/**, fixtures/export/**,
+    tests/adapter_operational_remote_client.rs,
+    scripts/adapter-cascade-acceptance, scripts/adapter-operational-query-acceptance,
+    scripts/generate-query-clients, docs/SUMMARY.md, docs/getting-started/**,
+    docs/integrations/**]
+  deliverables:
+  - Remove the WP-648 Better-Auth-specific admin query sources, role, principal fact, exact-text
+    index, generated methods, route host, and route-level acceptance from the retained RiffDB
+    fixture without removing its previously accepted generic cascade and lifecycle evidence
+  - A framework-neutral Document exact-result family covering binary UTF-8 contains, starts-with,
+    and ends-with predicates, one typed optional equality filter, deterministic ascending and
+    descending orders, bounded numeric offset, and exact total from one provider epoch
+  - Generated Rust, Go, TypeScript, Python, CLI, and MCP evidence that the neutral family exposes
+    only compiler-declared parameters and results and performs no client-side filter, count, sort,
+    page walk, provider selection, raw query construction, or storage access
+  - Handbook and historical WP-648 closure corrections that distinguish generic RiffDB capability
+    ownership from externally pinned framework-profile evidence and do not claim an adapter route
+    or generated framework SDK is shipped by this repository
+  acceptance_commands:
+  - ./scripts/adapter-operational-query-acceptance --all-languages
+  - ./scripts/adapter-cascade-acceptance --all-languages
+  - ./scripts/check-application-bindings
+  - ./scripts/check-generated
+  - ./scripts/check-requirement-coverage
+  - ./scripts/handbook check
+  - cargo +1.97.0 fmt --all -- --check
+  exit_gate: The repository contains no WP-648 Better Auth admin profile, generated admin method,
+    or admin route host; the neutral exact-result corpus proves all three exact binary-text
+    operators, typed optional filtering, both deterministic order directions, direct bounded
+    offset, and complete exact total through every generated language plus CLI and MCP; the
+    external adapter remains the sole owner of framework-specific route acceptance.
+  closure:
+    status: complete
+    evidence: docs/getting-started/OPERATIONAL-QUERIES.md
+    decision: The retained Better Auth lifecycle fixture is restored to its pre-WP-648 contract,
+      role, two named queries, generated clients, cascade runner, conformance manifests, and
+      portability receipts. The generic operational fixture now owns three Document exact-result
+      methods and proves contains, starts-with, ends-with, optional typed equality, ascending and
+      descending total order, one-row offset windows, and complete two-row totals through Rust,
+      Go, TypeScript, Python, CLI, and MCP after an explicit post-commit provider-readiness gate.
+      Generated closure, application bindings, requirement coverage, handbook, formatting,
+      targeted Clippy, the neutral live corpus, and the independent cascade lifecycle gate pass.
+      Route-level Better Auth acceptance remains required by OQ-030 but belongs only to the
+      external adapter repository and is not shipped or generated here.
+  standing_design_tests:
+    interface_safety: Applications receive only generated finite named methods with typed search,
+      filter, limit, and offset values; neither the neutral fixture nor an external adapter can
+      select fields, operators, indexes, providers, policy, freshness, count semantics, raw query
+      structure, or a client-side fallback.
+    scale: Search values, filters, pages, offsets, exact totals, waits, retries, outputs, and
+      diagnostics remain compiler bounded; exact count and ordinal selection never materialize the
+      matching population or walk skipped pages, and no framework-specific runtime branch enters
+      RiffDB.
   human_review_triggers: *id001

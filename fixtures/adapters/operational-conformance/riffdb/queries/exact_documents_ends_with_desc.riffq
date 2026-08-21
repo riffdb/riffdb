@@ -1,0 +1,22 @@
+query ExactDocumentsEndsWithDesc(
+    $site_id: Document.site_id,
+    $needle: Document.title,
+    $document_id: Document.document_id?,
+    $limit: Limit = 25,
+    $offset: u64 = 0
+) {
+    many documents from Document
+        where site_id == $site_id
+          && when $document_id { document_id == $document_id }
+          && title ends_with $needle
+        order by title desc, document_id asc
+        take $limit offset $offset
+
+    aggregate total from documents { exact_count() as value }
+
+    return Found {
+        documents: documents { site_id document_id title }
+        total: total { value }
+    }
+    outcomes Found
+}

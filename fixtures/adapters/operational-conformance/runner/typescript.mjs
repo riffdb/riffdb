@@ -30,6 +30,16 @@ try {
   const drafts = await client.listDraftDocuments({ site_id: id(30) });
   assert(drafts.value.outcome === "Found" && drafts.value.documents.length === 1, "Payload null predicate page");
 
+  const contains = await client.exactDocumentsContainsAsc({ site_id: id(30), needle: "Alpha", limit: 1, offset: 1n });
+  assert(contains.value.outcome === "Found" && contains.value.total.value === 2n, "generic contains exact total");
+  assert(contains.value.documents.length === 1 && contains.value.documents[0].title === "Alpha Published", "generic contains numeric offset");
+  const startsWith = await client.exactDocumentsStartsWithAsc({ site_id: id(30), needle: "Alpha", document_id: id(31), limit: 25, offset: 0n });
+  assert(startsWith.value.outcome === "Found" && startsWith.value.total.value === 1n, "generic starts-with typed optional filter");
+  assert(startsWith.value.documents.length === 1 && startsWith.value.documents[0].document_id === id(31), "generic starts-with result");
+  const endsWith = await client.exactDocumentsEndsWithDesc({ site_id: id(30), needle: "Guide", limit: 1, offset: 1n });
+  assert(endsWith.value.outcome === "Found" && endsWith.value.total.value === 2n, "generic ends-with exact total");
+  assert(endsWith.value.documents.length === 1 && endsWith.value.documents[0].title === "Beta Guide", "generic ends-with descending ordinal");
+
   const pipelines = await client.listPipelines({ organization_id: id(40), state: "queued" });
   assert(pipelines.value.outcome === "Found" && pipelines.value.pipelines.length === 1, "Woodpecker optional state page");
 
@@ -47,6 +57,9 @@ try {
     null_predicate: true,
     binary_prefix: true,
     exact_aggregates: true,
+    exact_text_family: true,
+    exact_total: true,
+    numeric_offset: true,
     adapters: ["mlflow", "openfga", "better-auth", "woodpecker"],
     regression_adapters: ["payload"],
   }));
