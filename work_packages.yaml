@@ -11901,6 +11901,9 @@ work_packages:
     # operation and decision path to authorize the exact symbolic vector
     # projection before inspection and again before result release.
     crates/riffdb-policy/**,
+    # Maintainer-authorized path expansion: the additive public application
+    # operation needs the shared typed error-envelope operation identity.
+    crates/riffdb-errors/**,
     # Coordinator-authorized 2026-08-21: the new closed application-service
     # operation must retain the existing fixed-cardinality metric label rather
     # than disappear from production observability.

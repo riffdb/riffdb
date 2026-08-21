@@ -28,10 +28,10 @@ use riffdb_service::{
     ExplainSymbolicQueryResult, ExplainedCommand, FieldSelection, GetActiveContractRequest,
     GetActiveContractResult, GetCommitRequest, GetContractVersionRequest, GetContractVersionResult,
     GetEntityRequest, GetProjectionStatusRequest, GetProjectionStatusResult,
-    GetReactiveWakeupResult, HealthContext, HealthRequest, HealthResult,
-    ListPendingOutboxDeliveriesRequest, LiveNamedQuerySelection, LiveQueryCursor,
-    LiveQueryFrontier, LiveQueryPatchOperation, LiveQueryResetReason, LiveQueryTerminalReason,
-    LiveQueryUpdate, NamedQueryToolDescriptor, NamedSymbolicQueryRequest,
+    GetReactiveWakeupResult, HealthContext, HealthRequest, HealthResult, InspectVectorStateRequest,
+    InspectVectorStateResult, ListPendingOutboxDeliveriesRequest, LiveNamedQuerySelection,
+    LiveQueryCursor, LiveQueryFrontier, LiveQueryPatchOperation, LiveQueryResetReason,
+    LiveQueryTerminalReason, LiveQueryUpdate, NamedQueryToolDescriptor, NamedSymbolicQueryRequest,
     NegativeAcknowledgeEventStreamRequest, OperationSchemaCatalog, PageLimit, PageRequest,
     ProvenanceSelection, QueryParameters, QueryProjectionRequest, QueryResultValue,
     RequestCancellationHandle, RequestContext, RequestControl, ResolveCommandOutcomeRequest,
@@ -40,7 +40,8 @@ use riffdb_service::{
     SubmittedFieldIdentity, SubmittedList, SubmittedMoney, SubmittedRecord, SubmittedValue,
     SymbolicContractSelector, SymbolicDiagnostic, SymbolicQueryIdentity, SymbolicQueryParameters,
     SymbolicQuerySchema, SymbolicQuerySource, SymbolicResultField, SymbolicResultRecord,
-    TraceProvenanceRequest, ValidateContractRequest, WatchLiveNamedQueryRequest,
+    TraceProvenanceRequest, ValidateContractRequest, VectorStateInspectionKind,
+    WatchLiveNamedQueryRequest,
 };
 use riffdb_types::{
     ActorKind, Audience, CanonicalRecord, CanonicalValue, CommandId, CommitSequence,
@@ -1353,6 +1354,42 @@ impl HostedServiceMcpBackend {
                     .map_err(|failure| map_application_service_failure(failure, &error_context))?;
                 call.complete();
                 render_application_catalog(result)
+            }
+            McpFixedToolRequest::InspectVectorState {
+                contract,
+                entity,
+                field,
+                partition,
+                outdated_models,
+                page,
+            } => {
+                let selector = symbolic_contract_selector(Some(contract))?;
+                let operation = if outdated_models {
+                    VectorStateInspectionKind::OutdatedModelEntities
+                } else {
+                    VectorStateInspectionKind::StaleEntities
+                };
+                let request = InspectVectorStateRequest::new(
+                    selector,
+                    SourceName::new(entity).map_err(invalid_response)?,
+                    SourceName::new(field).map_err(invalid_response)?,
+                    submitted_value_from_mcp(partition)?,
+                    operation,
+                    service_page_request(page)?,
+                );
+                let mut call = self.prepare_call(
+                    invocation,
+                    McpRateTarget::Service(ServiceOperationV1::InspectVectorState),
+                )?;
+                let error_context =
+                    call.application_context(ApplicationOperation::InspectVectorState)?;
+                let result = self
+                    .service
+                    .inspect_vector_state(call.take_context()?, request)
+                    .await
+                    .map_err(|failure| map_application_service_failure(failure, &error_context))?;
+                call.complete();
+                render_vector_inspection(result)
             }
             McpFixedToolRequest::CheckQuery { contract, source } => {
                 let request = CompileSymbolicQueryRequest::new(
@@ -3987,6 +4024,58 @@ fn render_application_catalog(
         McpFixedResultBranch::ApplicationCatalogPage,
         Some(payload_from(&payload)?),
     )
+}
+
+fn render_vector_inspection(
+    result: InspectVectorStateResult,
+) -> Result<McpToolResult, McpBackendError> {
+    match result {
+        InspectVectorStateResult::StalenessSummary(report) => compose(
+            32,
+            McpFixedResultBranch::VectorStalenessSummary,
+            Some(payload_from(&serde_json::json!({
+                "total_entities": report.total_entities().to_string(),
+                "stale_count": report.stale_count().to_string(),
+                "stale_entity_count_threshold": report.stale_entity_count_threshold().to_string(),
+                "slo_breached": report.slo_breached(),
+            }))?),
+        ),
+        InspectVectorStateResult::ModelVersionSummary(report) => compose(
+            32,
+            McpFixedResultBranch::VectorModelVersionSummary,
+            Some(payload_from(&serde_json::json!({
+                "current_count": report.current_count().to_string(),
+                "outdated_count": report.outdated_count().to_string(),
+            }))?),
+        ),
+        InspectVectorStateResult::StaleEntities(page) => compose(
+            32,
+            McpFixedResultBranch::VectorStaleEntities,
+            Some(payload_from(&serde_json::json!({
+                "items": page.items().iter().map(|item| serde_json::json!({
+                    "entity_key": lower_hex(item.entity_key().as_bytes()),
+                    "newest_source_write": item.newest_source_write().get().to_string(),
+                    "embedding_write": item.embedding_write().map(|value| value.get().to_string()),
+                })).collect::<Vec<_>>(),
+                "next_cursor": page.next_cursor().map(|cursor| encode_mcp_cursor(*cursor.as_bytes())),
+                "observed_frontier": page.observed_fence().map(|value| value.get().to_string()),
+            }))?),
+        ),
+        InspectVectorStateResult::OutdatedModelEntities(page) => compose(
+            32,
+            McpFixedResultBranch::VectorOutdatedModelEntities,
+            Some(payload_from(&serde_json::json!({
+                "items": page.items().iter().map(|item| serde_json::json!({
+                    "entity_key": lower_hex(item.entity_key().as_bytes()),
+                    "model": item.metadata().model_identity(),
+                    "model_version": item.metadata().model_version(),
+                    "embedding_write": item.embedding_write().get().to_string(),
+                })).collect::<Vec<_>>(),
+                "next_cursor": page.next_cursor().map(|cursor| encode_mcp_cursor(*cursor.as_bytes())),
+                "observed_frontier": page.observed_fence().map(|value| value.get().to_string()),
+            }))?),
+        ),
+    }
 }
 
 fn render_symbolic_check(

@@ -509,13 +509,17 @@ async fn inspect_vector_state(
     request: InspectVectorStateRequest,
 ) -> ServiceResult<InspectVectorStateResult> {
     const OPERATION: ServiceOperationV1 = ServiceOperationV1::InspectVectorState;
-    let bundle =
-        prepare_selected_contract(&service, &context, &ContractSelection::Active, OPERATION)
-            .await?;
-    let contract = bundle.bundle();
-    if contract.lineage() != request.contract_lineage() {
-        return Err(validation_failure(ValidationCode::InvalidValue));
+    let bundle = prepare_selected_contract(
+        &service,
+        &context,
+        request.contract().selection(),
+        OPERATION,
+    )
+    .await?;
+    if !request.contract().matches(&bundle) {
+        return Err(PublicError::contract_mismatch(bundle.contract_version()).into());
     }
+    let contract = bundle.bundle();
     let entity = contract
         .schema()
         .entities()

@@ -56,21 +56,21 @@ use riffdb_service::{
     GetOfflineMaintenanceOperationRequest, GetOfflineMaintenanceOperationResult,
     GetProjectionStatusRequest, GetProjectionStatusResult, GetQueryModuleRequest,
     GetReactiveWakeupResult, HealthComponentKind, HealthComponentStatus, HealthRequest,
-    HealthResult, HealthStatus, JournaledCommandResult, JournaledCompletion,
-    ListPendingOutboxDeliveriesRequest, ListPendingOutboxDeliveriesResult, LiveNamedQuerySelection,
-    LiveQueryCursor, LiveQueryPatchOperation, LiveQueryResetReason, LiveQueryTerminalReason,
-    LiveQueryUpdate, NamedQueryToolDescriptor, NamedQueryToolSchemaArtifact,
-    NamedSymbolicQueryRequest, NegativeAcknowledgeEventStreamRequest,
-    NormalCreateCapabilityRequest, NormalCreateCapabilityResult,
-    OfflineMaintenanceObservationFailure, OfflineMaintenanceObservationPhase,
-    OfflineMaintenanceOperationObservation, OfflineMaintenanceStartDisposition,
-    OfflineMaintenanceStartResult, OperationSchemaArtifact, OperationSchemaCatalog,
-    OperationSchemaCatalogIdentity, OperationSchemaIdentity, OutboxDeliveryState,
-    OutcomeResourceLocator, PageLimit, PageRequest, PreBootstrapLifecycle, ProjectionFailureCode,
-    ProjectionLifecycle, ProjectionUnavailableReason, ProvenanceSelection, PublishedApplyMode,
-    QueryModuleActiveExpectation, QueryModuleDeploymentDisposition, QueryModuleInspection,
-    QueryProjectionRequest, QueryProjectionResult, QueryResultValue, QueryRow,
-    ReactiveModuleDeploymentDisposition, ReplayEventsRequest, ReplayEventsResult,
+    HealthResult, HealthStatus, InspectVectorStateRequest, InspectVectorStateResult,
+    JournaledCommandResult, JournaledCompletion, ListPendingOutboxDeliveriesRequest,
+    ListPendingOutboxDeliveriesResult, LiveNamedQuerySelection, LiveQueryCursor,
+    LiveQueryPatchOperation, LiveQueryResetReason, LiveQueryTerminalReason, LiveQueryUpdate,
+    NamedQueryToolDescriptor, NamedQueryToolSchemaArtifact, NamedSymbolicQueryRequest,
+    NegativeAcknowledgeEventStreamRequest, NormalCreateCapabilityRequest,
+    NormalCreateCapabilityResult, OfflineMaintenanceObservationFailure,
+    OfflineMaintenanceObservationPhase, OfflineMaintenanceOperationObservation,
+    OfflineMaintenanceStartDisposition, OfflineMaintenanceStartResult, OperationSchemaArtifact,
+    OperationSchemaCatalog, OperationSchemaCatalogIdentity, OperationSchemaIdentity,
+    OutboxDeliveryState, OutcomeResourceLocator, PageLimit, PageRequest, PreBootstrapLifecycle,
+    ProjectionFailureCode, ProjectionLifecycle, ProjectionUnavailableReason, ProvenanceSelection,
+    PublishedApplyMode, QueryModuleActiveExpectation, QueryModuleDeploymentDisposition,
+    QueryModuleInspection, QueryProjectionRequest, QueryProjectionResult, QueryResultValue,
+    QueryRow, ReactiveModuleDeploymentDisposition, ReplayEventsRequest, ReplayEventsResult,
     ResolveCommandOutcomeRequest, ResolveCommandOutcomeResult, ResourceDescriptor,
     ResourceDescriptorRef, ResourceDiscoveryKind, RestoreOfflineBackupRequest,
     RetireOfflineBackupRequest, RevokeCapabilityRequest, RevokeCapabilityResult,
@@ -83,7 +83,7 @@ use riffdb_service::{
     SymbolicEvent, SymbolicQueryIdentity, SymbolicQueryParameters, SymbolicQuerySchema,
     SymbolicQuerySource, SymbolicResultField, SymbolicResultRecord, TailEventsRequest,
     TailEventsResult, TraceProvenanceRequest, TraceProvenanceResult, ValidateContractRequest,
-    WatchLiveNamedQueryRequest,
+    VectorStateInspectionKind, WatchLiveNamedQueryRequest,
 };
 use riffdb_types::{
     ActorId, ActorKind, AdmittedActorContext, ApplicationExportClassV1,
@@ -1290,6 +1290,92 @@ pub fn page_request_to_proto(page: PageRequest) -> v1::PageRequest {
     v1::PageRequest {
         limit: Some(u32::from(page.limit().get().get())),
         cursor: page.cursor().map(|cursor| cursor.as_bytes().to_vec()),
+    }
+}
+
+/// Converts one symbolic authoritative vector-evidence request.
+pub fn inspect_vector_state_request_from_proto(
+    request: app_v1::InspectVectorStateRequest,
+) -> Result<(RequestId, InspectVectorStateRequest), Status> {
+    let request_id = request_id_from_bytes(&request.request_id)?;
+    let contract = symbolic_contract_selector_from_proto(request.contract)?;
+    let entity = SourceName::new(request.entity).map_err(|_| invalid_request())?;
+    let field = SourceName::new(request.field).map_err(|_| invalid_request())?;
+    let partition = submitted_value_from_proto(request.partition.ok_or_else(invalid_request)?)?;
+    let kind = match app_v1::VectorStateInspectionKind::try_from(request.kind) {
+        Ok(app_v1::VectorStateInspectionKind::StaleEntities) => {
+            VectorStateInspectionKind::StaleEntities
+        }
+        Ok(app_v1::VectorStateInspectionKind::OutdatedModelEntities) => {
+            VectorStateInspectionKind::OutdatedModelEntities
+        }
+        Ok(app_v1::VectorStateInspectionKind::Unspecified) | Err(_) => {
+            return Err(invalid_request());
+        }
+    };
+    let page = page_request_from_proto(request.page.ok_or_else(invalid_request)?)?;
+    Ok((
+        request_id,
+        InspectVectorStateRequest::new(contract, entity, field, partition, kind, page),
+    ))
+}
+
+/// Converts one authorized vector-evidence result without widening its variant.
+#[must_use]
+pub fn inspect_vector_state_result_to_proto(
+    result: InspectVectorStateResult,
+) -> app_v1::InspectVectorStateResponse {
+    use app_v1::inspect_vector_state_response::Result as WireResult;
+
+    let result = match result {
+        InspectVectorStateResult::StalenessSummary(report) => {
+            WireResult::StalenessSummary(app_v1::VectorStalenessReport {
+                total_entities: report.total_entities(),
+                stale_count: report.stale_count(),
+                stale_entity_count_threshold: report.stale_entity_count_threshold(),
+                slo_breached: report.slo_breached(),
+            })
+        }
+        InspectVectorStateResult::ModelVersionSummary(report) => {
+            WireResult::ModelVersionSummary(app_v1::VectorModelVersionReport {
+                current_count: report.current_count(),
+                outdated_count: report.outdated_count(),
+            })
+        }
+        InspectVectorStateResult::StaleEntities(page) => {
+            WireResult::StaleEntities(app_v1::VectorStalenessPage {
+                items: page
+                    .items()
+                    .iter()
+                    .map(|item| app_v1::VectorStalenessItem {
+                        entity_key: item.entity_key().as_bytes().to_vec(),
+                        newest_source_write: item.newest_source_write().get(),
+                        embedding_write: item.embedding_write().map(CommitSequence::get),
+                    })
+                    .collect(),
+                next_cursor: page.next_cursor().map(|cursor| cursor.as_bytes().to_vec()),
+                observed_frontier: page.observed_fence().map(CommitSequence::get),
+            })
+        }
+        InspectVectorStateResult::OutdatedModelEntities(page) => {
+            WireResult::OutdatedModelEntities(app_v1::VectorModelVersionPage {
+                items: page
+                    .items()
+                    .iter()
+                    .map(|item| app_v1::VectorModelVersionItem {
+                        entity_key: item.entity_key().as_bytes().to_vec(),
+                        model: item.metadata().model_identity().to_owned(),
+                        model_version: item.metadata().model_version().to_owned(),
+                        embedding_write: item.embedding_write().get(),
+                    })
+                    .collect(),
+                next_cursor: page.next_cursor().map(|cursor| cursor.as_bytes().to_vec()),
+                observed_frontier: page.observed_fence().map(CommitSequence::get),
+            })
+        }
+    };
+    app_v1::InspectVectorStateResponse {
+        result: Some(result),
     }
 }
 
@@ -3297,6 +3383,7 @@ const fn fixed_tool_to_proto(kind: FixedToolKind) -> v1::FixedToolKind {
         FixedToolKind::ContextualNack => v1::FixedToolKind::ContextualNack,
         FixedToolKind::ContextualStatus => v1::FixedToolKind::ContextualStatus,
         FixedToolKind::ContextualReact => v1::FixedToolKind::ContextualReact,
+        FixedToolKind::InspectVectorState => v1::FixedToolKind::InspectVectorState,
     }
 }
 
@@ -7593,5 +7680,50 @@ mod vector_wire_tests {
         ] {
             assert!(submitted_value_from_proto(wire(components)).is_err());
         }
+    }
+
+    #[test]
+    fn symbolic_vector_inspection_preserves_exact_selector_and_typed_variants() {
+        let request = app_v1::InspectVectorStateRequest {
+            contract: Some(app_v1::ContractSelector {
+                lineage: "Vectors".to_owned(),
+                version: 3,
+                bundle_hash: vec![0x44; 32],
+            }),
+            entity: "Document".to_owned(),
+            field: "embedding".to_owned(),
+            partition: Some(v1::Value {
+                kind: Some(v1::value::Kind::StringValue("org-a".to_owned())),
+            }),
+            kind: app_v1::VectorStateInspectionKind::StaleEntities as i32,
+            page: Some(v1::PageRequest {
+                limit: Some(20),
+                cursor: None,
+            }),
+            request_id: vec![0, 0, 0, 0, 0, 1, 0x70, 0, 0x80, 0, 0, 0, 0, 0, 0, 1],
+        };
+        let (_, request) =
+            inspect_vector_state_request_from_proto(request).expect("checked request");
+        assert!(matches!(
+            request.contract().exact_identity(),
+            Some((lineage, version, hash))
+                if lineage.as_str() == "Vectors"
+                    && version.get() == 3
+                    && hash.as_bytes() == &[0x44; 32]
+        ));
+        assert_eq!(request.kind(), VectorStateInspectionKind::StaleEntities);
+
+        let result = InspectVectorStateResult::StalenessSummary(
+            riffdb_service::VectorStalenessReport::new(8, 3, 2).expect("report"),
+        );
+        let wire = inspect_vector_state_result_to_proto(result);
+        let Some(app_v1::inspect_vector_state_response::Result::StalenessSummary(report)) =
+            wire.result
+        else {
+            panic!("staleness summary arm");
+        };
+        assert_eq!(report.total_entities, 8);
+        assert_eq!(report.stale_count, 3);
+        assert!(report.slo_breached);
     }
 }

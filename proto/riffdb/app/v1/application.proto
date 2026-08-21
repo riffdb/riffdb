@@ -3,6 +3,7 @@ syntax = "proto3";
 package riffdb.app.v1;
 
 import "riffdb/v1/value.proto";
+import "riffdb/v1/common.proto";
 
 // Exact contract selection. An absent selector requests the active contract.
 message ContractSelector {
@@ -36,6 +37,7 @@ enum ApplicationOperation {
   APPLICATION_OPERATION_BATCH_COMMAND = 8;
   APPLICATION_OPERATION_EXECUTE_PROJECTED_QUERY = 9;
   APPLICATION_OPERATION_DEPLOY_REACTIVE_MODULE = 10;
+  APPLICATION_OPERATION_INSPECT_VECTOR_STATE = 11;
 }
 
 enum ApplicationErrorCode {
@@ -703,6 +705,71 @@ message ExecuteProjectedQueryResponse {
   }
 }
 
+// Closed authoritative vector-evidence population. Numeric entity and field
+// identities are deliberately absent from the public request.
+enum VectorStateInspectionKind {
+  VECTOR_STATE_INSPECTION_KIND_UNSPECIFIED = 0;
+  VECTOR_STATE_INSPECTION_KIND_STALE_ENTITIES = 1;
+  VECTOR_STATE_INSPECTION_KIND_OUTDATED_MODEL_ENTITIES = 2;
+}
+
+message InspectVectorStateRequest {
+  // Required exact or active application contract selector.
+  optional ContractSelector contract = 1;
+  string entity = 2;
+  string field = 3;
+  riffdb.v1.Value partition = 4;
+  VectorStateInspectionKind kind = 5;
+  riffdb.v1.PageRequest page = 6;
+  bytes request_id = 100;
+}
+
+message VectorStalenessReport {
+  uint64 total_entities = 1;
+  uint64 stale_count = 2;
+  uint64 stale_entity_count_threshold = 3;
+  bool slo_breached = 4;
+}
+
+message VectorModelVersionReport {
+  uint64 current_count = 1;
+  uint64 outdated_count = 2;
+}
+
+message VectorStalenessItem {
+  bytes entity_key = 1;
+  uint64 newest_source_write = 2;
+  optional uint64 embedding_write = 3;
+}
+
+message VectorModelVersionItem {
+  bytes entity_key = 1;
+  string model = 2;
+  string model_version = 3;
+  uint64 embedding_write = 4;
+}
+
+message VectorStalenessPage {
+  repeated VectorStalenessItem items = 1;
+  optional bytes next_cursor = 2;
+  optional uint64 observed_frontier = 3;
+}
+
+message VectorModelVersionPage {
+  repeated VectorModelVersionItem items = 1;
+  optional bytes next_cursor = 2;
+  optional uint64 observed_frontier = 3;
+}
+
+message InspectVectorStateResponse {
+  oneof result {
+    VectorStalenessReport staleness_summary = 1;
+    VectorStalenessPage stale_entities = 2;
+    VectorModelVersionReport model_version_summary = 3;
+    VectorModelVersionPage outdated_model_entities = 4;
+  }
+}
+
 service ApplicationQueryService {
   rpc DescribeContract(DescribeContractRequest) returns (DescribeContractResponse);
   rpc GetApplicationCatalog(GetApplicationCatalogRequest) returns (GetApplicationCatalogResponse);
@@ -713,4 +780,5 @@ service ApplicationQueryService {
   rpc DeployReactiveModule(DeployReactiveModuleRequest) returns (DeployReactiveModuleResponse);
   rpc GetQueryModule(GetQueryModuleRequest) returns (GetQueryModuleResponse);
   rpc ExecuteProjectedQuery(ExecuteProjectedQueryRequest) returns (ExecuteProjectedQueryResponse);
+  rpc InspectVectorState(InspectVectorStateRequest) returns (InspectVectorStateResponse);
 }

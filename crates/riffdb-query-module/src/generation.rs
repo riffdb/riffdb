@@ -8,8 +8,8 @@ use riffdb_contract_ir::{
     ValueTypeTag, WorkflowLeaseOperation,
 };
 use riffdb_query_ir::{
-    CoveredResultLayoutV1, NamedQuerySchemas, NamedTypeSchema, PageBound, ReactiveModulePlanV1,
-    ReactiveOperationPlanV1, max_query_page_take,
+    CoveredResultLayoutV1, NamedQuerySchemas, NamedTypeSchema, PageBound, QueryAccessKind,
+    ReactiveModulePlanV1, ReactiveOperationPlanV1, max_query_page_take,
 };
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
@@ -33,6 +33,44 @@ pub(crate) struct EmbeddingCommandFacade {
     pub(crate) version_input_name: String,
     pub(crate) model_identity: String,
     pub(crate) model_version: String,
+}
+
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+struct VectorInspectionFacade {
+    entity: String,
+    field: String,
+    partition_type: ValueType,
+}
+
+fn vector_inspection_facades(
+    module: &QueryModule,
+    contract: &ContractBundle,
+) -> Vec<VectorInspectionFacade> {
+    let mut facades = BTreeSet::new();
+    for query in module.queries() {
+        for step in query.plan().representative_program().steps() {
+            let QueryAccessKind::Nearest { vector_field, .. } = step.access() else {
+                continue;
+            };
+            let entity = contract
+                .schema()
+                .entity(step.internal_entity_id())
+                .expect("checked nearest entity");
+            let aggregate = contract
+                .schema()
+                .aggregate_for_entity(entity.id())
+                .expect("checked nearest aggregate");
+            let partition_type = aggregate.keys().partition_schema().components()[0]
+                .value_type()
+                .clone();
+            facades.insert(VectorInspectionFacade {
+                entity: entity.name().to_owned(),
+                field: vector_field.clone(),
+                partition_type,
+            });
+        }
+    }
+    facades.into_iter().collect()
 }
 
 pub(crate) fn embedding_command_facades(
@@ -1024,6 +1062,7 @@ fn is_optional_type(value_type: &NamedTypeSchema) -> bool {
 pub fn generate_rust_client(module: &QueryModule, contract: &ContractBundle) -> String {
     let mut output = String::new();
     let has_vector = !contract.schema().vector_field_specs().is_empty();
+    let has_vector_inspection = !vector_inspection_facades(module, contract).is_empty();
     let has_compact_result = module
         .queries()
         .iter()
@@ -1036,10 +1075,15 @@ pub fn generate_rust_client(module: &QueryModule, contract: &ContractBundle) -> 
          use riffdb_client_rust::{{ApplicationCardinality, ApplicationClientError, ApplicationContract, ApplicationUuid{vector_import}, \
          ApplicationRecord, ApplicationSessionIdentity, ApplicationValue, AttemptBudget, CallMetadata, GeneratedBatchError, GeneratedBatchOptions, \
          GeneratedBatchProgress, GeneratedBatchResult, IdempotentCommand, NamedQuery, NamedQueryResult, \
-         StableApplicationClient, TypedCommandResult, TypedQueryResult, v1}};\n\
+         StableApplicationClient, TypedCommandResult, TypedQueryResult{vector_client_import}, v1}};\n\
          pub use riffdb_client_rust::QueryOptions;\n\
          use riffdb_client_rust::v1::value::Kind as WireKind;\n",
         vector_import = if has_vector { ", CanonicalVector" } else { "" },
+        vector_client_import = if has_vector_inspection {
+            ", VectorStateInspection, VectorStateInspectionKind, VectorStateInspectionResult"
+        } else {
+            ""
+        },
     )
     .expect("string");
     if has_compact_result {
@@ -1142,7 +1186,7 @@ pub fn generate_rust_client(module: &QueryModule, contract: &ContractBundle) -> 
         emit_rust_command_outcome(&mut output, command, contract);
         emit_rust_generated_command_impl(&mut output, command, contract);
     }
-    emit_rust_client_facade(&mut output, module, &commands);
+    emit_rust_client_facade(&mut output, module, &commands, contract);
     emit_rust_runtime_helpers(&mut output, has_vector);
     output
 }
@@ -2535,7 +2579,13 @@ fn emit_rust_generated_command_impl(
     writeln!(output, "}}\n").expect("string");
 }
 
-fn emit_rust_client_facade(output: &mut String, module: &QueryModule, commands: &[&CommandPlan]) {
+fn emit_rust_client_facade(
+    output: &mut String,
+    module: &QueryModule,
+    commands: &[&CommandPlan],
+    contract: &ContractBundle,
+) {
+    let vector_inspections = vector_inspection_facades(module, contract);
     let client_name = format!("{}Client", pascal(module.contract_lineage().as_str()));
     writeln!(
         output,
@@ -2606,7 +2656,65 @@ fn emit_rust_client_facade(output: &mut String, module: &QueryModule, commands: 
         )
         .expect("string");
     }
+    for inspection in &vector_inspections {
+        let function = format!(
+            "inspect_{}_{}",
+            snake(&inspection.entity),
+            snake(&inspection.field)
+        );
+        let partition_type = rust_contract_type(&inspection.partition_type, contract);
+        let partition = rust_application_partition_expr(&inspection.partition_type, "partition");
+        for (suffix, kind) in [
+            ("staleness", "VectorStateInspectionKind::Stale"),
+            ("model_versions", "VectorStateInspectionKind::OutdatedModel"),
+        ] {
+            writeln!(
+                output,
+                "    /// Inspects authoritative `{entity}.{field}` {suffix} state.\n\
+                 \x20   pub async fn {function}_{suffix}(&mut self, partition: {partition_type}, limit: u32, cursor: Option<Vec<u8>>) -> Result<VectorStateInspectionResult, ApplicationClientError> {{\n\
+                 \x20       let request = VectorStateInspection::new(\n\
+                 \x20           ApplicationContract::Exact {{ lineage: CONTRACT_LINEAGE.to_owned(), version: CONTRACT_VERSION, bundle_hash: Some(CONTRACT_BUNDLE_HASH) }},\n\
+                 \x20           {entity:?}, {field:?}, {partition}, {kind}, limit,\n\
+                 \x20       );\n\
+                 \x20       let request = match cursor {{ Some(cursor) => request.after(cursor), None => request }};\n\
+                 \x20       self.client.inspect_vector_state(request, &self.metadata).await\n    }}\n",
+                entity = inspection.entity,
+                field = inspection.field,
+            )
+            .expect("string");
+        }
+    }
     writeln!(output, "}}\n").expect("string");
+}
+
+fn rust_application_partition_expr(value_type: &ValueType, access: &str) -> String {
+    match value_type.tag() {
+        ValueTypeTag::Bool => format!("ApplicationValue::Bool({access})"),
+        ValueTypeTag::I64 => format!("ApplicationValue::I64({access})"),
+        ValueTypeTag::U64 => format!("ApplicationValue::U64({access})"),
+        ValueTypeTag::String => format!("ApplicationValue::String({access})"),
+        ValueTypeTag::Bytes => format!("ApplicationValue::Bytes({access})"),
+        ValueTypeTag::Uuid => {
+            format!("ApplicationValue::Uuid(ApplicationUuid::from_text({access})?)")
+        }
+        ValueTypeTag::Date => format!("ApplicationValue::Date({access})"),
+        ValueTypeTag::Timestamp => format!(
+            "ApplicationValue::Timestamp {{ seconds: {access}.seconds, nanos: {access}.nanos }}"
+        ),
+        ValueTypeTag::Decimal => format!(
+            "ApplicationValue::Decimal {{ coefficient_twos_complement: {access}.coefficient_twos_complement, scale: {access}.scale, precision: {access}.precision }}"
+        ),
+        ValueTypeTag::Money => format!(
+            "ApplicationValue::Money {{ currency: {access}.currency, amount: Box::new(ApplicationValue::Decimal {{ coefficient_twos_complement: {access}.amount.coefficient_twos_complement, scale: {access}.amount.scale, precision: {access}.amount.precision }}) }}"
+        ),
+        ValueTypeTag::Enum => format!("ApplicationValue::Enum({access})"),
+        ValueTypeTag::Vector
+        | ValueTypeTag::Record
+        | ValueTypeTag::Optional
+        | ValueTypeTag::List => {
+            panic!("checked aggregate partition must be an authoritative scalar")
+        }
+    }
 }
 
 fn emit_rust_runtime_helpers(output: &mut String, has_vector: bool) {
@@ -4546,6 +4654,49 @@ mod tests {
             generated_typescript.contains("options.concurrency > MAX_COMMAND_BATCH_CONCURRENCY")
         );
         assert!(!generated_typescript.contains("options.concurrency > 32"));
+    }
+
+    #[test]
+    fn generated_rust_facade_exposes_role_derived_vector_inspection() {
+        let contract = compile_contract_source(include_str!(
+            "../../../fixtures/compiler/production-embedding/contract.riff"
+        ))
+        .expect("production vector contract");
+        let query = NamedQuerySource::new(
+            "SimilarDocuments",
+            r#"query SimilarDocuments(
+                $org_id: Document.org_id,
+                $query_vec: Document.embedding,
+            ) {
+                many results from Document
+                    where org_id == $org_id
+                    nearest(embedding, $query_vec, 10)
+                return Found { results: results { title } }
+                outcomes Found
+            }"#,
+        )
+        .expect("query source");
+        let module = QueryModule::compile(
+            QueryModuleCandidate::new(
+                QueryModuleName::new("documents").expect("module name"),
+                QueryModuleVersion::new(1).expect("module version"),
+                vec![query],
+            )
+            .expect("candidate"),
+            &contract,
+        )
+        .expect("module");
+
+        let generated = generate_rust_client(&module, &contract);
+
+        assert!(generated.contains("VectorStateInspectionResult"));
+        assert!(generated.contains("pub async fn inspect_document_embedding_staleness("));
+        assert!(generated.contains("pub async fn inspect_document_embedding_model_versions("));
+        assert!(generated.contains("partition: String"));
+        assert!(generated.contains("ApplicationUuid::from_text(partition)?"));
+        assert!(generated.contains("VectorStateInspectionKind::Stale"));
+        assert!(generated.contains("VectorStateInspectionKind::OutdatedModel"));
+        assert!(generated.contains("ApplicationContract::Exact"));
     }
 
     #[test]

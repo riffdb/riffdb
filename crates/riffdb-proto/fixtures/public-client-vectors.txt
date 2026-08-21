@@ -345,6 +345,7 @@ enum-value riffdb.v1.FixedToolKind 28 FIXED_TOOL_KIND_CONTEXTUAL_NACK
 enum-value riffdb.v1.FixedToolKind 29 FIXED_TOOL_KIND_CONTEXTUAL_STATUS
 enum-value riffdb.v1.FixedToolKind 3 FIXED_TOOL_KIND_EXPLAIN_COMMAND
 enum-value riffdb.v1.FixedToolKind 30 FIXED_TOOL_KIND_CONTEXTUAL_REACT
+enum-value riffdb.v1.FixedToolKind 31 FIXED_TOOL_KIND_INSPECT_VECTOR_STATE
 enum-value riffdb.v1.FixedToolKind 4 FIXED_TOOL_KIND_DEPLOY_CONTRACT
 enum-value riffdb.v1.FixedToolKind 5 FIXED_TOOL_KIND_RESOLVE_COMMAND_OUTCOME
 enum-value riffdb.v1.FixedToolKind 6 FIXED_TOOL_KIND_GET_ENTITY

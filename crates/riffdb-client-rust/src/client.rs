@@ -404,6 +404,12 @@ impl RiffDbClient {
         app_v1::ExecuteProjectedQueryRequest,
         app_v1::ExecuteProjectedQueryResponse
     );
+    unary_application!(
+        inspect_vector_state,
+        inspect_vector_state,
+        app_v1::InspectVectorStateRequest,
+        app_v1::InspectVectorStateResponse
+    );
 
     unary_exchange!(
         validate_contract,

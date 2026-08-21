@@ -119,9 +119,11 @@ pub trait QueryApplication: Send + Sync {
     /// Inspects one compiler-declared vector field under exact role authority.
     fn inspect_vector_state(
         &self,
-        context: RequestContext,
-        request: InspectVectorStateRequest,
-    ) -> ServiceFuture<'_, InspectVectorStateResult>;
+        _context: RequestContext,
+        _request: InspectVectorStateRequest,
+    ) -> ServiceFuture<'_, InspectVectorStateResult> {
+        Box::pin(async { Err(riffdb_errors::PublicError::authorization_denied().into()) })
+    }
 }
 
 /// Commit-log reads, subscription establishment, and provenance tracing.

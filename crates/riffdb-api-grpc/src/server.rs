@@ -2362,6 +2362,36 @@ impl ApplicationQueryService for GrpcApplication {
             .map_err(|status| status_from_application_boundary(status, &application))?;
         Ok(Response::new(response))
     }
+
+    async fn inspect_vector_state(
+        &self,
+        request: Request<app_v1::InspectVectorStateRequest>,
+    ) -> Result<Response<app_v1::InspectVectorStateResponse>, Status> {
+        let (metadata, _peer, message) = split_request(request);
+        let boundary =
+            ApplicationErrorContextBuilder::without_trace(ApplicationOperation::InspectVectorState);
+        let original = message.clone();
+        let (request_id, request) = inspect_vector_state_request_from_proto(message)
+            .map_err(|status| status_from_application_boundary(status, &boundary))?;
+        let application = application_context(
+            ApplicationOperation::InspectVectorState,
+            request_id,
+            original.contract.as_ref(),
+            Some(original.field.as_str()),
+        );
+        let (service, context, _cancellation) = self
+            .normal_invocation(
+                ServiceOperationV1::InspectVectorState,
+                &metadata,
+                request_id,
+            )
+            .map_err(|status| status_from_application_boundary(status, &application))?;
+        let result = map_application_service(
+            service.inspect_vector_state(context, request).await,
+            &application,
+        )?;
+        Ok(Response::new(inspect_vector_state_result_to_proto(result)))
+    }
 }
 
 #[tonic::async_trait]

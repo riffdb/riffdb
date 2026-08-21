@@ -618,6 +618,13 @@ pub(crate) enum RoleActorKind {
     Service,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+#[value(rename_all = "lower")]
+pub(crate) enum VectorInspectionKind {
+    Stale,
+    Outdated,
+}
+
 #[derive(Debug, Subcommand)]
 pub(crate) enum QueryCommand {
     Describe {
@@ -692,6 +699,29 @@ pub(crate) enum QueryCommand {
         contract: ContractSelectionArgs,
     },
     Repl {
+        #[command(flatten)]
+        contract: ContractSelectionArgs,
+    },
+    /// Inspects authoritative vector freshness or model-version state.
+    InspectVector {
+        /// Symbolic entity name that owns the maintained vector field.
+        #[arg(value_name = "ENTITY")]
+        entity: String,
+        /// Symbolic maintained vector field name.
+        #[arg(value_name = "FIELD")]
+        field: String,
+        /// Exact partition value as typed InputValue JSON.
+        #[arg(long, value_name = "JSON_VALUE")]
+        partition: String,
+        /// Whether to inspect stale evidence or outdated model versions.
+        #[arg(long, value_enum, default_value = "stale")]
+        kind: VectorInspectionKind,
+        /// Maximum returned entity items when row policy forbids summary counts.
+        #[arg(long, value_name = "ROWS")]
+        limit: Option<String>,
+        /// Opaque continuation cursor as lower-hex bytes.
+        #[arg(long, value_name = "HEX")]
+        cursor_hex: Option<String>,
         #[command(flatten)]
         contract: ContractSelectionArgs,
     },
@@ -1324,6 +1354,49 @@ mod tests {
                 command: QueryCommand::Projected { packed: false, .. },
             } => {}
             other => panic!("default must not be packed: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn query_vector_inspection_is_symbolic_and_bounded_at_the_cli_boundary() {
+        let cli = Cli::try_parse_from([
+            "riffdb",
+            "query",
+            "inspect-vector",
+            "Document",
+            "embedding",
+            "--partition",
+            r#"{"type":"uuid","value":"11111111-1111-1111-1111-111111111111"}"#,
+            "--kind",
+            "outdated",
+            "--limit",
+            "20",
+            "--cursor-hex",
+            "00112233445566778899aabbccddeeff",
+        ])
+        .expect("accepted symbolic inspection");
+        match cli.command {
+            TopLevel::Query {
+                command:
+                    QueryCommand::InspectVector {
+                        entity,
+                        field,
+                        kind,
+                        limit,
+                        cursor_hex,
+                        ..
+                    },
+            } => {
+                assert_eq!(entity, "Document");
+                assert_eq!(field, "embedding");
+                assert_eq!(kind, VectorInspectionKind::Outdated);
+                assert_eq!(limit.as_deref(), Some("20"));
+                assert_eq!(
+                    cursor_hex.as_deref(),
+                    Some("00112233445566778899aabbccddeeff")
+                );
+            }
+            other => panic!("expected Query::InspectVector, got {other:?}"),
         }
     }
 

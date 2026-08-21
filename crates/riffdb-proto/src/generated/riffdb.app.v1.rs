@@ -671,6 +671,98 @@ pub mod execute_projected_query_response {
         ReadyAggregates(super::ProjectedReadyAggregates),
     }
 }
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct InspectVectorStateRequest {
+    #[prost(message, optional, tag = "1")]
+    pub contract: ::core::option::Option<ContractSelector>,
+    #[prost(string, tag = "2")]
+    pub entity: ::prost::alloc::string::String,
+    #[prost(string, tag = "3")]
+    pub field: ::prost::alloc::string::String,
+    #[prost(message, optional, tag = "4")]
+    pub partition: ::core::option::Option<super::super::v1::Value>,
+    #[prost(enumeration = "VectorStateInspectionKind", tag = "5")]
+    pub kind: i32,
+    #[prost(message, optional, tag = "6")]
+    pub page: ::core::option::Option<super::super::v1::PageRequest>,
+    #[prost(bytes = "vec", tag = "100")]
+    pub request_id: ::prost::alloc::vec::Vec<u8>,
+}
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct VectorStalenessReport {
+    #[prost(uint64, tag = "1")]
+    pub total_entities: u64,
+    #[prost(uint64, tag = "2")]
+    pub stale_count: u64,
+    #[prost(uint64, tag = "3")]
+    pub stale_entity_count_threshold: u64,
+    #[prost(bool, tag = "4")]
+    pub slo_breached: bool,
+}
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct VectorModelVersionReport {
+    #[prost(uint64, tag = "1")]
+    pub current_count: u64,
+    #[prost(uint64, tag = "2")]
+    pub outdated_count: u64,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct VectorStalenessItem {
+    #[prost(bytes = "vec", tag = "1")]
+    pub entity_key: ::prost::alloc::vec::Vec<u8>,
+    #[prost(uint64, tag = "2")]
+    pub newest_source_write: u64,
+    #[prost(uint64, optional, tag = "3")]
+    pub embedding_write: ::core::option::Option<u64>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct VectorModelVersionItem {
+    #[prost(bytes = "vec", tag = "1")]
+    pub entity_key: ::prost::alloc::vec::Vec<u8>,
+    #[prost(string, tag = "2")]
+    pub model: ::prost::alloc::string::String,
+    #[prost(string, tag = "3")]
+    pub model_version: ::prost::alloc::string::String,
+    #[prost(uint64, tag = "4")]
+    pub embedding_write: u64,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct VectorStalenessPage {
+    #[prost(message, repeated, tag = "1")]
+    pub items: ::prost::alloc::vec::Vec<VectorStalenessItem>,
+    #[prost(bytes = "vec", optional, tag = "2")]
+    pub next_cursor: ::core::option::Option<::prost::alloc::vec::Vec<u8>>,
+    #[prost(uint64, optional, tag = "3")]
+    pub observed_frontier: ::core::option::Option<u64>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct VectorModelVersionPage {
+    #[prost(message, repeated, tag = "1")]
+    pub items: ::prost::alloc::vec::Vec<VectorModelVersionItem>,
+    #[prost(bytes = "vec", optional, tag = "2")]
+    pub next_cursor: ::core::option::Option<::prost::alloc::vec::Vec<u8>>,
+    #[prost(uint64, optional, tag = "3")]
+    pub observed_frontier: ::core::option::Option<u64>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct InspectVectorStateResponse {
+    #[prost(oneof = "inspect_vector_state_response::Result", tags = "1, 2, 3, 4")]
+    pub result: ::core::option::Option<inspect_vector_state_response::Result>,
+}
+/// Nested message and enum types in `InspectVectorStateResponse`.
+pub mod inspect_vector_state_response {
+    #[derive(Clone, PartialEq, ::prost::Oneof)]
+    pub enum Result {
+        #[prost(message, tag = "1")]
+        StalenessSummary(super::VectorStalenessReport),
+        #[prost(message, tag = "2")]
+        StaleEntities(super::VectorStalenessPage),
+        #[prost(message, tag = "3")]
+        ModelVersionSummary(super::VectorModelVersionReport),
+        #[prost(message, tag = "4")]
+        OutdatedModelEntities(super::VectorModelVersionPage),
+    }
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
 pub enum ApplicationOperation {
@@ -685,6 +777,7 @@ pub enum ApplicationOperation {
     BatchCommand = 8,
     ExecuteProjectedQuery = 9,
     DeployReactiveModule = 10,
+    InspectVectorState = 11,
 }
 impl ApplicationOperation {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -706,6 +799,7 @@ impl ApplicationOperation {
                 "APPLICATION_OPERATION_EXECUTE_PROJECTED_QUERY"
             }
             Self::DeployReactiveModule => "APPLICATION_OPERATION_DEPLOY_REACTIVE_MODULE",
+            Self::InspectVectorState => "APPLICATION_OPERATION_INSPECT_VECTOR_STATE",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
@@ -725,6 +819,9 @@ impl ApplicationOperation {
             }
             "APPLICATION_OPERATION_DEPLOY_REACTIVE_MODULE" => {
                 Some(Self::DeployReactiveModule)
+            }
+            "APPLICATION_OPERATION_INSPECT_VECTOR_STATE" => {
+                Some(Self::InspectVectorState)
             }
             _ => None,
         }
@@ -1477,6 +1574,39 @@ impl ProjectedDegradedReason {
                 Some(Self::MaintenanceBacklog)
             }
             "PROJECTED_DEGRADED_REASON_PARTIAL_INVENTORY" => Some(Self::PartialInventory),
+            _ => None,
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum VectorStateInspectionKind {
+    Unspecified = 0,
+    StaleEntities = 1,
+    OutdatedModelEntities = 2,
+}
+impl VectorStateInspectionKind {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "VECTOR_STATE_INSPECTION_KIND_UNSPECIFIED",
+            Self::StaleEntities => "VECTOR_STATE_INSPECTION_KIND_STALE_ENTITIES",
+            Self::OutdatedModelEntities => {
+                "VECTOR_STATE_INSPECTION_KIND_OUTDATED_MODEL_ENTITIES"
+            }
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "VECTOR_STATE_INSPECTION_KIND_UNSPECIFIED" => Some(Self::Unspecified),
+            "VECTOR_STATE_INSPECTION_KIND_STALE_ENTITIES" => Some(Self::StaleEntities),
+            "VECTOR_STATE_INSPECTION_KIND_OUTDATED_MODEL_ENTITIES" => {
+                Some(Self::OutdatedModelEntities)
+            }
             _ => None,
         }
     }

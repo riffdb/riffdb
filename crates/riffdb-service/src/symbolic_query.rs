@@ -213,7 +213,11 @@ impl SymbolicContractSelector {
         &self.selection
     }
 
-    fn exact_identity(&self) -> Option<(&ContractLineage, ContractVersion, ContractBundleHash)> {
+    /// Returns the complete exact identity when the selector is hash-pinned.
+    #[must_use]
+    pub fn exact_identity(
+        &self,
+    ) -> Option<(&ContractLineage, ContractVersion, ContractBundleHash)> {
         match (&self.selection, self.expected_hash) {
             (ContractSelection::Exact { lineage, version }, Some(hash)) => {
                 Some((lineage, *version, hash))
