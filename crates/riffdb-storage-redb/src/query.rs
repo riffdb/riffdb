@@ -13,14 +13,16 @@ use riffdb_policy::{
     ProjectedPolicyCandidateObservationV1,
 };
 use riffdb_query_executor::{
-    BoundPredicate, MAX_QUERY_SCANNED_ROWS, QueryBackendFault, QueryContinuation,
-    QueryExecutionError, QueryExecutionPort, QueryExecutionRequest, QueryNearestPage,
-    QueryOwnedSnapshot, QueryParameters, QueryReadView, QueryRow, QueryScanPage,
-    execute_in_snapshot, execute_page_in_snapshot, execute_policy_operational_page_in_snapshot,
-    execute_policy_page_in_snapshot, validate_query_execution_group,
+    BoundPredicate, CoveredResultBatch, MAX_QUERY_SCANNED_ROWS, QueryBackendFault,
+    QueryContinuation, QueryExecutionError, QueryExecutionPort, QueryExecutionRequest,
+    QueryNearestPage, QueryOwnedSnapshot, QueryParameters, QueryReadView, QueryRow, QueryScanPage,
+    covered_row_matches_predicates_v1, execute_in_snapshot, execute_page_in_snapshot,
+    execute_policy_operational_page_in_snapshot, execute_policy_page_in_snapshot,
+    validate_query_execution_group,
 };
 use riffdb_query_ir::{
-    AccessDirection, QueryAccessKind, QueryAccessProgramV1, QueryAccessStep, QueryPredicateOperator,
+    AccessDirection, CoveredResultSourceV1, QueryAccessKind, QueryAccessProgramV1, QueryAccessStep,
+    QueryPredicateOperator,
 };
 use riffdb_storage_api::{EntityTarget, PartitionIndexTarget, StorageError, StorageErrorKind};
 use riffdb_types::{CanonicalValue, EntityKey, EntityTypeId, FieldId, IndexEntryKey};
@@ -850,6 +852,186 @@ impl QueryReadView for RedbQueryView<'_> {
         }
     }
 
+    fn scan_covered(
+        &mut self,
+        step: &QueryAccessStep,
+        predicates: &[BoundPredicate],
+        limit: u64,
+        after: Option<&[u8]>,
+        policy: Option<&AuthorizedQueryRowPolicyContextV1>,
+    ) -> Result<Option<CoveredResultBatch>, Self::Error> {
+        let Some(layout) = step.covered_result_layout() else {
+            return Ok(None);
+        };
+        if policy.is_some() {
+            return Err(invariant());
+        }
+        let QueryAccessKind::Index { direction, .. } = step.access() else {
+            return Err(invariant());
+        };
+        let schema = step.internal_index_key_schema().ok_or_else(invariant)?;
+        let partition_value = self
+            .parameters
+            .get(self.program.partition_parameter())
+            .ok_or_else(invariant)?;
+        let partition = step
+            .internal_partition_key_schema()
+            .encode_partition(std::slice::from_ref(partition_value))
+            .map_err(|_| invariant())?;
+        let generation_target =
+            PartitionIndexTarget::new(partition, step.internal_index_id().ok_or_else(invariant)?);
+        let epoch = self.read_epoch(&generation_target)?;
+        let page_limit =
+            usize::try_from(limit).map_err(|_| storage_error(StorageErrorKind::LimitExceeded))?;
+        let fetch_limit = page_limit.saturating_add(1);
+        let scan_ceiling = usize::try_from(MAX_QUERY_SCANNED_ROWS)
+            .map_err(|_| storage_error(StorageErrorKind::LimitExceeded))?;
+        let mut entries = Vec::<(IndexEntryKey, Vec<CanonicalValue>)>::new();
+        let mut inspected = 0usize;
+        let mut partition_candidates = 0usize;
+        let mut prefixes = riffdb_query_executor::bound_index_prefix_bytes_v1(step, predicates)
+            .map_err(|_| invariant())?;
+        prefixes.sort_unstable();
+        let unique_len = prefixes.len();
+        prefixes.dedup();
+        if prefixes.len() != unique_len {
+            return Err(invariant());
+        }
+        if *direction == AccessDirection::Reverse {
+            prefixes.reverse();
+        }
+
+        self.touch_indexes();
+        'prefixes: for prefix in prefixes {
+            let upper = exclusive_prefix_end(prefix.as_slice()).ok_or_else(invariant)?;
+            if after.is_some_and(|after| match direction {
+                AccessDirection::Forward => upper.as_slice() <= after,
+                AccessDirection::Reverse => prefix.as_slice() > after,
+            }) {
+                continue;
+            }
+            let remaining_scan = scan_ceiling.saturating_sub(inspected);
+            if remaining_scan == 0 {
+                return Err(storage_error(StorageErrorKind::LimitExceeded));
+            }
+            let rows = match direction {
+                AccessDirection::Forward => {
+                    let start = after
+                        .filter(|after| after.starts_with(prefix.as_slice()))
+                        .unwrap_or(prefix.as_slice());
+                    self.transaction.read_range(
+                        JournalTable::SecondaryIndexes,
+                        start,
+                        &upper,
+                        remaining_scan,
+                    )?
+                }
+                AccessDirection::Reverse => {
+                    let end = after
+                        .filter(|after| after.starts_with(prefix.as_slice()))
+                        .unwrap_or(upper.as_slice());
+                    self.transaction.read_range_reverse(
+                        JournalTable::SecondaryIndexes,
+                        prefix.as_slice(),
+                        end,
+                        remaining_scan,
+                    )?
+                }
+            };
+            let inspected_this_prefix = rows.len();
+            inspected = inspected
+                .checked_add(inspected_this_prefix)
+                .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
+            for entry in rows {
+                if matches!(direction, AccessDirection::Forward)
+                    && after.is_some_and(|after| entry.0.as_ref() == after)
+                {
+                    continue;
+                }
+                let (entry_key, stored) = decode_current_index_entry(entry)?;
+                if stored.partition_key() != generation_target.partition_key() {
+                    continue;
+                }
+                partition_candidates = partition_candidates
+                    .checked_add(1)
+                    .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
+                let contract = self.program.contract();
+                if stored.schema_binding().lineage() != contract.lineage()
+                    || stored.schema_binding().contract_version() != contract.version()
+                    || stored.schema_binding().bundle_hash() != contract.bundle_hash()
+                {
+                    return Err(corrupt());
+                }
+                let mut actual_cover_ids = stored
+                    .covered_values()
+                    .fields()
+                    .iter()
+                    .map(|(field_id, _)| *field_id)
+                    .collect::<Vec<_>>();
+                let mut expected_cover_ids = layout.internal_cover_field_ids().to_vec();
+                actual_cover_ids.sort_unstable();
+                expected_cover_ids.sort_unstable();
+                if actual_cover_ids != expected_cover_ids {
+                    return Err(corrupt());
+                }
+                let decoded_key = schema.decode_index(&entry_key).map_err(|_| corrupt())?;
+                let entity_values = step
+                    .internal_entity_key_schema()
+                    .decode_entity(decoded_key.entity_key())
+                    .map_err(|_| corrupt())?;
+                let values = layout
+                    .fields()
+                    .iter()
+                    .map(|field| match field.internal_source() {
+                        CoveredResultSourceV1::IndexKey(position) => decoded_key
+                            .values()
+                            .get(usize::from(position))
+                            .cloned()
+                            .ok_or_else(corrupt),
+                        CoveredResultSourceV1::EntityKey(position) => entity_values
+                            .get(usize::from(position))
+                            .cloned()
+                            .ok_or_else(corrupt),
+                        CoveredResultSourceV1::Cover => stored
+                            .covered_values()
+                            .fields()
+                            .binary_search_by_key(&field.internal_field_id(), |(id, _)| *id)
+                            .ok()
+                            .and_then(|position| stored.covered_values().fields().get(position))
+                            .map(|(_, value)| value.clone())
+                            .ok_or_else(corrupt),
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                if !covered_row_matches_predicates_v1(layout, &values, predicates)
+                    .map_err(|_| invariant())?
+                {
+                    continue;
+                }
+                entries.push((entry_key, values));
+                if entries.len() == fetch_limit {
+                    break 'prefixes;
+                }
+            }
+            if inspected_this_prefix == remaining_scan {
+                return Err(storage_error(StorageErrorKind::LimitExceeded));
+            }
+        }
+
+        let has_more = entries.len() > page_limit;
+        if has_more {
+            entries.truncate(page_limit);
+        }
+        let scanned_rows = u64::try_from(partition_candidates)
+            .map_err(|_| storage_error(StorageErrorKind::LimitExceeded))?;
+        let continuation = has_more
+            .then(|| entries.last().map(|entry| entry.0.as_bytes().to_vec()))
+            .flatten();
+        let rows = entries.into_iter().map(|(_, row)| row).collect();
+        CoveredResultBatch::checked(layout.clone(), rows, epoch, scanned_rows, 0, continuation)
+            .map(Some)
+            .ok_or_else(invariant)
+    }
+
     fn nearest(
         &mut self,
         _step: &QueryAccessStep,
@@ -1138,6 +1320,7 @@ query ProjectMembers(
     outcomes Found
 }
 "#;
+    const BOARD_QUERY: &str = include_str!("../../../queries/ticketdesk/board_page_450.riffq");
     /// Whole-directory scope: the database and every side file it grows live
     /// in one [`crate::test_path::ScopedDirectory`] removed on drop — pass,
     /// fail, or panic.
@@ -1463,6 +1646,189 @@ query ProjectMembers(
             Some(QueryResultValue::Many(rows))
                 if rows.len() == 1 && rows[0].field("user_id").cloned() != first_user
         ));
+    }
+
+    #[test]
+    fn covered_index_page_never_opens_or_reads_the_entity_table() {
+        let covered_contract = CONTRACT.replace(
+            "    index by_project_status (organization_id, project_id, status, ticket_id)",
+            "    index by_project_status (organization_id, project_id, status, ticket_id)\n    index by_board_project_status (organization_id, project_id, status, ticket_id) cover (title, reporter_id, assignee_id)",
+        );
+        let bundle = compile_contract_source(&covered_contract).expect("covered contract");
+        let catalog = SymbolicCatalog::from_bundle(&bundle).expect("catalog");
+        let program =
+            compile_query(&parse_query(BOARD_QUERY).expect("parse"), &catalog).expect("program");
+        let step = &program.steps()[0];
+        assert!(step.covered_result_layout().is_some());
+
+        let organization = CanonicalValue::Uuid([1; 16]);
+        let project = CanonicalValue::Uuid([2; 16]);
+        let ticket = CanonicalValue::Uuid([3; 16]);
+        let reporter = CanonicalValue::Uuid([4; 16]);
+        let assignee = CanonicalValue::Uuid([5; 16]);
+        let status_schema = bundle
+            .schema()
+            .enums()
+            .iter()
+            .find(|enumeration| enumeration.name() == "TicketStatus")
+            .expect("status enum");
+        let status = CanonicalValue::Enum {
+            type_id: status_schema.id(),
+            variant_id: status_schema
+                .variants()
+                .iter()
+                .find(|variant| variant.name() == "Open")
+                .expect("Open")
+                .id(),
+        };
+        let entity_key = step
+            .internal_entity_key_schema()
+            .encode_entity(&[organization.clone(), ticket.clone()])
+            .expect("entity key");
+        let index_key = step
+            .internal_index_key_schema()
+            .expect("index schema")
+            .encode_index(
+                &[
+                    organization.clone(),
+                    project.clone(),
+                    status.clone(),
+                    ticket,
+                ],
+                entity_key,
+            )
+            .expect("index key");
+        let access = program
+            .internal_entity_access("Ticket")
+            .expect("Ticket access");
+        let covered_values = CanonicalRecord::new(vec![
+            (
+                access.internal_field_id("title").expect("title"),
+                CanonicalValue::string("covered ticket").expect("title value"),
+            ),
+            (
+                access.internal_field_id("reporter_id").expect("reporter"),
+                reporter,
+            ),
+            (
+                access.internal_field_id("assignee_id").expect("assignee"),
+                assignee,
+            ),
+        ])
+        .expect("covered values");
+        let binding = DurableKeySchemaBindingV1::new(
+            bundle.lineage().clone(),
+            bundle.contract_version(),
+            bundle.bundle_hash(),
+        );
+        let partition = step
+            .internal_partition_key_schema()
+            .encode_partition(std::slice::from_ref(&organization))
+            .expect("partition");
+        let index = StoredIndexEntryV2::new(
+            index_key.clone(),
+            binding.clone(),
+            covered_values,
+            partition.clone(),
+        )
+        .expect("covered index");
+
+        let path = TestPath::new();
+        let mut store = RedbStore::open(&path.0).expect("store");
+        let database_id =
+            DatabaseId::from_unix_milliseconds_and_random(1_700_000_000_000, [0x13; 10])
+                .expect("database ID");
+        store.initialize_database(database_id).expect("initialize");
+        let ports = RedbOperationalPorts {
+            shared: Arc::clone(&store.shared),
+        };
+        let access_write = ports.begin_write().expect("write");
+        {
+            let mut table = access_write
+                .transaction()
+                .expect("transaction")
+                .open_table(SECONDARY_INDEXES)
+                .expect("indexes");
+            let encoded = encode_index_entry_v2(&index).expect("encode index");
+            table
+                .insert(index.key().as_bytes(), encoded.as_bytes())
+                .expect("insert index");
+        }
+        access_write.commit().expect("commit");
+
+        let parameters = QueryParameters::checked(BTreeMap::from([
+            ("organization_id".to_owned(), organization),
+            ("project_id".to_owned(), project),
+            ("status".to_owned(), status),
+        ]))
+        .expect("parameters");
+        let _serial = QUERY_TABLE_OPEN_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        reset_query_table_open_counts();
+        let snapshot = ports.execute_query(&program, &parameters).expect("query");
+        let covered = snapshot
+            .covered_result()
+            .expect("positional result retained");
+        assert_eq!(covered.result_name(), "tickets");
+        assert_eq!(covered.entity(), "Ticket");
+        assert_eq!(covered.rows().len(), 1);
+        let title_position = covered
+            .fields()
+            .position(|field| field == "title")
+            .expect("title position");
+        assert_eq!(
+            covered.rows()[0][title_position],
+            CanonicalValue::string("covered ticket").expect("title")
+        );
+        assert_eq!(
+            query_table_open_counts(),
+            QueryTableOpenCounts {
+                commits: 1,
+                entities: 0,
+                indexes: 1,
+                epochs: 1,
+            },
+            "sealed cover execution must not open the entity table"
+        );
+
+        let missing_cover = StoredIndexEntryV2::new(
+            index_key,
+            binding,
+            CanonicalRecord::new(vec![
+                (
+                    access.internal_field_id("title").expect("title"),
+                    CanonicalValue::string("covered ticket").expect("title value"),
+                ),
+                (
+                    access.internal_field_id("reporter_id").expect("reporter"),
+                    CanonicalValue::Uuid([4; 16]),
+                ),
+            ])
+            .expect("missing cover record"),
+            partition,
+        )
+        .expect("structurally encodable but semantically incomplete cover");
+        let access_write = ports.begin_write().expect("write corrupt cover");
+        {
+            let mut table = access_write
+                .transaction()
+                .expect("transaction")
+                .open_table(SECONDARY_INDEXES)
+                .expect("indexes");
+            let encoded = encode_index_entry_v2(&missing_cover).expect("encode missing cover");
+            table
+                .insert(missing_cover.key().as_bytes(), encoded.as_bytes())
+                .expect("replace index");
+        }
+        access_write.commit().expect("commit corrupt cover");
+        reset_query_table_open_counts();
+        assert_eq!(
+            ports.execute_query(&program, &parameters),
+            Err(QueryExecutionError::BackendIntegrity),
+            "a marked plan must fail closed rather than hydrate on incomplete coverage"
+        );
+        assert_eq!(query_table_open_counts().entities, 0);
     }
 
     #[test]

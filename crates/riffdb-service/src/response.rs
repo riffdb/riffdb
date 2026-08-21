@@ -397,6 +397,17 @@ impl ServiceResponseCharge for ExecuteSymbolicQueryResult {
             charge.bytes(name.len())?;
             charge_symbolic_field(&mut charge, field)?;
         }
+        if let Some(compact) = self.compact_result() {
+            charge.bytes(compact.result_name().len())?;
+            charge.bytes(compact.entity().len())?;
+            charge.fields(1)?;
+            for field in compact.fields() {
+                charge.bytes(field.len())?;
+            }
+            for row in compact.rows() {
+                charge.repeated(row)?;
+            }
+        }
         if self.next_cursor().is_some() {
             charge.bytes(crate::CURSOR_TOKEN_BYTES)?;
         }

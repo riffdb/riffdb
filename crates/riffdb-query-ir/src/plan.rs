@@ -12,6 +12,119 @@ use crate::{
 const PROGRAM_MAGIC: &[u8] = b"RIFFDB-QUERY-ACCESS-PROGRAM\0";
 const INDEX_GENERATION_MODEL_V2: &[u8] = b"PARTITION-INDEX-GENERATION-V2\0";
 
+/// One compiler-owned positional field in a sealed covered-result layout.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CoveredResultSourceV1 {
+    /// Value decoded from one declared index-key component position.
+    IndexKey(u16),
+    /// Value decoded from one owning entity primary-key component position.
+    EntityKey(u16),
+    /// Value decoded from the canonical covered record under this field ID.
+    Cover,
+}
+
+/// One compiler-owned positional field in a sealed covered-result layout.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CoveredResultFieldV1 {
+    name: String,
+    field_id: FieldId,
+    source: CoveredResultSourceV1,
+}
+
+impl CoveredResultFieldV1 {
+    /// Exact contract field name.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Stable compiler-internal field identity.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn internal_field_id(&self) -> FieldId {
+        self.field_id
+    }
+
+    /// Compiler-proven physical source for this value.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn internal_source(&self) -> CoveredResultSourceV1 {
+        self.source
+    }
+
+    /// Constructs one checked compiler-owned position.
+    #[doc(hidden)]
+    pub fn checked(name: String, field_id: FieldId, source: CoveredResultSourceV1) -> Option<Self> {
+        (!name.is_empty()).then_some(Self {
+            name,
+            field_id,
+            source,
+        })
+    }
+}
+
+/// Exact compiler witness permitting covered positional execution for one step.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CoveredResultLayoutV1 {
+    entity: String,
+    index: String,
+    fields: Vec<CoveredResultFieldV1>,
+    cover_field_ids: Vec<FieldId>,
+}
+
+impl CoveredResultLayoutV1 {
+    /// Exact entity symbol.
+    #[must_use]
+    pub fn entity(&self) -> &str {
+        &self.entity
+    }
+
+    /// Exact covering-index symbol.
+    #[must_use]
+    pub fn index(&self) -> &str {
+        &self.index
+    }
+
+    /// Canonical positional fields in compiler-owned name order.
+    #[must_use]
+    pub fn fields(&self) -> &[CoveredResultFieldV1] {
+        &self.fields
+    }
+
+    /// Complete declared cover identities in declaration order.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn internal_cover_field_ids(&self) -> &[FieldId] {
+        &self.cover_field_ids
+    }
+
+    /// Constructs one exact bounded layout witness.
+    #[doc(hidden)]
+    pub fn checked(
+        entity: String,
+        index: String,
+        fields: Vec<CoveredResultFieldV1>,
+        cover_field_ids: Vec<FieldId>,
+    ) -> Option<Self> {
+        (!entity.is_empty()
+            && !index.is_empty()
+            && !fields.is_empty()
+            && !cover_field_ids.is_empty()
+            && fields.windows(2).all(|pair| pair[0].name < pair[1].name)
+            && {
+                let mut ids = cover_field_ids.clone();
+                ids.sort_unstable();
+                ids.windows(2).all(|pair| pair[0] < pair[1])
+            })
+        .then_some(Self {
+            entity,
+            index,
+            fields,
+            cover_field_ids,
+        })
+    }
+}
+
 /// Direction of one complete ordered index walk.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AccessDirection {
@@ -249,6 +362,7 @@ pub struct QueryAccessStep {
     partition_key_schema: KeySchema,
     entity_key_schema: KeySchema,
     index_key_schema: Option<KeySchema>,
+    covered_result_layout: Option<CoveredResultLayoutV1>,
 }
 
 impl std::fmt::Debug for QueryAccessStep {
@@ -268,6 +382,7 @@ impl std::fmt::Debug for QueryAccessStep {
             .field("dependencies", &self.dependencies)
             .field("absence_outcome", &self.absence_outcome)
             .field("cursor_parameter", &self.cursor_parameter)
+            .field("covered_result_layout", &self.covered_result_layout)
             .finish()
     }
 }
@@ -380,6 +495,12 @@ impl QueryAccessStep {
         self.index_key_schema.as_ref()
     }
 
+    /// Compiler-sealed positional cover proof, when this step is eligible.
+    #[must_use]
+    pub const fn covered_result_layout(&self) -> Option<&CoveredResultLayoutV1> {
+        self.covered_result_layout.as_ref()
+    }
+
     /// Earlier bindings supplying key values.
     #[must_use]
     pub fn dependencies(&self) -> &[String] {
@@ -407,6 +528,7 @@ impl QueryAccessStep {
         partition_key_schema: KeySchema,
         entity_key_schema: KeySchema,
         index_key_schema: Option<KeySchema>,
+        covered_result_layout: Option<CoveredResultLayoutV1>,
     ) -> Option<Self> {
         let row_limit_is_valid = match &row_limit {
             QueryRowLimit::Literal(value) => {
@@ -481,11 +603,29 @@ impl QueryAccessStep {
                     && cardinality == Cardinality::Many
             }
         };
+        let covered_layout_is_valid = covered_result_layout.as_ref().is_none_or(|layout| {
+            let QueryAccessKind::Index { index, .. } = &access else {
+                return false;
+            };
+            layout.entity == entity
+                && layout.index == *index
+                && layout
+                    .fields
+                    .iter()
+                    .map(|field| field.name.as_str())
+                    .eq(predicate_fields
+                        .iter()
+                        .chain(selected_fields.iter())
+                        .collect::<std::collections::BTreeSet<_>>()
+                        .into_iter()
+                        .map(String::as_str))
+        });
         if binding.is_empty()
             || entity.is_empty()
             || maximum_rows == 0
             || !row_limit_is_valid
             || !access_is_valid
+            || !covered_layout_is_valid
             || predicate_fields.windows(2).any(|pair| pair[0] >= pair[1])
             || selected_fields.windows(2).any(|pair| pair[0] >= pair[1])
             || result_names.windows(2).any(|pair| pair[0] >= pair[1])
@@ -512,6 +652,7 @@ impl QueryAccessStep {
             partition_key_schema,
             entity_key_schema,
             index_key_schema,
+            covered_result_layout,
         })
     }
 }
@@ -723,10 +864,18 @@ impl QueryAccessProgramV1 {
         {
             return None;
         }
+        let ir_version = if steps
+            .iter()
+            .any(|step| step.covered_result_layout.is_some())
+        {
+            crate::QUERY_IR_VERSION_COVERED_RESULT_V1
+        } else {
+            surface.ir_version()
+        };
         let canonical_bytes = encode_program(
             ProgramSurface {
                 contract: &contract,
-                ir_version: surface.ir_version(),
+                ir_version,
                 canonical_bytes: surface.canonical_bytes(),
                 name: name.as_deref(),
             },
@@ -779,6 +928,20 @@ impl QueryAccessProgramV1 {
     #[must_use]
     pub fn steps(&self) -> &[QueryAccessStep] {
         &self.steps
+    }
+
+    /// Least-sufficient executable IR identity for this exact program.
+    #[must_use]
+    pub fn ir_version(&self) -> u32 {
+        if self
+            .steps
+            .iter()
+            .any(|step| step.covered_result_layout.is_some())
+        {
+            crate::QUERY_IR_VERSION_COVERED_RESULT_V1
+        } else {
+            self.surface.ir_version()
+        }
     }
 
     /// Complete authorization requirement set.
@@ -921,6 +1084,39 @@ fn encode_program(
         write_text(&mut out, step.absence_outcome.as_deref().unwrap_or(""))?;
         write_text(&mut out, step.cursor_parameter.as_deref().unwrap_or(""))?;
         write_strings(&mut out, &step.dependencies)?;
+        if surface.ir_version == crate::QUERY_IR_VERSION_COVERED_RESULT_V1 {
+            match &step.covered_result_layout {
+                None => out.push(0),
+                Some(layout) => {
+                    out.push(1);
+                    write_text(&mut out, &layout.entity)?;
+                    write_text(&mut out, &layout.index)?;
+                    write_count(&mut out, layout.fields.len())?;
+                    for field in &layout.fields {
+                        write_text(&mut out, &field.name)?;
+                        out.extend_from_slice(&field.field_id.get().to_be_bytes());
+                        match field.source {
+                            CoveredResultSourceV1::IndexKey(position) => {
+                                out.push(1);
+                                out.extend_from_slice(&position.to_be_bytes());
+                            }
+                            CoveredResultSourceV1::EntityKey(position) => {
+                                out.push(2);
+                                out.extend_from_slice(&position.to_be_bytes());
+                            }
+                            CoveredResultSourceV1::Cover => {
+                                out.push(3);
+                                out.extend_from_slice(&0_u16.to_be_bytes());
+                            }
+                        }
+                    }
+                    write_count(&mut out, layout.cover_field_ids.len())?;
+                    for field_id in &layout.cover_field_ids {
+                        out.extend_from_slice(&field_id.get().to_be_bytes());
+                    }
+                }
+            }
+        }
     }
     write_count(&mut out, authorization.len())?;
     for access in authorization {

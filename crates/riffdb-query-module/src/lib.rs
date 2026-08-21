@@ -65,10 +65,11 @@ use riffdb_query_compiler::{
 };
 use riffdb_query_ir::{
     AuthorizationEntityAccess, NamedQuerySchemas, OperationalQueryFamilyV1,
-    QUERY_IR_VERSION_EXACT_FILTERED_RESULT_SET_V1, QUERY_IR_VERSION_EXACT_RESULT_SET_V1,
-    QUERY_IR_VERSION_OPERATIONAL_AGGREGATE_V1, QUERY_IR_VERSION_OPERATIONAL_V1,
-    QUERY_IR_VERSION_SECRET_OUTPUT_V1, QUERY_IR_VERSION_V1, QueryAccessProgramV1, QuerySourceMap,
-    SecretOutputRequirement, SourceSymbolKind, SymbolicCatalog,
+    QUERY_IR_VERSION_COVERED_RESULT_V1, QUERY_IR_VERSION_EXACT_FILTERED_RESULT_SET_V1,
+    QUERY_IR_VERSION_EXACT_RESULT_SET_V1, QUERY_IR_VERSION_OPERATIONAL_AGGREGATE_V1,
+    QUERY_IR_VERSION_OPERATIONAL_V1, QUERY_IR_VERSION_SECRET_OUTPUT_V1, QUERY_IR_VERSION_V1,
+    QueryAccessProgramV1, QuerySourceMap, SecretOutputRequirement, SourceSymbolKind,
+    SymbolicCatalog,
 };
 use riffdb_riffql_syntax::{
     Document, MAX_IDENTIFIER_BYTES, MAX_SOURCE_BYTES, ParseDiagnostics, RIFFQL_LANGUAGE_VERSION,
@@ -101,6 +102,8 @@ pub const QUERY_MODULE_FORMAT_VERSION_SECRET_OUTPUT_V1: u32 = 4;
 pub const QUERY_MODULE_FORMAT_VERSION_EXACT_RESULT_SET_V1: u32 = 5;
 /// Additive module codec carrying a compiler-bound typed equality filter.
 pub const QUERY_MODULE_FORMAT_VERSION_EXACT_FILTERED_RESULT_SET_V1: u32 = 6;
+/// Additive module codec carrying compiler-sealed covered-result layouts.
+pub const QUERY_MODULE_FORMAT_VERSION_COVERED_RESULT_V1: u32 = 7;
 /// Maximum queries retained in one immutable module.
 pub const MAX_MODULE_QUERIES: usize = 4_096;
 /// Maximum canonical bytes for one immutable module.
@@ -207,6 +210,23 @@ pub enum CompiledNamedQueryPlan {
 }
 
 impl CompiledNamedQueryPlan {
+    fn has_covered_result_layout(&self) -> bool {
+        let program_has_cover = |program: &QueryAccessProgramV1| {
+            program
+                .steps()
+                .iter()
+                .any(|step| step.covered_result_layout().is_some())
+        };
+        match self {
+            Self::V1(program) => program_has_cover(program),
+            Self::OperationalV1(family) => family
+                .members()
+                .iter()
+                .any(|member| program_has_cover(member.program())),
+            Self::ExactTextResultV1(_) => false,
+        }
+    }
+
     /// Public typed parameter/result schemas shared by every selectable plan.
     #[must_use]
     pub fn schemas(&self) -> &NamedQuerySchemas {
@@ -590,7 +610,13 @@ impl QueryModule {
     /// Canonical module codec selected by its contained plan kinds.
     #[must_use]
     pub fn format_version(&self) -> u32 {
-        if self.queries.iter().any(|query| {
+        if self
+            .queries
+            .iter()
+            .any(|query| query.plan().has_covered_result_layout())
+        {
+            QUERY_MODULE_FORMAT_VERSION_COVERED_RESULT_V1
+        } else if self.queries.iter().any(|query| {
             query
                 .exact_text_result()
                 .is_some_and(|exact| exact.filter().is_some())
@@ -931,7 +957,12 @@ fn encode_module(
     let secret_output = queries
         .iter()
         .any(|query| !query.plan().secret_outputs().is_empty());
-    let format_version = if exact_filtered_result {
+    let covered_result = queries
+        .iter()
+        .any(|query| query.plan().has_covered_result_layout());
+    let format_version = if covered_result {
+        QUERY_MODULE_FORMAT_VERSION_COVERED_RESULT_V1
+    } else if exact_filtered_result {
         QUERY_MODULE_FORMAT_VERSION_EXACT_FILTERED_RESULT_SET_V1
     } else if exact_result {
         QUERY_MODULE_FORMAT_VERSION_EXACT_RESULT_SET_V1
@@ -965,7 +996,9 @@ fn encode_module(
         .to_be_bytes(),
     );
     output.extend_from_slice(
-        &if exact_filtered_result {
+        &if covered_result {
+            QUERY_IR_VERSION_COVERED_RESULT_V1
+        } else if exact_filtered_result {
             QUERY_IR_VERSION_EXACT_FILTERED_RESULT_SET_V1
         } else if exact_result {
             QUERY_IR_VERSION_EXACT_RESULT_SET_V1
@@ -986,7 +1019,7 @@ fn encode_module(
         write_text(&mut output, query.name())?;
         write_bytes(&mut output, query.canonical_source().as_bytes())?;
         output.extend_from_slice(query.source_hash().as_bytes());
-        if operational || secret_output || exact_result {
+        if covered_result || operational || secret_output || exact_result {
             output.push(match query.plan() {
                 CompiledNamedQueryPlan::V1(_) => 1,
                 CompiledNamedQueryPlan::OperationalV1(_) => 2,
@@ -1038,6 +1071,7 @@ fn decode_candidate(bytes: &[u8]) -> Result<DecodedCandidate, QueryModuleError> 
             | QUERY_MODULE_FORMAT_VERSION_SECRET_OUTPUT_V1
             | QUERY_MODULE_FORMAT_VERSION_EXACT_RESULT_SET_V1
             | QUERY_MODULE_FORMAT_VERSION_EXACT_FILTERED_RESULT_SET_V1
+            | QUERY_MODULE_FORMAT_VERSION_COVERED_RESULT_V1
     ) {
         return Err(QueryModuleError::new(
             QueryModuleErrorKind::UnsupportedVersion,
@@ -1078,6 +1112,15 @@ fn decode_candidate(bytes: &[u8]) -> Result<DecodedCandidate, QueryModuleError> 
             language_version == RIFFQL_LANGUAGE_VERSION_EXACT_RESULT_SET_V1
                 && ir_version == QUERY_IR_VERSION_EXACT_FILTERED_RESULT_SET_V1
         }
+        QUERY_MODULE_FORMAT_VERSION_COVERED_RESULT_V1 => {
+            matches!(
+                language_version,
+                RIFFQL_LANGUAGE_VERSION
+                    | RIFFQL_LANGUAGE_VERSION_OPERATIONAL_V1
+                    | RIFFQL_LANGUAGE_VERSION_SECRET_OUTPUT_V1
+                    | RIFFQL_LANGUAGE_VERSION_EXACT_RESULT_SET_V1
+            ) && ir_version == QUERY_IR_VERSION_COVERED_RESULT_V1
+        }
         _ => false,
     };
     if !versions_match {
@@ -1110,7 +1153,8 @@ fn decode_candidate(bytes: &[u8]) -> Result<DecodedCandidate, QueryModuleError> 
             let maximum_tag = match format_version {
                 QUERY_MODULE_FORMAT_VERSION_SECRET_OUTPUT_V1
                 | QUERY_MODULE_FORMAT_VERSION_EXACT_RESULT_SET_V1
-                | QUERY_MODULE_FORMAT_VERSION_EXACT_FILTERED_RESULT_SET_V1 => 10,
+                | QUERY_MODULE_FORMAT_VERSION_EXACT_FILTERED_RESULT_SET_V1
+                | QUERY_MODULE_FORMAT_VERSION_COVERED_RESULT_V1 => 10,
                 QUERY_MODULE_FORMAT_VERSION_OPERATIONAL_AGGREGATE_V1 => 9,
                 _ => 7,
             };

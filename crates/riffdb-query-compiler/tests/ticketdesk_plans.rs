@@ -3,7 +3,8 @@
 use riffdb_contract_compiler::compile_contract_source;
 use riffdb_query_compiler::compile_query;
 use riffdb_query_ir::{
-    QueryAccessKind, QueryAccessProgramV1, QueryAccessStep, QueryPredicateValue, SymbolicCatalog,
+    QUERY_IR_VERSION_COVERED_RESULT_V1, QUERY_IR_VERSION_V1, QueryAccessKind, QueryAccessProgramV1,
+    QueryAccessStep, QueryPredicateValue, SymbolicCatalog,
 };
 use riffdb_riffql_syntax::parse_query;
 use riffdb_types::QueryCostVectorV1;
@@ -51,6 +52,73 @@ const QUERIES: &[(&str, &str)] = &[
         include_str!("../../../queries/ticketdesk/project_summary.riffq"),
     ),
 ];
+
+const BOARD_PAGE_450: &str = include_str!("../../../queries/ticketdesk/board_page_450.riffq");
+
+#[test]
+fn complete_cover_seals_board_page_layout_and_incomplete_cover_does_not() {
+    let covered_contract = CONTRACT.replace(
+        "    index by_project_status (organization_id, project_id, status, ticket_id)",
+        "    index by_project_status (organization_id, project_id, status, ticket_id)\n    index by_board_project_status (organization_id, project_id, status, ticket_id) cover (title, reporter_id, assignee_id)",
+    );
+    let bundle = compile_contract_source(&covered_contract).expect("covered contract");
+    let catalog = SymbolicCatalog::from_bundle(&bundle).expect("covered catalog");
+    let covered = compile_query(&parse_query(BOARD_PAGE_450).expect("board parse"), &catalog)
+        .expect("covered board plan");
+    let step = &covered.steps()[0];
+    assert!(matches!(
+        step.access(),
+        QueryAccessKind::Index { index, .. } if index == "by_board_project_status"
+    ));
+    let layout = step
+        .covered_result_layout()
+        .expect("complete cover seals layout");
+    assert_eq!(layout.entity(), "Ticket");
+    assert_eq!(layout.index(), "by_board_project_status");
+    assert_eq!(
+        layout
+            .fields()
+            .iter()
+            .map(|field| field.name())
+            .collect::<Vec<_>>(),
+        [
+            "assignee_id",
+            "organization_id",
+            "project_id",
+            "reporter_id",
+            "status",
+            "ticket_id",
+            "title",
+        ]
+    );
+    assert_eq!(covered.ir_version(), QUERY_IR_VERSION_COVERED_RESULT_V1);
+
+    let incomplete_contract = CONTRACT.replace(
+        "    index by_project_status (organization_id, project_id, status, ticket_id)",
+        "    index by_project_status (organization_id, project_id, status, ticket_id)\n    index by_board_project_status (organization_id, project_id, status, ticket_id) cover (title, reporter_id)",
+    );
+    let bundle = compile_contract_source(&incomplete_contract).expect("incomplete contract");
+    let catalog = SymbolicCatalog::from_bundle(&bundle).expect("incomplete catalog");
+    let generic = compile_query(&parse_query(BOARD_PAGE_450).expect("board parse"), &catalog)
+        .expect("generic board plan");
+    assert!(generic.steps()[0].covered_result_layout().is_none());
+    assert_eq!(generic.ir_version(), QUERY_IR_VERSION_V1);
+
+    let insertion = covered_contract.rfind('}').expect("contract closing brace");
+    let policy_contract = format!(
+        "{}  row policy TicketRead on Ticket {{ allow read when true }}\n{}",
+        &covered_contract[..insertion],
+        &covered_contract[insertion..]
+    );
+    let bundle = compile_contract_source(&policy_contract).expect("policy contract");
+    let catalog = SymbolicCatalog::from_bundle(&bundle).expect("policy catalog");
+    let policy_plan = compile_query(&parse_query(BOARD_PAGE_450).expect("board parse"), &catalog)
+        .expect("policy board plan");
+    assert!(
+        policy_plan.steps()[0].covered_result_layout().is_none(),
+        "a cover is not eligible until the complete row-policy proof is represented"
+    );
+}
 
 #[test]
 fn every_ticketdesk_query_has_one_stable_bounded_same_partition_program() {

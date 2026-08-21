@@ -192,6 +192,10 @@ message ExecuteQueryRequest {
   repeated Parameter parameters = 5;
   optional string cursor = 6;
   optional uint64 minimum_application_head = 7;
+  // Closed, canonical set. Empty means legacy records. Compact-capable callers
+  // advertise LEGACY_RECORDS followed by COMPACT_V1 so an ineligible deployed
+  // plan can retain the byte-equivalent legacy representation.
+  repeated NamedResultEncoding accepted_result_encodings = 8;
   bytes request_id = 100;
 }
 
@@ -213,12 +217,35 @@ message ResultField {
   repeated ResultRecord records = 3;
 }
 
+// Additive representation negotiation for named-query results. This changes
+// carriage only; the selected compiled operation and all query semantics stay
+// identical.
+enum NamedResultEncoding {
+  NAMED_RESULT_ENCODING_UNSPECIFIED = 0;
+  NAMED_RESULT_ENCODING_LEGACY_RECORDS = 1;
+  NAMED_RESULT_ENCODING_COMPACT_V1 = 2;
+}
+
+message CompactResultRow {
+  repeated riffdb.v1.Value values = 1;
+}
+
+message CompactResultField {
+  string name = 1;
+  ResultCardinality cardinality = 2;
+  string entity = 3;
+  repeated string fields = 4;
+  repeated CompactResultRow rows = 5;
+}
+
 message ExecuteQueryResponse {
   QueryIdentity identity = 1;
   string outcome = 2;
   uint64 application_head = 3;
   repeated ResultField fields = 4;
   optional string next_cursor = 5;
+  NamedResultEncoding selected_result_encoding = 6;
+  optional CompactResultField compact_result = 7;
 }
 
 message DescribeContractRequest {

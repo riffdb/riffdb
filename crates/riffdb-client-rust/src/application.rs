@@ -1458,6 +1458,10 @@ impl RiffDbClient {
                     parameters,
                     cursor: query.cursor,
                     minimum_application_head: query.minimum_application_head,
+                    accepted_result_encodings: vec![
+                        app_v1::NamedResultEncoding::LegacyRecords as i32,
+                        app_v1::NamedResultEncoding::CompactV1 as i32,
+                    ],
                     request_id,
                 },
                 metadata,
@@ -1751,6 +1755,27 @@ pub(crate) fn lower_value(value: ApplicationValue) -> Result<v1::Value, Applicat
 fn raise_query_result(
     response: app_v1::ExecuteQueryResponse,
 ) -> Result<NamedQueryResult, ApplicationClientError> {
+    let selected_encoding =
+        app_v1::NamedResultEncoding::try_from(response.selected_result_encoding)
+            .map_err(|_| ApplicationClientError::InvalidResponse)?;
+    let fields = match selected_encoding {
+        app_v1::NamedResultEncoding::Unspecified | app_v1::NamedResultEncoding::LegacyRecords => {
+            if response.compact_result.is_some() {
+                return Err(ApplicationClientError::InvalidResponse);
+            }
+            raise_legacy_query_fields(response.fields)?
+        }
+        app_v1::NamedResultEncoding::CompactV1 => {
+            if !response.fields.is_empty() {
+                return Err(ApplicationClientError::InvalidResponse);
+            }
+            raise_compact_query_field(
+                response
+                    .compact_result
+                    .ok_or(ApplicationClientError::InvalidResponse)?,
+            )?
+        }
+    };
     let identity = response
         .identity
         .ok_or(ApplicationClientError::InvalidResponse)?;
@@ -1770,8 +1795,27 @@ fn raise_query_result(
     let query_name = identity
         .query_name
         .ok_or(ApplicationClientError::InvalidResponse)?;
+    Ok(NamedQueryResult {
+        outcome: response.outcome,
+        application_head: response.application_head,
+        fields,
+        next_cursor: response.next_cursor,
+        identity: QueryResponseIdentity {
+            contract_lineage: identity.contract_lineage,
+            contract_version: identity.contract_version,
+            contract_bundle_hash,
+            module_hash,
+            query_name,
+            plan_hash,
+        },
+    })
+}
+
+fn raise_legacy_query_fields(
+    wire_fields: Vec<app_v1::ResultField>,
+) -> Result<BTreeMap<String, ApplicationResultField>, ApplicationClientError> {
     let mut fields = BTreeMap::new();
-    for field in response.fields {
+    for field in wire_fields {
         let cardinality = match app_v1::ResultCardinality::try_from(field.cardinality) {
             Ok(app_v1::ResultCardinality::One) => ApplicationCardinality::One,
             Ok(app_v1::ResultCardinality::Maybe) => ApplicationCardinality::Maybe,
@@ -1817,20 +1861,53 @@ fn raise_query_result(
             return Err(ApplicationClientError::InvalidResponse);
         }
     }
-    Ok(NamedQueryResult {
-        outcome: response.outcome,
-        application_head: response.application_head,
-        fields,
-        next_cursor: response.next_cursor,
-        identity: QueryResponseIdentity {
-            contract_lineage: identity.contract_lineage,
-            contract_version: identity.contract_version,
-            contract_bundle_hash,
-            module_hash,
-            query_name,
-            plan_hash,
+    Ok(fields)
+}
+
+fn raise_compact_query_field(
+    field: app_v1::CompactResultField,
+) -> Result<BTreeMap<String, ApplicationResultField>, ApplicationClientError> {
+    if field.name.is_empty() || field.entity.is_empty() || field.fields.is_empty() {
+        return Err(ApplicationClientError::InvalidResponse);
+    }
+    let cardinality = match app_v1::ResultCardinality::try_from(field.cardinality) {
+        Ok(app_v1::ResultCardinality::Many) => ApplicationCardinality::Many,
+        _ => return Err(ApplicationClientError::InvalidResponse),
+    };
+    let mut names = BTreeSet::new();
+    for name in &field.fields {
+        if name.is_empty() || !names.insert(name.as_str()) {
+            return Err(ApplicationClientError::InvalidResponse);
+        }
+    }
+    let width = field.fields.len();
+    let records = field
+        .rows
+        .into_iter()
+        .map(|row| {
+            if row.values.len() != width {
+                return Err(ApplicationClientError::InvalidResponse);
+            }
+            let fields = field
+                .fields
+                .iter()
+                .cloned()
+                .zip(row.values)
+                .map(|(name, value)| Ok((name, raise_value(value)?)))
+                .collect::<Result<BTreeMap<_, _>, ApplicationClientError>>()?;
+            Ok(ApplicationRecord {
+                entity: field.entity.clone(),
+                fields,
+            })
+        })
+        .collect::<Result<Vec<_>, ApplicationClientError>>()?;
+    Ok(BTreeMap::from([(
+        field.name,
+        ApplicationResultField {
+            cardinality,
+            records,
         },
-    })
+    )]))
 }
 
 pub(crate) fn raise_value(value: v1::Value) -> Result<ApplicationValue, ApplicationClientError> {
@@ -2067,6 +2144,8 @@ mod tests {
                 }],
             }],
             next_cursor: None,
+            selected_result_encoding: app_v1::NamedResultEncoding::LegacyRecords as i32,
+            compact_result: None,
         };
         let result = raise_query_result(response).expect("result");
         assert_eq!(result.outcome, "Found");

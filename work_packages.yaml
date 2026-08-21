@@ -14418,9 +14418,10 @@ work_packages:
     crates/riffdb-client-rust/**, crates/riffdb-codegen-rust/**,
     crates/riffdb-codegen-typescript/**, crates/riffdb-codegen-go/**,
     crates/riffdb-codegen-python/**, crates/riffdb-driver-host/**,
-    crates/riffdb-observability/**, examples/app-baseline/**,
+    crates/riffdb-observability/**, crates/riffdb-cli/**, crates/riffdb-mcp-stdio/**,
+    examples/app-baseline/**,
     examples/agent-alpha/**, fixtures/**, tests/**, scripts/**,
-    docs/SUMMARY.md, docs/getting-started/**, docs/reference/**,
+    docs/SUMMARY.md, docs/contracts/**, docs/getting-started/**, docs/reference/**,
     docs/performance/**, docs/architecture/**]
   deliverables:
   - The accepted ADR-0133 SPEC amendments, version-topology entries, compiler grammar/IR/hash/lock

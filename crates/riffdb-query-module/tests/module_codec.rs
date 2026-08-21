@@ -2,7 +2,8 @@
 
 use riffdb_contract_compiler::compile_contract_source;
 use riffdb_query_module::{
-    ApplicationManifest, CompiledNamedQueryPlan, ManifestErrorKind, NamedQuerySource,
+    ApplicationManifest, CompiledNamedQuery, CompiledNamedQueryPlan, ManifestErrorKind,
+    NamedQuerySource, QUERY_MODULE_FORMAT_VERSION_COVERED_RESULT_V1,
     QUERY_MODULE_FORMAT_VERSION_OPERATIONAL_AGGREGATE_V1,
     QUERY_MODULE_FORMAT_VERSION_OPERATIONAL_V1, QUERY_MODULE_FORMAT_VERSION_V1, QueryModule,
     QueryModuleCandidate, QueryModuleErrorKind, QueryModuleName, QueryModuleVersion,
@@ -126,6 +127,43 @@ fn identity_and_bytes_are_independent_of_input_order() {
     assert_eq!(first.canonical_bytes(), second.canonical_bytes());
     assert_eq!(first.queries()[0].name(), "ListTickets");
     assert_eq!(first.queries()[1].name(), "TicketPage");
+}
+
+#[test]
+fn covered_result_module_uses_v7_and_round_trips_exactly() {
+    let covered_contract = CONTRACT.replace(
+        "    index by_project_status (organization_id, project_id, status, ticket_id)",
+        "    index by_project_status (organization_id, project_id, status, ticket_id)\n    index by_board_project_status (organization_id, project_id, status, ticket_id) cover (title, reporter_id, assignee_id)",
+    );
+    let bundle = compile_contract_source(&covered_contract).expect("covered contract");
+    let candidate = QueryModuleCandidate::new(
+        QueryModuleName::new("ticketdesk_board").expect("module name"),
+        QueryModuleVersion::new(1).expect("module version"),
+        vec![
+            NamedQuerySource::new(
+                "BoardPage450",
+                include_str!("../../../queries/ticketdesk/board_page_450.riffq"),
+            )
+            .expect("board source"),
+        ],
+    )
+    .expect("candidate");
+    let module = QueryModule::compile(candidate, &bundle).expect("covered module");
+    assert_eq!(
+        module.format_version(),
+        QUERY_MODULE_FORMAT_VERSION_COVERED_RESULT_V1
+    );
+    assert!(
+        module
+            .query("BoardPage450")
+            .and_then(CompiledNamedQuery::ordinary_program)
+            .and_then(|program| program.steps()[0].covered_result_layout())
+            .is_some()
+    );
+    let decoded = QueryModule::decode_and_validate(module.canonical_bytes(), &bundle)
+        .expect("strict V7 round trip");
+    assert_eq!(decoded.canonical_bytes(), module.canonical_bytes());
+    assert_eq!(decoded.identity(), module.identity());
 }
 
 #[test]
