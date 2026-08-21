@@ -6,6 +6,7 @@ use riffdb_query_ir::{
     ExactPredicateOperatorV1, QUERY_IR_VERSION_EXACT_PREDICATE_V1, SymbolicCatalog,
 };
 use riffdb_riffql_syntax::{RIFFQL_LANGUAGE_VERSION_EXACT_PREDICATE_V1, parse_query};
+use riffdb_types::EXACT_PREDICATE_PROVIDER_STATE_SCHEMA_HASH_V4;
 use riffdb_types::ProjectionProviderPolicyModeV1;
 
 const CONTRACT: &str = r#"
@@ -77,6 +78,15 @@ fn rich_family_is_finite_canonical_and_provider_complete() {
     assert_eq!(
         first.program().provider_requirement().policy_mode(),
         ProjectionProviderPolicyModeV1::PartitionAligned
+    );
+    let descriptor = first
+        .program()
+        .provider_descriptor()
+        .expect("V4 provider descriptor");
+    assert_eq!(descriptor.state_identity().layout_version().get(), 4);
+    assert_eq!(
+        descriptor.state_identity().schema_hash(),
+        EXACT_PREDICATE_PROVIDER_STATE_SCHEMA_HASH_V4
     );
     assert!(
         first

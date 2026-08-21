@@ -14751,6 +14751,19 @@ work_packages:
     checkpoints remain readable and byte-exact, lifecycle and corruption fail closed, and no
     request-time scan, population materialization, page walk, client shaping, or provider bridge
     exists.
+  closure:
+    status: complete
+    evidence: docs/architecture/WP-657-INDEXED-EXACT-PROVIDER.md
+    decision: Additive provider-state V4 implements bounded indexed set algebra, independent total
+      orders, exact count, and direct ordinal selection over one policy-aligned partition and epoch.
+      Background activation applies bounded row admission before index construction; the request
+      port performs no authoritative scan, hydration, sort, page walk, matching-population
+      materialization, fallback, or provider bridge. Randomized independent equivalence, every
+      activated operator and scalar profile, lifecycle mutations, compaction, byte-exact restart,
+      corruption and mixed-version refusal, epoch proofs, architecture boundaries, the complete
+      package test set, generated/topology/coverage/policy checks, handbook, formatting, and
+      workspace Clippy pass. WP-658 retains all public transport, SDK, and external publication
+      activation.
   standing_design_tests:
     interface_safety: The runtime accepts only compiler-sealed plan/member identities and typed
       values; it cannot accept caller structure, switch providers, omit a predicate or order term,

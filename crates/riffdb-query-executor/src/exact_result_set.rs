@@ -1,14 +1,19 @@
 //! Exact-text result-set execution over one already-authorized epoch proof.
 
+use std::collections::BTreeMap;
 use std::error::Error;
 use std::fmt;
 use std::num::NonZeroU16;
 
 use riffdb_projection::{
+    ExactPredicatePartitionIndexV4, ExactPredicateProviderErrorV1, ExactPredicateResultPageV1,
     ExactTextPartitionIndexV2, ExactTextPartitionIndexV3, ExactTextResultRowV2,
     ResultSetEpochProofV1,
 };
-use riffdb_query_ir::{ExactTextPlanFamilyV1, ProjectionResultSetPlanV2};
+use riffdb_query_ir::{
+    ExactParameterValueV1, ExactPredicateFamilyMemberV1, ExactPredicateProgramV1,
+    ExactTextPlanFamilyV1, ProjectionResultSetPlanV2,
+};
 use riffdb_types::{
     ApplicationRoleHash, CanonicalValue, CommitSequence, ExactTextNeedleV1, ExactTextOperatorV1,
     ExactTextOrderV1, PartitionKeyHash, ProjectionGeneration, ProjectionProviderDescriptorHash,
@@ -28,6 +33,110 @@ pub struct ExactTextResultSetV1 {
     history_incarnation: u64,
     epoch: CommitSequence,
 }
+
+/// Executes one ADR-0134 indexed predicate member under one authorized epoch proof.
+#[allow(clippy::too_many_arguments)]
+pub fn execute_exact_predicate_result_set_v1(
+    plan_identity: QueryPlanHash,
+    program: &ExactPredicateProgramV1,
+    proof: &ResultSetEpochProofV1,
+    provider: &ExactPredicatePartitionIndexV4,
+    parameters: &BTreeMap<u16, ExactParameterValueV1>,
+    member: ExactPredicateFamilyMemberV1,
+    offset: u32,
+    limit: NonZeroU16,
+) -> Result<ExactPredicateResultPageV1, ExactPredicateResultSetErrorV1> {
+    let binding = provider.binding();
+    if binding.plan() != plan_identity
+        || binding.plan() != proof.plan_identity()
+        || binding.policy_shape() != proof.policy_shape_identity()
+        || provider.program().identity() != program.identity()
+    {
+        return Err(ExactPredicateResultSetErrorV1::PlanMismatch);
+    }
+    let descriptor = program
+        .provider_descriptor()
+        .map_err(|_| ExactPredicateResultSetErrorV1::PlanMismatch)?;
+    if descriptor.digest() != binding.descriptor() {
+        return Err(ExactPredicateResultSetErrorV1::PlanMismatch);
+    }
+    let participant = proof
+        .participants()
+        .find(|participant| participant.descriptor() == binding.descriptor())
+        .ok_or(ExactPredicateResultSetErrorV1::EpochProofMismatch)?;
+    if participant.state_schema_hash() != descriptor.state_identity().schema_hash()
+        || participant.history_incarnation() != binding.history_incarnation()
+        || participant.generation() != binding.generation()
+        || proof.selected_epoch() != binding.frontier()
+        || proof.selected_epoch() < participant.floor()
+        || proof.selected_epoch() > participant.ceiling()
+    {
+        return Err(ExactPredicateResultSetErrorV1::EpochProofMismatch);
+    }
+    provider
+        .result_page(parameters, member, offset, limit)
+        .map_err(map_exact_predicate_provider_error)
+}
+
+fn map_exact_predicate_provider_error(
+    error: ExactPredicateProviderErrorV1,
+) -> ExactPredicateResultSetErrorV1 {
+    match error {
+        ExactPredicateProviderErrorV1::MemberMismatch => {
+            ExactPredicateResultSetErrorV1::MemberNotDeclared
+        }
+        ExactPredicateProviderErrorV1::WindowInvalid => {
+            ExactPredicateResultSetErrorV1::WindowInvalid
+        }
+        ExactPredicateProviderErrorV1::ParameterInvalid
+        | ExactPredicateProviderErrorV1::TypeMismatch => {
+            ExactPredicateResultSetErrorV1::ParameterInvalid
+        }
+        ExactPredicateProviderErrorV1::FuelExhausted
+        | ExactPredicateProviderErrorV1::BoundExceeded
+        | ExactPredicateProviderErrorV1::StateAmplification => {
+            ExactPredicateResultSetErrorV1::BoundExceeded
+        }
+        ExactPredicateProviderErrorV1::BindingMismatch
+        | ExactPredicateProviderErrorV1::DuplicateRow
+        | ExactPredicateProviderErrorV1::OrderStateInvalid
+        | ExactPredicateProviderErrorV1::NonAdvancingEpoch
+        | ExactPredicateProviderErrorV1::Integrity
+        | ExactPredicateProviderErrorV1::UnsupportedFormat => {
+            ExactPredicateResultSetErrorV1::ProviderUnavailable
+        }
+    }
+}
+
+/// Closed value-free ADR-0134 execution failures.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ExactPredicateResultSetErrorV1 {
+    /// Plan, semantic program, descriptor, or policy identity disagrees.
+    PlanMismatch,
+    /// The selected family member is not compiler declared.
+    MemberNotDeclared,
+    /// Offset or limit exceeds the compiler-owned window.
+    WindowInvalid,
+    /// Bound scalar/set values do not match the sealed program.
+    ParameterInvalid,
+    /// Epoch, history, generation, or state schema proof disagrees.
+    EpochProofMismatch,
+    /// A compiler-owned work or state bound was exceeded.
+    BoundExceeded,
+    /// Provider state is unavailable or internally inconsistent.
+    ProviderUnavailable,
+}
+
+impl fmt::Display for ExactPredicateResultSetErrorV1 {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "exact predicate result set unavailable: {self:?}"
+        )
+    }
+}
+
+impl Error for ExactPredicateResultSetErrorV1 {}
 
 /// Executes the additive filtered exact operation over one V3 provider epoch.
 #[allow(clippy::too_many_arguments)]
