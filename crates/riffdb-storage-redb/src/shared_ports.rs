@@ -35,7 +35,8 @@ use riffdb_storage_api::{
     StoredCapabilityRecordV1, StoredCommitRecordV1, StoredContractBundleV1,
     StoredContractMigrationEdgeV1, StoredDurableEventV1, StoredEntityRecordV1, StoredOutcomeV1,
     StoredProvenanceRecordV1, StoredQueryModuleV1, UndeliveredOutboxStatusScanRequestV1,
-    UndeliveredOutboxStatusScanV1,
+    UndeliveredOutboxStatusScanV1, VectorObservationCountsV1, VectorObservationRepository,
+    VectorObservationTargetV1,
 };
 use riffdb_types::{
     CapabilityId, CapabilityTokenDigest, CommitSequence, ContractBundleHash, ContractLineage,
@@ -268,6 +269,15 @@ impl CatalogRepository for RedbSharedPorts {
         predecessor: ContractBundleHash,
     ) -> Result<Option<StoredContractMigrationEdgeV1>, StorageError> {
         CatalogRepository::read_contract_migration_edge(&self.operational(), predecessor)
+    }
+}
+
+impl VectorObservationRepository for RedbSharedPorts {
+    fn read_vector_observation(
+        &self,
+        target: &VectorObservationTargetV1,
+    ) -> Result<Option<VectorObservationCountsV1>, StorageError> {
+        VectorObservationRepository::read_vector_observation(&self.operational(), target)
     }
 }
 

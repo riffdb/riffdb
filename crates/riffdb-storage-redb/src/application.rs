@@ -35,7 +35,7 @@ use riffdb_storage_api::{
     TransactionCurrentState, TransactionCurrentStateBuilder, TransactionCurrentVectorEvidenceV1,
     TransactionLocalCommandBatch, UniqueIndexOccupancy, UniqueOccupancyKind,
     UnpublishedAuditedBatchV1, ValidationReadRequest, VectorEvidenceReadRequestV1,
-    encode_capsule_command_record_set_v1,
+    VectorObservationRepository, VectorObservationTargetV1, encode_capsule_command_record_set_v1,
 };
 use riffdb_types::{CommitSequence, EventId, ProvenanceId};
 
@@ -453,6 +453,20 @@ impl ApplicationCommandTransactionPort for RedbOperationalPorts {
         Ok(RedbEmptyBatch {
             core: BatchCore::open(self)?,
         })
+    }
+}
+
+impl VectorObservationRepository for RedbOperationalPorts {
+    fn read_vector_observation(
+        &self,
+        target: &VectorObservationTargetV1,
+    ) -> Result<Option<riffdb_storage_api::VectorObservationCountsV1>, StorageError> {
+        let key = encode_vector_observation_key(target)
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+        self.begin_read()?
+            .read_value(JournalTable::VectorObservations, &key)?
+            .map(|bytes| decode_vector_observation_v1(&bytes).map(decoded_value))
+            .transpose()
     }
 }
 
@@ -2966,7 +2980,81 @@ fn decoded_value<T>(item: riffdb_storage_api::EncodedPageItem<T>) -> T {
 
 #[cfg(test)]
 mod tests {
+    use riffdb_storage_api::{DatabaseInitializationPort, VectorObservationCountsV1};
+    use riffdb_types::{
+        AggregateTypeId, ContractLineage, DatabaseId, EntityTypeId, FieldId, PartitionKeyBuilder,
+    };
+
     use super::*;
+    use crate::layout::VECTOR_OBSERVATIONS;
+    use crate::store::RedbStore;
+
+    fn vector_observation_target(partition: u64) -> VectorObservationTargetV1 {
+        let mut key = PartitionKeyBuilder::new(
+            AggregateTypeId::new(9).expect("vector observation aggregate"),
+        );
+        key.push_u64(partition).expect("partition component");
+        VectorObservationTargetV1::new(
+            ContractLineage::new("vector-observation-test").expect("lineage"),
+            key.finish().expect("partition key"),
+            EntityTypeId::new(7).expect("entity type"),
+            FieldId::new(8).expect("vector field"),
+        )
+    }
+
+    #[test]
+    fn vector_observation_repository_reads_one_exact_canonical_row() {
+        let scope = crate::test_path::ScopedDirectory::new("vector-observation-read");
+        let path = scope.join("db.redb");
+        let mut store = RedbStore::open(&path).expect("open store");
+        store
+            .initialize_database(
+                DatabaseId::from_unix_milliseconds_and_random(1, [0x71; 10]).expect("database ID"),
+            )
+            .expect("initialize store");
+        let ports = RedbOperationalPorts {
+            shared: Arc::clone(&store.shared),
+        };
+        let present = vector_observation_target(1);
+        let absent = vector_observation_target(2);
+        let expected = VectorObservationCountsV1::from_parts(
+            present.clone(),
+            3,
+            1,
+            Vec::new(),
+            CommitSequence::new(11).expect("revision"),
+        )
+        .expect("observation");
+        let key = encode_vector_observation_key(&present).expect("observation key");
+        let value = encode_vector_observation_v1(&expected).expect("observation value");
+        let transaction = store
+            .shared
+            .database
+            .begin_write()
+            .expect("write transaction");
+        {
+            let mut table = transaction
+                .open_table(VECTOR_OBSERVATIONS)
+                .expect("observation table");
+            table
+                .insert(key.as_slice(), value.as_bytes())
+                .expect("insert observation");
+        }
+        transaction.commit().expect("commit observation");
+
+        assert_eq!(
+            ports
+                .read_vector_observation(&present)
+                .expect("read present observation"),
+            Some(expected)
+        );
+        assert_eq!(
+            ports
+                .read_vector_observation(&absent)
+                .expect("read absent observation"),
+            None
+        );
+    }
 
     fn generation_target(index: u32) -> PartitionIndexTarget {
         let aggregate = riffdb_types::AggregateTypeId::new(1).expect("aggregate");

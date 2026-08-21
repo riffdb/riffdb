@@ -16,6 +16,18 @@ use crate::{DurableKeySchemaBindingV1, EntityTarget, ExecutablePlanRef, StorageV
 /// cannot grow one authoritative counter record without bound.
 pub const MAX_VECTOR_MODELS_PER_OBSERVATION: usize = 256;
 
+/// Pure-read port for one exact authoritative vector-observation row.
+///
+/// Callers supply a compiler-derived partition/field identity; there is no
+/// unscoped scan or numeric application-facing selector on this boundary.
+pub trait VectorObservationRepository {
+    /// Reads the current published counts for one exact partitioned field.
+    fn read_vector_observation(
+        &self,
+        target: &VectorObservationTargetV1,
+    ) -> Result<Option<VectorObservationCountsV1>, crate::StorageError>;
+}
+
 /// Stable logical identity for maintained vector counts and ordered indexes.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct VectorObservationTargetV1 {
