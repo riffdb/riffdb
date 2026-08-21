@@ -78,6 +78,10 @@ artifacts=(
     fixtures/proto/durable-capability-v5-schema-hash.bin
     fixtures/proto/durable-capability-v7-record-bound.bin
     fixtures/proto/durable-capability-v7-schema-hash.bin
+    fixtures/proto/durable-capability-v8-record-bound.bin
+    fixtures/proto/durable-capability-v8-schema-hash.bin
+    crates/riffdb-proto/fixtures/durable-capability-v8-record-bound.bin
+    crates/riffdb-proto/fixtures/durable-capability-v8-schema-hash.bin
     fixtures/proto/durable-vector-evidence-v1-record-bound.bin
     fixtures/proto/durable-vector-evidence-v1-schema-hash.bin
     fixtures/proto/durable-vector-observation-v1-record-bound.bin

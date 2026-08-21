@@ -9,13 +9,14 @@ use riffdb_types::{
     CapabilityApplicationReimportGrantV1, CapabilityApplicationReimportScopeV1,
     CapabilityExportGrantV1, CapabilityId, CapabilityPrincipalFactsV1,
     CapabilityRowPolicyBindingV1, CapabilityRowPolicyGrantV1, CapabilityRowPolicyOperationV1,
-    CapabilityTokenDigest, CommandId, CommitSequence, ContractBundleHash, ContractLineage,
-    ContractVersion, DatabaseId, DigestKeyId, EntityKeyBuilder, EntityTypeId, EntityVersion,
-    Environment, EventId, EventTypeId, FieldId, IndexEntryKeyBuilder, IndexEpoch, IndexId,
-    LogicalTime, OutcomeId, PartitionKey, PartitionKeyBuilder, PlanHash, ProjectionApplyHash,
-    ProjectionApplyKey, ProjectionGeneration, ProjectionId, ProvenanceId, RequestId, RowPolicyName,
-    ServiceAuditLinkV1, ServiceAuditPhaseV1, ServiceAuditTargetV1, ServiceAuditTargetsV1,
-    ServiceIngressKindV1, ServiceOperationV1, TenantId, TenantScope, Timestamp, hash_partition_key,
+    CapabilityTokenDigest, CapabilityVectorInspectionGrantV1, CapabilityVectorInspectionTargetV1,
+    CommandId, CommitSequence, ContractBundleHash, ContractLineage, ContractVersion, DatabaseId,
+    DigestKeyId, EntityKeyBuilder, EntityTypeId, EntityVersion, Environment, EventId, EventTypeId,
+    FieldId, IndexEntryKeyBuilder, IndexEpoch, IndexId, LogicalTime, OutcomeId, PartitionKey,
+    PartitionKeyBuilder, PlanHash, ProjectionApplyHash, ProjectionApplyKey, ProjectionGeneration,
+    ProjectionId, ProvenanceId, RequestId, RowPolicyName, ServiceAuditLinkV1, ServiceAuditPhaseV1,
+    ServiceAuditTargetV1, ServiceAuditTargetsV1, ServiceIngressKindV1, ServiceOperationV1,
+    TenantId, TenantScope, Timestamp, hash_partition_key,
 };
 
 use crate::{
@@ -790,6 +791,56 @@ pub(super) fn capability_record_with_reimport_authority() -> StoredCapabilityRec
         base.lifecycle().clone(),
     )
     .expect("reimport capability")
+}
+
+pub(super) fn capability_record_with_vector_inspection() -> StoredCapabilityRecordV1 {
+    let (base, _, _, _) = capability_records();
+    let role = ApplicationRoleHash::from_bytes([0x61; 32]);
+    let mut permissions = base.grant().permissions().as_slice().to_vec();
+    permissions.extend([
+        CapabilityPermissionV1::ApplicationRoleIdentity(role),
+        CapabilityPermissionV1::unparameterized(CapabilityPermissionKindV1::InspectVectorState)
+            .expect("vector inspection permission"),
+    ]);
+    let grant = CapabilityGrantV1::new(
+        base.grant().tenant_scope().clone(),
+        base.grant().partition_scope().clone(),
+        CapabilityPermissionsV1::new(permissions).expect("vector inspection permissions"),
+        base.grant().field_visibility().to_vec(),
+        base.grant().max_scan_rows(),
+        base.grant().approval_required().to_vec(),
+    )
+    .expect("vector inspection base")
+    .with_vector_inspection(
+        CapabilityVectorInspectionGrantV1::new(
+            role,
+            vec![CapabilityVectorInspectionTargetV1::new(
+                lineage(),
+                EntityTypeId::first(),
+                FieldId::first(),
+                true,
+            )],
+        )
+        .expect("vector inspection extension"),
+    )
+    .expect("vector inspection grant");
+    StoredCapabilityRecordV1::from_stored_parts(
+        base.capability_id(),
+        base.revision(),
+        base.token_digest(),
+        base.database_id(),
+        base.environment().clone(),
+        base.principal_id().clone(),
+        base.actor_kind(),
+        base.audiences().to_vec(),
+        base.issued_at(),
+        base.expires_at(),
+        base.creation_sequence(),
+        base.creation_request_id(),
+        grant,
+        base.lifecycle().clone(),
+    )
+    .expect("vector inspection capability")
 }
 
 pub(super) fn capability_record_with_complete_export_authority() -> StoredCapabilityRecordV1 {

@@ -1010,3 +1010,32 @@ fn exact_reimport_authority_uses_additive_capability_v7_only() {
     );
     assert!(record.row_policy.is_some());
 }
+
+#[test]
+fn exact_vector_inspection_uses_additive_capability_v8_only() {
+    let capability = sample::capability_record_with_vector_inspection();
+    let encoded = assert_round_trip(
+        capability.clone(),
+        encode_capability_record_v1,
+        decode_capability_record_v1,
+    );
+    let envelope = riffdb_proto::durable::readable_record_registry()
+        .decode(encoded.as_bytes())
+        .expect("vector inspection capability envelope");
+    assert_eq!(
+        envelope.record_type(),
+        "riffdb.storage.v1.CapabilityRecordV8"
+    );
+    let record = wire::CapabilityRecordV8::decode(envelope.payload()).expect("capability V8");
+    let inspection = record.vector_inspection.expect("inspection extension");
+    assert_eq!(inspection.application_role_hash, vec![0x61; 32]);
+    assert_eq!(inspection.targets.len(), 1);
+    assert_eq!(inspection.targets[0].contract_lineage, "codec-sample");
+    assert_eq!(inspection.targets[0].entity_type_id, 1);
+    assert_eq!(inspection.targets[0].field_id, 1);
+    assert!(inspection.targets[0].allow_counts);
+
+    let decoded = decode_capability_record_v1(encoded.as_bytes()).expect("decodes");
+    let reencoded = encode_capability_record_v1(decoded.value()).expect("re-encodes");
+    assert_eq!(encoded.as_bytes(), reencoded.as_bytes());
+}

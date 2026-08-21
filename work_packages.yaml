@@ -11897,6 +11897,10 @@ work_packages:
     # Coordinator-authorized 2026-08-21: production V15 bundles must cross the
     # catalog's exact version trust boundary before any public command can run.
     crates/riffdb-catalog/**,
+    # Coordinator-authorized 2026-08-21: ADR-0136 requires the shared policy
+    # operation and decision path to authorize the exact symbolic vector
+    # projection before inspection and again before result release.
+    crates/riffdb-policy/**,
     crates/riffdb-service/**, crates/riffdb-commit/**, crates/riffdb-runtime/**,
     crates/riffdb-storage-api/**, crates/riffdb-storage-memory/**,
     crates/riffdb-storage-redb/**, crates/riffdb-proto/**, crates/riffdb-api-grpc/**,

@@ -1549,6 +1549,43 @@ pub struct CapabilityRecordV6 {
     pub secret: ::core::option::Option<CapabilitySecretGrantExtensionV1>,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct CapabilityVectorInspectionTargetV1 {
+    #[prost(string, tag = "1")]
+    pub contract_lineage: ::prost::alloc::string::String,
+    #[prost(uint32, tag = "2")]
+    pub entity_type_id: u32,
+    #[prost(uint32, tag = "3")]
+    pub field_id: u32,
+    #[prost(bool, tag = "4")]
+    pub allow_counts: bool,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct CapabilityVectorInspectionGrantV1 {
+    #[prost(bytes = "vec", tag = "1")]
+    pub application_role_hash: ::prost::alloc::vec::Vec<u8>,
+    #[prost(message, repeated, tag = "2")]
+    pub targets: ::prost::alloc::vec::Vec<CapabilityVectorInspectionTargetV1>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct CapabilityRecordV8 {
+    #[prost(message, optional, tag = "1")]
+    pub base: ::core::option::Option<CapabilityRecordV1>,
+    #[prost(message, optional, tag = "2")]
+    pub migration: ::core::option::Option<CapabilityMigrationGrantExtensionV1>,
+    #[prost(message, optional, tag = "3")]
+    pub installation: ::core::option::Option<CapabilityInstallationGrantExtensionV1>,
+    #[prost(message, optional, tag = "4")]
+    pub row_policy: ::core::option::Option<CapabilityRowPolicyGrantExtensionV1>,
+    #[prost(message, optional, tag = "5")]
+    pub export: ::core::option::Option<CapabilityExportGrantExtensionV1>,
+    #[prost(message, optional, tag = "6")]
+    pub secret: ::core::option::Option<CapabilitySecretGrantExtensionV1>,
+    #[prost(message, optional, tag = "7")]
+    pub reimport: ::core::option::Option<CapabilityApplicationReimportGrantV1>,
+    #[prost(message, optional, tag = "8")]
+    pub vector_inspection: ::core::option::Option<CapabilityVectorInspectionGrantV1>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct StoredContractBundleV1 {
     #[prost(string, tag = "1")]
     pub contract_lineage: ::prost::alloc::string::String,

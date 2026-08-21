@@ -11243,6 +11243,8 @@ pub struct InspectVectorStateRequest {
     entity: SourceName,
     /// Source-level vector field name.
     field: SourceName,
+    /// Symbolic value for the owning aggregate's single partition component.
+    partition: SubmittedValue,
     /// Compiler-closed population to inspect.
     kind: VectorStateInspectionKind,
     /// Bounded initial page or continuation.
@@ -11256,6 +11258,7 @@ impl InspectVectorStateRequest {
         contract_lineage: ContractLineage,
         entity: SourceName,
         field: SourceName,
+        partition: SubmittedValue,
         kind: VectorStateInspectionKind,
         page: PageRequest,
     ) -> Self {
@@ -11263,6 +11266,7 @@ impl InspectVectorStateRequest {
             contract_lineage,
             entity,
             field,
+            partition,
             kind,
             page,
         }
@@ -11284,6 +11288,13 @@ impl InspectVectorStateRequest {
     #[must_use]
     pub const fn field(&self) -> &SourceName {
         &self.field
+    }
+
+    /// Borrows the untrusted symbolic partition component. The service
+    /// materializes it through the selected contract before policy or storage.
+    #[must_use]
+    pub const fn partition(&self) -> &SubmittedValue {
+        &self.partition
     }
 
     /// Returns the closed requested population.
@@ -11555,12 +11566,14 @@ mod vector_observability_tests {
             ContractLineage::new("ticketdesk").expect("lineage"),
             SourceName::new("Ticket").expect("entity"),
             SourceName::new("embedding").expect("field"),
+            SubmittedValue::String(riffdb_types::CanonicalString::new("org-a").expect("partition")),
             VectorStateInspectionKind::StaleEntities,
             PageRequest::new(PageLimit::new(20).expect("page limit"), None),
         );
         assert_eq!(request.contract_lineage().as_str(), "ticketdesk");
         assert_eq!(request.entity().as_str(), "Ticket");
         assert_eq!(request.field().as_str(), "embedding");
+        assert!(matches!(request.partition(), SubmittedValue::String(_)));
         assert_eq!(request.kind(), VectorStateInspectionKind::StaleEntities);
 
         let mut key =

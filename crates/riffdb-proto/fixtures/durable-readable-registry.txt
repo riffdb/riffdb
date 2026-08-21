@@ -1,5 +1,5 @@
 riffdb-durable-registry-v1
-records 91
+records 92
 riffdb.storage.v1.StoredStorageFormatVersionV1 source=metadata.proto message=StoredStorageFormatVersionV1 descriptor-bytes=1498 max-payload-bytes=8192 max-envelope-bytes=8284 schema-hash=07371c0b9eba9bfcad3118b345064b3d33a20a13641c6bde017e5c99dc6020ab
 riffdb.storage.v1.StoredDatabaseIdentityV1 source=metadata.proto message=StoredDatabaseIdentityV1 descriptor-bytes=1498 max-payload-bytes=8192 max-envelope-bytes=8280 schema-hash=de6f4f35fa52ca7664a85d9ffaa0041c506f3c5eb22632ba0ecd757dc6df1dea
 riffdb.storage.v1.StoredApplicationSequenceAllocatorV1 source=metadata.proto message=StoredApplicationSequenceAllocatorV1 descriptor-bytes=1498 max-payload-bytes=8192 max-envelope-bytes=8292 schema-hash=ff01f9e77e1d0ae47de12badcd541131a58fc6926b27543c681f0151f49aa24a
@@ -83,6 +83,7 @@ riffdb.storage.v1.StoredCommandCapsuleV5 source=event_policy_command_authority_v
 riffdb.storage.v1.StoredCommandSegmentV4 source=event_policy_command_authority_v5.proto message=StoredCommandSegmentV4 descriptor-bytes=31087 max-payload-bytes=16777128 max-envelope-bytes=16777216 schema-hash=5bb759cdd4849ea8389ace1384ed47cc94d513f28723935684387764674ccc3a
 riffdb.storage.v1.CapabilityRecordV6 source=capability_secret.proto message=CapabilityRecordV6 descriptor-bytes=11293 max-payload-bytes=2097152 max-envelope-bytes=2097236 schema-hash=736a878b90b593fda25c515cc4b5f758daddb76fefcf5bd7868d8ea6bc248630
 riffdb.storage.v1.CapabilityRecordV7 source=capability_reimport.proto message=CapabilityRecordV7 descriptor-bytes=12696 max-payload-bytes=2097152 max-envelope-bytes=2097236 schema-hash=9bccde62d7d63f5ca3777f5ad0a19709df572ed5977d6bbb94081dcddc4b8f13
+riffdb.storage.v1.CapabilityRecordV8 source=capability_vector_inspection.proto message=CapabilityRecordV8 descriptor-bytes=14130 max-payload-bytes=2097152 max-envelope-bytes=2097236 schema-hash=ff4fcbb031676932d6ab40e02b288e21fbb3c196034445c897f5170ff121aef9
 riffdb.storage.v1.StoredVectorEvidenceV1 source=vector_evidence_v1.proto message=StoredVectorEvidenceV1 descriptor-bytes=8931 max-payload-bytes=8192 max-envelope-bytes=8278 schema-hash=de3451baade7dbe010de8f4bf227dbf267931cf9dafef170fde952b14a16d84f
 riffdb.storage.v1.StoredVectorObservationV1 source=vector_observation_v1.proto message=StoredVectorObservationV1 descriptor-bytes=621 max-payload-bytes=2097152 max-envelope-bytes=2097243 schema-hash=5a2c5973e57ea3f0100f786aa48699f04fac2e97a9d1d622b49af45e40417652
 riffdb.storage.v1.StoredVectorEvidenceIndexV1 source=vector_evidence_index_v1.proto message=StoredVectorEvidenceIndexV1 descriptor-bytes=9514 max-payload-bytes=8192 max-envelope-bytes=8283 schema-hash=6129c2ee589159eab28081ba3d2aff16de85e67a80e6d86d9bc265957d1e7d4e
