@@ -1,7 +1,7 @@
 # ADR-0137: Bounded Framed Application Transport
 
 - **Status:** Proposed
-- **Direction approved:** Pending maintainer review
+- **Direction approved:** Yes
 - **Exact text accepted:** No
 - **Decision deadline:** Before WP-662 adds a non-HTTP/2 listener path, changes
   generated-client transport selection, or amends `PERF-018`
@@ -85,10 +85,13 @@ The framed protocol does not add an insecure remote port.
   distinguish the HTTP/2 client preface from one fixed framed-protocol preface
   within a small byte and time ceiling. An ambiguous, partial, slow, or unknown
   preface is rejected without application admission.
-- `trusted_proxy_cleartext` retains its existing same-pod and transport-policy
-  restrictions. A proxy cannot assert a RiffDB principal or rewrite a frame.
-  Whether this profile advertises the framed protocol is fixed by WP-662's
-  process tests, never an application knob.
+- Under `local_socket`, the existing same-host filesystem-identity and
+  permission checks remain exact. A local proxy cannot assert a RiffDB
+  principal or rewrite a frame. A framed connection may cross a remote proxy
+  only as an opaque layer-4/TCP stream terminating at `direct_tls`; the
+  existing HTTP/2 application-proxy path remains gRPC-only. Whether
+  `local_socket` accepts the framed protocol is fixed by WP-662's process
+  tests, never an application knob.
 
 Ingress performs TLS and protocol selection, then hands an already protected
 bounded byte stream to either Tonic or the framed adapter. The TLS provider,
@@ -96,6 +99,26 @@ versions, cipher defaults, certificate files, and cryptographic dependency
 closure do not change. Rustls and `ring` remain confined to the accepted
 ingress/client transport crates; service, command, storage, and deterministic
 runtime graphs gain no cryptographic dependency.
+
+This decision deliberately amends ADR-0105's direct-TLS statement that the
+application endpoint speaks only HTTP/2. Direct TLS instead advertises one
+exact ALPN allowlist containing `h2` and the versioned framed protocol. It does
+not amend ADR-0105's three exact ingress profiles, certificate and peer-name
+verification, credential boundary, proxy restrictions, downgrade refusal, or
+default-disabled posture.
+
+WP-662 must replace, not delete, the architecture pins named
+`production_transport_features_are_exact_default_disabled_and_confined` and
+`reviewed_transport_and_entropy_graph_remains_exact`. The server pin gains only
+the exact framed ingress dependency and retains crypto confinement. The client
+pin may allow the already reviewed `tokio-rustls`/`rustls` stack only in the
+native framed client transport; it continues to forbid direct `ring`
+selection, alternate crypto stacks, and crypto dependencies in generated
+facades or semantic crates. The existing
+`tonic_runtime_features_remain_narrow_and_default_disabled` pin remains
+unchanged: framing lives in a separate first-party crate and does not widen
+the gRPC crate's feature or dependency closure. Each pin change and its
+accepted ADR citation must land with the implementation that requires it.
 
 ### 3. Both transports invoke one API-neutral operation adapter
 
@@ -269,7 +292,8 @@ hidden row, event, principal, or operation exists.
   expiry, row policy, field visibility, idempotency, outcome recovery,
   read-after-commit, typed errors, and result bytes.
 - Real process tests for loopback preface selection, TLS ALPN, hostile
-  certificates, proxy profile, rotation, no downgrade, and bounded shutdown.
+  certificates, local-socket and layer-4 proxy carriage, rotation, no
+  downgrade, and bounded shutdown.
 - Architecture tests proving first-party Rust ownership and absence of service,
   storage, catalog, plan, policy, and commit authority in the frame adapter.
 - Counterbalanced workstation/N1/E2 mechanics followed by the complete
