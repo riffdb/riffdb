@@ -1,15 +1,18 @@
 # ADR-0139: Established-Connection Generated-Operation Lane
 
-- **Status:** Proposed
-- **Direction approved:** No
-- **Exact text accepted:** No
+- **Status:** Accepted
+- **Direction approved:** Yes
+- **Exact text accepted:** Yes, 2026-08-22
+- **Accepted:** 2026-08-22
+- **Acceptance reference:** Maintainer exact-text approval in the current
+  Codex session for commit `291fd842`
 - **Decision deadline:** Before WP-664 restores any direct application
   listener, framing crate, ALPN, client selector, or comparator candidate
 - **Requires:** ADR-0040, ADR-0055, ADR-0056, ADR-0070, ADR-0105, ADR-0106,
   ADR-0120, ADR-0123, ADR-0127, ADR-0132, ADR-0133, ADR-0137, and ADR-0138
 - **Defines or blocks:** WP-664, WP-623, WP-578, and WP-579
 
-This record is not authoritative until a human accepts its exact text.
+This record is authoritative for WP-664 implementation.
 
 ## Context
 
@@ -279,6 +282,6 @@ operation even on an otherwise healthy resumed TLS connection.
 
 ## Decision Deadline
 
-Exact human acceptance is required before WP-664 restores any direct listener,
-framing crate, ALPN, client selector, benchmark selector, or production
-candidate. Direction approval alone does not authorize implementation.
+The maintainer accepted this exact decision text on 2026-08-22 for commit
+`291fd842`. WP-664 may restore the diagnostic candidate and may proceed beyond
+it only under the reject-first conditions above.
