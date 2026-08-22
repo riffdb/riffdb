@@ -221,15 +221,7 @@ impl RiffDbPublicBackend {
     /// session on an independent HTTP/2 connection.
     pub fn fresh_bounded_session(&self) -> Result<Self, RiffDbError> {
         let mut backend = self.fresh_session()?;
-        let identity = ApplicationSessionIdentity::new(
-            "TicketDesk".to_owned(),
-            1,
-            self.contract_bundle_hash,
-            vec![self.query_module_hash],
-            TICKETDESK_APPLICATION_LOCK_HASH,
-            128,
-        )
-        .map_err(|_| RiffDbError::Connection)?;
+        let identity = self.application_session_identity()?;
         backend
             .runtime
             .clone()
@@ -240,6 +232,44 @@ impl RiffDbPublicBackend {
             )
             .map_err(map_app)?;
         Ok(backend)
+    }
+
+    /// Opens ADR-0137's explicitly non-evidentiary bounded framed candidate
+    /// on an independent loopback connection.
+    pub fn fresh_framed_session(&self) -> Result<Self, RiffDbError> {
+        let mut backend = self.fresh_session()?;
+        let authority = self
+            .endpoint
+            .uri()
+            .authority()
+            .ok_or(RiffDbError::Connection)?;
+        let address = authority
+            .as_str()
+            .parse()
+            .map_err(|_| RiffDbError::Connection)?;
+        let identity = self.application_session_identity()?;
+        backend
+            .runtime
+            .clone()
+            .block_on(backend.transport.open_framed_loopback_session(
+                address,
+                identity,
+                &backend.metadata,
+            ))
+            .map_err(map_app)?;
+        Ok(backend)
+    }
+
+    fn application_session_identity(&self) -> Result<ApplicationSessionIdentity, RiffDbError> {
+        ApplicationSessionIdentity::new(
+            "TicketDesk".to_owned(),
+            1,
+            self.contract_bundle_hash,
+            vec![self.query_module_hash],
+            TICKETDESK_APPLICATION_LOCK_HASH,
+            128,
+        )
+        .map_err(|_| RiffDbError::Connection)
     }
 
     /// Ends an explicitly selected bounded session before the harness asks

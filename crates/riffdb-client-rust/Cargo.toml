@@ -26,6 +26,7 @@ rustls-webpki = { version = "=0.103.13", default-features = false, features = ["
 tokio = { version = "=1.52.0", default-features = false, features = ["io-util", "net", "rt", "sync", "time"] }
 tonic = { version = "=0.14.6", default-features = false, features = ["channel", "codegen", "tls-ring"] }
 tonic-prost = { version = "=0.14.6", default-features = false }
+tokio-rustls = { version = "=0.26.4", default-features = false, features = ["logging", "ring", "tls12"] }
 zeroize = { version = "=1.8.1", default-features = false, features = ["alloc"] }
 
 [dev-dependencies]

@@ -255,6 +255,34 @@ impl RiffDbClient {
         Ok(())
     }
 
+    pub(crate) async fn enable_framed_tls_application_session(
+        &mut self,
+        config: &riffdb_config::TlsClientConfig,
+        identity: crate::session::ApplicationSessionIdentity,
+        metadata: CallMetadata,
+    ) -> Result<(), ClientError> {
+        let session =
+            crate::session::BoundedApplicationSession::open_framed_tls(config, identity, metadata)
+                .await?;
+        self.bounded_application_session = Some(session);
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    pub(crate) async fn enable_framed_local_socket_application_session(
+        &mut self,
+        path: &std::path::Path,
+        identity: crate::session::ApplicationSessionIdentity,
+        metadata: CallMetadata,
+    ) -> Result<(), ClientError> {
+        let session = crate::session::BoundedApplicationSession::open_framed_local_socket(
+            path, identity, metadata,
+        )
+        .await?;
+        self.bounded_application_session = Some(session);
+        Ok(())
+    }
+
     pub(crate) const fn bounded_application_session_enabled(&self) -> bool {
         self.bounded_application_session.is_some()
     }

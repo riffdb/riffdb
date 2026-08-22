@@ -182,6 +182,36 @@ impl StableApplicationClient {
         Ok(())
     }
 
+    /// Opens the bounded first-party framed candidate through mandatory
+    /// direct TLS using the exact configured trust root and peer identity.
+    pub async fn open_framed_tls_session(
+        &mut self,
+        config: &TlsClientConfig,
+        identity: crate::ApplicationSessionIdentity,
+        metadata: &CallMetadata,
+    ) -> Result<(), ApplicationClientError> {
+        self.inner
+            .enable_framed_tls_application_session(config, identity, metadata.clone())
+            .await?;
+        Ok(())
+    }
+
+    /// Opens the bounded first-party framed candidate over the configured
+    /// Unix-domain application listener. It preserves the same credential and
+    /// per-operation authorization checks as every other application ingress.
+    #[cfg(unix)]
+    pub async fn open_framed_local_socket_session(
+        &mut self,
+        path: &std::path::Path,
+        identity: crate::ApplicationSessionIdentity,
+        metadata: &CallMetadata,
+    ) -> Result<(), ApplicationClientError> {
+        self.inner
+            .enable_framed_local_socket_application_session(path, identity, metadata.clone())
+            .await?;
+        Ok(())
+    }
+
     /// Reports whether this facade explicitly selected the bounded session.
     #[must_use]
     pub const fn bounded_session_enabled(&self) -> bool {

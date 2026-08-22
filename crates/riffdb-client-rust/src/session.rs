@@ -8,8 +8,10 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use futures_util::stream;
-use riffdb_api_frame::{Frame, read_frame, write_frame};
+use riffdb_api_frame::{read_response, write_request};
+use riffdb_config::TlsClientConfig;
 use riffdb_proto::{decode_application_error, decode_public_error, v1};
+use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpStream;
 use tokio::sync::{mpsc, oneshot, watch};
 use tonic::{Code, Status};
@@ -234,6 +236,52 @@ impl BoundedApplicationSession {
         if !address.ip().is_loopback() {
             return Err(ClientError::ConnectionFailure);
         }
+        let stream = tokio::time::timeout(Duration::from_secs(10), TcpStream::connect(address))
+            .await
+            .map_err(|_| ClientError::ConnectionFailure)?
+            .map_err(|_| ClientError::ConnectionFailure)?;
+        stream
+            .set_nodelay(true)
+            .map_err(|_| ClientError::ConnectionFailure)?;
+        Self::open_framed_stream(stream, identity, metadata).await
+    }
+
+    pub(crate) async fn open_framed_tls(
+        config: &TlsClientConfig,
+        identity: ApplicationSessionIdentity,
+        metadata: CallMetadata,
+    ) -> Result<Self, ClientError> {
+        let stream = crate::tls::connect_framed_tls(config).await?;
+        Self::open_framed_stream(stream, identity, metadata).await
+    }
+
+    #[cfg(unix)]
+    pub(crate) async fn open_framed_local_socket(
+        path: &std::path::Path,
+        identity: ApplicationSessionIdentity,
+        metadata: CallMetadata,
+    ) -> Result<Self, ClientError> {
+        if path.as_os_str().is_empty() {
+            return Err(ClientError::ConnectionFailure);
+        }
+        let stream = tokio::time::timeout(
+            Duration::from_secs(10),
+            tokio::net::UnixStream::connect(path),
+        )
+        .await
+        .map_err(|_| ClientError::ConnectionFailure)?
+        .map_err(|_| ClientError::ConnectionFailure)?;
+        Self::open_framed_stream(stream, identity, metadata).await
+    }
+
+    async fn open_framed_stream<IO>(
+        stream: IO,
+        identity: ApplicationSessionIdentity,
+        metadata: CallMetadata,
+    ) -> Result<Self, ClientError>
+    where
+        IO: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+    {
         let (credential, database) = metadata
             .framed_open_parts()
             .ok_or(ClientError::ConnectionFailure)?;
@@ -251,25 +299,15 @@ impl BoundedApplicationSession {
                 ),
             )),
         };
-        let stream = tokio::time::timeout(Duration::from_secs(10), TcpStream::connect(address))
+        let mut stream = stream;
+        tokio::time::timeout(Duration::from_secs(30), write_request(&mut stream, &open))
             .await
             .map_err(|_| ClientError::ConnectionFailure)?
             .map_err(|_| ClientError::ConnectionFailure)?;
-        stream
-            .set_nodelay(true)
-            .map_err(|_| ClientError::ConnectionFailure)?;
-        let (mut reader, mut writer) = tokio::io::split(stream);
-        let frame = Frame::request(&open).map_err(|_| invalid_inbound())?;
-        tokio::time::timeout(Duration::from_secs(30), write_frame(&mut writer, &frame))
+        let opened = tokio::time::timeout(Duration::from_secs(30), read_response(&mut stream))
             .await
             .map_err(|_| ClientError::ConnectionFailure)?
             .map_err(|_| ClientError::ConnectionFailure)?;
-        let opened = tokio::time::timeout(Duration::from_secs(30), read_frame(&mut reader))
-            .await
-            .map_err(|_| ClientError::ConnectionFailure)?
-            .map_err(|_| ClientError::ConnectionFailure)?
-            .decode_response()
-            .map_err(|_| invalid_inbound())?;
         let Some(v1::application_session_response::Response::Opened(opened_identity)) =
             opened.response.as_ref()
         else {
@@ -285,35 +323,14 @@ impl BoundedApplicationSession {
         let pending = Arc::new(Mutex::new(BTreeMap::<u64, PendingResponse>::new()));
         let closed = Arc::new(AtomicBool::new(false));
 
-        let writer_closed = Arc::clone(&closed);
-        let writer_pending = Arc::clone(&pending);
-        let writer_shutdown = shutdown.clone();
+        let actor_closed = Arc::clone(&closed);
+        let actor_pending = Arc::clone(&pending);
+        let actor_shutdown = shutdown.clone();
         tokio::spawn(async move {
-            run_framed_writer(writer, receiver, shutdown_receiver).await;
-            writer_closed.store(true, Ordering::Release);
-            close_session_pending(&writer_pending);
-            let _ = writer_shutdown.send(true);
-        });
-
-        let response_pending = Arc::clone(&pending);
-        let response_closed = Arc::clone(&closed);
-        let response_shutdown = shutdown.clone();
-        tokio::spawn(async move {
-            loop {
-                let response = match read_frame(&mut reader).await {
-                    Ok(frame) => match frame.decode_response() {
-                        Ok(response) => response,
-                        Err(_) => break,
-                    },
-                    Err(_) => break,
-                };
-                if !route_session_response(&response_pending, response) {
-                    break;
-                }
-            }
-            response_closed.store(true, Ordering::Release);
-            close_session_pending(&response_pending);
-            let _ = response_shutdown.send(true);
+            run_framed_session(stream, receiver, shutdown_receiver, &actor_pending).await;
+            actor_closed.store(true, Ordering::Release);
+            close_session_pending(&actor_pending);
+            let _ = actor_shutdown.send(true);
         });
 
         Ok(Self {
@@ -465,33 +482,46 @@ impl BoundedApplicationSession {
     }
 }
 
-async fn run_framed_writer(
-    mut writer: tokio::io::WriteHalf<TcpStream>,
+async fn run_framed_session<IO>(
+    stream: IO,
     mut receiver: mpsc::Receiver<v1::ApplicationSessionRequest>,
     mut shutdown: watch::Receiver<bool>,
-) {
+    pending: &Mutex<BTreeMap<u64, PendingResponse>>,
+) where
+    IO: AsyncRead + AsyncWrite + Unpin,
+{
+    let (mut reader, mut writer) = tokio::io::split(stream);
     loop {
-        let request = tokio::select! {
+        tokio::select! {
+            biased;
             changed = shutdown.changed() => {
                 match changed {
                     Ok(()) if *shutdown.borrow() => return,
-                    Ok(()) | Err(_) => receiver.recv().await,
+                    Ok(()) => {}
+                    Err(_) => return,
                 }
             }
-            request = receiver.recv() => request,
-        };
-        let Some(request) = request else {
-            return;
-        };
-        let frame = match Frame::request(&request) {
-            Ok(frame) => frame,
-            Err(_) => return,
-        };
-        if !matches!(
-            tokio::time::timeout(Duration::from_secs(30), write_frame(&mut writer, &frame)).await,
-            Ok(Ok(()))
-        ) {
-            return;
+            response = read_response(&mut reader) => {
+                let response = match response {
+                    Ok(response) => response,
+                    Err(_) => return,
+                };
+                if !route_session_response(pending, response) {
+                    return;
+                }
+            }
+            request = receiver.recv() => {
+                let Some(request) = request else { return; };
+                if !matches!(
+                    tokio::time::timeout(
+                        Duration::from_secs(30),
+                        write_request(&mut writer, &request),
+                    ).await,
+                    Ok(Ok(()))
+                ) {
+                    return;
+                }
+            }
         }
     }
 }
