@@ -8,8 +8,6 @@ require "set"
 
 ROOT = Pathname.new(File.expand_path("..", __dir__)).realpath
 EXPECTED_PACKAGES = %w[
-  riffdb-api-application
-  riffdb-api-frame
   riffdb-api-grpc
   riffdb-api-mcp
   riffdb-application
