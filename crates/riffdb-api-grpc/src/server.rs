@@ -1216,8 +1216,7 @@ fn application_session_request_matches(
             Ok(SessionOperationKind::Query)
         }
         v1::application_session_request::Request::Open(_)
-        | v1::application_session_request::Request::Cancel(_)
-        | v1::application_session_request::Request::Close(_) => {
+        | v1::application_session_request::Request::Cancel(_) => {
             Err(Status::invalid_argument(EMERGENCY_INTERNAL_MESSAGE))
         }
     }
@@ -1258,8 +1257,7 @@ fn application_session_operation(
                     })
             }
             v1::application_session_request::Request::Open(_)
-            | v1::application_session_request::Request::Cancel(_)
-            | v1::application_session_request::Request::Close(_) => {
+            | v1::application_session_request::Request::Cancel(_) => {
                 Err(Status::invalid_argument(EMERGENCY_INTERNAL_MESSAGE))
             }
         };
@@ -1313,23 +1311,10 @@ async fn run_application_session(
     let mut operations = FuturesUnordered::<ApplicationSessionOperation>::new();
     let mut accepted_work = 0_u64;
     let mut last_correlation_id = scope.opening_correlation_id;
-    let mut closing_correlation_id = None;
     let lifetime = tokio::time::sleep(MAX_APPLICATION_SESSION_LIFETIME);
     tokio::pin!(lifetime);
 
     loop {
-        if let Some(correlation_id) = closing_correlation_id
-            && operations.is_empty()
-        {
-            let response = v1::ApplicationSessionResponse {
-                correlation_id,
-                response: Some(v1::application_session_response::Response::Closed(
-                    v1::ApplicationSessionClosed {},
-                )),
-            };
-            let _ = send_application_session_output(&output, Ok(response)).await;
-            break;
-        }
         tokio::select! {
             _ = &mut lifetime => {
                 let _ = send_application_session_output(&output, Err(Status::deadline_exceeded(EMERGENCY_INTERNAL_MESSAGE))).await;
@@ -1346,7 +1331,7 @@ async fn run_application_session(
                     break;
                 }
             }
-            message = inbound.message(), if closing_correlation_id.is_none() => {
+            message = inbound.message() => {
                 let message = match message {
                     Ok(Some(message)) => message,
                     Ok(None) => break,
@@ -1420,9 +1405,6 @@ async fn run_application_session(
                         let _ = send_application_session_output(&output, Err(Status::invalid_argument(EMERGENCY_INTERNAL_MESSAGE))).await;
                         break;
                     }
-                    v1::application_session_request::Request::Close(_) => {
-                        closing_correlation_id = Some(message.correlation_id);
-                    }
                     operation => {
                         accepted_work = accepted_work.saturating_add(1);
                         let kind = match application_session_request_matches(
@@ -1448,8 +1430,7 @@ async fn run_application_session(
                                         )
                                     }
                                     v1::application_session_request::Request::Open(_)
-                                    | v1::application_session_request::Request::Cancel(_)
-                                    | v1::application_session_request::Request::Close(_) => {
+                                    | v1::application_session_request::Request::Cancel(_) => {
                                         let _ = send_application_session_output(&output, Err(Status::invalid_argument(EMERGENCY_INTERNAL_MESSAGE))).await;
                                         break;
                                     }

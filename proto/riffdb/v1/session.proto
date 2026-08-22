@@ -20,10 +20,6 @@ message ApplicationSessionCancel {
   uint64 target_correlation_id = 1;
 }
 
-// Explicit graceful close request. Empty by design: the frame correlation is
-// the complete close identity and carries no application authority.
-message ApplicationSessionClose {}
-
 // One closed generated application operation carried by the session.
 // Correlation identities are nonzero and strictly increase for the lifetime
 // of one stream; they identify responses but never imply application order.
@@ -34,7 +30,6 @@ message ApplicationSessionRequest {
     ExecuteCommandRequest command = 3;
     riffdb.app.v1.ExecuteQueryRequest query = 4;
     ApplicationSessionCancel cancel = 5;
-    ApplicationSessionClose close = 6;
   }
 }
 
@@ -73,9 +68,6 @@ message ApplicationSessionCancellation {
   ApplicationSessionCancellationDisposition disposition = 2;
 }
 
-// Explicit graceful close acknowledgement.
-message ApplicationSessionClosed {}
-
 // One independently correlated response. Operation responses may arrive in a
 // different order from requests; correlation never implies application order.
 message ApplicationSessionResponse {
@@ -86,7 +78,6 @@ message ApplicationSessionResponse {
     riffdb.app.v1.ExecuteQueryResponse query = 4;
     ApplicationSessionFailure failure = 5;
     ApplicationSessionCancellation cancellation = 6;
-    ApplicationSessionClosed closed = 7;
   }
 }
 
