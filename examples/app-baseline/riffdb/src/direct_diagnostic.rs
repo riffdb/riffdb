@@ -1,7 +1,6 @@
-//! Non-evidentiary ADR-0138 direct ownership client.
+//! Non-evidentiary ADR-0139 direct ownership client.
 
 use std::net::SocketAddr;
-use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -77,42 +76,135 @@ trait DirectDiagnosticIo: AsyncRead + AsyncWrite + Unpin + Send {}
 
 impl<T> DirectDiagnosticIo for T where T: AsyncRead + AsyncWrite + Unpin + Send {}
 
+/// Immutable, authority-free transport generation for one exact diagnostic
+/// endpoint and TLS identity.
+///
+/// Clones share only rustls's bounded process-local resumption store. They do
+/// not contain a credential, database, application identity, or authorization
+/// decision.
+#[derive(Clone)]
+pub struct DirectDiagnosticTransportGeneration {
+    address: SocketAddr,
+    tls: Option<DirectDiagnosticTlsGeneration>,
+}
+
+#[derive(Clone)]
+struct DirectDiagnosticTlsGeneration {
+    config: Arc<tokio_rustls::rustls::ClientConfig>,
+    server_name: ServerName<'static>,
+}
+
+/// Customer-paid setup intervals for one accepted direct session.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct DirectDiagnosticOpenTiming {
+    /// Socket creation through transport readiness and verified TLS, if used.
+    pub trust_establishment: Duration,
+    /// Credential presentation through the accepted session result.
+    pub session_establishment: Duration,
+    /// Caller time spanning both setup intervals.
+    pub total: Duration,
+}
+
+impl DirectDiagnosticOpenTiming {
+    /// Sum of the two non-overlapping setup intervals.
+    #[must_use]
+    pub fn ledger_total(self) -> Duration {
+        self.trust_establishment
+            .saturating_add(self.session_establishment)
+    }
+}
+
 impl RiffDbPublicBackend {
-    /// Opens the feature-gated direct diagnostic lane with the same credential.
-    pub async fn open_direct_diagnostic(
+    /// Compiles one exact authority-free diagnostic transport generation.
+    pub fn direct_diagnostic_transport_generation(
         &self,
         address: SocketAddr,
-    ) -> Result<DirectDiagnosticClient, RiffDbError> {
+    ) -> Result<DirectDiagnosticTransportGeneration, RiffDbError> {
+        let tls = self
+            .direct_diagnostic_tls_trust_root
+            .as_deref()
+            .map(build_verified_tls_generation)
+            .transpose()?;
+        Ok(DirectDiagnosticTransportGeneration { address, tls })
+    }
+
+    /// Opens the feature-gated lane and reports trust/session setup separately.
+    pub async fn open_direct_diagnostic_on(
+        &self,
+        generation: &DirectDiagnosticTransportGeneration,
+    ) -> Result<(DirectDiagnosticClient, DirectDiagnosticOpenTiming), RiffDbError> {
+        let total_started = Instant::now();
+        let trust_started = Instant::now();
+        let address = generation.address;
         let stream = TcpStream::connect(address)
             .await
             .map_err(|_| RiffDbError::Connection)?;
         stream.set_nodelay(true).map_err(|_| RiffDbError::Connection)?;
-        let mut stream: Box<dyn DirectDiagnosticIo> =
-            if let Some(trust_root) = self.direct_diagnostic_tls_trust_root.as_deref() {
-                Box::new(connect_verified_tls(stream, trust_root).await?)
-            } else {
-                Box::new(stream)
-            };
-        write_open(&mut stream, self.bearer_token.as_bytes(), &[])
+        let mut stream: Box<dyn DirectDiagnosticIo> = if let Some(tls) = &generation.tls {
+            Box::new(
+                TlsConnector::from(tls.config.clone())
+                    .connect(tls.server_name.clone(), stream)
+                    .await
+                    .map_err(|_| RiffDbError::Connection)?,
+            )
+        } else {
+            Box::new(stream)
+        };
+        let trust_establishment = trust_started.elapsed();
+
+        let session_started = Instant::now();
+        let session = v1::ApplicationSessionRequest {
+            correlation_id: 1,
+            request: Some(v1::application_session_request::Request::Open(
+                diagnostic_application_session(
+                    self.contract_bundle_hash,
+                    self.query_module_hash,
+                    riffdb_client_rust::generate_request_id()
+                        .map_err(|_| RiffDbError::Connection)?
+                        .into_bytes()
+                        .to_vec(),
+                ),
+            )),
+        }
+        .encode_to_vec();
+        write_open(&mut stream, self.bearer_token.as_bytes(), &[], &session)
             .await
             .map_err(|_| RiffDbError::Connection)?;
         let opened = stream.read_u8().await.map_err(|_| RiffDbError::Connection)?;
         if opened != DIAGNOSTIC_OPENED {
             return Err(RiffDbError::Connection);
         }
-        Ok(DirectDiagnosticClient {
-            stream,
-            contract_bundle_hash: self.contract_bundle_hash,
-            query_module_hash: self.query_module_hash,
-            runtime: self.runtime.clone(),
-        })
+        let session_establishment = session_started.elapsed();
+        Ok((
+            DirectDiagnosticClient {
+                stream,
+                contract_bundle_hash: self.contract_bundle_hash,
+                query_module_hash: self.query_module_hash,
+                runtime: self.runtime.clone(),
+            },
+            DirectDiagnosticOpenTiming {
+                trust_establishment,
+                session_establishment,
+                total: total_started.elapsed(),
+            },
+        ))
+    }
+
+    /// Opens the feature-gated direct diagnostic lane with the same credential.
+    pub async fn open_direct_diagnostic(
+        &self,
+        address: SocketAddr,
+    ) -> Result<DirectDiagnosticClient, RiffDbError> {
+        let generation = self.direct_diagnostic_transport_generation(address)?;
+        self.open_direct_diagnostic_on(&generation)
+            .await
+            .map(|(client, _)| client)
     }
 }
 
-async fn connect_verified_tls(
-    stream: TcpStream,
-    trust_root: &Path,
-) -> Result<tokio_rustls::client::TlsStream<TcpStream>, RiffDbError> {
+fn build_verified_tls_generation(
+    trust_root: &std::path::Path,
+) -> Result<DirectDiagnosticTlsGeneration, RiffDbError> {
     let mut roots = tokio_rustls::rustls::RootCertStore::empty();
     let certificates = CertificateDer::pem_file_iter(trust_root)
         .map_err(|_| RiffDbError::Connection)?
@@ -132,14 +224,35 @@ async fn connect_verified_tls(
         .map_err(|_| RiffDbError::Connection)?
         .with_root_certificates(roots)
         .with_no_client_auth();
-    config.alpn_protocols = vec![b"riffdb-direct-diagnostic/1".to_vec()];
+    config.alpn_protocols = vec![b"riffdb-direct-diagnostic/2".to_vec()];
+    config.enable_early_data = false;
+    config.resumption = tokio_rustls::rustls::client::Resumption::in_memory_sessions(8);
     let server_name = ServerName::try_from("127.0.0.1")
         .map_err(|_| RiffDbError::Connection)?
         .to_owned();
-    TlsConnector::from(Arc::new(config))
-        .connect(server_name, stream)
-        .await
-        .map_err(|_| RiffDbError::Connection)
+    Ok(DirectDiagnosticTlsGeneration {
+        config: Arc::new(config),
+        server_name,
+    })
+}
+
+fn diagnostic_application_session(
+    contract_bundle_hash: [u8; 32],
+    query_module_hash: [u8; 32],
+    request_id: Vec<u8>,
+) -> v1::ApplicationSessionOpen {
+    v1::ApplicationSessionOpen {
+        protocol_version: riffdb_client_rust::APPLICATION_SESSION_PROTOCOL_V1,
+        contract: Some(app_v1::ContractSelector {
+            lineage: "TicketDesk".to_owned(),
+            version: 1,
+            bundle_hash: contract_bundle_hash.to_vec(),
+        }),
+        query_module_hashes: vec![query_module_hash.to_vec()],
+        application_lock_hash: crate::TICKETDESK_APPLICATION_LOCK_HASH.to_vec(),
+        requested_max_in_flight: 1,
+        request_id,
+    }
 }
 
 impl DirectDiagnosticClient {
@@ -320,4 +433,16 @@ fn stages(stages: DiagnosticServerStages) -> (Duration, Duration, Duration, Dura
         Duration::from_nanos(stages.encode_ns),
         Duration::from_nanos(stages.previous_write_ns),
     )
+}
+
+#[cfg(test)]
+mod architecture_tests {
+    #[test]
+    fn diagnostic_tls_forbids_early_data_and_bounds_resumption() {
+        let source = include_str!("direct_diagnostic.rs");
+        assert!(source.contains("config.enable_early_data = false;"));
+        assert!(source.contains("Resumption::in_memory_sessions(8)"));
+        let forbidden = ["enable_early_data = ", "true"].concat();
+        assert!(!source.contains(&forbidden));
+    }
 }

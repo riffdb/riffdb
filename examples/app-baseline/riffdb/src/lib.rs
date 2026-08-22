@@ -58,7 +58,10 @@ pub use server::{
     ServerStartOptions, min_free_bytes_for_full, resolve_bench_root, resolve_database_root,
     sweep_stale_session_dirs,
 };
-pub use direct_diagnostic::{DirectDiagnosticClient, DirectDiagnosticTiming};
+pub use direct_diagnostic::{
+    DirectDiagnosticClient, DirectDiagnosticOpenTiming, DirectDiagnosticTiming,
+    DirectDiagnosticTransportGeneration,
+};
 
 /// Default in-flight seed commands (bounded client concurrency, not a bulk RPC).
 ///
@@ -355,6 +358,24 @@ impl RiffDbPublicBackend {
             history_incarnation: self.history_incarnation,
             projected_gates_ready: self.projected_gates_ready,
         })
+    }
+
+    /// Authenticates the existing independent HTTP/2 connection as ADR-0127's
+    /// bounded application session without hiding the customer-paid interval.
+    pub async fn open_bounded_session_async(&mut self) -> Result<(), RiffDbError> {
+        let identity = ApplicationSessionIdentity::new(
+            "TicketDesk".to_owned(),
+            1,
+            self.contract_bundle_hash,
+            vec![self.query_module_hash],
+            TICKETDESK_APPLICATION_LOCK_HASH,
+            128,
+        )
+        .map_err(|_| RiffDbError::Connection)?;
+        self.transport
+            .open_bounded_session(identity, &self.metadata)
+            .await
+            .map_err(map_app)
     }
 
     /// Reconnects this logical application session to a restarted local daemon.

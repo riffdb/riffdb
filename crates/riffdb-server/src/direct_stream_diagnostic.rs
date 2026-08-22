@@ -1,4 +1,4 @@
-//! Feature-gated direct ownership probe for ADR-0138.
+//! Feature-gated direct ownership probe for ADR-0139.
 
 use std::io;
 use std::net::SocketAddr;
@@ -14,6 +14,7 @@ use riffdb_api_exclusive::{
 use riffdb_api_grpc::generated_app::application_query_service_server::ApplicationQueryService;
 use riffdb_api_grpc::{DATABASE_METADATA_KEY, GrpcApplication};
 use riffdb_proto::app::v1::{ExecuteQueryRequest, ExecuteQueryResponse};
+use riffdb_proto::v1::ApplicationSessionRequest;
 use riffdb_proto::{decode_public_message, validate_public_message};
 use rustls_pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject as _};
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt as _};
@@ -132,6 +133,27 @@ async fn serve_connection(
                 .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "database is invalid"))?,
         )
     };
+    let application_session = decode_public_message::<ApplicationSessionRequest>(
+        &open.application_session,
+    )
+    .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "session identity is invalid"))?;
+    let Some(riffdb_proto::v1::application_session_request::Request::Open(application_session)) =
+        application_session.request
+    else {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "session identity is invalid",
+        ));
+    };
+    let mut session_metadata = tonic::metadata::MetadataMap::new();
+    session_metadata.insert("authorization", authorization.clone());
+    if let Some(database) = database.as_ref() {
+        session_metadata.insert(DATABASE_METADATA_KEY, database.clone());
+    }
+    application
+        .validate_application_session_open(session_metadata, &application_session)
+        .await
+        .map_err(|_| io::Error::new(io::ErrorKind::PermissionDenied, "session refused"))?;
     stream.write_all(&[DIAGNOSTIC_OPENED]).await?;
     stream.flush().await?;
 
@@ -237,7 +259,9 @@ fn diagnostic_tls_from_environment() -> io::Result<Option<TlsAcceptor>> {
                 "diagnostic TLS identity invalid",
             )
         })?;
-    config.alpn_protocols = vec![b"riffdb-direct-diagnostic/1".to_vec()];
+    config.alpn_protocols = vec![b"riffdb-direct-diagnostic/2".to_vec()];
+    config.max_early_data_size = 0;
+    config.send_half_rtt_data = false;
     Ok(Some(TlsAcceptor::from(Arc::new(config))))
 }
 
