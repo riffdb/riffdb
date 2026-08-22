@@ -1,6 +1,6 @@
 # Remote and Local Application Ingress
 
-RiffDB application gRPC has three and only three listener profiles:
+RiffDB application ingress has three and only three listener profiles:
 
 - `loopback_cleartext` for local development;
 - `direct_tls` for TCP beyond literal loopback; and
@@ -10,6 +10,15 @@ There is no insecure non-loopback profile. Hosted MCP remains loopback-only.
 Every protected operation still requires a RiffDB bearer capability and the
 normal database selector; transport identity never becomes application
 authority.
+
+Unary gRPC remains the release default. The same listener also recognizes the
+explicit bounded framed transport candidate for exact generated commands and
+named queries. Loopback TCP and local sockets select it with the fixed
+`RIFFDBF1` preface; direct TLS selects the fixed `riffdb-frame-v1` ALPN.
+Anything else is rejected before application admission. There is no second
+port, framing configuration, cleartext remote fallback, or proxy-supplied
+identity. The framed candidate is non-evidentiary until ADR-0137's activation
+gates and a separate exact default amendment are accepted.
 
 ## Direct TLS
 
@@ -177,7 +186,8 @@ process created.
 
 The socket protects the transport boundary; it does not bypass bearer
 authentication, database selection, authorization, or shared application
-service semantics.
+service semantics. Its fixed preface demultiplexer accepts ordinary HTTP/2 or
+the bounded framed candidate; this choice is not an application setting.
 
 ## Bounds and proxies
 

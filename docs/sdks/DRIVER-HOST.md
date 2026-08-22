@@ -49,6 +49,16 @@ The endpoint is always HTTPS. There is no cleartext fallback, native-root mode,
 trust-all mode, client-certificate setting, cipher-suite setting, or TLS
 provider setting on this surface.
 
+The Rust-owned host can carry generated calls over ADR-0137's bounded framed
+TLS candidate. Go, TypeScript, and Python continue to speak only the existing
+private local driver protocol: they do not implement TLS, frame parsing,
+credentials, retries, uncertainty, freshness, or public-error semantics. The
+host constructs the framed session from the exact reviewed lock and catalog,
+and the remote server repeats current authentication and authorization for
+each operation. Unary TLS remains the release selection until the framed
+candidate passes its reject-first gates; this is not an application or
+target-language configuration knob.
+
 ## Exact handshake
 
 Before binding the socket, the host authenticates across every pooled TLS
