@@ -19,9 +19,7 @@ riffdb-query-module = { path = "../../../crates/riffdb-query-module", version = 
 riffdb-storage-redb = { path = "../../../crates/riffdb-storage-redb", version = "0.1.0", default-features = false, features = ["benchmark-support"] }
 riffdb-ticketdesk = { path = "../../ticketdesk", version = "0.1.0", default-features = false }
 riffdb-types = { path = "../../../crates/riffdb-types", version = "0.1.0", default-features = false }
-riffdb-api-exclusive = { path = "../../../crates/riffdb-api-exclusive", version = "0.1.0", default-features = false }
-prost = { version = "=0.14.4", default-features = false, features = ["std"] }
-tokio = { version = "=1.52.0", default-features = false, features = ["io-util", "macros", "net", "rt-multi-thread", "time"] }
+tokio = { version = "=1.52.0", default-features = false, features = ["macros", "rt-multi-thread", "time"] }
 tonic = { version = "=0.14.6", default-features = false, features = ["channel", "codegen"] }
 
 [lints]

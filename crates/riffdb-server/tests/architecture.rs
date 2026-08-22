@@ -129,15 +129,10 @@ fn production_transport_features_are_exact_default_disabled_and_confined() {
     assert!(production.contains(
         "riffdb-api-mcp = { version = \"0.1.0\", path = \"../riffdb-api-mcp\", default-features = false, features = [\"streamable-http\"] }"
     ));
-    assert!(MANIFEST.contains(
-        "test-fixtures = [\"dep:prost\", \"dep:riffdb-api-exclusive\", \"dep:riffdb-proto\", \"tokio/io-util\"]"
-    ));
-    assert!(production.contains(
-        "riffdb-proto = { version = \"0.1.0\", path = \"../riffdb-proto\", default-features = false, optional = true }"
-    ));
 
     for forbidden in [
         "riffdb-client-rust",
+        "riffdb-proto",
         "riffdb-storage-memory",
         "base64 =",
         "features = [\"transport\"]",
@@ -310,34 +305,4 @@ fn recovery_abort_controller_is_closed_and_absent_from_riffdbd_entrypoint() {
     assert!(!controller.contains("std::env"));
     assert!(!controller.contains("args_os"));
     assert!(!controller.contains("RIFFDB_"));
-}
-
-#[test]
-fn direct_stream_probe_is_confined_to_test_fixtures() {
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let library = std::fs::read_to_string(root.join("src/lib.rs")).expect("read server library");
-    let daemon = std::fs::read_to_string(root.join("src/daemon.rs")).expect("read daemon");
-    let diagnostic = std::fs::read_to_string(root.join("src/direct_stream_diagnostic.rs"))
-        .expect("read direct-stream diagnostic");
-
-    assert!(library.contains("#[cfg(feature = \"test-fixtures\")]\nmod direct_stream_diagnostic;"));
-    assert!(daemon.contains(
-        "#[cfg(feature = \"test-fixtures\")]\nuse crate::direct_stream_diagnostic::HostedDirectStreamDiagnostic;"
-    ));
-    assert!(diagnostic.contains("RIFFDB_DIRECT_STREAM_DIAGNOSTIC"));
-    for (path, source) in rust_sources(&root.join("src")) {
-        if path.ends_with("direct_stream_diagnostic.rs") {
-            continue;
-        }
-        assert!(
-            !source.contains("RIFFDB_DIRECT_STREAM_DIAGNOSTIC"),
-            "production server source {} acquired the direct-stream diagnostic trigger",
-            path.display()
-        );
-        assert!(
-            !source.contains("riffdb_api_exclusive"),
-            "production server source {} acquired the diagnostic protocol crate",
-            path.display()
-        );
-    }
 }
