@@ -15109,7 +15109,7 @@ work_packages:
     thresholds remove production listener/client selection, while a complete pass produces only a
     proposed exact PERF-018/default amendment for separate human acceptance
   acceptance_commands:
-  - cargo +1.97.0 test -p riffdb-proto -p riffdb-api-application -p riffdb-api-frame -p riffdb-api-grpc -p riffdb-client-rust -p riffdb-driver-host -p riffdb-server --all-features
+  - cargo +1.97.0 test -p riffdb-proto -p riffdb-api-grpc -p riffdb-client-rust -p riffdb-driver-host -p riffdb-server --all-features
   - cargo +1.97.0 test --manifest-path examples/app-baseline/Cargo.toml --workspace
   - ./scripts/driver-conformance --all-languages --remote
   - ./scripts/recovery_full
@@ -15132,4 +15132,12 @@ work_packages:
     scale: Frames, payloads, correlations, tasks, buffers, queues, cancellations, waits, lifetime
       work, telemetry, and evidence are hard-bounded independently of database size and duration;
       no completed response or application value is retained after delivery.
+  closure:
+    status: complete_without_production_activation
+    evidence: docs/performance/wp-662-framed-transport-closure.md
+    decision: The framed candidate reduced exact point-read mean materially, but missed the
+      reject-first c1 threshold on all three workstation generations, one N1 generation, and all
+      three E2 generations. E2 also missed the outside-service reduction in two generations. The
+      production protocol, listener, clients, selectors, fixtures, and public documentation were
+      removed; unary remains the default, PERF-018 is unchanged, and WP-623 remains open.
   human_review_triggers: *id001
