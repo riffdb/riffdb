@@ -325,6 +325,9 @@ fn direct_stream_probe_is_confined_to_test_fixtures() {
         "#[cfg(feature = \"test-fixtures\")]\nuse crate::direct_stream_diagnostic::HostedDirectStreamDiagnostic;"
     ));
     assert!(diagnostic.contains("RIFFDB_DIRECT_STREAM_DIAGNOSTIC"));
+    assert!(diagnostic.contains("config.max_early_data_size = 0;"));
+    assert!(diagnostic.contains("config.send_half_rtt_data = false;"));
+    assert!(!diagnostic.contains("send_half_rtt_data = true"));
     for (path, source) in rust_sources(&root.join("src")) {
         if path.ends_with("direct_stream_diagnostic.rs") {
             continue;

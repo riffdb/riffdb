@@ -1,8 +1,8 @@
 #![forbid(unsafe_code)]
 
-//! Diagnostic-only direct ownership framing for ADR-0138's reject-first gate.
+//! Diagnostic-only direct ownership framing for ADR-0139's reject-first gate.
 //!
-//! This crate is not a public application protocol. WP-663 must remove it if
+//! This crate is not a public application protocol. WP-664 must remove it if
 //! the cross-cloud mechanics threshold fails, and may promote a successor only
 //! after that threshold passes.
 
@@ -11,11 +11,13 @@ use std::io;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 /// Distinct diagnostic preface; it is never accepted by a production listener.
-pub const DIAGNOSTIC_MAGIC: [u8; 16] = *b"RDBX-DIAG-V1\0\0\0\0";
+pub const DIAGNOSTIC_MAGIC: [u8; 16] = *b"RDBX-DIAG-V2\0\0\0\0";
 /// Exact v1 bearer presentation bytes excluding the `Bearer ` prefix.
 pub const DIAGNOSTIC_CREDENTIAL_BYTES: usize = 43;
 /// Maximum canonical database alias bytes accepted by the probe.
 pub const MAX_DIAGNOSTIC_DATABASE_BYTES: usize = 128;
+/// Maximum strict encoded application-session identity bytes.
+pub const MAX_DIAGNOSTIC_SESSION_BYTES: usize = 2_048;
 /// Maximum strict request payload bytes.
 pub const MAX_DIAGNOSTIC_REQUEST_BYTES: usize = 1_048_576;
 /// Maximum strict response payload bytes.
@@ -30,6 +32,8 @@ pub struct DiagnosticOpen {
     pub credential: Vec<u8>,
     /// Empty selects the server's only/default database.
     pub database: Vec<u8>,
+    /// Strict encoded `ApplicationSessionOpen` identity.
+    pub application_session: Vec<u8>,
 }
 
 /// Per-operation server stages returned only to the mechanics probe.
@@ -61,9 +65,12 @@ pub async fn write_open(
     stream: &mut (impl AsyncWrite + Unpin),
     credential: &[u8],
     database: &[u8],
+    application_session: &[u8],
 ) -> io::Result<()> {
     if credential.len() != DIAGNOSTIC_CREDENTIAL_BYTES
         || database.len() > MAX_DIAGNOSTIC_DATABASE_BYTES
+        || application_session.is_empty()
+        || application_session.len() > MAX_DIAGNOSTIC_SESSION_BYTES
     {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -72,13 +79,17 @@ pub async fn write_open(
     }
     let database_len = u16::try_from(database.len())
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "database alias too large"))?;
+    let session_len = u16::try_from(application_session.len())
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "session identity too large"))?;
     stream.write_all(&DIAGNOSTIC_MAGIC).await?;
     stream
         .write_all(&(DIAGNOSTIC_CREDENTIAL_BYTES as u16).to_be_bytes())
         .await?;
     stream.write_all(&database_len.to_be_bytes()).await?;
+    stream.write_all(&session_len.to_be_bytes()).await?;
     stream.write_all(credential).await?;
     stream.write_all(database).await?;
+    stream.write_all(application_session).await?;
     stream.flush().await
 }
 
@@ -94,7 +105,11 @@ pub async fn read_open(stream: &mut (impl AsyncRead + Unpin)) -> io::Result<Diag
     }
     let credential_len = usize::from(stream.read_u16().await?);
     let database_len = usize::from(stream.read_u16().await?);
-    if credential_len != DIAGNOSTIC_CREDENTIAL_BYTES || database_len > MAX_DIAGNOSTIC_DATABASE_BYTES
+    let session_len = usize::from(stream.read_u16().await?);
+    if credential_len != DIAGNOSTIC_CREDENTIAL_BYTES
+        || database_len > MAX_DIAGNOSTIC_DATABASE_BYTES
+        || session_len == 0
+        || session_len > MAX_DIAGNOSTIC_SESSION_BYTES
     {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
@@ -103,11 +118,14 @@ pub async fn read_open(stream: &mut (impl AsyncRead + Unpin)) -> io::Result<Diag
     }
     let mut credential = vec![0_u8; credential_len];
     let mut database = vec![0_u8; database_len];
+    let mut application_session = vec![0_u8; session_len];
     stream.read_exact(&mut credential).await?;
     stream.read_exact(&mut database).await?;
+    stream.read_exact(&mut application_session).await?;
     Ok(DiagnosticOpen {
         credential,
         database,
+        application_session,
     })
 }
 

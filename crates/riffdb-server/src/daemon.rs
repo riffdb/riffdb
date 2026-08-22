@@ -3340,7 +3340,7 @@ fn publish_readiness(endpoint: &HostedGrpcEndpoint) -> Result<(), DaemonError> {
 fn publish_direct_diagnostic_readiness(address: SocketAddr) -> Result<(), DaemonError> {
     let stdout = io::stdout();
     let mut stdout = stdout.lock();
-    writeln!(stdout, "riffdb-direct-stream-diagnostic-v1\t{address}")
+    writeln!(stdout, "riffdb-direct-stream-diagnostic-v2\t{address}")
         .map_err(DaemonError::Readiness)?;
     stdout.flush().map_err(DaemonError::Readiness)
 }
