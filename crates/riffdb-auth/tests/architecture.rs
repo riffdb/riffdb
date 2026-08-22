@@ -105,6 +105,10 @@ fn reviewed_dependency_owners_and_lock_entries_are_frozen() {
                 "riffdb-api-mcp",
                 "riffdb-auth",
                 "riffdb-cli",
+                // WP-659's Python packed-result compatibility renders the
+                // existing canonical cursor bytes as standard base64 at the
+                // language boundary.
+                "riffdb-client-python-native",
                 // ADR-0106's closed driver value model owns canonical byte,
                 // decimal, money, lease, and causation-token presentation.
                 "riffdb-driver-host",
