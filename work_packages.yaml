@@ -12797,7 +12797,7 @@ work_packages:
   human_review_triggers: *id001
 - id: WP-623
   name: Dual-profile alpha performance qualification
-  depends_on: [WP-620, WP-621, WP-622, WP-662, WP-663]
+  depends_on: [WP-620, WP-621, WP-622, WP-662, WP-663, WP-664]
   objective: Qualify the optimized release candidate on both the workstation/NVMe and
     general-purpose-cloud/persistent-disk profiles before restarting the 72-hour endurance gate.
     Preserve exact safe-application PostgreSQL obligations and report minimal PostgreSQL separately.
@@ -13310,6 +13310,75 @@ work_packages:
       reject-first rule therefore stopped the package after the first TLS generation; every
       listener, protocol, ALPN, client, and benchmark-selection implementation was removed, unary
       gRPC remains the default, PERF-018 is unchanged, and WP-623 remains open.
+  human_review_triggers: *id001
+- id: WP-664
+  name: Established-connection generated-operation lane candidate
+  depends_on: [WP-663]
+  objective: After exact acceptance of ADR-0139, retest direct one-in-flight generated operations
+    with trust establishment, application-session establishment, and operation latency accounted as
+    distinct customer-paid intervals; activate nothing unless the corrected mechanics gate and the
+    complete workstation/N1/E2 release matrix pass.
+  requirements: [API-001, PERF-005, PERF-008, PERF-018,
+    NET-001, NET-002, NET-003, NET-004, NET-005, NET-006, NET-007, NET-008,
+    NET-009, NET-010, NET-011, NET-012,
+    DRV-001, DRV-002, DRV-003, DRV-004, DRV-005, DRV-006, DRV-007,
+    DRV-008, DRV-009, DRV-010, DRV-011, DRV-012, DRV-013, DRV-014]
+  required_adrs: [ADR-0040, ADR-0055, ADR-0056, ADR-0070, ADR-0105, ADR-0106,
+    ADR-0120, ADR-0123, ADR-0127, ADR-0132, ADR-0133, ADR-0137, ADR-0138, ADR-0139]
+  allowed_paths: [work_packages.yaml, SPEC.md, Cargo.toml, Cargo.lock, adr/README.md,
+    adr/0139-established-connection-application-lane.md, proto/**,
+    crates/riffdb-types/**, crates/riffdb-proto/**,
+    crates/riffdb-api-application/**, crates/riffdb-api-exclusive/**,
+    crates/riffdb-api-grpc/**, crates/riffdb-client-rust/**,
+    crates/riffdb-driver-host/**, crates/riffdb-server/**,
+    crates/riffdb-observability/**, clients/go/**, clients/typescript/**,
+    clients/python/**, examples/app-baseline/**, fixtures/**, fuzz/**,
+    tests/**, benchmarks/**, scripts/**, release/**, docs/SUMMARY.md,
+    docs/reference/**, docs/getting-started/**, docs/operations/**,
+    docs/performance/**]
+  deliverables:
+  - Diagnostic-only three-interval ledger separating cold verified trust, application-session
+    establishment, and generated-operation latency, closing their sum to caller time within five
+    percent and structurally preventing cold setup from being relabeled as warm or resumed
+  - One bounded immutable Rust transport generation sharing only exact trust/peer/ALPN configuration
+    and process-local rustls resumption state across identical connections, with cold full-handshake
+    evidence retained and zero-RTT or half-RTT application data forbidden
+  - ADR-0138's strict one-in-flight generated-operation lane, finite exclusive pool, shared
+    API-neutral application adapter, per-operation mutable-authority checks, and no target-language
+    protocol implementation, restored only after ADR-0139's revised mechanics gate passes
+  - Pool readiness, partial-fill, reconnect, uncertainty, rotation, revocation, drift, saturation,
+    cancellation, and shutdown semantics that never report readiness before one exact authenticated
+    lane exists and never return an uncertain command connection to the pool
+  - Three-generation N1/E2 loopback and verified-TLS mechanics receipts plus full workstation/N1/E2
+    c1, c32, seed, tail, correctness, lifecycle, resource, and stability evidence only after every
+    reject-first threshold passes
+  acceptance_commands:
+  - cargo +1.97.0 test --workspace --all-targets --all-features
+  - cargo +1.97.0 test --manifest-path examples/app-baseline/Cargo.toml --workspace
+  - ./scripts/driver-conformance --all-languages --remote
+  - ./scripts/recovery_full
+  - ./scripts/generate-proto --check
+  - ./scripts/check-generated
+  - ./scripts/check-application-bindings
+  - ./scripts/check-workspace-policy
+  - ./scripts/check-requirement-coverage
+  - ./scripts/handbook check
+  - cargo +1.97.0 fmt --all -- --check
+  - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: The revised diagnostic proves cold setup non-regression and established-session first
+    and steady operations on N1/E2; the production candidate is semantically indistinguishable from
+    unary at every safe point and passes every workstation/N1/E2 release gate. Only then may it
+    produce an exact PERF-018/default amendment for separate human acceptance. Any missed threshold
+    removes production selection and leaves WP-623 open with a value-free failed-candidate receipt.
+  standing_design_tests:
+    interface_safety: The client exposes only ready generated operations and typed bounded failure;
+      it cannot expose trust/resumption/pool knobs, cache authority, create a transaction, imply
+      freshness, relax durability or uncertainty, select storage, or fall back after possible
+      command submission.
+    scale: Transport generations, resumption entries, connections, pools, frames, bytes, operations,
+      waits, setup, idle, lifetime, cancellation, shutdown, and telemetry are hard-bounded
+      independently of database size and duration; no result, authorization decision, or full-state
+      cache survives delivery.
   human_review_triggers: *id001
 - id: WP-632
   name: Frozen-client transport attribution and asynchronous shadow diagnostic
