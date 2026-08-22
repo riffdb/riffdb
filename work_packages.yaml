@@ -15080,7 +15080,8 @@ work_packages:
     ADR-0123, ADR-0127, ADR-0132, ADR-0133, ADR-0137]
   allowed_paths: [work_packages.yaml, SPEC.md, Cargo.toml, Cargo.lock, adr/README.md,
     adr/0137-bounded-framed-application-transport.md, proto/**,
-    crates/riffdb-types/**, crates/riffdb-proto/**, crates/riffdb-api-frame/**,
+    crates/riffdb-types/**, crates/riffdb-proto/**,
+    crates/riffdb-api-application/**, crates/riffdb-api-frame/**,
     crates/riffdb-api-grpc/**,
     crates/riffdb-client-rust/**, crates/riffdb-driver-host/**,
     crates/riffdb-server/**, crates/riffdb-observability/**,
@@ -15108,7 +15109,7 @@ work_packages:
     thresholds remove production listener/client selection, while a complete pass produces only a
     proposed exact PERF-018/default amendment for separate human acceptance
   acceptance_commands:
-  - cargo +1.97.0 test -p riffdb-proto -p riffdb-api-grpc -p riffdb-client-rust -p riffdb-driver-host -p riffdb-server --all-features
+  - cargo +1.97.0 test -p riffdb-proto -p riffdb-api-application -p riffdb-api-frame -p riffdb-api-grpc -p riffdb-client-rust -p riffdb-driver-host -p riffdb-server --all-features
   - cargo +1.97.0 test --manifest-path examples/app-baseline/Cargo.toml --workspace
   - ./scripts/driver-conformance --all-languages --remote
   - ./scripts/recovery_full
