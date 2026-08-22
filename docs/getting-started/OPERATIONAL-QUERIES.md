@@ -91,22 +91,23 @@ clients expose these as the same typed application error codes on every
 transport. A host may retry these lifecycle outcomes with a bounded attempt
 budget; it must not emulate a scan, retain a stale page, or weaken freshness.
 
-Exact-result source currently accepts one partition equality, one exact text
+The narrow exact-result form accepts one partition equality, one exact text
 predicate, and at most one compiler-declared optional typed equality filter.
-The filter's absent/null form means the named plan omits that predicate; its
-present form selects a disjoint canonical-value posting before count and
-ordinal selection. Any second filter, disjunction, caller-selected field or
-operator, or other unsupported predicate is a source-spanned compiler error
-rather than a request-time filter or ignored condition.
+The richer V6 form accepts the closed exact-predicate vocabulary documented in
+[Exact Predicate and Order Families](../riffql/EXACT-PREDICATES.md): comparisons,
+bounded typed sets, state tests, binary text operations, capped Boolean shape,
+and compiler-enumerated optional guards. It also permits a total order over
+fields independent from the search fields. Any unsupported or unindexed family
+member rejects the complete source with a span; it is never a request-time
+filter or ignored condition.
 
-The compiler also recognizes the additive V6 exact-predicate language and can
-seal its complete provider-independent predicate/order family into query IR
-and module identity. V6 exists so contracts, locks, diagnostics, and provider
-requirements can be reviewed before physical activation. It is not yet an
-executable application query: until its indexed-set provider is installed by
-the subsequent provider package, use the narrower exact-text form above for
-runtime traffic. RiffDB does not fall back from a V6 family to scans, page
-walking, client filtering, or the older provider.
+Set parameters accept at most 64 submitted values. RiffDB sorts and
+deduplicates them canonically before indexed execution; empty `in` and
+`not_in` sets retain their documented exact semantics. `Limit` is positive and
+at most 499; offset is bounded by the compiled family. Every declared
+predicate and order field contributes provider storage and rebuild work, and
+every optional guard multiplies the finite member count. Keep named operations
+small and task-shaped rather than building one combinatorial search endpoint.
 
 ## Framework-neutral exact-result proof
 
@@ -116,7 +117,10 @@ one typed optional document filter, deterministic ascending and descending
 orders, bounded limit and numeric offset, and a complete exact total. Its
 generated Rust, Go, TypeScript, Python, CLI, and MCP surfaces prove the RiffDB
 semantics without embedding an external framework's schema, route, role, or
-application policy in this repository.
+application policy in this repository. Its generic `DirectoryUser` family
+additionally proves bounded sets, comparison ranges, null/existence state,
+optional-presence members, Unicode values, and search-by-one-field/order-by-
+another through the same six public surfaces.
 
 Framework integrations own their generated profile and route-level acceptance
 in their own repositories. They pin a RiffDB build and prove that their public
@@ -145,7 +149,8 @@ Payload binary-prefix and null pages, a Woodpecker state queue, a typed session
 lookup, and the framework-neutral exact-result family through Rust, Go,
 TypeScript, Python, CLI, and generated MCP schemas. The exact-result phase
 proves all three binary-text operators, both declared order directions, direct
-offset boundaries, complete totals, and optional-filter null/present forms.
+offset boundaries, complete totals, optional-filter null/present forms, and
+the V6 set/range/state/independent-order family.
 The corpus also proves a malformed cursor fails closed and scans the
 application runners for kernel, storage, numeric-ID, raw-transaction, and
 client-filter escape hatches. External adapter repositories own their separate

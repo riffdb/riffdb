@@ -1,0 +1,23 @@
+query ReviewedDirectoryUsers(
+    $organization_id: DirectoryUser.organization_id,
+    $states: Set<DirectoryUser.state>,
+    $before_created_at: DirectoryUser.created_at,
+    $limit: Limit = 25,
+    $offset: u64 = 0
+) {
+    many users from DirectoryUser
+        where organization_id == $organization_id
+          && state in $states
+          && created_at < $before_created_at
+          && reviewed_at is not null
+        order by state desc, user_id asc
+        take $limit offset $offset
+
+    aggregate total from users { exact_count() as value }
+
+    return Found {
+        users: users { organization_id user_id email state created_at reviewed_at }
+        total: total { value }
+    }
+    outcomes Found
+}

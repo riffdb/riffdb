@@ -1,0 +1,79 @@
+{
+  "contract": {
+    "bundle_hash": "fa2e95c6c1c9226ae1d7b6cb0a01d822626973f5e427c6404547363bea8a3036",
+    "lineage": "AdapterOperationalConformance",
+    "version": 1
+  },
+  "exact_predicate_operations": [
+    {
+      "name": "ReviewedDirectoryUsers",
+      "plan_hash": "f0a936d2d4da23100acdbd9bcabfb9f0b0fa437b1f1f86c0b35d8b7db1821cc9",
+      "source_hash": "87e39dd6bbab6ca3b9010d85a15f3bd3c2a87efc23af4b9e01e33a805a70dbc8"
+    },
+    {
+      "name": "SearchDirectoryUsers",
+      "plan_hash": "1250e20a7e966e8fc33ab1733512afd031fbb2f5eec478229f3996b50ad820d6",
+      "source_hash": "ac655be6312c0175048dfdc16eb7d37763c184a371b4617dd3db8a7b46c93d99"
+    }
+  ],
+  "external_acceptance": {
+    "owner": "external_adapter_repository",
+    "required_evidence": "public framework routes delegate only to pinned generated operations",
+    "status": "not_proved_by_neutral_corpus"
+  },
+  "generated_artifacts": [
+    {
+      "kind": "go",
+      "path": "fixtures/adapters/operational-conformance/generated/go/client.go",
+      "sha256": "b141d46ebd95cfbe09b7326237a22adc29153c0528918d5e8811b1130314878b"
+    },
+    {
+      "kind": "mcp",
+      "path": "fixtures/adapters/operational-conformance/generated/mcp/tools.json",
+      "sha256": "211dcbd0b00de53d9e67736a91b1e376871fdb66c59f984c594afb6dbe348573"
+    },
+    {
+      "kind": "python",
+      "path": "fixtures/adapters/operational-conformance/generated/python/client.py",
+      "sha256": "69275a4402272dec5f661913a914eb7abb7fada83d6c084a485884bfe3e1a970"
+    },
+    {
+      "kind": "rust",
+      "path": "fixtures/adapters/operational-conformance/generated/rust/client.rs",
+      "sha256": "6588cd414433c424bb2d1a74e58e3d3b733c01e824d5cb2dd1e4241ac9250ff1"
+    },
+    {
+      "kind": "typescript",
+      "path": "fixtures/adapters/operational-conformance/generated/typescript/client.ts",
+      "sha256": "b906273ca6ce114bda45fdd0a7f499c8c6566e11bb8420aa5df2ce09097121de"
+    }
+  ],
+  "query_module": {
+    "module_hash": "47adab52831a2338255906aff0e02abf67b94e2fe8e7570d4cd8d6e5dff3a8c6",
+    "name": "adapter_operational_conformance",
+    "version": 1
+  },
+  "schema": "riffdb.operational-query-capability/v1",
+  "semantics": {
+    "caller_supplied_structure": false,
+    "client_shaping": false,
+    "exact_total": true,
+    "finite_compiler_family": true,
+    "independent_total_order": true,
+    "ordinal_window": true,
+    "policy_before_index": true,
+    "provider_state_format": 4,
+    "request_time_authoritative_scan": false,
+    "typed_generated_languages": [
+      "go",
+      "python",
+      "rust",
+      "typescript"
+    ]
+  },
+  "source_lock": {
+    "path": "fixtures/adapters/operational-conformance/riffdb.application.lock.json",
+    "sha256": "a67f7bbf852345a0777be76e198d79f3958b7a151feb6f8295578db4c066331b"
+  },
+  "status": "development"
+}

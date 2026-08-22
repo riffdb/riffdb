@@ -1176,7 +1176,12 @@ fn mcp_type_schema(value_type: &NamedTypeSchema) -> Value {
             json!({"anyOf": [mcp_type_schema(inner), {"type": "null"}]})
         }
         NamedTypeSchema::Set(inner) => {
-            json!({"type": "array", "items": mcp_type_schema(inner), "uniqueItems": true})
+            json!({
+                "type": "array",
+                "items": mcp_type_schema(inner),
+                "maxItems": riffdb_query_ir::MAX_EXACT_SET_VALUES_V1,
+                "uniqueItems": true
+            })
         }
         NamedTypeSchema::List { element, maximum } => {
             let maximum = match maximum {
@@ -2374,10 +2379,11 @@ fn rust_encode_application_expr(value_type: &NamedTypeSchema, access: &str) -> S
         ),
         NamedTypeSchema::Set(inner) | NamedTypeSchema::List { element: inner, .. } => {
             let element = rust_encode_application_expr(inner, "value");
-            if element == "ApplicationValue::Enum(value)" {
-                format!(
-                    "ApplicationValue::List({access}.into_iter().map(ApplicationValue::Enum).collect())"
-                )
+            if let Some(constructor) = element
+                .strip_suffix("(value)")
+                .filter(|constructor| constructor.starts_with("ApplicationValue::"))
+            {
+                format!("ApplicationValue::List({access}.into_iter().map({constructor}).collect())")
             } else {
                 format!(
                     "ApplicationValue::List({access}.into_iter().map(|value| {element}).collect())"

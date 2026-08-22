@@ -16,6 +16,8 @@ from client import (
     ListFgaTuplesParams,
     ListPipelinesParams,
     MetricDashboardParams,
+    ReviewedDirectoryUsersParams,
+    SearchDirectoryUsersParams,
     SearchDocumentsParams,
 )
 from riffdb_application import (
@@ -113,6 +115,24 @@ def main() -> None:
             and ends_with.documents[0].title == "Beta Guide",
             "generic ends-with descending ordinal",
         )
+        rich = client.search_directory_users(
+            SearchDirectoryUsersParams(
+                organization_id=uid(60), needle="example",
+                excluded_states=("disabled", "disabled"), limit=1, offset=1,
+            )
+        ).value
+        require(rich.total.value == 3 and len(rich.users) == 1
+                and rich.users[0].email == "beta@example.test",
+                "V6 exact predicate optional/set/order page")
+        reviewed = client.reviewed_directory_users(
+            ReviewedDirectoryUsersParams(
+                organization_id=uid(60), states=("active", "archive"),
+                before_created_at=35, limit=25, offset=0,
+            )
+        ).value
+        require(reviewed.total.value == 1 and len(reviewed.users) == 1
+                and reviewed.users[0].email == "álpha@example.test",
+                "V6 exact predicate range/existence page")
 
         pipelines = client.list_pipelines(
             ListPipelinesParams(organization_id=uid(40), state="queued")
@@ -145,6 +165,7 @@ def main() -> None:
                 "binary_prefix": True,
                 "exact_aggregates": True,
                 "exact_text_family": True,
+                "exact_predicate_family": True,
                 "exact_total": True,
                 "numeric_offset": True,
                 "adapters": ["mlflow", "openfga", "better-auth", "woodpecker"],

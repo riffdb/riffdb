@@ -5,11 +5,11 @@ use riffdb_client_rust::{ApplicationCardinality, ApplicationClientError, Applica
 pub use riffdb_client_rust::QueryOptions;
 use riffdb_client_rust::v1::value::Kind as WireKind;
 
-pub const QUERY_MODULE_HASH: [u8; 32] = [0x2d, 0xa4, 0x2e, 0x51, 0x0a, 0x3b, 0xa3, 0x2b, 0x14, 0xaf, 0x31, 0xe1, 0x14, 0xa6, 0x71, 0x48, 0x15, 0x62, 0x02, 0xd6, 0x50, 0x23, 0x66, 0xae, 0x01, 0x5e, 0x0c, 0x7a, 0xd9, 0x14, 0xa4, 0x5b];
+pub const QUERY_MODULE_HASH: [u8; 32] = [0x47, 0xad, 0xab, 0x52, 0x83, 0x1a, 0x23, 0x38, 0x25, 0x59, 0x06, 0xaf, 0xf0, 0xe0, 0x2a, 0xbf, 0x67, 0xb9, 0x4e, 0x2f, 0xe8, 0xe7, 0x57, 0x0d, 0x4c, 0xd8, 0xd6, 0xe5, 0xdf, 0xf3, 0xa8, 0xc6];
 pub const CONTRACT_LINEAGE: &str = "AdapterOperationalConformance";
 pub const CONTRACT_VERSION: u64 = 1;
 
-pub const CONTRACT_BUNDLE_HASH: [u8; 32] = [0xb1, 0xfc, 0x11, 0x17, 0x57, 0x28, 0xc7, 0x47, 0xe7, 0x0a, 0xb0, 0x71, 0x37, 0x92, 0xeb, 0xcf, 0x7d, 0x76, 0xad, 0x16, 0x87, 0x46, 0x6d, 0x48, 0x99, 0xd3, 0x3d, 0x68, 0x02, 0x86, 0xd6, 0x76];
+pub const CONTRACT_BUNDLE_HASH: [u8; 32] = [0xfa, 0x2e, 0x95, 0xc6, 0xc1, 0xc9, 0x22, 0x6a, 0xe1, 0xd7, 0xb6, 0xcb, 0x0a, 0x01, 0xd8, 0x22, 0x62, 0x69, 0x73, 0xf5, 0xe4, 0x27, 0xc6, 0x40, 0x45, 0x47, 0x36, 0x3b, 0xea, 0x8a, 0x30, 0x36];
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DecimalValue {
@@ -60,7 +60,7 @@ pub enum ExactDocumentsContainsAscResult {
     Found(Box<ExactDocumentsContainsAscFound>),
 }
 
-pub const EXACT_DOCUMENTS_CONTAINS_ASC_QUERY_PLAN_HASH: [u8; 32] = [0x23, 0x1a, 0x3e, 0x06, 0xe5, 0xbb, 0x5c, 0x19, 0x15, 0xa6, 0x92, 0xfc, 0x80, 0x4d, 0xc1, 0x95, 0x20, 0x7b, 0x99, 0xdc, 0xbd, 0x32, 0x5c, 0x69, 0xeb, 0x8a, 0xe9, 0x80, 0x4b, 0xa6, 0xfb, 0x6b];
+pub const EXACT_DOCUMENTS_CONTAINS_ASC_QUERY_PLAN_HASH: [u8; 32] = [0x0f, 0x21, 0x07, 0x77, 0x32, 0x90, 0x1c, 0x06, 0xae, 0x68, 0x36, 0x66, 0xb7, 0xc0, 0x7e, 0x23, 0x1d, 0x6c, 0xb2, 0x91, 0x26, 0x70, 0x17, 0xbb, 0x8b, 0xb8, 0x61, 0xf7, 0xc9, 0x0b, 0x32, 0x97];
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ExactDocumentsContainsAscQuery(pub ExactDocumentsContainsAscParams);
 impl GeneratedQuery for ExactDocumentsContainsAscQuery {
@@ -152,7 +152,7 @@ pub enum ExactDocumentsEndsWithDescResult {
     Found(Box<ExactDocumentsEndsWithDescFound>),
 }
 
-pub const EXACT_DOCUMENTS_ENDS_WITH_DESC_QUERY_PLAN_HASH: [u8; 32] = [0x79, 0x3b, 0x31, 0x32, 0xac, 0xdf, 0x55, 0x12, 0xfa, 0x01, 0x2d, 0xca, 0x17, 0x9e, 0x70, 0x32, 0x51, 0x34, 0x87, 0xf2, 0xa6, 0xc8, 0xce, 0x2c, 0xf3, 0x76, 0xbd, 0x78, 0x8d, 0x8c, 0x3d, 0x8b];
+pub const EXACT_DOCUMENTS_ENDS_WITH_DESC_QUERY_PLAN_HASH: [u8; 32] = [0xbd, 0x35, 0x21, 0x86, 0xba, 0x39, 0xf7, 0xe1, 0x03, 0x8e, 0x85, 0xa9, 0x1e, 0x06, 0xb8, 0xcb, 0xd2, 0x24, 0xa1, 0x96, 0xaf, 0x34, 0xfe, 0xba, 0x4a, 0x72, 0x43, 0x06, 0x07, 0xc2, 0xd5, 0x77];
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ExactDocumentsEndsWithDescQuery(pub ExactDocumentsEndsWithDescParams);
 impl GeneratedQuery for ExactDocumentsEndsWithDescQuery {
@@ -244,7 +244,7 @@ pub enum ExactDocumentsStartsWithAscResult {
     Found(Box<ExactDocumentsStartsWithAscFound>),
 }
 
-pub const EXACT_DOCUMENTS_STARTS_WITH_ASC_QUERY_PLAN_HASH: [u8; 32] = [0x4d, 0x2c, 0x98, 0xbb, 0xa6, 0x48, 0x82, 0x50, 0x4a, 0xc8, 0x16, 0x5e, 0x45, 0x7d, 0x29, 0xb2, 0xe8, 0xc2, 0xae, 0xaa, 0x2d, 0x5e, 0x37, 0x00, 0x5d, 0xc7, 0xc8, 0xe8, 0xd2, 0x72, 0x2b, 0xd3];
+pub const EXACT_DOCUMENTS_STARTS_WITH_ASC_QUERY_PLAN_HASH: [u8; 32] = [0x85, 0x25, 0x9a, 0x05, 0xf3, 0x0c, 0x02, 0x51, 0x94, 0x5b, 0x24, 0x52, 0x6e, 0xeb, 0xa7, 0xca, 0xe1, 0x15, 0x17, 0xb9, 0x71, 0x50, 0xd0, 0xa6, 0x3b, 0xc5, 0xb4, 0xd1, 0x9f, 0xd3, 0xdc, 0x4f];
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ExactDocumentsStartsWithAscQuery(pub ExactDocumentsStartsWithAscParams);
 impl GeneratedQuery for ExactDocumentsStartsWithAscQuery {
@@ -335,7 +335,7 @@ pub enum GetAuthSessionResult {
     Missing(Box<GetAuthSessionMissing>),
 }
 
-pub const GET_AUTH_SESSION_QUERY_PLAN_HASH: [u8; 32] = [0xfb, 0xa7, 0xa6, 0xf3, 0x7a, 0xde, 0xb8, 0x77, 0x26, 0x73, 0xda, 0x83, 0x37, 0xcf, 0x1b, 0x3f, 0x6e, 0x43, 0x64, 0x4e, 0x59, 0x61, 0x32, 0x24, 0xc1, 0xf5, 0x53, 0x85, 0xd7, 0xa4, 0xb8, 0x84];
+pub const GET_AUTH_SESSION_QUERY_PLAN_HASH: [u8; 32] = [0xff, 0x50, 0x1d, 0x8e, 0x9d, 0x45, 0x13, 0x80, 0xa4, 0x6d, 0xc3, 0xd0, 0x9f, 0xe6, 0xbb, 0x7f, 0x94, 0x00, 0xbb, 0xa2, 0x30, 0xda, 0x14, 0xc7, 0x9a, 0xeb, 0xb1, 0xbf, 0xf2, 0x3c, 0x80, 0xe6];
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct GetAuthSessionQuery(pub GetAuthSessionParams);
 impl GeneratedQuery for GetAuthSessionQuery {
@@ -414,7 +414,7 @@ pub enum ListDraftDocumentsResult {
     Found(Box<ListDraftDocumentsFound>),
 }
 
-pub const LIST_DRAFT_DOCUMENTS_QUERY_PLAN_HASH: [u8; 32] = [0x3d, 0x36, 0x19, 0xc4, 0xad, 0xbd, 0xd3, 0xfd, 0x33, 0x58, 0xc1, 0x03, 0xc6, 0x34, 0x11, 0x88, 0x0f, 0xd0, 0xa6, 0x64, 0xea, 0xf6, 0x22, 0xaa, 0x7e, 0xde, 0xe6, 0xf2, 0x84, 0xa3, 0x5e, 0x3f];
+pub const LIST_DRAFT_DOCUMENTS_QUERY_PLAN_HASH: [u8; 32] = [0x9d, 0xea, 0xd9, 0x95, 0xc1, 0xef, 0x40, 0x67, 0x26, 0x64, 0x0f, 0x51, 0x79, 0x3c, 0xd8, 0x2a, 0x83, 0xf5, 0x5b, 0x17, 0xb2, 0x13, 0x76, 0xb5, 0x5b, 0x8a, 0xef, 0xf5, 0x9e, 0xe2, 0x23, 0x8e];
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ListDraftDocumentsQuery(pub ListDraftDocumentsParams);
 impl GeneratedQuery for ListDraftDocumentsQuery {
@@ -486,7 +486,7 @@ pub enum ListFgaTuplesResult {
     Found(Box<ListFgaTuplesFound>),
 }
 
-pub const LIST_FGA_TUPLES_QUERY_PLAN_HASH: [u8; 32] = [0x0c, 0x35, 0xae, 0xa7, 0x4d, 0xbd, 0x55, 0x27, 0xac, 0x56, 0x94, 0x5c, 0xee, 0x31, 0xd2, 0xa3, 0x51, 0x53, 0x5f, 0xcd, 0xff, 0x8b, 0xa8, 0x62, 0xd5, 0xf8, 0x98, 0x2a, 0x33, 0x92, 0x76, 0xe7];
+pub const LIST_FGA_TUPLES_QUERY_PLAN_HASH: [u8; 32] = [0xbf, 0x95, 0xe3, 0x3c, 0x68, 0xb0, 0xb6, 0x04, 0x70, 0xe6, 0x35, 0x0f, 0xd2, 0xff, 0x00, 0xe6, 0x79, 0x6b, 0xcd, 0x30, 0xbb, 0xea, 0x26, 0x40, 0x27, 0xda, 0x0e, 0x4d, 0x9d, 0x2e, 0x24, 0xc7];
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ListFgaTuplesQuery(pub ListFgaTuplesParams);
 impl GeneratedQuery for ListFgaTuplesQuery {
@@ -560,7 +560,7 @@ pub enum ListPipelinesResult {
     Found(Box<ListPipelinesFound>),
 }
 
-pub const LIST_PIPELINES_QUERY_PLAN_HASH: [u8; 32] = [0xe1, 0x14, 0xac, 0x25, 0x75, 0x35, 0x79, 0x21, 0xf0, 0xd7, 0xc9, 0x88, 0x8b, 0xeb, 0x43, 0x3a, 0x9b, 0x14, 0xd5, 0x36, 0x0c, 0x89, 0xe5, 0xd7, 0x37, 0x2b, 0x63, 0x3d, 0x75, 0x0b, 0x65, 0x0b];
+pub const LIST_PIPELINES_QUERY_PLAN_HASH: [u8; 32] = [0x7e, 0x28, 0x8f, 0x33, 0xbd, 0xdf, 0xf2, 0x26, 0xd1, 0x3d, 0xaa, 0x5b, 0xe6, 0xf4, 0x4f, 0xe6, 0x81, 0x03, 0xa7, 0x6a, 0x72, 0x80, 0xec, 0x24, 0x43, 0x0d, 0xd8, 0xd7, 0x42, 0x03, 0x2d, 0x76];
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ListPipelinesQuery(pub ListPipelinesParams);
 impl GeneratedQuery for ListPipelinesQuery {
@@ -633,7 +633,7 @@ pub enum MetricDashboardResult {
     Found(Box<MetricDashboardFound>),
 }
 
-pub const METRIC_DASHBOARD_QUERY_PLAN_HASH: [u8; 32] = [0x00, 0xb8, 0x64, 0x0c, 0x9a, 0xfd, 0xae, 0x08, 0x48, 0x44, 0x25, 0xa7, 0xaf, 0x0e, 0x27, 0x00, 0x3a, 0x4e, 0x18, 0x1e, 0x76, 0x6e, 0xb0, 0x7f, 0xb4, 0xb6, 0x29, 0xad, 0x9f, 0xc2, 0x39, 0x87];
+pub const METRIC_DASHBOARD_QUERY_PLAN_HASH: [u8; 32] = [0x25, 0x28, 0x79, 0xf2, 0xe9, 0x26, 0x03, 0x32, 0xe1, 0x11, 0x95, 0xd2, 0x0a, 0xb0, 0x60, 0x76, 0x95, 0xfd, 0xda, 0x96, 0x77, 0xa5, 0x7a, 0xd8, 0x91, 0x0b, 0x81, 0x7f, 0x54, 0x4f, 0x7e, 0xdc];
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MetricDashboardQuery(pub MetricDashboardParams);
 impl GeneratedQuery for MetricDashboardQuery {
@@ -683,6 +683,204 @@ fn decode_metric_dashboard_found_summary_record(mut record: ApplicationRecord) -
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ReviewedDirectoryUsersParams {
+    pub organization_id: String,
+    pub states: Vec<String>,
+    pub before_created_at: u64,
+    pub limit: u64,
+    pub offset: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ReviewedDirectoryUsersFoundUsers {
+    pub organization_id: String,
+    pub user_id: String,
+    pub email: String,
+    pub state: String,
+    pub created_at: u64,
+    pub reviewed_at: Option<TimestampValue>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ReviewedDirectoryUsersFoundTotal {
+    pub value: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ReviewedDirectoryUsersFound {
+    pub users: Vec<ReviewedDirectoryUsersFoundUsers>,
+    pub total: ReviewedDirectoryUsersFoundTotal,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ReviewedDirectoryUsersResult {
+    Found(Box<ReviewedDirectoryUsersFound>),
+}
+
+pub const REVIEWED_DIRECTORY_USERS_QUERY_PLAN_HASH: [u8; 32] = [0xf0, 0xa9, 0x36, 0xd2, 0xd4, 0xda, 0x23, 0x10, 0x0a, 0xcd, 0xbd, 0x9b, 0xca, 0xbf, 0xb9, 0xf0, 0xb0, 0xfa, 0x43, 0x7b, 0x1f, 0x1f, 0x86, 0xc0, 0xb3, 0x5d, 0x8b, 0x7d, 0xb1, 0x82, 0x1c, 0xc9];
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ReviewedDirectoryUsersQuery(pub ReviewedDirectoryUsersParams);
+impl GeneratedQuery for ReviewedDirectoryUsersQuery {
+    type Output = ReviewedDirectoryUsersResult;
+
+    fn named_query(self, options: QueryOptions) -> Result<NamedQuery, ApplicationClientError> {
+        let mut parameters = BTreeMap::new();
+        parameters.insert("organization_id".to_owned(), ApplicationValue::Uuid(ApplicationUuid::from_text(self.0.organization_id)?));
+        parameters.insert("states".to_owned(), ApplicationValue::List(self.0.states.into_iter().map(ApplicationValue::String).collect()));
+        parameters.insert("before_created_at".to_owned(), ApplicationValue::U64(self.0.before_created_at));
+        parameters.insert("limit".to_owned(), ApplicationValue::U64(self.0.limit));
+        parameters.insert("offset".to_owned(), ApplicationValue::U64(self.0.offset));
+        NamedQuery::new(
+            ApplicationContract::Exact {
+                lineage: CONTRACT_LINEAGE.to_owned(),
+                version: CONTRACT_VERSION,
+                bundle_hash: Some(CONTRACT_BUNDLE_HASH),
+            },
+            "ReviewedDirectoryUsers",
+            Some(QUERY_MODULE_HASH),
+            parameters,
+            None,
+        )?.expect_plan_hash(REVIEWED_DIRECTORY_USERS_QUERY_PLAN_HASH).with_options(options)
+    }
+
+    fn decode_result(mut response: NamedQueryResult) -> Result<Self::Output, ApplicationClientError> {
+        let outcome = response.outcome.clone();
+        match outcome.as_str() {
+            "Found" => {
+                let decoded = ReviewedDirectoryUsersFound {
+                    users: many_result_records(take_result_field(&mut response.fields, "users")?)?.into_iter().map(decode_reviewed_directory_users_found_users_record).collect::<Result<Vec<_>, _>>()?,
+                    total: decode_reviewed_directory_users_found_total_record(one_result_record(take_result_field(&mut response.fields, "total")?)?)?,
+                };
+                if !response.fields.is_empty() { return Err(ApplicationClientError::InvalidResponse); }
+                Ok(ReviewedDirectoryUsersResult::Found(Box::new(decoded)))
+            },
+            _ => Err(ApplicationClientError::InvalidResponse),
+        }
+    }
+}
+
+fn decode_reviewed_directory_users_found_users_record(mut record: ApplicationRecord) -> Result<ReviewedDirectoryUsersFoundUsers, ApplicationClientError> {
+    let value = ReviewedDirectoryUsersFoundUsers {
+        organization_id: application_uuid(take_application_value(&mut record.fields, "organization_id")?)?,
+        user_id: application_uuid(take_application_value(&mut record.fields, "user_id")?)?,
+        email: application_string(take_application_value(&mut record.fields, "email")?)?,
+        state: application_string(take_application_value(&mut record.fields, "state")?)?,
+        created_at: application_u64(take_application_value(&mut record.fields, "created_at")?)?,
+        reviewed_at: match take_application_value(&mut record.fields, "reviewed_at")? { ApplicationValue::Null => None, value => Some(application_timestamp(value)?) },
+    };
+    if !record.fields.is_empty() { return Err(ApplicationClientError::InvalidResponse); }
+    Ok(value)
+}
+
+fn decode_reviewed_directory_users_found_total_record(mut record: ApplicationRecord) -> Result<ReviewedDirectoryUsersFoundTotal, ApplicationClientError> {
+    let value = ReviewedDirectoryUsersFoundTotal {
+        value: application_u64(take_application_value(&mut record.fields, "value")?)?,
+    };
+    if !record.fields.is_empty() { return Err(ApplicationClientError::InvalidResponse); }
+    Ok(value)
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SearchDirectoryUsersParams {
+    pub organization_id: String,
+    pub needle: String,
+    pub excluded_states: Vec<String>,
+    pub maximum_created_at: Option<u64>,
+    pub limit: u64,
+    pub offset: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SearchDirectoryUsersFoundUsers {
+    pub organization_id: String,
+    pub user_id: String,
+    pub email: String,
+    pub state: String,
+    pub created_at: u64,
+    pub reviewed_at: Option<TimestampValue>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SearchDirectoryUsersFoundTotal {
+    pub value: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SearchDirectoryUsersFound {
+    pub users: Vec<SearchDirectoryUsersFoundUsers>,
+    pub total: SearchDirectoryUsersFoundTotal,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum SearchDirectoryUsersResult {
+    Found(Box<SearchDirectoryUsersFound>),
+}
+
+pub const SEARCH_DIRECTORY_USERS_QUERY_PLAN_HASH: [u8; 32] = [0x12, 0x50, 0xe2, 0x0a, 0x7e, 0x96, 0x6e, 0x8f, 0xc3, 0x3a, 0xb1, 0x73, 0x35, 0x12, 0xaf, 0xd0, 0x31, 0xfb, 0xb2, 0xf5, 0xee, 0xc4, 0x78, 0x22, 0x9f, 0x39, 0x96, 0xb5, 0x0a, 0xd8, 0x20, 0xd6];
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SearchDirectoryUsersQuery(pub SearchDirectoryUsersParams);
+impl GeneratedQuery for SearchDirectoryUsersQuery {
+    type Output = SearchDirectoryUsersResult;
+
+    fn named_query(self, options: QueryOptions) -> Result<NamedQuery, ApplicationClientError> {
+        let mut parameters = BTreeMap::new();
+        parameters.insert("organization_id".to_owned(), ApplicationValue::Uuid(ApplicationUuid::from_text(self.0.organization_id)?));
+        parameters.insert("needle".to_owned(), ApplicationValue::String(self.0.needle));
+        parameters.insert("excluded_states".to_owned(), ApplicationValue::List(self.0.excluded_states.into_iter().map(ApplicationValue::String).collect()));
+        parameters.insert("maximum_created_at".to_owned(), match self.0.maximum_created_at { Some(value) => ApplicationValue::U64(value), None => ApplicationValue::Null });
+        parameters.insert("limit".to_owned(), ApplicationValue::U64(self.0.limit));
+        parameters.insert("offset".to_owned(), ApplicationValue::U64(self.0.offset));
+        NamedQuery::new(
+            ApplicationContract::Exact {
+                lineage: CONTRACT_LINEAGE.to_owned(),
+                version: CONTRACT_VERSION,
+                bundle_hash: Some(CONTRACT_BUNDLE_HASH),
+            },
+            "SearchDirectoryUsers",
+            Some(QUERY_MODULE_HASH),
+            parameters,
+            None,
+        )?.expect_plan_hash(SEARCH_DIRECTORY_USERS_QUERY_PLAN_HASH).with_options(options)
+    }
+
+    fn decode_result(mut response: NamedQueryResult) -> Result<Self::Output, ApplicationClientError> {
+        let outcome = response.outcome.clone();
+        match outcome.as_str() {
+            "Found" => {
+                let decoded = SearchDirectoryUsersFound {
+                    users: many_result_records(take_result_field(&mut response.fields, "users")?)?.into_iter().map(decode_search_directory_users_found_users_record).collect::<Result<Vec<_>, _>>()?,
+                    total: decode_search_directory_users_found_total_record(one_result_record(take_result_field(&mut response.fields, "total")?)?)?,
+                };
+                if !response.fields.is_empty() { return Err(ApplicationClientError::InvalidResponse); }
+                Ok(SearchDirectoryUsersResult::Found(Box::new(decoded)))
+            },
+            _ => Err(ApplicationClientError::InvalidResponse),
+        }
+    }
+}
+
+fn decode_search_directory_users_found_users_record(mut record: ApplicationRecord) -> Result<SearchDirectoryUsersFoundUsers, ApplicationClientError> {
+    let value = SearchDirectoryUsersFoundUsers {
+        organization_id: application_uuid(take_application_value(&mut record.fields, "organization_id")?)?,
+        user_id: application_uuid(take_application_value(&mut record.fields, "user_id")?)?,
+        email: application_string(take_application_value(&mut record.fields, "email")?)?,
+        state: application_string(take_application_value(&mut record.fields, "state")?)?,
+        created_at: application_u64(take_application_value(&mut record.fields, "created_at")?)?,
+        reviewed_at: match take_application_value(&mut record.fields, "reviewed_at")? { ApplicationValue::Null => None, value => Some(application_timestamp(value)?) },
+    };
+    if !record.fields.is_empty() { return Err(ApplicationClientError::InvalidResponse); }
+    Ok(value)
+}
+
+fn decode_search_directory_users_found_total_record(mut record: ApplicationRecord) -> Result<SearchDirectoryUsersFoundTotal, ApplicationClientError> {
+    let value = SearchDirectoryUsersFoundTotal {
+        value: application_u64(take_application_value(&mut record.fields, "value")?)?,
+    };
+    if !record.fields.is_empty() { return Err(ApplicationClientError::InvalidResponse); }
+    Ok(value)
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SearchDocumentsParams {
     pub site_id: String,
     pub title_prefix: String,
@@ -706,7 +904,7 @@ pub enum SearchDocumentsResult {
     Found(Box<SearchDocumentsFound>),
 }
 
-pub const SEARCH_DOCUMENTS_QUERY_PLAN_HASH: [u8; 32] = [0xab, 0x1b, 0x0a, 0xb4, 0xbb, 0xf7, 0x80, 0xc0, 0x97, 0x96, 0x48, 0xcf, 0x1a, 0xf6, 0x5e, 0xe5, 0x2f, 0xc7, 0xbd, 0x56, 0xc0, 0x10, 0x74, 0x65, 0xc3, 0x28, 0xce, 0xdb, 0x15, 0x30, 0xab, 0x9a];
+pub const SEARCH_DOCUMENTS_QUERY_PLAN_HASH: [u8; 32] = [0xe8, 0x8b, 0xaa, 0x94, 0xa5, 0x18, 0x39, 0xd1, 0xab, 0x27, 0x74, 0x85, 0x55, 0x11, 0x10, 0xe7, 0x80, 0xdd, 0xc7, 0xc0, 0x99, 0xff, 0xbc, 0x76, 0x7d, 0x02, 0xb9, 0xb9, 0x6c, 0xfc, 0x1e, 0x4e];
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SearchDocumentsQuery(pub SearchDocumentsParams);
 impl GeneratedQuery for SearchDocumentsQuery {
@@ -945,6 +1143,42 @@ fn decode_auth_session_entity(value: v1::Value) -> Result<AuthSession, Generated
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DirectoryUser {
+    pub email: String,
+    pub state: String,
+    pub user_id: String,
+    pub created_at: u64,
+    pub reviewed_at: Option<TimestampValue>,
+    pub organization_id: String,
+}
+
+fn encode_directory_user_entity(value: &DirectoryUser) -> Result<v1::Value, GeneratedCommandError> {
+    let fields = vec![
+        v1::ValueField { field_id: Some(1), name: String::new(), value: Some(wire_string(Clone::clone(&value.email))) },
+        v1::ValueField { field_id: Some(2), name: String::new(), value: Some(wire_string(Clone::clone(&value.state))) },
+        v1::ValueField { field_id: Some(3), name: String::new(), value: Some(wire_uuid(&value.user_id)?) },
+        v1::ValueField { field_id: Some(4), name: String::new(), value: Some(wire_u64(value.created_at)) },
+        v1::ValueField { field_id: Some(5), name: String::new(), value: Some(match &value.reviewed_at.as_ref() { Some(value) => wire_timestamp(value)?, None => wire_null() }) },
+        v1::ValueField { field_id: Some(6), name: String::new(), value: Some(wire_uuid(&value.organization_id)?) },
+    ];
+    Ok(v1::Value { kind: Some(WireKind::RecordValue(v1::ValueRecord { fields })) })
+}
+
+fn decode_directory_user_entity(value: v1::Value) -> Result<DirectoryUser, GeneratedCommandError> {
+    let mut fields = wire_record_fields(value)?;
+    let entity = DirectoryUser {
+        email: decode_wire_string(take_wire_field(&mut fields, 1)?)?,
+        state: decode_wire_string(take_wire_field(&mut fields, 2)?)?,
+        user_id: decode_wire_uuid(take_wire_field(&mut fields, 3)?)?,
+        created_at: decode_wire_u64(take_wire_field(&mut fields, 4)?)?,
+        reviewed_at: decode_wire_optional(take_wire_field(&mut fields, 5)?, decode_wire_timestamp)?,
+        organization_id: decode_wire_uuid(take_wire_field(&mut fields, 6)?)?,
+    };
+    if !fields.is_empty() { return Err(GeneratedCommandError::InvalidOutcomeShape); }
+    Ok(entity)
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AuthSignupInput {
     pub email: String,
     pub user_id: String,
@@ -996,7 +1230,7 @@ pub enum CreateAuthSessionsOutcome {
     SessionAlreadyExists,
 }
 
-const CREATE_AUTH_SESSIONS_PLAN_HASH: [u8; 32] = [0xc8, 0xb6, 0xc4, 0x8a, 0x13, 0x28, 0x62, 0x2d, 0x67, 0x16, 0x83, 0x92, 0x04, 0x9a, 0x17, 0xd1, 0x87, 0xac, 0x1a, 0x57, 0x1e, 0x79, 0xcc, 0x88, 0x8e, 0x54, 0x89, 0x63, 0x98, 0xcf, 0xe3, 0xf6];
+const CREATE_AUTH_SESSIONS_PLAN_HASH: [u8; 32] = [0x73, 0x47, 0x4d, 0x2f, 0xe7, 0x7a, 0xcd, 0x9b, 0x29, 0x9f, 0xd9, 0x01, 0x92, 0xa5, 0x1b, 0xac, 0x96, 0x07, 0xb6, 0x8e, 0xd1, 0xd7, 0xbe, 0x9c, 0xb1, 0x8d, 0xf1, 0xc7, 0xe6, 0xd7, 0x09, 0x0d];
 impl GeneratedCommand for CreateAuthSessionsInput {
     type Outcome = CreateAuthSessionsOutcome;
 
@@ -1026,6 +1260,54 @@ impl GeneratedCommand for CreateAuthSessionsInput {
             "SessionsCreated" => if fields.is_empty() { Ok(Self::Outcome::SessionsCreated) } else { Err(GeneratedCommandError::InvalidOutcomeShape) },
             "UserAlreadyExists" => if fields.is_empty() { Ok(Self::Outcome::UserAlreadyExists) } else { Err(GeneratedCommandError::InvalidOutcomeShape) },
             "SessionAlreadyExists" => if fields.is_empty() { Ok(Self::Outcome::SessionAlreadyExists) } else { Err(GeneratedCommandError::InvalidOutcomeShape) },
+            _ => Err(GeneratedCommandError::InvalidOutcomeShape),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CreateDirectoryUsersInput {
+    pub users: Vec<DirectoryUser>,
+    pub request_id: String,
+}
+
+#[allow(clippy::large_enum_variant)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum CreateDirectoryUsersOutcome {
+    DirectoryUsersCreated,
+
+    DirectoryUserAlreadyExists,
+}
+
+const CREATE_DIRECTORY_USERS_PLAN_HASH: [u8; 32] = [0x21, 0x6b, 0x40, 0x0b, 0x14, 0x57, 0xc5, 0x57, 0x9a, 0x96, 0x22, 0x80, 0xca, 0x7b, 0x85, 0xc4, 0xea, 0xd4, 0x9b, 0x58, 0x1f, 0xf7, 0xd8, 0x4e, 0x77, 0xc3, 0x1b, 0x2d, 0x7e, 0x14, 0x1c, 0x18];
+impl GeneratedCommand for CreateDirectoryUsersInput {
+    type Outcome = CreateDirectoryUsersOutcome;
+
+    fn idempotent_command(&self) -> Result<IdempotentCommand, GeneratedCommandError> {
+
+        if self.users.is_empty() || self.users.len() > 32 { return Err(GeneratedCommandError::InvalidInputShape); }
+        let fields = vec![
+            wire_named_field("users", v1::Value { kind: Some(WireKind::ListValue(v1::ValueList { values: (self.users).iter().map(encode_directory_user_entity).collect::<Result<Vec<_>, GeneratedCommandError>>()? })) }),
+            wire_named_field("request_id", wire_uuid(&self.request_id)?),
+        ];
+        IdempotentCommand::new("CreateDirectoryUsers", Some(CONTRACT_VERSION), wire_record(fields)).map_err(Into::into)
+    }
+
+    fn outcome_request(&self, request_id: riffdb_client_rust::RequestId) -> Result<v1::GetOutcomeRequest, GeneratedCommandError> {
+        Ok(v1::GetOutcomeRequest {
+            request_id: request_id.into_bytes().to_vec(),
+            contract_lineage: CONTRACT_LINEAGE.to_owned(),
+            command_name: "CreateDirectoryUsers".to_owned(),
+            idempotency_key: self.request_id.clone(),
+            outcome_uri: None,
+        })
+    }
+
+    fn decode_outcome(&self, response: &v1::ExecuteCommandResponse) -> Result<Self::Outcome, GeneratedCommandError> {
+        let fields = wire_outcome_fields(response, &CREATE_DIRECTORY_USERS_PLAN_HASH)?;
+        match response.outcome_type.as_str() {
+            "DirectoryUsersCreated" => if fields.is_empty() { Ok(Self::Outcome::DirectoryUsersCreated) } else { Err(GeneratedCommandError::InvalidOutcomeShape) },
+            "DirectoryUserAlreadyExists" => if fields.is_empty() { Ok(Self::Outcome::DirectoryUserAlreadyExists) } else { Err(GeneratedCommandError::InvalidOutcomeShape) },
             _ => Err(GeneratedCommandError::InvalidOutcomeShape),
         }
     }
@@ -1349,6 +1631,32 @@ impl AdapterOperationalConformanceClient {
         self.client.execute_generated_query(MetricDashboardQuery(parameters), options, &self.metadata).await
     }
 
+    /// Executes the generated `ReviewedDirectoryUsers` named query.
+    pub async fn reviewed_directory_users(&mut self, parameters: ReviewedDirectoryUsersParams) -> Result<ReviewedDirectoryUsersResult, ApplicationClientError> {
+        Ok(self.reviewed_directory_users_with_options(parameters, QueryOptions::new()).await?.value)
+    }
+    /// Executes `ReviewedDirectoryUsers` against a snapshot at or after the supplied command commit.
+    pub async fn reviewed_directory_users_after_commit(&mut self, parameters: ReviewedDirectoryUsersParams, commit_sequence: u64) -> Result<TypedQueryResult<ReviewedDirectoryUsersResult>, ApplicationClientError> {
+        self.reviewed_directory_users_with_options(parameters, QueryOptions::new().read_after_commit(commit_sequence)).await
+    }
+    /// Executes `ReviewedDirectoryUsers` with generated pagination or read-fence options.
+    pub async fn reviewed_directory_users_with_options(&mut self, parameters: ReviewedDirectoryUsersParams, options: QueryOptions) -> Result<TypedQueryResult<ReviewedDirectoryUsersResult>, ApplicationClientError> {
+        self.client.execute_generated_query(ReviewedDirectoryUsersQuery(parameters), options, &self.metadata).await
+    }
+
+    /// Executes the generated `SearchDirectoryUsers` named query.
+    pub async fn search_directory_users(&mut self, parameters: SearchDirectoryUsersParams) -> Result<SearchDirectoryUsersResult, ApplicationClientError> {
+        Ok(self.search_directory_users_with_options(parameters, QueryOptions::new()).await?.value)
+    }
+    /// Executes `SearchDirectoryUsers` against a snapshot at or after the supplied command commit.
+    pub async fn search_directory_users_after_commit(&mut self, parameters: SearchDirectoryUsersParams, commit_sequence: u64) -> Result<TypedQueryResult<SearchDirectoryUsersResult>, ApplicationClientError> {
+        self.search_directory_users_with_options(parameters, QueryOptions::new().read_after_commit(commit_sequence)).await
+    }
+    /// Executes `SearchDirectoryUsers` with generated pagination or read-fence options.
+    pub async fn search_directory_users_with_options(&mut self, parameters: SearchDirectoryUsersParams, options: QueryOptions) -> Result<TypedQueryResult<SearchDirectoryUsersResult>, ApplicationClientError> {
+        self.client.execute_generated_query(SearchDirectoryUsersQuery(parameters), options, &self.metadata).await
+    }
+
     /// Executes the generated `SearchDocuments` named query.
     pub async fn search_documents(&mut self, parameters: SearchDocumentsParams) -> Result<SearchDocumentsResult, ApplicationClientError> {
         Ok(self.search_documents_with_options(parameters, QueryOptions::new()).await?.value)
@@ -1371,6 +1679,21 @@ impl AdapterOperationalConformanceClient {
     }
 
     pub async fn create_auth_sessions_batch_with_progress<F>(&self, inputs: Vec<CreateAuthSessionsInput>, options: GeneratedBatchOptions, progress: F) -> Result<GeneratedBatchResult<CreateAuthSessionsOutcome>, GeneratedBatchError>
+    where
+        F: FnMut(GeneratedBatchProgress),
+    {
+        self.client.execute_generated_command_batch_with_progress(inputs, options, self.command_attempts, &self.metadata, progress).await
+    }
+
+    pub async fn create_directory_users(&mut self, input: CreateDirectoryUsersInput) -> Result<TypedCommandResult<CreateDirectoryUsersOutcome>, ApplicationClientError> {
+        self.client.execute_generated_command(&input, self.command_attempts, &self.metadata).await.map_err(Into::into)
+    }
+
+    pub async fn create_directory_users_batch(&self, inputs: Vec<CreateDirectoryUsersInput>, options: GeneratedBatchOptions) -> Result<GeneratedBatchResult<CreateDirectoryUsersOutcome>, GeneratedBatchError> {
+        self.client.execute_generated_command_batch(inputs, options, self.command_attempts, &self.metadata).await
+    }
+
+    pub async fn create_directory_users_batch_with_progress<F>(&self, inputs: Vec<CreateDirectoryUsersInput>, options: GeneratedBatchOptions, progress: F) -> Result<GeneratedBatchResult<CreateDirectoryUsersOutcome>, GeneratedBatchError>
     where
         F: FnMut(GeneratedBatchProgress),
     {

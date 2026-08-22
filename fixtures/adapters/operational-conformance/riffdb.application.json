@@ -22,6 +22,8 @@
         { "name": "ExactDocumentsContainsAsc", "source": "riffdb/queries/exact_documents_contains_asc.riffq" },
         { "name": "ExactDocumentsEndsWithDesc", "source": "riffdb/queries/exact_documents_ends_with_desc.riffq" },
         { "name": "ExactDocumentsStartsWithAsc", "source": "riffdb/queries/exact_documents_starts_with_asc.riffq" },
+        { "name": "SearchDirectoryUsers", "source": "riffdb/queries/search_directory_users.riffq" },
+        { "name": "ReviewedDirectoryUsers", "source": "riffdb/queries/reviewed_directory_users.riffq" },
         { "name": "ListFgaTuples", "source": "riffdb/queries/list_fga_tuples.riffq" },
         { "name": "MetricDashboard", "source": "riffdb/queries/metric_dashboard.riffq" },
         { "name": "SearchDocuments", "source": "riffdb/queries/search_documents.riffq" },
@@ -41,6 +43,8 @@
         "ExactDocumentsContainsAsc",
         "ExactDocumentsEndsWithDesc",
         "ExactDocumentsStartsWithAsc",
+        "SearchDirectoryUsers",
+        "ReviewedDirectoryUsers",
         "ListFgaTuples",
         "MetricDashboard",
         "SearchDocuments",
@@ -48,7 +52,7 @@
         "ListPipelines",
         "GetAuthSession"
       ],
-      "commands": ["WriteTuples", "LogMetrics", "CreateDocuments", "CreatePipelines", "CreateAuthSessions"],
+      "commands": ["WriteTuples", "LogMetrics", "CreateDocuments", "CreateDirectoryUsers", "CreatePipelines", "CreateAuthSessions"],
       "event_streams": [],
       "watch_queries": [],
       "agent_subscriptions": []

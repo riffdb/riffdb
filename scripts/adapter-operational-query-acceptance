@@ -214,6 +214,51 @@ for exact_query in ExactDocumentsContainsAsc ExactDocumentsEndsWithDesc ExactDoc
         exit 1
     }
 done
+cat >"$work_root/exact-predicate-readiness.json" <<'EOF'
+{
+  "organization_id": {"$uuid":"018f0f8b-7c6d-7e31-8a4f-00000000003c"},
+  "needle": "example",
+  "excluded_states": ["disabled"],
+  "maximum_created_at": null,
+  "limit": 1,
+  "offset": {"$u64":"0"}
+}
+EOF
+cat >"$work_root/exact-predicate-reviewed-readiness.json" <<'EOF'
+{
+  "organization_id": {"$uuid":"018f0f8b-7c6d-7e31-8a4f-00000000003c"},
+  "states": ["active", "archive"],
+  "before_created_at": {"$u64":"35"},
+  "limit": 25,
+  "offset": {"$u64":"0"}
+}
+EOF
+for query_and_file in \
+    "SearchDirectoryUsers:$work_root/exact-predicate-readiness.json" \
+    "ReviewedDirectoryUsers:$work_root/exact-predicate-reviewed-readiness.json"; do
+    exact_query="${query_and_file%%:*}"
+    readiness_file="${query_and_file#*:}"
+    exact_provider_ready=''
+    for _attempt in $(seq 1 100); do
+        if target/debug/riffdb --config "$work_root/application-client.toml" \
+            query run-named "$exact_query" \
+            --contract-lineage AdapterOperationalConformance --contract-version 1 \
+            --module-hash "$module_hash" --parameters "$readiness_file" \
+            --output json >"$work_root/exact-provider-readiness.out" 2>&1; then
+            exact_provider_ready=yes
+            break
+        fi
+        if ! rg -q 'RDB-QUERY-0102' "$work_root/exact-provider-readiness.out"; then
+            cat "$work_root/exact-provider-readiness.out" >&2
+            exit 1
+        fi
+    done
+    [[ "$exact_provider_ready" == yes ]] || {
+        cat "$work_root/exact-provider-readiness.out" >&2
+        echo "$exact_query provider did not become ready within the bounded poll budget" >&2
+        exit 1
+    }
+done
 
 cargo +1.97.0 run --quiet -p riffdb-testkit --example adapter_operational_remote_client -- >"$work_root/rust.json"
 
@@ -342,7 +387,7 @@ PYTHONPATH="$work_root/application/generated/python" \
     "$work_root/python-venv/bin/python" fixtures/adapters/operational-conformance/runner/python.py \
     >"$work_root/python.json"
 
-expected='{"adapters":["mlflow","openfga","better-auth","woodpecker"],"binary_prefix":true,"catalog_preflight":true,"exact_aggregates":true,"exact_text_family":true,"exact_total":true,"null_predicate":true,"numeric_offset":true,"optional_filters":true,"regression_adapters":["payload"],"schema":"riffdb.adapter-operational-observation/v1","stable_cursor":true}'
+expected='{"adapters":["mlflow","openfga","better-auth","woodpecker"],"binary_prefix":true,"catalog_preflight":true,"exact_aggregates":true,"exact_predicate_family":true,"exact_text_family":true,"exact_total":true,"null_predicate":true,"numeric_offset":true,"optional_filters":true,"regression_adapters":["payload"],"schema":"riffdb.adapter-operational-observation/v1","stable_cursor":true}'
 for language in rust go typescript python; do
     observed="$(jq -cS 'del(.language)' "$work_root/$language.json")"
     [[ "$observed" == "$expected" ]] || {
@@ -353,8 +398,8 @@ done
 
 jq -e '
   .schema == "riffdb-generated-application-operations/v2"
-  and (.tools | length) == 9
-  and ([.tools[].operation_name] | sort) == ["ExactDocumentsContainsAsc", "ExactDocumentsEndsWithDesc", "ExactDocumentsStartsWithAsc", "GetAuthSession", "ListDraftDocuments", "ListFgaTuples", "ListPipelines", "MetricDashboard", "SearchDocuments"]
+  and (.tools | length) == 11
+  and ([.tools[].operation_name] | sort) == ["ExactDocumentsContainsAsc", "ExactDocumentsEndsWithDesc", "ExactDocumentsStartsWithAsc", "GetAuthSession", "ListDraftDocuments", "ListFgaTuples", "ListPipelines", "MetricDashboard", "ReviewedDirectoryUsers", "SearchDirectoryUsers", "SearchDocuments"]
   and ([.tools[] | select(.operation_name | startswith("ExactDocuments"))] | length) == 3
   and all(.tools[] | select(.operation_name | startswith("ExactDocuments"));
        (.input_schema.required | sort) == ["needle", "site_id"]
@@ -373,6 +418,11 @@ jq -e '
   and (.tools[] | select(.operation_name == "SearchDocuments")
        | (.input_schema.required | sort) == ["site_id", "title_prefix"]
          and .result_schema.oneOf[0].properties.documents.maxItems == 25)
+  and (.tools[] | select(.operation_name == "SearchDirectoryUsers")
+       | (.input_schema.required | sort) == ["excluded_states", "needle", "organization_id"]
+         and .input_schema.properties.excluded_states.maxItems == 64
+         and .input_schema.properties.excluded_states.uniqueItems == true
+         and .result_schema.oneOf[0].properties.users.maxItems == 499)
 ' \
     fixtures/adapters/operational-conformance/generated/mcp/tools.json >/dev/null
 

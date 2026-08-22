@@ -131,6 +131,22 @@ impl CompiledExactPredicateResultSetV1 {
         self.metadata.maximum_cost()
     }
 
+    /// Request-time authorization charge after background provider work is separated.
+    #[must_use]
+    pub fn authorization_cost(&self) -> QueryCostVectorV1 {
+        let cost = self.cost();
+        QueryCostVectorV1::new(
+            cost.access_steps(),
+            0,
+            0,
+            cost.dependent_keys(),
+            cost.intermediate_rows(),
+            cost.projected_values(),
+            cost.encoded_result_bytes(),
+        )
+        .expect("lowering internal provider work preserves a valid query cost")
+    }
+
     /// Non-executable representative used only for shared metadata.
     #[doc(hidden)]
     #[must_use]
