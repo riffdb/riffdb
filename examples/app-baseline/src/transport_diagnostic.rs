@@ -205,22 +205,6 @@ fn main() -> Result<(), String> {
         } else {
             None
         };
-        let direct_exclusive_first = if args.direct_exclusive_probe
-            && clients == 1
-            && args.direct_first
-        {
-            let (restarted, measured, server) = measure_direct_shape(
-                &runtime,
-                session,
-                &expected,
-                args.samples_per_client,
-                args.warmup_per_client,
-            )?;
-            session = restarted;
-            Some((measured, server))
-        } else {
-            None
-        };
         let bounded_session_first = if args.bounded_session_shadow && args.bounded_session_first {
             let (restarted, measured) = measure_bounded_session_shape(
                 &runtime,
@@ -281,19 +265,21 @@ fn main() -> Result<(), String> {
         };
 
         let direct_exclusive = if args.direct_exclusive_probe && clients == 1 {
-            let (measured, server) = if let Some(measured) = direct_exclusive_first {
-                measured
-            } else {
-                let (restarted, measured, server) = measure_direct_shape(
-                    &runtime,
-                    session,
-                    &expected,
-                    args.samples_per_client,
-                    args.warmup_per_client,
-                )?;
-                session = restarted;
-                (measured, server)
-            };
+            let address = session
+                .direct_diagnostic_address()
+                .ok_or_else(|| "direct diagnostic listener was not published".to_owned())?;
+            let measured = run_direct_shape(
+                &runtime,
+                &session.backend,
+                address,
+                &expected,
+                args.samples_per_client,
+                args.warmup_per_client,
+            )?;
+            let (restarted, server) = runtime
+                .block_on(session.restart_for_measurement())
+                .map_err(|error| error.to_string())?;
+            session = restarted;
             let unary_complete_ns = synchronous
                 .paired
                 .as_ref()
@@ -353,10 +339,9 @@ fn main() -> Result<(), String> {
                 "after": asynchronous_memory_after,
             },
             "bounded_session_shadow": bounded_session,
-                "direct_exclusive_probe": direct_exclusive,
-                "connection_setup_first_operation": direct_setup,
-                "bookkeeping": {
-                "direct_exclusive_order": if args.direct_first { "before_unary" } else { "after_async" },
+            "direct_exclusive_probe": direct_exclusive,
+            "connection_setup_first_operation": direct_setup,
+            "bookkeeping": {
                 "bounded_session_order": if args.bounded_session_first { "before_unary" } else { "after_async" },
                 "bridge_only_classification": "measurement_artifact_not_product_gain",
                 "asynchronous_call_classification": "customer_paid_product_path",
@@ -426,37 +411,6 @@ fn main() -> Result<(), String> {
         println!("{encoded}");
     }
     Ok(())
-}
-
-fn measure_direct_shape(
-    runtime: &tokio::runtime::Runtime,
-    session: RiffDbServerSession,
-    expected: &TicketRow,
-    samples_per_client: usize,
-    warmup_per_client: usize,
-) -> Result<
-    (
-        RiffDbServerSession,
-        DirectShapeResult,
-        RiffDbShutdownEvidence,
-    ),
-    String,
-> {
-    let address = session
-        .direct_diagnostic_address()
-        .ok_or_else(|| "direct diagnostic listener was not published".to_owned())?;
-    let measured = run_direct_shape(
-        runtime,
-        &session.backend,
-        address,
-        expected,
-        samples_per_client,
-        warmup_per_client,
-    )?;
-    let (restarted, server) = runtime
-        .block_on(session.restart_for_measurement())
-        .map_err(|error| error.to_string())?;
-    Ok((restarted, measured, server))
 }
 
 fn measure_bounded_session_shape(
@@ -576,16 +530,6 @@ async fn measure_setup_first(
     }
 
     const SETUP_SAMPLES: usize = 32;
-    // The setup gate measures a fresh connection plus its first operation, not
-    // one-time process code-page and plan-cache cold start. Warm each transport
-    // once in the opposite order before the counterbalanced measured pairs.
-    if direct_first {
-        unary(&session.backend, expected).await?;
-        direct(session, expected).await?;
-    } else {
-        direct(session, expected).await?;
-        unary(&session.backend, expected).await?;
-    }
     let mut unary_latency = LatencyHistogram::default();
     let mut direct_latency = LatencyHistogram::default();
     for sample in 0..SETUP_SAMPLES {
