@@ -143,3 +143,34 @@ fn caller_structure_and_incomplete_orders_remain_unrepresentable() {
         "exact predicate values must be typed parameters"
     );
 }
+
+#[test]
+fn state_predicates_do_not_invent_value_parameter_slots() {
+    let query = r#"
+query ReviewedUsers(
+  $organization_id: User.organization_id,
+  $states: Set<User.state>,
+  $before: User.created_at,
+  $limit: Limit,
+  $offset: u64
+) {
+  many users from User
+    where organization_id == $organization_id
+      && state in $states
+      && created_at < $before
+      && email is not null
+    order by created_at desc, user_id asc
+    take $limit offset $offset
+  aggregate totals from users { exact_count() as total }
+  return Found { users: users { user_id email state created_at } totals: totals { total } }
+  outcomes Found
+}
+"#;
+    let compiled =
+        compile_exact_predicate_query_v1(&parse_query(query).expect("query"), &catalog(CONTRACT))
+            .expect("state predicate family");
+    assert_eq!(
+        compiled.value_parameters(),
+        &["before", "organization_id", "states"]
+    );
+}

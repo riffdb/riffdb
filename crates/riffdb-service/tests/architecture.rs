@@ -143,6 +143,38 @@ fn projected_vector_release_revalidates_authority_after_ranked_provider_work() {
 }
 
 #[test]
+fn exact_predicate_service_owns_member_selection_and_revalidates_before_release() {
+    let execution = SYMBOLIC_QUERY_SOURCE
+        .split_once("async fn execute_exact_predicate_named_query(")
+        .expect("exact predicate service path")
+        .1
+        .split_once("fn exact_parameter_value(")
+        .expect("exact predicate helper boundary")
+        .0;
+    let member = execution
+        .find("member.presence_bits() == presence_bits")
+        .expect("compiler-enumerated member selection");
+    let provider = execution
+        .find("provider.execute(request)")
+        .expect("least-authority provider execution");
+    let release = execution
+        .find("let release_authorization = begun")
+        .expect("post-provider authorization safe point");
+    let response = execution
+        .find("exact_predicate_result_response(")
+        .expect("response shaping");
+    assert!(member < provider && provider < release && release < response);
+    for forbidden in ["scan_index", "read_entity", "ExactPredicateNodeV1"] {
+        assert!(
+            !execution.contains(forbidden),
+            "public exact predicate path acquired forbidden {forbidden}"
+        );
+    }
+    assert!(execution.contains("release_authorization.application_role_hash()"));
+    assert!(execution.contains("release_row_policy_identity != row_policy_identity"));
+}
+
+#[test]
 fn grpc_context_construction_fixes_ingress_and_hides_policy_claim_vocabulary() {
     let constructor = CONTEXT_SOURCE
         .split_once("pub const fn from_authenticated_grpc(")

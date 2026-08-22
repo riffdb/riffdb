@@ -2229,7 +2229,7 @@ func (client *Client) ListComments(ctx context.Context, parameters ListCommentsP
 
 const ListTicketsQueryPlanHash = "6930b4040e3c0c7a8b3d44315e74f356e5c5a4fa6d05049cb78cca1ec4643f95"
 
-var ListTicketsOperation = riffdb.Operation{Name: "ticketdesk_list_tickets", InputSchemaHash: "bf2fcb24cfb4f236db61aad07b9363d7b4a3702bf71ce94dc297f48cb64d6905"}
+var ListTicketsOperation = riffdb.Operation{Name: "ticketdesk_list_tickets", InputSchemaHash: "2b4e3e6aeeb69261eb8eedad512fdc55bf2d5e41d39b4b6c3e9cf212aae243e0"}
 
 func decodeListTicketsResult(value riffdb.Value) (ListTicketsResult, error) {
 	fields, err := riffdb.RecordFields(value)
@@ -2351,7 +2351,7 @@ func (client *Client) ListTickets(ctx context.Context, parameters ListTicketsPar
 
 const ListTicketsByAssigneeQueryPlanHash = "c927cb236e2e0929f2ff3e323eed462578a6cbbf1fe8bc5571888bcd77d4c7d8"
 
-var ListTicketsByAssigneeOperation = riffdb.Operation{Name: "ticketdesk_list_tickets_by_assignee", InputSchemaHash: "528863e9349e4b0b4861b4b0aa80385f3ef3216d04d7f762afa1d6f2c8d1a9a5"}
+var ListTicketsByAssigneeOperation = riffdb.Operation{Name: "ticketdesk_list_tickets_by_assignee", InputSchemaHash: "6c44484392eb00036ddefd89782799209d57e6da27f28557bec663d449ff1dfb"}
 
 func decodeListTicketsByAssigneeResult(value riffdb.Value) (ListTicketsByAssigneeResult, error) {
 	fields, err := riffdb.RecordFields(value)

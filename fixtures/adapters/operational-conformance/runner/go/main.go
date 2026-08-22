@@ -143,6 +143,27 @@ func run() error {
 		endsWithPage.Documents[0].Title != "Beta Guide" {
 		return errors.New("generic ends-with page with descending order and numeric offset")
 	}
+	rich, err := client.SearchDirectoryUsers(ctx, generated.SearchDirectoryUsersParams{
+		OrganizationId: id(60), Needle: "example", ExcludedStates: []string{"disabled", "disabled"},
+		Limit: &limitOne, Offset: &offsetOne,
+	}, generated.QueryOptions{})
+	if err != nil {
+		return err
+	}
+	richPage, ok := rich.Value.(generated.SearchDirectoryUsersFound)
+	if !ok || richPage.Total.Value != 3 || len(richPage.Users) != 1 || richPage.Users[0].Email != "beta@example.test" {
+		return errors.New("V6 exact predicate optional/set/order page")
+	}
+	reviewed, err := client.ReviewedDirectoryUsers(ctx, generated.ReviewedDirectoryUsersParams{
+		OrganizationId: id(60), States: []string{"active", "archive"}, BeforeCreatedAt: 35,
+	}, generated.QueryOptions{})
+	if err != nil {
+		return err
+	}
+	reviewedPage, ok := reviewed.Value.(generated.ReviewedDirectoryUsersFound)
+	if !ok || reviewedPage.Total.Value != 1 || len(reviewedPage.Users) != 1 || reviewedPage.Users[0].Email != "álpha@example.test" {
+		return errors.New("V6 exact predicate range/existence page")
+	}
 
 	queued := "queued"
 	pipelines, err := client.ListPipelines(ctx, generated.ListPipelinesParams{
@@ -176,7 +197,7 @@ func observation(language string) map[string]any {
 		"schema": "riffdb.adapter-operational-observation/v1", "language": language,
 		"catalog_preflight": true, "optional_filters": true, "stable_cursor": true,
 		"null_predicate": true, "binary_prefix": true, "exact_aggregates": true,
-		"exact_text_family": true, "exact_total": true, "numeric_offset": true,
+		"exact_text_family": true, "exact_predicate_family": true, "exact_total": true, "numeric_offset": true,
 		"adapters":            []string{"mlflow", "openfga", "better-auth", "woodpecker"},
 		"regression_adapters": []string{"payload"},
 	}

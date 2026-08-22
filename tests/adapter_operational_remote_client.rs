@@ -108,6 +108,7 @@ async fn run_async() -> TestResult<()> {
             "binary_prefix": true,
             "exact_aggregates": true,
             "exact_text_family": true,
+            "exact_predicate_family": true,
             "exact_total": true,
             "numeric_offset": true,
             "adapters": ["mlflow", "openfga", "better-auth", "woodpecker"],
@@ -182,6 +183,17 @@ async fn seed(client: &mut generated::AdapterOperationalConformanceClient) -> Te
                         nanos: 0,
                     }),
                 },
+            ],
+        })
+        .await?;
+    client
+        .create_directory_users(generated::CreateDirectoryUsersInput {
+            request_id: id(6),
+            users: vec![
+                directory_user(61, "ada@example.test", "active", 40, true),
+                directory_user(62, "alan@example.test", "disabled", 30, true),
+                directory_user(63, "beta@example.test", "active", 20, false),
+                directory_user(64, "álpha@example.test", "archive", 10, true),
             ],
         })
         .await?;
@@ -313,6 +325,40 @@ async fn verify_queries(
         "generic ends-with page uses descending value order and direct ordinal seek",
     )?;
 
+    let rich = client
+        .search_directory_users(generated::SearchDirectoryUsersParams {
+            organization_id: id(60),
+            needle: "example".to_owned(),
+            excluded_states: vec!["disabled".to_owned(), "disabled".to_owned()],
+            maximum_created_at: None,
+            limit: 1,
+            offset: 1,
+        })
+        .await?;
+    let generated::SearchDirectoryUsersResult::Found(rich) = rich;
+    expect(
+        rich.total.value == 3
+            && rich.users.len() == 1
+            && rich.users[0].email == "beta@example.test",
+        "V6 set canonicalization, optional absence, independent order, total, and ordinal",
+    )?;
+    let reviewed = client
+        .reviewed_directory_users(generated::ReviewedDirectoryUsersParams {
+            organization_id: id(60),
+            states: vec!["active".to_owned(), "archive".to_owned()],
+            before_created_at: 35,
+            limit: 25,
+            offset: 0,
+        })
+        .await?;
+    let generated::ReviewedDirectoryUsersResult::Found(reviewed) = reviewed;
+    expect(
+        reviewed.total.value == 1
+            && reviewed.users.len() == 1
+            && reviewed.users[0].email == "álpha@example.test",
+        "V6 membership, range, existence, Unicode, and mixed order",
+    )?;
+
     let queued = client
         .list_pipelines(generated::ListPipelinesParams {
             organization_id: id(40),
@@ -369,6 +415,26 @@ fn pipeline(suffix: u8, name: &str, state: &str) -> generated::Pipeline {
         pipeline_id: id(suffix),
         name: name.to_owned(),
         state: state.to_owned(),
+    }
+}
+
+fn directory_user(
+    suffix: u8,
+    email: &str,
+    state: &str,
+    created_at: u64,
+    reviewed: bool,
+) -> generated::DirectoryUser {
+    generated::DirectoryUser {
+        organization_id: id(60),
+        user_id: id(suffix),
+        email: email.to_owned(),
+        state: state.to_owned(),
+        created_at,
+        reviewed_at: reviewed.then_some(generated::TimestampValue {
+            seconds: 1_700_000_000 + i64::from(suffix),
+            nanos: 0,
+        }),
     }
 }
 

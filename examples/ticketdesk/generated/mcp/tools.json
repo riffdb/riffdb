@@ -3216,6 +3216,7 @@
             "items": {
               "type": "string"
             },
+            "maxItems": 64,
             "type": "array",
             "uniqueItems": true
           }
@@ -3328,6 +3329,7 @@
             "items": {
               "type": "string"
             },
+            "maxItems": 64,
             "type": "array",
             "uniqueItems": true
           }

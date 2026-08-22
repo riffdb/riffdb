@@ -340,7 +340,7 @@ fn collect_parameter_names(
             presence.insert(parameter.value.as_str().to_owned());
             collect_parameter_names(predicate, values, presence)
         }
-        Expression::Unary { operand, .. } => collect_parameter_names(operand, values, presence),
+        Expression::Unary { .. } => Ok(()),
         Expression::Binary {
             operator,
             left,

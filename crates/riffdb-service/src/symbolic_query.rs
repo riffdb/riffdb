@@ -43,9 +43,9 @@ use riffdb_query_executor::{
     QueryOwnedSnapshot, QueryParameters, QueryResultValue, QueryRow,
 };
 use riffdb_query_ir::{
-    NamedTypeSchema, ProjectedVectorFreshnessV1, QueryAccessKind, QueryAccessProgramV1,
-    QueryDiagnostic, QueryPredicateOperator, QueryPredicateValue, SymbolicCatalog,
-    resolve_query_surface,
+    ExactParameterValueV1, ExactScalarV1, NamedTypeSchema, ProjectedVectorFreshnessV1,
+    QueryAccessKind, QueryAccessProgramV1, QueryDiagnostic, QueryPredicateOperator,
+    QueryPredicateValue, SymbolicCatalog, resolve_query_surface,
 };
 use riffdb_query_module::{CompiledNamedQuery, NamedQuerySource, QueryModuleCandidate};
 use riffdb_riffql_syntax::{
@@ -68,11 +68,12 @@ use crate::query_discovery_operations::{
 use crate::wait::{ControlledWaitError, wait_with_control};
 use crate::{
     ApplicationCatalogCursorLookup, ApplicationCatalogCursorState, ContractSelection,
-    CursorAccessError, CursorContractIdentity, CursorToken, ExactTextProjectionPortError,
-    ExactTextProjectionRequest, ExactTextProjectionResult, InternalDefect, QueryCursorLookup,
-    QueryCursorState, ReadPipelineStage, RequestContext, RiffDbService, RiffDbServiceInner,
-    ServiceAuditTargetMap, ServiceFailure, ServiceFuture, ServiceResult, ServiceTelemetryEvent,
-    SourceName, SubmittedEnum, SubmittedValue, VectorProjectionPortError, VectorProjectionRequest,
+    CursorAccessError, CursorContractIdentity, CursorToken, ExactPredicateProjectionRequest,
+    ExactPredicateProjectionResult, ExactTextProjectionPortError, ExactTextProjectionRequest,
+    ExactTextProjectionResult, InternalDefect, QueryCursorLookup, QueryCursorState,
+    ReadPipelineStage, RequestContext, RiffDbService, RiffDbServiceInner, ServiceAuditTargetMap,
+    ServiceFailure, ServiceFuture, ServiceResult, ServiceTelemetryEvent, SourceName, SubmittedEnum,
+    SubmittedValue, VectorProjectionPortError, VectorProjectionRequest,
 };
 
 /// Stricter application-surface source ceiling.
@@ -2585,6 +2586,21 @@ async fn execute_named_query(
             stage: ReadPipelineStage::PlanLookup,
             elapsed: plan_lookup_started.elapsed(),
         });
+    if let Some(exact) = query.shared_exact_predicate_result() {
+        return execute_exact_predicate_named_query(
+            service,
+            context,
+            bundle,
+            exact,
+            query.shared_document(),
+            module_hash,
+            query_name,
+            request.parameters,
+            request.cursor,
+            request.minimum_application_head,
+        )
+        .await;
+    }
     if let Some(exact) = query.shared_exact_text_result() {
         return execute_exact_named_query(
             service,
@@ -3079,6 +3095,273 @@ fn vector_projection_response(
 }
 
 #[allow(clippy::too_many_arguments)]
+async fn execute_exact_predicate_named_query(
+    service: Arc<RiffDbServiceInner>,
+    context: RequestContext,
+    bundle: riffdb_catalog::ValidatedContractBundle,
+    exact: Arc<riffdb_query_module::CompiledExactPredicateResultSetV1>,
+    document: Arc<Document>,
+    module_hash: QueryModuleHash,
+    query_name: QueryOperationName,
+    submitted: SymbolicQueryParameters,
+    cursor: Option<CursorToken>,
+    minimum_application_head: Option<u64>,
+) -> ServiceResult<ExecuteSymbolicQueryResult> {
+    const OPERATION: ServiceOperationV1 = ServiceOperationV1::ExecuteQuery;
+    if cursor.is_some() {
+        return Err(application_validation_failure(
+            ValidationCode::InvalidValue,
+            ApplicationErrorCode::CursorInvalid,
+        ));
+    }
+    let submitted = exact_parameters_with_defaults(
+        document.as_ref(),
+        submitted,
+        [exact.limit_parameter(), exact.offset_parameter()],
+    )
+    .ok_or_else(|| validation_failure(ValidationCode::InvalidValue))?;
+    let access_program = exact.representative_program();
+    let parameters = materialize_query_parameters(
+        &service,
+        OPERATION,
+        bundle.bundle(),
+        document.as_ref(),
+        &submitted,
+    )?;
+    let target = application_query_target_with_identity(
+        bundle.bundle(),
+        access_program,
+        &parameters,
+        context.ingress(),
+        exact.identity(),
+        exact.authorization_cost(),
+        Some(NonZeroU16::MIN),
+    )
+    .ok_or_else(|| validation_failure(ValidationCode::InvalidValue))?;
+    let partition_value = parameters
+        .get(access_program.partition_parameter())
+        .cloned()
+        .ok_or_else(|| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?;
+    let limit = exact_u64_parameter(&document, &parameters, exact.limit_parameter())
+        .and_then(|value| u16::try_from(value).ok())
+        .and_then(NonZeroU16::new)
+        .filter(|limit| limit.get() <= exact.program().max_limit())
+        .ok_or_else(|| validation_failure(ValidationCode::InvalidValue))?;
+    let offset = exact_u64_parameter(&document, &parameters, exact.offset_parameter())
+        .and_then(|value| u32::try_from(value).ok())
+        .filter(|offset| *offset <= exact.program().max_offset())
+        .ok_or_else(|| validation_failure(ValidationCode::InvalidValue))?;
+    let exact_parameters = exact
+        .value_parameters()
+        .iter()
+        .enumerate()
+        .filter_map(|(ordinal, name)| {
+            let value = parameters.get(name)?;
+            (!matches!(value, CanonicalValue::Null)).then_some((ordinal, value))
+        })
+        .map(|(ordinal, value)| {
+            u16::try_from(ordinal)
+                .map_err(|_| validation_failure(ValidationCode::InvalidValue))
+                .and_then(|ordinal| {
+                    exact_parameter_value(value)
+                        .map(|value| (ordinal, value))
+                        .ok_or_else(|| validation_failure(ValidationCode::TypeMismatch))
+                })
+        })
+        .collect::<ServiceResult<BTreeMap<_, _>>>()?;
+    let presence_bits = exact.presence_parameters().iter().enumerate().try_fold(
+        0_u64,
+        |bits, (ordinal, name)| {
+            let present = parameters
+                .get(name)
+                .is_some_and(|value| !matches!(value, CanonicalValue::Null));
+            if !present {
+                return Ok(bits);
+            }
+            let shift = u32::try_from(ordinal)
+                .map_err(|_| validation_failure(ValidationCode::InvalidValue))?;
+            bits.checked_add(
+                1_u64
+                    .checked_shl(shift)
+                    .ok_or_else(|| validation_failure(ValidationCode::InvalidValue))?,
+            )
+            .ok_or_else(|| validation_failure(ValidationCode::InvalidValue))
+        },
+    )?;
+    let member = exact
+        .program()
+        .members()
+        .iter()
+        .copied()
+        .find(|member| member.presence_bits() == presence_bits && member.order_ordinal() == 0)
+        .ok_or_else(|| validation_failure(ValidationCode::InvalidValue))?;
+    let minimum_epoch = minimum_application_head
+        .map(|value| {
+            CommitSequence::new(value)
+                .ok_or_else(|| validation_failure(ValidationCode::InvalidValue))
+        })
+        .transpose()?;
+    let operation_request = OperationRequest::execute_named_query(
+        bundle.lineage().clone(),
+        module_hash,
+        query_name,
+        target,
+    )
+    .map_err(|_| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?;
+    let begun = begin_symbolic(&service, &context, &bundle, operation_request, OPERATION).await?;
+    let execution_authorization = begun
+        .reauthorize_read(&service, &context)
+        .await?
+        .into_application_query()
+        .ok_or_else(|| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?;
+    let row_policy =
+        resolve_authorized_query_row_policy_context(&execution_authorization, bundle.bundle())
+            .map_err(|_| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?
+            .map(Arc::new);
+    let row_policy_identity = row_policy
+        .as_deref()
+        .map(|policy| {
+            policy
+                .internal_capability_identity()
+                .ok_or_else(|| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))
+        })
+        .transpose()?;
+    let Some(policy_shape) = execution_authorization.application_role_hash() else {
+        let failure = application_validation_failure(
+            ValidationCode::InvalidValue,
+            ApplicationErrorCode::QueryUnavailable,
+        );
+        return Err(finish_failure(&service, &context, &begun, failure).await);
+    };
+    let request = ExactPredicateProjectionRequest::new(
+        Arc::clone(&exact),
+        execution_authorization
+            .target()
+            .partition()
+            .partition_key()
+            .clone(),
+        partition_value,
+        policy_shape,
+        row_policy,
+        exact_parameters,
+        member,
+        offset,
+        limit,
+        minimum_epoch,
+    );
+    let Some(provider) = service.providers.exact_predicate.as_ref() else {
+        let failure = PublicError::storage_unavailable().into();
+        return Err(finish_failure(&service, &context, &begun, failure).await);
+    };
+    let observed = match provider.execute(request) {
+        Ok(observed) => observed,
+        Err(error) => {
+            let Some(code) = exact_projection_application_code(error) else {
+                let failure = service.internal_failure(OPERATION, InternalDefect::ProofMismatch);
+                return Err(finish_failure(&service, &context, &begun, failure).await);
+            };
+            let failure = application_validation_failure(ValidationCode::InvalidValue, code);
+            return Err(finish_failure(&service, &context, &begun, failure).await);
+        }
+    };
+    let descriptor = exact
+        .program()
+        .provider_descriptor()
+        .map_err(|_| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?;
+    if observed.provider() != descriptor.digest()
+        || minimum_epoch.is_some_and(|minimum| observed.epoch() < minimum)
+    {
+        let failure = service.internal_failure(OPERATION, InternalDefect::ProofMismatch);
+        return Err(finish_failure(&service, &context, &begun, failure).await);
+    }
+    let release_authorization = begun
+        .reauthorize_read(&service, &context)
+        .await?
+        .into_application_query()
+        .ok_or_else(|| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?;
+    let release_row_policy =
+        resolve_authorized_query_row_policy_context(&release_authorization, bundle.bundle())
+            .map_err(|_| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?;
+    let release_row_policy_identity = release_row_policy
+        .as_ref()
+        .map(|policy| {
+            policy
+                .internal_capability_identity()
+                .ok_or_else(|| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))
+        })
+        .transpose()?;
+    if release_authorization.application_role_hash() != Some(policy_shape)
+        || release_row_policy_identity != row_policy_identity
+    {
+        let failure = application_validation_failure(
+            ValidationCode::InvalidValue,
+            ApplicationErrorCode::QueryUnavailable,
+        );
+        return Err(finish_failure(&service, &context, &begun, failure).await);
+    }
+    let result = exact_predicate_result_response(
+        &exact,
+        &document,
+        module_hash,
+        observed,
+        Arc::clone(bundle.enum_variant_names()),
+    )
+    .ok_or_else(|| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?;
+    finish_success(&service, &context, &begun).await?;
+    Ok(result)
+}
+
+fn exact_parameter_value(value: &CanonicalValue) -> Option<ExactParameterValueV1> {
+    match value {
+        CanonicalValue::List(values) => ExactParameterValueV1::canonical_set(
+            values
+                .values()
+                .iter()
+                .map(exact_scalar_value)
+                .collect::<Option<Vec<_>>>()?,
+        )
+        .ok(),
+        _ => exact_scalar_value(value).map(ExactParameterValueV1::Scalar),
+    }
+}
+
+fn exact_scalar_value(value: &CanonicalValue) -> Option<ExactScalarV1> {
+    match value {
+        CanonicalValue::Bool(value) => Some(ExactScalarV1::Bool(*value)),
+        CanonicalValue::I64(value) => Some(ExactScalarV1::I64(*value)),
+        CanonicalValue::U64(value) => Some(ExactScalarV1::U64(*value)),
+        CanonicalValue::Decimal(value) => Some(ExactScalarV1::Decimal {
+            coefficient: value.coefficient(),
+            scale: value.spec().scale(),
+        }),
+        CanonicalValue::Money(value) => Some(ExactScalarV1::Money {
+            currency: *value.currency().as_bytes(),
+            coefficient: value.amount().coefficient(),
+            scale: value.amount().spec().scale(),
+        }),
+        CanonicalValue::String(value) => Some(ExactScalarV1::String(value.as_str().to_owned())),
+        CanonicalValue::Bytes(value) => Some(ExactScalarV1::Bytes(value.as_bytes().to_vec())),
+        CanonicalValue::Timestamp(value) => i128::from(value.seconds())
+            .checked_mul(1_000_000_000)
+            .and_then(|seconds| seconds.checked_add(i128::from(value.nanoseconds())))
+            .map(ExactScalarV1::Timestamp),
+        CanonicalValue::Date(value) => Some(ExactScalarV1::Date(value.days_since_unix_epoch())),
+        CanonicalValue::Uuid(value) => Some(ExactScalarV1::Uuid(*value)),
+        CanonicalValue::Enum {
+            type_id,
+            variant_id,
+        } => Some(ExactScalarV1::Enum {
+            type_id: type_id.get(),
+            variant_id: variant_id.get(),
+        }),
+        CanonicalValue::Null
+        | CanonicalValue::List(_)
+        | CanonicalValue::Record(_)
+        | CanonicalValue::Vector(_) => None,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 async fn execute_exact_named_query(
     service: Arc<RiffDbServiceInner>,
     context: RequestContext,
@@ -3399,6 +3682,91 @@ fn exact_result_response(
     );
     Some(ExecuteSymbolicQueryResult {
         identity: SymbolicQueryIdentity::from_named_plan(program, module_hash, exact.identity()),
+        outcome: document.body.outcome.as_ref()?.value.as_str().to_owned(),
+        application_head: epoch.get(),
+        fields,
+        compact_result: None,
+        enum_variant_names,
+        next_cursor: None,
+    })
+}
+
+fn exact_predicate_result_response(
+    exact: &riffdb_query_module::CompiledExactPredicateResultSetV1,
+    document: &Document,
+    module_hash: QueryModuleHash,
+    observed: ExactPredicateProjectionResult,
+    enum_variant_names: SharedEnumVariantNames,
+) -> Option<ExecuteSymbolicQueryResult> {
+    let access_program = exact.representative_program();
+    let step = access_program.steps().first()?;
+    if access_program.steps().len() != 1 || step.result_names().len() != 1 {
+        return None;
+    }
+    let access = access_program.internal_entity_access(step.entity())?;
+    let field_names = step
+        .selected_fields()
+        .iter()
+        .map(|name| access.internal_field_id(name).map(|field| (field, name)))
+        .collect::<Option<BTreeMap<FieldId, &String>>>()?;
+    let (rows, exact_total, epoch, _generation, _provider, _history_incarnation) =
+        observed.into_parts();
+    let rows = rows
+        .into_iter()
+        .map(|row| {
+            let (_key, output) = row.into_parts();
+            let fields = output
+                .into_fields()
+                .into_iter()
+                .map(|(field, value)| {
+                    field_names
+                        .get(&field)
+                        .map(|name| (Arc::<str>::from(name.as_str()), value))
+                })
+                .collect::<Option<BTreeMap<_, _>>>()?;
+            (fields.len() == field_names.len()).then_some(SymbolicResultRecord {
+                entity: Arc::from(step.entity()),
+                fields,
+                exact_decimals: BTreeMap::new(),
+            })
+        })
+        .collect::<Option<Vec<_>>>()?;
+    let aggregate = document.body.aggregates.first()?;
+    if document.body.aggregates.len() != 1
+        || aggregate.measures.len() != 1
+        || aggregate.source.value.as_str() != step.binding()
+    {
+        return None;
+    }
+    let measure = aggregate.measures.first()?;
+    if measure.function.value != riffdb_riffql_syntax::AggregateFunction::ExactCount {
+        return None;
+    }
+    let aggregate_result_name =
+        selection_result_name(&document.body.selection, &aggregate.name.value)?;
+    let row_result_name = selection_result_name(
+        &document.body.selection,
+        &document.body.bindings.first()?.name.value,
+    )?;
+    let mut fields = BTreeMap::new();
+    fields.insert(row_result_name, SymbolicResultField::Many(rows));
+    fields.insert(
+        aggregate_result_name,
+        SymbolicResultField::One(SymbolicResultRecord {
+            entity: Arc::from(aggregate.name.value.as_str()),
+            fields: BTreeMap::from([(
+                Arc::from(measure.alias.value.as_str()),
+                CanonicalValue::U64(exact_total),
+            )]),
+            exact_decimals: BTreeMap::new(),
+        }),
+    );
+    Some(ExecuteSymbolicQueryResult {
+        identity: SymbolicQueryIdentity::from_named_plan(
+            access_program,
+            module_hash,
+            exact.identity(),
+        ),
         outcome: document.body.outcome.as_ref()?.value.as_str().to_owned(),
         application_head: epoch.get(),
         fields,
@@ -4727,6 +5095,48 @@ query SearchUsers(
 }
 "#;
 
+    const RICH_CONTRACT: &str = r#"
+contract Directory version 1 {
+  entity User {
+    key (organization_id: uuid, user_id: uuid)
+    field email: string<320>
+    field state: string<32>
+    field created_at: u64
+    field reviewed_at: optional<timestamp>
+    index by_email (organization_id, email, user_id) text_key(email, binary_utf8_v1)
+    index by_state (organization_id, state, user_id)
+    index by_created (organization_id, created_at, user_id)
+    index by_reviewed (organization_id, reviewed_at, user_id) presence(reviewed_at)
+  }
+  aggregate Users {
+    root User
+    partition_by organization_id
+    conflict_key (organization_id, user_id)
+  }
+}
+"#;
+
+    const RICH_QUERY: &str = r#"
+query SearchUsers(
+  $organization_id: User.organization_id,
+  $states: Set<User.state>,
+  $before: User.created_at,
+  $limit: Limit = 50,
+  $offset: u64 = 0
+) {
+  many users from User
+    where organization_id == $organization_id
+      && state in $states
+      && created_at < $before
+      && exists reviewed_at
+    order by created_at desc, user_id asc
+    take $limit offset $offset
+  aggregate total from users { exact_count() as value }
+  return Found { users: users { user_id email state created_at reviewed_at } total: total { value } }
+  outcomes Found
+}
+"#;
+
     #[test]
     fn exact_page_and_count_shape_share_one_epoch_without_client_shaping() {
         let bundle = riffdb_contract_compiler::compile_contract_source(CONTRACT).expect("contract");
@@ -4874,6 +5284,103 @@ query SearchUsers(
         for (error, expected) in mappings {
             assert_eq!(exact_projection_application_code(error), expected);
         }
+    }
+
+    #[test]
+    fn exact_predicate_page_and_count_are_shaped_from_one_sealed_observation() {
+        let bundle =
+            riffdb_contract_compiler::compile_contract_source(RICH_CONTRACT).expect("contract");
+        let module = QueryModule::compile(
+            QueryModuleCandidate::new(
+                QueryModuleName::new("directory").expect("module name"),
+                QueryModuleVersion::new(1).expect("module version"),
+                vec![NamedQuerySource::new("SearchUsers", RICH_QUERY).expect("query")],
+            )
+            .expect("candidate"),
+            &bundle,
+        )
+        .expect("module");
+        let query = module.query("SearchUsers").expect("query");
+        let exact = query.exact_predicate_result().expect("V6 exact plan");
+        let program = exact.representative_program();
+        let step = &program.steps()[0];
+        let access = program.internal_entity_access("User").expect("access");
+        let key = step
+            .internal_entity_key_schema()
+            .encode_entity(&[
+                CanonicalValue::Uuid([0x11; 16]),
+                CanonicalValue::Uuid([0x22; 16]),
+            ])
+            .expect("key");
+        let reviewed = riffdb_types::Timestamp::new(1_700_000_000, 0).expect("timestamp");
+        let output = CanonicalRecord::new(vec![
+            (
+                access.internal_field_id("user_id").expect("user id"),
+                CanonicalValue::Uuid([0x22; 16]),
+            ),
+            (
+                access.internal_field_id("email").expect("email"),
+                CanonicalValue::string("ada@example.test").expect("email"),
+            ),
+            (
+                access.internal_field_id("state").expect("state"),
+                CanonicalValue::string("active").expect("state"),
+            ),
+            (
+                access.internal_field_id("created_at").expect("created"),
+                CanonicalValue::U64(40),
+            ),
+            (
+                access.internal_field_id("reviewed_at").expect("reviewed"),
+                CanonicalValue::Timestamp(reviewed),
+            ),
+        ])
+        .expect("output");
+        let epoch = CommitSequence::new(29).expect("epoch");
+        let observed = ExactPredicateProjectionResult::new(
+            vec![ExactTextProjectionRow::new(key, output)],
+            7,
+            epoch,
+            ProjectionGeneration::first(),
+            exact.program().provider_descriptor().unwrap().digest(),
+            3,
+        );
+        let result = exact_predicate_result_response(
+            exact,
+            query.shared_document().as_ref(),
+            module.identity(),
+            observed,
+            Arc::new(BTreeMap::new()),
+        )
+        .expect("response");
+        assert_eq!(result.application_head(), 29);
+        let SymbolicResultField::Many(users) = &result.fields()["users"] else {
+            panic!("users");
+        };
+        assert_eq!(users.len(), 1);
+        let SymbolicResultField::One(total) = &result.fields()["total"] else {
+            panic!("total");
+        };
+        assert_eq!(total.fields()["value"], CanonicalValue::U64(7));
+        assert_eq!(result.identity().plan_hash(), exact.identity());
+    }
+
+    #[test]
+    fn exact_set_parameters_are_canonical_and_bounded_before_provider_work() {
+        let duplicate = CanonicalValue::string("disabled").expect("string");
+        let values = CanonicalValue::list(vec![duplicate.clone(), duplicate]).expect("list");
+        let ExactParameterValueV1::Set(values) = exact_parameter_value(&values).expect("set")
+        else {
+            panic!("set");
+        };
+        assert_eq!(values, vec![ExactScalarV1::String("disabled".to_owned())]);
+        let excessive = CanonicalValue::list(
+            (0..=riffdb_query_ir::MAX_EXACT_SET_VALUES_V1)
+                .map(|value| CanonicalValue::U64(value as u64))
+                .collect(),
+        )
+        .expect("list");
+        assert!(exact_parameter_value(&excessive).is_none());
     }
 }
 

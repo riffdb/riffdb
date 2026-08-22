@@ -1941,6 +1941,29 @@ impl ExactPredicateProjectionResult {
     pub const fn history_incarnation(&self) -> u64 {
         self.history_incarnation
     }
+
+    /// Consumes the checked result into response-assembly parts.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn into_parts(
+        self,
+    ) -> (
+        Vec<ExactTextProjectionRow>,
+        u64,
+        CommitSequence,
+        ProjectionGeneration,
+        ProjectionProviderDescriptorHash,
+        u64,
+    ) {
+        (
+            self.rows,
+            self.exact_total,
+            self.epoch,
+            self.generation,
+            self.provider,
+            self.history_incarnation,
+        )
+    }
 }
 
 /// Least-authority exact predicate derived-result execution boundary.

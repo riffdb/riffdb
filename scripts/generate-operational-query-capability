@@ -1,0 +1,103 @@
+#!/usr/bin/env python3
+"""Generate the immutable generic operational-query capability receipt."""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+from pathlib import Path
+import sys
+
+
+ROOT = Path(__file__).resolve().parent.parent
+LOCK = ROOT / "fixtures/adapters/operational-conformance/riffdb.application.lock.json"
+OUTPUT = ROOT / "release/evidence/operational-query-capability-v1.json"
+V6_OPERATIONS = ("ReviewedDirectoryUsers", "SearchDirectoryUsers")
+
+
+def sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def render() -> bytes:
+    lock = json.loads(LOCK.read_text(encoding="utf-8"))
+    module = lock["modules"][0]
+    queries = {query["name"]: query for query in module["queries"]}
+    artifacts = sorted(
+        (
+            {
+                "kind": artifact["kind"],
+                "path": f"fixtures/adapters/operational-conformance/{artifact['path']}",
+                "sha256": artifact["content_hash"],
+            }
+            for artifact in lock["artifacts"]
+            if artifact["kind"] in {"go", "mcp", "python", "rust", "typescript"}
+        ),
+        key=lambda artifact: artifact["kind"],
+    )
+    receipt = {
+        "schema": "riffdb.operational-query-capability/v1",
+        "status": "development",
+        "contract": {
+            "lineage": lock["contract"]["lineage"],
+            "version": lock["contract"]["version"],
+            "bundle_hash": lock["contract"]["bundle_hash"],
+        },
+        "query_module": {
+            "name": module["name"],
+            "version": module["version"],
+            "module_hash": module["module_hash"],
+        },
+        "exact_predicate_operations": [
+            {
+                "name": name,
+                "plan_hash": queries[name]["plan_hash"],
+                "source_hash": queries[name]["source_hash"],
+            }
+            for name in V6_OPERATIONS
+        ],
+        "generated_artifacts": artifacts,
+        "semantics": {
+            "caller_supplied_structure": False,
+            "client_shaping": False,
+            "exact_total": True,
+            "finite_compiler_family": True,
+            "independent_total_order": True,
+            "ordinal_window": True,
+            "policy_before_index": True,
+            "provider_state_format": 4,
+            "request_time_authoritative_scan": False,
+            "typed_generated_languages": ["go", "python", "rust", "typescript"],
+        },
+        "external_acceptance": {
+            "owner": "external_adapter_repository",
+            "status": "not_proved_by_neutral_corpus",
+            "required_evidence": "public framework routes delegate only to pinned generated operations",
+        },
+        "source_lock": {
+            "path": str(LOCK.relative_to(ROOT)),
+            "sha256": sha256(LOCK),
+        },
+    }
+    return (json.dumps(receipt, indent=2, sort_keys=True) + "\n").encode()
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--check", action="store_true")
+    arguments = parser.parse_args()
+    expected = render()
+    if arguments.check:
+        if not OUTPUT.exists() or OUTPUT.read_bytes() != expected:
+            print(f"generated operational-query capability is stale: {OUTPUT}", file=sys.stderr)
+            return 1
+        return 0
+    OUTPUT.parent.mkdir(parents=True, exist_ok=True)
+    OUTPUT.write_bytes(expected)
+    print(OUTPUT.relative_to(ROOT))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

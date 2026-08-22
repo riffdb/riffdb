@@ -22,8 +22,8 @@ def _compact_tag(value: object, tag: str, keys: frozenset[str]) -> dict[str, obj
 
 CONTRACT_LINEAGE: Final[str] = "AdapterOperationalConformance"
 CONTRACT_VERSION: Final[int] = 1
-CONTRACT_BUNDLE_HASH: Final[str] = "b1fc11175728c747e70ab0713792ebcf7d76ad1687466d4899d33d680286d676"
-QUERY_MODULE_HASH: Final[str] = "2da42e510a3ba32b14af31e114a67148156202d6502366ae015e0c7ad914a45b"
+CONTRACT_BUNDLE_HASH: Final[str] = "fa2e95c6c1c9226ae1d7b6cb0a01d822626973f5e427c6404547363bea8a3036"
+QUERY_MODULE_HASH: Final[str] = "47adab52831a2338255906aff0e02abf67b94e2fe8e7570d4cd8d6e5dff3a8c6"
 
 class AuthSessionState(StrEnum):
     AUTH_ACTIVE = "AuthActive"
@@ -75,6 +75,15 @@ class AuthSession:
     organization_id: UUID
 
 @dataclass(frozen=True, slots=True, kw_only=True)
+class DirectoryUser:
+    email: str
+    state: str
+    user_id: UUID
+    created_at: Annotated[int, "u64"]
+    reviewed_at: Timestamp | None
+    organization_id: UUID
+
+@dataclass(frozen=True, slots=True, kw_only=True)
 class AuthSignupInput:
     email: str
     user_id: UUID
@@ -83,7 +92,7 @@ class AuthSignupInput:
     token_digest: str
     organization_id: UUID
 
-EXACT_DOCUMENTS_CONTAINS_ASC_QUERY_PLAN_HASH: Final[str] = "231a3e06e5bb5c1915a692fc804dc195207b99dcbd325c69eb8ae9804ba6fb6b"
+EXACT_DOCUMENTS_CONTAINS_ASC_QUERY_PLAN_HASH: Final[str] = "0f21077732901c06ae683666b7c07e231d6cb291267017bb8bb861f7c90b3297"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ExactDocumentsContainsAscParams:
@@ -111,7 +120,7 @@ class ExactDocumentsContainsAscFound:
 
 ExactDocumentsContainsAscResult: TypeAlias = ExactDocumentsContainsAscFound
 
-EXACT_DOCUMENTS_ENDS_WITH_DESC_QUERY_PLAN_HASH: Final[str] = "793b3132acdf5512fa012dca179e7032513487f2a6c8ce2cf376bd788d8c3d8b"
+EXACT_DOCUMENTS_ENDS_WITH_DESC_QUERY_PLAN_HASH: Final[str] = "bd352186ba39f7e1038e85a91e06b8cbd224a196af34feba4a72430607c2d577"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ExactDocumentsEndsWithDescParams:
@@ -139,7 +148,7 @@ class ExactDocumentsEndsWithDescFound:
 
 ExactDocumentsEndsWithDescResult: TypeAlias = ExactDocumentsEndsWithDescFound
 
-EXACT_DOCUMENTS_STARTS_WITH_ASC_QUERY_PLAN_HASH: Final[str] = "4d2c98bba64882504ac8165e457d29b2e8c2aeaa2d5e37005dc7c8e8d2722bd3"
+EXACT_DOCUMENTS_STARTS_WITH_ASC_QUERY_PLAN_HASH: Final[str] = "85259a05f30c0251945b24526eeba7cae11517b97150d0a63bc5b4d19fd3dc4f"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ExactDocumentsStartsWithAscParams:
@@ -167,7 +176,7 @@ class ExactDocumentsStartsWithAscFound:
 
 ExactDocumentsStartsWithAscResult: TypeAlias = ExactDocumentsStartsWithAscFound
 
-GET_AUTH_SESSION_QUERY_PLAN_HASH: Final[str] = "fba7a6f37adeb8772673da8337cf1b3f6e43644e59613224c1f55385d7a4b884"
+GET_AUTH_SESSION_QUERY_PLAN_HASH: Final[str] = "ff501d8e9d451380a46dc3d09fe6bb7f9400bba230da14c79aebb1bff23c80e6"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class GetAuthSessionParams:
@@ -194,7 +203,7 @@ class GetAuthSessionMissing:
 
 GetAuthSessionResult: TypeAlias = GetAuthSessionFound | GetAuthSessionMissing
 
-LIST_DRAFT_DOCUMENTS_QUERY_PLAN_HASH: Final[str] = "3d3619c4adbdd3fd3358c103c63411880fd0a664eaf622aa7edee6f284a35e3f"
+LIST_DRAFT_DOCUMENTS_QUERY_PLAN_HASH: Final[str] = "9dead995c1ef406726640f51793cd82a83f55b17b21376b55b8aeff59ee2238e"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ListDraftDocumentsParams:
@@ -213,7 +222,7 @@ class ListDraftDocumentsFound:
 
 ListDraftDocumentsResult: TypeAlias = ListDraftDocumentsFound
 
-LIST_FGA_TUPLES_QUERY_PLAN_HASH: Final[str] = "0c35aea74dbd5527ac56945cee31d2a351535fcdff8ba862d5f8982a339276e7"
+LIST_FGA_TUPLES_QUERY_PLAN_HASH: Final[str] = "bf95e33c68b0b60470e6350fd2ff00e6796bcd30bbea264027da0e4d9d2e24c7"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ListFgaTuplesParams:
@@ -235,7 +244,7 @@ class ListFgaTuplesFound:
 
 ListFgaTuplesResult: TypeAlias = ListFgaTuplesFound
 
-LIST_PIPELINES_QUERY_PLAN_HASH: Final[str] = "e114ac2575357921f0d7c9888beb433a9b14d5360c89e5d7372b633d750b650b"
+LIST_PIPELINES_QUERY_PLAN_HASH: Final[str] = "7e288f33bddff226d13daa5be6f44fe68103a76a7280ec24430dd8d742032d76"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ListPipelinesParams:
@@ -256,7 +265,7 @@ class ListPipelinesFound:
 
 ListPipelinesResult: TypeAlias = ListPipelinesFound
 
-METRIC_DASHBOARD_QUERY_PLAN_HASH: Final[str] = "00b8640c9afdae08484425a7af0e27003a4e181e766eb07fb4b629ad9fc23987"
+METRIC_DASHBOARD_QUERY_PLAN_HASH: Final[str] = "252879f2e9260332e11195d20ab0607695fdda9677a57ad8910b817f544f7edc"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class MetricDashboardParams:
@@ -277,7 +286,70 @@ class MetricDashboardFound:
 
 MetricDashboardResult: TypeAlias = MetricDashboardFound
 
-SEARCH_DOCUMENTS_QUERY_PLAN_HASH: Final[str] = "ab1b0ab4bbf780c0979648cf1af65ee52fc7bd56c0107465c328cedb1530ab9a"
+REVIEWED_DIRECTORY_USERS_QUERY_PLAN_HASH: Final[str] = "f0a936d2d4da23100acdbd9bcabfb9f0b0fa437b1f1f86c0b35d8b7db1821cc9"
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ReviewedDirectoryUsersParams:
+    organization_id: UUID
+    states: tuple[str, ...]
+    before_created_at: Annotated[int, "u64"]
+    limit: Annotated[int, "u64"] | None = None
+    offset: Annotated[int, "u64"] | None = None
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ReviewedDirectoryUsersFoundUsers:
+    organization_id: UUID
+    user_id: UUID
+    email: str
+    state: str
+    created_at: Annotated[int, "u64"]
+    reviewed_at: Timestamp | None
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ReviewedDirectoryUsersFoundTotal:
+    value: Annotated[int, "u64"]
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ReviewedDirectoryUsersFound:
+    users: tuple[ReviewedDirectoryUsersFoundUsers, ...]
+    total: ReviewedDirectoryUsersFoundTotal
+    outcome: Literal["Found"] = field(default="Found", init=False)
+
+ReviewedDirectoryUsersResult: TypeAlias = ReviewedDirectoryUsersFound
+
+SEARCH_DIRECTORY_USERS_QUERY_PLAN_HASH: Final[str] = "1250e20a7e966e8fc33ab1733512afd031fbb2f5eec478229f3996b50ad820d6"
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class SearchDirectoryUsersParams:
+    organization_id: UUID
+    needle: str
+    excluded_states: tuple[str, ...]
+    maximum_created_at: Annotated[int, "u64"] | None = None
+    limit: Annotated[int, "u64"] | None = None
+    offset: Annotated[int, "u64"] | None = None
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class SearchDirectoryUsersFoundUsers:
+    organization_id: UUID
+    user_id: UUID
+    email: str
+    state: str
+    created_at: Annotated[int, "u64"]
+    reviewed_at: Timestamp | None
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class SearchDirectoryUsersFoundTotal:
+    value: Annotated[int, "u64"]
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class SearchDirectoryUsersFound:
+    users: tuple[SearchDirectoryUsersFoundUsers, ...]
+    total: SearchDirectoryUsersFoundTotal
+    outcome: Literal["Found"] = field(default="Found", init=False)
+
+SearchDirectoryUsersResult: TypeAlias = SearchDirectoryUsersFound
+
+SEARCH_DOCUMENTS_QUERY_PLAN_HASH: Final[str] = "e88baa94a51839d1ab277485551110e780ddc7c099ffbc767d02b9b96cfc1e4e"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class SearchDocumentsParams:
@@ -303,7 +375,7 @@ class CreateAuthSessionsInput:
     signups: tuple[AuthSignupInput, ...]
     request_id: UUID
 
-CREATE_AUTH_SESSIONS_PLAN_HASH: Final[str] = "c8b6c48a1328622d67168392049a17d187ac1a571e79cc888e54896398cfe3f6"
+CREATE_AUTH_SESSIONS_PLAN_HASH: Final[str] = "73474d2fe77acd9b299fd90192a51bac9607b68ed1d7be9cb18df1c7e6d7090d"
 @dataclass(frozen=True, slots=True, kw_only=True)
 class CreateAuthSessionsSessionsCreated:
     outcome: Literal["SessionsCreated"] = field(default="SessionsCreated", init=False)
@@ -317,6 +389,22 @@ class CreateAuthSessionsSessionAlreadyExists:
     outcome: Literal["SessionAlreadyExists"] = field(default="SessionAlreadyExists", init=False)
 
 CreateAuthSessionsOutcome: TypeAlias = CreateAuthSessionsSessionsCreated | CreateAuthSessionsUserAlreadyExists | CreateAuthSessionsSessionAlreadyExists
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class CreateDirectoryUsersInput:
+    users: tuple[DirectoryUser, ...]
+    request_id: UUID
+
+CREATE_DIRECTORY_USERS_PLAN_HASH: Final[str] = "216b400b1457c5579a962280ca7b85c4ead49b581ff7d84e77c31b2d7e141c18"
+@dataclass(frozen=True, slots=True, kw_only=True)
+class CreateDirectoryUsersDirectoryUsersCreated:
+    outcome: Literal["DirectoryUsersCreated"] = field(default="DirectoryUsersCreated", init=False)
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class CreateDirectoryUsersDirectoryUserAlreadyExists:
+    outcome: Literal["DirectoryUserAlreadyExists"] = field(default="DirectoryUserAlreadyExists", init=False)
+
+CreateDirectoryUsersOutcome: TypeAlias = CreateDirectoryUsersDirectoryUsersCreated | CreateDirectoryUsersDirectoryUserAlreadyExists
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class CreateDocumentsInput:
@@ -484,6 +572,30 @@ class AdapterOperationalConformanceClient:
         }
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
+    def reviewed_directory_users(self, parameters: ReviewedDirectoryUsersParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ReviewedDirectoryUsersResult]:
+        raw = self._transport._execute_named_query(
+            contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
+            contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
+            query_name="ReviewedDirectoryUsers", plan_hash=REVIEWED_DIRECTORY_USERS_QUERY_PLAN_HASH,
+            parameters=encode_record(parameters), options=options,
+        )
+        outcomes = {
+            "Found": ReviewedDirectoryUsersFound,
+        }
+        return raw._map_value(lambda value: decode_variant(outcomes, value))
+
+    def search_directory_users(self, parameters: SearchDirectoryUsersParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[SearchDirectoryUsersResult]:
+        raw = self._transport._execute_named_query(
+            contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
+            contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
+            query_name="SearchDirectoryUsers", plan_hash=SEARCH_DIRECTORY_USERS_QUERY_PLAN_HASH,
+            parameters=encode_record(parameters), options=options,
+        )
+        outcomes = {
+            "Found": SearchDirectoryUsersFound,
+        }
+        return raw._map_value(lambda value: decode_variant(outcomes, value))
+
     def search_documents(self, parameters: SearchDocumentsParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[SearchDocumentsResult]:
         raw = self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
@@ -519,6 +631,29 @@ class AdapterOperationalConformanceClient:
             if not 1 <= len(input.signups) <= 8:
                 raise ValueError("invalid bounded collection length for CreateAuthSessions.signups")
         return self._transport._command_batch(inputs, options, self.create_auth_sessions, progress)
+
+    def create_directory_users(self, input: CreateDirectoryUsersInput) -> TypedCommandResult[CreateDirectoryUsersOutcome]:
+        if not 1 <= len(input.users) <= 32:
+            raise ValueError("invalid bounded collection length for CreateDirectoryUsers.users")
+        raw = self._transport._execute_command(
+            contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
+            command_name="CreateDirectoryUsers", plan_hash=CREATE_DIRECTORY_USERS_PLAN_HASH,
+            input=encode_record(input), attempts=self._command_attempts,
+        )
+        outcomes = {
+            "DirectoryUsersCreated": CreateDirectoryUsersDirectoryUsersCreated,
+            "DirectoryUserAlreadyExists": CreateDirectoryUsersDirectoryUserAlreadyExists,
+        }
+        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+
+    def create_directory_users_batch(
+        self, inputs: Sequence[CreateDirectoryUsersInput], options: CommandBatchOptions,
+        progress: Callable[[CommandBatchProgress], None] | None = None,
+    ) -> CommandBatchResult[CreateDirectoryUsersOutcome]:
+        for input in inputs:
+            if not 1 <= len(input.users) <= 32:
+                raise ValueError("invalid bounded collection length for CreateDirectoryUsers.users")
+        return self._transport._command_batch(inputs, options, self.create_directory_users, progress)
 
     def create_documents(self, input: CreateDocumentsInput) -> TypedCommandResult[CreateDocumentsOutcome]:
         if not 1 <= len(input.documents) <= 32:
@@ -714,6 +849,30 @@ class AsyncAdapterOperationalConformanceClient:
         }
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
+    async def reviewed_directory_users(self, parameters: ReviewedDirectoryUsersParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ReviewedDirectoryUsersResult]:
+        raw = await self._transport._execute_named_query(
+            contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
+            contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
+            query_name="ReviewedDirectoryUsers", plan_hash=REVIEWED_DIRECTORY_USERS_QUERY_PLAN_HASH,
+            parameters=encode_record(parameters), options=options,
+        )
+        outcomes = {
+            "Found": ReviewedDirectoryUsersFound,
+        }
+        return raw._map_value(lambda value: decode_variant(outcomes, value))
+
+    async def search_directory_users(self, parameters: SearchDirectoryUsersParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[SearchDirectoryUsersResult]:
+        raw = await self._transport._execute_named_query(
+            contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
+            contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
+            query_name="SearchDirectoryUsers", plan_hash=SEARCH_DIRECTORY_USERS_QUERY_PLAN_HASH,
+            parameters=encode_record(parameters), options=options,
+        )
+        outcomes = {
+            "Found": SearchDirectoryUsersFound,
+        }
+        return raw._map_value(lambda value: decode_variant(outcomes, value))
+
     async def search_documents(self, parameters: SearchDocumentsParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[SearchDocumentsResult]:
         raw = await self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
@@ -749,6 +908,29 @@ class AsyncAdapterOperationalConformanceClient:
             if not 1 <= len(input.signups) <= 8:
                 raise ValueError("invalid bounded collection length for CreateAuthSessions.signups")
         return await self._transport._command_batch(inputs, options, self.create_auth_sessions, progress)
+
+    async def create_directory_users(self, input: CreateDirectoryUsersInput) -> TypedCommandResult[CreateDirectoryUsersOutcome]:
+        if not 1 <= len(input.users) <= 32:
+            raise ValueError("invalid bounded collection length for CreateDirectoryUsers.users")
+        raw = await self._transport._execute_command(
+            contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
+            command_name="CreateDirectoryUsers", plan_hash=CREATE_DIRECTORY_USERS_PLAN_HASH,
+            input=encode_record(input), attempts=self._command_attempts,
+        )
+        outcomes = {
+            "DirectoryUsersCreated": CreateDirectoryUsersDirectoryUsersCreated,
+            "DirectoryUserAlreadyExists": CreateDirectoryUsersDirectoryUserAlreadyExists,
+        }
+        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+
+    async def create_directory_users_batch(
+        self, inputs: Sequence[CreateDirectoryUsersInput], options: CommandBatchOptions,
+        progress: Callable[[CommandBatchProgress], None] | None = None,
+    ) -> CommandBatchResult[CreateDirectoryUsersOutcome]:
+        for input in inputs:
+            if not 1 <= len(input.users) <= 32:
+                raise ValueError("invalid bounded collection length for CreateDirectoryUsers.users")
+        return await self._transport._command_batch(inputs, options, self.create_directory_users, progress)
 
     async def create_documents(self, input: CreateDocumentsInput) -> TypedCommandResult[CreateDocumentsOutcome]:
         if not 1 <= len(input.documents) <= 32:

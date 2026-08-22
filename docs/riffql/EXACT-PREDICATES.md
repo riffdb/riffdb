@@ -64,7 +64,9 @@ source-spanned diagnostic. There is no partial family and no runtime scan.
 ## Current activation status
 
 WP-656 makes V6 source, semantic IR V9, and query-module V9 compilable and
-reproducible. WP-657 adds rebuildable provider-state format V4. The compiler
+reproducible. WP-657 adds rebuildable provider-state format V4, and WP-658
+activates that provider through the shared application service, gRPC, CLI,
+MCP, and generated Rust, Go, TypeScript, and Python methods. The compiler
 seals optional-family members, comparison profiles, policy mode, exact-count
 and ordinal requirements, independent order layouts, and static work/state
 bounds into its provider identity. Existing V1–V8 source, plan, module, and V1
@@ -78,11 +80,20 @@ policy admission happens before a row can enter the provider universe, so a
 denied row cannot affect complements, counts, ordering, ordinals, diagnostics,
 or lifecycle selection.
 
-The shared public service, transports, and generated clients remain owned by
-WP-658. Until that package activates, application traffic must use the existing
-narrow exact-text result form. A V6 query never degrades to an authoritative
-request-time scan, client-side filter or sort, page walk, materialized full
-population, cross-provider identifier transfer, or a nearby older provider.
+Callers submit only the generated typed values for one named operation. They do
+not submit a predicate, field, operator, order, provider, plan member, policy,
+or cost. The service materializes and type-checks values before authorization,
+selects the compiler-enumerated optional-presence member, and reauthorizes both
+before provider execution and before releasing values. A V6 query never
+degrades to an authoritative request-time scan, client-side filter or sort,
+page walk, materialized full population, cross-provider identifier transfer,
+or a nearby older provider.
+
+The initial request for a new plan/policy/partition slot can return
+`RDB-QUERY-0102` while bounded background construction is in progress. The
+same typed lifecycle, freshness, retired-snapshot, divergence, and revocation
+failures cross every public transport. The application may use a bounded retry
+budget; it may not emulate the result while the provider is unavailable.
 
 Provider rebuilds are currently bounded full-partition rebuilds after an
 authoritative frontier change. This is derived work, not request work, and is

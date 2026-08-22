@@ -26,6 +26,18 @@ contract AdapterOperationalConformance version 1 {
     index by_published (site_id, published_at, document_id) presence(published_at)
   }
 
+  entity DirectoryUser {
+    key (organization_id: uuid, user_id: uuid)
+    field email: string<320>
+    field state: string<32>
+    field created_at: u64
+    field reviewed_at: optional<timestamp>
+    index directory_by_email (organization_id, email, user_id) text_key(email, binary_utf8_v1)
+    index directory_by_state (organization_id, state, user_id)
+    index directory_by_created (organization_id, created_at, user_id)
+    index directory_by_reviewed (organization_id, reviewed_at, user_id) presence(reviewed_at)
+  }
+
   entity Pipeline {
     key (organization_id: uuid, pipeline_id: uuid)
     field name: string<128>
@@ -72,6 +84,12 @@ contract AdapterOperationalConformance version 1 {
     root Document
     partition_by site_id
     conflict_key (site_id, document_id)
+  }
+
+  aggregate DirectoryUsers {
+    root DirectoryUser
+    partition_by organization_id
+    conflict_key (organization_id, user_id)
   }
 
   aggregate Pipelines {
@@ -131,6 +149,20 @@ contract AdapterOperationalConformance version 1 {
       set stored.published_at = document.published_at
     }
     return DocumentsCreated {}
+  }
+
+  bulk command CreateDirectoryUsers {
+    input request_id: uuid
+    input users: list<DirectoryUser, 1..32>
+    idempotency_key request_id
+    for candidate in users {
+      create DirectoryUser(candidate.organization_id, candidate.user_id) as stored else DirectoryUserAlreadyExists {}
+      set stored.email = candidate.email
+      set stored.state = candidate.state
+      set stored.created_at = candidate.created_at
+      set stored.reviewed_at = candidate.reviewed_at
+    }
+    return DirectoryUsersCreated {}
   }
 
   bulk command CreatePipelines {

@@ -351,6 +351,7 @@ impl CompiledNamedQueryPlan {
     pub fn authorization_cost(&self) -> QueryCostVectorV1 {
         match self {
             Self::ExactTextResultV1(exact) => exact.authorization_cost(),
+            Self::ExactPredicateV1(exact) => exact.authorization_cost(),
             _ => self.cost(),
         }
     }
@@ -485,6 +486,18 @@ impl CompiledNamedQuery {
     pub fn exact_predicate_result(&self) -> Option<&CompiledExactPredicateResultSetV1> {
         match &self.plan {
             CompiledNamedQueryPlan::ExactPredicateV1(exact) => Some(exact),
+            CompiledNamedQueryPlan::V1(_)
+            | CompiledNamedQueryPlan::OperationalV1(_)
+            | CompiledNamedQueryPlan::ExactTextResultV1(_) => None,
+        }
+    }
+
+    /// Shared immutable ADR-0134 predicate/order family for provider execution.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn shared_exact_predicate_result(&self) -> Option<Arc<CompiledExactPredicateResultSetV1>> {
+        match &self.plan {
+            CompiledNamedQueryPlan::ExactPredicateV1(exact) => Some(Arc::clone(exact)),
             CompiledNamedQueryPlan::V1(_)
             | CompiledNamedQueryPlan::OperationalV1(_)
             | CompiledNamedQueryPlan::ExactTextResultV1(_) => None,

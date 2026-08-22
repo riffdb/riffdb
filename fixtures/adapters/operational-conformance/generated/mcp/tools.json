@@ -1,5 +1,5 @@
 {
-  "application_manifest_hash": "f74efa06870411de34d48be0ecb7693b50f5d8c23332607aee54bbd72f30be41",
+  "application_manifest_hash": "2b1363120011ee72b2d9ec036ef0053ebd321c939aa6cb9019c32e7466a6a1c2",
   "commands": [
     {
       "annotations": {
@@ -8,7 +8,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "contract_bundle_hash": "b1fc11175728c747e70ab0713792ebcf7d76ad1687466d4899d33d680286d676",
+      "contract_bundle_hash": "fa2e95c6c1c9226ae1d7b6cb0a01d822626973f5e427c6404547363bea8a3036",
       "description": "Execute the exact CreateAuthSessions compiled command from contract AdapterOperationalConformance.",
       "input_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -63,7 +63,7 @@
       },
       "name": "adapter_operational_conformance_create_auth_sessions",
       "operation_name": "CreateAuthSessions",
-      "plan_hash": "c8b6c48a1328622d67168392049a17d187ac1a571e79cc888e54896398cfe3f6",
+      "plan_hash": "73474d2fe77acd9b299fd90192a51bac9607b68ed1d7be9cb18df1c7e6d7090d",
       "result_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "oneOf": [
@@ -117,7 +117,110 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "contract_bundle_hash": "b1fc11175728c747e70ab0713792ebcf7d76ad1687466d4899d33d680286d676",
+      "contract_bundle_hash": "fa2e95c6c1c9226ae1d7b6cb0a01d822626973f5e427c6404547363bea8a3036",
+      "description": "Execute the exact CreateDirectoryUsers compiled command from contract AdapterOperationalConformance.",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "request_id": {
+            "type": "string"
+          },
+          "users": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "created_at": {
+                  "type": "integer"
+                },
+                "email": {
+                  "type": "string"
+                },
+                "organization_id": {
+                  "type": "string"
+                },
+                "reviewed_at": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "state": {
+                  "type": "string"
+                },
+                "user_id": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "email",
+                "state",
+                "user_id",
+                "created_at",
+                "reviewed_at",
+                "organization_id"
+              ],
+              "type": "object"
+            },
+            "maxItems": 32,
+            "minItems": 1,
+            "type": "array"
+          }
+        },
+        "required": [
+          "users",
+          "request_id"
+        ],
+        "type": "object"
+      },
+      "name": "adapter_operational_conformance_create_directory_users",
+      "operation_name": "CreateDirectoryUsers",
+      "plan_hash": "216b400b1457c5579a962280ca7b85c4ead49b581ff7d84e77c31b2d7e141c18",
+      "result_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "DirectoryUsersCreated",
+                "type": "string"
+              }
+            },
+            "required": [
+              "outcome"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "DirectoryUserAlreadyExists",
+                "type": "string"
+              }
+            },
+            "required": [
+              "outcome"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "title": "Run CreateDirectoryUsers"
+    },
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "contract_bundle_hash": "fa2e95c6c1c9226ae1d7b6cb0a01d822626973f5e427c6404547363bea8a3036",
       "description": "Execute the exact CreateDocuments compiled command from contract AdapterOperationalConformance.",
       "input_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -212,7 +315,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "contract_bundle_hash": "b1fc11175728c747e70ab0713792ebcf7d76ad1687466d4899d33d680286d676",
+      "contract_bundle_hash": "fa2e95c6c1c9226ae1d7b6cb0a01d822626973f5e427c6404547363bea8a3036",
       "description": "Execute the exact CreatePipelines compiled command from contract AdapterOperationalConformance.",
       "input_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -300,7 +403,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "contract_bundle_hash": "b1fc11175728c747e70ab0713792ebcf7d76ad1687466d4899d33d680286d676",
+      "contract_bundle_hash": "fa2e95c6c1c9226ae1d7b6cb0a01d822626973f5e427c6404547363bea8a3036",
       "description": "Execute the exact LogMetrics compiled command from contract AdapterOperationalConformance.",
       "input_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -392,7 +495,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "contract_bundle_hash": "b1fc11175728c747e70ab0713792ebcf7d76ad1687466d4899d33d680286d676",
+      "contract_bundle_hash": "fa2e95c6c1c9226ae1d7b6cb0a01d822626973f5e427c6404547363bea8a3036",
       "description": "Execute the exact WriteTuples compiled command from contract AdapterOperationalConformance.",
       "input_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -524,7 +627,7 @@
         ],
         "type": "object"
       },
-      "module_hash": "2da42e510a3ba32b14af31e114a67148156202d6502366ae015e0c7ad914a45b",
+      "module_hash": "47adab52831a2338255906aff0e02abf67b94e2fe8e7570d4cd8d6e5dff3a8c6",
       "name": "adapter_operational_conformance_exact_documents_contains_asc",
       "operation_name": "ExactDocumentsContainsAsc",
       "result_schema": {
@@ -628,7 +731,7 @@
         ],
         "type": "object"
       },
-      "module_hash": "2da42e510a3ba32b14af31e114a67148156202d6502366ae015e0c7ad914a45b",
+      "module_hash": "47adab52831a2338255906aff0e02abf67b94e2fe8e7570d4cd8d6e5dff3a8c6",
       "name": "adapter_operational_conformance_exact_documents_ends_with_desc",
       "operation_name": "ExactDocumentsEndsWithDesc",
       "result_schema": {
@@ -732,7 +835,7 @@
         ],
         "type": "object"
       },
-      "module_hash": "2da42e510a3ba32b14af31e114a67148156202d6502366ae015e0c7ad914a45b",
+      "module_hash": "47adab52831a2338255906aff0e02abf67b94e2fe8e7570d4cd8d6e5dff3a8c6",
       "name": "adapter_operational_conformance_exact_documents_starts_with_asc",
       "operation_name": "ExactDocumentsStartsWithAsc",
       "result_schema": {
@@ -822,7 +925,7 @@
         ],
         "type": "object"
       },
-      "module_hash": "2da42e510a3ba32b14af31e114a67148156202d6502366ae015e0c7ad914a45b",
+      "module_hash": "47adab52831a2338255906aff0e02abf67b94e2fe8e7570d4cd8d6e5dff3a8c6",
       "name": "adapter_operational_conformance_get_auth_session",
       "operation_name": "GetAuthSession",
       "result_schema": {
@@ -908,7 +1011,7 @@
         ],
         "type": "object"
       },
-      "module_hash": "2da42e510a3ba32b14af31e114a67148156202d6502366ae015e0c7ad914a45b",
+      "module_hash": "47adab52831a2338255906aff0e02abf67b94e2fe8e7570d4cd8d6e5dff3a8c6",
       "name": "adapter_operational_conformance_list_draft_documents",
       "operation_name": "ListDraftDocuments",
       "result_schema": {
@@ -1004,7 +1107,7 @@
         ],
         "type": "object"
       },
-      "module_hash": "2da42e510a3ba32b14af31e114a67148156202d6502366ae015e0c7ad914a45b",
+      "module_hash": "47adab52831a2338255906aff0e02abf67b94e2fe8e7570d4cd8d6e5dff3a8c6",
       "name": "adapter_operational_conformance_list_fga_tuples",
       "operation_name": "ListFgaTuples",
       "result_schema": {
@@ -1097,7 +1200,7 @@
         ],
         "type": "object"
       },
-      "module_hash": "2da42e510a3ba32b14af31e114a67148156202d6502366ae015e0c7ad914a45b",
+      "module_hash": "47adab52831a2338255906aff0e02abf67b94e2fe8e7570d4cd8d6e5dff3a8c6",
       "name": "adapter_operational_conformance_list_pipelines",
       "operation_name": "ListPipelines",
       "result_schema": {
@@ -1166,7 +1269,7 @@
         ],
         "type": "object"
       },
-      "module_hash": "2da42e510a3ba32b14af31e114a67148156202d6502366ae015e0c7ad914a45b",
+      "module_hash": "47adab52831a2338255906aff0e02abf67b94e2fe8e7570d4cd8d6e5dff3a8c6",
       "name": "adapter_operational_conformance_metric_dashboard",
       "operation_name": "MetricDashboard",
       "result_schema": {
@@ -1243,6 +1346,260 @@
         "openWorldHint": false,
         "readOnlyHint": true
       },
+      "description": "Execute the exact ReviewedDirectoryUsers named query from immutable module adapter_operational_conformance.",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "before_created_at": {
+            "type": "string"
+          },
+          "limit": {
+            "maximum": 499,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "offset": {
+            "type": "string"
+          },
+          "organization_id": {
+            "type": "string"
+          },
+          "states": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 64,
+            "type": "array",
+            "uniqueItems": true
+          }
+        },
+        "required": [
+          "organization_id",
+          "states",
+          "before_created_at"
+        ],
+        "type": "object"
+      },
+      "module_hash": "47adab52831a2338255906aff0e02abf67b94e2fe8e7570d4cd8d6e5dff3a8c6",
+      "name": "adapter_operational_conformance_reviewed_directory_users",
+      "operation_name": "ReviewedDirectoryUsers",
+      "result_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "Found",
+                "type": "string"
+              },
+              "total": {
+                "additionalProperties": false,
+                "properties": {
+                  "value": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "value"
+                ],
+                "type": "object"
+              },
+              "users": {
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "created_at": {
+                      "type": "string"
+                    },
+                    "email": {
+                      "type": "string"
+                    },
+                    "organization_id": {
+                      "type": "string"
+                    },
+                    "reviewed_at": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "state": {
+                      "type": "string"
+                    },
+                    "user_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "organization_id",
+                    "user_id",
+                    "email",
+                    "state",
+                    "created_at",
+                    "reviewed_at"
+                  ],
+                  "type": "object"
+                },
+                "maxItems": 499,
+                "type": "array"
+              }
+            },
+            "required": [
+              "outcome",
+              "users",
+              "total"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "title": "Run ReviewedDirectoryUsers"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "Execute the exact SearchDirectoryUsers named query from immutable module adapter_operational_conformance.",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "excluded_states": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 64,
+            "type": "array",
+            "uniqueItems": true
+          },
+          "limit": {
+            "maximum": 499,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "maximum_created_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "needle": {
+            "type": "string"
+          },
+          "offset": {
+            "type": "string"
+          },
+          "organization_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "organization_id",
+          "needle",
+          "excluded_states"
+        ],
+        "type": "object"
+      },
+      "module_hash": "47adab52831a2338255906aff0e02abf67b94e2fe8e7570d4cd8d6e5dff3a8c6",
+      "name": "adapter_operational_conformance_search_directory_users",
+      "operation_name": "SearchDirectoryUsers",
+      "result_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "Found",
+                "type": "string"
+              },
+              "total": {
+                "additionalProperties": false,
+                "properties": {
+                  "value": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "value"
+                ],
+                "type": "object"
+              },
+              "users": {
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "created_at": {
+                      "type": "string"
+                    },
+                    "email": {
+                      "type": "string"
+                    },
+                    "organization_id": {
+                      "type": "string"
+                    },
+                    "reviewed_at": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "state": {
+                      "type": "string"
+                    },
+                    "user_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "organization_id",
+                    "user_id",
+                    "email",
+                    "state",
+                    "created_at",
+                    "reviewed_at"
+                  ],
+                  "type": "object"
+                },
+                "maxItems": 499,
+                "type": "array"
+              }
+            },
+            "required": [
+              "outcome",
+              "users",
+              "total"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "title": "Run SearchDirectoryUsers"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
       "description": "Execute the exact SearchDocuments named query from immutable module adapter_operational_conformance.",
       "input_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -1271,7 +1628,7 @@
         ],
         "type": "object"
       },
-      "module_hash": "2da42e510a3ba32b14af31e114a67148156202d6502366ae015e0c7ad914a45b",
+      "module_hash": "47adab52831a2338255906aff0e02abf67b94e2fe8e7570d4cd8d6e5dff3a8c6",
       "name": "adapter_operational_conformance_search_documents",
       "operation_name": "SearchDocuments",
       "result_schema": {
