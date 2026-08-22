@@ -141,6 +141,44 @@ test("compact query results preserve compiler order and reject malformed rows", 
   }
 });
 
+test("packed query results preserve compiler columns and require closed negotiation", async () => {
+  const first = Buffer.from([1, 6, 0, 0, 0, 1, 0x61]);
+  const second = Buffer.from([1, 6, 0, 0, 0, 2, 0x62, 0x63]);
+  const data = Buffer.concat([first, second]);
+  const fixture = await DriverFixture.start((request) => request.type === "invoke" ? {
+    type: "packed_query_result", request_id: request.request_id,
+    outcome: "Found", result_name: "tickets", entity: "Ticket",
+    fields: ["title"], row_count: 2,
+    columns: [{ data: data.toString("base64"), offsets: [0, first.length, data.length] }],
+    application_head: 19, cursor: "rfcur_19",
+  } : undefined);
+  const transport = await DriverApplicationTransport.connect({ socketPath: fixture.path, identity });
+  try {
+    await assert.rejects(
+      transport.invoke(
+        { name: "ticketdesk_board_page450", inputSchemaHash: HASH },
+        {},
+        { acceptPackedResult: true },
+      ),
+      /invalid RiffDB driver invocation options/u,
+    );
+    const result = await transport.invoke(
+      { name: "ticketdesk_board_page450", inputSchemaHash: HASH },
+      {},
+      { acceptCompactResult: true, acceptPackedResult: true },
+    );
+    assert.equal(result.packed?.rowCount, 2);
+    assert.deepEqual(result.packed?.fields, ["title"]);
+    assert.deepEqual(Array.from(result.packed?.columns[0]?.data ?? []), Array.from(data));
+    assert.equal(result.applicationHead, 19n);
+    assert.equal(result.cursor, "rfcur_19");
+    assert.match(fixture.lastRequest, /"accept_packed_result":true/u);
+  } finally {
+    await transport.shutdown();
+    await fixture.close();
+  }
+});
+
 test("concurrent sessions use distinct driver request identities", async () => {
   const requestIds = new Set<string>();
   const fixture = await DriverFixture.start((request) => {

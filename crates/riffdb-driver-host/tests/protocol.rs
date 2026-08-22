@@ -28,6 +28,7 @@ fn request_round_trip_is_exact_and_name_addressed() {
             read_after_commit: None,
             cursor: None,
             accept_compact_result: false,
+            accept_packed_result: false,
         },
     };
     let encoded = FrameCodec::encode_request(&request).expect("encode");
@@ -67,6 +68,7 @@ fn canonical_vector_registry_round_trips_exact_component_bits() {
             read_after_commit: None,
             cursor: None,
             accept_compact_result: false,
+            accept_packed_result: false,
         },
     };
     let encoded = FrameCodec::encode_request(&request).expect("encode vector request");
@@ -99,6 +101,7 @@ fn non_finite_driver_vector_bits_fail_before_dispatch() {
             read_after_commit: None,
             cursor: None,
             accept_compact_result: false,
+            accept_packed_result: false,
         },
     };
     assert_eq!(
@@ -129,7 +132,7 @@ fn handshake_registry_identities_are_frozen() {
         FrameCodec::decode_request(&encoded).expect("decode"),
         request
     );
-    let expected = include_bytes!("../../../fixtures/driver/v2/handshake-request.json");
+    let expected = include_bytes!("../../../fixtures/driver/v3/handshake-request.json");
     assert_eq!(
         &encoded[4..],
         expected.strip_suffix(b"\n").unwrap_or(expected)
@@ -172,6 +175,46 @@ fn v1_handshake_and_invoke_remain_legacy_read_compatible() {
         panic!("expected invoke");
     };
     assert!(!options.accept_compact_result);
+    assert!(!options.accept_packed_result);
+}
+
+#[test]
+fn v2_handshake_and_invoke_remain_compact_read_compatible() {
+    let body = include_bytes!("../../../fixtures/driver/v2/handshake-request.json")
+        .strip_suffix(b"\n")
+        .unwrap_or(include_bytes!(
+            "../../../fixtures/driver/v2/handshake-request.json"
+        ));
+    let mut frame = Vec::from(
+        u32::try_from(body.len())
+            .expect("bounded fixture")
+            .to_be_bytes(),
+    );
+    frame.extend_from_slice(body);
+    assert!(matches!(
+        FrameCodec::decode_request(&frame).expect("decode V2 handshake"),
+        DriverRequest::Handshake {
+            protocol_version: 2,
+            ..
+        }
+    ));
+
+    let body = format!(
+        "{{\"type\":\"invoke\",\"request_id\":\"v2-query\",\"operation\":\"ticketdesk_get_ticket\",\"input_schema_hash\":\"{HASH}\",\"input\":{{}},\"options\":{{\"deadline_millis\":1000,\"maximum_attempts\":1,\"read_after_commit\":null,\"cursor\":null,\"accept_compact_result\":true}}}}"
+    );
+    let mut frame = Vec::from(
+        u32::try_from(body.len())
+            .expect("bounded request")
+            .to_be_bytes(),
+    );
+    frame.extend_from_slice(body.as_bytes());
+    let DriverRequest::Invoke { options, .. } =
+        FrameCodec::decode_request(&frame).expect("decode V2 invoke")
+    else {
+        panic!("expected invoke");
+    };
+    assert!(options.accept_compact_result);
+    assert!(!options.accept_packed_result);
 }
 
 #[test]
@@ -282,6 +325,76 @@ fn compact_query_result_preserves_compiler_order_and_rejects_shape_drift() {
 }
 
 #[test]
+fn packed_query_result_preserves_columns_and_rejects_malformed_cells() {
+    use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
+
+    // Canonical string cells: tag 0x05 followed by a big-endian u32 byte length.
+    let first = [1_u8, 6, 0, 0, 0, 1, b'a'];
+    let second = [1_u8, 6, 0, 0, 0, 2, b'b', b'c'];
+    let data = [first.as_slice(), second.as_slice()].concat();
+    let response = DriverResponse::PackedQueryResult {
+        request_id: "board-packed-1".to_owned(),
+        outcome: "Found".to_owned(),
+        result_name: "tickets".to_owned(),
+        entity: "Ticket".to_owned(),
+        fields: vec!["title".to_owned()],
+        row_count: 2,
+        columns: vec![riffdb_driver_host::DriverPackedColumn {
+            data: BASE64.encode(data),
+            offsets: vec![0, 7, 15],
+        }],
+        application_head: 17,
+        cursor: Some("rfcur_17".to_owned()),
+    };
+    let encoded = FrameCodec::encode_response(&response).expect("encode packed result");
+    assert_eq!(
+        FrameCodec::decode_response(&encoded).expect("decode packed result"),
+        response
+    );
+
+    let malformed = DriverResponse::PackedQueryResult {
+        request_id: "board-packed-2".to_owned(),
+        outcome: "Found".to_owned(),
+        result_name: "tickets".to_owned(),
+        entity: "Ticket".to_owned(),
+        fields: vec!["title".to_owned()],
+        row_count: 1,
+        columns: vec![riffdb_driver_host::DriverPackedColumn {
+            data: BASE64.encode([1_u8, 6, 0, 0, 0, 2, b'a']),
+            offsets: vec![0, 7],
+        }],
+        application_head: 17,
+        cursor: None,
+    };
+    assert_eq!(
+        FrameCodec::encode_response(&malformed),
+        Err(ProtocolError::InvalidBounds)
+    );
+}
+
+#[test]
+fn packed_negotiation_requires_the_compact_predecessor() {
+    let request = DriverRequest::Invoke {
+        request_id: "packed-without-compact".to_owned(),
+        operation: "ticketdesk_board_page450".to_owned(),
+        input_schema_hash: HASH.to_owned(),
+        input: BTreeMap::new(),
+        options: InvokeOptions {
+            deadline_millis: 1_000,
+            maximum_attempts: 1,
+            read_after_commit: None,
+            cursor: None,
+            accept_compact_result: false,
+            accept_packed_result: true,
+        },
+    };
+    assert_eq!(
+        FrameCodec::encode_request(&request),
+        Err(ProtocolError::InvalidBounds)
+    );
+}
+
+#[test]
 fn hostile_lengths_and_unknown_fields_fail_closed() {
     let mut oversized = Vec::from(u32::MAX.to_be_bytes());
     oversized.extend_from_slice(b"{}");
@@ -317,6 +430,7 @@ fn bounded_batch_round_trip_retains_independent_items_and_checkpoint() {
             read_after_commit: None,
             cursor: None,
             accept_compact_result: false,
+            accept_packed_result: false,
         },
     };
     let frame = FrameCodec::encode_request(&request).expect("encode batch");

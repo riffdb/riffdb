@@ -11,7 +11,7 @@ const MAX_U64 = 18446744073709551615n;
 const UTF8_DECODER = new TextDecoder("utf-8", { fatal: true });
 let nextSession = 0;
 /** Exact alpha driver protocol generation. */
-export const DRIVER_PROTOCOL_VERSION = 2;
+export const DRIVER_PROTOCOL_VERSION = 3;
 /** Exact tagged value registry compiled into `riffdb-driverd`. */
 export const DRIVER_VALUE_REGISTRY_HASH = "8e1681ddf5e6a82e7fa646f9737128ad7e36f54f8b5846ac6e33e732125407e5";
 /** Exact structured-error registry compiled into `riffdb-driverd`. */
@@ -269,7 +269,8 @@ function lowerOptions(options) {
     if (!Number.isInteger(deadline) || deadline < 1 || deadline > 300_000
         || !Number.isInteger(attempts) || attempts < 1 || attempts > 10
         || (options.readAfterCommit !== undefined && options.readAfterCommit < 1n)
-        || (options.cursor !== undefined && options.cursor.length > 16_384)) {
+        || (options.cursor !== undefined && options.cursor.length > 16_384)
+        || (options.acceptPackedResult === true && options.acceptCompactResult !== true)) {
         throw new Error("invalid RiffDB driver invocation options");
     }
     return {
@@ -278,6 +279,7 @@ function lowerOptions(options) {
         read_after_commit: options.readAfterCommit ?? null,
         cursor: options.cursor ?? null,
         accept_compact_result: options.acceptCompactResult ?? false,
+        accept_packed_result: options.acceptPackedResult ?? false,
     };
 }
 function encodeFrame(value) {
@@ -471,6 +473,45 @@ class ExactJsonParser {
     }
 }
 function decodeResult(response) {
+    if (response.type === "packed_query_result") {
+        const outcome = boundedPattern(response.outcome, SYMBOL);
+        const resultName = boundedPattern(response.result_name, SYMBOL);
+        const entity = boundedPattern(response.entity, SYMBOL);
+        if (!Array.isArray(response.fields) || response.fields.length < 1
+            || response.fields.length > MAX_COLLECTION_ITEMS
+            || !Number.isInteger(response.row_count) || response.row_count < 0
+            || response.row_count > MAX_COLLECTION_ITEMS
+            || !Array.isArray(response.columns) || response.columns.length !== response.fields.length) {
+            throw new Error("RiffDB driver returned an invalid packed result");
+        }
+        const fields = response.fields.map((field) => boundedPattern(field, SYMBOL));
+        if (new Set(fields).size !== fields.length)
+            throw new Error("RiffDB driver returned an invalid packed result");
+        const rowCount = response.row_count;
+        const columns = response.columns.map((raw) => {
+            if (typeof raw !== "object" || raw === null || Array.isArray(raw))
+                throw new Error("RiffDB driver returned an invalid packed result");
+            const column = raw;
+            if (typeof column.data !== "string" || !Array.isArray(column.offsets) || column.offsets.length !== rowCount + 1)
+                throw new Error("RiffDB driver returned an invalid packed result");
+            const data = Buffer.from(column.data, "base64");
+            if (data.toString("base64") !== column.data)
+                throw new Error("RiffDB driver returned an invalid packed result");
+            const offsets = column.offsets.map((offset) => {
+                if (!Number.isInteger(offset) || offset < 0 || offset > 0xffff_ffff)
+                    throw new Error("RiffDB driver returned an invalid packed result");
+                return offset;
+            });
+            if (offsets[0] !== 0 || offsets.at(-1) !== data.length || offsets.some((offset, index) => index > 0 && offsets[index - 1] > offset))
+                throw new Error("RiffDB driver returned an invalid packed result");
+            return { data: new Uint8Array(data), offsets };
+        });
+        const head = optionalNonnegativeBigInt(response.application_head);
+        if (head === undefined)
+            throw new Error("RiffDB driver omitted the query frontier");
+        const cursor = optionalBoundedString(response.cursor, 16_384);
+        return { packed: { outcome, resultName, entity, fields, rowCount, columns }, applicationHead: head, replayed: false, ...(cursor === undefined ? {} : { cursor }) };
+    }
     if (response.type === "compact_query_result") {
         const outcome = boundedPattern(response.outcome, SYMBOL);
         const resultName = boundedPattern(response.result_name, SYMBOL);

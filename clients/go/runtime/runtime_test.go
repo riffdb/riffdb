@@ -98,6 +98,29 @@ func TestBoundaryContainsNoRemoteTransport(t *testing.T) {
 	}
 }
 
+func TestPackedNegotiationRequiresCompactPredecessor(t *testing.T) {
+	if _, err := (Options{AcceptPackedResult: true}).wire(); err == nil {
+		t.Fatal("packed result was accepted without compact predecessor")
+	}
+	if _, err := (Options{AcceptCompactResult: true, AcceptPackedResult: true}).wire(); err != nil {
+		t.Fatalf("closed packed negotiation was rejected: %v", err)
+	}
+}
+
+func TestPackedCanonicalScalarDecodersRejectWrongTags(t *testing.T) {
+	value := []byte{1, 6, 0, 0, 0, 2, 'o', 'k'}
+	decoded, err := PackedString(value, 2)
+	if err != nil || decoded != "ok" {
+		t.Fatalf("packed string changed: %q %v", decoded, err)
+	}
+	if _, err = PackedString(value, 1); err == nil {
+		t.Fatal("packed string exceeded compiler byte bound")
+	}
+	if _, err = PackedU64(value); err == nil {
+		t.Fatal("packed string was accepted as u64")
+	}
+}
+
 func TestRequestIdentityPrefixesAreUniqueAcrossConcurrentSessions(t *testing.T) {
 	first := &Session{requestPrefix: newSessionRequestPrefix()}
 	second := &Session{requestPrefix: newSessionRequestPrefix()}

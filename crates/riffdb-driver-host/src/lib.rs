@@ -30,7 +30,7 @@ pub use operator_protocol::{
 pub use operator_socket::{OperatorDriverSocket, OperatorSocketError};
 pub use protocol::{
     DRIVER_PROTOCOL_VERSION, DriverBatchItem, DriverBatchOutcome, DriverDecimal, DriverMoney,
-    DriverRequest, DriverResponse, DriverTimestamp, DriverValue, DriverVector, FrameCodec,
-    InvokeOptions, MAX_DRIVER_FRAME_BYTES, ProtocolError,
+    DriverPackedColumn, DriverRequest, DriverResponse, DriverTimestamp, DriverValue, DriverVector,
+    FrameCodec, InvokeOptions, MAX_DRIVER_FRAME_BYTES, ProtocolError,
 };
 pub use socket::{DriverSocket, SocketError};

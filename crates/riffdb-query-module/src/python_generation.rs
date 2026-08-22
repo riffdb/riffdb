@@ -1190,6 +1190,97 @@ fn python_decode_compact_expr(value: &str, ty: &ValueType, contract: &ContractBu
     }
 }
 
+#[allow(dead_code)]
+fn emit_python_packed_query_decoder(
+    output: &mut String,
+    name: &str,
+    shape: &RustCompactResultShape,
+    contract: &ContractBundle,
+) {
+    let method = python_identifier(&snake(name));
+    let nested = format!(
+        "{name}{}{}",
+        pascal(&shape.outcome),
+        pascal(&shape.result_name)
+    );
+    let branch = format!("{name}{}", pascal(&shape.outcome));
+    let fields = shape
+        .fields
+        .iter()
+        .map(|field| format!("{:?}", field.name))
+        .collect::<Vec<_>>()
+        .join(", ");
+    writeln!(output, "def _decode_{method}_packed(value: object) -> {name}Result:\n    if not isinstance(value, dict) or frozenset(value) != frozenset((\"$riffdb_packed\",)):\n        raise ValueError(\"invalid RiffDB packed result\")\n    packed = value[\"$riffdb_packed\"]\n    if not isinstance(packed, dict) or frozenset(packed) != frozenset((\"outcome\", \"result_name\", \"entity\", \"fields\", \"row_count\", \"columns\")) or packed[\"outcome\"] != {:?} or packed[\"result_name\"] != {:?} or packed[\"entity\"] != {:?} or packed[\"fields\"] != [{fields}] or type(packed[\"row_count\"]) is not int or packed[\"row_count\"] < 0 or packed[\"row_count\"] > {} or not isinstance(packed[\"columns\"], list) or len(packed[\"columns\"]) != {}:\n        raise ValueError(\"invalid RiffDB packed result\")\n    row_count = packed[\"row_count\"]\n    decoded: list[{nested}] = []\n    for row in range(row_count):\n        decoded.append({nested}(\n", shape.outcome, shape.result_name, shape.entity, shape.maximum_rows, shape.fields.len()).expect("String writes cannot fail");
+    for (index, field) in shape.fields.iter().enumerate() {
+        writeln!(
+            output,
+            "            {}={},",
+            python_identifier(&field.name),
+            python_decode_packed_expr(
+                &format!("_packed_cell(packed[\"columns\"][{index}], row, row_count)"),
+                &field.value_type,
+                contract
+            )
+        )
+        .expect("String writes cannot fail");
+    }
+    writeln!(
+        output,
+        "        ))\n    return {branch}({}=tuple(decoded))\n",
+        python_identifier(&shape.result_name)
+    )
+    .expect("String writes cannot fail");
+}
+
+#[allow(dead_code)]
+fn python_decode_packed_expr(value: &str, ty: &ValueType, contract: &ContractBundle) -> String {
+    if let Some(inner) = ty.optional_inner() {
+        return format!(
+            "None if {value} == b\"\\x01\\x00\" else {}",
+            python_decode_packed_expr(value, inner, contract)
+        );
+    }
+    match ty.tag() {
+        ValueTypeTag::Bool => format!(
+            "(lambda raw: (raw[2] == 1) if raw[2] in (0, 1) else (_ for _ in ()).throw(ValueError(\"invalid RiffDB packed bool\")))(_packed_tag({value}, 1, 3))"
+        ),
+        ValueTypeTag::I64 => {
+            format!("int.from_bytes(_packed_tag({value}, 2, 10)[2:], \"big\", signed=True)")
+        }
+        ValueTypeTag::U64 => format!("int.from_bytes(_packed_tag({value}, 3, 10)[2:], \"big\")"),
+        ValueTypeTag::String => format!(
+            "_packed_string({value}, {})",
+            ty.byte_bound().expect("string bound")
+        ),
+        ValueTypeTag::Timestamp => format!(
+            "(lambda raw: Timestamp(seconds=int.from_bytes(raw[2:10], \"big\", signed=True), nanos=int.from_bytes(raw[10:14], \"big\")) if int.from_bytes(raw[10:14], \"big\") < 1_000_000_000 else (_ for _ in ()).throw(ValueError(\"invalid RiffDB packed timestamp\")))(_packed_tag({value}, 8, 14))"
+        ),
+        ValueTypeTag::Date => format!(
+            "RiffDate(int.from_bytes(_packed_tag({value}, 9, 6)[2:], \"big\", signed=True))"
+        ),
+        ValueTypeTag::Uuid => format!("UUID(bytes=_packed_tag({value}, 10, 18)[2:])"),
+        ValueTypeTag::Enum => {
+            let enumeration = contract
+                .schema()
+                .enumeration(ty.enum_type_id().expect("enum identity"))
+                .expect("validated enum");
+            let mapping = enumeration
+                .variants()
+                .iter()
+                .map(|variant| format!("{}: {:?}", variant.id().get(), variant.name()))
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!(
+                "(lambda raw: {}({{{mapping}}}[int.from_bytes(raw[6:10], \"big\")]) if int.from_bytes(raw[2:6], \"big\") == {} and int.from_bytes(raw[6:10], \"big\") in {{{mapping}}} else (_ for _ in ()).throw(ValueError(\"invalid RiffDB packed enum\")))(_packed_tag({value}, 11, 10))",
+                pascal(enumeration.name()),
+                enumeration.id().get()
+            )
+        }
+        ValueTypeTag::Optional => unreachable!("handled above"),
+        _ => "(_ for _ in ()).throw(ValueError(\"unsupported RiffDB packed value\"))".to_owned(),
+    }
+}
+
 fn emit_client(
     output: &mut String,
     module: &QueryModule,

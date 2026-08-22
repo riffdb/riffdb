@@ -8,6 +8,8 @@ use std::path::Path;
 use std::sync::Mutex;
 use std::time::Duration;
 
+use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD as BASE64;
 use pyo3::exceptions::PyTypeError;
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyModule, PyType};
@@ -198,7 +200,7 @@ impl NativeSyncClient {
     fn execute_named_query(&self, py: Python<'_>, request: &str) -> PyResult<String> {
         let request = parse_query(request)?;
         let mut client = self.client()?;
-        if request.accept_compact_result {
+        if request.accept_compact_result || request.accept_packed_result {
             let result = py
                 .detach(|| {
                     self.runtime
@@ -661,11 +663,14 @@ struct QueryRequest {
     read_after_commit: Option<u64>,
     #[serde(default)]
     accept_compact_result: bool,
+    #[serde(default)]
+    accept_packed_result: bool,
 }
 
 struct ParsedQuery {
     query: NamedQuery,
     accept_compact_result: bool,
+    accept_packed_result: bool,
 }
 
 #[derive(Deserialize)]
@@ -1019,6 +1024,9 @@ fn parse_live_query(source: &str) -> PyResult<ParsedLiveQuery> {
 
 fn parse_query(source: &str) -> PyResult<ParsedQuery> {
     let request: QueryRequest = parse_json(source)?;
+    if request.accept_packed_result && !request.accept_compact_result {
+        return Err(native_error("invalid_input", None));
+    }
     let bundle_hash = parse_hash(&request.contract_bundle_hash)?;
     let module_hash = parse_hash(&request.module_hash)?;
     let plan_hash = parse_hash(&request.plan_hash)?;
@@ -1036,6 +1044,7 @@ fn parse_query(source: &str) -> PyResult<ParsedQuery> {
         options = options.read_after_commit(sequence);
     }
     let accept_compact_result = request.accept_compact_result;
+    let accept_packed_result = request.accept_packed_result;
     let query = NamedQuery::new(
         ApplicationContract::Exact {
             lineage: request.contract_lineage,
@@ -1047,11 +1056,20 @@ fn parse_query(source: &str) -> PyResult<ParsedQuery> {
         parameters,
         None,
     )
-    .and_then(|query| query.expect_plan_hash(plan_hash).with_options(options))
+    .and_then(|query| {
+        let query = query.expect_plan_hash(plan_hash);
+        let query = if accept_packed_result {
+            query.accept_packed_result_v1()
+        } else {
+            query
+        };
+        query.with_options(options)
+    })
     .map_err(application_client_error)?;
     Ok(ParsedQuery {
         query,
         accept_compact_result,
+        accept_packed_result,
     })
 }
 
@@ -1355,6 +1373,49 @@ fn render_vector_inspection(result: VectorStateInspectionResult) -> PyResult<Str
 }
 
 fn render_wire_query_result(response: app_v1::ExecuteQueryResponse) -> PyResult<String> {
+    if response.selected_result_encoding == app_v1::NamedResultEncoding::PackedV1 as i32 {
+        if !response.fields.is_empty() || response.compact_result.is_some() {
+            return Err(native_error("protocol_error", None));
+        }
+        let identity = response
+            .identity
+            .ok_or_else(|| native_error("protocol_error", None))?;
+        let packed = response
+            .packed_result
+            .ok_or_else(|| native_error("protocol_error", None))?;
+        let columns = packed
+            .columns
+            .into_iter()
+            .map(|column| {
+                json!({
+                    "data": BASE64.encode(column.data),
+                    "offsets": column.offsets,
+                })
+            })
+            .collect::<Vec<_>>();
+        return serialize(&json!({
+            "value": {
+                "$riffdb_packed": {
+                    "outcome": response.outcome,
+                    "result_name": packed.name,
+                    "entity": packed.entity,
+                    "fields": packed.fields,
+                    "row_count": packed.row_count,
+                    "columns": columns,
+                }
+            },
+            "identity": {
+                "contract_lineage": identity.contract_lineage,
+                "contract_version": identity.contract_version,
+                "contract_bundle_hash": hex(&identity.contract_bundle_hash),
+                "module_hash": identity.module_hash.as_deref().map(hex).ok_or_else(|| native_error("protocol_error", None))?,
+                "query_name": identity.query_name.ok_or_else(|| native_error("protocol_error", None))?,
+                "plan_hash": hex(&identity.plan_hash),
+            },
+            "application_head": response.application_head,
+            "next_cursor": response.next_cursor,
+        }));
+    }
     if response.selected_result_encoding != app_v1::NamedResultEncoding::CompactV1 as i32 {
         return render_query_result(
             raise_query_result(response).map_err(application_client_error)?,

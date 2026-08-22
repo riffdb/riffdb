@@ -2,7 +2,9 @@
 
 use std::collections::BTreeSet;
 
-use riffdb_types::{EmbeddingMetadata, EntityKey, MAX_CONTRACT_LINEAGE_BYTES};
+use riffdb_types::{
+    EmbeddingMetadata, EntityKey, MAX_CONTRACT_LINEAGE_BYTES, decode_canonical_value,
+};
 
 use crate::app::v1 as app_v1;
 use crate::public_message::{
@@ -517,6 +519,10 @@ app_message!(
             [legacy, compact]
                 if *legacy == app_v1::NamedResultEncoding::LegacyRecords as i32
                     && *compact == app_v1::NamedResultEncoding::CompactV1 as i32 => {}
+            [legacy, compact, packed]
+                if *legacy == app_v1::NamedResultEncoding::LegacyRecords as i32
+                    && *compact == app_v1::NamedResultEncoding::CompactV1 as i32
+                    && *packed == app_v1::NamedResultEncoding::PackedV1 as i32 => {}
             _ => return Err(PublicWireError::InvalidEnum),
         }
         Ok(())
@@ -526,7 +532,7 @@ app_message!(
     app_v1::ExecuteQueryResponse,
     None,
     MAX_PUBLIC_RESPONSE_BYTES,
-    7,
+    8,
     &[4],
     &[],
     |value: &app_v1::ExecuteQueryResponse| {
@@ -547,14 +553,26 @@ app_message!(
         match app_v1::NamedResultEncoding::try_from(value.selected_result_encoding) {
             Ok(app_v1::NamedResultEncoding::Unspecified)
             | Ok(app_v1::NamedResultEncoding::LegacyRecords)
-                if value.compact_result.is_none() =>
+                if value.compact_result.is_none() && value.packed_result.is_none() =>
             {
                 validate_legacy_result_fields(&value.fields)
             }
-            Ok(app_v1::NamedResultEncoding::CompactV1) if value.fields.is_empty() => {
+            Ok(app_v1::NamedResultEncoding::CompactV1)
+                if value.fields.is_empty() && value.packed_result.is_none() =>
+            {
                 validate_compact_result_field(
                     value
                         .compact_result
+                        .as_ref()
+                        .ok_or(PublicWireError::MissingRequiredField)?,
+                )
+            }
+            Ok(app_v1::NamedResultEncoding::PackedV1)
+                if value.fields.is_empty() && value.compact_result.is_none() =>
+            {
+                validate_packed_result_field(
+                    value
+                        .packed_result
                         .as_ref()
                         .ok_or(PublicWireError::MissingRequiredField)?,
                 )
@@ -623,6 +641,55 @@ fn validate_compact_result_field(
         for value in &row.values {
             validate_value(value).map_err(|_| PublicWireError::InvalidValue)?;
         }
+    }
+    Ok(())
+}
+
+fn validate_packed_result_field(field: &app_v1::PackedResultField) -> Result<(), PublicWireError> {
+    let cardinality = app_v1::ResultCardinality::try_from(field.cardinality)
+        .map_err(|_| PublicWireError::InvalidEnum)?;
+    let row_count = usize::try_from(field.row_count).map_err(|_| PublicWireError::TooManyItems)?;
+    if cardinality == app_v1::ResultCardinality::Unspecified
+        || !valid_name(&field.name)
+        || !valid_name(&field.entity)
+        || field.fields.is_empty()
+        || field.fields.len() > MAX_QUERY_ITEMS
+        || field.fields.iter().any(|name| !valid_name(name))
+        || row_count > MAX_QUERY_ROWS
+        || field.columns.len() != field.fields.len()
+        || (cardinality == app_v1::ResultCardinality::One && row_count != 1)
+        || (cardinality == app_v1::ResultCardinality::Maybe && row_count > 1)
+    {
+        return Err(PublicWireError::InvalidBytes);
+    }
+    let mut names = BTreeSet::new();
+    if field.fields.iter().any(|name| !names.insert(name)) {
+        return Err(PublicWireError::NonCanonical);
+    }
+    for column in &field.columns {
+        validate_packed_column(column, row_count)?;
+    }
+    Ok(())
+}
+
+fn validate_packed_column(
+    column: &app_v1::PackedColumn,
+    row_count: usize,
+) -> Result<(), PublicWireError> {
+    if column.offsets.len() != row_count.saturating_add(1)
+        || column.offsets.first().copied() != Some(0)
+        || column.offsets.last().copied().map(|value| value as usize) != Some(column.data.len())
+    {
+        return Err(PublicWireError::InconsistentFields);
+    }
+    for offsets in column.offsets.windows(2) {
+        let start = offsets[0] as usize;
+        let end = offsets[1] as usize;
+        if start > end || end > column.data.len() {
+            return Err(PublicWireError::InconsistentFields);
+        }
+        decode_canonical_value(&column.data[start..end])
+            .map_err(|_| PublicWireError::InvalidValue)?;
     }
     Ok(())
 }
@@ -1147,6 +1214,7 @@ mod tests {
                     ],
                 }],
             }),
+            packed_result: None,
         };
         assert_eq!(response.validate_structure(), Ok(()));
         response.fields.push(app_v1::ResultField {
@@ -1162,6 +1230,80 @@ mod tests {
         response.compact_result.as_mut().expect("compact").rows[0]
             .values
             .pop();
+        assert_eq!(
+            response.validate_structure(),
+            Err(PublicWireError::InconsistentFields)
+        );
+    }
+
+    #[test]
+    fn packed_named_result_is_exclusive_offset_checked_and_canonical() {
+        let request = app_v1::ExecuteQueryRequest {
+            contract: Some(selector()),
+            module_hash: None,
+            parameters: Vec::new(),
+            cursor: None,
+            minimum_application_head: None,
+            accepted_result_encodings: vec![
+                app_v1::NamedResultEncoding::LegacyRecords as i32,
+                app_v1::NamedResultEncoding::CompactV1 as i32,
+                app_v1::NamedResultEncoding::PackedV1 as i32,
+            ],
+            request_id: vec![0x77; 16],
+            query: Some(app_v1::execute_query_request::Query::QueryName(
+                "BoardPage".to_owned(),
+            )),
+        };
+        assert_eq!(request.validate_structure(), Ok(()));
+
+        let ticket =
+            riffdb_types::encode_canonical_value(&riffdb_types::CanonicalValue::Uuid([0x44; 16]))
+                .expect("uuid");
+        let title = riffdb_types::encode_canonical_value(
+            &riffdb_types::CanonicalValue::string("covered").expect("string"),
+        )
+        .expect("title");
+        let mut response = app_v1::ExecuteQueryResponse {
+            identity: Some(app_v1::QueryIdentity {
+                contract_lineage: "ReactiveBoundary".to_owned(),
+                contract_version: 1,
+                contract_bundle_hash: vec![0x11; 32],
+                query_name: Some("BoardPage".to_owned()),
+                plan_hash: vec![0x22; 32],
+                module_hash: Some(vec![0x33; 32]),
+            }),
+            outcome: "Found".to_owned(),
+            application_head: 9,
+            fields: Vec::new(),
+            next_cursor: None,
+            selected_result_encoding: app_v1::NamedResultEncoding::PackedV1 as i32,
+            compact_result: None,
+            packed_result: Some(app_v1::PackedResultField {
+                name: "tickets".to_owned(),
+                cardinality: app_v1::ResultCardinality::Many as i32,
+                entity: "Ticket".to_owned(),
+                fields: vec!["ticket_id".to_owned(), "title".to_owned()],
+                row_count: 1,
+                columns: vec![
+                    app_v1::PackedColumn {
+                        offsets: vec![0, ticket.len() as u32],
+                        data: ticket,
+                    },
+                    app_v1::PackedColumn {
+                        offsets: vec![0, title.len() as u32],
+                        data: title,
+                    },
+                ],
+            }),
+        };
+        assert_eq!(response.validate_structure(), Ok(()));
+        response.packed_result.as_mut().expect("packed").columns[0].offsets[1] -= 1;
+        assert_eq!(
+            response.validate_structure(),
+            Err(PublicWireError::InconsistentFields)
+        );
+        response.packed_result.as_mut().expect("packed").columns[0].offsets[1] += 1;
+        response.compact_result = Some(app_v1::CompactResultField::default());
         assert_eq!(
             response.validate_structure(),
             Err(PublicWireError::InconsistentFields)

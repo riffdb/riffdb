@@ -282,7 +282,7 @@ messages
     7 minimum_application_head optional uint64 proto3-optional oneof=_minimum_application_head
     8 accepted_result_encodings repeated .riffdb.app.v1.NamedResultEncoding
     100 request_id optional bytes
-  riffdb.app.v1.ExecuteQueryResponse fields=7
+  riffdb.app.v1.ExecuteQueryResponse fields=8
     1 identity optional .riffdb.app.v1.QueryIdentity
     2 outcome optional string
     3 application_head optional uint64
@@ -290,6 +290,7 @@ messages
     5 next_cursor optional string proto3-optional oneof=_next_cursor
     6 selected_result_encoding optional .riffdb.app.v1.NamedResultEncoding
     7 compact_result optional .riffdb.app.v1.CompactResultField proto3-optional oneof=_compact_result
+    8 packed_result optional .riffdb.app.v1.PackedResultField proto3-optional oneof=_packed_result
   riffdb.app.v1.ExplainQueryRequest fields=5
     1 contract optional .riffdb.app.v1.ContractSelector proto3-optional oneof=_contract
     2 source optional string oneof=query
@@ -352,6 +353,13 @@ messages
   riffdb.app.v1.PackedColumn fields=2
     1 data optional bytes
     2 offsets repeated uint32
+  riffdb.app.v1.PackedResultField fields=6
+    1 name optional string
+    2 cardinality optional .riffdb.app.v1.ResultCardinality
+    3 entity optional string
+    4 fields repeated string
+    5 row_count optional uint32
+    6 columns repeated .riffdb.app.v1.PackedColumn
   riffdb.app.v1.Parameter fields=2
     1 name optional string
     2 value optional .riffdb.v1.Value
@@ -2894,10 +2902,11 @@ enums
     5 APPLICATION_RECOVERY_ACTION_REFRESH_CONTRACT
     6 APPLICATION_RECOVERY_ACTION_CONTACT_OPERATOR
     7 APPLICATION_RECOVERY_ACTION_NONE
-  riffdb.app.v1.NamedResultEncoding values=3
+  riffdb.app.v1.NamedResultEncoding values=4
     0 NAMED_RESULT_ENCODING_UNSPECIFIED
     1 NAMED_RESULT_ENCODING_LEGACY_RECORDS
     2 NAMED_RESULT_ENCODING_COMPACT_V1
+    3 NAMED_RESULT_ENCODING_PACKED_V1
   riffdb.app.v1.ProjectedAggregateOp values=5
     0 PROJECTED_AGGREGATE_OP_UNSPECIFIED
     1 PROJECTED_AGGREGATE_OP_COUNT

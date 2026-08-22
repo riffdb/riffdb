@@ -1768,6 +1768,7 @@ dependencies = [
 name = "riffdb-client-python-native"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "pyo3",
  "pyo3-async-runtimes",
  "riffdb-client-rust",

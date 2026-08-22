@@ -35,6 +35,8 @@ pub use riffdb_proto::app::v1 as app_v1;
 pub use riffdb_proto::v1;
 #[doc(hidden)]
 pub use riffdb_proto::{canonical_value_from_proto, canonical_value_to_proto};
+#[doc(hidden)]
+pub use riffdb_types::{CanonicalValue, decode_canonical_value};
 
 pub use application::{
     ApplicationCardinality, ApplicationCatalogFeature, ApplicationCatalogFeatureState,

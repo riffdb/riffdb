@@ -487,6 +487,74 @@ fn emit_go_compact_query_decoder(
     .unwrap();
 }
 
+#[allow(dead_code)]
+fn emit_go_packed_query_decoder(
+    output: &mut String,
+    name: &str,
+    shape: &RustCompactResultShape,
+    contract: &ContractBundle,
+) {
+    let fields = shape
+        .fields
+        .iter()
+        .map(|field| format!("{:?}", field.name))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let branch = format!("{name}{}", go_public(&shape.outcome));
+    let row_fields = shape
+        .result_fields
+        .iter()
+        .map(|field| {
+            format!(
+                "{} {}",
+                go_public(&field.name),
+                go_type(&field.value_type, contract)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("; ");
+    let rows_type = format!("[]struct {{ {row_fields} }}");
+    writeln!(output, "func decode{name}Packed(value *riffdb.PackedQueryResult) ({name}Result, error) {{ if value == nil || value.Outcome != {:?} || value.ResultName != {:?} || value.Entity != {:?} || len(value.Fields) != {} || len(value.Columns) != {} || value.RowCount > {} {{ return nil, errors.New(\"RiffDB driver returned invalid packed result\") }}; expected := []string{{{fields}}}; for index := range expected {{ if value.Fields[index] != expected[index] {{ return nil, errors.New(\"RiffDB driver returned invalid packed result\") }} }}; for _, column := range value.Columns {{ if len(column.Offsets) != int(value.RowCount)+1 || len(column.Offsets) == 0 || column.Offsets[0] != 0 || uint64(column.Offsets[len(column.Offsets)-1]) != uint64(len(column.Data)) {{ return nil, errors.New(\"RiffDB driver returned invalid packed result\") }}; for index := 1; index < len(column.Offsets); index++ {{ if column.Offsets[index-1] > column.Offsets[index] || uint64(column.Offsets[index]) > uint64(len(column.Data)) {{ return nil, errors.New(\"RiffDB driver returned invalid packed result\") }} }} }}; rows := make({rows_type}, 0, value.RowCount); for rowIndex := uint32(0); rowIndex < value.RowCount; rowIndex++ {{ var row struct {{ {row_fields} }}; var err error", shape.outcome, shape.result_name, shape.entity, shape.fields.len(), shape.fields.len(), shape.maximum_rows).unwrap();
+    for (index, field) in shape.fields.iter().enumerate() {
+        writeln!(output, "column{index} := value.Columns[{index}]; raw{index} := column{index}.Data[column{index}.Offsets[rowIndex]:column{index}.Offsets[rowIndex+1]]; row.{field}, err = {decode}; if err != nil {{ return nil, err }}", field = go_public(&field.name), decode = go_decode_packed_expr(&format!("raw{index}"), &field.value_type, contract)).unwrap();
+    }
+    writeln!(
+        output,
+        "rows = append(rows, row) }}; return {branch}{{Outcome: {:?}, {}: rows}}, nil }}",
+        shape.outcome,
+        go_public(&shape.result_name)
+    )
+    .unwrap();
+}
+
+#[allow(dead_code)]
+fn go_decode_packed_expr(value: &str, ty: &ValueType, contract: &ContractBundle) -> String {
+    if let Some(inner) = ty.optional_inner() {
+        let inner_type = go_type(inner, contract);
+        return format!(
+            "func() (*{inner_type}, error) {{ if riffdb.PackedIsNull({value}) {{ return nil, nil }}; decoded, err := {}; if err != nil {{ return nil, err }}; return &decoded, nil }}()",
+            go_decode_packed_expr(value, inner, contract)
+        );
+    }
+    match ty.tag() {
+        ValueTypeTag::Bool => format!("riffdb.PackedBool({value})"),
+        ValueTypeTag::I64 => format!("riffdb.PackedI64({value})"),
+        ValueTypeTag::U64 => format!("riffdb.PackedU64({value})"),
+        ValueTypeTag::String => format!("riffdb.PackedString({value}, {})", ty.byte_bound().expect("string bound")),
+        ValueTypeTag::Timestamp => format!("riffdb.PackedTimestamp({value})"),
+        ValueTypeTag::Date => format!("riffdb.PackedDate({value})"),
+        ValueTypeTag::Uuid => format!("riffdb.PackedUUID({value})"),
+        ValueTypeTag::Enum => {
+            let enumeration = contract.schema().enumeration(ty.enum_type_id().expect("enum identity")).expect("validated enum");
+            let name = go_public(enumeration.name());
+            let cases = enumeration.variants().iter().map(|variant| format!("case typeID == {} && variantID == {}: return {name}({:?}), nil", enumeration.id().get(), variant.id().get(), variant.name())).collect::<Vec<_>>().join("; ");
+            format!("func() ({name}, error) {{ typeID, variantID, err := riffdb.PackedEnum({value}); if err != nil {{ return \"\", err }}; switch {{ {cases}; default: return \"\", errors.New(\"invalid RiffDB packed enum\") }} }}()")
+        }
+        ValueTypeTag::Optional => unreachable!("handled above"),
+        _ => "func() (string, error) { return \"\", errors.New(\"unsupported RiffDB packed value\") }()".to_owned(),
+    }
+}
+
 fn go_decode_compact_expr(value: &str, ty: &ValueType, contract: &ContractBundle) -> String {
     if let Some(inner) = ty.optional_inner() {
         return format!(

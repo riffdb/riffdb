@@ -2,12 +2,16 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::io;
 
+use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD as BASE64;
+use riffdb_types::decode_canonical_value;
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 /// Exact alpha driver protocol generation.
-pub const DRIVER_PROTOCOL_VERSION: u32 = 2;
+pub const DRIVER_PROTOCOL_VERSION: u32 = 3;
 pub(crate) const DRIVER_PROTOCOL_VERSION_V1: u32 = 1;
+pub(crate) const DRIVER_PROTOCOL_VERSION_V2: u32 = 2;
 /// Hard bound for one complete local request or response body.
 pub const MAX_DRIVER_FRAME_BYTES: usize = 1_048_576;
 const MAX_COLLECTION_ITEMS: usize = 4_096;
@@ -101,6 +105,9 @@ pub struct InvokeOptions {
     /// Generated query accepts the exact compiler-sealed positional arm.
     #[serde(default)]
     pub accept_compact_result: bool,
+    /// Generated query accepts canonical packed columns.
+    #[serde(default)]
+    pub accept_packed_result: bool,
 }
 
 /// Closed application value registry used by every target language.
@@ -247,6 +254,27 @@ pub enum DriverResponse {
         /// Optional opaque continuation cursor.
         cursor: Option<String>,
     },
+    /// Completed compiler-sealed named query as canonical packed columns.
+    PackedQueryResult {
+        /// Matching request identifier.
+        request_id: String,
+        /// Exact declared result outcome.
+        outcome: String,
+        /// Exact top-level result field name.
+        result_name: String,
+        /// Exact contract entity name.
+        entity: String,
+        /// Compiler-sealed field names in positional order.
+        fields: Vec<String>,
+        /// Bounded row count.
+        row_count: u32,
+        /// Canonical columns encoded as base64 plus checked offsets.
+        columns: Vec<DriverPackedColumn>,
+        /// Application snapshot frontier.
+        application_head: u64,
+        /// Optional opaque continuation cursor.
+        cursor: Option<String>,
+    },
     /// Completed bounded command batch with independently typed items.
     BatchResult {
         /// Matching batch request identifier.
@@ -298,6 +326,16 @@ pub enum DriverResponse {
         /// Whether a command outcome remains uncertain.
         outcome_uncertain: bool,
     },
+}
+
+/// One canonical packed result column carried by the language-driver protocol.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct DriverPackedColumn {
+    /// Canonical RFC 4648 base64 cell bytes.
+    pub data: String,
+    /// Row boundaries into decoded data.
+    pub offsets: Vec<u32>,
 }
 
 /// One independently completed generated command batch item.
@@ -509,7 +547,7 @@ fn validate_request(request: &DriverRequest) -> Result<(), ProtocolError> {
             valid_id(request_id)?;
             if !matches!(
                 *protocol_version,
-                DRIVER_PROTOCOL_VERSION_V1 | DRIVER_PROTOCOL_VERSION
+                DRIVER_PROTOCOL_VERSION_V1 | DRIVER_PROTOCOL_VERSION_V2 | DRIVER_PROTOCOL_VERSION
             ) || !is_hash(application_manifest_hash)
                 || !is_hash(operation_catalog_hash)
                 || contract_lineage.is_empty()
@@ -544,6 +582,7 @@ fn validate_request(request: &DriverRequest) -> Result<(), ProtocolError> {
                 || options.deadline_millis == 0
                 || options.deadline_millis > 300_000
                 || options.read_after_commit == Some(0)
+                || (options.accept_packed_result && !options.accept_compact_result)
                 || options
                     .cursor
                     .as_ref()
@@ -576,6 +615,7 @@ fn validate_request(request: &DriverRequest) -> Result<(), ProtocolError> {
                 || options.read_after_commit.is_some()
                 || options.cursor.is_some()
                 || options.accept_compact_result
+                || options.accept_packed_result
             {
                 return Err(ProtocolError::InvalidBounds);
             }
@@ -619,7 +659,7 @@ fn validate_response(response: &DriverResponse) -> Result<(), ProtocolError> {
             valid_id(request_id)?;
             if !matches!(
                 *protocol_version,
-                DRIVER_PROTOCOL_VERSION_V1 | DRIVER_PROTOCOL_VERSION
+                DRIVER_PROTOCOL_VERSION_V1 | DRIVER_PROTOCOL_VERSION_V2 | DRIVER_PROTOCOL_VERSION
             ) || driver_identity.is_empty()
                 || driver_identity.len() > 128
                 || !is_hash(application_manifest_hash)
@@ -676,6 +716,55 @@ fn validate_response(response: &DriverResponse) -> Result<(), ProtocolError> {
             }
             for row in rows {
                 validate_values(row.iter(), 0)?;
+            }
+        }
+        DriverResponse::PackedQueryResult {
+            request_id,
+            outcome,
+            result_name,
+            entity,
+            fields,
+            row_count,
+            columns,
+            cursor,
+            ..
+        } => {
+            valid_id(request_id)?;
+            let rows = usize::try_from(*row_count).map_err(|_| ProtocolError::InvalidBounds)?;
+            if !is_public_symbol(outcome)
+                || !is_public_symbol(result_name)
+                || !is_public_symbol(entity)
+                || fields.is_empty()
+                || fields.len() > MAX_COLLECTION_ITEMS
+                || rows > MAX_COLLECTION_ITEMS
+                || columns.len() != fields.len()
+                || fields.iter().any(|field| !is_public_symbol(field))
+                || fields.iter().collect::<BTreeSet<_>>().len() != fields.len()
+                || cursor.as_ref().is_some_and(|value| value.len() > 16_384)
+            {
+                return Err(ProtocolError::InvalidBounds);
+            }
+            for column in columns {
+                let data = BASE64
+                    .decode(column.data.as_bytes())
+                    .map_err(|_| ProtocolError::InvalidBounds)?;
+                if column.offsets.len() != rows.saturating_add(1)
+                    || column.offsets.first().copied() != Some(0)
+                    || column.offsets.last().copied().map(|value| value as usize)
+                        != Some(data.len())
+                {
+                    return Err(ProtocolError::InvalidBounds);
+                }
+                for pair in column.offsets.windows(2) {
+                    let start = pair[0] as usize;
+                    let end = pair[1] as usize;
+                    if start > end
+                        || end > data.len()
+                        || decode_canonical_value(&data[start..end]).is_err()
+                    {
+                        return Err(ProtocolError::InvalidBounds);
+                    }
+                }
             }
         }
         DriverResponse::BatchResult {

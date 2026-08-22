@@ -1285,6 +1285,7 @@ dependencies = [
  "riffdb-catalog",
  "riffdb-contract-ir",
  "riffdb-invariant",
+ "riffdb-query-ir",
  "riffdb-storage-api",
  "riffdb-types",
 ]

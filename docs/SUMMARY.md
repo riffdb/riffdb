@@ -153,6 +153,7 @@
 # Reference
 
 - [CLI Reference](reference/CLI.md)
+- [Named-result Carriage](reference/NAMED-RESULT-CARRIAGE.md)
 - [Values and Identifiers](reference/VALUES.md)
 - [Errors and Outcomes](reference/ERRORS.md)
 - [Rust API](reference/RUST-API.md)

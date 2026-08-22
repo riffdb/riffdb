@@ -854,6 +854,7 @@ fn bootstrap_request(
             row_policy: None,
             export: None,
             reimport: None,
+            vector_inspection: None,
         }),
     })
 }
@@ -952,6 +953,7 @@ fn application_role_grant_to_proto(
         row_policy: None,
         export: None,
         reimport: None,
+        vector_inspection: None,
     })
 }
 

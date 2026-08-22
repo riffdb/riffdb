@@ -1050,6 +1050,7 @@ pub struct NamedSymbolicQueryRequest {
     cursor: Option<CursorToken>,
     minimum_application_head: Option<u64>,
     accepts_compact_result_v1: bool,
+    accepts_packed_result_v1: bool,
 }
 
 impl NamedSymbolicQueryRequest {
@@ -1071,6 +1072,7 @@ impl NamedSymbolicQueryRequest {
             cursor: None,
             minimum_application_head: None,
             accepts_compact_result_v1: false,
+            accepts_packed_result_v1: false,
         })
     }
 
@@ -1092,6 +1094,14 @@ impl NamedSymbolicQueryRequest {
     #[must_use]
     pub const fn accepting_compact_result_v1(mut self) -> Self {
         self.accepts_compact_result_v1 = true;
+        self
+    }
+
+    /// Advertises support for the additive packed named-result encoding.
+    #[must_use]
+    pub const fn accepting_packed_result_v1(mut self) -> Self {
+        self.accepts_compact_result_v1 = true;
+        self.accepts_packed_result_v1 = true;
         self
     }
 
@@ -1328,6 +1338,7 @@ pub struct ExecuteSymbolicQueryResult {
     application_head: u64,
     fields: BTreeMap<String, SymbolicResultField>,
     compact_result: Option<CoveredQueryResultV1>,
+    packed_result: bool,
     enum_variant_names: SharedEnumVariantNames,
     next_cursor: Option<CursorToken>,
 }
@@ -1339,6 +1350,7 @@ pub type SymbolicQueryResponseParts = (
     u64,
     BTreeMap<String, SymbolicResultField>,
     Option<CoveredQueryResultV1>,
+    bool,
     SharedEnumVariantNames,
     Option<CursorToken>,
 );
@@ -1367,6 +1379,7 @@ impl ExecuteSymbolicQueryResult {
             application_head: 0,
             fields: BTreeMap::new(),
             compact_result: None,
+            packed_result: false,
             enum_variant_names: Arc::new(BTreeMap::new()),
             next_cursor: None,
         }
@@ -1377,6 +1390,7 @@ impl ExecuteSymbolicQueryResult {
         snapshot: QueryOwnedSnapshot,
         enum_variant_names: SharedEnumVariantNames,
         retain_compact: bool,
+        retain_packed: bool,
     ) -> Self {
         let application_head = snapshot.application_head();
         let outcome = snapshot.outcome().to_owned();
@@ -1419,12 +1433,14 @@ impl ExecuteSymbolicQueryResult {
                 (name, value)
             })
             .collect();
+        let packed_result = retain_packed && compact_result.is_some();
         Self {
             identity: SymbolicQueryIdentity::from_program(program),
             outcome,
             application_head,
             fields,
             compact_result,
+            packed_result,
             enum_variant_names,
             next_cursor: None,
         }
@@ -1436,7 +1452,7 @@ impl ExecuteSymbolicQueryResult {
         snapshot: QueryOwnedSnapshot,
         enum_variant_names: SharedEnumVariantNames,
     ) -> Self {
-        let mut result = Self::from_snapshot(program, snapshot, enum_variant_names, false);
+        let mut result = Self::from_snapshot(program, snapshot, enum_variant_names, false, false);
         result.identity = SymbolicQueryIdentity::from_named(program, module_hash);
         result
     }
@@ -1480,6 +1496,7 @@ impl ExecuteSymbolicQueryResult {
             self.application_head,
             self.fields,
             self.compact_result,
+            self.packed_result,
             self.enum_variant_names,
             self.next_cursor,
         )
@@ -1501,6 +1518,7 @@ impl ExecuteSymbolicQueryResult {
             application_head,
             fields,
             compact_result: None,
+            packed_result: false,
             enum_variant_names,
             next_cursor: None,
         }
@@ -2683,6 +2701,7 @@ async fn execute_named_query(
         request.cursor,
         request.minimum_application_head,
         request.accepts_compact_result_v1,
+        request.accepts_packed_result_v1,
     )
     .await
 }
@@ -3089,6 +3108,7 @@ fn vector_projection_response(
         application_head: epoch.get(),
         fields: BTreeMap::from([(result_name, SymbolicResultField::Many(rows))]),
         compact_result: None,
+        packed_result: false,
         enum_variant_names,
         next_cursor: None,
     })
@@ -3686,6 +3706,7 @@ fn exact_result_response(
         application_head: epoch.get(),
         fields,
         compact_result: None,
+        packed_result: false,
         enum_variant_names,
         next_cursor: None,
     })
@@ -3771,6 +3792,7 @@ fn exact_predicate_result_response(
         application_head: epoch.get(),
         fields,
         compact_result: None,
+        packed_result: false,
         enum_variant_names,
         next_cursor: None,
     })
@@ -4074,6 +4096,7 @@ async fn execute_query(
         request.cursor,
         request.minimum_application_head,
         false,
+        false,
     )
     .await
 }
@@ -4101,6 +4124,7 @@ async fn execute_compiled_query(
     cursor: Option<CursorToken>,
     minimum_application_head: Option<u64>,
     retain_compact_result: bool,
+    retain_packed_result: bool,
 ) -> ServiceResult<ExecuteSymbolicQueryResult> {
     const OPERATION: ServiceOperationV1 = ServiceOperationV1::ExecuteQuery;
     if program.steps().len() > MAX_SYMBOLIC_QUERY_STEPS {
@@ -4314,6 +4338,7 @@ async fn execute_compiled_query(
         snapshot,
         Arc::clone(bundle.enum_variant_names()),
         retain_compact_result && module_hash.is_some(),
+        retain_packed_result && module_hash.is_some(),
     );
     if let Some(module_hash) = module_hash {
         result.identity = SymbolicQueryIdentity::from_named_plan(
@@ -5535,6 +5560,7 @@ mod reimport_observation_tests {
             application_head: head,
             fields: BTreeMap::from([("ticket".to_owned(), SymbolicResultField::One(record))]),
             compact_result: None,
+            packed_result: false,
             enum_variant_names: Arc::new(BTreeMap::new()),
             next_cursor: None,
         }

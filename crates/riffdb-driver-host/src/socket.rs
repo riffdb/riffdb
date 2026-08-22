@@ -8,7 +8,7 @@ use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::{Semaphore, mpsc, watch};
 use tokio::task::JoinSet;
 
-use crate::protocol::DRIVER_PROTOCOL_VERSION_V1;
+use crate::protocol::{DRIVER_PROTOCOL_VERSION_V1, DRIVER_PROTOCOL_VERSION_V2};
 use crate::{DriverHost, DriverRequest, DriverResponse, FrameCodec};
 
 const MAX_CONNECTIONS: usize = 256;
@@ -148,18 +148,22 @@ async fn serve_connection(stream: UnixStream, host: DriverHost, mut drain: watch
             changed=drain.changed()=>{let _=changed;break;}
             request=FrameCodec::read_request(&mut reader)=>match request{Ok(request)=>request,Err(_)=>break},
         };
-        if protocol_version == DRIVER_PROTOCOL_VERSION_V1
-            && matches!(
-                &request,
-                DriverRequest::Invoke {
-                    options,
-                    ..
-                } if options.accept_compact_result
-            )
-        {
+        if matches!(
+            (protocol_version, &request),
+            (
+                DRIVER_PROTOCOL_VERSION_V1,
+                DriverRequest::Invoke { options, .. }
+            ) if options.accept_compact_result || options.accept_packed_result
+        ) || matches!(
+            (protocol_version, &request),
+            (
+                DRIVER_PROTOCOL_VERSION_V2,
+                DriverRequest::Invoke { options, .. }
+            ) if options.accept_packed_result
+        ) {
             let response = local_protocol_error(
                 &request,
-                "driver protocol V1 cannot negotiate compact results",
+                "this driver protocol cannot negotiate generated result encodings",
             );
             if responses.send(response).await.is_err() {
                 break;

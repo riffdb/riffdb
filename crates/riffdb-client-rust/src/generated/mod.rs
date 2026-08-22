@@ -57,6 +57,15 @@ pub trait GeneratedQuery {
     ) -> Result<Self::Output, ApplicationClientError> {
         Err(ApplicationClientError::InvalidResponse)
     }
+
+    /// Decodes the compiler-sealed canonical-column arm directly into the
+    /// generated result without constructing generic value or row maps.
+    fn decode_packed_result(
+        _outcome: String,
+        _response: app_v1::PackedResultField,
+    ) -> Result<Self::Output, ApplicationClientError> {
+        Err(ApplicationClientError::InvalidResponse)
+    }
 }
 
 /// One command shape emitted from a checked contract bundle.

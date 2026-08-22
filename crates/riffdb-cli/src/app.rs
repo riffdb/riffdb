@@ -12345,6 +12345,7 @@ mod tests {
             next_cursor: None,
             selected_result_encoding: app_v1::NamedResultEncoding::LegacyRecords as i32,
             compact_result: None,
+            packed_result: None,
         };
         let result = query_execution_json(&response).expect("query JSON");
         assert_eq!(

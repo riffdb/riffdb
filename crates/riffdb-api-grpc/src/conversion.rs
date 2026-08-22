@@ -247,8 +247,8 @@ pub enum ExecuteSymbolicQueryInvocation {
 pub fn execute_symbolic_query_request_from_proto(
     request: app_v1::ExecuteQueryRequest,
 ) -> Result<(RequestId, ExecuteSymbolicQueryInvocation), Status> {
-    let accepts_compact_result_v1 =
-        accepts_compact_named_result_v1(&request.accepted_result_encodings)?;
+    let (accepts_compact_result_v1, accepts_packed_result_v1) =
+        accepted_named_result_encodings(&request.accepted_result_encodings)?;
     let request_id = request_id_from_bytes(&request.request_id)?;
     let contract = symbolic_contract_selector_from_proto(request.contract)?;
     let module_hash = optional_query_module_hash(request.module_hash)?;
@@ -289,6 +289,9 @@ pub fn execute_symbolic_query_request_from_proto(
             if accepts_compact_result_v1 {
                 request = request.accepting_compact_result_v1();
             }
+            if accepts_packed_result_v1 {
+                request = request.accepting_packed_result_v1();
+            }
             ExecuteSymbolicQueryInvocation::Named(request)
         }
         _ => return Err(invalid_request()),
@@ -296,15 +299,24 @@ pub fn execute_symbolic_query_request_from_proto(
     Ok((request_id, invocation))
 }
 
-fn accepts_compact_named_result_v1(values: &[i32]) -> Result<bool, Status> {
+fn accepted_named_result_encodings(values: &[i32]) -> Result<(bool, bool), Status> {
     match values {
-        [] => Ok(false),
-        [legacy] if *legacy == app_v1::NamedResultEncoding::LegacyRecords as i32 => Ok(false),
+        [] => Ok((false, false)),
+        [legacy] if *legacy == app_v1::NamedResultEncoding::LegacyRecords as i32 => {
+            Ok((false, false))
+        }
         [legacy, compact]
             if *legacy == app_v1::NamedResultEncoding::LegacyRecords as i32
                 && *compact == app_v1::NamedResultEncoding::CompactV1 as i32 =>
         {
-            Ok(true)
+            Ok((true, false))
+        }
+        [legacy, compact, packed]
+            if *legacy == app_v1::NamedResultEncoding::LegacyRecords as i32
+                && *compact == app_v1::NamedResultEncoding::CompactV1 as i32
+                && *packed == app_v1::NamedResultEncoding::PackedV1 as i32 =>
+        {
+            Ok((true, true))
         }
         _ => Err(invalid_request()),
     }
@@ -714,8 +726,16 @@ fn name_symbolic_enum_values(
 pub fn execute_symbolic_query_result_to_proto(
     result: ExecuteSymbolicQueryResult,
 ) -> Result<app_v1::ExecuteQueryResponse, Status> {
-    let (identity, outcome, application_head, fields, compact_result, enum_names, next_cursor) =
-        result.into_response_parts();
+    let (
+        identity,
+        outcome,
+        application_head,
+        fields,
+        compact_result,
+        packed_result,
+        enum_names,
+        next_cursor,
+    ) = result.into_response_parts();
     if !fields.is_empty() && compact_result.is_some() {
         return Err(invalid_service_response());
     }
@@ -723,12 +743,18 @@ pub fn execute_symbolic_query_result_to_proto(
         .into_iter()
         .map(|(name, field)| symbolic_field_into_proto(&enum_names, name, field))
         .collect::<Result<Vec<_>, _>>()?;
-    let (selected_result_encoding, compact_result) = match compact_result {
+    let (selected_result_encoding, compact_result, packed_result) = match compact_result {
+        Some(compact) if packed_result => (
+            app_v1::NamedResultEncoding::PackedV1,
+            None,
+            Some(packed_result_into_proto(compact)?),
+        ),
         Some(compact) => (
             app_v1::NamedResultEncoding::CompactV1,
             Some(compact_result_into_proto(&enum_names, compact)?),
+            None,
         ),
-        None => (app_v1::NamedResultEncoding::LegacyRecords, None),
+        None => (app_v1::NamedResultEncoding::LegacyRecords, None, None),
     };
     Ok(app_v1::ExecuteQueryResponse {
         identity: Some(symbolic_identity_to_proto(&identity)),
@@ -738,6 +764,34 @@ pub fn execute_symbolic_query_result_to_proto(
         next_cursor: next_cursor.map(|cursor| URL_SAFE_NO_PAD.encode(cursor.as_bytes())),
         selected_result_encoding: selected_result_encoding as i32,
         compact_result,
+        packed_result,
+    })
+}
+
+fn packed_result_into_proto(
+    compact: riffdb_service::CoveredQueryResultV1,
+) -> Result<app_v1::PackedResultField, Status> {
+    let (name, entity, fields, rows) = compact.into_parts();
+    let width = fields.len();
+    if rows.iter().any(|row| row.len() != width) {
+        return Err(invalid_service_response());
+    }
+    let row_count = u32::try_from(rows.len()).map_err(|_| invalid_service_response())?;
+    let columns = (0..width)
+        .map(|column| {
+            crate::projected_query_conversion::pack_column(
+                rows.iter()
+                    .map(|row| row.get(column).ok_or_else(invalid_service_response)),
+            )
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(app_v1::PackedResultField {
+        name,
+        cardinality: app_v1::ResultCardinality::Many as i32,
+        entity: entity.to_string(),
+        fields: fields.into_iter().map(|field| field.to_string()).collect(),
+        row_count,
+        columns,
     })
 }
 
