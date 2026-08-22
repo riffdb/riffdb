@@ -3,8 +3,7 @@
 use std::collections::VecDeque;
 use std::fs::{self, OpenOptions};
 use std::io::{self, BufRead, BufReader, Read, Write};
-use std::net::{SocketAddr, TcpListener};
-use std::num::NonZeroU32;
+use std::net::SocketAddr;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
@@ -22,7 +21,6 @@ use riffdb_client_rust::{
     CallMetadata, RiffDbClient, app_v1, generate_capability_id, generate_request_id, v1,
 };
 use riffdb_contract_compiler::compile_contract_source;
-use riffdb_config::{CanonicalHttpsEndpoint, ProtectedFilePath, TlsClientConfig, TlsServerIdentity};
 use riffdb_query_module::{
     ApplicationManifest, CompiledApplicationRole, NamedQuerySource, QueryModule,
     QueryModuleCandidate, QueryModuleName, QueryModuleVersion, compile_application_role,
@@ -45,39 +43,6 @@ entity = "Ticket"
 projected_fields = ["project_id", "reporter_id", "assignee_id", "status", "title"]
 org_scope_field = "organization_id"
 "#;
-const DIAGNOSTIC_TLS_CERTIFICATE: &[u8] =
-    include_bytes!("../../../../crates/riffdb-server/tests/fixtures/localhost-cert.pem");
-const DIAGNOSTIC_TLS_PRIVATE_KEY: &[u8] =
-    include_bytes!("../../../../crates/riffdb-server/tests/fixtures/localhost-key.pem");
-const DIAGNOSTIC_TLS_TRUST_ROOT: &[u8] =
-    include_bytes!("../../../../crates/riffdb-server/tests/fixtures/test-ca.pem");
-
-fn reserve_diagnostic_tls_port() -> Result<u16, RiffDbError> {
-    let listener = TcpListener::bind("127.0.0.1:0").map_err(|_| RiffDbError::Io)?;
-    listener
-        .local_addr()
-        .map(|address| address.port())
-        .map_err(|_| RiffDbError::Io)
-}
-
-fn render_diagnostic_tls_config(certificate: &Path, private_key: &Path, port: u16) -> String {
-    format!(
-        r#"[server]
-audience = "{AUDIENCE}"
-
-[server.application_listener]
-mode = "direct_tls"
-listen = "127.0.0.1:{port}"
-public_endpoint = "https://127.0.0.1:{port}"
-certificate_chain = "{}"
-private_key = "{}"
-
-{}"#,
-        certificate.display(),
-        private_key.display(),
-        BOARD_PROJECTIONS_TOML.trim_start(),
-    )
-}
 
 const AUDIENCE: &str = "riffdb-grpc-loopback";
 const ENVIRONMENT: &str = "app-baseline";
@@ -221,9 +186,6 @@ pub struct ServerStartOptions {
     pub query_execute_diagnostics: bool,
     /// Enable ADR-0138's feature-gated, non-production direct-stream probe.
     pub direct_stream_diagnostic: bool,
-    /// Run the measured generation through verified TLS for both unary and
-    /// direct diagnostic carriage.
-    pub direct_stream_diagnostic_tls: bool,
 }
 
 /// Owns one live `riffdbd` process and a ready public client backend.
@@ -234,12 +196,7 @@ pub struct RiffDbServerSession {
     coordinator_workload_capacity: Option<u16>,
     query_execute_diagnostics: bool,
     direct_stream_diagnostic: bool,
-    direct_stream_diagnostic_tls: bool,
     direct_diagnostic_address: Option<SocketAddr>,
-    diagnostic_tls_certificate: Option<PathBuf>,
-    diagnostic_tls_private_key: Option<PathBuf>,
-    diagnostic_tls_trust_root: Option<PathBuf>,
-    diagnostic_tls_config: Option<PathBuf>,
     table_inventory_before_measurement:
         Option<Vec<riffdb_storage_redb::benchmark_support::AuthoritativeTableInventoryV1>>,
     /// Resolved real-disk root used for this session.
@@ -428,10 +385,6 @@ impl RiffDbServerSession {
         let backup_root = temporary.path().join("backups");
         let projections_root = temporary.path().join("projections");
         let projections_config_path = temporary.path().join("projections.toml");
-        let diagnostic_tls_certificate = temporary.path().join("diagnostic-server.pem");
-        let diagnostic_tls_private_key = temporary.path().join("diagnostic-server.key");
-        let diagnostic_tls_trust_root = temporary.path().join("diagnostic-ca.pem");
-        let diagnostic_tls_config = temporary.path().join("diagnostic-tls.toml");
         let capability_keys_path = temporary.path().join("capability.keys");
         let idempotency_keys_path = temporary.path().join("idempotency.keys");
         let bootstrap_path = temporary.path().join("bootstrap.credential");
@@ -447,22 +400,6 @@ impl RiffDbServerSession {
             BOARD_PROJECTIONS_TOML.trim_start().as_bytes(),
         )
         .map_err(|_| RiffDbError::Io)?;
-        if options.direct_stream_diagnostic_tls {
-            write_protected_file(&diagnostic_tls_certificate, DIAGNOSTIC_TLS_CERTIFICATE)
-                .map_err(|_| RiffDbError::Io)?;
-            write_protected_file(&diagnostic_tls_private_key, DIAGNOSTIC_TLS_PRIVATE_KEY)
-                .map_err(|_| RiffDbError::Io)?;
-            write_protected_file(&diagnostic_tls_trust_root, DIAGNOSTIC_TLS_TRUST_ROOT)
-                .map_err(|_| RiffDbError::Io)?;
-            let port = reserve_diagnostic_tls_port()?;
-            let config = render_diagnostic_tls_config(
-                &diagnostic_tls_certificate,
-                &diagnostic_tls_private_key,
-                port,
-            );
-            write_protected_file(&diagnostic_tls_config, config.as_bytes())
-                .map_err(|_| RiffDbError::Io)?;
-        }
         let generated = generate_bootstrap_credential(BOOTSTRAP_UNIX_MILLISECONDS, &SystemEntropy)
             .map_err(|_| RiffDbError::Bootstrap)?;
         write_protected_file(&bootstrap_path, generated.render_document().expose_secret())
@@ -481,7 +418,6 @@ impl RiffDbServerSession {
             options.coordinator_workload_capacity,
             options.query_execute_diagnostics,
             false,
-            None,
             None,
             None,
         )
@@ -509,17 +445,6 @@ impl RiffDbServerSession {
             })?;
 
         // Phase 2: same database with board projection registration.
-        let diagnostic_tls = options
-            .direct_stream_diagnostic_tls
-            .then_some((
-                diagnostic_tls_certificate.as_path(),
-                diagnostic_tls_private_key.as_path(),
-            ));
-        let phase2_config = if options.direct_stream_diagnostic_tls {
-            diagnostic_tls_config.as_path()
-        } else {
-            projections_config_path.as_path()
-        };
         let process = ServerProcess::spawn(
             riffdbd_bin,
             &database_path,
@@ -529,9 +454,8 @@ impl RiffDbServerSession {
             options.coordinator_workload_capacity,
             options.query_execute_diagnostics,
             options.direct_stream_diagnostic,
-            diagnostic_tls,
             Some(projections_root.as_path()),
-            Some(phase2_config),
+            Some(projections_config_path.as_path()),
         )
         .map_err(|error| RiffDbError::Server {
             detail: error.to_string(),
@@ -548,39 +472,18 @@ impl RiffDbServerSession {
         } else {
             None
         };
-        let endpoint = if options.direct_stream_diagnostic_tls {
-            format!("https://{address}")
-        } else {
-            format!("http://{address}")
-        };
-        let mut client = if options.direct_stream_diagnostic_tls {
-            connect_verified_tls(&endpoint, &diagnostic_tls_trust_root).await?
-        } else {
-            connect(&endpoint).await?
-        };
+        let endpoint = format!("http://{address}");
+        let mut client = connect(&endpoint).await?;
         let (token, module_hash) = deploy_module_and_issue_runner(&mut client, &retained).await?;
-        let backend = if options.direct_stream_diagnostic_tls {
-            RiffDbPublicBackend::connect_verified_tls(
-                &endpoint,
-                &diagnostic_tls_trust_root,
-                &token,
-                status_ids,
-                contract_bundle_hash,
-                module_hash,
-                history_incarnation,
-            )
-            .await?
-        } else {
-            RiffDbPublicBackend::connect(
-                &endpoint,
-                &token,
-                status_ids,
-                contract_bundle_hash,
-                module_hash,
-                history_incarnation,
-            )
-            .await?
-        };
+        let backend = RiffDbPublicBackend::connect(
+            &endpoint,
+            &token,
+            status_ids,
+            contract_bundle_hash,
+            module_hash,
+            history_incarnation,
+        )
+        .await?;
         Ok(Self {
             _temporary: temporary,
             process,
@@ -588,20 +491,7 @@ impl RiffDbServerSession {
             coordinator_workload_capacity: options.coordinator_workload_capacity,
             query_execute_diagnostics: options.query_execute_diagnostics,
             direct_stream_diagnostic: options.direct_stream_diagnostic,
-            direct_stream_diagnostic_tls: options.direct_stream_diagnostic_tls,
             direct_diagnostic_address,
-            diagnostic_tls_certificate: options
-                .direct_stream_diagnostic_tls
-                .then_some(diagnostic_tls_certificate),
-            diagnostic_tls_private_key: options
-                .direct_stream_diagnostic_tls
-                .then_some(diagnostic_tls_private_key),
-            diagnostic_tls_trust_root: options
-                .direct_stream_diagnostic_tls
-                .then_some(diagnostic_tls_trust_root),
-            diagnostic_tls_config: options
-                .direct_stream_diagnostic_tls
-                .then_some(diagnostic_tls_config),
             table_inventory_before_measurement: None,
             bench_root,
             backend,
@@ -636,10 +526,6 @@ impl RiffDbServerSession {
         let projections_config_path = self._temporary.path().join("projections.toml");
         let capability_keys_path = self._temporary.path().join("capability.keys");
         let idempotency_keys_path = self._temporary.path().join("idempotency.keys");
-        let diagnostic_tls = self
-            .diagnostic_tls_certificate
-            .as_deref()
-            .zip(self.diagnostic_tls_private_key.as_deref());
         let process = ServerProcess::spawn(
             &self.riffdbd_bin,
             &database_path,
@@ -649,11 +535,8 @@ impl RiffDbServerSession {
             self.coordinator_workload_capacity,
             self.query_execute_diagnostics,
             self.direct_stream_diagnostic,
-            diagnostic_tls,
             Some(projections_root.as_path()),
-            self.diagnostic_tls_config
-                .as_deref()
-                .or(Some(projections_config_path.as_path())),
+            Some(projections_config_path.as_path()),
         )
         .map_err(|error| RiffDbError::Server {
             detail: error.to_string(),
@@ -670,18 +553,8 @@ impl RiffDbServerSession {
         } else {
             None
         };
-        let endpoint = if self.direct_stream_diagnostic_tls {
-            format!("https://{address}")
-        } else {
-            format!("http://{address}")
-        };
-        let backend = if let Some(trust_root) = self.diagnostic_tls_trust_root.as_deref() {
-            self.backend
-                .reconnect_verified_tls_endpoint(&endpoint, trust_root)
-                .await?
-        } else {
-            self.backend.reconnect_endpoint(&endpoint).await?
-        };
+        let endpoint = format!("http://{address}");
+        let backend = self.backend.reconnect_endpoint(&endpoint).await?;
         self.process = process;
         self.direct_diagnostic_address = direct_diagnostic_address;
         self.backend = backend;
@@ -1168,23 +1041,6 @@ async fn connect(endpoint: &str) -> Result<RiffDbClient, RiffDbError> {
     bounded_rpc("connect", RiffDbClient::connect(endpoint)).await
 }
 
-async fn connect_verified_tls(
-    endpoint: &str,
-    trust_root: &Path,
-) -> Result<RiffDbClient, RiffDbError> {
-    let config = TlsClientConfig::new(
-        CanonicalHttpsEndpoint::parse(endpoint).map_err(|_| RiffDbError::Connection)?,
-        ProtectedFilePath::new(trust_root.to_path_buf()).map_err(|_| RiffDbError::Connection)?,
-        TlsServerIdentity::parse("127.0.0.1").map_err(|_| RiffDbError::Connection)?,
-        Duration::from_secs(10),
-        Duration::from_secs(30),
-        NonZeroU32::new(1).expect("positive diagnostic TLS pool"),
-        NonZeroU32::new(64).expect("positive diagnostic TLS stream ceiling"),
-    )
-    .map_err(|_| RiffDbError::Connection)?;
-    bounded_rpc("connect verified TLS", RiffDbClient::connect_verified_tls(&config)).await
-}
-
 async fn bounded_rpc<T, E>(
     step: &str,
     future: impl std::future::Future<Output = Result<T, E>>,
@@ -1328,7 +1184,6 @@ impl ServerProcess {
         coordinator_workload_capacity: Option<u16>,
         query_execute_diagnostics: bool,
         direct_stream_diagnostic: bool,
-        direct_stream_diagnostic_tls: Option<(&Path, &Path)>,
         projections_root: Option<&Path>,
         projections_config: Option<&Path>,
     ) -> io::Result<Self> {
@@ -1338,6 +1193,8 @@ impl ServerProcess {
             .arg(database_path)
             .arg("--backup-root")
             .arg(backup_root)
+            .arg("--listen")
+            .arg("127.0.0.1:0")
             .arg("--environment")
             .arg(ENVIRONMENT)
             .arg("--audience")
@@ -1351,9 +1208,6 @@ impl ServerProcess {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        if direct_stream_diagnostic_tls.is_none() {
-            command.arg("--listen").arg("127.0.0.1:0");
-        }
         if let Some(root) = projections_root {
             command.arg("--projections-root").arg(root);
         }
@@ -1371,11 +1225,6 @@ impl ServerProcess {
         }
         if direct_stream_diagnostic {
             command.env("RIFFDB_DIRECT_STREAM_DIAGNOSTIC", "1");
-        }
-        if let Some((certificate, private_key)) = direct_stream_diagnostic_tls {
-            command
-                .env("RIFFDB_DIRECT_STREAM_DIAGNOSTIC_TLS_CERT", certificate)
-                .env("RIFFDB_DIRECT_STREAM_DIAGNOSTIC_TLS_KEY", private_key);
         }
         let mut child = command.spawn()?;
         let child_id = child.id();

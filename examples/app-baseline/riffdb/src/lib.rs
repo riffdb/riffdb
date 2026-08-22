@@ -14,8 +14,6 @@ use std::collections::{BTreeMap, VecDeque};
 use std::error::Error;
 use std::fmt;
 use std::future::Future;
-use std::num::NonZeroU32;
-use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
@@ -33,7 +31,6 @@ use riffdb_client_rust::{
     GeneratedBatchOptions, GeneratedBatchResult, NamedQuery, NamedQueryResult,
     StableApplicationClient,
 };
-use riffdb_config::{CanonicalHttpsEndpoint, ProtectedFilePath, TlsClientConfig, TlsServerIdentity};
 use riffdb_ticketdesk::{
     AddProjectMemberInput, AttachLabelInput, BoardPage50Params, BoardPage50Result,
     BoardPage200Params, BoardPage200Result, BoardPage450Params, BoardPage450Result,
@@ -81,8 +78,6 @@ const TICKETDESK_APPLICATION_LOCK_HASH: [u8; 32] = [
 #[derive(Clone)]
 pub struct RiffDbPublicBackend {
     endpoint: Endpoint,
-    tls_config: Option<TlsClientConfig>,
-    direct_diagnostic_tls_trust_root: Option<PathBuf>,
     projected_channel: tokio::sync::OnceCell<tonic::transport::Channel>,
     transport: StableApplicationClient,
     metadata: CallMetadata,
@@ -140,32 +135,12 @@ pub struct PairedClientResult<T> {
     pub timing: PairedClientTiming,
 }
 
-fn diagnostic_tls_config(endpoint: &str, trust_root: &Path) -> Result<TlsClientConfig, RiffDbError> {
-    TlsClientConfig::new(
-        CanonicalHttpsEndpoint::parse(endpoint).map_err(|_| RiffDbError::Connection)?,
-        ProtectedFilePath::new(trust_root.to_path_buf()).map_err(|_| RiffDbError::Connection)?,
-        TlsServerIdentity::parse("127.0.0.1").map_err(|_| RiffDbError::Connection)?,
-        Duration::from_secs(10),
-        Duration::from_secs(30),
-        NonZeroU32::new(1).expect("positive diagnostic TLS pool"),
-        NonZeroU32::new(64).expect("positive diagnostic TLS stream ceiling"),
-    )
-    .map_err(|_| RiffDbError::Connection)
-}
-
 impl RiffDbPublicBackend {
     /// One lazily-connected shared channel for the projected wire path, so
     /// timed projected samples ride warm HTTP/2 exactly like compiled ones
     /// ride the client's persistent transport (review must-fix: symmetric
     /// transport).
     async fn projected_channel(&self) -> Result<tonic::transport::Channel, RiffDbError> {
-        // WP-663's verified-TLS mechanics probe deliberately configures only
-        // the generated application client. Do not let an unrelated projected
-        // diagnostic silently attempt a clear or incompletely verified
-        // channel against that endpoint.
-        if self.tls_config.is_some() {
-            return Err(RiffDbError::Connection);
-        }
         self.projected_channel
             .get_or_try_init(|| async {
                 self.endpoint
@@ -201,50 +176,6 @@ impl RiffDbPublicBackend {
         let runtime = tokio::runtime::Handle::try_current().map_err(|_| RiffDbError::Runtime)?;
         Ok(Self {
             endpoint,
-            tls_config: None,
-            direct_diagnostic_tls_trust_root: None,
-            projected_channel: tokio::sync::OnceCell::new(),
-            transport,
-            metadata,
-            bearer_token: bearer_token.to_owned(),
-            command_attempts: AttemptBudget::new(3).expect("positive command attempt budget"),
-            runtime,
-            status_ids,
-            contract_bundle_hash,
-            query_module_hash,
-            last_seed_commit_sequence: None,
-            history_incarnation,
-            projected_gates_ready: false,
-        })
-    }
-
-    /// Connects the diagnostic application backend through the accepted
-    /// verified direct-TLS client path.
-    pub(crate) async fn connect_verified_tls(
-        endpoint: &str,
-        trust_root: &Path,
-        bearer_token: &str,
-        status_ids: TicketStatusEnumIds,
-        contract_bundle_hash: [u8; 32],
-        query_module_hash: [u8; 32],
-        history_incarnation: u64,
-    ) -> Result<Self, RiffDbError> {
-        let tls_config = diagnostic_tls_config(endpoint, trust_root)?;
-        let endpoint = Endpoint::from_shared(endpoint.to_owned())
-            .map_err(|_| RiffDbError::Connection)?
-            .connect_timeout(std::time::Duration::from_secs(10))
-            .timeout(std::time::Duration::from_secs(60));
-        let transport = StableApplicationClient::connect_verified_tls(&tls_config)
-            .await
-            .map_err(|_| RiffDbError::Connection)?;
-        let metadata = CallMetadata::authenticated(
-            BearerCredential::new(bearer_token).map_err(|_| RiffDbError::Connection)?,
-        );
-        let runtime = tokio::runtime::Handle::try_current().map_err(|_| RiffDbError::Runtime)?;
-        Ok(Self {
-            endpoint,
-            tls_config: Some(tls_config),
-            direct_diagnostic_tls_trust_root: Some(trust_root.to_path_buf()),
             projected_channel: tokio::sync::OnceCell::new(),
             transport,
             metadata,
@@ -268,20 +199,12 @@ impl RiffDbPublicBackend {
         let endpoint = self.endpoint.clone();
         let metadata = self.metadata.clone();
         let runtime = self.runtime.clone();
-        let tls_config = self.tls_config.clone();
         let transport = runtime
-            .block_on(async {
-                match tls_config.as_ref() {
-                    Some(config) => StableApplicationClient::connect_verified_tls(config).await,
-                    None => StableApplicationClient::connect(endpoint.clone()).await,
-                }
-            })
+            .block_on(StableApplicationClient::connect(endpoint.clone()))
             .map_err(|_| RiffDbError::Connection)?;
         Ok(Self {
             projected_channel: tokio::sync::OnceCell::new(),
             endpoint,
-            tls_config,
-            direct_diagnostic_tls_trust_root: self.direct_diagnostic_tls_trust_root.clone(),
             transport,
             metadata,
             bearer_token: self.bearer_token.clone(),
@@ -333,16 +256,12 @@ impl RiffDbPublicBackend {
     /// This exists only for WP-632's non-evidentiary asynchronous shadow. The
     /// frozen PERF-018 driver continues to use [`Self::fresh_session`].
     pub async fn fresh_session_async(&self) -> Result<Self, RiffDbError> {
-        let transport = match self.tls_config.as_ref() {
-            Some(config) => StableApplicationClient::connect_verified_tls(config).await,
-            None => StableApplicationClient::connect(self.endpoint.clone()).await,
-        }
-        .map_err(|_| RiffDbError::Connection)?;
+        let transport = StableApplicationClient::connect(self.endpoint.clone())
+            .await
+            .map_err(|_| RiffDbError::Connection)?;
         Ok(Self {
             projected_channel: tokio::sync::OnceCell::new(),
             endpoint: self.endpoint.clone(),
-            tls_config: self.tls_config.clone(),
-            direct_diagnostic_tls_trust_root: self.direct_diagnostic_tls_trust_root.clone(),
             transport,
             metadata: self.metadata.clone(),
             bearer_token: self.bearer_token.clone(),
@@ -359,45 +278,8 @@ impl RiffDbPublicBackend {
 
     /// Reconnects this logical application session to a restarted local daemon.
     async fn reconnect_endpoint(&self, endpoint: &str) -> Result<Self, RiffDbError> {
-        let mut reconnected = if let Some(trust_root) = self.direct_diagnostic_tls_trust_root.as_ref()
-        {
-            Self::connect_verified_tls(
-                endpoint,
-                trust_root,
-                &self.bearer_token,
-                self.status_ids,
-                self.contract_bundle_hash,
-                self.query_module_hash,
-                self.history_incarnation,
-            )
-            .await?
-        } else {
-            Self::connect(
-                endpoint,
-                &self.bearer_token,
-                self.status_ids,
-                self.contract_bundle_hash,
-                self.query_module_hash,
-                self.history_incarnation,
-            )
-            .await?
-        };
-        reconnected.command_attempts = self.command_attempts;
-        reconnected.last_seed_commit_sequence = self.last_seed_commit_sequence;
-        reconnected.projected_gates_ready = self.projected_gates_ready;
-        Ok(reconnected)
-    }
-
-    /// Reconnects the diagnostic logical application session while switching
-    /// from loopback bootstrap carriage to verified direct TLS.
-    async fn reconnect_verified_tls_endpoint(
-        &self,
-        endpoint: &str,
-        trust_root: &Path,
-    ) -> Result<Self, RiffDbError> {
-        let mut reconnected = Self::connect_verified_tls(
+        let mut reconnected = Self::connect(
             endpoint,
-            trust_root,
             &self.bearer_token,
             self.status_ids,
             self.contract_bundle_hash,
