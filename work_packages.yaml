@@ -12797,7 +12797,7 @@ work_packages:
   human_review_triggers: *id001
 - id: WP-623
   name: Dual-profile alpha performance qualification
-  depends_on: [WP-620, WP-621, WP-622]
+  depends_on: [WP-620, WP-621, WP-622, WP-662]
   objective: Qualify the optimized release candidate on both the workstation/NVMe and
     general-purpose-cloud/persistent-disk profiles before restarting the 72-hour endurance gate.
     Preserve exact safe-application PostgreSQL obligations and report minimal PostgreSQL separately.
@@ -15063,4 +15063,71 @@ work_packages:
       stable 15-percent c1 and 10-percent c8 improvements on both hosts therefore fail before the
       PostgreSQL release sweep. Unary remains the default, PERF-018 is unchanged, and only the
       non-evidentiary diagnostic topology correction is retained.
+  human_review_triggers: *id001
+- id: WP-662
+  name: Bounded framed application-transport candidate
+  depends_on: [WP-649, WP-650, WP-660, WP-661]
+  objective: After exact acceptance of ADR-0137, replace the measured Tonic/HTTP2 scheduling floor
+    for high-frequency generated named operations with one bounded first-party Rust frame protocol
+    over the existing loopback/TLS ingress, while preserving gRPC compatibility and every
+    per-operation semantic, authority, durability, freshness, uncertainty, and resource guarantee.
+  requirements: [API-001, PERF-005, PERF-008, PERF-018,
+    NET-001, NET-002, NET-003, NET-004, NET-005, NET-006, NET-007, NET-008,
+    NET-009, NET-010, NET-011, NET-012,
+    DRV-001, DRV-002, DRV-003, DRV-004, DRV-005, DRV-006, DRV-007,
+    DRV-008, DRV-009, DRV-010, DRV-011, DRV-012, DRV-013, DRV-014]
+  required_adrs: [ADR-0040, ADR-0055, ADR-0056, ADR-0105, ADR-0106,
+    ADR-0123, ADR-0127, ADR-0132, ADR-0133, ADR-0137]
+  allowed_paths: [work_packages.yaml, SPEC.md, Cargo.toml, Cargo.lock, adr/README.md,
+    adr/0137-bounded-framed-application-transport.md, proto/**,
+    crates/riffdb-types/**, crates/riffdb-proto/**, crates/riffdb-api-grpc/**,
+    crates/riffdb-client-rust/**, crates/riffdb-driver-host/**,
+    crates/riffdb-server/**, crates/riffdb-observability/**,
+    clients/go/**, clients/typescript/**, clients/python/**,
+    examples/app-baseline/**, fixtures/**, fuzz/**, tests/**, benchmarks/**,
+    scripts/**, release/**, docs/SUMMARY.md, docs/reference/**,
+    docs/getting-started/**, docs/operations/**, docs/performance/**]
+  deliverables:
+  - One versioned fixed-header frame protocol carrying only exact application-session open,
+    generated command, named-query, cancellation, response, typed-failure, and controlled-close
+    envelopes with strict Protobuf payloads and finite bytes, correlations, tasks, waits, and work
+  - One loopback-preface and TLS-ALPN demultiplexer over the existing listener/trust profiles, with
+    no insecure remote port, trust downgrade, cryptographic change, proxy principal, compression,
+    application knob, or ingress dependency outside the accepted transport crates
+  - One API-neutral Rust generated-operation adapter used by gRPC and framing, with architecture
+    tests proving the frame engine owns no storage, catalog, policy, plan, commit, projection, audit,
+    or cached-allow authority and every current safe point remains per operation
+  - Native Rust transport plus Rust-driver-host carriage for Go, TypeScript, and Python, with no
+    target-language implementation of TLS, framing, authentication, retry, uncertainty, freshness,
+    or public-error semantics
+  - Hostile-frame, fragmentation, cancellation, stream-loss, reconnect, rotation, revocation,
+    expiry, role/contract/module drift, read-after-commit, command-uncertainty, overload, slow-peer,
+    graceful-shutdown, and unary/session/framed byte-semantic equivalence evidence
+  - Closed workstation, N1, and E2 mechanics ledgers and reject-first performance receipts; failed
+    thresholds remove production listener/client selection, while a complete pass produces only a
+    proposed exact PERF-018/default amendment for separate human acceptance
+  acceptance_commands:
+  - cargo +1.97.0 test -p riffdb-proto -p riffdb-api-grpc -p riffdb-client-rust -p riffdb-driver-host -p riffdb-server --all-features
+  - cargo +1.97.0 test --manifest-path examples/app-baseline/Cargo.toml --workspace
+  - ./scripts/driver-conformance --all-languages --remote
+  - ./scripts/recovery_full
+  - ./scripts/generate-proto --check
+  - ./scripts/check-generated
+  - ./scripts/check-application-bindings
+  - ./scripts/check-workspace-policy
+  - ./scripts/check-requirement-coverage
+  - ./scripts/handbook check
+  - cargo +1.97.0 fmt --all -- --check
+  - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: The framed candidate is semantically indistinguishable from unary gRPC at every safe
+    point, passes the cross-profile mechanics and complete release performance gates in ADR-0137,
+    and is submitted for an exact human comparator/default amendment; otherwise production framing
+    is removed, WP-662 closes with only its failed-candidate receipt, and WP-623 remains open.
+  standing_design_tests:
+    interface_safety: Framing carries only existing generated named operations and cannot cache
+      authority, create a transaction, imply ordering/freshness, relax durability or uncertainty,
+      select storage, expose protocol structure, or bypass the shared application service.
+    scale: Frames, payloads, correlations, tasks, buffers, queues, cancellations, waits, lifetime
+      work, telemetry, and evidence are hard-bounded independently of database size and duration;
+      no completed response or application value is retained after delivery.
   human_review_triggers: *id001
