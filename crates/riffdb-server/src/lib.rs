@@ -14,7 +14,6 @@ mod consumer_token;
 mod cursor;
 mod daemon;
 mod exact_text_adapter;
-mod framed_application;
 mod hosted_mcp;
 mod identifiers;
 mod installation_adapter;
