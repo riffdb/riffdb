@@ -12797,12 +12797,12 @@ work_packages:
   human_review_triggers: *id001
 - id: WP-623
   name: Dual-profile alpha performance qualification
-  depends_on: [WP-620, WP-621, WP-622, WP-662]
+  depends_on: [WP-620, WP-621, WP-622, WP-662, WP-663]
   objective: Qualify the optimized release candidate on both the workstation/NVMe and
     general-purpose-cloud/persistent-disk profiles before restarting the 72-hour endurance gate.
     Preserve exact safe-application PostgreSQL obligations and report minimal PostgreSQL separately.
   requirements: [PERF-008, PERF-018, END-007, END-008, END-009, END-010]
-  required_adrs: [ADR-0056, ADR-0104, ADR-0123, ADR-0137]
+  required_adrs: [ADR-0056, ADR-0104, ADR-0123, ADR-0137, ADR-0138]
   allowed_paths: [work_packages.yaml, SPEC.md, docs/**, benchmarks/**, scripts/**,
     examples/app-baseline/**, tests/endurance_harness.rs, release/**]
   deliverables:
@@ -13224,6 +13224,82 @@ work_packages:
       installed package, malformed and out-of-range values fail closed, and the corrected bytes
       were published under the immutable development build recorded by the package matrix. The
       implementation merged in c617e0ba and its WP-631 registry entry merged through 1aabfac5.
+  human_review_triggers: *id001
+- id: WP-663
+  name: Direct exclusive generated-operation lane candidate
+  depends_on: [WP-649, WP-650, WP-660, WP-661, WP-662]
+  objective: After exact acceptance of ADR-0138, determine whether a directly polled,
+    one-in-flight first-party Rust application connection can remove the measured HTTP2 and
+    client-actor floor while preserving every current application-service, authority, durability,
+    freshness, uncertainty, lifecycle, and resource guarantee; activate nothing unless the exact
+    cloud and release gates pass.
+  requirements: [API-001, PERF-005, PERF-008, PERF-018,
+    NET-001, NET-002, NET-003, NET-004, NET-005, NET-006, NET-007, NET-008,
+    NET-009, NET-010, NET-011, NET-012,
+    DRV-001, DRV-002, DRV-003, DRV-004, DRV-005, DRV-006, DRV-007,
+    DRV-008, DRV-009, DRV-010, DRV-011, DRV-012, DRV-013, DRV-014]
+  required_adrs: [ADR-0040, ADR-0055, ADR-0056, ADR-0070, ADR-0105, ADR-0106,
+    ADR-0120, ADR-0123, ADR-0127, ADR-0132, ADR-0133, ADR-0137, ADR-0138]
+  allowed_paths: [work_packages.yaml, SPEC.md, Cargo.toml, Cargo.lock, adr/README.md,
+    adr/0138-direct-exclusive-application-lane.md, proto/**,
+    crates/riffdb-types/**, crates/riffdb-proto/**,
+    crates/riffdb-api-application/**, crates/riffdb-api-exclusive/**,
+    crates/riffdb-api-grpc/**, crates/riffdb-client-rust/**,
+    crates/riffdb-driver-host/**, crates/riffdb-server/**,
+    crates/riffdb-observability/**, clients/go/**, clients/typescript/**,
+    clients/python/**, examples/app-baseline/**, fixtures/**, fuzz/**,
+    tests/**, benchmarks/**, scripts/**, release/**, docs/SUMMARY.md,
+    docs/reference/**, docs/getting-started/**, docs/operations/**,
+    docs/performance/**]
+  deliverables:
+  - Diagnostic-only direct-stream probe, outside every production listener and client selector,
+    closing the exact per-operation stage ledger within five percent and passing ADR-0138's three-
+    generation N1/E2 mechanics thresholds before any production frame implementation
+  - One fixed-header, strict-Protobuf, one-in-flight generated-operation lane over existing
+    loopback, direct-TLS, and local-socket trust profiles, with finite connection, frame, operation,
+    wait, setup, idle, lifetime, pool, shutdown, and telemetry bounds
+  - One API-neutral generated-operation adapter shared by unary gRPC and the exclusive lane, with
+    no storage, catalog, policy, plan, command, projection, audit, clock, cached-allow, or target-
+    language protocol authority in the transport
+  - One session-authentication proof that amortizes only the exact credential presentation while
+    reloading and rechecking every mutable capability, expiry, identity, role, contract, module,
+    operation, tenant, row, field, secret, freshness, and response-release fact per operation
+  - Native Rust exclusive-session and bounded-pool carriage plus Rust-driver-host use for Go,
+    TypeScript, and Python; no target-language TLS, framing, retry, uncertainty, freshness, or error
+    implementation
+  - Hostile-frame, fragmentation, cancellation-by-close, stream-loss, reconnect, rotation,
+    revocation, expiry, role/contract/module drift, read-after-commit, command-uncertainty, overload,
+    slow-peer, pool saturation, graceful-shutdown, and unary/exclusive byte-semantic equivalence
+  - Three-generation workstation/N1/E2 performance receipts and full release matrix only after the
+    mechanics and semantic gates pass; failed thresholds remove all production selection and retain
+    only a value-free failed-candidate receipt
+  acceptance_commands:
+  - cargo +1.97.0 test --workspace --all-targets --all-features
+  - cargo +1.97.0 test --manifest-path examples/app-baseline/Cargo.toml --workspace
+  - ./scripts/driver-conformance --all-languages --remote
+  - ./scripts/recovery_full
+  - ./scripts/generate-proto --check
+  - ./scripts/check-generated
+  - ./scripts/check-application-bindings
+  - ./scripts/check-workspace-policy
+  - ./scripts/check-requirement-coverage
+  - ./scripts/handbook check
+  - cargo +1.97.0 fmt --all -- --check
+  - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: The diagnostic first proves the direct-ownership mechanism on N1 and E2; the resulting
+    production candidate is semantically indistinguishable from unary at every safe point and
+    passes every workstation/N1/E2 c1, c32, seed, tail, correctness, resource, and stability gate;
+    only then may it produce an exact PERF-018/default amendment for separate human acceptance.
+    Any missed mechanics or release threshold removes production implementation and leaves WP-623
+    open with a value-free failed-candidate receipt.
+  standing_design_tests:
+    interface_safety: The lane accepts only existing generated typed commands and exact named
+      queries; one-in-flight ownership, pooling, and pay-once credential presentation cannot create
+      a transaction, cache authority, imply ordering/freshness, relax durability or uncertainty,
+      select storage, expose raw IDs, or permit fallback after possible command submission.
+    scale: Connections, pools, frames, bytes, operations, buffers, waits, setup, idle, lifetime,
+      cancellation, shutdown, telemetry, and evidence are hard-bounded independently of database
+      size and duration; no completed result, authorization decision, request, or value is retained.
   human_review_triggers: *id001
 - id: WP-632
   name: Frozen-client transport attribution and asynchronous shadow diagnostic
