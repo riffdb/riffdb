@@ -1550,6 +1550,7 @@ fn run_load(args: Args) -> Result<(), String> {
                 )
                 .is_some_and(|value| value == "1"),
                 direct_stream_diagnostic: false,
+                direct_stream_diagnostic_tls: false,
             };
             let transport_topology = if args.load_saturate {
                 RiffDbTransport::PerSession
