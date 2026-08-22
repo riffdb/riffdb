@@ -18,7 +18,7 @@ use std::task::{Context, Poll};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
-use futures_util::stream::{FuturesUnordered, StreamExt};
+use futures_util::stream::FuturesUnordered;
 use riffdb_api_grpc::{GrpcApplication, GrpcDatabaseRoutes, GrpcLifecycleRoute, GrpcRequestLimits};
 use riffdb_api_mcp::MCP_PROTOCOL_VERSION;
 use riffdb_auth::{NoopAuthenticationTelemetry, load_digest_key_providers};
@@ -3475,7 +3475,7 @@ impl HostedGrpc {
                     LoopbackCleartextListener::new(local_address)
                         .map_err(|_| DaemonError::GrpcConfiguration)?,
                 );
-                let (grpc_connections, grpc_incoming) = tokio::sync::mpsc::channel(1024);
+                let (grpc_connections, incoming) = tokio::sync::mpsc::channel(1024);
                 let (demux_shutdown, demux_stopped) = oneshot::channel();
                 let demux_task = tokio::spawn(run_loopback_transport_demux(
                     listener,
@@ -3485,7 +3485,7 @@ impl HostedGrpc {
                 ));
                 let router = application_router(Server::builder(), application, None);
                 let task = tokio::spawn(router.serve_with_incoming_shutdown(
-                    ReceiverStream::new(grpc_incoming),
+                    ReceiverStream::new(incoming),
                     shutdown_signal(stopped),
                 ));
                 Ok(Self {
@@ -3512,20 +3512,11 @@ impl HostedGrpc {
                     identity,
                     bounds,
                 );
-                let (grpc_connections, grpc_incoming) = tokio::sync::mpsc::channel(1024);
-                let (demux_shutdown, demux_stopped) = oneshot::channel();
-                let demux_task = tokio::spawn(run_tls_transport_demux(
-                    incoming,
-                    grpc_connections,
-                    application.database_routes(),
-                    demux_stopped,
-                ));
                 let router = application_router(Server::builder(), application, Some(bounds));
                 let rebind_config = ApplicationListenerConfig::DirectTls(listener);
-                let task = tokio::spawn(router.serve_with_incoming_shutdown(
-                    ReceiverStream::new(grpc_incoming),
-                    shutdown_signal(stopped),
-                ));
+                let task = tokio::spawn(
+                    router.serve_with_incoming_shutdown(incoming, shutdown_signal(stopped)),
+                );
                 Ok(Self {
                     endpoint: HostedGrpcEndpoint::Tcp(local_address),
                     rebind_config,
@@ -3534,8 +3525,8 @@ impl HostedGrpc {
                     _local_socket: None,
                     shutdown: Some(shutdown),
                     task,
-                    demux_shutdown: Some(demux_shutdown),
-                    demux_task: Some(demux_task),
+                    demux_shutdown: None,
+                    demux_task: None,
                 })
             }
             ApplicationListenerConfig::LocalSocket(listener) => {
@@ -3543,23 +3534,14 @@ impl HostedGrpc {
                 {
                     let (incoming, guard) = bind_local_socket(&listener)?;
                     let bounds = listener.bounds();
-                    let incoming = BoundedIncoming::new(
-                        incoming,
-                        bounds.max_connections(),
-                        bounds.idle_timeout(),
-                    );
-                    let (grpc_connections, grpc_incoming) = tokio::sync::mpsc::channel(1024);
-                    let (demux_shutdown, demux_stopped) = oneshot::channel();
-                    let demux_task = tokio::spawn(run_preface_transport_demux(
-                        incoming,
-                        grpc_connections,
-                        application.database_routes(),
-                        demux_stopped,
-                    ));
                     let router = application_router(Server::builder(), application, Some(bounds));
                     let rebind_config = ApplicationListenerConfig::LocalSocket(listener);
                     let task = tokio::spawn(router.serve_with_incoming_shutdown(
-                        ReceiverStream::new(grpc_incoming),
+                        BoundedIncoming::new(
+                            incoming,
+                            bounds.max_connections(),
+                            bounds.idle_timeout(),
+                        ),
                         shutdown_signal(stopped),
                     ));
                     Ok(Self {
@@ -3569,8 +3551,8 @@ impl HostedGrpc {
                         _local_socket: Some(guard),
                         shutdown: Some(shutdown),
                         task,
-                        demux_shutdown: Some(demux_shutdown),
-                        demux_task: Some(demux_task),
+                        demux_shutdown: None,
+                        demux_task: None,
                     })
                 }
                 #[cfg(not(unix))]
@@ -3652,16 +3634,9 @@ async fn run_loopback_transport_demux(
     mut shutdown: oneshot::Receiver<()>,
 ) -> io::Result<()> {
     let permits = Arc::new(Semaphore::new(LOOPBACK_MAX_CONNECTIONS));
-    let (framed_shutdown, _) = tokio::sync::watch::channel(false);
-    let mut framed_tasks = tokio::task::JoinSet::new();
     loop {
         tokio::select! {
-            _ = &mut shutdown => break,
-            completed = framed_tasks.join_next(), if !framed_tasks.is_empty() => {
-                if completed.is_some_and(|result| result.is_err()) {
-                    return Err(io::Error::other("framed application task failed"));
-                }
-            }
+            _ = &mut shutdown => return Ok(()),
             accepted = listener.accept() => {
                 let (mut stream, _) = accepted?;
                 stream.set_nodelay(true)?;
@@ -3690,128 +3665,15 @@ async fn run_loopback_transport_demux(
                         return Ok(());
                     }
                 } else if prefix == riffdb_api_frame::FRAME_MAGIC_V1 {
-                    framed_tasks.spawn(crate::framed_application::serve(
+                    tokio::spawn(crate::framed_application::serve(
                         connection,
                         Arc::clone(&routes),
                         REQUEST_DURATION_LIMIT,
-                        framed_shutdown.subscribe(),
                     ));
                 }
             }
         }
     }
-    let _ = framed_shutdown.send(true);
-    while let Some(result) = framed_tasks.join_next().await {
-        if result.is_err() {
-            return Err(io::Error::other("framed application task failed"));
-        }
-    }
-    Ok(())
-}
-
-async fn run_tls_transport_demux(
-    mut incoming: ReloadingTlsIncoming,
-    grpc_connections: tokio::sync::mpsc::Sender<Result<TlsConnection, io::Error>>,
-    routes: Arc<GrpcDatabaseRoutes>,
-    mut shutdown: oneshot::Receiver<()>,
-) -> io::Result<()> {
-    let (framed_shutdown, _) = tokio::sync::watch::channel(false);
-    let mut framed_tasks = tokio::task::JoinSet::new();
-    loop {
-        tokio::select! {
-            _ = &mut shutdown => break,
-            completed = framed_tasks.join_next(), if !framed_tasks.is_empty() => {
-                if completed.is_some_and(|result| result.is_err()) {
-                    return Err(io::Error::other("framed application task failed"));
-                }
-            }
-            connection = incoming.next() => {
-                let Some(connection) = connection else { break; };
-                let connection = connection?;
-                match connection.negotiated_alpn() {
-                    Some(b"h2") => {
-                        if grpc_connections.send(Ok(connection)).await.is_err() {
-                            return Ok(());
-                        }
-                    }
-                    Some(protocol) if protocol == riffdb_api_frame::FRAME_ALPN_V1 => {
-                        framed_tasks.spawn(crate::framed_application::serve(
-                            connection,
-                            Arc::clone(&routes),
-                            REQUEST_DURATION_LIMIT,
-                            framed_shutdown.subscribe(),
-                        ));
-                    }
-                    Some(_) | None => {}
-                }
-            }
-        }
-    }
-    let _ = framed_shutdown.send(true);
-    while let Some(result) = framed_tasks.join_next().await {
-        if result.is_err() {
-            return Err(io::Error::other("framed application task failed"));
-        }
-    }
-    Ok(())
-}
-
-async fn run_preface_transport_demux<S, IO>(
-    mut incoming: S,
-    grpc_connections: tokio::sync::mpsc::Sender<Result<PrefixedConnection<IO>, io::Error>>,
-    routes: Arc<GrpcDatabaseRoutes>,
-    mut shutdown: oneshot::Receiver<()>,
-) -> io::Result<()>
-where
-    S: Stream<Item = Result<IO, io::Error>> + Unpin,
-    IO: AsyncRead + AsyncWrite + Connected + Unpin + Send + 'static,
-{
-    let (framed_shutdown, _) = tokio::sync::watch::channel(false);
-    let mut framed_tasks = tokio::task::JoinSet::new();
-    loop {
-        tokio::select! {
-            _ = &mut shutdown => break,
-            completed = framed_tasks.join_next(), if !framed_tasks.is_empty() => {
-                if completed.is_some_and(|result| result.is_err()) {
-                    return Err(io::Error::other("framed application task failed"));
-                }
-            }
-            connection = incoming.next() => {
-                let Some(connection) = connection else { break; };
-                let mut connection = connection?;
-                let mut prefix = [0_u8; 8];
-                if !matches!(
-                    tokio::time::timeout(
-                        LOOPBACK_PROTOCOL_PREFACE_TIMEOUT,
-                        connection.read_exact(&mut prefix),
-                    ).await,
-                    Ok(Ok(_))
-                ) {
-                    continue;
-                }
-                let connection = PrefixedConnection::new(prefix, connection);
-                if prefix == LOOPBACK_HTTP2_PREFACE_PREFIX {
-                    if grpc_connections.send(Ok(connection)).await.is_err() {
-                        return Ok(());
-                    }
-                } else if prefix == riffdb_api_frame::FRAME_MAGIC_V1 {
-                    framed_tasks.spawn(crate::framed_application::serve(
-                        connection,
-                        Arc::clone(&routes),
-                        REQUEST_DURATION_LIMIT,
-                        framed_shutdown.subscribe(),
-                    ));
-                }
-            }
-        }
-    }
-    let _ = framed_shutdown.send(true);
-    while let Some(result) = framed_tasks.join_next().await {
-        if result.is_err() {
-            return Err(io::Error::other("framed application task failed"));
-        }
-    }
-    Ok(())
 }
 
 struct PrefixedConnection<IO> {
@@ -4132,12 +3994,6 @@ impl<IO> GenerationDrainedConnection<IO> {
     }
 }
 
-impl GenerationDrainedConnection<RawTlsConnection> {
-    fn negotiated_alpn(&self) -> Option<&[u8]> {
-        self.io.get_ref().1.alpn_protocol()
-    }
-}
-
 impl<IO: AsyncRead + Unpin> AsyncRead for GenerationDrainedConnection<IO> {
     fn poll_read(
         mut self: Pin<&mut Self>,
@@ -4399,7 +4255,7 @@ fn load_tls_snapshot(
         .with_no_client_auth()
         .with_single_cert(certificates, private_key)
         .map_err(|_| DaemonError::TlsConfiguration)?;
-    config.alpn_protocols = vec![b"h2".to_vec(), riffdb_api_frame::FRAME_ALPN_V1.to_vec()];
+    config.alpn_protocols.push(b"h2".to_vec());
     Ok((
         Arc::new(config),
         TlsFilePairIdentity {
@@ -4722,10 +4578,7 @@ impl Error for DaemonError {
 mod tests {
     use std::io::Cursor;
 
-    use riffdb_client_rust::{
-        ApplicationSessionIdentity, BearerCredential, CallMetadata, RiffDbClient,
-        StableApplicationClient,
-    };
+    use riffdb_client_rust::{CallMetadata, RiffDbClient};
     use riffdb_proto::v1;
     use tonic::transport::Endpoint;
 
@@ -5435,30 +5288,6 @@ mod tests {
             health.result,
             Some(v1::health_response::Result::PreBootstrap(_))
         ));
-
-        let mut framed = StableApplicationClient::connect_verified_tls(&verified)
-            .await
-            .expect("verified framed TLS bootstrap connection");
-        let framed_metadata = CallMetadata::authenticated(
-            BearerCredential::new(&"A".repeat(43)).expect("bounded test credential"),
-        )
-        .with_database(DatabaseAlias::new("default").expect("database alias"));
-        let framed_identity = ApplicationSessionIdentity::new(
-            "TlsProbe".to_owned(),
-            1,
-            [1; 32],
-            vec![[2; 32]],
-            [3; 32],
-            1,
-        )
-        .expect("bounded framed identity");
-        assert!(
-            framed
-                .open_framed_tls_session(&verified, framed_identity, &framed_metadata)
-                .await
-                .is_err(),
-            "framed ALPN must reach the initializing lifecycle and fail closed"
-        );
 
         let wrong_endpoint = CanonicalHttpsEndpoint::parse(&format!("https://127.0.0.2:{port}"))
             .expect("wrong-name endpoint");

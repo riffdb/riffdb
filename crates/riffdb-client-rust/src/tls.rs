@@ -9,8 +9,7 @@ use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::Path;
 
 use riffdb_config::TlsClientConfig;
-use rustls_pki_types::{CertificateDer, ServerName, pem::PemObject};
-use tokio_rustls::TlsConnector;
+use rustls_pki_types::{CertificateDer, pem::PemObject};
 use tonic::transport::{Certificate, ClientTlsConfig as TonicTlsConfig, Endpoint};
 
 use crate::{ClientError, RiffDbClient};
@@ -177,55 +176,6 @@ async fn connect_with_trust_root(
         .await
         .map_err(|_| ClientError::Tls(TlsClientFailure::ConnectionOrPeerVerification))?;
     Ok(RiffDbClient::from_channel(channel))
-}
-
-pub(crate) async fn connect_framed_tls(
-    config: &TlsClientConfig,
-) -> Result<tokio_rustls::client::TlsStream<tokio::net::TcpStream>, ClientError> {
-    let snapshot = read_trust_root_snapshot(config)?;
-    let mut roots = tokio_rustls::rustls::RootCertStore::empty();
-    let mut reader = std::io::Cursor::new(&snapshot.bytes);
-    let mut count = 0_usize;
-    for certificate in CertificateDer::pem_reader_iter(&mut reader) {
-        let certificate =
-            certificate.map_err(|_| ClientError::Tls(TlsClientFailure::InvalidConfiguration))?;
-        roots
-            .add(certificate)
-            .map_err(|_| ClientError::Tls(TlsClientFailure::InvalidConfiguration))?;
-        count += 1;
-    }
-    if count == 0 || count > MAX_TRUST_ROOT_CERTIFICATES {
-        return Err(ClientError::Tls(TlsClientFailure::InvalidConfiguration));
-    }
-    let mut tls = tokio_rustls::rustls::ClientConfig::builder()
-        .with_root_certificates(roots)
-        .with_no_client_auth();
-    tls.alpn_protocols = vec![riffdb_api_frame::FRAME_ALPN_V1.to_vec()];
-
-    let authority = config
-        .endpoint()
-        .as_str()
-        .strip_prefix("https://")
-        .ok_or(ClientError::Tls(TlsClientFailure::InvalidConfiguration))?;
-    let stream = tokio::time::timeout(
-        config.connect_timeout(),
-        tokio::net::TcpStream::connect(authority),
-    )
-    .await
-    .map_err(|_| ClientError::Tls(TlsClientFailure::ConnectionOrPeerVerification))?
-    .map_err(|_| ClientError::Tls(TlsClientFailure::ConnectionOrPeerVerification))?;
-    stream
-        .set_nodelay(true)
-        .map_err(|_| ClientError::Tls(TlsClientFailure::ConnectionOrPeerVerification))?;
-    let server_name = ServerName::try_from(config.expected_server_identity().as_str().to_owned())
-        .map_err(|_| ClientError::Tls(TlsClientFailure::InvalidConfiguration))?;
-    tokio::time::timeout(
-        config.connect_timeout(),
-        TlsConnector::from(std::sync::Arc::new(tls)).connect(server_name, stream),
-    )
-    .await
-    .map_err(|_| ClientError::Tls(TlsClientFailure::ConnectionOrPeerVerification))?
-    .map_err(|_| ClientError::Tls(TlsClientFailure::ConnectionOrPeerVerification))
 }
 
 fn read_trust_root_snapshot(config: &TlsClientConfig) -> Result<TrustRootSnapshot, ClientError> {

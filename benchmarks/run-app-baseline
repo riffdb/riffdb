@@ -19,7 +19,7 @@ usage() {
         '         [--load-journeys]' \
         '         [--load-saturate] [--load-saturate-p99-ms N] [--load-concurrency-sweep]' \
         '         [--load-accumulate-history]' \
-        '         [--load-riffdb-transport per-session|shared|bounded-session|framed]' \
+        '         [--load-riffdb-transport per-session|shared|bounded-session]' \
         '         [--database-root PATH]' \
         '         [--seed-only]' \
         '         [--postgres-comparator minimal|safe-app]' \

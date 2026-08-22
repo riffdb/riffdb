@@ -100,28 +100,6 @@ operations under the ordinary uncertainty rules, and returns the facade to
 unary transport. Drop the client or call it before waiting for a colocated
 server's graceful shutdown.
 
-ADR-0137 also defines an explicit first-party framed candidate for the same
-generated operations. It changes transport only: no raw frame type, storage
-operation, field mask, transaction, inferred freshness, or cached permission
-enters application code. The stable facade exposes the candidate separately
-for the three existing trust profiles:
-
-```rust,ignore
-client
-    .open_framed_tls_session(&tls, exact_identity, &metadata)
-    .await?;
-// Local development may instead use open_framed_loopback_session; Unix
-// same-host deployments may use open_framed_local_socket_session.
-```
-
-Direct TLS selects the fixed `riffdb-frame-v1` ALPN on the existing listener;
-loopback TCP and local sockets use the fixed `RIFFDBF1` preface. There is no
-additional port or insecure remote mode. Every operation reauthenticates and
-reauthorizes through the same application service, and an explicit
-read-after-commit fence remains required. The candidate is not the release
-default and cannot be used as PERF-018 evidence unless its accepted mechanics
-and comparator gates pass and a separate exact default amendment is accepted.
-
 Operational applications can preflight the exact authorized server feature
 registry with `StableApplicationClient::preflight_application_features` before
 constructing the generated facade. An unavailable feature never authorizes a

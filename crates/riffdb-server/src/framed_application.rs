@@ -12,8 +12,7 @@ use riffdb_api_application::{
     APPLICATION_SESSION_PROTOCOL_V1, ApplicationOperationPresentation, execute_generated_command,
     execute_generated_query, open_application_session,
 };
-use riffdb_api_frame::{app::v1 as app_v1, v1};
-use riffdb_api_frame::{read_request, write_response};
+use riffdb_api_frame::{Frame, read_frame, write_frame};
 use riffdb_api_grpc::{
     EMERGENCY_INTERNAL_MESSAGE, GrpcDatabaseRoutes, SharedGrpcOperationRoute,
     status_from_application_error, status_from_application_operation_failure,
@@ -24,6 +23,7 @@ use riffdb_errors::{
     ApplicationError, ApplicationErrorCode, ApplicationErrorContext, ApplicationOperation,
     PublicError,
 };
+use riffdb_proto::{app::v1 as app_v1, v1};
 use riffdb_types::{ContractVersion, DatabaseAlias};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tonic::Status;
@@ -63,14 +63,17 @@ pub(crate) async fn serve<IO>(
     stream: IO,
     routes: Arc<GrpcDatabaseRoutes>,
     operation_limit: Duration,
-    mut shutdown: tokio::sync::watch::Receiver<bool>,
 ) where
     IO: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
     let (mut reader, mut writer) = tokio::io::split(stream);
-    let first = match tokio::time::timeout(operation_limit, read_request(&mut reader)).await {
-        Ok(Ok(first)) => first,
+    let first = match tokio::time::timeout(operation_limit, read_frame(&mut reader)).await {
+        Ok(Ok(frame)) => frame,
         Ok(Err(_)) | Err(_) => return,
+    };
+    let first = match first.decode_request() {
+        Ok(first) => first,
+        Err(_) => return,
     };
     let Some(v1::application_session_request::Request::Open(mut open)) = first.request else {
         return;
@@ -129,32 +132,24 @@ pub(crate) async fn serve<IO>(
     let mut accepted_work = 0_u64;
     let mut last_correlation_id = first.correlation_id;
     let mut closing = None;
-    let mut draining = false;
     let lifetime = tokio::time::sleep(MAX_APPLICATION_SESSION_LIFETIME);
     tokio::pin!(lifetime);
 
     loop {
-        if operations.is_empty() {
-            if let Some(correlation_id) = closing {
-                let closed = v1::ApplicationSessionResponse {
-                    correlation_id,
-                    response: Some(v1::application_session_response::Response::Closed(
-                        v1::ApplicationSessionClosed {},
-                    )),
-                };
-                let _ = send(&mut writer, closed).await;
-                break;
-            }
-            if draining {
-                break;
-            }
+        if let Some(correlation_id) = closing
+            && operations.is_empty()
+        {
+            let closed = v1::ApplicationSessionResponse {
+                correlation_id,
+                response: Some(v1::application_session_response::Response::Closed(
+                    v1::ApplicationSessionClosed {},
+                )),
+            };
+            let _ = send(&mut writer, closed).await;
+            break;
         }
         tokio::select! {
             _ = &mut lifetime => break,
-            changed = shutdown.changed(), if !draining => {
-                let _ = changed;
-                draining = true;
-            }
             completed = operations.next(), if !operations.is_empty() => {
                 let Some((correlation_id, _kind, response)) = completed else { continue; };
                 live.remove(&correlation_id);
@@ -164,8 +159,8 @@ pub(crate) async fn serve<IO>(
                     break;
                 }
             }
-            frame = read_request(&mut reader), if closing.is_none() && !draining => {
-                let message = match frame {
+            frame = read_frame(&mut reader), if closing.is_none() => {
+                let message = match frame.and_then(|frame| frame.decode_request().map_err(riffdb_api_frame::FrameIoError::InvalidFrame)) {
                     Ok(message) => message,
                     Err(_) => break,
                 };
@@ -407,10 +402,14 @@ async fn send<W>(writer: &mut W, response: v1::ApplicationSessionResponse) -> bo
 where
     W: AsyncWrite + Unpin,
 {
+    let frame = match Frame::response(&response) {
+        Ok(frame) => frame,
+        Err(_) => return false,
+    };
     matches!(
         tokio::time::timeout(
             MAX_APPLICATION_SESSION_OUTPUT_STALL,
-            write_response(writer, &response)
+            write_frame(writer, &frame)
         )
         .await,
         Ok(Ok(()))

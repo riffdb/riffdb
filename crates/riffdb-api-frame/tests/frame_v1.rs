@@ -3,7 +3,7 @@
 use prost::Message;
 use riffdb_api_frame::{
     FRAME_HEADER_BYTES, FRAME_MAGIC_V1, FRAME_PROTOCOL_V1, Frame, FrameError, FrameIoError,
-    FrameKind, read_frame, read_request, read_response, write_frame, write_request, write_response,
+    FrameKind, read_frame, write_frame,
 };
 use riffdb_proto::v1;
 use tokio::io::AsyncWriteExt;
@@ -193,50 +193,4 @@ async fn async_writer_emits_the_canonical_frame() {
     let (mut writer, mut reader) = tokio::io::duplex(frame.encoded_len());
     write_frame(&mut writer, &frame).await.expect("write");
     assert_eq!(read_frame(&mut reader).await.expect("read"), frame);
-}
-
-#[tokio::test]
-async fn typed_read_write_helpers_preserve_canonical_bytes_and_direction() {
-    let request = cancel_request();
-    let response = cancellation_response();
-    let mut expected_request = Vec::new();
-    Frame::request(&request)
-        .expect("request")
-        .encode(&mut expected_request);
-    let mut expected_response = Vec::new();
-    Frame::response(&response)
-        .expect("response")
-        .encode(&mut expected_response);
-
-    let (mut request_writer, mut request_reader) = tokio::io::duplex(expected_request.len());
-    write_request(&mut request_writer, &request)
-        .await
-        .expect("write request");
-    assert_eq!(
-        read_request(&mut request_reader)
-            .await
-            .expect("read request"),
-        request
-    );
-
-    let (mut response_writer, mut response_reader) = tokio::io::duplex(expected_response.len());
-    write_response(&mut response_writer, &response)
-        .await
-        .expect("write response");
-    assert_eq!(
-        read_response(&mut response_reader)
-            .await
-            .expect("read response"),
-        response
-    );
-
-    let (mut wrong_writer, mut wrong_reader) = tokio::io::duplex(expected_request.len());
-    wrong_writer
-        .write_all(&expected_request)
-        .await
-        .expect("write request bytes");
-    assert!(matches!(
-        read_response(&mut wrong_reader).await,
-        Err(FrameIoError::InvalidFrame(FrameError::DirectionMismatch))
-    ));
 }
