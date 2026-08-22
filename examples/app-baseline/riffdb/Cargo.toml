@@ -14,7 +14,6 @@ riffdb-auth = { path = "../../../crates/riffdb-auth", version = "0.1.0", default
 riffdb-client-rust = { path = "../../../crates/riffdb-client-rust", version = "0.1.0", default-features = false }
 riffdb-contract-compiler = { path = "../../../crates/riffdb-contract-compiler", version = "0.1.0", default-features = false }
 riffdb-contract-ir = { path = "../../../crates/riffdb-contract-ir", version = "0.1.0", default-features = false }
-riffdb-config = { path = "../../../crates/riffdb-config", version = "0.1.0", default-features = false }
 riffdb-proto = { path = "../../../crates/riffdb-proto", version = "0.1.0", default-features = false }
 riffdb-query-module = { path = "../../../crates/riffdb-query-module", version = "0.1.0", default-features = false }
 riffdb-storage-redb = { path = "../../../crates/riffdb-storage-redb", version = "0.1.0", default-features = false, features = ["benchmark-support"] }
@@ -23,8 +22,6 @@ riffdb-types = { path = "../../../crates/riffdb-types", version = "0.1.0", defau
 riffdb-api-exclusive = { path = "../../../crates/riffdb-api-exclusive", version = "0.1.0", default-features = false }
 prost = { version = "=0.14.4", default-features = false, features = ["std"] }
 tokio = { version = "=1.52.0", default-features = false, features = ["io-util", "macros", "net", "rt-multi-thread", "time"] }
-tokio-rustls = { version = "=0.26.4", default-features = false, features = ["logging", "ring", "tls12"] }
-rustls-pki-types = { version = "=1.15.1", default-features = false, features = ["std"] }
 tonic = { version = "=0.14.6", default-features = false, features = ["channel", "codegen"] }
 
 [lints]

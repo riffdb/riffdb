@@ -39,7 +39,6 @@ struct Args {
     bounded_session_shadow: bool,
     bounded_session_first: bool,
     direct_exclusive_probe: bool,
-    direct_exclusive_tls_probe: bool,
     direct_first: bool,
 }
 
@@ -173,7 +172,6 @@ fn main() -> Result<(), String> {
             ServerStartOptions {
                 query_execute_diagnostics: true,
                 direct_stream_diagnostic: args.direct_exclusive_probe,
-                direct_stream_diagnostic_tls: args.direct_exclusive_tls_probe,
                 ..ServerStartOptions::default()
             },
         ))
@@ -392,7 +390,6 @@ fn main() -> Result<(), String> {
         "frozen_release_binary": "riffdb-app-baseline",
         "diagnostic_binary": "riffdb-client-transport-diagnostic",
         "direct_exclusive_probe_enabled": args.direct_exclusive_probe,
-        "direct_exclusive_transport": if args.direct_exclusive_tls_probe { "verified_direct_tls" } else { "loopback_cleartext" },
         "scale": args.scale.name(),
         "tcp_nodelay": {
             "client": true,
@@ -952,7 +949,6 @@ fn parse_args() -> Result<Args, String> {
     let mut bounded_session_shadow = false;
     let mut bounded_session_first = false;
     let mut direct_exclusive_probe = false;
-    let mut direct_exclusive_tls_probe = false;
     let mut direct_first = false;
     let mut arguments = env::args_os().skip(1);
     while let Some(argument) = arguments.next() {
@@ -1035,10 +1031,6 @@ fn parse_args() -> Result<Args, String> {
             "--bounded-session-shadow" => bounded_session_shadow = true,
             "--bounded-session-first" => bounded_session_first = true,
             "--direct-exclusive-probe" => direct_exclusive_probe = true,
-            "--direct-exclusive-tls-probe" => {
-                direct_exclusive_probe = true;
-                direct_exclusive_tls_probe = true;
-            }
             "--direct-first" => direct_first = true,
             "--help" | "-h" => {
                 return Err(
@@ -1047,7 +1039,7 @@ fn parse_args() -> Result<Args, String> {
                      [--clients 1,8,32] \
                      [--bounded-session-shadow] \
                      [--bounded-session-first] \
-                     [--direct-exclusive-probe|--direct-exclusive-tls-probe] [--direct-first] \
+                     [--direct-exclusive-probe] [--direct-first] \
                      [--postgres-url URL] \
                      [--samples-per-client 1..10000] [--warmup-per-client 0..1000]"
                         .to_owned(),
@@ -1080,7 +1072,6 @@ fn parse_args() -> Result<Args, String> {
         bounded_session_shadow,
         bounded_session_first,
         direct_exclusive_probe,
-        direct_exclusive_tls_probe,
         direct_first,
     })
 }
