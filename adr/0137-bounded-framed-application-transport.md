@@ -123,11 +123,15 @@ accepted ADR citation must land with the implementation that requires it.
 ### 3. Both transports invoke one API-neutral operation adapter
 
 WP-662 must refactor command and named-query adaptation into one first-party
-Rust operation adapter used by both gRPC and framing. Neither transport calls
-the other's handler. The shared adapter owns structural-to-domain conversion,
-operation-specific error mapping, request control, current lifecycle admission,
-authentication, authorization, application-service invocation, response
-release, and domain-to-wire conversion.
+Rust operation adapter used by both gRPC and framing. The adapter resides in a
+separate `riffdb-api-application` crate; `riffdb-api-grpc` and
+`riffdb-api-frame` depend on it, and neither transport crate depends on or
+calls the other. The shared adapter owns structural-to-domain conversion,
+operation-specific public failure construction, request control, current
+lifecycle admission, authentication, authorization, application-service
+invocation, response release, and domain-to-wire conversion. Transport-specific
+gRPC status and framed-close mapping remain in their respective transport
+crates.
 
 The framed ingress owns only byte bounds, frame state, correlation, connection
 backpressure, and transport cancellation. It receives no storage, catalog,
@@ -296,6 +300,9 @@ hidden row, event, principal, or operation exists.
   downgrade, and bounded shutdown.
 - Architecture tests proving first-party Rust ownership and absence of service,
   storage, catalog, plan, policy, and commit authority in the frame adapter.
+- Dependency-direction tests proving the API-neutral adapter depends on no
+  transport, TLS, socket, Tonic, HTTP, or frame engine and neither transport
+  crate depends on the other.
 - Counterbalanced workstation/N1/E2 mechanics followed by the complete
   `PERF-018` matrix only after the reject-first gate passes.
 
