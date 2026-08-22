@@ -1594,6 +1594,8 @@ messages
   riffdb.v1.ApplicationSessionCancellation fields=2
     1 target_correlation_id optional uint64
     2 disposition optional .riffdb.v1.ApplicationSessionCancellationDisposition
+  riffdb.v1.ApplicationSessionClose fields=0
+  riffdb.v1.ApplicationSessionClosed fields=0
   riffdb.v1.ApplicationSessionFailure fields=3
     1 operation_kind optional .riffdb.v1.ApplicationSessionOperationKind
     2 grpc_code optional int32
@@ -1611,19 +1613,21 @@ messages
     3 query_module_hashes repeated bytes
     4 application_lock_hash optional bytes
     5 maximum_in_flight optional uint32
-  riffdb.v1.ApplicationSessionRequest fields=5
+  riffdb.v1.ApplicationSessionRequest fields=6
     1 correlation_id optional uint64
     2 open optional .riffdb.v1.ApplicationSessionOpen oneof=request
     3 command optional .riffdb.v1.ExecuteCommandRequest oneof=request
     4 query optional .riffdb.app.v1.ExecuteQueryRequest oneof=request
     5 cancel optional .riffdb.v1.ApplicationSessionCancel oneof=request
-  riffdb.v1.ApplicationSessionResponse fields=6
+    6 close optional .riffdb.v1.ApplicationSessionClose oneof=request
+  riffdb.v1.ApplicationSessionResponse fields=7
     1 correlation_id optional uint64
     2 opened optional .riffdb.v1.ApplicationSessionOpened oneof=response
     3 command optional .riffdb.v1.ExecuteCommandResponse oneof=response
     4 query optional .riffdb.app.v1.ExecuteQueryResponse oneof=response
     5 failure optional .riffdb.v1.ApplicationSessionFailure oneof=response
     6 cancellation optional .riffdb.v1.ApplicationSessionCancellation oneof=response
+    7 closed optional .riffdb.v1.ApplicationSessionClosed oneof=response
   riffdb.v1.ApplyApplicationReimportPageRequest fields=3
     1 request_id optional bytes
     2 campaign_id optional bytes

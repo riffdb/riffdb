@@ -273,6 +273,30 @@ mod application_session_tests {
             Err(PublicWireError::InvalidIdentity)
         );
     }
+
+    #[test]
+    fn session_close_and_ack_are_empty_correlated_messages() {
+        let request = v1::ApplicationSessionRequest {
+            correlation_id: 9,
+            request: Some(v1::application_session_request::Request::Close(
+                v1::ApplicationSessionClose {},
+            )),
+        };
+        let response = v1::ApplicationSessionResponse {
+            correlation_id: 9,
+            response: Some(v1::application_session_response::Response::Closed(
+                v1::ApplicationSessionClosed {},
+            )),
+        };
+        for encoded in [request.encode_to_vec(), response.encode_to_vec()] {
+            assert!(!encoded.is_empty());
+        }
+        assert_eq!(validate_public_message(&request), Ok(()));
+        assert_eq!(validate_public_message(&response), Ok(()));
+
+        assert_eq!(preflight_application_session_close(&[]), Ok(()));
+        assert_eq!(preflight_application_session_closed(&[]), Ok(()));
+    }
 }
 
 /// Decodes one bounded public message through its context-free validator.
@@ -10780,6 +10804,10 @@ fn preflight_application_session_cancel(input: &[u8]) -> Result<(), PublicWireEr
     preflight_nested_message(input, 1, &[], &[], &[], &[])
 }
 
+fn preflight_application_session_close(input: &[u8]) -> Result<(), PublicWireError> {
+    preflight_nested_message(input, 0, &[], &[], &[], &[])
+}
+
 fn preflight_application_query_request(input: &[u8]) -> Result<(), PublicWireError> {
     <crate::app::v1::ExecuteQueryRequest as PublicMessage>::preflight(input)
 }
@@ -10791,9 +10819,9 @@ fn preflight_application_query_response(input: &[u8]) -> Result<(), PublicWireEr
 fn preflight_application_session_request(input: &[u8]) -> Result<(), PublicWireError> {
     preflight_nested_message(
         input,
-        5,
+        6,
         &[],
-        &[&[2, 3, 4, 5]],
+        &[&[2, 3, 4, 5, 6]],
         &[
             NestedRule {
                 field: 2,
@@ -10810,6 +10838,10 @@ fn preflight_application_session_request(input: &[u8]) -> Result<(), PublicWireE
             NestedRule {
                 field: 5,
                 preflight: preflight_application_session_cancel,
+            },
+            NestedRule {
+                field: 6,
+                preflight: preflight_application_session_close,
             },
         ],
         &[],
@@ -10842,12 +10874,16 @@ fn preflight_application_session_cancellation(input: &[u8]) -> Result<(), Public
     preflight_nested_message(input, 2, &[], &[], &[], &[])
 }
 
+fn preflight_application_session_closed(input: &[u8]) -> Result<(), PublicWireError> {
+    preflight_nested_message(input, 0, &[], &[], &[], &[])
+}
+
 fn preflight_application_session_response(input: &[u8]) -> Result<(), PublicWireError> {
     preflight_nested_message(
         input,
-        6,
+        7,
         &[],
-        &[&[2, 3, 4, 5, 6]],
+        &[&[2, 3, 4, 5, 6, 7]],
         &[
             NestedRule {
                 field: 2,
@@ -10868,6 +10904,10 @@ fn preflight_application_session_response(input: &[u8]) -> Result<(), PublicWire
             NestedRule {
                 field: 6,
                 preflight: preflight_application_session_cancellation,
+            },
+            NestedRule {
+                field: 7,
+                preflight: preflight_application_session_closed,
             },
         ],
         &[],
@@ -10921,6 +10961,7 @@ fn validate_application_session_request(
                 Ok(())
             }
         }
+        Request::Close(_) => Ok(()),
     }
 }
 
@@ -10977,15 +11018,16 @@ fn validate_application_session_response(
             }
             Ok(())
         }
+        Response::Closed(_) => Ok(()),
     }
 }
 
 impl_public_message!(
     v1::ApplicationSessionRequest,
     MAX_PUBLIC_REQUEST_BYTES,
-    5,
+    6,
     &[],
-    &[&[2, 3, 4, 5]],
+    &[&[2, 3, 4, 5, 6]],
     preflight_application_session_request,
     validate_application_session_request
 );
@@ -10993,9 +11035,9 @@ impl_public_message!(
 impl_public_message!(
     v1::ApplicationSessionResponse,
     MAX_PUBLIC_RESPONSE_BYTES,
-    6,
+    7,
     &[],
-    &[&[2, 3, 4, 5, 6]],
+    &[&[2, 3, 4, 5, 6, 7]],
     preflight_application_session_response,
     validate_application_session_response
 );

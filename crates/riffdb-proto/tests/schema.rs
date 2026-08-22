@@ -757,7 +757,7 @@ fn service_inventory_and_completed_phase_zero_messages_are_exact() {
             .keys()
             .filter(|name| name.starts_with("riffdb.v1."))
             .count(),
-        283
+        285
     );
     assert_eq!(
         messages
@@ -765,7 +765,11 @@ fn service_inventory_and_completed_phase_zero_messages_are_exact() {
             .filter(|(name, message)| name.starts_with("riffdb.v1.") && message.field.is_empty())
             .map(|(name, _)| name.as_str())
             .collect::<Vec<_>>(),
-        vec!["riffdb.v1.Unit"]
+        vec![
+            "riffdb.v1.ApplicationSessionClose",
+            "riffdb.v1.ApplicationSessionClosed",
+            "riffdb.v1.Unit",
+        ]
     );
 }
 

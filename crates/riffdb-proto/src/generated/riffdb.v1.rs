@@ -5757,11 +5757,13 @@ pub struct ApplicationSessionCancel {
     #[prost(uint64, tag = "1")]
     pub target_correlation_id: u64,
 }
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ApplicationSessionClose {}
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ApplicationSessionRequest {
     #[prost(uint64, tag = "1")]
     pub correlation_id: u64,
-    #[prost(oneof = "application_session_request::Request", tags = "2, 3, 4, 5")]
+    #[prost(oneof = "application_session_request::Request", tags = "2, 3, 4, 5, 6")]
     pub request: ::core::option::Option<application_session_request::Request>,
 }
 /// Nested message and enum types in `ApplicationSessionRequest`.
@@ -5776,6 +5778,8 @@ pub mod application_session_request {
         Query(super::super::app::v1::ExecuteQueryRequest),
         #[prost(message, tag = "5")]
         Cancel(super::ApplicationSessionCancel),
+        #[prost(message, tag = "6")]
+        Close(super::ApplicationSessionClose),
     }
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -5807,11 +5811,13 @@ pub struct ApplicationSessionCancellation {
     #[prost(enumeration = "ApplicationSessionCancellationDisposition", tag = "2")]
     pub disposition: i32,
 }
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ApplicationSessionClosed {}
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ApplicationSessionResponse {
     #[prost(uint64, tag = "1")]
     pub correlation_id: u64,
-    #[prost(oneof = "application_session_response::Response", tags = "2, 3, 4, 5, 6")]
+    #[prost(oneof = "application_session_response::Response", tags = "2, 3, 4, 5, 6, 7")]
     pub response: ::core::option::Option<application_session_response::Response>,
 }
 /// Nested message and enum types in `ApplicationSessionResponse`.
@@ -5828,6 +5834,8 @@ pub mod application_session_response {
         Failure(super::ApplicationSessionFailure),
         #[prost(message, tag = "6")]
         Cancellation(super::ApplicationSessionCancellation),
+        #[prost(message, tag = "7")]
+        Closed(super::ApplicationSessionClosed),
     }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
