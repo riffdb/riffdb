@@ -8,6 +8,7 @@
 
 mod projected;
 mod server;
+mod direct_diagnostic;
 
 use std::collections::{BTreeMap, VecDeque};
 use std::error::Error;
@@ -54,6 +55,7 @@ pub use server::{
     ServerStartOptions, min_free_bytes_for_full, resolve_bench_root, resolve_database_root,
     sweep_stale_session_dirs,
 };
+pub use direct_diagnostic::{DirectDiagnosticClient, DirectDiagnosticTiming};
 
 /// Default in-flight seed commands (bounded client concurrency, not a bulk RPC).
 ///
