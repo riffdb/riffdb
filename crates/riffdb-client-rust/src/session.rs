@@ -123,6 +123,9 @@ enum PendingResponse {
     /// identity until the server answers prevents a deliberately cancelled
     /// operation from being misclassified as an unknown response.
     Ignore,
+    /// One controlled close acknowledgement. Existing live calls remain in
+    /// the map until the server drains them before acknowledging this entry.
+    Closing,
 }
 
 /// Cloneable optional session transport. It retains only bounded correlation
@@ -209,13 +212,43 @@ impl BoundedApplicationSession {
         self.metadata.has_same_session_scope(metadata)
     }
 
-    /// Ends the request stream for a controlled shutdown. Pending operations
-    /// are released without manufacturing outcomes; commands retain the
-    /// ordinary outcome-unknown and idempotency recovery contract.
+    /// Starts one controlled shutdown. The server drains accepted operations
+    /// before acknowledging the close. This synchronous facade deliberately
+    /// does not claim that the acknowledgement has arrived when it returns.
     pub(crate) fn close(&self) {
-        self.closed.store(true, Ordering::Release);
-        let _ = self.shutdown.send(true);
-        close_session_pending(&self.pending);
+        if self.closed.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        let sent = self.pending.lock().ok().is_some_and(|mut pending| {
+            let correlation_id = self.next_correlation.fetch_add(1, Ordering::Relaxed);
+            if correlation_id == 0 || correlation_id == u64::MAX {
+                return false;
+            }
+            if pending
+                .insert(correlation_id, PendingResponse::Closing)
+                .is_some()
+            {
+                return false;
+            }
+            if self
+                .outbound
+                .try_send(v1::ApplicationSessionRequest {
+                    correlation_id,
+                    request: Some(v1::application_session_request::Request::Close(
+                        v1::ApplicationSessionClose {},
+                    )),
+                })
+                .is_err()
+            {
+                pending.remove(&correlation_id);
+                return false;
+            }
+            true
+        });
+        if !sent {
+            let _ = self.shutdown.send(true);
+            close_session_pending(&self.pending);
+        }
     }
 
     async fn call(
@@ -326,8 +359,16 @@ fn session_outbound_stream(
             tokio::select! {
                 biased;
                 changed = shutdown.changed() => {
-                    let _ = changed;
-                    None
+                    match changed {
+                        Ok(()) if *shutdown.borrow() => None,
+                        // Dropping the final shutdown sender is an ordinary
+                        // owner drop. Drain any already-enqueued close frame
+                        // before ending the request stream.
+                        Ok(()) | Err(_) => receiver
+                            .recv()
+                            .await
+                            .map(|item| (item, (receiver, shutdown))),
+                    }
                 }
                 item = receiver.recv() => item.map(|item| (item, (receiver, shutdown))),
             }
@@ -349,6 +390,10 @@ fn route_session_response(
             true
         }
         Some(PendingResponse::Ignore) => true,
+        Some(PendingResponse::Closing) => matches!(
+            response.response,
+            Some(v1::application_session_response::Response::Closed(_))
+        ),
         None => false,
     }
 }
@@ -506,7 +551,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn explicit_close_releases_pending_and_ends_the_request_stream() {
+    async fn explicit_close_is_correlated_and_ends_after_the_acknowledgement() {
         use futures_util::StreamExt;
 
         let (outbound, receiver) = mpsc::channel(OUTBOUND_SESSION_ITEMS);
@@ -523,9 +568,24 @@ mod tests {
         let stream = session_outbound_stream(receiver, shutdown_receiver);
         tokio::pin!(stream);
         session.close();
-        assert!(stream.next().await.is_none());
+        let close = stream.next().await.expect("controlled close request");
+        assert!(matches!(
+            close.request,
+            Some(v1::application_session_request::Request::Close(_))
+        ));
+        assert!(route_session_response(
+            &session.pending,
+            v1::ApplicationSessionResponse {
+                correlation_id: close.correlation_id,
+                response: Some(v1::application_session_response::Response::Closed(
+                    v1::ApplicationSessionClosed {},
+                )),
+            },
+        ));
         assert!(session.closed.load(Ordering::Acquire));
         assert!(session.pending.lock().expect("pending").is_empty());
+        drop(session);
+        assert!(stream.next().await.is_none());
     }
 
     #[test]
