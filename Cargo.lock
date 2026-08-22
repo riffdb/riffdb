@@ -1645,6 +1645,14 @@ checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 [[package]]
 name = "riffdb-api-application"
 version = "0.1.0"
+dependencies = [
+ "base64",
+ "riffdb-auth",
+ "riffdb-errors",
+ "riffdb-proto",
+ "riffdb-service",
+ "riffdb-types",
+]
 
 [[package]]
 name = "riffdb-api-frame"
@@ -1652,6 +1660,8 @@ version = "0.1.0"
 dependencies = [
  "prost",
  "riffdb-proto",
+ "tokio",
+ "zeroize",
 ]
 
 [[package]]
@@ -1662,6 +1672,7 @@ dependencies = [
  "futures-util",
  "prost",
  "prost-types",
+ "riffdb-api-application",
  "riffdb-application",
  "riffdb-auth",
  "riffdb-client-rust",
@@ -1796,6 +1807,7 @@ version = "0.1.0"
 dependencies = [
  "futures-util",
  "getrandom 0.3.4",
+ "riffdb-api-frame",
  "riffdb-api-grpc",
  "riffdb-application",
  "riffdb-config",
@@ -2109,6 +2121,8 @@ dependencies = [
  "axum",
  "futures-util",
  "getrandom 0.3.4",
+ "riffdb-api-application",
+ "riffdb-api-frame",
  "riffdb-api-grpc",
  "riffdb-api-mcp",
  "riffdb-application",

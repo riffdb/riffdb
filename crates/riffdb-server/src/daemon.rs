@@ -50,9 +50,10 @@ use tokio::sync::futures::OwnedNotified;
 use tokio::sync::oneshot;
 use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore};
 use tokio::task::{JoinError, JoinHandle as TokioJoinHandle};
-use tokio::{io::AsyncRead, io::AsyncWrite, io::ReadBuf};
+use tokio::{io::AsyncRead, io::AsyncReadExt, io::AsyncWrite, io::ReadBuf};
 use tokio_rustls::TlsAcceptor;
 use tokio_stream::Stream;
+use tokio_stream::wrappers::ReceiverStream;
 #[cfg(unix)]
 use tokio_stream::wrappers::UnixListenerStream;
 use tonic::transport::{
@@ -3445,6 +3446,8 @@ struct HostedGrpc {
     _local_socket: Option<BoundLocalSocket>,
     shutdown: Option<oneshot::Sender<()>>,
     task: TokioJoinHandle<Result<(), tonic::transport::Error>>,
+    demux_shutdown: Option<oneshot::Sender<()>>,
+    demux_task: Option<TokioJoinHandle<io::Result<()>>>,
 }
 
 impl HostedGrpc {
@@ -3460,18 +3463,31 @@ impl HostedGrpc {
                 // Nagle enabled on the accepted side couples those frames to the peer's
                 // delayed-ACK timer and adds a repeatable ~40 ms to otherwise local
                 // unary calls. The public client already enables TCP_NODELAY.
-                let incoming = TcpIncoming::bind(address)
-                    .map_err(DaemonError::Listener)?
-                    .with_nodelay(Some(true));
-                let local_address = incoming.local_addr().map_err(DaemonError::Listener)?;
+                let listener =
+                    std::net::TcpListener::bind(address).map_err(DaemonError::Listener)?;
+                listener
+                    .set_nonblocking(true)
+                    .map_err(DaemonError::Listener)?;
+                let local_address = listener.local_addr().map_err(DaemonError::Listener)?;
+                let listener =
+                    tokio::net::TcpListener::from_std(listener).map_err(DaemonError::Listener)?;
                 let rebind_config = ApplicationListenerConfig::LoopbackCleartext(
                     LoopbackCleartextListener::new(local_address)
                         .map_err(|_| DaemonError::GrpcConfiguration)?,
                 );
+                let (grpc_connections, incoming) = tokio::sync::mpsc::channel(1024);
+                let (demux_shutdown, demux_stopped) = oneshot::channel();
+                let demux_task = tokio::spawn(run_loopback_transport_demux(
+                    listener,
+                    grpc_connections,
+                    application.database_routes(),
+                    demux_stopped,
+                ));
                 let router = application_router(Server::builder(), application, None);
-                let task = tokio::spawn(
-                    router.serve_with_incoming_shutdown(incoming, shutdown_signal(stopped)),
-                );
+                let task = tokio::spawn(router.serve_with_incoming_shutdown(
+                    ReceiverStream::new(incoming),
+                    shutdown_signal(stopped),
+                ));
                 Ok(Self {
                     endpoint: HostedGrpcEndpoint::Tcp(local_address),
                     rebind_config,
@@ -3480,6 +3496,8 @@ impl HostedGrpc {
                     _local_socket: None,
                     shutdown: Some(shutdown),
                     task,
+                    demux_shutdown: Some(demux_shutdown),
+                    demux_task: Some(demux_task),
                 })
             }
             ApplicationListenerConfig::DirectTls(listener) => {
@@ -3507,6 +3525,8 @@ impl HostedGrpc {
                     _local_socket: None,
                     shutdown: Some(shutdown),
                     task,
+                    demux_shutdown: None,
+                    demux_task: None,
                 })
             }
             ApplicationListenerConfig::LocalSocket(listener) => {
@@ -3531,6 +3551,8 @@ impl HostedGrpc {
                         _local_socket: Some(guard),
                         shutdown: Some(shutdown),
                         task,
+                        demux_shutdown: None,
+                        demux_task: None,
                     })
                 }
                 #[cfg(not(unix))]
@@ -3561,21 +3583,157 @@ impl HostedGrpc {
 
     fn is_finished(&self) -> bool {
         self.task.is_finished()
+            || self
+                .demux_task
+                .as_ref()
+                .is_some_and(TokioJoinHandle::is_finished)
     }
 
     async fn drain_after_signal(&mut self) -> Result<(), DaemonError> {
         if let Some(shutdown) = self.shutdown.take() {
             let _ = shutdown.send(());
         }
+        if let Some(shutdown) = self.demux_shutdown.take() {
+            let _ = shutdown.send(());
+        }
         let completion = tokio::time::timeout(self.drain_limit, &mut self.task)
             .await
             .map_err(|_| DaemonError::TransportDrainTimeout)?;
-        classify_transport_completion(&completion)
+        classify_transport_completion(&completion)?;
+        if let Some(task) = self.demux_task.as_mut() {
+            let demux = tokio::time::timeout(self.drain_limit, task)
+                .await
+                .map_err(|_| DaemonError::TransportDrainTimeout)?;
+            if !matches!(demux, Ok(Ok(()))) {
+                return Err(DaemonError::Transport);
+            }
+        }
+        Ok(())
     }
 
     async fn completed(&mut self) -> Result<(), DaemonError> {
         let completion = (&mut self.task).await;
+        if let Some(shutdown) = self.demux_shutdown.take() {
+            let _ = shutdown.send(());
+        }
         classify_transport_completion(&completion)
+    }
+}
+
+const LOOPBACK_HTTP2_PREFACE_PREFIX: [u8; 8] = *b"PRI * HT";
+const LOOPBACK_PROTOCOL_PREFACE_TIMEOUT: Duration = Duration::from_secs(5);
+const LOOPBACK_MAX_CONNECTIONS: usize = 1024;
+const LOOPBACK_IDLE_TIMEOUT: Duration = Duration::from_secs(15 * 60);
+
+async fn run_loopback_transport_demux(
+    listener: tokio::net::TcpListener,
+    grpc_connections: tokio::sync::mpsc::Sender<
+        Result<PrefixedConnection<AdmittedConnection<tokio::net::TcpStream>>, io::Error>,
+    >,
+    routes: Arc<GrpcDatabaseRoutes>,
+    mut shutdown: oneshot::Receiver<()>,
+) -> io::Result<()> {
+    let permits = Arc::new(Semaphore::new(LOOPBACK_MAX_CONNECTIONS));
+    loop {
+        tokio::select! {
+            _ = &mut shutdown => return Ok(()),
+            accepted = listener.accept() => {
+                let (mut stream, _) = accepted?;
+                stream.set_nodelay(true)?;
+                let Ok(permit) = Arc::clone(&permits).try_acquire_owned() else {
+                    continue;
+                };
+                let mut prefix = [0_u8; 8];
+                if !matches!(
+                    tokio::time::timeout(
+                        LOOPBACK_PROTOCOL_PREFACE_TIMEOUT,
+                        stream.read_exact(&mut prefix),
+                    ).await,
+                    Ok(Ok(_))
+                ) {
+                    continue;
+                }
+                let admitted = AdmittedConnection {
+                    io: stream,
+                    _permit: permit,
+                    idle_timeout: LOOPBACK_IDLE_TIMEOUT,
+                    idle: Box::pin(tokio::time::sleep(LOOPBACK_IDLE_TIMEOUT)),
+                };
+                let connection = PrefixedConnection::new(prefix, admitted);
+                if prefix == LOOPBACK_HTTP2_PREFACE_PREFIX {
+                    if grpc_connections.send(Ok(connection)).await.is_err() {
+                        return Ok(());
+                    }
+                } else if prefix == riffdb_api_frame::FRAME_MAGIC_V1 {
+                    tokio::spawn(crate::framed_application::serve(
+                        connection,
+                        Arc::clone(&routes),
+                        REQUEST_DURATION_LIMIT,
+                    ));
+                }
+            }
+        }
+    }
+}
+
+struct PrefixedConnection<IO> {
+    prefix: [u8; 8],
+    consumed: usize,
+    io: IO,
+}
+
+impl<IO> PrefixedConnection<IO> {
+    const fn new(prefix: [u8; 8], io: IO) -> Self {
+        Self {
+            prefix,
+            consumed: 0,
+            io,
+        }
+    }
+}
+
+impl<IO: AsyncRead + Unpin> AsyncRead for PrefixedConnection<IO> {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        context: &mut Context<'_>,
+        buffer: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        if self.consumed < self.prefix.len() && buffer.remaining() > 0 {
+            let count = buffer
+                .remaining()
+                .min(self.prefix.len().saturating_sub(self.consumed));
+            let end = self.consumed + count;
+            buffer.put_slice(&self.prefix[self.consumed..end]);
+            self.consumed = end;
+            return Poll::Ready(Ok(()));
+        }
+        Pin::new(&mut self.io).poll_read(context, buffer)
+    }
+}
+
+impl<IO: AsyncWrite + Unpin> AsyncWrite for PrefixedConnection<IO> {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        context: &mut Context<'_>,
+        buffer: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        Pin::new(&mut self.io).poll_write(context, buffer)
+    }
+
+    fn poll_flush(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.io).poll_flush(context)
+    }
+
+    fn poll_shutdown(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.io).poll_shutdown(context)
+    }
+}
+
+impl<IO: Connected> Connected for PrefixedConnection<IO> {
+    type ConnectInfo = IO::ConnectInfo;
+
+    fn connect_info(&self) -> Self::ConnectInfo {
+        self.io.connect_info()
     }
 }
 

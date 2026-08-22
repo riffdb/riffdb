@@ -131,17 +131,17 @@ fn application_session_is_confined_to_existing_application_operations() {
         .nth(1)
         .and_then(|tail| tail.split("async fn run_application_session(").next())
         .expect("bounded session operation adapter");
-    assert!(dispatch.contains("CommandService::execute(&application, request)"));
-    assert!(dispatch.contains("ApplicationQueryService::execute_query(&application, request)"));
+    assert!(dispatch.contains("execute_generated_command("));
+    assert!(dispatch.contains("execute_generated_query("));
+    assert!(dispatch.contains("ApplicationOperationPresentation::from_opaque"));
     for forbidden in ["storage", "commit_coordinator", "execute_command(context"] {
         assert!(
             !dispatch.contains(forbidden),
             "session adapter must not acquire lower authority through {forbidden}"
         );
     }
-    assert!(source.contains("struct ApplicationSessionMetadata(MetadataMap);"));
-    assert!(source.contains("ApplicationSessionMetadata([REDACTED])"));
-    assert!(source.contains("metadata.copy_for_operation()"));
+    assert!(source.contains("Arc<riffdb_auth::RetainedOpaqueCredential>"));
+    assert!(source.contains("credential.borrow()"));
     assert!(source.contains("if operations.len() >= scope.maximum_in_flight"));
 }
 

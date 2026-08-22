@@ -11,6 +11,7 @@ default = []
 client = ["tonic/channel"]
 server = [
     "dep:futures-util",
+    "dep:riffdb-api-application",
     "dep:riffdb-auth",
     "dep:riffdb-application",
     "dep:riffdb-errors",
@@ -23,6 +24,7 @@ server = [
 
 [dependencies]
 base64 = { version = "=0.22.1", default-features = false, features = ["alloc"] }
+riffdb-api-application = { version = "0.1.0", path = "../riffdb-api-application", default-features = false, optional = true }
 riffdb-application = { version = "0.1.0", path = "../riffdb-application", default-features = false, optional = true }
 futures-util = { version = "=0.3.33", default-features = false, features = ["alloc"], optional = true }
 riffdb-auth = { version = "0.1.0", path = "../riffdb-auth", default-features = false, optional = true }

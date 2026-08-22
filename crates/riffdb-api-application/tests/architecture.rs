@@ -4,7 +4,7 @@ use std::fs;
 use std::path::PathBuf;
 
 #[test]
-fn application_adapter_has_no_transport_or_crypto_dependency() {
+fn application_adapter_has_no_transport_crypto_or_lower_authority_dependency() {
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
     let source = fs::read_to_string(manifest).expect("read adapter manifest");
     for forbidden in [
@@ -16,6 +16,14 @@ fn application_adapter_has_no_transport_or_crypto_dependency() {
         "ring",
         "riffdb-api-grpc",
         "riffdb-api-frame",
+        "riffdb-storage-api",
+        "riffdb-storage-redb",
+        "riffdb-catalog",
+        "riffdb-policy",
+        "riffdb-plan",
+        "riffdb-commit",
+        "riffdb-projection",
+        "riffdb-audit",
     ] {
         assert!(
             !source.lines().any(|line| {

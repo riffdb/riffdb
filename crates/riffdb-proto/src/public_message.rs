@@ -14,8 +14,8 @@ use riffdb_types::{
     CapabilityExportGrantV1, CapabilityId, CapabilityPrincipalFactV1, CapabilityPrincipalFactsV1,
     CapabilityRowPolicyBindingV1, CapabilityRowPolicyGrantV1, CapabilityRowPolicyOperationV1,
     CapabilityVectorInspectionGrantV1, CapabilityVectorInspectionTargetV1, ContractLineage,
-    ContractMigrationOperationId, DatabaseId, EntityKey, EntityTypeId, EventConsumerName, FieldId,
-    IndexEntryKey, MAX_ACTOR_ID_BYTES, MAX_APPLICATION_EXPORT_MODULES,
+    ContractMigrationOperationId, DatabaseAlias, DatabaseId, EntityKey, EntityTypeId,
+    EventConsumerName, FieldId, IndexEntryKey, MAX_ACTOR_ID_BYTES, MAX_APPLICATION_EXPORT_MODULES,
     MAX_CAPABILITY_APPLICATION_EXPORT_GRANTS, MAX_CAPABILITY_AUDIENCES,
     MAX_CAPABILITY_FIELD_VISIBILITY, MAX_CAPABILITY_LIFETIME_SECONDS, MAX_CAPABILITY_PARTITIONS,
     MAX_CAPABILITY_PAYLOAD_BYTES, MAX_CAPABILITY_PERMISSIONS, MAX_CAPABILITY_ROW_POLICY_BINDINGS,
@@ -65,6 +65,7 @@ const APPLICATION_SESSION_PROTOCOL_V1: u32 = 1;
 const MAX_APPLICATION_SESSION_IN_FLIGHT: u32 = 128;
 const MAX_APPLICATION_SESSION_QUERY_MODULES: usize = 32;
 const MAX_APPLICATION_SESSION_ERROR_DETAILS_BYTES: usize = 64 * 1024;
+const MAX_APPLICATION_SESSION_CREDENTIAL_BYTES: usize = 43;
 const MAX_DISCOVERY_PAGE_BYTES: usize = 2_621_440;
 const MAX_OPERATION_SCHEMA_BYTES: usize = 65_536;
 const MAX_INSTALLATION_DRIVERS: usize = 4;
@@ -215,6 +216,8 @@ mod application_session_tests {
                     application_lock_hash: vec![10; 32],
                     requested_max_in_flight: 32,
                     request_id: vec![11; 16],
+                    credential_presentation: Vec::new(),
+                    database_alias: String::new(),
                 },
             )),
         }
@@ -6657,7 +6660,7 @@ fn preflight_scan_index_response(input: &[u8]) -> Result<(), PublicWireError> {
 fn preflight_query_projection_request(input: &[u8]) -> Result<(), PublicWireError> {
     preflight_nested_message(
         input,
-        7,
+        8,
         &[4],
         &[],
         &[
@@ -10785,7 +10788,7 @@ fn preflight_application_session_contract(input: &[u8]) -> Result<(), PublicWire
 fn preflight_application_session_open(input: &[u8]) -> Result<(), PublicWireError> {
     preflight_nested_message(
         input,
-        6,
+        7,
         &[3],
         &[],
         &[NestedRule {
@@ -10943,6 +10946,9 @@ fn validate_application_session_request(
                 || open.requested_max_in_flight == 0
                 || open.requested_max_in_flight > MAX_APPLICATION_SESSION_IN_FLIGHT
                 || open.request_id.len() != 16
+                || open.credential_presentation.len() > MAX_APPLICATION_SESSION_CREDENTIAL_BYTES
+                || (!open.database_alias.is_empty()
+                    && DatabaseAlias::new(open.database_alias.clone()).is_err())
             {
                 return Err(PublicWireError::InvalidIdentity);
             }

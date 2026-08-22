@@ -167,6 +167,21 @@ impl StableApplicationClient {
         Ok(())
     }
 
+    /// Opens the bounded first-party framed candidate on a literal loopback
+    /// endpoint. Unary gRPC remains the default until this explicit operation
+    /// succeeds.
+    pub async fn open_framed_loopback_session(
+        &mut self,
+        address: std::net::SocketAddr,
+        identity: crate::ApplicationSessionIdentity,
+        metadata: &CallMetadata,
+    ) -> Result<(), ApplicationClientError> {
+        self.inner
+            .enable_framed_loopback_application_session(address, identity, metadata.clone())
+            .await?;
+        Ok(())
+    }
+
     /// Reports whether this facade explicitly selected the bounded session.
     #[must_use]
     pub const fn bounded_session_enabled(&self) -> bool {
