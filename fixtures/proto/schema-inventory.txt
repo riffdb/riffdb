@@ -1600,15 +1600,13 @@ messages
     1 operation_kind optional .riffdb.v1.ApplicationSessionOperationKind
     2 grpc_code optional int32
     3 details optional bytes
-  riffdb.v1.ApplicationSessionOpen fields=8
+  riffdb.v1.ApplicationSessionOpen fields=6
     1 protocol_version optional uint32
     2 contract optional .riffdb.app.v1.ContractSelector
     3 query_module_hashes repeated bytes
     4 application_lock_hash optional bytes
     5 requested_max_in_flight optional uint32
     6 request_id optional bytes
-    7 credential_presentation optional bytes
-    8 database_alias optional string
   riffdb.v1.ApplicationSessionOpened fields=5
     1 protocol_version optional uint32
     2 contract optional .riffdb.app.v1.ContractSelector

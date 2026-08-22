@@ -66,7 +66,7 @@ pub fn retain_normal_request_credential(
     RetainedOpaqueCredential::new(credential).map_err(|_| unauthenticated())
 }
 
-pub(crate) fn extract_normal_credential(metadata: &MetadataMap) -> Result<&[u8], Status> {
+fn extract_normal_credential(metadata: &MetadataMap) -> Result<&[u8], Status> {
     if metadata
         .get_all_bin(BOOTSTRAP_TOKEN_METADATA_KEY)
         .iter()

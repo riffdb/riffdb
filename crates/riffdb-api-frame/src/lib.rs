@@ -9,8 +9,6 @@ use prost::Message;
 use riffdb_proto::{
     MAX_PUBLIC_REQUEST_BYTES, MAX_PUBLIC_RESPONSE_BYTES, PublicMessage, decode_public_message, v1,
 };
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
-use zeroize::{Zeroize, Zeroizing};
 
 /// Exact eight-byte preface and frame magic for protocol version 1.
 pub const FRAME_MAGIC_V1: [u8; 8] = *b"RIFFDBF1";
@@ -49,17 +47,11 @@ impl FrameKind {
 }
 
 /// One fully bounded, structurally checked transport frame.
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Frame {
     kind: FrameKind,
     correlation_id: u64,
     payload: Vec<u8>,
-}
-
-impl Drop for Frame {
-    fn drop(&mut self) {
-        self.payload.zeroize();
-    }
 }
 
 impl Frame {
@@ -139,10 +131,32 @@ impl Frame {
         if input.len() < FRAME_HEADER_BYTES {
             return Err(FrameError::Truncated);
         }
-        let header: &[u8; FRAME_HEADER_BYTES] = input[..FRAME_HEADER_BYTES]
-            .try_into()
-            .map_err(|_| FrameError::Truncated)?;
-        let (kind, correlation_id, payload_len) = decode_header(header)?;
+        if input[..8] != FRAME_MAGIC_V1 {
+            return Err(FrameError::InvalidMagic);
+        }
+        if input[8] != FRAME_PROTOCOL_V1 {
+            return Err(FrameError::UnsupportedVersion);
+        }
+        let kind = FrameKind::from_byte(input[9])?;
+        if input[10..12] != [0, 0] {
+            return Err(FrameError::NonzeroFlags);
+        }
+        let correlation_id = u64::from_be_bytes(
+            input[12..20]
+                .try_into()
+                .map_err(|_| FrameError::Truncated)?,
+        );
+        if correlation_id == 0 {
+            return Err(FrameError::ZeroCorrelation);
+        }
+        let payload_len = u32::from_be_bytes(
+            input[20..24]
+                .try_into()
+                .map_err(|_| FrameError::Truncated)?,
+        ) as usize;
+        if payload_len > kind.maximum_payload_bytes() {
+            return Err(FrameError::PayloadTooLarge);
+        }
         let expected = FRAME_HEADER_BYTES
             .checked_add(payload_len)
             .ok_or(FrameError::PayloadTooLarge)?;
@@ -152,18 +166,10 @@ impl Frame {
         if input.len() != expected {
             return Err(FrameError::TrailingBytes);
         }
-        Self::from_payload(kind, correlation_id, input[FRAME_HEADER_BYTES..].to_vec())
-    }
-
-    fn from_payload(
-        kind: FrameKind,
-        correlation_id: u64,
-        payload: Vec<u8>,
-    ) -> Result<Self, FrameError> {
         let frame = Self {
             kind,
             correlation_id,
-            payload,
+            payload: input[FRAME_HEADER_BYTES..].to_vec(),
         };
         frame.validate_payload()?;
         Ok(frame)
@@ -237,85 +243,3 @@ impl fmt::Display for FrameError {
 }
 
 impl Error for FrameError {}
-
-/// Closed I/O failure at the framed byte boundary.
-#[derive(Debug)]
-pub enum FrameIoError {
-    /// The byte stream failed or ended before a complete frame arrived.
-    Transport,
-    /// A complete byte sequence was not one canonical bounded frame.
-    InvalidFrame(FrameError),
-}
-
-impl fmt::Display for FrameIoError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("bounded application frame I/O failed")
-    }
-}
-
-impl Error for FrameIoError {}
-
-/// Reads exactly one bounded frame without allocating before its directional
-/// payload ceiling has been checked.
-pub async fn read_frame<R>(reader: &mut R) -> Result<Frame, FrameIoError>
-where
-    R: AsyncRead + Unpin,
-{
-    let mut header = [0_u8; FRAME_HEADER_BYTES];
-    reader
-        .read_exact(&mut header)
-        .await
-        .map_err(|_| FrameIoError::Transport)?;
-    let (kind, correlation_id, payload_len) =
-        decode_header(&header).map_err(FrameIoError::InvalidFrame)?;
-    let mut payload = vec![0_u8; payload_len];
-    reader
-        .read_exact(&mut payload)
-        .await
-        .map_err(|_| FrameIoError::Transport)?;
-    Frame::from_payload(kind, correlation_id, payload).map_err(FrameIoError::InvalidFrame)
-}
-
-/// Writes one already validated frame and flushes it to the protected stream.
-pub async fn write_frame<W>(writer: &mut W, frame: &Frame) -> Result<(), FrameIoError>
-where
-    W: AsyncWrite + Unpin,
-{
-    let mut encoded = Zeroizing::new(Vec::with_capacity(frame.encoded_len()));
-    frame.encode(&mut encoded);
-    writer
-        .write_all(&encoded)
-        .await
-        .map_err(|_| FrameIoError::Transport)?;
-    writer.flush().await.map_err(|_| FrameIoError::Transport)
-}
-
-fn decode_header(input: &[u8; FRAME_HEADER_BYTES]) -> Result<(FrameKind, u64, usize), FrameError> {
-    if input[..8] != FRAME_MAGIC_V1 {
-        return Err(FrameError::InvalidMagic);
-    }
-    if input[8] != FRAME_PROTOCOL_V1 {
-        return Err(FrameError::UnsupportedVersion);
-    }
-    let kind = FrameKind::from_byte(input[9])?;
-    if input[10..12] != [0, 0] {
-        return Err(FrameError::NonzeroFlags);
-    }
-    let correlation_id = u64::from_be_bytes(
-        input[12..20]
-            .try_into()
-            .map_err(|_| FrameError::Truncated)?,
-    );
-    if correlation_id == 0 {
-        return Err(FrameError::ZeroCorrelation);
-    }
-    let payload_len = u32::from_be_bytes(
-        input[20..24]
-            .try_into()
-            .map_err(|_| FrameError::Truncated)?,
-    ) as usize;
-    if payload_len > kind.maximum_payload_bytes() {
-        return Err(FrameError::PayloadTooLarge);
-    }
-    Ok((kind, correlation_id, payload_len))
-}

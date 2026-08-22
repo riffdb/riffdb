@@ -2,11 +2,9 @@
 
 use prost::Message;
 use riffdb_api_frame::{
-    FRAME_HEADER_BYTES, FRAME_MAGIC_V1, FRAME_PROTOCOL_V1, Frame, FrameError, FrameIoError,
-    FrameKind, read_frame, write_frame,
+    FRAME_HEADER_BYTES, FRAME_MAGIC_V1, FRAME_PROTOCOL_V1, Frame, FrameError, FrameKind,
 };
 use riffdb_proto::v1;
-use tokio::io::AsyncWriteExt;
 
 fn cancel_request() -> v1::ApplicationSessionRequest {
     v1::ApplicationSessionRequest {
@@ -144,53 +142,4 @@ fn invalid_public_payload_is_rejected_before_use() {
         Frame::decode_exact(&encoded),
         Err(FrameError::InvalidPayload)
     );
-}
-
-#[tokio::test]
-async fn fragmented_and_coalesced_frames_are_read_exactly_once() {
-    let first = Frame::request(&cancel_request()).expect("first frame");
-    let mut second_request = cancel_request();
-    second_request.correlation_id = 8;
-    let second = Frame::request(&second_request).expect("second frame");
-    let mut bytes = Vec::new();
-    first.encode(&mut bytes);
-    second.encode(&mut bytes);
-
-    let (mut writer, mut reader) = tokio::io::duplex(bytes.len() + 1);
-    let split = FRAME_HEADER_BYTES - 3;
-    writer
-        .write_all(&bytes[..split])
-        .await
-        .expect("fragment prefix");
-    writer
-        .write_all(&bytes[split..])
-        .await
-        .expect("coalesced suffix");
-
-    assert_eq!(read_frame(&mut reader).await.expect("first"), first);
-    assert_eq!(read_frame(&mut reader).await.expect("second"), second);
-}
-
-#[tokio::test]
-async fn oversized_declared_payload_fails_before_body_read() {
-    let mut header = [0_u8; FRAME_HEADER_BYTES];
-    header[..8].copy_from_slice(&FRAME_MAGIC_V1);
-    header[8] = FRAME_PROTOCOL_V1;
-    header[9] = FrameKind::Request as u8;
-    header[12..20].copy_from_slice(&1_u64.to_be_bytes());
-    header[20..24].copy_from_slice(&u32::MAX.to_be_bytes());
-    let (mut writer, mut reader) = tokio::io::duplex(FRAME_HEADER_BYTES);
-    writer.write_all(&header).await.expect("header");
-    assert!(matches!(
-        read_frame(&mut reader).await,
-        Err(FrameIoError::InvalidFrame(FrameError::PayloadTooLarge))
-    ));
-}
-
-#[tokio::test]
-async fn async_writer_emits_the_canonical_frame() {
-    let frame = Frame::response(&cancellation_response()).expect("response");
-    let (mut writer, mut reader) = tokio::io::duplex(frame.encoded_len());
-    write_frame(&mut writer, &frame).await.expect("write");
-    assert_eq!(read_frame(&mut reader).await.expect("read"), frame);
 }
