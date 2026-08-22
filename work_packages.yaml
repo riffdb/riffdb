@@ -13300,6 +13300,16 @@ work_packages:
     scale: Connections, pools, frames, bytes, operations, buffers, waits, setup, idle, lifetime,
       cancellation, shutdown, telemetry, and evidence are hard-bounded independently of database
       size and duration; no completed result, authorization decision, request, or value is retained.
+  closure:
+    status: complete_without_production_activation
+    evidence: docs/performance/wp-663-direct-exclusive-closure.md
+    decision: Direct ownership passed every loopback mechanics threshold in all three N1 and E2
+      generations and reduced verified-TLS steady-state complete point-read mean by 48.5 to 52.4
+      percent, but verified-TLS connection setup plus first-operation reduction was only 12.17
+      percent on N1 and 22.23 percent on E2 against the required 25 percent. ADR-0138's
+      reject-first rule therefore stopped the package after the first TLS generation; every
+      listener, protocol, ALPN, client, and benchmark-selection implementation was removed, unary
+      gRPC remains the default, PERF-018 is unchanged, and WP-623 remains open.
   human_review_triggers: *id001
 - id: WP-632
   name: Frozen-client transport attribution and asynchronous shadow diagnostic
