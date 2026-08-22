@@ -155,7 +155,7 @@ direction, merged draft, or implementation choice.
 | [0134](0134-compiler-declared-exact-predicate-and-order-families.md) | Compiler-Declared Exact Predicate and Independent Order Families | Accepted |
 | [0135](0135-packed-compiled-result-carriage.md) | Packed Compiler-Bound Named-Result Carriage | Accepted |
 | [0136](0136-authoritative-vector-evidence-and-projected-nearest.md) | Authoritative Vector Evidence and Production Projected Nearest | Accepted |
-| [0137](0137-bounded-framed-application-transport.md) | Bounded Framed Application Transport | Proposed |
+| [0137](0137-bounded-framed-application-transport.md) | Bounded Framed Application Transport | Accepted |
 
 The human architecture review on 2026-07-12 approved the direction represented
 by ADR-0001 through ADR-0012. The human maintainer accepted ADR-0001 through
