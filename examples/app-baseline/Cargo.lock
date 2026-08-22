@@ -1164,6 +1164,7 @@ dependencies = [
  "riffdb-auth",
  "riffdb-bench-root",
  "riffdb-client-rust",
+ "riffdb-config",
  "riffdb-contract-compiler",
  "riffdb-contract-ir",
  "riffdb-proto",
@@ -1171,7 +1172,9 @@ dependencies = [
  "riffdb-storage-redb",
  "riffdb-ticketdesk",
  "riffdb-types",
+ "rustls-pki-types",
  "tokio",
+ "tokio-rustls",
  "tonic",
 ]
 
