@@ -1,4 +1,4 @@
-import { DriverApplicationTransport, type DriverApplicationError, type DriverCompactQueryResult, type DriverOperation } from "./driver.js";
+import { DriverApplicationTransport, type DriverApplicationError, type DriverCompactQueryResult, type DriverPackedQueryResult, type DriverOperation } from "./driver.js";
 export type ApplicationValueSchema = {
     readonly kind: "bool" | "i64" | "u64" | "string" | "uuid" | "bytes" | "date" | "timestamp" | "cursor" | "limit";
 } | {
@@ -67,6 +67,7 @@ interface NamedQueryRequest<P, R> {
     readonly parameterSchema: ApplicationValueSchema;
     readonly resultSchemas: Readonly<Record<string, ApplicationValueSchema>>;
     readonly compactDecoder?: (value: DriverCompactQueryResult) => R;
+    readonly packedDecoder?: (value: DriverPackedQueryResult) => R;
     readonly decodeError: (value: unknown) => Error;
     readonly resultType?: R;
 }
@@ -311,4 +312,4 @@ export declare class DriverGeneratedApplicationTransport {
     private mutateDriverLease;
 }
 export { DRIVER_ERROR_REGISTRY_HASH, DRIVER_PROTOCOL_VERSION, DRIVER_VALUE_REGISTRY_HASH, DriverApplicationError, DriverApplicationTransport, } from "./driver.js";
-export type { DriverApplicationIdentity, DriverApplicationTransportOptions, DriverBatchItem, DriverBatchResult, DriverBatchSuccess, DriverDecimal, DriverErrorDetails, DriverInvokeOptions, DriverMoney, DriverOperation, DriverResult, DriverTimestamp, DriverValue, } from "./driver.js";
+export type { DriverApplicationIdentity, DriverApplicationTransportOptions, DriverBatchItem, DriverBatchResult, DriverBatchSuccess, DriverDecimal, DriverErrorDetails, DriverInvokeOptions, DriverMoney, DriverOperation, DriverPackedColumn, DriverPackedQueryResult, DriverResult, DriverTimestamp, DriverValue, } from "./driver.js";

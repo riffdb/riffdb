@@ -8,6 +8,7 @@ import {
   DriverApplicationTransport,
   type DriverApplicationError,
   type DriverCompactQueryResult,
+  type DriverPackedQueryResult,
   type DriverOperation,
   type DriverValue,
 } from "./driver.js";
@@ -95,6 +96,7 @@ interface NamedQueryRequest<P, R> {
   readonly parameterSchema: ApplicationValueSchema;
   readonly resultSchemas: Readonly<Record<string, ApplicationValueSchema>>;
   readonly compactDecoder?: (value: DriverCompactQueryResult) => R;
+  readonly packedDecoder?: (value: DriverPackedQueryResult) => R;
   readonly decodeError: (value: unknown) => Error;
   readonly resultType?: R;
 }
@@ -718,11 +720,15 @@ export class DriverGeneratedApplicationTransport {
         ...(options.cursor === undefined ? {} : { cursor: options.cursor }),
         ...(options.readAfterCommit === undefined ? {} : { readAfterCommit: options.readAfterCommit }),
         ...(request.compactDecoder === undefined ? {} : { acceptCompactResult: true }),
+        ...(request.packedDecoder === undefined ? {} : { acceptPackedResult: true }),
       },
     );
     if (result.applicationHead === undefined) throw new Error("RiffDB driver omitted the query frontier");
     let value: R;
-    if (result.compact !== undefined) {
+    if (result.packed !== undefined) {
+      if (request.packedDecoder === undefined || result.value !== undefined || result.compact !== undefined) throw new Error("RiffDB driver returned an unexpected packed result");
+      value = request.packedDecoder(result.packed);
+    } else if (result.compact !== undefined) {
       if (request.compactDecoder === undefined || result.value !== undefined) throw new Error("RiffDB driver returned an unexpected compact result");
       value = request.compactDecoder(result.compact);
     } else {
@@ -2334,6 +2340,8 @@ export type {
   DriverInvokeOptions,
   DriverMoney,
   DriverOperation,
+  DriverPackedColumn,
+  DriverPackedQueryResult,
   DriverResult,
   DriverTimestamp,
   DriverValue,

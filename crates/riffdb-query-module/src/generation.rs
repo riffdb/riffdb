@@ -2092,6 +2092,141 @@ fn emit_rust_compact_query_decoder(
     .expect("string");
 }
 
+#[allow(dead_code)]
+fn emit_rust_packed_query_decoder(
+    output: &mut String,
+    query_name: &str,
+    shape: &RustCompactResultShape,
+    contract: &ContractBundle,
+) {
+    let variant = pascal(&shape.outcome);
+    let nested_name = format!("{query_name}{}{}", variant, pascal(&shape.result_name));
+    let field_names = shape
+        .fields
+        .iter()
+        .map(|field| format!("{:?}.to_owned()", field.name))
+        .collect::<Vec<_>>()
+        .join(", ");
+    writeln!(
+        output,
+        "\n    fn decode_packed_result(outcome: String, response: app_v1::PackedResultField) -> Result<Self::Output, ApplicationClientError> {{\n\
+         \x20       if outcome != {outcome:?}\n\
+         \x20           || response.name != {result_name:?}\n\
+         \x20           || response.cardinality != app_v1::ResultCardinality::Many as i32\n\
+         \x20           || response.entity != {entity:?}\n\
+         \x20           || response.fields != vec![{field_names}]\n\
+         \x20           || response.row_count as usize > {maximum_rows}usize\n\
+         \x20           || response.columns.len() != {width}usize\n\
+         \x20       {{ return Err(ApplicationClientError::InvalidResponse); }}\n\
+         \x20       let row_count = response.row_count as usize;\n\
+         \x20       for column in &response.columns {{\n\
+         \x20           if column.offsets.len() != row_count.saturating_add(1)\n\
+         \x20               || column.offsets.first().copied() != Some(0)\n\
+         \x20               || column.offsets.last().copied().map(|value| value as usize) != Some(column.data.len())\n\
+         \x20               || column.offsets.windows(2).any(|pair| pair[0] > pair[1] || pair[1] as usize > column.data.len())\n\
+         \x20           {{ return Err(ApplicationClientError::InvalidResponse); }}\n\
+         \x20       }}\n\
+         \x20       let mut values = Vec::with_capacity(row_count);\n\
+         \x20       for row_index in 0..row_count {{",
+        outcome = shape.outcome,
+        result_name = shape.result_name,
+        entity = shape.entity,
+        maximum_rows = shape.maximum_rows,
+        width = shape.fields.len(),
+    )
+    .expect("string");
+    for (index, _) in shape.fields.iter().enumerate() {
+        writeln!(
+            output,
+            "            let column = &response.columns[{index}];\n\
+             \x20           let start = column.offsets[row_index] as usize;\n\
+             \x20           let end = column.offsets[row_index + 1] as usize;\n\
+             \x20           let value_{index} = decode_canonical_value(&column.data[start..end]).map_err(|_| ApplicationClientError::InvalidResponse)?;"
+        )
+        .expect("string");
+    }
+    writeln!(output, "            values.push({nested_name} {{").expect("string");
+    for (index, field) in shape.fields.iter().enumerate() {
+        let expression =
+            rust_decode_packed_expr(&field.value_type, &format!("value_{index}"), contract);
+        writeln!(
+            output,
+            "                {}: {expression},",
+            rust_identifier(&field.name)
+        )
+        .expect("string");
+    }
+    writeln!(
+        output,
+        "            }});\n        }}\n        Ok({query_name}Result::{variant}(Box::new({query_name}{variant} {{ {result}: values }})))\n    }}",
+        result = rust_identifier(&shape.result_name),
+    )
+    .expect("string");
+}
+
+#[allow(dead_code)]
+fn rust_decode_packed_expr(
+    value_type: &ValueType,
+    access: &str,
+    contract: &ContractBundle,
+) -> String {
+    if let Some(inner) = value_type.optional_inner() {
+        return format!(
+            "match {access} {{ CanonicalValue::Null => None, value => Some({}) }}",
+            rust_decode_packed_expr(inner, "value", contract)
+        );
+    }
+    let invalid = "return Err(ApplicationClientError::InvalidResponse)";
+    match value_type.tag() {
+        ValueTypeTag::Bool => format!(
+            "if let CanonicalValue::Bool(value) = {access} {{ value }} else {{ {invalid}; }}"
+        ),
+        ValueTypeTag::I64 => format!(
+            "if let CanonicalValue::I64(value) = {access} {{ value }} else {{ {invalid}; }}"
+        ),
+        ValueTypeTag::U64 => format!(
+            "if let CanonicalValue::U64(value) = {access} {{ value }} else {{ {invalid}; }}"
+        ),
+        ValueTypeTag::String => format!(
+            "if let CanonicalValue::String(value) = {access} {{ if value.len() > {}usize {{ {invalid}; }} value.into_string() }} else {{ {invalid}; }}",
+            value_type.byte_bound().expect("string bound")
+        ),
+        ValueTypeTag::Timestamp => format!(
+            "if let CanonicalValue::Timestamp(value) = {access} {{ TimestampValue {{ seconds: value.seconds(), nanos: value.nanos() }} }} else {{ {invalid}; }}"
+        ),
+        ValueTypeTag::Date => format!(
+            "if let CanonicalValue::Date(value) = {access} {{ value.days_since_unix_epoch() }} else {{ {invalid}; }}"
+        ),
+        ValueTypeTag::Uuid => format!(
+            "if let CanonicalValue::Uuid(value) = {access} {{ ApplicationUuid::from(value).into_string() }} else {{ {invalid}; }}"
+        ),
+        ValueTypeTag::Enum => {
+            let enumeration = contract
+                .schema()
+                .enumeration(value_type.enum_type_id().expect("enum identity"))
+                .expect("validated enum identity");
+            let variants = enumeration
+                .variants()
+                .iter()
+                .map(|variant| {
+                    format!(
+                        "({}, {}) => {:?}.to_owned()",
+                        enumeration.id().get(),
+                        variant.id().get(),
+                        variant.name()
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!(
+                "if let CanonicalValue::Enum {{ type_id, variant_id }} = {access} {{ match (type_id.get(), variant_id.get()) {{ {variants}, _ => {{ {invalid}; }} }} }} else {{ {invalid}; }}"
+            )
+        }
+        ValueTypeTag::Optional => unreachable!("handled above"),
+        _ => invalid.to_owned(),
+    }
+}
+
 fn rust_decode_compact_wire_expr(
     value_type: &ValueType,
     access: &str,
@@ -2225,6 +2360,86 @@ fn emit_typescript_compact_query_decoder(
         .expect("string");
     }
     writeln!(output, "    }};\n  }}) }};\n}}\n").expect("string");
+}
+
+#[allow(dead_code)]
+fn emit_typescript_packed_query_decoder(
+    output: &mut String,
+    query_name: &str,
+    shape: &RustCompactResultShape,
+    contract: &ContractBundle,
+) {
+    let function = format!("decode{}Packed", pascal(query_name));
+    let fields = shape
+        .fields
+        .iter()
+        .map(|field| format!("{:?}", field.name))
+        .collect::<Vec<_>>()
+        .join(", ");
+    writeln!(output, "function {function}(value: PackedNamedQueryResult): {query_name}Result {{\n  if (value.outcome !== {outcome:?} || value.resultName !== {result_name:?} || value.entity !== {entity:?}\n      || value.fields.length !== {width} || value.fields.some((field, index) => field !== [{fields}][index])\n      || value.columns.length !== {width} || value.rowCount > {maximum_rows}) throw new Error(\"invalid RiffDB packed result\");\n  for (const column of value.columns) {{ if (column.offsets.length !== value.rowCount + 1 || column.offsets[0] !== 0 || column.offsets.at(-1) !== column.data.length || column.offsets.some((offset, index) => !Number.isInteger(offset) || offset < 0 || offset > column.data.length || (index > 0 && column.offsets[index - 1]! > offset))) throw new Error(\"invalid RiffDB packed result\"); }}\n  const rows = [];\n  for (let row = 0; row < value.rowCount; row += 1) {{ rows.push({{", outcome=shape.outcome, result_name=shape.result_name, entity=shape.entity, width=shape.fields.len(), maximum_rows=shape.maximum_rows).expect("string");
+    for (index, field) in shape.fields.iter().enumerate() {
+        let expression = ts_decode_packed_expr(
+            &field.value_type,
+            &format!("packedCell(value, {index}, row)"),
+            contract,
+        );
+        writeln!(output, "    {}: {expression},", ts_identifier(&field.name)).expect("string");
+    }
+    writeln!(
+        output,
+        "  }}); }}\n  return {{ outcome: {:?}, {}: rows }};\n}}\n",
+        shape.outcome,
+        ts_identifier(&shape.result_name)
+    )
+    .expect("string");
+}
+
+#[allow(dead_code)]
+fn ts_decode_packed_expr(
+    value_type: &ValueType,
+    access: &str,
+    contract: &ContractBundle,
+) -> String {
+    if let Some(inner) = value_type.optional_inner() {
+        return format!(
+            "(() => {{ const raw = {access}; return raw.length === 2 && raw[0] === 1 && raw[1] === 0 ? null : {}; }})()",
+            ts_decode_packed_expr(inner, "raw", contract)
+        );
+    }
+    match value_type.tag() {
+        ValueTypeTag::Bool => format!(
+            "(() => {{ const raw = {access}; packedTag(raw, 1, 3); if (raw[2] !== 0 && raw[2] !== 1) throw new Error(\"invalid RiffDB packed bool\"); return raw[2] === 1; }})()"
+        ),
+        ValueTypeTag::I64 => format!("packedI64({access}, 2)"),
+        ValueTypeTag::U64 => format!("packedI64({access}, 3)"),
+        ValueTypeTag::String => format!(
+            "packedString({access}, {})",
+            value_type.byte_bound().expect("string bound")
+        ),
+        ValueTypeTag::Timestamp => format!(
+            "(() => {{ const view = packedTag({access}, 8, 14); const nanos = view.getUint32(10); if (nanos >= 1_000_000_000) throw new Error(\"invalid RiffDB packed timestamp\"); return {{ seconds: view.getBigInt64(2), nanos }}; }})()"
+        ),
+        ValueTypeTag::Date => format!("packedTag({access}, 9, 6).getInt32(2)"),
+        ValueTypeTag::Uuid => format!("packedUuid({access})"),
+        ValueTypeTag::Enum => {
+            let enumeration = contract
+                .schema()
+                .enumeration(value_type.enum_type_id().expect("enum identity"))
+                .expect("validated enum identity");
+            let cases = enumeration
+                .variants()
+                .iter()
+                .map(|variant| format!("case {}: return {:?};", variant.id().get(), variant.name()))
+                .collect::<Vec<_>>()
+                .join(" ");
+            format!(
+                "(() => {{ const view = packedTag({access}, 11, 10); if (view.getUint32(2) !== {}) throw new Error(\"invalid RiffDB packed enum\"); switch (view.getUint32(6)) {{ {cases} default: throw new Error(\"invalid RiffDB packed enum\"); }} }})()",
+                enumeration.id().get()
+            )
+        }
+        ValueTypeTag::Optional => unreachable!("handled above"),
+        _ => "(() => { throw new Error(\"unsupported RiffDB packed value\"); })()".to_owned(),
+    }
 }
 
 fn ts_decode_compact_wire_expr(
@@ -3306,10 +3521,9 @@ function compactTimestamp(value: CompactApplicationValue): { readonly seconds: b
   if (seconds < -9223372036854775808n || seconds > 9223372036854775807n) throw new Error("invalid RiffDB compact value");
   return { seconds, nanos: record.nanos as number };
 }
-
 "#,
     );
-
+    output.push('\n');
     for query in module.queries() {
         let name = query.name();
         let schemas = query.plan().schemas();
@@ -5013,5 +5227,42 @@ mod tests {
             ts_contract_value_schema(price.value_type(), &contract),
             json!({"kind": "money", "precision": 38, "scale": 2, "currency": "USD"})
         );
+    }
+
+    #[test]
+    fn failed_packed_activation_removes_generated_selection_and_decoder_bulk() {
+        let contract = compile_contract_source(include_str!(
+            "../../../examples/app-baseline/contracts/ticketdesk.riff"
+        ))
+        .expect("TicketDesk contract");
+        let query = NamedQuerySource::new(
+            "BoardPage450",
+            include_str!("../../../queries/ticketdesk/board_page_450.riffq"),
+        )
+        .expect("query source");
+        let module = QueryModule::compile(
+            QueryModuleCandidate::new(
+                QueryModuleName::new("TicketDeskBoard").expect("module name"),
+                QueryModuleVersion::new(1).expect("module version"),
+                vec![query],
+            )
+            .expect("candidate"),
+            &contract,
+        )
+        .expect("module");
+
+        let rust = generate_rust_client(&module, &contract);
+        let go = crate::generate_go_client(&module, &contract);
+        let typescript = generate_typescript_client(&module, &contract);
+        let python = generate_python_client(&module, &contract).expect("Python");
+
+        assert!(!rust.contains("fn decode_packed_result("));
+        assert!(!rust.contains(".accept_packed_result_v1()"));
+        assert!(!go.contains("func decodeBoardPage450Packed("));
+        assert!(!go.contains("AcceptPackedResult = true"));
+        assert!(!typescript.contains("function decodeBoardPage450Packed("));
+        assert!(!typescript.contains("packedDecoder: decodeBoardPage450Packed"));
+        assert!(!python.contains("def _decode_board_page450_packed("));
+        assert!(!python.contains("accept_packed_result="));
     }
 }

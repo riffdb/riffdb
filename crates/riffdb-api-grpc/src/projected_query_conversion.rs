@@ -304,7 +304,7 @@ pub fn execute_projected_query_result_to_proto_with_encoding(
 /// One contiguous `data` buffer per column: encode each cell once via
 /// [`encode_canonical_value_into`] after a [`canonical_value_encoded_len`]
 /// reserve. Offsets are `row_count + 1` u32 start/end markers.
-fn pack_column<'a, I>(cells: I) -> Result<app_v1::PackedColumn, Status>
+pub(crate) fn pack_column<'a, I>(cells: I) -> Result<app_v1::PackedColumn, Status>
 where
     I: Iterator<Item = Result<&'a CanonicalValue, Status>>,
 {

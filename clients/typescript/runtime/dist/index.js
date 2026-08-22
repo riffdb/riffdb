@@ -384,11 +384,17 @@ export class DriverGeneratedApplicationTransport {
             ...(options.cursor === undefined ? {} : { cursor: options.cursor }),
             ...(options.readAfterCommit === undefined ? {} : { readAfterCommit: options.readAfterCommit }),
             ...(request.compactDecoder === undefined ? {} : { acceptCompactResult: true }),
+            ...(request.packedDecoder === undefined ? {} : { acceptPackedResult: true }),
         });
         if (result.applicationHead === undefined)
             throw new Error("RiffDB driver omitted the query frontier");
         let value;
-        if (result.compact !== undefined) {
+        if (result.packed !== undefined) {
+            if (request.packedDecoder === undefined || result.value !== undefined || result.compact !== undefined)
+                throw new Error("RiffDB driver returned an unexpected packed result");
+            value = request.packedDecoder(result.packed);
+        }
+        else if (result.compact !== undefined) {
             if (request.compactDecoder === undefined || result.value !== undefined)
                 throw new Error("RiffDB driver returned an unexpected compact result");
             value = request.compactDecoder(result.compact);

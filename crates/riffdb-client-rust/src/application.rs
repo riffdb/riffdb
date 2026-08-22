@@ -335,6 +335,17 @@ impl StableApplicationClient {
                         .ok_or(ApplicationClientError::InvalidResponse)?,
                 )?
             }
+            Ok(app_v1::NamedResultEncoding::PackedV1) => {
+                if !response.fields.is_empty() || response.compact_result.is_some() {
+                    return Err(ApplicationClientError::InvalidResponse);
+                }
+                Q::decode_packed_result(
+                    response.outcome,
+                    response
+                        .packed_result
+                        .ok_or(ApplicationClientError::InvalidResponse)?,
+                )?
+            }
             Ok(app_v1::NamedResultEncoding::LegacyRecords)
             | Ok(app_v1::NamedResultEncoding::Unspecified) => {
                 Q::decode_result(raise_query_result(response)?)?
@@ -1402,6 +1413,7 @@ pub struct NamedQuery {
     parameters: BTreeMap<String, ApplicationValue>,
     cursor: Option<String>,
     minimum_application_head: Option<u64>,
+    accept_packed_result_v1: bool,
 }
 
 impl NamedQuery {
@@ -1432,6 +1444,7 @@ impl NamedQuery {
             parameters,
             cursor,
             minimum_application_head: None,
+            accept_packed_result_v1: false,
         })
     }
 
@@ -1439,6 +1452,14 @@ impl NamedQuery {
     #[must_use]
     pub const fn expect_plan_hash(mut self, plan_hash: [u8; 32]) -> Self {
         self.expected_plan_hash = Some(plan_hash);
+        self
+    }
+
+    /// Advertises the packed result arm for a compiler-covered generated query.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn accept_packed_result_v1(mut self) -> Self {
+        self.accept_packed_result_v1 = true;
         self
     }
 
@@ -1762,10 +1783,18 @@ impl RiffDbClient {
                     parameters,
                     cursor: query.cursor,
                     minimum_application_head: query.minimum_application_head,
-                    accepted_result_encodings: vec![
-                        app_v1::NamedResultEncoding::LegacyRecords as i32,
-                        app_v1::NamedResultEncoding::CompactV1 as i32,
-                    ],
+                    accepted_result_encodings: if query.accept_packed_result_v1 {
+                        vec![
+                            app_v1::NamedResultEncoding::LegacyRecords as i32,
+                            app_v1::NamedResultEncoding::CompactV1 as i32,
+                            app_v1::NamedResultEncoding::PackedV1 as i32,
+                        ]
+                    } else {
+                        vec![
+                            app_v1::NamedResultEncoding::LegacyRecords as i32,
+                            app_v1::NamedResultEncoding::CompactV1 as i32,
+                        ]
+                    },
                     request_id,
                 },
                 metadata,
@@ -2069,13 +2098,13 @@ pub fn raise_query_result(
             .map_err(|_| ApplicationClientError::InvalidResponse)?;
     let fields = match selected_encoding {
         app_v1::NamedResultEncoding::Unspecified | app_v1::NamedResultEncoding::LegacyRecords => {
-            if response.compact_result.is_some() {
+            if response.compact_result.is_some() || response.packed_result.is_some() {
                 return Err(ApplicationClientError::InvalidResponse);
             }
             raise_legacy_query_fields(response.fields)?
         }
         app_v1::NamedResultEncoding::CompactV1 => {
-            if !response.fields.is_empty() {
+            if !response.fields.is_empty() || response.packed_result.is_some() {
                 return Err(ApplicationClientError::InvalidResponse);
             }
             raise_compact_query_field(
@@ -2083,6 +2112,9 @@ pub fn raise_query_result(
                     .compact_result
                     .ok_or(ApplicationClientError::InvalidResponse)?,
             )?
+        }
+        app_v1::NamedResultEncoding::PackedV1 => {
+            return Err(ApplicationClientError::InvalidResponse);
         }
     };
     Ok(NamedQueryResult {
@@ -2457,6 +2489,7 @@ mod tests {
             next_cursor: None,
             selected_result_encoding: app_v1::NamedResultEncoding::LegacyRecords as i32,
             compact_result: None,
+            packed_result: None,
         };
         let result = raise_query_result(response).expect("result");
         assert_eq!(result.outcome, "Found");

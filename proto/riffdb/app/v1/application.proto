@@ -227,6 +227,7 @@ enum NamedResultEncoding {
   NAMED_RESULT_ENCODING_UNSPECIFIED = 0;
   NAMED_RESULT_ENCODING_LEGACY_RECORDS = 1;
   NAMED_RESULT_ENCODING_COMPACT_V1 = 2;
+  NAMED_RESULT_ENCODING_PACKED_V1 = 3;
 }
 
 message CompactResultRow {
@@ -241,6 +242,18 @@ message CompactResultField {
   repeated CompactResultRow rows = 5;
 }
 
+// Column-major compiler-bound named result. Cells use the same canonical
+// encoding and checked offsets as ProjectedReadyPacked; field order is sealed
+// by the deployed named-query plan.
+message PackedResultField {
+  string name = 1;
+  ResultCardinality cardinality = 2;
+  string entity = 3;
+  repeated string fields = 4;
+  uint32 row_count = 5;
+  repeated PackedColumn columns = 6;
+}
+
 message ExecuteQueryResponse {
   QueryIdentity identity = 1;
   string outcome = 2;
@@ -249,6 +262,7 @@ message ExecuteQueryResponse {
   optional string next_cursor = 5;
   NamedResultEncoding selected_result_encoding = 6;
   optional CompactResultField compact_result = 7;
+  optional PackedResultField packed_result = 8;
 }
 
 message DescribeContractRequest {

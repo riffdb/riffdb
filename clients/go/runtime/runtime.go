@@ -7,6 +7,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -21,10 +22,11 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 )
 
 const (
-	ProtocolVersion   = uint32(2)
+	ProtocolVersion   = uint32(3)
 	ValueRegistryHash = "8e1681ddf5e6a82e7fa646f9737128ad7e36f54f8b5846ac6e33e732125407e5"
 	ErrorRegistryHash = "b94d685ecbc18f2369a2bfa1a53139d06100699c4ee41b31c86d6a7e17039850"
 	maxFrameBytes     = 1_048_576
@@ -399,6 +401,7 @@ type Options struct {
 	ReadAfterCommit     *uint64
 	Cursor              string
 	AcceptCompactResult bool
+	AcceptPackedResult  bool
 }
 
 func (options Options) wire() (wireOptions, error) {
@@ -410,11 +413,11 @@ func (options Options) wire() (wireOptions, error) {
 	if attempts == 0 {
 		attempts = 3
 	}
-	if deadline < time.Millisecond || deadline > 5*time.Minute || attempts < 1 || attempts > 10 || len(options.Cursor) > 16_384 {
+	if deadline < time.Millisecond || deadline > 5*time.Minute || attempts < 1 || attempts > 10 || len(options.Cursor) > 16_384 || options.AcceptPackedResult && !options.AcceptCompactResult {
 		return wireOptions{}, errors.New("invalid RiffDB driver invocation options")
 	}
 	deadlineMillis := deadline.Milliseconds()
-	return wireOptions{DeadlineMillis: uint64(deadlineMillis), MaximumAttempts: attempts, ReadAfterCommit: options.ReadAfterCommit, Cursor: optionalString(options.Cursor), AcceptCompactResult: options.AcceptCompactResult}, nil
+	return wireOptions{DeadlineMillis: uint64(deadlineMillis), MaximumAttempts: attempts, ReadAfterCommit: options.ReadAfterCommit, Cursor: optionalString(options.Cursor), AcceptCompactResult: options.AcceptCompactResult, AcceptPackedResult: options.AcceptPackedResult}, nil
 }
 
 type CompactQueryResult struct {
@@ -425,9 +428,94 @@ type CompactQueryResult struct {
 	Rows       [][]Value
 }
 
+type PackedColumn struct {
+	Data    []byte
+	Offsets []uint32
+}
+
+type PackedQueryResult struct {
+	Outcome    string
+	ResultName string
+	Entity     string
+	Fields     []string
+	RowCount   uint32
+	Columns    []PackedColumn
+}
+
+func packedTag(value []byte, tag byte, size int) error {
+	if len(value) != size || len(value) < 2 || value[0] != 1 || value[1] != tag {
+		return errors.New("invalid RiffDB packed value")
+	}
+	return nil
+}
+
+func PackedIsNull(value []byte) bool { return len(value) == 2 && value[0] == 1 && value[1] == 0 }
+func PackedBool(value []byte) (bool, error) {
+	if err := packedTag(value, 1, 3); err != nil || value[2] > 1 {
+		return false, errors.New("invalid RiffDB packed bool")
+	}
+	return value[2] == 1, nil
+}
+func PackedI64(value []byte) (int64, error) {
+	if err := packedTag(value, 2, 10); err != nil {
+		return 0, err
+	}
+	return int64(binary.BigEndian.Uint64(value[2:])), nil
+}
+func PackedU64(value []byte) (uint64, error) {
+	if err := packedTag(value, 3, 10); err != nil {
+		return 0, err
+	}
+	return binary.BigEndian.Uint64(value[2:]), nil
+}
+func PackedString(value []byte, maximum int) (string, error) {
+	if len(value) < 6 || value[0] != 1 || value[1] != 6 {
+		return "", errors.New("invalid RiffDB packed string")
+	}
+	length := int(binary.BigEndian.Uint32(value[2:6]))
+	if length > maximum || length != len(value)-6 || !utf8.Valid(value[6:]) {
+		return "", errors.New("invalid RiffDB packed string")
+	}
+	return string(value[6:]), nil
+}
+func PackedTimestamp(value []byte) (Instant, error) {
+	if err := packedTag(value, 8, 14); err != nil {
+		return Instant{}, err
+	}
+	nanos := binary.BigEndian.Uint32(value[10:])
+	if nanos >= 1_000_000_000 {
+		return Instant{}, errors.New("invalid RiffDB packed timestamp")
+	}
+	return Instant{Seconds: int64(binary.BigEndian.Uint64(value[2:10])), Nanos: nanos}, nil
+}
+func PackedDate(value []byte) (int32, error) {
+	if err := packedTag(value, 9, 6); err != nil {
+		return 0, err
+	}
+	return int32(binary.BigEndian.Uint32(value[2:])), nil
+}
+func PackedUUID(value []byte) (string, error) {
+	if err := packedTag(value, 10, 18); err != nil {
+		return "", err
+	}
+	b := value[2:]
+	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16]), nil
+}
+func PackedEnum(value []byte) (uint32, uint32, error) {
+	if err := packedTag(value, 11, 10); err != nil {
+		return 0, 0, err
+	}
+	typeID, variantID := binary.BigEndian.Uint32(value[2:6]), binary.BigEndian.Uint32(value[6:10])
+	if typeID == 0 || variantID == 0 {
+		return 0, 0, errors.New("invalid RiffDB packed enum")
+	}
+	return typeID, variantID, nil
+}
+
 type Result struct {
 	Value           Value
 	Compact         *CompactQueryResult
+	Packed          *PackedQueryResult
 	ApplicationHead *uint64
 	Cursor          string
 	Replayed        bool
@@ -690,6 +778,7 @@ type wireOptions struct {
 	ReadAfterCommit     *uint64 `json:"read_after_commit"`
 	Cursor              *string `json:"cursor"`
 	AcceptCompactResult bool    `json:"accept_compact_result"`
+	AcceptPackedResult  bool    `json:"accept_packed_result"`
 }
 type handshakeRequest struct {
 	Type                    string `json:"type"`
@@ -763,6 +852,21 @@ type compactQueryResultResponse struct {
 	ApplicationHead uint64    `json:"application_head"`
 	Cursor          *string   `json:"cursor"`
 }
+type packedQueryResultResponse struct {
+	Type       string   `json:"type"`
+	RequestID  string   `json:"request_id"`
+	Outcome    string   `json:"outcome"`
+	ResultName string   `json:"result_name"`
+	Entity     string   `json:"entity"`
+	Fields     []string `json:"fields"`
+	RowCount   uint32   `json:"row_count"`
+	Columns    []struct {
+		Data    []byte   `json:"data"`
+		Offsets []uint32 `json:"offsets"`
+	} `json:"columns"`
+	ApplicationHead uint64  `json:"application_head"`
+	Cursor          *string `json:"cursor"`
+}
 type batchResponse struct {
 	Type      string `json:"type"`
 	RequestID string `json:"request_id"`
@@ -834,6 +938,35 @@ func decodeResult(body []byte) (Result, error) {
 		}
 		compact := &CompactQueryResult{Outcome: response.Outcome, ResultName: response.ResultName, Entity: response.Entity, Fields: response.Fields, Rows: response.Rows}
 		result := Result{Compact: compact, ApplicationHead: &response.ApplicationHead}
+		if response.Cursor != nil {
+			result.Cursor = *response.Cursor
+		}
+		return result, nil
+	}
+	if header.Type == "packed_query_result" {
+		var response packedQueryResultResponse
+		if json.Unmarshal(body, &response) != nil || !symbolPattern.MatchString(response.Outcome) || !symbolPattern.MatchString(response.ResultName) || !symbolPattern.MatchString(response.Entity) || len(response.Fields) < 1 || len(response.Fields) > maxCollection || response.RowCount > maxCollection || len(response.Columns) != len(response.Fields) || (response.Cursor != nil && len(*response.Cursor) > 16_384) {
+			return Result{}, errors.New("RiffDB driver returned an invalid packed result")
+		}
+		for index, field := range response.Fields {
+			if !symbolPattern.MatchString(field) || (index > 0 && response.Fields[index-1] >= field) {
+				return Result{}, errors.New("RiffDB driver returned an invalid packed result")
+			}
+		}
+		columns := make([]PackedColumn, len(response.Columns))
+		for index, column := range response.Columns {
+			if len(column.Offsets) != int(response.RowCount)+1 || len(column.Offsets) == 0 || column.Offsets[0] != 0 || uint64(column.Offsets[len(column.Offsets)-1]) != uint64(len(column.Data)) {
+				return Result{}, errors.New("RiffDB driver returned an invalid packed result")
+			}
+			for offset := 1; offset < len(column.Offsets); offset++ {
+				if column.Offsets[offset-1] > column.Offsets[offset] || uint64(column.Offsets[offset]) > uint64(len(column.Data)) {
+					return Result{}, errors.New("RiffDB driver returned an invalid packed result")
+				}
+			}
+			columns[index] = PackedColumn{Data: column.Data, Offsets: column.Offsets}
+		}
+		packed := &PackedQueryResult{Outcome: response.Outcome, ResultName: response.ResultName, Entity: response.Entity, Fields: response.Fields, RowCount: response.RowCount, Columns: columns}
+		result := Result{Packed: packed, ApplicationHead: &response.ApplicationHead}
 		if response.Cursor != nil {
 			result.Cursor = *response.Cursor
 		}

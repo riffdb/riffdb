@@ -25,9 +25,9 @@ use crate::catalog::{
     ApplicationCatalog, OperationKind, OperationSpec, ReactiveKind, VectorInspectionKind,
 };
 use crate::protocol::{
-    DRIVER_PROTOCOL_VERSION, DRIVER_PROTOCOL_VERSION_V1, DriverBatchItem, DriverBatchOutcome,
-    DriverDecimal, DriverMoney, DriverRequest, DriverResponse, DriverTimestamp, DriverValue,
-    DriverVector, InvokeOptions,
+    DRIVER_PROTOCOL_VERSION, DRIVER_PROTOCOL_VERSION_V1, DRIVER_PROTOCOL_VERSION_V2,
+    DriverBatchItem, DriverBatchOutcome, DriverDecimal, DriverMoney, DriverPackedColumn,
+    DriverRequest, DriverResponse, DriverTimestamp, DriverValue, DriverVector, InvokeOptions,
 };
 
 /// Exact alpha host build identity.
@@ -212,7 +212,7 @@ impl DriverHost {
         };
         if !matches!(
             *protocol_version,
-            DRIVER_PROTOCOL_VERSION_V1 | DRIVER_PROTOCOL_VERSION
+            DRIVER_PROTOCOL_VERSION_V1 | DRIVER_PROTOCOL_VERSION_V2 | DRIVER_PROTOCOL_VERSION
         ) || application_manifest_hash != &self.inner.catalog.application_manifest_hash()
             || operation_catalog_hash != &self.inner.catalog.catalog_hash()
             || contract_lineage != self.inner.catalog.contract_lineage()
@@ -611,7 +611,7 @@ impl DriverHost {
         let mut client = self.inner.pool.select();
         match spec.kind() {
             OperationKind::Command => {
-                if options.accept_compact_result {
+                if options.accept_compact_result || options.accept_packed_result {
                     return local_error(
                         Some(request_id),
                         Some(spec.public_name().to_owned()),
@@ -658,6 +658,7 @@ impl DriverHost {
             }
             OperationKind::Query => {
                 let accept_compact_result = options.accept_compact_result;
+                let accept_packed_result = options.accept_packed_result;
                 let contract = ApplicationContract::Exact {
                     lineage: self.inner.catalog.contract_lineage().to_owned(),
                     version: self.inner.catalog.contract_version(),
@@ -681,17 +682,62 @@ impl DriverHost {
                     let query = spec
                         .plan_hash()
                         .map_or(query.clone(), |hash| query.expect_plan_hash(hash));
+                    let query = if accept_packed_result {
+                        query.accept_packed_result_v1()
+                    } else {
+                        query
+                    };
                     query.with_options(query_options)
                 });
                 let query = match query {
                     Ok(query) => query,
                     Err(error) => return application_error(request_id, spec, error, false),
                 };
-                if accept_compact_result {
+                if accept_compact_result || accept_packed_result {
                     match client
                         .execute_named_query_wire(query, &self.inner.metadata)
                         .await
                     {
+                        Ok(response)
+                            if response.selected_result_encoding
+                                == app_v1::NamedResultEncoding::PackedV1 as i32
+                                && accept_packed_result =>
+                        {
+                            let packed = match response.packed_result {
+                                Some(packed)
+                                    if response.fields.is_empty()
+                                        && response.compact_result.is_none() =>
+                                {
+                                    packed
+                                }
+                                _ => {
+                                    return application_error(
+                                        request_id,
+                                        spec,
+                                        ApplicationClientError::InvalidResponse,
+                                        false,
+                                    );
+                                }
+                            };
+                            DriverResponse::PackedQueryResult {
+                                request_id,
+                                outcome: response.outcome,
+                                result_name: packed.name,
+                                entity: packed.entity,
+                                fields: packed.fields,
+                                row_count: packed.row_count,
+                                columns: packed
+                                    .columns
+                                    .into_iter()
+                                    .map(|column| DriverPackedColumn {
+                                        data: BASE64.encode(column.data),
+                                        offsets: column.offsets,
+                                    })
+                                    .collect(),
+                                application_head: response.application_head,
+                                cursor: response.next_cursor,
+                            }
+                        }
                         Ok(response)
                             if response.selected_result_encoding
                                 == app_v1::NamedResultEncoding::CompactV1 as i32 =>

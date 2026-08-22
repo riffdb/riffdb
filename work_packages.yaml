@@ -14903,6 +14903,17 @@ work_packages:
     both cloud 1.10x gates and every 30-percent candidate threshold, and no ordinary operation,
     durability, compatibility, resource, or tail gate regresses; otherwise packed selection is
     removed and WP-623 receives only the failed-candidate receipt.
+  closure:
+    status: complete_without_production_activation
+    evidence: docs/performance/wp-659-packed-result-closure.md
+    decision: The additive PACKED_V1 protocol, strict canonical-column validation, and V1/V2/V3
+      driver compatibility are retained, but direct generated decoder prototypes and production
+      selection are removed; generated clients continue to negotiate COMPACT_V1. The paired workstation
+      BoardPage450 candidate improved only 13.9 percent from compact and remained 1.65x same-run
+      safe PostgreSQL, failing both conjunctive ADR-0135 thresholds before cloud or release-matrix
+      execution. Representative generated clients also grew 5.5 to 8.7 percent, failing the
+      no-regression gate. Architecture tests pin packed decoder bulk and production selection absent;
+      this package claims no PERF-018 activation.
   standing_design_tests:
     interface_safety: Applications still invoke only compiler-fixed generated named queries and
       cannot select packing, layout, ordinals, types, provider, index, validation, policy,

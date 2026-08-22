@@ -13,7 +13,7 @@ const UTF8_DECODER = new TextDecoder("utf-8", { fatal: true });
 let nextSession = 0;
 
 /** Exact alpha driver protocol generation. */
-export const DRIVER_PROTOCOL_VERSION = 2 as const;
+export const DRIVER_PROTOCOL_VERSION = 3 as const;
 /** Exact tagged value registry compiled into `riffdb-driverd`. */
 export const DRIVER_VALUE_REGISTRY_HASH = "8e1681ddf5e6a82e7fa646f9737128ad7e36f54f8b5846ac6e33e732125407e5" as const;
 /** Exact structured-error registry compiled into `riffdb-driverd`. */
@@ -114,6 +114,7 @@ export interface DriverInvokeOptions {
   readonly cursor?: string;
   readonly signal?: AbortSignal;
   readonly acceptCompactResult?: boolean;
+  readonly acceptPackedResult?: boolean;
 }
 
 export interface DriverCompactQueryResult {
@@ -124,9 +125,24 @@ export interface DriverCompactQueryResult {
   readonly rows: ReadonlyArray<ReadonlyArray<DriverValue>>;
 }
 
+export interface DriverPackedColumn {
+  readonly data: Uint8Array;
+  readonly offsets: ReadonlyArray<number>;
+}
+
+export interface DriverPackedQueryResult {
+  readonly outcome: string;
+  readonly resultName: string;
+  readonly entity: string;
+  readonly fields: ReadonlyArray<string>;
+  readonly rowCount: number;
+  readonly columns: ReadonlyArray<DriverPackedColumn>;
+}
+
 export interface DriverResult {
   readonly value?: DriverValue;
   readonly compact?: DriverCompactQueryResult;
+  readonly packed?: DriverPackedQueryResult;
   readonly applicationHead?: bigint;
   readonly cursor?: string;
   readonly replayed: boolean;
@@ -407,7 +423,8 @@ function lowerOptions(options: DriverInvokeOptions): Record<string, unknown> {
   if (!Number.isInteger(deadline) || deadline < 1 || deadline > 300_000
       || !Number.isInteger(attempts) || attempts < 1 || attempts > 10
       || (options.readAfterCommit !== undefined && options.readAfterCommit < 1n)
-      || (options.cursor !== undefined && options.cursor.length > 16_384)) {
+      || (options.cursor !== undefined && options.cursor.length > 16_384)
+      || (options.acceptPackedResult === true && options.acceptCompactResult !== true)) {
     throw new Error("invalid RiffDB driver invocation options");
   }
   return {
@@ -416,6 +433,7 @@ function lowerOptions(options: DriverInvokeOptions): Record<string, unknown> {
     read_after_commit: options.readAfterCommit ?? null,
     cursor: options.cursor ?? null,
     accept_compact_result: options.acceptCompactResult ?? false,
+    accept_packed_result: options.acceptPackedResult ?? false,
   };
 }
 
@@ -574,6 +592,38 @@ class ExactJsonParser {
 }
 
 function decodeResult(response: DriverResponse): DriverResult {
+  if (response.type === "packed_query_result") {
+    const outcome = boundedPattern(response.outcome, SYMBOL);
+    const resultName = boundedPattern(response.result_name, SYMBOL);
+    const entity = boundedPattern(response.entity, SYMBOL);
+    if (!Array.isArray(response.fields) || response.fields.length < 1
+        || response.fields.length > MAX_COLLECTION_ITEMS
+        || !Number.isInteger(response.row_count) || (response.row_count as number) < 0
+        || (response.row_count as number) > MAX_COLLECTION_ITEMS
+        || !Array.isArray(response.columns) || response.columns.length !== response.fields.length) {
+      throw new Error("RiffDB driver returned an invalid packed result");
+    }
+    const fields = response.fields.map((field) => boundedPattern(field, SYMBOL));
+    if (new Set(fields).size !== fields.length) throw new Error("RiffDB driver returned an invalid packed result");
+    const rowCount = response.row_count as number;
+    const columns = response.columns.map((raw) => {
+      if (typeof raw !== "object" || raw === null || Array.isArray(raw)) throw new Error("RiffDB driver returned an invalid packed result");
+      const column = raw as Record<string, unknown>;
+      if (typeof column.data !== "string" || !Array.isArray(column.offsets) || column.offsets.length !== rowCount + 1) throw new Error("RiffDB driver returned an invalid packed result");
+      const data = Buffer.from(column.data, "base64");
+      if (data.toString("base64") !== column.data) throw new Error("RiffDB driver returned an invalid packed result");
+      const offsets = column.offsets.map((offset) => {
+        if (!Number.isInteger(offset) || (offset as number) < 0 || (offset as number) > 0xffff_ffff) throw new Error("RiffDB driver returned an invalid packed result");
+        return offset as number;
+      });
+      if (offsets[0] !== 0 || offsets.at(-1) !== data.length || offsets.some((offset, index) => index > 0 && offsets[index - 1]! > offset)) throw new Error("RiffDB driver returned an invalid packed result");
+      return { data: new Uint8Array(data), offsets };
+    });
+    const head = optionalNonnegativeBigInt(response.application_head);
+    if (head === undefined) throw new Error("RiffDB driver omitted the query frontier");
+    const cursor = optionalBoundedString(response.cursor, 16_384);
+    return { packed: { outcome, resultName, entity, fields, rowCount, columns }, applicationHead: head, replayed: false, ...(cursor === undefined ? {} : { cursor }) };
+  }
   if (response.type === "compact_query_result") {
     const outcome = boundedPattern(response.outcome, SYMBOL);
     const resultName = boundedPattern(response.result_name, SYMBOL);
