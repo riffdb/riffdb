@@ -14843,6 +14843,18 @@ work_packages:
     complete generic operator/order matrix without client shaping or caller structure, the immutable
     publication is reproducible, and the repository contains no framework-specific profile, route,
     SDK, runtime, or false claim that outstanding external route acceptance has completed.
+  closure:
+    status: complete
+    evidence: release/evidence/operational-query-capability-v1.json
+    decision: The framework-neutral DirectoryUser and Document families execute the complete
+      compiler-declared exact predicate, independent order, exact count, and ordinal-window surface
+      through the shared service and generated Rust, Go, TypeScript, Python, CLI, and MCP paths.
+      Installed TLS acceptance, the shared remote driver corpus, and immutable development-registry
+      installation across npm, PyPI, Go, and Cargo pass from the exact generated artifacts. Static
+      boundary checks retain no caller-supplied query structure, client filtering, sorting, counting,
+      page walking, provider selection, storage access, or framework-owned route. The reproducible
+      capability receipt explicitly leaves real framework route evidence owned by external adapter
+      repositories and claims no such route acceptance inside RiffDB.
   standing_design_tests:
     interface_safety: Applications and adapters receive only generated finite methods or closed
       generated member choices with typed bounded values; they cannot select fields, raw operators,
