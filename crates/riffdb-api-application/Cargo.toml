@@ -9,5 +9,13 @@ publish.workspace = true
 [features]
 default = []
 
+[dependencies]
+base64 = { version = "=0.22.1", default-features = false, features = ["alloc"] }
+riffdb-auth = { version = "0.1.0", path = "../riffdb-auth", default-features = false }
+riffdb-errors = { version = "0.1.0", path = "../riffdb-errors", default-features = false }
+riffdb-proto = { version = "0.1.0", path = "../riffdb-proto", default-features = false }
+riffdb-service = { version = "0.1.0", path = "../riffdb-service", default-features = false }
+riffdb-types = { version = "0.1.0", path = "../riffdb-types", default-features = false }
+
 [lints]
 workspace = true

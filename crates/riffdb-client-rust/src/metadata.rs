@@ -68,6 +68,14 @@ impl BearerCredential {
     pub fn has_same_presentation(&self, other: &Self) -> bool {
         self.authorization == other.authorization
     }
+
+    pub(crate) fn token_presentation(&self) -> Option<&[u8]> {
+        self.authorization
+            .to_str()
+            .ok()
+            .and_then(|value| value.strip_prefix("Bearer "))
+            .map(str::as_bytes)
+    }
 }
 
 /// One bounded credential for the loopback-only bootstrap call.
@@ -189,6 +197,15 @@ impl CallMetadata {
             (Some(_), None) | (None, Some(_)) => false,
         };
         credentials_match && traces_match && self.database == other.database
+    }
+
+    pub(crate) fn framed_open_parts(&self) -> Option<(&[u8], DatabaseAlias)> {
+        let credential = self.credential.as_ref()?.token_presentation()?;
+        let database = self
+            .database
+            .clone()
+            .unwrap_or_else(DatabaseAlias::default_alias);
+        Some((credential, database))
     }
 }
 

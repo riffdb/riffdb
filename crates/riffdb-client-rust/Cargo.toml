@@ -13,6 +13,7 @@ default = []
 futures-util = { version = "=0.3.33", default-features = false, features = ["async-await", "std"] }
 getrandom = { version = "=0.3.4", default-features = false }
 riffdb-api-grpc = { version = "0.1.0", path = "../riffdb-api-grpc", default-features = false, features = ["client"] }
+riffdb-api-frame = { version = "0.1.0", path = "../riffdb-api-frame", default-features = false }
 riffdb-application = { version = "0.1.0", path = "../riffdb-application", default-features = false }
 riffdb-config = { version = "0.1.0", path = "../riffdb-config", default-features = false }
 riffdb-errors = { version = "0.1.0", path = "../riffdb-errors", default-features = false }
@@ -22,7 +23,7 @@ rustls-pki-types = { version = "=1.15.1", default-features = false, features = [
 rustls-webpki = { version = "=0.103.13", default-features = false, features = ["std"] }
 # Already transitive via tonic; direct dep with only `time` for non-blocking
 # Overloaded backoff (must not block the async runtime during saturation).
-tokio = { version = "=1.52.0", default-features = false, features = ["rt", "sync", "time"] }
+tokio = { version = "=1.52.0", default-features = false, features = ["io-util", "net", "rt", "sync", "time"] }
 tonic = { version = "=0.14.6", default-features = false, features = ["channel", "codegen", "tls-ring"] }
 tonic-prost = { version = "=0.14.6", default-features = false }
 zeroize = { version = "=1.8.1", default-features = false, features = ["alloc"] }

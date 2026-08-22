@@ -12,6 +12,11 @@ use std::time::{Duration, Instant};
 
 use futures_util::future::{AbortHandle, Abortable, join_all};
 use futures_util::stream::{FuturesUnordered, StreamExt};
+use riffdb_api_application::{
+    ApplicationOperationFailure, ApplicationOperationPresentation, ApplicationOperationRoute,
+    ApplicationOperationSecurity, ApplicationPresentationError, execute_generated_command,
+    execute_generated_query, open_application_session,
+};
 use riffdb_auth::{
     AuthenticatedPrincipal, AuthenticationContext, CapabilityDigestKeyProvider,
     CredentialAuthenticator,
@@ -33,7 +38,7 @@ use riffdb_service::{
     RecoveryOfflineMaintenanceApplication, RecoveryRestoreOfflineBackupInvocation,
     RequestCancellationHandle, RequestContext, RequestControl, RestoreOfflineBackupInvocation,
     RestoreRetryOfflineMaintenanceApplication, ServiceFailure, ServiceFuture, ServiceResult,
-    ServiceTelemetry, ServiceTelemetryEvent, WriteServiceStage,
+    ServiceTelemetry, ServiceTelemetryEvent,
 };
 use riffdb_types::{
     Audience, ContractLineage, ContractVersion, DatabaseAlias, MAX_DATABASES_PER_PROCESS,
@@ -44,9 +49,9 @@ use tonic::metadata::MetadataMap;
 use tonic::{Request, Response, Status};
 
 use crate::authentication::{
-    AUTHORIZATION_METADATA_KEY, BOOTSTRAP_TOKEN_METADATA_KEY, UNAUTHENTICATED_MESSAGE,
-    authenticate_and_retain_normal_request, authenticate_normal_request,
-    prepare_loopback_bootstrap_token, retain_normal_request_credential,
+    AUTHORIZATION_METADATA_KEY, BOOTSTRAP_TOKEN_METADATA_KEY, CAPABILITY_REVOKED_MESSAGE,
+    UNAUTHENTICATED_MESSAGE, authenticate_and_retain_normal_request, authenticate_normal_request,
+    extract_normal_credential, prepare_loopback_bootstrap_token, retain_normal_request_credential,
 };
 use crate::conversion::*;
 use crate::error::{
@@ -267,6 +272,12 @@ impl GrpcDatabaseRoutes {
             None => None,
         }
     }
+
+    /// Selects one already-validated alias for server-side transport
+    /// demultiplexing. Protocol parsing remains outside this registry.
+    pub fn select_alias(&self, alias: &DatabaseAlias) -> Option<Arc<dyn GrpcLifecycleRoute>> {
+        self.routes.read().ok()?.get(alias).cloned()
+    }
 }
 
 impl fmt::Debug for GrpcDatabaseRoutes {
@@ -450,6 +461,45 @@ impl fmt::Debug for CheckedGrpcSecurityContext {
     }
 }
 
+/// API-neutral view of one current lifecycle route used by transport hosts.
+///
+/// This wrapper exports no gRPC metadata, status, storage, or policy authority.
+pub struct SharedGrpcOperationRoute<'a>(&'a dyn GrpcLifecycleRoute);
+
+impl<'a> SharedGrpcOperationRoute<'a> {
+    /// Borrows one current route for a single shared-adapter operation.
+    #[must_use]
+    pub const fn new(route: &'a dyn GrpcLifecycleRoute) -> Self {
+        Self(route)
+    }
+}
+
+impl ApplicationOperationRoute for SharedGrpcOperationRoute<'_> {
+    fn admit_authenticated(
+        &self,
+        operation: ServiceOperationV1,
+    ) -> Option<Arc<dyn ApplicationService>> {
+        self.0.admit_authenticated(operation)
+    }
+
+    fn security_context(&self) -> Option<ApplicationOperationSecurity> {
+        self.0.security_context().map(|security| {
+            ApplicationOperationSecurity::new(
+                Arc::clone(&security.authenticator),
+                security.authentication.clone(),
+            )
+        })
+    }
+
+    fn history_incarnation(&self) -> Option<u64> {
+        self.0.history_incarnation()
+    }
+
+    fn read_stage_telemetry(&self) -> Option<Arc<dyn ServiceTelemetry>> {
+        self.0.read_stage_telemetry()
+    }
+}
+
 /// Cloneable current-database authentication scoped to exact restore retry.
 ///
 /// Unlike [`CheckedGrpcSecurityContext`], this capability carries no bootstrap
@@ -489,6 +539,13 @@ pub struct GrpcApplication {
 }
 
 impl GrpcApplication {
+    /// Returns the checked current lifecycle registry for a co-hosted
+    /// transport demultiplexer. No route selection or authority is cached.
+    #[must_use]
+    pub fn database_routes(&self) -> Arc<GrpcDatabaseRoutes> {
+        Arc::clone(&self.routes)
+    }
+
     /// Wires transport-only dependencies around the shared application service.
     #[must_use]
     pub fn new(lifecycle: Arc<dyn GrpcLifecycleRoute>, limits: GrpcRequestLimits) -> Self {
@@ -1069,6 +1126,30 @@ fn service_not_ready() -> Status {
     status_from_public_error(&PublicError::storage_unavailable())
 }
 
+/// Maps one shared-adapter failure into the retained gRPC-compatible public
+/// status carriage. Framed hosting uses the same closed code/details mapping
+/// without invoking a gRPC service.
+pub fn status_from_application_operation_failure(failure: ApplicationOperationFailure) -> Status {
+    if let Some(error) = failure.application_error() {
+        return status_from_application_error(&error);
+    }
+    match failure {
+        ApplicationOperationFailure::InvalidRequest(_) => invalid_request(),
+        ApplicationOperationFailure::Unauthenticated(_) => unauthenticated(),
+        ApplicationOperationFailure::CapabilityRevoked(_) => {
+            Status::permission_denied(CAPABILITY_REVOKED_MESSAGE)
+        }
+        ApplicationOperationFailure::Unavailable(_) => service_not_ready(),
+        ApplicationOperationFailure::Service { failure, .. } => {
+            status_from_service_failure(&failure)
+        }
+        ApplicationOperationFailure::Application(error) => status_from_application_error(&error),
+        ApplicationOperationFailure::InvalidResponse => {
+            Status::internal(EMERGENCY_INTERNAL_MESSAGE)
+        }
+    }
+}
+
 fn map_service<T>(result: ServiceResult<T>) -> Result<T, Status> {
     result.map_err(|failure| status_from_service_failure(&failure))
 }
@@ -1077,21 +1158,6 @@ fn map_service<T>(result: ServiceResult<T>) -> Result<T, Status> {
 enum SessionOperationKind {
     Command,
     Query,
-}
-
-#[derive(Clone)]
-struct ApplicationSessionMetadata(MetadataMap);
-
-impl ApplicationSessionMetadata {
-    fn copy_for_operation(&self) -> MetadataMap {
-        self.0.clone()
-    }
-}
-
-impl fmt::Debug for ApplicationSessionMetadata {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("ApplicationSessionMetadata([REDACTED])")
-    }
 }
 
 impl SessionOperationKind {
@@ -1224,8 +1290,9 @@ fn application_session_request_matches(
 }
 
 fn application_session_operation(
-    application: GrpcApplication,
-    metadata: ApplicationSessionMetadata,
+    lifecycle: Arc<dyn GrpcLifecycleRoute>,
+    credential: Arc<riffdb_auth::RetainedOpaqueCredential>,
+    deadline: Instant,
     correlation_id: u64,
     request: v1::application_session_request::Request,
     kind: SessionOperationKind,
@@ -1234,28 +1301,35 @@ fn application_session_operation(
     let operation = async move {
         let result = match request {
             v1::application_session_request::Request::Command(command) => {
-                let mut request = Request::new(command);
-                *request.metadata_mut() = metadata.copy_for_operation();
-                CommandService::execute(&application, request)
-                    .await
-                    .map(|response| v1::ApplicationSessionResponse {
-                        correlation_id,
-                        response: Some(v1::application_session_response::Response::Command(
-                            response.into_inner(),
-                        )),
-                    })
+                let route = SharedGrpcOperationRoute(lifecycle.as_ref());
+                execute_generated_command(
+                    &route,
+                    ApplicationOperationPresentation::from_opaque(credential.borrow(), deadline),
+                    command,
+                )
+                .await
+                .map(|response| v1::ApplicationSessionResponse {
+                    correlation_id,
+                    response: Some(v1::application_session_response::Response::Command(
+                        response,
+                    )),
+                })
+                .map_err(status_from_application_operation_failure)
             }
             v1::application_session_request::Request::Query(query) => {
-                let mut request = Request::new(query);
-                *request.metadata_mut() = metadata.copy_for_operation();
-                ApplicationQueryService::execute_query(&application, request)
-                    .await
-                    .map(|response| v1::ApplicationSessionResponse {
-                        correlation_id,
-                        response: Some(v1::application_session_response::Response::Query(
-                            response.into_inner(),
-                        )),
-                    })
+                let route = SharedGrpcOperationRoute(lifecycle.as_ref());
+                execute_generated_query(
+                    &route,
+                    ApplicationOperationPresentation::from_opaque(credential.borrow(), deadline),
+                    query,
+                    true,
+                )
+                .await
+                .map(|response| v1::ApplicationSessionResponse {
+                    correlation_id,
+                    response: Some(v1::application_session_response::Response::Query(response)),
+                })
+                .map_err(status_from_application_operation_failure)
             }
             v1::application_session_request::Request::Open(_)
             | v1::application_session_request::Request::Cancel(_)
@@ -1303,8 +1377,9 @@ fn advance_application_session_correlation(
 }
 
 async fn run_application_session(
-    application: GrpcApplication,
-    metadata: ApplicationSessionMetadata,
+    lifecycle: Arc<dyn GrpcLifecycleRoute>,
+    credential: Arc<riffdb_auth::RetainedOpaqueCredential>,
+    deadline: Instant,
     mut inbound: tonic::Streaming<v1::ApplicationSessionRequest>,
     output: tokio::sync::mpsc::Sender<Result<v1::ApplicationSessionResponse, Status>>,
     scope: ApplicationSessionScope,
@@ -1477,8 +1552,9 @@ async fn run_application_session(
                             continue;
                         }
                         let (future, abort) = application_session_operation(
-                            application.clone(),
-                            metadata.clone(),
+                            Arc::clone(&lifecycle),
+                            Arc::clone(&credential),
+                            deadline,
                             message.correlation_id,
                             operation,
                             kind,
@@ -1800,6 +1876,8 @@ impl ApplicationSessionService for GrpcApplication {
         if open.protocol_version != APPLICATION_SESSION_PROTOCOL_V1
             || open.requested_max_in_flight == 0
             || open.requested_max_in_flight as usize > MAX_APPLICATION_SESSION_IN_FLIGHT
+            || !open.credential_presentation.is_empty()
+            || !open.database_alias.is_empty()
         {
             return Err(Status::invalid_argument(EMERGENCY_INTERNAL_MESSAGE));
         }
@@ -1807,68 +1885,45 @@ impl ApplicationSessionService for GrpcApplication {
             .contract
             .clone()
             .ok_or_else(|| Status::invalid_argument(EMERGENCY_INTERNAL_MESSAGE))?;
-
-        // Establishment proves the exact contract and every selected query
-        // module under the same authenticated, authorized catalog boundary
-        // used by unary clients. This grants no reusable allow decision: every
-        // operation below re-enters its ordinary handler and authenticates
-        // again.
-        let mut catalog = Request::new(app_v1::GetApplicationCatalogRequest {
-            contract: Some(contract.clone()),
-            limit: 1,
-            cursor: None,
-            request_id: open.request_id.clone(),
+        let lifecycle = self.select_lifecycle(&metadata)?;
+        let credential = extract_normal_credential(&metadata)
+            .map_err(|_| ApplicationPresentationError::InvalidCredential);
+        let retained_credential = credential.and_then(|credential| {
+            riffdb_auth::RetainedOpaqueCredential::new(credential)
+                .map_err(|_| ApplicationPresentationError::InvalidCredential)
         });
-        *catalog.metadata_mut() = metadata.clone();
-        let described = ApplicationQueryService::get_application_catalog(self, catalog)
-            .await?
-            .into_inner();
-        if described.contract_lineage != contract.lineage
-            || described.contract_version != contract.version
-            || described.contract_bundle_hash != contract.bundle_hash
-        {
-            return Err(status_from_application_error(&ApplicationError::new(
-                ApplicationErrorCode::ContractMismatch,
-                ApplicationOperation::DescribeContract,
-                ApplicationErrorContext::empty(),
-                None,
-            )));
-        }
-        if open.query_module_hashes.iter().any(|selected| {
-            !described
-                .query_module_hashes
-                .iter()
-                .any(|active| active == selected)
-        }) {
-            return Err(status_from_application_error(&ApplicationError::new(
-                ApplicationErrorCode::ModuleUnavailable,
-                ApplicationOperation::DescribeContract,
-                ApplicationErrorContext::empty(),
-                None,
-            )));
-        }
+        let route = SharedGrpcOperationRoute(lifecycle.as_ref());
+        let opened = open_application_session(
+            &route,
+            ApplicationOperationPresentation::from_checked_opaque_parts(
+                retained_credential
+                    .as_ref()
+                    .map(|credential| credential.borrow())
+                    .map_err(|error| *error),
+                Ok(deadline),
+            ),
+            open.clone(),
+        )
+        .await
+        .map_err(status_from_application_operation_failure)?;
 
         let maximum_in_flight = open.requested_max_in_flight as usize;
         let (output, receiver) = tokio::sync::mpsc::channel(maximum_in_flight + 1);
         output
             .send(Ok(v1::ApplicationSessionResponse {
                 correlation_id: first.correlation_id,
-                response: Some(v1::application_session_response::Response::Opened(
-                    v1::ApplicationSessionOpened {
-                        protocol_version: APPLICATION_SESSION_PROTOCOL_V1,
-                        contract: Some(contract.clone()),
-                        query_module_hashes: open.query_module_hashes.clone(),
-                        application_lock_hash: open.application_lock_hash,
-                        maximum_in_flight: open.requested_max_in_flight,
-                    },
-                )),
+                response: Some(v1::application_session_response::Response::Opened(opened)),
             }))
             .await
             .map_err(|_| Status::unavailable(EMERGENCY_INTERNAL_MESSAGE))?;
 
+        let retained_credential = Arc::new(
+            retained_credential.map_err(|_| Status::unauthenticated(UNAUTHENTICATED_MESSAGE))?,
+        );
         tokio::spawn(run_application_session(
-            self.clone(),
-            ApplicationSessionMetadata(metadata),
+            lifecycle,
+            retained_credential,
+            deadline,
             inbound,
             output,
             ApplicationSessionScope {
@@ -1891,35 +1946,22 @@ impl CommandService for GrpcApplication {
         &self,
         request: Request<v1::ExecuteCommandRequest>,
     ) -> Result<Response<v1::ExecuteCommandResponse>, Status> {
-        let transport_started = Instant::now();
         let (metadata, _peer, message) = split_request(request);
-        let (request_id, request) = execute_command_request_from_proto(message)?;
         let lifecycle = self.select_lifecycle(&metadata)?;
-        let history_incarnation = lifecycle
-            .history_incarnation()
-            .ok_or_else(service_not_ready)?;
-        let (service, context, _cancellation) = self.normal_invocation_with(
-            lifecycle.as_ref(),
-            ServiceOperationV1::ExecuteCommand,
-            &metadata,
-            request_id,
-        )?;
-        let telemetry = lifecycle.read_stage_telemetry();
-        if let Some(telemetry) = &telemetry {
-            telemetry.record(ServiceTelemetryEvent::WriteServiceStageCompleted {
-                stage: WriteServiceStage::TransportAdapt,
-                elapsed: transport_started.elapsed(),
-            });
-        }
-        let result = map_service(service.execute_command(context, request).await)?;
-        let encode_started = Instant::now();
-        let response = execute_command_result_to_proto(&result, history_incarnation)?;
-        if let Some(telemetry) = &telemetry {
-            telemetry.record(ServiceTelemetryEvent::WriteServiceStageCompleted {
-                stage: WriteServiceStage::EncodeConvert,
-                elapsed: encode_started.elapsed(),
-            });
-        }
+        let deadline = self
+            .limits
+            .deadline(&metadata)
+            .map_err(|_| ApplicationPresentationError::InvalidDeadline);
+        let credential = extract_normal_credential(&metadata)
+            .map_err(|_| ApplicationPresentationError::InvalidCredential);
+        let route = SharedGrpcOperationRoute(lifecycle.as_ref());
+        let response = execute_generated_command(
+            &route,
+            ApplicationOperationPresentation::from_checked_parts(credential, deadline),
+            message,
+        )
+        .await
+        .map_err(status_from_application_operation_failure)?;
         Ok(Response::new(response))
     }
 
@@ -2203,60 +2245,28 @@ impl ApplicationQueryService for GrpcApplication {
         &self,
         request: Request<app_v1::ExecuteQueryRequest>,
     ) -> Result<Response<app_v1::ExecuteQueryResponse>, Status> {
-        let transport_started = Instant::now();
         let (metadata, _peer, message) = split_request(request);
-        let boundary =
-            ApplicationErrorContextBuilder::without_trace(ApplicationOperation::ExecuteQuery);
-        let original = message.clone();
-        let operation_symbol = match original.query.as_ref() {
-            Some(app_v1::execute_query_request::Query::QueryName(name)) => Some(name.as_str()),
-            Some(app_v1::execute_query_request::Query::Source(_)) | None => None,
-        };
-        let (request_id, request) = execute_symbolic_query_request_from_proto(message)
-            .map_err(|status| status_from_application_boundary(status, &boundary))?;
-        let application = application_context(
-            ApplicationOperation::ExecuteQuery,
-            request_id,
-            original.contract.as_ref(),
-            operation_symbol,
-        );
-        // TransportAdapt ends once the domain request is ready; residual stages
-        // after this are admission/authn/spawn/service/encode.
-        let lifecycle = self
-            .select_lifecycle(&metadata)
-            .map_err(|status| status_from_application_boundary(status, &application))?;
-        if let Some(telemetry) = lifecycle.read_stage_telemetry() {
-            telemetry.record(ServiceTelemetryEvent::ReadPipelineStageCompleted {
-                stage: ReadPipelineStage::TransportAdapt,
-                elapsed: transport_started.elapsed(),
-            });
-        }
-        let (service, context, _cancellation) = self
-            .normal_invocation_with(
-                lifecycle.as_ref(),
-                ServiceOperationV1::ExecuteQuery,
-                &metadata,
-                request_id,
+        let lifecycle = self.select_lifecycle(&metadata).map_err(|_| {
+            status_from_application_error(
+                &ApplicationErrorContextBuilder::without_trace(ApplicationOperation::ExecuteQuery)
+                    .unavailable(),
             )
-            .map_err(|status| status_from_application_boundary(status, &application))?;
-        let result = match request {
-            ExecuteSymbolicQueryInvocation::AdHoc(request) => map_application_service(
-                service.execute_symbolic_query(context, request).await,
-                &application,
-            )?,
-            ExecuteSymbolicQueryInvocation::Named(request) => map_application_service(
-                service.execute_named_symbolic_query(context, request).await,
-                &application,
-            )?,
-        };
-        let encode_started = Instant::now();
-        let response = execute_symbolic_query_result_to_proto(result)?;
-        if let Some(telemetry) = lifecycle.read_stage_telemetry() {
-            telemetry.record(ServiceTelemetryEvent::ReadPipelineStageCompleted {
-                stage: ReadPipelineStage::EncodeConvert,
-                elapsed: encode_started.elapsed(),
-            });
-        }
+        })?;
+        let deadline = self
+            .limits
+            .deadline(&metadata)
+            .map_err(|_| ApplicationPresentationError::InvalidDeadline);
+        let credential = extract_normal_credential(&metadata)
+            .map_err(|_| ApplicationPresentationError::InvalidCredential);
+        let route = SharedGrpcOperationRoute(lifecycle.as_ref());
+        let response = execute_generated_query(
+            &route,
+            ApplicationOperationPresentation::from_checked_parts(credential, deadline),
+            message,
+            false,
+        )
+        .await
+        .map_err(status_from_application_operation_failure)?;
         Ok(Response::new(response))
     }
 
@@ -4057,14 +4067,15 @@ mod tests {
     }
 
     #[test]
-    fn session_metadata_debug_is_unconditionally_redacted() {
-        let mut metadata = MetadataMap::new();
-        metadata.insert(
-            AUTHORIZATION_METADATA_KEY,
-            MetadataValue::from_static("Bearer secret-presentation"),
+    fn shared_operation_presentation_debug_is_unconditionally_redacted() {
+        let rendered = format!(
+            "{:?}",
+            ApplicationOperationPresentation::new(
+                b"secret-presentation",
+                Instant::now() + Duration::from_secs(1),
+            )
         );
-        let rendered = format!("{:?}", ApplicationSessionMetadata(metadata));
-        assert_eq!(rendered, "ApplicationSessionMetadata([REDACTED])");
+        assert_eq!(rendered, "ApplicationOperationPresentation([REDACTED])");
         assert!(!rendered.contains("secret-presentation"));
     }
 

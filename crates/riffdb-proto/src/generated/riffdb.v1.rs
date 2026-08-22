@@ -5751,6 +5751,10 @@ pub struct ApplicationSessionOpen {
     pub requested_max_in_flight: u32,
     #[prost(bytes = "vec", tag = "6")]
     pub request_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "7")]
+    pub credential_presentation: ::prost::alloc::vec::Vec<u8>,
+    #[prost(string, tag = "8")]
+    pub database_alias: ::prost::alloc::string::String,
 }
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ApplicationSessionCancel {

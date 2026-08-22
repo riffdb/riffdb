@@ -241,6 +241,20 @@ impl RiffDbClient {
         Ok(())
     }
 
+    pub(crate) async fn enable_framed_loopback_application_session(
+        &mut self,
+        address: std::net::SocketAddr,
+        identity: crate::session::ApplicationSessionIdentity,
+        metadata: CallMetadata,
+    ) -> Result<(), ClientError> {
+        let session = crate::session::BoundedApplicationSession::open_framed_loopback(
+            address, identity, metadata,
+        )
+        .await?;
+        self.bounded_application_session = Some(session);
+        Ok(())
+    }
+
     pub(crate) const fn bounded_application_session_enabled(&self) -> bool {
         self.bounded_application_session.is_some()
     }

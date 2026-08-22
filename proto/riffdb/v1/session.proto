@@ -13,6 +13,12 @@ message ApplicationSessionOpen {
   bytes application_lock_hash = 4;
   uint32 requested_max_in_flight = 5;
   bytes request_id = 6;
+  // Present only on the framed transport. gRPC authenticates from metadata
+  // and rejects message-carried credential bytes.
+  bytes credential_presentation = 7;
+  // Present only on the framed transport. gRPC selects the database from its
+  // existing exact metadata boundary and rejects this field.
+  string database_alias = 8;
 }
 
 // One cancellation request. The target retains its own outcome semantics.

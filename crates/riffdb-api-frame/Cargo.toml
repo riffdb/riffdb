@@ -12,6 +12,11 @@ default = []
 [dependencies]
 prost = { version = "=0.14.4", default-features = false, features = ["std"] }
 riffdb-proto = { version = "0.1.0", path = "../riffdb-proto", default-features = false }
+tokio = { version = "=1.52.0", default-features = false, features = ["io-util"] }
+zeroize = { version = "=1.8.1", default-features = false, features = ["alloc"] }
+
+[dev-dependencies]
+tokio = { version = "=1.52.0", default-features = false, features = ["io-util", "macros", "rt"] }
 
 [lints]
 workspace = true
