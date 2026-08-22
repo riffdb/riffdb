@@ -1,8 +1,11 @@
 # ADR-0138: Direct Exclusive Generated-Operation Lane
 
-- **Status:** Proposed
-- **Direction approved:** No
-- **Exact text accepted:** No
+- **Status:** Accepted
+- **Direction approved:** Yes
+- **Exact text accepted:** Yes, 2026-08-22
+- **Accepted:** 2026-08-22
+- **Acceptance reference:** Maintainer exact-text acceptance in the current
+  Codex session for commit `f580be6e`
 - **Decision deadline:** Before WP-663 adds a non-HTTP/2 application listener,
   changes credential-proof scope, exposes an exclusive generated-operation
   session, or changes `PERF-018`
@@ -10,8 +13,7 @@
   ADR-0120, ADR-0123, ADR-0127, ADR-0132, ADR-0133, and ADR-0137
 - **Defines or blocks:** WP-663, WP-623, WP-578, and WP-579
 
-This record is planning input only. Exact human acceptance is required before
-implementation.
+This record is authoritative for WP-663 implementation.
 
 ## Context
 
@@ -364,7 +366,6 @@ and timing-inference rules.
 
 ## Decision Deadline
 
-Exact human acceptance is required before WP-663 adds a listener, frame parser,
-client or driver-host selection, session authentication proof, public fixture,
-or generated operation transport. Diagnostic report-schema planning may land
-while this record remains Proposed; no wire or authority code may.
+The maintainer accepted this exact decision text on 2026-08-22 for commit
+`f580be6e`. WP-663 may now implement the diagnostic gate and may proceed beyond
+it only under the reject-first conditions above.
