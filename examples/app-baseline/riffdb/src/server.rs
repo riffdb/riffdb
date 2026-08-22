@@ -47,6 +47,7 @@ org_scope_field = "organization_id"
 const AUDIENCE: &str = "riffdb-grpc-loopback";
 const ENVIRONMENT: &str = "app-baseline";
 const READY_PREFIX: &str = "riffdbd-ready-v1\t";
+const DIRECT_DIAGNOSTIC_PREFIX: &str = "riffdb-direct-stream-diagnostic-v1\t";
 const WRITE_GROUP_PREFIX: &str = "riffdb-write-completion-groups-v1\t";
 const WRITE_GROUP_BUCKETS: usize = riffdb_storage_redb::benchmark_support::MAX_GROUP_COMMANDS;
 const DISPATCH_REASON_PREFIX: &str = "riffdb-dispatch-reasons-v1\t";
@@ -183,6 +184,8 @@ pub struct ServerStartOptions {
     pub min_free_bytes: u64,
     /// Enable fixed-cardinality query-execute attribution in the child only.
     pub query_execute_diagnostics: bool,
+    /// Enable ADR-0138's feature-gated, non-production direct-stream probe.
+    pub direct_stream_diagnostic: bool,
 }
 
 /// Owns one live `riffdbd` process and a ready public client backend.
@@ -192,6 +195,8 @@ pub struct RiffDbServerSession {
     riffdbd_bin: PathBuf,
     coordinator_workload_capacity: Option<u16>,
     query_execute_diagnostics: bool,
+    direct_stream_diagnostic: bool,
+    direct_diagnostic_address: Option<SocketAddr>,
     table_inventory_before_measurement:
         Option<Vec<riffdb_storage_redb::benchmark_support::AuthoritativeTableInventoryV1>>,
     /// Resolved real-disk root used for this session.
@@ -412,6 +417,7 @@ impl RiffDbServerSession {
             &idempotency_keys_path,
             options.coordinator_workload_capacity,
             options.query_execute_diagnostics,
+            false,
             None,
             None,
         )
@@ -447,6 +453,7 @@ impl RiffDbServerSession {
             &idempotency_keys_path,
             options.coordinator_workload_capacity,
             options.query_execute_diagnostics,
+            options.direct_stream_diagnostic,
             Some(projections_root.as_path()),
             Some(projections_config_path.as_path()),
         )
@@ -457,6 +464,14 @@ impl RiffDbServerSession {
             let detail = process.diagnostic_detail(&error.to_string());
             RiffDbError::Server { detail }
         })?;
+        let direct_diagnostic_address = if options.direct_stream_diagnostic {
+            Some(process.wait_for_direct_diagnostic_address().map_err(|error| {
+                let detail = process.diagnostic_detail(&error.to_string());
+                RiffDbError::Server { detail }
+            })?)
+        } else {
+            None
+        };
         let endpoint = format!("http://{address}");
         let mut client = connect(&endpoint).await?;
         let (token, module_hash) = deploy_module_and_issue_runner(&mut client, &retained).await?;
@@ -475,6 +490,8 @@ impl RiffDbServerSession {
             riffdbd_bin: riffdbd_bin.to_path_buf(),
             coordinator_workload_capacity: options.coordinator_workload_capacity,
             query_execute_diagnostics: options.query_execute_diagnostics,
+            direct_stream_diagnostic: options.direct_stream_diagnostic,
+            direct_diagnostic_address,
             table_inventory_before_measurement: None,
             bench_root,
             backend,
@@ -517,6 +534,7 @@ impl RiffDbServerSession {
             &idempotency_keys_path,
             self.coordinator_workload_capacity,
             self.query_execute_diagnostics,
+            self.direct_stream_diagnostic,
             Some(projections_root.as_path()),
             Some(projections_config_path.as_path()),
         )
@@ -527,12 +545,27 @@ impl RiffDbServerSession {
             let detail = process.diagnostic_detail(&error.to_string());
             RiffDbError::Server { detail }
         })?;
+        let direct_diagnostic_address = if self.direct_stream_diagnostic {
+            Some(process.wait_for_direct_diagnostic_address().map_err(|error| {
+                let detail = process.diagnostic_detail(&error.to_string());
+                RiffDbError::Server { detail }
+            })?)
+        } else {
+            None
+        };
         let endpoint = format!("http://{address}");
         let backend = self.backend.reconnect_endpoint(&endpoint).await?;
         self.process = process;
+        self.direct_diagnostic_address = direct_diagnostic_address;
         self.backend = backend;
         self.table_inventory_before_measurement = Some(table_inventory_before_measurement);
         Ok((self, setup_evidence))
+    }
+
+    /// Returns the diagnostic-only direct listener selected for this process generation.
+    #[must_use]
+    pub const fn direct_diagnostic_address(&self) -> Option<SocketAddr> {
+        self.direct_diagnostic_address
     }
 
     /// Stops the server cleanly.
@@ -1127,6 +1160,7 @@ struct ServerProcess {
     child_id: u32,
     stdin: Option<std::process::ChildStdin>,
     ready: Receiver<io::Result<String>>,
+    direct_ready: Receiver<io::Result<String>>,
     shutdown_evidence: Receiver<io::Result<RiffDbShutdownEvidence>>,
     reaper_commands: SyncSender<ReaperCommand>,
     exited: Receiver<io::Result<ExitStatus>>,
@@ -1149,6 +1183,7 @@ impl ServerProcess {
         idempotency_keys_path: &Path,
         coordinator_workload_capacity: Option<u16>,
         query_execute_diagnostics: bool,
+        direct_stream_diagnostic: bool,
         projections_root: Option<&Path>,
         projections_config: Option<&Path>,
     ) -> io::Result<Self> {
@@ -1188,6 +1223,9 @@ impl ServerProcess {
         if query_execute_diagnostics {
             command.env("RIFFDB_QUERY_EXECUTE_DIAGNOSTICS", "1");
         }
+        if direct_stream_diagnostic {
+            command.env("RIFFDB_DIRECT_STREAM_DIAGNOSTIC", "1");
+        }
         let mut child = command.spawn()?;
         let child_id = child.id();
         let stdin = child
@@ -1203,9 +1241,12 @@ impl ServerProcess {
             .take()
             .ok_or_else(|| io::Error::other("stderr"))?;
         let (ready_sender, ready) = mpsc::sync_channel(1);
+        let (direct_ready_sender, direct_ready) = mpsc::sync_channel(1);
         let (shutdown_sender, shutdown_evidence) = mpsc::sync_channel(1);
         let stdout =
-            thread::spawn(move || read_server_stdout(stdout, ready_sender, shutdown_sender));
+            thread::spawn(move || {
+                read_server_stdout(stdout, ready_sender, direct_ready_sender, shutdown_sender)
+            });
         let stderr_ring = Arc::new(Mutex::new(VecDeque::with_capacity(STDERR_RING_LINES)));
         let stderr_ring_worker = Arc::clone(&stderr_ring);
         let stderr = thread::spawn(move || drain_server_stderr(stderr, stderr_ring_worker));
@@ -1216,6 +1257,7 @@ impl ServerProcess {
             child_id,
             stdin: Some(stdin),
             ready,
+            direct_ready,
             shutdown_evidence,
             reaper_commands,
             exited,
@@ -1249,6 +1291,25 @@ impl ServerProcess {
         address
             .parse()
             .map_err(|_| io::Error::other("bad ready address"))
+    }
+
+
+    fn wait_for_direct_diagnostic_address(&self) -> io::Result<SocketAddr> {
+        let line = match self.direct_ready.recv_timeout(PROCESS_START_TIMEOUT) {
+            Ok(result) => result?,
+            Err(RecvTimeoutError::Timeout) => {
+                return Err(io::Error::new(io::ErrorKind::TimedOut, "direct diagnostic ready timeout"));
+            }
+            Err(RecvTimeoutError::Disconnected) => {
+                return Err(io::Error::other("direct diagnostic ready disconnected"));
+            }
+        };
+        let address = line
+            .strip_prefix(DIRECT_DIAGNOSTIC_PREFIX)
+            .ok_or_else(|| io::Error::other("bad direct diagnostic ready line"))?;
+        address
+            .parse()
+            .map_err(|_| io::Error::other("bad direct diagnostic ready address"))
     }
 
     fn stderr_tail(&self) -> String {
@@ -1376,6 +1437,7 @@ impl Drop for ServerProcess {
 fn read_server_stdout(
     stream: impl Read,
     ready_sender: SyncSender<io::Result<String>>,
+    direct_ready_sender: SyncSender<io::Result<String>>,
     shutdown_sender: SyncSender<io::Result<RiffDbShutdownEvidence>>,
 ) -> usize {
     let mut reader = BufReader::new(stream);
@@ -1407,7 +1469,9 @@ fn read_server_stdout(
         }
         eprint!("{line}");
         total = total.saturating_add(read);
-        if let Some(encoded) = line.trim_end().strip_prefix(WRITE_GROUP_PREFIX) {
+        if line.trim_end().starts_with(DIRECT_DIAGNOSTIC_PREFIX) {
+            let _ = direct_ready_sender.send(Ok(line.trim_end().to_owned()));
+        } else if let Some(encoded) = line.trim_end().strip_prefix(WRITE_GROUP_PREFIX) {
             write_completion_groups = Some(parse_fixed_counts(
                 encoded,
                 "write-group",

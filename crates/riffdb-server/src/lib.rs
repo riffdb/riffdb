@@ -13,6 +13,8 @@ mod consumer_adapter;
 mod consumer_token;
 mod cursor;
 mod daemon;
+#[cfg(feature = "test-fixtures")]
+mod direct_stream_diagnostic;
 mod exact_text_adapter;
 mod hosted_mcp;
 mod identifiers;

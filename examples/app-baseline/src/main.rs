@@ -1549,6 +1549,7 @@ fn run_load(args: Args) -> Result<(), String> {
                     "RIFFDB_APP_BASELINE_QUERY_EXECUTE_DIAGNOSTICS",
                 )
                 .is_some_and(|value| value == "1"),
+                direct_stream_diagnostic: false,
             };
             let transport_topology = if args.load_saturate {
                 RiffDbTransport::PerSession
@@ -3164,10 +3165,13 @@ impl Args {
             return Err("--reps must be 1..=32".to_owned());
         }
         let diagnostic_sample_ceiling =
-            env::var_os("RIFFDB_APP_BASELINE_QUERY_EXECUTE_DIAGNOSTICS")
+            if env::var_os("RIFFDB_APP_BASELINE_QUERY_EXECUTE_DIAGNOSTICS")
                 .is_some_and(|value| value == "1")
-                .then_some(1_024)
-                .unwrap_or(100);
+            {
+                1_024
+            } else {
+                100
+            };
         if !(1..=diagnostic_sample_ceiling).contains(&samples) {
             return Err(format!("--samples must be 1..={diagnostic_sample_ceiling}"));
         }
