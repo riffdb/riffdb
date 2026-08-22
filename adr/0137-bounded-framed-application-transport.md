@@ -1,8 +1,10 @@
 # ADR-0137: Bounded Framed Application Transport
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Direction approved:** Yes
-- **Exact text accepted:** No
+- **Exact text accepted:** Yes, 2026-08-21
+- **Accepted:** 2026-08-21
+- **Acceptance reference:** Maintainer approval in the current Codex session
 - **Decision deadline:** Before WP-662 adds a non-HTTP/2 listener path, changes
   generated-client transport selection, or amends `PERF-018`
 - **Requires:** ADR-0040, ADR-0055, ADR-0056, ADR-0105, ADR-0106,
