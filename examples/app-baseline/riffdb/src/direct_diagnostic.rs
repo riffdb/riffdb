@@ -1,6 +1,8 @@
 //! Non-evidentiary ADR-0138 direct ownership client.
 
 use std::net::SocketAddr;
+use std::path::Path;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use prost::Message as _;
@@ -12,8 +14,10 @@ use riffdb_proto::{decode_public_message, validate_public_message};
 use riffdb_ticketdesk::{
     GET_TICKET_QUERY_PLAN_HASH, GetTicketFound, GetTicketQuery, GetTicketResult,
 };
-use tokio::io::AsyncReadExt as _;
+use rustls_pki_types::{CertificateDer, ServerName, pem::PemObject as _};
+use tokio::io::{AsyncRead, AsyncReadExt as _, AsyncWrite};
 use tokio::net::TcpStream;
+use tokio_rustls::TlsConnector;
 
 use crate::{RiffDbError, RiffDbPublicBackend, map_app, parse_status_name, parse_uuid_text};
 
@@ -63,11 +67,15 @@ impl DirectDiagnosticTiming {
 
 /// One caller-owned, one-in-flight diagnostic connection.
 pub struct DirectDiagnosticClient {
-    stream: TcpStream,
+    stream: Box<dyn DirectDiagnosticIo>,
     contract_bundle_hash: [u8; 32],
     query_module_hash: [u8; 32],
     runtime: tokio::runtime::Handle,
 }
+
+trait DirectDiagnosticIo: AsyncRead + AsyncWrite + Unpin + Send {}
+
+impl<T> DirectDiagnosticIo for T where T: AsyncRead + AsyncWrite + Unpin + Send {}
 
 impl RiffDbPublicBackend {
     /// Opens the feature-gated direct diagnostic lane with the same credential.
@@ -75,10 +83,16 @@ impl RiffDbPublicBackend {
         &self,
         address: SocketAddr,
     ) -> Result<DirectDiagnosticClient, RiffDbError> {
-        let mut stream = TcpStream::connect(address)
+        let stream = TcpStream::connect(address)
             .await
             .map_err(|_| RiffDbError::Connection)?;
         stream.set_nodelay(true).map_err(|_| RiffDbError::Connection)?;
+        let mut stream: Box<dyn DirectDiagnosticIo> =
+            if let Some(trust_root) = self.direct_diagnostic_tls_trust_root.as_deref() {
+                Box::new(connect_verified_tls(stream, trust_root).await?)
+            } else {
+                Box::new(stream)
+            };
         write_open(&mut stream, self.bearer_token.as_bytes(), &[])
             .await
             .map_err(|_| RiffDbError::Connection)?;
@@ -93,6 +107,39 @@ impl RiffDbPublicBackend {
             runtime: self.runtime.clone(),
         })
     }
+}
+
+async fn connect_verified_tls(
+    stream: TcpStream,
+    trust_root: &Path,
+) -> Result<tokio_rustls::client::TlsStream<TcpStream>, RiffDbError> {
+    let mut roots = tokio_rustls::rustls::RootCertStore::empty();
+    let certificates = CertificateDer::pem_file_iter(trust_root)
+        .map_err(|_| RiffDbError::Connection)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| RiffDbError::Connection)?;
+    if certificates.is_empty() {
+        return Err(RiffDbError::Connection);
+    }
+    for certificate in certificates {
+        roots
+            .add(certificate)
+            .map_err(|_| RiffDbError::Connection)?;
+    }
+    let provider = Arc::new(tokio_rustls::rustls::crypto::ring::default_provider());
+    let mut config = tokio_rustls::rustls::ClientConfig::builder_with_provider(provider)
+        .with_safe_default_protocol_versions()
+        .map_err(|_| RiffDbError::Connection)?
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+    config.alpn_protocols = vec![b"riffdb-direct-diagnostic/1".to_vec()];
+    let server_name = ServerName::try_from("127.0.0.1")
+        .map_err(|_| RiffDbError::Connection)?
+        .to_owned();
+    TlsConnector::from(Arc::new(config))
+        .connect(server_name, stream)
+        .await
+        .map_err(|_| RiffDbError::Connection)
 }
 
 impl DirectDiagnosticClient {
