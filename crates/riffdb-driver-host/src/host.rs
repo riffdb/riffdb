@@ -12,12 +12,11 @@ use riffdb_client_rust::{
     ApplicationEventCheckpoint, ApplicationEventConsumer, ApplicationEventConsumerPublicStatus,
     ApplicationEventConsumerStatus, ApplicationEventId, ApplicationEventLeaseEvidence,
     ApplicationEventMutationResult, ApplicationEventPullDisposition, ApplicationLiveQueryUpdate,
-    ApplicationReactiveOperation, ApplicationRecord, ApplicationSessionIdentity, ApplicationUuid,
-    ApplicationValue, AttemptBudget, CallMetadata, EventConsumerOptions, LiveQueryCursor,
-    LiveQueryPatchOperation, NamedQuery, QueryOptions, StableApplicationClient,
-    VectorModelVersionItem, VectorStalenessItem, VectorStateInspection, VectorStateInspectionKind,
-    VectorStateInspectionResult, app_v1, raise_query_result as raise_wire_query_result,
-    raise_value as raise_wire_value,
+    ApplicationReactiveOperation, ApplicationRecord, ApplicationUuid, ApplicationValue,
+    AttemptBudget, CallMetadata, EventConsumerOptions, LiveQueryCursor, LiveQueryPatchOperation,
+    NamedQuery, QueryOptions, StableApplicationClient, VectorModelVersionItem, VectorStalenessItem,
+    VectorStateInspection, VectorStateInspectionKind, VectorStateInspectionResult, app_v1,
+    raise_query_result as raise_wire_query_result, raise_value as raise_wire_value,
 };
 use riffdb_config::TlsClientConfig;
 use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore, watch};
@@ -55,25 +54,6 @@ pub struct DriverPool {
 impl DriverPool {
     /// Connects the configured number of independent verified TLS channels.
     pub async fn connect_verified_tls(config: &TlsClientConfig) -> Result<Self, DriverHostError> {
-        Self::connect_verified_tls_inner(config, None, None).await
-    }
-
-    /// Connects the configured number of verified TLS channels and selects
-    /// ADR-0137's bounded framed carriage for each Rust-owned driver channel.
-    /// Target-language drivers never implement or observe framing themselves.
-    pub async fn connect_framed_verified_tls(
-        config: &TlsClientConfig,
-        catalog: &ApplicationCatalog,
-        metadata: &CallMetadata,
-    ) -> Result<Self, DriverHostError> {
-        Self::connect_verified_tls_inner(config, Some(catalog), Some(metadata)).await
-    }
-
-    async fn connect_verified_tls_inner(
-        config: &TlsClientConfig,
-        catalog: Option<&ApplicationCatalog>,
-        metadata: Option<&CallMetadata>,
-    ) -> Result<Self, DriverHostError> {
         let count = usize::try_from(config.max_pool_connections().get())
             .map_err(|_| DriverHostError::InvalidConfiguration)?;
         if count == 0 || count > MAX_POOL_CONNECTIONS {
@@ -81,25 +61,11 @@ impl DriverPool {
         }
         let mut clients = Vec::with_capacity(count);
         for _ in 0..count {
-            let mut client = StableApplicationClient::connect_verified_tls(config)
-                .await
-                .map_err(|_| DriverHostError::RemoteUnavailable)?;
-            if let (Some(catalog), Some(metadata)) = (catalog, metadata) {
-                let identity = ApplicationSessionIdentity::new(
-                    catalog.contract_lineage().to_owned(),
-                    catalog.contract_version(),
-                    catalog.contract_bundle_hash(),
-                    catalog.query_module_hashes().to_vec(),
-                    catalog.application_lock_hash(),
-                    128,
-                )
-                .map_err(|_| DriverHostError::InvalidConfiguration)?;
-                client
-                    .open_framed_tls_session(config, identity, metadata)
+            clients.push(
+                StableApplicationClient::connect_verified_tls(config)
                     .await
-                    .map_err(|_| DriverHostError::RemoteUnavailable)?;
-            }
-            clients.push(client);
+                    .map_err(|_| DriverHostError::RemoteUnavailable)?,
+            );
         }
         let streams = usize::try_from(config.max_streams_per_connection().get())
             .map_err(|_| DriverHostError::InvalidConfiguration)?;

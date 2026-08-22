@@ -7,9 +7,8 @@ use std::fmt;
 
 use prost::Message;
 use riffdb_proto::{
-    MAX_PUBLIC_REQUEST_BYTES, MAX_PUBLIC_RESPONSE_BYTES, PublicMessage, decode_public_message,
+    MAX_PUBLIC_REQUEST_BYTES, MAX_PUBLIC_RESPONSE_BYTES, PublicMessage, decode_public_message, v1,
 };
-pub use riffdb_proto::{app, v1};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use zeroize::{Zeroize, Zeroizing};
 
@@ -17,8 +16,6 @@ use zeroize::{Zeroize, Zeroizing};
 pub const FRAME_MAGIC_V1: [u8; 8] = *b"RIFFDBF1";
 /// Exact protocol version carried independently from the magic.
 pub const FRAME_PROTOCOL_V1: u8 = 1;
-/// Exact direct-TLS ALPN identifier for framed protocol version 1.
-pub const FRAME_ALPN_V1: &[u8] = b"riffdb-frame-v1";
 /// Fixed version-1 header length.
 pub const FRAME_HEADER_BYTES: usize = 24;
 /// Maximum accepted frame payload across both directions.
@@ -264,52 +261,6 @@ pub async fn read_frame<R>(reader: &mut R) -> Result<Frame, FrameIoError>
 where
     R: AsyncRead + Unpin,
 {
-    let (kind, correlation_id, payload) = read_payload(reader).await?;
-    Frame::from_payload(kind, correlation_id, payload).map_err(FrameIoError::InvalidFrame)
-}
-
-/// Reads and validates exactly one request without decoding its strict
-/// Protobuf payload more than once.
-pub async fn read_request<R>(reader: &mut R) -> Result<v1::ApplicationSessionRequest, FrameIoError>
-where
-    R: AsyncRead + Unpin,
-{
-    let (kind, correlation_id, payload) = read_payload(reader).await?;
-    if kind != FrameKind::Request {
-        return Err(FrameIoError::InvalidFrame(FrameError::DirectionMismatch));
-    }
-    let value = decode_public_message::<v1::ApplicationSessionRequest>(&payload)
-        .map_err(|_| FrameIoError::InvalidFrame(FrameError::InvalidPayload))?;
-    if value.correlation_id != correlation_id {
-        return Err(FrameIoError::InvalidFrame(FrameError::CorrelationMismatch));
-    }
-    Ok(value)
-}
-
-/// Reads and validates exactly one response without decoding its strict
-/// Protobuf payload more than once.
-pub async fn read_response<R>(
-    reader: &mut R,
-) -> Result<v1::ApplicationSessionResponse, FrameIoError>
-where
-    R: AsyncRead + Unpin,
-{
-    let (kind, correlation_id, payload) = read_payload(reader).await?;
-    if kind != FrameKind::Response {
-        return Err(FrameIoError::InvalidFrame(FrameError::DirectionMismatch));
-    }
-    let value = decode_public_message::<v1::ApplicationSessionResponse>(&payload)
-        .map_err(|_| FrameIoError::InvalidFrame(FrameError::InvalidPayload))?;
-    if value.correlation_id != correlation_id {
-        return Err(FrameIoError::InvalidFrame(FrameError::CorrelationMismatch));
-    }
-    Ok(value)
-}
-
-async fn read_payload<R>(reader: &mut R) -> Result<(FrameKind, u64, Vec<u8>), FrameIoError>
-where
-    R: AsyncRead + Unpin,
-{
     let mut header = [0_u8; FRAME_HEADER_BYTES];
     reader
         .read_exact(&mut header)
@@ -322,7 +273,7 @@ where
         .read_exact(&mut payload)
         .await
         .map_err(|_| FrameIoError::Transport)?;
-    Ok((kind, correlation_id, payload))
+    Frame::from_payload(kind, correlation_id, payload).map_err(FrameIoError::InvalidFrame)
 }
 
 /// Writes one already validated frame and flushes it to the protected stream.
@@ -332,65 +283,6 @@ where
 {
     let mut encoded = Zeroizing::new(Vec::with_capacity(frame.encoded_len()));
     frame.encode(&mut encoded);
-    writer
-        .write_all(&encoded)
-        .await
-        .map_err(|_| FrameIoError::Transport)?;
-    writer.flush().await.map_err(|_| FrameIoError::Transport)
-}
-
-/// Validates and writes one request with a single secret-bearing allocation.
-pub async fn write_request<W>(
-    writer: &mut W,
-    value: &v1::ApplicationSessionRequest,
-) -> Result<(), FrameIoError>
-where
-    W: AsyncWrite + Unpin,
-{
-    write_public(writer, FrameKind::Request, value.correlation_id, value).await
-}
-
-/// Validates and writes one response with a single secret-bearing allocation.
-pub async fn write_response<W>(
-    writer: &mut W,
-    value: &v1::ApplicationSessionResponse,
-) -> Result<(), FrameIoError>
-where
-    W: AsyncWrite + Unpin,
-{
-    write_public(writer, FrameKind::Response, value.correlation_id, value).await
-}
-
-async fn write_public<W, M>(
-    writer: &mut W,
-    kind: FrameKind,
-    correlation_id: u64,
-    value: &M,
-) -> Result<(), FrameIoError>
-where
-    W: AsyncWrite + Unpin,
-    M: PublicMessage + Message,
-{
-    if correlation_id == 0 {
-        return Err(FrameIoError::InvalidFrame(FrameError::ZeroCorrelation));
-    }
-    value
-        .validate_structure()
-        .map_err(|_| FrameIoError::InvalidFrame(FrameError::InvalidPayload))?;
-    let payload_len = value.encoded_len();
-    if payload_len > kind.maximum_payload_bytes() {
-        return Err(FrameIoError::InvalidFrame(FrameError::PayloadTooLarge));
-    }
-    let mut encoded = Zeroizing::new(Vec::with_capacity(FRAME_HEADER_BYTES + payload_len));
-    encoded.extend_from_slice(&FRAME_MAGIC_V1);
-    encoded.push(FRAME_PROTOCOL_V1);
-    encoded.push(kind as u8);
-    encoded.extend_from_slice(&0_u16.to_be_bytes());
-    encoded.extend_from_slice(&correlation_id.to_be_bytes());
-    encoded.extend_from_slice(&(payload_len as u32).to_be_bytes());
-    value
-        .encode(&mut *encoded)
-        .map_err(|_| FrameIoError::InvalidFrame(FrameError::InvalidPayload))?;
     writer
         .write_all(&encoded)
         .await

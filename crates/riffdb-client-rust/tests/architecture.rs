@@ -49,12 +49,6 @@ fn reviewed_transport_and_entropy_graph_remains_exact() {
     ));
     assert!(manifest.contains("tonic-prost = { version = \"=0.14.6\", default-features = false }"));
     assert!(manifest.contains(
-        "tokio-rustls = { version = \"=0.26.4\", default-features = false, features = [\"logging\", \"ring\", \"tls12\"] }"
-    ));
-    assert!(manifest.contains(
-        "riffdb-api-frame = { version = \"0.1.0\", path = \"../riffdb-api-frame\", default-features = false }"
-    ));
-    assert!(manifest.contains(
         "zeroize = { version = \"=1.8.1\", default-features = false, features = [\"alloc\"] }"
     ));
     assert!(manifest.contains("default-features = false, features = [\"client\"]"));
@@ -69,6 +63,7 @@ fn reviewed_transport_and_entropy_graph_remains_exact() {
     ));
     for forbidden in [
         "base64 =",
+        "tokio-rustls =",
         "ring =",
         "tls-aws-lc",
         "gzip",

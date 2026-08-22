@@ -171,7 +171,6 @@ impl OperationSpec {
 /// Exact application-only dispatch catalog.
 #[derive(Clone, Debug)]
 pub struct ApplicationCatalog {
-    application_lock_hash: [u8; 32],
     application_manifest_hash: [u8; 32],
     catalog_hash: [u8; 32],
     database: String,
@@ -180,7 +179,6 @@ pub struct ApplicationCatalog {
     contract_lineage: String,
     contract_version: u64,
     contract_bundle_hash: [u8; 32],
-    query_module_hashes: Vec<[u8; 32]>,
     operations: BTreeMap<String, OperationSpec>,
 }
 
@@ -206,7 +204,6 @@ impl ApplicationCatalog {
         {
             return Err(CatalogError::InvalidArtifact);
         }
-        let application_lock_hash = *riffdb_types::hash_application_lock(lock).as_bytes();
         let manifest_file_hash = *hash_generated_artifact(manifest).as_bytes();
         let tools_file_hash = *hash_generated_artifact(tools).as_bytes();
         let lock: ExactLock =
@@ -279,10 +276,8 @@ impl ApplicationCatalog {
             }
         }
         let mut available_queries = BTreeMap::new();
-        let mut query_module_hashes = Vec::with_capacity(lock.modules.len());
         for module in &lock.modules {
             let module_hash = parse_hash(&module.module_hash)?;
-            query_module_hashes.push(module_hash);
             for query in &module.queries {
                 if available_queries
                     .insert(
@@ -295,8 +290,6 @@ impl ApplicationCatalog {
                 }
             }
         }
-        query_module_hashes.sort_unstable();
-        query_module_hashes.dedup();
         let mut queries = BTreeMap::new();
         for query in &selected_role.definition.queries {
             let identity = (parse_hash(&query.module_hash)?, query.name.clone());
@@ -508,7 +501,6 @@ impl ApplicationCatalog {
         }
         let catalog_hash = tools_file_hash;
         Ok(Self {
-            application_lock_hash,
             application_manifest_hash: manifest_hash,
             catalog_hash,
             database: database.to_owned(),
@@ -517,7 +509,6 @@ impl ApplicationCatalog {
             contract_lineage: lock.contract.lineage,
             contract_version: lock.contract.version,
             contract_bundle_hash: bundle_hash,
-            query_module_hashes,
             operations,
         })
     }
@@ -531,11 +522,6 @@ impl ApplicationCatalog {
     #[must_use]
     pub fn application_manifest_hash(&self) -> String {
         hex(&self.application_manifest_hash)
-    }
-    /// Domain-separated identity of the exact canonical application lock.
-    #[must_use]
-    pub const fn application_lock_hash(&self) -> [u8; 32] {
-        self.application_lock_hash
     }
     /// Exact canonical generated catalog identity.
     #[must_use]
@@ -576,11 +562,6 @@ impl ApplicationCatalog {
     #[must_use]
     pub fn contract_bundle_hash_hex(&self) -> String {
         hex(&self.contract_bundle_hash)
-    }
-    /// Canonically sorted exact query-module identities admitted by the lock.
-    #[must_use]
-    pub fn query_module_hashes(&self) -> &[[u8; 32]] {
-        &self.query_module_hashes
     }
 }
 

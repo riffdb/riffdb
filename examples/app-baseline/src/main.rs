@@ -25,8 +25,7 @@ use riffdb_app_baseline_postgres::{
     PostgresResourceSnapshot,
 };
 use riffdb_app_baseline_riffdb::{
-    RiffDbError, RiffDbPublicBackend, RiffDbServerSession, RiffDbShutdownEvidence,
-    ServerStartOptions, min_free_bytes_for_full,
+    RiffDbServerSession, RiffDbShutdownEvidence, ServerStartOptions, min_free_bytes_for_full,
 };
 use riffdb_bench_root::{
     BenchRoot, BenchRootOptions, DeviceBaseline, StorageMedium, classify_medium,
@@ -266,13 +265,10 @@ fn run() -> Result<(), String> {
                 // generated-operation session when requested so their public
                 // write-latency ratios are measured rather than inferred from
                 // the mixed-load histogram.
-                if matches!(
-                    args.riffdb_transport,
-                    RiffDbTransport::BoundedSession | RiffDbTransport::Framed
-                ) {
+                if args.riffdb_transport == RiffDbTransport::BoundedSession {
                     session.backend = session
                         .backend
-                        .fresh_selected_transport(args.riffdb_transport)
+                        .fresh_bounded_session()
                         .map_err(|error| error.to_string())?;
                 }
                 let scenario_result = run_scenarios_with_options(
@@ -282,10 +278,7 @@ fn run() -> Result<(), String> {
                     args.samples,
                     true,
                 );
-                if matches!(
-                    args.riffdb_transport,
-                    RiffDbTransport::BoundedSession | RiffDbTransport::Framed
-                ) {
+                if args.riffdb_transport == RiffDbTransport::BoundedSession {
                     session.backend.close_bounded_session();
                 }
                 match scenario_result {
@@ -1636,8 +1629,13 @@ fn run_load(args: Args) -> Result<(), String> {
                             {
                                 let prototype = prototype.clone();
                                 move || {
-                                    let mut backend =
-                                        prototype.fresh_selected_transport(transport_topology)
+                                    let mut backend = match transport_topology {
+                                        RiffDbTransport::PerSession => prototype.fresh_session(),
+                                        RiffDbTransport::Shared => Ok(prototype.clone()),
+                                        RiffDbTransport::BoundedSession => {
+                                            prototype.fresh_bounded_session()
+                                        }
+                                    }
                                     .map_err(|error| error.to_string())?;
                                     backend.prewarm().map_err(|error| error.to_string())?;
                                     Ok(backend)
@@ -1665,8 +1663,13 @@ fn run_load(args: Args) -> Result<(), String> {
                             {
                                 let prototype = prototype.clone();
                                 move || {
-                                    let mut backend =
-                                        prototype.fresh_selected_transport(transport_topology)
+                                    let mut backend = match transport_topology {
+                                        RiffDbTransport::PerSession => prototype.fresh_session(),
+                                        RiffDbTransport::Shared => Ok(prototype.clone()),
+                                        RiffDbTransport::BoundedSession => {
+                                            prototype.fresh_bounded_session()
+                                        }
+                                    }
                                     .map_err(|error| error.to_string())?;
                                     backend.prewarm().map_err(|error| error.to_string())?;
                                     Ok(backend)
@@ -1824,8 +1827,13 @@ fn run_load(args: Args) -> Result<(), String> {
                             &dataset,
                             seed_ns,
                             move || {
-                                let mut backend =
-                                    prototype.fresh_selected_transport(transport_topology)
+                                let mut backend = match transport_topology {
+                                    RiffDbTransport::PerSession => prototype.fresh_session(),
+                                    RiffDbTransport::Shared => Ok(prototype.clone()),
+                                    RiffDbTransport::BoundedSession => {
+                                        prototype.fresh_bounded_session()
+                                    }
+                                }
                                 .map_err(|error| error.to_string())?;
                                 backend.prewarm().map_err(|error| error.to_string())?;
                                 Ok(backend)
@@ -1850,9 +1858,14 @@ fn run_load(args: Args) -> Result<(), String> {
                             &dataset,
                             seed_ns,
                             move || {
-                                let mut backend =
-                                    prototype.fresh_selected_transport(transport_topology)
-                                        .map_err(|error| error.to_string())?;
+                                let mut backend = match transport_topology {
+                                    RiffDbTransport::PerSession => prototype.fresh_session(),
+                                    RiffDbTransport::Shared => Ok(prototype.clone()),
+                                    RiffDbTransport::BoundedSession => {
+                                        prototype.fresh_bounded_session()
+                                    }
+                                }
+                                .map_err(|error| error.to_string())?;
                                 backend.prewarm().map_err(|error| error.to_string())?;
                                 Ok(backend)
                             },
@@ -2745,7 +2758,6 @@ enum RiffDbTransport {
     PerSession,
     Shared,
     BoundedSession,
-    Framed,
 }
 
 impl RiffDbTransport {
@@ -2754,7 +2766,6 @@ impl RiffDbTransport {
             "per-session" => Some(Self::PerSession),
             "shared" => Some(Self::Shared),
             "bounded-session" => Some(Self::BoundedSession),
-            "framed" => Some(Self::Framed),
             _ => None,
         }
     }
@@ -2764,28 +2775,6 @@ impl RiffDbTransport {
             Self::PerSession => "per_session_http2_connection",
             Self::Shared => "shared_http2_connection",
             Self::BoundedSession => "per_session_bounded_application_stream_v1",
-            Self::Framed => "per_session_bounded_application_frame_v1",
-        }
-    }
-}
-
-trait RiffDbTransportSelection {
-    fn fresh_selected_transport(
-        &self,
-        transport: RiffDbTransport,
-    ) -> Result<RiffDbPublicBackend, RiffDbError>;
-}
-
-impl RiffDbTransportSelection for RiffDbPublicBackend {
-    fn fresh_selected_transport(
-        &self,
-        transport: RiffDbTransport,
-    ) -> Result<RiffDbPublicBackend, RiffDbError> {
-        match transport {
-            RiffDbTransport::PerSession => self.fresh_session(),
-            RiffDbTransport::Shared => Ok(self.clone()),
-            RiffDbTransport::BoundedSession => self.fresh_bounded_session(),
-            RiffDbTransport::Framed => self.fresh_framed_session(),
         }
     }
 }
@@ -3029,7 +3018,7 @@ impl Args {
                 "--load-riffdb-transport" => {
                     let value = args.next().ok_or("--load-riffdb-transport needs a value")?;
                     riffdb_transport = RiffDbTransport::parse(&value).ok_or_else(|| {
-                        "--load-riffdb-transport must be per-session, shared, bounded-session, or framed"
+                        "--load-riffdb-transport must be per-session, shared, or bounded-session"
                             .to_owned()
                     })?;
                 }
@@ -3123,7 +3112,7 @@ impl Args {
                          [--load-journeys] \
                          [--load-contended] [--load-saturate] [--load-saturate-p99-ms N] \
                          [--load-concurrency-sweep] [--load-sweep-per-level-daemon|--load-accumulate-history] \
-                         [--load-riffdb-transport per-session|shared|bounded-session|framed] \
+                         [--load-riffdb-transport per-session|shared|bounded-session] \
                          [--database-root PATH] [--postgres-data-host-path PATH] \
                          [--allow-tmpfs] [--reps N] [--require-stable] \
                          [--seed-only] \
@@ -3423,23 +3412,6 @@ mod tests {
         assert_eq!(
             session_args.riffdb_transport.as_report_str(),
             "per_session_bounded_application_stream_v1"
-        );
-
-        let framed_args = Args::parse(
-            [
-                "--load",
-                "interactive",
-                "--load-riffdb-transport",
-                "framed",
-            ]
-            .into_iter()
-            .map(str::to_owned),
-        )
-        .expect("framed session flag");
-        assert_eq!(framed_args.riffdb_transport, RiffDbTransport::Framed);
-        assert_eq!(
-            framed_args.riffdb_transport.as_report_str(),
-            "per_session_bounded_application_frame_v1"
         );
     }
 

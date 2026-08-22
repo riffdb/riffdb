@@ -1818,7 +1818,6 @@ dependencies = [
  "rustls-webpki",
  "tempfile",
  "tokio",
- "tokio-rustls",
  "tonic",
  "tonic-prost",
  "zeroize",
