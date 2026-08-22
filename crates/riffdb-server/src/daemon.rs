@@ -63,6 +63,8 @@ use zeroize::Zeroizing;
 
 use crate::clocks::{ProductionWallClocks, ServerProcessClockError};
 use crate::config::{DatabaseConfig, ServerConfig, ServerConfigError};
+#[cfg(feature = "test-fixtures")]
+use crate::direct_stream_diagnostic::HostedDirectStreamDiagnostic;
 use crate::hosted_mcp::{HostedMcp, HostedMcpStartError, HostedMcpStopError};
 use crate::identifiers::ProductionIdentifierSources;
 use crate::lifecycle::ProductionLifecycleRoute;
@@ -148,6 +150,8 @@ struct ReadyGeneration {
     routing: RuntimeRoutingState,
     transport: HostedGrpc,
     hosted_mcp: Option<HostedMcp>,
+    #[cfg(feature = "test-fixtures")]
+    direct_diagnostic: Option<HostedDirectStreamDiagnostic>,
 }
 
 struct GenerationInputs {
@@ -557,6 +561,10 @@ async fn run_server(
     let application =
         GrpcApplication::new_with_audience(lifecycle_for_grpc, limits, config.audience().clone());
     let mut transport = HostedGrpc::bind(config.application_listener().clone(), &application)?;
+    #[cfg(feature = "test-fixtures")]
+    let direct_diagnostic = HostedDirectStreamDiagnostic::bind_if_enabled(&application)
+        .await
+        .map_err(DaemonError::Listener)?;
     drop(application);
     let (maintenance_storage, reconciliation) =
         RedbMaintenanceStorage::open(config.database_path(), config.backup_root())
@@ -893,6 +901,8 @@ async fn run_server(
             routing,
             transport,
             hosted_mcp,
+            #[cfg(feature = "test-fixtures")]
+            direct_diagnostic,
         },
         publish_initial,
         maintenance_lifecycle,
@@ -2208,6 +2218,19 @@ async fn run_ready_generations(
         .await?;
         return Err(source);
     }
+    #[cfg(feature = "test-fixtures")]
+    if publish_initial
+        && let Some(diagnostic) = generation.direct_diagnostic.as_ref()
+        && let Err(source) = publish_direct_diagnostic_readiness(diagnostic.address())
+    {
+        shutdown_before_ready(
+            generation.graph,
+            &mut generation.transport,
+            &mut generation.hosted_mcp,
+        )
+        .await?;
+        return Err(source);
+    }
     let (shutdown, stdin_thread) = match spawn_shutdown_reader() {
         Ok(reader) => reader,
         Err(source) => {
@@ -2232,6 +2255,8 @@ async fn run_ready_generations(
             generation.routing,
             generation.transport,
             generation.hosted_mcp,
+            #[cfg(feature = "test-fixtures")]
+            generation.direct_diagnostic,
             &mut shutdown,
             &mut stdin_thread,
             process_signal,
@@ -2898,6 +2923,10 @@ async fn start_generation(
     let application =
         GrpcApplication::new_with_audience(lifecycle_for_grpc, limits, config.audience().clone());
     let mut transport = HostedGrpc::bind(listener_config, &application)?;
+    #[cfg(feature = "test-fixtures")]
+    let direct_diagnostic = HostedDirectStreamDiagnostic::bind_if_enabled(&application)
+        .await
+        .map_err(DaemonError::Listener)?;
     let graph = match ProductionGraphBuilder::new(
         startup,
         activator,
@@ -2973,6 +3002,8 @@ async fn start_generation(
         routing,
         transport,
         hosted_mcp,
+        #[cfg(feature = "test-fixtures")]
+        direct_diagnostic,
     })
 }
 
@@ -3058,6 +3089,7 @@ async fn supervise_ready_process(
     routing: RuntimeRoutingState,
     mut transport: HostedGrpc,
     mut hosted_mcp: Option<HostedMcp>,
+    #[cfg(feature = "test-fixtures")] _direct_diagnostic: Option<HostedDirectStreamDiagnostic>,
     shutdown: &mut Option<ShutdownReceiver>,
     stdin_thread: &mut Option<JoinHandle<()>>,
     process_signal: &mut ProductionShutdownSignal,
@@ -3301,6 +3333,15 @@ fn publish_readiness(endpoint: &HostedGrpcEndpoint) -> Result<(), DaemonError> {
     let stdout = io::stdout();
     let mut stdout = stdout.lock();
     writeln!(stdout, "{READY_PROTOCOL}\t{endpoint}").map_err(DaemonError::Readiness)?;
+    stdout.flush().map_err(DaemonError::Readiness)
+}
+
+#[cfg(feature = "test-fixtures")]
+fn publish_direct_diagnostic_readiness(address: SocketAddr) -> Result<(), DaemonError> {
+    let stdout = io::stdout();
+    let mut stdout = stdout.lock();
+    writeln!(stdout, "riffdb-direct-stream-diagnostic-v1\t{address}")
+        .map_err(DaemonError::Readiness)?;
     stdout.flush().map_err(DaemonError::Readiness)
 }
 

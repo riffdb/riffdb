@@ -16,8 +16,8 @@ use std::time::{Duration, Instant};
 use riffdb_app_baseline_core::{AppBackend, LatencyHistogram, Scale, SeedDataset, TicketRow};
 use riffdb_app_baseline_postgres::{PostgresAppBackend, PostgresComparisonProfile};
 use riffdb_app_baseline_riffdb::{
-    PairedClientTiming, RiffDbPublicBackend, RiffDbQueryExecuteEvidence, RiffDbReadStageEvidence,
-    RiffDbServerSession, RiffDbShutdownEvidence, ServerStartOptions,
+    DirectDiagnosticTiming, PairedClientTiming, RiffDbPublicBackend, RiffDbQueryExecuteEvidence,
+    RiffDbReadStageEvidence, RiffDbServerSession, RiffDbShutdownEvidence, ServerStartOptions,
 };
 use serde_json::{Value, json};
 
@@ -38,6 +38,8 @@ struct Args {
     postgres_url: Option<String>,
     bounded_session_shadow: bool,
     bounded_session_first: bool,
+    direct_exclusive_probe: bool,
+    direct_first: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -91,6 +93,64 @@ struct ShapeResult {
     paired: Option<PairedHistograms>,
 }
 
+#[derive(Debug, Default)]
+struct DirectHistograms {
+    outer: LatencyHistogram,
+    runtime_entry: LatencyHistogram,
+    client_encode: LatencyHistogram,
+    stream_write: LatencyHistogram,
+    server_decode_adapt: LatencyHistogram,
+    application_service: LatencyHistogram,
+    server_encode: LatencyHistogram,
+    server_write: LatencyHistogram,
+    stream_poll_read: LatencyHistogram,
+    client_decode: LatencyHistogram,
+    caller_wakeup: LatencyHistogram,
+    ledger_error: LatencyHistogram,
+}
+
+impl DirectHistograms {
+    fn record(&mut self, timing: DirectDiagnosticTiming) {
+        self.outer.record(timing.outer);
+        self.runtime_entry.record(timing.runtime_entry);
+        self.client_encode.record(timing.client_encode);
+        self.stream_write.record(timing.stream_write);
+        self.server_decode_adapt.record(timing.server_decode_adapt);
+        self.application_service.record(timing.application_service);
+        self.server_encode.record(timing.server_encode);
+        self.server_write.record(timing.server_write);
+        self.stream_poll_read.record(timing.stream_poll_read);
+        self.client_decode.record(timing.client_decode);
+        self.caller_wakeup.record(timing.caller_wakeup);
+        self.ledger_error
+            .record(timing.outer.abs_diff(timing.ledger_total()));
+    }
+
+    fn json(&self) -> Value {
+        json!({
+            "outer": self.outer.summary_json(),
+            "runtime_entry": self.runtime_entry.summary_json(),
+            "client_encode": self.client_encode.summary_json(),
+            "stream_write": self.stream_write.summary_json(),
+            "server_decode_adapt": self.server_decode_adapt.summary_json(),
+            "application_service": self.application_service.summary_json(),
+            "server_encode": self.server_encode.summary_json(),
+            "server_write": self.server_write.summary_json(),
+            "stream_poll_read": self.stream_poll_read.summary_json(),
+            "client_decode": self.client_decode.summary_json(),
+            "caller_wakeup": self.caller_wakeup.summary_json(),
+            "ledger_error": self.ledger_error.summary_json(),
+        })
+    }
+}
+
+#[derive(Debug)]
+struct DirectShapeResult {
+    throughput_ops_s: u64,
+    elapsed: Duration,
+    timings: DirectHistograms,
+}
+
 fn main() -> Result<(), String> {
     let args = parse_args()?;
     let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -111,6 +171,7 @@ fn main() -> Result<(), String> {
             &args.riffdbd_bin,
             ServerStartOptions {
                 query_execute_diagnostics: true,
+                direct_stream_diagnostic: args.direct_exclusive_probe,
                 ..ServerStartOptions::default()
             },
         ))
@@ -127,6 +188,23 @@ fn main() -> Result<(), String> {
 
     let mut cells = Vec::new();
     for &clients in &args.clients {
+        let direct_setup = if args.direct_exclusive_probe && clients == 1 {
+            let measured = runtime.block_on(measure_setup_first(
+                &session,
+                &expected,
+                args.direct_first,
+            ))?;
+            let (restarted, setup_server) = runtime
+                .block_on(session.restart_for_measurement())
+                .map_err(|error| error.to_string())?;
+            session = restarted;
+            Some(json!({
+                "timing": measured,
+                "server_read_stages": read_stages_json(&setup_server),
+            }))
+        } else {
+            None
+        };
         let bounded_session_first = if args.bounded_session_shadow && args.bounded_session_first {
             let (restarted, measured) = measure_bounded_session_shape(
                 &runtime,
@@ -186,6 +264,57 @@ fn main() -> Result<(), String> {
             None
         };
 
+        let direct_exclusive = if args.direct_exclusive_probe && clients == 1 {
+            let address = session
+                .direct_diagnostic_address()
+                .ok_or_else(|| "direct diagnostic listener was not published".to_owned())?;
+            let measured = run_direct_shape(
+                &runtime,
+                &session.backend,
+                address,
+                &expected,
+                args.samples_per_client,
+                args.warmup_per_client,
+            )?;
+            let (restarted, server) = runtime
+                .block_on(session.restart_for_measurement())
+                .map_err(|error| error.to_string())?;
+            session = restarted;
+            let unary_complete_ns = synchronous
+                .paired
+                .as_ref()
+                .map(|paired| histogram_mean_ns(&paired.asynchronous_call))
+                .unwrap_or(0);
+            let unary_server_ns = read_stage_mean_ns(&synchronous_server);
+            let direct_complete_ns = histogram_mean_ns(&measured.timings.outer);
+            let direct_server_ns = histogram_mean_ns(&measured.timings.application_service);
+            let unary_outside_ns = unary_complete_ns.saturating_sub(unary_server_ns);
+            let direct_outside_ns = direct_complete_ns.saturating_sub(direct_server_ns);
+            Some(json!({
+                "throughput_ops_s": measured.throughput_ops_s,
+                "elapsed_ns": u64::try_from(measured.elapsed.as_nanos()).unwrap_or(u64::MAX),
+                "paired_stage_ledger": measured.timings.json(),
+                "server_read_stages": read_stages_json(&server),
+                "mechanics_gate": {
+                    "unary_complete_mean_ns": unary_complete_ns,
+                    "direct_complete_mean_ns": direct_complete_ns,
+                    "complete_reduction_percent": reduction_percent(unary_complete_ns, direct_complete_ns),
+                    "complete_threshold_percent": 40,
+                    "unary_outside_service_mean_ns": unary_outside_ns,
+                    "direct_outside_service_mean_ns": direct_outside_ns,
+                    "outside_service_reduction_percent": reduction_percent(unary_outside_ns, direct_outside_ns),
+                    "outside_service_threshold_percent": 55,
+                    "ledger_error_percent": ratio_percent(
+                        histogram_mean_ns(&measured.timings.ledger_error),
+                        direct_complete_ns,
+                    ),
+                    "ledger_error_threshold_percent": 5,
+                },
+            }))
+        } else {
+            None
+        };
+
         cells.push(json!({
             "clients": clients,
             "operation": "generated.GetTicket",
@@ -210,6 +339,8 @@ fn main() -> Result<(), String> {
                 "after": asynchronous_memory_after,
             },
             "bounded_session_shadow": bounded_session,
+            "direct_exclusive_probe": direct_exclusive,
+            "connection_setup_first_operation": direct_setup,
             "bookkeeping": {
                 "bounded_session_order": if args.bounded_session_first { "before_unary" } else { "after_async" },
                 "bridge_only_classification": "measurement_artifact_not_product_gain",
@@ -243,6 +374,7 @@ fn main() -> Result<(), String> {
         "release_comparator_changed": false,
         "frozen_release_binary": "riffdb-app-baseline",
         "diagnostic_binary": "riffdb-client-transport-diagnostic",
+        "direct_exclusive_probe_enabled": args.direct_exclusive_probe,
         "scale": args.scale.name(),
         "tcp_nodelay": {
             "client": true,
@@ -268,6 +400,7 @@ fn main() -> Result<(), String> {
             "The asynchronous shadow uses the same exact generated operation, credential, persistent HTTP/2 channel, and server path.",
             "Removing bridge-only time is a measurement correction and cannot be claimed as a RiffDB product improvement.",
             "This report cannot encode a release pass.",
+            "The direct-exclusive cell is feature-gated diagnostic carriage and is not a production listener or selector.",
         ],
     });
     let encoded = serde_json::to_string_pretty(&report).map_err(|error| error.to_string())?;
@@ -317,6 +450,146 @@ fn measure_bounded_session_shape(
             },
         }),
     ))
+}
+
+fn run_direct_shape(
+    runtime: &tokio::runtime::Runtime,
+    prototype: &RiffDbPublicBackend,
+    address: std::net::SocketAddr,
+    expected: &TicketRow,
+    samples: usize,
+    warmup: usize,
+) -> Result<DirectShapeResult, String> {
+    let mut client = runtime
+        .block_on(prototype.open_direct_diagnostic(address))
+        .map_err(|error| error.to_string())?;
+    for _ in 0..warmup {
+        let (observed, _) = client
+            .get_ticket_paired(expected.organization_id, expected.ticket_id)
+            .map_err(|error| error.to_string())?;
+        require_expected(observed.as_ref(), expected)?;
+    }
+    let started = Instant::now();
+    let mut timings = DirectHistograms::default();
+    for _ in 0..samples {
+        let (observed, timing) = client
+            .get_ticket_paired(expected.organization_id, expected.ticket_id)
+            .map_err(|error| error.to_string())?;
+        require_expected(observed.as_ref(), expected)?;
+        timings.record(timing);
+    }
+    let elapsed = started.elapsed();
+    Ok(DirectShapeResult {
+        throughput_ops_s: throughput(1, samples, elapsed),
+        elapsed,
+        timings,
+    })
+}
+
+async fn measure_setup_first(
+    session: &RiffDbServerSession,
+    expected: &TicketRow,
+    direct_first: bool,
+) -> Result<Value, String> {
+    async fn unary(
+        backend: &RiffDbPublicBackend,
+        expected: &TicketRow,
+    ) -> Result<u64, String> {
+        let started = Instant::now();
+        let fresh = backend
+            .fresh_session_async()
+            .await
+            .map_err(|error| error.to_string())?;
+        let observed = fresh
+            .get_ticket_generated_async(expected.organization_id, expected.ticket_id)
+            .await
+            .map_err(|error| error.to_string())?;
+        require_expected(observed.as_ref(), expected)?;
+        Ok(u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX))
+    }
+
+    async fn direct(
+        session: &RiffDbServerSession,
+        expected: &TicketRow,
+    ) -> Result<u64, String> {
+        let address = session
+            .direct_diagnostic_address()
+            .ok_or_else(|| "direct diagnostic listener was not published".to_owned())?;
+        let started = Instant::now();
+        let mut fresh = session
+            .backend
+            .open_direct_diagnostic(address)
+            .await
+            .map_err(|error| error.to_string())?;
+        let (observed, _) = fresh
+            .get_ticket(expected.organization_id, expected.ticket_id)
+            .await
+            .map_err(|error| error.to_string())?;
+        require_expected(observed.as_ref(), expected)?;
+        Ok(u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX))
+    }
+
+    const SETUP_SAMPLES: usize = 32;
+    let mut unary_latency = LatencyHistogram::default();
+    let mut direct_latency = LatencyHistogram::default();
+    for sample in 0..SETUP_SAMPLES {
+        let candidate_first = (sample % 2 == 0) == direct_first;
+        let (unary_ns, direct_ns) = if candidate_first {
+            let direct_ns = direct(session, expected).await?;
+            let unary_ns = unary(&session.backend, expected).await?;
+            (unary_ns, direct_ns)
+        } else {
+            let unary_ns = unary(&session.backend, expected).await?;
+            let direct_ns = direct(session, expected).await?;
+            (unary_ns, direct_ns)
+        };
+        unary_latency.record(Duration::from_nanos(unary_ns));
+        direct_latency.record(Duration::from_nanos(direct_ns));
+    }
+    let unary_ns = histogram_mean_ns(&unary_latency);
+    let direct_ns = histogram_mean_ns(&direct_latency);
+    Ok(json!({
+        "samples": SETUP_SAMPLES,
+        "counterbalanced_start": if direct_first { "direct" } else { "unary" },
+        "unary": unary_latency.summary_json(),
+        "direct": direct_latency.summary_json(),
+        "direct_reduction_percent": reduction_percent(unary_ns, direct_ns),
+        "threshold_percent": 25,
+    }))
+}
+
+fn reduction_percent(control: u64, candidate: u64) -> f64 {
+    if control == 0 {
+        return 0.0;
+    }
+    100.0 * (control.saturating_sub(candidate) as f64) / control as f64
+}
+
+fn ratio_percent(numerator: u64, denominator: u64) -> f64 {
+    if denominator == 0 {
+        return 0.0;
+    }
+    100.0 * numerator as f64 / denominator as f64
+}
+
+fn histogram_mean_ns(histogram: &LatencyHistogram) -> u64 {
+    histogram
+        .summary_json()
+        .get("mean_ns")
+        .and_then(Value::as_u64)
+        .unwrap_or(0)
+}
+
+fn read_stage_mean_ns(evidence: &RiffDbShutdownEvidence) -> u64 {
+    evidence.read_stages.iter().fold(0_u64, |total, stage| {
+        total.saturating_add(
+            stage
+                .sum_us
+                .saturating_mul(1_000)
+                .checked_div(stage.count)
+                .unwrap_or(0),
+        )
+    })
 }
 
 fn run_postgres_safe_app_twin(
@@ -619,6 +892,8 @@ fn parse_args() -> Result<Args, String> {
     let mut postgres_url = None;
     let mut bounded_session_shadow = false;
     let mut bounded_session_first = false;
+    let mut direct_exclusive_probe = false;
+    let mut direct_first = false;
     let mut arguments = env::args_os().skip(1);
     while let Some(argument) = arguments.next() {
         let argument = argument
@@ -699,6 +974,8 @@ fn parse_args() -> Result<Args, String> {
             }
             "--bounded-session-shadow" => bounded_session_shadow = true,
             "--bounded-session-first" => bounded_session_first = true,
+            "--direct-exclusive-probe" => direct_exclusive_probe = true,
+            "--direct-first" => direct_first = true,
             "--help" | "-h" => {
                 return Err(
                     "usage: riffdb-client-transport-diagnostic --riffdbd-bin PATH \
@@ -706,6 +983,7 @@ fn parse_args() -> Result<Args, String> {
                      [--clients 1,8,32] \
                      [--bounded-session-shadow] \
                      [--bounded-session-first] \
+                     [--direct-exclusive-probe] [--direct-first] \
                      [--postgres-url URL] \
                      [--samples-per-client 1..10000] [--warmup-per-client 0..1000]"
                         .to_owned(),
@@ -717,6 +995,9 @@ fn parse_args() -> Result<Args, String> {
     let riffdbd_bin = riffdbd_bin.ok_or_else(|| "--riffdbd-bin is required".to_owned())?;
     if bounded_session_first && !bounded_session_shadow {
         return Err("--bounded-session-first requires --bounded-session-shadow".to_owned());
+    }
+    if direct_first && !direct_exclusive_probe {
+        return Err("--direct-first requires --direct-exclusive-probe".to_owned());
     }
     if !riffdbd_bin.is_file() {
         return Err(format!(
@@ -734,6 +1015,8 @@ fn parse_args() -> Result<Args, String> {
         postgres_url,
         bounded_session_shadow,
         bounded_session_first,
+        direct_exclusive_probe,
+        direct_first,
     })
 }
 

@@ -8,13 +8,14 @@ publish.workspace = true
 
 [features]
 default = []
-test-fixtures = []
+test-fixtures = ["dep:prost", "dep:riffdb-api-exclusive", "dep:riffdb-proto", "tokio/io-util"]
 
 [dependencies]
 axum = { version = "=0.8.9", default-features = false, features = ["http1", "tokio"] }
 futures-util = { version = "=0.3.33", default-features = false, features = ["async-await", "std"] }
 getrandom = { version = "=0.3.4", default-features = false }
 riffdb-auth = { version = "0.1.0", path = "../riffdb-auth", default-features = false }
+riffdb-api-exclusive = { version = "0.1.0", path = "../riffdb-api-exclusive", default-features = false, optional = true }
 riffdb-api-mcp = { version = "0.1.0", path = "../riffdb-api-mcp", default-features = false, features = ["streamable-http"] }
 riffdb-api-grpc = { version = "0.1.0", path = "../riffdb-api-grpc", default-features = false, features = ["server"] }
 riffdb-application = { version = "0.1.0", path = "../riffdb-application", default-features = false }
@@ -29,6 +30,7 @@ riffdb-idempotency = { version = "0.1.0", path = "../riffdb-idempotency", defaul
 riffdb-outbox = { version = "0.1.0", path = "../riffdb-outbox", default-features = false }
 riffdb-observability = { version = "0.1.0", path = "../riffdb-observability", default-features = false }
 riffdb-policy = { version = "0.1.0", path = "../riffdb-policy", default-features = false }
+riffdb-proto = { version = "0.1.0", path = "../riffdb-proto", default-features = false, optional = true }
 riffdb-projection = { version = "0.1.0", path = "../riffdb-projection", default-features = false }
 riffdb-query-executor = { version = "0.1.0", path = "../riffdb-query-executor", default-features = false }
 riffdb-query-ir = { version = "0.1.0", path = "../riffdb-query-ir", default-features = false }
@@ -41,6 +43,7 @@ rustls-pki-types = { version = "=1.15.1", default-features = false, features = [
 rustls-webpki = { version = "=0.103.13", default-features = false, features = ["std"] }
 serde = { version = "=1.0.229", default-features = false, features = ["derive", "std"] }
 serde_json = { version = "=1.0.150", default-features = false, features = ["std"] }
+prost = { version = "=0.14.4", default-features = false, features = ["std"], optional = true }
 tokio = { version = "=1.52.0", default-features = false, features = ["macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
 tokio-stream = { version = "=0.1.18", default-features = false, features = ["net"] }
 tokio-rustls = { version = "=0.26.4", default-features = false, features = ["logging", "ring", "tls12"] }
