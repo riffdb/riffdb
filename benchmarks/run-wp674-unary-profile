@@ -48,6 +48,10 @@ esac
 
 mkdir -p "$output_dir"
 output_dir="$(cd "$output_dir" && pwd)"
+attempts_dir="$output_dir/attempts"
+mkdir -p "$attempts_dir"
+accepted_index="$output_dir/accepted-attempts.tsv"
+: >"$accepted_index"
 task_tmp_root="${RIFFDB_TMP_ROOT:-$HOME/tmp}"
 mkdir -p "$task_tmp_root"
 export TMPDIR="$task_tmp_root"
@@ -69,35 +73,183 @@ scenarios=(
     open_ticket_with_labels
 )
 
-for scenario in "${scenarios[@]}"; do
-    report="$output_dir/safe-app-$scenario.json"
-    printf 'WP-674 %s: safe-app %s\n' "$profile" "$scenario"
-    RIFFDB_APP_BASELINE_UNARY_QUALIFICATION_SCENARIO="$scenario" \
-        ./benchmarks/run-app-baseline \
-            --full --samples 100 --warmup 20 --reps 3 --require-stable \
-            --postgres-comparator safe-app --output "$report"
+host_invalid_attempt() {
+    local report="$1"
+    [[ -f "$report" ]] && jq -e '
+      .schema == "riffdb.app-baseline/v1"
+      and (
+        .host_validity.preflight.valid != true
+        or .host_validity.postflight.valid != true
+      )
+    ' "$report" >/dev/null 2>&1
+}
+
+safe_app_attempt_shape_is_exact() {
+    local report="$1" scenario="$2"
     jq -e --arg scenario "$scenario" '
       .schema == "riffdb.app-baseline/v1"
-      and .evidence_eligibility.eligible == true
+      and .evidence_eligibility.host_idle == true
+      and .evidence_eligibility.correctness_clean == true
+      and .evidence_eligibility.same_device_comparable == true
+      and .evidence_eligibility.comparison_complete == true
+      and .qualification_candidate.schema == "riffdb.app-baseline-qualified-candidate/v1"
       and .unary_qualification.scenario == $scenario
       and .unary_qualification.process_generations == 3
       and .unary_qualification.same_scenario_warmups_after_restart == 20
       and .unary_qualification.measured_operations_per_generation == 100
+      and (.comparisons.unary_rep_summaries[$scenario] != null)
     ' "$report" >/dev/null
+}
+
+safe_app_attempt_spread_is_valid() {
+    local report="$1" scenario="$2"
+    jq -e --arg scenario "$scenario" '
+      .comparisons.unary_rep_summaries[$scenario] as $summary |
+      [
+        $summary.postgres.p50_ns,
+        $summary.postgres.p95_ns,
+        $summary.riffdb.p50_ns,
+        $summary.riffdb.p95_ns,
+        $summary.ratios_riffdb_over_postgres.p50,
+        $summary.ratios_riffdb_over_postgres.p95
+      ] | all(.reps == 3 and .spread_ratio <= 1.20)
+    ' "$report" >/dev/null
+}
+
+minimal_attempt_shape_is_exact() {
+    local report="$1"
+    jq -e '
+      .schema == "riffdb.app-baseline/v1"
+      and .evidence_eligibility.host_idle == true
+      and .evidence_eligibility.correctness_clean == true
+      and .evidence_eligibility.same_device_comparable == true
+      and .evidence_eligibility.comparison_complete == true
+      and .qualification_candidate.schema == "riffdb.app-baseline-qualified-candidate/v1"
+      and ((.comparisons.unary_rep_summaries | length) == 14)
+    ' "$report" >/dev/null
+}
+
+minimal_attempt_spread_is_valid() {
+    local report="$1"
+    jq -e '
+      [.comparisons.unary_rep_summaries[] |
+        .postgres.p50_ns,
+        .postgres.p95_ns,
+        .riffdb.p50_ns,
+        .riffdb.p95_ns,
+        .ratios_riffdb_over_postgres.p50,
+        .ratios_riffdb_over_postgres.p95
+      ] | all(.reps == 3 and .spread_ratio <= 1.20)
+    ' "$report" >/dev/null
+}
+
+for scenario in "${scenarios[@]}"; do
+    report="$output_dir/safe-app-$scenario.json"
+    accepted=0
+    for attempt in 1 2 3; do
+        attempt_report="$attempts_dir/safe-app-$scenario-attempt-$attempt.json"
+        printf 'WP-674 %s: safe-app %s attempt %s/3\n' "$profile" "$scenario" "$attempt"
+        set +e
+        RIFFDB_APP_BASELINE_UNARY_QUALIFICATION_SCENARIO="$scenario" \
+        RIFFDB_APP_BASELINE_DEFER_UNARY_STABILITY=1 \
+        RIFFDB_APP_BASELINE_WP674_RECEIPT=1 \
+            ./benchmarks/run-app-baseline \
+                --full --samples 100 --warmup 20 --reps 3 --require-stable \
+                --postgres-comparator safe-app --output "$attempt_report"
+        attempt_status=$?
+        set -e
+        if ((attempt_status != 0)); then
+            if host_invalid_attempt "$attempt_report"; then
+                printf 'WP-674 %s: retaining host-invalid %s attempt %s\n' \
+                    "$profile" "$scenario" "$attempt" >&2
+                continue
+            fi
+            printf 'WP-674 %s: non-retryable failure for %s attempt %s\n' \
+                "$profile" "$scenario" "$attempt" >&2
+            exit 1
+        fi
+        if ! safe_app_attempt_shape_is_exact "$attempt_report" "$scenario"; then
+            printf 'WP-674 %s: non-retryable evidence drift for %s attempt %s\n' \
+                "$profile" "$scenario" "$attempt" >&2
+            exit 1
+        fi
+        if safe_app_attempt_spread_is_valid "$attempt_report" "$scenario"; then
+            if ! jq -e '.evidence_eligibility.eligible == true' \
+                "$attempt_report" >/dev/null; then
+                printf 'WP-674 %s: non-retryable eligibility drift for %s attempt %s\n' \
+                    "$profile" "$scenario" "$attempt" >&2
+                exit 1
+            fi
+            cp "$attempt_report" "$report"
+            printf '%s\t%s\n' "$scenario" "$attempt" >>"$accepted_index"
+            accepted=1
+            break
+        fi
+        printf 'WP-674 %s: retaining rejected %s attempt %s\n' \
+            "$profile" "$scenario" "$attempt" >&2
+    done
+    if ((accepted == 0)); then
+        printf 'WP-674 %s: no valid bounded attempt for %s\n' "$profile" "$scenario" >&2
+        exit 1
+    fi
 done
 
 minimal="$output_dir/minimal.json"
-printf 'WP-674 %s: complete minimal-PostgreSQL disclosure\n' "$profile"
-./benchmarks/run-app-baseline \
-    --full --samples 100 --warmup 20 --reps 3 --require-stable \
-    --postgres-comparator minimal --output "$minimal"
+minimal_accepted=0
+for attempt in 1 2 3; do
+    attempt_report="$attempts_dir/minimal-attempt-$attempt.json"
+    printf 'WP-674 %s: complete minimal-PostgreSQL disclosure attempt %s/3\n' \
+        "$profile" "$attempt"
+    set +e
+    RIFFDB_APP_BASELINE_DEFER_UNARY_STABILITY=1 \
+    RIFFDB_APP_BASELINE_WP674_RECEIPT=1 \
+        ./benchmarks/run-app-baseline \
+            --full --samples 100 --warmup 20 --reps 3 --require-stable \
+            --postgres-comparator minimal --output "$attempt_report"
+    attempt_status=$?
+    set -e
+    if ((attempt_status != 0)); then
+        if host_invalid_attempt "$attempt_report"; then
+            printf 'WP-674 %s: retaining host-invalid minimal attempt %s\n' \
+                "$profile" "$attempt" >&2
+            continue
+        fi
+        printf 'WP-674 %s: non-retryable minimal failure at attempt %s\n' \
+            "$profile" "$attempt" >&2
+        exit 1
+    fi
+    if ! minimal_attempt_shape_is_exact "$attempt_report"; then
+        printf 'WP-674 %s: non-retryable minimal evidence drift at attempt %s\n' \
+            "$profile" "$attempt" >&2
+        exit 1
+    fi
+    if minimal_attempt_spread_is_valid "$attempt_report"; then
+        if ! jq -e '.evidence_eligibility.eligible == true' \
+            "$attempt_report" >/dev/null; then
+            printf 'WP-674 %s: non-retryable minimal eligibility drift at attempt %s\n' \
+                "$profile" "$attempt" >&2
+            exit 1
+        fi
+        cp "$attempt_report" "$minimal"
+        printf 'minimal\t%s\n' "$attempt" >>"$accepted_index"
+        minimal_accepted=1
+        break
+    fi
+    printf 'WP-674 %s: retaining rejected minimal attempt %s\n' \
+        "$profile" "$attempt" >&2
+done
+if ((minimal_accepted == 0)); then
+    printf 'WP-674 %s: no valid bounded minimal disclosure attempt\n' "$profile" >&2
+    exit 1
+fi
 
 source_revision="$(git rev-parse --verify HEAD)"
 cargo_lock_sha256="$(sha256sum Cargo.lock | awk '{print $1}')"
 harness_sha256="$(sha256sum benchmarks/run-app-baseline | awk '{print $1}')"
 fragment="$output_dir/profile-fragment.json"
 python3 - "$fragment" "$profile" "$hardware_class" "$source_revision" \
-    "$cargo_lock_sha256" "$harness_sha256" "$minimal" "${scenarios[@]}" <<'PY'
+    "$cargo_lock_sha256" "$harness_sha256" "$minimal" "$accepted_index" \
+    "${scenarios[@]}" <<'PY'
 import hashlib
 import json
 from pathlib import Path
@@ -111,6 +263,7 @@ import sys
     cargo_lock_sha256,
     harness_sha256,
     minimal_path,
+    accepted_index_path,
     *scenarios,
 ) = sys.argv[1:]
 root = Path(fragment_path).parent
@@ -126,6 +279,28 @@ reports = []
 for scenario in scenarios:
     path = root / f"safe-app-{scenario}.json"
     reports.append({"scenario": scenario, **reference(path)})
+accepted = {}
+for line in Path(accepted_index_path).read_text(encoding="utf-8").splitlines():
+    scenario, attempt = line.split("\t")
+    accepted[scenario] = int(attempt)
+attempt_reports = []
+for scenario in scenarios:
+    for attempt in range(1, accepted[scenario] + 1):
+        path = root / "attempts" / f"safe-app-{scenario}-attempt-{attempt}.json"
+        attempt_reports.append({
+            "scenario": scenario,
+            "attempt": attempt,
+            "status": "accepted" if attempt == accepted[scenario] else "rejected",
+            **reference(path),
+        })
+minimal_attempt_reports = []
+for attempt in range(1, accepted["minimal"] + 1):
+    path = root / "attempts" / f"minimal-attempt-{attempt}.json"
+    minimal_attempt_reports.append({
+        "attempt": attempt,
+        "status": "accepted" if attempt == accepted["minimal"] else "rejected",
+        **reference(path),
+    })
 fragment = {
     "schema": "riffdb.wp-674-unary-profile/v1",
     "source_revision": source_revision,
@@ -135,7 +310,9 @@ fragment = {
         "id": profile,
         "hardware_class": hardware_class,
         "reports": reports,
+        "attempt_reports": attempt_reports,
         "minimal_report": reference(Path(minimal_path)),
+        "minimal_attempt_reports": minimal_attempt_reports,
     },
 }
 Path(fragment_path).write_text(json.dumps(fragment, indent=2) + "\n", encoding="utf-8")

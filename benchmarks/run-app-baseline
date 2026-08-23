@@ -377,6 +377,7 @@ postgres_comparator=minimal
 output=
 reps=
 require_stable=0
+defer_unary_stability="${RIFFDB_APP_BASELINE_DEFER_UNARY_STABILITY:-0}"
 seed_only=0
 while (($#)); do
     case "$1" in
@@ -559,6 +560,16 @@ fi
 host_validity_preflight=
 host_validity_postflight=
 if ((require_stable)); then
+    if [[ "$defer_unary_stability" != 0 && "$defer_unary_stability" != 1 ]]; then
+        printf 'RIFFDB_APP_BASELINE_DEFER_UNARY_STABILITY must be 0 or 1\n' >&2
+        exit 2
+    fi
+    if [[ "$defer_unary_stability" == 1 \
+       && -z "${RIFFDB_APP_BASELINE_UNARY_QUALIFICATION_SCENARIO:-}" \
+       && "${RIFFDB_APP_BASELINE_WP674_RECEIPT:-0}" != 1 ]]; then
+        printf 'deferred stability is confined to a WP-674 evidence receipt\n' >&2
+        exit 2
+    fi
     if ! git diff --quiet --ignore-submodules -- || \
        ! git diff --cached --quiet --ignore-submodules -- || \
        [[ -n "$(git ls-files --others --exclude-standard)" ]]; then
@@ -868,7 +879,9 @@ extra_args+=(--database-root "$database_root")
 extra_args+=(--postgres-data-host-path "$postgres_database_root")
 extra_args+=(--postgres-comparator "$postgres_comparator")
 [[ -n "$reps" ]] && extra_args+=(--reps "$reps")
-((require_stable)) && extra_args+=(--require-stable)
+if ((require_stable)) && [[ "$defer_unary_stability" == 0 ]]; then
+    extra_args+=(--require-stable)
+fi
 ((seed_only)) && extra_args+=(--seed-only)
 export RIFFDB_APP_BASELINE_POSTGRES_DATA_HOST="$postgres_database_root"
 ((assert_write_parity)) && extra_args+=(--assert-write-parity)
