@@ -13478,6 +13478,62 @@ work_packages:
       removed before commit. Unary remains the generated-operation default, the optional generic
       session remains unchanged, PERF-018 is unchanged, and WP-623 stays open.
   human_review_triggers: *id001
+- id: WP-666
+  name: Post-readiness derived catch-up interference attribution
+  depends_on: [WP-455, WP-623, WP-665]
+  objective: Determine whether columnar and sibling derived catch-up running after public readiness
+    materially inflates ordinary generated-operation latency on general-purpose cloud hardware.
+    Separate background replay CPU, storage, and scheduling interference from the retained unary
+    gRPC path before proposing another transport or derived-worker candidate.
+  requirements: [PERF-002, PERF-008, PERF-018, PRJ-001, PRJ-002, PRJ-003, PRJ-004]
+  required_adrs: [ADR-0055, ADR-0056, ADR-0086, ADR-0087, ADR-0123, ADR-0140]
+  allowed_paths: [work_packages.yaml, crates/riffdb-columnar/**,
+    crates/riffdb-server/src/columnar_worker.rs, crates/riffdb-server/src/exact_text_worker.rs,
+    crates/riffdb-observability/**, examples/app-baseline/**, benchmarks/**, scripts/**,
+    docs/performance/**]
+  deliverables:
+  - A non-evidentiary, hard-bounded diagnostic control that measures the unchanged generated unary
+    operation either immediately after restart or after an explicit post-restart settle interval,
+    records the interval in its report, and cannot alter the frozen PERF-018 comparator
+  - Paired current-HEAD N1 and E2 full-dataset c1 receipts, with process and artifact identity,
+    showing immediate versus settled caller, API-neutral service, outside-service, CPU, storage,
+    readiness, and derived-frontier behavior
+  - A closed causal ledger naming the CPU and off-CPU work that overlaps measured requests and
+    predeclared Amdahl bounds for any production candidate; benchmark waiting is never credited as
+    product improvement
+  - A value-free closure that either sizes one bounded derived-worker scheduling/pay-once candidate
+    for separate human review or rejects derived catch-up as the remaining unary mechanism
+  acceptance_commands:
+  - cargo +1.97.0 test --manifest-path examples/app-baseline/Cargo.toml --workspace
+  - cargo +1.97.0 test -p riffdb-columnar -p riffdb-server -p riffdb-observability --all-features
+  - ./scripts/check-workspace-policy
+  - ./scripts/check-requirement-coverage
+  - cargo +1.97.0 fmt --all -- --check
+  - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: The paired immediate and settled cells close within five percent and either prove at
+    least twenty percent of current N1 and E2 caller latency is caused by overlapping derived work,
+    with one evidence-sized bounded production direction, or reject that mechanism without a
+    production change. This diagnostic never qualifies WP-623 or changes PERF-018.
+  standing_design_tests:
+    interface_safety: The control exists only in the non-evidentiary diagnostic binary; no server,
+      generated client, application, agent, or release comparator can request delayed readiness,
+      relaxed freshness, reduced validation, worker priority, or omitted derived work.
+    scale: The diagnostic interval is explicitly reported and capped at 120 seconds; receipts,
+      stage families, frontiers, CPU classes, storage counters, and process observations remain
+      fixed-cardinality and retain no application values, keys, credentials, or per-operation
+      history.
+  closure:
+    status: complete_without_production_change
+    evidence: docs/performance/wp-666-derived-catchup-attribution.md
+    decision: A temporary diagnostic-only 0-to-120-second post-restart settle control and an N1
+      CPU profile proved columnar replay overlaps immediate reads and can delay shutdown, but a
+      40-second settle improved synchronous unary mean only 0.49 percent on N1 and 4.38 percent on
+      E2; the asynchronous shadow improved 1.92 percent on N1 and regressed 9.64 percent on E2.
+      This misses the twenty-percent causal threshold on both profiles. The control was removed,
+      no benchmark wait or server behavior changed, PERF-018 is unchanged, and WP-623 remains
+      open. Interruptible bounded derived catch-up is a separate lifecycle follow-up, not a unary
+      performance candidate.
+  human_review_triggers: *id001
 - id: WP-632
   name: Frozen-client transport attribution and asynchronous shadow diagnostic
   depends_on: [WP-627]
