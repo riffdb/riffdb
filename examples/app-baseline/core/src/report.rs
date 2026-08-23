@@ -259,12 +259,19 @@ pub(crate) fn backend_json(backend: &BackendReport) -> Value {
     value
 }
 
+fn is_postgres_backend(backend_id: &str) -> bool {
+    matches!(
+        backend_id,
+        "postgres_sql" | "postgres_minimal" | "postgres_safe_app"
+    )
+}
+
 /// Asserts board scenario last_row_counts match across backends.
 ///
 /// Called after both backends have measured so a silent cardinality skew cannot
 /// masquerade as a fair p50 ratio.
 pub fn assert_board_last_row_counts_equal(backends: &[BackendReport]) -> Result<(), String> {
-    let Some(postgres) = backends.iter().find(|b| b.backend_id == "postgres_sql") else {
+    let Some(postgres) = backends.iter().find(|b| is_postgres_backend(b.backend_id)) else {
         return Ok(());
     };
     let Some(riffdb) = backends
@@ -359,14 +366,14 @@ fn summary_json(summary: &SampleSummary) -> Value {
 fn build_comparisons(backends: &[BackendReport]) -> Value {
     let postgres = backends
         .iter()
-        .find(|backend| backend.backend_id == "postgres_sql");
+        .find(|backend| is_postgres_backend(backend.backend_id));
     let riffdb = backends
         .iter()
         .find(|backend| backend.backend_id == "riffdb_public_grpc");
     let (Some(postgres), Some(riffdb)) = (postgres, riffdb) else {
         return json!({
             "available": false,
-            "reason": "both postgres_sql and riffdb_public_grpc backends required for ratios",
+            "reason": "one recognized PostgreSQL comparator and riffdb_public_grpc are required for ratios",
         });
     };
 
@@ -470,7 +477,10 @@ fn build_comparisons(backends: &[BackendReport]) -> Value {
 
 #[cfg(test)]
 mod tests {
-    use super::{BOARD_PAGE_SQL, assert_board_ticket_sequences_equal, backend_json, build_report};
+    use super::{
+        BOARD_PAGE_SQL, assert_board_ticket_sequences_equal, backend_json, build_report,
+        is_postgres_backend,
+    };
     use crate::{
         BackendReport, SampleSet, Scale, ScenarioId, ScenarioResult, board_marginal_ns_per_row,
         board_projected_marginal_from_results,
@@ -485,6 +495,52 @@ mod tests {
         assert!(BOARD_PAGE_SQL.contains("ticket_id::text"));
         assert!(BOARD_PAGE_SQL.contains("ORDER BY ticket_id ASC"));
         assert!(BOARD_PAGE_SQL.contains("LIMIT $4"));
+    }
+
+    #[test]
+    fn comparator_identity_accepts_both_frozen_profiles_and_legacy_id() {
+        assert!(is_postgres_backend("postgres_safe_app"));
+        assert!(is_postgres_backend("postgres_minimal"));
+        assert!(is_postgres_backend("postgres_sql"));
+        assert!(!is_postgres_backend("postgres"));
+        assert!(!is_postgres_backend("postgres_safe_app_modified"));
+    }
+
+    #[test]
+    fn safe_application_comparator_builds_unary_ratios() {
+        let backend = |backend_id, nanos| {
+            let mut samples = SampleSet::default();
+            samples.record(std::time::Duration::from_nanos(nanos));
+            BackendReport {
+                backend_id,
+                description: "test".to_owned(),
+                guarantee_notes: Vec::new(),
+                seed_ns: nanos,
+                seed_rows: 1,
+                scenarios: vec![ScenarioResult {
+                    scenario: ScenarioId::PointGetTicket,
+                    samples,
+                    last_row_count: 1,
+                    encoded_request_bytes: 35,
+                    encoded_response_bytes: 101,
+                }],
+                write_completion_groups: None,
+            }
+        };
+        let report = build_report(
+            Scale::smoke(),
+            0,
+            1,
+            &[
+                backend("postgres_safe_app", 100),
+                backend("riffdb_public_grpc", 200),
+            ],
+        );
+        assert_eq!(report["comparisons"]["available"], true);
+        assert_eq!(
+            report["comparisons"]["scenarios"][0]["ratio_riffdb_over_postgres"],
+            2.0
+        );
     }
 
     #[test]
