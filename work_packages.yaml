@@ -13379,6 +13379,16 @@ work_packages:
       waits, setup, idle, lifetime, cancellation, shutdown, and telemetry are hard-bounded
       independently of database size and duration; no result, authorization decision, or full-state
       cache survives delivery.
+  closure:
+    status: complete_without_production_activation
+    evidence: docs/performance/wp-664-established-connection-closure.md
+    decision: The corrected lifecycle ledger passed its setup and first-operation gates in the
+      initial N1/E2 loopback cells, but E2's third loopback generation reduced complete operation
+      latency by only 34.66 percent and outside-service latency by only 53.25 percent against 40
+      and 55 percent minima. E2's first verified-TLS generation also reduced the accepted-session
+      first operation by only 24.40 percent against 25 percent. The reject-first matrix stopped,
+      all candidate implementation was removed, unary gRPC remains the only generated-operation
+      transport, PERF-018 is unchanged, and WP-623 remains open.
   human_review_triggers: *id001
 - id: WP-632
   name: Frozen-client transport attribution and asynchronous shadow diagnostic
