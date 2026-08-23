@@ -79,7 +79,7 @@ impl ApplicationSessionIdentity {
         })
     }
 
-    pub(crate) fn open_request(&self, request_id: Vec<u8>) -> v1::ApplicationSessionOpen {
+    fn open_request(&self, request_id: Vec<u8>) -> v1::ApplicationSessionOpen {
         v1::ApplicationSessionOpen {
             protocol_version: APPLICATION_SESSION_PROTOCOL_V1,
             contract: Some(riffdb_proto::app::v1::ContractSelector {
@@ -98,7 +98,7 @@ impl ApplicationSessionIdentity {
         }
     }
 
-    pub(crate) fn matches_opened(&self, opened: &v1::ApplicationSessionOpened) -> bool {
+    fn matches_opened(&self, opened: &v1::ApplicationSessionOpened) -> bool {
         let Some(contract) = opened.contract.as_ref() else {
             return false;
         };
@@ -413,12 +413,12 @@ impl Drop for PendingCallGuard {
 }
 
 #[derive(Clone, Copy)]
-pub(crate) enum SessionExpected {
+enum SessionExpected {
     Command,
     Query,
 }
 
-pub(crate) fn session_failure(
+fn session_failure(
     failure: v1::ApplicationSessionFailure,
     expected: SessionExpected,
 ) -> ClientError {
@@ -469,7 +469,7 @@ pub(crate) fn session_failure(
     }
 }
 
-pub(crate) fn invalid_inbound() -> ClientError {
+fn invalid_inbound() -> ClientError {
     ClientError::Protocol(ProtocolFailure::new(
         ProtocolFailureKind::InvalidInboundMessage,
     ))

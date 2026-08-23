@@ -28,7 +28,7 @@ use riffdb_client_rust::{
     ApplicationClientError, ApplicationContract, ApplicationUuid, ApplicationValue, AttemptBudget,
     ApplicationSessionIdentity, BearerCredential, CallMetadata, GeneratedBatchError,
     GeneratedBatchOptions, GeneratedBatchResult, NamedQuery, NamedQueryResult,
-    ExclusiveDiagnosticConfiguration, StableApplicationClient,
+    StableApplicationClient,
 };
 use riffdb_ticketdesk::{
     AddProjectMemberInput, AttachLabelInput, BoardPage50Params, BoardPage50Result,
@@ -54,8 +54,6 @@ pub use server::{
     ServerStartOptions, min_free_bytes_for_full, resolve_bench_root, resolve_database_root,
     sweep_stale_session_dirs,
 };
-#[doc(hidden)]
-pub use riffdb_client_rust::ExclusiveDiagnosticOperationEvidence;
 
 /// Default in-flight seed commands (bounded client concurrency, not a bulk RPC).
 ///
@@ -136,44 +134,6 @@ pub struct PairedClientResult<T> {
 }
 
 impl RiffDbPublicBackend {
-    /// Enables WP-670's private diagnostic transport beneath the existing
-    /// generated facade. No application-facing selector is created.
-    pub async fn enable_exclusive_diagnostic(
-        &mut self,
-        address: std::net::SocketAddr,
-        trust_root: Option<std::path::PathBuf>,
-    ) -> Result<(), RiffDbError> {
-        let identity = ApplicationSessionIdentity::new(
-            "TicketDesk".to_owned(),
-            1,
-            self.contract_bundle_hash,
-            vec![self.query_module_hash],
-            TICKETDESK_APPLICATION_LOCK_HASH,
-            1,
-        )
-        .map_err(|_| RiffDbError::Connection)?;
-        self.transport
-            .enable_exclusive_diagnostic(
-                ExclusiveDiagnosticConfiguration {
-                    address,
-                    trust_root,
-                    server_name: "127.0.0.1".to_owned(),
-                },
-                identity,
-                &self.metadata,
-            )
-            .await
-            .map_err(map_app)
-    }
-
-    /// Takes and resets private per-operation stage evidence.
-    #[must_use]
-    pub fn take_exclusive_diagnostic_evidence(
-        &self,
-    ) -> Option<Vec<ExclusiveDiagnosticOperationEvidence>> {
-        self.transport.take_exclusive_diagnostic_evidence()
-    }
-
     /// One lazily-connected shared channel for the projected wire path, so
     /// timed projected samples ride warm HTTP/2 exactly like compiled ones
     /// ride the client's persistent transport (review must-fix: symmetric

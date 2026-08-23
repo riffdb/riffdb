@@ -96,15 +96,6 @@ fn locked_version(package: &str) -> &'static str {
 fn production_transport_features_are_exact_default_disabled_and_confined() {
     let production = production_dependencies();
     assert!(MANIFEST.contains("[features]\ndefault = []"));
-    assert!(MANIFEST.contains(
-        "test-fixtures = [\"dep:prost\", \"dep:riffdb-api-exclusive\", \"dep:riffdb-proto\", \"riffdb-api-grpc/exclusive-diagnostic\", \"tokio/io-util\"]"
-    ));
-    assert!(production.contains(
-        "riffdb-proto = { version = \"0.1.0\", path = \"../riffdb-proto\", default-features = false, optional = true }"
-    ));
-    assert!(production.contains(
-        "riffdb-api-exclusive = { version = \"0.1.0\", path = \"../riffdb-api-exclusive\", default-features = false, optional = true }"
-    ));
     assert!(production.contains(
         "riffdb-api-grpc = { version = \"0.1.0\", path = \"../riffdb-api-grpc\", default-features = false, features = [\"server\"] }"
     ));
@@ -141,6 +132,7 @@ fn production_transport_features_are_exact_default_disabled_and_confined() {
 
     for forbidden in [
         "riffdb-client-rust",
+        "riffdb-proto",
         "riffdb-storage-memory",
         "base64 =",
         "features = [\"transport\"]",

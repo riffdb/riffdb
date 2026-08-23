@@ -489,138 +489,6 @@ pub struct GrpcApplication {
 }
 
 impl GrpcApplication {
-    /// Validates one exact application-session identity through the ordinary
-    /// authenticated catalog boundary without retaining an allow decision.
-    pub async fn validate_application_session_open(
-        &self,
-        metadata: MetadataMap,
-        open: &v1::ApplicationSessionOpen,
-    ) -> Result<v1::ApplicationSessionOpened, Status> {
-        if open.protocol_version != APPLICATION_SESSION_PROTOCOL_V1
-            || open.requested_max_in_flight == 0
-            || open.requested_max_in_flight as usize > MAX_APPLICATION_SESSION_IN_FLIGHT
-        {
-            return Err(Status::invalid_argument(EMERGENCY_INTERNAL_MESSAGE));
-        }
-        let contract = open
-            .contract
-            .clone()
-            .ok_or_else(|| Status::invalid_argument(EMERGENCY_INTERNAL_MESSAGE))?;
-        let mut catalog = Request::new(app_v1::GetApplicationCatalogRequest {
-            contract: Some(contract.clone()),
-            limit: 1,
-            cursor: None,
-            request_id: open.request_id.clone(),
-        });
-        *catalog.metadata_mut() = metadata;
-        let described = ApplicationQueryService::get_application_catalog(self, catalog)
-            .await?
-            .into_inner();
-        if described.contract_lineage != contract.lineage
-            || described.contract_version != contract.version
-            || described.contract_bundle_hash != contract.bundle_hash
-        {
-            return Err(status_from_application_error(&ApplicationError::new(
-                ApplicationErrorCode::ContractMismatch,
-                ApplicationOperation::DescribeContract,
-                ApplicationErrorContext::empty(),
-                None,
-            )));
-        }
-        if open.query_module_hashes.iter().any(|selected| {
-            !described
-                .query_module_hashes
-                .iter()
-                .any(|active| active == selected)
-        }) {
-            return Err(status_from_application_error(&ApplicationError::new(
-                ApplicationErrorCode::ModuleUnavailable,
-                ApplicationOperation::DescribeContract,
-                ApplicationErrorContext::empty(),
-                None,
-            )));
-        }
-        Ok(v1::ApplicationSessionOpened {
-            protocol_version: APPLICATION_SESSION_PROTOCOL_V1,
-            contract: Some(contract),
-            query_module_hashes: open.query_module_hashes.clone(),
-            application_lock_hash: open.application_lock_hash.clone(),
-            maximum_in_flight: open.requested_max_in_flight,
-        })
-    }
-
-    /// Executes one private, serial diagnostic operation through the same
-    /// current-authority handlers as unary gRPC and the bounded session.
-    #[cfg(feature = "exclusive-diagnostic")]
-    #[doc(hidden)]
-    pub async fn execute_exclusive_diagnostic_operation(
-        &self,
-        metadata: MetadataMap,
-        opened: &v1::ApplicationSessionOpened,
-        message: v1::ApplicationSessionRequest,
-    ) -> Result<v1::ApplicationSessionResponse, Status> {
-        if message.correlation_id == 0 {
-            return Err(Status::invalid_argument(EMERGENCY_INTERNAL_MESSAGE));
-        }
-        let request = message
-            .request
-            .ok_or_else(|| Status::invalid_argument(EMERGENCY_INTERNAL_MESSAGE))?;
-        let kind = match &request {
-            v1::application_session_request::Request::Command(_) => SessionOperationKind::Command,
-            v1::application_session_request::Request::Query(_) => SessionOperationKind::Query,
-            v1::application_session_request::Request::Open(_)
-            | v1::application_session_request::Request::Cancel(_) => {
-                return Err(Status::invalid_argument(EMERGENCY_INTERNAL_MESSAGE));
-            }
-        };
-        let contract = opened
-            .contract
-            .as_ref()
-            .ok_or_else(|| Status::internal(EMERGENCY_INTERNAL_MESSAGE))?;
-        if let Err(status) =
-            application_session_request_matches(&request, contract, &opened.query_module_hashes)
-        {
-            return Ok(application_session_failure(
-                message.correlation_id,
-                kind,
-                status,
-            ));
-        }
-        let result = match request {
-            v1::application_session_request::Request::Command(command) => {
-                let mut request = Request::new(command);
-                *request.metadata_mut() = metadata;
-                CommandService::execute(self, request)
-                    .await
-                    .map(|response| v1::ApplicationSessionResponse {
-                        correlation_id: message.correlation_id,
-                        response: Some(v1::application_session_response::Response::Command(
-                            response.into_inner(),
-                        )),
-                    })
-            }
-            v1::application_session_request::Request::Query(query) => {
-                let mut request = Request::new(query);
-                *request.metadata_mut() = metadata;
-                ApplicationQueryService::execute_query(self, request)
-                    .await
-                    .map(|response| v1::ApplicationSessionResponse {
-                        correlation_id: message.correlation_id,
-                        response: Some(v1::application_session_response::Response::Query(
-                            response.into_inner(),
-                        )),
-                    })
-            }
-            v1::application_session_request::Request::Open(_)
-            | v1::application_session_request::Request::Cancel(_) => {
-                return Err(Status::invalid_argument(EMERGENCY_INTERNAL_MESSAGE));
-            }
-        };
-        Ok(result.unwrap_or_else(|status| {
-            application_session_failure(message.correlation_id, kind, status)
-        }))
-    }
-
     /// Wires transport-only dependencies around the shared application service.
     #[must_use]
     pub fn new(lifecycle: Arc<dyn GrpcLifecycleRoute>, limits: GrpcRequestLimits) -> Self {
@@ -1910,18 +1778,56 @@ impl ApplicationSessionService for GrpcApplication {
         let Some(v1::application_session_request::Request::Open(open)) = first.request else {
             return Err(Status::invalid_argument(EMERGENCY_INTERNAL_MESSAGE));
         };
+        if open.protocol_version != APPLICATION_SESSION_PROTOCOL_V1
+            || open.requested_max_in_flight == 0
+            || open.requested_max_in_flight as usize > MAX_APPLICATION_SESSION_IN_FLIGHT
+        {
+            return Err(Status::invalid_argument(EMERGENCY_INTERNAL_MESSAGE));
+        }
+        let contract = open
+            .contract
+            .clone()
+            .ok_or_else(|| Status::invalid_argument(EMERGENCY_INTERNAL_MESSAGE))?;
+
         // Establishment proves the exact contract and every selected query
         // module under the same authenticated, authorized catalog boundary
         // used by unary clients. This grants no reusable allow decision: every
         // operation below re-enters its ordinary handler and authenticates
         // again.
-        let opened = self
-            .validate_application_session_open(metadata.clone(), &open)
-            .await?;
-        let contract = opened
-            .contract
-            .clone()
-            .ok_or_else(|| Status::internal(EMERGENCY_INTERNAL_MESSAGE))?;
+        let mut catalog = Request::new(app_v1::GetApplicationCatalogRequest {
+            contract: Some(contract.clone()),
+            limit: 1,
+            cursor: None,
+            request_id: open.request_id.clone(),
+        });
+        *catalog.metadata_mut() = metadata.clone();
+        let described = ApplicationQueryService::get_application_catalog(self, catalog)
+            .await?
+            .into_inner();
+        if described.contract_lineage != contract.lineage
+            || described.contract_version != contract.version
+            || described.contract_bundle_hash != contract.bundle_hash
+        {
+            return Err(status_from_application_error(&ApplicationError::new(
+                ApplicationErrorCode::ContractMismatch,
+                ApplicationOperation::DescribeContract,
+                ApplicationErrorContext::empty(),
+                None,
+            )));
+        }
+        if open.query_module_hashes.iter().any(|selected| {
+            !described
+                .query_module_hashes
+                .iter()
+                .any(|active| active == selected)
+        }) {
+            return Err(status_from_application_error(&ApplicationError::new(
+                ApplicationErrorCode::ModuleUnavailable,
+                ApplicationOperation::DescribeContract,
+                ApplicationErrorContext::empty(),
+                None,
+            )));
+        }
 
         let maximum_in_flight = open.requested_max_in_flight as usize;
         let (output, receiver) = tokio::sync::mpsc::channel(maximum_in_flight + 1);
@@ -1930,11 +1836,11 @@ impl ApplicationSessionService for GrpcApplication {
                 correlation_id: first.correlation_id,
                 response: Some(v1::application_session_response::Response::Opened(
                     v1::ApplicationSessionOpened {
-                        protocol_version: opened.protocol_version,
-                        contract: opened.contract,
-                        query_module_hashes: opened.query_module_hashes,
-                        application_lock_hash: opened.application_lock_hash,
-                        maximum_in_flight: opened.maximum_in_flight,
+                        protocol_version: APPLICATION_SESSION_PROTOCOL_V1,
+                        contract: Some(contract.clone()),
+                        query_module_hashes: open.query_module_hashes.clone(),
+                        application_lock_hash: open.application_lock_hash,
+                        maximum_in_flight: open.requested_max_in_flight,
                     },
                 )),
             }))
