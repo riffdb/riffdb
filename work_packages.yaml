@@ -15800,3 +15800,55 @@ work_packages:
       telemetry, and evidence are fixed-bounded independently of history, database size, tenant
       count, completed operations, or process duration; no full-state or result cache is introduced.
   human_review_triggers: *id001
+- id: WP-673
+  name: Small-operation API-neutral service-floor attribution
+  depends_on: [WP-622, WP-638, WP-650, WP-670]
+  objective: After WP-670 removes transport as the next universal explanation, isolate every
+    representative small read and command in its own measured process generation, close the
+    API-neutral service, storage/query, coordinator, conversion, and remaining caller ledgers on
+    N1/E2, and authorize at most one measured service-path candidate that can reach the unchanged
+    public gate without weakening any safe point.
+  requirements: [PERF-005, PERF-008, PERF-018, QRY-001, QRY-002, QRY-003,
+    QRY-004, QRY-005, QRY-006, QRY-007, QRY-008, QRY-009, POC-005,
+    LOG-001, TXN-001, TXN-002]
+  required_adrs: [ADR-0040, ADR-0055, ADR-0056, ADR-0070, ADR-0120,
+    ADR-0123, ADR-0129, ADR-0132, ADR-0141]
+  allowed_paths: [work_packages.yaml, crates/riffdb-service/**,
+    crates/riffdb-observability/**, crates/riffdb-storage-redb/**,
+    crates/riffdb-server/**, examples/app-baseline/**, benchmarks/**,
+    scripts/**, tests/**, docs/performance/**]
+  deliverables:
+  - A private exact-scenario diagnostic selection that restarts `riffdbd` after setup, executes only
+    one existing generated scenario, and emits no application value, caller-chosen server operation,
+    production selector, or change to PERF-018's normal ordering/topology
+  - Paired N1/E2 64-sample ledgers for all seven ordinary read and four command scenarios, with
+    each process generation containing only that operation after warmup and every unfavorable cell
+    preserved
+  - Read ledgers covering public adapter, authentication/admission, dispatch, plan/parameter work,
+    three authorization/audit safe points, storage snapshot and fourteen existing query-execute
+    substages, result assembly, conversion, response release, and remaining caller time
+  - Command ledgers covering public adapter, API-neutral preparation, coordinator queue/evaluation/
+    validation/apply/journal/fence/publication, service finish, conversion, response release, and
+    remaining caller time
+  - Per-host Amdahl arithmetic for at most one next candidate; no implementation package when no
+    single cross-host movable family can fit every affected scenario's 1.10x budget
+  acceptance_commands:
+  - cargo +1.97.0 test --manifest-path examples/app-baseline/Cargo.toml --workspace
+  - cargo +1.97.0 test -p riffdb-service -p riffdb-observability -p riffdb-storage-redb -p riffdb-server --all-features
+  - ./scripts/check-workspace-policy
+  - ./scripts/check-requirement-coverage
+  - cargo +1.97.0 fmt --all -- --check
+  - cargo +1.97.0 clippy -p riffdb-service -p riffdb-observability -p riffdb-storage-redb -p riffdb-server --all-targets --all-features -- -D warnings
+  exit_gate: Every small operation has a closed N1/E2 service-floor ledger and exact same-run
+    PostgreSQL budget. The package either proposes one separately reviewed candidate whose measured
+    movable share can reach 1.10x on both hosts, or stops the campaign and returns the universal
+    unary threshold to the maintainer. It cannot revive the WP-670 transport or change semantics.
+  standing_design_tests:
+    interface_safety: Diagnostics select only one already compiled/generated scenario in the local
+      harness; application and production surfaces gain no selector, cache, transaction, predicate,
+      authorization, freshness, durability, uncertainty, or storage control, and all current safe
+      points execute unchanged.
+    scale: Scenario identity is one member of the frozen finite benchmark registry; stage counters,
+      windows, bytes, samples, tasks, and retained evidence have fixed ceilings independent of data
+      history, database size, tenants, completed operations, or process lifetime.
+  human_review_triggers: *id001

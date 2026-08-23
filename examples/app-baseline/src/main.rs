@@ -17,8 +17,8 @@ use riffdb_app_baseline_core::{
     SEED_GENERATION, Scale, SeedDataset, WorkloadProfile, assert_board_last_row_counts_equal,
     assert_board_ticket_sequences_equal, board_marginal_from_results, build_report,
     concurrency_curve_point, print_concurrency_sweep_summary, print_load_summary,
-    run_closed_loop_load, run_closed_loop_load_with_abort, run_open_loop_load, run_scenarios,
-    run_scenarios_with_options, run_stateful_journeys,
+    run_closed_loop_load, run_closed_loop_load_with_abort, run_open_loop_load,
+    run_scenarios_selected, run_stateful_journeys, ScenarioId,
 };
 use riffdb_app_baseline_postgres::{
     PostgresAppBackend, PostgresComparisonProfile, PostgresDurabilitySettings,
@@ -49,6 +49,14 @@ fn run() -> Result<(), String> {
         return run_load(args);
     }
     let dataset = SeedDataset::generate(args.scale);
+    let service_ledger_scenario = service_ledger_scenario_from_env()?;
+    if service_ledger_scenario.is_some()
+        && args.riffdb_transport == RiffDbTransport::BoundedSession
+    {
+        return Err(format!(
+            "{SERVICE_LEDGER_SCENARIO_ENV} requires the frozen unary transport"
+        ));
+    }
     let mut backends = Vec::new();
     let mut concurrent_reads = Vec::new();
     let mut postgres_durability: Option<PostgresDurabilitySettings> = None;
@@ -57,6 +65,12 @@ fn run() -> Result<(), String> {
     let mut device_baseline_json: Option<serde_json::Value> = None;
     let mut environment_json: Option<serde_json::Value> = None;
     let mut integrity_notes: Vec<String> = Vec::new();
+    if let Some(scenario) = service_ledger_scenario {
+        integrity_notes.push(format!(
+            "private non-evidentiary service ledger selected only {}",
+            scenario.as_str()
+        ));
+    }
     let full_mode = args.scale.name() == "full";
     let min_free = min_free_bytes_for_full(full_mode);
 
@@ -116,6 +130,7 @@ fn run() -> Result<(), String> {
     let board_crosscheck_limits: Vec<u32> = [50_u32, 200, 450]
         .into_iter()
         .filter(|&limit| dataset.board_dense_open_count() >= limit as usize)
+        .filter(|_| service_ledger_scenario.is_none())
         .collect();
     let mut board_crosscheck_pg_pages: Option<Vec<(u32, Vec<[u8; 16]>)>> = None;
     let mut board_crosscheck_done = false;
@@ -143,8 +158,15 @@ fn run() -> Result<(), String> {
             let seed_started = Instant::now();
             postgres.seed(&dataset).map_err(|error| error.to_string())?;
             let seed_ns = u64::try_from(seed_started.elapsed().as_nanos()).unwrap_or(u64::MAX);
-            let scenarios = run_scenarios(&mut postgres, &dataset, args.warmups, args.samples)
-                .map_err(|error| error.to_string())?;
+            let scenarios = run_scenarios_selected(
+                &mut postgres,
+                &dataset,
+                args.warmups,
+                args.samples,
+                false,
+                service_ledger_scenario,
+            )
+            .map_err(|error| error.to_string())?;
             if rep == 0 && !board_crosscheck_limits.is_empty() {
                 let probes = dataset.probes();
                 let mut pages = Vec::with_capacity(board_crosscheck_limits.len());
@@ -259,6 +281,21 @@ fn run() -> Result<(), String> {
                     }
                     return Err(error.to_string());
                 }
+                if service_ledger_scenario.is_some() {
+                    run_scenarios_selected(
+                        &mut session.backend,
+                        &dataset,
+                        args.warmups,
+                        0,
+                        true,
+                        service_ledger_scenario,
+                    )
+                    .map_err(|error| error.to_string())?;
+                    let (restarted, _setup_evidence) = runtime
+                        .block_on(session.restart_for_measurement())
+                        .map_err(|error| error.to_string())?;
+                    session = restarted;
+                }
                 // ADR-0127 is an explicitly selected diagnostic shape. Seed and
                 // projection preparation stay on the frozen unary path; the
                 // representative application operations below use one bounded
@@ -271,12 +308,17 @@ fn run() -> Result<(), String> {
                         .fresh_bounded_session()
                         .map_err(|error| error.to_string())?;
                 }
-                let scenario_result = run_scenarios_with_options(
+                let scenario_result = run_scenarios_selected(
                     &mut session.backend,
                     &dataset,
-                    args.warmups,
+                    if service_ledger_scenario.is_some() {
+                        0
+                    } else {
+                        args.warmups
+                    },
                     args.samples,
                     true,
+                    service_ledger_scenario,
                 );
                 if args.riffdb_transport == RiffDbTransport::BoundedSession {
                     session.backend.close_bounded_session();
@@ -546,6 +588,26 @@ fn run() -> Result<(), String> {
         require_stable(&report)?;
     }
     Ok(())
+}
+
+const SERVICE_LEDGER_SCENARIO_ENV: &str = "RIFFDB_APP_BASELINE_SERVICE_LEDGER_SCENARIO";
+
+fn service_ledger_scenario_from_env() -> Result<Option<ScenarioId>, String> {
+    let Some(value) = env::var_os(SERVICE_LEDGER_SCENARIO_ENV) else {
+        return Ok(None);
+    };
+    let value = value
+        .to_str()
+        .ok_or_else(|| format!("{SERVICE_LEDGER_SCENARIO_ENV} must be UTF-8"))?;
+    let scenario = ScenarioId::from_report_id(value).ok_or_else(|| {
+        format!("{SERVICE_LEDGER_SCENARIO_ENV} names unknown scenario {value}")
+    })?;
+    if !scenario.is_service_ledger_scenario() {
+        return Err(format!(
+            "{SERVICE_LEDGER_SCENARIO_ENV} permits only the seven small reads and four commands"
+        ));
+    }
+    Ok(Some(scenario))
 }
 
 #[derive(Debug)]

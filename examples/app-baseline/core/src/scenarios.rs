@@ -48,6 +48,14 @@ pub enum ScenarioId {
 }
 
 impl ScenarioId {
+    /// Resolves one stable report identifier.
+    #[must_use]
+    pub fn from_report_id(value: &str) -> Option<Self> {
+        Self::all()
+            .into_iter()
+            .find(|scenario| scenario.as_str() == value)
+    }
+
     /// Stable report id.
     #[must_use]
     pub const fn as_str(self) -> &'static str {
@@ -114,6 +122,25 @@ impl ScenarioId {
         matches!(
             self,
             Self::BoardPage50 | Self::BoardPage200 | Self::BoardPage450
+        )
+    }
+
+    /// Whether this scenario belongs to the small-operation service ledger.
+    #[must_use]
+    pub const fn is_service_ledger_scenario(self) -> bool {
+        matches!(
+            self,
+            Self::PointGetTicket
+                | Self::PointGetUser
+                | Self::ListTicketsByProjectStatus
+                | Self::ListOpenTicketsForAssignee
+                | Self::ListCommentsForTicket
+                | Self::ListProjectMembers
+                | Self::TicketDetailPage
+                | Self::CreateComment
+                | Self::CloseTicketWithComment
+                | Self::SwapMemberRoles
+                | Self::OpenTicketWithLabels
         )
     }
 
@@ -263,6 +290,28 @@ pub fn run_scenarios_with_options<B: AppBackend>(
     samples: usize,
     include_projected: bool,
 ) -> Result<Vec<ScenarioResult>, B::Error> {
+    run_scenarios_selected(
+        backend,
+        dataset,
+        warmups,
+        samples,
+        include_projected,
+        None,
+    )
+}
+
+/// Runs the normal scenario machinery with an optional exact private selector.
+///
+/// The selector exists only for process-isolated attribution. Public benchmark
+/// evidence must use [`run_scenarios_with_options`] without a selector.
+pub fn run_scenarios_selected<B: AppBackend>(
+    backend: &mut B,
+    dataset: &SeedDataset,
+    warmups: usize,
+    samples: usize,
+    include_projected: bool,
+    selected: Option<ScenarioId>,
+) -> Result<Vec<ScenarioResult>, B::Error> {
     let probes = dataset.probes();
     let mut scenario_ids = if include_projected {
         ScenarioId::for_dataset_with_projected(dataset)
@@ -273,6 +322,9 @@ pub fn run_scenarios_with_options<B: AppBackend>(
         .is_some_and(|value| value == "1")
     {
         scenario_ids.retain(|scenario| scenario.is_compiled_board());
+    }
+    if let Some(selected) = selected {
+        scenario_ids.retain(|scenario| *scenario == selected);
     }
     for _ in 0..warmups {
         run_once(backend, &probes, &scenario_ids)?;
@@ -547,7 +599,7 @@ fn run_once<B: AppBackend>(
 mod tests {
     use super::{
         ScenarioId, ScenarioResult, board_marginal_from_results, board_marginal_ns_per_row,
-        board_projected_marginal_from_results,
+        board_projected_marginal_from_results, run_scenarios_selected,
     };
     use crate::{
         AppBackend, CloseTicketWithCommentSeed, CommentRow, CommentSeed, LoadErrorClass,
@@ -786,6 +838,43 @@ mod tests {
         assert!(with_projected.contains(&ScenarioId::BoardPagePacked200));
         assert!(with_projected.contains(&ScenarioId::BoardPagePacked450));
         assert_eq!(with_projected.len(), 20);
+    }
+
+    #[test]
+    fn report_ids_round_trip_and_service_ledger_set_is_exact() {
+        for scenario in ScenarioId::all() {
+            assert_eq!(ScenarioId::from_report_id(scenario.as_str()), Some(scenario));
+        }
+        assert_eq!(ScenarioId::from_report_id("unknown"), None);
+        assert_eq!(
+            ScenarioId::all()
+                .into_iter()
+                .filter(|scenario| scenario.is_service_ledger_scenario())
+                .count(),
+            11
+        );
+        assert!(!ScenarioId::BoardPage50.is_service_ledger_scenario());
+    }
+
+    #[test]
+    fn private_selector_runs_exactly_one_existing_scenario() {
+        let dataset = SeedDataset::generate(Scale::smoke());
+        let mut backend = SeedBackedBackend {
+            dataset: dataset.clone(),
+            last_board_ids: Vec::new(),
+        };
+        let results = run_scenarios_selected(
+            &mut backend,
+            &dataset,
+            1,
+            3,
+            false,
+            Some(ScenarioId::PointGetTicket),
+        )
+        .expect("selected scenario");
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].scenario, ScenarioId::PointGetTicket);
+        assert_eq!(results[0].samples.summary().sample_count, 3);
     }
 
     #[test]
