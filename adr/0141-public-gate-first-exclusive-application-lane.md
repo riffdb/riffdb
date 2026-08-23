@@ -1,8 +1,8 @@
 # ADR-0141: Diagnostic-Gate-First Exclusive Application Lane
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Direction approved:** Yes
-- **Exact text accepted:** No
+- **Exact text accepted:** Yes
 - **Decision deadline:** Before WP-670 restores a direct application listener,
   frame implementation, ALPN, client selector, or candidate wire identity
 - **Requires:** ADR-0040, ADR-0055, ADR-0056, ADR-0070, ADR-0105, ADR-0106,
@@ -10,9 +10,9 @@
   ADR-0139, and ADR-0140
 - **Defines or blocks:** WP-670, WP-671, WP-672, WP-623, WP-578, and WP-579
 
-The maintainer approved the diagnostic-first direction on 2026-08-23. Exact-
-text acceptance is still required before implementation. This proposal neither
-revives a rejected wire identity nor amends `PERF-018`.
+The maintainer approved the diagnostic-first direction on 2026-08-23 and
+accepted the exact text in commit `839b1f2e`. This decision neither revives a
+rejected wire identity nor amends `PERF-018`.
 
 ## Context
 
@@ -378,5 +378,7 @@ principals, operations, or policy facts.
 
 ## Decision Deadline
 
-Exact human acceptance is required before WP-670 restores any direct listener,
-frame implementation, ALPN, client selector, or candidate wire identity.
+The maintainer accepted this exact decision on 2026-08-23. WP-670 may restore
+only the private diagnostic listener, frame implementation, ALPN, and candidate
+wire identity authorized above; public selection and activation remain blocked
+on WP-671, WP-672, and a separate exact decision.
