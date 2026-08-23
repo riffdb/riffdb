@@ -1,7 +1,6 @@
 [workspace]
 resolver = "3"
 members = [
-    "crates/riffdb-api-exclusive",
     "crates/riffdb-api-grpc",
     "crates/riffdb-api-mcp",
     "crates/riffdb-application",

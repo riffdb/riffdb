@@ -16,9 +16,8 @@ use std::time::{Duration, Instant};
 use riffdb_app_baseline_core::{AppBackend, LatencyHistogram, Scale, SeedDataset, TicketRow};
 use riffdb_app_baseline_postgres::{PostgresAppBackend, PostgresComparisonProfile};
 use riffdb_app_baseline_riffdb::{
-    DirectDiagnosticOpenTiming, DirectDiagnosticTiming, PairedClientTiming, RiffDbPublicBackend,
-    RiffDbQueryExecuteEvidence, RiffDbReadStageEvidence, RiffDbServerSession,
-    RiffDbShutdownEvidence, ServerStartOptions,
+    PairedClientTiming, RiffDbPublicBackend, RiffDbQueryExecuteEvidence, RiffDbReadStageEvidence,
+    RiffDbServerSession, RiffDbShutdownEvidence, ServerStartOptions,
 };
 use serde_json::{Value, json};
 
@@ -39,9 +38,6 @@ struct Args {
     postgres_url: Option<String>,
     bounded_session_shadow: bool,
     bounded_session_first: bool,
-    direct_exclusive_probe: bool,
-    direct_exclusive_tls_probe: bool,
-    direct_first: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -95,137 +91,6 @@ struct ShapeResult {
     paired: Option<PairedHistograms>,
 }
 
-#[derive(Debug, Default)]
-struct DirectHistograms {
-    outer: LatencyHistogram,
-    runtime_entry: LatencyHistogram,
-    client_encode: LatencyHistogram,
-    stream_write: LatencyHistogram,
-    server_decode_adapt: LatencyHistogram,
-    application_service: LatencyHistogram,
-    server_encode: LatencyHistogram,
-    server_write: LatencyHistogram,
-    stream_poll_read: LatencyHistogram,
-    client_decode: LatencyHistogram,
-    caller_wakeup: LatencyHistogram,
-    ledger_error: LatencyHistogram,
-}
-
-impl DirectHistograms {
-    fn record(&mut self, timing: DirectDiagnosticTiming) {
-        self.outer.record(timing.outer);
-        self.runtime_entry.record(timing.runtime_entry);
-        self.client_encode.record(timing.client_encode);
-        self.stream_write.record(timing.stream_write);
-        self.server_decode_adapt.record(timing.server_decode_adapt);
-        self.application_service.record(timing.application_service);
-        self.server_encode.record(timing.server_encode);
-        self.server_write.record(timing.server_write);
-        self.stream_poll_read.record(timing.stream_poll_read);
-        self.client_decode.record(timing.client_decode);
-        self.caller_wakeup.record(timing.caller_wakeup);
-        self.ledger_error
-            .record(timing.outer.abs_diff(timing.ledger_total()));
-    }
-
-    fn json(&self) -> Value {
-        json!({
-            "outer": self.outer.summary_json(),
-            "runtime_entry": self.runtime_entry.summary_json(),
-            "client_encode": self.client_encode.summary_json(),
-            "stream_write": self.stream_write.summary_json(),
-            "server_decode_adapt": self.server_decode_adapt.summary_json(),
-            "application_service": self.application_service.summary_json(),
-            "server_encode": self.server_encode.summary_json(),
-            "server_write": self.server_write.summary_json(),
-            "stream_poll_read": self.stream_poll_read.summary_json(),
-            "client_decode": self.client_decode.summary_json(),
-            "caller_wakeup": self.caller_wakeup.summary_json(),
-            "ledger_error": self.ledger_error.summary_json(),
-        })
-    }
-}
-
-#[derive(Debug)]
-struct DirectShapeResult {
-    throughput_ops_s: u64,
-    elapsed: Duration,
-    timings: DirectHistograms,
-}
-
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-struct LifecycleSample {
-    trust_establishment: Duration,
-    session_establishment: Duration,
-    first_operation: Duration,
-    total: Duration,
-}
-
-impl LifecycleSample {
-    fn ledger_total(self) -> Duration {
-        self.trust_establishment
-            .saturating_add(self.session_establishment)
-            .saturating_add(self.first_operation)
-    }
-}
-
-#[derive(Debug, Default)]
-struct LifecycleHistograms {
-    trust_establishment: LatencyHistogram,
-    session_establishment: LatencyHistogram,
-    first_operation: LatencyHistogram,
-    total: LatencyHistogram,
-    ledger_error: LatencyHistogram,
-}
-
-impl LifecycleHistograms {
-    fn record(&mut self, sample: LifecycleSample) {
-        self.trust_establishment.record(sample.trust_establishment);
-        self.session_establishment.record(sample.session_establishment);
-        self.first_operation.record(sample.first_operation);
-        self.total.record(sample.total);
-        self.ledger_error
-            .record(sample.total.abs_diff(sample.ledger_total()));
-    }
-
-    fn json(&self) -> Value {
-        json!({
-            "trust_establishment": self.trust_establishment.summary_json(),
-            "session_establishment": self.session_establishment.summary_json(),
-            "first_operation": self.first_operation.summary_json(),
-            "total": self.total.summary_json(),
-            "ledger_error": self.ledger_error.summary_json(),
-        })
-    }
-}
-
-#[derive(Debug, Default)]
-struct OpenHistograms {
-    trust_establishment: LatencyHistogram,
-    session_establishment: LatencyHistogram,
-    total: LatencyHistogram,
-    ledger_error: LatencyHistogram,
-}
-
-impl OpenHistograms {
-    fn record(&mut self, timing: DirectDiagnosticOpenTiming) {
-        self.trust_establishment.record(timing.trust_establishment);
-        self.session_establishment.record(timing.session_establishment);
-        self.total.record(timing.total);
-        self.ledger_error
-            .record(timing.total.abs_diff(timing.ledger_total()));
-    }
-
-    fn json(&self) -> Value {
-        json!({
-            "trust_establishment": self.trust_establishment.summary_json(),
-            "session_establishment": self.session_establishment.summary_json(),
-            "total": self.total.summary_json(),
-            "ledger_error": self.ledger_error.summary_json(),
-        })
-    }
-}
-
 fn main() -> Result<(), String> {
     let args = parse_args()?;
     let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -246,8 +111,6 @@ fn main() -> Result<(), String> {
             &args.riffdbd_bin,
             ServerStartOptions {
                 query_execute_diagnostics: true,
-                direct_stream_diagnostic: args.direct_exclusive_probe,
-                direct_stream_diagnostic_tls: args.direct_exclusive_tls_probe,
                 ..ServerStartOptions::default()
             },
         ))
@@ -264,39 +127,6 @@ fn main() -> Result<(), String> {
 
     let mut cells = Vec::new();
     for &clients in &args.clients {
-        let direct_setup = if args.direct_exclusive_probe && clients == 1 {
-            let measured = runtime.block_on(measure_connection_lifecycle(
-                &session,
-                &expected,
-                args.direct_first,
-            ))?;
-            let (restarted, setup_server) = runtime
-                .block_on(session.restart_for_measurement())
-                .map_err(|error| error.to_string())?;
-            session = restarted;
-            Some(json!({
-                "timing": measured,
-                "server_read_stages": read_stages_json(&setup_server),
-            }))
-        } else {
-            None
-        };
-        let direct_exclusive_first = if args.direct_exclusive_probe
-            && clients == 1
-            && args.direct_first
-        {
-            let (restarted, measured, server) = measure_direct_shape(
-                &runtime,
-                session,
-                &expected,
-                args.samples_per_client,
-                args.warmup_per_client,
-            )?;
-            session = restarted;
-            Some((measured, server))
-        } else {
-            None
-        };
         let bounded_session_first = if args.bounded_session_shadow && args.bounded_session_first {
             let (restarted, measured) = measure_bounded_session_shape(
                 &runtime,
@@ -356,55 +186,6 @@ fn main() -> Result<(), String> {
             None
         };
 
-        let direct_exclusive = if args.direct_exclusive_probe && clients == 1 {
-            let (measured, server) = if let Some(measured) = direct_exclusive_first {
-                measured
-            } else {
-                let (restarted, measured, server) = measure_direct_shape(
-                    &runtime,
-                    session,
-                    &expected,
-                    args.samples_per_client,
-                    args.warmup_per_client,
-                )?;
-                session = restarted;
-                (measured, server)
-            };
-            let unary_complete_ns = synchronous
-                .paired
-                .as_ref()
-                .map(|paired| histogram_mean_ns(&paired.asynchronous_call))
-                .unwrap_or(0);
-            let unary_server_ns = read_stage_mean_ns(&synchronous_server);
-            let direct_complete_ns = histogram_mean_ns(&measured.timings.outer);
-            let direct_server_ns = histogram_mean_ns(&measured.timings.application_service);
-            let unary_outside_ns = unary_complete_ns.saturating_sub(unary_server_ns);
-            let direct_outside_ns = direct_complete_ns.saturating_sub(direct_server_ns);
-            Some(json!({
-                "throughput_ops_s": measured.throughput_ops_s,
-                "elapsed_ns": u64::try_from(measured.elapsed.as_nanos()).unwrap_or(u64::MAX),
-                "paired_stage_ledger": measured.timings.json(),
-                "server_read_stages": read_stages_json(&server),
-                "mechanics_gate": {
-                    "unary_complete_mean_ns": unary_complete_ns,
-                    "direct_complete_mean_ns": direct_complete_ns,
-                    "complete_reduction_percent": reduction_percent(unary_complete_ns, direct_complete_ns),
-                    "complete_threshold_percent": 40,
-                    "unary_outside_service_mean_ns": unary_outside_ns,
-                    "direct_outside_service_mean_ns": direct_outside_ns,
-                    "outside_service_reduction_percent": reduction_percent(unary_outside_ns, direct_outside_ns),
-                    "outside_service_threshold_percent": 55,
-                    "ledger_error_percent": ratio_percent(
-                        histogram_mean_ns(&measured.timings.ledger_error),
-                        direct_complete_ns,
-                    ),
-                    "ledger_error_threshold_percent": 5,
-                },
-            }))
-        } else {
-            None
-        };
-
         cells.push(json!({
             "clients": clients,
             "operation": "generated.GetTicket",
@@ -429,10 +210,7 @@ fn main() -> Result<(), String> {
                 "after": asynchronous_memory_after,
             },
             "bounded_session_shadow": bounded_session,
-                "direct_exclusive_probe": direct_exclusive,
-                "connection_lifecycle": direct_setup,
-                "bookkeeping": {
-                "direct_exclusive_order": if args.direct_first { "before_unary" } else { "after_async" },
+            "bookkeeping": {
                 "bounded_session_order": if args.bounded_session_first { "before_unary" } else { "after_async" },
                 "bridge_only_classification": "measurement_artifact_not_product_gain",
                 "asynchronous_call_classification": "customer_paid_product_path",
@@ -459,14 +237,12 @@ fn main() -> Result<(), String> {
         .transpose()?;
 
     let report = json!({
-        "schema": "riffdb.client-transport-attribution/v2",
+        "schema": "riffdb.client-transport-attribution/v1",
         "evidentiary": false,
         "perf_018_eligible": false,
         "release_comparator_changed": false,
         "frozen_release_binary": "riffdb-app-baseline",
         "diagnostic_binary": "riffdb-client-transport-diagnostic",
-        "direct_exclusive_probe_enabled": args.direct_exclusive_probe,
-        "direct_exclusive_transport": if args.direct_exclusive_tls_probe { "verified_direct_tls" } else { "loopback_cleartext" },
         "scale": args.scale.name(),
         "tcp_nodelay": {
             "client": true,
@@ -492,8 +268,6 @@ fn main() -> Result<(), String> {
             "The asynchronous shadow uses the same exact generated operation, credential, persistent HTTP/2 channel, and server path.",
             "Removing bridge-only time is a measurement correction and cannot be claimed as a RiffDB product improvement.",
             "This report cannot encode a release pass.",
-            "The direct-exclusive cell is feature-gated diagnostic carriage and is not a production listener or selector.",
-            "Cold trust, exact application-session acceptance, and first generated operation are disjoint customer-paid intervals; resumed reconnect is reported separately.",
         ],
     });
     let encoded = serde_json::to_string_pretty(&report).map_err(|error| error.to_string())?;
@@ -504,37 +278,6 @@ fn main() -> Result<(), String> {
         println!("{encoded}");
     }
     Ok(())
-}
-
-fn measure_direct_shape(
-    runtime: &tokio::runtime::Runtime,
-    session: RiffDbServerSession,
-    expected: &TicketRow,
-    samples_per_client: usize,
-    warmup_per_client: usize,
-) -> Result<
-    (
-        RiffDbServerSession,
-        DirectShapeResult,
-        RiffDbShutdownEvidence,
-    ),
-    String,
-> {
-    let address = session
-        .direct_diagnostic_address()
-        .ok_or_else(|| "direct diagnostic listener was not published".to_owned())?;
-    let measured = run_direct_shape(
-        runtime,
-        &session.backend,
-        address,
-        expected,
-        samples_per_client,
-        warmup_per_client,
-    )?;
-    let (restarted, server) = runtime
-        .block_on(session.restart_for_measurement())
-        .map_err(|error| error.to_string())?;
-    Ok((restarted, measured, server))
 }
 
 fn measure_bounded_session_shape(
@@ -574,240 +317,6 @@ fn measure_bounded_session_shape(
             },
         }),
     ))
-}
-
-fn run_direct_shape(
-    runtime: &tokio::runtime::Runtime,
-    prototype: &RiffDbPublicBackend,
-    address: std::net::SocketAddr,
-    expected: &TicketRow,
-    samples: usize,
-    warmup: usize,
-) -> Result<DirectShapeResult, String> {
-    let mut client = runtime
-        .block_on(async {
-            let generation = prototype.direct_diagnostic_transport_generation(address)?;
-            prototype
-                .open_direct_diagnostic_on(&generation)
-                .await
-                .map(|(client, _)| client)
-        })
-        .map_err(|error| error.to_string())?;
-    for _ in 0..warmup {
-        let (observed, _) = client
-            .get_ticket_paired(expected.organization_id, expected.ticket_id)
-            .map_err(|error| error.to_string())?;
-        require_expected(observed.as_ref(), expected)?;
-    }
-    let started = Instant::now();
-    let mut timings = DirectHistograms::default();
-    for _ in 0..samples {
-        let (observed, timing) = client
-            .get_ticket_paired(expected.organization_id, expected.ticket_id)
-            .map_err(|error| error.to_string())?;
-        require_expected(observed.as_ref(), expected)?;
-        timings.record(timing);
-    }
-    let elapsed = started.elapsed();
-    Ok(DirectShapeResult {
-        throughput_ops_s: throughput(1, samples, elapsed),
-        elapsed,
-        timings,
-    })
-}
-
-async fn measure_connection_lifecycle(
-    session: &RiffDbServerSession,
-    expected: &TicketRow,
-    direct_first: bool,
-) -> Result<Value, String> {
-    async fn unary(
-        backend: &RiffDbPublicBackend,
-        expected: &TicketRow,
-    ) -> Result<LifecycleSample, String> {
-        let total_started = Instant::now();
-        let trust_started = Instant::now();
-        let mut fresh = backend
-            .fresh_session_async()
-            .await
-            .map_err(|error| error.to_string())?;
-        let trust_establishment = trust_started.elapsed();
-        let session_started = Instant::now();
-        fresh
-            .open_bounded_session_async()
-            .await
-            .map_err(|error| error.to_string())?;
-        let session_establishment = session_started.elapsed();
-        let operation_started = Instant::now();
-        let observed = fresh
-            .get_ticket_generated_async(expected.organization_id, expected.ticket_id)
-            .await
-            .map_err(|error| error.to_string())?;
-        let first_operation = operation_started.elapsed();
-        require_expected(observed.as_ref(), expected)?;
-        Ok(LifecycleSample {
-            trust_establishment,
-            session_establishment,
-            first_operation,
-            total: total_started.elapsed(),
-        })
-    }
-
-    async fn direct(
-        session: &RiffDbServerSession,
-        expected: &TicketRow,
-    ) -> Result<LifecycleSample, String> {
-        let address = session
-            .direct_diagnostic_address()
-            .ok_or_else(|| "direct diagnostic listener was not published".to_owned())?;
-        // A new generation for every cold sample structurally prevents TLS
-        // resumption from being mislabeled as a full handshake.
-        let generation = session
-            .backend
-            .direct_diagnostic_transport_generation(address)
-            .map_err(|error| error.to_string())?;
-        let total_started = Instant::now();
-        let (mut fresh, open) = session
-            .backend
-            .open_direct_diagnostic_on(&generation)
-            .await
-            .map_err(|error| error.to_string())?;
-        let operation_started = Instant::now();
-        let (observed, _) = fresh
-            .get_ticket(expected.organization_id, expected.ticket_id)
-            .await
-            .map_err(|error| error.to_string())?;
-        let first_operation = operation_started.elapsed();
-        require_expected(observed.as_ref(), expected)?;
-        Ok(LifecycleSample {
-            trust_establishment: open.trust_establishment,
-            session_establishment: open.session_establishment,
-            first_operation,
-            total: total_started.elapsed(),
-        })
-    }
-
-    const SETUP_SAMPLES: usize = 32;
-    // Warm code and plans on discarded connections. Every measured direct
-    // connection still uses a fresh TLS generation and therefore cannot
-    // resume a prior diagnostic TLS session.
-    if direct_first {
-        unary(&session.backend, expected).await?;
-        direct(session, expected).await?;
-    } else {
-        direct(session, expected).await?;
-        unary(&session.backend, expected).await?;
-    }
-    let mut unary_latency = LifecycleHistograms::default();
-    let mut direct_latency = LifecycleHistograms::default();
-    for sample in 0..SETUP_SAMPLES {
-        let candidate_first = (sample % 2 == 0) == direct_first;
-        let (unary_sample, direct_sample) = if candidate_first {
-            let direct_sample = direct(session, expected).await?;
-            let unary_sample = unary(&session.backend, expected).await?;
-            (unary_sample, direct_sample)
-        } else {
-            let unary_sample = unary(&session.backend, expected).await?;
-            let direct_sample = direct(session, expected).await?;
-            (unary_sample, direct_sample)
-        };
-        unary_latency.record(unary_sample);
-        direct_latency.record(direct_sample);
-    }
-
-    // Resumed reconnect is reported separately and never substitutes for the
-    // cold full-handshake gate above.
-    let address = session
-        .direct_diagnostic_address()
-        .ok_or_else(|| "direct diagnostic listener was not published".to_owned())?;
-    let generation = session
-        .backend
-        .direct_diagnostic_transport_generation(address)
-        .map_err(|error| error.to_string())?;
-    let (priming, _) = session
-        .backend
-        .open_direct_diagnostic_on(&generation)
-        .await
-        .map_err(|error| error.to_string())?;
-    drop(priming);
-    let mut resumed = OpenHistograms::default();
-    for _ in 0..SETUP_SAMPLES {
-        let (client, timing) = session
-            .backend
-            .open_direct_diagnostic_on(&generation)
-            .await
-            .map_err(|error| error.to_string())?;
-        resumed.record(timing);
-        drop(client);
-    }
-
-    let unary_setup_ns = histogram_mean_ns(&unary_latency.trust_establishment)
-        .saturating_add(histogram_mean_ns(&unary_latency.session_establishment));
-    let direct_setup_ns = histogram_mean_ns(&direct_latency.trust_establishment)
-        .saturating_add(histogram_mean_ns(&direct_latency.session_establishment));
-    let unary_first_ns = histogram_mean_ns(&unary_latency.first_operation);
-    let direct_first_ns = histogram_mean_ns(&direct_latency.first_operation);
-    let unary_total_ns = histogram_mean_ns(&unary_latency.total);
-    let direct_total_ns = histogram_mean_ns(&direct_latency.total);
-    Ok(json!({
-        "samples": SETUP_SAMPLES,
-        "counterbalanced_start": if direct_first { "direct" } else { "unary" },
-        "cold_full_handshake": {
-            "unary_authenticated_session": unary_latency.json(),
-            "direct_authenticated_session": direct_latency.json(),
-            "setup_ratio_percent": ratio_percent(direct_setup_ns, unary_setup_ns),
-            "setup_maximum_percent": 105,
-            "first_operation_reduction_percent": reduction_percent(unary_first_ns, direct_first_ns),
-            "first_operation_threshold_percent": 25,
-            "unary_ledger_error_percent": ratio_percent(
-                histogram_mean_ns(&unary_latency.ledger_error),
-                unary_total_ns,
-            ),
-            "direct_ledger_error_percent": ratio_percent(
-                histogram_mean_ns(&direct_latency.ledger_error),
-                direct_total_ns,
-            ),
-            "ledger_error_threshold_percent": 5,
-        },
-        "resumed_reconnect": {
-            "direct_authenticated_session": resumed.json(),
-            "classification": "reported_separately_not_a_cold_setup_substitute",
-        },
-    }))
-}
-
-fn reduction_percent(control: u64, candidate: u64) -> f64 {
-    if control == 0 {
-        return 0.0;
-    }
-    100.0 * (control.saturating_sub(candidate) as f64) / control as f64
-}
-
-fn ratio_percent(numerator: u64, denominator: u64) -> f64 {
-    if denominator == 0 {
-        return 0.0;
-    }
-    100.0 * numerator as f64 / denominator as f64
-}
-
-fn histogram_mean_ns(histogram: &LatencyHistogram) -> u64 {
-    histogram
-        .summary_json()
-        .get("mean_ns")
-        .and_then(Value::as_u64)
-        .unwrap_or(0)
-}
-
-fn read_stage_mean_ns(evidence: &RiffDbShutdownEvidence) -> u64 {
-    evidence.read_stages.iter().fold(0_u64, |total, stage| {
-        total.saturating_add(
-            stage
-                .sum_us
-                .saturating_mul(1_000)
-                .checked_div(stage.count)
-                .unwrap_or(0),
-        )
-    })
 }
 
 fn run_postgres_safe_app_twin(
@@ -1110,9 +619,6 @@ fn parse_args() -> Result<Args, String> {
     let mut postgres_url = None;
     let mut bounded_session_shadow = false;
     let mut bounded_session_first = false;
-    let mut direct_exclusive_probe = false;
-    let mut direct_exclusive_tls_probe = false;
-    let mut direct_first = false;
     let mut arguments = env::args_os().skip(1);
     while let Some(argument) = arguments.next() {
         let argument = argument
@@ -1193,12 +699,6 @@ fn parse_args() -> Result<Args, String> {
             }
             "--bounded-session-shadow" => bounded_session_shadow = true,
             "--bounded-session-first" => bounded_session_first = true,
-            "--direct-exclusive-probe" => direct_exclusive_probe = true,
-            "--direct-exclusive-tls-probe" => {
-                direct_exclusive_probe = true;
-                direct_exclusive_tls_probe = true;
-            }
-            "--direct-first" => direct_first = true,
             "--help" | "-h" => {
                 return Err(
                     "usage: riffdb-client-transport-diagnostic --riffdbd-bin PATH \
@@ -1206,7 +706,6 @@ fn parse_args() -> Result<Args, String> {
                      [--clients 1,8,32] \
                      [--bounded-session-shadow] \
                      [--bounded-session-first] \
-                     [--direct-exclusive-probe|--direct-exclusive-tls-probe] [--direct-first] \
                      [--postgres-url URL] \
                      [--samples-per-client 1..10000] [--warmup-per-client 0..1000]"
                         .to_owned(),
@@ -1218,9 +717,6 @@ fn parse_args() -> Result<Args, String> {
     let riffdbd_bin = riffdbd_bin.ok_or_else(|| "--riffdbd-bin is required".to_owned())?;
     if bounded_session_first && !bounded_session_shadow {
         return Err("--bounded-session-first requires --bounded-session-shadow".to_owned());
-    }
-    if direct_first && !direct_exclusive_probe {
-        return Err("--direct-first requires --direct-exclusive-probe".to_owned());
     }
     if !riffdbd_bin.is_file() {
         return Err(format!(
@@ -1238,9 +734,6 @@ fn parse_args() -> Result<Args, String> {
         postgres_url,
         bounded_session_shadow,
         bounded_session_first,
-        direct_exclusive_probe,
-        direct_exclusive_tls_probe,
-        direct_first,
     })
 }
 
@@ -1261,29 +754,4 @@ fn parse_bounded_usize(
         return Err(format!("{flag} must be {minimum}..={maximum}"));
     }
     Ok(parsed)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{LifecycleHistograms, LifecycleSample, histogram_mean_ns};
-    use std::time::Duration;
-
-    #[test]
-    fn lifecycle_ledger_closes_only_over_three_customer_paid_intervals() {
-        let sample = LifecycleSample {
-            trust_establishment: Duration::from_micros(300),
-            session_establishment: Duration::from_micros(200),
-            first_operation: Duration::from_micros(100),
-            total: Duration::from_micros(607),
-        };
-        let mut histograms = LifecycleHistograms::default();
-        histograms.record(sample);
-        assert_eq!(sample.ledger_total(), Duration::from_micros(600));
-        assert_eq!(histogram_mean_ns(&histograms.ledger_error), 7_000);
-        let encoded = histograms.json();
-        assert!(encoded.get("trust_establishment").is_some());
-        assert!(encoded.get("session_establishment").is_some());
-        assert!(encoded.get("first_operation").is_some());
-        assert!(encoded.get("total").is_some());
-    }
 }
