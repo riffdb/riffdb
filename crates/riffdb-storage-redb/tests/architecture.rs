@@ -887,6 +887,36 @@ fn the_shutdown_checkpoint_reads_row_counts_and_counts_every_terminal_failure_on
 }
 
 #[test]
+fn an_exact_current_checkpoint_returns_before_opening_a_write_transaction() {
+    let source_dir = crate_root().join("src");
+    let checkpoint = without_whitespace(&production_source(source_dir.join("validated_prefix.rs")));
+    let write = checkpoint
+        .split_once("fnwrite_validated_prefix_checkpoint(")
+        .expect("checkpoint write")
+        .1
+        .split_once("///ReturnstrueonlywhenthealreadyvalidatedV2proof")
+        .expect("checkpoint write end")
+        .0;
+    let exact = write
+        .find("exact_current_checkpoint_exists(")
+        .expect("exact-current decision");
+    assert!(write[..exact].contains("purpose==CheckpointPurpose::GracefulShutdown&&"));
+    let early_return = write[exact..]
+        .find("returnOk(())")
+        .map(|offset| exact + offset)
+        .expect("exact-current early return");
+    let begin_write = write
+        .find("shared.database.begin_write()")
+        .expect("checkpoint write transaction");
+    let commit_hook = write
+        .find("shared.before_test_commit(RedbTestOperation::ValidatedPrefixCheckpoint)")
+        .expect("checkpoint commit hook");
+    assert!(exact < early_return);
+    assert!(early_return < begin_write);
+    assert!(begin_write < commit_hook);
+}
+
+#[test]
 fn validated_prefix_entity_heads_are_anchored_at_s_and_advanced_through_the_suffix() {
     let source_dir = crate_root().join("src");
     let checkpoint = without_whitespace(&production_source(source_dir.join("validated_prefix.rs")));

@@ -1158,6 +1158,7 @@ impl StructuralEvidenceSession for RedbStructuralEvidenceSession {
                 if crate::validated_prefix::write_validated_prefix_checkpoint(
                     &self.shared,
                     &retained,
+                    crate::validated_prefix::CheckpointPurpose::StartupValidation,
                 )
                 .is_err()
                 {
@@ -11624,11 +11625,33 @@ contract RedbMigration version 1 {
             0,
             "the post-validation checkpoint write must not walk history either"
         );
+        let checkpoint_before = {
+            let read = ports.shared.database.begin_read().expect("checkpoint read");
+            let meta = read.open_table(META).expect("metadata table");
+            meta.get(META_VALIDATED_PREFIX_CHECKPOINT)
+                .expect("checkpoint lookup")
+                .expect("startup checkpoint")
+                .value()
+                .to_vec()
+        };
         assert!(
             ports
                 .write_validated_prefix_checkpoint()
                 .expect("graceful-shutdown checkpoint write"),
             "a clean validation must permit the shutdown checkpoint write"
+        );
+        let checkpoint_after = {
+            let read = ports.shared.database.begin_read().expect("checkpoint read");
+            let meta = read.open_table(META).expect("metadata table");
+            meta.get(META_VALIDATED_PREFIX_CHECKPOINT)
+                .expect("checkpoint lookup")
+                .expect("retained checkpoint")
+                .value()
+                .to_vec()
+        };
+        assert_eq!(
+            checkpoint_after, checkpoint_before,
+            "an exact-current proof must be retained byte-for-byte instead of chained again"
         );
         assert_eq!(
             ports.checkpoint_count_rows_walked(),
@@ -11659,6 +11682,116 @@ contract RedbMigration version 1 {
         session
             .finish(structural_end, historical_end)
             .expect("the metadata-derived counts must survive verification");
+    }
+
+    #[test]
+    fn startup_republishes_once_and_shutdown_reuses_that_process_proof() {
+        let path = TestDatabasePath::new("checkpoint-process-proof");
+        let id = database_id(0x99);
+        let (store, _bundle) = checkpointable_history_store(&path, id, 4);
+        let first_ports = open_cleanly(store);
+        let first = {
+            let read = first_ports
+                .shared
+                .database
+                .begin_read()
+                .expect("first checkpoint read");
+            let meta = read.open_table(META).expect("metadata table");
+            meta.get(META_VALIDATED_PREFIX_CHECKPOINT)
+                .expect("checkpoint lookup")
+                .expect("first startup checkpoint")
+                .value()
+                .to_vec()
+        };
+        drop(first_ports);
+
+        let second_store = RedbStore::open(&path.0).expect("reopen checkpointed store");
+        let second_ports = open_cleanly(second_store);
+        let second = {
+            let read = second_ports
+                .shared
+                .database
+                .begin_read()
+                .expect("second checkpoint read");
+            let meta = read.open_table(META).expect("metadata table");
+            meta.get(META_VALIDATED_PREFIX_CHECKPOINT)
+                .expect("checkpoint lookup")
+                .expect("second startup checkpoint")
+                .value()
+                .to_vec()
+        };
+        assert_ne!(
+            second, first,
+            "startup validation must publish its one process-generation proof"
+        );
+        assert!(
+            second_ports
+                .write_validated_prefix_checkpoint()
+                .expect("graceful shutdown checkpoint")
+        );
+        let shutdown = {
+            let read = second_ports
+                .shared
+                .database
+                .begin_read()
+                .expect("shutdown checkpoint read");
+            let meta = read.open_table(META).expect("metadata table");
+            meta.get(META_VALIDATED_PREFIX_CHECKPOINT)
+                .expect("checkpoint lookup")
+                .expect("shutdown checkpoint")
+                .value()
+                .to_vec()
+        };
+        assert_eq!(
+            shutdown, second,
+            "graceful shutdown must retain startup's exact process-generation proof"
+        );
+    }
+
+    #[test]
+    fn an_uncertain_current_checkpoint_takes_the_full_repair_path() {
+        let path = TestDatabasePath::new("checkpoint-current-corrupt");
+        let id = database_id(0x9a);
+        let (store, _bundle) = checkpointable_history_store(&path, id, 4);
+        let ports = open_cleanly(store);
+
+        let write = ports
+            .shared
+            .database
+            .begin_write()
+            .expect("damage checkpoint");
+        write
+            .open_table(META)
+            .expect("metadata table")
+            .insert(
+                META_VALIDATED_PREFIX_CHECKPOINT,
+                b"not-a-checkpoint".as_slice(),
+            )
+            .expect("replace checkpoint");
+        write.commit().expect("commit checkpoint damage");
+
+        assert!(
+            ports
+                .write_validated_prefix_checkpoint()
+                .expect("repair uncertain checkpoint"),
+            "a clean process generation must repair rather than trust uncertain proof bytes"
+        );
+        drop(ports);
+
+        let reopened = RedbStore::open(&path.0).expect("reopen repaired checkpoint");
+        let mut session = reopened
+            .begin_structural_evidence(inputs())
+            .expect("begin repaired validation");
+        assert!(
+            session.checkpoint_verified(),
+            "the replacement must be a complete validated-prefix proof: {:?}",
+            session.checkpoint_ignored_reason()
+        );
+        let structural_end = finish_structural(&mut session);
+        let historical_end = drain_historical(&mut session);
+        session
+            .finish(structural_end, historical_end)
+            .expect("repaired proof must survive full validation");
     }
 
     #[test]
