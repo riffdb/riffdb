@@ -13390,6 +13390,84 @@ work_packages:
       all candidate implementation was removed, unary gRPC remains the only generated-operation
       transport, PERF-018 is unchanged, and WP-623 remains open.
   human_review_triggers: *id001
+- id: WP-665
+  name: Serial one-in-flight gRPC application-session candidate
+  depends_on: [WP-650, WP-663, WP-664]
+  objective: After exact acceptance of ADR-0140, specialize the existing
+    ApplicationSession protocol V1 maximum-in-flight-one case into one directly owned client and
+    server operation state, eliminating the general correlation routers without adding a listener,
+    protocol, TLS path, cached authority, or unsafe cancellation outcome. Activate nothing unless
+    the mechanism and complete public alpha ratios pass.
+  requirements: [API-001, PERF-005, PERF-008, PERF-018, SEC-001, SEC-002,
+    NET-001, NET-002, NET-003, NET-004, NET-005, NET-006, NET-007, NET-008,
+    NET-009, NET-010, NET-011, NET-012,
+    DRV-001, DRV-002, DRV-003, DRV-004, DRV-005, DRV-006, DRV-007,
+    DRV-008, DRV-009, DRV-010, DRV-011, DRV-012, DRV-013, DRV-014]
+  required_adrs: [ADR-0040, ADR-0055, ADR-0056, ADR-0105, ADR-0106,
+    ADR-0120, ADR-0123, ADR-0127, ADR-0132, ADR-0133, ADR-0137, ADR-0138,
+    ADR-0139, ADR-0140]
+  allowed_paths: [work_packages.yaml, adr/README.md,
+    adr/0140-serial-one-in-flight-grpc-session.md,
+    crates/riffdb-api-grpc/**, crates/riffdb-client-rust/**,
+    crates/riffdb-query-module/**, crates/riffdb-server/**,
+    crates/riffdb-observability/**, clients/go/**, clients/typescript/**,
+    clients/python/**, examples/app-baseline/**, examples/agent-alpha/**,
+    examples/ticketdesk/**, fixtures/**, fuzz/**, tests/**, benchmarks/**,
+    scripts/**, release/**, docs/SUMMARY.md, docs/reference/**,
+    docs/getting-started/**, docs/operations/**, docs/performance/**]
+  deliverables:
+  - A failing architecture test that proves maximum-in-flight one currently enters the generic
+    client pending-map/oneshot/response-router and server BTreeMap/FuturesUnordered/Abortable path,
+    followed by exact pins that forbid those structures in the serial strategy without weakening
+    the retained multiplexed strategy
+  - One try-only, queue-free first-party Rust serial client lane that directly submits and receives
+    one exact session operation, destroys its generation on cancellation or uncertainty, and
+    retains no completed response, allow decision, operation value, or unbounded waiter
+  - One server serial state machine that concurrently polls its sole operation, cancellation,
+    stream loss, deadlines, lifetime, shutdown, and bounded response delivery without a per-operation
+    spawn, general correlation collection, or authority outside the shared application adapter
+  - A fixed serial-session pool with bounded cardinality, ready minimum, partial fill, saturation,
+    rotation, reconnect, replacement, idle, lifetime, and byte states; applications select no pool
+    or trust knob and target languages retain the first-party Rust driver host
+  - Unary, generic-session, and serial-session semantic equivalence plus deterministic cancellation,
+    uncertainty, revocation, expiry, drift, row/secret policy, read-after-commit, overload, slow-peer,
+    shutdown, hostile-wire, and resource-bound tests on byte-identical session protocol V1
+  - Three counterbalanced N1/E2 loopback and verified-TLS generations with a closed lifecycle and
+    operation ledger; stop and remove the specialization if setup regresses above five percent,
+    exact GetTicket outside-service mean falls less than 50 percent from unary, any server/resource
+    metric regresses above five percent, or any semantic/lifecycle gate fails
+  - Only after mechanics pass, a same-run short N1/E2 public matrix requiring every representative
+    scenario at most 1.10 times safe-application PostgreSQL, c32 throughput at least 0.90 times and
+    p95 at most 1.25 times PostgreSQL, seed at most 5.0 times PostgreSQL, clean correctness, and no
+    otherwise-uncovered regression above five percent; only a complete pass may start WP-623
+  acceptance_commands:
+  - cargo +1.97.0 test -p riffdb-api-grpc -p riffdb-client-rust -p riffdb-server --all-features
+  - cargo +1.97.0 test --manifest-path examples/app-baseline/Cargo.toml --workspace
+  - ./scripts/driver-conformance --all-languages --remote
+  - ./scripts/recovery_full
+  - ./scripts/generate-proto --check
+  - ./scripts/check-generated
+  - ./scripts/check-application-bindings
+  - ./scripts/check-workspace-policy
+  - ./scripts/check-requirement-coverage
+  - ./scripts/handbook check
+  - cargo +1.97.0 fmt --all -- --check
+  - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: The existing session V1 maximum-in-flight-one case is semantically identical to unary
+    and the generic session at every safe point, owns only one bounded operation state, and passes
+    every mechanics and public N1/E2 gate. Only a subsequent complete workstation/N1/E2 WP-623
+    matrix and separately accepted PERF-018/default amendment can activate it; any earlier miss
+    removes the specialization and leaves unary default and WP-623 open.
+  standing_design_tests:
+    interface_safety: Applications still invoke only generated commands and exact named queries and
+      cannot select a transaction, ordering, pool size, trust mode, cached authority, durability,
+      retry, uncertainty, freshness, raw method, or storage behavior. Every operation retains fresh
+      authentication, authorization, row/field/secret policy, response release, audit, and typed
+      cancellation semantics.
+    scale: Each lane retains one bounded operation and response; pool, stream, permit, buffer, byte,
+      task, wait, setup, idle, lifetime, shutdown, and replacement counts are hard-capped independent
+      of database size and duration, with no queued caller population or completed-result history.
+  human_review_triggers: *id001
 - id: WP-632
   name: Frozen-client transport attribution and asynchronous shadow diagnostic
   depends_on: [WP-627]

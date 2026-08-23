@@ -158,6 +158,7 @@ direction, merged draft, or implementation choice.
 | [0137](0137-bounded-framed-application-transport.md) | Bounded Framed Application Transport | Accepted |
 | [0138](0138-direct-exclusive-application-lane.md) | Direct Exclusive Generated-Operation Lane | Accepted |
 | [0139](0139-established-connection-application-lane.md) | Established-Connection Generated-Operation Lane | Accepted |
+| [0140](0140-serial-one-in-flight-grpc-session.md) | Serial Ownership for the Existing One-In-Flight gRPC Application Session | Proposed |
 
 The human architecture review on 2026-07-12 approved the direction represented
 by ADR-0001 through ADR-0012. The human maintainer accepted ADR-0001 through
