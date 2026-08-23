@@ -15674,6 +15674,15 @@ work_packages:
     scale: Lanes, pool, frames, bytes, tasks, operations, waits, cancellation, replacement,
       telemetry, and evidence are fixed-bounded independently of history, database size, tenant
       count, completed operations, or process duration; no full-state or result cache is introduced.
+  closure:
+    status: complete_without_production_activation
+    evidence: docs/performance/wp-670-exclusive-verdict.md
+    decision: The private candidate improved generated GetTicket mean 35.48 percent on N1 and
+      36.77 percent on E2 and closed its stage ledger within 0.167 percent, but the first complete
+      unary generation still missed 1.10x for every N1 small operation and six E2 small operations.
+      Multiple misses were already service-floor-owned. ADR-0141 therefore required immediate
+      removal before further generations or hardening; unary gRPC and PERF-018 are unchanged, and
+      WP-671/WP-672 are not authorized by this package.
   human_review_triggers: *id001
 - id: WP-671
   name: BoardPage450 result-path attribution and decision
