@@ -13534,6 +13534,58 @@ work_packages:
       open. Interruptible bounded derived catch-up is a separate lifecycle follow-up, not a unary
       performance candidate.
   human_review_triggers: *id001
+- id: WP-667
+  name: Interruptible bounded columnar catch-up turns
+  depends_on: [WP-455, WP-666]
+  objective: Bound the time before the columnar worker can observe shutdown without publishing an
+    incomplete commit prefix, checkpointing unpublished state, slowing ordinary catch-up with a
+    polling window, or changing any projected-query freshness and authorization guarantee.
+  requirements: [PERF-008, PRJ-001, PRJ-002, PRJ-003, PRJ-004]
+  required_adrs: [ADR-0086, ADR-0087]
+  allowed_paths: [work_packages.yaml, crates/riffdb-columnar/**,
+    crates/riffdb-server/src/columnar_worker.rs, docs/performance/**]
+  deliverables:
+  - A positive bounded page-turn type and engine entry point that processes at most the declared
+    number of existing 64-record authoritative pages, reports caught-up versus more-work, and
+    retains the current all-or-none commit and monotonic processed-frontier proofs
+  - Worker scheduling that checks shutdown between bounded turns and immediately continues while
+    more work exists, applying the existing 25-millisecond poll only after reaching ExactEnd
+  - No publication, notification, checkpoint, durable-frontier advancement, or retention claim
+    caused solely by turn-budget exhaustion; the existing maximal-safe-prefix publication during
+    supersession holdback remains unchanged, and the final caught-up turn publishes the same
+    byte-equivalent snapshot and frontier as one unbounded call
+  - Deterministic multi-page equivalence, supersession holdback, checkpoint/reopen, and stop-between-
+    turns tests plus a full-dataset process shutdown receipt proving bounded exit without catch-up,
+    query, apply-throughput, CPU, or memory regression above five percent
+  acceptance_commands:
+  - cargo +1.97.0 test -p riffdb-columnar --all-features
+  - cargo +1.97.0 test -p riffdb-server --all-features
+  - ./scripts/check-workspace-policy
+  - ./scripts/check-requirement-coverage
+  - cargo +1.97.0 fmt --all -- --check
+  - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: A shutdown request is observed after at most one fixed catch-up turn; completed catch-
+    up publishes and checkpoints exactly the pre-change state/frontier; incomplete turns expose no
+    state; full catch-up and projected-query performance regress no more than five percent. Any
+    semantic or throughput miss removes the bounded-turn candidate.
+  standing_design_tests:
+    interface_safety: Applications cannot select turn size, partial publication, checkpoint,
+      freshness, fallback, scheduling, or shutdown behavior; projected reads retain the exact
+      source, policy, authorization, frontier, and typed lifecycle contract.
+    scale: One turn processes at most eight existing 64-record pages and the worker owns one turn,
+      one engine lock, and existing bounded working/deferred state. Continued catch-up retains no
+      per-turn history and never sleeps while a frozen prefix remains.
+  closure:
+    status: complete_without_production_change
+    evidence: docs/performance/wp-667-interruptible-columnar-catchup-closure.md
+    decision: The private engine proved frozen-fence continuation, no publication or checkpoint on
+      budget exhaustion, exact final equivalence, and checkpoint/reopen safety. Eight-, four-, two-,
+      and one-page worker schedules plus a setup-retaining one-page variant were paired against the
+      exact old binary on N1 and E2. Every variant exceeded at least one five-percent lifecycle,
+      request-latency, throughput, resource, or whole-process gate. All candidate code and
+      tests were removed. A future package must attribute shutdown time across every worker and the
+      final checkpoint before bounding the measured owner.
+  human_review_triggers: *id001
 - id: WP-632
   name: Frozen-client transport attribution and asynchronous shadow diagnostic
   depends_on: [WP-627]
