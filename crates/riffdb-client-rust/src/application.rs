@@ -117,6 +117,38 @@ pub struct StableApplicationClient {
 }
 
 impl StableApplicationClient {
+    /// Enables ADR-0141's private diagnostic lane. This hidden test-only
+    /// method carries no compatibility or availability promise.
+    #[cfg(feature = "exclusive-diagnostic")]
+    #[doc(hidden)]
+    pub async fn enable_exclusive_diagnostic(
+        &mut self,
+        configuration: crate::ExclusiveDiagnosticConfiguration,
+        identity: crate::ApplicationSessionIdentity,
+        metadata: &CallMetadata,
+    ) -> Result<(), ApplicationClientError> {
+        self.inner
+            .enable_exclusive_diagnostic(configuration, identity, metadata.clone())
+            .await?;
+        Ok(())
+    }
+
+    /// Takes and resets private diagnostic stage evidence.
+    #[cfg(feature = "exclusive-diagnostic")]
+    #[doc(hidden)]
+    pub fn take_exclusive_diagnostic_evidence(
+        &self,
+    ) -> Option<Vec<crate::ExclusiveDiagnosticOperationEvidence>> {
+        self.inner.take_exclusive_diagnostic_evidence()
+    }
+
+    /// Destroys the private diagnostic lane and restores unary selection.
+    #[cfg(feature = "exclusive-diagnostic")]
+    #[doc(hidden)]
+    pub fn close_exclusive_diagnostic(&mut self) {
+        self.inner.close_exclusive_diagnostic();
+    }
+
     /// Connects the application-only facade through mandatory explicit TLS
     /// trust and exact peer-name verification.
     pub async fn connect_verified_tls(config: &TlsClientConfig) -> Result<Self, ClientError> {
