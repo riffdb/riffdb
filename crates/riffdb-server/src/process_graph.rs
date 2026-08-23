@@ -4,6 +4,7 @@ use std::error::Error;
 use std::fmt;
 use std::num::{NonZeroU16, NonZeroU32};
 use std::sync::Arc;
+use std::time::Instant;
 
 use riffdb_api_grpc::CheckedGrpcSecurityContext;
 use riffdb_api_mcp::McpTelemetry;
@@ -97,6 +98,32 @@ use crate::server_generation::{
 };
 use crate::startup::CheckedRedbStartup;
 use crate::storage::SharedRedbOperationalPorts;
+
+/// Closed graceful-shutdown stage order used by process evidence V1.
+pub(crate) const PRODUCTION_SHUTDOWN_STAGE_COUNT: usize = 8;
+
+/// Fixed-cardinality graceful-shutdown timing evidence.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct ProductionGraphShutdownStageEvidence {
+    graph_elapsed_us: u64,
+    elapsed_us: [u64; PRODUCTION_SHUTDOWN_STAGE_COUNT],
+}
+
+impl ProductionGraphShutdownStageEvidence {
+    /// Stable process-evidence line consumed by benchmark harnesses.
+    pub(crate) fn format_v1_line(self) -> String {
+        let values = self
+            .elapsed_us
+            .iter()
+            .map(u64::to_string)
+            .collect::<Vec<_>>()
+            .join(",");
+        format!(
+            "riffdb-shutdown-stages-v1\t{}\t{values}",
+            self.graph_elapsed_us
+        )
+    }
+}
 
 /// Fixed P1 coordinator admission bound, independent of the 256-command
 /// transaction ceiling and the reserved shutdown slot.
@@ -880,44 +907,69 @@ impl RunningProductionGraph {
     /// that all independently supervised service work and lower workers drain.
     /// After the writer lane and blocking ports drain, the final engine commit
     /// is a non-fatal validated-prefix checkpoint write (ADR-0019 Amendment 1).
-    pub(crate) async fn shutdown(mut self) -> Result<(), ProductionGraphShutdownError> {
-        self.lifecycle.stop();
-        self.spawner.wait_for_idle().await;
+    pub(crate) async fn shutdown(self) -> Result<(), ProductionGraphShutdownError> {
+        self.shutdown_with_stage_evidence().await.map(|_| ())
+    }
 
+    /// Same exact graceful drain with one fixed-cardinality timing receipt.
+    pub(crate) async fn shutdown_with_stage_evidence(
+        mut self,
+    ) -> Result<ProductionGraphShutdownStageEvidence, ProductionGraphShutdownError> {
+        let graph_started = Instant::now();
+        let mut elapsed_us = [0_u64; PRODUCTION_SHUTDOWN_STAGE_COUNT];
+        self.lifecycle.stop();
+        let started = Instant::now();
+        self.spawner.wait_for_idle().await;
+        elapsed_us[0] = elapsed_microseconds(started);
+
+        let started = Instant::now();
         let exact = self
             .exact_worker
             .take()
             .expect("a running graph retains one exact text worker")
             .shutdown()
             .err();
+        elapsed_us[1] = elapsed_microseconds(started);
+        let started = Instant::now();
         let columnar = self
             .columnar_worker
             .take()
             .expect("a running graph retains one columnar worker")
             .shutdown()
             .err();
+        elapsed_us[2] = elapsed_microseconds(started);
+        let started = Instant::now();
         let projection = self
             .projection_worker
             .take()
             .expect("a running graph retains one projection worker")
             .shutdown()
             .err();
+        elapsed_us[3] = elapsed_microseconds(started);
+        let started = Instant::now();
         let notification_failed = self.notifications.shutdown().is_err();
+        elapsed_us[4] = elapsed_microseconds(started);
+        let started = Instant::now();
         let coordinator = self
             .coordinator
             .take()
             .expect("a running graph retains one coordinator")
             .shutdown()
             .err();
+        elapsed_us[5] = elapsed_microseconds(started);
+        let started = Instant::now();
         let blocking = self
             .blocking
             .take()
             .expect("a running graph retains one blocking driver")
             .shutdown_and_drain()
             .err();
+        elapsed_us[6] = elapsed_microseconds(started);
         // ADR-0019 A1 write point (2): after the writer lane drains, as the
         // final engine commit. A write failure is non-fatal (lost fast path).
+        let started = Instant::now();
         write_shutdown_validated_prefix_checkpoint(&self.storage);
+        elapsed_us[7] = elapsed_microseconds(started);
         shutdown_result(
             exact,
             columnar,
@@ -925,37 +977,64 @@ impl RunningProductionGraph {
             notification_failed,
             coordinator,
             blocking,
-        )
+        )?;
+        Ok(ProductionGraphShutdownStageEvidence {
+            graph_elapsed_us: elapsed_microseconds(graph_started),
+            elapsed_us,
+        })
     }
 
     /// Maintenance-only shutdown with a closed boundary between fully drained
     /// workers and closing the final blocking storage ports.
     pub(crate) async fn shutdown_for_maintenance(
-        mut self,
+        self,
         recovery: &crate::maintenance_recovery_controller::MaintenanceRecoveryController,
     ) -> Result<(), ProductionGraphShutdownError> {
-        self.lifecycle.stop();
-        self.spawner.wait_for_idle().await;
+        self.shutdown_for_maintenance_with_stage_evidence(recovery)
+            .await
+            .map(|_| ())
+    }
 
+    /// Maintenance drain with the same closed timing order as ordinary shutdown.
+    pub(crate) async fn shutdown_for_maintenance_with_stage_evidence(
+        mut self,
+        recovery: &crate::maintenance_recovery_controller::MaintenanceRecoveryController,
+    ) -> Result<ProductionGraphShutdownStageEvidence, ProductionGraphShutdownError> {
+        let graph_started = Instant::now();
+        let mut elapsed_us = [0_u64; PRODUCTION_SHUTDOWN_STAGE_COUNT];
+        self.lifecycle.stop();
+        let started = Instant::now();
+        self.spawner.wait_for_idle().await;
+        elapsed_us[0] = elapsed_microseconds(started);
+
+        let started = Instant::now();
         let exact = self
             .exact_worker
             .take()
             .expect("a running graph retains one exact text worker")
             .shutdown()
             .err();
+        elapsed_us[1] = elapsed_microseconds(started);
+        let started = Instant::now();
         let columnar = self
             .columnar_worker
             .take()
             .expect("a running graph retains one columnar worker")
             .shutdown()
             .err();
+        elapsed_us[2] = elapsed_microseconds(started);
+        let started = Instant::now();
         let projection = self
             .projection_worker
             .take()
             .expect("a running graph retains one projection worker")
             .shutdown()
             .err();
+        elapsed_us[3] = elapsed_microseconds(started);
+        let started = Instant::now();
         let notification_failed = self.notifications.shutdown().is_err();
+        elapsed_us[4] = elapsed_microseconds(started);
+        let started = Instant::now();
         let coordinator = self
             .coordinator
             .take()
@@ -965,14 +1044,19 @@ impl RunningProductionGraph {
         recovery.reached(
             crate::maintenance_recovery_controller::MaintenanceRecoveryBoundary::DrainComplete,
         );
+        elapsed_us[5] = elapsed_microseconds(started);
+        let started = Instant::now();
         let blocking = self
             .blocking
             .take()
             .expect("a running graph retains one blocking driver")
             .shutdown_and_drain()
             .err();
+        elapsed_us[6] = elapsed_microseconds(started);
         // Same non-fatal final checkpoint write as graceful production shutdown.
+        let started = Instant::now();
         write_shutdown_validated_prefix_checkpoint(&self.storage);
+        elapsed_us[7] = elapsed_microseconds(started);
         shutdown_result(
             exact,
             columnar,
@@ -980,8 +1064,16 @@ impl RunningProductionGraph {
             notification_failed,
             coordinator,
             blocking,
-        )
+        )?;
+        Ok(ProductionGraphShutdownStageEvidence {
+            graph_elapsed_us: elapsed_microseconds(graph_started),
+            elapsed_us,
+        })
     }
+}
+
+fn elapsed_microseconds(started: Instant) -> u64 {
+    u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX)
 }
 
 /// Graceful-shutdown validated-prefix checkpoint write (ADR-0019 Amendment 1).
@@ -1339,7 +1431,7 @@ impl Error for ProductionGraphShutdownError {}
 
 #[cfg(test)]
 mod tests {
-    use super::P1_COORDINATOR_WORKLOAD_CAPACITY;
+    use super::{P1_COORDINATOR_WORKLOAD_CAPACITY, ProductionGraphShutdownStageEvidence};
     use riffdb_storage_api::MAX_GROUPED_WRITE_TRANSITIONS;
 
     const SOURCE: &str = include_str!("process_graph.rs");
@@ -1430,7 +1522,7 @@ mod tests {
     fn shutdown_order_is_route_jobs_workers_notifications_coordinator_ports_then_checkpoint() {
         let source = production_source();
         let body = source
-            .split_once("pub(crate) async fn shutdown")
+            .split_once("pub(crate) async fn shutdown_with_stage_evidence")
             .expect("shutdown method")
             .1
             // Bound the body to this method only (not shutdown_for_maintenance).
@@ -1471,7 +1563,7 @@ mod tests {
         // error aggregation.
         let source = production_source();
         let body = source
-            .split_once("pub(crate) async fn shutdown_for_maintenance")
+            .split_once("pub(crate) async fn shutdown_for_maintenance_with_stage_evidence")
             .expect("maintenance shutdown method")
             .1
             // Bound the body to this method only (the helper definition follows).
@@ -1511,7 +1603,7 @@ mod tests {
             "shutdown checkpoint write must not propagate failure with ?"
         );
         let shutdown_body = source
-            .split_once("pub(crate) async fn shutdown")
+            .split_once("pub(crate) async fn shutdown_with_stage_evidence")
             .expect("shutdown method")
             .1
             .split_once("pub(crate) async fn shutdown_for_maintenance")
@@ -1521,6 +1613,18 @@ mod tests {
             !shutdown_body.contains("write_shutdown_validated_prefix_checkpoint(&self.storage)?")
                 && !shutdown_body.contains("write_validated_prefix_checkpoint()?"),
             "checkpoint write failure must not fail the shutdown result"
+        );
+    }
+
+    #[test]
+    fn shutdown_stage_receipt_has_exact_v1_shape() {
+        let evidence = ProductionGraphShutdownStageEvidence {
+            graph_elapsed_us: 9,
+            elapsed_us: [1, 2, 3, 4, 5, 6, 7, 8],
+        };
+        assert_eq!(
+            evidence.format_v1_line(),
+            "riffdb-shutdown-stages-v1\t9\t1,2,3,4,5,6,7,8"
         );
     }
 }

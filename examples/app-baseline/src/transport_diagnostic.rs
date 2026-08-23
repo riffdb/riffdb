@@ -120,7 +120,7 @@ fn main() -> Result<(), String> {
         .backend
         .seed(&dataset)
         .map_err(|error| error.to_string())?;
-    let (restarted, _) = runtime
+    let (restarted, initial_server) = runtime
         .block_on(session.restart_for_measurement())
         .map_err(|error| error.to_string())?;
     session = restarted;
@@ -194,6 +194,7 @@ fn main() -> Result<(), String> {
             "frozen_synchronous_bridge": shape_json(&synchronous),
             "asynchronous_shadow": shape_json(&asynchronous),
             "synchronous_server_read_stages": read_stages_json(&synchronous_server),
+            "synchronous_server_shutdown": shutdown_stages_json(&synchronous_server),
             "synchronous_server_query_execute_windows": query_execute_json(
                 synchronous_server.query_execute.as_ref(),
             ),
@@ -202,6 +203,7 @@ fn main() -> Result<(), String> {
                 "after": synchronous_memory_after,
             },
             "asynchronous_server_read_stages": read_stages_json(&asynchronous_server),
+            "asynchronous_server_shutdown": shutdown_stages_json(&asynchronous_server),
             "asynchronous_server_query_execute_windows": query_execute_json(
                 asynchronous_server.query_execute.as_ref(),
             ),
@@ -219,7 +221,7 @@ fn main() -> Result<(), String> {
         }));
     }
 
-    session
+    let final_server = session
         .shutdown_with_evidence()
         .map_err(|error| error.to_string())?;
     let postgres_safe_app_twin = args
@@ -261,6 +263,8 @@ fn main() -> Result<(), String> {
             "c32": "no_regression",
         },
         "cells": cells,
+        "initial_seed_server_shutdown": shutdown_stages_json(&initial_server),
+        "final_server_shutdown": shutdown_stages_json(&final_server),
         "postgres_safe_app_get_ticket_twin": postgres_safe_app_twin,
         "notes": [
             "The synchronous shape is observed but not modified; ordinary PERF-018 evidence remains frozen.",
@@ -306,6 +310,7 @@ fn measure_bounded_session_shape(
         json!({
             "shape": shape_json(&measured),
             "server_read_stages": read_stages_json(&server),
+            "server_shutdown": shutdown_stages_json(&server),
             "server_query_execute_windows": query_execute_json(server.query_execute.as_ref()),
             "server_memory_kib": {
                 "before": memory_before,
@@ -538,6 +543,41 @@ fn shape_json(result: &ShapeResult) -> Value {
 
 fn read_stages_json(evidence: &RiffDbShutdownEvidence) -> Value {
     Value::Array(evidence.read_stages.iter().map(read_stage_json).collect())
+}
+
+fn shutdown_stages_json(evidence: &RiffDbShutdownEvidence) -> Value {
+    const NAMES: [&str; 8] = [
+        "service_jobs_idle",
+        "exact_text_worker",
+        "columnar_worker",
+        "projection_worker",
+        "notifications",
+        "coordinator",
+        "blocking_ports",
+        "validated_prefix_checkpoint",
+    ];
+    let stages = evidence.shutdown_stages_us.map(|values| {
+        NAMES
+            .iter()
+            .zip(values)
+            .map(|(name, elapsed_us)| (name.to_string(), json!(elapsed_us)))
+            .collect::<serde_json::Map<String, Value>>()
+    });
+    let stage_sum_us = evidence
+        .shutdown_stages_us
+        .map(|values| values.into_iter().sum::<u64>());
+    json!({
+        "stages_us": stages,
+        "stage_sum_us": stage_sum_us,
+        "graph_shutdown_elapsed_us": evidence.graph_shutdown_elapsed_us,
+        "harness_shutdown_elapsed_us": evidence.harness_shutdown_elapsed_us,
+        "graph_closure_ratio": stage_sum_us.zip(evidence.graph_shutdown_elapsed_us).map(
+            |(sum, graph)| sum as f64 / graph.max(1) as f64,
+        ),
+        "external_process_residual_us": evidence.graph_shutdown_elapsed_us.map(|graph| {
+            evidence.harness_shutdown_elapsed_us.saturating_sub(graph)
+        }),
+    })
 }
 
 fn read_stage_json(stage: &RiffDbReadStageEvidence) -> Value {

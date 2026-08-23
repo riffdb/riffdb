@@ -924,6 +924,9 @@ fn riffdb_shutdown_evidence_json(evidence: &RiffDbShutdownEvidence) -> serde_jso
         })
         .collect::<Vec<_>>();
     json!({
+        "graph_shutdown_elapsed_us": evidence.graph_shutdown_elapsed_us,
+        "shutdown_stages_us": evidence.shutdown_stages_us,
+        "harness_shutdown_elapsed_us": evidence.harness_shutdown_elapsed_us,
         "write_completion_groups_by_size": evidence.write_completion_groups.to_vec(),
         "dispatch_reasons": {
             "full": evidence.dispatch_reasons[0],

@@ -10,7 +10,7 @@ use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use riffdb_auth::bootstrap_secret::{
     BootstrapCredential as RetainedBootstrapCredential, SystemEntropy,
@@ -60,6 +60,7 @@ const WRITER_JOURNAL_STAGES_PREFIX: &str = "riffdb-writer-journal-stages-v1\t";
 const WRITER_PUBLICATION_STAGES_PREFIX: &str = "riffdb-writer-publication-stages-v1\t";
 const COMPLETION_LANE_PREFIX: &str = "riffdb-completion-lane-v1\t";
 const QUERY_EXECUTE_WINDOWS_PREFIX: &str = "riffdb-query-execute-windows-v1\t";
+const SHUTDOWN_STAGES_PREFIX: &str = "riffdb-shutdown-stages-v1\t";
 const PROCESS_START_TIMEOUT: Duration = Duration::from_secs(90);
 const PROCESS_STOP_TIMEOUT: Duration = Duration::from_secs(15);
 /// Keep the last N stderr lines for crash diagnosis (panic / OOM messages).
@@ -203,6 +204,13 @@ pub struct RiffDbServerSession {
 /// Redaction-safe fixed-cardinality server telemetry emitted at clean shutdown.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RiffDbShutdownEvidence {
+    /// Complete graph-local shutdown wall time from the server receipt.
+    pub graph_shutdown_elapsed_us: Option<u64>,
+    /// Service jobs, exact text, columnar, projection, notifications,
+    /// coordinator, blocking ports, and checkpoint elapsed microseconds.
+    pub shutdown_stages_us: Option<[u64; 8]>,
+    /// Complete harness-observed clean-shutdown wall time.
+    pub harness_shutdown_elapsed_us: u64,
     /// Successful completion groups indexed by group size minus one.
     pub write_completion_groups: [u64; WRITE_GROUP_BUCKETS],
     /// Dispatch counts in full, barrier, queue-drained, receiver-closed order.
@@ -1302,11 +1310,12 @@ impl ServerProcess {
     }
 
     fn shutdown_cleanly(&mut self) -> io::Result<RiffDbShutdownEvidence> {
+        let started = Instant::now();
         if let Some(mut stdin) = self.stdin.take() {
             let _ = stdin.write_all(b"shutdown\n");
             let _ = stdin.flush();
         }
-        match self.exited.recv_timeout(PROCESS_STOP_TIMEOUT) {
+        let evidence = match self.exited.recv_timeout(PROCESS_STOP_TIMEOUT) {
             Ok(status) => {
                 self.exit_observed = true;
                 let status = status?;
@@ -1352,7 +1361,12 @@ impl ServerProcess {
                 };
                 Err(io::Error::other(self.diagnostic_detail(&headline)))
             }
-        }
+        };
+        evidence.map(|mut evidence| {
+            evidence.harness_shutdown_elapsed_us =
+                u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX);
+            evidence
+        })
     }
 }
 
@@ -1397,6 +1411,7 @@ fn read_server_stdout(
     let mut writer_publication_stages = None;
     let mut completion_lane = None;
     let mut query_execute = None;
+    let mut shutdown_stages_us = None;
     loop {
         line.clear();
         let Ok(read) = reader.read_line(&mut line) else {
@@ -1442,6 +1457,8 @@ fn read_server_stdout(
             completion_lane = Some(parse_completion_lane(encoded));
         } else if let Some(encoded) = line.trim_end().strip_prefix(QUERY_EXECUTE_WINDOWS_PREFIX) {
             query_execute = Some(parse_query_execute_windows(encoded));
+        } else if let Some(encoded) = line.trim_end().strip_prefix(SHUTDOWN_STAGES_PREFIX) {
+            shutdown_stages_us = Some(parse_shutdown_stages(encoded));
         }
     }
     let evidence = match (
@@ -1469,8 +1486,11 @@ fn read_server_stdout(
                             writer_publication_stages.transpose().and_then(
                                 |writer_publication_stages| {
                                     completion_lane.transpose().and_then(|completion_lane| {
-                                        query_execute.transpose().map(|query_execute| {
-                                            RiffDbShutdownEvidence {
+                                        query_execute.transpose().and_then(|query_execute| {
+                                            optional_shutdown_stages(shutdown_stages_us).map(|(graph_shutdown_elapsed_us, shutdown_stages_us)| RiffDbShutdownEvidence {
+                                                graph_shutdown_elapsed_us,
+                                                shutdown_stages_us,
+                                                harness_shutdown_elapsed_us: 0,
                                                 write_completion_groups,
                                                 dispatch_reasons,
                                                 read_stages,
@@ -1485,7 +1505,7 @@ fn read_server_stdout(
                                                 query_execute,
                                                 table_inventory_before_measurement: None,
                                                 table_inventory_after_measurement: Vec::new(),
-                                            }
+                                            })
                                         })
                                     })
                                 },
@@ -1631,6 +1651,29 @@ fn parse_fixed_counts<const N: usize>(
         return Err(io::Error::other(format!("invalid {label} count length")));
     }
     values.try_into().map_err(|_| io::Error::other(label))
+}
+
+fn parse_shutdown_stages(encoded: &str) -> io::Result<(u64, [u64; 8])> {
+    let (graph_elapsed, stages) = encoded
+        .split_once('\t')
+        .ok_or_else(|| io::Error::other("missing shutdown graph wall"))?;
+    let graph_elapsed = graph_elapsed
+        .parse::<u64>()
+        .map_err(|_| io::Error::other("invalid shutdown graph wall"))?;
+    let stages = parse_fixed_counts(stages, "shutdown-stages", 8)?;
+    Ok((graph_elapsed, stages))
+}
+
+fn optional_shutdown_stages(
+    evidence: Option<io::Result<(u64, [u64; 8])>>,
+) -> io::Result<(Option<u64>, Option<[u64; 8]>)> {
+    match evidence {
+        Some(Ok((graph_elapsed_us, stages_us))) => {
+            Ok((Some(graph_elapsed_us), Some(stages_us)))
+        }
+        Some(Err(error)) => Err(error),
+        None => Ok((None, None)),
+    }
 }
 
 fn parse_read_stages(encoded: &str) -> io::Result<Vec<RiffDbReadStageEvidence>> {
@@ -1955,6 +1998,22 @@ mod tests {
                 .expect("groups");
         assert_eq!(parsed[WRITE_GROUP_BUCKETS - 1], 255);
         assert!(parse_fixed_counts::<4>("1,2,3", "dispatch", 4).is_err());
+        assert_eq!(
+            parse_shutdown_stages("9\t1,2,3,4,5,6,7,8")
+                .expect("shutdown stages"),
+            (9, [1, 2, 3, 4, 5, 6, 7, 8])
+        );
+        assert!(parse_shutdown_stages("9\t1,2,3,4,5,6,7").is_err());
+        assert!(parse_shutdown_stages("1,2,3,4,5,6,7,8").is_err());
+        assert_eq!(
+            optional_shutdown_stages(None).expect("old server omits additive evidence"),
+            (None, None)
+        );
+        assert_eq!(
+            optional_shutdown_stages(Some(Ok((9, [1, 2, 3, 4, 5, 6, 7, 8]))))
+                .expect("current shutdown evidence"),
+            (Some(9), Some([1, 2, 3, 4, 5, 6, 7, 8]))
+        );
 
         let buckets = (0_u64..16)
             .map(|value| value.to_string())
