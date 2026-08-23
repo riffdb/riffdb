@@ -1,6 +1,98 @@
 //! Timed application scenarios.
 
-use crate::{AppBackend, SampleSet, ScenarioProbes, SeedDataset, time_call};
+use crate::{
+    AppBackend, CloseTicketWithCommentSeed, CommentRow, CommentSeed, LabelRow,
+    OpenTicketWithLabelsSeed, OrganizationRow, ProjectMemberRow, ProjectRow, SampleSet,
+    ScenarioProbes, SeedDataset, SwapMemberRolesSeed, TicketDetailPage, TicketRow, UserRow,
+    time_call,
+};
+
+/// Backend-neutral encoded-size disclosure used by ADR-0142 evidence.
+///
+/// The benchmark encodes the semantic request and response as a statically
+/// shaped frame: one version byte, one two-byte scenario tag, fixed-width UUID/
+/// integer/enum values, four-byte collection/string lengths, and one-byte
+/// optional/outcome tags. This deliberately excludes backend-specific transport
+/// framing so PostgreSQL and RiffDB disclose the exact same application payload.
+const SEMANTIC_FRAME_HEADER_BYTES: u64 = 3;
+
+const fn semantic_string_bytes(value: &str) -> u64 {
+    4 + value.len() as u64
+}
+
+const fn semantic_uuid_bytes() -> u64 {
+    16
+}
+
+fn semantic_organization_bytes(row: &OrganizationRow) -> u64 {
+    semantic_uuid_bytes() + semantic_string_bytes(&row.name)
+}
+
+fn semantic_user_bytes(row: &UserRow) -> u64 {
+    semantic_uuid_bytes() * 2
+        + semantic_string_bytes(&row.email)
+        + semantic_string_bytes(&row.display_name)
+}
+
+fn semantic_project_bytes(row: &ProjectRow) -> u64 {
+    semantic_uuid_bytes() * 2 + semantic_string_bytes(&row.name)
+}
+
+fn semantic_member_bytes(row: &ProjectMemberRow) -> u64 {
+    semantic_uuid_bytes() * 3 + semantic_string_bytes(&row.role)
+}
+
+fn semantic_ticket_bytes(row: &TicketRow) -> u64 {
+    semantic_uuid_bytes() * 5 + 1 + semantic_string_bytes(&row.title)
+}
+
+fn semantic_comment_bytes(row: &CommentRow) -> u64 {
+    semantic_uuid_bytes() * 4 + semantic_string_bytes(&row.body)
+}
+
+fn semantic_label_bytes(row: &LabelRow) -> u64 {
+    semantic_uuid_bytes() * 2 + semantic_string_bytes(&row.name)
+}
+
+fn semantic_ticket_page_bytes(page: &TicketDetailPage) -> u64 {
+    semantic_ticket_bytes(&page.ticket)
+        + semantic_project_bytes(&page.project)
+        + semantic_organization_bytes(&page.organization)
+        + 1
+        + page.assignee.as_ref().map_or(0, semantic_user_bytes)
+        + 4
+        + page.comments.iter().map(semantic_comment_bytes).sum::<u64>()
+        + 4
+        + page.labels.iter().map(semantic_label_bytes).sum::<u64>()
+}
+
+fn semantic_comment_request_bytes(input: &CommentSeed) -> u64 {
+    SEMANTIC_FRAME_HEADER_BYTES
+        + semantic_comment_bytes(&input.row)
+        + semantic_string_bytes(&input.idempotency_key)
+}
+
+fn semantic_close_request_bytes(input: &CloseTicketWithCommentSeed) -> u64 {
+    SEMANTIC_FRAME_HEADER_BYTES
+        + semantic_uuid_bytes() * 4
+        + semantic_string_bytes(&input.body)
+        + semantic_string_bytes(&input.idempotency_key)
+}
+
+fn semantic_swap_request_bytes(input: &SwapMemberRolesSeed) -> u64 {
+    SEMANTIC_FRAME_HEADER_BYTES
+        + semantic_uuid_bytes() * 4
+        + semantic_string_bytes(&input.role_a)
+        + semantic_string_bytes(&input.role_b)
+        + semantic_string_bytes(&input.idempotency_key)
+}
+
+fn semantic_open_request_bytes(input: &OpenTicketWithLabelsSeed) -> u64 {
+    SEMANTIC_FRAME_HEADER_BYTES
+        + semantic_uuid_bytes() * 7
+        + semantic_string_bytes(&input.title)
+        + semantic_string_bytes(&input.idempotency_key)
+}
 
 /// Stable scenario identifiers.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -245,6 +337,10 @@ pub struct ScenarioResult {
     pub samples: SampleSet,
     /// Optional result cardinality check (rows returned on last sample).
     pub last_row_count: usize,
+    /// Exact encoded semantic request bytes for the last measured sample.
+    pub encoded_request_bytes: u64,
+    /// Exact encoded semantic response bytes for the last measured sample.
+    pub encoded_response_bytes: u64,
 }
 
 /// Per-row marginal cost from the board size curve: `(p50_450 − p50_50) / 400`.
@@ -364,6 +460,8 @@ pub fn run_scenarios_selected<B: AppBackend>(
             scenario,
             samples: SampleSet::default(),
             last_row_count: 0,
+            encoded_request_bytes: 0,
+            encoded_response_bytes: 0,
         })
         .collect::<Vec<_>>();
 
@@ -374,13 +472,33 @@ pub fn run_scenarios_selected<B: AppBackend>(
                     let (value, elapsed) = time_call(|| {
                         backend.point_get_ticket(probes.organization_id, probes.ticket_id)
                     });
-                    value.map(|row| (usize::from(row.is_some()), elapsed))
+                    value.map(|row| {
+                        let response_bytes = SEMANTIC_FRAME_HEADER_BYTES
+                            + 1
+                            + row.as_ref().map_or(0, semantic_ticket_bytes);
+                        (
+                            usize::from(row.is_some()),
+                            elapsed,
+                            SEMANTIC_FRAME_HEADER_BYTES + semantic_uuid_bytes() * 2,
+                            response_bytes,
+                        )
+                    })
                 }
                 ScenarioId::PointGetUser => {
                     let (value, elapsed) = time_call(|| {
                         backend.point_get_user(probes.organization_id, probes.user_id)
                     });
-                    value.map(|row| (usize::from(row.is_some()), elapsed))
+                    value.map(|row| {
+                        let response_bytes = SEMANTIC_FRAME_HEADER_BYTES
+                            + 1
+                            + row.as_ref().map_or(0, semantic_user_bytes);
+                        (
+                            usize::from(row.is_some()),
+                            elapsed,
+                            SEMANTIC_FRAME_HEADER_BYTES + semantic_uuid_bytes() * 2,
+                            response_bytes,
+                        )
+                    })
                 }
                 ScenarioId::ListTicketsByProjectStatus => {
                     let (value, elapsed) = time_call(|| {
@@ -391,7 +509,17 @@ pub fn run_scenarios_selected<B: AppBackend>(
                             50,
                         )
                     });
-                    value.map(|rows| (rows.len(), elapsed))
+                    value.map(|rows| {
+                        let response_bytes = SEMANTIC_FRAME_HEADER_BYTES
+                            + 4
+                            + rows.iter().map(semantic_ticket_bytes).sum::<u64>();
+                        (
+                            rows.len(),
+                            elapsed,
+                            SEMANTIC_FRAME_HEADER_BYTES + semantic_uuid_bytes() * 2 + 1 + 4,
+                            response_bytes,
+                        )
+                    })
                 }
                 ScenarioId::ListOpenTicketsForAssignee => {
                     let (value, elapsed) = time_call(|| {
@@ -401,7 +529,17 @@ pub fn run_scenarios_selected<B: AppBackend>(
                             50,
                         )
                     });
-                    value.map(|rows| (rows.len(), elapsed))
+                    value.map(|rows| {
+                        let response_bytes = SEMANTIC_FRAME_HEADER_BYTES
+                            + 4
+                            + rows.iter().map(semantic_ticket_bytes).sum::<u64>();
+                        (
+                            rows.len(),
+                            elapsed,
+                            SEMANTIC_FRAME_HEADER_BYTES + semantic_uuid_bytes() * 2 + 4,
+                            response_bytes,
+                        )
+                    })
                 }
                 ScenarioId::ListCommentsForTicket => {
                     let (value, elapsed) = time_call(|| {
@@ -411,13 +549,33 @@ pub fn run_scenarios_selected<B: AppBackend>(
                             50,
                         )
                     });
-                    value.map(|rows| (rows.len(), elapsed))
+                    value.map(|rows| {
+                        let response_bytes = SEMANTIC_FRAME_HEADER_BYTES
+                            + 4
+                            + rows.iter().map(semantic_comment_bytes).sum::<u64>();
+                        (
+                            rows.len(),
+                            elapsed,
+                            SEMANTIC_FRAME_HEADER_BYTES + semantic_uuid_bytes() * 2 + 4,
+                            response_bytes,
+                        )
+                    })
                 }
                 ScenarioId::ListProjectMembers => {
                     let (value, elapsed) = time_call(|| {
                         backend.list_project_members(probes.organization_id, probes.project_id, 50)
                     });
-                    value.map(|rows| (rows.len(), elapsed))
+                    value.map(|rows| {
+                        let response_bytes = SEMANTIC_FRAME_HEADER_BYTES
+                            + 4
+                            + rows.iter().map(semantic_member_bytes).sum::<u64>();
+                        (
+                            rows.len(),
+                            elapsed,
+                            SEMANTIC_FRAME_HEADER_BYTES + semantic_uuid_bytes() * 2 + 4,
+                            response_bytes,
+                        )
+                    })
                 }
                 ScenarioId::TicketDetailPage => {
                     let (value, elapsed) = time_call(|| {
@@ -429,7 +587,15 @@ pub fn run_scenarios_selected<B: AppBackend>(
                                 + page.labels.len()
                                 + usize::from(page.assignee.is_some())
                         });
-                        (count, elapsed)
+                        let response_bytes = SEMANTIC_FRAME_HEADER_BYTES
+                            + 1
+                            + page.as_ref().map_or(0, semantic_ticket_page_bytes);
+                        (
+                            count,
+                            elapsed,
+                            SEMANTIC_FRAME_HEADER_BYTES + semantic_uuid_bytes() * 2 + 4,
+                            response_bytes,
+                        )
                     })
                 }
                 ScenarioId::BoardPage50 | ScenarioId::BoardPage200 | ScenarioId::BoardPage450 => {
@@ -445,7 +611,17 @@ pub fn run_scenarios_selected<B: AppBackend>(
                             limit,
                         )
                     });
-                    value.map(|rows| (rows.len(), elapsed))
+                    value.map(|rows| {
+                        let response_bytes = SEMANTIC_FRAME_HEADER_BYTES
+                            + 4
+                            + rows.iter().map(semantic_ticket_bytes).sum::<u64>();
+                        (
+                            rows.len(),
+                            elapsed,
+                            SEMANTIC_FRAME_HEADER_BYTES + semantic_uuid_bytes() * 2 + 1 + 4,
+                            response_bytes,
+                        )
+                    })
                 }
                 ScenarioId::BoardPageProjected50
                 | ScenarioId::BoardPageProjected200
@@ -462,7 +638,17 @@ pub fn run_scenarios_selected<B: AppBackend>(
                             limit,
                         )
                     });
-                    value.map(|rows| (rows.len(), elapsed))
+                    value.map(|rows| {
+                        let response_bytes = SEMANTIC_FRAME_HEADER_BYTES
+                            + 4
+                            + rows.iter().map(semantic_ticket_bytes).sum::<u64>();
+                        (
+                            rows.len(),
+                            elapsed,
+                            SEMANTIC_FRAME_HEADER_BYTES + semantic_uuid_bytes() * 2 + 1 + 4,
+                            response_bytes,
+                        )
+                    })
                 }
                 ScenarioId::BoardPagePacked50
                 | ScenarioId::BoardPagePacked200
@@ -479,7 +665,17 @@ pub fn run_scenarios_selected<B: AppBackend>(
                             limit,
                         )
                     });
-                    value.map(|rows| (rows.len(), elapsed))
+                    value.map(|rows| {
+                        let response_bytes = SEMANTIC_FRAME_HEADER_BYTES
+                            + 4
+                            + rows.iter().map(semantic_ticket_bytes).sum::<u64>();
+                        (
+                            rows.len(),
+                            elapsed,
+                            SEMANTIC_FRAME_HEADER_BYTES + semantic_uuid_bytes() * 2 + 1 + 4,
+                            response_bytes,
+                        )
+                    })
                 }
                 ScenarioId::CreateComment => {
                     // Each sample inserts a distinct comment (new idempotency
@@ -487,28 +683,56 @@ pub fn run_scenarios_selected<B: AppBackend>(
                     // and PostgreSQL never no-ops on conflict.
                     let input = probes.write_comment(sample);
                     let (value, elapsed) = time_call(|| backend.create_comment(&input));
-                    value.map(|()| (1, elapsed))
+                    value.map(|()| {
+                        (
+                            1,
+                            elapsed,
+                            semantic_comment_request_bytes(&input),
+                            SEMANTIC_FRAME_HEADER_BYTES + 1,
+                        )
+                    })
                 }
                 ScenarioId::CloseTicketWithComment => {
                     let input = probes.close_ticket_with_comment(sample);
                     let (value, elapsed) = time_call(|| backend.close_ticket_with_comment(&input));
                     // Two entity mutations: ticket + comment.
-                    value.map(|()| (2, elapsed))
+                    value.map(|()| {
+                        (
+                            2,
+                            elapsed,
+                            semantic_close_request_bytes(&input),
+                            SEMANTIC_FRAME_HEADER_BYTES + 1,
+                        )
+                    })
                 }
                 ScenarioId::SwapMemberRoles => {
                     let input = probes.swap_member_roles(sample);
                     let (value, elapsed) = time_call(|| backend.swap_member_roles(&input));
-                    value.map(|()| (2, elapsed))
+                    value.map(|()| {
+                        (
+                            2,
+                            elapsed,
+                            semantic_swap_request_bytes(&input),
+                            SEMANTIC_FRAME_HEADER_BYTES + 1,
+                        )
+                    })
                 }
                 ScenarioId::OpenTicketWithLabels => {
                     let input = probes.open_ticket_with_labels(sample);
                     let (value, elapsed) = time_call(|| backend.open_ticket_with_labels(&input));
                     // Ticket + two label links.
-                    value.map(|()| (3, elapsed))
+                    value.map(|()| {
+                        (
+                            3,
+                            elapsed,
+                            semantic_open_request_bytes(&input),
+                            SEMANTIC_FRAME_HEADER_BYTES + 1,
+                        )
+                    })
                 }
             };
-            let (row_count, elapsed) = match outcome {
-                Ok(pair) => pair,
+            let (row_count, elapsed, encoded_request_bytes, encoded_response_bytes) = match outcome {
+                Ok(measurement) => measurement,
                 Err(error) => {
                     eprintln!("scenario {scenario_name} failed: {error}");
                     return Err(error);
@@ -516,6 +740,8 @@ pub fn run_scenarios_selected<B: AppBackend>(
             };
             result.samples.record(elapsed);
             result.last_row_count = row_count;
+            result.encoded_request_bytes = encoded_request_bytes;
+            result.encoded_response_bytes = encoded_response_bytes;
             Ok(())
     };
     if std::env::var_os("RIFFDB_APP_BASELINE_SCENARIO_MAJOR_DIAGNOSTICS")
@@ -793,11 +1019,15 @@ mod tests {
                 scenario: ScenarioId::BoardPage50,
                 samples: s50,
                 last_row_count: 50,
+                encoded_request_bytes: 0,
+                encoded_response_bytes: 0,
             },
             ScenarioResult {
                 scenario: ScenarioId::BoardPage450,
                 samples: s450,
                 last_row_count: 450,
+                encoded_request_bytes: 0,
+                encoded_response_bytes: 0,
             },
         ];
         assert_eq!(board_marginal_from_results(&results), Some(100));
@@ -816,11 +1046,15 @@ mod tests {
                 scenario: ScenarioId::BoardPageProjected50,
                 samples: s50,
                 last_row_count: 50,
+                encoded_request_bytes: 0,
+                encoded_response_bytes: 0,
             },
             ScenarioResult {
                 scenario: ScenarioId::BoardPageProjected450,
                 samples: s450,
                 last_row_count: 450,
+                encoded_request_bytes: 0,
+                encoded_response_bytes: 0,
             },
         ];
         assert_eq!(board_projected_marginal_from_results(&results), Some(100));
@@ -926,6 +1160,8 @@ mod tests {
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].scenario, ScenarioId::PointGetTicket);
         assert_eq!(results[0].samples.summary().sample_count, 3);
+        assert_eq!(results[0].encoded_request_bytes, 35);
+        assert_eq!(results[0].encoded_response_bytes, 4);
     }
 
     #[test]

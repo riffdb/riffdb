@@ -263,10 +263,33 @@ def verify_report(
     backend_ids = {row.get("backend_id") for row in backends if isinstance(row, dict)}
     if backend_ids != {"postgres_safe_app", "riffdb_public_grpc"}:
         fail(f"{label}: backend set drifted")
+    encoded_sizes: dict[str, dict[str, int]] = {}
     for backend in backends:
         rows = backend.get("scenarios") if isinstance(backend, dict) else None
         if not isinstance(rows, list) or len(rows) != 1 or rows[0].get("scenario") != scenario:
             fail(f"{label}: report contains another timed scenario")
+        encoded = rows[0].get("encoded_size") or {}
+        if encoded.get("schema") != "riffdb.app-baseline-canonical-semantic-frame/v1":
+            fail(f"{label}: encoded-size schema is absent or drifted")
+        if encoded.get("transport_framing_included") is not False:
+            fail(f"{label}: encoded-size transport framing declaration drifted")
+        request_bytes = encoded.get("request_bytes")
+        response_bytes = encoded.get("response_bytes")
+        if (
+            not isinstance(request_bytes, int)
+            or isinstance(request_bytes, bool)
+            or request_bytes <= 0
+            or not isinstance(response_bytes, int)
+            or isinstance(response_bytes, bool)
+            or response_bytes <= 0
+        ):
+            fail(f"{label}: encoded request/response sizes are not positive integers")
+        encoded_sizes[backend["backend_id"]] = {
+            "request_bytes": request_bytes,
+            "response_bytes": response_bytes,
+        }
+    if len({tuple(sorted(value.items())) for value in encoded_sizes.values()}) != 1:
+        fail(f"{label}: backends did not execute one encoded semantic payload shape")
 
     comparisons = report.get("comparisons") or {}
     if comparisons.get("available") is not True:
@@ -295,6 +318,7 @@ def verify_report(
         "postgres": {},
         "riffdb": {},
         "ratios_riffdb_over_postgres": {},
+        "encoded_size": next(iter(encoded_sizes.values())),
     }
     for backend in ("postgres", "riffdb"):
         for statistic in ("p50_ns", "p95_ns"):
@@ -346,6 +370,35 @@ def verify_minimal_report(
         row.get("backend_id") for row in backends if isinstance(row, dict)
     } != {"postgres_minimal", "riffdb_public_grpc"}:
         fail(f"{label}: minimal backend set drifted")
+    encoded_by_backend: dict[str, dict[str, tuple[int, int]]] = {}
+    for backend in backends:
+        encoded_by_backend[backend["backend_id"]] = {}
+        for row in backend.get("scenarios") or []:
+            scenario = row.get("scenario")
+            if scenario not in SCENARIOS:
+                continue
+            encoded = row.get("encoded_size") or {}
+            request_bytes = encoded.get("request_bytes")
+            response_bytes = encoded.get("response_bytes")
+            if (
+                encoded.get("schema") != "riffdb.app-baseline-canonical-semantic-frame/v1"
+                or encoded.get("transport_framing_included") is not False
+                or not isinstance(request_bytes, int)
+                or isinstance(request_bytes, bool)
+                or request_bytes <= 0
+                or not isinstance(response_bytes, int)
+                or isinstance(response_bytes, bool)
+                or response_bytes <= 0
+            ):
+                fail(f"{label}.{scenario}: minimal encoded-size disclosure is invalid")
+            encoded_by_backend[backend["backend_id"]][scenario] = (
+                request_bytes,
+                response_bytes,
+            )
+    if any(set(sizes) != SCENARIOS for sizes in encoded_by_backend.values()):
+        fail(f"{label}: minimal encoded-size scenario set is incomplete")
+    if len({tuple(sorted(sizes.items())) for sizes in encoded_by_backend.values()}) != 1:
+        fail(f"{label}: minimal backends executed different semantic payload shapes")
     comparisons = report.get("comparisons") or {}
     rows = comparisons.get("scenarios")
     if not isinstance(rows, list):
@@ -663,8 +716,30 @@ def fake_report(manifest: dict[str, Any], profile: str, scenario: str) -> dict[s
             "riffdb_public_grpc",
         ],
         "backends": [
-            {"backend_id": "postgres_safe_app", "scenarios": [{"scenario": scenario}]},
-            {"backend_id": "riffdb_public_grpc", "scenarios": [{"scenario": scenario}]},
+            {
+                "backend_id": "postgres_safe_app",
+                "scenarios": [{
+                    "scenario": scenario,
+                    "encoded_size": {
+                        "schema": "riffdb.app-baseline-canonical-semantic-frame/v1",
+                        "request_bytes": 64,
+                        "response_bytes": 128,
+                        "transport_framing_included": False,
+                    },
+                }],
+            },
+            {
+                "backend_id": "riffdb_public_grpc",
+                "scenarios": [{
+                    "scenario": scenario,
+                    "encoded_size": {
+                        "schema": "riffdb.app-baseline-canonical-semantic-frame/v1",
+                        "request_bytes": 64,
+                        "response_bytes": 128,
+                        "transport_framing_included": False,
+                    },
+                }],
+            },
         ],
         "comparisons": {
             "available": True,
@@ -712,11 +787,33 @@ def fake_minimal_report(manifest: dict[str, Any], profile: str) -> dict[str, Any
     report["backends"] = [
         {
             "backend_id": "postgres_minimal",
-            "scenarios": [{"scenario": scenario} for scenario in sorted(SCENARIOS)],
+            "scenarios": [
+                {
+                    "scenario": scenario,
+                    "encoded_size": {
+                        "schema": "riffdb.app-baseline-canonical-semantic-frame/v1",
+                        "request_bytes": 64,
+                        "response_bytes": 128,
+                        "transport_framing_included": False,
+                    },
+                }
+                for scenario in sorted(SCENARIOS)
+            ],
         },
         {
             "backend_id": "riffdb_public_grpc",
-            "scenarios": [{"scenario": scenario} for scenario in sorted(SCENARIOS)],
+            "scenarios": [
+                {
+                    "scenario": scenario,
+                    "encoded_size": {
+                        "schema": "riffdb.app-baseline-canonical-semantic-frame/v1",
+                        "request_bytes": 64,
+                        "response_bytes": 128,
+                        "transport_framing_included": False,
+                    },
+                }
+                for scenario in sorted(SCENARIOS)
+            ],
         },
     ]
     report["board_page_live_crosscheck"] = {"status": "ok"}
