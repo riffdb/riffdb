@@ -79,10 +79,15 @@ a new identity and makes actual public ratios, semantic equivalence, and
 cross-generation stability the gate.
 
 Transport cannot close `board_page_450` alone. Its current 1.74--1.99x ratio
-survives even a perfect removal of the point-read residual. WP-670 must report
-that cell and may not claim release activation while it or any other
-representative operation misses `PERF-008`; the result-set campaign remains a
-separate owner.
+survives even a perfect removal of the point-read residual. Revised ADR-0141
+therefore makes WP-670 a deliberately narrow verdict: build the minimum safe
+private candidate and run the complete unary matrix immediately. A service-
+owned miss on any ordinary small operation ends transport work before
+production hardening. A complete small-operation pass preserves the candidate
+only as private diagnostic machinery and hands BoardPage50/200/450 attribution
+to WP-671. Conditional WP-672 is the sole owner of later production hardening
+and activation, and cannot start until the large-result gate has a measured,
+accepted closure.
 
 ## Artifact custody
 

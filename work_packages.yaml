@@ -15605,13 +15605,14 @@ work_packages:
       removed; unary remains the default, PERF-018 is unchanged, and WP-623 remains open.
   human_review_triggers: *id001
 - id: WP-670
-  name: Public-gate-first exclusive application lane reconsideration
+  name: Diagnostic-gate-first exclusive application lane verdict
   depends_on: [WP-649, WP-650, WP-654, WP-659, WP-663, WP-664, WP-665, WP-666,
     WP-667, WP-669]
-  objective: After exact acceptance of ADR-0141, implement one new-identity direct exclusive
-    generated-operation candidate and retain it only when actual public PostgreSQL ratios,
-    cross-generation stability, semantic equivalence, and resource gates all pass without hiding
-    the independently owned large-result miss.
+  objective: After exact acceptance of ADR-0141, implement only the minimum safe private
+    new-identity direct exclusive candidate, immediately obtain a complete unary public-ratio
+    verdict, and stop transport work on any service-owned small-operation miss; production
+    hardening is permitted only after every small operation passes without hiding the separately
+    owned large-result miss.
   requirements: [API-001, PERF-005, PERF-008, PERF-018, SEC-001, SEC-002,
     NET-001, NET-002, NET-003, NET-004, NET-005, NET-006, NET-007, NET-008,
     NET-009, NET-010, NET-011, NET-012,
@@ -15635,23 +15636,133 @@ work_packages:
   - The current-head N1/E2 short unary, mixed-c32, seed, and exact GetTicket ledger in
     docs/performance/wp-670-current-head-preflight.md, clearly marked non-evidentiary and preserving
     every unfavorable result
-  - Before protocol editing, per-host arithmetic for representative point/list/detail/large-result
-    reads and commands separating unchanged service floor, removable outside-service cost,
-    same-run PostgreSQL budget, and the candidate latency required to meet it
-  - After exact ADR acceptance only, one new magic/version/ALPN direct exclusive lane with one
-    caller-owned operation, finite independent-lane pool, strict existing Protobuf payloads, shared
-    API-neutral semantics, current per-operation authority, and no reuse of rejected experiment
-    identities
-  - Hostile-wire, cancellation, uncertainty, revocation, expiry, rotation, drift, saturation,
-    reconnect, restart, and shutdown evidence plus architecture tests proving Rust-only transport,
-    direct ownership, and no storage/policy/commit authority
-  - Three counterbalanced loopback and verified-TLS mechanics generations on N1/E2 with exact
-    stage closure, setup/resource/no-regression gates, and removal before public integration upon
-    any miss
-  - A short complete public candidate matrix retaining every ordinary and BoardPage scenario; a
-    miss keeps the candidate private and cannot produce a PERF-018/default proposal
-  - Only after every short public gate passes, the complete workstation/N1/E2 release matrix and
+  - Before protocol editing, per-host arithmetic for every unary scenario separating unchanged
+    service floor, removable outside-service cost, encoded request/response bytes, same-run
+    PostgreSQL budget, and the candidate latency required to meet it
+  - After exact ADR acceptance only, one private new magic/version/ALPN diagnostic lane with one
+    caller-owned operation, strict existing Protobuf payloads, shared API-neutral semantics,
+    current per-operation authority, minimum malformed-input/resource tests, and no public selector,
+    target-language exposure, compatibility promise, or reuse of rejected experiment identities
+  - Three counterbalanced loopback and verified-TLS generations on N1/E2 followed immediately by
+    the complete existing unary scenario matrix and a closed per-scenario service/residual/byte
+    ledger
+  - >-
+    A binary decision receipt: remove the candidate and stop transport work upon any service-owned
+    small-operation miss, or preserve it as private diagnostic machinery and authorize WP-671 when
+    every small read and command is at most 1.10x same-run safe-application PostgreSQL in every
+    generation
+  acceptance_commands:
+  - cargo +1.97.0 test -p riffdb-proto -p riffdb-api-grpc -p riffdb-client-rust -p riffdb-driver-host -p riffdb-server --all-features
+  - cargo +1.97.0 test --manifest-path examples/app-baseline/Cargo.toml --workspace
+  - ./scripts/generate-proto --check
+  - ./scripts/check-generated
+  - ./scripts/check-application-bindings
+  - ./scripts/check-workspace-policy
+  - ./scripts/check-requirement-coverage
+  - cargo +1.97.0 fmt --all -- --check
+  - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: The private candidate first produces a decisive complete-unary N1/E2 verdict. Any
+    small read or command above 1.10x, or any service floor that cannot fit that budget, stops
+    transport work and removes the candidate before production hardening. A complete small-
+    operation pass closes WP-670 with a private candidate and authorizes WP-671, but permits no
+    hardening, activation, public selector, generated exposure, or compatibility claim.
+  standing_design_tests:
+    interface_safety: Applications still invoke only generated typed commands and exact named
+      queries and cannot select framing, pool size, trust, cached authority, transaction scope,
+      durability, freshness, retry after uncertainty, fallback after submission, or storage;
+      every operation traverses the shared application service and all current safe points.
+    scale: Lanes, pool, frames, bytes, tasks, operations, waits, cancellation, replacement,
+      telemetry, and evidence are fixed-bounded independently of history, database size, tenant
+      count, completed operations, or process duration; no full-state or result cache is introduced.
+  human_review_triggers: *id001
+- id: WP-671
+  name: BoardPage450 result-path attribution and decision
+  depends_on: [WP-654, WP-659, WP-670]
+  objective: While ADR-0141's private direct candidate exists, close a customer-paid stage ledger
+    for BoardPage450 on N1/E2, determine whether result assembly, windowing, hydration, encoding,
+    response release, or transport owns the remaining miss, and propose at most one separately
+    reviewed result-path package whose measured Amdahl bound can reach the public gate.
+  requirements: [PERF-005, PERF-008, PERF-018, QRY-001, QRY-002, QRY-003,
+    QRY-004, QRY-005, QRY-006, QRY-007, QRY-008, QRY-009]
+  required_adrs: [ADR-0040, ADR-0055, ADR-0070, ADR-0120, ADR-0123, ADR-0132,
+    ADR-0137, ADR-0141]
+  allowed_paths: [work_packages.yaml, adr/README.md, adr/**,
+    crates/riffdb-query/**, crates/riffdb-api-application/**,
+    crates/riffdb-api-frame/**, crates/riffdb-api-grpc/**,
+    crates/riffdb-client-rust/**, crates/riffdb-observability/**,
+    crates/riffdb-server/**, examples/app-baseline/**, benchmarks/**, scripts/**,
+    tests/**, docs/performance/**]
+  deliverables:
+  - Counterbalanced N1/E2 BoardPage50/200/450 runs under unary gRPC and the same private WP-670
+    candidate, with identical data, query identity, authorization, freshness, and result bytes
+  - A closed caller-time ledger for BoardPage450 covering plan execution, row/window assembly,
+    dependent hydration, value conversion, Protobuf encoding, response release, transport, and all
+    remaining residual, closing within five percent
+  - Absolute CPU, allocation/byte, and off-CPU evidence for the dominant stage, with response-size
+    scaling across BoardPage50/200/450 and no value-bearing profile artifact in repository history
+  - Predeclared Amdahl arithmetic for at most one candidate showing its predicted N1/E2 public
+    ratios; no implementation proposal when the measured movable share cannot fit 1.10x
+  - A closure receipt that either proposes a separate ADR/work package for exact human review or
+    records that the universal BoardPage450 gate requires a maintainer product-rule decision
+  acceptance_commands:
+  - cargo +1.97.0 test --manifest-path examples/app-baseline/Cargo.toml --workspace
+  - cargo +1.97.0 test -p riffdb-query -p riffdb-api-application -p riffdb-api-grpc -p riffdb-client-rust -p riffdb-server --all-features
+  - ./scripts/check-workspace-policy
+  - ./scripts/check-requirement-coverage
+  - cargo +1.97.0 fmt --all -- --check
+  - cargo +1.97.0 clippy -p riffdb-query -p riffdb-api-application -p riffdb-api-grpc -p riffdb-client-rust -p riffdb-server --all-targets --all-features -- -D warnings
+  exit_gate: BoardPage450 caller time closes within five percent on N1/E2, its dominant movable
+    stage and response-size scaling are measured, and either one candidate is proven capable of
+    reaching 1.10x before implementation or the result-path campaign stops and returns the product
+    rule to the maintainer. WP-671 cannot activate transport or weaken query bounds, authorization,
+    freshness, result identity, or response budgets.
+  standing_design_tests:
+    interface_safety: Attribution and any proposal preserve named compiler-bounded reads, current
+      row/field policy, explicit freshness, exact result identity, and response budgets; no raw
+      predicate, caller-selected projection, authority cache, hidden-row inference, or unbounded
+      result surface is introduced.
+    scale: Every diagnostic and proposed mechanism is bounded by the compiled query/result budget;
+      retained bytes, rows, tasks, buffers, telemetry, and evidence do not grow with history,
+      tenants, completed requests, or process lifetime.
+  human_review_triggers: *id001
+- id: WP-672
+  name: Conditional exclusive application lane hardening and activation
+  depends_on: [WP-670, WP-671]
+  objective: Only after WP-670 proves every small unary operation and WP-671 supplies a viable
+    large-result closure, harden the private exclusive lane into a bounded production candidate and
+    retain it only when the complete public performance, semantic, lifecycle, resource, and
+    cross-profile release matrix passes.
+  requirements: [API-001, PERF-005, PERF-008, PERF-018, SEC-001, SEC-002,
+    NET-001, NET-002, NET-003, NET-004, NET-005, NET-006, NET-007, NET-008,
+    NET-009, NET-010, NET-011, NET-012, DRV-001, DRV-002, DRV-003, DRV-004,
+    DRV-005, DRV-006, DRV-007, DRV-008, DRV-009, DRV-010, DRV-011, DRV-012,
+    DRV-013, DRV-014]
+  required_adrs: [ADR-0040, ADR-0055, ADR-0056, ADR-0070, ADR-0105, ADR-0106,
+    ADR-0120, ADR-0123, ADR-0127, ADR-0132, ADR-0133, ADR-0137, ADR-0138,
+    ADR-0139, ADR-0140, ADR-0141]
+  allowed_paths: [work_packages.yaml, adr/README.md,
+    adr/0141-public-gate-first-exclusive-application-lane.md,
+    Cargo.toml, Cargo.lock, proto/**, crates/riffdb-types/**, crates/riffdb-proto/**,
+    crates/riffdb-api-application/**, crates/riffdb-api-frame/**,
+    crates/riffdb-api-grpc/**, crates/riffdb-client-rust/**,
+    crates/riffdb-driver-host/**, crates/riffdb-server/**,
+    crates/riffdb-observability/**, clients/go/**, clients/typescript/**,
+    clients/python/**, examples/app-baseline/**, examples/agent-alpha/**,
+    fixtures/**, fuzz/**, tests/**, benchmarks/**, scripts/**, release/**,
+    docs/SUMMARY.md, docs/reference/**, docs/getting-started/**,
+    docs/operations/**, docs/performance/**]
+  deliverables:
+  - Finite independent-lane pool, bounded setup/replacement/lifetime behavior, production selector,
+    shared Rust driver-host path, and no target-language protocol implementation
+  - Exhaustive hostile-wire, cancellation, uncertainty, revocation, expiry, rotation, drift,
+    saturation, reconnect, restart, shutdown, and resource evidence plus architecture pins for
+    direct ownership and absence of semantic/storage authority in transport
+  - A short complete product matrix containing every ordinary, command, and BoardPage scenario,
+    mixed c32, seed, correctness, setup, resource, and no-regression gate on N1/E2
+  - Only after every short gate passes, the complete workstation/N1/E2 90-second release matrix and
     an exact proposed PERF-018/default amendment for separate human acceptance
+  - Public handbook/generated-client changes only in the same commit as the separately accepted
+    activation/default decision; no diagnostic identity is documented as available before then
   acceptance_commands:
   - cargo +1.97.0 test -p riffdb-proto -p riffdb-api-grpc -p riffdb-client-rust -p riffdb-driver-host -p riffdb-server --all-features
   - cargo +1.97.0 test --manifest-path examples/app-baseline/Cargo.toml --workspace
@@ -15665,17 +15776,17 @@ work_packages:
   - ./scripts/handbook check
   - cargo +1.97.0 fmt --all -- --check
   - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
-  exit_gate: The new candidate passes ADR-0141's semantics, coarse mechanics, resource, and
-    cross-generation gates; every representative unary scenario including BoardPage450 is at most
-    1.10x same-run safe-application PostgreSQL on N1/E2; mixed c32 throughput is at least 0.90x and
-    p95 at most 1.25x; seed remains at most 5.0x; correctness is exact; and only a complete
-    workstation/N1/E2 release pass may produce a separately accepted PERF-018/default amendment.
-    Any miss leaves unary gRPC selected and no candidate wire identity active.
+  exit_gate: Every representative unary scenario including BoardPage450 is at most 1.10x same-run
+    safe-application PostgreSQL on N1/E2; mixed c32 throughput is at least 0.90x and p95 at most
+    1.25x; seed remains at most 5.0x; correctness and semantic equivalence are exact; resource and
+    lifecycle gates pass; and only a complete workstation/N1/E2 release pass may produce a
+    separately accepted PERF-018/default amendment. Any miss leaves unary gRPC selected and no
+    candidate wire identity active.
   standing_design_tests:
     interface_safety: Applications still invoke only generated typed commands and exact named
       queries and cannot select framing, pool size, trust, cached authority, transaction scope,
-      durability, freshness, retry after uncertainty, fallback after submission, or storage;
-      every operation traverses the shared application service and all current safe points.
+      durability, freshness, retry after uncertainty, fallback after submission, or storage; every
+      operation traverses the shared application service and all current safe points.
     scale: Lanes, pool, frames, bytes, tasks, operations, waits, cancellation, replacement,
       telemetry, and evidence are fixed-bounded independently of history, database size, tenant
       count, completed operations, or process duration; no full-state or result cache is introduced.
