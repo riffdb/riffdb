@@ -13586,6 +13586,51 @@ work_packages:
       tests were removed. A future package must attribute shutdown time across every worker and the
       final checkpoint before bounding the measured owner.
   human_review_triggers: *id001
+- id: WP-668
+  name: Fixed-cardinality graceful-shutdown stage attribution
+  depends_on: [WP-642, WP-643, WP-667]
+  objective: Attribute clean process shutdown across every ordered graph owner and the final
+    validated-prefix checkpoint before proposing another bounded worker or lifecycle candidate,
+    without changing drain order, deadlines, failure classification, or authoritative state.
+  requirements: [MDB-007, PERF-007, PERF-018, REC-001, STO-001]
+  required_adrs: [ADR-0004, ADR-0019, ADR-0086, ADR-0104, ADR-0123]
+  allowed_paths: [work_packages.yaml, crates/riffdb-server/src/process_graph.rs,
+    crates/riffdb-server/src/daemon.rs, examples/app-baseline/**, docs/performance/**]
+  deliverables:
+  - A closed eight-stage microsecond receipt for admitted service-job drain, exact-text worker,
+    columnar worker, projection worker, notification closure, coordinator drain, blocking-port
+    drain, and the final validated-prefix checkpoint, preserving their existing order exactly
+  - One additive versioned shutdown-evidence line parsed optionally by old-compatible benchmark
+    clients and emitted in diagnostic and app-baseline JSON without values, paths, identifiers,
+    credentials, thread IDs, or unbounded labels
+  - Deterministic formatter/parser exactness tests and process receipts from N1 and E2 that close
+    measured graph shutdown against wall time and identify the dominant owner before any repair
+  acceptance_commands:
+  - cargo +1.97.0 test -p riffdb-server --all-features
+  - cargo +1.97.0 test --manifest-path examples/app-baseline/Cargo.toml --workspace
+  - ./scripts/check-workspace-policy
+  - ./scripts/check-requirement-coverage
+  - cargo +1.97.0 fmt --all -- --check
+  - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: Every clean current server emits exactly eight ordered bounded values; an old server
+    remains parseable with absent stage evidence; N1 and E2 receipts assign at least ninety-five
+    percent of graph-shutdown wall to the closed stages or explicitly name the residual boundary.
+    No scheduling or shutdown behavior changes in this attribution package.
+  standing_design_tests:
+    interface_safety: The receipt is diagnostic observation only. No caller can select, skip,
+      reorder, delay, retry, or weaken any shutdown stage, checkpoint, failure, or readiness rule.
+    scale: One process retains eight saturating u64 totals and emits one fixed-size line. The
+      receipt has no dynamic labels, per-operation history, application values, or tenant cardinality.
+  closure:
+    status: complete
+    evidence: docs/performance/wp-668-shutdown-attribution.md
+    decision: The eight stages close more than 99.995 percent of graph-local shutdown wall in all
+      N1 and E2 full-dataset generations. The validated-prefix checkpoint is the stable owner at
+      50.7 to 96.3 percent; pending columnar catch-up is the variable owner at 2.7 to 83.6 percent.
+      The other six stages together remain below 1.94 percent. WP-667 already rejected bounded
+      columnar scheduling, so the next package must decompose the checkpoint before proposing a
+      repair. No scheduling, drain, failure, checkpoint, or public application behavior changed.
+  human_review_triggers: *id001
 - id: WP-632
   name: Frozen-client transport attribution and asynchronous shadow diagnostic
   depends_on: [WP-627]

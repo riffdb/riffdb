@@ -3125,11 +3125,13 @@ async fn supervise_ready_process(
     }
     let maintenance_shutdown = matches!(trigger, ReadyProcessTrigger::Maintenance(_));
     let graph_result = if maintenance_shutdown {
-        graph.shutdown_for_maintenance(recovery).await
+        graph
+            .shutdown_for_maintenance_with_stage_evidence(recovery)
+            .await
     } else {
-        graph.shutdown().await
+        graph.shutdown_with_stage_evidence().await
     };
-    if graph_result.is_ok() {
+    if let Ok(shutdown_stages) = &graph_result {
         let counts = write_completion_groups
             .iter()
             .map(u64::to_string)
@@ -3146,6 +3148,7 @@ async fn supervise_ready_process(
         // BYTE-IDENTICAL with prior releases: Tier 2 harness depends on this line.
         let _ = writeln!(stdout, "riffdb-write-completion-groups-v1\t{counts}");
         let _ = writeln!(stdout, "riffdb-dispatch-reasons-v1\t{reasons}");
+        let _ = writeln!(stdout, "{}", shutdown_stages.format_v1_line());
         let read_stages_line = riffdb_observability::format_read_stages_v1_line(&read_stages);
         let _ = writeln!(stdout, "{read_stages_line}");
         let write_service_stages_line =
@@ -3268,7 +3271,9 @@ async fn supervise_ready_process(
     if notification_stop_failed {
         return Err(DaemonError::NotificationShutdown);
     }
-    graph_result.map_err(DaemonError::GraphShutdown)?;
+    graph_result
+        .map(|_| ())
+        .map_err(DaemonError::GraphShutdown)?;
     transport_result?;
     mcp_result.map_err(DaemonError::McpStop)?;
     trigger_result
@@ -4885,10 +4890,14 @@ mod tests {
             ready
                 .find("transport_is_terminal(&transport_result)")
                 .expect("terminal classification")
-                < ready.find("graph.shutdown().await").expect("graph drain")
+                < ready
+                    .find("graph.shutdown_with_stage_evidence().await")
+                    .expect("graph drain")
         );
         assert!(
-            ready.find("graph.shutdown().await").expect("graph drain")
+            ready
+                .find("graph.shutdown_with_stage_evidence().await")
+                .expect("graph drain")
                 < ready.rfind("transport_result?;").expect("transport result")
         );
         assert!(
