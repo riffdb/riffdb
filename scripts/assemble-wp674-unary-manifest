@@ -98,6 +98,10 @@ def main() -> int:
         reports = profile.get("reports")
         if not isinstance(reports, list):
             fail(f"{expected}: reports are absent")
+        attempt_reports = profile.get("attempt_reports")
+        minimal_attempt_reports = profile.get("minimal_attempt_reports")
+        if not isinstance(attempt_reports, list) or not isinstance(minimal_attempt_reports, list):
+            fail(f"{expected}: bounded attempt inventory is absent")
         profiles.append(
             {
                 "id": expected,
@@ -110,7 +114,26 @@ def main() -> int:
                     for row in reports
                     if isinstance(row, dict)
                 ],
+                "attempt_reports": [
+                    {
+                        "scenario": row.get("scenario"),
+                        "attempt": row.get("attempt"),
+                        "status": row.get("status"),
+                        **remap({"path": row.get("path"), "sha256": row.get("sha256")}),
+                    }
+                    for row in attempt_reports
+                    if isinstance(row, dict)
+                ],
                 "minimal_report": remap(profile.get("minimal_report")),
+                "minimal_attempt_reports": [
+                    {
+                        "attempt": row.get("attempt"),
+                        "status": row.get("status"),
+                        **remap({"path": row.get("path"), "sha256": row.get("sha256")}),
+                    }
+                    for row in minimal_attempt_reports
+                    if isinstance(row, dict)
+                ],
             }
         )
     assert common is not None

@@ -100,6 +100,15 @@ common setup, performs 20 same-operation warmups, then records 100 operations.
 The qualified p50 and p95 are the medians of the three generation statistics;
 a greater-than-1.20 max/min spread invalidates that statistic.
 
+Each scenario and the minimal-PostgreSQL disclosure have at most three bounded
+attempts. An attempt is retried only for explicit host invalidity or a frozen
+statistic spread above `1.20`, never because its latency, ratio, or SLO result is
+unfavorable. Runtime, correctness, identity, and evidence-shape failures stop
+the profile instead of being retried. Every rejected attempt remains in the
+profile inventory with its digest and disposition; the verifier requires
+contiguous attempts followed by exactly one accepted attempt whose bytes equal
+the canonical report.
+
 The frozen classes are:
 
 | Class | Operations | p50 | p95 |

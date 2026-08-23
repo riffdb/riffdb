@@ -28,6 +28,7 @@ WARMUPS = 20
 MEASUREMENTS = 100
 MAX_SPREAD = 1.20
 MAX_REGRESSION = 1.10
+MAX_ATTEMPTS = 3
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
 REVISION = re.compile(r"^[0-9a-f]{40}$")
 PROFILE_CLASSES = {
@@ -466,7 +467,14 @@ def load_reports(
 ) -> dict[str, dict[str, tuple[dict[str, Any], str]]]:
     result: dict[str, dict[str, tuple[dict[str, Any], str]]] = {}
     for profile in manifest["profiles"]:
-        if set(profile) != {"id", "hardware_class", "reports", "minimal_report"}:
+        if set(profile) != {
+            "id",
+            "hardware_class",
+            "reports",
+            "attempt_reports",
+            "minimal_report",
+            "minimal_attempt_reports",
+        }:
             fail("profile shape is invalid")
         profile_id = profile["id"]
         if profile.get("hardware_class") != PROFILE_CLASSES[profile_id]:
@@ -500,6 +508,74 @@ def load_reports(
         if digest != require_sha(reference["sha256"], f"{profile_id}.minimal"):
             fail(f"{profile_id}: minimal report digest differs")
         result[profile_id]["minimal"] = (report, digest)
+        attempts = profile.get("attempt_reports")
+        if not isinstance(attempts, list) or not attempts:
+            fail(f"{profile_id}: unary attempt inventory is absent")
+        attempts_by_scenario: dict[str, list[dict[str, Any]]] = {
+            scenario: [] for scenario in SCENARIOS
+        }
+        for attempt in attempts:
+            if not isinstance(attempt, dict) or set(attempt) != {
+                "scenario",
+                "attempt",
+                "status",
+                "path",
+                "sha256",
+            }:
+                fail(f"{profile_id}: unary attempt reference is invalid")
+            scenario = attempt.get("scenario")
+            if scenario not in SCENARIOS:
+                fail(f"{profile_id}: unary attempt scenario is invalid")
+            number = attempt.get("attempt")
+            if not isinstance(number, int) or isinstance(number, bool) or not 1 <= number <= MAX_ATTEMPTS:
+                fail(f"{profile_id}.{scenario}: attempt number is invalid")
+            relative = attempt.get("path")
+            if not isinstance(relative, str):
+                fail(f"{profile_id}.{scenario}: attempt path is invalid")
+            _, actual = load_json((manifest_path.parent / relative).resolve(), MAX_REPORT_BYTES)
+            if actual != require_sha(attempt.get("sha256"), f"{profile_id}.{scenario}.attempt"):
+                fail(f"{profile_id}.{scenario}: attempt digest differs")
+            attempts_by_scenario[scenario].append(attempt)
+        for scenario, entries in attempts_by_scenario.items():
+            entries.sort(key=lambda row: row["attempt"])
+            if not entries:
+                fail(f"{profile_id}.{scenario}: attempt inventory is absent")
+            if [row["attempt"] for row in entries] != list(range(1, len(entries) + 1)):
+                fail(f"{profile_id}.{scenario}: attempts are not contiguous")
+            if entries[-1].get("status") != "accepted" or any(
+                row.get("status") != "rejected" for row in entries[:-1]
+            ):
+                fail(f"{profile_id}.{scenario}: attempt disposition is invalid")
+            canonical = next(
+                row for row in profile["reports"] if row["scenario"] == scenario
+            )
+            if entries[-1]["sha256"] != canonical["sha256"]:
+                fail(f"{profile_id}.{scenario}: accepted attempt is not canonical")
+        minimal_attempts = profile.get("minimal_attempt_reports")
+        if not isinstance(minimal_attempts, list) or not minimal_attempts:
+            fail(f"{profile_id}: minimal attempt inventory is absent")
+        minimal_attempts.sort(key=lambda row: row.get("attempt", 0) if isinstance(row, dict) else 0)
+        for index, attempt in enumerate(minimal_attempts, 1):
+            if not isinstance(attempt, dict) or set(attempt) != {
+                "attempt",
+                "status",
+                "path",
+                "sha256",
+            }:
+                fail(f"{profile_id}: minimal attempt reference is invalid")
+            if attempt.get("attempt") != index or index > MAX_ATTEMPTS:
+                fail(f"{profile_id}: minimal attempts are not contiguous")
+            expected_status = "accepted" if index == len(minimal_attempts) else "rejected"
+            if attempt.get("status") != expected_status:
+                fail(f"{profile_id}: minimal attempt disposition is invalid")
+            relative = attempt.get("path")
+            if not isinstance(relative, str):
+                fail(f"{profile_id}: minimal attempt path is invalid")
+            _, actual = load_json((manifest_path.parent / relative).resolve(), MAX_REPORT_BYTES)
+            if actual != require_sha(attempt.get("sha256"), f"{profile_id}.minimal.attempt"):
+                fail(f"{profile_id}: minimal attempt digest differs")
+        if minimal_attempts[-1]["sha256"] != profile["minimal_report"]["sha256"]:
+            fail(f"{profile_id}: accepted minimal attempt is not canonical")
     return result
 
 
@@ -512,6 +588,9 @@ def verify_corpus(
     runner_digests: set[str] = set()
     daemon_digests: set[str] = set()
     for profile_id in PROFILE_CLASSES:
+        manifest_profile = next(
+            profile for profile in manifest["profiles"] if profile["id"] == profile_id
+        )
         scenarios: dict[str, Any] = {}
         report_digests: dict[str, str] = {}
         host_digests: dict[str, str] = {}
@@ -560,6 +639,23 @@ def verify_corpus(
                 "hardware_identity_sha256": next(iter(hardware_digests)),
                 "host_inventory_sha256": host_digests,
                 "report_sha256": report_digests,
+                "attempt_report_sha256": [
+                    {
+                        "scenario": row["scenario"],
+                        "attempt": row["attempt"],
+                        "status": row["status"],
+                        "sha256": row["sha256"],
+                    }
+                    for row in manifest_profile["attempt_reports"]
+                ],
+                "minimal_attempt_report_sha256": [
+                    {
+                        "attempt": row["attempt"],
+                        "status": row["status"],
+                        "sha256": row["sha256"],
+                    }
+                    for row in manifest_profile["minimal_attempt_reports"]
+                ],
                 "minimal_postgres": minimal,
                 "scenarios": scenarios,
             }
@@ -857,10 +953,28 @@ def run_self_test(root: Path) -> None:
                 "id": profile_id,
                 "hardware_class": hardware_class,
                 "reports": references,
+                "attempt_reports": [
+                    {
+                        "scenario": reference["scenario"],
+                        "attempt": 1,
+                        "status": "accepted",
+                        "path": reference["path"],
+                        "sha256": reference["sha256"],
+                    }
+                    for reference in references
+                ],
                 "minimal_report": {
                     "path": minimal_path.name,
                     "sha256": hashlib.sha256(minimal_encoded.encode()).hexdigest(),
                 },
+                "minimal_attempt_reports": [
+                    {
+                        "attempt": 1,
+                        "status": "accepted",
+                        "path": minimal_path.name,
+                        "sha256": hashlib.sha256(minimal_encoded.encode()).hexdigest(),
+                    }
+                ],
             }
         )
     manifest_path = scratch / "manifest.json"
@@ -876,6 +990,15 @@ def run_self_test(root: Path) -> None:
         pass
     else:
         fail("missing scenario passed")
+
+    invalid_attempt = copy.deepcopy(manifest)
+    invalid_attempt["profiles"][0]["attempt_reports"][0]["status"] = "rejected"
+    try:
+        verify_corpus(manifest_path, invalid_attempt)
+    except ValueError:
+        pass
+    else:
+        fail("attempt inventory without one accepted terminal attempt passed")
 
     report, _ = load_json(scratch / f"n1-{sorted(SCENARIOS)[0]}.json", MAX_REPORT_BYTES)
     entry = report["comparisons"]["unary_rep_summaries"][sorted(SCENARIOS)[0]]
