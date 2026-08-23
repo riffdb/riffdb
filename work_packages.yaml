@@ -15604,3 +15604,79 @@ work_packages:
       production protocol, listener, clients, selectors, fixtures, and public documentation were
       removed; unary remains the default, PERF-018 is unchanged, and WP-623 remains open.
   human_review_triggers: *id001
+- id: WP-670
+  name: Public-gate-first exclusive application lane reconsideration
+  depends_on: [WP-649, WP-650, WP-654, WP-659, WP-663, WP-664, WP-665, WP-666,
+    WP-667, WP-669]
+  objective: After exact acceptance of ADR-0141, implement one new-identity direct exclusive
+    generated-operation candidate and retain it only when actual public PostgreSQL ratios,
+    cross-generation stability, semantic equivalence, and resource gates all pass without hiding
+    the independently owned large-result miss.
+  requirements: [API-001, PERF-005, PERF-008, PERF-018, SEC-001, SEC-002,
+    NET-001, NET-002, NET-003, NET-004, NET-005, NET-006, NET-007, NET-008,
+    NET-009, NET-010, NET-011, NET-012,
+    DRV-001, DRV-002, DRV-003, DRV-004, DRV-005, DRV-006, DRV-007,
+    DRV-008, DRV-009, DRV-010, DRV-011, DRV-012, DRV-013, DRV-014]
+  required_adrs: [ADR-0040, ADR-0055, ADR-0056, ADR-0070, ADR-0105, ADR-0106,
+    ADR-0120, ADR-0123, ADR-0127, ADR-0132, ADR-0133, ADR-0137, ADR-0138,
+    ADR-0139, ADR-0140, ADR-0141]
+  allowed_paths: [work_packages.yaml, adr/README.md,
+    adr/0141-public-gate-first-exclusive-application-lane.md,
+    Cargo.toml, Cargo.lock, proto/**, crates/riffdb-types/**, crates/riffdb-proto/**,
+    crates/riffdb-api-application/**, crates/riffdb-api-frame/**,
+    crates/riffdb-api-grpc/**, crates/riffdb-client-rust/**,
+    crates/riffdb-driver-host/**, crates/riffdb-server/**,
+    crates/riffdb-observability/**, clients/go/**, clients/typescript/**,
+    clients/python/**, examples/app-baseline/**, examples/agent-alpha/**,
+    fixtures/**, fuzz/**, tests/**, benchmarks/**, scripts/**, release/**,
+    docs/SUMMARY.md, docs/reference/**, docs/getting-started/**,
+    docs/operations/**, docs/performance/**]
+  deliverables:
+  - The current-head N1/E2 short unary, mixed-c32, seed, and exact GetTicket ledger in
+    docs/performance/wp-670-current-head-preflight.md, clearly marked non-evidentiary and preserving
+    every unfavorable result
+  - Before protocol editing, per-host arithmetic for representative point/list/detail/large-result
+    reads and commands separating unchanged service floor, removable outside-service cost,
+    same-run PostgreSQL budget, and the candidate latency required to meet it
+  - After exact ADR acceptance only, one new magic/version/ALPN direct exclusive lane with one
+    caller-owned operation, finite independent-lane pool, strict existing Protobuf payloads, shared
+    API-neutral semantics, current per-operation authority, and no reuse of rejected experiment
+    identities
+  - Hostile-wire, cancellation, uncertainty, revocation, expiry, rotation, drift, saturation,
+    reconnect, restart, and shutdown evidence plus architecture tests proving Rust-only transport,
+    direct ownership, and no storage/policy/commit authority
+  - Three counterbalanced loopback and verified-TLS mechanics generations on N1/E2 with exact
+    stage closure, setup/resource/no-regression gates, and removal before public integration upon
+    any miss
+  - A short complete public candidate matrix retaining every ordinary and BoardPage scenario; a
+    miss keeps the candidate private and cannot produce a PERF-018/default proposal
+  - Only after every short public gate passes, the complete workstation/N1/E2 release matrix and
+    an exact proposed PERF-018/default amendment for separate human acceptance
+  acceptance_commands:
+  - cargo +1.97.0 test -p riffdb-proto -p riffdb-api-grpc -p riffdb-client-rust -p riffdb-driver-host -p riffdb-server --all-features
+  - cargo +1.97.0 test --manifest-path examples/app-baseline/Cargo.toml --workspace
+  - ./scripts/driver-conformance --all-languages --remote
+  - ./scripts/recovery_full
+  - ./scripts/generate-proto --check
+  - ./scripts/check-generated
+  - ./scripts/check-application-bindings
+  - ./scripts/check-workspace-policy
+  - ./scripts/check-requirement-coverage
+  - ./scripts/handbook check
+  - cargo +1.97.0 fmt --all -- --check
+  - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: The new candidate passes ADR-0141's semantics, coarse mechanics, resource, and
+    cross-generation gates; every representative unary scenario including BoardPage450 is at most
+    1.10x same-run safe-application PostgreSQL on N1/E2; mixed c32 throughput is at least 0.90x and
+    p95 at most 1.25x; seed remains at most 5.0x; correctness is exact; and only a complete
+    workstation/N1/E2 release pass may produce a separately accepted PERF-018/default amendment.
+    Any miss leaves unary gRPC selected and no candidate wire identity active.
+  standing_design_tests:
+    interface_safety: Applications still invoke only generated typed commands and exact named
+      queries and cannot select framing, pool size, trust, cached authority, transaction scope,
+      durability, freshness, retry after uncertainty, fallback after submission, or storage;
+      every operation traverses the shared application service and all current safe points.
+    scale: Lanes, pool, frames, bytes, tasks, operations, waits, cancellation, replacement,
+      telemetry, and evidence are fixed-bounded independently of history, database size, tenant
+      count, completed operations, or process duration; no full-state or result cache is introduced.
+  human_review_triggers: *id001
