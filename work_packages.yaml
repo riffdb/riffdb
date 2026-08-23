@@ -13467,6 +13467,16 @@ work_packages:
     scale: Each lane retains one bounded operation and response; pool, stream, permit, buffer, byte,
       task, wait, setup, idle, lifetime, shutdown, and replacement counts are hard-capped independent
       of database size and duration, with no queued caller population or completed-result history.
+  closure:
+    status: complete_without_production_activation
+    evidence: docs/performance/wp-665-serial-grpc-session-closure.md
+    decision: The private maximum-in-flight-one client/server strategy preserved session protocol
+      V1 and passed live generated command, fenced query, reconnect, and dead-peer semantics, but
+      the first full-dataset N1 generation reduced exact GetTicket outside-service time by only
+      31.13 percent against ADR-0140's 50 percent minimum. The reject-first matrix stopped; every
+      serial implementation, selector, test pin, diagnostic surface, and prospective pool was
+      removed before commit. Unary remains the generated-operation default, the optional generic
+      session remains unchanged, PERF-018 is unchanged, and WP-623 stays open.
   human_review_triggers: *id001
 - id: WP-632
   name: Frozen-client transport attribution and asynchronous shadow diagnostic
