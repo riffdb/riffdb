@@ -114,6 +114,14 @@ than `1.10x`. Safe-application PostgreSQL runs in every unary cell and minimal
 PostgreSQL is retained as a full disclosure report. Their p50/p95 ratios remain
 published evidence, not unary release gates.
 
+Every unary row also carries exact request and response bytes under the frozen
+`riffdb.app-baseline-canonical-semantic-frame/v1` encoding. This counts the
+backend-neutral application payload (fixed-width UUID/integer/enum values,
+length-delimited strings and collections, and explicit optional/outcome tags),
+not HTTP/2 or PostgreSQL wire framing. The verifier requires equal sizes across
+RiffDB and PostgreSQL so latency cannot be compared across different semantic
+payloads.
+
 Bank one clean host column with:
 
 ```bash

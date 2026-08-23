@@ -3783,6 +3783,8 @@ mod tests {
                 scenario: ScenarioId::PointGetTicket,
                 samples,
                 last_row_count: 1,
+                encoded_request_bytes: 35,
+                encoded_response_bytes: 100,
             }
         }
 
@@ -4032,6 +4034,8 @@ mod tests {
                 scenario: ScenarioId::CreateComment,
                 samples: SampleSet::from_nanos(samples),
                 last_row_count: count,
+                encoded_request_bytes: 100,
+                encoded_response_bytes: 4,
             }
         };
         let rep_high = vec![mk(vec![400, 500, 600])]; // p50 ≈ 500
@@ -4061,6 +4065,8 @@ mod tests {
             scenario: ScenarioId::CreateComment,
             samples: SampleSet::from_nanos(vec![10, 20, 30, 40, 50, 60, 70, 80, 90, 100]),
             last_row_count: 10,
+            encoded_request_bytes: 100,
+            encoded_response_bytes: 4,
         }];
         let out = median_scenarios(std::slice::from_ref(&only));
         let summary = out[0].samples.summary();

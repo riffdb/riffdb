@@ -185,6 +185,12 @@ pub(crate) fn backend_json(backend: &BackendReport) -> Value {
             json!({
                 "scenario": scenario.scenario.as_str(),
                 "last_row_count": scenario.last_row_count,
+                "encoded_size": {
+                    "schema": "riffdb.app-baseline-canonical-semantic-frame/v1",
+                    "request_bytes": scenario.encoded_request_bytes,
+                    "response_bytes": scenario.encoded_response_bytes,
+                    "transport_framing_included": false,
+                },
                 "timing": summary_json(&summary),
             })
         })
@@ -505,11 +511,15 @@ mod tests {
                 scenario: ScenarioId::BoardPageProjected50,
                 samples: s50.clone(),
                 last_row_count: 50,
+                encoded_request_bytes: 0,
+                encoded_response_bytes: 0,
             },
             ScenarioResult {
                 scenario: ScenarioId::BoardPageProjected450,
                 samples: s450.clone(),
                 last_row_count: 450,
+                encoded_request_bytes: 0,
+                encoded_response_bytes: 0,
             },
         ];
         assert_eq!(board_projected_marginal_from_results(&results), Some(100));
@@ -519,11 +529,15 @@ mod tests {
                 scenario: ScenarioId::BoardPageProjected50,
                 samples: s450,
                 last_row_count: 50,
+                encoded_request_bytes: 0,
+                encoded_response_bytes: 0,
             },
             ScenarioResult {
                 scenario: ScenarioId::BoardPageProjected450,
                 samples: s50,
                 last_row_count: 450,
+                encoded_request_bytes: 0,
+                encoded_response_bytes: 0,
             },
         ];
         assert_eq!(board_projected_marginal_from_results(&swapped), None);
