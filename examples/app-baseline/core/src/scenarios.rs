@@ -144,6 +144,34 @@ impl ScenarioId {
         )
     }
 
+    /// Whether this scenario belongs to ADR-0142's frozen unary qualification matrix.
+    #[must_use]
+    pub const fn is_unary_qualification_scenario(self) -> bool {
+        self.is_service_ledger_scenario() || self.is_compiled_board()
+    }
+
+    /// ADR-0142's frozen service-level class, when this is a qualifying scenario.
+    #[must_use]
+    pub const fn unary_qualification_class(self) -> Option<&'static str> {
+        match self {
+            Self::PointGetTicket
+            | Self::PointGetUser
+            | Self::ListTicketsByProjectStatus
+            | Self::ListOpenTicketsForAssignee
+            | Self::ListCommentsForTicket
+            | Self::ListProjectMembers
+            | Self::TicketDetailPage => Some("ordinary_named_read"),
+            Self::BoardPage50 | Self::BoardPage200 | Self::BoardPage450 => {
+                Some("wide_bounded_named_read")
+            }
+            Self::CreateComment
+            | Self::CloseTicketWithComment
+            | Self::SwapMemberRoles
+            | Self::OpenTicketWithLabels => Some("compiled_command"),
+            _ => None,
+        }
+    }
+
     /// All scenarios in report order (including board; may be filtered by scale).
     #[must_use]
     pub const fn all() -> [Self; 20] {
@@ -854,6 +882,29 @@ mod tests {
             11
         );
         assert!(!ScenarioId::BoardPage50.is_service_ledger_scenario());
+        assert_eq!(
+            ScenarioId::all()
+                .into_iter()
+                .filter(|scenario| scenario.is_unary_qualification_scenario())
+                .count(),
+            14
+        );
+        assert_eq!(
+            ScenarioId::PointGetTicket.unary_qualification_class(),
+            Some("ordinary_named_read")
+        );
+        assert_eq!(
+            ScenarioId::BoardPage450.unary_qualification_class(),
+            Some("wide_bounded_named_read")
+        );
+        assert_eq!(
+            ScenarioId::CreateComment.unary_qualification_class(),
+            Some("compiled_command")
+        );
+        assert_eq!(
+            ScenarioId::BoardPageProjected450.unary_qualification_class(),
+            None
+        );
     }
 
     #[test]

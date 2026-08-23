@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fail-closed verifier for the WP-623 dual-profile qualification corpus."""
+"""Fail-closed verifier for the WP-623 three-profile qualification corpus."""
 
 from __future__ import annotations
 
@@ -14,21 +14,27 @@ import sys
 from typing import Any
 
 
-MANIFEST_SCHEMA = "riffdb.wp-623-performance-qualification-manifest/v1"
-RECEIPT_SCHEMA = "riffdb.wp-623-performance-qualification/v1"
+MANIFEST_SCHEMA = "riffdb.wp-623-performance-qualification-manifest/v2"
+RECEIPT_SCHEMA = "riffdb.wp-623-performance-qualification/v2"
+UNARY_BASELINE_SCHEMA = "riffdb.wp-674-unary-baseline/v1"
+UNARY_QUALIFICATION_SCHEMA = "riffdb.wp-674-unary-qualification/v1"
 LOAD_SCHEMA = "riffdb.app-baseline-load-suite/v1"
 PARITY_SCHEMA = "riffdb.app-baseline/v1"
 CANDIDATE_SCHEMA = "riffdb.app-baseline-qualified-candidate/v1"
 MAX_MANIFEST_BYTES = 128 * 1024
 MAX_REPORT_BYTES = 16 * 1024 * 1024
-REQUIRED_CLASSES = {"workstation_nvme", "cloud_persistent_disk"}
+REQUIRED_PROFILES = {
+    "workstation": "workstation_nvme",
+    "n1": "gcp_n1_persistent_disk",
+    "e2": "gcp_e2_persistent_disk",
+}
 REQUIRED_REPORTS = {"parity_safe_app", "parity_minimal", "interactive", "write_only"}
 REQUIRED_REQUIREMENTS = {"PERF-008", "PERF-018", "END-007", "END-008", "END-009", "END-010"}
 CLIENTS = {1, 8, 32, 128}
 REPETITIONS = 3
 MEASURED_SECONDS = 90
 WARMUP_SECONDS = 15
-MAX_UNARY_RATIO = 1.10
+MAX_UNARY_REGRESSION_RATIO = 1.10
 MIN_MIXED_C32_THROUGHPUT_RATIO = 0.90
 MAX_MIXED_C32_P95_RATIO = 1.25
 MAX_SEED_RATIO = 5.0
@@ -47,6 +53,33 @@ COMMON_SCENARIOS = {
     "close_ticket_with_comment",
     "swap_member_roles",
     "open_ticket_with_labels",
+}
+SCENARIO_CLASSES = {
+    "ordinary_named_read": {
+        "point_get_ticket",
+        "point_get_user",
+        "list_tickets_by_project_status",
+        "list_open_tickets_for_assignee",
+        "list_comments_for_ticket",
+        "list_project_members",
+        "ticket_detail_page",
+    },
+    "wide_bounded_named_read": {
+        "board_page_50",
+        "board_page_200",
+        "board_page_450",
+    },
+    "compiled_command": {
+        "create_comment",
+        "close_ticket_with_comment",
+        "swap_member_roles",
+        "open_ticket_with_labels",
+    },
+}
+ABSOLUTE_CEILINGS_NS = {
+    "ordinary_named_read": {"p50_ns": 3_000_000.0, "p95_ns": 6_000_000.0},
+    "wide_bounded_named_read": {"p50_ns": 6_000_000.0, "p95_ns": 12_000_000.0},
+    "compiled_command": {"p50_ns": 10_000_000.0, "p95_ns": 15_000_000.0},
 }
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
 REVISION = re.compile(r"^[0-9a-f]{40}$")
@@ -323,6 +356,7 @@ def verify_parity(
     if names != COMMON_SCENARIOS:
         fail(f"{label}: representative unary scenario set drifted")
     scenario_ratios: dict[str, float] = {}
+    scenario_p95_ratios: dict[str, float] = {}
     for row in rows:
         name = row.get("scenario")
         if row.get("last_row_count_equal") is not True:
@@ -330,19 +364,23 @@ def verify_parity(
         ratio = summary_median(
             row.get("ratio_riffdb_over_postgres"), f"{label}.scenario.{name}"
         )
+        p95_ratio = summary_median(
+            row.get("ratio_riffdb_over_postgres_p95"),
+            f"{label}.scenario_p95.{name}",
+        )
         scenario_ratios[str(name)] = ratio
-        if comparator == "safe_app" and ratio > MAX_UNARY_RATIO:
-            fail(
-                f"{label}: {name} ratio {ratio:.4f} exceeds unary gate "
-                f"{MAX_UNARY_RATIO:.2f}"
-            )
+        scenario_p95_ratios[str(name)] = p95_ratio
     seed_ratio = summary_median(
         (comparisons.get("seed") or {}).get("ratio_riffdb_over_postgres"),
         f"{label}.seed_ratio",
     )
     if comparator == "safe_app" and seed_ratio > MAX_SEED_RATIO:
         fail(f"{label}: seed ratio {seed_ratio:.4f} exceeds {MAX_SEED_RATIO:.1f}")
-    return {"seed_ratio": seed_ratio, "scenario_ratios": scenario_ratios}
+    return {
+        "seed_ratio": seed_ratio,
+        "scenario_ratios": scenario_ratios,
+        "scenario_p95_ratios": scenario_p95_ratios,
+    }
 
 
 def verify_profile(
@@ -354,7 +392,7 @@ def verify_profile(
     if not isinstance(profile_id, str) or not profile_id or len(profile_id) > 64:
         fail("profile id is invalid")
     hardware_class = profile.get("hardware_class")
-    if hardware_class not in REQUIRED_CLASSES:
+    if REQUIRED_PROFILES.get(str(profile_id)) != hardware_class:
         fail(f"{profile_id}: hardware class is invalid")
     references = profile.get("reports")
     if not isinstance(references, list):
@@ -388,13 +426,110 @@ def verify_profile(
         **interactive,
         "seed_ratio": safe["seed_ratio"],
         "maximum_unary_ratio": max(safe["scenario_ratios"].values()),
+        "maximum_unary_p95_ratio": max(safe["scenario_p95_ratios"].values()),
         "runner_sha256": require_sha(next(iter(runner_digests)), f"{profile_id}.runner_sha256"),
         "riffdbd_sha256": require_sha(next(iter(daemon_digests)), f"{profile_id}.riffdbd_sha256"),
     }
 
 
+def verify_unary_receipts(
+    manifest: dict[str, Any],
+    baseline: dict[str, Any],
+    qualification: dict[str, Any],
+) -> None:
+    if baseline.get("schema") != UNARY_BASELINE_SCHEMA:
+        fail("unary baseline schema is invalid")
+    if qualification.get("schema") != UNARY_QUALIFICATION_SCHEMA:
+        fail("unary qualification schema is invalid")
+    if qualification.get("qualified") is not True:
+        fail("unary qualification is not a pass")
+    if qualification.get("candidate_source_revision") != manifest.get("source_revision"):
+        fail("unary candidate source differs from WP-623")
+    if qualification.get("baseline_source_revision") != baseline.get("source_revision"):
+        fail("unary qualification names another baseline")
+    if qualification.get("maximum_riffdb_regression_ratio") != MAX_UNARY_REGRESSION_RATIO:
+        fail("unary regression ceiling drifted")
+    candidate = qualification.get("candidate")
+    if not isinstance(candidate, dict) or candidate.get("schema") != UNARY_BASELINE_SCHEMA:
+        fail("unary candidate receipt is absent")
+    for key in ("source_revision", "cargo_lock_sha256", "harness_sha256"):
+        if candidate.get(key) != manifest.get(key):
+            fail(f"unary candidate {key} differs from WP-623")
+    expected_classes = {
+        class_name: {
+            "scenarios": sorted(members),
+            **ABSOLUTE_CEILINGS_NS[class_name],
+        }
+        for class_name, members in SCENARIO_CLASSES.items()
+    }
+    if baseline.get("scenario_classes") != expected_classes:
+        fail("unary baseline scenario registry or ceilings drifted")
+    if candidate.get("scenario_classes") != expected_classes:
+        fail("unary candidate scenario registry or ceilings drifted")
+    profiles = {profile.get("id"): profile for profile in candidate.get("profiles") or []}
+    baseline_profiles = {
+        profile.get("id"): profile for profile in baseline.get("profiles") or []
+    }
+    if set(profiles) != set(REQUIRED_PROFILES):
+        fail("unary candidate profile set is incomplete")
+    if set(baseline_profiles) != set(REQUIRED_PROFILES):
+        fail("unary baseline profile set is incomplete")
+    for profile_id, hardware_class in REQUIRED_PROFILES.items():
+        profile = profiles[profile_id]
+        if profile.get("hardware_class") != hardware_class:
+            fail(f"unary {profile_id} hardware class drifted")
+        if profile.get("hardware_identity_sha256") != baseline_profiles[profile_id].get(
+            "hardware_identity_sha256"
+        ):
+            fail(f"unary {profile_id} hardware identity differs from the frozen baseline")
+        scenarios = profile.get("scenarios") or {}
+        if set(scenarios) != COMMON_SCENARIOS:
+            fail(f"unary {profile_id} scenario registry drifted")
+        for scenario, metrics in scenarios.items():
+            class_name = metrics.get("class")
+            if scenario not in SCENARIO_CLASSES.get(class_name, set()):
+                fail(f"unary {profile_id}.{scenario} was reclassified")
+            if profile_id in {"n1", "e2"}:
+                for statistic, ceiling in ABSOLUTE_CEILINGS_NS[class_name].items():
+                    measured = require_number(
+                        (metrics.get("riffdb") or {}).get(statistic),
+                        f"unary {profile_id}.{scenario}.{statistic}",
+                    )
+                    if measured > ceiling:
+                        fail(f"unary {profile_id}.{scenario}.{statistic} exceeds SLO")
+    regressions = qualification.get("regressions")
+    expected_count = len(REQUIRED_PROFILES) * len(COMMON_SCENARIOS) * 2
+    if not isinstance(regressions, list) or len(regressions) != expected_count:
+        fail("unary regression matrix is incomplete")
+    identities = set()
+    for row in regressions:
+        if not isinstance(row, dict) or set(row) != {
+            "profile",
+            "scenario",
+            "statistic",
+            "candidate_over_baseline",
+        }:
+            fail("unary regression row shape is invalid")
+        identity = (row["profile"], row["scenario"], row["statistic"])
+        identities.add(identity)
+        ratio = require_number(row["candidate_over_baseline"], "unary regression ratio")
+        if ratio > MAX_UNARY_REGRESSION_RATIO:
+            fail("unary regression exceeds the frozen ceiling")
+    expected = {
+        (profile, scenario, statistic)
+        for profile in REQUIRED_PROFILES
+        for scenario in COMMON_SCENARIOS
+        for statistic in ("p50_ns", "p95_ns")
+    }
+    if identities != expected:
+        fail("unary regression identities are incomplete or duplicated")
+
+
 def verify_manifest(
-    manifest: dict[str, Any], loaded_reports: dict[str, dict[str, dict[str, Any]]]
+    manifest: dict[str, Any],
+    loaded_reports: dict[str, dict[str, dict[str, Any]]],
+    unary_baseline: dict[str, Any],
+    unary_qualification: dict[str, Any],
 ) -> dict[str, Any]:
     expected_keys = {
         "schema",
@@ -403,6 +538,8 @@ def verify_manifest(
         "harness_sha256",
         "requirements",
         "profiles",
+        "unary_baseline",
+        "unary_qualification",
     }
     if set(manifest) != expected_keys or manifest.get("schema") != MANIFEST_SCHEMA:
         fail("qualification manifest has an invalid shape or schema")
@@ -411,21 +548,34 @@ def verify_manifest(
         fail("qualification source revision is invalid")
     require_sha(manifest.get("cargo_lock_sha256"), "manifest.cargo_lock_sha256")
     require_sha(manifest.get("harness_sha256"), "manifest.harness_sha256")
+    for key in ("unary_baseline", "unary_qualification"):
+        reference = manifest.get(key)
+        if not isinstance(reference, dict) or set(reference) != {"path", "sha256"}:
+            fail(f"manifest {key} reference is invalid")
+        require_sha(reference.get("sha256"), f"manifest.{key}.sha256")
     if not exact_string_set(manifest.get("requirements"), REQUIRED_REQUIREMENTS):
         fail("qualification requirements are incomplete")
     profiles = manifest.get("profiles")
-    if not isinstance(profiles, list) or len(profiles) != len(REQUIRED_CLASSES):
-        fail("qualification must contain exactly the workstation and cloud profiles")
+    if not isinstance(profiles, list) or len(profiles) != len(REQUIRED_PROFILES):
+        fail("qualification must contain exactly workstation, N1, and E2")
     ids = [profile.get("id") for profile in profiles if isinstance(profile, dict)]
     classes = [profile.get("hardware_class") for profile in profiles if isinstance(profile, dict)]
-    if len(set(ids)) != len(profiles) or set(classes) != REQUIRED_CLASSES:
+    if set(ids) != set(REQUIRED_PROFILES) or {
+        profile_id: hardware_class for profile_id, hardware_class in zip(ids, classes)
+    } != REQUIRED_PROFILES:
         fail("qualification profile identities are duplicated or incomplete")
+    verify_unary_receipts(manifest, unary_baseline, unary_qualification)
     results = []
     for profile in profiles:
         profile_id = profile.get("id")
         if profile_id not in loaded_reports:
             fail(f"{profile_id}: loaded report set is absent")
         results.append(verify_profile(profile, loaded_reports[profile_id], manifest))
+    candidate = unary_qualification["candidate"]
+    if {result["runner_sha256"] for result in results} != {candidate["runner_sha256"]}:
+        fail("unary and mixed/parity reports use different runner artifacts")
+    if {result["riffdbd_sha256"] for result in results} != {candidate["riffdbd_sha256"]}:
+        fail("unary and mixed/parity reports use different daemon artifacts")
     return {
         "schema": RECEIPT_SCHEMA,
         "qualified": True,
@@ -433,8 +583,12 @@ def verify_manifest(
         "cargo_lock_sha256": manifest["cargo_lock_sha256"],
         "harness_sha256": manifest["harness_sha256"],
         "profiles": results,
+        "unary_baseline_source_revision": unary_baseline["source_revision"],
+        "unary_qualification_source_revision": unary_qualification[
+            "candidate_source_revision"
+        ],
         "gate_limits": {
-            "maximum_unary_ratio": MAX_UNARY_RATIO,
+            "maximum_unary_regression_ratio": MAX_UNARY_REGRESSION_RATIO,
             "minimum_mixed_c32_throughput_ratio": MIN_MIXED_C32_THROUGHPUT_RATIO,
             "maximum_mixed_c32_p95_ratio": MAX_MIXED_C32_P95_RATIO,
             "maximum_seed_ratio": MAX_SEED_RATIO,
@@ -465,6 +619,28 @@ def load_manifest_reports(
                 fail(f"{profile_id}.{reference.get('kind')}: evidence digest differs")
             loaded[profile_id][reference["kind"]] = report
     return loaded
+
+
+def load_bound_artifact(
+    root: Path,
+    manifest: dict[str, Any],
+    key: str,
+    closed_root: Path,
+    maximum: int,
+) -> dict[str, Any]:
+    reference = manifest.get(key)
+    if not isinstance(reference, dict) or set(reference) != {"path", "sha256"}:
+        fail(f"{key} reference is invalid")
+    relative = reference.get("path")
+    if not isinstance(relative, str):
+        fail(f"{key} path is invalid")
+    path = (root / relative).resolve()
+    if not path.is_relative_to(closed_root.resolve()):
+        fail(f"{key} path escapes its closed evidence root")
+    value, digest = load_json(path, maximum)
+    if digest != require_sha(reference.get("sha256"), f"{key}.sha256"):
+        fail(f"{key} digest differs")
+    return value
 
 
 def fake_candidate(manifest: dict[str, Any]) -> dict[str, Any]:
@@ -527,6 +703,7 @@ def fake_parity(manifest: dict[str, Any], backend: str) -> dict[str, Any]:
             "scenario": name,
             "last_row_count_equal": True,
             "ratio_riffdb_over_postgres": fake_summary(1.0),
+            "ratio_riffdb_over_postgres_p95": fake_summary(1.0),
         }
         for name in sorted(COMMON_SCENARIOS)
     ]
@@ -547,6 +724,76 @@ def fake_parity(manifest: dict[str, Any], backend: str) -> dict[str, Any]:
         }
     )
     return report
+
+
+def fake_unary_baseline(manifest: dict[str, Any]) -> dict[str, Any]:
+    profiles = []
+    for profile_id, hardware_class in REQUIRED_PROFILES.items():
+        scenarios = {}
+        for scenario in COMMON_SCENARIOS:
+            class_name = next(
+                name for name, members in SCENARIO_CLASSES.items() if scenario in members
+            )
+            scenarios[scenario] = {
+                "class": class_name,
+                "profile": profile_id,
+                "postgres": {"p50_ns": 1_000.0, "p95_ns": 2_000.0},
+                "riffdb": {"p50_ns": 1_000.0, "p95_ns": 2_000.0},
+                "ratios_riffdb_over_postgres": {"p50": 1.0, "p95": 1.0},
+            }
+        profiles.append(
+            {
+                "id": profile_id,
+                "hardware_class": hardware_class,
+                "hardware_identity_sha256": "a" * 64,
+                "host_inventory_sha256": {scenario: "6" * 64 for scenario in COMMON_SCENARIOS},
+                "report_sha256": {scenario: "7" * 64 for scenario in COMMON_SCENARIOS},
+                "scenarios": scenarios,
+            }
+        )
+    return {
+        "schema": UNARY_BASELINE_SCHEMA,
+        "source_revision": manifest["source_revision"],
+        "cargo_lock_sha256": manifest["cargo_lock_sha256"],
+        "harness_sha256": manifest["harness_sha256"],
+        "runner_sha256": "4" * 64,
+        "riffdbd_sha256": "5" * 64,
+        "requirements": sorted({"PERF-005", "PERF-008", "PERF-018", "END-007", "END-008"}),
+        "method": {},
+        "scenario_classes": {
+            class_name: {
+                "scenarios": sorted(members),
+                **ABSOLUTE_CEILINGS_NS[class_name],
+            }
+            for class_name, members in SCENARIO_CLASSES.items()
+        },
+        "profiles": profiles,
+    }
+
+
+def fake_unary_qualification(
+    manifest: dict[str, Any], baseline: dict[str, Any]
+) -> dict[str, Any]:
+    regressions = [
+        {
+            "profile": profile,
+            "scenario": scenario,
+            "statistic": statistic,
+            "candidate_over_baseline": 1.0,
+        }
+        for profile in REQUIRED_PROFILES
+        for scenario in COMMON_SCENARIOS
+        for statistic in ("p50_ns", "p95_ns")
+    ]
+    return {
+        "schema": UNARY_QUALIFICATION_SCHEMA,
+        "qualified": True,
+        "candidate_source_revision": manifest["source_revision"],
+        "baseline_source_revision": baseline["source_revision"],
+        "maximum_riffdb_regression_ratio": MAX_UNARY_REGRESSION_RATIO,
+        "regressions": regressions,
+        "candidate": copy.deepcopy(baseline),
+    }
 
 
 def fake_load(manifest: dict[str, Any], profile: str) -> dict[str, Any]:
@@ -613,6 +860,8 @@ def run_self_test() -> None:
         "cargo_lock_sha256": "2" * 64,
         "harness_sha256": "3" * 64,
         "requirements": sorted(REQUIRED_REQUIREMENTS),
+        "unary_baseline": {"path": "baseline.json", "sha256": "8" * 64},
+        "unary_qualification": {"path": "qualification.json", "sha256": "9" * 64},
         "profiles": [
             {
                 "id": "workstation",
@@ -620,51 +869,58 @@ def run_self_test() -> None:
                 "reports": [{"kind": kind} for kind in sorted(REQUIRED_REPORTS)],
             },
             {
-                "id": "cloud",
-                "hardware_class": "cloud_persistent_disk",
+                "id": "n1",
+                "hardware_class": "gcp_n1_persistent_disk",
+                "reports": [{"kind": kind} for kind in sorted(REQUIRED_REPORTS)],
+            },
+            {
+                "id": "e2",
+                "hardware_class": "gcp_e2_persistent_disk",
                 "reports": [{"kind": kind} for kind in sorted(REQUIRED_REPORTS)],
             },
         ],
     }
     reports = {}
-    for profile_id in ("workstation", "cloud"):
+    for profile_id in ("workstation", "n1", "e2"):
         reports[profile_id] = {
             "parity_safe_app": fake_parity(manifest, "postgres_safe_app"),
             "parity_minimal": fake_parity(manifest, "postgres_minimal"),
             "interactive": fake_load(manifest, "interactive"),
             "write_only": fake_load(manifest, "write_only"),
         }
-    receipt = verify_manifest(manifest, reports)
+    baseline = fake_unary_baseline(manifest)
+    qualification = fake_unary_qualification(manifest, baseline)
+    receipt = verify_manifest(manifest, reports, baseline, qualification)
     if receipt.get("qualified") is not True:
         fail("valid self-test corpus did not qualify")
 
     mutations = {
         "missing_profile": lambda m, r: m["profiles"].pop(),
-        "host_interference": lambda m, r: r["cloud"]["interactive"]["host_validity"][
+        "host_interference": lambda m, r: r["n1"]["interactive"]["host_validity"][
             "postflight"
         ].update(valid=False),
-        "unstable": lambda m, r: r["cloud"]["interactive"]["load_rep_summaries"][
+        "unstable": lambda m, r: r["n1"]["interactive"]["load_rep_summaries"][
             "riffdb_public_grpc@clients=32"
         ]["throughput_ops_s"].update(stability="unstable"),
         "shape_drift": lambda m, r: r["workstation"]["interactive"]["comparison"].update(
             client_points=[1, 32]
         ),
-        "artifact_drift": lambda m, r: r["cloud"]["write_only"][
+        "artifact_drift": lambda m, r: r["n1"]["write_only"][
             "qualification_candidate"
         ].update(runner_sha256="6" * 64),
-        "missing_ratio": lambda m, r: r["cloud"]["parity_safe_app"]["comparisons"][
+        "missing_ratio": lambda m, r: r["n1"]["parity_safe_app"]["comparisons"][
             "scenarios"
         ][0].pop("ratio_riffdb_over_postgres"),
-        "throughput_miss": lambda m, r: r["cloud"]["interactive"]["load_rep_summaries"][
+        "throughput_miss": lambda m, r: r["n1"]["interactive"]["load_rep_summaries"][
             "riffdb_public_grpc@clients=32"
         ]["throughput_ops_s"].update(median=899.0),
-        "tail_miss": lambda m, r: r["cloud"]["interactive"]["load_rep_summaries"][
+        "tail_miss": lambda m, r: r["n1"]["interactive"]["load_rep_summaries"][
             "riffdb_public_grpc@clients=32"
         ]["aggregate_p95_ns"].update(median=1251.0),
-        "unary_miss": lambda m, r: r["cloud"]["parity_safe_app"]["comparisons"][
+        "missing_p95_disclosure": lambda m, r: r["n1"]["parity_safe_app"]["comparisons"][
             "scenarios"
-        ][0]["ratio_riffdb_over_postgres"].update(median=1.101),
-        "seed_miss": lambda m, r: r["cloud"]["parity_safe_app"]["comparisons"]["seed"][
+        ][0].pop("ratio_riffdb_over_postgres_p95"),
+        "seed_miss": lambda m, r: r["n1"]["parity_safe_app"]["comparisons"]["seed"][
             "ratio_riffdb_over_postgres"
         ].update(median=5.001),
     }
@@ -673,11 +929,32 @@ def run_self_test() -> None:
         invalid_reports = copy.deepcopy(reports)
         mutate(invalid_manifest, invalid_reports)
         try:
-            verify_manifest(invalid_manifest, invalid_reports)
+            verify_manifest(invalid_manifest, invalid_reports, baseline, qualification)
         except ValueError:
             print(f"{name}: rejected")
         else:
             fail(f"{name}: invalid qualification passed")
+
+    regressed = copy.deepcopy(qualification)
+    regressed["regressions"][0]["candidate_over_baseline"] = 1.101
+    try:
+        verify_manifest(manifest, reports, baseline, regressed)
+    except ValueError:
+        print("unary_regression: rejected")
+    else:
+        fail("unary regression passed")
+
+    reclassified = copy.deepcopy(qualification)
+    n1_profile = next(
+        profile for profile in reclassified["candidate"]["profiles"] if profile["id"] == "n1"
+    )
+    n1_profile["scenarios"]["point_get_ticket"]["class"] = "compiled_command"
+    try:
+        verify_manifest(manifest, reports, baseline, reclassified)
+    except ValueError:
+        print("unary_reclassification: rejected")
+    else:
+        fail("unary reclassification passed")
 
 
 def parse_args() -> argparse.Namespace:
@@ -705,7 +982,21 @@ def main() -> int:
         manifest_path = root / manifest_path
     manifest, _ = load_json(manifest_path, MAX_MANIFEST_BYTES)
     reports = load_manifest_reports(root, manifest)
-    receipt = verify_manifest(manifest, reports)
+    unary_baseline = load_bound_artifact(
+        root,
+        manifest,
+        "unary_baseline",
+        root / "release/evidence/wp-674",
+        512 * 1024,
+    )
+    unary_qualification = load_bound_artifact(
+        root,
+        manifest,
+        "unary_qualification",
+        root / "release/evidence/wp-623",
+        1024 * 1024,
+    )
+    receipt = verify_manifest(manifest, reports, unary_baseline, unary_qualification)
     encoded = json.dumps(receipt, indent=2) + "\n"
     if args.output is not None:
         output = args.output if args.output.is_absolute() else root / args.output

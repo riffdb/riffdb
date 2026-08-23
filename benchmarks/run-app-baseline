@@ -59,6 +59,9 @@ if [[ "${1:-}" == "--self-test" ]]; then
       and (.valid | type == "boolean")
       and (.active_processes | type == "array")
       and (.interfering_processes | type == "array")
+      and (.logical_cpus | type == "number")
+      and (.hardware_identity.cpu_model | type == "string")
+      and (.hardware_identity.operating_system | type == "object")
       and .inventory_bounds.process_arguments_included == false
     ' "$host_fixture" >/dev/null
     receipt_fixture="$(mktemp "$task_tmp_root/riffdb-non-evidentiary.XXXXXX")"
@@ -881,15 +884,23 @@ if [[ -n "$load_profile" ]] && ((skip_postgres == 0)) && ((skip_riffdb == 0)); t
 fi
 
 if ((skip_riffdb == 0)); then
-    printf 'building riffdbd (release)\n'
-    cargo +1.97.0 build --locked --release -p riffdb-server --bin riffdbd
-    export RIFFDB_APP_BASELINE_RIFFDBD_BIN="$(cargo_target_directory)/release/riffdbd"
+    if [[ -n "${RIFFDB_APP_BASELINE_RIFFDBD_BIN:-}" && -x "$RIFFDB_APP_BASELINE_RIFFDBD_BIN" ]]; then
+        printf 'using exact supplied riffdbd: %s\n' "$RIFFDB_APP_BASELINE_RIFFDBD_BIN"
+    else
+        printf 'building riffdbd (release)\n'
+        cargo +1.97.0 build --locked --release -p riffdb-server --bin riffdbd
+        export RIFFDB_APP_BASELINE_RIFFDBD_BIN="$(cargo_target_directory)/release/riffdbd"
+    fi
 fi
 
-printf 'building app-baseline runner\n'
-cargo +1.97.0 build --release --manifest-path examples/app-baseline/Cargo.toml -p riffdb-app-baseline
-
-runner="$(cargo_target_directory --manifest-path examples/app-baseline/Cargo.toml)/release/riffdb-app-baseline"
+runner="${RIFFDB_APP_BASELINE_RUNNER_BIN:-}"
+if [[ -n "$runner" && -x "$runner" ]]; then
+    printf 'using exact supplied app-baseline runner: %s\n' "$runner"
+else
+    printf 'building app-baseline runner\n'
+    cargo +1.97.0 build --release --manifest-path examples/app-baseline/Cargo.toml -p riffdb-app-baseline
+    runner="$(cargo_target_directory --manifest-path examples/app-baseline/Cargo.toml)/release/riffdb-app-baseline"
+fi
 if [[ ! -x "$runner" ]]; then
     runner="$(find examples/app-baseline/target target -type f -name riffdb-app-baseline 2>/dev/null | head -n1 || true)"
     [[ -n "$runner" && -x "$runner" ]] || {
@@ -1318,12 +1329,19 @@ if report.get("schema") == "riffdb.app-baseline/v1":
     )
     comparisons = report.get("comparisons") or {}
     crosscheck = report.get("board_page_live_crosscheck") or {}
+    unary = report.get("unary_qualification") or {}
     scenario_rows = comparisons.get("scenarios") or []
-    correctness_clean = (
-        crosscheck.get("status") == "ok"
-        and bool(scenario_rows)
-        and all(row.get("last_row_count_equal") is True for row in scenario_rows)
+    unary_exact = (
+        unary.get("schema") == "riffdb.app-baseline-unary-qualification/v1"
+        and len(scenario_rows) == 1
+        and unary.get("scenario") == scenario_rows[0].get("scenario")
+        and unary.get("same_scenario_warmups_after_restart") == 20
+        and unary.get("measured_operations_per_generation") == 100
+        and unary.get("process_generations") == 3
     )
+    correctness_clean = bool(scenario_rows) and all(
+        row.get("last_row_count_equal") is True for row in scenario_rows
+    ) and (unary_exact or crosscheck.get("status") == "ok")
     required = {
         "same_device": report.get("same_device") is True,
         "repetitions": int(report.get("reps") or 0) >= 3,

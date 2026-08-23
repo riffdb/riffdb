@@ -49,14 +49,13 @@ fn run() -> Result<(), String> {
         return run_load(args);
     }
     let dataset = SeedDataset::generate(args.scale);
-    let service_ledger_scenario = service_ledger_scenario_from_env()?;
-    if service_ledger_scenario.is_some()
+    let scenario_selection = scenario_selection_from_env()?;
+    if scenario_selection.is_some()
         && args.riffdb_transport == RiffDbTransport::BoundedSession
     {
-        return Err(format!(
-            "{SERVICE_LEDGER_SCENARIO_ENV} requires the frozen unary transport"
-        ));
+        return Err("private exact-scenario selection requires the frozen unary transport".to_owned());
     }
+    let selected_scenario = scenario_selection.map(|selection| selection.scenario);
     let mut backends = Vec::new();
     let mut concurrent_reads = Vec::new();
     let mut postgres_durability: Option<PostgresDurabilitySettings> = None;
@@ -65,11 +64,8 @@ fn run() -> Result<(), String> {
     let mut device_baseline_json: Option<serde_json::Value> = None;
     let mut environment_json: Option<serde_json::Value> = None;
     let mut integrity_notes: Vec<String> = Vec::new();
-    if let Some(scenario) = service_ledger_scenario {
-        integrity_notes.push(format!(
-            "private non-evidentiary service ledger selected only {}",
-            scenario.as_str()
-        ));
+    if let Some(selection) = scenario_selection {
+        integrity_notes.push(selection.integrity_note());
     }
     let full_mode = args.scale.name() == "full";
     let min_free = min_free_bytes_for_full(full_mode);
@@ -118,25 +114,30 @@ fn run() -> Result<(), String> {
         }
     }
 
-    // Interleaved reps: PG1, R1, PG2, R2, …
+    // Ordinary parity remains interleaved PG/RiffDB. ADR-0142's qualification
+    // mode counterbalances backend order across its three generations.
     let mut pg_rep_seed_ns: Vec<u64> = Vec::new();
     let mut pg_rep_scenarios: Vec<Vec<riffdb_app_baseline_core::ScenarioResult>> = Vec::new();
     let mut rd_rep_seed_ns: Vec<u64> = Vec::new();
     let mut rd_rep_scenarios: Vec<Vec<riffdb_app_baseline_core::ScenarioResult>> = Vec::new();
     let mut rd_write_groups: Option<Vec<u64>> = None;
     let mut rd_process_evidence = Vec::new();
+    let mut backend_execution_order = Vec::new();
     // Live order-sensitive board page cross-check (rep 0): all static sizes
     // the dense cell can fill (50/200/450 → BoardPage50/200/450 on RiffDB).
     let board_crosscheck_limits: Vec<u32> = [50_u32, 200, 450]
         .into_iter()
         .filter(|&limit| dataset.board_dense_open_count() >= limit as usize)
-        .filter(|_| service_ledger_scenario.is_none())
+        .filter(|_| scenario_selection.is_none())
         .collect();
     let mut board_crosscheck_pg_pages: Option<Vec<(u32, Vec<[u8; 16]>)>> = None;
     let mut board_crosscheck_done = false;
 
     for rep in 0..args.reps {
+        macro_rules! run_postgres_generation {
+            () => {{
         if !args.skip_postgres {
+            backend_execution_order.push(args.postgres_comparator.backend_id());
             let url = args
                 .postgres_url
                 .clone()
@@ -164,7 +165,7 @@ fn run() -> Result<(), String> {
                 args.warmups,
                 args.samples,
                 false,
-                service_ledger_scenario,
+                selected_scenario,
             )
             .map_err(|error| error.to_string())?;
             if rep == 0 && !board_crosscheck_limits.is_empty() {
@@ -207,8 +208,13 @@ fn run() -> Result<(), String> {
             pg_rep_seed_ns.push(seed_ns);
             pg_rep_scenarios.push(scenarios);
         }
+            }};
+        }
 
+        macro_rules! run_riffdb_generation {
+            () => {{
         if !args.skip_riffdb {
+            backend_execution_order.push("riffdb_public_grpc");
             let riffdbd = args
                 .riffdbd_bin
                 .clone()
@@ -281,14 +287,25 @@ fn run() -> Result<(), String> {
                     }
                     return Err(error.to_string());
                 }
-                if service_ledger_scenario.is_some() {
+                if scenario_selection.is_some() {
+                    let warmups_before_restart = if matches!(
+                        scenario_selection,
+                        Some(ScenarioSelection {
+                            mode: ScenarioSelectionMode::ServiceLedger,
+                            ..
+                        })
+                    ) {
+                        args.warmups
+                    } else {
+                        0
+                    };
                     run_scenarios_selected(
                         &mut session.backend,
                         &dataset,
-                        args.warmups,
+                        warmups_before_restart,
                         0,
                         true,
-                        service_ledger_scenario,
+                        selected_scenario,
                     )
                     .map_err(|error| error.to_string())?;
                     let (restarted, _setup_evidence) = runtime
@@ -311,14 +328,20 @@ fn run() -> Result<(), String> {
                 let scenario_result = run_scenarios_selected(
                     &mut session.backend,
                     &dataset,
-                    if service_ledger_scenario.is_some() {
+                    if matches!(
+                        scenario_selection,
+                        Some(ScenarioSelection {
+                            mode: ScenarioSelectionMode::ServiceLedger,
+                            ..
+                        })
+                    ) {
                         0
                     } else {
                         args.warmups
                     },
                     args.samples,
                     true,
-                    service_ledger_scenario,
+                    selected_scenario,
                 );
                 if args.riffdb_transport == RiffDbTransport::BoundedSession {
                     session.backend.close_bounded_session();
@@ -378,6 +401,23 @@ fn run() -> Result<(), String> {
             rd_process_evidence.push(riffdb_shutdown_evidence_json(&process_evidence));
             rd_rep_seed_ns.push(seed_ns);
             rd_rep_scenarios.push(scenarios);
+        }
+            }};
+        }
+
+        if matches!(
+            scenario_selection,
+            Some(ScenarioSelection {
+                mode: ScenarioSelectionMode::UnaryQualification,
+                ..
+            })
+        ) && rep % 2 == 1
+        {
+            run_riffdb_generation!();
+            run_postgres_generation!();
+        } else {
+            run_postgres_generation!();
+            run_riffdb_generation!();
         }
     }
 
@@ -468,6 +508,7 @@ fn run() -> Result<(), String> {
     assert_board_last_row_counts_equal(&backends)?;
 
     let mut report = build_report(args.scale, args.warmups, args.samples, &backends);
+    report["backend_execution_order"] = json!(backend_execution_order);
     report["riffdb_process_evidence"] = json!(rd_process_evidence);
     report["scale_shape"] = json!({
         "organizations": args.scale.organizations,
@@ -492,6 +533,21 @@ fn run() -> Result<(), String> {
         &rd_rep_seed_ns,
         &rd_rep_scenarios,
     );
+    if let Some(ScenarioSelection {
+        scenario,
+        mode: ScenarioSelectionMode::UnaryQualification,
+    }) = scenario_selection
+    {
+        report["unary_qualification"] = json!({
+            "schema": "riffdb.app-baseline-unary-qualification/v1",
+            "scenario": scenario.as_str(),
+            "class": scenario.unary_qualification_class(),
+            "daemon_restart_after_common_setup": true,
+            "same_scenario_warmups_after_restart": args.warmups,
+            "measured_operations_per_generation": args.samples,
+            "process_generations": args.reps,
+        });
+    }
     if board_crosscheck_done {
         report["board_page_live_crosscheck"] = json!({
             "status": "ok",
@@ -591,23 +647,79 @@ fn run() -> Result<(), String> {
 }
 
 const SERVICE_LEDGER_SCENARIO_ENV: &str = "RIFFDB_APP_BASELINE_SERVICE_LEDGER_SCENARIO";
+const UNARY_QUALIFICATION_SCENARIO_ENV: &str =
+    "RIFFDB_APP_BASELINE_UNARY_QUALIFICATION_SCENARIO";
 
-fn service_ledger_scenario_from_env() -> Result<Option<ScenarioId>, String> {
-    let Some(value) = env::var_os(SERVICE_LEDGER_SCENARIO_ENV) else {
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ScenarioSelectionMode {
+    ServiceLedger,
+    UnaryQualification,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct ScenarioSelection {
+    scenario: ScenarioId,
+    mode: ScenarioSelectionMode,
+}
+
+impl ScenarioSelection {
+    fn integrity_note(self) -> String {
+        match self.mode {
+            ScenarioSelectionMode::ServiceLedger => format!(
+                "private non-evidentiary service ledger selected only {}",
+                self.scenario.as_str()
+            ),
+            ScenarioSelectionMode::UnaryQualification => format!(
+                "ADR-0142 frozen unary qualification selected only {}",
+                self.scenario.as_str()
+            ),
+        }
+    }
+}
+
+fn scenario_from_env(name: &str) -> Result<Option<ScenarioId>, String> {
+    let Some(value) = env::var_os(name) else {
         return Ok(None);
     };
     let value = value
         .to_str()
-        .ok_or_else(|| format!("{SERVICE_LEDGER_SCENARIO_ENV} must be UTF-8"))?;
-    let scenario = ScenarioId::from_report_id(value).ok_or_else(|| {
-        format!("{SERVICE_LEDGER_SCENARIO_ENV} names unknown scenario {value}")
-    })?;
-    if !scenario.is_service_ledger_scenario() {
+        .ok_or_else(|| format!("{name} must be UTF-8"))?;
+    ScenarioId::from_report_id(value)
+        .map(Some)
+        .ok_or_else(|| format!("{name} names unknown scenario {value}"))
+}
+
+fn scenario_selection_from_env() -> Result<Option<ScenarioSelection>, String> {
+    let service = scenario_from_env(SERVICE_LEDGER_SCENARIO_ENV)?;
+    let unary = scenario_from_env(UNARY_QUALIFICATION_SCENARIO_ENV)?;
+    if service.is_some() && unary.is_some() {
         return Err(format!(
-            "{SERVICE_LEDGER_SCENARIO_ENV} permits only the seven small reads and four commands"
+            "{SERVICE_LEDGER_SCENARIO_ENV} and {UNARY_QUALIFICATION_SCENARIO_ENV} are mutually exclusive"
         ));
     }
-    Ok(Some(scenario))
+    if let Some(scenario) = service {
+        if !scenario.is_service_ledger_scenario() {
+            return Err(format!(
+                "{SERVICE_LEDGER_SCENARIO_ENV} permits only the seven small reads and four commands"
+            ));
+        }
+        return Ok(Some(ScenarioSelection {
+            scenario,
+            mode: ScenarioSelectionMode::ServiceLedger,
+        }));
+    }
+    if let Some(scenario) = unary {
+        if !scenario.is_unary_qualification_scenario() {
+            return Err(format!(
+                "{UNARY_QUALIFICATION_SCENARIO_ENV} permits only ADR-0142's fourteen frozen unary scenarios"
+            ));
+        }
+        return Ok(Some(ScenarioSelection {
+            scenario,
+            mode: ScenarioSelectionMode::UnaryQualification,
+        }));
+    }
+    Ok(None)
 }
 
 #[derive(Debug)]
@@ -2642,6 +2754,7 @@ fn attach_rep_summaries(
         return;
     }
     let mut rep_summaries = serde_json::Map::new();
+    let mut unary_rep_summaries = serde_json::Map::new();
 
     let mut seed_ratios = Vec::new();
     for (pg, rd) in pg_seed.iter().zip(rd_seed.iter()) {
@@ -2667,35 +2780,75 @@ fn attach_rep_summaries(
             .collect();
         if let Some(scenarios_json) = report["comparisons"]["scenarios"].as_array_mut() {
             for name in scenario_ids {
-                let mut ratios = Vec::new();
+                let mut p50_ratios = Vec::new();
+                let mut p95_ratios = Vec::new();
+                let mut pg_p50s = Vec::new();
+                let mut pg_p95s = Vec::new();
+                let mut rd_p50s = Vec::new();
+                let mut rd_p95s = Vec::new();
                 let n = pg_scenarios.len().min(rd_scenarios.len());
                 for i in 0..n {
-                    let pg_p50 = pg_scenarios[i]
+                    let pg_summary = pg_scenarios[i]
                         .iter()
                         .find(|s| s.scenario.as_str() == name)
-                        .map(|s| s.samples.summary().p50_ns)
-                        .unwrap_or(0);
-                    let rd_p50 = rd_scenarios[i]
+                        .map(|s| s.samples.summary());
+                    let rd_summary = rd_scenarios[i]
                         .iter()
                         .find(|s| s.scenario.as_str() == name)
-                        .map(|s| s.samples.summary().p50_ns)
-                        .unwrap_or(0);
-                    let ratio = if pg_p50 == 0 {
-                        f64::INFINITY
-                    } else {
-                        rd_p50 as f64 / pg_p50 as f64
-                    };
-                    ratios.push(ratio);
+                        .map(|s| s.samples.summary());
+                    if let (Some(pg), Some(rd)) = (pg_summary, rd_summary) {
+                        pg_p50s.push(pg.p50_ns as f64);
+                        pg_p95s.push(pg.p95_ns as f64);
+                        rd_p50s.push(rd.p50_ns as f64);
+                        rd_p95s.push(rd.p95_ns as f64);
+                        p50_ratios.push(if pg.p50_ns == 0 {
+                            f64::INFINITY
+                        } else {
+                            rd.p50_ns as f64 / pg.p50_ns as f64
+                        });
+                        p95_ratios.push(if pg.p95_ns == 0 {
+                            f64::INFINITY
+                        } else {
+                            rd.p95_ns as f64 / pg.p95_ns as f64
+                        });
+                    }
                 }
-                let summary = scalar_summary(&ratios);
+                let p50_ratio_summary = scalar_summary(&p50_ratios);
+                let p95_ratio_summary = scalar_summary(&p95_ratios);
                 if let Some(row) = scenarios_json
                     .iter_mut()
                     .find(|row| row["scenario"].as_str() == Some(name.as_str()))
                 {
-                    row["ratio_riffdb_over_postgres"] = summary.clone();
-                    row["ratio_riffdb_over_postgres_median"] = summary["median"].clone();
+                    row["ratio_riffdb_over_postgres"] = p50_ratio_summary.clone();
+                    row["ratio_riffdb_over_postgres_median"] =
+                        p50_ratio_summary["median"].clone();
+                    row["ratio_riffdb_over_postgres_p95"] = p95_ratio_summary.clone();
                 }
-                rep_summaries.insert(format!("scenario:{name}"), summary);
+                rep_summaries.insert(
+                    format!("scenario:{name}"),
+                    p50_ratio_summary.clone(),
+                );
+                rep_summaries.insert(
+                    format!("scenario_p95:{name}"),
+                    p95_ratio_summary.clone(),
+                );
+                unary_rep_summaries.insert(
+                    name,
+                    json!({
+                        "postgres": {
+                            "p50_ns": scalar_summary(&pg_p50s),
+                            "p95_ns": scalar_summary(&pg_p95s),
+                        },
+                        "riffdb": {
+                            "p50_ns": scalar_summary(&rd_p50s),
+                            "p95_ns": scalar_summary(&rd_p95s),
+                        },
+                        "ratios_riffdb_over_postgres": {
+                            "p50": p50_ratio_summary,
+                            "p95": p95_ratio_summary,
+                        },
+                    }),
+                );
             }
         }
     }
@@ -2741,6 +2894,8 @@ fn attach_rep_summaries(
     }
 
     report["comparisons"]["rep_summaries"] = serde_json::Value::Object(rep_summaries);
+    report["comparisons"]["unary_rep_summaries"] =
+        serde_json::Value::Object(unary_rep_summaries);
 }
 
 fn device_baseline_value(baseline: &DeviceBaseline) -> serde_json::Value {
@@ -3373,7 +3528,8 @@ mod tests {
 
     use super::{
         Args, RiffDbTransport, Scale, SeedDataset, WorkloadProfile, assert_all_parity,
-        assert_write_parity, comparator_contract, gated_ratio, load_rep_summaries,
+        assert_write_parity, attach_rep_summaries, comparator_contract, gated_ratio,
+        load_rep_summaries,
         median_scenarios, require_load_stable, require_stable, scalar_summary,
     };
 
@@ -3612,6 +3768,47 @@ mod tests {
     #[test]
     fn parity_gate_accepts_its_exact_boundary() {
         assert_write_parity(&parity_report(2.0, 2.0)).expect("exact boundary");
+    }
+
+    #[test]
+    fn unary_rep_summaries_publish_both_percentiles_and_ratios() {
+        use riffdb_app_baseline_core::{SampleSet, ScenarioId, ScenarioResult};
+
+        fn result(base: u64) -> ScenarioResult {
+            let mut samples = SampleSet::default();
+            for multiplier in 1..=5 {
+                samples.record(std::time::Duration::from_nanos(base * multiplier));
+            }
+            ScenarioResult {
+                scenario: ScenarioId::PointGetTicket,
+                samples,
+                last_row_count: 1,
+            }
+        }
+
+        let postgres = vec![vec![result(100)], vec![result(110)], vec![result(120)]];
+        let riffdb = vec![vec![result(200)], vec![result(220)], vec![result(240)]];
+        let mut report = json!({
+            "comparisons": {
+                "scenarios": [{
+                    "scenario": "point_get_ticket",
+                    "last_row_count_equal": true,
+                }]
+            }
+        });
+        attach_rep_summaries(&mut report, &[1, 1, 1], &postgres, &[1, 1, 1], &riffdb);
+        let summary = &report["comparisons"]["unary_rep_summaries"]["point_get_ticket"];
+        assert_eq!(summary["postgres"]["p50_ns"]["reps"], 3);
+        assert_eq!(summary["postgres"]["p95_ns"]["reps"], 3);
+        assert_eq!(summary["riffdb"]["p50_ns"]["median"], 660.0);
+        assert_eq!(summary["riffdb"]["p95_ns"]["median"], 1_100.0);
+        assert_eq!(summary["ratios_riffdb_over_postgres"]["p50"]["median"], 2.0);
+        assert_eq!(summary["ratios_riffdb_over_postgres"]["p95"]["median"], 2.0);
+        assert_eq!(
+            report["comparisons"]["scenarios"][0]["ratio_riffdb_over_postgres_p95"]
+                ["median"],
+            2.0
+        );
     }
 
     #[test]

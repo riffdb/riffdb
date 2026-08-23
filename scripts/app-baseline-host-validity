@@ -95,6 +95,36 @@ def memory_available() -> int | None:
     return None
 
 
+def first_prefixed_line(path: Path, prefix: str) -> str | None:
+    try:
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if line.startswith(prefix):
+                return line.split(":", 1)[-1].strip()[:128]
+    except OSError:
+        pass
+    return None
+
+
+def bounded_text(path: Path) -> str | None:
+    try:
+        value = path.read_text(encoding="utf-8").strip()
+        return value[:128] or None
+    except OSError:
+        return None
+
+
+def os_release() -> dict[str, str | None]:
+    values: dict[str, str] = {}
+    try:
+        for line in Path("/etc/os-release").read_text(encoding="utf-8").splitlines():
+            key, separator, value = line.partition("=")
+            if separator and key in {"ID", "VERSION_ID"}:
+                values[key] = value.strip().strip('"')[:64]
+    except OSError:
+        pass
+    return {"id": values.get("ID"), "version_id": values.get("VERSION_ID")}
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--interval-ms", type=int, default=3000)
@@ -164,6 +194,12 @@ def main() -> int:
         "load_average_before": before_load,
         "load_average_after": load_average(),
         "memory_available_bytes": memory_available(),
+        "hardware_identity": {
+            "cpu_model": first_prefixed_line(Path("/proc/cpuinfo"), "model name"),
+            "system_product": bounded_text(Path("/sys/class/dmi/id/product_name")),
+            "system_vendor": bounded_text(Path("/sys/class/dmi/id/sys_vendor")),
+            "operating_system": os_release(),
+        },
         "thresholds": {
             "cpu_percent_of_one_logical_cpu": args.cpu_percent,
             "io_bytes_per_sec": args.io_bytes_per_sec,

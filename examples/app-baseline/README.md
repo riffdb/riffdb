@@ -66,8 +66,14 @@ profile ticket count and probe keys changed vs pre-B1 generation 1 (~2000
 tickets / ~15160 rows → densified board cell). **Pre-B1 `--full` baselines are
 superseded and not comparable.**
 
-# fail unless the same-run seed and every write p50 are within 2x PostgreSQL
+# Legacy optimization assertion; PERF-008 release qualification uses WP-674's
+# absolute unary SLO and frozen RiffDB regression bank instead.
 ./benchmarks/run-app-baseline --full --assert-write-parity
+
+# Bank one exact ADR-0142 host column (run separately on workstation, N1, E2).
+./benchmarks/run-wp674-unary-profile \
+  --profile workstation \
+  --output-dir release/evidence/wp-674/workstation
 
 # concurrent mixed-workload load driver (closed-loop; realistic tails/contention)
 ./benchmarks/run-app-baseline --smoke --load interactive --load-clients 8 \

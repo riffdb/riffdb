@@ -6,9 +6,9 @@
 **Tagline:** *Vibe fast. Commit safely.*  
 **Category:** Contract-first operational database for agent-built applications  
 
-**Version:** 1.04
+**Version:** 1.05
 **Status:** Deployable Application Alpha architecture accepted; implementation gated by work packages
-**Date:** 20 August 2026
+**Date:** 23 August 2026
 **Audience:** Coding agents, database engineers, compiler engineers, security reviewers, and technical product leads  
 **Working binaries:** `riffdbd`, `riffdb`, `riffdb-mcp`  
 **Working URI scheme:** `riffdb://`  
@@ -37,6 +37,7 @@
 
 | Version | Date | Summary |
 |---|---|---|
+| 1.05 | 2026-08-23 | Accepted ADR-0142 after WP-670/WP-673 proved the universal 1.10-times PostgreSQL unary gate arithmetically unreachable without deleting required safety work. Mixed c32 throughput/p95 and the seed ceiling remain comparative gates; unary qualification becomes fixed N1/E2 absolute p50/p95 service levels plus a downward-only RiffDB low-water regression bank, while every safe-application PostgreSQL unary ratio remains mandatory published evidence. PERF-008 becomes the sole performance-threshold owner and PERF-005 retains its safety semantics without the superseded parity sentence. |
 | 1.04 | 2026-08-20 | Accepted ADR-0133 and registered QRY-006 through QRY-009 plus WP-654 for explicit compiler-owned covering indexes, atomic covered-value production, sealed positional result batches, additive negotiated compact named-query carriage, and direct typed Rust/Go/TypeScript/Python decoding. Existing index identities and grammar/IR-v1 empty covered values remain byte-exact; opted-in covering indexes use the least sufficient V14 contract bundle/grammar/IR identity. PERF-018 permits only the negotiated byte-equivalent representation change and retains every comparator and semantic obligation. |
 | 1.03 | 2026-08-18 | Advanced the ADR-0004 embedded-storage baseline from redb 4.1.0 to exactly redb 4.2.0 with default features disabled and no optional features. The pin carries upstream `fd82ced`, so a torn crash inside a file-growing commit no longer leaves an unopenable database: `PageManager::grow` syncs the extension before the larger layout can reach the on-disk header, and an actually truncated file returns `StorageError::Corrupted` instead of tripping an open-time assert. `REDB_PIN_CONTAINS_FD82CED` flips to `true` with it; the seeded-campaign corpus consequences are recorded as findings for maintainer rotation rather than silently re-pinned. Renewed dependency-graph, feature, and unsafe-surface review plus a full portable performance re-baseline remain required before this pin carries release evidence. |
 | 1.02 | 2026-08-16 | Amended the PERF-008 alpha performance gate per the WP-640 closure evidence: the real-world gates are unchanged (every representative unary scenario within 1.10x, c32 mixed throughput at least 0.90x, and c32 p95 at most 1.25x same-run PostgreSQL), while the full TicketDesk seed becomes receipted evidence under a 5.0x same-run regression ceiling rather than an alpha parity gate, because the measured single-lane ordered apply/submit floor alone exceeds the seed parity budget on both inventoried profiles; seed parity is deferred to the conflict-domain-parallel batch apply direction preserved by ADR-0129. |
@@ -7044,13 +7045,11 @@ ADR-0055.
   MUST make the command ineligible for same-snapshot grouping; unproved overlap
   remains strictly serialized, either through separate commits or the closed
   transaction-local protocol. Server evidence MUST report the bounded effective
-  completion-group-size distribution without high-cardinality labels. On the
-  checked profile, the full public-command TicketDesk seed and representative
-  unary mutation p50 MUST each complete within twice the same-run PostgreSQL
-  result under the same semantic acknowledgement durability and audit
-  semantics. A
-  miss blocks Agent Application Alpha and MUST NOT be waived through direct
-  storage/import writes or weaker safety.
+  completion-group-size distribution without high-cardinality labels.
+  Performance qualification for these command shapes is owned solely by
+  `PERF-008`; it MUST NOT be repaired through direct storage/import writes or
+  weaker durability, audit, authorization, atomicity, visibility, freshness,
+  uncertainty, or response-release semantics.
 - `PERF-006`: After receiving the oldest groupable transition, the production
   scheduler MAY wait for compatible work until that transition's existing
   200-microsecond deadline even when an intermediate queue poll is empty. It
@@ -7092,18 +7091,50 @@ ADR-0055.
   its predecessors. It MUST retain the 256-command and 16 MiB ceilings, expose no
   partial state or public transaction, commit all staged graphs through one
   complete Immediate boundary, and resolve uncertainty independently by exact
-  command identity. On
-  the checked profile, every representative unary scenario MUST be within 1.10
-  times same-run PostgreSQL; at 32 clients, public mixed-workload throughput
-  MUST be at least 0.90 times PostgreSQL and p95 latency MUST be at most 1.25
-  times PostgreSQL. The full public TicketDesk seed MUST be measured and
-  receipted on both inventoried profiles; for the alpha it is reported evidence
-  bounded by a 5.0 times same-run PostgreSQL regression ceiling rather than a
-  parity gate, because the WP-640 closure proved the single-lane ordered
-  apply/submit floor alone exceeds the seed parity budget on both profiles.
-  Seed parity remains a post-alpha objective owned by the conflict-domain-
-  parallel batch apply direction preserved by ADR-0129. A miss of any gate in
-  this requirement blocks WP-370.
+  command identity.
+
+  At 32 clients, public interactive mixed-workload throughput MUST be at least
+  0.90 times same-run safe-application PostgreSQL and p95 latency MUST be at
+  most 1.25 times PostgreSQL on every `PERF-018` release profile. The full
+  public TicketDesk seed MUST be measured and receipted on every profile and
+  remain below the 5.0-times same-run PostgreSQL regression ceiling. Seed
+  parity remains a post-alpha objective owned by ADR-0129's conflict-domain-
+  parallel batch-apply direction.
+
+  Representative unary operations MUST meet both their absolute alpha service
+  level on each inventoried N1 and E2 cloud profile and the frozen RiffDB
+  low-water regression ceiling on N1, E2, and workstation. The frozen classes
+  and ceilings are:
+
+  - the seven ordinary named reads (`point_get_ticket`, `point_get_user`,
+    `list_tickets_by_project_status`, `list_open_tickets_for_assignee`,
+    `list_comments_for_ticket`, `list_project_members`, and
+    `ticket_detail_page`) at p50 no greater than 3 ms and p95 no greater than
+    6 ms;
+  - `board_page_50`, `board_page_200`, and `board_page_450` at p50 no greater
+    than 6 ms and p95 no greater than 12 ms; and
+  - `create_comment`, `close_ticket_with_comment`, `swap_member_roles`, and
+    `open_ticket_with_labels` at p50 no greater than 10 ms and p95 no greater
+    than 15 ms.
+
+  Unary qualification MUST use three counterbalanced independent process
+  generations per backend/scenario/host, with RiffDB restarted after common
+  setup and each generation running 20 same-scenario warmups followed by 100
+  measured operations over the frozen full dataset. The qualified statistic is
+  the median of the three per-generation p50 or p95 values. Evidence is invalid
+  when the largest/smallest statistic ratio exceeds 1.20, host validity or
+  correctness fails, or a semantic comparator input drifts. Every qualified
+  unary p50 and p95 MUST additionally remain at most 1.10 times its exact
+  frozen RiffDB low-water baseline. A valid accepted release MAY ratchet an
+  individual baseline down with a bound source receipt; moving one upward
+  requires an accepted amendment and overlapping evidence.
+
+  Safe-application PostgreSQL MUST still run in every unary generation and its
+  absolute results and RiffDB/PostgreSQL p50/p95 ratios MUST be published, but
+  those unary ratios are disclosure evidence rather than release gates. A miss
+  of any mixed, seed, absolute unary, RiffDB regression, stability,
+  correctness, or evidence-integrity gate blocks alpha qualification. No gate
+  may be waived through a weaker product guarantee.
 - `PERF-009`: The standard application durability profile MUST acknowledge only
   after either a redb Immediate one-phase checksummed durability fence or an
   ADR-0101 first-party checksummed journal fence covering the complete command
@@ -8034,6 +8065,15 @@ behavior:
   three same-run 90-second post-warmup repetitions for interactive and write-
   only concurrency sweeps on an idle inventoried host; short, unstable,
   interfered, drifted, or incorrect runs are non-evidentiary.
+  Unary qualification MUST additionally freeze ADR-0142's finite scenario
+  classes, three-generation 20-warmup/100-measurement process isolation,
+  absolute N1/E2 service levels, exact RiffDB low-water receipts and 1.10-times
+  regression ceiling. Safe-application and minimal PostgreSQL unary results and
+  ratios remain mandatory published evidence even though the ratios are not a
+  unary release gate. A benchmark MUST reject missing or reclassified
+  scenarios, missing hosts/backends/generations, greater-than-20-percent
+  per-generation spread, baseline identity drift, and any semantic or
+  correctness mismatch.
   ADR-0133 permits generated named-query clients to negotiate its exact
   schema-bound compact response arm in both RiffDB and comparator workloads.
   This is a representation-only amendment: the frozen dataset, operations,
