@@ -162,10 +162,22 @@ pub(crate) enum CheckpointCountSource {
     DurableLengths { execution_failed_rows: u64 },
 }
 
+/// Closed lifecycle purpose for one checkpoint write attempt.
+///
+/// Startup retains its established proof-publication schedule. Graceful
+/// shutdown may reuse the proof startup established for this process
+/// generation when the authoritative view is still exact.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum CheckpointPurpose {
+    StartupValidation,
+    GracefulShutdown,
+}
+
 /// Builds and durably writes one validated-prefix checkpoint under an exclusive writer.
 pub(crate) fn write_validated_prefix_checkpoint(
     shared: &SharedRedb,
     retained: &riffdb_storage_api::RetainedMetadataV1,
+    purpose: CheckpointPurpose,
 ) -> Result<(), StorageError> {
     let transaction = shared.database.begin_read().map_err(transaction_error)?;
     let mut rows_walked = 0_u64;
@@ -175,6 +187,16 @@ pub(crate) fn write_validated_prefix_checkpoint(
     let source = CheckpointCountSource::DurableLengths {
         execution_failed_rows: shared.terminal_execution_failure_rows(),
     };
+    if purpose == CheckpointPurpose::GracefulShutdown
+        && exact_current_checkpoint_exists(
+            &transaction,
+            retained,
+            shared.terminal_execution_failure_rows(),
+        )?
+    {
+        shared.note_checkpoint_count_rows_walked(rows_walked);
+        return Ok(());
+    }
     let checkpoint =
         build_checkpoint_from_snapshot(&transaction, retained, source, &mut rows_walked)?;
     drop(transaction);
@@ -196,6 +218,71 @@ pub(crate) fn write_validated_prefix_checkpoint(
     shared.before_test_commit(RedbTestOperation::ValidatedPrefixCheckpoint)?;
     shared.commit_durable(write)?;
     shared.after_test_commit(RedbTestOperation::ValidatedPrefixCheckpoint)
+}
+
+/// Returns true only when the already validated V2 proof describes the exact
+/// current durable view. Startup established the snapshot contents and
+/// fingerprints for this process generation; frontiers and complete O(1)
+/// table counts prove that no authoritative transition occurred since.
+fn exact_current_checkpoint_exists(
+    transaction: &ReadTransaction,
+    retained: &riffdb_storage_api::RetainedMetadataV1,
+    execution_failed_rows: u64,
+) -> Result<bool, StorageError> {
+    let meta = transaction.open_table(META).map_err(table_error)?;
+    let Some(encoded) = meta
+        .get(META_VALIDATED_PREFIX_CHECKPOINT)
+        .map_err(precommit_storage_error)?
+    else {
+        return Ok(false);
+    };
+    let checkpoint = match decode_validated_prefix_checkpoint_v2(encoded.value()) {
+        Ok(checkpoint) => checkpoint.into_parts().0,
+        Err(_) => return Ok(false),
+    };
+    let base = checkpoint.base();
+    let head = last_commit_sequence(transaction)?
+        .map(CommitSequence::get)
+        .unwrap_or(0);
+    let audit = last_audit_sequence(transaction)?
+        .map(AdministrationSequence::get)
+        .unwrap_or(0);
+    let watermark = load_retention_watermark_sequence(transaction)?;
+    let counts = counts_from_durable_lengths(transaction, head, audit, execution_failed_rows)?;
+    let Some(counts) = counts else {
+        return Ok(false);
+    };
+    let entity_rows = transaction
+        .open_table(ENTITIES)
+        .map_err(table_error)?
+        .len()
+        .map_err(precommit_storage_error)?;
+    let chain_rows = transaction
+        .open_table(ENTITY_CHAIN_HEADS)
+        .map_err(table_error)?
+        .len()
+        .map_err(precommit_storage_error)?;
+    let snapshot_rows = transaction
+        .open_table(VALIDATED_PREFIX_ENTITY_HEADS)
+        .map_err(table_error)?
+        .len()
+        .map_err(precommit_storage_error)?;
+    let entity_counts = checkpoint.entity_counts();
+    let recorded_chain_rows = entity_counts
+        .live_entity_count
+        .checked_add(entity_counts.deleted_entity_count)
+        .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
+    Ok(base.database_id() == retained.database_id()
+        && base.history_incarnation() == retained.history_incarnation()
+        && base.registry_digest() == current_record_registry_digest()
+        && base.checkpoint_commit_sequence() == head
+        && base.audit_sequence_bound() == audit
+        && base.retention_watermark_sequence() == watermark
+        && base.retained() == retained_snapshot(retained)
+        && base.counts() == counts
+        && entity_counts.live_entity_count == entity_rows
+        && recorded_chain_rows == chain_rows
+        && snapshot_rows == chain_rows)
 }
 
 /// Replaces the exact at-S entity-head snapshot in the same transaction that

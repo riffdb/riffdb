@@ -13631,6 +13631,63 @@ work_packages:
       columnar scheduling, so the next package must decompose the checkpoint before proposing a
       repair. No scheduling, drain, failure, checkpoint, or public application behavior changed.
   human_review_triggers: *id001
+- id: WP-669
+  name: Exact-current validated-prefix checkpoint reuse
+  depends_on: [WP-642, WP-668]
+  objective: Decompose the stable graceful-shutdown checkpoint owner and avoid rebuilding or
+    durably rewriting a proof that is already exact for the current authoritative head, without
+    weakening startup validation, checkpoint binding, crash recovery, or the non-fatal shutdown
+    rule.
+  requirements: [PERF-007, PERF-008, PERF-018, REC-001, STO-001, STO-002]
+  required_adrs: [ADR-0019, ADR-0085, ADR-0100, ADR-0104, ADR-0123]
+  allowed_paths: [work_packages.yaml, crates/riffdb-storage-redb/**,
+    crates/riffdb-server/src/process_graph.rs, crates/riffdb-server/src/daemon.rs,
+    examples/app-baseline/**, tests/**, docs/performance/**]
+  deliverables:
+  - A closed checkpoint ledger separating journal-suffix barrier, retained-state read, checkpoint
+    proof construction, encoding, entity-head snapshot replacement, metadata publication, and
+    durable commit on workstation, N1, and E2 before selecting a candidate
+  - An exact-current reuse decision derived only from process-generation-proven checkpoint identity,
+    current commit and audit frontiers, retained metadata, retention watermark, and complete durable
+    table counts; absence, mismatch, decode failure, or uncertainty executes the existing full path
+  - Tests proving a read-only generation performs no checkpoint mutation, every authoritative or
+    administrative advance performs the ordinary proof-carrying write, corrupt or predecessor
+    checkpoints never qualify, and crash/startup validation fixtures remain byte-exact
+  - Paired full-dataset N1 and E2 receipts with predeclared no-regression gates for seed, mixed/read
+    latency and throughput, shutdown tail, startup readiness, writes, recovery, and inventory
+  acceptance_commands:
+  - cargo +1.97.0 test -p riffdb-storage-redb -p riffdb-server --all-features
+  - cargo +1.97.0 test --manifest-path examples/app-baseline/Cargo.toml --workspace
+  - ./scripts/check-workspace-policy
+  - ./scripts/check-requirement-coverage
+  - cargo +1.97.0 fmt --all -- --check
+  - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: The pre-change ledger attributes at least ninety-five percent of checkpoint wall or
+    names the residual; an exact-current shutdown performs zero checkpoint write transaction and
+    reduces the isolated validated-prefix-checkpoint p95 by at least ninety-five percent on both
+    cloud profiles; changed heads retain byte-identical proof and recovery semantics; no public
+    performance or correctness cell regresses more than five percent. Whole-graph shutdown remains
+    reported but is not a candidate gate because its earlier columnar-drain stage is independently
+    scheduled and varied by more than an order of magnitude in the paired receipts.
+  standing_design_tests:
+    interface_safety: Reuse is internal and fail-closed. Applications cannot select, forge, skip,
+      invalidate, or observe checkpoint reuse, and cannot weaken startup validation or acknowledged
+      durability. Any uncertain identity takes the existing proof-building path.
+    scale: Exact-current admission uses fixed metadata and O(1) table lengths only. It retains no
+      application values or per-command history and cannot replace the existing bounded startup
+      proof or suffix validation.
+  closure:
+    status: complete_with_measured_gate_correction
+    evidence: docs/performance/wp-669-exact-current-checkpoint-reuse.md
+    decision: The pre-change ledger closes the stable checkpoint owner, and graceful exact-current
+      reuse cuts isolated checkpoint p95 by 95.1 percent on N1 and 96.8 percent on E2 while opening
+      no checkpoint write transaction. Startup still publishes one process-generation proof and
+      any changed or uncertain identity retains the full proof path. The originally proposed
+      whole-graph p95 gate was corrected before closure because its already-completed columnar stage
+      varied from 0.4 to 900 milliseconds independently of this candidate; order-balanced receipts
+      demonstrate that confounder. Paired E2 mixed-c32 receipts are clean and improve throughput and
+      latency, so the candidate activates without a public regression claim.
+  human_review_triggers: *id001
 - id: WP-632
   name: Frozen-client transport attribution and asynchronous shadow diagnostic
   depends_on: [WP-627]

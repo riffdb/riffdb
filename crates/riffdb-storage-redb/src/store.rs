@@ -2049,15 +2049,16 @@ impl RedbStore {
         self.shared.fence_writes();
     }
 
-    /// Writes one proof-carrying validated-prefix startup checkpoint (ADR-0085 A1).
+    /// Ensures one proof-carrying validated-prefix checkpoint at the graceful boundary.
     ///
-    /// Requires exclusive writer access. Same body — and the SAME write gate —
-    /// as the post-validation startup write: the checkpoint is written only
-    /// when this handle's startup validation session completed with zero
-    /// structural findings of any scope. Returns `Ok(false)` (vetoed, nothing
-    /// written) otherwise, so a finding can never be silenced by a shutdown
-    /// checkpoint. A failed write after a clean gate is counted and returned as
-    /// `Err`; callers (including graceful shutdown) treat that as non-fatal.
+    /// Requires exclusive writer access and the same clean-validation gate and
+    /// full proof builder as the post-validation startup write. Startup always
+    /// publishes its one process-generation proof; graceful shutdown retains it
+    /// unchanged when the authoritative view is still exact. Returns `Ok(false)`
+    /// only when vetoed; `Ok(true)` means an exact proof is present. A finding
+    /// can never be silenced by a shutdown checkpoint. A failed write after a
+    /// clean gate is counted and returned as `Err`; callers treat that as
+    /// non-fatal.
     pub fn write_validated_prefix_checkpoint(&self) -> Result<bool, StorageError> {
         let _lease = self.acquire_mutation_lease()?;
         self.ensure_writable()?;
@@ -2078,7 +2079,11 @@ impl RedbStore {
             .map_err(transaction_error)?;
         let retained = crate::startup::read_retained_metadata_pub(&transaction)?;
         drop(transaction);
-        match crate::validated_prefix::write_validated_prefix_checkpoint(&self.shared, &retained) {
+        match crate::validated_prefix::write_validated_prefix_checkpoint(
+            &self.shared,
+            &retained,
+            crate::validated_prefix::CheckpointPurpose::GracefulShutdown,
+        ) {
             Ok(()) => Ok(true),
             Err(error) => {
                 // ADR-0019 A1: count the lost fast path; callers decide fatality.
