@@ -1,0 +1,144 @@
+#!/usr/bin/env bash
+# Bank one host column of ADR-0142's frozen unary corpus.
+set -euo pipefail
+export LC_ALL=C
+export TZ=UTC
+
+usage() {
+    printf '%s\n' \
+        'usage: benchmarks/run-wp674-unary-profile --profile workstation|n1|e2 --output-dir PATH' >&2
+    exit 2
+}
+
+profile=
+output_dir=
+while (($#)); do
+    case "$1" in
+        --profile)
+            (($# >= 2)) || usage
+            profile="$2"
+            shift 2
+            ;;
+        --output-dir)
+            (($# >= 2)) || usage
+            output_dir="$2"
+            shift 2
+            ;;
+        *) usage ;;
+    esac
+done
+
+[[ "$profile" == workstation || "$profile" == n1 || "$profile" == e2 ]] || usage
+[[ -n "$output_dir" ]] || usage
+
+repo_root="$(git rev-parse --show-toplevel)"
+cd "$repo_root"
+if ! git diff --quiet --ignore-submodules -- || \
+   ! git diff --cached --quiet --ignore-submodules -- || \
+   [[ -n "$(git ls-files --others --exclude-standard)" ]]; then
+    printf 'WP-674 profile banking requires an exact clean source tree\n' >&2
+    exit 2
+fi
+
+case "$profile" in
+    workstation) hardware_class=workstation_nvme ;;
+    n1) hardware_class=gcp_n1_persistent_disk ;;
+    e2) hardware_class=gcp_e2_persistent_disk ;;
+esac
+
+mkdir -p "$output_dir"
+output_dir="$(cd "$output_dir" && pwd)"
+task_tmp_root="${RIFFDB_TMP_ROOT:-$HOME/tmp}"
+mkdir -p "$task_tmp_root"
+export TMPDIR="$task_tmp_root"
+
+scenarios=(
+    point_get_ticket
+    point_get_user
+    list_tickets_by_project_status
+    list_open_tickets_for_assignee
+    list_comments_for_ticket
+    list_project_members
+    ticket_detail_page
+    board_page_50
+    board_page_200
+    board_page_450
+    create_comment
+    close_ticket_with_comment
+    swap_member_roles
+    open_ticket_with_labels
+)
+
+for scenario in "${scenarios[@]}"; do
+    report="$output_dir/safe-app-$scenario.json"
+    printf 'WP-674 %s: safe-app %s\n' "$profile" "$scenario"
+    RIFFDB_APP_BASELINE_UNARY_QUALIFICATION_SCENARIO="$scenario" \
+        ./benchmarks/run-app-baseline \
+            --full --samples 100 --warmup 20 --reps 3 --require-stable \
+            --postgres-comparator safe-app --output "$report"
+    jq -e --arg scenario "$scenario" '
+      .schema == "riffdb.app-baseline/v1"
+      and .evidence_eligibility.eligible == true
+      and .unary_qualification.scenario == $scenario
+      and .unary_qualification.process_generations == 3
+      and .unary_qualification.same_scenario_warmups_after_restart == 20
+      and .unary_qualification.measured_operations_per_generation == 100
+    ' "$report" >/dev/null
+done
+
+minimal="$output_dir/minimal.json"
+printf 'WP-674 %s: complete minimal-PostgreSQL disclosure\n' "$profile"
+./benchmarks/run-app-baseline \
+    --full --samples 100 --warmup 20 --reps 3 --require-stable \
+    --postgres-comparator minimal --output "$minimal"
+
+source_revision="$(git rev-parse --verify HEAD)"
+cargo_lock_sha256="$(sha256sum Cargo.lock | awk '{print $1}')"
+harness_sha256="$(sha256sum benchmarks/run-app-baseline | awk '{print $1}')"
+fragment="$output_dir/profile-fragment.json"
+python3 - "$fragment" "$profile" "$hardware_class" "$source_revision" \
+    "$cargo_lock_sha256" "$harness_sha256" "$minimal" "${scenarios[@]}" <<'PY'
+import hashlib
+import json
+from pathlib import Path
+import sys
+
+(
+    fragment_path,
+    profile,
+    hardware_class,
+    source_revision,
+    cargo_lock_sha256,
+    harness_sha256,
+    minimal_path,
+    *scenarios,
+) = sys.argv[1:]
+root = Path(fragment_path).parent
+
+def reference(path: Path) -> dict[str, str]:
+    encoded = path.read_bytes()
+    return {
+        "path": path.name,
+        "sha256": hashlib.sha256(encoded).hexdigest(),
+    }
+
+reports = []
+for scenario in scenarios:
+    path = root / f"safe-app-{scenario}.json"
+    reports.append({"scenario": scenario, **reference(path)})
+fragment = {
+    "schema": "riffdb.wp-674-unary-profile/v1",
+    "source_revision": source_revision,
+    "cargo_lock_sha256": cargo_lock_sha256,
+    "harness_sha256": harness_sha256,
+    "profile": {
+        "id": profile,
+        "hardware_class": hardware_class,
+        "reports": reports,
+        "minimal_report": reference(Path(minimal_path)),
+    },
+}
+Path(fragment_path).write_text(json.dumps(fragment, indent=2) + "\n", encoding="utf-8")
+PY
+
+printf 'WP-674 profile fragment: %s\n' "$fragment"

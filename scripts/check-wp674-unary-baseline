@@ -1,0 +1,846 @@
+#!/usr/bin/env python3
+"""Bank or verify ADR-0142's portable unary performance baseline."""
+
+from __future__ import annotations
+
+import argparse
+import copy
+import hashlib
+import json
+import math
+from pathlib import Path
+import re
+import sys
+from typing import Any
+
+
+MANIFEST_SCHEMA = "riffdb.wp-674-unary-manifest/v1"
+BASELINE_SCHEMA = "riffdb.wp-674-unary-baseline/v1"
+QUALIFICATION_SCHEMA = "riffdb.wp-674-unary-qualification/v1"
+REPORT_SCHEMA = "riffdb.app-baseline/v1"
+SELECTION_SCHEMA = "riffdb.app-baseline-unary-qualification/v1"
+CANDIDATE_SCHEMA = "riffdb.app-baseline-qualified-candidate/v1"
+MAX_MANIFEST_BYTES = 256 * 1024
+MAX_REPORT_BYTES = 32 * 1024 * 1024
+MAX_BASELINE_BYTES = 512 * 1024
+REPETITIONS = 3
+WARMUPS = 20
+MEASUREMENTS = 100
+MAX_SPREAD = 1.20
+MAX_REGRESSION = 1.10
+SHA256 = re.compile(r"^[0-9a-f]{64}$")
+REVISION = re.compile(r"^[0-9a-f]{40}$")
+PROFILE_CLASSES = {
+    "workstation": "workstation_nvme",
+    "n1": "gcp_n1_persistent_disk",
+    "e2": "gcp_e2_persistent_disk",
+}
+PROFILE_HARDWARE_RULES = {
+    "workstation": {"logical_cpus": 32, "cpu_contains": "AMD Ryzen 9 7950X"},
+    "n1": {"logical_cpus": 8, "cpu_contains": "Intel"},
+    "e2": {"logical_cpus": 8, "cpu_contains": "AMD EPYC 7B12"},
+}
+SCENARIO_CLASSES = {
+    "ordinary_named_read": {
+        "point_get_ticket",
+        "point_get_user",
+        "list_tickets_by_project_status",
+        "list_open_tickets_for_assignee",
+        "list_comments_for_ticket",
+        "list_project_members",
+        "ticket_detail_page",
+    },
+    "wide_bounded_named_read": {
+        "board_page_50",
+        "board_page_200",
+        "board_page_450",
+    },
+    "compiled_command": {
+        "create_comment",
+        "close_ticket_with_comment",
+        "swap_member_roles",
+        "open_ticket_with_labels",
+    },
+}
+ABSOLUTE_CEILINGS_NS = {
+    "ordinary_named_read": {"p50_ns": 3_000_000.0, "p95_ns": 6_000_000.0},
+    "wide_bounded_named_read": {"p50_ns": 6_000_000.0, "p95_ns": 12_000_000.0},
+    "compiled_command": {"p50_ns": 10_000_000.0, "p95_ns": 15_000_000.0},
+}
+SCENARIOS = set().union(*SCENARIO_CLASSES.values())
+REQUIREMENTS = {"PERF-005", "PERF-008", "PERF-018", "END-007", "END-008"}
+
+
+def fail(detail: str) -> "None":
+    raise ValueError(detail)
+
+
+def load_json(path: Path, maximum: int) -> tuple[dict[str, Any], str]:
+    if not path.is_file() or path.is_symlink():
+        fail(f"evidence file is absent or linked: {path}")
+    encoded = path.read_bytes()
+    if not 0 < len(encoded) <= maximum:
+        fail(f"evidence file exceeds its byte bound: {path}")
+    value = json.loads(encoded.decode("utf-8"))
+    if not isinstance(value, dict):
+        fail(f"evidence root must be an object: {path}")
+    return value, hashlib.sha256(encoded).hexdigest()
+
+
+def require_sha(value: Any, label: str) -> str:
+    if not isinstance(value, str) or SHA256.fullmatch(value) is None:
+        fail(f"{label} is not a lowercase SHA-256 digest")
+    return value
+
+
+def require_number(value: Any, label: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        fail(f"{label} is not numeric")
+    result = float(value)
+    if not math.isfinite(result) or result < 0:
+        fail(f"{label} is not finite and nonnegative")
+    return result
+
+
+def exact_strings(value: Any, expected: set[str], label: str) -> None:
+    if (
+        not isinstance(value, list)
+        or len(value) != len(expected)
+        or any(not isinstance(item, str) for item in value)
+        or set(value) != expected
+    ):
+        fail(f"{label} is not the exact frozen set")
+
+
+def scenario_class(name: str) -> str:
+    for class_name, members in SCENARIO_CLASSES.items():
+        if name in members:
+            return class_name
+    fail(f"unknown frozen unary scenario {name}")
+
+
+def summary_value(summary: Any, label: str) -> float:
+    if not isinstance(summary, dict):
+        fail(f"{label} summary is absent")
+    if summary.get("reps") != REPETITIONS:
+        fail(f"{label} does not contain exactly three generations")
+    median = require_number(summary.get("median"), f"{label}.median")
+    minimum = require_number(summary.get("min"), f"{label}.min")
+    maximum = require_number(summary.get("max"), f"{label}.max")
+    spread = require_number(summary.get("spread_ratio"), f"{label}.spread_ratio")
+    if minimum > median or median > maximum:
+        fail(f"{label} median is outside min/max")
+    expected_spread = 1.0 if minimum == 0 and maximum == 0 else (
+        math.inf if minimum == 0 else maximum / minimum
+    )
+    if not math.isclose(spread, expected_spread, rel_tol=1e-9, abs_tol=1e-9):
+        fail(f"{label} spread arithmetic differs")
+    if spread > MAX_SPREAD:
+        fail(f"{label} spread {spread:.4f} exceeds {MAX_SPREAD:.2f}")
+    return median
+
+
+def verify_host(report: dict[str, Any], profile_id: str, label: str) -> tuple[str, str]:
+    host = report.get("host_validity")
+    if not isinstance(host, dict):
+        fail(f"{label}: host validity is absent")
+    inventories: list[dict[str, Any]] = []
+    stable_identities: list[dict[str, Any]] = []
+    for boundary in ("preflight", "postflight"):
+        observation = host.get(boundary)
+        if not isinstance(observation, dict) or observation.get("valid") is not True:
+            fail(f"{label}: host invalid at {boundary}")
+        if observation.get("interfering_processes") != []:
+            fail(f"{label}: host interference at {boundary}")
+        bounds = observation.get("inventory_bounds") or {}
+        if bounds.get("process_arguments_included") is not False:
+            fail(f"{label}: process-argument redaction pin is absent")
+        inventories.append(observation)
+        identity = observation.get("hardware_identity")
+        if not isinstance(identity, dict):
+            fail(f"{label}: hardware identity is absent")
+        rules = PROFILE_HARDWARE_RULES[profile_id]
+        if observation.get("logical_cpus") != rules["logical_cpus"]:
+            fail(f"{label}: logical CPU count differs from {profile_id}")
+        cpu_model = identity.get("cpu_model")
+        if not isinstance(cpu_model, str) or rules["cpu_contains"] not in cpu_model:
+            fail(f"{label}: CPU model differs from {profile_id}")
+        stable_identities.append(
+            {
+                "logical_cpus": observation["logical_cpus"],
+                "hardware_identity": identity,
+            }
+        )
+    if stable_identities[0] != stable_identities[1]:
+        fail(f"{label}: hardware identity changed during measurement")
+    environment = report.get("environment") or {}
+    medium = environment.get("medium") or {}
+    stable_identity = {
+        **stable_identities[0],
+        "storage": {
+            key: medium.get(key) for key in ("kind", "fstype", "device_model")
+        },
+    }
+    if stable_identity["storage"]["kind"] != "disk":
+        fail(f"{label}: storage is not persistent disk")
+    encoded = json.dumps(inventories, sort_keys=True, separators=(",", ":")).encode()
+    stable = json.dumps(stable_identity, sort_keys=True, separators=(",", ":")).encode()
+    return hashlib.sha256(encoded).hexdigest(), hashlib.sha256(stable).hexdigest()
+
+
+def verify_candidate(
+    report: dict[str, Any], manifest: dict[str, Any], label: str
+) -> dict[str, str]:
+    candidate = report.get("qualification_candidate")
+    if not isinstance(candidate, dict) or candidate.get("schema") != CANDIDATE_SCHEMA:
+        fail(f"{label}: exact candidate identity is absent")
+    if candidate.get("source_tree_clean") is not True:
+        fail(f"{label}: source tree was not clean")
+    for key in ("source_revision", "cargo_lock_sha256", "harness_sha256"):
+        if candidate.get(key) != manifest.get(key):
+            fail(f"{label}: candidate {key} differs from manifest")
+    return {
+        key: require_sha(candidate.get(key), f"{label}.{key}")
+        for key in ("runner_sha256", "riffdbd_sha256")
+    }
+
+
+def verify_counterbalance(report: dict[str, Any], postgres: str, label: str) -> None:
+    expected = [
+        postgres,
+        "riffdb_public_grpc",
+        "riffdb_public_grpc",
+        postgres,
+        postgres,
+        "riffdb_public_grpc",
+    ]
+    if report.get("backend_execution_order") != expected:
+        fail(f"{label}: backend generations are not counterbalanced")
+
+
+def verify_report(
+    report: dict[str, Any],
+    manifest: dict[str, Any],
+    profile_id: str,
+    scenario: str,
+    label: str,
+) -> tuple[dict[str, Any], dict[str, str]]:
+    if report.get("schema") != REPORT_SCHEMA or report.get("reps") != REPETITIONS:
+        fail(f"{label}: report schema or repetition count drifted")
+    if (report.get("scale") or {}).get("profile") != "full":
+        fail(f"{label}: full frozen dataset is absent")
+    configuration = report.get("configuration") or {}
+    if configuration.get("warmup_iterations") != WARMUPS:
+        fail(f"{label}: warmup count drifted")
+    if configuration.get("measured_samples") != MEASUREMENTS:
+        fail(f"{label}: measurement count drifted")
+    selection = report.get("unary_qualification") or {}
+    if selection != {
+        "schema": SELECTION_SCHEMA,
+        "scenario": scenario,
+        "class": scenario_class(scenario),
+        "daemon_restart_after_common_setup": True,
+        "same_scenario_warmups_after_restart": WARMUPS,
+        "measured_operations_per_generation": MEASUREMENTS,
+        "process_generations": REPETITIONS,
+    }:
+        fail(f"{label}: frozen selection or class drifted")
+    if report.get("same_device") is not True:
+        fail(f"{label}: PostgreSQL and RiffDB are not on one device")
+    durability = report.get("postgres_durability") or {}
+    for key in ("synchronous_commit", "fsync", "full_page_writes"):
+        if durability.get(key) != "on":
+            fail(f"{label}: PostgreSQL {key} is not on")
+    if not report.get("environment") or not report.get("device_baseline"):
+        fail(f"{label}: environment or device observation is absent")
+    host_digest, hardware_digest = verify_host(report, profile_id, label)
+    binaries = verify_candidate(report, manifest, label)
+    verify_counterbalance(report, "postgres_safe_app", label)
+
+    backends = report.get("backends")
+    if not isinstance(backends, list):
+        fail(f"{label}: backend reports are absent")
+    backend_ids = {row.get("backend_id") for row in backends if isinstance(row, dict)}
+    if backend_ids != {"postgres_safe_app", "riffdb_public_grpc"}:
+        fail(f"{label}: backend set drifted")
+    for backend in backends:
+        rows = backend.get("scenarios") if isinstance(backend, dict) else None
+        if not isinstance(rows, list) or len(rows) != 1 or rows[0].get("scenario") != scenario:
+            fail(f"{label}: report contains another timed scenario")
+
+    comparisons = report.get("comparisons") or {}
+    if comparisons.get("available") is not True:
+        fail(f"{label}: comparison is absent")
+    rows = comparisons.get("scenarios")
+    if (
+        not isinstance(rows, list)
+        or len(rows) != 1
+        or rows[0].get("scenario") != scenario
+        or rows[0].get("last_row_count_equal") is not True
+    ):
+        fail(f"{label}: correctness or scenario identity differs")
+    summaries = comparisons.get("unary_rep_summaries")
+    if not isinstance(summaries, dict) or set(summaries) != {scenario}:
+        fail(f"{label}: unary generation summaries are not exact")
+    entry = summaries[scenario]
+    if not isinstance(entry, dict) or set(entry) != {
+        "postgres",
+        "riffdb",
+        "ratios_riffdb_over_postgres",
+    }:
+        fail(f"{label}: unary summary shape drifted")
+
+    result: dict[str, Any] = {
+        "class": scenario_class(scenario),
+        "postgres": {},
+        "riffdb": {},
+        "ratios_riffdb_over_postgres": {},
+    }
+    for backend in ("postgres", "riffdb"):
+        for statistic in ("p50_ns", "p95_ns"):
+            result[backend][statistic] = summary_value(
+                (entry.get(backend) or {}).get(statistic),
+                f"{label}.{backend}.{statistic}",
+            )
+    for statistic in ("p50", "p95"):
+        result["ratios_riffdb_over_postgres"][statistic] = summary_value(
+            (entry.get("ratios_riffdb_over_postgres") or {}).get(statistic),
+            f"{label}.ratio.{statistic}",
+        )
+    for statistic in ("p50", "p95"):
+        calculated = result["riffdb"][f"{statistic}_ns"] / result["postgres"][f"{statistic}_ns"]
+        reported = result["ratios_riffdb_over_postgres"][statistic]
+        # The median of ratios need not equal the ratio of medians. Preserve both
+        # and require only a finite, positive disclosure here.
+        if not math.isfinite(calculated) or not math.isfinite(reported):
+            fail(f"{label}: {statistic} comparison is not finite")
+    result["profile"] = profile_id
+    result["host_observation_sha256"] = host_digest
+    result["hardware_identity_sha256"] = hardware_digest
+    return result, binaries
+
+
+def verify_minimal_report(
+    report: dict[str, Any], manifest: dict[str, Any], profile_id: str, label: str
+) -> tuple[dict[str, Any], dict[str, str], str, str]:
+    if report.get("schema") != REPORT_SCHEMA or report.get("reps") != REPETITIONS:
+        fail(f"{label}: minimal report schema or repetition count drifted")
+    if (report.get("scale") or {}).get("profile") != "full":
+        fail(f"{label}: minimal report is not the full dataset")
+    configuration = report.get("configuration") or {}
+    if configuration.get("warmup_iterations") != WARMUPS:
+        fail(f"{label}: minimal warmup count drifted")
+    if configuration.get("measured_samples") != MEASUREMENTS:
+        fail(f"{label}: minimal measurement count drifted")
+    if report.get("same_device") is not True:
+        fail(f"{label}: minimal backends are not on one device")
+    durability = report.get("postgres_durability") or {}
+    for key in ("synchronous_commit", "fsync", "full_page_writes"):
+        if durability.get(key) != "on":
+            fail(f"{label}: minimal PostgreSQL {key} is not on")
+    host_digest, hardware_digest = verify_host(report, profile_id, label)
+    binaries = verify_candidate(report, manifest, label)
+    verify_counterbalance(report, "postgres_minimal", label)
+    backends = report.get("backends")
+    if not isinstance(backends, list) or {
+        row.get("backend_id") for row in backends if isinstance(row, dict)
+    } != {"postgres_minimal", "riffdb_public_grpc"}:
+        fail(f"{label}: minimal backend set drifted")
+    comparisons = report.get("comparisons") or {}
+    rows = comparisons.get("scenarios")
+    if not isinstance(rows, list):
+        fail(f"{label}: minimal scenarios are absent")
+    rows_by_scenario = {
+        row.get("scenario"): row for row in rows if isinstance(row, dict)
+    }
+    if not SCENARIOS.issubset(rows_by_scenario):
+        fail(f"{label}: minimal unary scenario set is incomplete")
+    if any(
+        rows_by_scenario[scenario].get("last_row_count_equal") is not True
+        for scenario in SCENARIOS
+    ):
+        fail(f"{label}: minimal correctness differs")
+    if (report.get("board_page_live_crosscheck") or {}).get("status") != "ok":
+        fail(f"{label}: minimal board cross-check is absent")
+    summaries = comparisons.get("unary_rep_summaries")
+    if not isinstance(summaries, dict) or not SCENARIOS.issubset(summaries):
+        fail(f"{label}: minimal unary disclosures are incomplete")
+    result: dict[str, Any] = {}
+    for scenario in sorted(SCENARIOS):
+        entry = summaries[scenario]
+        metrics = {"postgres": {}, "riffdb": {}, "ratios_riffdb_over_postgres": {}}
+        for backend in ("postgres", "riffdb"):
+            for statistic in ("p50_ns", "p95_ns"):
+                metrics[backend][statistic] = summary_value(
+                    (entry.get(backend) or {}).get(statistic),
+                    f"{label}.{scenario}.{backend}.{statistic}",
+                )
+        for statistic in ("p50", "p95"):
+            metrics["ratios_riffdb_over_postgres"][statistic] = summary_value(
+                (entry.get("ratios_riffdb_over_postgres") or {}).get(statistic),
+                f"{label}.{scenario}.ratio.{statistic}",
+            )
+        result[scenario] = metrics
+    return result, binaries, host_digest, hardware_digest
+
+
+def validate_manifest(manifest: dict[str, Any]) -> None:
+    if set(manifest) != {
+        "schema",
+        "source_revision",
+        "cargo_lock_sha256",
+        "harness_sha256",
+        "requirements",
+        "profiles",
+    } or manifest.get("schema") != MANIFEST_SCHEMA:
+        fail("manifest shape or schema is invalid")
+    revision = manifest.get("source_revision")
+    if not isinstance(revision, str) or REVISION.fullmatch(revision) is None:
+        fail("manifest source revision is invalid")
+    require_sha(manifest.get("cargo_lock_sha256"), "manifest.cargo_lock_sha256")
+    require_sha(manifest.get("harness_sha256"), "manifest.harness_sha256")
+    exact_strings(manifest.get("requirements"), REQUIREMENTS, "manifest.requirements")
+    profiles = manifest.get("profiles")
+    if not isinstance(profiles, list) or len(profiles) != len(PROFILE_CLASSES):
+        fail("manifest must contain workstation, N1, and E2")
+    observed = {p.get("id") for p in profiles if isinstance(p, dict)}
+    if observed != set(PROFILE_CLASSES):
+        fail("manifest profile identities are not exact")
+
+
+def load_reports(
+    manifest_path: Path, manifest: dict[str, Any]
+) -> dict[str, dict[str, tuple[dict[str, Any], str]]]:
+    result: dict[str, dict[str, tuple[dict[str, Any], str]]] = {}
+    for profile in manifest["profiles"]:
+        if set(profile) != {"id", "hardware_class", "reports", "minimal_report"}:
+            fail("profile shape is invalid")
+        profile_id = profile["id"]
+        if profile.get("hardware_class") != PROFILE_CLASSES[profile_id]:
+            fail(f"{profile_id}: hardware class drifted")
+        reports = profile.get("reports")
+        if not isinstance(reports, list) or len(reports) != len(SCENARIOS):
+            fail(f"{profile_id}: report inventory is incomplete")
+        names = {item.get("scenario") for item in reports if isinstance(item, dict)}
+        if names != SCENARIOS:
+            fail(f"{profile_id}: scenario inventory drifted")
+        result[profile_id] = {}
+        for reference in reports:
+            if set(reference) != {"scenario", "path", "sha256"}:
+                fail(f"{profile_id}: report reference shape is invalid")
+            relative = reference["path"]
+            if not isinstance(relative, str):
+                fail(f"{profile_id}: report path is invalid")
+            path = (manifest_path.parent / relative).resolve()
+            report, digest = load_json(path, MAX_REPORT_BYTES)
+            if digest != require_sha(reference["sha256"], f"{profile_id}.{reference['scenario']}"):
+                fail(f"{profile_id}.{reference['scenario']}: report digest differs")
+            result[profile_id][reference["scenario"]] = (report, digest)
+        reference = profile["minimal_report"]
+        if not isinstance(reference, dict) or set(reference) != {"path", "sha256"}:
+            fail(f"{profile_id}: minimal report reference is invalid")
+        relative = reference.get("path")
+        if not isinstance(relative, str):
+            fail(f"{profile_id}: minimal report path is invalid")
+        path = (manifest_path.parent / relative).resolve()
+        report, digest = load_json(path, MAX_REPORT_BYTES)
+        if digest != require_sha(reference["sha256"], f"{profile_id}.minimal"):
+            fail(f"{profile_id}: minimal report digest differs")
+        result[profile_id]["minimal"] = (report, digest)
+    return result
+
+
+def verify_corpus(
+    manifest_path: Path, manifest: dict[str, Any]
+) -> dict[str, Any]:
+    validate_manifest(manifest)
+    reports = load_reports(manifest_path, manifest)
+    profiles = []
+    runner_digests: set[str] = set()
+    daemon_digests: set[str] = set()
+    for profile_id in PROFILE_CLASSES:
+        scenarios: dict[str, Any] = {}
+        report_digests: dict[str, str] = {}
+        host_digests: dict[str, str] = {}
+        hardware_digests: set[str] = set()
+        for scenario in sorted(SCENARIOS):
+            report, digest = reports[profile_id][scenario]
+            metrics, binaries = verify_report(
+                report,
+                manifest,
+                profile_id,
+                scenario,
+                f"{profile_id}.{scenario}",
+            )
+            if profile_id in {"n1", "e2"}:
+                ceilings = ABSOLUTE_CEILINGS_NS[metrics["class"]]
+                for statistic, ceiling in ceilings.items():
+                    if metrics["riffdb"][statistic] > ceiling:
+                        fail(
+                            f"{profile_id}.{scenario}: {statistic} "
+                            f"{metrics['riffdb'][statistic]:.0f} exceeds {ceiling:.0f}"
+                        )
+            host_digests[scenario] = metrics.pop("host_observation_sha256")
+            hardware_digests.add(metrics.pop("hardware_identity_sha256"))
+            runner_digests.add(binaries["runner_sha256"])
+            daemon_digests.add(binaries["riffdbd_sha256"])
+            scenarios[scenario] = metrics
+            report_digests[scenario] = digest
+        minimal_report, minimal_digest = reports[profile_id]["minimal"]
+        minimal, minimal_binaries, minimal_host, minimal_hardware = verify_minimal_report(
+            minimal_report,
+            manifest,
+            profile_id,
+            f"{profile_id}.minimal",
+        )
+        runner_digests.add(minimal_binaries["runner_sha256"])
+        daemon_digests.add(minimal_binaries["riffdbd_sha256"])
+        host_digests["minimal"] = minimal_host
+        hardware_digests.add(minimal_hardware)
+        report_digests["minimal"] = minimal_digest
+        if len(hardware_digests) != 1:
+            fail(f"{profile_id}: hardware identity drifted between scenario cells")
+        profiles.append(
+            {
+                "id": profile_id,
+                "hardware_class": PROFILE_CLASSES[profile_id],
+                "hardware_identity_sha256": next(iter(hardware_digests)),
+                "host_inventory_sha256": host_digests,
+                "report_sha256": report_digests,
+                "minimal_postgres": minimal,
+                "scenarios": scenarios,
+            }
+        )
+    if len(runner_digests) != 1 or len(daemon_digests) != 1:
+        fail("profiles did not measure one exact runner and daemon artifact")
+    return {
+        "schema": BASELINE_SCHEMA,
+        "source_revision": manifest["source_revision"],
+        "cargo_lock_sha256": manifest["cargo_lock_sha256"],
+        "harness_sha256": manifest["harness_sha256"],
+        "runner_sha256": next(iter(runner_digests)),
+        "riffdbd_sha256": next(iter(daemon_digests)),
+        "requirements": sorted(REQUIREMENTS),
+        "method": {
+            "process_generations": REPETITIONS,
+            "warmups_per_generation": WARMUPS,
+            "measurements_per_generation": MEASUREMENTS,
+            "maximum_spread_ratio": MAX_SPREAD,
+            "maximum_riffdb_regression_ratio": MAX_REGRESSION,
+            "qualified_statistic": "median_of_three_per_generation_statistics",
+        },
+        "scenario_classes": {
+            class_name: {
+                "scenarios": sorted(members),
+                **ABSOLUTE_CEILINGS_NS[class_name],
+            }
+            for class_name, members in SCENARIO_CLASSES.items()
+        },
+        "profiles": profiles,
+    }
+
+
+def verify_against_baseline(candidate: dict[str, Any], baseline: dict[str, Any]) -> dict[str, Any]:
+    if baseline.get("schema") != BASELINE_SCHEMA:
+        fail("baseline schema is invalid")
+    if candidate.get("scenario_classes") != baseline.get("scenario_classes"):
+        fail("scenario classes or absolute ceilings drifted")
+    baseline_profiles = {profile["id"]: profile for profile in baseline.get("profiles") or []}
+    candidate_profiles = {profile["id"]: profile for profile in candidate.get("profiles") or []}
+    if set(baseline_profiles) != set(PROFILE_CLASSES) or set(candidate_profiles) != set(PROFILE_CLASSES):
+        fail("baseline or candidate profiles are incomplete")
+    regressions = []
+    for profile_id in PROFILE_CLASSES:
+        if candidate_profiles[profile_id].get(
+            "hardware_identity_sha256"
+        ) != baseline_profiles[profile_id].get("hardware_identity_sha256"):
+            fail(f"{profile_id}: candidate hardware differs from frozen baseline")
+        old = baseline_profiles[profile_id]["scenarios"]
+        new = candidate_profiles[profile_id]["scenarios"]
+        if set(old) != SCENARIOS or set(new) != SCENARIOS:
+            fail(f"{profile_id}: baseline scenario registry drifted")
+        for scenario in sorted(SCENARIOS):
+            for statistic in ("p50_ns", "p95_ns"):
+                prior = require_number(old[scenario]["riffdb"][statistic], "baseline metric")
+                current = require_number(new[scenario]["riffdb"][statistic], "candidate metric")
+                ratio = math.inf if prior == 0 else current / prior
+                if ratio > MAX_REGRESSION:
+                    fail(
+                        f"{profile_id}.{scenario}.{statistic} regression "
+                        f"{ratio:.4f} exceeds {MAX_REGRESSION:.2f}"
+                    )
+                regressions.append(
+                    {
+                        "profile": profile_id,
+                        "scenario": scenario,
+                        "statistic": statistic,
+                        "candidate_over_baseline": ratio,
+                    }
+                )
+    return {
+        "schema": QUALIFICATION_SCHEMA,
+        "qualified": True,
+        "candidate_source_revision": candidate["source_revision"],
+        "baseline_source_revision": baseline["source_revision"],
+        "maximum_riffdb_regression_ratio": MAX_REGRESSION,
+        "regressions": regressions,
+        "candidate": candidate,
+    }
+
+
+def fake_summary(value: float, spread: float = 1.0) -> dict[str, Any]:
+    return {
+        "median": value,
+        "min": value,
+        "max": value * spread,
+        "reps": REPETITIONS,
+        "spread_ratio": spread,
+        "stability": "stable",
+    }
+
+
+def fake_report(manifest: dict[str, Any], profile: str, scenario: str) -> dict[str, Any]:
+    host = {
+        "valid": True,
+        "interfering_processes": [],
+        "inventory_bounds": {"process_arguments_included": False},
+        "profile": profile,
+        "logical_cpus": PROFILE_HARDWARE_RULES[profile]["logical_cpus"],
+        "hardware_identity": {
+            "cpu_model": PROFILE_HARDWARE_RULES[profile]["cpu_contains"],
+            "system_product": "Google Compute Engine" if profile != "workstation" else "test",
+            "system_vendor": "Google" if profile != "workstation" else "test",
+            "operating_system": {"id": "test", "version_id": "1"},
+        },
+    }
+    class_name = scenario_class(scenario)
+    pg = 1_000_000.0
+    rd = min(2_000_000.0, ABSOLUTE_CEILINGS_NS[class_name]["p50_ns"])
+    return {
+        "schema": REPORT_SCHEMA,
+        "reps": REPETITIONS,
+        "scale": {"profile": "full"},
+        "configuration": {
+            "warmup_iterations": WARMUPS,
+            "measured_samples": MEASUREMENTS,
+        },
+        "unary_qualification": {
+            "schema": SELECTION_SCHEMA,
+            "scenario": scenario,
+            "class": class_name,
+            "daemon_restart_after_common_setup": True,
+            "same_scenario_warmups_after_restart": WARMUPS,
+            "measured_operations_per_generation": MEASUREMENTS,
+            "process_generations": REPETITIONS,
+        },
+        "same_device": True,
+        "postgres_durability": {
+            "synchronous_commit": "on",
+            "fsync": "on",
+            "full_page_writes": "on",
+        },
+        "environment": {
+            "profile": profile,
+            "medium": {"kind": "disk", "fstype": "ext4", "device_model": "test"},
+        },
+        "device_baseline": {"fdatasync_p50_us": 100},
+        "host_validity": {"preflight": host, "postflight": copy.deepcopy(host)},
+        "qualification_candidate": {
+            "schema": CANDIDATE_SCHEMA,
+            "source_revision": manifest["source_revision"],
+            "source_tree_clean": True,
+            "cargo_lock_sha256": manifest["cargo_lock_sha256"],
+            "harness_sha256": manifest["harness_sha256"],
+            "runner_sha256": "4" * 64,
+            "riffdbd_sha256": "5" * 64,
+        },
+        "backend_execution_order": [
+            "postgres_safe_app",
+            "riffdb_public_grpc",
+            "riffdb_public_grpc",
+            "postgres_safe_app",
+            "postgres_safe_app",
+            "riffdb_public_grpc",
+        ],
+        "backends": [
+            {"backend_id": "postgres_safe_app", "scenarios": [{"scenario": scenario}]},
+            {"backend_id": "riffdb_public_grpc", "scenarios": [{"scenario": scenario}]},
+        ],
+        "comparisons": {
+            "available": True,
+            "scenarios": [{"scenario": scenario, "last_row_count_equal": True}],
+            "unary_rep_summaries": {
+                scenario: {
+                    "postgres": {
+                        "p50_ns": fake_summary(pg),
+                        "p95_ns": fake_summary(pg * 2),
+                    },
+                    "riffdb": {
+                        "p50_ns": fake_summary(rd),
+                        "p95_ns": fake_summary(rd * 2),
+                    },
+                    "ratios_riffdb_over_postgres": {
+                        "p50": fake_summary(rd / pg),
+                        "p95": fake_summary(rd / pg),
+                    },
+                }
+            },
+        },
+    }
+
+
+def fake_minimal_report(manifest: dict[str, Any], profile: str) -> dict[str, Any]:
+    first = sorted(SCENARIOS)[0]
+    report = fake_report(manifest, profile, first)
+    report.pop("unary_qualification")
+    report["backend_execution_order"] = [
+        "postgres_minimal",
+        "riffdb_public_grpc",
+        "riffdb_public_grpc",
+        "postgres_minimal",
+        "postgres_minimal",
+        "riffdb_public_grpc",
+    ]
+    rows = [
+        {"scenario": scenario, "last_row_count_equal": True}
+        for scenario in sorted(SCENARIOS)
+    ]
+    summaries = {}
+    for scenario in sorted(SCENARIOS):
+        one = fake_report(manifest, profile, scenario)
+        summaries[scenario] = one["comparisons"]["unary_rep_summaries"][scenario]
+    report["backends"] = [
+        {
+            "backend_id": "postgres_minimal",
+            "scenarios": [{"scenario": scenario} for scenario in sorted(SCENARIOS)],
+        },
+        {
+            "backend_id": "riffdb_public_grpc",
+            "scenarios": [{"scenario": scenario} for scenario in sorted(SCENARIOS)],
+        },
+    ]
+    report["board_page_live_crosscheck"] = {"status": "ok"}
+    report["comparisons"] = {
+        "available": True,
+        "scenarios": rows,
+        "unary_rep_summaries": summaries,
+    }
+    return report
+
+
+def run_self_test(root: Path) -> None:
+    scratch = root / "self-test"
+    scratch.mkdir(parents=True, exist_ok=True)
+    manifest: dict[str, Any] = {
+        "schema": MANIFEST_SCHEMA,
+        "source_revision": "1" * 40,
+        "cargo_lock_sha256": "2" * 64,
+        "harness_sha256": "3" * 64,
+        "requirements": sorted(REQUIREMENTS),
+        "profiles": [],
+    }
+    for profile_id, hardware_class in PROFILE_CLASSES.items():
+        references = []
+        for scenario in sorted(SCENARIOS):
+            path = scratch / f"{profile_id}-{scenario}.json"
+            encoded = json.dumps(fake_report(manifest, profile_id, scenario), indent=2) + "\n"
+            path.write_text(encoded, encoding="utf-8")
+            references.append(
+                {
+                    "scenario": scenario,
+                    "path": path.name,
+                    "sha256": hashlib.sha256(encoded.encode()).hexdigest(),
+                }
+            )
+        minimal_path = scratch / f"{profile_id}-minimal.json"
+        minimal_encoded = json.dumps(fake_minimal_report(manifest, profile_id), indent=2) + "\n"
+        minimal_path.write_text(minimal_encoded, encoding="utf-8")
+        manifest["profiles"].append(
+            {
+                "id": profile_id,
+                "hardware_class": hardware_class,
+                "reports": references,
+                "minimal_report": {
+                    "path": minimal_path.name,
+                    "sha256": hashlib.sha256(minimal_encoded.encode()).hexdigest(),
+                },
+            }
+        )
+    manifest_path = scratch / "manifest.json"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    baseline = verify_corpus(manifest_path, manifest)
+    verify_against_baseline(baseline, baseline)
+
+    invalid = copy.deepcopy(manifest)
+    invalid["profiles"][1]["reports"].pop()
+    try:
+        verify_corpus(manifest_path, invalid)
+    except ValueError:
+        pass
+    else:
+        fail("missing scenario passed")
+
+    report, _ = load_json(scratch / f"n1-{sorted(SCENARIOS)[0]}.json", MAX_REPORT_BYTES)
+    entry = report["comparisons"]["unary_rep_summaries"][sorted(SCENARIOS)[0]]
+    entry["riffdb"]["p50_ns"]["max"] *= 1.21
+    entry["riffdb"]["p50_ns"]["spread_ratio"] = 1.21
+    try:
+        verify_report(report, manifest, "n1", sorted(SCENARIOS)[0], "spread")
+    except ValueError:
+        pass
+    else:
+        fail("unstable unary summary passed")
+
+    slower = copy.deepcopy(baseline)
+    slower["profiles"][0]["scenarios"][sorted(SCENARIOS)[0]]["riffdb"]["p50_ns"] *= 1.101
+    try:
+        verify_against_baseline(slower, baseline)
+    except ValueError:
+        pass
+    else:
+        fail("regressed candidate passed")
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--manifest", type=Path)
+    parser.add_argument("--baseline", type=Path)
+    parser.add_argument("--output", type=Path)
+    parser.add_argument("--self-test", action="store_true")
+    args = parser.parse_args()
+    if args.self_test and any((args.manifest, args.baseline, args.output)):
+        parser.error("--self-test is exclusive")
+    if not args.self_test and args.manifest is None:
+        parser.error("--manifest is required")
+    return args
+
+
+def main() -> int:
+    args = parse_args()
+    if args.self_test:
+        root = Path.home() / "tmp" / "riffdb-wp674-verifier-self-test"
+        run_self_test(root)
+        print("WP-674 unary verifier self-test: passed")
+        return 0
+    manifest_path = args.manifest.resolve()
+    manifest, _ = load_json(manifest_path, MAX_MANIFEST_BYTES)
+    candidate = verify_corpus(manifest_path, manifest)
+    output = candidate
+    if args.baseline is not None:
+        baseline, _ = load_json(args.baseline.resolve(), MAX_BASELINE_BYTES)
+        output = verify_against_baseline(candidate, baseline)
+    encoded = json.dumps(output, indent=2, sort_keys=True) + "\n"
+    if args.output is None:
+        print(encoded, end="")
+    else:
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        args.output.write_text(encoded, encoding="utf-8")
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as error:
+        print(f"wp674_unary_baseline_invalid: {error}", file=sys.stderr)
+        raise SystemExit(3) from error

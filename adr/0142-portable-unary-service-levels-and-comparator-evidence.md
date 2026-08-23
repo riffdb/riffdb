@@ -1,17 +1,16 @@
 # ADR-0142: Portable Unary Service Levels and Comparator Evidence
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Direction approved:** 2026-08-23 (maintainer)
-- **Exact text accepted:** No
+- **Exact text accepted:** Yes, 2026-08-23 (maintainer)
 - **Decision deadline:** Before WP-674 banks the alpha unary baseline or WP-623
   starts final performance qualification
 - **Requires:** ADR-0056, ADR-0059, ADR-0123, ADR-0132, ADR-0141
 - **Amends:** ADR-0059's checked-profile parity gate, ADR-0123 Decision 1,
   ADR-0132's release gates, ADR-0141 Decisions 6 and 7, and `PERF-008`
 
-The maintainer approved the direction on 2026-08-23 after WP-673 closed the
-API-neutral service-floor ledgers. This record is not authoritative until its
-exact text is accepted.
+The maintainer approved the direction and accepted this exact text on
+2026-08-23 after WP-673 closed the API-neutral service-floor ledgers.
 
 ## Context
 

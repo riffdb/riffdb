@@ -86,11 +86,65 @@ are never retained. Successful reports bind the source revision, `Cargo.lock`,
 benchmark harness, built runner, and `riffdbd` digests; evidence from a nearby
 binary or a dirty checkout cannot be substituted later.
 
-## WP-623 dual-profile qualification
+## WP-674 unary baseline and WP-623 three-profile qualification
 
-The final optimized alpha candidate must pass on both a workstation with local
-NVMe and a general-purpose cloud VM with ordinary persistent block storage.
-Each profile retains four reports from one exact clean source revision:
+Unary qualification is banked independently for a workstation with local NVMe,
+an N1 cloud VM with persistent disk, and an E2 cloud VM with persistent disk.
+The initial bank freezes the 32-logical-CPU Ryzen 9 7950X workstation, the
+8-vCPU Intel N1 host, and the 8-vCPU AMD EPYC 7B12 E2 host, including bounded
+OS/system identity and persistent-device metadata. Candidate evidence must
+match those stable hardware identities.
+For each of the fourteen frozen unary operations, the harness runs three
+counterbalanced process generations. Each generation restarts RiffDB after
+common setup, performs 20 same-operation warmups, then records 100 operations.
+The qualified p50 and p95 are the medians of the three generation statistics;
+a greater-than-1.20 max/min spread invalidates that statistic.
+
+The frozen classes are:
+
+| Class | Operations | p50 | p95 |
+|---|---|---:|---:|
+| ordinary named read | seven point/list/detail operations | 3 ms | 6 ms |
+| wide bounded named read | board 50/200/450 | 6 ms | 12 ms |
+| compiled command | four representative commands | 10 ms | 15 ms |
+
+The absolute ceilings gate N1 and E2. All three profiles additionally gate each
+operation/statistic against the exact WP-674 RiffDB low-water bank at no more
+than `1.10x`. Safe-application PostgreSQL runs in every unary cell and minimal
+PostgreSQL is retained as a full disclosure report. Their p50/p95 ratios remain
+published evidence, not unary release gates.
+
+Bank one clean host column with:
+
+```bash
+./benchmarks/run-wp674-unary-profile \
+  --profile workstation \
+  --output-dir release/evidence/wp-674/workstation
+```
+
+Use `--profile n1` and `--profile e2` on those hosts. Assemble and verify the
+three columns only after copying them beneath one evidence root:
+
+WP-674 requires one exact runner and daemon artifact across all three hosts.
+Build them once, copy those bytes to the other hosts, and set
+`RIFFDB_APP_BASELINE_RUNNER_BIN` and `RIFFDB_APP_BASELINE_RIFFDBD_BIN` there;
+the final verifier rejects even a source-equivalent binary with another digest.
+
+```bash
+./scripts/assemble-wp674-unary-manifest \
+  --workstation release/evidence/wp-674/workstation/profile-fragment.json \
+  --n1 release/evidence/wp-674/n1/profile-fragment.json \
+  --e2 release/evidence/wp-674/e2/profile-fragment.json \
+  --output release/evidence/wp-674/manifest-v1.json
+
+./scripts/check-wp674-unary-baseline \
+  --manifest release/evidence/wp-674/manifest-v1.json \
+  --output release/evidence/wp-674/baseline-v1.json
+```
+
+The final optimized alpha candidate must then pass on those same three
+profiles. Each profile retains four full-matrix reports from one exact clean
+source revision:
 
 - full safe-application PostgreSQL parity, three repetitions;
 - full minimal PostgreSQL parity, reported as the conventional floor;
@@ -98,25 +152,28 @@ Each profile retains four reports from one exact clean source revision:
   90-second post-warmup repetitions; and
 - the matching write-only sweep.
 
-The safe-application report is the gate comparator. Every common unary
-scenario must be at most `1.10x`, the full seed must remain at most `5.0x`, and
-the interactive 32-client cell must provide at least `0.90x` PostgreSQL
-throughput with at most `1.25x` PostgreSQL p95. Minimal PostgreSQL is verified
-for identical durability, source, host, storage, stability, and correctness,
-but does not replace the safe-application gate.
+The safe-application report is the mixed/seed gate comparator. The full seed
+must remain at most `5.0x`, and the interactive 32-client cell must provide at
+least `0.90x` PostgreSQL throughput with at most `1.25x` PostgreSQL p95.
+WP-623 also consumes a fresh WP-674 unary qualification receipt against the
+frozen bank. Minimal PostgreSQL is verified for identical durability, source,
+host, storage, stability, and correctness, but does not replace the
+safe-application mixed/seed gate.
 
 The retained manifest is checked with:
 
 ```bash
 ./scripts/check-wp623-performance-qualification \
-  --manifest release/evidence/wp-623/manifest-v1.json \
-  --output release/evidence/wp-623/qualification-v1.json
+  --manifest release/evidence/wp-623/manifest-v2.json \
+  --output release/evidence/wp-623/qualification-v2.json
 ```
 
-The verifier rejects an omitted hardware class or report, hash or source
-identity mismatch, dirty source, interference, instability, shortened window,
+The verifier rejects an omitted profile or report, hash or source identity
+mismatch, dirty source, interference, instability, shortened window,
 client/workload/transport/durability drift, incomplete matrix, correctness
-failure, missing ratio, or failed gate. A digest alone never qualifies a run.
+failure, missing p50/p95 disclosure, unary reclassification, baseline
+regression, or failed absolute/mixed/seed gate. A digest alone never qualifies
+a run.
 
 ## WP-552 evidence status
 

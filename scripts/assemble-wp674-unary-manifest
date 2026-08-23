@@ -1,0 +1,135 @@
+#!/usr/bin/env python3
+"""Assemble three bounded WP-674 profile fragments into one verifier manifest."""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+from pathlib import Path
+import re
+import sys
+from typing import Any
+
+
+SCHEMA = "riffdb.wp-674-unary-profile/v1"
+MANIFEST_SCHEMA = "riffdb.wp-674-unary-manifest/v1"
+PROFILE_CLASSES = {
+    "workstation": "workstation_nvme",
+    "n1": "gcp_n1_persistent_disk",
+    "e2": "gcp_e2_persistent_disk",
+}
+REQUIREMENTS = ["END-007", "END-008", "PERF-005", "PERF-008", "PERF-018"]
+SHA256 = re.compile(r"^[0-9a-f]{64}$")
+REVISION = re.compile(r"^[0-9a-f]{40}$")
+MAX_FRAGMENT_BYTES = 128 * 1024
+
+
+def fail(message: str) -> "None":
+    raise ValueError(message)
+
+
+def read_fragment(path: Path) -> dict[str, Any]:
+    if not path.is_file() or path.is_symlink():
+        fail(f"profile fragment is absent or linked: {path}")
+    encoded = path.read_bytes()
+    if not 0 < len(encoded) <= MAX_FRAGMENT_BYTES:
+        fail(f"profile fragment exceeds its byte bound: {path}")
+    value = json.loads(encoded.decode("utf-8"))
+    if not isinstance(value, dict) or value.get("schema") != SCHEMA:
+        fail(f"profile fragment schema is invalid: {path}")
+    return value
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--workstation", type=Path, required=True)
+    parser.add_argument("--n1", type=Path, required=True)
+    parser.add_argument("--e2", type=Path, required=True)
+    parser.add_argument("--output", type=Path, required=True)
+    args = parser.parse_args()
+    output = args.output.resolve()
+    output.parent.mkdir(parents=True, exist_ok=True)
+    common: tuple[str, str, str] | None = None
+    profiles = []
+    for expected, path in (
+        ("workstation", args.workstation.resolve()),
+        ("n1", args.n1.resolve()),
+        ("e2", args.e2.resolve()),
+    ):
+        fragment = read_fragment(path)
+        identity = (
+            fragment.get("source_revision"),
+            fragment.get("cargo_lock_sha256"),
+            fragment.get("harness_sha256"),
+        )
+        if REVISION.fullmatch(str(identity[0])) is None or any(
+            SHA256.fullmatch(str(value)) is None for value in identity[1:]
+        ):
+            fail(f"{expected}: source or harness identity is invalid")
+        if common is None:
+            common = identity  # type: ignore[assignment]
+        elif identity != common:
+            fail(f"{expected}: source, lock, or harness differs")
+        profile = fragment.get("profile")
+        if not isinstance(profile, dict) or profile.get("id") != expected:
+            fail(f"{expected}: profile identity differs")
+        if profile.get("hardware_class") != PROFILE_CLASSES[expected]:
+            fail(f"{expected}: hardware class differs")
+
+        def remap(reference: Any) -> dict[str, str]:
+            if not isinstance(reference, dict) or set(reference) != {"path", "sha256"}:
+                fail(f"{expected}: evidence reference is invalid")
+            relative = reference.get("path")
+            digest = reference.get("sha256")
+            if not isinstance(relative, str) or SHA256.fullmatch(str(digest)) is None:
+                fail(f"{expected}: evidence path or digest is invalid")
+            source = (path.parent / relative).resolve()
+            if not source.is_file() or source.is_symlink():
+                fail(f"{expected}: evidence file is absent or linked: {source}")
+            actual = hashlib.sha256(source.read_bytes()).hexdigest()
+            if actual != digest:
+                fail(f"{expected}: evidence digest differs: {source}")
+            return {
+                "path": str(source.relative_to(output.parent)),
+                "sha256": digest,
+            }
+
+        reports = profile.get("reports")
+        if not isinstance(reports, list):
+            fail(f"{expected}: reports are absent")
+        profiles.append(
+            {
+                "id": expected,
+                "hardware_class": PROFILE_CLASSES[expected],
+                "reports": [
+                    {
+                        "scenario": row.get("scenario"),
+                        **remap({"path": row.get("path"), "sha256": row.get("sha256")}),
+                    }
+                    for row in reports
+                    if isinstance(row, dict)
+                ],
+                "minimal_report": remap(profile.get("minimal_report")),
+            }
+        )
+    assert common is not None
+    manifest = {
+        "schema": MANIFEST_SCHEMA,
+        "source_revision": common[0],
+        "cargo_lock_sha256": common[1],
+        "harness_sha256": common[2],
+        "requirements": REQUIREMENTS,
+        "profiles": profiles,
+    }
+    output.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+    print(output)
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as error:
+        print(f"wp674_manifest_invalid: {error}", file=sys.stderr)
+        raise SystemExit(3) from error
