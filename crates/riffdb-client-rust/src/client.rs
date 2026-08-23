@@ -195,8 +195,6 @@ pub struct RiffDbClient {
     application_query: ApplicationQueryServiceClient<Channel>,
     application_session: ApplicationSessionServiceClient<Channel>,
     bounded_application_session: Option<crate::session::BoundedApplicationSession>,
-    #[cfg(feature = "exclusive-diagnostic")]
-    exclusive_diagnostic: Option<crate::exclusive_diagnostic::ExclusiveDiagnosticSession>,
     /// Optional client-remembered history incarnation for commit read surfaces.
     ///
     /// When set, [`Self::apply_observed_history_incarnation`] fills request
@@ -228,45 +226,8 @@ impl RiffDbClient {
             application_query: ApplicationQueryServiceClient::new(channel.clone()),
             application_session: ApplicationSessionServiceClient::new(channel),
             bounded_application_session: None,
-            #[cfg(feature = "exclusive-diagnostic")]
-            exclusive_diagnostic: None,
             observed_history_incarnation: None,
         }
-    }
-
-    #[cfg(feature = "exclusive-diagnostic")]
-    pub(crate) async fn enable_exclusive_diagnostic(
-        &mut self,
-        configuration: crate::ExclusiveDiagnosticConfiguration,
-        identity: crate::ApplicationSessionIdentity,
-        metadata: crate::CallMetadata,
-    ) -> Result<(), ClientError> {
-        if self.bounded_application_session.is_some() || self.exclusive_diagnostic.is_some() {
-            return Err(invalid_outbound());
-        }
-        self.exclusive_diagnostic = Some(
-            crate::exclusive_diagnostic::ExclusiveDiagnosticSession::open(
-                configuration,
-                identity,
-                metadata,
-            )
-            .await?,
-        );
-        Ok(())
-    }
-
-    #[cfg(feature = "exclusive-diagnostic")]
-    pub(crate) fn take_exclusive_diagnostic_evidence(
-        &self,
-    ) -> Option<Vec<crate::ExclusiveDiagnosticOperationEvidence>> {
-        self.exclusive_diagnostic
-            .as_ref()
-            .map(crate::exclusive_diagnostic::ExclusiveDiagnosticSession::take_evidence)
-    }
-
-    #[cfg(feature = "exclusive-diagnostic")]
-    pub(crate) fn close_exclusive_diagnostic(&mut self) {
-        self.exclusive_diagnostic = None;
     }
 
     pub(crate) async fn enable_bounded_application_session(
@@ -274,10 +235,6 @@ impl RiffDbClient {
         identity: crate::ApplicationSessionIdentity,
         metadata: CallMetadata,
     ) -> Result<(), ClientError> {
-        #[cfg(feature = "exclusive-diagnostic")]
-        if self.exclusive_diagnostic.is_some() {
-            return Err(invalid_outbound());
-        }
         let session =
             crate::session::BoundedApplicationSession::open(self, identity, metadata).await?;
         self.bounded_application_session = Some(session);
@@ -299,13 +256,6 @@ impl RiffDbClient {
         message: app_v1::ExecuteQueryRequest,
         metadata: &CallMetadata,
     ) -> Result<app_v1::ExecuteQueryResponse, ClientError> {
-        #[cfg(feature = "exclusive-diagnostic")]
-        if let Some(session) = self.exclusive_diagnostic.as_ref() {
-            if !session.matches_metadata(metadata) {
-                return Err(invalid_outbound());
-            }
-            return session.execute_query(message).await;
-        }
         if let Some(session) = self.bounded_application_session.as_ref() {
             if !session.matches_metadata(metadata) {
                 return Err(invalid_outbound());
@@ -1538,13 +1488,6 @@ impl ExecuteRetryAttempt for RiffDbClient {
         request: v1::ExecuteCommandRequest,
         metadata: &CallMetadata,
     ) -> Result<v1::ExecuteCommandResponse, ClientError> {
-        #[cfg(feature = "exclusive-diagnostic")]
-        if let Some(session) = self.exclusive_diagnostic.as_ref() {
-            if !session.matches_metadata(metadata) {
-                return Err(invalid_outbound());
-            }
-            return session.execute_command(request).await;
-        }
         if let Some(session) = self.bounded_application_session.as_ref() {
             if !session.matches_metadata(metadata) {
                 return Err(invalid_outbound());

@@ -11,7 +11,6 @@ const IDS: &str = include_str!("../src/ids.rs");
 const METADATA: &str = include_str!("../src/metadata.rs");
 const STATUS: &str = include_str!("../src/status.rs");
 const TLS: &str = include_str!("../src/tls.rs");
-const EXCLUSIVE_DIAGNOSTIC: &str = include_str!("../src/exclusive_diagnostic.rs");
 const GENERATED: &str = include_str!("../src/generated/mod.rs");
 const LEGAL_SPEND: &str = include_str!("../src/generated/legal_spend.rs");
 const PYTHON_NATIVE: &str = include_str!("../../riffdb-client-python-native/src/lib.rs");
@@ -62,14 +61,9 @@ fn reviewed_transport_and_entropy_graph_remains_exact() {
     assert!(manifest.contains(
         "rustls-webpki = { version = \"=0.103.13\", default-features = false, features = [\"std\"] }"
     ));
-    assert!(manifest.contains(
-        "exclusive-diagnostic = [\"dep:riffdb-api-exclusive\", \"dep:tokio-rustls\", \"tokio/io-util\", \"tokio/net\"]"
-    ));
-    assert!(manifest.contains(
-        "tokio-rustls = { version = \"=0.26.4\", default-features = false, features = [\"logging\", \"ring\", \"tls12\"], optional = true }"
-    ));
     for forbidden in [
         "base64 =",
+        "tokio-rustls =",
         "ring =",
         "tls-aws-lc",
         "gzip",
@@ -83,21 +77,6 @@ fn reviewed_transport_and_entropy_graph_remains_exact() {
             .lines()
             .any(|line| line.trim_start().starts_with("rustls ="))
     );
-    for source in [
-        CLIENT,
-        CAPABILITY,
-        COMMAND,
-        CREDENTIAL_FILE,
-        IDS,
-        METADATA,
-        STATUS,
-        TLS,
-        GENERATED,
-        LEGAL_SPEND,
-    ] {
-        assert!(!source.contains("tokio_rustls::"));
-    }
-    assert!(EXCLUSIVE_DIAGNOSTIC.contains("tokio_rustls::"));
 }
 
 #[test]

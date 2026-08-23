@@ -47,7 +47,6 @@ org_scope_field = "organization_id"
 const AUDIENCE: &str = "riffdb-grpc-loopback";
 const ENVIRONMENT: &str = "app-baseline";
 const READY_PREFIX: &str = "riffdbd-ready-v1\t";
-const EXCLUSIVE_DIAGNOSTIC_PREFIX: &str = "riffdb-private-wp670-v3\t";
 const WRITE_GROUP_PREFIX: &str = "riffdb-write-completion-groups-v1\t";
 const WRITE_GROUP_BUCKETS: usize = riffdb_storage_redb::benchmark_support::MAX_GROUP_COMMANDS;
 const DISPATCH_REASON_PREFIX: &str = "riffdb-dispatch-reasons-v1\t";
@@ -185,12 +184,6 @@ pub struct ServerStartOptions {
     pub min_free_bytes: u64,
     /// Enable fixed-cardinality query-execute attribution in the child only.
     pub query_execute_diagnostics: bool,
-    /// Enable ADR-0141's feature-gated private direct lane.
-    pub exclusive_diagnostic: bool,
-    /// Carry the private lane over the repository's verified-TLS fixture.
-    ///
-    /// This remains diagnostic-only and is not a public transport selector.
-    pub exclusive_diagnostic_tls: bool,
 }
 
 /// Owns one live `riffdbd` process and a ready public client backend.
@@ -200,9 +193,6 @@ pub struct RiffDbServerSession {
     riffdbd_bin: PathBuf,
     coordinator_workload_capacity: Option<u16>,
     query_execute_diagnostics: bool,
-    exclusive_diagnostic: bool,
-    exclusive_diagnostic_tls: bool,
-    exclusive_diagnostic_address: Option<SocketAddr>,
     table_inventory_before_measurement:
         Option<Vec<riffdb_storage_redb::benchmark_support::AuthoritativeTableInventoryV1>>,
     /// Resolved real-disk root used for this session.
@@ -430,8 +420,6 @@ impl RiffDbServerSession {
             &idempotency_keys_path,
             options.coordinator_workload_capacity,
             options.query_execute_diagnostics,
-            false,
-            false,
             None,
             None,
         )
@@ -467,8 +455,6 @@ impl RiffDbServerSession {
             &idempotency_keys_path,
             options.coordinator_workload_capacity,
             options.query_execute_diagnostics,
-            options.exclusive_diagnostic,
-            options.exclusive_diagnostic_tls,
             Some(projections_root.as_path()),
             Some(projections_config_path.as_path()),
         )
@@ -479,18 +465,10 @@ impl RiffDbServerSession {
             let detail = process.diagnostic_detail(&error.to_string());
             RiffDbError::Server { detail }
         })?;
-        let exclusive_diagnostic_address = if options.exclusive_diagnostic {
-            Some(process.wait_for_exclusive_diagnostic_address().map_err(|error| {
-                let detail = process.diagnostic_detail(&error.to_string());
-                RiffDbError::Server { detail }
-            })?)
-        } else {
-            None
-        };
         let endpoint = format!("http://{address}");
         let mut client = connect(&endpoint).await?;
         let (token, module_hash) = deploy_module_and_issue_runner(&mut client, &retained).await?;
-        let mut backend = RiffDbPublicBackend::connect(
+        let backend = RiffDbPublicBackend::connect(
             &endpoint,
             &token,
             status_ids,
@@ -499,20 +477,12 @@ impl RiffDbServerSession {
             history_incarnation,
         )
         .await?;
-        if let Some(address) = exclusive_diagnostic_address {
-            backend
-                .enable_exclusive_diagnostic(address, diagnostic_trust_root(options.exclusive_diagnostic_tls))
-                .await?;
-        }
         Ok(Self {
             _temporary: temporary,
             process,
             riffdbd_bin: riffdbd_bin.to_path_buf(),
             coordinator_workload_capacity: options.coordinator_workload_capacity,
             query_execute_diagnostics: options.query_execute_diagnostics,
-            exclusive_diagnostic: options.exclusive_diagnostic,
-            exclusive_diagnostic_tls: options.exclusive_diagnostic_tls,
-            exclusive_diagnostic_address,
             table_inventory_before_measurement: None,
             bench_root,
             backend,
@@ -555,8 +525,6 @@ impl RiffDbServerSession {
             &idempotency_keys_path,
             self.coordinator_workload_capacity,
             self.query_execute_diagnostics,
-            self.exclusive_diagnostic,
-            self.exclusive_diagnostic_tls,
             Some(projections_root.as_path()),
             Some(projections_config_path.as_path()),
         )
@@ -567,35 +535,12 @@ impl RiffDbServerSession {
             let detail = process.diagnostic_detail(&error.to_string());
             RiffDbError::Server { detail }
         })?;
-        let exclusive_diagnostic_address = if self.exclusive_diagnostic {
-            Some(process.wait_for_exclusive_diagnostic_address().map_err(|error| {
-                let detail = process.diagnostic_detail(&error.to_string());
-                RiffDbError::Server { detail }
-            })?)
-        } else {
-            None
-        };
         let endpoint = format!("http://{address}");
-        let mut backend = self.backend.reconnect_endpoint(&endpoint).await?;
-        if let Some(address) = exclusive_diagnostic_address {
-            backend
-                .enable_exclusive_diagnostic(
-                    address,
-                    diagnostic_trust_root(self.exclusive_diagnostic_tls),
-                )
-                .await?;
-        }
+        let backend = self.backend.reconnect_endpoint(&endpoint).await?;
         self.process = process;
-        self.exclusive_diagnostic_address = exclusive_diagnostic_address;
         self.backend = backend;
         self.table_inventory_before_measurement = Some(table_inventory_before_measurement);
         Ok((self, setup_evidence))
-    }
-
-    /// Returns the private diagnostic endpoint for this process generation.
-    #[must_use]
-    pub const fn exclusive_diagnostic_address(&self) -> Option<SocketAddr> {
-        self.exclusive_diagnostic_address
     }
 
     /// Stops the server cleanly.
@@ -681,16 +626,6 @@ impl RiffDbServerSession {
     pub fn session_directory(&self) -> &Path {
         self._temporary.path()
     }
-}
-
-fn diagnostic_fixture(name: &str) -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../../crates/riffdb-server/tests/fixtures")
-        .join(name)
-}
-
-fn diagnostic_trust_root(enabled: bool) -> Option<PathBuf> {
-    enabled.then(|| diagnostic_fixture("test-ca.pem"))
 }
 
 /// Phase 1: bootstrap capability + deploy TicketDesk contract only.
@@ -1200,7 +1135,6 @@ struct ServerProcess {
     child_id: u32,
     stdin: Option<std::process::ChildStdin>,
     ready: Receiver<io::Result<String>>,
-    exclusive_ready: Receiver<io::Result<String>>,
     shutdown_evidence: Receiver<io::Result<RiffDbShutdownEvidence>>,
     reaper_commands: SyncSender<ReaperCommand>,
     exited: Receiver<io::Result<ExitStatus>>,
@@ -1223,8 +1157,6 @@ impl ServerProcess {
         idempotency_keys_path: &Path,
         coordinator_workload_capacity: Option<u16>,
         query_execute_diagnostics: bool,
-        exclusive_diagnostic: bool,
-        exclusive_diagnostic_tls: bool,
         projections_root: Option<&Path>,
         projections_config: Option<&Path>,
     ) -> io::Result<Self> {
@@ -1264,20 +1196,6 @@ impl ServerProcess {
         if query_execute_diagnostics {
             command.env("RIFFDB_QUERY_EXECUTE_DIAGNOSTICS", "1");
         }
-        if exclusive_diagnostic {
-            command.env("RIFFDB_DIRECT_STREAM_DIAGNOSTIC", "1");
-            if exclusive_diagnostic_tls {
-                command
-                    .env(
-                        "RIFFDB_DIRECT_STREAM_DIAGNOSTIC_TLS_CERT",
-                        diagnostic_fixture("localhost-cert.pem"),
-                    )
-                    .env(
-                        "RIFFDB_DIRECT_STREAM_DIAGNOSTIC_TLS_KEY",
-                        diagnostic_fixture("localhost-key.pem"),
-                    );
-            }
-        }
         let mut child = command.spawn()?;
         let child_id = child.id();
         let stdin = child
@@ -1293,16 +1211,9 @@ impl ServerProcess {
             .take()
             .ok_or_else(|| io::Error::other("stderr"))?;
         let (ready_sender, ready) = mpsc::sync_channel(1);
-        let (exclusive_ready_sender, exclusive_ready) = mpsc::sync_channel(1);
         let (shutdown_sender, shutdown_evidence) = mpsc::sync_channel(1);
-        let stdout = thread::spawn(move || {
-            read_server_stdout(
-                stdout,
-                ready_sender,
-                exclusive_ready_sender,
-                shutdown_sender,
-            )
-        });
+        let stdout =
+            thread::spawn(move || read_server_stdout(stdout, ready_sender, shutdown_sender));
         let stderr_ring = Arc::new(Mutex::new(VecDeque::with_capacity(STDERR_RING_LINES)));
         let stderr_ring_worker = Arc::clone(&stderr_ring);
         let stderr = thread::spawn(move || drain_server_stderr(stderr, stderr_ring_worker));
@@ -1313,7 +1224,6 @@ impl ServerProcess {
             child_id,
             stdin: Some(stdin),
             ready,
-            exclusive_ready,
             shutdown_evidence,
             reaper_commands,
             exited,
@@ -1347,27 +1257,6 @@ impl ServerProcess {
         address
             .parse()
             .map_err(|_| io::Error::other("bad ready address"))
-    }
-
-    fn wait_for_exclusive_diagnostic_address(&self) -> io::Result<SocketAddr> {
-        let line = match self.exclusive_ready.recv_timeout(PROCESS_START_TIMEOUT) {
-            Ok(result) => result?,
-            Err(RecvTimeoutError::Timeout) => {
-                return Err(io::Error::new(
-                    io::ErrorKind::TimedOut,
-                    self.diagnostic_detail("private diagnostic ready timeout"),
-                ));
-            }
-            Err(RecvTimeoutError::Disconnected) => {
-                return Err(io::Error::other(
-                    self.diagnostic_detail("private diagnostic ready disconnected"),
-                ));
-            }
-        };
-        line.strip_prefix(EXCLUSIVE_DIAGNOSTIC_PREFIX)
-            .ok_or_else(|| io::Error::other("bad private diagnostic ready line"))?
-            .parse()
-            .map_err(|_| io::Error::other("bad private diagnostic ready address"))
     }
 
     fn stderr_tail(&self) -> String {
@@ -1501,7 +1390,6 @@ impl Drop for ServerProcess {
 fn read_server_stdout(
     stream: impl Read,
     ready_sender: SyncSender<io::Result<String>>,
-    exclusive_ready_sender: SyncSender<io::Result<String>>,
     shutdown_sender: SyncSender<io::Result<RiffDbShutdownEvidence>>,
 ) -> usize {
     let mut reader = BufReader::new(stream);
@@ -1534,9 +1422,7 @@ fn read_server_stdout(
         }
         eprint!("{line}");
         total = total.saturating_add(read);
-        if line.trim_end().starts_with(EXCLUSIVE_DIAGNOSTIC_PREFIX) {
-            let _ = exclusive_ready_sender.send(Ok(line.trim_end().to_owned()));
-        } else if let Some(encoded) = line.trim_end().strip_prefix(WRITE_GROUP_PREFIX) {
+        if let Some(encoded) = line.trim_end().strip_prefix(WRITE_GROUP_PREFIX) {
             write_completion_groups = Some(parse_fixed_counts(
                 encoded,
                 "write-group",

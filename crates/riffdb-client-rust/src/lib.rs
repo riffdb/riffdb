@@ -11,8 +11,6 @@ mod capability;
 mod client;
 mod command;
 mod credential_file;
-#[cfg(feature = "exclusive-diagnostic")]
-mod exclusive_diagnostic;
 mod export;
 mod ids;
 mod installation;
@@ -64,12 +62,6 @@ pub use client::{
 };
 pub use command::{AttemptBudget, CommandShapeError, IdempotentCommand};
 pub use credential_file::{BearerCredentialFileError, load_protected_bearer_credential};
-#[cfg(feature = "exclusive-diagnostic")]
-#[doc(hidden)]
-pub use exclusive_diagnostic::{
-    ExclusiveDiagnosticConfiguration, ExclusiveDiagnosticEvidence,
-    ExclusiveDiagnosticOperationEvidence,
-};
 pub use export::StartApplicationExport;
 pub use ids::{
     IdentifierGenerationError, SystemIdSource, generate_agent_session_id,

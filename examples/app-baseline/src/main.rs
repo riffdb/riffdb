@@ -111,7 +111,6 @@ fn run() -> Result<(), String> {
     let mut rd_rep_scenarios: Vec<Vec<riffdb_app_baseline_core::ScenarioResult>> = Vec::new();
     let mut rd_write_groups: Option<Vec<u64>> = None;
     let mut rd_process_evidence = Vec::new();
-    let mut rd_exclusive_evidence = Vec::new();
     // Live order-sensitive board page cross-check (rep 0): all static sizes
     // the dense cell can fill (50/200/450 → BoardPage50/200/450 on RiffDB).
     let board_crosscheck_limits: Vec<u32> = [50_u32, 200, 450]
@@ -220,14 +219,6 @@ fn run() -> Result<(), String> {
                             "RIFFDB_APP_BASELINE_QUERY_EXECUTE_DIAGNOSTICS",
                         )
                         .is_some_and(|value| value == "1"),
-                        exclusive_diagnostic: private_env_enabled(
-                            "RIFFDB_APP_BASELINE_EXCLUSIVE_DIAGNOSTIC",
-                        ) || private_env_enabled(
-                            "RIFFDB_APP_BASELINE_EXCLUSIVE_DIAGNOSTIC_TLS",
-                        ),
-                        exclusive_diagnostic_tls: private_env_enabled(
-                            "RIFFDB_APP_BASELINE_EXCLUSIVE_DIAGNOSTIC_TLS",
-                        ),
                         ..ServerStartOptions::default()
                     },
                 ))
@@ -255,7 +246,6 @@ fn run() -> Result<(), String> {
                 return Err(error.to_string());
             }
             let seed_ns = u64::try_from(seed_started.elapsed().as_nanos()).unwrap_or(u64::MAX);
-            let _ = session.backend.take_exclusive_diagnostic_evidence();
             let scenarios = if args.seed_only {
                 Vec::new()
             } else {
@@ -304,9 +294,6 @@ fn run() -> Result<(), String> {
                     }
                 }
             };
-            if let Some(entries) = session.backend.take_exclusive_diagnostic_evidence() {
-                rd_exclusive_evidence.push(exclusive_diagnostic_evidence_json(&entries));
-            }
             if rep == 0
                 && let Some(pg_pages) = board_crosscheck_pg_pages.as_ref()
             {
@@ -407,37 +394,24 @@ fn run() -> Result<(), String> {
     if !rd_rep_scenarios.is_empty() {
         let seed_ns = median_u64(&rd_rep_seed_ns);
         let scenarios = median_scenarios(&rd_rep_scenarios);
-        let private_exclusive = !rd_exclusive_evidence.is_empty();
-        let mut guarantee_notes = vec![
-            "cross-era comparability: since CP3, compiled named reads execute via \
-             NamedQuery with the deployed module hash (client decode differs from \
-             the pre-CP3 generated-client era) and all scenarios run on a \
-             projection-enabled server with background apply — compare compiled \
-             p50s across eras with this disclosure, not raw"
-                .to_owned(),
-            "Symbolic TicketDesk commands for seed/writes".to_owned(),
-            "Reads via named RiffQL queries (one public RPC per page)".to_owned(),
-            "ticket_detail_page is one TicketPage query with dependent key batches".to_owned(),
-            "board_page_projected_* via ExecuteProjectedQuery (generated tonic client) after Causal catch-up".to_owned(),
-            "board_page_packed_* via ExecuteProjectedQuery response_encoding=PACKED (column-major canonical cells)".to_owned(),
-            "Synchronous durable command commits".to_owned(),
-        ];
-        if private_exclusive {
-            guarantee_notes.push(
-                "ordinary generated operations used ADR-0141's private, non-evidentiary WP-670 diagnostic lane; seed and projected-board probes remained on public gRPC"
-                    .to_owned(),
-            );
-        }
         backends.push(BackendReport {
             backend_id: "riffdb_public_grpc",
-            description: if private_exclusive {
-                "Live riffdbd: ordinary operations over private WP-670 diagnostic lane; seed/projected board over public gRPC"
-                    .to_owned()
-            } else {
-                "Live riffdbd over public gRPC (symbolic commands + named RiffQL + projected board)"
-                    .to_owned()
-            },
-            guarantee_notes,
+            description: "Live riffdbd over public gRPC (symbolic commands + named RiffQL + projected board)"
+                .to_owned(),
+            guarantee_notes: vec![
+                "cross-era comparability: since CP3, compiled named reads execute via \
+                 NamedQuery with the deployed module hash (client decode differs from \
+                 the pre-CP3 generated-client era) and all scenarios run on a \
+                 projection-enabled server with background apply — compare compiled \
+                 p50s across eras with this disclosure, not raw"
+                    .to_owned(),
+                "Symbolic TicketDesk commands for seed/writes".to_owned(),
+                "Reads via named RiffQL queries (one public RPC per page)".to_owned(),
+                "ticket_detail_page is one TicketPage query with dependent key batches".to_owned(),
+                "board_page_projected_* via ExecuteProjectedQuery (generated tonic client) after Causal catch-up".to_owned(),
+                "board_page_packed_* via ExecuteProjectedQuery response_encoding=PACKED (column-major canonical cells)".to_owned(),
+                "Synchronous durable command commits".to_owned(),
+            ],
             seed_ns,
             seed_rows: args.scale.approximate_row_count(),
             scenarios,
@@ -453,16 +427,6 @@ fn run() -> Result<(), String> {
 
     let mut report = build_report(args.scale, args.warmups, args.samples, &backends);
     report["riffdb_process_evidence"] = json!(rd_process_evidence);
-    if !rd_exclusive_evidence.is_empty() {
-        report["configuration"]["riffdb_operation_transport"] =
-            json!("private_wp670_exclusive_diagnostic");
-        report["private_exclusive_diagnostic"] = json!({
-            "schema": "riffdb.wp670-exclusive-stages/v1",
-            "evidentiary": false,
-            "public_selector": false,
-            "generations": rd_exclusive_evidence,
-        });
-    }
     report["scale_shape"] = json!({
         "organizations": args.scale.organizations,
         "projects_per_org": args.scale.projects_per_org,
@@ -1588,14 +1552,6 @@ fn run_load(args: Args) -> Result<(), String> {
                     "RIFFDB_APP_BASELINE_QUERY_EXECUTE_DIAGNOSTICS",
                 )
                 .is_some_and(|value| value == "1"),
-                exclusive_diagnostic: private_env_enabled(
-                    "RIFFDB_APP_BASELINE_EXCLUSIVE_DIAGNOSTIC",
-                ) || private_env_enabled(
-                    "RIFFDB_APP_BASELINE_EXCLUSIVE_DIAGNOSTIC_TLS",
-                ),
-                exclusive_diagnostic_tls: private_env_enabled(
-                    "RIFFDB_APP_BASELINE_EXCLUSIVE_DIAGNOSTIC_TLS",
-                ),
             };
             let transport_topology = if args.load_saturate {
                 RiffDbTransport::PerSession
@@ -2732,53 +2688,6 @@ fn device_baseline_value(baseline: &DeviceBaseline) -> serde_json::Value {
         "fsyncs_per_s": baseline.fsyncs_per_s,
         "sequential_write_mib_s": baseline.sequential_write_mib_s,
     })
-}
-
-fn exclusive_diagnostic_evidence_json(
-    entries: &[riffdb_app_baseline_riffdb::ExclusiveDiagnosticOperationEvidence],
-) -> serde_json::Value {
-    serde_json::Value::Array(
-        entries
-            .iter()
-            .map(|entry| {
-                let evidence = entry.evidence;
-                let operations = evidence.operations.max(1);
-                let ledger_ns = evidence
-                    .client_encode_ns
-                    .saturating_add(evidence.client_write_ns)
-                    .saturating_add(evidence.server_decode_adapt_ns)
-                    .saturating_add(evidence.application_service_ns)
-                    .saturating_add(evidence.server_encode_ns)
-                    .saturating_add(evidence.server_write_ns)
-                    .saturating_add(evidence.client_read_residual_ns)
-                    .saturating_add(evidence.client_decode_ns);
-                json!({
-                    "operation": entry.operation,
-                    "operations": evidence.operations,
-                    "request_bytes_total": evidence.request_bytes,
-                    "response_bytes_total": evidence.response_bytes,
-                    "request_bytes_mean": evidence.request_bytes / operations,
-                    "response_bytes_mean": evidence.response_bytes / operations,
-                    "caller_mean_ns": evidence.caller_ns / operations,
-                    "stages_mean_ns": {
-                        "client_encode": evidence.client_encode_ns / operations,
-                        "client_write": evidence.client_write_ns / operations,
-                        "server_decode_adapt": evidence.server_decode_adapt_ns / operations,
-                        "application_service": evidence.application_service_ns / operations,
-                        "server_encode": evidence.server_encode_ns / operations,
-                        "server_write_aligned": evidence.server_write_ns / operations,
-                        "client_read_residual": evidence.client_read_residual_ns / operations,
-                        "client_decode": evidence.client_decode_ns / operations,
-                    },
-                    "ledger_error_mean_ns": evidence.caller_ns.abs_diff(ledger_ns) / operations,
-                })
-            })
-            .collect(),
-    )
-}
-
-fn private_env_enabled(name: &str) -> bool {
-    env::var_os(name).is_some_and(|value| value == "1")
 }
 
 fn print_summary(report: &serde_json::Value) {
