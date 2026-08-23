@@ -177,6 +177,23 @@ impl CallMetadata {
         }
     }
 
+    #[cfg(feature = "exclusive-diagnostic")]
+    pub(crate) fn exclusive_bearer(&self) -> Option<&str> {
+        self.credential
+            .as_ref()?
+            .authorization
+            .to_str()
+            .ok()?
+            .strip_prefix("Bearer ")
+    }
+
+    #[cfg(feature = "exclusive-diagnostic")]
+    pub(crate) fn exclusive_database(&self) -> &str {
+        self.database
+            .as_ref()
+            .map_or("", riffdb_types::DatabaseAlias::as_str)
+    }
+
     pub(crate) fn has_same_session_scope(&self, other: &Self) -> bool {
         let credentials_match = match (&self.credential, &other.credential) {
             (Some(left), Some(right)) => left.has_same_presentation(right),
