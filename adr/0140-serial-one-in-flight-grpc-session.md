@@ -1,8 +1,11 @@
 # ADR-0140: Serial Ownership for the Existing One-In-Flight gRPC Application Session
 
-- **Status:** Proposed
-- **Direction approved:** No
-- **Exact text accepted:** No
+- **Status:** Accepted
+- **Direction approved:** Yes
+- **Exact text accepted:** Yes, 2026-08-22
+- **Accepted:** 2026-08-22
+- **Acceptance reference:** Maintainer exact-text approval in the current
+  Codex session for commit `7969108a`
 - **Decision deadline:** Before WP-665 changes the implementation selected by
   `ApplicationSessionOpen.requested_max_in_flight == 1`, adds a generated
   serial-session pool, or uses session-shaped evidence for `PERF-018`
@@ -10,8 +13,8 @@
   ADR-0123, ADR-0127, ADR-0132, ADR-0133, ADR-0137, ADR-0138, and ADR-0139
 - **Defines or blocks:** WP-665, WP-623, WP-578, and WP-579
 
-This proposal authorizes no implementation until its exact text is accepted.
-It does not reactivate any removed framed or direct protocol.
+This record is authoritative for WP-665 implementation. It does not reactivate
+any removed framed or direct protocol.
 
 ## Context
 
@@ -280,6 +283,5 @@ fixed-cardinality and redaction-safe.
 
 ## Decision Deadline
 
-Exact acceptance is required before WP-665 changes session implementation or
-generated-client selection. Planning and failing architecture-test placement
-may merge earlier; no candidate runtime code may do so.
+The maintainer accepted this exact decision text on 2026-08-22 for commit
+`7969108a`. WP-665 may proceed under the reject-first conditions above.
