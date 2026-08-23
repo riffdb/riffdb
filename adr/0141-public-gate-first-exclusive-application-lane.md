@@ -1,18 +1,18 @@
-# ADR-0141: Public-Gate-First Exclusive Application Lane
+# ADR-0141: Diagnostic-Gate-First Exclusive Application Lane
 
 - **Status:** Proposed
-- **Direction approved:** No
+- **Direction approved:** Yes
 - **Exact text accepted:** No
 - **Decision deadline:** Before WP-670 restores a direct application listener,
   frame implementation, ALPN, client selector, or candidate wire identity
 - **Requires:** ADR-0040, ADR-0055, ADR-0056, ADR-0070, ADR-0105, ADR-0106,
   ADR-0120, ADR-0123, ADR-0127, ADR-0132, ADR-0133, ADR-0137, ADR-0138,
   ADR-0139, and ADR-0140
-- **Defines or blocks:** WP-670, WP-623, WP-578, and WP-579
+- **Defines or blocks:** WP-670, WP-671, WP-672, WP-623, WP-578, and WP-579
 
-Direction approval and exact-text acceptance are required before
-implementation. This proposal neither revives a rejected wire identity nor
-amends `PERF-018`.
+The maintainer approved the diagnostic-first direction on 2026-08-23. Exact-
+text acceptance is still required before implementation. This proposal neither
+revives a rejected wire identity nor amends `PERF-018`.
 
 ## Context
 
@@ -47,11 +47,18 @@ residual remains. Conversely, transport alone cannot close the large-result
 cell.
 
 The prior direct-lane evidence is therefore useful as an existence proof but
-insufficient as activation evidence. This decision permits one new candidate
-identity whose reject-first gate is the actual public requirement matrix,
-preceded by semantic and coarse mechanics falsifiers. It does not lower a
-product threshold, credit a benchmark artifact, or claim that one transport
-fix completes alpha.
+insufficient as activation evidence. Repeating full production integration
+before asking whether the candidate closes the public unary gap would repeat
+the build/remove cycle that caused the current churn. This decision instead
+permits one private candidate identity whose first purpose is a decisive
+customer-shaped measurement. A minimum safe prototype is followed immediately
+by the complete unary matrix. Only a successful small-operation verdict permits
+production hardening.
+
+This ordering does not lower a product threshold, credit a benchmark artifact,
+or claim that one transport fix completes alpha. It explicitly separates the
+small-operation transport question from the already measured large-result
+question.
 
 ## Proposed Decision
 
@@ -160,22 +167,32 @@ Cancellation closes the lane. It releases query/command work only under the
 existing rules and never turns uncertainty into a safe retry. Reconnect creates
 a new authenticated generation and infers no prior result.
 
-### 6. Reject first on semantics and attainable public arithmetic
+### 6. Build only the minimum safe diagnostic before the public verdict
 
-Before restoring a production selector, WP-670 must produce current-head N1
-and E2 ledgers for representative small reads, large reads, and commands. For
-each operation it predeclares:
+Before editing protocol code, WP-670 must produce current-head N1 and E2
+ledgers for every representative unary scenario. For each operation it
+predeclares:
 
 - the current API-neutral service time;
 - the outside-service time the lane can remove;
 - the same-run 1.10x PostgreSQL budget; and
 - the candidate mean required to fit that budget.
 
-The diagnostic candidate runs three counterbalanced loopback and verified-TLS
-generations on both hosts. It stops and is removed if:
+The first implementation is private diagnostic machinery, not a production
+selector or documented application feature. It contains only the strict frame
+parser, protected connection, shared API-neutral adapter invocation, one
+in-flight request, controlled close, and the instrumentation needed to close
+caller time. It must not add public configuration, generated defaults, target-
+language selection, compatibility promises, automatic fallback, pool tuning,
+or handbook claims.
 
-- any semantic, hostile-input, cancellation, uncertainty, authorization,
-  lifecycle, or resource test fails;
+Before full hostile-input, lifecycle, pool, target-language, and release-matrix
+hardening, the private candidate runs three counterbalanced loopback and
+verified-TLS generations on both hosts. The run includes the complete existing
+public unary scenario matrix, not only `GetTicket`. It stops and is removed if:
+
+- any minimum semantic-equivalence, malformed-frame, authorization,
+  uncertainty, or bounded-resource test fails;
 - client/server stage sums fail to close caller time within five percent;
 - cold trust plus session establishment is more than five percent slower than
   same-run unary gRPC;
@@ -183,18 +200,52 @@ generations on both hosts. It stops and is removed if:
   representative point read on both hosts in every generation;
 - API-neutral service time, CPU, RSS, startup, shutdown, seed, or unary control
   regresses more than five percent; or
-- the measured candidate plus unchanged service floor cannot arithmetically
-  fit the current same-run PostgreSQL budget for the representative small read
-  and command.
+- any representative small read or command remains above 1.10x same-run safe-
+  application PostgreSQL; or
+- the measured service-only floor for any such miss cannot arithmetically fit
+  its PostgreSQL budget even with the remaining transport residual removed.
+
+For this decision, a small operation is an existing point, bounded list,
+bounded detail, or command scenario whose encoded response is at or below the
+frozen ordinary-response budget. Board scenarios and any operation above that
+budget are large-result scenarios. The classification comes from encoded byte
+size, not operation name, observed latency, or whether a result is favorable.
+
+The verdict report must show, for every scenario, same-run PostgreSQL mean and
+p50, candidate mean and p50, API-neutral service time, outside-service
+residual, encoded request/response bytes, and the remaining microseconds needed
+to reach 1.10x. This is the decision ledger: if a small-operation miss is
+service-owned, transport work ends. If all small operations pass, the direct
+lane has earned production hardening while large results remain separately
+owned.
 
 The 25-percent coarse falsifier prevents an immaterial second transport. It
-does not replace the public gate and does not retroactively weaken the larger
+does not replace the unary verdict and does not retroactively weaken the larger
 proxy thresholds in ADR-0138 through ADR-0140.
 
-### 7. Retention and activation are governed by public results
+### 7. Small-operation success permits hardening, not activation
 
-A mechanics pass permits a short same-run public matrix. Candidate retention
-requires, in every counterbalanced generation on both N1 and E2:
+Only a complete small-operation pass permits a later WP-672 to build the finite
+lane pool, exhaustive hostile-wire and lifecycle matrix, target-language
+driver-host integration, production selector, replacement behavior, shutdown
+evidence, and full architecture pins described in Decisions 1 through 5. A
+miss removes the private protocol implementation and records the closed ledger;
+no nearby body, partial frame, or experimental identity is retained in
+production.
+
+Board and other large-result scenarios are never waived. WP-671 profiles
+`board_page_450` under the same private candidate while it exists and closes a
+result-path stage ledger covering result assembly, windowing, hydration,
+encoding, response release, and transport. It may propose one separately
+reviewed result-path package only when the ledger identifies a dominant
+movable stage and the predicted public gain fits the gate. It may not change
+transport, cache authority, or introduce an unbounded result surface.
+
+WP-672 is conditional: it may start only after WP-670 records a complete small-
+operation pass and WP-671 either closes the large-result gate or has an exact
+accepted result-path dependency that can do so. After that hardening and any
+separately accepted large-result fix, candidate activation requires, in every
+counterbalanced generation on both N1 and E2:
 
 - every representative generated unary scenario at most 1.10x
   safe-application PostgreSQL;
@@ -205,10 +256,10 @@ requires, in every counterbalanced generation on both N1 and E2:
 - no otherwise-uncovered regression above five percent.
 
 `board_page_450` and every other large-result scenario remain in the matrix.
-Transport savings may not hide or waive a result-set miss. If an independently
-owned result-set package is required, WP-670 may preserve only a private
-diagnostic branch/receipt and must not activate or document the lane as
-available.
+Transport savings may not hide or waive a result-set miss. While WP-671 is
+open, WP-670 may preserve the implementation only as private diagnostic code
+without a selected default, generated exposure, compatibility entitlement, or
+claim of availability.
 
 Passing the short matrix still does not amend `PERF-018` or generated defaults.
 The complete workstation/N1/E2 90-second evidence must pass, after which a
@@ -229,14 +280,20 @@ Unary gRPC and control-plane RPCs remain supported.
    still large enough to test before renegotiating product performance.
 5. **Activate direct framing on improvement alone:** rejected. A second public
    transport must earn its cost through the actual complete product gates.
-6. **One new public-gate-first exclusive candidate:** proposed. It attacks the
-   dominant measured small-operation residual while keeping all public and
-   safety gates conjunctive.
+6. **Fully harden another proxy-gated transport before measuring it:** rejected.
+   This repeats the build/remove cycle without answering the public question.
+7. **One diagnostic-gate-first exclusive candidate:** proposed. It attacks the
+   dominant measured small-operation residual, obtains the complete unary
+   verdict immediately, and permits hardening only after it proves product
+   value.
 
 ## Consequences
 
-- The candidate repeats some implementation work from removed experiments,
-  but does so under a new identity and a product-relevant decision rule.
+- The candidate repeats only enough implementation work from removed
+  experiments to obtain a decisive product-relevant result under a new private
+  identity.
+- A failed candidate is cheaper: it stops before pool, driver-host, public
+  configuration, exhaustive lifecycle, and release integration work.
 - RiffDB may still need separate large-result work before any transport can
   activate; that miss stays visible.
 - A passing lane adds a second versioned application data-plane transport and
@@ -304,14 +361,18 @@ principals, operations, or policy facts.
   pool return, reconnect, rotation, restart, and shutdown.
 - Fixed resource tests for slow peers, pool exhaustion, operation/lifetime
   caps, reconnect storms, output stalls, and clean shutdown.
-- Counterbalanced workstation/N1/E2 mechanics and public matrices, followed by
-  full `PERF-018` only after all short gates pass.
+- Counterbalanced N1/E2 complete-unary diagnostic matrix immediately after the
+  minimum safe candidate, including per-scenario service/residual/byte ledgers.
+- BoardPage450 stage profiling under the private candidate, owned by WP-671.
+- Full hostile/lifecycle/driver and workstation/N1/E2 matrices only after the
+  small-operation verdict passes; full `PERF-018` only after all short product
+  gates pass.
 
 ## Requirements and Work Packages
 
 - **Requirements:** `API-001`, `PERF-005`, `PERF-008`, `PERF-018`, `SEC-001`,
   `SEC-002`, `NET-001` through `NET-012`, and `DRV-001` through `DRV-014`
-- **Defines or blocks:** WP-670 and WP-623
+- **Defines or blocks:** WP-670, WP-671, WP-672, and WP-623
 - **Final evidence:** WP-623, WP-578, and WP-579 after a separately accepted
   comparator/default amendment
 
