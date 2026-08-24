@@ -16,6 +16,12 @@ if [[ ! -d "$2" || -L "$2" ]]; then
     exit 1
 fi
 bundle_root="$(cd -- "$2" && pwd -P)"
+script_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+source_docs="$script_root/../docs"
+if [[ ! -d "$source_docs" || -L "$source_docs" ]]; then
+    printf '%s\n' 'authoritative documentation root is missing or linked' >&2
+    exit 1
+fi
 if [[ -n "$(find "$bundle_root" -type l -print -quit)" ]]; then
     printf '%s\n' 'release bundle contains a symbolic link' >&2
     exit 1
@@ -44,14 +50,25 @@ if [[ "$actual_units" != "$expected_units" ]]; then
     printf '%s\n' 'release bundle contains an unexpected systemd unit set' >&2
     exit 1
 fi
-expected_docs=$'backup-restore.md\ncompatibility.md\nconfiguration.md\ninstallation.md\nknown-limitations.md\nrelease.md\nsecurity.md\nupgrade-removal.md'
+expected_docs="$(
+    cd "$source_docs"
+    find . -type f -printf '%P\n' | sort
+)"
 actual_docs="$(
-    find "$bundle_root/docs" -mindepth 1 -maxdepth 1 -printf '%f\n' | sort
+    cd "$bundle_root/docs"
+    find . -type f -printf '%P\n' | sort
 )"
 if [[ "$actual_docs" != "$expected_docs" ]]; then
     printf '%s\n' 'release bundle contains an unexpected documentation set' >&2
     exit 1
 fi
+while IFS= read -r document; do
+    if ! cmp "$source_docs/$document" "$bundle_root/docs/$document"; then
+        printf 'release documentation differs from its authoritative source: %s\n' \
+            "$document" >&2
+        exit 1
+    fi
+done <<<"$expected_docs"
 expected_configs=$'bootstrap-budget-demo.json\nbootstrap-local-owner.json.example\nbootstrap-operator.json.example\nbudget-allocate-v1.json\nbudget-create-v1.json\nclient.toml.example\nmcp-local-developer.json.example\nmcp.toml.example\nriffdbd.toml.example'
 actual_configs="$(
     find "$bundle_root/release/config" \
@@ -197,8 +214,10 @@ for legal_notice in COPYRIGHT LICENSE-MIT LICENSE-APACHE; do
     install_one 0644 "$bundle_root/$legal_notice" "$doc_root/$legal_notice"
 done
 while IFS= read -r document; do
-    install_one 0644 "$document" "$doc_root/docs/${document##*/}"
-done < <(find "$bundle_root/docs" -mindepth 1 -maxdepth 1 -type f | sort)
+    install_one 0644 \
+        "$bundle_root/docs/$document" \
+        "$doc_root/docs/$document"
+done <<<"$actual_docs"
 while IFS= read -r config; do
     install_one 0644 \
         "$config" \
