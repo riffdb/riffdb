@@ -180,6 +180,10 @@ gates:
   - WP-571
 work_packages:
 - id: WP-000
+  closure:
+    status: complete
+    evidence: Cargo.toml
+    decision: The standalone pinned Rust workspace, crate graph, policy checks, CI scripts, licenses, and deny-by-default lint/dependency boundaries are established. Current workspace policy, formatting, Clippy, tests, docs, generation, and cargo-deny checks pass.
   name: Repository foundation
   depends_on: []
   objective: Create the reproducible Rust workspace, quality gates, ADR workflow, and generation checks used by
@@ -222,6 +226,10 @@ work_packages:
   - Unsafe Rust, native code, cryptography, or a new critical dependency is required.
   - Implementation needs files outside allowed_paths or an unmet dependency interface.
 - id: WP-010
+  closure:
+    status: complete
+    evidence: crates/riffdb-types
+    decision: Domain newtypes, exact values, checked identifiers, bounded collections, canonical ordering, error taxonomy, redaction-safe public errors, and compatibility fixtures are implemented and pass the complete workspace suite.
   name: Core types and error taxonomy
   depends_on:
   - WP-000
@@ -1154,6 +1162,10 @@ work_packages:
     checkpoint alone.
   human_review_triggers: *id001
 - id: WP-020
+  closure:
+    status: complete
+    evidence: crates/riffdb-proto/fixtures
+    decision: Public and durable Protobuf envelopes are versioned, bounded, checksummed, schema-hashed, reproducibly generated, and covered by byte-frozen compatibility fixtures and structural validation tests.
   name: Protobuf and durable envelope
   depends_on:
   - WP-010
@@ -1188,6 +1200,10 @@ work_packages:
   exit_gate: Golden fixtures decode and generated sources reproduce with a clean worktree.
   human_review_triggers: *id001
 - id: WP-030
+  closure:
+    status: complete
+    evidence: crates/riffdb-contract-syntax/LANGUAGE.md
+    decision: The bounded contract lexer, parser, source spans, diagnostics, reserved words, comments, and canonical syntax are implemented with parser, snapshot, generation, and fuzz coverage.
   name: Contract syntax
   depends_on:
   - WP-010
@@ -1226,6 +1242,10 @@ work_packages:
   exit_gate: Budget source parses; invalid corpus yields bounded, stable span diagnostics; fuzz smoke passes.
   human_review_triggers: *id001
 - id: WP-040
+  closure:
+    status: complete
+    evidence: crates/riffdb-contract-compiler
+    decision: Typed IR, stable symbolic identities, compiler-allocated IDs, command dependency plans, compatibility classification, deterministic artifacts, and semantic diagnostics are implemented and current compiler fixtures pass.
   name: Typed IR and compiler
   depends_on:
   - WP-010
@@ -1295,6 +1315,10 @@ work_packages:
     diagnostic snapshots; invalid or colliding ADR-0020 names reject deterministically.
   human_review_triggers: *id001
 - id: WP-045
+  closure:
+    status: complete
+    evidence: examples/budget-comparison/fixtures/workload-v1.json
+    decision: The canonical PostgreSQL and reference-model budget workload, guarantees, observations, and safety profiles are frozen. The repaired nested comparison workspace passes its complete semantic and architecture suite.
   name: Budget comparison baseline
   depends_on:
   - WP-040
@@ -1335,6 +1359,10 @@ work_packages:
     and concurrency assumptions.
   human_review_triggers: *id001
 - id: WP-050
+  closure:
+    status: complete
+    evidence: crates/riffdb-catalog
+    decision: Contract history, activation, exact plan lookup, stable-ID resolution, compatibility, migration identity, and fail-closed startup validation are catalog-owned and pass catalog, compiler, service, and recovery suites.
   name: Contract catalog
   depends_on:
   - WP-020
@@ -1449,6 +1477,10 @@ work_packages:
     evidence, including every qualifying capability-partition item, can produce ValidatedCatalogHistory.
   human_review_triggers: *id001
 - id: WP-060
+  closure:
+    status: complete
+    evidence: crates/riffdb-storage-api
+    decision: Storage exposes semantic versioned ports rather than backend handles, with bounded scans, snapshots, transactions, typed records, startup validation, and sealed authority boundaries. Architecture and backend conformance tests pass.
   name: Storage semantic API
   depends_on:
   - WP-010
@@ -1579,6 +1611,10 @@ work_packages:
     introducing a storage-to-IR dependency; capability-partition inventory fixtures prove complete exact-end emission.
   human_review_triggers: *id001
 - id: WP-065
+  closure:
+    status: complete
+    evidence: crates/riffdb-proto/fixtures/durable-schema-hashes.bin
+    decision: Authoritative, derived, audit, outbox, projection, idempotency, migration, and maintenance records have versioned bounded canonical schemas with generated golden hashes and reader/writer compatibility windows.
   name: Durable semantic record schema
   depends_on:
   - WP-020
@@ -1675,6 +1711,10 @@ work_packages:
     placeholder, and a clean generation diff before redb persistence begins.
   human_review_triggers: *id001
 - id: WP-070
+  closure:
+    status: complete
+    evidence: crates/riffdb-storage-redb
+    decision: Redb implements the semantic storage ports, atomic cross-table commands, snapshots, startup validation, journal/checkpoint recovery, migration, maintenance, retention, and crash semantics. Full storage and recovery matrices pass.
   name: Redb storage engine
   depends_on:
   - WP-020
@@ -1830,6 +1870,10 @@ work_packages:
     record is persisted.
   human_review_triggers: *id001
 - id: WP-075
+  closure:
+    status: complete
+    evidence: benchmarks/storage-fjall/reports/conformance-v1.tsv
+    decision: The isolated exact-pinned Fjall comparison proves substrate mechanics while failing semantic/performance eligibility closed. Its current durable-registry inventory, architecture, substrate, bounds, and frozen gap report all pass.
   name: Fjall semantic comparison
   depends_on:
   - WP-060
@@ -1868,6 +1912,10 @@ work_packages:
     are ready for WP-200 without linking Fjall into riffdbd.
   human_review_triggers: *id001
 - id: WP-080
+  closure:
+    status: complete
+    evidence: crates/riffdb-runtime
+    decision: The deterministic command runtime evaluates only compiler-visible plans with injected transaction facts and no network, filesystem, clock, process-global mutation, or untracked randomness. Runtime semantic and deterministic tests pass.
   name: Deterministic command runtime
   depends_on:
   - WP-040
@@ -1934,6 +1982,10 @@ work_packages:
   exit_gate: Differential generated-history tests match the single-threaded reference model.
   human_review_triggers: *id001
 - id: WP-090
+  closure:
+    status: complete
+    evidence: crates/riffdb-conflict
+    decision: Bounded sharded conflict ownership, canonical key ordering, cancellation release, fairness, and deterministic schedule behavior are implemented without assigning sequence or storage authority. Conflict and coordinator suites pass.
   name: Conflict manager
   depends_on:
   - WP-010
@@ -1966,6 +2018,10 @@ work_packages:
   exit_gate: Explored schedules find no double grant, leaked capability, deadlock cycle, or lost wakeup.
   human_review_triggers: *id001
 - id: WP-100
+  closure:
+    status: complete
+    evidence: crates/riffdb-commit
+    decision: The sole commit coordinator owns admission order, current validation, conflict ownership, sequence assignment, atomic mutation/outcome/event/provenance records, idempotency, uncertainty recovery, and publication. Semantic, crash, simulation, and recovery suites pass.
   name: Commit coordinator and idempotency
   depends_on:
   - WP-050
