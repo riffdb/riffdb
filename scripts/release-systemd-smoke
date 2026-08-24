@@ -267,13 +267,22 @@ if [[ -n "$riffdb_cli" ]]; then
           git_revision: $revision,
           rust_version: $rust_version,
           enabled_features: [],
-          storage_format_version: 1,
+          storage_format_version: 2,
           contract_ir_version: 1,
           mcp_protocol_baseline: "2025-11-25"
         }
     ' "$work_root/health.json" >/dev/null; then
         printf '%s\n' \
             'release binary did not expose the exact reviewed build metadata' >&2
+        jq -c '{
+          status: .result.status,
+          active_contract_version: .result.active_contract_version,
+          components: [.result.components[]
+            | select(.component == "authoritative_storage"
+                     or .component == "catalog"
+                     or .component == "commit_coordinator")],
+          build: .result.build
+        }' "$work_root/health.json" >&2 || true
         exit 1
     fi
 
