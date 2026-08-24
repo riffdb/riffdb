@@ -22,6 +22,11 @@ if [[ ! -d "$source_docs" || -L "$source_docs" ]]; then
     printf '%s\n' 'authoritative documentation root is missing or linked' >&2
     exit 1
 fi
+source_configs="$script_root/../release/config"
+if [[ ! -d "$source_configs" || -L "$source_configs" ]]; then
+    printf '%s\n' 'authoritative release configuration root is missing or linked' >&2
+    exit 1
+fi
 if [[ -n "$(find "$bundle_root" -type l -print -quit)" ]]; then
     printf '%s\n' 'release bundle contains a symbolic link' >&2
     exit 1
@@ -69,15 +74,25 @@ while IFS= read -r document; do
         exit 1
     fi
 done <<<"$expected_docs"
-expected_configs=$'bootstrap-budget-demo.json\nbootstrap-local-owner.json.example\nbootstrap-operator.json.example\nbudget-allocate-v1.json\nbudget-create-v1.json\nclient.toml.example\nmcp-local-developer.json.example\nmcp.toml.example\nriffdbd.toml.example'
+expected_configs="$(
+    cd "$source_configs"
+    find . -type f -printf '%P\n' | sort
+)"
 actual_configs="$(
-    find "$bundle_root/release/config" \
-        -mindepth 1 -maxdepth 1 -printf '%f\n' | sort
+    cd "$bundle_root/release/config"
+    find . -type f -printf '%P\n' | sort
 )"
 if [[ "$actual_configs" != "$expected_configs" ]]; then
     printf '%s\n' 'release bundle contains an unexpected configuration set' >&2
     exit 1
 fi
+while IFS= read -r config; do
+    if ! cmp "$source_configs/$config" "$bundle_root/release/config/$config"; then
+        printf 'release configuration differs from its authoritative source: %s\n' \
+            "$config" >&2
+        exit 1
+    fi
+done <<<"$expected_configs"
 expected_compatibility=$'durable-fixture-inventory-v1.txt\nphysical-formats-v1.json\nrelease-pairs-v1.json'
 actual_compatibility="$(
     find "$bundle_root/release/compatibility" \
