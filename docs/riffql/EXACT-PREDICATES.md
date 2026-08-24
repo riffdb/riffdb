@@ -166,7 +166,8 @@ implementation may incrementally maintain the same V4 identity without
 changing query semantics.
 
 The immutable generic capability receipt is
-`release/evidence/operational-query-capability-v2.json`. It binds the neutral
-contract, nullable operation plans, and generated-language artifacts. It does
-not claim any external framework route has passed: that evidence remains the
-responsibility of the repository owning the adapter.
+`release/evidence/operational-query-capability-v3.json`. It preserves the V1
+and V2 receipts and binds the neutral contract, nullable operation plans,
+generated-language artifacts, and strict TypeScript helper-reachability gate.
+It does not claim any external framework route has passed: that evidence
+remains the responsibility of the repository owning the adapter.

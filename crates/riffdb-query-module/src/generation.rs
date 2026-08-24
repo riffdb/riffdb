@@ -3393,6 +3393,128 @@ fn rust_decode_wire_result_expr(
         .map_or_else(|| format!("Ok({expression})"), str::to_owned)
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct TypescriptCompactHelperUsage {
+    payload: bool,
+    string: bool,
+    integer: bool,
+    timestamp: bool,
+}
+
+impl TypescriptCompactHelperUsage {
+    fn include(&mut self, value_type: &ValueType) {
+        if let Some(inner) = value_type.optional_inner() {
+            self.include(inner);
+            return;
+        }
+        match value_type.tag() {
+            ValueTypeTag::Bool => self.payload = true,
+            ValueTypeTag::I64 | ValueTypeTag::U64 => {
+                self.payload = true;
+                self.integer = true;
+            }
+            ValueTypeTag::String | ValueTypeTag::Date | ValueTypeTag::Uuid | ValueTypeTag::Enum => {
+                self.payload = true;
+                self.string = true;
+            }
+            ValueTypeTag::Timestamp => {
+                self.payload = true;
+                self.timestamp = true;
+            }
+            ValueTypeTag::Bytes
+            | ValueTypeTag::Decimal
+            | ValueTypeTag::Money
+            | ValueTypeTag::List
+            | ValueTypeTag::Record
+            | ValueTypeTag::Vector => {}
+            ValueTypeTag::Optional => unreachable!("handled above"),
+        }
+    }
+}
+
+fn typescript_compact_helper_usage(
+    module: &QueryModule,
+    contract: &ContractBundle,
+) -> TypescriptCompactHelperUsage {
+    let mut usage = TypescriptCompactHelperUsage::default();
+    for query in module.queries() {
+        let schemas = query.plan().schemas();
+        let Some(shape) = query.plan().common_covered_result().and_then(
+            |(result_name, layout, selected_fields)| {
+                rust_compact_result_shape(
+                    schemas,
+                    &result_name,
+                    &layout,
+                    &selected_fields,
+                    contract,
+                )
+            },
+        ) else {
+            continue;
+        };
+        for field in &shape.fields {
+            usage.include(&field.value_type);
+        }
+    }
+    usage
+}
+
+fn emit_typescript_compact_helpers(output: &mut String, usage: TypescriptCompactHelperUsage) {
+    if usage.payload {
+        output.push_str(
+            r#"function compactPayload(value: CompactApplicationValue, expected: string): unknown {
+  if (typeof value !== "object" || value === null || Array.isArray(value) || value.type !== expected) throw new Error("invalid RiffDB compact value");
+  const keys = Object.keys(value);
+  if (expected === "null") { if (keys.length !== 1) throw new Error("invalid RiffDB compact value"); return null; }
+  if (keys.length !== 2 || !Object.hasOwn(value, "value")) throw new Error("invalid RiffDB compact value");
+  return value.value;
+}
+"#,
+        );
+    }
+    if usage.string {
+        output.push_str(
+            r#"function compactString(value: CompactApplicationValue, expected: string, maximum: number): string {
+  const payload = compactPayload(value, expected);
+  if (typeof payload !== "string" || new TextEncoder().encode(payload).length > maximum) throw new Error("invalid RiffDB compact value");
+  return payload;
+}
+"#,
+        );
+    }
+    if usage.integer {
+        output.push_str(
+            r#"function compactInteger(value: CompactApplicationValue, expected: "i64" | "u64"): bigint {
+  const payload = compactPayload(value, expected);
+  if (typeof payload !== "string" || !/^-?(?:0|[1-9][0-9]*)$/.test(payload)) throw new Error("invalid RiffDB compact value");
+  const parsed = BigInt(payload);
+  if ((expected === "i64" && (parsed < -9223372036854775808n || parsed > 9223372036854775807n))
+      || (expected === "u64" && (parsed < 0n || parsed > 18446744073709551615n))) throw new Error("invalid RiffDB compact value");
+  return parsed;
+}
+"#,
+        );
+    }
+    if usage.timestamp {
+        output.push_str(
+            r#"function compactTimestamp(value: CompactApplicationValue): { readonly seconds: bigint; readonly nanos: number } {
+  const payload = compactPayload(value, "timestamp");
+  if (typeof payload !== "object" || payload === null || Array.isArray(payload)) throw new Error("invalid RiffDB compact value");
+  const record = payload as Record<string, unknown>;
+  if (Object.keys(record).length !== 2 || typeof record.seconds !== "string" || !/^-?(?:0|[1-9][0-9]*)$/.test(record.seconds)
+      || !Number.isInteger(record.nanos) || (record.nanos as number) < 0 || (record.nanos as number) >= 1_000_000_000) throw new Error("invalid RiffDB compact value");
+  const seconds = BigInt(record.seconds);
+  if (seconds < -9223372036854775808n || seconds > 9223372036854775807n) throw new Error("invalid RiffDB compact value");
+  return { seconds, nanos: record.nanos as number };
+}
+"#,
+        );
+    }
+    if usage.payload {
+        output.push('\n');
+    }
+}
+
 /// Generates a dependency-free TypeScript request model for every named query and command.
 #[must_use]
 pub fn generate_typescript_client(module: &QueryModule, contract: &ContractBundle) -> String {
@@ -3418,6 +3540,7 @@ pub fn generate_typescript_client(module: &QueryModule, contract: &ContractBundl
             )
         })
         .collect::<BTreeMap<_, _>>();
+    let compact_helper_usage = typescript_compact_helper_usage(module, contract);
     let mut output = String::new();
     writeln!(output, "// @generated by riffdb-query-module; do not edit.").expect("string");
     writeln!(
@@ -3490,40 +3613,7 @@ pub fn generate_typescript_client(module: &QueryModule, contract: &ContractBundl
          export type VectorModelVersionResult = {{ readonly kind: \"model_version_summary\"; readonly currentCount: bigint; readonly outdatedCount: bigint }} | {{ readonly kind: \"outdated_model_entities\"; readonly items: ReadonlyArray<VectorModelVersionItem>; readonly observedFrontier: bigint | null }};\n"
     )
     .expect("string");
-    output.push_str(
-        r#"function compactPayload(value: CompactApplicationValue, expected: string): unknown {
-  if (typeof value !== "object" || value === null || Array.isArray(value) || value.type !== expected) throw new Error("invalid RiffDB compact value");
-  const keys = Object.keys(value);
-  if (expected === "null") { if (keys.length !== 1) throw new Error("invalid RiffDB compact value"); return null; }
-  if (keys.length !== 2 || !Object.hasOwn(value, "value")) throw new Error("invalid RiffDB compact value");
-  return value.value;
-}
-function compactString(value: CompactApplicationValue, expected: string, maximum: number): string {
-  const payload = compactPayload(value, expected);
-  if (typeof payload !== "string" || new TextEncoder().encode(payload).length > maximum) throw new Error("invalid RiffDB compact value");
-  return payload;
-}
-function compactInteger(value: CompactApplicationValue, expected: "i64" | "u64"): bigint {
-  const payload = compactPayload(value, expected);
-  if (typeof payload !== "string" || !/^-?(?:0|[1-9][0-9]*)$/.test(payload)) throw new Error("invalid RiffDB compact value");
-  const parsed = BigInt(payload);
-  if ((expected === "i64" && (parsed < -9223372036854775808n || parsed > 9223372036854775807n))
-      || (expected === "u64" && (parsed < 0n || parsed > 18446744073709551615n))) throw new Error("invalid RiffDB compact value");
-  return parsed;
-}
-function compactTimestamp(value: CompactApplicationValue): { readonly seconds: bigint; readonly nanos: number } {
-  const payload = compactPayload(value, "timestamp");
-  if (typeof payload !== "object" || payload === null || Array.isArray(payload)) throw new Error("invalid RiffDB compact value");
-  const record = payload as Record<string, unknown>;
-  if (Object.keys(record).length !== 2 || typeof record.seconds !== "string" || !/^-?(?:0|[1-9][0-9]*)$/.test(record.seconds)
-      || !Number.isInteger(record.nanos) || (record.nanos as number) < 0 || (record.nanos as number) >= 1_000_000_000) throw new Error("invalid RiffDB compact value");
-  const seconds = BigInt(record.seconds);
-  if (seconds < -9223372036854775808n || seconds > 9223372036854775807n) throw new Error("invalid RiffDB compact value");
-  return { seconds, nanos: record.nanos as number };
-}
-"#,
-    );
-    output.push('\n');
+    emit_typescript_compact_helpers(&mut output, compact_helper_usage);
     for query in module.queries() {
         let name = query.name();
         let schemas = query.plan().schemas();
@@ -5098,6 +5188,31 @@ mod tests {
             generated_typescript.contains("options.concurrency > MAX_COMMAND_BATCH_CONCURRENCY")
         );
         assert!(!generated_typescript.contains("options.concurrency > 32"));
+        assert!(!generated_typescript.contains("function compactString("));
+        assert!(!generated_typescript.contains("function compactInteger("));
+        assert!(!generated_typescript.contains("function compactTimestamp("));
+    }
+
+    #[test]
+    fn typescript_compact_helpers_follow_decoder_reachability() {
+        let mut output = String::new();
+        emit_typescript_compact_helpers(
+            &mut output,
+            TypescriptCompactHelperUsage {
+                payload: true,
+                timestamp: true,
+                ..TypescriptCompactHelperUsage::default()
+            },
+        );
+
+        assert!(output.contains("function compactPayload("));
+        assert!(output.contains("function compactTimestamp("));
+        assert!(!output.contains("function compactString("));
+        assert!(!output.contains("function compactInteger("));
+
+        let mut empty = String::new();
+        emit_typescript_compact_helpers(&mut empty, TypescriptCompactHelperUsage::default());
+        assert!(empty.is_empty());
     }
 
     #[test]

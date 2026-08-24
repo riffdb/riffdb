@@ -167,24 +167,6 @@ function compactString(value: CompactApplicationValue, expected: string, maximum
   if (typeof payload !== "string" || new TextEncoder().encode(payload).length > maximum) throw new Error("invalid RiffDB compact value");
   return payload;
 }
-function compactInteger(value: CompactApplicationValue, expected: "i64" | "u64"): bigint {
-  const payload = compactPayload(value, expected);
-  if (typeof payload !== "string" || !/^-?(?:0|[1-9][0-9]*)$/.test(payload)) throw new Error("invalid RiffDB compact value");
-  const parsed = BigInt(payload);
-  if ((expected === "i64" && (parsed < -9223372036854775808n || parsed > 9223372036854775807n))
-      || (expected === "u64" && (parsed < 0n || parsed > 18446744073709551615n))) throw new Error("invalid RiffDB compact value");
-  return parsed;
-}
-function compactTimestamp(value: CompactApplicationValue): { readonly seconds: bigint; readonly nanos: number } {
-  const payload = compactPayload(value, "timestamp");
-  if (typeof payload !== "object" || payload === null || Array.isArray(payload)) throw new Error("invalid RiffDB compact value");
-  const record = payload as Record<string, unknown>;
-  if (Object.keys(record).length !== 2 || typeof record.seconds !== "string" || !/^-?(?:0|[1-9][0-9]*)$/.test(record.seconds)
-      || !Number.isInteger(record.nanos) || (record.nanos as number) < 0 || (record.nanos as number) >= 1_000_000_000) throw new Error("invalid RiffDB compact value");
-  const seconds = BigInt(record.seconds);
-  if (seconds < -9223372036854775808n || seconds > 9223372036854775807n) throw new Error("invalid RiffDB compact value");
-  return { seconds, nanos: record.nanos as number };
-}
 
 export const BOARD_PAGE200_QUERY_PLAN_HASH = "cb06f3300791614daa6bb72e5a8d850527bde79c63a08c2d03aaccb6e73bfc47" as const;
 export interface BoardPage200Params {

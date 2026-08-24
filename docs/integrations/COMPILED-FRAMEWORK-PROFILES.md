@@ -46,15 +46,16 @@ capability, but neither its route vocabulary nor its userland policy becomes a
 RiffDB feature.
 
 External adapters can pin
-`release/evidence/operational-query-capability-v2.json`. The successor
-development receipt preserves the immutable V1 receipt and binds the neutral
+`release/evidence/operational-query-capability-v3.json`. The current development
+receipt preserves immutable V1 and V2 predecessors and binds the neutral
 contract, module, V6 predicate plans, V7 nullable-order plans, and generated
-Rust/Go/TypeScript/Python artifacts to immutable hashes and records the safe
-execution properties being offered. It deliberately records external route
-acceptance as `not_proved_by_neutral_corpus`: the adapter repository must still
-show that its real public routes delegate only to those pinned generated
-operations without filtering, sorting, counting, page walking, raw query
-construction, or storage access.
+Rust/Go/TypeScript/Python artifacts to immutable hashes. V3 additionally binds
+reachability-only TypeScript compact helpers and strict unused-symbol compiler
+acceptance. It deliberately records external route acceptance as
+`not_proved_by_neutral_corpus`: the adapter repository must still show that its
+real public routes delegate only to those pinned generated operations without
+filtering, sorting, counting, page walking, raw query construction, or storage
+access.
 
 ## Keyless upstream retries
 
