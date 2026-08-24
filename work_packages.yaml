@@ -12782,6 +12782,13 @@ work_packages:
       crosses telemetry.
     scale: Every counter is fixed-cardinality and every probe uses the existing frame/suffix bounds;
       no per-command series, key, value, or unbounded histogram is retained.
+  closure:
+    status: complete
+    evidence: docs/performance/wp-620-portable-writer-mechanics.md
+    decision: Both inventoried profiles produced the fixed-cardinality stage and byte census, the
+      mechanics sweep separates frame construction, positional write, fence, and checkpoint
+      overlap, and the current-HEAD mechanics and crate acceptance gates pass without adding a
+      public durability or measurement control.
   human_review_triggers: *id001
 - id: WP-621
   name: Compact exact command-segment successor
@@ -12847,6 +12854,13 @@ work_packages:
     scale: Uncompressed length is rejected against the existing segment/frame ceiling before
       allocation, frame/suffix/overlay ceilings remain exact, mixed-version recovery is linear in
       the already bounded suffix, and no full database rewrite is introduced.
+  closure:
+    status: complete
+    evidence: docs/performance/wp-621-compact-command-segment-gate.md
+    decision: The bounded compact successor passed its byte-reduction mechanics but failed the
+      required cloud writer-stage activation threshold. The candidate was therefore removed, no
+      V5 record or compression dependency entered production, the current writer remains exact,
+      and the value-free rejection receipt closes the package honestly.
   human_review_triggers: *id001
 - id: WP-622
   name: Immutable exact named-query resolution fast path
@@ -12888,6 +12902,13 @@ work_packages:
       contract, module, query, or plan.
     scale: Entries are bounded by existing deployed contract/module/query cardinality limits and
       replacement publishes one immutable view; no request or row result is retained.
+  closure:
+    status: complete
+    evidence: docs/performance/wp-622-exact-named-query-lookup.md
+    decision: Warm generated reads resolve through one immutable complete-identity lookup after
+      admission while every principal-specific authority and release check remains per request.
+      The cloud lookup improved 6.90 times, exceeding the four-times gate, and current-HEAD service,
+      server, observability, generated-artifact, requirement, and handbook gates pass.
   human_review_triggers: *id001
 - id: WP-623
   name: Dual-profile alpha performance qualification
@@ -12972,6 +12993,13 @@ work_packages:
     scale: Collection retains the accepted two-millisecond oldest-command ceiling, 256-transition
       and 16-MiB frame ceilings, bounded intake channel, FIFO barrier rules, and fixed-cardinality
       observations; it creates no unbounded queue, series, or retained work.
+  closure:
+    status: complete
+    evidence: docs/performance/wp-624-contention-edge-coalescing-gate.md
+    decision: The contention-edge candidate increased commands per frame but slowed the public
+      closed-loop workload and missed both materiality alternatives. It was removed, immediate
+      completion-edge dispatch remains authoritative, and the value-free rejection receipt plus
+      current-HEAD coordinator and application-baseline tests close the package.
   human_review_triggers: *id001
 - id: WP-625
   name: Streaming anchored command-authority encoding
@@ -13020,6 +13048,13 @@ work_packages:
     scale: The encoder retains the existing 256-command, 16-MiB frame, field-visit, event,
       transition, manifest, and envelope bounds; it owns one body buffer and at most one bounded
       nested generated message, never an additional complete semantic graph.
+  closure:
+    status: complete
+    evidence: docs/performance/wp-625-streaming-authority-encoding-gate.md
+    decision: The byte-identical streaming encoder candidate remained correctness-clean but
+      improved public throughput only 2.8 percent and staging only 0.7 percent. The candidate and
+      live-path selection were removed, the frozen V4 writer remains in use, and the failed-
+      activation receipt closes the package without a durable-format change.
   human_review_triggers: *id001
 - id: WP-626
   name: Retained compiler-fact command staging
@@ -13073,6 +13108,13 @@ work_packages:
     scale: Retention replaces repeated bounded reconstructions with one already-bounded proof. It
       adds no queue, task, cache, cardinality, recursion, scan, wait, or durable footprint and
       remains charged inside the existing bounded command-preparation admission unit.
+  closure:
+    status: complete
+    evidence: docs/performance/wp-626-retained-compiler-fact-gate.md
+    decision: The retained-proof candidate preserved correctness but reached neither its public-
+      throughput nor staging-reduction activation threshold. Its private fields and alternate
+      entrypoints were removed, the existing derivation remains authoritative, and the value-free
+      rejection receipt records the bounded result.
   human_review_triggers: *id001
 - id: WP-627
   name: Cloud journal flush and checkpoint attribution
@@ -13116,6 +13158,13 @@ work_packages:
       durability, publication, recovery, freshness, or bounded failure behavior.
     scale: Seven saturating process-generation counters replace no bounded state and add no queue,
       cache, task, scan, wait, retained record, metric label, or per-command observation.
+  closure:
+    status: complete
+    evidence: docs/performance/wp-627-cloud-writer-attribution.md
+    decision: Matched N1 and E2 cells, workload-only thread-class profiles, and the physical-flush
+      census attribute the remaining ceiling to serialized coordinator CPU rather than freshness
+      waits, checkpoint I/O, or fence frequency. The evidence rejects sub-ten-percent candidates
+      and adds only fixed-cardinality value-free shutdown observations.
   human_review_triggers: *id001
 - id: WP-628
   name: Compiler-bounded one-hop cascade language and executable IR
@@ -13828,6 +13877,13 @@ work_packages:
     scale: Diagnostic samples and histograms are fixed-cardinality and bounded; the shadow uses one
       existing persistent channel and retains no keys, values, credentials, or unbounded trace
       series. The proposed session ADR requires explicit finite in-flight, byte, and queue bounds.
+  closure:
+    status: complete
+    evidence: docs/performance/wp-632-client-transport-attribution.md
+    decision: Paired N1 and E2 samples separate the frozen synchronous bridge, asynchronous client,
+      transport, and server orchestration without changing the PERF-018 comparator. TCP_NODELAY is
+      source-pinned, both reports are structurally non-evidentiary, and ADR-0127 remained blocked
+      until its later exact acceptance.
   human_review_triggers: *id001
 - id: WP-634
   name: Compiler-declared RiffQL secret outputs and derived role authority
@@ -13990,6 +14046,13 @@ work_packages:
     scale: Execute windows, memory samples, stage identities, and lock-wait classes have fixed
       count and byte ceilings independent of database size and request count; excess samples merge
       into one terminal bounded window rather than retaining per-request state.
+  closure:
+    status: complete
+    evidence: docs/performance/wp-636-query-execute-growth.md
+    decision: Workstation, N1, and E2 fixed-operation windows reproduced and attributed the growth
+      to application-frontier resolution over retained command authority, while the c32 capture
+      classified the separate waiting component. The bounded diagnostic changed no comparator or
+      product behavior and supplied the predeclared arithmetic used by WP-637.
   human_review_triggers: *id001
 - id: WP-637
   name: Restore constant-time named-query application frontiers
@@ -14031,6 +14094,13 @@ work_packages:
     scale: Frontier resolution performs a fixed number of same-transaction metadata and authority-
       presence lookups independent of retained history, segment width, entity count, or request count,
       and adds no cache, retained per-request state, scan, queue, or unbounded diagnostic surface.
+  closure:
+    status: complete
+    evidence: docs/performance/wp-637-constant-time-query-frontier.md
+    decision: Current and restarted named reads now derive the application frontier from same-
+      snapshot allocator metadata plus constant-time command-authority presence, without decoding
+      retained command payloads. Workstation, N1, and E2 receipts meet the predeclared gains, and
+      current-HEAD query, recovery, storage, server, and comparator tests pass.
   human_review_triggers: *id001
 - id: WP-638
   name: Closed public write-lane baseline and serialized-service ledger
@@ -14076,6 +14146,13 @@ work_packages:
     scale: Stage ledgers and queue evidence have fixed count and byte ceilings per process
       generation, retain no application values or per-operation series, and perform no history,
       entity, index, event, provenance, audit, or outbox scan.
+  closure:
+    status: complete
+    evidence: docs/performance/wp-638-write-lane-ledger.md
+    decision: Frozen-protocol N1 and E2 baselines are current, the workstation and cloud c1 ledgers
+      close within five percent of client-observed mean, and c32 queue delay is separated from
+      serialized service and physical fence work. The report classified movable and sequencing-
+      essential work before the coordinator design began.
   human_review_triggers: *id001
 - id: WP-639
   name: Batch writer ledger and admission-ordered coordinator proof split
@@ -14122,6 +14199,13 @@ work_packages:
     scale: Timers, stage identities, proof artifacts, and ratio receipts have fixed cardinality and
       byte ceilings independent of command count, history, entity count, or database size; bounded
       preparation capacity must apply backpressure without reordering or retaining unbounded work.
+  closure:
+    status: complete
+    evidence: docs/performance/wp-639-batch-writer-ledger.md
+    decision: Workstation and N1 seed ledgers close to measured wall time, the historical comparator
+      drift is traced to an interfered unstable PostgreSQL run rather than shape drift, and the
+      admission-ordered proof split plus all-gate predictions received maintainer review in
+      ADR-0129 without changing coordinator or public behavior.
   human_review_triggers: *id001
 - id: WP-640
   name: Bounded prepared command finalization and pay-once batch apply
