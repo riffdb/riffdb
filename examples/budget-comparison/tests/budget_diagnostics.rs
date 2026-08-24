@@ -566,6 +566,7 @@ fn sample_postgres_amortized(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn layer_json(
     layer_id: &str,
     description: &str,
@@ -754,21 +755,21 @@ fn bottleneck_hints(layers: &[Value], comparisons: &Value) -> Vec<Value> {
         .iter()
         .find(|layer| layer["layer_id"] == "riffdb_service_inprocess")
     {
-        if let Some(shares) = service["sequential_time_share"].as_array() {
-            if let Some(top) = shares.first() {
-                let share_bps = top["share_basis_points"].as_u64().unwrap_or(0);
-                if share_bps >= 2_000 {
-                    hints.push(json!({
-                        "severity": "high",
-                        "layer": "riffdb_service_inprocess",
-                        "signal": "sequential_time_share",
-                        "detail": format!(
-                            "operation {} accounts for {:.1}% of sequential mean time; profile that command class first",
-                            top["operation_id"].as_str().unwrap_or("?"),
-                            share_bps as f64 / 100.0
-                        ),
-                    }));
-                }
+        if let Some(shares) = service["sequential_time_share"].as_array()
+            && let Some(top) = shares.first()
+        {
+            let share_bps = top["share_basis_points"].as_u64().unwrap_or(0);
+            if share_bps >= 2_000 {
+                hints.push(json!({
+                    "severity": "high",
+                    "layer": "riffdb_service_inprocess",
+                    "signal": "sequential_time_share",
+                    "detail": format!(
+                        "operation {} accounts for {:.1}% of sequential mean time; profile that command class first",
+                        top["operation_id"].as_str().unwrap_or("?"),
+                        share_bps as f64 / 100.0
+                    ),
+                }));
             }
         }
 

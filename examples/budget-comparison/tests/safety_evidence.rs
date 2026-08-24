@@ -16,7 +16,6 @@ use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, ExitStatus, Stdio};
 use std::str;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
@@ -440,6 +439,7 @@ fn bootstrap_request(
             row_policy: None,
             export: None,
             reimport: None,
+            vector_inspection: None,
         }),
     })
 }
@@ -487,12 +487,14 @@ fn normal_capability_request() -> TestResult<v1::CreateCapabilityRequest> {
                 contract_lineage: CONTRACT_LINEAGE.to_owned(),
                 entity_type_id: 1,
                 field_ids: vec![1, 3, 5],
+                secret_field_ids: Vec::new(),
             }],
             max_scan_rows: 100,
             approval_required: Vec::new(),
             row_policy: None,
             export: None,
             reimport: None,
+            vector_inspection: None,
         }),
     })
 }

@@ -143,6 +143,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "cc"
+version = "1.4.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0ad534f4357a5264cce5019c989cf66a4f0dc4e0d1b1d15f8aacec0ff7360273"
+dependencies = [
+ "find-msvc-tools",
+ "shlex",
+]
+
+[[package]]
 name = "cfg-if"
 version = "1.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -298,6 +308,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "da7c62ceae207dd37ea5b845da6a0696c799f85e97da1ab5b7910be3c1c80223"
 
 [[package]]
+name = "find-msvc-tools"
+version = "0.1.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d45db016d36b838f563236e9193d0ee6ce38f3f68b6c94e914b4929c96bbb890"
+
+[[package]]
 name = "fixedbitset"
 version = "0.5.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -375,6 +391,17 @@ checksum = "85649ca51fd72272d7821adaf274ad91c288277713d9c18820d8499a7ff69e9a"
 dependencies = [
  "typenum",
  "version_check",
+]
+
+[[package]]
+name = "getrandom"
+version = "0.2.17"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ff2abc00be7fca6ebc474524697ae276ad847ad0a6b3faa4bcb027e9a4614ad0"
+dependencies = [
+ "cfg-if",
+ "libc",
+ "wasi 0.11.1+wasi-snapshot-preview1",
 ]
 
 [[package]]
@@ -1033,9 +1060,9 @@ checksum = "63b8176103e19a2643978565ca18b50549f6101881c443590420e4dc998a3c69"
 
 [[package]]
 name = "redb"
-version = "4.1.0"
+version = "4.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8e925444704b5f17d32bf42f5b6e2df050bceebc3dcd6e71cc73dafe8092e839"
+checksum = "de6c3b63e007e90ce536ec2ae4690826136a20ec8dbbbb400daef1bb999d2e36"
 dependencies = [
  "libc",
 ]
@@ -1089,6 +1116,16 @@ dependencies = [
  "tonic",
  "tonic-prost",
  "tonic-prost-build",
+]
+
+[[package]]
+name = "riffdb-application"
+version = "0.1.0"
+dependencies = [
+ "riffdb-contract-ir",
+ "riffdb-types",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -1207,13 +1244,27 @@ dependencies = [
  "futures-util",
  "getrandom 0.3.4",
  "riffdb-api-grpc",
+ "riffdb-application",
+ "riffdb-config",
  "riffdb-errors",
  "riffdb-proto",
  "riffdb-types",
+ "rustls-pki-types",
+ "rustls-webpki",
  "tokio",
  "tonic",
  "tonic-prost",
  "zeroize",
+]
+
+[[package]]
+name = "riffdb-columnar"
+version = "0.1.0"
+dependencies = [
+ "riffdb-contract-ir",
+ "riffdb-policy",
+ "riffdb-storage-api",
+ "riffdb-types",
 ]
 
 [[package]]
@@ -1226,11 +1277,16 @@ dependencies = [
  "riffdb-idempotency",
  "riffdb-invariant",
  "riffdb-policy",
+ "riffdb-projection",
  "riffdb-runtime",
  "riffdb-storage-api",
  "riffdb-types",
  "tokio",
 ]
+
+[[package]]
+name = "riffdb-config"
+version = "0.1.0"
 
 [[package]]
 name = "riffdb-conflict"
@@ -1292,6 +1348,7 @@ name = "riffdb-policy"
 version = "0.1.0"
 dependencies = [
  "riffdb-auth",
+ "riffdb-contract-ir",
  "riffdb-types",
 ]
 
@@ -1302,6 +1359,7 @@ dependencies = [
  "riffdb-catalog",
  "riffdb-contract-ir",
  "riffdb-invariant",
+ "riffdb-query-ir",
  "riffdb-storage-api",
  "riffdb-types",
 ]
@@ -1323,6 +1381,7 @@ version = "0.1.0"
 dependencies = [
  "riffdb-contract-ir",
  "riffdb-query-ir",
+ "riffdb-query-syntax",
  "riffdb-riffql-syntax",
  "riffdb-types",
 ]
@@ -1331,6 +1390,10 @@ dependencies = [
 name = "riffdb-query-executor"
 version = "0.1.0"
 dependencies = [
+ "riffdb-auth",
+ "riffdb-contract-ir",
+ "riffdb-policy",
+ "riffdb-projection",
  "riffdb-query-ir",
  "riffdb-riffql-syntax",
  "riffdb-types",
@@ -1353,10 +1416,16 @@ dependencies = [
  "riffdb-contract-syntax",
  "riffdb-query-compiler",
  "riffdb-query-ir",
+ "riffdb-query-syntax",
  "riffdb-riffql-syntax",
  "riffdb-types",
  "serde_json",
+ "sha2",
 ]
+
+[[package]]
+name = "riffdb-query-syntax"
+version = "0.1.0"
 
 [[package]]
 name = "riffdb-riffql-syntax"
@@ -1373,12 +1442,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "riffdb-scheduler"
+version = "0.1.0"
+dependencies = [
+ "riffdb-types",
+]
+
+[[package]]
 name = "riffdb-service"
 version = "0.1.0"
 dependencies = [
  "base64",
+ "riffdb-application",
  "riffdb-auth",
  "riffdb-catalog",
+ "riffdb-columnar",
  "riffdb-commit",
  "riffdb-contract-compiler",
  "riffdb-contract-ir",
@@ -1391,6 +1469,8 @@ dependencies = [
  "riffdb-query-module",
  "riffdb-riffql-syntax",
  "riffdb-types",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -1401,6 +1481,7 @@ dependencies = [
  "riffdb-contract-ir",
  "riffdb-proto",
  "riffdb-types",
+ "sha2",
 ]
 
 [[package]]
@@ -1410,6 +1491,7 @@ dependencies = [
  "cap-std",
  "redb",
  "riffdb-catalog",
+ "riffdb-policy",
  "riffdb-query-executor",
  "riffdb-query-ir",
  "riffdb-storage-api",
@@ -1427,6 +1509,7 @@ dependencies = [
  "riffdb-contract-ir",
  "riffdb-invariant",
  "riffdb-runtime",
+ "riffdb-scheduler",
  "riffdb-storage-api",
  "riffdb-storage-redb",
  "riffdb-types",
@@ -1438,6 +1521,20 @@ version = "0.1.0"
 dependencies = [
  "hmac",
  "sha2",
+]
+
+[[package]]
+name = "ring"
+version = "0.17.14"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a4689e6c2294d81e88dc6261c768b63bc4fcdb852be6d1352498b114f61383b7"
+dependencies = [
+ "cc",
+ "cfg-if",
+ "getrandom 0.2.17",
+ "libc",
+ "untrusted",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -1461,6 +1558,41 @@ checksum = "2fc84bf7e9aa16c4f2c758f27412dc9841341e16aa682d9c7ac308fe3ee12056"
 dependencies = [
  "once_cell",
  "rustix",
+]
+
+[[package]]
+name = "rustls"
+version = "0.23.43"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0283386ce02abc0151e1761d08802dfe86c173b0b494af5cbc086574e453da06"
+dependencies = [
+ "log",
+ "once_cell",
+ "ring",
+ "rustls-pki-types",
+ "rustls-webpki",
+ "subtle",
+ "zeroize",
+]
+
+[[package]]
+name = "rustls-pki-types"
+version = "1.15.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2f4925028c7eb5d1fcdaf196971378ed9d2c1c4efc7dc5d011256f76c99c0a96"
+dependencies = [
+ "zeroize",
+]
+
+[[package]]
+name = "rustls-webpki"
+version = "0.103.13"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "61c429a8649f110dddef65e2a5ad240f747e85f7758a6bccc7e5777bd33f756e"
+dependencies = [
+ "ring",
+ "rustls-pki-types",
+ "untrusted",
 ]
 
 [[package]]
@@ -1491,6 +1623,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4148590afebada386688f18773da617792bf2ef03ffc1e4cbd2b1d45b023e0ba"
 dependencies = [
  "serde_core",
+ "serde_derive",
 ]
 
 [[package]]
@@ -1548,6 +1681,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "shlex"
+version = "2.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f8fadd59c855ef2080decdef8ff161eb6661b86933c9d82e5ba29dc602a55aba"
+
+[[package]]
 name = "siphasher"
 version = "1.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1597,6 +1736,12 @@ dependencies = [
  "unicode-normalization",
  "unicode-properties",
 ]
+
+[[package]]
+name = "subtle"
+version = "2.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
 
 [[package]]
 name = "syn"
@@ -1716,6 +1861,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "tokio-rustls"
+version = "0.26.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1729aa945f29d91ba541258c8df89027d5792d85a8841fb65e8bf0f4ede4ef61"
+dependencies = [
+ "rustls",
+ "tokio",
+]
+
+[[package]]
 name = "tokio-stream"
 version = "0.1.19"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1759,6 +1914,7 @@ dependencies = [
  "pin-project",
  "sync_wrapper",
  "tokio",
+ "tokio-rustls",
  "tokio-stream",
  "tower",
  "tower-layer",
@@ -1913,6 +2069,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ebc1c04c71510c7f702b52b7c350734c9ff1295c464a03335b00bb84fc54f853"
 
 [[package]]
+name = "untrusted"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8ecb6da28b8a351d773b68d5825ac39017e680750f980f3a1a85cd8dd28a47c1"
+
+[[package]]
 name = "version_check"
 version = "0.9.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2052,6 +2214,15 @@ name = "windows-link"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f0805222e57f7521d6a62e36fa9163bc891acd422f971defe97d64e70d0a4fe5"
+
+[[package]]
+name = "windows-sys"
+version = "0.52.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "282be5f36a8ce781fad8c8ae18fa3f9beff57ec1b52cb3de0789201425d9a33d"
+dependencies = [
+ "windows-targets 0.52.6",
+]
 
 [[package]]
 name = "windows-sys"

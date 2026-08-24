@@ -13,7 +13,6 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, ExitStatus, Stdio};
 use std::str;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -229,17 +228,17 @@ fn public_path_phase_diagnostics_report() -> TestResult<()> {
             share_bps
         ));
     }
-    shares.sort_by(|left, right| right.1.cmp(&left.1));
+    shares.sort_by_key(|entry| std::cmp::Reverse(entry.1));
     let mut hint = String::from(
         "Inspect the largest share_basis_points phase first; if server_start_ready or bootstrap_deploy_credentials dominate, whole-suite process timings are lifecycle-dominated.",
     );
-    if let Some((name, share_bps, _)) = shares.first() {
-        if *share_bps >= 2_500 {
-            hint = format!(
-                "Phase `{name}` is {:.1}% of mean sample time; prioritize that surface before command-kernel tuning.",
-                *share_bps as f64 / 100.0
-            );
-        }
+    if let Some((name, share_bps, _)) = shares.first()
+        && *share_bps >= 2_500
+    {
+        hint = format!(
+            "Phase `{name}` is {:.1}% of mean sample time; prioritize that surface before command-kernel tuning.",
+            *share_bps as f64 / 100.0
+        );
     }
 
     let body = format!(
@@ -697,13 +696,14 @@ fn bootstrap_request(
                 contract_lineage: CONTRACT_LINEAGE.to_owned(),
                 entity_type_id: 1,
                 field_ids: vec![1, 3, 5],
+                secret_field_ids: Vec::new(),
             }],
             max_scan_rows: 1,
             approval_required: Vec::new(),
             row_policy: None,
             export: None,
             reimport: None,
-            reimport: None,
+            vector_inspection: None,
         }),
     })
 }
@@ -784,12 +784,14 @@ fn normal_capability_request(
                 contract_lineage: CONTRACT_LINEAGE.to_owned(),
                 entity_type_id: 1,
                 field_ids: vec![1, 3, 5],
+                secret_field_ids: Vec::new(),
             }],
             max_scan_rows: 1,
             approval_required: Vec::new(),
             row_policy: None,
             export: None,
             reimport: None,
+            vector_inspection: None,
         }),
     })
 }
