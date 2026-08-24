@@ -1,17 +1,18 @@
 # ADR-0143: Fixed-Generation Unary Stability Without Performance-Selected Retries
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Direction approved:** 2026-08-23 (maintainer)
-- **Exact text accepted:** No
+- **Exact text accepted:** Yes, 2026-08-24 (maintainer)
 - **Decision deadline:** Before WP-674 reruns or banks the alpha unary baseline
 - **Requires:** ADR-0123, ADR-0142
 - **Amends:** ADR-0142 Decisions 2 through 4 and WP-674's repetition-stability
   rule
 
-The maintainer approved this direction on 2026-08-23 after the first exact
+The maintainer approved this direction on 2026-08-23 and accepted this exact
+text on 2026-08-24 after the first exact
 WP-674 cloud run proved that ADR-0142's three-generation extreme-spread rule
 cannot distinguish a stable product from ordinary shared-cloud scheduling
-noise. This record is not authoritative until its exact text is accepted.
+noise.
 
 ## Context
 

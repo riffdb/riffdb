@@ -1,4 +1,4 @@
-spec_version: '1.05'
+spec_version: '1.06'
 product: RiffDB
 repository: riffdb
 status: deployable-application-alpha-architecture-accepted
@@ -3912,6 +3912,7 @@ work_packages:
   - ADR-0045
   - ADR-0049
   - ADR-0050
+  - ADR-0144
   allowed_paths:
   - README.md
   - scripts/demo*
@@ -3936,6 +3937,10 @@ work_packages:
   - The maintainer-approved WP-200 owner-package amendment is limited to the nested comparison manifests/lockfile,
     safety architecture scanner, and performance-support harness needed for dependency-free semantic benchmark
     evidence; it does not change an adapter, frozen fixture, public-run protocol, or guarantee profile
+  - ADR-0144 additionally permits the public budget adapter, its semantic/public-process/replay/safety/architecture
+    tests, and guarantee profile to record and reconcile the exact closed production durability set {sync, group};
+    response, replay, notification, and exact-end commit evidence must agree, while memory, absent, malformed,
+    unknown, or mismatched durability fails closed and the frozen workload and public-run JSONL fixture remain exact
   - Cross-transport semantic and durable-audit parity plus generated durable/public artifact evidence in the final
     requirement report
   - Final transaction-order evidence from current validation through mutation-affected epoch reads, sequence-free

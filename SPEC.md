@@ -6,9 +6,9 @@
 **Tagline:** *Vibe fast. Commit safely.*  
 **Category:** Contract-first operational database for agent-built applications  
 
-**Version:** 1.05
+**Version:** 1.06
 **Status:** Deployable Application Alpha architecture accepted; implementation gated by work packages
-**Date:** 23 August 2026
+**Date:** 24 August 2026
 **Audience:** Coding agents, database engineers, compiler engineers, security reviewers, and technical product leads  
 **Working binaries:** `riffdbd`, `riffdb`, `riffdb-mcp`  
 **Working URI scheme:** `riffdb://`  
@@ -37,6 +37,7 @@
 
 | Version | Date | Summary |
 |---|---|---|
+| 1.06 | 2026-08-24 | Accepted ADR-0143 and ADR-0144. Unary evidence now uses exactly five fixed process generations, qualifies the median generation, and requires the central three p50 and p95 observations for each backend to remain within 20 percent without performance-selected retries. Production command evidence accepts the closed `sync` and `group` durability set, rejects `memory` and unknown modes, and proves exact durability identity across response, replay, notification, and commit scan without exposing an application durability selector. |
 | 1.05 | 2026-08-23 | Accepted ADR-0142 after WP-670/WP-673 proved the universal 1.10-times PostgreSQL unary gate arithmetically unreachable without deleting required safety work. Mixed c32 throughput/p95 and the seed ceiling remain comparative gates; unary qualification becomes fixed N1/E2 absolute p50/p95 service levels plus a downward-only RiffDB low-water regression bank, while every safe-application PostgreSQL unary ratio remains mandatory published evidence. PERF-008 becomes the sole performance-threshold owner and PERF-005 retains its safety semantics without the superseded parity sentence. |
 | 1.04 | 2026-08-20 | Accepted ADR-0133 and registered QRY-006 through QRY-009 plus WP-654 for explicit compiler-owned covering indexes, atomic covered-value production, sealed positional result batches, additive negotiated compact named-query carriage, and direct typed Rust/Go/TypeScript/Python decoding. Existing index identities and grammar/IR-v1 empty covered values remain byte-exact; opted-in covering indexes use the least sufficient V14 contract bundle/grammar/IR identity. PERF-018 permits only the negotiated byte-equivalent representation change and retains every comparator and semantic obligation. |
 | 1.03 | 2026-08-18 | Advanced the ADR-0004 embedded-storage baseline from redb 4.1.0 to exactly redb 4.2.0 with default features disabled and no optional features. The pin carries upstream `fd82ced`, so a torn crash inside a file-growing commit no longer leaves an unopenable database: `PageManager::grow` syncs the extension before the larger layout can reach the on-disk header, and an actually truncated file returns `StorageError::Corrupted` instead of tripping an open-time assert. `REDB_PIN_CONTAINS_FD82CED` flips to `true` with it; the seeded-campaign corpus consequences are recorded as findings for maintainer rotation rather than silently re-pinned. Renewed dependency-graph, feature, and unsafe-surface review plus a full portable performance re-baseline remain required before this pin carries release evidence. |
@@ -3250,8 +3251,8 @@ that proto-owner review.
 
 | Mode | Behavior | Use |
 |---|---|---|
-| `sync` | Commit is acknowledged only after the embedded engine reports durable synchronization. | Required P1 `riffdbd` correctness mode |
-| `group` | Coordinator batches compatible intents and performs one durable flush for the batch. | Semantic interface and benchmark experiments only in the POC |
+| `sync` | Commit is acknowledged only after the embedded engine reports durable synchronization. | Production acknowledged-durable mode |
+| `group` | Coordinator batches compatible intents and performs one durable flush for the batch. | Production acknowledged-durable mode |
 | `memory` | No durability guarantee. | Unit and model tests only; server refuses non-test startup |
 
 The returned outcome MUST identify the durability mode used for its commit.
@@ -3261,13 +3262,13 @@ implicit or trait-provided default and MUST NOT infer a mode from the backend.
 `memory` may be supplied only through test-only coordinator construction and is
 not a production constructor value.
 
-The POC production server exposes only `sync` durability. Production `group`
-mode remains disabled unless the WP-100 scheduling, fairness, latency, and crash
-evidence receives explicit human review; defining the semantic mode and measuring
-it does not enable it. Its possible MVP default remains a post-POC decision.
-The P1 `riffdbd` component graph explicitly passes the code-level `sync` value to
-coordinator construction; it does not obtain `sync` from a constructor or
-backend fallback and exposes no POC operator durability selector.
+The production server may report exactly `sync` or `group` according to the
+closed coordinator path that committed the command. Both modes acknowledge
+only after the complete command graph is recoverable and every predecessor
+required by the single public frontier is durable and published. The `riffdbd`
+component graph passes its code-level mode explicitly to coordinator
+construction; it does not obtain a mode from a constructor or backend fallback
+and exposes no operator or application durability selector.
 
 ## 10.6 Recovery
 
@@ -8066,13 +8067,14 @@ behavior:
   only concurrency sweeps on an idle inventoried host; short, unstable,
   interfered, drifted, or incorrect runs are non-evidentiary.
   Unary qualification MUST additionally freeze ADR-0142's finite scenario
-  classes, three-generation 20-warmup/100-measurement process isolation,
+  classes, five-generation 20-warmup/100-measurement process isolation,
   absolute N1/E2 service levels, exact RiffDB low-water receipts and 1.10-times
   regression ceiling. Safe-application and minimal PostgreSQL unary results and
   ratios remain mandatory published evidence even though the ratios are not a
   unary release gate. A benchmark MUST reject missing or reclassified
   scenarios, missing hosts/backends/generations, greater-than-20-percent
-  per-generation spread, baseline identity drift, and any semantic or
+  central-three p50 or p95 spread for either backend, performance-selected
+  retry, baseline identity drift, and any semantic or
   correctness mismatch.
   ADR-0133 permits generated named-query clients to negotiate its exact
   schema-bound compact response arm in both RiffDB and comparator workloads.
