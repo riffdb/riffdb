@@ -8187,6 +8187,11 @@ work_packages:
   - ./scripts/check-workspace-policy
   exit_gate: Columnar engine results match an independent oracle at every published frontier and
     after recovery; crash injection never overclaims a durable frontier; org scope is airtight.
+  closure:
+    status: complete
+    evidence: docs/architecture/wp-430-448-closure.md
+    decision: The CP1 columnar core shipped in 47f626a7 and its independent-oracle, recovery,
+      publication, and organization-isolation suites pass on current main.
   human_review_triggers: *id001
 - id: WP-431
   name: Columnar projected-read surface engine additions (CP2a)
@@ -8220,6 +8225,11 @@ work_packages:
   exit_gate: CP1 acceptance suite remains green under empty-select semantics; select narrowing
     cannot widen; PK-order proof holds for fixed-width key components; frontiers never satisfy
     cross-incarnation tokens; structured storage errors expose only closed kinds.
+  closure:
+    status: complete
+    evidence: docs/architecture/wp-430-448-closure.md
+    decision: CP2a shipped in 0cc5250d; the focused current-head CP2a suite passes all eleven
+      selection, ordering, frontier, scope, and structured-error cases.
   human_review_triggers: *id001
 - id: WP-432
   name: Columnar projected-read surface wiring and acceptance spine (CP2b)
@@ -8259,6 +8269,11 @@ work_packages:
     real writes and real apply; every freshness policy resolves to its typed outcome; a stale
     incarnation token never serves; a capability revoked mid-wait is denied at the post-wake
     safe point without serving rows.
+  closure:
+    status: complete
+    evidence: docs/architecture/wp-430-448-closure.md
+    decision: CP2b shipped in 4184b171 and remains covered by current exact-frontier,
+      byte-equivalence, freshness, revocation, and recovery acceptance tests.
   human_review_triggers: *id001
 - id: WP-433
   name: Board benchmark through the projected read path (CP3)
@@ -8286,6 +8301,11 @@ work_packages:
   - cargo +1.97.0 fmt --all -- --check
   exit_gate: Smoke run WITH --board-density >= 50 executes projected board scenarios with gates passing (plain --smoke skips board cells by design); report carries
     board_projected_marginal_ns_per_row when 50/450 projected samples exist; PG path unchanged.
+  closure:
+    status: complete
+    evidence: docs/architecture/wp-430-448-closure.md
+    decision: The CP3 projected-board path shipped in fc0b78f4; current app-baseline tests freeze
+      board density, page sizes, projected marginal accounting, and comparator separation.
   human_review_triggers: *id001
 - id: F-A
   name: Deterministic saturation for flaky capacity and gate-a families
@@ -8382,6 +8402,11 @@ work_packages:
     policy; the packed decoder rejects each hostile offset and row-count shape without
     panicking or reserving remote-chosen capacity; encode-into is byte-identical to the
     allocating encoder and leaves a rejected cell out of the caller's buffer entirely.
+  closure:
+    status: complete
+    evidence: docs/architecture/wp-430-448-closure.md
+    decision: The CP4 SDK, CLI, and packed encode-into surfaces shipped in 208a355d; hostile-shape
+      and exact-byte tests remain green.
   human_review_triggers: *id001
 - id: WP-435
   name: DeployReactiveModule audit link allowlist repair and cross-crate pin (FX)
@@ -8429,6 +8454,11 @@ work_packages:
     across a full startup structural pass; re-removing the operation from the storage-api
     control-plane arm turns the unit matrix, the cross-crate pin, and the real-daemon
     acceptance red; the full workspace battery reports zero failures.
+  closure:
+    status: complete
+    evidence: docs/architecture/wp-430-448-closure.md
+    decision: The DeployReactiveModule audit allowlist repair and cross-crate pin shipped in
+      73a15cf1 and remain covered by the current all-feature workspace battery.
   human_review_triggers: *id001
 - id: WP-436
   name: Reactive republish audit parity, memory publish conformance, and write-time linkless
@@ -8482,6 +8512,11 @@ work_packages:
     cases red; a DeployReactiveModule linkless success cannot be appended yet a synthetic
     durable one still opens clean on both structural passes; the full workspace battery
     reports zero failures.
+  closure:
+    status: complete
+    evidence: docs/architecture/wp-430-448-closure.md
+    decision: Idempotent reactive republish audit parity and memory/redb conformance shipped in
+      01f28c34; current structural and daemon acceptance suites pass.
   human_review_triggers: *id001
 - id: WP-437
   name: App-baseline evidence integrity and repeatability
@@ -8508,6 +8543,11 @@ work_packages:
   exit_gate: An evidentiary load report cannot omit environment/durability identity, cannot pass unstable repetitions,
     cannot compare different history states implicitly, and cannot report clean when durable application state
     disagrees with recorded operation outcomes.
+  closure:
+    status: complete
+    evidence: docs/architecture/wp-430-448-closure.md
+    decision: Evidence identity, balanced isolation, stability refusal, fresh-history selection, and
+      post-load reconciliation shipped in a5a0cde3 and remain pinned by the current self-test.
   human_review_triggers: *id001
 - id: WP-438
   name: Open-loop arrival, tenant fairness, contention, and data-shape matrix
@@ -8530,6 +8570,11 @@ work_packages:
   - cargo +1.97.0 fmt --all -- --check
   exit_gate: The suite locates the offered-load saturation knee, reports fairness without high-cardinality labels,
     and records every selected tenant/contention/data-shape dimension in machine-readable output.
+  closure:
+    status: complete
+    evidence: docs/architecture/wp-430-448-closure.md
+    decision: Bounded open-loop accounting, tenant routing/fairness, contention, and data-shape
+      profiles shipped in a5a0cde3; current harness tests retain their machine-readable bounds.
   human_review_triggers: *id001
 - id: WP-439
   name: Stateful application journeys and semantic reconciliation
@@ -8551,6 +8596,11 @@ work_packages:
   - cargo +1.97.0 fmt --all -- --check
   exit_gate: Every supported journey measures one causal application action and proves its final durable effect exactly
     once; a dropped, duplicated, stale, or incorrectly shaped result turns the run red.
+  closure:
+    status: complete
+    evidence: docs/architecture/wp-430-448-closure.md
+    decision: Browser, agent, and durable-worker journey reconciliation shipped in a5a0cde3 with
+      exact once-only final-state checks retained by the current harness.
   human_review_triggers: *id001
 - id: WP-440
   name: Crash, history, deployment, authorization, and recovery under load
@@ -8572,6 +8622,11 @@ work_packages:
   - cargo +1.97.0 fmt --all -- --check
   exit_gate: Every injected failure or evolution transition yields a typed expected public result, recovery preserves
     exact command semantics, and the report distinguishes correctness, downtime, and latency recovery.
+  closure:
+    status: complete
+    evidence: docs/architecture/wp-430-448-closure.md
+    decision: Crash, history, deployment, role, overload, and restart profiles shipped in a5a0cde3;
+      the current self-test includes bounded dead-peer process-abort coverage.
   human_review_triggers: *id001
 - id: WP-441
   name: Benchmark attribution and resource accounting
@@ -8594,6 +8649,11 @@ work_packages:
   - cargo +1.97.0 fmt --all -- --check
   exit_gate: Every evidentiary run carries enough bounded stage and resource evidence to distinguish transport,
     queueing, CPU, durable I/O, storage growth, and unfair scheduling without exposing application values.
+  closure:
+    status: complete
+    evidence: docs/architecture/wp-430-448-closure.md
+    decision: Redaction-safe stage, scheduler, process, storage, and fairness attribution shipped in
+      a5a0cde3 and remains part of the versioned report surface.
   human_review_triggers: *id001
 - id: WP-442
   name: Minimal and safety-equivalent PostgreSQL comparisons
@@ -8614,6 +8674,11 @@ work_packages:
   - cargo +1.97.0 fmt --all -- --check
   exit_gate: Both PostgreSQL profiles execute the same domain operation shapes, the safety profile proves its extra
     obligations atomically, and every report identifies which comparator produced each number.
+  closure:
+    status: complete
+    evidence: docs/architecture/wp-430-448-closure.md
+    decision: Minimal and safety-equivalent PostgreSQL profiles shipped in a5a0cde3; current tests
+      freeze comparator identities, durability, obligations, and SQLSTATE-based outcomes.
   human_review_triggers: *id001
 - id: WP-443
   name: Rust TypeScript Python application conformance
@@ -8637,6 +8702,11 @@ work_packages:
   - cargo +1.97.0 fmt --all -- --check
   exit_gate: All three languages emit byte-equivalent canonical semantic observations for the golden workload and no
     runner imports kernel APIs or owns application transport/encoding logic.
+  closure:
+    status: complete
+    evidence: docs/architecture/wp-430-448-closure.md
+    decision: Rust, TypeScript, and Python golden conformance shipped in a5a0cde3; current generated
+      binding and boundary checks retain the no-kernel/no-handwritten-transport rule.
   human_review_triggers: *id001
 - id: WP-444
   name: Benchmark release matrix and evidence gate
@@ -8657,6 +8727,11 @@ work_packages:
   - ./scripts/check-requirement-coverage
   exit_gate: The alpha benchmark gate is eligible only when every required cell is present, stable, semantically
     reconciled, and measured under recorded comparable storage and durability conditions.
+  closure:
+    status: complete_framework_not_release_evidence
+    evidence: docs/architecture/wp-430-448-closure.md
+    decision: The fail-closed release-matrix manifest shipped in a5a0cde3. It correctly refuses
+      incomplete or unstable evidence; closing the framework does not qualify the current alpha.
   human_review_triggers: *id001
 - id: WP-445
   name: App-baseline realistic-suite documentation and evidence refresh
@@ -8677,6 +8752,11 @@ work_packages:
   - cargo +1.97.0 fmt --all -- --check
   exit_gate: A new operator can reproduce and correctly interpret every alpha benchmark cell from public documentation,
     and checked evidence contains no unsupported safety or performance claim.
+  closure:
+    status: complete
+    evidence: docs/performance/app-baseline-alpha.md
+    decision: The realistic-suite runbook, report interpretation, comparator boundaries, and evidence
+      eligibility rules shipped in a5a0cde3 and pass the current handbook check.
   human_review_triggers: *id001
 - id: WP-446
   name: Reactive-module storage hygiene — republish off the write lock, memory structural
@@ -8737,6 +8817,11 @@ work_packages:
     each yield exactly one typed authoritative finding, while a published module validates
     clean, and removing the new inspection arm returns all of them to zero findings; the full
     workspace battery reports zero failures.
+  closure:
+    status: complete
+    evidence: docs/architecture/wp-430-448-closure.md
+    decision: Write-lock-free idempotent republish and memory structural inspection shipped in
+      abadb5e2; the current storage suites retain the no-write and corruption-refusal pins.
   human_review_triggers: *id001
 - id: WP-447
   name: Storage-scan hygiene — single-pass startup verification of reactive publications,
@@ -8807,6 +8892,11 @@ work_packages:
     unretained reactive module and a delivery whose consumer is absent each yield exactly one
     authoritative MissingCrossLink, and removing either new inspection arm returns its case to
     zero findings; the full workspace battery reports zero failures.
+  closure:
+    status: complete
+    evidence: docs/architecture/wp-430-448-closure.md
+    decision: Single-pass reactive publication verification and complete memory consumer/delivery
+      inspection shipped in 163bf294 and remain covered by current structural tests.
   human_review_triggers: *id001
 - id: WP-448
   name: Graceful-shutdown checkpoint in O(1) — validated-prefix row counts read from table
@@ -8876,6 +8966,11 @@ work_packages:
     iterated rows to 432ms over zero, and to 63us with no live entities, leaving the
     entity-chain fingerprint's current-state ENTITIES pass as the sole remaining
     history-independent residual; the full workspace battery reports zero failures.
+  closure:
+    status: complete
+    evidence: docs/architecture/wp-430-448-closure.md
+    decision: Constant-time metadata-derived shutdown checkpoint counts shipped in 66966813 with
+      byte-identity, fallback, census-drift refusal, reopen, and scale coverage intact.
   human_review_triggers: *id001
 - id: WP-449
   name: Mixed-load writer evidence and fresh-history diagnosis
