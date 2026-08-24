@@ -27,12 +27,15 @@ use riffdb_client_rust::generated::legal_spend::{
 };
 use riffdb_client_rust::{
     AttemptBudget, BackupNameV1, BearerCredential, BootstrapCallMetadata,
-    BootstrapCredential as TransportBootstrapCredential, CallMetadata, CreateOfflineBackup,
-    OfflineMaintenanceOperationId, OfflineMaintenanceReplacementConfirmation, RestoreOfflineBackup,
-    RiffDbClient, generate_offline_maintenance_operation_id, generate_request_id, v1,
+    BootstrapCredential as TransportBootstrapCredential, CallMetadata, ClientError,
+    CreateOfflineBackup, DetailsFreeStatus, OfflineMaintenanceOperationId,
+    OfflineMaintenanceReplacementConfirmation, RestoreOfflineBackup, RiffDbClient,
+    generate_offline_maintenance_operation_id, generate_request_id, v1,
 };
+use riffdb_errors::PublicErrorKind;
 use riffdb_storage_api::{DatabaseIdentityProbe, DatabaseIdentityProbePort};
 use riffdb_storage_redb::RedbStore;
+use riffdb_testkit::process::MAX_CHILD_COMPONENT_BYTES;
 use riffdb_types::{EntityKeyBuilder, EntityTypeId};
 use tokio::time::timeout;
 use tonic::transport::Endpoint;
@@ -41,7 +44,21 @@ const AUDIENCE: &str = "riffdb-grpc-loopback";
 const ENVIRONMENT: &str = "wp155-maintenance-test";
 const READY_PREFIX: &str = "riffdbd-ready-v1\t";
 const SHUTDOWN_COMMAND: &[u8] = b"shutdown\n";
-const MAX_READY_LINE_BYTES: usize = 256;
+const SHUTDOWN_EVIDENCE_PREFIXES: [&str; 13] = [
+    "riffdb-write-completion-groups-v1\t",
+    "riffdb-dispatch-reasons-v1\t",
+    "riffdb-shutdown-stages-v1\t",
+    "riffdb-read-stages-v1\t",
+    "riffdb-write-service-stages-v1\t",
+    "riffdb-command-stages-v1\t",
+    "riffdb-writer-evidence-v1\t",
+    "riffdb-completion-lane-v1\t",
+    "riffdb-writer-frame-census-v1\t",
+    "riffdb-writer-flush-census-v1\t",
+    "riffdb-writer-journal-stages-v1\t",
+    "riffdb-writer-publication-stages-v1\t",
+    "riffdb-query-execute-windows-v1\t",
+];
 const PROCESS_START_TIMEOUT: Duration = Duration::from_secs(30);
 const MAINTENANCE_TIMEOUT: Duration = Duration::from_secs(90);
 const PROCESS_STOP_TIMEOUT: Duration = Duration::from_secs(15);
@@ -586,24 +603,8 @@ async fn staged_only_recovery_denies_bad_credentials_and_restores_empty_or_corru
     let denied_credential =
         generate_bootstrap_credential(BOOTSTRAP_UNIX_MILLISECONDS + 1, &SystemEntropy)?;
     let denied_metadata = CallMetadata::authenticated(bearer_credential(&denied_credential)?);
-    match timeout(
-        RPC_TIMEOUT,
-        empty_client.restore_offline_backup_with_retry(
-            &empty_restore,
-            retry_attempts(),
-            &denied_metadata,
-        ),
-    )
-    .await
-    {
-        Ok(Err(_)) => {}
-        Ok(Ok(_)) => {
-            return Err(test_failure(
-                "staged-only recovery accepted a bearer denied by the backup",
-            ));
-        }
-        Err(_) => return Err(test_failure("denied staged authorization timed out")),
-    }
+    require_staged_authentication_denial(&mut empty_client, &empty_restore, &denied_metadata)
+        .await?;
     let empty_result = bounded_rpc(
         "empty-target staged recovery retry",
         empty_client.restore_offline_backup_with_retry(
@@ -766,6 +767,39 @@ async fn restore_eventually(
     .map_err(|_| test_failure("recovery restore admission did not become available"))?
 }
 
+async fn require_staged_authentication_denial(
+    client: &mut RiffDbClient,
+    restore: &RestoreOfflineBackup,
+    metadata: &CallMetadata,
+) -> TestResult<()> {
+    timeout(PROCESS_START_TIMEOUT, async {
+        loop {
+            let request_id = fresh_request_id_bytes()?;
+            match client
+                .restore_offline_backup(restore_operation_request(request_id, restore), metadata)
+                .await
+            {
+                Err(ClientError::DetailsFree(DetailsFreeStatus::Unauthenticated)) => {
+                    return Ok(());
+                }
+                Err(ClientError::Public(error))
+                    if error.kind() == PublicErrorKind::AuthorizationDenied =>
+                {
+                    return Ok(());
+                }
+                Err(_) => tokio::task::yield_now().await,
+                Ok(_) => {
+                    return Err(test_failure(
+                        "staged-only recovery accepted a bearer denied by the backup",
+                    ));
+                }
+            }
+        }
+    })
+    .await
+    .map_err(|_| test_failure("denied staged authorization did not become observable"))?
+}
+
 async fn poll_terminal_operation(
     client: &mut RiffDbClient,
     operation_id: OfflineMaintenanceOperationId,
@@ -902,6 +936,26 @@ fn restore_backup_request(
         backup_name: backup_name.as_str().to_owned(),
         replacement_confirmation:
             v1::OfflineMaintenanceReplacementConfirmation::AllowReplaceNonemptyTarget as i32,
+    }
+}
+
+fn restore_operation_request(
+    request_id: Vec<u8>,
+    restore: &RestoreOfflineBackup,
+) -> v1::RestoreOfflineBackupRequest {
+    let replacement_confirmation = match restore.confirmation() {
+        OfflineMaintenanceReplacementConfirmation::NotProvided => {
+            v1::OfflineMaintenanceReplacementConfirmation::Unspecified
+        }
+        OfflineMaintenanceReplacementConfirmation::AllowReplaceNonemptyTarget => {
+            v1::OfflineMaintenanceReplacementConfirmation::AllowReplaceNonemptyTarget
+        }
+    };
+    v1::RestoreOfflineBackupRequest {
+        request_id,
+        operation_id: restore.operation_id().into_bytes().to_vec(),
+        backup_name: restore.backup_name().as_str().to_owned(),
+        replacement_confirmation: replacement_confirmation as i32,
     }
 }
 
@@ -1348,12 +1402,29 @@ fn reap_child(
 }
 
 fn read_readiness_stream(stdout: ChildStdout, ready: Sender<io::Result<String>>) -> usize {
-    let mut reader = BufReader::new(stdout);
+    read_readiness_lines(stdout, ready)
+}
+
+fn read_readiness_lines(mut reader: impl Read, ready: Sender<io::Result<String>>) -> usize {
+    let mut reader = BufReader::new(&mut reader);
     let mut total = 0_usize;
     loop {
-        match read_optional_bounded_line(&mut reader, MAX_READY_LINE_BYTES) {
+        match read_optional_bounded_line(&mut reader, MAX_CHILD_COMPONENT_BYTES) {
             Ok(Some(line)) => {
                 total = total.saturating_add(line.len().saturating_add(1));
+                if SHUTDOWN_EVIDENCE_PREFIXES
+                    .iter()
+                    .any(|prefix| line.starts_with(prefix))
+                {
+                    continue;
+                }
+                if !line.starts_with(READY_PREFIX) {
+                    let _ = ready.send(Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "riffdbd emitted an unknown readiness line",
+                    )));
+                    return total.saturating_add(drain_reader(&mut reader));
+                }
                 if ready.send(Ok(line)).is_err() {
                     return total.saturating_add(drain_reader(&mut reader));
                 }
@@ -1365,6 +1436,34 @@ fn read_readiness_stream(stdout: ChildStdout, ready: Sender<io::Result<String>>)
             }
         }
     }
+}
+
+#[test]
+fn readiness_reader_skips_only_bounded_exact_shutdown_evidence() -> TestResult<()> {
+    let long_evidence = format!(
+        "riffdb-writer-evidence-v1\t{}\nriffdbd-ready-v1\t127.0.0.1:12345\n",
+        "0".repeat(900)
+    );
+    let (sender, receiver) = mpsc::channel();
+    let consumed = read_readiness_lines(long_evidence.as_bytes(), sender);
+    let ready = receiver.recv()??;
+    if consumed != long_evidence.len() || ready != "riffdbd-ready-v1\t127.0.0.1:12345" {
+        return Err(test_failure(
+            "readiness reader did not skip exact bounded shutdown evidence",
+        ));
+    }
+
+    let (sender, receiver) = mpsc::channel();
+    let _ = read_readiness_lines(b"unregistered-evidence-v1\t0\n".as_slice(), sender);
+    let error = receiver
+        .recv()?
+        .expect_err("unknown stdout must fail closed");
+    if error.kind() != io::ErrorKind::InvalidData {
+        return Err(test_failure(
+            "unknown readiness output did not retain its closed error class",
+        ));
+    }
+    Ok(())
 }
 
 fn read_optional_bounded_line(
