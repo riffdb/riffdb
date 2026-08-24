@@ -354,6 +354,11 @@ work_packages:
   exit_gate: Evaluation and commit graph construction share one exact canonical entity post-image,
     external and recovered paths retain full validation, all semantic and recovery suites pass, and
     same-host evidence reduces validation/staging CPU or total seed without a material unary regression.
+  closure:
+    status: complete
+    evidence: docs/performance/wp-474-sealed-entity-postimage.md
+    decision: The sealed Arc-backed post-image path, exact-byte equivalence tests, recovery coverage,
+      and retained same-host improvement shipped in f38e57cc and remain green on current main.
   human_review_triggers: *id001
 - id: WP-475
   name: Retained canonical permission lookup
@@ -393,6 +398,11 @@ work_packages:
     point still reloads and fully evaluates current authority, permission-set clones share retained
     immutable keys, and same-host evidence reduces authorization CPU or total seed without a
     material unary regression.
+  closure:
+    status: complete
+    evidence: docs/performance/wp-475-retained-permission-keys.md
+    decision: Immutable retained permission keys shipped in aee0f8f9 with complete fresh-safe-point
+      authorization intact and a retained same-host CPU and latency improvement.
   human_review_triggers: *id001
 - id: WP-476
   name: Constant-time durable shape dispatch
@@ -430,6 +440,11 @@ work_packages:
   exit_gate: Every durable structural and semantic result remains exact, the direct table is proven
     equivalent to every closed rule set, all malformed and recovery suites pass, and same-host
     evidence reduces durable preflight CPU or total seed without a material unary regression.
+  closure:
+    status: complete
+    evidence: docs/performance/wp-476-durable-shape-dispatch.md
+    decision: Compile-time durable-shape dispatch shipped in 0c39ad86; exhaustive equivalence,
+      malformed-record, canonicality, and recovery tests remain green with retained improvement.
   human_review_triggers: *id001
 - id: WP-477
   name: Canonical command capsule durable layout
@@ -496,6 +511,11 @@ work_packages:
     locators, all predecessor databases migrate restartably with complete semantic equivalence and
     fail-closed recovery, every public behavior remains exact, and retained evidence materially
     reduces full-seed/write cost without material unary or read regression.
+  closure:
+    status: complete
+    evidence: docs/performance/wp-477-command-capsules.md
+    decision: Canonical capsules, checked locators, restartable predecessor migration, and complete
+      public-view reconstruction shipped and remain covered by current semantic and recovery suites.
   human_review_triggers: *id001
 - id: WP-478
   name: Pipelined standard-profile writer journal
@@ -571,6 +591,12 @@ work_packages:
     checkpoint-plus-journal prefix, applied roots never outrun public durability, all crash and
     semantic suites pass, idle and hardened paths remain exact, and retained same-run evidence shows
     RiffDB exceeding PostgreSQL safe-app mean throughput without a material c1 regression.
+  closure:
+    status: complete
+    evidence: docs/performance/wp-474-493-closure.md
+    decision: The bounded journal format and recovery path shipped before ADR-0104 production
+      activation; current crash/recovery suites and the retained historical activation comparison
+      satisfy the package gate without making a current alpha-release claim.
   human_review_triggers: *id001
 - id: WP-479
   name: Segmented command authority and rebuildable exact indexes
@@ -642,6 +668,12 @@ work_packages:
     migrates restartably, derived indexes are positively proven complete before use, and retained
     same-run evidence shows RiffDB exceeding PostgreSQL safe-app mean throughput across the accepted
     client sweep without material c1, read, startup, or durable-growth regression.
+  closure:
+    status: complete
+    evidence: docs/performance/wp-479-segmented-command-authority.md
+    decision: Segmented authority, readiness-gated derived indexes, generation overlays, and
+      restartable migration shipped; later overlay activation evidence supplies the completed public
+      comparison while current semantic and recovery suites retain exactness.
   human_review_triggers: *id001
 - id: WP-480
   name: Preallocated recyclable durability journal
@@ -699,6 +731,11 @@ work_packages:
     stale-residue, recycle, upgrade, ENOSPC, backup, and crash test passes; acknowledged state and
     published-frontier semantics remain exact; and c8/c32/c128 evidence identifies the post-journal
     performance frontier without a material c1 or read regression.
+  closure:
+    status: complete
+    evidence: docs/performance/wp-480-journal-mechanics.md
+    decision: The 5.09-times mechanics threshold justified activation; the generation-bound recycled
+      format, recovery and backup coverage, and retained public-path checkpoint remain current.
   human_review_triggers: *id001
 - id: WP-481
   name: Constant-time snapshot frontiers and concurrent named-query plan fanout
@@ -741,6 +778,11 @@ work_packages:
     snapshot-head work is independent of retained segment size, all operations remain error-free,
     and the public-path throughput/read-latency result materially improves over WP-480 without a
     material c1 or write regression.
+  closure:
+    status: complete
+    evidence: docs/performance/wp-481-constant-time-query-frontiers.md
+    decision: Constant-time frontier discovery and concurrent immutable plan lookup shipped with
+      exact snapshot semantics and retained c1/c32/c128 evidence; current read and recovery suites pass.
   human_review_triggers: *id001
 - id: WP-482
   name: Streaming command-segment sealing and complete serial writer evidence
@@ -779,6 +821,11 @@ work_packages:
   exit_gate: Durable bytes and all semantic/crash tests remain exact, serial stage counts cover the
     successful transaction-local command population, and the streaming encoder materially reduces
     writer CPU or public write latency without a read, c1, memory, or retained-byte regression.
+  closure:
+    status: complete
+    evidence: docs/performance/wp-482-streaming-command-segments.md
+    decision: Streaming segment sealing and complete serial-stage observations shipped with exact
+      byte-equality tests and retained improvements in memory, durable growth, and throughput.
   human_review_triggers: *id001
 - id: WP-483
   name: Fully streaming command-capsule sealing
@@ -814,6 +861,11 @@ work_packages:
   exit_gate: Durable bytes and recovery remain exact, the authoritative seal retains no complete
     capsule wire graph, and c32 evidence shows lower encoding/staging cost or memory without a
     public latency, retained-byte, or correctness regression.
+  closure:
+    status: complete
+    evidence: docs/performance/wp-483-streaming-command-capsules.md
+    decision: Fully streaming capsule encoding shipped with independent generated encoding as the
+      byte oracle; current recovery tests pass and retained controlled write evidence did not regress.
   human_review_triggers: *id001
 - id: WP-484
   name: Proven command-segment envelope framing
@@ -856,6 +908,11 @@ work_packages:
     remain exact, no untyped or compatibility path can select the proven framing shortcut, and
     fresh evidence shows lower writer CPU or public write latency without a memory, retained-byte,
     read-path, c1, or correctness regression.
+  closure:
+    status: complete
+    evidence: docs/performance/wp-484-proven-command-segment-framing.md
+    decision: The typed proven-framing shortcut shipped only on the sealed segment path, with exact
+      byte/bound equivalence and a retained public-path improvement.
   human_review_triggers: *id001
 - id: WP-485
   name: State-bearing command-segment mechanics proof
@@ -896,6 +953,11 @@ work_packages:
   exit_gate: Production storage and reads are unchanged, the evidence is reproducible and labels
     the proposed layout benchmark-only, and ADR-0104 is absent after a failed gate or remains
     Proposed pending exact-text human review after a passed gate.
+  closure:
+    status: complete_negative_mechanics_result
+    evidence: docs/performance/wp-485-state-bearing-segment-mechanics.md
+    decision: The predeclared two-times mechanics gate failed, so the state-bearing segment was
+      correctly rejected without changing production storage or read authority.
   human_review_triggers: *id001
 - id: WP-486
   name: Journal-authoritative overlay mechanics and exact design
@@ -944,6 +1006,11 @@ work_packages:
   exit_gate: Production behavior is unchanged; reproducible mechanics either reject the proposal or
     meet every apply, read, and checkpoint threshold; and ADR-0104 remains Proposed until the human
     maintainer accepts its exact authority, ordering, recovery, and read-validation text.
+  closure:
+    status: complete
+    evidence: docs/performance/wp-486-journal-state-overlay.md
+    decision: The overlay mechanics met every predeclared threshold and produced ADR-0104, whose
+      exact authority, ordering, recovery, and read-validation text was subsequently accepted.
   human_review_triggers: *id001
 - id: WP-487
   name: Frozen checkpoint-plus-overlay read views
@@ -985,6 +1052,11 @@ work_packages:
   exit_gate: Exact-text ADR-0104 is Accepted before implementation; composite view construction and
     reads pass semantic parity, boundedness, corruption, and concurrency tests; and no production
     acknowledgement path selects the overlay.
+  closure:
+    status: complete
+    evidence: docs/performance/wp-474-493-closure.md
+    decision: Accepted ADR-0104's immutable composite view shipped in 5156e86c and 864ec779; the
+      focused current-head conformance suite passes and production selection remained deferred to WP-488.
   human_review_triggers: *id001
 - id: WP-488
   name: Frame-first standard writer and overlay publication
@@ -1033,6 +1105,11 @@ work_packages:
   exit_gate: Standard acknowledgements perform no synchronous redb apply, hardened behavior is
     unchanged, all semantic/concurrency/failure suites pass, and focused c1/c32 write evidence
     materially improves without read or correctness regression.
+  closure:
+    status: complete
+    evidence: docs/performance/wp-474-493-closure.md
+    decision: Frame-first standard staging and ordered overlay publication shipped through
+      790041aa, fa1e2896, and the singleton/publish follow-ups; hardened semantics remain the oracle.
   human_review_triggers: *id001
 - id: WP-489
   name: Ordered asynchronous checkpoint, recovery, and maintenance barriers
@@ -1081,6 +1158,11 @@ work_packages:
   exit_gate: Every acknowledged command survives all crash arms, every reconstructed view is exact,
     checkpoints and barriers remain bounded and fail closed, backup/restore is complete, and no
     accepted suffix can be lost or exposed partially.
+  closure:
+    status: complete
+    evidence: docs/performance/wp-474-493-closure.md
+    decision: Ordered asynchronous checkpointing shipped in 351ae33a with deterministic suffix
+      recovery, bounded barriers, backup integration, and current process-level recovery coverage.
   human_review_triggers: *id001
 - id: WP-490
   name: Journal-overlay production enablement and safe-app throughput gate
@@ -1126,6 +1208,13 @@ work_packages:
   exit_gate: Same-run retained evidence proves RiffDB's four-point arithmetic mean throughput beats
     PostgreSQL safe-app, no point falls below 0.90 parity, every correctness/recovery/latency gate
     passes, and the complete standard-profile mechanism is documented and operationally bounded.
+  closure:
+    status: complete_with_superseded_release_gate
+    evidence: docs/performance/wp-474-493-closure.md
+    decision: Production overlay activation is complete and its historical 30-second sweep exceeded
+      safe-app by 1.05 times in the four-point mean with every point at or above 0.98 and zero
+      failures. Later PERF-018 and PERF-008 revisions supersede that activation receipt for release;
+      WP-623 and WP-674 remain open and no alpha-performance pass is claimed here.
   human_review_triggers: *id001
 - id: WP-493
   name: Contract-migration preflight reads the published overlay
@@ -1160,6 +1249,11 @@ work_packages:
     journal-suffix durable, the retired direct singleton path is not reintroduced, ADR-0101/0103/0104
     semantics are unchanged, and an architecture check reds if a preflight read returns to the
     checkpoint alone.
+  closure:
+    status: complete
+    evidence: docs/performance/wp-474-493-closure.md
+    decision: Overlay-aware migration preflight shipped in 0e3f56e4; the architecture pin and the
+      focused current-head migration gate pass while the direct singleton path remains retired.
   human_review_triggers: *id001
 - id: WP-020
   closure:
