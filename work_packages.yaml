@@ -11885,6 +11885,13 @@ work_packages:
   standing_design_tests:
     interface_safety: Documentation-only; no public surface changes.
     scale: Not applicable; no runtime code.
+  closure:
+    status: complete
+    evidence: docs/architecture/vectors-recon-map.md
+    decision: Commit ebe957e2 registered VEC-001 through VEC-012, recorded ADR-0091's
+      client-supplied-embedding amendment and the exact-first/first-party-ANN rulings, mapped the
+      inherited projection-plane authority and freshness seams, and fixed the WP-591 through WP-595
+      decomposition. Requirement coverage and the complete public handbook pass at current HEAD.
   human_review_triggers: *id001
 - id: WP-591
   name: Vectors contract surface — declared vector fields through grammar, IR, and compiler
@@ -11924,6 +11931,14 @@ work_packages:
   deferred:
   - The vector JSON-schema node does not yet pin the exact byte length for its declared
     dimension; the schema is dimension-generic (validated at the value boundary instead)
+  closure:
+    status: complete
+    evidence: docs/getting-started/VECTOR-SEARCH.md
+    decision: Commits 2ce3d2b7 and 9f6a403c delivered contextual vector-field grammar, bounded
+      canonical vector values, VEC metadata through versioned IR and bundle identity, and spanned
+      compiler rejection for every invalid declaration. Current syntax, IR, compiler, compatibility,
+      generation, and handbook checks pass; the intentionally dimension-generic JSON schema remains
+      guarded by canonical value-boundary validation as declared above.
   human_review_triggers: *id001
 - id: WP-592
   name: Vectors embedding write — typed command, staleness tracking, model-version observability
@@ -11974,6 +11989,15 @@ work_packages:
     to WP-596 under the maintainer rulings recorded 2026-08-11; no ruling remains open here.
   - Duration-based staleness (an entity stale longer than a declared duration) is a named future
     amendment; v1 enforces the declared stale-entity count threshold without clock machinery.
+  closure:
+    status: complete
+    evidence: docs/architecture/vectors-projection-obligations.md
+    decision: The WP-592 type foundation and the WP-596 production completion through commits
+      90c9cd7c and 036d18be provide canonical dimension-checked embedding commands, atomic durable
+      evidence with provenance and idempotency, bounded symbolic staleness/model-version inspection,
+      and fail-closed VectorStaleness health across native, gRPC, MCP, CLI, and generated clients.
+      Current production crate, real-server, generated-artifact, and recovery batteries pass;
+      duration-based staleness remains the explicitly deferred future amendment.
   human_review_triggers: *id001
 - id: WP-593
   name: Vectors exact tier — vector projection, exact KNN, nearest() with policy before ranking
@@ -12018,6 +12042,15 @@ work_packages:
     the production QueryReadView nearest adapter with the shared 500-row scan ceiling and
     policy before ranking, parameterized-K binding, and typed vector result transport is
     assigned to WP-596 under the maintainer rulings recorded 2026-08-11.
+  closure:
+    status: complete
+    evidence: docs/architecture/vectors-projection-obligations.md
+    decision: Commits 8bcb4271 and 9f6a403c established the exact bounded reference evaluator and
+      filter/policy-before-ranking semantics; WP-596's production series ending at 036d18be wired
+      the same compiler-owned projection through authoritative frontiers, freshness, rebuild,
+      replay, parameterized K, and public transports. Current projection semantics, real-server
+      vector acceptance, production crate, recovery, and generation tests pass with organization
+      scope, K, and the 500-row scan bound unrepresentable to omit.
   human_review_triggers: *id001
 - id: WP-594
   name: Vectors approximate tier — first-party ANN structure under the declared-recall contract
@@ -12216,6 +12249,15 @@ work_packages:
   - Duration-based staleness is a future ADR amendment; v1 intentionally requires no clock.
   - ANN threshold and recall-target declarations plus the first-party approximate structure
     belong to WP-594, whose contract-owner path expansion is recorded above.
+  closure:
+    status: complete
+    evidence: docs/architecture/wp-595-vector-acceptance.md
+    decision: The production vector prerequisite series from commit 90c9cd7c through 036d18be
+      completed canonical typed ingress, durable evidence and inspection, health parity, generated
+      clients, projection registration/lifecycle, and exact projected-nearest execution under
+      authorization and bounded scan work. The full current-head package union, real gRPC server
+      vector path, projection semantics, recovery matrix, generated artifacts, handbook, and
+      requirement coverage pass; WP-594 owns the separately closed approximate tier.
   human_review_triggers: *id001
 - id: WP-597
   name: Secret field classification with structural display-surface redaction
@@ -12260,6 +12302,15 @@ work_packages:
       full-fidelity and cannot silently redact stored state.
     scale: Classification and redaction are bounded static field metadata plus existing visibility
       checks; no row scan, retained secret set, or whole-application runtime registry is introduced.
+  closure:
+    status: complete
+    evidence: docs/security/SECRET-FIELDS.md
+    decision: Commit 03199e45 completed secret classification through syntax, V8 IR, bundle and
+      capability identity, durable V6 secret naming, structural default-deny visibility, explicit
+      reveal authority, and redaction across public errors, diagnostics, CLI, MCP, telemetry,
+      provenance, and audit summaries. Current compiler, service, CLI, transport, architecture,
+      generated-artifact, recovery, and handbook tests pass; full-fidelity authorized persistence,
+      backup, export, and changelog carriage remains distinct from display rendering.
   human_review_triggers: *id001
 - id: WP-598
   name: Framework-profile prerequisite verification for the rescoped alpha gate
