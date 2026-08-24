@@ -10359,6 +10359,13 @@ work_packages:
     scale: Frames remain bounded by the existing published-frontier ceiling. Validation retains
       bounded checkpoints and chain proofs rather than rescanning or rewriting all live state for
       each delete, and the representation is follower/partition routable.
+  closure:
+    status: complete
+    evidence: docs/architecture/DEPLOYABLE-APPLICATION-ALPHA.md
+    decision: Delete-aware changelog V2 tombstones, reciprocal entity transitions, and substituted-
+      checkpoint rejection shipped through commits 6985f11f, c2bba5ce, 2f38ae7a, and a222f682.
+      Current-head storage, full recovery-matrix, Protobuf, architecture, generated, requirement,
+      handbook, formatting, and Clippy gates pass.
   human_review_triggers: *id001
 - id: WP-560
   name: Bounded collection command language and IR
@@ -10403,6 +10410,13 @@ work_packages:
       when replication/durable validation cannot represent it.
     scale: Element, aggregate, byte, partition, and conflict sets are statically bounded and fully
       charged; no runtime scan or cross-partition discovery is introduced.
+  closure:
+    status: complete
+    evidence: docs/contracts/BOUNDED-COMMANDS.md
+    decision: The bounded collection grammar, V5 IR, exact create/delete expansion, cascade proof,
+      diagnostics, and compatibility fixtures shipped through commits c81d5dad through 47f30229.
+      Current-head compiler suites and a fresh 60-second contract-parser fuzz run pass with generated,
+      requirement, handbook, formatting, and Clippy checks green.
   human_review_triggers: *id001
 - id: WP-561
   name: Atomic collection command runtime, storage, and recovery
@@ -10454,6 +10468,13 @@ work_packages:
       crosses the semantic port.
     scale: Evaluation and staging are bounded by the compiled 256-element/16-MiB ceilings and one
       partition, with no hidden scan, unbounded recovery, or full-state copy.
+  closure:
+    status: complete
+    evidence: docs/contracts/BOUNDED-COMMANDS.md
+    decision: Atomic collection expansion, validation, storage mutation, tombstone derivation,
+      deterministic conflict ownership, and crash recovery shipped through commits c2f78f77,
+      b3bedb5e, and 6c23f49e. Current-head runtime/storage/commit suites, full storage recovery, and
+      the process-level bulk-command recovery matrix pass.
   human_review_triggers: *id001
 - id: WP-562
   name: Generated collection clients and adapter corpus
@@ -10491,6 +10512,12 @@ work_packages:
       row mutation, transaction, or raw element-outcome path; all safety failures remain typed.
     scale: Clients preflight bounded counts/bytes and stream within the fixed command ceiling rather
       than buffering an unbounded import or splitting one claimed atomic command.
+  closure:
+    status: complete
+    evidence: docs/contracts/BOUNDED-COMMANDS.md
+    decision: Generated bounded-collection facades and the adapter corpus shipped in commit
+      4143470d. A fresh Rust, Go, TypeScript, Python, CLI, and MCP acceptance passes with canonical
+      bindings, generated artifacts, requirements, and handbook pages current.
   human_review_triggers: *id001
 - id: WP-563
   name: Operational RiffQL grammar, finite plan families, and cursors
@@ -10543,6 +10570,13 @@ work_packages:
       module whose lock/role/generated identities are stale.
     scale: Plan-family cardinality, candidates, rows, groups, memory, output, and one-partition route
       are compile-time bounded; identity rotation is per declared application, not a data scan.
+  closure:
+    status: complete
+    evidence: docs/getting-started/OPERATIONAL-QUERIES.md
+    decision: Finite operational RiffQL plan families, cursor identity, exact predicates, ordering,
+      aggregates, and receipted module rotation shipped through commits 17bb8d5e, 131c7bbe, and
+      a11ae663. Current-head syntax/IR/compiler/module/catalog tests and a fresh 60-second RiffQL
+      parser fuzz run pass with exact bindings and generated artifacts.
   human_review_triggers: *id001
 - id: WP-564
   name: Operational query execution, text indexes, exact aggregates, and catalog service
@@ -10597,6 +10631,13 @@ work_packages:
       second FTS semantics, unclamped grouping, hidden catalog symbol, or partial result is exposed.
     scale: All reads are one-partition, indexed/projection-backed, snapshot-bound, and charged by
       row/group/memory/output ceilings; catalog pages are independently bounded.
+  closure:
+    status: complete
+    evidence: docs/getting-started/OPERATIONAL-QUERIES.md
+    decision: Authorized catalog pages, exact aggregate execution, binary-text predicates, null and
+      existence tests, and indexed bounded execution shipped through commits 2cd47a23, cabac61d,
+      37488df8, and ff57eabe. Current-head executor/storage/service/client suites and the focused
+      operational-query conformance test pass.
   human_review_triggers: *id001
 - id: WP-565
   name: Operational query generated clients and adapter acceptance
@@ -10636,6 +10677,12 @@ work_packages:
       cursors/results, never field/operator/index names, client filters, raw catalog, or N+1 escape.
     scale: Page, aggregate, and catalog bounds remain visible in generated schemas and cannot be
       raised by a language adapter; result decoding is streaming/bounded.
+  closure:
+    status: complete
+    evidence: docs/getting-started/OPERATIONAL-QUERIES.md
+    decision: Generated operational-query facades and the complete adapter corpus shipped in commit
+      c6ff11b7. A fresh Rust, Go, TypeScript, Python, CLI, and MCP acceptance passes with bindings,
+      generated artifacts, requirements, and handbook pages current.
   human_review_triggers: *id001
 - id: WP-566
   name: Revision transitions, fenced leases, and service-owned values
@@ -10689,6 +10736,13 @@ work_packages:
       caller-settable, lease state grants no authority, and no generic lock/CAS/update is exposed.
     scale: Leases and transitions are aggregate-local and partition-routed with bounded durations
       and attempts; no global lock, clock scan, or all-workflow coordinator is introduced.
+  closure:
+    status: complete
+    evidence: docs/contracts/WORKFLOWS.md
+    decision: Revision-checked transitions, service-owned time and UUID values, fenced claims,
+      successor revisions, and strictly increasing post-reimport fences shipped through commits
+      6865f04e through 6d9cc1eb. Current-head compiler/runtime/service/storage/client suites and the
+      focused workflow-concurrency tests pass.
   human_review_triggers: *id001
 - id: WP-567
   name: Bounded scheduler and workflow adapter acceptance
@@ -10733,6 +10787,13 @@ work_packages:
       derived from lease possession.
     scale: Selection, wakeups, claims, attempts, retries, and in-flight work are bounded and
       partition-local; future leaders can run local schedulers without a global queue.
+  closure:
+    status: complete
+    evidence: docs/contracts/SCHEDULERS.md
+    decision: The bounded scheduler, durable claim/retry/dead-letter state, restart recovery, and
+      least-authority workflow adapters shipped in commit 62ae5026 with the exact Woodpecker role
+      correction in 9bcaf9b9. Current-head scheduler recovery and all-language workflow acceptance
+      pass without unfenced or callback-shaped escape hatches.
   human_review_triggers: *id001
 - id: WP-568
   name: Programmatic exact application installation and upgrade campaigns
@@ -10788,6 +10849,13 @@ work_packages:
       as installed success or invoke an adapter hook.
     scale: Campaign state and receipts are bounded by one selected application's declared artifacts;
       data migration/seed retains its existing bounded mechanisms and no cross-cluster transaction.
+  closure:
+    status: complete
+    evidence: docs/operations/APPLICATION-INSTALLATION-CAMPAIGNS.md
+    decision: Exact installation planning, durable campaign state, remote reconciliation, resumable
+      CLI execution, terminal receipts, and reimport gating shipped through commits 1e90d6e7 through
+      cfe2cfb3 and d3168bfa. Current-head application/control-plane suites and every installation
+      interruption/resume acceptance pass.
   human_review_triggers: *id001
 - id: WP-569
   name: Adapter conformance manifests and four-domain evolution proof
@@ -10829,6 +10897,14 @@ work_packages:
       public feature and conformance observation.
     scale: Each manifest and campaign is bounded per adapter/application and declares platform and
       workload ceilings; no adapter requires global discovery or whole-database materialization.
+  closure:
+    status: complete
+    evidence: docs/architecture/DEPLOYABLE-APPLICATION-ALPHA.md
+    decision: Exact adapter manifests, generated operation/role/driver claims, safe evolution, and
+      the four-domain/four-language corpus shipped through commits f53af5eb and aad779c6. Fresh
+      OpenFGA, MLflow, Better Auth, and Woodpecker install/evolution and public-client conformance
+      passes; the current observation now includes Better Auth GetUser and DeleteUsers. Payload
+      remains the declared post-alpha regression fixture.
   human_review_triggers: *id001
 - id: WP-570
   name: Principal-aware row-policy language, IR, roles, and identity
@@ -10879,6 +10955,13 @@ work_packages:
       unexpressible rather than discouraged.
     scale: Policy nodes, facts, values, probes, bytes, and partitions have compiler maxima and use
       declared indexes; no full-state or global-principal expansion enters authorization.
+  closure:
+    status: complete
+    evidence: docs/security/ROW-POLICIES.md
+    decision: Principal-aware policy syntax/IR, role-bound exact identities, relationship-index
+      proofs, bounded evaluation, and V7 capability authority shipped through commits 4e1f45e7,
+      03029c4f, bac8c0db, and df2ea781. Current-head compiler/auth/policy tests, parser fuzzing,
+      binding generation, requirements, and handbook checks pass.
   human_review_triggers: *id001
 - id: WP-572
   name: Transaction-current row-policy enforcement across every application surface
@@ -10945,6 +11028,13 @@ work_packages:
       test failure, not an endpoint convention.
     scale: Evaluation is per bounded candidate/current row plus bounded indexed relationship probes,
       with one partition and existing page/work ceilings; no global ACL scan is introduced.
+  closure:
+    status: complete
+    evidence: docs/security/ROW-POLICIES.md
+    decision: Policy enforcement before query shaping, transaction-current command checks, live
+      query resets, contextual hydration/reactions, projection admission, and inference protection
+      shipped through commits 2ec0009d, e485e6a3, e04943a5, aa7739e6, 0bc66c43, and 46e7e58f.
+      Current-head conformance and inference suites pass across the production read/write paths.
   human_review_triggers: *id001
 - id: WP-573
   name: Generated row-policy clients and realistic Better Auth/MLflow acceptance
@@ -10991,6 +11081,13 @@ work_packages:
       fact administration is operator-only and no language can evaluate or override policy locally.
     scale: Adapter corpora use bounded indexed ACL relations, page/query ceilings, and finite
       principals/groups; no generated client materializes all ACLs or rows.
+  closure:
+    status: complete
+    evidence: docs/security/ROW-POLICIES.md
+    decision: Generated row-policy operations and realistic Better Auth/MLflow applications shipped
+      in commit 50354949. Fresh Rust, Go, TypeScript, Python, CLI, and MCP acceptance covers protected
+      commands, revision races, live resets, nested hydration, aggregate inference, tenant isolation,
+      and revocation without application-owned policy code.
   human_review_triggers: *id001
 - id: WP-574
   name: Alpha durable-format manifest and upgrade/refusal policy
