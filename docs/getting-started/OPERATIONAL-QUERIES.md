@@ -82,14 +82,16 @@ snapshot observation, so numeric offset is intended for admin-style windows
 rather than stable traversal across concurrent writes. Use ordinary cursor
 queries when snapshot-bound continuation is required.
 
-The initial request may temporarily return `RDB-QUERY-0102` while the bounded
-derived provider builds. `RDB-PROJECTION-0101` means the required providers
-cannot prove one common epoch, `RDB-PROJECTION-0102` means the requested
-snapshot retired, and `RDB-PROJECTION-0103` means no provider snapshot yet
-satisfies the request's current or read-after-commit freshness. Generated
-clients expose these as the same typed application error codes on every
-transport. A host may retry these lifecycle outcomes with a bounded attempt
-budget; it must not emulate a scan, retain a stale page, or weaken freshness.
+The initial request waits for a fixed, bounded readiness window while the
+derived provider builds in the background. It may still return
+`RDB-QUERY-0102` when that window expires. `RDB-PROJECTION-0101` means the
+required providers cannot prove one common epoch, `RDB-PROJECTION-0102` means
+the requested snapshot retired, and `RDB-PROJECTION-0103` means no provider
+snapshot yet satisfies the request's current or read-after-commit freshness.
+Generated clients expose these as the same typed application error codes on
+every transport. A host may retry these lifecycle outcomes with a bounded
+attempt budget; it must not emulate a scan, retain a stale page, or weaken
+freshness.
 
 The narrow exact-result form accepts one partition equality, one exact text
 predicate, and at most one compiler-declared optional typed equality filter.

@@ -23,7 +23,7 @@ def _compact_tag(value: object, tag: str, keys: frozenset[str]) -> dict[str, obj
 CONTRACT_LINEAGE: Final[str] = "AdapterOperationalConformance"
 CONTRACT_VERSION: Final[int] = 1
 CONTRACT_BUNDLE_HASH: Final[str] = "5cf309d8ba731173e426e53ec66d41fad99cc95cbbbfd10ad67a2b5db9a86b9c"
-QUERY_MODULE_HASH: Final[str] = "132487cd013120333bc8d8ca45aaa343ab1f94bbacb4577fe223869fa8324e9e"
+QUERY_MODULE_HASH: Final[str] = "590fdb5830f1355b30acfd495f3fba1259215109d5de7fd2790156153cd84b1d"
 
 class AuthSessionState(StrEnum):
     AUTH_ACTIVE = "AuthActive"
@@ -342,7 +342,7 @@ class ListDraftDocumentsFound:
 
 ListDraftDocumentsResult: TypeAlias = ListDraftDocumentsFound
 
-LIST_FGA_TUPLES_QUERY_PLAN_HASH: Final[str] = "85d4a53de22fe4f5dc7955c700a286b561e4e952810d0475c56802875bed188d"
+LIST_FGA_TUPLES_QUERY_PLAN_HASH: Final[str] = "923ceaf6aa4f8627499a9b48a6d8334f93834d3c20ad8c2d8855d7015e49fac0"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ListFgaTuplesParams:
@@ -364,7 +364,7 @@ class ListFgaTuplesFound:
 
 ListFgaTuplesResult: TypeAlias = ListFgaTuplesFound
 
-LIST_PIPELINES_QUERY_PLAN_HASH: Final[str] = "6244f84041b61b7a08f6c731df9da80796b252799e08340f07f7c0c19de5197c"
+LIST_PIPELINES_QUERY_PLAN_HASH: Final[str] = "7468c5218b334e3c26743f26efd3c880b245d32a5c3a431fcf80941f9bd4edb5"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ListPipelinesParams:

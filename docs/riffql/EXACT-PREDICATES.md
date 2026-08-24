@@ -148,11 +148,14 @@ degrades to an authoritative request-time scan, client-side filter or sort,
 page walk, materialized full population, cross-provider identifier transfer,
 or a nearby older provider.
 
-The initial request for a new plan/policy/partition slot can return
-`RDB-QUERY-0102` while bounded background construction is in progress. The
-same typed lifecycle, freshness (`RDB-PROJECTION-0103`), retired-snapshot, divergence, and revocation
-failures cross every public transport. The application may use a bounded retry
-budget; it may not emulate the result while the provider is unavailable.
+The initial request for a new plan/policy/partition slot waits for a fixed,
+bounded readiness window while background construction remains the sole owner
+of authoritative scans and provider publication. It can still return
+`RDB-QUERY-0102` when construction does not finish within that window. The same
+typed lifecycle, freshness (`RDB-PROJECTION-0103`), retired-snapshot,
+divergence, and revocation failures cross every public transport. The
+application may use a bounded retry budget; it may not emulate the result while
+the provider is unavailable.
 
 Numeric offsets are bounded direct ordinal selections inside one provider
 epoch. Use generated cursor pagination instead when a user journey spans

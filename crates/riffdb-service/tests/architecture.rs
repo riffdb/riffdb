@@ -155,7 +155,7 @@ fn exact_predicate_service_owns_member_selection_and_revalidates_before_release(
         .find("member.presence_bits() == presence_bits")
         .expect("compiler-enumerated member selection");
     let provider = execution
-        .find("exact.execute_provider(")
+        .find("execute_exact_provider_with_readiness(")
         .expect("least-authority provider execution");
     let release = execution
         .find("let release_authorization = begun")

@@ -233,8 +233,16 @@ cat >"$work_root/exact-predicate-reviewed-readiness.json" <<'EOF'
   "offset": {"$u64":"0"}
 }
 EOF
+if ! target/debug/riffdb --config "$work_root/application-client.toml" \
+    query run-named SearchDirectoryUsers \
+    --contract-lineage AdapterOperationalConformance --contract-version 1 \
+    --module-hash "$module_hash" --parameters "$work_root/exact-predicate-readiness.json" \
+    --output json >"$work_root/exact-provider-readiness.out" 2>&1; then
+    cat "$work_root/exact-provider-readiness.out" >&2
+    echo "SearchDirectoryUsers first request did not complete within the service readiness window" >&2
+    exit 1
+fi
 for query_and_file in \
-    "SearchDirectoryUsers:$work_root/exact-predicate-readiness.json" \
     "ReviewedDirectoryUsers:$work_root/exact-predicate-reviewed-readiness.json"; do
     exact_query="${query_and_file%%:*}"
     readiness_file="${query_and_file#*:}"

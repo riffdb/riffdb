@@ -2869,11 +2869,7 @@ fn operational_predicates_supported(
             .iter()
             .position(|field| field == comparison.field)
         else {
-            return !matches!(
-                comparison.operator,
-                SourcePredicateOperator::Unary(_)
-                    | SourcePredicateOperator::Binary(BinaryOperator::Prefix)
-            );
+            return false;
         };
         match comparison.operator {
             SourcePredicateOperator::Unary(_) => {

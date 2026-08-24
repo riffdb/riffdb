@@ -62,9 +62,82 @@ query DeletedTickets($organization_id: Ticket.organization_id) {
 }
 "#;
 
+const EXACT_IDENTITY_CONTRACT: &str = r#"
+contract ExactIdentity version 1 {
+  entity Account {
+    key (organization_id: uuid, user_id: uuid, account_id: uuid)
+    field external_id: string<256>
+    field provider_id: string<64>
+    unique provider_identity (organization_id, provider_id, external_id)
+    index by_provider (organization_id, provider_id, external_id, user_id, account_id)
+    index by_user (organization_id, user_id, account_id)
+  }
+  aggregate Accounts {
+    root Account
+    partition_by organization_id
+    conflict_key (organization_id, user_id)
+  }
+}
+"#;
+
+const EXACT_IDENTITY_QUERY: &str = r#"
+query AccountByProvider(
+    $organization_id: Account.organization_id,
+    $external_id: Account.external_id,
+    $provider_id: Account.provider_id,
+) {
+    many accounts from Account
+        where organization_id == $organization_id
+          && provider_id == $provider_id
+          && external_id == $external_id
+        order by user_id asc, account_id asc
+        take 1
+    return Found { accounts: accounts { user_id account_id external_id provider_id } }
+    outcomes Found
+}
+"#;
+
 fn catalog(source: &str) -> SymbolicCatalog {
     let bundle = compile_contract_source(source).expect("contract");
     SymbolicCatalog::from_bundle(&bundle).expect("catalog")
+}
+
+#[test]
+fn planner_never_selects_an_ordered_index_that_omits_a_filter_predicate() {
+    let program = compile_query(
+        &parse_query(EXACT_IDENTITY_QUERY).expect("query"),
+        &catalog(EXACT_IDENTITY_CONTRACT),
+    )
+    .expect("declared filter-and-order index is a complete access path");
+    assert!(matches!(
+        program.steps()[0].access(),
+        riffdb_query_ir::QueryAccessKind::Index { index, .. }
+            if index == "by_provider"
+    ));
+
+    let without_filter_index = EXACT_IDENTITY_CONTRACT.replace(
+        "    index by_provider (organization_id, provider_id, external_id, user_id, account_id)\n",
+        "",
+    );
+    let diagnostics = compile_query(
+        &parse_query(EXACT_IDENTITY_QUERY).expect("query"),
+        &catalog(&without_filter_index),
+    )
+    .expect_err("an order-only index cannot defer filters until after take");
+    let diagnostic = &diagnostics.as_slice()[0];
+    assert_eq!(diagnostic.code(), PlannerDiagnosticCode::Unindexed);
+    assert_eq!(
+        format!(
+            "{}|{}..{}|{}|{}|{}\n",
+            diagnostic.code().as_str(),
+            diagnostic.primary().start,
+            diagnostic.primary().end,
+            diagnostic.symbol_path().join("."),
+            diagnostic.summary(),
+            diagnostic.suggested_index().unwrap_or("")
+        ),
+        include_str!("../../../fixtures/riffql/residual-predicate-unindexed.snapshot")
+    );
 }
 
 #[test]
@@ -231,6 +304,8 @@ fn declared_operational_indexes_lower_to_sealed_predicates() {
     ];
     for (predicate, order, expected_index, expected_operator) in cases {
         let source = QUERY
+            .replace("    $status: Ticket.status?,\n", "")
+            .replace("&& when $status { status == $status }\n          ", "")
             .replace("$priority: Ticket.priority?", "$priority: Ticket.priority")
             .replace(
                 "&& when $priority { priority == $priority }",
