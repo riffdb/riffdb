@@ -12236,6 +12236,14 @@ work_packages:
     scale: The platform, package, file, archive, output, and dependency inventories are closed
       and bounded; package arrival uses one finite topologically ordered Rust closure and one
       finite smoke per named ecosystem.
+  closure:
+    status: complete
+    evidence: docs/getting-started/PACKAGE-INSTALLATION.md
+    decision: The signed x86_64 package-arrival gate passes the native CLI, TypeScript, Python,
+      Go, and Rust cells from the emitted local registries without source-tree fallback. The
+      distribution manifest now binds the current durable-format manifest, and the arrival
+      fixture names driver protocol V3 after the accepted runtime rotation. The two-platform
+      release workflow remains the publication owner; this closure does not publish packages.
   human_review_triggers: *id001
 - id: WP-602
   name: Database-shaped verbs — init, push, status, diff, migrate over riffdb.toml
@@ -12264,6 +12272,13 @@ work_packages:
   - cargo test -p riffdb-cli --all-features
   - cargo test -p riffdb-query-module --all-features
   - ./scripts/handbook check
+  closure:
+    status: complete
+    evidence: docs/getting-started/DATABASE-WORKFLOW.md
+    decision: The database-shaped init, push, status, diff, and migrate workflow is merged in
+      commit 39c9e947. Exact CLI and query-module tests prove domain-empty initialization,
+      project-selected materialization, read-only status/check behavior, ceremony only on changed
+      compiler-owned identity, and typed migration routing without changing existing verbs.
   human_review_triggers: *id001
 - id: WP-603
   name: Self-describing database — agent init, MCP guidance resources, generated teaching artifacts
@@ -12291,6 +12306,13 @@ work_packages:
   - cargo test -p riffdb-mcp-stdio --all-features
   - ./scripts/check-generated
   - ./scripts/handbook check
+  closure:
+    status: complete
+    evidence: docs/getting-started/AGENT-DATABASE-QUICKSTART.md
+    decision: The repository-scoped agent-init rails, authorization-filtered application guidance
+      MCP resources, and single-source generated teaching artifacts are merged in commit
+      3b3f3038. CLI, hosted/stdio MCP, generated-artifact, and handbook gates pass with no storage
+      or policy authority in the guidance surface.
   human_review_triggers: *id001
 - id: WP-604
   name: One-story conformance — cross-driver matrix, pinned step counts, campaign-03
@@ -12328,6 +12350,14 @@ work_packages:
       import, or source-tree dependency is a failing cell.
     scale: The language matrix, application corpus, operation set, campaign contexts, event
       count, and recorded metrics are finite and versioned.
+  closure:
+    status: complete
+    evidence: release/evidence/agent-application-alpha-package-campaign-v1.json
+    decision: The package-only conformance gate proves one four-step generated story across Go,
+      Python, Rust, and TypeScript with identical typed outcomes, replay, read-after-commit, and
+      stable reuse errors. The immutable six-run Blog/Orders campaign-03 receipt is current, has
+      zero rescue, kernel use, or handwritten transport, and records a minimum independent rating
+      of 8.7 with every selected evidence digest still exact.
   human_review_triggers: *id001
 - id: WP-605
   name: Contract-language editor tooling — tree-sitter grammar and compiler-backed LSP
