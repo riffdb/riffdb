@@ -2165,6 +2165,10 @@ work_packages:
     prove every production coordinator explicitly receives Sync or Group while Memory remains test-only.
   human_review_triggers: *id001
 - id: WP-110
+  closure:
+    status: complete
+    evidence: tests/authorization/authorization_non_bypass.rs
+    decision: Opaque capabilities resolve through auth-owned credential proof and deny-by-default policy with exact scope, revocation, approval, redaction, current-fact, entropy, key-custody, and dependency boundaries. Current auth, policy, workspace, and cargo-deny suites pass.
   name: Authorization and capability service
   depends_on:
   - WP-010
@@ -2225,6 +2229,10 @@ work_packages:
   exit_gate: Revocation, scope, environment, command visibility, and field-redaction tests pass.
   human_review_triggers: *id001
 - id: WP-120
+  closure:
+    status: complete
+    evidence: tests/service/service_end_to_end.rs
+    decision: All application, administration, read, projection, outbox, provenance, and health operations share API-neutral service ports, current authorization, bounded shaping, and audit orchestration. Complete service and workspace suites pass.
   name: API-neutral application service
   depends_on:
   - WP-050
@@ -2361,6 +2369,10 @@ work_packages:
     or provenance entity key is schema-valid and every commit-stream terminal path preserves the last visible frontier.
   human_review_triggers: *id001
 - id: WP-125
+  closure:
+    status: complete
+    evidence: examples/budget-comparison/tests/service_comparison.rs
+    decision: The storage-free service adapter and PostgreSQL adapter satisfy the same canonical workload and observation oracle. The formerly drifted nested workspace, lock, safety inventory, full test suite, formatting, and Clippy are green on current HEAD.
   name: Service comparison adapter
   depends_on:
   - WP-045
@@ -2399,6 +2411,10 @@ work_packages:
     workload and normalized observation oracle.
   human_review_triggers: *id001
 - id: WP-127
+  closure:
+    status: complete
+    evidence: fixtures/proto
+    decision: Every supported public operation has bounded structurally validated Protobuf messages, descriptors, schema hashes, golden bytes, UUID checks, pages, cursors, errors, and compatibility fixtures. Generated-proto and workspace tests pass.
   name: Public Protobuf API completion
   depends_on:
   - WP-020
@@ -2461,6 +2477,10 @@ work_packages:
     artifacts before transport conversion begins.
   human_review_triggers: *id001
 - id: WP-130
+  closure:
+    status: complete
+    evidence: tests/grpc/p1_riffdbd_restart.rs
+    decision: Tonic ingress, typed Rust client, exact public-error carriage, authentication, limits, retry mapping, server composition, generated client, and restart readiness all use the shared service boundary. Current gRPC, client, and server suites pass.
   name: gRPC server and Rust SDK
   depends_on:
   - WP-020
@@ -2621,6 +2641,10 @@ work_packages:
     accepted-task supervision.
   human_review_triggers: *id001
 - id: WP-135
+  closure:
+    status: complete
+    evidence: examples/budget-comparison/riffdb-grpc
+    decision: The public SDK adapter executes the frozen workload through the generated client and shared daemon without storage access. Its process, fixture, protocol-boundary, and semantic-oracle tests pass in the repaired nested workspace.
   name: Public SDK comparison adapter
   depends_on:
   - WP-125
@@ -2678,6 +2702,10 @@ work_packages:
     comparative benchmark can run.
   human_review_triggers: *id001
 - id: WP-137
+  closure:
+    status: complete
+    evidence: examples/budget-comparison/tests/public_comparison.rs
+    decision: Public gRPC and MCP paths preserve fresh request identity, replay recovery, audit/provenance observations, checked errors, and shared semantics. Public-comparison and transport-conformance tests pass.
   name: Public gRPC MCP parity bridge
   depends_on:
   - WP-130
@@ -2795,6 +2823,10 @@ work_packages:
     authority-bearing, or server dependency.
   human_review_triggers: *id001
 - id: WP-139
+  closure:
+    status: complete
+    evidence: examples/budget-comparison/fixtures/safety/report-v1.json
+    decision: The safety comparison distinguishes RiffDB's supported surface from PostgreSQL counterexamples and excludes unsafe variants from benchmark claims. Architecture and live safety-evidence tests pass.
   name: Budget safety counterexample evidence
   depends_on:
   - WP-045
@@ -2883,6 +2915,10 @@ work_packages:
     or P0/P1/P2 gate membership changes.
   human_review_triggers: *id001
 - id: WP-140
+  closure:
+    status: complete
+    evidence: docs/mcp/agent-cookbook.md
+    decision: Native MCP exposes the same authorized application service without storage or policy bypass, with generated schemas, bounded resources, credential-safe transport, and conformance coverage. MCP and workspace suites pass.
   name: Native MCP interface
   depends_on:
   - WP-040
@@ -3023,6 +3059,10 @@ work_packages:
     decision delegated to CredentialAuthenticator.
   human_review_triggers: *id001
 - id: WP-150
+  closure:
+    status: complete
+    evidence: scripts/demo
+    decision: The CLI owns install, bootstrap, deploy, query, command, backup, and demo workflows over public services with exact credentials, diagnostics, and no direct storage path. CLI and generated-reference suites pass; the later WP-200 evidence refresh remains separately open.
   name: CLI and local developer flow
   depends_on:
   - WP-130
@@ -3094,6 +3134,10 @@ work_packages:
   exit_gate: Every acceptance-demo operation is available through the CLI and public gRPC.
   human_review_triggers: *id001
 - id: WP-160
+  closure:
+    status: complete
+    evidence: crates/riffdb-outbox
+    decision: Outbox intent is atomic with command state and events, delivery state is derived and recoverable, and dispatcher retries preserve stable identity without authority bypass. Workspace, recovery, and conformance suites pass.
   name: Durable outbox
   depends_on:
   - WP-100
@@ -3153,6 +3197,10 @@ work_packages:
     duplicate dispatch scenarios are visible and policy-controlled.
   human_review_triggers: *id001
 - id: WP-170
+  closure:
+    status: complete
+    evidence: crates/riffdb-projection
+    decision: Projection state is rebuildable, generation and frontier fenced, policy-filtered, and never authoritative. Rebuild, degradation, publication, query, and recovery tests pass.
   name: Projection core
   depends_on:
   - WP-050
@@ -3225,6 +3273,10 @@ work_packages:
     properties pass.
   human_review_triggers: *id001
 - id: WP-180
+  closure:
+    status: complete
+    evidence: crates/riffdb-observability
+    decision: Fixed-cardinality metrics, structured tracing, incident linkage, health hooks, and redaction-before-subscriber telemetry are implemented. Current observability suites pass; one order-sensitive test flaked once in a prior full run and passed exact and complete reruns.
   name: Observability and diagnostics
   depends_on:
   - WP-120
@@ -3298,6 +3350,10 @@ work_packages:
     with a permissive sibling subscriber; no network metrics exporter is configured.
   human_review_triggers: *id001
 - id: WP-185
+  closure:
+    status: complete
+    evidence: crates/riffdb-server/src/process_graph.rs
+    decision: Production composition wires every authoritative and derived component exactly once, and readiness reflects complete authoritative validation plus bounded derived health without crossed startup outcomes. Server, service, architecture, and recovery tests pass.
   name: Server composition
   depends_on:
   - WP-130
@@ -3374,6 +3430,10 @@ work_packages:
     read-after-sequence projection behavior through public APIs.
   human_review_triggers: *id001
 - id: WP-155
+  closure:
+    status: complete
+    evidence: docs/backup-restore.md
+    decision: Offline backup and restore use authorized public administration, exact receipted phases, staged validation, destructive confirmation, crash reconciliation, and fail-closed readiness. Maintenance and recovery matrices pass.
   name: Public offline backup and restore maintenance
   depends_on:
   - WP-070
@@ -3516,6 +3576,10 @@ work_packages:
     exact fixtures document DatabaseId-preserving history rewind and possible suffix reuse.
   human_review_triggers: *id001
 - id: WP-190
+  closure:
+    status: complete
+    evidence: tests/recovery/fixtures/wp190-report-v1.json
+    decision: The named process failpoint inventory, child controller, durable inspector, full recovery matrix, offline maintenance matrix, lost-response replay, repeated-open, and migration recovery arms pass with the checked receipted report.
   name: Integrated crash harness
   depends_on:
   - WP-070
