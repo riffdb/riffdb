@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use riffdb_client_rust::{
     ApplicationCatalogFeature, ApplicationContract, AttemptBudget, CallMetadata, DatabaseAlias,
-    QueryOptions, StableApplicationClient, load_protected_bearer_credential,
+    GeneratedBatchOptions, QueryOptions, StableApplicationClient, load_protected_bearer_credential,
 };
 use riffdb_config::{
     CanonicalHttpsEndpoint, ProtectedFilePath, TlsClientConfig, TlsServerIdentity,
@@ -109,6 +109,7 @@ async fn run_async() -> TestResult<()> {
             "exact_aggregates": true,
             "exact_text_family": true,
             "exact_predicate_family": true,
+            "nullable_exact_order": true,
             "exact_total": true,
             "numeric_offset": true,
             "adapters": ["mlflow", "openfga", "better-auth", "woodpecker"],
@@ -194,6 +195,26 @@ async fn seed(client: &mut generated::AdapterOperationalConformanceClient) -> Te
                 directory_user(62, "alan@example.test", "disabled", 30, true),
                 directory_user(63, "beta@example.test", "active", 20, false),
                 directory_user(64, "álpha@example.test", "archive", 10, true),
+            ],
+        })
+        .await?;
+    client
+        .create_inventory_record_missing(generated::CreateInventoryRecordMissingInput {
+            request_id: id(7),
+            organization_id: id(70),
+            record_id: id(71),
+            tie_rank: 2,
+        })
+        .await?;
+    client
+        .create_inventory_records(generated::CreateInventoryRecordsInput {
+            request_id: id(8),
+            records: vec![
+                inventory_record(72, None, None, 5),
+                inventory_record(73, Some("Alpha"), Some(100), 3),
+                inventory_record(74, Some("Alpha"), Some(200), 1),
+                inventory_record(75, Some("Beta"), None, 4),
+                inventory_record(76, None, Some(150), 0),
             ],
         })
         .await?;
@@ -359,6 +380,24 @@ async fn verify_queries(
         "V6 membership, range, existence, Unicode, and mixed order",
     )?;
 
+    verify_nullable_orders(client, false).await?;
+    let transitions = vec![
+        inventory_transition(9, 71, Some("Omega"), Some(250), 2),
+        inventory_transition(10, 72, Some("Aardvark"), Some(50), 5),
+        inventory_transition(11, 73, None, None, 3),
+    ];
+    let transitioned = client
+        .change_inventory_record_state_batch(
+            transitions,
+            GeneratedBatchOptions::new(3).map_err(|error| format!("batch bounds: {error}"))?,
+        )
+        .await?;
+    expect(
+        transitioned.items.iter().all(|item| item.result.is_ok()),
+        "concurrent missing/null/value transitions",
+    )?;
+    wait_for_nullable_orders(client).await?;
+
     let queued = client
         .list_pipelines(generated::ListPipelinesParams {
             organization_id: id(40),
@@ -399,6 +438,96 @@ async fn verify_queries(
     Ok(())
 }
 
+async fn wait_for_nullable_orders(
+    client: &mut generated::AdapterOperationalConformanceClient,
+) -> TestResult<()> {
+    for _attempt in 0..100 {
+        match verify_nullable_orders(client, true).await {
+            Ok(()) => return Ok(()),
+            Err(error)
+                if error.to_string().contains("RDB-PROJECTION-0103")
+                    || error.to_string().contains("RDB-QUERY-0102") =>
+            {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    Err("nullable provider did not catch up within the bounded retry budget".into())
+}
+
+async fn verify_nullable_orders(
+    client: &mut generated::AdapterOperationalConformanceClient,
+    transitioned: bool,
+) -> TestResult<()> {
+    let organization_id = id(70);
+    let first = client
+        .inventory_by_subtitle_asc_nulls_first(generated::InventoryBySubtitleAscNullsFirstParams {
+            organization_id: organization_id.clone(),
+            limit: 2,
+            offset: 0,
+        })
+        .await?;
+    let generated::InventoryBySubtitleAscNullsFirstResult::Found(first) = first;
+    expect(first.total.value == 6, "nullable exact total")?;
+    let expected_first = if transitioned {
+        vec![id(73), id(76)]
+    } else {
+        vec![id(72), id(71)]
+    };
+    expect(
+        first
+            .records
+            .iter()
+            .map(|row| row.record_id.clone())
+            .collect::<Vec<_>>()
+            == expected_first,
+        "nulls-first order and later-term tie break",
+    )?;
+
+    let end = client
+        .inventory_by_subtitle_desc_nulls_last(generated::InventoryBySubtitleDescNullsLastParams {
+            organization_id: organization_id.clone(),
+            limit: 25,
+            offset: 5,
+        })
+        .await?;
+    let generated::InventoryBySubtitleDescNullsLastResult::Found(end) = end;
+    expect(
+        end.total.value == 6 && end.records.len() == 1,
+        "nullable end offset retains exact total",
+    )?;
+
+    let beyond = client
+        .inventory_by_observed_asc_nulls_last(generated::InventoryByObservedAscNullsLastParams {
+            organization_id: organization_id.clone(),
+            limit: 25,
+            offset: 7,
+        })
+        .await?;
+    let generated::InventoryByObservedAscNullsLastResult::Found(beyond) = beyond;
+    expect(
+        beyond.total.value == 6 && beyond.records.is_empty(),
+        "nullable beyond-end offset",
+    )?;
+
+    let maximum = client
+        .inventory_by_observed_desc_nulls_first(
+            generated::InventoryByObservedDescNullsFirstParams {
+                organization_id,
+                limit: 499,
+                offset: 499,
+            },
+        )
+        .await?;
+    let generated::InventoryByObservedDescNullsFirstResult::Found(maximum) = maximum;
+    expect(
+        maximum.total.value == 6 && maximum.records.is_empty(),
+        "nullable maximum offset",
+    )?;
+    Ok(())
+}
+
 fn metric(suffix: u8, value_micros: i64, step: i64) -> generated::Metric {
     generated::Metric {
         experiment_id: id(20),
@@ -435,6 +564,40 @@ fn directory_user(
             seconds: 1_700_000_000 + i64::from(suffix),
             nanos: 0,
         }),
+    }
+}
+
+fn inventory_record(
+    suffix: u8,
+    subtitle: Option<&str>,
+    observed_seconds: Option<i64>,
+    tie_rank: u64,
+) -> generated::InventoryRecord {
+    generated::InventoryRecord {
+        organization_id: id(70),
+        record_id: id(suffix),
+        subtitle: subtitle.map(str::to_owned),
+        observed_at: observed_seconds
+            .map(|seconds| generated::TimestampValue { seconds, nanos: 0 }),
+        tie_rank,
+    }
+}
+
+fn inventory_transition(
+    request_suffix: u8,
+    record_suffix: u8,
+    subtitle: Option<&str>,
+    observed_seconds: Option<i64>,
+    tie_rank: u64,
+) -> generated::ChangeInventoryRecordStateInput {
+    generated::ChangeInventoryRecordStateInput {
+        request_id: id(request_suffix),
+        organization_id: id(70),
+        record_id: id(record_suffix),
+        subtitle: subtitle.map(str::to_owned),
+        observed_at: observed_seconds
+            .map(|seconds| generated::TimestampValue { seconds, nanos: 0 }),
+        tie_rank,
     }
 }
 

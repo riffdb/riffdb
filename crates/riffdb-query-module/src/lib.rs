@@ -544,6 +544,21 @@ impl CompiledNamedQuery {
         }
     }
 
+    /// Shared immutable ADR-0145 nullable family for provider execution.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn shared_nullable_exact_predicate_result(
+        &self,
+    ) -> Option<Arc<CompiledNullableExactPredicateResultSetV1>> {
+        match &self.plan {
+            CompiledNamedQueryPlan::NullableExactPredicateV1(exact) => Some(Arc::clone(exact)),
+            CompiledNamedQueryPlan::V1(_)
+            | CompiledNamedQueryPlan::OperationalV1(_)
+            | CompiledNamedQueryPlan::ExactTextResultV1(_)
+            | CompiledNamedQueryPlan::ExactPredicateV1(_) => None,
+        }
+    }
+
     /// Shared selected member for exact compiler-ordered presence flags.
     #[must_use]
     pub fn select_program(&self, presence: &[bool]) -> Option<Arc<QueryAccessProgramV1>> {

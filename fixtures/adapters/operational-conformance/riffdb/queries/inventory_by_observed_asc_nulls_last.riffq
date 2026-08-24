@@ -1,0 +1,18 @@
+query InventoryByObservedAscNullsLast(
+    $organization_id: InventoryRecord.organization_id,
+    $limit: Limit = 25,
+    $offset: u64 = 0
+) {
+    many records from InventoryRecord
+        where organization_id == $organization_id
+        order by observed_at asc nulls last, tie_rank desc, record_id asc
+        take $limit offset $offset
+
+    aggregate total from records { exact_count() as value }
+
+    return Found {
+        records: records { organization_id record_id subtitle observed_at tie_rank }
+        total: total { value }
+    }
+    outcomes Found
+}

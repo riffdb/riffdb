@@ -155,7 +155,7 @@ fn exact_predicate_service_owns_member_selection_and_revalidates_before_release(
         .find("member.presence_bits() == presence_bits")
         .expect("compiler-enumerated member selection");
     let provider = execution
-        .find("provider.execute(request)")
+        .find("exact.execute_provider(")
         .expect("least-authority provider execution");
     let release = execution
         .find("let release_authorization = begun")
@@ -172,6 +172,39 @@ fn exact_predicate_service_owns_member_selection_and_revalidates_before_release(
     }
     assert!(execution.contains("release_authorization.application_role_hash()"));
     assert!(execution.contains("release_row_policy_identity != row_policy_identity"));
+}
+
+#[test]
+fn nullable_exact_order_uses_the_same_safe_service_path_without_caller_structure() {
+    let dispatch = SYMBOLIC_QUERY_SOURCE
+        .split_once("let query = &module.module().queries()[query_index];")
+        .expect("named-query dispatch")
+        .1
+        .split_once("let presence = query")
+        .expect("exact dispatch boundary")
+        .0;
+    assert!(dispatch.contains("shared_nullable_exact_predicate_result"));
+
+    let execution = SYMBOLIC_QUERY_SOURCE
+        .split_once("async fn execute_exact_predicate_named_query(")
+        .expect("exact predicate service path")
+        .1
+        .split_once("fn exact_parameter_value(")
+        .expect("exact predicate helper boundary")
+        .0;
+    assert!(execution.contains("provider.execute_nullable("));
+    for forbidden in [
+        "nulls_first",
+        "nulls_last",
+        "sort_by",
+        "scan_index",
+        "read_entity",
+    ] {
+        assert!(
+            !execution.contains(forbidden),
+            "nullable public path acquired caller/proof structure {forbidden}"
+        );
+    }
 }
 
 #[test]

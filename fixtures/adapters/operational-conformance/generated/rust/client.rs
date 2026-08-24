@@ -5,11 +5,11 @@ use riffdb_client_rust::{ApplicationCardinality, ApplicationClientError, Applica
 pub use riffdb_client_rust::QueryOptions;
 use riffdb_client_rust::v1::value::Kind as WireKind;
 
-pub const QUERY_MODULE_HASH: [u8; 32] = [0x47, 0xad, 0xab, 0x52, 0x83, 0x1a, 0x23, 0x38, 0x25, 0x59, 0x06, 0xaf, 0xf0, 0xe0, 0x2a, 0xbf, 0x67, 0xb9, 0x4e, 0x2f, 0xe8, 0xe7, 0x57, 0x0d, 0x4c, 0xd8, 0xd6, 0xe5, 0xdf, 0xf3, 0xa8, 0xc6];
+pub const QUERY_MODULE_HASH: [u8; 32] = [0x13, 0x24, 0x87, 0xcd, 0x01, 0x31, 0x20, 0x33, 0x3b, 0xc8, 0xd8, 0xca, 0x45, 0xaa, 0xa3, 0x43, 0xab, 0x1f, 0x94, 0xbb, 0xac, 0xb4, 0x57, 0x7f, 0xe2, 0x23, 0x86, 0x9f, 0xa8, 0x32, 0x4e, 0x9e];
 pub const CONTRACT_LINEAGE: &str = "AdapterOperationalConformance";
 pub const CONTRACT_VERSION: u64 = 1;
 
-pub const CONTRACT_BUNDLE_HASH: [u8; 32] = [0xfa, 0x2e, 0x95, 0xc6, 0xc1, 0xc9, 0x22, 0x6a, 0xe1, 0xd7, 0xb6, 0xcb, 0x0a, 0x01, 0xd8, 0x22, 0x62, 0x69, 0x73, 0xf5, 0xe4, 0x27, 0xc6, 0x40, 0x45, 0x47, 0x36, 0x3b, 0xea, 0x8a, 0x30, 0x36];
+pub const CONTRACT_BUNDLE_HASH: [u8; 32] = [0x5c, 0xf3, 0x09, 0xd8, 0xba, 0x73, 0x11, 0x73, 0xe4, 0x26, 0xe5, 0x3e, 0xc6, 0x6d, 0x41, 0xfa, 0xd9, 0x9c, 0xc9, 0x5c, 0xbb, 0xbf, 0xd1, 0x0a, 0xd6, 0x7a, 0x2b, 0x5d, 0xb9, 0xa8, 0x6b, 0x9c];
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DecimalValue {
@@ -60,7 +60,7 @@ pub enum ExactDocumentsContainsAscResult {
     Found(Box<ExactDocumentsContainsAscFound>),
 }
 
-pub const EXACT_DOCUMENTS_CONTAINS_ASC_QUERY_PLAN_HASH: [u8; 32] = [0x0f, 0x21, 0x07, 0x77, 0x32, 0x90, 0x1c, 0x06, 0xae, 0x68, 0x36, 0x66, 0xb7, 0xc0, 0x7e, 0x23, 0x1d, 0x6c, 0xb2, 0x91, 0x26, 0x70, 0x17, 0xbb, 0x8b, 0xb8, 0x61, 0xf7, 0xc9, 0x0b, 0x32, 0x97];
+pub const EXACT_DOCUMENTS_CONTAINS_ASC_QUERY_PLAN_HASH: [u8; 32] = [0xf4, 0x1a, 0x39, 0x06, 0x0a, 0x72, 0x8d, 0x51, 0x33, 0x88, 0x1f, 0x82, 0x52, 0xb0, 0x21, 0x37, 0x44, 0x63, 0xe5, 0x46, 0x27, 0x13, 0x9b, 0xd0, 0x1f, 0x15, 0x22, 0x3d, 0x08, 0x31, 0x61, 0x8c];
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ExactDocumentsContainsAscQuery(pub ExactDocumentsContainsAscParams);
 impl GeneratedQuery for ExactDocumentsContainsAscQuery {
@@ -152,7 +152,7 @@ pub enum ExactDocumentsEndsWithDescResult {
     Found(Box<ExactDocumentsEndsWithDescFound>),
 }
 
-pub const EXACT_DOCUMENTS_ENDS_WITH_DESC_QUERY_PLAN_HASH: [u8; 32] = [0xbd, 0x35, 0x21, 0x86, 0xba, 0x39, 0xf7, 0xe1, 0x03, 0x8e, 0x85, 0xa9, 0x1e, 0x06, 0xb8, 0xcb, 0xd2, 0x24, 0xa1, 0x96, 0xaf, 0x34, 0xfe, 0xba, 0x4a, 0x72, 0x43, 0x06, 0x07, 0xc2, 0xd5, 0x77];
+pub const EXACT_DOCUMENTS_ENDS_WITH_DESC_QUERY_PLAN_HASH: [u8; 32] = [0x36, 0xf0, 0x81, 0x5a, 0x0d, 0x7a, 0xf2, 0xd2, 0xdd, 0xaa, 0x25, 0xd6, 0xbc, 0xa9, 0x75, 0x6a, 0x15, 0x7d, 0xe5, 0x10, 0xc5, 0xbd, 0x1f, 0x4c, 0x81, 0xc3, 0x03, 0x61, 0x84, 0xb9, 0xc2, 0x40];
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ExactDocumentsEndsWithDescQuery(pub ExactDocumentsEndsWithDescParams);
 impl GeneratedQuery for ExactDocumentsEndsWithDescQuery {
@@ -244,7 +244,7 @@ pub enum ExactDocumentsStartsWithAscResult {
     Found(Box<ExactDocumentsStartsWithAscFound>),
 }
 
-pub const EXACT_DOCUMENTS_STARTS_WITH_ASC_QUERY_PLAN_HASH: [u8; 32] = [0x85, 0x25, 0x9a, 0x05, 0xf3, 0x0c, 0x02, 0x51, 0x94, 0x5b, 0x24, 0x52, 0x6e, 0xeb, 0xa7, 0xca, 0xe1, 0x15, 0x17, 0xb9, 0x71, 0x50, 0xd0, 0xa6, 0x3b, 0xc5, 0xb4, 0xd1, 0x9f, 0xd3, 0xdc, 0x4f];
+pub const EXACT_DOCUMENTS_STARTS_WITH_ASC_QUERY_PLAN_HASH: [u8; 32] = [0xc0, 0x1d, 0xc8, 0x6f, 0x5c, 0x35, 0x16, 0x43, 0x96, 0xc5, 0xd8, 0xde, 0x1e, 0xcc, 0x28, 0x82, 0xce, 0x45, 0x8f, 0x52, 0x76, 0xd6, 0x28, 0x42, 0xe6, 0xa0, 0xeb, 0xb3, 0xd2, 0xb8, 0x12, 0x07];
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ExactDocumentsStartsWithAscQuery(pub ExactDocumentsStartsWithAscParams);
 impl GeneratedQuery for ExactDocumentsStartsWithAscQuery {
@@ -335,7 +335,7 @@ pub enum GetAuthSessionResult {
     Missing(Box<GetAuthSessionMissing>),
 }
 
-pub const GET_AUTH_SESSION_QUERY_PLAN_HASH: [u8; 32] = [0xff, 0x50, 0x1d, 0x8e, 0x9d, 0x45, 0x13, 0x80, 0xa4, 0x6d, 0xc3, 0xd0, 0x9f, 0xe6, 0xbb, 0x7f, 0x94, 0x00, 0xbb, 0xa2, 0x30, 0xda, 0x14, 0xc7, 0x9a, 0xeb, 0xb1, 0xbf, 0xf2, 0x3c, 0x80, 0xe6];
+pub const GET_AUTH_SESSION_QUERY_PLAN_HASH: [u8; 32] = [0x5b, 0x79, 0x30, 0x5e, 0x91, 0x45, 0xa9, 0x1d, 0x5c, 0x27, 0xb9, 0x76, 0x9c, 0xcc, 0x25, 0x48, 0x96, 0x14, 0xce, 0x48, 0x39, 0x26, 0xbf, 0x08, 0x6e, 0x5c, 0x85, 0x2b, 0xb4, 0x7c, 0x4f, 0x5a];
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct GetAuthSessionQuery(pub GetAuthSessionParams);
 impl GeneratedQuery for GetAuthSessionQuery {
@@ -393,6 +393,374 @@ fn decode_get_auth_session_found_session_record(mut record: ApplicationRecord) -
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct InventoryByObservedAscNullsLastParams {
+    pub organization_id: String,
+    pub limit: u64,
+    pub offset: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct InventoryByObservedAscNullsLastFoundRecords {
+    pub organization_id: String,
+    pub record_id: String,
+    pub subtitle: Option<String>,
+    pub observed_at: Option<TimestampValue>,
+    pub tie_rank: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct InventoryByObservedAscNullsLastFoundTotal {
+    pub value: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct InventoryByObservedAscNullsLastFound {
+    pub records: Vec<InventoryByObservedAscNullsLastFoundRecords>,
+    pub total: InventoryByObservedAscNullsLastFoundTotal,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum InventoryByObservedAscNullsLastResult {
+    Found(Box<InventoryByObservedAscNullsLastFound>),
+}
+
+pub const INVENTORY_BY_OBSERVED_ASC_NULLS_LAST_QUERY_PLAN_HASH: [u8; 32] = [0x65, 0x34, 0x1f, 0x96, 0x76, 0xfd, 0x61, 0xe7, 0xe0, 0x90, 0x84, 0x51, 0x7b, 0xdd, 0x23, 0xf1, 0xc1, 0x54, 0x08, 0x6c, 0xdd, 0xf1, 0x3a, 0x48, 0xed, 0xf3, 0x95, 0x6d, 0xec, 0x75, 0x60, 0x7f];
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct InventoryByObservedAscNullsLastQuery(pub InventoryByObservedAscNullsLastParams);
+impl GeneratedQuery for InventoryByObservedAscNullsLastQuery {
+    type Output = InventoryByObservedAscNullsLastResult;
+
+    fn named_query(self, options: QueryOptions) -> Result<NamedQuery, ApplicationClientError> {
+        let mut parameters = BTreeMap::new();
+        parameters.insert("organization_id".to_owned(), ApplicationValue::Uuid(ApplicationUuid::from_text(self.0.organization_id)?));
+        parameters.insert("limit".to_owned(), ApplicationValue::U64(self.0.limit));
+        parameters.insert("offset".to_owned(), ApplicationValue::U64(self.0.offset));
+        NamedQuery::new(
+            ApplicationContract::Exact {
+                lineage: CONTRACT_LINEAGE.to_owned(),
+                version: CONTRACT_VERSION,
+                bundle_hash: Some(CONTRACT_BUNDLE_HASH),
+            },
+            "InventoryByObservedAscNullsLast",
+            Some(QUERY_MODULE_HASH),
+            parameters,
+            None,
+        )?.expect_plan_hash(INVENTORY_BY_OBSERVED_ASC_NULLS_LAST_QUERY_PLAN_HASH).with_options(options)
+    }
+
+    fn decode_result(mut response: NamedQueryResult) -> Result<Self::Output, ApplicationClientError> {
+        let outcome = response.outcome.clone();
+        match outcome.as_str() {
+            "Found" => {
+                let decoded = InventoryByObservedAscNullsLastFound {
+                    records: many_result_records(take_result_field(&mut response.fields, "records")?)?.into_iter().map(decode_inventory_by_observed_asc_nulls_last_found_records_record).collect::<Result<Vec<_>, _>>()?,
+                    total: decode_inventory_by_observed_asc_nulls_last_found_total_record(one_result_record(take_result_field(&mut response.fields, "total")?)?)?,
+                };
+                if !response.fields.is_empty() { return Err(ApplicationClientError::InvalidResponse); }
+                Ok(InventoryByObservedAscNullsLastResult::Found(Box::new(decoded)))
+            },
+            _ => Err(ApplicationClientError::InvalidResponse),
+        }
+    }
+}
+
+fn decode_inventory_by_observed_asc_nulls_last_found_records_record(mut record: ApplicationRecord) -> Result<InventoryByObservedAscNullsLastFoundRecords, ApplicationClientError> {
+    let value = InventoryByObservedAscNullsLastFoundRecords {
+        organization_id: application_uuid(take_application_value(&mut record.fields, "organization_id")?)?,
+        record_id: application_uuid(take_application_value(&mut record.fields, "record_id")?)?,
+        subtitle: match take_application_value(&mut record.fields, "subtitle")? { ApplicationValue::Null => None, value => Some(application_string(value)?) },
+        observed_at: match take_application_value(&mut record.fields, "observed_at")? { ApplicationValue::Null => None, value => Some(application_timestamp(value)?) },
+        tie_rank: application_u64(take_application_value(&mut record.fields, "tie_rank")?)?,
+    };
+    if !record.fields.is_empty() { return Err(ApplicationClientError::InvalidResponse); }
+    Ok(value)
+}
+
+fn decode_inventory_by_observed_asc_nulls_last_found_total_record(mut record: ApplicationRecord) -> Result<InventoryByObservedAscNullsLastFoundTotal, ApplicationClientError> {
+    let value = InventoryByObservedAscNullsLastFoundTotal {
+        value: application_u64(take_application_value(&mut record.fields, "value")?)?,
+    };
+    if !record.fields.is_empty() { return Err(ApplicationClientError::InvalidResponse); }
+    Ok(value)
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct InventoryByObservedDescNullsFirstParams {
+    pub organization_id: String,
+    pub limit: u64,
+    pub offset: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct InventoryByObservedDescNullsFirstFoundRecords {
+    pub organization_id: String,
+    pub record_id: String,
+    pub subtitle: Option<String>,
+    pub observed_at: Option<TimestampValue>,
+    pub tie_rank: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct InventoryByObservedDescNullsFirstFoundTotal {
+    pub value: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct InventoryByObservedDescNullsFirstFound {
+    pub records: Vec<InventoryByObservedDescNullsFirstFoundRecords>,
+    pub total: InventoryByObservedDescNullsFirstFoundTotal,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum InventoryByObservedDescNullsFirstResult {
+    Found(Box<InventoryByObservedDescNullsFirstFound>),
+}
+
+pub const INVENTORY_BY_OBSERVED_DESC_NULLS_FIRST_QUERY_PLAN_HASH: [u8; 32] = [0x42, 0x2d, 0x50, 0x4c, 0x46, 0x46, 0xf3, 0x69, 0x95, 0x74, 0x9b, 0xcd, 0xbb, 0xc1, 0x45, 0x13, 0xd8, 0x0d, 0x69, 0x21, 0x98, 0x40, 0xdb, 0xb6, 0xbb, 0x9e, 0xb7, 0xfa, 0x1b, 0x94, 0x96, 0x92];
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct InventoryByObservedDescNullsFirstQuery(pub InventoryByObservedDescNullsFirstParams);
+impl GeneratedQuery for InventoryByObservedDescNullsFirstQuery {
+    type Output = InventoryByObservedDescNullsFirstResult;
+
+    fn named_query(self, options: QueryOptions) -> Result<NamedQuery, ApplicationClientError> {
+        let mut parameters = BTreeMap::new();
+        parameters.insert("organization_id".to_owned(), ApplicationValue::Uuid(ApplicationUuid::from_text(self.0.organization_id)?));
+        parameters.insert("limit".to_owned(), ApplicationValue::U64(self.0.limit));
+        parameters.insert("offset".to_owned(), ApplicationValue::U64(self.0.offset));
+        NamedQuery::new(
+            ApplicationContract::Exact {
+                lineage: CONTRACT_LINEAGE.to_owned(),
+                version: CONTRACT_VERSION,
+                bundle_hash: Some(CONTRACT_BUNDLE_HASH),
+            },
+            "InventoryByObservedDescNullsFirst",
+            Some(QUERY_MODULE_HASH),
+            parameters,
+            None,
+        )?.expect_plan_hash(INVENTORY_BY_OBSERVED_DESC_NULLS_FIRST_QUERY_PLAN_HASH).with_options(options)
+    }
+
+    fn decode_result(mut response: NamedQueryResult) -> Result<Self::Output, ApplicationClientError> {
+        let outcome = response.outcome.clone();
+        match outcome.as_str() {
+            "Found" => {
+                let decoded = InventoryByObservedDescNullsFirstFound {
+                    records: many_result_records(take_result_field(&mut response.fields, "records")?)?.into_iter().map(decode_inventory_by_observed_desc_nulls_first_found_records_record).collect::<Result<Vec<_>, _>>()?,
+                    total: decode_inventory_by_observed_desc_nulls_first_found_total_record(one_result_record(take_result_field(&mut response.fields, "total")?)?)?,
+                };
+                if !response.fields.is_empty() { return Err(ApplicationClientError::InvalidResponse); }
+                Ok(InventoryByObservedDescNullsFirstResult::Found(Box::new(decoded)))
+            },
+            _ => Err(ApplicationClientError::InvalidResponse),
+        }
+    }
+}
+
+fn decode_inventory_by_observed_desc_nulls_first_found_records_record(mut record: ApplicationRecord) -> Result<InventoryByObservedDescNullsFirstFoundRecords, ApplicationClientError> {
+    let value = InventoryByObservedDescNullsFirstFoundRecords {
+        organization_id: application_uuid(take_application_value(&mut record.fields, "organization_id")?)?,
+        record_id: application_uuid(take_application_value(&mut record.fields, "record_id")?)?,
+        subtitle: match take_application_value(&mut record.fields, "subtitle")? { ApplicationValue::Null => None, value => Some(application_string(value)?) },
+        observed_at: match take_application_value(&mut record.fields, "observed_at")? { ApplicationValue::Null => None, value => Some(application_timestamp(value)?) },
+        tie_rank: application_u64(take_application_value(&mut record.fields, "tie_rank")?)?,
+    };
+    if !record.fields.is_empty() { return Err(ApplicationClientError::InvalidResponse); }
+    Ok(value)
+}
+
+fn decode_inventory_by_observed_desc_nulls_first_found_total_record(mut record: ApplicationRecord) -> Result<InventoryByObservedDescNullsFirstFoundTotal, ApplicationClientError> {
+    let value = InventoryByObservedDescNullsFirstFoundTotal {
+        value: application_u64(take_application_value(&mut record.fields, "value")?)?,
+    };
+    if !record.fields.is_empty() { return Err(ApplicationClientError::InvalidResponse); }
+    Ok(value)
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct InventoryBySubtitleAscNullsFirstParams {
+    pub organization_id: String,
+    pub limit: u64,
+    pub offset: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct InventoryBySubtitleAscNullsFirstFoundRecords {
+    pub organization_id: String,
+    pub record_id: String,
+    pub subtitle: Option<String>,
+    pub observed_at: Option<TimestampValue>,
+    pub tie_rank: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct InventoryBySubtitleAscNullsFirstFoundTotal {
+    pub value: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct InventoryBySubtitleAscNullsFirstFound {
+    pub records: Vec<InventoryBySubtitleAscNullsFirstFoundRecords>,
+    pub total: InventoryBySubtitleAscNullsFirstFoundTotal,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum InventoryBySubtitleAscNullsFirstResult {
+    Found(Box<InventoryBySubtitleAscNullsFirstFound>),
+}
+
+pub const INVENTORY_BY_SUBTITLE_ASC_NULLS_FIRST_QUERY_PLAN_HASH: [u8; 32] = [0xc2, 0xb7, 0x11, 0xbc, 0x82, 0x9f, 0xd7, 0xca, 0x34, 0xac, 0xda, 0x9d, 0x7b, 0x25, 0xfe, 0xf2, 0xb8, 0xd2, 0xe4, 0x7b, 0xaf, 0xc3, 0x85, 0x28, 0xd3, 0x62, 0xce, 0x4a, 0x0e, 0x9c, 0xc5, 0x55];
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct InventoryBySubtitleAscNullsFirstQuery(pub InventoryBySubtitleAscNullsFirstParams);
+impl GeneratedQuery for InventoryBySubtitleAscNullsFirstQuery {
+    type Output = InventoryBySubtitleAscNullsFirstResult;
+
+    fn named_query(self, options: QueryOptions) -> Result<NamedQuery, ApplicationClientError> {
+        let mut parameters = BTreeMap::new();
+        parameters.insert("organization_id".to_owned(), ApplicationValue::Uuid(ApplicationUuid::from_text(self.0.organization_id)?));
+        parameters.insert("limit".to_owned(), ApplicationValue::U64(self.0.limit));
+        parameters.insert("offset".to_owned(), ApplicationValue::U64(self.0.offset));
+        NamedQuery::new(
+            ApplicationContract::Exact {
+                lineage: CONTRACT_LINEAGE.to_owned(),
+                version: CONTRACT_VERSION,
+                bundle_hash: Some(CONTRACT_BUNDLE_HASH),
+            },
+            "InventoryBySubtitleAscNullsFirst",
+            Some(QUERY_MODULE_HASH),
+            parameters,
+            None,
+        )?.expect_plan_hash(INVENTORY_BY_SUBTITLE_ASC_NULLS_FIRST_QUERY_PLAN_HASH).with_options(options)
+    }
+
+    fn decode_result(mut response: NamedQueryResult) -> Result<Self::Output, ApplicationClientError> {
+        let outcome = response.outcome.clone();
+        match outcome.as_str() {
+            "Found" => {
+                let decoded = InventoryBySubtitleAscNullsFirstFound {
+                    records: many_result_records(take_result_field(&mut response.fields, "records")?)?.into_iter().map(decode_inventory_by_subtitle_asc_nulls_first_found_records_record).collect::<Result<Vec<_>, _>>()?,
+                    total: decode_inventory_by_subtitle_asc_nulls_first_found_total_record(one_result_record(take_result_field(&mut response.fields, "total")?)?)?,
+                };
+                if !response.fields.is_empty() { return Err(ApplicationClientError::InvalidResponse); }
+                Ok(InventoryBySubtitleAscNullsFirstResult::Found(Box::new(decoded)))
+            },
+            _ => Err(ApplicationClientError::InvalidResponse),
+        }
+    }
+}
+
+fn decode_inventory_by_subtitle_asc_nulls_first_found_records_record(mut record: ApplicationRecord) -> Result<InventoryBySubtitleAscNullsFirstFoundRecords, ApplicationClientError> {
+    let value = InventoryBySubtitleAscNullsFirstFoundRecords {
+        organization_id: application_uuid(take_application_value(&mut record.fields, "organization_id")?)?,
+        record_id: application_uuid(take_application_value(&mut record.fields, "record_id")?)?,
+        subtitle: match take_application_value(&mut record.fields, "subtitle")? { ApplicationValue::Null => None, value => Some(application_string(value)?) },
+        observed_at: match take_application_value(&mut record.fields, "observed_at")? { ApplicationValue::Null => None, value => Some(application_timestamp(value)?) },
+        tie_rank: application_u64(take_application_value(&mut record.fields, "tie_rank")?)?,
+    };
+    if !record.fields.is_empty() { return Err(ApplicationClientError::InvalidResponse); }
+    Ok(value)
+}
+
+fn decode_inventory_by_subtitle_asc_nulls_first_found_total_record(mut record: ApplicationRecord) -> Result<InventoryBySubtitleAscNullsFirstFoundTotal, ApplicationClientError> {
+    let value = InventoryBySubtitleAscNullsFirstFoundTotal {
+        value: application_u64(take_application_value(&mut record.fields, "value")?)?,
+    };
+    if !record.fields.is_empty() { return Err(ApplicationClientError::InvalidResponse); }
+    Ok(value)
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct InventoryBySubtitleDescNullsLastParams {
+    pub organization_id: String,
+    pub limit: u64,
+    pub offset: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct InventoryBySubtitleDescNullsLastFoundRecords {
+    pub organization_id: String,
+    pub record_id: String,
+    pub subtitle: Option<String>,
+    pub observed_at: Option<TimestampValue>,
+    pub tie_rank: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct InventoryBySubtitleDescNullsLastFoundTotal {
+    pub value: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct InventoryBySubtitleDescNullsLastFound {
+    pub records: Vec<InventoryBySubtitleDescNullsLastFoundRecords>,
+    pub total: InventoryBySubtitleDescNullsLastFoundTotal,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum InventoryBySubtitleDescNullsLastResult {
+    Found(Box<InventoryBySubtitleDescNullsLastFound>),
+}
+
+pub const INVENTORY_BY_SUBTITLE_DESC_NULLS_LAST_QUERY_PLAN_HASH: [u8; 32] = [0x38, 0x61, 0x41, 0xe0, 0x8e, 0x66, 0x11, 0x47, 0xf5, 0x32, 0x3e, 0x57, 0xfd, 0x6a, 0x45, 0x27, 0x91, 0x5e, 0xcf, 0x6a, 0x51, 0xf8, 0xa6, 0xdc, 0xea, 0x33, 0x5d, 0x28, 0x00, 0x45, 0x9c, 0x3b];
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct InventoryBySubtitleDescNullsLastQuery(pub InventoryBySubtitleDescNullsLastParams);
+impl GeneratedQuery for InventoryBySubtitleDescNullsLastQuery {
+    type Output = InventoryBySubtitleDescNullsLastResult;
+
+    fn named_query(self, options: QueryOptions) -> Result<NamedQuery, ApplicationClientError> {
+        let mut parameters = BTreeMap::new();
+        parameters.insert("organization_id".to_owned(), ApplicationValue::Uuid(ApplicationUuid::from_text(self.0.organization_id)?));
+        parameters.insert("limit".to_owned(), ApplicationValue::U64(self.0.limit));
+        parameters.insert("offset".to_owned(), ApplicationValue::U64(self.0.offset));
+        NamedQuery::new(
+            ApplicationContract::Exact {
+                lineage: CONTRACT_LINEAGE.to_owned(),
+                version: CONTRACT_VERSION,
+                bundle_hash: Some(CONTRACT_BUNDLE_HASH),
+            },
+            "InventoryBySubtitleDescNullsLast",
+            Some(QUERY_MODULE_HASH),
+            parameters,
+            None,
+        )?.expect_plan_hash(INVENTORY_BY_SUBTITLE_DESC_NULLS_LAST_QUERY_PLAN_HASH).with_options(options)
+    }
+
+    fn decode_result(mut response: NamedQueryResult) -> Result<Self::Output, ApplicationClientError> {
+        let outcome = response.outcome.clone();
+        match outcome.as_str() {
+            "Found" => {
+                let decoded = InventoryBySubtitleDescNullsLastFound {
+                    records: many_result_records(take_result_field(&mut response.fields, "records")?)?.into_iter().map(decode_inventory_by_subtitle_desc_nulls_last_found_records_record).collect::<Result<Vec<_>, _>>()?,
+                    total: decode_inventory_by_subtitle_desc_nulls_last_found_total_record(one_result_record(take_result_field(&mut response.fields, "total")?)?)?,
+                };
+                if !response.fields.is_empty() { return Err(ApplicationClientError::InvalidResponse); }
+                Ok(InventoryBySubtitleDescNullsLastResult::Found(Box::new(decoded)))
+            },
+            _ => Err(ApplicationClientError::InvalidResponse),
+        }
+    }
+}
+
+fn decode_inventory_by_subtitle_desc_nulls_last_found_records_record(mut record: ApplicationRecord) -> Result<InventoryBySubtitleDescNullsLastFoundRecords, ApplicationClientError> {
+    let value = InventoryBySubtitleDescNullsLastFoundRecords {
+        organization_id: application_uuid(take_application_value(&mut record.fields, "organization_id")?)?,
+        record_id: application_uuid(take_application_value(&mut record.fields, "record_id")?)?,
+        subtitle: match take_application_value(&mut record.fields, "subtitle")? { ApplicationValue::Null => None, value => Some(application_string(value)?) },
+        observed_at: match take_application_value(&mut record.fields, "observed_at")? { ApplicationValue::Null => None, value => Some(application_timestamp(value)?) },
+        tie_rank: application_u64(take_application_value(&mut record.fields, "tie_rank")?)?,
+    };
+    if !record.fields.is_empty() { return Err(ApplicationClientError::InvalidResponse); }
+    Ok(value)
+}
+
+fn decode_inventory_by_subtitle_desc_nulls_last_found_total_record(mut record: ApplicationRecord) -> Result<InventoryBySubtitleDescNullsLastFoundTotal, ApplicationClientError> {
+    let value = InventoryBySubtitleDescNullsLastFoundTotal {
+        value: application_u64(take_application_value(&mut record.fields, "value")?)?,
+    };
+    if !record.fields.is_empty() { return Err(ApplicationClientError::InvalidResponse); }
+    Ok(value)
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ListDraftDocumentsParams {
     pub site_id: String,
 }
@@ -414,7 +782,7 @@ pub enum ListDraftDocumentsResult {
     Found(Box<ListDraftDocumentsFound>),
 }
 
-pub const LIST_DRAFT_DOCUMENTS_QUERY_PLAN_HASH: [u8; 32] = [0x9d, 0xea, 0xd9, 0x95, 0xc1, 0xef, 0x40, 0x67, 0x26, 0x64, 0x0f, 0x51, 0x79, 0x3c, 0xd8, 0x2a, 0x83, 0xf5, 0x5b, 0x17, 0xb2, 0x13, 0x76, 0xb5, 0x5b, 0x8a, 0xef, 0xf5, 0x9e, 0xe2, 0x23, 0x8e];
+pub const LIST_DRAFT_DOCUMENTS_QUERY_PLAN_HASH: [u8; 32] = [0x1b, 0x4a, 0x62, 0x61, 0x41, 0xfd, 0x8f, 0x30, 0x3b, 0x46, 0x5f, 0x5e, 0x4d, 0x02, 0x37, 0xfe, 0x6e, 0x7e, 0x0d, 0x35, 0x2d, 0x0c, 0x76, 0xad, 0xb5, 0xb6, 0xce, 0xf8, 0xbf, 0xcb, 0xb9, 0x53];
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ListDraftDocumentsQuery(pub ListDraftDocumentsParams);
 impl GeneratedQuery for ListDraftDocumentsQuery {
@@ -486,7 +854,7 @@ pub enum ListFgaTuplesResult {
     Found(Box<ListFgaTuplesFound>),
 }
 
-pub const LIST_FGA_TUPLES_QUERY_PLAN_HASH: [u8; 32] = [0xbf, 0x95, 0xe3, 0x3c, 0x68, 0xb0, 0xb6, 0x04, 0x70, 0xe6, 0x35, 0x0f, 0xd2, 0xff, 0x00, 0xe6, 0x79, 0x6b, 0xcd, 0x30, 0xbb, 0xea, 0x26, 0x40, 0x27, 0xda, 0x0e, 0x4d, 0x9d, 0x2e, 0x24, 0xc7];
+pub const LIST_FGA_TUPLES_QUERY_PLAN_HASH: [u8; 32] = [0x85, 0xd4, 0xa5, 0x3d, 0xe2, 0x2f, 0xe4, 0xf5, 0xdc, 0x79, 0x55, 0xc7, 0x00, 0xa2, 0x86, 0xb5, 0x61, 0xe4, 0xe9, 0x52, 0x81, 0x0d, 0x04, 0x75, 0xc5, 0x68, 0x02, 0x87, 0x5b, 0xed, 0x18, 0x8d];
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ListFgaTuplesQuery(pub ListFgaTuplesParams);
 impl GeneratedQuery for ListFgaTuplesQuery {
@@ -560,7 +928,7 @@ pub enum ListPipelinesResult {
     Found(Box<ListPipelinesFound>),
 }
 
-pub const LIST_PIPELINES_QUERY_PLAN_HASH: [u8; 32] = [0x7e, 0x28, 0x8f, 0x33, 0xbd, 0xdf, 0xf2, 0x26, 0xd1, 0x3d, 0xaa, 0x5b, 0xe6, 0xf4, 0x4f, 0xe6, 0x81, 0x03, 0xa7, 0x6a, 0x72, 0x80, 0xec, 0x24, 0x43, 0x0d, 0xd8, 0xd7, 0x42, 0x03, 0x2d, 0x76];
+pub const LIST_PIPELINES_QUERY_PLAN_HASH: [u8; 32] = [0x62, 0x44, 0xf8, 0x40, 0x41, 0xb6, 0x1b, 0x7a, 0x08, 0xf6, 0xc7, 0x31, 0xdf, 0x9d, 0xa8, 0x07, 0x96, 0xb2, 0x52, 0x79, 0x9e, 0x08, 0x34, 0x0f, 0x07, 0xf7, 0xc0, 0xc1, 0x9d, 0xe5, 0x19, 0x7c];
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ListPipelinesQuery(pub ListPipelinesParams);
 impl GeneratedQuery for ListPipelinesQuery {
@@ -633,7 +1001,7 @@ pub enum MetricDashboardResult {
     Found(Box<MetricDashboardFound>),
 }
 
-pub const METRIC_DASHBOARD_QUERY_PLAN_HASH: [u8; 32] = [0x25, 0x28, 0x79, 0xf2, 0xe9, 0x26, 0x03, 0x32, 0xe1, 0x11, 0x95, 0xd2, 0x0a, 0xb0, 0x60, 0x76, 0x95, 0xfd, 0xda, 0x96, 0x77, 0xa5, 0x7a, 0xd8, 0x91, 0x0b, 0x81, 0x7f, 0x54, 0x4f, 0x7e, 0xdc];
+pub const METRIC_DASHBOARD_QUERY_PLAN_HASH: [u8; 32] = [0xe5, 0xa0, 0x9f, 0xde, 0xc5, 0xad, 0x5c, 0x36, 0x48, 0x48, 0x11, 0x8a, 0xf9, 0x29, 0xcf, 0x65, 0x4c, 0x58, 0xdb, 0xb0, 0xb5, 0xab, 0x59, 0xba, 0x04, 0xaa, 0x9a, 0x91, 0x01, 0x39, 0xdf, 0xa6];
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MetricDashboardQuery(pub MetricDashboardParams);
 impl GeneratedQuery for MetricDashboardQuery {
@@ -717,7 +1085,7 @@ pub enum ReviewedDirectoryUsersResult {
     Found(Box<ReviewedDirectoryUsersFound>),
 }
 
-pub const REVIEWED_DIRECTORY_USERS_QUERY_PLAN_HASH: [u8; 32] = [0xf0, 0xa9, 0x36, 0xd2, 0xd4, 0xda, 0x23, 0x10, 0x0a, 0xcd, 0xbd, 0x9b, 0xca, 0xbf, 0xb9, 0xf0, 0xb0, 0xfa, 0x43, 0x7b, 0x1f, 0x1f, 0x86, 0xc0, 0xb3, 0x5d, 0x8b, 0x7d, 0xb1, 0x82, 0x1c, 0xc9];
+pub const REVIEWED_DIRECTORY_USERS_QUERY_PLAN_HASH: [u8; 32] = [0x45, 0x7a, 0xdf, 0x85, 0x67, 0x68, 0xf6, 0x54, 0x14, 0x87, 0x62, 0x86, 0x45, 0x64, 0xe4, 0x1f, 0xf6, 0x47, 0x97, 0xa9, 0x5b, 0x03, 0xd2, 0x6e, 0xa3, 0xcf, 0x7a, 0x98, 0xc1, 0x85, 0xae, 0xc3];
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ReviewedDirectoryUsersQuery(pub ReviewedDirectoryUsersParams);
 impl GeneratedQuery for ReviewedDirectoryUsersQuery {
@@ -816,7 +1184,7 @@ pub enum SearchDirectoryUsersResult {
     Found(Box<SearchDirectoryUsersFound>),
 }
 
-pub const SEARCH_DIRECTORY_USERS_QUERY_PLAN_HASH: [u8; 32] = [0x12, 0x50, 0xe2, 0x0a, 0x7e, 0x96, 0x6e, 0x8f, 0xc3, 0x3a, 0xb1, 0x73, 0x35, 0x12, 0xaf, 0xd0, 0x31, 0xfb, 0xb2, 0xf5, 0xee, 0xc4, 0x78, 0x22, 0x9f, 0x39, 0x96, 0xb5, 0x0a, 0xd8, 0x20, 0xd6];
+pub const SEARCH_DIRECTORY_USERS_QUERY_PLAN_HASH: [u8; 32] = [0x8f, 0x68, 0x44, 0xea, 0x9a, 0xed, 0xe0, 0x80, 0xc0, 0x4b, 0x45, 0x5e, 0xc7, 0x2c, 0x17, 0x97, 0x0e, 0x4c, 0xaf, 0x31, 0xc2, 0x46, 0xe8, 0xd7, 0x71, 0x97, 0xc0, 0xe3, 0x18, 0x8a, 0xfc, 0x86];
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SearchDirectoryUsersQuery(pub SearchDirectoryUsersParams);
 impl GeneratedQuery for SearchDirectoryUsersQuery {
@@ -904,7 +1272,7 @@ pub enum SearchDocumentsResult {
     Found(Box<SearchDocumentsFound>),
 }
 
-pub const SEARCH_DOCUMENTS_QUERY_PLAN_HASH: [u8; 32] = [0xe8, 0x8b, 0xaa, 0x94, 0xa5, 0x18, 0x39, 0xd1, 0xab, 0x27, 0x74, 0x85, 0x55, 0x11, 0x10, 0xe7, 0x80, 0xdd, 0xc7, 0xc0, 0x99, 0xff, 0xbc, 0x76, 0x7d, 0x02, 0xb9, 0xb9, 0x6c, 0xfc, 0x1e, 0x4e];
+pub const SEARCH_DOCUMENTS_QUERY_PLAN_HASH: [u8; 32] = [0x53, 0x48, 0x74, 0x1f, 0x3b, 0xcd, 0x9e, 0xe9, 0x1a, 0x1e, 0x27, 0x62, 0x3f, 0x06, 0xf9, 0x07, 0x5a, 0xe5, 0x7c, 0x3b, 0xaa, 0x92, 0x6d, 0xc9, 0x60, 0x8b, 0x73, 0x8e, 0x41, 0x4b, 0x36, 0xaf];
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SearchDocumentsQuery(pub SearchDocumentsParams);
 impl GeneratedQuery for SearchDocumentsQuery {
@@ -1215,6 +1583,102 @@ fn decode_auth_signup_input_entity(value: v1::Value) -> Result<AuthSignupInput, 
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct InventoryRecord {
+    pub subtitle: Option<String>,
+    pub tie_rank: u64,
+    pub record_id: String,
+    pub observed_at: Option<TimestampValue>,
+    pub organization_id: String,
+}
+
+fn encode_inventory_record_entity(value: &InventoryRecord) -> Result<v1::Value, GeneratedCommandError> {
+    let fields = vec![
+        v1::ValueField { field_id: Some(1), name: String::new(), value: Some(match &value.subtitle.as_ref() { Some(value) => wire_string(Clone::clone(value)), None => wire_null() }) },
+        v1::ValueField { field_id: Some(2), name: String::new(), value: Some(wire_u64(value.tie_rank)) },
+        v1::ValueField { field_id: Some(3), name: String::new(), value: Some(wire_uuid(&value.record_id)?) },
+        v1::ValueField { field_id: Some(4), name: String::new(), value: Some(match &value.observed_at.as_ref() { Some(value) => wire_timestamp(value)?, None => wire_null() }) },
+        v1::ValueField { field_id: Some(5), name: String::new(), value: Some(wire_uuid(&value.organization_id)?) },
+    ];
+    Ok(v1::Value { kind: Some(WireKind::RecordValue(v1::ValueRecord { fields })) })
+}
+
+fn decode_inventory_record_entity(value: v1::Value) -> Result<InventoryRecord, GeneratedCommandError> {
+    let mut fields = wire_record_fields(value)?;
+    let entity = InventoryRecord {
+        subtitle: decode_wire_optional(take_wire_field(&mut fields, 1)?, decode_wire_string)?,
+        tie_rank: decode_wire_u64(take_wire_field(&mut fields, 2)?)?,
+        record_id: decode_wire_uuid(take_wire_field(&mut fields, 3)?)?,
+        observed_at: decode_wire_optional(take_wire_field(&mut fields, 4)?, decode_wire_timestamp)?,
+        organization_id: decode_wire_uuid(take_wire_field(&mut fields, 5)?)?,
+    };
+    if !fields.is_empty() { return Err(GeneratedCommandError::InvalidOutcomeShape); }
+    Ok(entity)
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ChangeInventoryRecordStateInput {
+    pub subtitle: Option<String>,
+    pub tie_rank: u64,
+    pub record_id: String,
+    pub request_id: String,
+    pub observed_at: Option<TimestampValue>,
+    pub organization_id: String,
+}
+
+#[allow(clippy::large_enum_variant)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ChangeInventoryRecordStateOutcome {
+    InventoryRecordMissing,
+
+    InventoryRecordStateChanged {
+        record: InventoryRecord,
+    },
+}
+
+const CHANGE_INVENTORY_RECORD_STATE_PLAN_HASH: [u8; 32] = [0xa2, 0x83, 0x76, 0xc6, 0x85, 0x6c, 0xdc, 0xcf, 0x2f, 0x36, 0x18, 0x4e, 0x5f, 0x0e, 0xea, 0xbe, 0x4f, 0xa0, 0x26, 0x36, 0x78, 0xf2, 0x7d, 0xec, 0x02, 0x07, 0x42, 0x1b, 0x84, 0x0f, 0x86, 0x82];
+impl GeneratedCommand for ChangeInventoryRecordStateInput {
+    type Outcome = ChangeInventoryRecordStateOutcome;
+
+    fn idempotent_command(&self) -> Result<IdempotentCommand, GeneratedCommandError> {
+
+        let fields = vec![
+            wire_named_field("subtitle", match &self.subtitle.as_ref() { Some(value) => wire_string(Clone::clone(value)), None => wire_null() }),
+            wire_named_field("tie_rank", wire_u64(self.tie_rank)),
+            wire_named_field("record_id", wire_uuid(&self.record_id)?),
+            wire_named_field("request_id", wire_uuid(&self.request_id)?),
+            wire_named_field("observed_at", match &self.observed_at.as_ref() { Some(value) => wire_timestamp(value)?, None => wire_null() }),
+            wire_named_field("organization_id", wire_uuid(&self.organization_id)?),
+        ];
+        IdempotentCommand::new("ChangeInventoryRecordState", Some(CONTRACT_VERSION), wire_record(fields)).map_err(Into::into)
+    }
+
+    fn outcome_request(&self, request_id: riffdb_client_rust::RequestId) -> Result<v1::GetOutcomeRequest, GeneratedCommandError> {
+        Ok(v1::GetOutcomeRequest {
+            request_id: request_id.into_bytes().to_vec(),
+            contract_lineage: CONTRACT_LINEAGE.to_owned(),
+            command_name: "ChangeInventoryRecordState".to_owned(),
+            idempotency_key: self.request_id.clone(),
+            outcome_uri: None,
+        })
+    }
+
+    fn decode_outcome(&self, response: &v1::ExecuteCommandResponse) -> Result<Self::Outcome, GeneratedCommandError> {
+        let mut fields = wire_outcome_fields(response, &CHANGE_INVENTORY_RECORD_STATE_PLAN_HASH)?;
+        match response.outcome_type.as_str() {
+            "InventoryRecordMissing" => if fields.is_empty() { Ok(Self::Outcome::InventoryRecordMissing) } else { Err(GeneratedCommandError::InvalidOutcomeShape) },
+            "InventoryRecordStateChanged" => {
+                let outcome = Self::Outcome::InventoryRecordStateChanged {
+                    record: decode_inventory_record_entity(take_wire_field(&mut fields, 1)?)?,
+                };
+                if !fields.is_empty() { return Err(GeneratedCommandError::InvalidOutcomeShape); }
+                Ok(outcome)
+            },
+            _ => Err(GeneratedCommandError::InvalidOutcomeShape),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CreateAuthSessionsInput {
     pub signups: Vec<AuthSignupInput>,
     pub request_id: String,
@@ -1356,6 +1820,105 @@ impl GeneratedCommand for CreateDocumentsInput {
         match response.outcome_type.as_str() {
             "DocumentsCreated" => if fields.is_empty() { Ok(Self::Outcome::DocumentsCreated) } else { Err(GeneratedCommandError::InvalidOutcomeShape) },
             "DocumentAlreadyExists" => if fields.is_empty() { Ok(Self::Outcome::DocumentAlreadyExists) } else { Err(GeneratedCommandError::InvalidOutcomeShape) },
+            _ => Err(GeneratedCommandError::InvalidOutcomeShape),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CreateInventoryRecordMissingInput {
+    pub tie_rank: u64,
+    pub record_id: String,
+    pub request_id: String,
+    pub organization_id: String,
+}
+
+#[allow(clippy::large_enum_variant)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum CreateInventoryRecordMissingOutcome {
+    InventoryRecordAlreadyExists,
+
+    InventoryRecordMissingCreated,
+}
+
+const CREATE_INVENTORY_RECORD_MISSING_PLAN_HASH: [u8; 32] = [0x62, 0x6e, 0xde, 0xd5, 0x20, 0xef, 0x9d, 0x3e, 0x22, 0x98, 0x79, 0x46, 0x87, 0xb8, 0x3e, 0x28, 0xee, 0x21, 0x95, 0x9f, 0x6f, 0xfd, 0x76, 0x3d, 0x8b, 0xe7, 0xa1, 0xf3, 0x93, 0x14, 0xe6, 0xde];
+impl GeneratedCommand for CreateInventoryRecordMissingInput {
+    type Outcome = CreateInventoryRecordMissingOutcome;
+
+    fn idempotent_command(&self) -> Result<IdempotentCommand, GeneratedCommandError> {
+
+        let fields = vec![
+            wire_named_field("tie_rank", wire_u64(self.tie_rank)),
+            wire_named_field("record_id", wire_uuid(&self.record_id)?),
+            wire_named_field("request_id", wire_uuid(&self.request_id)?),
+            wire_named_field("organization_id", wire_uuid(&self.organization_id)?),
+        ];
+        IdempotentCommand::new("CreateInventoryRecordMissing", Some(CONTRACT_VERSION), wire_record(fields)).map_err(Into::into)
+    }
+
+    fn outcome_request(&self, request_id: riffdb_client_rust::RequestId) -> Result<v1::GetOutcomeRequest, GeneratedCommandError> {
+        Ok(v1::GetOutcomeRequest {
+            request_id: request_id.into_bytes().to_vec(),
+            contract_lineage: CONTRACT_LINEAGE.to_owned(),
+            command_name: "CreateInventoryRecordMissing".to_owned(),
+            idempotency_key: self.request_id.clone(),
+            outcome_uri: None,
+        })
+    }
+
+    fn decode_outcome(&self, response: &v1::ExecuteCommandResponse) -> Result<Self::Outcome, GeneratedCommandError> {
+        let fields = wire_outcome_fields(response, &CREATE_INVENTORY_RECORD_MISSING_PLAN_HASH)?;
+        match response.outcome_type.as_str() {
+            "InventoryRecordAlreadyExists" => if fields.is_empty() { Ok(Self::Outcome::InventoryRecordAlreadyExists) } else { Err(GeneratedCommandError::InvalidOutcomeShape) },
+            "InventoryRecordMissingCreated" => if fields.is_empty() { Ok(Self::Outcome::InventoryRecordMissingCreated) } else { Err(GeneratedCommandError::InvalidOutcomeShape) },
+            _ => Err(GeneratedCommandError::InvalidOutcomeShape),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CreateInventoryRecordsInput {
+    pub records: Vec<InventoryRecord>,
+    pub request_id: String,
+}
+
+#[allow(clippy::large_enum_variant)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum CreateInventoryRecordsOutcome {
+    InventoryRecordsCreated,
+
+    InventoryRecordBatchAlreadyExists,
+}
+
+const CREATE_INVENTORY_RECORDS_PLAN_HASH: [u8; 32] = [0x01, 0xc8, 0xd5, 0xf5, 0x47, 0x6d, 0xae, 0x0c, 0xb2, 0x05, 0x0c, 0x24, 0x02, 0x96, 0xf9, 0xeb, 0xe9, 0xba, 0x72, 0xd8, 0x82, 0x90, 0x56, 0x27, 0xb7, 0x49, 0x1c, 0x74, 0x14, 0xab, 0xcd, 0xe6];
+impl GeneratedCommand for CreateInventoryRecordsInput {
+    type Outcome = CreateInventoryRecordsOutcome;
+
+    fn idempotent_command(&self) -> Result<IdempotentCommand, GeneratedCommandError> {
+
+        if self.records.is_empty() || self.records.len() > 32 { return Err(GeneratedCommandError::InvalidInputShape); }
+        let fields = vec![
+            wire_named_field("records", v1::Value { kind: Some(WireKind::ListValue(v1::ValueList { values: (self.records).iter().map(encode_inventory_record_entity).collect::<Result<Vec<_>, GeneratedCommandError>>()? })) }),
+            wire_named_field("request_id", wire_uuid(&self.request_id)?),
+        ];
+        IdempotentCommand::new("CreateInventoryRecords", Some(CONTRACT_VERSION), wire_record(fields)).map_err(Into::into)
+    }
+
+    fn outcome_request(&self, request_id: riffdb_client_rust::RequestId) -> Result<v1::GetOutcomeRequest, GeneratedCommandError> {
+        Ok(v1::GetOutcomeRequest {
+            request_id: request_id.into_bytes().to_vec(),
+            contract_lineage: CONTRACT_LINEAGE.to_owned(),
+            command_name: "CreateInventoryRecords".to_owned(),
+            idempotency_key: self.request_id.clone(),
+            outcome_uri: None,
+        })
+    }
+
+    fn decode_outcome(&self, response: &v1::ExecuteCommandResponse) -> Result<Self::Outcome, GeneratedCommandError> {
+        let fields = wire_outcome_fields(response, &CREATE_INVENTORY_RECORDS_PLAN_HASH)?;
+        match response.outcome_type.as_str() {
+            "InventoryRecordsCreated" => if fields.is_empty() { Ok(Self::Outcome::InventoryRecordsCreated) } else { Err(GeneratedCommandError::InvalidOutcomeShape) },
+            "InventoryRecordBatchAlreadyExists" => if fields.is_empty() { Ok(Self::Outcome::InventoryRecordBatchAlreadyExists) } else { Err(GeneratedCommandError::InvalidOutcomeShape) },
             _ => Err(GeneratedCommandError::InvalidOutcomeShape),
         }
     }
@@ -1579,6 +2142,58 @@ impl AdapterOperationalConformanceClient {
         self.client.execute_generated_query(GetAuthSessionQuery(parameters), options, &self.metadata).await
     }
 
+    /// Executes the generated `InventoryByObservedAscNullsLast` named query.
+    pub async fn inventory_by_observed_asc_nulls_last(&mut self, parameters: InventoryByObservedAscNullsLastParams) -> Result<InventoryByObservedAscNullsLastResult, ApplicationClientError> {
+        Ok(self.inventory_by_observed_asc_nulls_last_with_options(parameters, QueryOptions::new()).await?.value)
+    }
+    /// Executes `InventoryByObservedAscNullsLast` against a snapshot at or after the supplied command commit.
+    pub async fn inventory_by_observed_asc_nulls_last_after_commit(&mut self, parameters: InventoryByObservedAscNullsLastParams, commit_sequence: u64) -> Result<TypedQueryResult<InventoryByObservedAscNullsLastResult>, ApplicationClientError> {
+        self.inventory_by_observed_asc_nulls_last_with_options(parameters, QueryOptions::new().read_after_commit(commit_sequence)).await
+    }
+    /// Executes `InventoryByObservedAscNullsLast` with generated pagination or read-fence options.
+    pub async fn inventory_by_observed_asc_nulls_last_with_options(&mut self, parameters: InventoryByObservedAscNullsLastParams, options: QueryOptions) -> Result<TypedQueryResult<InventoryByObservedAscNullsLastResult>, ApplicationClientError> {
+        self.client.execute_generated_query(InventoryByObservedAscNullsLastQuery(parameters), options, &self.metadata).await
+    }
+
+    /// Executes the generated `InventoryByObservedDescNullsFirst` named query.
+    pub async fn inventory_by_observed_desc_nulls_first(&mut self, parameters: InventoryByObservedDescNullsFirstParams) -> Result<InventoryByObservedDescNullsFirstResult, ApplicationClientError> {
+        Ok(self.inventory_by_observed_desc_nulls_first_with_options(parameters, QueryOptions::new()).await?.value)
+    }
+    /// Executes `InventoryByObservedDescNullsFirst` against a snapshot at or after the supplied command commit.
+    pub async fn inventory_by_observed_desc_nulls_first_after_commit(&mut self, parameters: InventoryByObservedDescNullsFirstParams, commit_sequence: u64) -> Result<TypedQueryResult<InventoryByObservedDescNullsFirstResult>, ApplicationClientError> {
+        self.inventory_by_observed_desc_nulls_first_with_options(parameters, QueryOptions::new().read_after_commit(commit_sequence)).await
+    }
+    /// Executes `InventoryByObservedDescNullsFirst` with generated pagination or read-fence options.
+    pub async fn inventory_by_observed_desc_nulls_first_with_options(&mut self, parameters: InventoryByObservedDescNullsFirstParams, options: QueryOptions) -> Result<TypedQueryResult<InventoryByObservedDescNullsFirstResult>, ApplicationClientError> {
+        self.client.execute_generated_query(InventoryByObservedDescNullsFirstQuery(parameters), options, &self.metadata).await
+    }
+
+    /// Executes the generated `InventoryBySubtitleAscNullsFirst` named query.
+    pub async fn inventory_by_subtitle_asc_nulls_first(&mut self, parameters: InventoryBySubtitleAscNullsFirstParams) -> Result<InventoryBySubtitleAscNullsFirstResult, ApplicationClientError> {
+        Ok(self.inventory_by_subtitle_asc_nulls_first_with_options(parameters, QueryOptions::new()).await?.value)
+    }
+    /// Executes `InventoryBySubtitleAscNullsFirst` against a snapshot at or after the supplied command commit.
+    pub async fn inventory_by_subtitle_asc_nulls_first_after_commit(&mut self, parameters: InventoryBySubtitleAscNullsFirstParams, commit_sequence: u64) -> Result<TypedQueryResult<InventoryBySubtitleAscNullsFirstResult>, ApplicationClientError> {
+        self.inventory_by_subtitle_asc_nulls_first_with_options(parameters, QueryOptions::new().read_after_commit(commit_sequence)).await
+    }
+    /// Executes `InventoryBySubtitleAscNullsFirst` with generated pagination or read-fence options.
+    pub async fn inventory_by_subtitle_asc_nulls_first_with_options(&mut self, parameters: InventoryBySubtitleAscNullsFirstParams, options: QueryOptions) -> Result<TypedQueryResult<InventoryBySubtitleAscNullsFirstResult>, ApplicationClientError> {
+        self.client.execute_generated_query(InventoryBySubtitleAscNullsFirstQuery(parameters), options, &self.metadata).await
+    }
+
+    /// Executes the generated `InventoryBySubtitleDescNullsLast` named query.
+    pub async fn inventory_by_subtitle_desc_nulls_last(&mut self, parameters: InventoryBySubtitleDescNullsLastParams) -> Result<InventoryBySubtitleDescNullsLastResult, ApplicationClientError> {
+        Ok(self.inventory_by_subtitle_desc_nulls_last_with_options(parameters, QueryOptions::new()).await?.value)
+    }
+    /// Executes `InventoryBySubtitleDescNullsLast` against a snapshot at or after the supplied command commit.
+    pub async fn inventory_by_subtitle_desc_nulls_last_after_commit(&mut self, parameters: InventoryBySubtitleDescNullsLastParams, commit_sequence: u64) -> Result<TypedQueryResult<InventoryBySubtitleDescNullsLastResult>, ApplicationClientError> {
+        self.inventory_by_subtitle_desc_nulls_last_with_options(parameters, QueryOptions::new().read_after_commit(commit_sequence)).await
+    }
+    /// Executes `InventoryBySubtitleDescNullsLast` with generated pagination or read-fence options.
+    pub async fn inventory_by_subtitle_desc_nulls_last_with_options(&mut self, parameters: InventoryBySubtitleDescNullsLastParams, options: QueryOptions) -> Result<TypedQueryResult<InventoryBySubtitleDescNullsLastResult>, ApplicationClientError> {
+        self.client.execute_generated_query(InventoryBySubtitleDescNullsLastQuery(parameters), options, &self.metadata).await
+    }
+
     /// Executes the generated `ListDraftDocuments` named query.
     pub async fn list_draft_documents(&mut self, parameters: ListDraftDocumentsParams) -> Result<ListDraftDocumentsResult, ApplicationClientError> {
         Ok(self.list_draft_documents_with_options(parameters, QueryOptions::new()).await?.value)
@@ -1670,6 +2285,21 @@ impl AdapterOperationalConformanceClient {
         self.client.execute_generated_query(SearchDocumentsQuery(parameters), options, &self.metadata).await
     }
 
+    pub async fn change_inventory_record_state(&mut self, input: ChangeInventoryRecordStateInput) -> Result<TypedCommandResult<ChangeInventoryRecordStateOutcome>, ApplicationClientError> {
+        self.client.execute_generated_command(&input, self.command_attempts, &self.metadata).await.map_err(Into::into)
+    }
+
+    pub async fn change_inventory_record_state_batch(&self, inputs: Vec<ChangeInventoryRecordStateInput>, options: GeneratedBatchOptions) -> Result<GeneratedBatchResult<ChangeInventoryRecordStateOutcome>, GeneratedBatchError> {
+        self.client.execute_generated_command_batch(inputs, options, self.command_attempts, &self.metadata).await
+    }
+
+    pub async fn change_inventory_record_state_batch_with_progress<F>(&self, inputs: Vec<ChangeInventoryRecordStateInput>, options: GeneratedBatchOptions, progress: F) -> Result<GeneratedBatchResult<ChangeInventoryRecordStateOutcome>, GeneratedBatchError>
+    where
+        F: FnMut(GeneratedBatchProgress),
+    {
+        self.client.execute_generated_command_batch_with_progress(inputs, options, self.command_attempts, &self.metadata, progress).await
+    }
+
     pub async fn create_auth_sessions(&mut self, input: CreateAuthSessionsInput) -> Result<TypedCommandResult<CreateAuthSessionsOutcome>, ApplicationClientError> {
         self.client.execute_generated_command(&input, self.command_attempts, &self.metadata).await.map_err(Into::into)
     }
@@ -1709,6 +2339,36 @@ impl AdapterOperationalConformanceClient {
     }
 
     pub async fn create_documents_batch_with_progress<F>(&self, inputs: Vec<CreateDocumentsInput>, options: GeneratedBatchOptions, progress: F) -> Result<GeneratedBatchResult<CreateDocumentsOutcome>, GeneratedBatchError>
+    where
+        F: FnMut(GeneratedBatchProgress),
+    {
+        self.client.execute_generated_command_batch_with_progress(inputs, options, self.command_attempts, &self.metadata, progress).await
+    }
+
+    pub async fn create_inventory_record_missing(&mut self, input: CreateInventoryRecordMissingInput) -> Result<TypedCommandResult<CreateInventoryRecordMissingOutcome>, ApplicationClientError> {
+        self.client.execute_generated_command(&input, self.command_attempts, &self.metadata).await.map_err(Into::into)
+    }
+
+    pub async fn create_inventory_record_missing_batch(&self, inputs: Vec<CreateInventoryRecordMissingInput>, options: GeneratedBatchOptions) -> Result<GeneratedBatchResult<CreateInventoryRecordMissingOutcome>, GeneratedBatchError> {
+        self.client.execute_generated_command_batch(inputs, options, self.command_attempts, &self.metadata).await
+    }
+
+    pub async fn create_inventory_record_missing_batch_with_progress<F>(&self, inputs: Vec<CreateInventoryRecordMissingInput>, options: GeneratedBatchOptions, progress: F) -> Result<GeneratedBatchResult<CreateInventoryRecordMissingOutcome>, GeneratedBatchError>
+    where
+        F: FnMut(GeneratedBatchProgress),
+    {
+        self.client.execute_generated_command_batch_with_progress(inputs, options, self.command_attempts, &self.metadata, progress).await
+    }
+
+    pub async fn create_inventory_records(&mut self, input: CreateInventoryRecordsInput) -> Result<TypedCommandResult<CreateInventoryRecordsOutcome>, ApplicationClientError> {
+        self.client.execute_generated_command(&input, self.command_attempts, &self.metadata).await.map_err(Into::into)
+    }
+
+    pub async fn create_inventory_records_batch(&self, inputs: Vec<CreateInventoryRecordsInput>, options: GeneratedBatchOptions) -> Result<GeneratedBatchResult<CreateInventoryRecordsOutcome>, GeneratedBatchError> {
+        self.client.execute_generated_command_batch(inputs, options, self.command_attempts, &self.metadata).await
+    }
+
+    pub async fn create_inventory_records_batch_with_progress<F>(&self, inputs: Vec<CreateInventoryRecordsInput>, options: GeneratedBatchOptions, progress: F) -> Result<GeneratedBatchResult<CreateInventoryRecordsOutcome>, GeneratedBatchError>
     where
         F: FnMut(GeneratedBatchProgress),
     {

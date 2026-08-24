@@ -43,6 +43,9 @@ try {
   assert(rich.value.outcome === "Found" && rich.value.total.value === 3n && rich.value.users.length === 1 && rich.value.users[0].email === "beta@example.test", "V6 exact predicate optional/set/order page");
   const reviewed = await client.reviewedDirectoryUsers({ organization_id: id(60), states: ["active", "archive"], before_created_at: 35n, limit: 25, offset: 0n });
   assert(reviewed.value.outcome === "Found" && reviewed.value.total.value === 1n && reviewed.value.users.length === 1 && reviewed.value.users[0].email === "álpha@example.test", "V6 exact predicate range/existence page");
+  const inventory = await client.inventoryBySubtitleAscNullsFirst({ organization_id: id(70), limit: 2, offset: 0n });
+  assert(inventory.value.outcome === "Found" && inventory.value.total.value === 6n, "nullable exact total");
+  assert(inventory.value.records.map((row) => row.record_id).join(",") === `${id(73)},${id(76)}`, "nullable generated order");
 
   const pipelines = await client.listPipelines({ organization_id: id(40), state: "queued" });
   assert(pipelines.value.outcome === "Found" && pipelines.value.pipelines.length === 1, "Woodpecker optional state page");
@@ -63,6 +66,7 @@ try {
     exact_aggregates: true,
     exact_text_family: true,
     exact_predicate_family: true,
+    nullable_exact_order: true,
     exact_total: true,
     numeric_offset: true,
     adapters: ["mlflow", "openfga", "better-auth", "woodpecker"],

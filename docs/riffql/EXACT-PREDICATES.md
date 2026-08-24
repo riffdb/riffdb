@@ -81,10 +81,18 @@ does not substitute a sentinel scalar.
 
 WP-675 makes the V7 source and its provider-independent V10 semantic/module
 artifacts compilable. WP-676 activates rebuildable provider-state V5 and its
-internal exact-count/direct-ordinal execution lane. Application requests remain
-fail-closed until WP-677 connects that lane through the shared service and
-generated surfaces; there is no scan, request-time sort, page walk, or
-older-provider fallback during that interval.
+internal exact-count/direct-ordinal execution lane. WP-677 connects that lane
+through the shared service, gRPC, CLI, MCP, and generated Rust, Go, TypeScript,
+and Python methods. There is no scan, request-time sort, page walk, or older-
+provider fallback.
+
+Declare every nullable placement in the checked-in named `.riffq` document,
+then regenerate the application lock and typed clients. Generated callers pass
+only the operation's domain parameters, `limit`, and `offset`; there is no sort
+descriptor to construct. The framework-neutral `InventoryRecord` corpus in
+`fixtures/adapters/operational-conformance` demonstrates optional text and
+timestamp orders in both directions and placements, later-term `NoValue` ties,
+exact totals, direct ordinal boundaries, and missing/null/value transitions.
 
 Every predicate and order field requires a declared partition-routed index.
 One missing index, invalid type, incomplete key tie-breaker, excessive Boolean
@@ -142,12 +150,23 @@ or a nearby older provider.
 
 The initial request for a new plan/policy/partition slot can return
 `RDB-QUERY-0102` while bounded background construction is in progress. The
-same typed lifecycle, freshness, retired-snapshot, divergence, and revocation
+same typed lifecycle, freshness (`RDB-PROJECTION-0103`), retired-snapshot, divergence, and revocation
 failures cross every public transport. The application may use a bounded retry
 budget; it may not emulate the result while the provider is unavailable.
+
+Numeric offsets are bounded direct ordinal selections inside one provider
+epoch. Use generated cursor pagination instead when a user journey spans
+multiple requests and must retain snapshot identity across concurrent writes;
+do not turn successive numeric offsets into a client-side page walk.
 
 Provider rebuilds are currently bounded full-partition rebuilds after an
 authoritative frontier change. This is derived work, not request work, and is
 limited by the compiler-declared candidate and amplification ceilings. A later
 implementation may incrementally maintain the same V4 identity without
 changing query semantics.
+
+The immutable generic capability receipt is
+`release/evidence/operational-query-capability-v2.json`. It binds the neutral
+contract, nullable operation plans, and generated-language artifacts. It does
+not claim any external framework route has passed: that evidence remains the
+responsibility of the repository owning the adapter.
