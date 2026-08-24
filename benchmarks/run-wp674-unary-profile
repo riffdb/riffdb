@@ -78,8 +78,8 @@ host_invalid_attempt() {
     [[ -f "$report" ]] && jq -e '
       .schema == "riffdb.app-baseline/v1"
       and (
-        .host_validity.preflight.valid != true
-        or .host_validity.postflight.valid != true
+        .host_validity.preflight.valid == false
+        or .host_validity.postflight.valid == false
       )
     ' "$report" >/dev/null 2>&1
 }
