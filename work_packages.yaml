@@ -12555,6 +12555,14 @@ work_packages:
     scale: Journal recovery is bounded by the existing extent limits and happens once per offline
       prune invocation; rebase is O(one preallocated extent), while prune remains bounded by the
       accepted 1,024-sequence sub-range transactions.
+  closure:
+    status: complete
+    evidence: docs/performance/alpha-endurance.md
+    decision: Offline retention now recovers and validates the complete checkpoint-plus-journal
+      authority, fences an empty strictly newer extent, and issues a storage-private preparation
+      witness before deleting a checkpoint or pruning. Recovery, storage architecture, CLI,
+      endurance, and requirement gates prove two-cycle reuse without stale suffix, mixed
+      generation, frontier regression, or application-fabricated authority.
   human_review_triggers: *id001
 - id: WP-610
   name: Receipted immutable-backup retirement
@@ -12615,6 +12623,15 @@ work_packages:
       and deletion visit only the fixed backup inventory, reconciliation is bounded by receipt and
       retired-stage ceilings, and retained backup count remains fixed without unbounded tombstones
       beyond the already bounded durable receipt registry.
+  closure:
+    status: complete
+    evidence: docs/backup-restore.md
+    decision: The additive backup-retirement RPC, Rust operator client, and CLI are fully wired
+      through shared service and policy. Byte-frozen V1 create/restore receipts remain readable,
+      retire-only V2 receipts permanently consume names, and every bounded rename/delete crash arm
+      reconciles without inventing success. Proto, storage, policy, service, client, recovery,
+      endurance, generated-artifact, requirement, and handbook gates pass with no MCP or raw-path
+      escape hatch.
   human_review_triggers: *id001
 - id: WP-611
   name: Four-ecosystem development package registries
@@ -12659,6 +12676,15 @@ work_packages:
     scale: Publication visits one closed bounded artifact inventory, registry indices are generated
       deterministically, loopback services have explicit request and artifact-size limits, and
       acceptance uses one bounded consumer per ecosystem.
+  closure:
+    status: complete
+    evidence: docs/getting-started/PACKAGE-INSTALLATION.md
+    decision: One immutable development identity publishes to loopback npm, Python Simple, Go
+      proxy, and Cargo sparse registries and is consumed by four clean external projects with exact
+      package-manager metadata and no source fallback. Identical publication is idempotent,
+      production/development inputs remain disjoint, and distribution, requirement, and handbook
+      gates pass. The Python cell used the exact prebuilt abi3 wheel because this host cannot claim
+      a manylinux_2_28 build.
   human_review_triggers: *id001
 - id: WP-612
   name: Version topology and retirement governance
@@ -12705,6 +12731,14 @@ work_packages:
       and unsupported inputs continue to fail closed at the original boundary.
     scale: The topology is a bounded release artifact over a fixed domain inventory; checks read only
       declared source files and manifests and never scan database contents or retain runtime state.
+  closure:
+    status: complete
+    evidence: docs/versioning-and-retirement.md
+    decision: The canonical topology governs 57 independently versioned domains and cross-checks
+      all 11 durable reader/writer windows without introducing a runtime super-version. Source
+      pins, explicit reader/writer sets, writer policies, lifecycle states, retirement evidence,
+      durable-manifest agreement, generated artifacts, requirement coverage, and handbook checks
+      all pass; no existing decoder is retired by this package.
   human_review_triggers: *id001
 - id: WP-620
   name: Portable writer and checkpoint mechanics evidence
