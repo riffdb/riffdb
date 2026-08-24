@@ -97,6 +97,10 @@ safe_app_attempt_shape_is_exact() {
     jq -e --arg scenario "$scenario" '
       .schema == "riffdb.app-baseline/v1"
       and .evidence_eligibility.host_idle == true
+      and .host_validity.preflight.schema == "riffdb.app-baseline-host-validity/v2"
+      and .host_validity.postflight.schema == "riffdb.app-baseline-host-validity/v2"
+      and .host_validity.postflight.whole_cell.valid == true
+      and .host_validity.postflight.whole_cell.maximum_steal_percent == 1
       and .evidence_eligibility.correctness_clean == true
       and .evidence_eligibility.same_device_comparable == true
       and .evidence_eligibility.comparison_complete == true
@@ -104,7 +108,7 @@ safe_app_attempt_shape_is_exact() {
       and .unary_qualification.scenario == $scenario
       and .unary_qualification.process_generations == 5
       and .unary_qualification.same_scenario_warmups_after_restart == 20
-      and .unary_qualification.measured_operations_per_generation == 100
+      and .unary_qualification.measured_operations_per_generation == 1000
       and (.comparisons.unary_rep_summaries[$scenario] != null)
     ' "$report" >/dev/null
 }
@@ -133,6 +137,10 @@ minimal_attempt_shape_is_exact() {
     jq -e '
       .schema == "riffdb.app-baseline/v1"
       and .evidence_eligibility.host_idle == true
+      and .host_validity.preflight.schema == "riffdb.app-baseline-host-validity/v2"
+      and .host_validity.postflight.schema == "riffdb.app-baseline-host-validity/v2"
+      and .host_validity.postflight.whole_cell.valid == true
+      and .host_validity.postflight.whole_cell.maximum_steal_percent == 1
       and .evidence_eligibility.correctness_clean == true
       and .evidence_eligibility.same_device_comparable == true
       and .evidence_eligibility.comparison_complete == true
@@ -173,7 +181,7 @@ run_host_attempt() {
         RIFFDB_APP_BASELINE_DEFER_UNARY_STABILITY=1 \
         RIFFDB_APP_BASELINE_WP674_RECEIPT=1 \
             ./benchmarks/run-app-baseline \
-                --full --samples 100 --warmup 20 --reps 5 --require-stable \
+                --full --samples 1000 --warmup 20 --reps 5 --require-stable \
                 --postgres-comparator safe-app --output "$attempt_report"
         attempt_status=$?
         set -e
@@ -210,7 +218,7 @@ run_host_attempt() {
     RIFFDB_APP_BASELINE_DEFER_UNARY_STABILITY=1 \
     RIFFDB_APP_BASELINE_WP674_RECEIPT=1 \
         ./benchmarks/run-app-baseline \
-            --full --samples 100 --warmup 20 --reps 5 --require-stable \
+            --full --samples 1000 --warmup 20 --reps 5 --require-stable \
             --postgres-comparator minimal --output "$attempt_report"
     attempt_status=$?
     set -e
@@ -275,9 +283,12 @@ cp "$accepted_root/minimal.json" "$minimal"
 source_revision="$(git rev-parse --verify HEAD)"
 cargo_lock_sha256="$(sha256sum Cargo.lock | awk '{print $1}')"
 harness_sha256="$(sha256sum benchmarks/run-app-baseline | awk '{print $1}')"
+governance_predecessor_sha256="$(sha256sum \
+    release/evidence/wp-674/adr0143-failed-attempts-v1.json | awk '{print $1}')"
 fragment="$output_dir/profile-fragment.json"
 python3 - "$fragment" "$profile" "$hardware_class" "$source_revision" \
-    "$cargo_lock_sha256" "$harness_sha256" "$minimal" "$attempt_statuses" \
+    "$cargo_lock_sha256" "$harness_sha256" "$governance_predecessor_sha256" \
+    "$minimal" "$attempt_statuses" \
     "${scenarios[@]}" <<'PY'
 import hashlib
 import json
@@ -291,6 +302,7 @@ import sys
     source_revision,
     cargo_lock_sha256,
     harness_sha256,
+    governance_predecessor_sha256,
     minimal_path,
     attempt_statuses_path,
     *scenarios,
@@ -326,10 +338,11 @@ for line in Path(attempt_statuses_path).read_text(encoding="utf-8").splitlines()
         "minimal_report": reference(minimal_attempt) if minimal_attempt.is_file() else None,
     })
 fragment = {
-    "schema": "riffdb.wp-674-unary-profile/v1",
+    "schema": "riffdb.wp-674-unary-profile/v2",
     "source_revision": source_revision,
     "cargo_lock_sha256": cargo_lock_sha256,
     "harness_sha256": harness_sha256,
+    "governance_predecessor_sha256": governance_predecessor_sha256,
     "profile": {
         "id": profile,
         "hardware_class": hardware_class,

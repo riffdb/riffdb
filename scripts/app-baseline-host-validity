@@ -4,14 +4,218 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
+import tempfile
 import time
+from typing import Any
 
 
-SCHEMA = "riffdb.app-baseline-host-validity/v1"
+SCHEMA = "riffdb.app-baseline-host-validity/v2"
 MAX_REPORTED_PROCESSES = 32
+MAX_BASELINE_BYTES = 1024 * 1024
+MAX_STEAL_PERCENT = 1.0
+
+
+def parse_cpu_accounting(text: str) -> dict[str, int]:
+    first = text.splitlines()[0].split() if text else []
+    if len(first) < 9 or first[0] != "cpu":
+        raise ValueError("aggregate CPU accounting is absent")
+    try:
+        fields = [int(value) for value in first[1:9]]
+    except ValueError as error:
+        raise ValueError("aggregate CPU accounting is malformed") from error
+    if any(value < 0 for value in fields):
+        raise ValueError("aggregate CPU accounting contains a negative counter")
+    return {"total_ticks": sum(fields), "steal_ticks": fields[7]}
+
+
+def read_cpu_accounting() -> dict[str, int]:
+    try:
+        return parse_cpu_accounting(Path("/proc/stat").read_text(encoding="utf-8"))
+    except OSError as error:
+        raise ValueError("aggregate CPU accounting could not be read") from error
+
+
+def boot_identity() -> str:
+    try:
+        value = Path("/proc/sys/kernel/random/boot_id").read_text(encoding="utf-8").strip()
+    except OSError as error:
+        raise ValueError("boot identity could not be read") from error
+    if not value or len(value) > 128:
+        raise ValueError("boot identity is invalid")
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def checked_cpu_accounting(value: Any, label: str) -> tuple[int, int]:
+    if not isinstance(value, dict):
+        raise ValueError(f"{label} CPU accounting is absent")
+    total = value.get("total_ticks")
+    steal = value.get("steal_ticks")
+    if (
+        isinstance(total, bool)
+        or not isinstance(total, int)
+        or isinstance(steal, bool)
+        or not isinstance(steal, int)
+        or total < 0
+        or steal < 0
+        or steal > total
+    ):
+        raise ValueError(f"{label} CPU accounting is invalid")
+    return total, steal
+
+
+def whole_cell_accounting(
+    baseline: dict[str, Any],
+    current_accounting: dict[str, int],
+    *,
+    current_boot_identity: str,
+    current_hardware_identity: dict[str, Any],
+    current_logical_cpus: int | None,
+) -> dict[str, Any]:
+    if baseline.get("schema") != SCHEMA:
+        raise ValueError("preflight host inventory has the wrong schema")
+    if baseline.get("valid") is not True:
+        raise ValueError("preflight host inventory is not valid")
+    if (
+        baseline.get("whole_cell") is not None
+        or baseline.get("baseline_report_sha256") is not None
+        or (baseline.get("thresholds") or {}).get(
+            "maximum_whole_cell_steal_percent"
+        )
+        != MAX_STEAL_PERCENT
+    ):
+        raise ValueError("preflight host inventory is not an exact V2 preflight")
+    if baseline.get("boot_identity_sha256") != current_boot_identity:
+        raise ValueError("host boot identity changed across the measured cell")
+    if baseline.get("hardware_identity") != current_hardware_identity:
+        raise ValueError("hardware identity changed across the measured cell")
+    if baseline.get("logical_cpus") != current_logical_cpus:
+        raise ValueError("logical CPU count changed across the measured cell")
+    before_total, before_steal = checked_cpu_accounting(
+        baseline.get("cpu_accounting"), "preflight"
+    )
+    after_total, after_steal = checked_cpu_accounting(
+        current_accounting, "postflight"
+    )
+    if after_total <= before_total or after_steal < before_steal:
+        raise ValueError("CPU accounting regressed across the measured cell")
+    total_delta = after_total - before_total
+    steal_delta = after_steal - before_steal
+    steal_percent = steal_delta / total_delta * 100.0
+    valid = steal_percent <= MAX_STEAL_PERCENT
+    return {
+        "valid": valid,
+        "reason": None if valid else "cpu_steal_exceeded",
+        "elapsed_total_ticks": total_delta,
+        "elapsed_steal_ticks": steal_delta,
+        "steal_percent": round(steal_percent, 6),
+        "maximum_steal_percent": MAX_STEAL_PERCENT,
+    }
+
+
+def load_baseline(path: Path) -> tuple[dict[str, Any], str]:
+    if not path.is_file() or path.is_symlink():
+        raise ValueError("preflight host inventory is absent or linked")
+    encoded = path.read_bytes()
+    if not 0 < len(encoded) <= MAX_BASELINE_BYTES:
+        raise ValueError("preflight host inventory exceeds its byte bound")
+    value = json.loads(encoded.decode("utf-8"))
+    if not isinstance(value, dict):
+        raise ValueError("preflight host inventory root is not an object")
+    return value, hashlib.sha256(encoded).hexdigest()
+
+
+def run_self_test() -> None:
+    assert parse_cpu_accounting("cpu  1 2 3 4 5 6 7 8 9 10\n")["total_ticks"] == 36
+    for malformed in ("", "cpu0 1 2 3 4 5 6 7 8", "cpu 1 2 bad 4 5 6 7 8"):
+        try:
+            parse_cpu_accounting(malformed)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("malformed CPU accounting was accepted")
+
+    hardware = {"cpu_model": "test"}
+    baseline: dict[str, Any] = {
+        "schema": SCHEMA,
+        "valid": True,
+        "boot_identity_sha256": "a" * 64,
+        "hardware_identity": hardware,
+        "logical_cpus": 8,
+        "cpu_accounting": {"total_ticks": 10_000, "steal_ticks": 100},
+        "whole_cell": None,
+        "baseline_report_sha256": None,
+        "thresholds": {
+            "maximum_whole_cell_steal_percent": MAX_STEAL_PERCENT,
+        },
+    }
+    boundary = whole_cell_accounting(
+        baseline,
+        {"total_ticks": 20_000, "steal_ticks": 200},
+        current_boot_identity="a" * 64,
+        current_hardware_identity=hardware,
+        current_logical_cpus=8,
+    )
+    assert boundary["valid"] is True and boundary["steal_percent"] == 1.0
+    over = whole_cell_accounting(
+        baseline,
+        {"total_ticks": 20_000, "steal_ticks": 201},
+        current_boot_identity="a" * 64,
+        current_hardware_identity=hardware,
+        current_logical_cpus=8,
+    )
+    assert over["valid"] is False and over["reason"] == "cpu_steal_exceeded"
+    for kwargs in (
+        {"current_boot_identity": "b" * 64},
+        {"current_logical_cpus": 4},
+    ):
+        arguments = {
+            "current_boot_identity": "a" * 64,
+            "current_hardware_identity": hardware,
+            "current_logical_cpus": 8,
+            **kwargs,
+        }
+        try:
+            whole_cell_accounting(
+                baseline,
+                {"total_ticks": 20_000, "steal_ticks": 200},
+                **arguments,
+            )
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("host identity drift was accepted")
+    try:
+        whole_cell_accounting(
+            baseline,
+            {"total_ticks": 9_999, "steal_ticks": 100},
+            current_boot_identity="a" * 64,
+            current_hardware_identity=hardware,
+            current_logical_cpus=8,
+        )
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("regressing CPU accounting was accepted")
+
+    task_tmp = Path.home() / "tmp"
+    task_tmp.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="riffdb-host-validity-", dir=task_tmp) as root:
+        fixture = Path(root) / "preflight.json"
+        fixture.write_text(json.dumps(baseline), encoding="utf-8")
+        loaded, digest = load_baseline(fixture)
+        assert loaded == baseline and len(digest) == 64
+        linked = Path(root) / "linked.json"
+        linked.symlink_to(fixture)
+        try:
+            load_baseline(linked)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("linked preflight inventory was accepted")
 
 
 def ancestors(pid: int) -> set[int]:
@@ -127,10 +331,16 @@ def os_release() -> dict[str, str | None]:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
+    parser.add_argument("--self-test", action="store_true")
     parser.add_argument("--interval-ms", type=int, default=3000)
     parser.add_argument("--cpu-percent", type=float, default=5.0)
     parser.add_argument("--io-bytes-per-sec", type=int, default=8 * 1024 * 1024)
+    parser.add_argument("--baseline-report", type=Path)
     args = parser.parse_args()
+    if args.self_test:
+        run_self_test()
+        print("app-baseline-host-validity-v2: self-test passed")
+        return 0
     if not 50 <= args.interval_ms <= 10_000:
         parser.error("--interval-ms must be between 50 and 10000")
     if not 0.1 <= args.cpu_percent <= 1000.0:
@@ -184,25 +394,45 @@ def main() -> int:
         or int(row["read_bytes_per_sec"]) >= args.io_bytes_per_sec
         or int(row["write_bytes_per_sec"]) >= args.io_bytes_per_sec
     ]
-    valid = not interferers
+    hardware = {
+        "cpu_model": first_prefixed_line(Path("/proc/cpuinfo"), "model name"),
+        "system_product": bounded_text(Path("/sys/class/dmi/id/product_name")),
+        "system_vendor": bounded_text(Path("/sys/class/dmi/id/sys_vendor")),
+        "operating_system": os_release(),
+    }
+    logical_cpus = os.cpu_count()
+    accounting = read_cpu_accounting()
+    current_boot_identity = boot_identity()
+    whole_cell = None
+    baseline_sha256 = None
+    if args.baseline_report is not None:
+        baseline, baseline_sha256 = load_baseline(args.baseline_report)
+        whole_cell = whole_cell_accounting(
+            baseline,
+            accounting,
+            current_boot_identity=current_boot_identity,
+            current_hardware_identity=hardware,
+            current_logical_cpus=logical_cpus,
+        )
+    valid = not interferers and (whole_cell is None or whole_cell["valid"])
     report = {
         "schema": SCHEMA,
         "valid": valid,
         "reason": None if valid else "host_interference",
         "sample_interval_ms": int(elapsed * 1000),
-        "logical_cpus": os.cpu_count(),
+        "logical_cpus": logical_cpus,
         "load_average_before": before_load,
         "load_average_after": load_average(),
         "memory_available_bytes": memory_available(),
-        "hardware_identity": {
-            "cpu_model": first_prefixed_line(Path("/proc/cpuinfo"), "model name"),
-            "system_product": bounded_text(Path("/sys/class/dmi/id/product_name")),
-            "system_vendor": bounded_text(Path("/sys/class/dmi/id/sys_vendor")),
-            "operating_system": os_release(),
-        },
+        "hardware_identity": hardware,
+        "boot_identity_sha256": current_boot_identity,
+        "cpu_accounting": accounting,
+        "whole_cell": whole_cell,
+        "baseline_report_sha256": baseline_sha256,
         "thresholds": {
             "cpu_percent_of_one_logical_cpu": args.cpu_percent,
             "io_bytes_per_sec": args.io_bytes_per_sec,
+            "maximum_whole_cell_steal_percent": MAX_STEAL_PERCENT,
         },
         "active_processes": active,
         "interfering_processes": interferers,

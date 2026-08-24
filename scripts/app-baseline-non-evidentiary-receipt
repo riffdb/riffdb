@@ -20,7 +20,10 @@ def load_inventory(path: str | None) -> dict[str, object] | None:
         raise ValueError("host inventory exceeds the bounded receipt input")
     with candidate.open(encoding="utf-8") as source:
         value = json.load(source)
-    if value.get("schema") != "riffdb.app-baseline-host-validity/v1":
+    if value.get("schema") not in {
+        "riffdb.app-baseline-host-validity/v1",
+        "riffdb.app-baseline-host-validity/v2",
+    }:
         raise ValueError("host inventory has the wrong schema")
     return value
 
@@ -73,6 +76,17 @@ def main() -> None:
     host_idle = bool(preflight and preflight.get("valid")) and bool(
         postflight and postflight.get("valid")
     )
+    if host_idle and postflight and postflight.get("schema") == (
+        "riffdb.app-baseline-host-validity/v2"
+    ):
+        whole_cell = postflight.get("whole_cell")
+        canonical_preflight = (json.dumps(preflight, sort_keys=True) + "\n").encode()
+        host_idle = bool(
+            isinstance(whole_cell, dict)
+            and whole_cell.get("valid") is True
+            and postflight.get("baseline_report_sha256")
+            == hashlib.sha256(canonical_preflight).hexdigest()
+        )
 
     reason: dict[str, object] = {
         "code": arguments.reason,

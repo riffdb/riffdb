@@ -163,6 +163,7 @@ direction, merged draft, or implementation choice.
 | [0142](0142-portable-unary-service-levels-and-comparator-evidence.md) | Portable Unary Service Levels and Comparator Evidence | Accepted |
 | [0143](0143-fixed-generation-unary-stability.md) | Fixed-Generation Unary Stability Without Performance-Selected Retries | Accepted |
 | [0144](0144-release-evidence-durability-mode-reconciliation.md) | Release-Evidence Durability-Mode Reconciliation | Accepted |
+| [0146](0146-fixed-generation-unary-sampling-and-cloud-host-validity.md) | Fixed-Generation Unary Sampling and Whole-Cell Cloud Host Validity | Accepted |
 
 The human architecture review on 2026-07-12 approved the direction represented
 by ADR-0001 through ADR-0012. The human maintainer accepted ADR-0001 through

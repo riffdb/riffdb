@@ -1,0 +1,50 @@
+{
+  "schema": "riffdb.wp-674-failed-governance-attempts/v1",
+  "status": "failed_immutable",
+  "measurement_governance": {
+    "adr": "ADR-0143",
+    "process_generations": 5,
+    "warmups_per_generation": 20,
+    "measurements_per_generation": 100,
+    "maximum_central_three_spread": 1.2,
+    "retry_permitted": false,
+    "superseded_by": "ADR-0146"
+  },
+  "artifact_identity": {
+    "source_revision": "6977d46ca3812090d796462f6ed73ba9243bccfc",
+    "cargo_lock_sha256": "e1d85ba82fd24e1828f29319b2f60ed7240ddba62050334e22d114bd042420e6",
+    "harness_sha256": "e5f12b3193861594c6fdc3d0133d3bd34d978aff7fd17970c84ecd853b3fef73",
+    "runner_sha256": "03314d5aa204571f2e033d07be89105f961782300b1d214e970eeeeef02b99ef",
+    "riffdbd_sha256": "9f82eabd9afd86742854db681d2b8cb3dc09864c7ff61b3a6d72f4cfeaafb31f"
+  },
+  "attempts": [
+    {
+      "profile": "n1",
+      "scenario": "point_get_ticket",
+      "report_sha256": "19ae0f5143dce240f264587c635e8802cfa726b6dccf89bc9979b806f08c02d7",
+      "correctness_clean": true,
+      "absolute_service_level_passed": true,
+      "failure": "postgres_safe_app_p95_central_three_spread",
+      "values_ns": {
+        "postgres_p50": [257780, 268297, 266895, 264610, 275041],
+        "postgres_p95": [304740, 381673, 519079, 413177, 473102],
+        "riffdb_p50": [604821, 627249, 615677, 650466, 585983],
+        "riffdb_p95": [755279, 794836, 741017, 786663, 700999]
+      }
+    },
+    {
+      "profile": "e2",
+      "scenario": "point_get_ticket",
+      "report_sha256": "1ffcbd195a3112fae40b7d2907cb3d54462ff7c44781041886cf2f368ef3d406",
+      "correctness_clean": true,
+      "absolute_service_level_passed": true,
+      "failure": "postgres_safe_app_p95_central_three_spread",
+      "values_ns": {
+        "postgres_p50": [396161, 350950, 367910, 436200, 402100],
+        "postgres_p95": [1720060, 1260670, 1548129, 1031500, 965230],
+        "riffdb_p50": [1773630, 1411700, 1655530, 1664180, 1220810],
+        "riffdb_p95": [2881540, 1983700, 2304610, 2337200, 1755800]
+      }
+    }
+  ]
+}

@@ -12,8 +12,8 @@ import sys
 from typing import Any
 
 
-SCHEMA = "riffdb.wp-674-unary-profile/v1"
-MANIFEST_SCHEMA = "riffdb.wp-674-unary-manifest/v1"
+SCHEMA = "riffdb.wp-674-unary-profile/v2"
+MANIFEST_SCHEMA = "riffdb.wp-674-unary-manifest/v2"
 PROFILE_CLASSES = {
     "workstation": "workstation_nvme",
     "n1": "gcp_n1_persistent_disk",
@@ -50,7 +50,7 @@ def main() -> int:
     args = parser.parse_args()
     output = args.output.resolve()
     output.parent.mkdir(parents=True, exist_ok=True)
-    common: tuple[str, str, str] | None = None
+    common: tuple[str, str, str, str] | None = None
     profiles = []
     for expected, path in (
         ("workstation", args.workstation.resolve()),
@@ -62,6 +62,7 @@ def main() -> int:
             fragment.get("source_revision"),
             fragment.get("cargo_lock_sha256"),
             fragment.get("harness_sha256"),
+            fragment.get("governance_predecessor_sha256"),
         )
         if REVISION.fullmatch(str(identity[0])) is None or any(
             SHA256.fullmatch(str(value)) is None for value in identity[1:]
@@ -146,6 +147,7 @@ def main() -> int:
         "source_revision": common[0],
         "cargo_lock_sha256": common[1],
         "harness_sha256": common[2],
+        "governance_predecessor_sha256": common[3],
         "requirements": REQUIREMENTS,
         "profiles": profiles,
     }

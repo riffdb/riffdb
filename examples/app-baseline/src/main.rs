@@ -3403,17 +3403,17 @@ impl Args {
         if !(1..=32).contains(&reps) {
             return Err("--reps must be 1..=32".to_owned());
         }
+        let wp674_receipt = env::var_os("RIFFDB_APP_BASELINE_WP674_RECEIPT")
+            .is_some_and(|value| value == "1");
+        let query_execute_diagnostics =
+            env::var_os("RIFFDB_APP_BASELINE_QUERY_EXECUTE_DIAGNOSTICS")
+                .is_some_and(|value| value == "1");
         let diagnostic_sample_ceiling =
-            if env::var_os("RIFFDB_APP_BASELINE_QUERY_EXECUTE_DIAGNOSTICS")
-                .is_some_and(|value| value == "1")
-            {
-                1_024
-            } else {
-                100
-            };
+            measurement_sample_ceiling(wp674_receipt, query_execute_diagnostics);
         if !(1..=diagnostic_sample_ceiling).contains(&samples) {
             return Err(format!("--samples must be 1..={diagnostic_sample_ceiling}"));
         }
+        validate_wp674_receipt_shape(wp674_receipt, samples, warmups, reps)?;
         if warmups > 20 {
             return Err("--warmup must be <= 20".to_owned());
         }
@@ -3542,6 +3542,31 @@ impl Args {
     }
 }
 
+fn measurement_sample_ceiling(wp674_receipt: bool, query_execute_diagnostics: bool) -> usize {
+    if wp674_receipt {
+        1_000
+    } else if query_execute_diagnostics {
+        1_024
+    } else {
+        100
+    }
+}
+
+fn validate_wp674_receipt_shape(
+    wp674_receipt: bool,
+    samples: usize,
+    warmups: usize,
+    reps: usize,
+) -> Result<(), String> {
+    if wp674_receipt && (samples != 1_000 || warmups != 20 || reps != 5) {
+        return Err(
+            "WP-674 receipt mode requires exactly --samples 1000 --warmup 20 --reps 5"
+                .to_owned(),
+        );
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use serde_json::{Value, json};
@@ -3549,9 +3574,26 @@ mod tests {
     use super::{
         Args, RiffDbTransport, Scale, SeedDataset, WorkloadProfile, assert_all_parity,
         assert_write_parity, attach_rep_summaries, comparator_contract, gated_ratio,
-        load_rep_summaries,
-        median_scenarios, require_load_stable, require_stable, scalar_summary,
+        load_rep_summaries, measurement_sample_ceiling, median_scenarios,
+        require_load_stable, require_stable, scalar_summary, validate_wp674_receipt_shape,
     };
+
+    #[test]
+    fn wp674_sample_shape_is_fixed_without_raising_the_ordinary_ceiling() {
+        assert_eq!(measurement_sample_ceiling(false, false), 100);
+        assert_eq!(measurement_sample_ceiling(false, true), 1_024);
+        assert_eq!(measurement_sample_ceiling(true, false), 1_000);
+        assert!(validate_wp674_receipt_shape(true, 1_000, 20, 5).is_ok());
+        for shape in [
+            (100, 20, 5),
+            (999, 20, 5),
+            (1_000, 19, 5),
+            (1_000, 20, 4),
+        ] {
+            assert!(validate_wp674_receipt_shape(true, shape.0, shape.1, shape.2).is_err());
+        }
+        assert!(validate_wp674_receipt_shape(false, 100, 5, 3).is_ok());
+    }
 
     #[test]
     fn safe_app_comparator_contract_freezes_obligations_and_calculations() {
