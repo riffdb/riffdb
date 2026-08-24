@@ -94,20 +94,22 @@ The initial bank freezes the 32-logical-CPU Ryzen 9 7950X workstation, the
 8-vCPU Intel N1 host, and the 8-vCPU AMD EPYC 7B12 E2 host, including bounded
 OS/system identity and persistent-device metadata. Candidate evidence must
 match those stable hardware identities.
-For each of the fourteen frozen unary operations, the harness runs three
+For each of the fourteen frozen unary operations, the harness runs five fixed
 counterbalanced process generations. Each generation restarts RiffDB after
 common setup, performs 20 same-operation warmups, then records 100 operations.
-The qualified p50 and p95 are the medians of the three generation statistics;
-a greater-than-1.20 max/min spread invalidates that statistic.
+All five p50 and p95 observations are retained. After sorting them as
+`x1 <= x2 <= x3 <= x4 <= x5`, the qualified statistic is `x3` and stability
+requires `x4 / x2 <= 1.20` independently for each backend and percentile. The
+two extremes remain disclosed. PostgreSQL ratios are derived from the two
+qualified backend medians and are not separately stability-gated.
 
-Each scenario and the minimal-PostgreSQL disclosure have at most three bounded
-attempts. An attempt is retried only for explicit host invalidity or a frozen
-statistic spread above `1.20`, never because its latency, ratio, or SLO result is
-unfavorable. Runtime, correctness, identity, and evidence-shape failures stop
-the profile instead of being retried. Every rejected attempt remains in the
-profile inventory with its digest and disposition; the verifier requires
-contiguous attempts followed by exactly one accepted attempt whose bytes equal
-the canonical report.
+There is one fixed measurement set per host attempt. A completed unstable cell
+fails and is never retried. The entire host attempt may be replaced once only
+when a predeclared host-validity failure independent of performance is retained
+in the receipt; a second invalid host attempt fails. Runtime, correctness,
+identity, topology, and evidence-shape failures stop the profile. The verifier
+rejects per-scenario retries, performance-selected replacement, a third host
+attempt, or an accepted attempt whose bytes differ from the canonical reports.
 
 The frozen classes are:
 
