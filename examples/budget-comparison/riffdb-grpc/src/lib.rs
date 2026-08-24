@@ -23,9 +23,9 @@ use riffdb_client_rust::generated::legal_spend::{
 };
 use riffdb_client_rust::generated::{GeneratedCommand, GeneratedCommandError};
 use riffdb_client_rust::{
-    AttemptBudget, BearerCredential, CallMetadata, ClientError, GeneratedExecution,
-    GeneratedExecutionError, PublicErrorDetails, PublicErrorKind, RiffDbClient,
-    generate_request_id,
+    ApplicationErrorCode, ApplicationOperation, AttemptBudget, BearerCredential, CallMetadata,
+    ClientError, GeneratedExecution, GeneratedExecutionError, PublicErrorDetails, PublicErrorKind,
+    RiffDbClient, generate_request_id,
 };
 use riffdb_proto::{decimal_from_proto, v1};
 use riffdb_types::{CommitSequence, ContractVersion, DecimalSpec, EntityKeyBuilder, EntityTypeId};
@@ -37,6 +37,7 @@ const BUDGET_APPROVED_AMOUNT_FIELD_ID: u32 = 3;
 const BUDGET_ALLOCATED_AMOUNT_FIELD_ID: u32 = 5;
 const CREATE_BUDGET_COMMAND_ID: u32 = 1;
 const ALLOCATE_BUDGET_COMMAND_ID: u32 = 2;
+const ALLOCATE_BUDGET_SYMBOL: &str = "AllocateBudget";
 const BUDGET_ALLOCATED_EVENT_TYPE_ID: u32 = 1;
 const COMMIT_SCAN_LIMIT: u32 = 500;
 const SUBSCRIPTION_LIFETIME_NANOS: u64 = 30_000_000_000;
@@ -722,23 +723,16 @@ impl RiffDbPublicBudgetAdapter {
             .execute_generated(&generated, one_attempt(), &self.metadata)
             .await
         {
-            Err(GeneratedExecutionError::Client(ClientError::Public(error))) => error,
-            Err(GeneratedExecutionError::Client(_))
-            | Err(GeneratedExecutionError::CommandShape(_))
-            | Ok(_) => return Err(RiffDbPublicAdapterError::InvalidResponse),
+            Err(GeneratedExecutionError::Client(error)) => {
+                checked_idempotency_reuse_error(error)?
+            }
+            Err(GeneratedExecutionError::CommandShape(_)) | Ok(_) => {
+                return Err(RiffDbPublicAdapterError::InvalidResponse);
+            }
         };
-        let mismatch_error_kind = mismatch_error.kind();
-        let mismatch_error_details_none =
-            matches!(mismatch_error.details(), PublicErrorDetails::None);
-        let mismatch_incident_id_present = mismatch_error.incident_id().is_some();
-        if mismatch_error_kind != PublicErrorKind::IdempotencyKeyReuse
-            || !mismatch_error_details_none
-            || mismatch_incident_id_present
-        {
-            return Err(RiffDbPublicAdapterError::InvalidResponse);
-        }
-        let error_display = mismatch_error.to_string();
-        let error_debug = format!("{mismatch_error:?}");
+        let mismatch_error_kind = mismatch_error.kind;
+        let mismatch_error_details_none = mismatch_error.details_none;
+        let mismatch_incident_id_present = mismatch_error.incident_id_present;
         let public_input_canaries = [
             first.idempotency_key.as_str().to_owned(),
             first.operation_id.as_str().to_owned(),
@@ -752,7 +746,9 @@ impl RiffDbPublicBudgetAdapter {
         ];
         let public_error_canary_absent = public_input_canaries
             .iter()
-            .all(|canary| !error_display.contains(canary) && !error_debug.contains(canary));
+            .all(|canary| {
+                !mismatch_error.display.contains(canary) && !mismatch_error.debug.contains(canary)
+            });
         if !public_error_canary_absent {
             return Err(RiffDbPublicAdapterError::InvalidResponse);
         }
@@ -1011,6 +1007,64 @@ impl RiffDbPublicBudgetAdapter {
             }
             None => Err(RiffDbPublicAdapterError::InvalidResponse),
         }
+    }
+}
+
+struct CheckedIdempotencyReuseError {
+    kind: PublicErrorKind,
+    details_none: bool,
+    incident_id_present: bool,
+    display: String,
+    debug: String,
+}
+
+fn checked_idempotency_reuse_error(
+    error: ClientError,
+) -> Result<CheckedIdempotencyReuseError, RiffDbPublicAdapterError> {
+    match error {
+        ClientError::Public(error) => {
+            let checked = CheckedIdempotencyReuseError {
+                kind: error.kind(),
+                details_none: matches!(error.details(), PublicErrorDetails::None),
+                incident_id_present: error.incident_id().is_some(),
+                display: error.to_string(),
+                debug: format!("{error:?}"),
+            };
+            if checked.kind != PublicErrorKind::IdempotencyKeyReuse
+                || !checked.details_none
+                || checked.incident_id_present
+            {
+                return Err(RiffDbPublicAdapterError::InvalidResponse);
+            }
+            Ok(checked)
+        }
+        ClientError::Application(error) => {
+            let context = error.context();
+            if error.code() != ApplicationErrorCode::IdempotencyKeyReuse
+                || error.operation() != ApplicationOperation::ExecuteCommand
+                || context.contract().is_some()
+                || context.operation_symbol() != Some(ALLOCATE_BUDGET_SYMBOL)
+                || !context.symbol_path().is_empty()
+                || context.source_span().is_some()
+                || context.trace_id().is_some()
+                || error.incident_id().is_some()
+            {
+                return Err(RiffDbPublicAdapterError::InvalidResponse);
+            }
+            Ok(CheckedIdempotencyReuseError {
+                kind: PublicErrorKind::IdempotencyKeyReuse,
+                details_none: true,
+                incident_id_present: false,
+                display: error.to_string(),
+                debug: format!("{error:?}"),
+            })
+        }
+        ClientError::DetailsFree(_)
+        | ClientError::Protocol(_)
+        | ClientError::IdentifierGeneration(_)
+        | ClientError::ConnectionFailure
+        | ClientError::Tls(_)
+        | ClientError::OutcomeUnknown(_) => Err(RiffDbPublicAdapterError::InvalidResponse),
     }
 }
 
@@ -1699,6 +1753,8 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::task::{Wake, Waker};
 
+    use riffdb_client_rust::{ApplicationError, ApplicationErrorContext};
+
     use super::*;
 
     fn command_response(durability_mode: &str) -> v1::ExecuteCommandResponse {
@@ -1735,6 +1791,50 @@ mod tests {
             PublicComparisonCase::SameKeyReplay.as_str(),
             "same_key_replay"
         );
+    }
+
+    #[test]
+    fn safety_mismatch_accepts_only_the_exact_structured_application_error() {
+        let context = ApplicationErrorContext::empty()
+            .with_operation_symbol(ALLOCATE_BUDGET_SYMBOL.to_owned())
+            .expect("compiler-owned command symbol");
+        let exact = ApplicationError::new(
+            ApplicationErrorCode::IdempotencyKeyReuse,
+            ApplicationOperation::ExecuteCommand,
+            context,
+            None,
+        );
+        let checked = checked_idempotency_reuse_error(ClientError::Application(Box::new(exact)))
+            .expect("exact structured idempotency error");
+        assert_eq!(checked.kind, PublicErrorKind::IdempotencyKeyReuse);
+        assert!(checked.details_none);
+        assert!(!checked.incident_id_present);
+
+        let wrong_operation = ApplicationError::new(
+            ApplicationErrorCode::IdempotencyKeyReuse,
+            ApplicationOperation::ExecuteQuery,
+            ApplicationErrorContext::empty()
+                .with_operation_symbol(ALLOCATE_BUDGET_SYMBOL.to_owned())
+                .expect("compiler-owned command symbol"),
+            None,
+        );
+        assert!(matches!(
+            checked_idempotency_reuse_error(ClientError::Application(Box::new(wrong_operation))),
+            Err(RiffDbPublicAdapterError::InvalidResponse)
+        ));
+
+        let wrong_symbol = ApplicationError::new(
+            ApplicationErrorCode::IdempotencyKeyReuse,
+            ApplicationOperation::ExecuteCommand,
+            ApplicationErrorContext::empty()
+                .with_operation_symbol("CreateBudget".to_owned())
+                .expect("compiler-owned command symbol"),
+            None,
+        );
+        assert!(matches!(
+            checked_idempotency_reuse_error(ClientError::Application(Box::new(wrong_symbol))),
+            Err(RiffDbPublicAdapterError::InvalidResponse)
+        ));
     }
 
     #[test]
