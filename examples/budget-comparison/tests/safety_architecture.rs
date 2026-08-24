@@ -187,6 +187,7 @@ fn public_inventory_has_no_generic_application_dml() {
         rpcs,
         [
             "rpc Execute(ExecuteCommandRequest) returns (ExecuteCommandResponse);",
+            "rpc ExecuteBatch(ExecuteCommandBatchRequest) returns (ExecuteCommandBatchResponse);",
             "rpc GetOutcome(GetOutcomeRequest) returns (GetOutcomeResponse);",
         ]
     );

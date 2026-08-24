@@ -12,9 +12,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use riffdb_bench_root::{
-    BenchDir, BenchRoot, BenchRootOptions, default_perf_db_root, sweep_stale,
-};
+use riffdb_bench_root::{BenchDir, BenchRoot, BenchRootOptions, default_perf_db_root, sweep_stale};
 
 static NEXT: AtomicU64 = AtomicU64::new(1);
 

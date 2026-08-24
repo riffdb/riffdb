@@ -35,7 +35,7 @@ use riffdb_commit::{
     AdministrationClock, AdministrationClockError, AdmissionClock, AdmissionClockError,
     ApplicationCommitNotificationError, ApplicationCommitNotificationSink, CoordinatorDurability,
     CoordinatorWorkloadCapacity, ProvenanceIdSource, ProvenanceIdSourceError,
-    RunningCommandCoordinator,
+    RunningCommandCoordinator, ServiceUuidV7Source, ServiceUuidV7SourceError,
 };
 use riffdb_conflict::{ConflictManager, ConflictManagerConfig, ShardedConflictManager};
 use riffdb_contract_compiler::compile_contract_source;
@@ -95,7 +95,6 @@ use riffdb_types::{
 
 const BASE_SECONDS: i64 = 1_700_300_000;
 const BUDGET_SOURCE: &str = include_str!("../../../contracts/examples/budget.riff");
-static NEXT_DATABASE: AtomicU64 = AtomicU64::new(1);
 
 #[test]
 fn service_comparison_matches_the_shared_semantic_oracle() {
@@ -409,7 +408,9 @@ impl BudgetServiceHarness {
                 StoredAdministrationAuditRecordV1::Service(record) => Some(record),
                 StoredAdministrationAuditRecordV1::Catalog(_)
                 | StoredAdministrationAuditRecordV1::Capability(_)
-                | StoredAdministrationAuditRecordV1::QueryModule(_) => None,
+                | StoredAdministrationAuditRecordV1::QueryModule(_)
+                | StoredAdministrationAuditRecordV1::ReactiveModule(_)
+                | StoredAdministrationAuditRecordV1::Retention(_) => None,
             })
             .collect()
     }
@@ -1386,6 +1387,7 @@ fn start_coordinator(
         ports,
         conflicts,
         Arc::new(FixedAdmissionClock),
+        Arc::new(FixedServiceUuidV7Source),
         Arc::new(IncrementingAdministrationClock::new()),
         Arc::new(FixedAuthorizationClock),
         Arc::new(SequentialProvenanceIds::default()),
@@ -1410,6 +1412,14 @@ struct FixedAdmissionClock;
 impl AdmissionClock for FixedAdmissionClock {
     fn now(&self) -> Result<Timestamp, AdmissionClockError> {
         Ok(timestamp(BASE_SECONDS + 20))
+    }
+}
+
+struct FixedServiceUuidV7Source;
+
+impl ServiceUuidV7Source for FixedServiceUuidV7Source {
+    fn next_uuid_v7(&self) -> Result<[u8; 16], ServiceUuidV7SourceError> {
+        Ok(uuid_bytes_from_ordinal(0x7a, 0))
     }
 }
 
