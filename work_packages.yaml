@@ -11507,6 +11507,14 @@ work_packages:
     reversibility: Notice placement and release propagation are independent of database protocols,
       durable formats, and application compatibility. A future ownership change requires explicit
       maintainer and legal review rather than an implementation shortcut.
+  closure:
+    status: complete
+    evidence: COPYRIGHT
+    decision: Commit d3d702d0 established the canonical Kevin O'Shea and O'Shea & Sons, LLC
+      ownership notice while retaining both MIT and Apache-2.0 license choices, propagated it
+      through the README, handbook, website, release assembly, and install verification, and added
+      the drift guard. The notice check, website static and browser suites, handbook check, shell
+      validation, and requirement coverage pass at current HEAD.
   human_review_triggers: *id001
 - id: WP-580
   name: DST foundation — simulator crate, simulated disk, redb backend adapter, determinism pin
@@ -11578,6 +11586,15 @@ work_packages:
     scale: Simulated disk state is bounded by the configured workload and capacity, campaigns run
       in seconds on one core, and the sweep budget is fixed by seed count rather than database
       size.
+  closure:
+    status: complete
+    evidence: adr/0113-deterministic-simulation-testing.md
+    decision: Commit 15ae45ab delivered the dev-only seeded SimDisk/redb adapter, deterministic
+      versioned trace and fault-sensitivity pins, crash-recover shadow oracle, 32-seed regression
+      sweep, production dependency boundary, deterministic conflict grouping, and explicit
+      evaluation-pool sizing. The simulator, commit, runtime, workspace-policy, and requirement
+      batteries pass at current HEAD; the SIM-003, SIM-004, and SIM-006 items explicitly deferred
+      here are closed by WP-582 and WP-583.
   human_review_triggers: *id001
 - id: WP-581
   name: DST storage seams — journal media port, backend-parameterized open, first simulated store open
@@ -11633,6 +11650,14 @@ work_packages:
     scale: The media port adds one enum-dispatch branch on the journal hot loop's production
       arm and no allocation; simulated side-file state is bounded by the configured extent
       sizes and the smoke workload.
+  closure:
+    status: complete
+    evidence: adr/0113-deterministic-simulation-testing.md
+    decision: Commit d22c71a6 delivered the hidden JournalMedia and backend-parameterized open
+      seams, byte-compatible real-filesystem default, SimJournalMedia, shared two-backend media
+      conformance suite, and fully simulated store smoke with clean and crash recovery. Current
+      storage, simulator, workspace-policy, and requirement batteries pass, and architecture tests
+      continue to exclude simulator authority from every production dependency graph.
   human_review_triggers: *id001
 - id: WP-582
   name: DST recovery oracle — AuthoritativeCommandModel equality at the recovered durable frontier
@@ -11705,6 +11730,15 @@ work_packages:
     scale: Inspection requests stay bounded by the existing 256-target and 10k-record limits,
       the oracle workload is four commands, and the sweep budget is fixed by the window range
       and seed count rather than database size.
+  closure:
+    status: complete
+    evidence: adr/0113-deterministic-simulation-testing.md
+    decision: Commit b766f43b delivered bounded durable-inspection accessors, bidirectional
+      AuthoritativeCommandModel comparison with population accounting, and the fixed-workload
+      recovery oracle across clean, dirty-repair, fused, and two-phase crash windows. Current
+      simulator, testkit, and storage batteries prove startup validation, structural inspection,
+      both crash-boundary outcomes, and model equality; the enumerated index-epoch, delivered
+      outbox, and campaign-generation limits remain explicit rather than being treated as covered.
   human_review_triggers: *id001
 - id: WP-583
   name: DST seeded campaign — workload generator, crash-schedule exploration, found-seed corpus, matrix subsumption
@@ -11805,6 +11839,15 @@ work_packages:
     scale: Campaign state is bounded by the configured plan (commands, targets, note bytes)
       and the crash budget; inspection requests stay inside the 256-target and 10k-record
       limits; the sweep budget is fixed by seed count and finishes in under a minute.
+  closure:
+    status: complete
+    evidence: adr/0113-deterministic-simulation-testing.md
+    decision: Commit 4ac5ac40 completed ADR-0113 Phase 1 with the deterministic workload generator,
+      crash-and-recovery campaign, model oracle at every recovered frontier, per-merge found-seed
+      corpus, and closed RECOVERY_SCENARIOS classification. The current-head campaign and corpus
+      pass with non-vacuous crash, torn-write, recovery-window, and both commit-outcome coverage;
+      deep exploration remains intentionally environment-gated, typed exclusions remain visible,
+      and the redb 4.2.0 pin guard has flipped the former fd82ced defect witness to clean recovery.
   human_review_triggers: *id001
 - id: WP-590
   name: Vectors pillar — recon, VEC requirement registration, and design confirmation
