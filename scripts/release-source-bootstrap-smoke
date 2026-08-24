@@ -73,7 +73,7 @@ if [[ -n "$python_wheel" ]]; then
 fi
 
 for tool in \
-    cargo chmod cmp cp find git grep id jq mkfifo mkdir mktemp mv rm sed \
+    cargo chmod cmp cp find git grep id jq mkfifo mkdir mktemp mv rm sed sleep \
     sha256sum stat tail timeout
 do
     require_tool "$tool"
@@ -1194,7 +1194,8 @@ then
     fail "unselected database became unavailable during maintenance"
 fi
 backup_terminal=false
-for _attempt in {1..1000}; do
+backup_deadline=$((SECONDS + 180))
+while (( SECONDS < backup_deadline )); do
     if "$bin_root/riffdb" --config "$client_config" --output json \
         backup operation "$backup_operation" \
         >"$work_root/default-backup-operation.json" 2>/dev/null \
@@ -1202,12 +1203,27 @@ for _attempt in {1..1000}; do
             .schema == "riffdb.cli.output/v1"
             and .command == "backup.operation"
             and .ok == true
+            and .result.status == "found"
             and .result.phase == "succeeded"
         ' "$work_root/default-backup-operation.json" >/dev/null
     then
         backup_terminal=true
         break
     fi
+    if [[ -s "$work_root/default-backup-operation.json" ]] \
+       && jq -e '
+            .schema == "riffdb.cli.output/v1"
+            and .command == "backup.operation"
+            and .ok == true
+            and .result.status == "found"
+            and (.result.phase == "failed" or .result.phase == "refused")
+        ' "$work_root/default-backup-operation.json" >/dev/null 2>&1
+    then
+        break
+    fi
+    # Offline maintenance intentionally makes the selected database
+    # unavailable while the operation remains durably pollable after reopen.
+    sleep 0.1
 done
 backup_manifest="$data_root/backups/default/multi-database-proof/manifest.riffdb"
 if [[ "$backup_terminal" != true || ! -f "$backup_manifest" ]]; then
