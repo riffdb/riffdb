@@ -1,19 +1,19 @@
 {
   "schema": "riffdb.benchmark-report/v1",
   "report_id": "budget-postgresql-riffdb",
-  "source_revision": "77630b930d81219d1bd77790ad5a27f7f7224aa4",
+  "source_revision": "94e39a9c532144714b344ed0421ce04d97f1b72e",
   "dirty": false,
   "rust_version": "1.97.0",
   "target": "x86_64-unknown-linux-gnu",
   "environment": {
     "cpu": "AMD Ryzen 9 7950X 16-Core Processor",
-    "memory": "      65206396 kB",
-    "storage_medium": "local Samsung SSD 990 PRO NVMe, ext4, noatime",
-    "operating_system": "Linux 7.0.12-gentoo-r1-x86_64 x86_64 GNU/Linux",
-    "kernel": "Linux 7.0.12-gentoo-r1-x86_64 x86_64 GNU/Linux",
-    "filesystem": "ext4 /dev/nvme0n1p2[/home/user/dev/riffdb]",
-    "mount_options": "rw,nosuid,nodev,noatime",
-    "database_root": "/home/user/dev/riffdb/target/wp200/benchmarks/budget-comparison/database-roots",
+    "memory": "      65205600 kB",
+    "storage_medium": "local NVMe filesystem (workstation)",
+    "operating_system": "Linux 7.1.8-gentoo-x86_64 x86_64 GNU/Linux",
+    "kernel": "Linux 7.1.8-gentoo-x86_64 x86_64 GNU/Linux",
+    "filesystem": "ext4 /dev/nvme0n1p2",
+    "mount_options": "rw,noatime",
+    "database_root": "/home/user/tmp/riffdb-release-evidence-b0cf1cb3/target/wp200/benchmarks/budget-comparison/database-roots",
     "postgres_server": {
       "image": "postgres:18.4-bookworm@sha256:d9c83446333daec3f0588cc709adb80c26090b7f9f0f7ec8d43c243385d79818",
       "image_id": "sha256:cefcc49b1cd34d41cdc0d09ab4a902ac75b8a6c1a0209ed838b6a82267304df3",
@@ -22,8 +22,8 @@
       "fsync": "on",
       "full_page_writes": "on",
       "network": "loopback-only ephemeral Docker publication",
-      "filesystem": "ext4 /dev/nvme0n1p2[/home/user/dev/riffdb]",
-      "mount_options": "rw,nosuid,nodev,noatime"
+      "filesystem": "ext4 /dev/nvme0n1p2",
+      "mount_options": "rw,noatime"
     }
   },
   "methodology": {
@@ -34,24 +34,24 @@
     "workload_distribution": "complete canonical sequential and contention workloads; RiffDB also executes the required same-key replay case",
     "durability_modes": [
       "PostgreSQL synchronous_commit=on, fsync=on, full_page_writes=on",
-      "RiffDB synchronous"
+      "RiffDB group (exact response/commit identity checked)"
     ],
     "warmup_runs": 2,
     "sample_count": 24,
     "distribution_method": "complete repeated-run wall-clock nanosecond distributions with nearest-rank p50/p95/p99",
-    "analysis_command": "[\"benchmarks/run-budget-comparison\",\"--storage-medium\",\"local Samsung SSD 990 PRO NVMe, ext4, noatime\",\"--samples\",\"12\",\"--warmup\",\"2\"]"
+    "analysis_command": "[\"benchmarks/run-budget-comparison\",\"--storage-medium\",\"local NVMe filesystem (workstation)\",\"--samples\",\"12\",\"--warmup\",\"2\"]"
   },
   "correctness_status": "passed",
   "performance_status": "measured",
   "raw_artifact": "benchmarks/reports/budget-comparison/raw-v1.tsv",
-  "raw_sha256": "c56b50e8e8dff871d9c4ccc3ba6fb21c76281ce8d796509577be1659cb09e5a0",
+  "raw_sha256": "a0fbb66d8598725cf957001433ddcaaf364389da91d13dcd0c456e223d388bcd",
   "unsafe_postgresql_variants_included": false,
   "comparison_qualification": {
     "matched_semantics": [
       "typed canonical LegalSpend workload outcomes",
       "atomic exact-decimal row/entity mutation",
       "same-budget conflict exclusion",
-      "synchronous acknowledged durability"
+      "server-acknowledged durability (PostgreSQL synchronous; RiffDB group)"
     ],
     "stronger_riffdb_guarantees": [
       "compiled command-only mutation",
@@ -70,18 +70,18 @@
       "unit": "nanoseconds",
       "sample_count": 12,
       "samples_ns": [
-        744414803,
-        745021908,
-        746982743,
-        747207691,
-        749169495,
-        749196589,
-        749224867,
-        751192510,
-        751238402,
-        753523316,
-        755032010,
-        768082727
+        729578591,
+        737187937,
+        743420753,
+        743705396,
+        748639929,
+        756824777,
+        760132164,
+        761390131,
+        767267104,
+        796498757,
+        816379444,
+        963567925
       ],
       "database_size_bytes": 8001215,
       "database_size_samples_bytes": [
@@ -98,12 +98,12 @@
         7993023,
         8001215
       ],
-      "min_ns": 744414803,
-      "p50_ns": 749224867,
-      "p95_ns": 768082727,
-      "p99_ns": 768082727,
-      "max_ns": 768082727,
-      "mean_ns": 750857255
+      "min_ns": 729578591,
+      "p50_ns": 760132164,
+      "p95_ns": 963567925,
+      "p99_ns": 963567925,
+      "max_ns": 963567925,
+      "mean_ns": 777049409
     },
     {
       "workload_id": "riffdb_public_sequential_contention_replay",
@@ -112,18 +112,18 @@
       "unit": "nanoseconds",
       "sample_count": 12,
       "samples_ns": [
-        2555808040,
-        2562740864,
-        2573533061,
-        2582210507,
-        2589736020,
-        2612439622,
-        2613945914,
-        2632649548,
-        2633535170,
-        2653589876,
-        2708432113,
-        2714999936
+        941509901,
+        953267213,
+        961907382,
+        968544520,
+        970433874,
+        973021404,
+        980072846,
+        986853956,
+        987603036,
+        992660778,
+        1033279631,
+        1165209145
       ],
       "database_size_bytes": 1056768,
       "database_size_samples_bytes": [
@@ -140,12 +140,12 @@
         1056768,
         1056768
       ],
-      "min_ns": 2555808040,
-      "p50_ns": 2613945914,
-      "p95_ns": 2714999936,
-      "p99_ns": 2714999936,
-      "max_ns": 2714999936,
-      "mean_ns": 2619468389
+      "min_ns": 941509901,
+      "p50_ns": 980072846,
+      "p95_ns": 1165209145,
+      "p99_ns": 1165209145,
+      "max_ns": 1165209145,
+      "mean_ns": 992863640
     }
   ]
 }
