@@ -3568,6 +3568,10 @@ impl CommandWriter {
             let AdministrationAuditSubmission::FusedPair { started, terminal } = submission else {
                 unreachable!("matched FusedPair");
             };
+            // Publish stop before unwinding drops the receipt sender. The
+            // writer-loop guard is outside this call frame, so it cannot order
+            // lifecycle publication ahead of these moved completion owners.
+            let _panic_guard = ActorMessagePanicGuard::new(self.lifecycle.clone());
             let result = self
                 .operations
                 .append_audit_fused_pair(started.as_ref(), terminal.as_ref());
@@ -3617,6 +3621,10 @@ impl CommandWriter {
                 }
             }
         }
+        // `completions` owns the accepted callers' receipt senders. Keep a
+        // guard declared after it so panic unwinding publishes Stopped before
+        // any sender drop can wake a caller with stale Accepting state.
+        let _panic_guard = ActorMessagePanicGuard::new(self.lifecycle.clone());
         match self.operations.drive_audit_group(&inputs) {
             AuditGroupDriveResult::Complete(results) => {
                 self.finish_audit_group(completions, results);
