@@ -211,6 +211,7 @@ run_riffdb() {
     env --chdir="$repo_root/$riffdb_process_cwd" \
         RIFFDB_BUDGET_RIFFDBD_BIN="$riffdbd" \
         RIFFDB_BUDGET_RUNNER_BIN="$public_runner" \
+        RIFFDB_BENCH_DB_ROOT="$repo_root/$riffdb_database_root" \
         TMPDIR="$repo_root/$riffdb_database_root" \
         "$public_test" \
         --exact public_comparison_process_runner_matches_the_shared_oracle \
@@ -323,6 +324,7 @@ for ((iteration = 1; iteration <= samples; iteration++)); do
         --chdir="$repo_root/$riffdb_process_cwd" \
         RIFFDB_BUDGET_RIFFDBD_BIN="$riffdbd" \
         RIFFDB_BUDGET_RUNNER_BIN="$public_runner" \
+        RIFFDB_BENCH_DB_ROOT="$repo_root/$riffdb_database_root" \
         TMPDIR="$repo_root/$riffdb_database_root" \
         "$public_test" \
         --exact public_comparison_process_runner_matches_the_shared_oracle \
