@@ -74,7 +74,7 @@ def summarize($id; $samples; $database_sizes; $description; $guarantees):
       workload_distribution: "complete canonical sequential and contention workloads; RiffDB also executes the required same-key replay case",
       durability_modes: [
         "PostgreSQL synchronous_commit=on, fsync=on, full_page_writes=on",
-        "RiffDB synchronous"
+        "RiffDB \($capture.metadata.riffdb_durability_mode) (exact response/commit identity checked)"
       ],
       warmup_runs: ($capture.metadata.warmup_runs | tonumber),
       sample_count: (
@@ -101,7 +101,7 @@ def summarize($id; $samples; $database_sizes; $description; $guarantees):
         "typed canonical LegalSpend workload outcomes",
         "atomic exact-decimal row/entity mutation",
         "same-budget conflict exclusion",
-        "synchronous acknowledged durability"
+        "server-acknowledged durability (PostgreSQL synchronous; RiffDB \($capture.metadata.riffdb_durability_mode))"
       ],
       stronger_riffdb_guarantees: [
         "compiled command-only mutation",

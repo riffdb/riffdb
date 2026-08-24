@@ -123,6 +123,21 @@ fn public_comparison_adapter_dependency_boundary_is_frozen() {
         }
     }
     assert!(runner_source.contains("load_protected_bearer_credential"));
+    for durability_reconciliation in [
+        "pub enum PublicCommandDurability",
+        "PublicCommandDurability::from_response",
+        "PublicCommandDurability::from_commit(commit.durability)",
+        "commit_matches_response_metadata(&notified_commit, &replay.metadata)",
+    ] {
+        assert!(
+            adapter_source.contains(durability_reconciliation),
+            "adapter lost fail-closed durability reconciliation: {durability_reconciliation}"
+        );
+    }
+    assert!(!adapter_source.contains("response.durability_mode != \"sync\""));
+    assert!(!adapter_source.contains(
+        "commit.durability != v1::CommandDurability::Synchronous as i32"
+    ));
     for bypass in ["std::fs", "std::env::var(", "std::env::var_os("] {
         assert!(
             !runner_source.contains(bypass),
