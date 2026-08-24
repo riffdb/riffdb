@@ -119,6 +119,11 @@ record, aggregate, and excess declarations fail compilation with `RDB-QR007`.
 There is no wildcard, whole-record, expression, cursor, or parameter form, and
 one query is limited to 1,024 declared secret leaves.
 
+When a result field itself is the bare contextual identifier `reveals`, keep
+its comma delimiter before a following field. The canonical formatter emits
+that delimiter automatically so parse-format-parse cannot reinterpret the
+field as another secret-output clause.
+
 The declaration records review intent in RiffQL language V3 and query IR V4;
 it is not caller-supplied authority. Selecting the immutable query in an
 application role derives only its exact dedicated secret-field visibility.

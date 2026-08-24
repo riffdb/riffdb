@@ -48,3 +48,32 @@ fn reveals_remains_a_legal_identifier_without_selecting_v3() {
     assert_eq!(document.body.bindings[0].name.value.as_str(), "reveals");
     assert!(document.body.selection.fields[0].reveals.is_empty());
 }
+
+#[test]
+fn formatter_delimits_a_bare_reveals_field_before_a_dotted_field() {
+    let source = r#"query Contextual($id: Session.session_id) {
+    one session from Session where session_id == $id else NotFound
+    return Found {
+        token_digest reveals session.token_digest
+        reveals,
+        session.user_id
+    }
+    outcomes Found | NotFound
+}"#;
+
+    let document = parse_query(source).expect("contextual identifier parses with delimiter");
+    assert_eq!(document.body.selection.fields.len(), 3);
+
+    let canonical = format_query(&document);
+    assert!(canonical.contains("        reveals,\n        session.user_id"));
+    let reparsed = parse_query(&canonical).expect("canonical contextual identifier reparses");
+    assert_eq!(format_query(&reparsed), canonical);
+    assert_eq!(reparsed.language_version, document.language_version);
+    assert_eq!(reparsed.body.selection.fields.len(), 3);
+    assert_eq!(
+        reparsed.body.selection.fields[1].source.value.0[0]
+            .value
+            .as_str(),
+        "reveals"
+    );
+}

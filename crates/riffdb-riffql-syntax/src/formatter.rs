@@ -182,13 +182,22 @@ pub fn format_query(document: &Document) -> String {
 
 fn format_selection(output: &mut String, selection: &Selection, indentation: usize) {
     output.push_str("{\n");
-    for field in &selection.fields {
+    for (index, field) in selection.fields.iter().enumerate() {
         output.push_str(&"    ".repeat(indentation + 1));
         format_field(output, field, indentation + 1);
+        if index + 1 != selection.fields.len() && is_bare_reveals_identifier(field) {
+            output.push(',');
+        }
         output.push('\n');
     }
     output.push_str(&"    ".repeat(indentation));
     output.push('}');
+}
+
+fn is_bare_reveals_identifier(field: &FieldSelection) -> bool {
+    field.alias.is_none()
+        && field.source.value.0.len() == 1
+        && field.source.value.0[0].value.as_str() == "reveals"
 }
 
 fn format_field(output: &mut String, field: &FieldSelection, indentation: usize) {
