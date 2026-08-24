@@ -7,9 +7,10 @@ use std::fmt;
 use std::num::NonZeroU16;
 
 use riffdb_query_ir::{
-    ExactComparisonProfileV1, ExactOrderDirectionV1, ExactOrderProgramV1, ExactParameterValueV1,
-    ExactPredicateFamilyMemberV1, ExactPredicateLeafV1, ExactPredicateNodeV1,
-    ExactPredicateOperatorV1, ExactPredicateProgramV1, ExactReferenceCellV1, ExactScalarV1,
+    ExactComparisonProfileV1, ExactOrderDirectionV1, ExactOrderProgramV1, ExactOrderProgramV2,
+    ExactParameterValueV1, ExactPredicateFamilyMemberV1, ExactPredicateLeafV1,
+    ExactPredicateNodeV1, ExactPredicateOperatorV1, ExactPredicateProgramV1,
+    ExactPredicateProgramV2, ExactReferenceCellV1, ExactScalarV1, ExactStatePlacementV1,
     ExactValueSlotV1,
 };
 use riffdb_types::{
@@ -20,8 +21,12 @@ use riffdb_types::{
 
 /// Additive provider-state format; V1 through V3 remain independently readable.
 pub const EXACT_PREDICATE_PROVIDER_STATE_FORMAT_V4: u16 = 4;
+/// Additive nullable exact-order provider-state format.
+pub const EXACT_PREDICATE_PROVIDER_STATE_FORMAT_V5: u16 = 5;
 /// Strict checkpoint ceiling for one bounded partition.
 pub const MAX_EXACT_PREDICATE_CHECKPOINT_BYTES_V4: usize = 256 * 1024 * 1024;
+/// Strict V5 checkpoint ceiling for one bounded partition.
+pub const MAX_EXACT_PREDICATE_CHECKPOINT_BYTES_V5: usize = MAX_EXACT_PREDICATE_CHECKPOINT_BYTES_V4;
 const CHECKPOINT_MAGIC: &[u8; 4] = b"RXPA";
 const CHECKSUM_BYTES: usize = 32;
 
@@ -80,6 +85,106 @@ impl ExactPredicateProviderBindingV1 {
     }
 
     /// Policy shape used to form the complete candidate universe.
+    #[must_use]
+    pub const fn policy_shape(self) -> ApplicationRoleHash {
+        self.policy_shape
+    }
+
+    /// Policy-aligned partition.
+    #[must_use]
+    pub const fn partition(self) -> PartitionKeyHash {
+        self.partition
+    }
+
+    /// Authoritative history incarnation.
+    #[must_use]
+    pub const fn history_incarnation(self) -> u64 {
+        self.history_incarnation
+    }
+
+    /// Never-reused provider generation.
+    #[must_use]
+    pub const fn generation(self) -> ProjectionGeneration {
+        self.generation
+    }
+
+    /// Exact applied frontier represented by this state.
+    #[must_use]
+    pub const fn frontier(self) -> CommitSequence {
+        self.frontier
+    }
+
+    fn advanced(self, frontier: CommitSequence) -> Result<Self, ExactPredicateProviderErrorV1> {
+        if frontier <= self.frontier {
+            return Err(ExactPredicateProviderErrorV1::NonAdvancingEpoch);
+        }
+        Ok(Self { frontier, ..self })
+    }
+}
+
+/// Immutable V5 state binding for a nullable exact-order semantic program.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ExactPredicateProviderBindingV2 {
+    plan: QueryPlanHash,
+    program: QueryPlanHash,
+    descriptor: ProjectionProviderDescriptorHash,
+    policy_shape: ApplicationRoleHash,
+    partition: PartitionKeyHash,
+    history_incarnation: u64,
+    generation: ProjectionGeneration,
+    frontier: CommitSequence,
+}
+
+impl ExactPredicateProviderBindingV2 {
+    /// Binds one V5 generation to its compiler-owned nullable order and universe.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        plan: QueryPlanHash,
+        program: &ExactPredicateProgramV2,
+        policy_shape: ApplicationRoleHash,
+        partition: PartitionKeyHash,
+        history_incarnation: u64,
+        generation: ProjectionGeneration,
+        frontier: CommitSequence,
+    ) -> Result<Self, ExactPredicateProviderErrorV1> {
+        if history_incarnation == 0 {
+            return Err(ExactPredicateProviderErrorV1::BindingMismatch);
+        }
+        let descriptor = program
+            .provider_descriptor()
+            .map_err(|_| ExactPredicateProviderErrorV1::BindingMismatch)?
+            .digest();
+        Ok(Self {
+            plan,
+            program: program.identity(),
+            descriptor,
+            policy_shape,
+            partition,
+            history_incarnation,
+            generation,
+            frontier,
+        })
+    }
+
+    /// Compiler-owned query plan identity.
+    #[must_use]
+    pub const fn plan(self) -> QueryPlanHash {
+        self.plan
+    }
+
+    /// Provider-independent nullable semantic-program identity.
+    #[must_use]
+    pub const fn program(self) -> QueryPlanHash {
+        self.program
+    }
+
+    /// Complete V5 provider descriptor.
+    #[must_use]
+    pub const fn descriptor(self) -> ProjectionProviderDescriptorHash {
+        self.descriptor
+    }
+
+    /// Policy shape used for admission.
     #[must_use]
     pub const fn policy_shape(self) -> ApplicationRoleHash {
         self.policy_shape
@@ -276,6 +381,41 @@ pub struct ExactPredicateResultPageV1 {
     exact_total: u64,
     binding: ExactPredicateProviderBindingV1,
     member: ExactPredicateFamilyMemberV1,
+}
+
+/// One V5 nullable-order page and exact count from a single bound epoch.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ExactPredicateResultPageV2 {
+    rows: Vec<ExactPredicateProviderRowV1>,
+    exact_total: u64,
+    binding: ExactPredicateProviderBindingV2,
+    member: ExactPredicateFamilyMemberV1,
+}
+
+impl ExactPredicateResultPageV2 {
+    /// Only the requested bounded page is released.
+    #[must_use]
+    pub fn rows(&self) -> &[ExactPredicateProviderRowV1] {
+        &self.rows
+    }
+
+    /// Whole authorized-result cardinality before the ordinal window.
+    #[must_use]
+    pub const fn exact_total(&self) -> u64 {
+        self.exact_total
+    }
+
+    /// Complete V5 plan/policy/partition/generation/frontier binding.
+    #[must_use]
+    pub const fn binding(&self) -> ExactPredicateProviderBindingV2 {
+        self.binding
+    }
+
+    /// Exact compiler-enumerated family member.
+    #[must_use]
+    pub const fn member(&self) -> ExactPredicateFamilyMemberV1 {
+        self.member
+    }
 }
 
 impl ExactPredicateResultPageV1 {
@@ -692,6 +832,288 @@ impl ExactPredicatePartitionIndexV4 {
     }
 }
 
+/// Rebuildable V5 provider state with explicit missing/null placement.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ExactPredicatePartitionIndexV5 {
+    binding: ExactPredicateProviderBindingV2,
+    program: ExactPredicateProgramV2,
+    rows: Vec<ExactPredicateProviderRowV1>,
+    orders: Vec<ExactOrderIndexV1>,
+}
+
+impl ExactPredicatePartitionIndexV5 {
+    /// Rebuilds one disjoint V5 generation after row-policy admission.
+    pub fn rebuild(
+        binding: ExactPredicateProviderBindingV2,
+        program: ExactPredicateProgramV2,
+        rows: Vec<ExactPredicateProviderRowV1>,
+    ) -> Result<Self, ExactPredicateProviderErrorV1> {
+        if binding.program != program.identity()
+            || rows.len()
+                > usize::try_from(program.provider_requirement().max_candidates())
+                    .map_err(|_| ExactPredicateProviderErrorV1::BoundExceeded)?
+        {
+            return Err(ExactPredicateProviderErrorV1::BindingMismatch);
+        }
+        let mut rows = rows;
+        rows.sort_by(|left, right| left.key.as_bytes().cmp(right.key.as_bytes()));
+        if rows
+            .windows(2)
+            .any(|pair| pair[0].key.as_bytes() == pair[1].key.as_bytes())
+        {
+            return Err(ExactPredicateProviderErrorV1::DuplicateRow);
+        }
+        let profiles = referenced_profiles_v2(&program)?;
+        for row in &rows {
+            if row.fields.len() > profiles.len()
+                || row.fields.keys().any(|field| !profiles.contains_key(field))
+            {
+                return Err(ExactPredicateProviderErrorV1::Integrity);
+            }
+        }
+        let mut orders = Vec::with_capacity(program.orders().len());
+        for order in program.orders() {
+            let mut ordered_rows = (0..rows.len()).collect::<Vec<_>>();
+            for row in &rows {
+                validate_nullable_order_row(row, order)?;
+            }
+            ordered_rows.sort_by(|left, right| {
+                compare_nullable_provider_rows(&rows[*left], &rows[*right], order)
+            });
+            let mut fields = profiles
+                .iter()
+                .map(|(field, profile)| (*field, SparseFieldIndexV1::new(*profile)))
+                .collect::<BTreeMap<_, _>>();
+            for (position, row_index) in ordered_rows.iter().copied().enumerate() {
+                let row = &rows[row_index];
+                for (field, index) in &mut fields {
+                    index.insert(
+                        position,
+                        row.fields
+                            .get(field)
+                            .unwrap_or(&ExactReferenceCellV1::Missing),
+                    )?;
+                }
+            }
+            orders.push(ExactOrderIndexV1 {
+                rows: ordered_rows,
+                fields,
+            });
+        }
+        let state = Self {
+            binding,
+            program,
+            rows,
+            orders,
+        };
+        state.validate_state_bound()?;
+        Ok(state)
+    }
+
+    /// Applies one complete epoch atomically; failure preserves prior state.
+    pub fn apply(
+        &mut self,
+        epoch: CommitSequence,
+        mutations: &[ExactPredicateIndexMutationV1],
+    ) -> Result<(), ExactPredicateProviderErrorV1> {
+        let mut seen = BTreeSet::new();
+        let mut rows = self
+            .rows
+            .iter()
+            .cloned()
+            .map(|row| (row.key.as_bytes().to_vec(), row))
+            .collect::<BTreeMap<_, _>>();
+        for mutation in mutations {
+            if !seen.insert(mutation.key().as_bytes().to_vec()) {
+                return Err(ExactPredicateProviderErrorV1::DuplicateRow);
+            }
+            match mutation {
+                ExactPredicateIndexMutationV1::Upsert(row) => {
+                    rows.insert(row.key.as_bytes().to_vec(), row.clone());
+                }
+                ExactPredicateIndexMutationV1::Delete(key) => {
+                    rows.remove(key.as_bytes());
+                }
+            }
+        }
+        let next = Self::rebuild(
+            self.binding.advanced(epoch)?,
+            self.program.clone(),
+            rows.into_values().collect(),
+        )?;
+        *self = next;
+        Ok(())
+    }
+
+    /// Rebuilds physical indexes without changing logical identity.
+    pub fn compact(&mut self) -> Result<(), ExactPredicateProviderErrorV1> {
+        let compacted = Self::rebuild(self.binding, self.program.clone(), self.rows.clone())?;
+        *self = compacted;
+        Ok(())
+    }
+
+    /// Executes one sealed member using only V5 provider-owned indexed state.
+    pub fn result_page(
+        &self,
+        parameters: &BTreeMap<u16, ExactParameterValueV1>,
+        member: ExactPredicateFamilyMemberV1,
+        offset: u32,
+        limit: NonZeroU16,
+    ) -> Result<ExactPredicateResultPageV2, ExactPredicateProviderErrorV1> {
+        if !self.program.members().contains(&member)
+            || offset > self.program.max_offset()
+            || limit.get() > self.program.max_limit()
+        {
+            return Err(ExactPredicateProviderErrorV1::WindowInvalid);
+        }
+        let order = self
+            .orders
+            .get(usize::from(member.order_ordinal()))
+            .ok_or(ExactPredicateProviderErrorV1::MemberMismatch)?;
+        let mut fuel = Fuel::new(self.program.provider_requirement().max_work_units());
+        let selected = evaluate_node(
+            self.program.predicate(),
+            order,
+            parameters,
+            member.presence_bits(),
+            &mut fuel,
+        )?;
+        let exact_total = selected.count();
+        let rows = selected
+            .select(offset, limit.get())
+            .into_iter()
+            .map(|position| {
+                order
+                    .rows
+                    .get(position)
+                    .and_then(|row| self.rows.get(*row))
+                    .cloned()
+                    .ok_or(ExactPredicateProviderErrorV1::Integrity)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(ExactPredicateResultPageV2 {
+            rows,
+            exact_total,
+            binding: self.binding,
+            member,
+        })
+    }
+
+    /// Exact immutable V5 provider binding.
+    #[must_use]
+    pub const fn binding(&self) -> ExactPredicateProviderBindingV2 {
+        self.binding
+    }
+
+    /// Canonical nullable semantic program.
+    #[must_use]
+    pub const fn program(&self) -> &ExactPredicateProgramV2 {
+        &self.program
+    }
+
+    /// Encodes canonical V5 state; physical indexes are rebuilt on recovery.
+    pub fn to_checkpoint_bytes(&self) -> Result<Vec<u8>, ExactPredicateProviderErrorV1> {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(CHECKPOINT_MAGIC);
+        bytes.extend_from_slice(&EXACT_PREDICATE_PROVIDER_STATE_FORMAT_V5.to_be_bytes());
+        bytes.extend_from_slice(&0_u16.to_be_bytes());
+        write_bytes(&mut bytes, self.program.canonical_bytes())?;
+        bytes.extend_from_slice(self.binding.plan.as_bytes());
+        bytes.extend_from_slice(self.binding.program.as_bytes());
+        bytes.extend_from_slice(self.binding.descriptor.as_bytes());
+        bytes.extend_from_slice(self.binding.policy_shape.as_bytes());
+        bytes.extend_from_slice(self.binding.partition.as_bytes());
+        bytes.extend_from_slice(&self.binding.history_incarnation.to_be_bytes());
+        bytes.extend_from_slice(&self.binding.generation.to_be_bytes());
+        bytes.extend_from_slice(&self.binding.frontier.get().to_be_bytes());
+        bytes.extend_from_slice(
+            &u32::try_from(self.rows.len())
+                .map_err(|_| ExactPredicateProviderErrorV1::BoundExceeded)?
+                .to_be_bytes(),
+        );
+        encode_rows(&mut bytes, &self.rows)?;
+        if bytes.len().saturating_add(CHECKSUM_BYTES) > MAX_EXACT_PREDICATE_CHECKPOINT_BYTES_V5 {
+            return Err(ExactPredicateProviderErrorV1::BoundExceeded);
+        }
+        let digest = hash(HashDomain::ExactResultCheckpoint, &bytes);
+        bytes.extend_from_slice(digest.as_bytes());
+        Ok(bytes)
+    }
+
+    /// Strictly decodes V5 and reconstructs every derived index.
+    pub fn from_checkpoint_bytes(bytes: &[u8]) -> Result<Self, ExactPredicateProviderErrorV1> {
+        if bytes.len() < 8 + CHECKSUM_BYTES
+            || bytes.len() > MAX_EXACT_PREDICATE_CHECKPOINT_BYTES_V5
+            || &bytes[..4] != CHECKPOINT_MAGIC
+            || u16::from_be_bytes([bytes[4], bytes[5]]) != EXACT_PREDICATE_PROVIDER_STATE_FORMAT_V5
+        {
+            return Err(ExactPredicateProviderErrorV1::UnsupportedFormat);
+        }
+        if bytes[6..8] != [0, 0] {
+            return Err(ExactPredicateProviderErrorV1::Integrity);
+        }
+        let payload_end = bytes
+            .len()
+            .checked_sub(CHECKSUM_BYTES)
+            .ok_or(ExactPredicateProviderErrorV1::Integrity)?;
+        let digest = hash(HashDomain::ExactResultCheckpoint, &bytes[..payload_end]);
+        if bytes[payload_end..] != digest.as_bytes()[..] {
+            return Err(ExactPredicateProviderErrorV1::Integrity);
+        }
+        let mut reader = CheckpointReader::new(&bytes[8..payload_end]);
+        let program = ExactPredicateProgramV2::from_canonical_bytes(reader.bytes()?)
+            .map_err(|_| ExactPredicateProviderErrorV1::Integrity)?;
+        let plan = QueryPlanHash::from_bytes(reader.array()?);
+        let program_identity = QueryPlanHash::from_bytes(reader.array()?);
+        let descriptor = ProjectionProviderDescriptorHash::from_bytes(reader.array()?);
+        let policy_shape = ApplicationRoleHash::from_bytes(reader.array()?);
+        let partition = PartitionKeyHash::from_bytes(reader.array()?);
+        let history_incarnation = reader.u64()?;
+        let generation = ProjectionGeneration::new(reader.u64()?)
+            .ok_or(ExactPredicateProviderErrorV1::Integrity)?;
+        let frontier =
+            CommitSequence::new(reader.u64()?).ok_or(ExactPredicateProviderErrorV1::Integrity)?;
+        let binding = ExactPredicateProviderBindingV2::new(
+            plan,
+            &program,
+            policy_shape,
+            partition,
+            history_incarnation,
+            generation,
+            frontier,
+        )?;
+        if binding.program != program_identity || binding.descriptor != descriptor {
+            return Err(ExactPredicateProviderErrorV1::BindingMismatch);
+        }
+        let count = usize::try_from(reader.u32()?)
+            .map_err(|_| ExactPredicateProviderErrorV1::BoundExceeded)?;
+        if count
+            > usize::try_from(program.provider_requirement().max_candidates())
+                .map_err(|_| ExactPredicateProviderErrorV1::BoundExceeded)?
+        {
+            return Err(ExactPredicateProviderErrorV1::BoundExceeded);
+        }
+        let rows = decode_rows(&mut reader, count)?;
+        reader.finish()?;
+        let recovered = Self::rebuild(binding, program, rows)?;
+        if recovered.to_checkpoint_bytes()? != bytes {
+            return Err(ExactPredicateProviderErrorV1::Integrity);
+        }
+        Ok(recovered)
+    }
+
+    fn validate_state_bound(&self) -> Result<(), ExactPredicateProviderErrorV1> {
+        validate_state_bound(
+            self.program.canonical_bytes(),
+            self.program
+                .provider_requirement()
+                .max_state_bytes_per_row(),
+            &self.rows,
+            &self.orders,
+        )
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct BitSet {
     len: usize,
@@ -1023,6 +1445,19 @@ fn referenced_profiles(
     Ok(profiles)
 }
 
+fn referenced_profiles_v2(
+    program: &ExactPredicateProgramV2,
+) -> Result<BTreeMap<FieldId, ExactComparisonProfileV1>, ExactPredicateProviderErrorV1> {
+    let mut profiles = BTreeMap::new();
+    collect_predicate_profiles(program.predicate(), &mut profiles)?;
+    for order in program.orders() {
+        for term in order.terms() {
+            insert_profile(&mut profiles, term.field(), term.profile())?;
+        }
+    }
+    Ok(profiles)
+}
+
 fn collect_predicate_profiles(
     node: &ExactPredicateNodeV1,
     profiles: &mut BTreeMap<FieldId, ExactComparisonProfileV1>,
@@ -1091,6 +1526,180 @@ fn compare_rows(
         }
     }
     left.key.as_bytes().cmp(right.key.as_bytes())
+}
+
+fn validate_nullable_order_row(
+    row: &ExactPredicateProviderRowV1,
+    order: &ExactOrderProgramV2,
+) -> Result<(), ExactPredicateProviderErrorV1> {
+    for term in order.terms() {
+        let cell = row
+            .fields
+            .get(&term.field())
+            .unwrap_or(&ExactReferenceCellV1::Missing);
+        match cell {
+            ExactReferenceCellV1::Value(value) if value.profile() == term.profile() => {}
+            ExactReferenceCellV1::Missing | ExactReferenceCellV1::Null
+                if term.placement() != ExactStatePlacementV1::PresentOnlyV1 => {}
+            _ => return Err(ExactPredicateProviderErrorV1::OrderStateInvalid),
+        }
+    }
+    Ok(())
+}
+
+fn compare_nullable_provider_rows(
+    left: &ExactPredicateProviderRowV1,
+    right: &ExactPredicateProviderRowV1,
+    order: &ExactOrderProgramV2,
+) -> Ordering {
+    for term in order.terms() {
+        let left_cell = left
+            .fields
+            .get(&term.field())
+            .unwrap_or(&ExactReferenceCellV1::Missing);
+        let right_cell = right
+            .fields
+            .get(&term.field())
+            .unwrap_or(&ExactReferenceCellV1::Missing);
+        let compared = match (left_cell, right_cell) {
+            (ExactReferenceCellV1::Value(left), ExactReferenceCellV1::Value(right)) => {
+                match term.direction() {
+                    ExactOrderDirectionV1::Ascending => left.cmp(right),
+                    ExactOrderDirectionV1::Descending => left.cmp(right).reverse(),
+                }
+            }
+            (
+                ExactReferenceCellV1::Missing | ExactReferenceCellV1::Null,
+                ExactReferenceCellV1::Missing | ExactReferenceCellV1::Null,
+            ) => Ordering::Equal,
+            (ExactReferenceCellV1::Missing | ExactReferenceCellV1::Null, _) => {
+                match term.placement() {
+                    ExactStatePlacementV1::NullsFirstV1 => Ordering::Less,
+                    ExactStatePlacementV1::NullsLastV1 => Ordering::Greater,
+                    ExactStatePlacementV1::PresentOnlyV1 => Ordering::Equal,
+                }
+            }
+            (_, ExactReferenceCellV1::Missing | ExactReferenceCellV1::Null) => {
+                match term.placement() {
+                    ExactStatePlacementV1::NullsFirstV1 => Ordering::Greater,
+                    ExactStatePlacementV1::NullsLastV1 => Ordering::Less,
+                    ExactStatePlacementV1::PresentOnlyV1 => Ordering::Equal,
+                }
+            }
+        };
+        if compared != Ordering::Equal {
+            return compared;
+        }
+    }
+    left.key.as_bytes().cmp(right.key.as_bytes())
+}
+
+fn encode_rows(
+    bytes: &mut Vec<u8>,
+    rows: &[ExactPredicateProviderRowV1],
+) -> Result<(), ExactPredicateProviderErrorV1> {
+    for row in rows {
+        write_bytes(bytes, row.key.as_bytes())?;
+        bytes.extend_from_slice(
+            &u16::try_from(row.fields.len())
+                .map_err(|_| ExactPredicateProviderErrorV1::BoundExceeded)?
+                .to_be_bytes(),
+        );
+        for (field, cell) in &row.fields {
+            bytes.extend_from_slice(&field.to_be_bytes());
+            match cell {
+                ExactReferenceCellV1::Missing => bytes.push(0),
+                ExactReferenceCellV1::Null => bytes.push(1),
+                ExactReferenceCellV1::Value(value) => {
+                    bytes.push(2);
+                    write_bytes(bytes, &encode_scalar(value)?)?;
+                }
+            }
+        }
+        let output =
+            encode_canonical_value(&riffdb_types::CanonicalValue::Record(row.output.clone()))
+                .map_err(|_| ExactPredicateProviderErrorV1::Integrity)?;
+        write_bytes(bytes, &output)?;
+    }
+    Ok(())
+}
+
+fn decode_rows(
+    reader: &mut CheckpointReader<'_>,
+    count: usize,
+) -> Result<Vec<ExactPredicateProviderRowV1>, ExactPredicateProviderErrorV1> {
+    let mut rows = Vec::with_capacity(count);
+    for _ in 0..count {
+        let key = EntityKey::from_bytes(reader.bytes()?.to_vec())
+            .map_err(|_| ExactPredicateProviderErrorV1::Integrity)?;
+        let field_count = usize::from(reader.u16()?);
+        let mut fields = BTreeMap::new();
+        for _ in 0..field_count {
+            let field =
+                FieldId::new(reader.u32()?).ok_or(ExactPredicateProviderErrorV1::Integrity)?;
+            let cell = match reader.u8()? {
+                0 => ExactReferenceCellV1::Missing,
+                1 => ExactReferenceCellV1::Null,
+                2 => ExactReferenceCellV1::Value(decode_scalar(reader.bytes()?)?),
+                _ => return Err(ExactPredicateProviderErrorV1::Integrity),
+            };
+            if fields.insert(field, cell).is_some() {
+                return Err(ExactPredicateProviderErrorV1::Integrity);
+            }
+        }
+        let riffdb_types::CanonicalValue::Record(output) = decode_canonical_value(reader.bytes()?)
+            .map_err(|_| ExactPredicateProviderErrorV1::Integrity)?
+        else {
+            return Err(ExactPredicateProviderErrorV1::Integrity);
+        };
+        rows.push(ExactPredicateProviderRowV1::new(key, fields, output));
+    }
+    Ok(rows)
+}
+
+fn validate_state_bound(
+    program_bytes: &[u8],
+    max_state_bytes_per_row: u32,
+    rows: &[ExactPredicateProviderRowV1],
+    orders: &[ExactOrderIndexV1],
+) -> Result<(), ExactPredicateProviderErrorV1> {
+    let mut bytes = program_bytes.len() as u64;
+    for row in rows {
+        bytes = bytes
+            .checked_add(row.key.as_bytes().len() as u64)
+            .and_then(|value| value.checked_add((row.fields.len() as u64).saturating_mul(5)))
+            .ok_or(ExactPredicateProviderErrorV1::BoundExceeded)?;
+        for cell in row.fields.values() {
+            if let ExactReferenceCellV1::Value(value) = cell {
+                bytes = bytes
+                    .checked_add(estimated_scalar_bytes(value))
+                    .ok_or(ExactPredicateProviderErrorV1::BoundExceeded)?;
+            }
+        }
+        let output =
+            encode_canonical_value(&riffdb_types::CanonicalValue::Record(row.output.clone()))
+                .map_err(|_| ExactPredicateProviderErrorV1::Integrity)?;
+        bytes = bytes
+            .checked_add(output.len() as u64)
+            .ok_or(ExactPredicateProviderErrorV1::BoundExceeded)?;
+    }
+    for order in orders {
+        bytes = bytes
+            .checked_add((order.rows.len() as u64).saturating_mul(8))
+            .ok_or(ExactPredicateProviderErrorV1::BoundExceeded)?;
+        for index in order.fields.values() {
+            bytes = bytes
+                .checked_add(index.estimated_bytes()?)
+                .ok_or(ExactPredicateProviderErrorV1::BoundExceeded)?;
+        }
+    }
+    let allowed = u64::from(max_state_bytes_per_row)
+        .checked_mul(rows.len().max(1) as u64)
+        .ok_or(ExactPredicateProviderErrorV1::BoundExceeded)?;
+    if bytes > allowed {
+        return Err(ExactPredicateProviderErrorV1::StateAmplification);
+    }
+    Ok(())
 }
 
 fn estimated_scalar_bytes(value: &ExactScalarV1) -> u64 {

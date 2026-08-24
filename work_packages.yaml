@@ -17383,6 +17383,26 @@ work_packages:
     scale: Provider state, state buckets, write amplification, index probes, rank/select work,
       offsets, pages, outputs, rebuild/catch-up work, waits, and diagnostics are statically bounded;
       no request allocates the matching population or walks work proportional to the offset.
+  closure:
+    status: complete
+    completed_at: "2026-08-24"
+    requirements_satisfied: [OQ-003, OQ-004, OQ-005, OQ-006, OQ-017, OQ-019,
+      OQ-020, OQ-021, OQ-022, OQ-024, OQ-026, OQ-027, OQ-028, OQ-029]
+    evidence: Additive provider-state V5 binds the compiled nullable program, descriptor, policy
+      shape, partition, history incarnation, generation, frontier, and checksum. Its policy-aligned
+      background lifecycle builds missing/null state classes and canonical value indexes before
+      exposing exact count plus direct ordinal pages at one epoch. Optional text, timestamp, and
+      numeric fixtures cover both placements and directions, later-key ties, zero/end/beyond-end
+      offsets, state transitions, deletion, compaction, byte-exact restart, corruption, V4/V5
+      refusal, and independent-evaluator equivalence. Architecture checks prohibit per-request
+      descriptor proof, scans, request sorting, materialization, page walks, sentinels, and provider
+      bridges. All package tests, process recovery tests, topology/generated/coverage/policy checks,
+      handbook, formatting, and workspace Clippy pass.
+    known_limitations: WP-676 activates only the internal provider port and server lifecycle.
+      Application-service dispatch, transport carriage, generated Rust/Go/TypeScript/Python
+      methods, CLI, MCP, and the immutable external handoff remain intentionally fail-closed until
+      WP-677.
+    follow_ups: [WP-677]
   human_review_triggers: *id001
 - id: WP-677
   name: Nullable exact-order generated surfaces and external handoff
