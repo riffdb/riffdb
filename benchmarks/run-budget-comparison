@@ -135,6 +135,13 @@ postgres_port="$(
 }
 postgres_url="postgres://riffdb:riffdb-benchmark-local@127.0.0.1:$postgres_port/riffdb_budget"
 postgres_image_id="$(docker inspect --format '{{.Image}}' "$postgres_container")"
+if [[ "$postgres_image_id" =~ ^[0-9a-f]{64}$ ]]; then
+    postgres_image_id="sha256:$postgres_image_id"
+fi
+[[ "$postgres_image_id" =~ ^sha256:[0-9a-f]{64}$ ]] || {
+    printf '%s\n' 'Docker returned an invalid PostgreSQL image identity' >&2
+    exit 1
+}
 postgres_settings="$(
     docker exec "$postgres_container" \
         psql -X -A -t -F $'\t' -U riffdb -d riffdb_budget \
