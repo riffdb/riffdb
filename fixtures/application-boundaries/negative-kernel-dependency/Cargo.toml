@@ -3,5 +3,10 @@ name = "unsafe-application"
 version = "0.1.0"
 edition = "2024"
 
+# This intentionally-invalid manifest is source text for the negative boundary
+# test and therefore has no compilable target for cargo-machete to inspect.
+[package.metadata.cargo-machete]
+ignored = ["riffdb-api-grpc"]
+
 [dependencies]
 riffdb-api-grpc = "0.1.0"

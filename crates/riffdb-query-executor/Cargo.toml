@@ -6,6 +6,11 @@ rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
 
+# `riffdb-auth` is carried explicitly with the policy feature boundary used by
+# cross-crate fixtures; production code does not import it directly.
+[package.metadata.cargo-machete]
+ignored = ["riffdb-auth"]
+
 [features]
 default = []
 # Test-only constructors for cross-crate tests; never enabled by shipped code.

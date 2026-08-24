@@ -3,5 +3,10 @@ name = "safe-application"
 version = "0.1.0"
 edition = "2024"
 
+# This manifest is an input to the boundary scanner, not a standalone Cargo
+# target; generated fixture assembly supplies its source tree.
+[package.metadata.cargo-machete]
+ignored = ["riffdb-client-rust"]
+
 [dependencies]
 riffdb-client-rust = { version = "0.1.0", default-features = false }
