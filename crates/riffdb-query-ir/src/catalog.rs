@@ -20,6 +20,7 @@ pub struct FieldSymbol {
     key: bool,
     secret: bool,
     production_vector: bool,
+    present_and_non_null_across_lineage: bool,
 }
 
 impl FieldSymbol {
@@ -51,6 +52,12 @@ impl FieldSymbol {
     #[must_use]
     pub const fn is_production_vector(&self) -> bool {
         self.production_vector
+    }
+
+    /// Whether the supplied complete lineage proves this field always has a value.
+    #[must_use]
+    pub const fn is_present_and_non_null_across_lineage(&self) -> bool {
+        self.present_and_non_null_across_lineage
     }
 
     /// Compiler-internal stable identity.
@@ -386,6 +393,8 @@ impl SymbolicCatalog {
                         .schema()
                         .vector_production_spec(entity.id(), field.id())
                         .is_some(),
+                    present_and_non_null_across_lineage: !field.value_type().is_optional()
+                        && bundle.contract_version().get() == 1,
                 };
                 if fields.insert(symbol.name.clone(), symbol).is_some() {
                     return Err(invariant("duplicate exact-contract field"));
@@ -552,6 +561,57 @@ impl SymbolicCatalog {
             row_policies,
             principal_facts,
         })
+    }
+
+    /// Builds a catalog whose field-presence proof covers a complete ordered lineage.
+    pub fn from_lineage(bundles: &[ContractBundle]) -> Result<Self, QueryDiagnostics> {
+        let current = bundles
+            .last()
+            .ok_or_else(|| invariant("contract lineage is empty"))?;
+        if bundles
+            .iter()
+            .any(|bundle| bundle.lineage() != current.lineage())
+        {
+            return Err(invariant("contract lineage contains a foreign member"));
+        }
+        if bundles
+            .first()
+            .map(ContractBundle::contract_version)
+            .map(|version| version.get())
+            != Some(1)
+            || bundles.windows(2).any(|pair| {
+                pair[1].contract_version().get()
+                    != pair[0].contract_version().get().saturating_add(1)
+            })
+        {
+            return Err(invariant(
+                "contract lineage must contain every version in ascending order",
+            ));
+        }
+        let mut catalog = Self::from_bundle(current)?;
+        for entity in catalog.entities.values_mut() {
+            for field in entity.fields.values_mut() {
+                field.present_and_non_null_across_lineage = !field.value_type.is_optional()
+                    && bundles
+                        .iter()
+                        .filter_map(|bundle| {
+                            bundle
+                                .schema()
+                                .entities()
+                                .iter()
+                                .find(|candidate| candidate.name() == entity.name)
+                        })
+                        .all(|historical_entity| {
+                            historical_entity
+                                .record()
+                                .fields()
+                                .iter()
+                                .find(|candidate| candidate.name() == field.name)
+                                .is_some_and(|historical| !historical.value_type().is_optional())
+                        });
+            }
+        }
+        Ok(catalog)
     }
 
     /// Exact immutable contract identity.

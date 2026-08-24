@@ -17247,3 +17247,218 @@ work_packages:
     scale: The scenario, profile, repetition, sample, artifact, and report matrices are fixed and
       bounded; no product cache, full-state materialization, or history-sized evidence is added.
   human_review_triggers: *id001
+- id: WP-675
+  name: Nullable exact-order semantic and compiler profiles
+  depends_on: [WP-656, WP-658]
+  objective: After exact acceptance of ADR-0145, add generic compiler-declared nulls-first and
+    nulls-last total-order semantics for optional or historically missing scalar fields, freezing
+    source, semantic IR, reference evaluation, and compatibility without activating provider
+    runtime or importing any external framework artifact.
+  requirements: [OQ-001, OQ-002, OQ-003, OQ-004, OQ-005, OQ-006, OQ-015,
+    OQ-017, OQ-019, OQ-021, OQ-022, OQ-024, OQ-026, OQ-027, OQ-028, OQ-029]
+  required_adrs: [ADR-0002, ADR-0051, ADR-0052, ADR-0053, ADR-0055, ADR-0108,
+    ADR-0111, ADR-0124, ADR-0130, ADR-0131, ADR-0134, ADR-0145]
+  allowed_paths: [SPEC.md, work_packages.yaml, adr/README.md,
+    adr/0145-compiler-declared-nullable-total-order-placement.md,
+    release/version-topology-v1.json, crates/riffdb-types/**,
+    crates/riffdb-riffql-syntax/**, crates/riffdb-query-ir/**,
+    crates/riffdb-query-compiler/**, crates/riffdb-query-module/**,
+    crates/riffdb-catalog/**, crates/riffdb-cli/assets/editor/**,
+    clients/editor/**, fixtures/**, fuzz/**, tests/**, scripts/**,
+    docs/SUMMARY.md, docs/riffql/**, docs/architecture/**,
+    docs/getting-started/OPERATIONAL-QUERIES.md]
+  deliverables:
+  - Accepted ADR-0145 SPEC reconciliation and public RiffQL documentation for per-term `nulls
+    first` and `nulls last`, required whenever the complete family lacks a present/non-null proof,
+    with no request-time placement or implicit backend default
+  - One canonical NoValue order class in which missing and explicit null compare equal for the
+    current term, later terms and the complete ascending entity key resolve ties, placement is not
+    reversed by descending direction, and state predicates retain their existing truth model
+  - RiffQL V7, query IR V10, and query-module V10 semantic successors carrying closed
+    PresentOnlyV1/NullsFirstV1/NullsLastV1 identities, plus a preimplementation topology audit that
+    stops for administrative renumbering rather than occupying an intervening identity
+  - Least-sufficient compilation retaining byte-exact V6/V9/V9 artifacts when present/non-null is
+    proven, preserving explicit placement even when currently vacuous, and rejecting missing
+    proof, invalid placement, optional entity-key, unsupported comparison, excessive family, or
+    incomplete provider requirements with source-spanned diagnostics
+  - Independent bounded reference evaluation and randomized truth-table corpus for missing, null,
+    optional text/timestamp, value boundaries, later terms, duplicate values, mixed directions,
+    both placements, complete keys, predicates that prove non-null, and every finite family member
+  - Canonical successor fixtures, locks, hashes, generated-schema metadata, editor support,
+    version-topology entries, fuzz coverage, and architecture negatives proving this package adds
+    no provider runtime/state, scan, caller query structure, framework branch, or compatibility
+    reinterpretation
+  acceptance_commands:
+  - cargo +1.97.0 test -p riffdb-types -p riffdb-riffql-syntax -p riffdb-query-ir -p riffdb-query-compiler -p riffdb-query-module -p riffdb-catalog --all-features
+  - cargo +nightly-2026-07-12 fuzz run riffql_parser -- -max_total_time=60
+  - ./scripts/check-version-topology
+  - ./scripts/check-generated
+  - ./scripts/check-requirement-coverage
+  - ./scripts/handbook check
+  - cargo +1.97.0 fmt --all -- --check
+  - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: Every nullable exact-order family member has one canonical compiler-owned placement,
+    total-order identity, independent semantic result, and complete statically bounded provider
+    requirement; every old artifact remains byte-exact and readable; and no provider runtime,
+    framework artifact, request-time sort structure, scan, or fallback is introduced.
+  standing_design_tests:
+    interface_safety: Application callers still receive only finite generated named operations;
+      the compiler owns field, direction, state placement, comparison, tie-breaker, predicate,
+      provider requirement, policy, cost, and freshness, and an incomplete family fails closed.
+    scale: Order terms, placement profiles, family members, IR bytes, reference work, provider
+      requirements, generated artifacts, inputs, outputs, and diagnostics are compiler bounded and
+      the semantic model assumes neither a full result nor co-located authoritative storage.
+  closure:
+    status: complete
+    completed_at: "2026-08-24"
+    requirements_satisfied: [OQ-001, OQ-002, OQ-003, OQ-004, OQ-005, OQ-006,
+      OQ-015, OQ-017, OQ-019, OQ-021, OQ-022, OQ-024, OQ-026, OQ-027, OQ-028,
+      OQ-029]
+    evidence: RiffQL V7, query IR V10, and query-module V10 add a canonical NoValue order class
+      with explicit nulls-first/nulls-last placement, randomized reference semantics, strict
+      successor decoding, contiguous-lineage proof checks, generated-surface negatives, editor
+      fixtures, version-topology registration, parser fuzzing, and complete acceptance commands.
+    known_limitations: Provider-state and runtime execution remain intentionally unavailable until
+      WP-676; public transport and generated application activation remain owned by WP-677.
+    follow_ups: [WP-676, WP-677]
+  human_review_triggers: *id001
+- id: WP-676
+  name: Nullable exact-order provider state and ordinal execution
+  depends_on: [WP-657, WP-675]
+  objective: Implement ADR-0145's state-aware exact total orders as additive rebuildable provider-
+    state V5 with exact count and direct ordinal selection over one authorized epoch, without
+    authoritative scans, request-time sorting, materialization, skipped-row/page walks, sentinel
+    values, client shaping, or cross-provider transfer.
+  requirements: [OQ-003, OQ-004, OQ-005, OQ-006, OQ-017, OQ-019, OQ-020,
+    OQ-021, OQ-022, OQ-024, OQ-026, OQ-027, OQ-028, OQ-029]
+  required_adrs: [ADR-0038, ADR-0051, ADR-0053, ADR-0055, ADR-0086, ADR-0108,
+    ADR-0111, ADR-0124, ADR-0129, ADR-0130, ADR-0131, ADR-0134, ADR-0145]
+  allowed_paths: [SPEC.md, work_packages.yaml, release/version-topology-v1.json,
+    crates/riffdb-types/**, crates/riffdb-query-ir/**,
+    crates/riffdb-query-compiler/**, crates/riffdb-query-module/**,
+    crates/riffdb-catalog/**, crates/riffdb-projection/**,
+    crates/riffdb-query-executor/**, crates/riffdb-policy/**,
+    crates/riffdb-storage-api/**, crates/riffdb-storage-memory/**,
+    crates/riffdb-storage-redb/**, crates/riffdb-service/**,
+    crates/riffdb-server/**, fixtures/**, fuzz/**, tests/**, scripts/**,
+    docs/SUMMARY.md, docs/riffql/**, docs/architecture/**,
+    docs/getting-started/OPERATIONAL-QUERIES.md]
+  deliverables:
+  - Additive exact-provider state V5 binding each state-aware order layout, NoValue rank, scalar
+    comparison, later terms, complete ascending entity key, authorized universe, exact-count and
+    ordinal capabilities, static work/state amplification, generation, epoch, plan, and checksum
+  - Provider-owned order statistics where missing and explicit null share one term class, value
+    keys use existing canonical scalar comparisons, direction reverses only value comparison, and
+    both placements equal the independent evaluator for optional text and timestamp fields
+  - Exact cardinality and direct ordinal seek over the complete authorized predicate and V5 order
+    at one provider epoch, returning only the bounded page and never scanning authoritative rows,
+    sorting request results, materializing matches, walking skipped rows/pages, or fetching non-page
+    values outside separately declared bounded policy evidence
+  - Partition-scoped and policy-aligned activation plus bounded-row-admission negatives proving
+    denied rows cannot affect NoValue distribution, count, rank, offset, cursor, work class,
+    readiness, diagnostics, or lifecycle choice and sortable fields do not become projectable
+  - Canonical rebuild, catch-up, persistence, restart, corruption, compaction, cancellation,
+    retention, concurrent state-transition, and mixed-version refusal evidence; V4 remains readable
+    and byte-exact, least-sufficient V4 writers remain active, and nullable plans never downgrade
+  - Descriptor/layout validation once per provider-plan generation and epoch proof once per opened
+    result set, with architecture guards forbidding per-row/per-probe proof work, sentinel encoding,
+    scan fallback, framework branches, and cross-provider bitmap or row-ID transfer
+  acceptance_commands:
+  - cargo +1.97.0 test -p riffdb-types -p riffdb-query-ir -p riffdb-query-compiler -p riffdb-query-module -p riffdb-catalog -p riffdb-projection -p riffdb-query-executor -p riffdb-policy -p riffdb-storage-api -p riffdb-storage-memory -p riffdb-storage-redb -p riffdb-service -p riffdb-server --all-features
+  - ./scripts/check-version-topology
+  - ./scripts/check-generated
+  - ./scripts/check-requirement-coverage
+  - ./scripts/check-workspace-policy
+  - ./scripts/handbook check
+  - cargo +1.97.0 fmt --all -- --check
+  - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: Every compiler-admitted nullable order equals the independent evaluator at one
+    authorized epoch, exact count and ordinal selection use only declared indexed work, V4 remains
+    readable and byte-exact, lifecycle/corruption fail closed, and no scan, request sort,
+    materialization, page walk, sentinel, client shaping, or provider bridge exists.
+  standing_design_tests:
+    interface_safety: Runtime accepts only compiler-sealed plan/member and placement identities with
+      typed values; it cannot accept caller order structure, switch providers, invent state order,
+      omit policy/freshness, or substitute scans, fallbacks, sentinels, or client processing.
+    scale: Provider state, state buckets, write amplification, index probes, rank/select work,
+      offsets, pages, outputs, rebuild/catch-up work, waits, and diagnostics are statically bounded;
+      no request allocates the matching population or walks work proportional to the offset.
+  human_review_triggers: *id001
+- id: WP-677
+  name: Nullable exact-order generated surfaces and external handoff
+  depends_on: [WP-658, WP-676]
+  objective: Activate ADR-0145's generic nullable total orders through the shared service,
+    transports, generated Rust, Go, TypeScript, and Python SDKs, CLI, and MCP using a framework-
+    neutral optional-field corpus, then publish an immutable capability receipt for external
+    acceptance without importing any framework schema, route, profile, adapter, or runtime.
+  requirements: [OQ-001, OQ-003, OQ-004, OQ-005, OQ-006, OQ-015, OQ-016,
+    OQ-019, OQ-020, OQ-021, OQ-022, OQ-026, OQ-027, OQ-028, OQ-029, OQ-030,
+    API-001, MCP-001, MCP-020, MCP-021, MCP-023, MCP-025, MCP-026, MCP-040,
+    MCP-043, MCP-045, MCP-049]
+  required_adrs: [ADR-0040, ADR-0051, ADR-0052, ADR-0053, ADR-0055, ADR-0074,
+    ADR-0106, ADR-0108, ADR-0111, ADR-0117, ADR-0120, ADR-0124, ADR-0128,
+    ADR-0130, ADR-0131, ADR-0133, ADR-0134, ADR-0145]
+  allowed_paths: [SPEC.md, work_packages.yaml, proto/**,
+    fixtures/adapters/operational-conformance/**, fixtures/adapters/conformance/**,
+    fixtures/application-parity/**, fixtures/query-modules/**, fixtures/export/**,
+    crates/riffdb-types/**, crates/riffdb-query-ir/**,
+    crates/riffdb-query-compiler/**, crates/riffdb-query-module/**,
+    crates/riffdb-query-executor/**, crates/riffdb-catalog/**,
+    crates/riffdb-projection/**, crates/riffdb-policy/**,
+    crates/riffdb-storage-api/**, crates/riffdb-storage-memory/**,
+    crates/riffdb-storage-redb/**, crates/riffdb-service/**,
+    crates/riffdb-proto/**, crates/riffdb-api-grpc/**,
+    crates/riffdb-api-mcp/**, crates/riffdb-client-rust/**,
+    crates/riffdb-codegen-rust/**, crates/riffdb-codegen-typescript/**,
+    crates/riffdb-codegen-go/**, crates/riffdb-codegen-python/**,
+    crates/riffdb-driver-host/**, crates/riffdb-cli/**,
+    crates/riffdb-mcp-stdio/**, crates/riffdb-server/**, clients/**,
+    templates/**, examples/**, tests/**, scripts/**, release/**,
+    docs/SUMMARY.md, docs/riffql/**, docs/getting-started/**,
+    docs/integrations/**, docs/reference/**]
+  deliverables:
+  - Shared application-service, gRPC, CLI, MCP, Rust, Go, TypeScript, and Python activation for
+    finite generated nullable-order operations whose field, direction, placement, predicate, exact
+    total, ordinal page, policy, provider epoch, plan identity, bounds, and typed failures remain
+    identical on every surface
+  - A framework-neutral InventoryRecord corpus with optional text and timestamp fields covering
+    nulls first/last, ascending/descending, later-term ordering within NoValue, deterministic keys,
+    exact totals, offset zero/end/beyond-end/maximum, and concurrent missing/null/value transitions
+  - Generated-client and transport adversaries for tenant isolation, secret-field independence,
+    revocation, readiness, divergence, retired epochs, saturation, malformed responses,
+    mixed-version peers, output budgets, and every closed family member without caller-supplied
+    field, direction, placement, order tuple, or raw query structure
+  - Static and runtime boundary checks forbidding client filtering/sorting/counting, cursor/page
+    walks, provider selection, storage access, sentinel values, per-row descriptor/epoch/layout
+    proof construction, framework names, and any translation of typed refusal into false empty data
+  - Handbook guidance for declaring nullable order placement in bounded named `.riffql` documents,
+    regenerating typed SDK methods, understanding state/index amplification and readiness, and using
+    cursor pagination when cross-request snapshot stability is required
+  - One reproducible immutable development publication and successor generic capability receipt,
+    explicitly recording that real framework route evidence remains owned and release-gating in the
+    external repository and is not proved by RiffDB's neutral corpus
+  acceptance_commands:
+  - ./scripts/adapter-operational-query-acceptance --all-languages
+  - ./scripts/driver-development-registry-acceptance --all-ecosystems
+  - ./scripts/driver-conformance --all-languages --remote
+  - ./scripts/check-application-bindings
+  - ./scripts/check-version-topology
+  - ./scripts/check-generated
+  - ./scripts/check-requirement-coverage
+  - ./scripts/check-workspace-policy
+  - ./scripts/handbook check
+  - cargo +1.97.0 fmt --all -- --check
+  - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: Every public RiffDB surface returns the same exact authorized nullable-ordered page and
+    total without caller structure or client shaping, the immutable publication is reproducible,
+    all old artifacts remain compatible, and the repository contains no external framework schema,
+    profile, route, adapter, runtime, or false external-acceptance claim.
+  standing_design_tests:
+    interface_safety: Applications and adapters receive only finite generated methods or closed
+      member choices with compiler-fixed nullable order; they cannot select field, direction,
+      placement, provider, policy, cost, fallback, or freshness, and no transport exposes a generic
+      unsafe sort object.
+    scale: Family choices, inputs, outputs, request/response bytes, provider work, page/offset,
+      generated decode, buffers, waits, retries, diagnostics, and publication artifacts are bounded;
+      no client or server surface retains or materializes the matching population.
+  human_review_triggers: *id001

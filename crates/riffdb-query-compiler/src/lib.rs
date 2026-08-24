@@ -2709,7 +2709,7 @@ fn choose_access(
 
     let mut first_compatible = None;
     for index in entity.indexes() {
-        if !operational_predicates_supported(index, comparisons) {
+        if !operational_predicates_supported(index, comparisons, binding) {
             continue;
         }
         let mut order_start = 0;
@@ -2861,6 +2861,7 @@ fn suggested_index(
 fn operational_predicates_supported(
     index: &riffdb_query_ir::IndexSymbol,
     comparisons: &[Comparison<'_>],
+    binding: &riffdb_riffql_syntax::Binding,
 ) -> bool {
     let predicates_match = comparisons.iter().all(|comparison| {
         let Some(position) = index
@@ -2889,10 +2890,16 @@ fn operational_predicates_supported(
         && index.internal_encodings().iter().enumerate().all(
             |(position, encoding)| match encoding {
                 IndexFieldEncodingV1::Canonical => true,
-                IndexFieldEncodingV1::Presence => comparisons.iter().any(|comparison| {
-                    comparison.field == index.fields()[position]
-                        && matches!(comparison.operator, SourcePredicateOperator::Unary(_))
-                }),
+                IndexFieldEncodingV1::Presence => {
+                    comparisons.iter().any(|comparison| {
+                        comparison.field == index.fields()[position]
+                            && matches!(comparison.operator, SourcePredicateOperator::Unary(_))
+                    }) || binding.order.iter().any(|term| {
+                        term.null_placement.is_some()
+                            && path_field(&term.path.value)
+                                == Some(index.fields()[position].as_str())
+                    })
+                }
                 IndexFieldEncodingV1::TextKey(_) => comparisons.iter().any(|comparison| {
                     comparison.field == index.fields()[position]
                         && comparison.operator.is_binary(BinaryOperator::Prefix)

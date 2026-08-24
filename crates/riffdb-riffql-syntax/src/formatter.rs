@@ -2,7 +2,8 @@ use std::fmt::Write;
 
 use crate::{
     AggregateFunction, BinaryOperator, Cardinality, Direction, Document, Expression,
-    FieldSelection, Literal, Path, ProjectedFreshness, Selection, TypeReference, UnaryOperator,
+    FieldSelection, Literal, NullPlacement, Path, ProjectedFreshness, Selection, TypeReference,
+    UnaryOperator,
 };
 
 /// Emits the canonical, idempotent RiffQL source spelling for the document version.
@@ -87,6 +88,12 @@ pub fn format_query(document: &Document) -> String {
                     Direction::Ascending => "asc",
                     Direction::Descending => "desc",
                 });
+                if let Some(placement) = &term.null_placement {
+                    output.push_str(match placement.value {
+                        NullPlacement::First => " nulls first",
+                        NullPlacement::Last => " nulls last",
+                    });
+                }
             }
             output.push('\n');
         }

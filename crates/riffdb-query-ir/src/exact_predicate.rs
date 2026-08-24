@@ -15,6 +15,8 @@ use riffdb_types::{
 
 /// Canonical exact predicate/order program identity.
 pub const EXACT_PREDICATE_PROGRAM_VERSION_V1: u16 = 1;
+/// Canonical nullable-order semantic-program identity.
+pub const EXACT_PREDICATE_PROGRAM_VERSION_V2: u16 = 2;
 /// Maximum predicate leaves in one compiled family member.
 pub const MAX_EXACT_PREDICATE_LEAVES_V1: usize = 16;
 /// Maximum Boolean nesting in one compiled predicate.
@@ -404,6 +406,112 @@ impl ExactOrderProgramV1 {
     }
 }
 
+/// Closed placement of the shared missing/null order class.
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ExactStatePlacementV1 {
+    /// Every admitted row is compiler-proven present and non-null.
+    PresentOnlyV1 = 1,
+    /// Missing and explicit null precede every present value.
+    NullsFirstV1 = 2,
+    /// Missing and explicit null follow every present value.
+    NullsLastV1 = 3,
+}
+
+/// One compiler-owned total-order term with explicit state placement.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ExactOrderTermV2 {
+    field: FieldId,
+    profile: ExactComparisonProfileV1,
+    direction: ExactOrderDirectionV1,
+    placement: ExactStatePlacementV1,
+    key_tie_breaker: bool,
+}
+
+impl ExactOrderTermV2 {
+    /// Constructs one state-aware order term.
+    #[must_use]
+    pub const fn new(
+        field: FieldId,
+        profile: ExactComparisonProfileV1,
+        direction: ExactOrderDirectionV1,
+        placement: ExactStatePlacementV1,
+        key_tie_breaker: bool,
+    ) -> Self {
+        Self {
+            field,
+            profile,
+            direction,
+            placement,
+            key_tie_breaker,
+        }
+    }
+
+    /// Compiler-resolved field.
+    #[must_use]
+    pub const fn field(self) -> FieldId {
+        self.field
+    }
+
+    /// Frozen scalar comparison profile.
+    #[must_use]
+    pub const fn profile(self) -> ExactComparisonProfileV1 {
+        self.profile
+    }
+
+    /// Fixed direction for present-value comparison.
+    #[must_use]
+    pub const fn direction(self) -> ExactOrderDirectionV1 {
+        self.direction
+    }
+
+    /// Closed state placement.
+    #[must_use]
+    pub const fn placement(self) -> ExactStatePlacementV1 {
+        self.placement
+    }
+
+    /// Whether this term belongs to the complete ascending key suffix.
+    #[must_use]
+    pub const fn is_key_tie_breaker(self) -> bool {
+        self.key_tie_breaker
+    }
+}
+
+/// One independent nullable-aware complete total order.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ExactOrderProgramV2 {
+    terms: Vec<ExactOrderTermV2>,
+}
+
+impl ExactOrderProgramV2 {
+    /// Constructs a total order ending in present-only ascending entity-key terms.
+    pub fn new(terms: Vec<ExactOrderTermV2>) -> Result<Self, ExactPredicateProgramErrorV1> {
+        if terms.is_empty() || terms.len() > MAX_EXACT_ORDER_TERMS_V1 {
+            return Err(ExactPredicateProgramErrorV1::InvalidOrder);
+        }
+        let first_key = terms
+            .iter()
+            .position(|term| term.key_tie_breaker)
+            .ok_or(ExactPredicateProgramErrorV1::InvalidOrder)?;
+        if terms[first_key..].iter().any(|term| {
+            !term.key_tie_breaker
+                || term.direction != ExactOrderDirectionV1::Ascending
+                || term.placement != ExactStatePlacementV1::PresentOnlyV1
+        }) || terms[..first_key].iter().any(|term| term.key_tie_breaker)
+        {
+            return Err(ExactPredicateProgramErrorV1::InvalidOrder);
+        }
+        Ok(Self { terms })
+    }
+
+    /// Compiler-resolved complete total-order terms.
+    #[must_use]
+    pub fn terms(&self) -> &[ExactOrderTermV2] {
+        &self.terms
+    }
+}
+
 /// One finite optional-presence/order family member.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ExactPredicateFamilyMemberV1 {
@@ -707,6 +815,231 @@ impl ExactPredicateProgramV1 {
         let end = start.saturating_add(usize::from(limit)).min(matched.len());
         Ok(ExactReferenceResultV1 {
             total: self.exact_count.then_some(total),
+            entity_keys: matched[start..end]
+                .iter()
+                .map(|row| row.entity_key.clone())
+                .collect(),
+        })
+    }
+}
+
+/// Canonical nullable-order semantic family, independent of every physical provider.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ExactPredicateProgramV2 {
+    base: ExactPredicateProgramV1,
+    orders: Vec<ExactOrderProgramV2>,
+    canonical_bytes: Vec<u8>,
+    identity: QueryPlanHash,
+}
+
+impl ExactPredicateProgramV2 {
+    /// Validates all finite bounds and seals explicit state placement into V2 bytes.
+    pub fn new(
+        predicate: ExactPredicateNodeV1,
+        orders: Vec<ExactOrderProgramV2>,
+        presence_parameter_count: u8,
+        exact_count: bool,
+        max_offset: u32,
+        max_limit: u16,
+        provider_requirement: ExactProviderRequirementV1,
+    ) -> Result<Self, ExactPredicateProgramErrorV1> {
+        if orders.is_empty() || orders.len() > u8::MAX as usize {
+            return Err(ExactPredicateProgramErrorV1::InvalidOrder);
+        }
+        let compatibility_orders = orders
+            .iter()
+            .map(|order| {
+                ExactOrderProgramV1::new(
+                    order
+                        .terms()
+                        .iter()
+                        .map(|term| {
+                            ExactOrderTermV1::new(
+                                term.field,
+                                term.profile,
+                                term.direction,
+                                term.key_tie_breaker,
+                            )
+                        })
+                        .collect(),
+                )
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let base = ExactPredicateProgramV1::new(
+            predicate,
+            compatibility_orders,
+            presence_parameter_count,
+            exact_count,
+            max_offset,
+            max_limit,
+            provider_requirement,
+        )?;
+        let canonical_bytes = encode_nullable_program(&base, &orders)?;
+        let identity = hash_query_plan(&canonical_bytes);
+        Ok(Self {
+            base,
+            orders,
+            canonical_bytes,
+            identity,
+        })
+    }
+
+    /// Strictly decodes and reproduces one canonical nullable-order program.
+    pub fn from_canonical_bytes(bytes: &[u8]) -> Result<Self, ExactPredicateProgramErrorV1> {
+        if bytes.len() > MAX_EXACT_PREDICATE_PROGRAM_BYTES_V1 {
+            return Err(ExactPredicateProgramErrorV1::BoundExceeded);
+        }
+        let mut reader = Reader::new(bytes);
+        reader.exact(b"REPN")?;
+        if reader.u16()? != EXACT_PREDICATE_PROGRAM_VERSION_V2 {
+            return Err(ExactPredicateProgramErrorV1::InvalidEncoding);
+        }
+        let base_len = usize::try_from(reader.u32()?)
+            .map_err(|_| ExactPredicateProgramErrorV1::InvalidEncoding)?;
+        let base = ExactPredicateProgramV1::from_canonical_bytes(reader.take(base_len)?)?;
+        let order_count = usize::from(reader.u8()?);
+        let mut orders = Vec::with_capacity(order_count);
+        for _ in 0..order_count {
+            let term_count = usize::from(reader.u8()?);
+            let mut terms = Vec::with_capacity(term_count);
+            for _ in 0..term_count {
+                let field = FieldId::new(reader.u32()?)
+                    .ok_or(ExactPredicateProgramErrorV1::InvalidEncoding)?;
+                let profile = decode_profile(reader.u8()?)?;
+                let direction = match reader.u8()? {
+                    1 => ExactOrderDirectionV1::Ascending,
+                    2 => ExactOrderDirectionV1::Descending,
+                    _ => return Err(ExactPredicateProgramErrorV1::InvalidEncoding),
+                };
+                let placement = match reader.u8()? {
+                    1 => ExactStatePlacementV1::PresentOnlyV1,
+                    2 => ExactStatePlacementV1::NullsFirstV1,
+                    3 => ExactStatePlacementV1::NullsLastV1,
+                    _ => return Err(ExactPredicateProgramErrorV1::InvalidEncoding),
+                };
+                let key = match reader.u8()? {
+                    0 => false,
+                    1 => true,
+                    _ => return Err(ExactPredicateProgramErrorV1::InvalidEncoding),
+                };
+                terms.push(ExactOrderTermV2::new(
+                    field, profile, direction, placement, key,
+                ));
+            }
+            orders.push(ExactOrderProgramV2::new(terms)?);
+        }
+        reader.finish()?;
+        let program = Self::new(
+            base.predicate.clone(),
+            orders,
+            base.presence_parameter_count,
+            base.exact_count,
+            base.max_offset,
+            base.max_limit,
+            base.provider_requirement,
+        )?;
+        if program.canonical_bytes != bytes {
+            return Err(ExactPredicateProgramErrorV1::InvalidEncoding);
+        }
+        Ok(program)
+    }
+
+    /// Canonical bytes included in plan and module identity.
+    #[must_use]
+    pub fn canonical_bytes(&self) -> &[u8] {
+        &self.canonical_bytes
+    }
+
+    /// Domain-separated semantic identity.
+    #[must_use]
+    pub const fn identity(&self) -> QueryPlanHash {
+        self.identity
+    }
+
+    /// Finite compiler-enumerated members.
+    #[must_use]
+    pub fn members(&self) -> &[ExactPredicateFamilyMemberV1] {
+        self.base.members()
+    }
+
+    /// Independent state-aware order programs.
+    #[must_use]
+    pub fn orders(&self) -> &[ExactOrderProgramV2] {
+        &self.orders
+    }
+
+    /// Complete normalized predicate tree.
+    #[must_use]
+    pub const fn predicate(&self) -> &ExactPredicateNodeV1 {
+        self.base.predicate()
+    }
+
+    /// Number of compiler-declared optional-presence bits.
+    #[must_use]
+    pub const fn presence_parameter_count(&self) -> u8 {
+        self.base.presence_parameter_count()
+    }
+
+    /// Whether execution returns the whole-result cardinality.
+    #[must_use]
+    pub const fn exact_count(&self) -> bool {
+        self.base.exact_count()
+    }
+
+    /// Maximum zero-based ordinal accepted by this program.
+    #[must_use]
+    pub const fn max_offset(&self) -> u32 {
+        self.base.max_offset()
+    }
+
+    /// Maximum page rows accepted by this program.
+    #[must_use]
+    pub const fn max_limit(&self) -> u16 {
+        self.base.max_limit()
+    }
+
+    /// Complete provider capability and amplification requirement.
+    #[must_use]
+    pub const fn provider_requirement(&self) -> ExactProviderRequirementV1 {
+        self.base.provider_requirement()
+    }
+
+    /// Executes the independent bounded nullable-order reference model.
+    pub fn evaluate_reference(
+        &self,
+        rows: &[ExactReferenceRowV1],
+        parameters: &BTreeMap<u16, ExactParameterValueV1>,
+        member: ExactPredicateFamilyMemberV1,
+        offset: u32,
+        limit: u16,
+    ) -> Result<ExactReferenceResultV1, ExactPredicateProgramErrorV1> {
+        if !self.members().contains(&member)
+            || offset > self.max_offset()
+            || limit == 0
+            || limit > self.max_limit()
+        {
+            return Err(ExactPredicateProgramErrorV1::InvalidWindow);
+        }
+        let order = self
+            .orders
+            .get(usize::from(member.order_ordinal))
+            .ok_or(ExactPredicateProgramErrorV1::InvalidOrder)?;
+        let mut matched = Vec::new();
+        for row in rows {
+            if evaluate_node(self.base.predicate(), row, parameters, member.presence_bits)? {
+                validate_nullable_order_row(row, order)?;
+                matched.push(row);
+            }
+        }
+        matched.sort_by(|left, right| compare_nullable_rows(left, right, order));
+        let total = u64::try_from(matched.len())
+            .map_err(|_| ExactPredicateProgramErrorV1::BoundExceeded)?;
+        let start = usize::try_from(offset)
+            .map_err(|_| ExactPredicateProgramErrorV1::InvalidWindow)?
+            .min(matched.len());
+        let end = start.saturating_add(usize::from(limit)).min(matched.len());
+        Ok(ExactReferenceResultV1 {
+            total: self.exact_count().then_some(total),
             entity_keys: matched[start..end]
                 .iter()
                 .map(|row| row.entity_key.clone())
@@ -1021,6 +1354,107 @@ fn compare_rows(
         }
     }
     left.entity_key.cmp(&right.entity_key)
+}
+
+fn validate_nullable_order_row(
+    row: &ExactReferenceRowV1,
+    order: &ExactOrderProgramV2,
+) -> Result<(), ExactPredicateProgramErrorV1> {
+    for term in &order.terms {
+        let cell = row
+            .fields
+            .get(&term.field)
+            .unwrap_or(&ExactReferenceCellV1::Missing);
+        match cell {
+            ExactReferenceCellV1::Value(value) if value.profile() == term.profile => {}
+            ExactReferenceCellV1::Missing | ExactReferenceCellV1::Null
+                if term.placement != ExactStatePlacementV1::PresentOnlyV1 => {}
+            _ => return Err(ExactPredicateProgramErrorV1::TypeMismatch),
+        }
+    }
+    Ok(())
+}
+
+fn compare_nullable_rows(
+    left: &ExactReferenceRowV1,
+    right: &ExactReferenceRowV1,
+    order: &ExactOrderProgramV2,
+) -> Ordering {
+    for term in &order.terms {
+        let left = left
+            .fields
+            .get(&term.field)
+            .unwrap_or(&ExactReferenceCellV1::Missing);
+        let right = right
+            .fields
+            .get(&term.field)
+            .unwrap_or(&ExactReferenceCellV1::Missing);
+        let compared = match (left, right) {
+            (ExactReferenceCellV1::Value(left), ExactReferenceCellV1::Value(right)) => {
+                let compared = left.cmp(right);
+                match term.direction {
+                    ExactOrderDirectionV1::Ascending => compared,
+                    ExactOrderDirectionV1::Descending => compared.reverse(),
+                }
+            }
+            (
+                ExactReferenceCellV1::Missing | ExactReferenceCellV1::Null,
+                ExactReferenceCellV1::Missing | ExactReferenceCellV1::Null,
+            ) => Ordering::Equal,
+            (ExactReferenceCellV1::Missing | ExactReferenceCellV1::Null, _) => {
+                match term.placement {
+                    ExactStatePlacementV1::NullsFirstV1 => Ordering::Less,
+                    ExactStatePlacementV1::NullsLastV1 => Ordering::Greater,
+                    ExactStatePlacementV1::PresentOnlyV1 => Ordering::Equal,
+                }
+            }
+            (_, ExactReferenceCellV1::Missing | ExactReferenceCellV1::Null) => {
+                match term.placement {
+                    ExactStatePlacementV1::NullsFirstV1 => Ordering::Greater,
+                    ExactStatePlacementV1::NullsLastV1 => Ordering::Less,
+                    ExactStatePlacementV1::PresentOnlyV1 => Ordering::Equal,
+                }
+            }
+        };
+        if compared != Ordering::Equal {
+            return compared;
+        }
+    }
+    left.entity_key.cmp(&right.entity_key)
+}
+
+fn encode_nullable_program(
+    base: &ExactPredicateProgramV1,
+    orders: &[ExactOrderProgramV2],
+) -> Result<Vec<u8>, ExactPredicateProgramErrorV1> {
+    let mut output = Vec::new();
+    output.extend_from_slice(b"REPN");
+    output.extend_from_slice(&EXACT_PREDICATE_PROGRAM_VERSION_V2.to_be_bytes());
+    output.extend_from_slice(
+        &u32::try_from(base.canonical_bytes().len())
+            .map_err(|_| ExactPredicateProgramErrorV1::BoundExceeded)?
+            .to_be_bytes(),
+    );
+    output.extend_from_slice(base.canonical_bytes());
+    output
+        .push(u8::try_from(orders.len()).map_err(|_| ExactPredicateProgramErrorV1::BoundExceeded)?);
+    for order in orders {
+        output.push(
+            u8::try_from(order.terms.len())
+                .map_err(|_| ExactPredicateProgramErrorV1::BoundExceeded)?,
+        );
+        for term in &order.terms {
+            output.extend_from_slice(&term.field.get().to_be_bytes());
+            output.push(term.profile as u8);
+            output.push(term.direction as u8);
+            output.push(term.placement as u8);
+            output.push(u8::from(term.key_tie_breaker));
+        }
+    }
+    if output.len() > MAX_EXACT_PREDICATE_PROGRAM_BYTES_V1 {
+        return Err(ExactPredicateProgramErrorV1::BoundExceeded);
+    }
+    Ok(output)
 }
 
 fn encode_program(

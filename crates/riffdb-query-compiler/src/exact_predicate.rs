@@ -4,14 +4,16 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use riffdb_contract_ir::{ValueType, ValueTypeTag};
 use riffdb_query_ir::{
-    ExactComparisonProfileV1, ExactOrderDirectionV1, ExactOrderProgramV1, ExactOrderTermV1,
-    ExactPredicateLeafV1, ExactPredicateNodeV1, ExactPredicateOperatorV1, ExactPredicateProgramV1,
-    ExactProviderRequirementV1, ExactValueSlotV1, OperationalQueryFamilyV1, ResolvedQueryV1,
-    SymbolicCatalog, resolve_query_surface,
+    ExactComparisonProfileV1, ExactOrderDirectionV1, ExactOrderProgramV1, ExactOrderProgramV2,
+    ExactOrderTermV1, ExactOrderTermV2, ExactPredicateLeafV1, ExactPredicateNodeV1,
+    ExactPredicateOperatorV1, ExactPredicateProgramV1, ExactPredicateProgramV2,
+    ExactProviderRequirementV1, ExactStatePlacementV1, ExactValueSlotV1, OperationalQueryFamilyV1,
+    ResolvedQueryV1, SymbolicCatalog, resolve_query_surface,
 };
 use riffdb_riffql_syntax::{
-    AggregateFunction, BinaryOperator, Cardinality, Direction, Document, Expression, Path,
-    RIFFQL_LANGUAGE_VERSION_EXACT_PREDICATE_V1, Span, Spanned, TypeReference, UnaryOperator,
+    AggregateFunction, BinaryOperator, Cardinality, Direction, Document, Expression, NullPlacement,
+    Path, RIFFQL_LANGUAGE_VERSION_EXACT_PREDICATE_V1,
+    RIFFQL_LANGUAGE_VERSION_NULLABLE_EXACT_ORDER_V1, Span, Spanned, TypeReference, UnaryOperator,
 };
 use riffdb_types::{MAX_EXACT_TEXT_ROWS_PER_PARTITION_V1, ProjectionProviderPolicyModeV1};
 
@@ -74,10 +76,75 @@ impl CompiledExactPredicateQueryV1 {
     }
 }
 
+/// Compiler-owned exact predicate operation with nullable total-order placement.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CompiledExactPredicateQueryV2 {
+    program: ExactPredicateProgramV2,
+    surface: ResolvedQueryV1,
+    value_parameters: Vec<String>,
+    presence_parameters: Vec<String>,
+    limit_parameter: String,
+    offset_parameter: String,
+    metadata: OperationalQueryFamilyV1,
+}
+
+impl CompiledExactPredicateQueryV2 {
+    /// Canonical nullable-order semantic program.
+    #[must_use]
+    pub const fn program(&self) -> &ExactPredicateProgramV2 {
+        &self.program
+    }
+
+    /// Exact symbolic query surface.
+    #[must_use]
+    pub const fn surface(&self) -> &ResolvedQueryV1 {
+        &self.surface
+    }
+
+    /// Canonically ordered scalar/set parameter names addressed by value slots.
+    #[must_use]
+    pub fn value_parameters(&self) -> &[String] {
+        &self.value_parameters
+    }
+
+    /// Canonically ordered optional-presence parameters addressed by family bits.
+    #[must_use]
+    pub fn presence_parameters(&self) -> &[String] {
+        &self.presence_parameters
+    }
+
+    /// Typed page limit parameter.
+    #[must_use]
+    pub fn limit_parameter(&self) -> &str {
+        &self.limit_parameter
+    }
+
+    /// Typed zero-based ordinal parameter.
+    #[must_use]
+    pub fn offset_parameter(&self) -> &str {
+        &self.offset_parameter
+    }
+
+    /// Non-executable ordinary metadata proof used for authorization and cost.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn metadata(&self) -> &OperationalQueryFamilyV1 {
+        &self.metadata
+    }
+}
+
 /// Compiles one V6 source into provider-independent, finite semantic IR.
 pub fn compile_exact_predicate_query_v1(
     document: &Document,
     catalog: &SymbolicCatalog,
+) -> Result<CompiledExactPredicateQueryV1, PlannerDiagnostics> {
+    compile_exact_predicate_query_core(document, catalog, false)
+}
+
+fn compile_exact_predicate_query_core(
+    document: &Document,
+    catalog: &SymbolicCatalog,
+    allow_nullable_order: bool,
 ) -> Result<CompiledExactPredicateQueryV1, PlannerDiagnostics> {
     let primary = document
         .name
@@ -205,7 +272,7 @@ pub fn compile_exact_predicate_query_v1(
         &presence_slots,
         &mut predicate_fields,
     )?;
-    let order = compile_order(binding, entity)?;
+    let order = compile_order(binding, entity, allow_nullable_order)?;
     let order_fields = order
         .terms()
         .iter()
@@ -263,6 +330,55 @@ pub fn compile_exact_predicate_query_v1(
         limit_parameter,
         offset_parameter,
         metadata,
+    })
+}
+
+/// Compiles one V7 source into provider-independent nullable-order semantic IR.
+pub fn compile_nullable_exact_predicate_query_v1(
+    document: &Document,
+    catalog: &SymbolicCatalog,
+) -> Result<CompiledExactPredicateQueryV2, PlannerDiagnostics> {
+    let primary = document
+        .name
+        .as_ref()
+        .map_or(Span { start: 0, end: 0 }, |name| name.span);
+    if document.language_version != RIFFQL_LANGUAGE_VERSION_NULLABLE_EXACT_ORDER_V1 {
+        return Err(diagnostic(
+            primary,
+            "nullable exact-order query shape is incomplete",
+        ));
+    }
+    let mut compatibility = document.clone();
+    compatibility.language_version = RIFFQL_LANGUAGE_VERSION_EXACT_PREDICATE_V1;
+    let compiled = compile_exact_predicate_query_core(&compatibility, catalog, true)?;
+    let binding = &document.body.bindings[0];
+    let entity = catalog
+        .entity(binding.entity.value.as_str())
+        .ok_or_else(|| diagnostic(binding.entity.span, "exact predicate entity is unknown"))?;
+    let order = compile_nullable_order(binding, entity)?;
+    let program = ExactPredicateProgramV2::new(
+        compiled.program().predicate().clone(),
+        vec![order],
+        compiled.program().presence_parameter_count(),
+        compiled.program().exact_count(),
+        compiled.program().max_offset(),
+        compiled.program().max_limit(),
+        compiled.program().provider_requirement(),
+    )
+    .map_err(|_| {
+        diagnostic(
+            primary,
+            "nullable exact-order family exceeds a static bound",
+        )
+    })?;
+    Ok(CompiledExactPredicateQueryV2 {
+        program,
+        surface: compiled.surface,
+        value_parameters: compiled.value_parameters,
+        presence_parameters: compiled.presence_parameters,
+        limit_parameter: compiled.limit_parameter,
+        offset_parameter: compiled.offset_parameter,
+        metadata: compiled.metadata,
     })
 }
 
@@ -523,6 +639,7 @@ fn flatten_boolean<'a>(
 fn compile_order(
     binding: &riffdb_riffql_syntax::Binding,
     entity: &riffdb_query_ir::EntitySymbol,
+    allow_nullable: bool,
 ) -> Result<ExactOrderProgramV1, PlannerDiagnostics> {
     if binding.order.is_empty() {
         return Err(diagnostic(
@@ -549,10 +666,10 @@ fn compile_order(
         let field = entity
             .field(field_name)
             .ok_or_else(|| diagnostic(term.path.span, "exact predicate order field is unknown"))?;
-        if field.value_type().is_optional() {
+        if !field.is_present_and_non_null_across_lineage() && !allow_nullable {
             return Err(diagnostic(
                 term.path.span,
-                "exact predicate order fields must be present and non-null",
+                "exact predicate order field lacks a complete present/non-null proof; add nulls first or nulls last",
             ));
         }
         let profile = comparison_profile(field.value_type()).ok_or_else(|| {
@@ -582,6 +699,83 @@ fn compile_order(
         diagnostic(
             binding.order[0].path.span,
             "exact predicate order is incomplete",
+        )
+    })
+}
+
+fn compile_nullable_order(
+    binding: &riffdb_riffql_syntax::Binding,
+    entity: &riffdb_query_ir::EntitySymbol,
+) -> Result<ExactOrderProgramV2, PlannerDiagnostics> {
+    if binding.order.is_empty() {
+        return Err(diagnostic(
+            binding.cardinality.span,
+            "nullable exact-order total order is required",
+        ));
+    }
+    let key_fields = entity
+        .primary_key()
+        .iter()
+        .filter(|name| name.as_str() != entity.partition_field())
+        .collect::<Vec<_>>();
+    if binding.order.len() < key_fields.len() {
+        return Err(diagnostic(
+            binding.order[0].path.span,
+            "exact predicate order requires the complete ascending entity key",
+        ));
+    }
+    let key_start = binding.order.len() - key_fields.len();
+    let mut terms = Vec::with_capacity(binding.order.len());
+    for (ordinal, term) in binding.order.iter().enumerate() {
+        let field_name = path_tail(&term.path.value)
+            .ok_or_else(|| diagnostic(term.path.span, "exact predicate order field is invalid"))?;
+        let field = entity
+            .field(field_name)
+            .ok_or_else(|| diagnostic(term.path.span, "exact predicate order field is unknown"))?;
+        let profile = comparison_profile(field.value_type()).ok_or_else(|| {
+            diagnostic(term.path.span, "exact predicate order type is unsupported")
+        })?;
+        let key = ordinal >= key_start;
+        if key
+            && (field_name != key_fields[ordinal - key_start].as_str()
+                || term.direction.value != Direction::Ascending
+                || term.null_placement.is_some())
+        {
+            return Err(diagnostic(
+                term.path.span,
+                "exact predicate order requires a present-only complete ascending entity key",
+            ));
+        }
+        let placement = match term
+            .null_placement
+            .as_ref()
+            .map(|placement| placement.value)
+        {
+            Some(NullPlacement::First) => ExactStatePlacementV1::NullsFirstV1,
+            Some(NullPlacement::Last) => ExactStatePlacementV1::NullsLastV1,
+            None if !field.is_present_and_non_null_across_lineage() => {
+                return Err(diagnostic(
+                    term.path.span,
+                    "nullable exact-order field requires nulls first or nulls last",
+                ));
+            }
+            None => ExactStatePlacementV1::PresentOnlyV1,
+        };
+        terms.push(ExactOrderTermV2::new(
+            field.internal_id(),
+            profile,
+            match term.direction.value {
+                Direction::Ascending => ExactOrderDirectionV1::Ascending,
+                Direction::Descending => ExactOrderDirectionV1::Descending,
+            },
+            placement,
+            key,
+        ));
+    }
+    ExactOrderProgramV2::new(terms).map_err(|_| {
+        diagnostic(
+            binding.order[0].path.span,
+            "nullable exact-order is incomplete",
         )
     })
 }
