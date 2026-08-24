@@ -329,6 +329,11 @@ The input is the outer harness receipt, not the controller's diagnostic
 `raw-receipt-v1.json`: only the outer receipt carries the independently sampled
 preflight and postflight host-validity records. Binding may atomically replace
 that same outer receipt after the adapter evidence phases have passed.
+The V2 postflight binds the exact preflight and the complete endurance window's
+aggregate CPU counters. More than 1.00 percent guest CPU steal, a reboot or
+hardware/counter drift, or either bounded endpoint process/IO inventory failure
+invalidates the host; the workload's latency distribution cannot reclassify
+that result.
 
 The inventory uses schema
 `riffdb.alpha-endurance-release-inventory/v1`, fixes the durable-format path to

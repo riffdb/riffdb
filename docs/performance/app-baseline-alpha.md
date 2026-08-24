@@ -53,8 +53,14 @@ All temporary build/test roots honor `RIFFDB_TMP_ROOT` and default to
 | `riffdb.app-baseline-language-conformance-result/v1` | generated-client semantic/boundary result |
 | `riffdb.app-baseline-alpha-matrix/v1` | required cells and evidence hashes |
 | `riffdb.app-baseline-qualified-candidate/v1` | clean source, lock, harness, runner, and daemon identity attached to an evidentiary report |
-| `riffdb.wp-623-performance-qualification-manifest/v1` | content-addressed workstation/cloud qualification inventory |
-| `riffdb.wp-623-performance-qualification/v1` | derived gate ratios and exact qualified source identity |
+| `riffdb.app-baseline-host-validity/v1` | immutable historical bounded endpoint host inventory |
+| `riffdb.app-baseline-host-validity/v2` | bounded endpoint inventory plus exact whole-cell CPU-steal evidence |
+| `riffdb.wp-674-unary-profile/v2` | one fixed host profile and every retained attempt |
+| `riffdb.wp-674-unary-manifest/v2` | exact three-profile unary evidence inventory |
+| `riffdb.wp-674-unary-baseline/v2` | frozen absolute and low-water unary baseline |
+| `riffdb.wp-674-unary-qualification/v2` | derived unary regression qualification |
+| `riffdb.wp-623-performance-qualification-manifest/v2` | content-addressed workstation/cloud qualification inventory |
+| `riffdb.wp-623-performance-qualification/v2` | derived gate ratios and exact qualified source identity |
 
 Adding optional fields is compatible within v1. Removing/renaming a field,
 changing units, changing a percentile population, changing an operation mix,
@@ -96,12 +102,20 @@ OS/system identity and persistent-device metadata. Candidate evidence must
 match those stable hardware identities.
 For each of the fourteen frozen unary operations, the harness runs five fixed
 counterbalanced process generations. Each generation restarts RiffDB after
-common setup, performs 20 same-operation warmups, then records 100 operations.
+common setup, performs 20 same-operation warmups, then records exactly 1,000
+operations.
 All five p50 and p95 observations are retained. After sorting them as
 `x1 <= x2 <= x3 <= x4 <= x5`, the qualified statistic is `x3` and stability
 requires `x4 / x2 <= 1.20` independently for each backend and percentile. The
 two extremes remain disclosed. PostgreSQL ratios are derived from the two
 qualified backend medians and are not separately stability-gated.
+
+Each measured cell also binds V2 preflight and postflight host observations.
+The postflight proves the complete-cell aggregate Linux CPU-steal delta against
+the exact preflight; more than 1.00 percent steal, counter or boot/host drift,
+or either bounded process/IO inventory failure makes the attempt
+non-evidentiary. This ceiling is fixed by the release protocol and cannot be
+selected per caller or profile.
 
 There is one fixed measurement set per host attempt. A completed unstable cell
 fails and is never retried. The entire host attempt may be replaced once only

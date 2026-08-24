@@ -16,8 +16,8 @@ from typing import Any
 
 MANIFEST_SCHEMA = "riffdb.wp-623-performance-qualification-manifest/v2"
 RECEIPT_SCHEMA = "riffdb.wp-623-performance-qualification/v2"
-UNARY_BASELINE_SCHEMA = "riffdb.wp-674-unary-baseline/v1"
-UNARY_QUALIFICATION_SCHEMA = "riffdb.wp-674-unary-qualification/v1"
+UNARY_BASELINE_SCHEMA = "riffdb.wp-674-unary-baseline/v2"
+UNARY_QUALIFICATION_SCHEMA = "riffdb.wp-674-unary-qualification/v2"
 LOAD_SCHEMA = "riffdb.app-baseline-load-suite/v1"
 PARITY_SCHEMA = "riffdb.app-baseline/v1"
 CANDIDATE_SCHEMA = "riffdb.app-baseline-qualified-candidate/v1"
@@ -38,6 +38,20 @@ MAX_UNARY_REGRESSION_RATIO = 1.10
 MIN_MIXED_C32_THROUGHPUT_RATIO = 0.90
 MAX_MIXED_C32_P95_RATIO = 1.25
 MAX_SEED_RATIO = 5.0
+GOVERNANCE_PREDECESSOR = (
+    Path(__file__).resolve().parent.parent
+    / "release/evidence/wp-674/adr0143-failed-attempts-v1.json"
+)
+EXPECTED_UNARY_METHOD = {
+    "process_generations": 5,
+    "warmups_per_generation": 20,
+    "measurements_per_generation": 1_000,
+    "maximum_spread_ratio": 1.20,
+    "maximum_riffdb_regression_ratio": 1.10,
+    "maximum_whole_cell_steal_percent": 1.0,
+    "host_validity_schema": "riffdb.app-baseline-host-validity/v2",
+    "qualified_statistic": "median_of_five_with_central_three_stability",
+}
 COMMON_SCENARIOS = {
     "point_get_ticket",
     "point_get_user",
@@ -144,13 +158,35 @@ def verify_host(report: dict[str, Any], label: str) -> None:
         fail(f"{label}: host-validity receipt is absent")
     for boundary in ("preflight", "postflight"):
         observation = host.get(boundary)
-        if not isinstance(observation, dict) or observation.get("valid") is not True:
+        if (
+            not isinstance(observation, dict)
+            or observation.get("schema") != "riffdb.app-baseline-host-validity/v2"
+            or observation.get("valid") is not True
+        ):
             fail(f"{label}: host validity failed at {boundary}")
         if observation.get("interfering_processes") != []:
             fail(f"{label}: interfering process was recorded at {boundary}")
         inventory = observation.get("inventory_bounds") or {}
         if inventory.get("process_arguments_included") is not False:
             fail(f"{label}: host receipt includes or omits the process-argument redaction pin")
+    preflight = host["preflight"]
+    postflight = host["postflight"]
+    if preflight.get("whole_cell") is not None:
+        fail(f"{label}: preflight unexpectedly claims whole-cell validity")
+    whole_cell = postflight.get("whole_cell") or {}
+    if (
+        whole_cell.get("valid") is not True
+        or whole_cell.get("maximum_steal_percent") != 1.0
+        or require_number(whole_cell.get("steal_percent"), f"{label}.steal_percent") > 1.0
+    ):
+        fail(f"{label}: whole-cell CPU-steal validity failed")
+    bound = require_sha(
+        postflight.get("baseline_report_sha256"),
+        f"{label}.baseline_report_sha256",
+    )
+    canonical = (json.dumps(preflight, sort_keys=True) + "\n").encode()
+    if bound != hashlib.sha256(canonical).hexdigest():
+        fail(f"{label}: postflight does not bind the exact preflight")
 
 
 def verify_eligibility(report: dict[str, Any], label: str) -> None:
@@ -443,6 +479,8 @@ def verify_unary_receipts(
         fail("unary qualification schema is invalid")
     if qualification.get("qualified") is not True:
         fail("unary qualification is not a pass")
+    if baseline.get("method") != EXPECTED_UNARY_METHOD:
+        fail("unary baseline method drifted")
     if qualification.get("candidate_source_revision") != manifest.get("source_revision"):
         fail("unary candidate source differs from WP-623")
     if qualification.get("baseline_source_revision") != baseline.get("source_revision"):
@@ -452,6 +490,20 @@ def verify_unary_receipts(
     candidate = qualification.get("candidate")
     if not isinstance(candidate, dict) or candidate.get("schema") != UNARY_BASELINE_SCHEMA:
         fail("unary candidate receipt is absent")
+    if candidate.get("method") != EXPECTED_UNARY_METHOD:
+        fail("unary candidate method drifted")
+    predecessor = require_sha(
+        baseline.get("governance_predecessor_sha256"),
+        "unary baseline governance predecessor",
+    )
+    if (
+        candidate.get("governance_predecessor_sha256") != predecessor
+        or not GOVERNANCE_PREDECESSOR.is_file()
+        or GOVERNANCE_PREDECESSOR.is_symlink()
+        or hashlib.sha256(GOVERNANCE_PREDECESSOR.read_bytes()).hexdigest()
+        != predecessor
+    ):
+        fail("unary governance predecessor receipt drifted")
     for key in ("source_revision", "cargo_lock_sha256", "harness_sha256"):
         if candidate.get(key) != manifest.get(key):
             fail(f"unary candidate {key} differs from WP-623")
@@ -657,10 +709,24 @@ def fake_candidate(manifest: dict[str, Any]) -> dict[str, Any]:
 
 def fake_common(manifest: dict[str, Any]) -> dict[str, Any]:
     host = {
+        "schema": "riffdb.app-baseline-host-validity/v2",
         "valid": True,
         "interfering_processes": [],
         "inventory_bounds": {"process_arguments_included": False},
+        "cpu_accounting": {"total_ticks": 10_000, "steal_ticks": 0},
+        "whole_cell": None,
+        "baseline_report_sha256": None,
     }
+    postflight = copy.deepcopy(host)
+    postflight["cpu_accounting"] = {"total_ticks": 20_000, "steal_ticks": 50}
+    postflight["whole_cell"] = {
+        "valid": True,
+        "maximum_steal_percent": 1.0,
+        "steal_percent": 0.5,
+    }
+    postflight["baseline_report_sha256"] = hashlib.sha256(
+        (json.dumps(host, sort_keys=True) + "\n").encode()
+    ).hexdigest()
     return {
         "scale": {"profile": "full"},
         "same_device": True,
@@ -669,7 +735,7 @@ def fake_common(manifest: dict[str, Any]) -> dict[str, Any]:
             "synchronous_commit": "on",
             "full_page_writes": "on",
         },
-        "host_validity": {"preflight": host, "postflight": copy.deepcopy(host)},
+        "host_validity": {"preflight": host, "postflight": postflight},
         "evidence_eligibility": {
             "eligible": True,
             "stable": True,
@@ -759,7 +825,10 @@ def fake_unary_baseline(manifest: dict[str, Any]) -> dict[str, Any]:
         "runner_sha256": "4" * 64,
         "riffdbd_sha256": "5" * 64,
         "requirements": sorted({"PERF-005", "PERF-008", "PERF-018", "END-007", "END-008"}),
-        "method": {},
+        "method": copy.deepcopy(EXPECTED_UNARY_METHOD),
+        "governance_predecessor_sha256": hashlib.sha256(
+            GOVERNANCE_PREDECESSOR.read_bytes()
+        ).hexdigest(),
         "scenario_classes": {
             class_name: {
                 "scenarios": sorted(members),
@@ -899,6 +968,9 @@ def run_self_test() -> None:
         "host_interference": lambda m, r: r["n1"]["interactive"]["host_validity"][
             "postflight"
         ].update(valid=False),
+        "whole_cell_steal": lambda m, r: r["n1"]["interactive"]["host_validity"][
+            "postflight"
+        ]["whole_cell"].update(valid=False, steal_percent=1.01),
         "unstable": lambda m, r: r["n1"]["interactive"]["load_rep_summaries"][
             "riffdb_public_grpc@clients=32"
         ]["throughput_ops_s"].update(stability="unstable"),
@@ -955,6 +1027,24 @@ def run_self_test() -> None:
         print("unary_reclassification: rejected")
     else:
         fail("unary reclassification passed")
+
+    short_sample = copy.deepcopy(qualification)
+    short_sample["candidate"]["method"]["measurements_per_generation"] = 100
+    try:
+        verify_manifest(manifest, reports, baseline, short_sample)
+    except ValueError:
+        print("unary_sample_drift: rejected")
+    else:
+        fail("historical unary sample cardinality passed as V2")
+
+    predecessor_drift = copy.deepcopy(qualification)
+    predecessor_drift["candidate"]["governance_predecessor_sha256"] = "0" * 64
+    try:
+        verify_manifest(manifest, reports, baseline, predecessor_drift)
+    except ValueError:
+        print("unary_governance_predecessor_drift: rejected")
+    else:
+        fail("unary governance predecessor drift passed")
 
 
 def parse_args() -> argparse.Namespace:

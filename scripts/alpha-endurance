@@ -374,7 +374,36 @@ def validate_receipt(receipt: dict[str, Any], manifest: dict[str, Any], requeste
     requested_seconds = requested_hours * 3600
     require(integer(receipt.get("requested_duration_seconds"), "invalid_receipt", "requested_duration_seconds") == requested_seconds, "duration_mismatch", "receipt duration differs from invocation")
     require(integer(receipt.get("measured_duration_seconds"), "invalid_receipt", "measured_duration_seconds") >= requested_seconds, "short_duration", "run ended before the requested duration")
-    require(receipt.get("host_validity", {}).get("preflight", {}).get("valid") is True and receipt.get("host_validity", {}).get("postflight", {}).get("valid") is True, "host_interference", "host validity failed")
+    host = receipt.get("host_validity", {})
+    preflight = host.get("preflight", {})
+    postflight = host.get("postflight", {})
+    require(
+        preflight.get("schema") == "riffdb.app-baseline-host-validity/v2"
+        and postflight.get("schema") == "riffdb.app-baseline-host-validity/v2"
+        and preflight.get("valid") is True
+        and postflight.get("valid") is True,
+        "host_interference",
+        "V2 host validity failed",
+    )
+    whole_cell = postflight.get("whole_cell", {})
+    require(
+        isinstance(whole_cell, dict)
+        and whole_cell.get("valid") is True
+        and whole_cell.get("maximum_steal_percent") == 1.0
+        and isinstance(whole_cell.get("steal_percent"), (int, float))
+        and not isinstance(whole_cell.get("steal_percent"), bool)
+        and 0 <= whole_cell["steal_percent"] <= 1.0,
+        "host_interference",
+        "whole-cell CPU-steal validity failed",
+    )
+    bound_preflight = postflight.get("baseline_report_sha256")
+    require(
+        isinstance(bound_preflight, str)
+        and bound_preflight
+        == hashlib.sha256((json.dumps(preflight, sort_keys=True) + "\n").encode()).hexdigest(),
+        "host_interference",
+        "postflight is not bound to the exact preflight",
+    )
     require(receipt.get("manifest_sha256") == canonical_digest(manifest), "manifest_mismatch", "receipt is not bound to the selected manifest")
     require(HEX_256.fullmatch(str(receipt.get("action_manifest_sha256", ""))) is not None, "manifest_mismatch", "action manifest digest is absent")
     require(HEX_256.fullmatch(str(receipt.get("release_artifact_sha256", ""))) is not None, "artifact_mismatch", "release artifact digest is absent")
@@ -752,6 +781,23 @@ def base_receipt(manifest: dict[str, Any], hours: int = 1) -> dict[str, Any]:
         }
         for ordinal in range(4)
     ]
+    host_preflight = {
+        "schema": "riffdb.app-baseline-host-validity/v2",
+        "valid": True,
+        "whole_cell": None,
+    }
+    host_postflight = {
+        "schema": "riffdb.app-baseline-host-validity/v2",
+        "valid": True,
+        "whole_cell": {
+            "valid": True,
+            "maximum_steal_percent": 1.0,
+            "steal_percent": 0.0,
+        },
+        "baseline_report_sha256": hashlib.sha256(
+            (json.dumps(host_preflight, sort_keys=True) + "\n").encode()
+        ).hexdigest(),
+    }
     return {
         "schema": RECEIPT_SCHEMA,
         "status": "passed",
@@ -760,7 +806,7 @@ def base_receipt(manifest: dict[str, Any], hours: int = 1) -> dict[str, Any]:
         "manifest_sha256": canonical_digest(manifest),
         "action_manifest_sha256": "b" * 64,
         "release_artifact_sha256": "a" * 64,
-        "host_validity": {"preflight": {"valid": True}, "postflight": {"valid": True}},
+        "host_validity": {"preflight": host_preflight, "postflight": host_postflight},
         "languages_completed": sorted(REQUIRED_LANGUAGES),
         "workload_coverage": sorted(REQUIRED_WORKLOADS),
         "environment_results": [
@@ -897,6 +943,8 @@ def self_test() -> None:
         ("invalid_structure", "invalid_receipt", lambda value: value.update(schema="riffdb.invalid/v1")),
         ("short_duration", "short_duration", lambda value: value.update(measured_duration_seconds=3599)),
         ("host_interference", "host_interference", lambda value: value["host_validity"]["postflight"].update(valid=False)),
+        ("whole_cell_steal", "host_interference", lambda value: value["host_validity"]["postflight"]["whole_cell"].update(valid=False, steal_percent=1.01)),
+        ("unbound_host_preflight", "host_interference", lambda value: value["host_validity"]["postflight"].update(baseline_report_sha256="0" * 64)),
         ("missing_lifecycle", "missing_lifecycle", lambda value: value["lifecycle_counts"].update(restart=0)),
         ("missing_fault", "missing_fault", lambda value: value["fault_counts"].update(process_kill=0)),
         ("missing_language_progress", "starvation", lambda value: value["observations"][-1]["language_operations"].update(rust=10)),
@@ -1081,7 +1129,16 @@ def run_controller(arguments: argparse.Namespace, manifest: dict[str, Any]) -> i
     status = subprocess.run(command, cwd=root, env=environment, check=False).returncode
     elapsed = int(time.monotonic() - started)
     with postflight.open("w", encoding="utf-8") as output:
-        post = subprocess.run([str(root / "scripts/app-baseline-host-validity")], cwd=root, stdout=output, check=False)
+        post = subprocess.run(
+            [
+                str(root / "scripts/app-baseline-host-validity"),
+                "--baseline-report",
+                str(preflight),
+            ],
+            cwd=root,
+            stdout=output,
+            check=False,
+        )
     require(status == 0 and raw_receipt.is_file(), "controller_failed", "endurance controller failed or omitted its receipt")
     receipt = read_json(raw_receipt)
     require(receipt.get("action_manifest_sha256") == action_digest, "manifest_mismatch", "controller receipt is not bound to the reviewed action manifest")

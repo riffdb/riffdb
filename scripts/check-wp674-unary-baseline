@@ -14,9 +14,9 @@ import sys
 from typing import Any
 
 
-MANIFEST_SCHEMA = "riffdb.wp-674-unary-manifest/v1"
-BASELINE_SCHEMA = "riffdb.wp-674-unary-baseline/v1"
-QUALIFICATION_SCHEMA = "riffdb.wp-674-unary-qualification/v1"
+MANIFEST_SCHEMA = "riffdb.wp-674-unary-manifest/v2"
+BASELINE_SCHEMA = "riffdb.wp-674-unary-baseline/v2"
+QUALIFICATION_SCHEMA = "riffdb.wp-674-unary-qualification/v2"
 REPORT_SCHEMA = "riffdb.app-baseline/v1"
 SELECTION_SCHEMA = "riffdb.app-baseline-unary-qualification/v1"
 CANDIDATE_SCHEMA = "riffdb.app-baseline-qualified-candidate/v1"
@@ -25,10 +25,14 @@ MAX_REPORT_BYTES = 32 * 1024 * 1024
 MAX_BASELINE_BYTES = 512 * 1024
 REPETITIONS = 5
 WARMUPS = 20
-MEASUREMENTS = 100
+MEASUREMENTS = 1_000
 MAX_SPREAD = 1.20
 MAX_REGRESSION = 1.10
 MAX_HOST_ATTEMPTS = 2
+GOVERNANCE_PREDECESSOR = (
+    Path(__file__).resolve().parent.parent
+    / "release/evidence/wp-674/adr0143-failed-attempts-v1.json"
+)
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
 REVISION = re.compile(r"^[0-9a-f]{40}$")
 PROFILE_CLASSES = {
@@ -160,13 +164,34 @@ def verify_host(report: dict[str, Any], profile_id: str, label: str) -> tuple[st
     stable_identities: list[dict[str, Any]] = []
     for boundary in ("preflight", "postflight"):
         observation = host.get(boundary)
-        if not isinstance(observation, dict) or observation.get("valid") is not True:
+        if (
+            not isinstance(observation, dict)
+            or observation.get("schema") != "riffdb.app-baseline-host-validity/v2"
+            or observation.get("valid") is not True
+        ):
             fail(f"{label}: host invalid at {boundary}")
         if observation.get("interfering_processes") != []:
             fail(f"{label}: host interference at {boundary}")
         bounds = observation.get("inventory_bounds") or {}
         if bounds.get("process_arguments_included") is not False:
             fail(f"{label}: process-argument redaction pin is absent")
+        require_sha(
+            observation.get("boot_identity_sha256"),
+            f"{label}.{boundary}.boot_identity_sha256",
+        )
+        checked_cpu_accounting = observation.get("cpu_accounting") or {}
+        total_ticks = checked_cpu_accounting.get("total_ticks")
+        steal_ticks = checked_cpu_accounting.get("steal_ticks")
+        if (
+            isinstance(total_ticks, bool)
+            or not isinstance(total_ticks, int)
+            or total_ticks < 0
+            or isinstance(steal_ticks, bool)
+            or not isinstance(steal_ticks, int)
+            or steal_ticks < 0
+            or steal_ticks > total_ticks
+        ):
+            fail(f"{label}: {boundary} CPU accounting is invalid")
         inventories.append(observation)
         identity = observation.get("hardware_identity")
         if not isinstance(identity, dict):
@@ -183,6 +208,48 @@ def verify_host(report: dict[str, Any], profile_id: str, label: str) -> tuple[st
                 "hardware_identity": identity,
             }
         )
+    preflight, postflight = inventories
+    if preflight.get("whole_cell") is not None:
+        fail(f"{label}: preflight unexpectedly claims whole-cell evidence")
+    whole_cell = postflight.get("whole_cell")
+    if (
+        not isinstance(whole_cell, dict)
+        or whole_cell.get("valid") is not True
+        or whole_cell.get("reason") is not None
+        or whole_cell.get("maximum_steal_percent") != 1.0
+    ):
+        fail(f"{label}: valid whole-cell steal evidence is absent")
+    elapsed_total = whole_cell.get("elapsed_total_ticks")
+    elapsed_steal = whole_cell.get("elapsed_steal_ticks")
+    steal_percent = whole_cell.get("steal_percent")
+    if (
+        isinstance(elapsed_total, bool)
+        or not isinstance(elapsed_total, int)
+        or elapsed_total <= 0
+        or isinstance(elapsed_steal, bool)
+        or not isinstance(elapsed_steal, int)
+        or elapsed_steal < 0
+        or elapsed_steal > elapsed_total
+        or isinstance(steal_percent, bool)
+        or not isinstance(steal_percent, (int, float))
+        or not math.isclose(
+            float(steal_percent),
+            round(elapsed_steal / elapsed_total * 100.0, 6),
+            rel_tol=0.0,
+            abs_tol=0.000001,
+        )
+        or float(steal_percent) > 1.0
+    ):
+        fail(f"{label}: whole-cell steal arithmetic is invalid")
+    bound_preflight = require_sha(
+        postflight.get("baseline_report_sha256"),
+        f"{label}.postflight.baseline_report_sha256",
+    )
+    canonical_preflight = (json.dumps(preflight, sort_keys=True) + "\n").encode()
+    if bound_preflight != hashlib.sha256(canonical_preflight).hexdigest():
+        fail(f"{label}: postflight does not bind its exact preflight")
+    if preflight.get("boot_identity_sha256") != postflight.get("boot_identity_sha256"):
+        fail(f"{label}: boot identity changed during measurement")
     if stable_identities[0] != stable_identities[1]:
         fail(f"{label}: hardware identity changed during measurement")
     environment = report.get("environment") or {}
@@ -465,6 +532,7 @@ def validate_manifest(manifest: dict[str, Any]) -> None:
         "source_revision",
         "cargo_lock_sha256",
         "harness_sha256",
+        "governance_predecessor_sha256",
         "requirements",
         "profiles",
     } or manifest.get("schema") != MANIFEST_SCHEMA:
@@ -474,6 +542,17 @@ def validate_manifest(manifest: dict[str, Any]) -> None:
         fail("manifest source revision is invalid")
     require_sha(manifest.get("cargo_lock_sha256"), "manifest.cargo_lock_sha256")
     require_sha(manifest.get("harness_sha256"), "manifest.harness_sha256")
+    predecessor = require_sha(
+        manifest.get("governance_predecessor_sha256"),
+        "manifest.governance_predecessor_sha256",
+    )
+    if (
+        not GOVERNANCE_PREDECESSOR.is_file()
+        or GOVERNANCE_PREDECESSOR.is_symlink()
+        or hashlib.sha256(GOVERNANCE_PREDECESSOR.read_bytes()).hexdigest()
+        != predecessor
+    ):
+        fail("governance predecessor receipt is absent, linked, or differs")
     exact_strings(manifest.get("requirements"), REQUIREMENTS, "manifest.requirements")
     profiles = manifest.get("profiles")
     if not isinstance(profiles, list) or len(profiles) != len(PROFILE_CLASSES):
@@ -694,6 +773,9 @@ def verify_corpus(
         "source_revision": manifest["source_revision"],
         "cargo_lock_sha256": manifest["cargo_lock_sha256"],
         "harness_sha256": manifest["harness_sha256"],
+        "governance_predecessor_sha256": manifest[
+            "governance_predecessor_sha256"
+        ],
         "runner_sha256": next(iter(runner_digests)),
         "riffdbd_sha256": next(iter(daemon_digests)),
         "requirements": sorted(REQUIREMENTS),
@@ -703,6 +785,8 @@ def verify_corpus(
             "measurements_per_generation": MEASUREMENTS,
             "maximum_spread_ratio": MAX_SPREAD,
             "maximum_riffdb_regression_ratio": MAX_REGRESSION,
+            "maximum_whole_cell_steal_percent": 1.0,
+            "host_validity_schema": "riffdb.app-baseline-host-validity/v2",
             "qualified_statistic": "median_of_five_with_central_three_stability",
         },
         "scenario_classes": {
@@ -719,6 +803,12 @@ def verify_corpus(
 def verify_against_baseline(candidate: dict[str, Any], baseline: dict[str, Any]) -> dict[str, Any]:
     if baseline.get("schema") != BASELINE_SCHEMA:
         fail("baseline schema is invalid")
+    if candidate.get("method") != baseline.get("method"):
+        fail("candidate measurement or host-validity method drifted")
+    if candidate.get("governance_predecessor_sha256") != baseline.get(
+        "governance_predecessor_sha256"
+    ):
+        fail("governance predecessor receipt drifted")
     if candidate.get("scenario_classes") != baseline.get("scenario_classes"):
         fail("scenario classes or absolute ceilings drifted")
     baseline_profiles = {profile["id"]: profile for profile in baseline.get("profiles") or []}
@@ -784,6 +874,7 @@ def fake_ratio_summary(value: float) -> dict[str, Any]:
 
 def fake_report(manifest: dict[str, Any], profile: str, scenario: str) -> dict[str, Any]:
     host = {
+        "schema": "riffdb.app-baseline-host-validity/v2",
         "valid": True,
         "interfering_processes": [],
         "inventory_bounds": {"process_arguments_included": False},
@@ -795,7 +886,24 @@ def fake_report(manifest: dict[str, Any], profile: str, scenario: str) -> dict[s
             "system_vendor": "Google" if profile != "workstation" else "test",
             "operating_system": {"id": "test", "version_id": "1"},
         },
+        "boot_identity_sha256": "6" * 64,
+        "cpu_accounting": {"total_ticks": 10_000, "steal_ticks": 0},
+        "whole_cell": None,
+        "baseline_report_sha256": None,
     }
+    postflight = copy.deepcopy(host)
+    postflight["cpu_accounting"] = {"total_ticks": 20_000, "steal_ticks": 50}
+    postflight["whole_cell"] = {
+        "valid": True,
+        "reason": None,
+        "elapsed_total_ticks": 10_000,
+        "elapsed_steal_ticks": 50,
+        "steal_percent": 0.5,
+        "maximum_steal_percent": 1.0,
+    }
+    postflight["baseline_report_sha256"] = hashlib.sha256(
+        (json.dumps(host, sort_keys=True) + "\n").encode()
+    ).hexdigest()
     class_name = scenario_class(scenario)
     pg = 1_000_000.0
     rd = min(2_000_000.0, ABSOLUTE_CEILINGS_NS[class_name]["p50_ns"])
@@ -827,7 +935,7 @@ def fake_report(manifest: dict[str, Any], profile: str, scenario: str) -> dict[s
             "medium": {"kind": "disk", "fstype": "ext4", "device_model": "test"},
         },
         "device_baseline": {"fdatasync_p50_us": 100},
-        "host_validity": {"preflight": host, "postflight": copy.deepcopy(host)},
+        "host_validity": {"preflight": host, "postflight": postflight},
         "qualification_candidate": {
             "schema": CANDIDATE_SCHEMA,
             "source_revision": manifest["source_revision"],
@@ -971,6 +1079,9 @@ def run_self_test(root: Path) -> None:
         "source_revision": "1" * 40,
         "cargo_lock_sha256": "2" * 64,
         "harness_sha256": "3" * 64,
+        "governance_predecessor_sha256": hashlib.sha256(
+            GOVERNANCE_PREDECESSOR.read_bytes()
+        ).hexdigest(),
         "requirements": sorted(REQUIREMENTS),
         "profiles": [],
     }
@@ -1095,6 +1206,48 @@ def run_self_test(root: Path) -> None:
         pass
     else:
         fail("unstable unary summary passed")
+
+    short_sample = fake_report(manifest, "n1", sorted(SCENARIOS)[0])
+    short_sample["configuration"]["measured_samples"] = 100
+    short_sample["unary_qualification"]["measured_operations_per_generation"] = 100
+    try:
+        verify_report(
+            short_sample,
+            manifest,
+            "n1",
+            sorted(SCENARIOS)[0],
+            "short_sample",
+        )
+    except ValueError:
+        pass
+    else:
+        fail("historical 100-operation qualification passed as V2")
+
+    v1_host = fake_report(manifest, "n1", sorted(SCENARIOS)[0])
+    v1_host["host_validity"]["preflight"]["schema"] = (
+        "riffdb.app-baseline-host-validity/v1"
+    )
+    try:
+        verify_report(v1_host, manifest, "n1", sorted(SCENARIOS)[0], "v1_host")
+    except ValueError:
+        pass
+    else:
+        fail("historical V1 host evidence passed as V2")
+
+    stolen = fake_report(manifest, "n1", sorted(SCENARIOS)[0])
+    stolen_whole = stolen["host_validity"]["postflight"]["whole_cell"]
+    stolen_whole.update(
+        elapsed_steal_ticks=101,
+        steal_percent=1.01,
+        valid=False,
+        reason="cpu_steal_exceeded",
+    )
+    try:
+        verify_report(stolen, manifest, "n1", sorted(SCENARIOS)[0], "stolen")
+    except ValueError:
+        pass
+    else:
+        fail("whole-cell CPU steal above 1 percent passed")
 
     slower = copy.deepcopy(baseline)
     slower["profiles"][0]["scenarios"][sorted(SCENARIOS)[0]]["riffdb"]["p50_ns"] *= 1.101

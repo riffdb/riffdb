@@ -106,7 +106,7 @@ commands without page-query or projection-catch-up work.
 |------|---------|--------|--------------|
 | smoke | short (5 s load) | 1 s | 1 |
 | full  | 90 s load        | 15 s | 3 |
-| ADR-0142 unary | 100 operations | 20 same-operation calls after RiffDB restart | 3 process generations |
+| ADR-0146 unary | 1,000 operations | 20 same-operation calls after RiffDB restart | 5 process generations |
 
 - Load duration **&lt; 60 s** is marked `non_evidentiary_window` in the report.
 - Dual-backend load reps execute as isolated, counterbalanced phases
@@ -119,12 +119,15 @@ commands without page-query or projection-catch-up work.
   when `--reps < 2` (single-rep stability is trivial).
 - Parity gates evaluate the **median** of reps and **refuse** (do not pass)
   when either backend’s gated metric is unstable.
-- ADR-0142 unary evidence counterbalances backend order as
-  `PG,RiffDB / RiffDB,PG / PG,RiffDB`. It qualifies the median of the three
-  per-generation p50/p95 values and refuses when max/min exceeds `1.20`.
+- ADR-0146 unary evidence counterbalances backend order as
+  `PG,RiffDB / RiffDB,PG / PG,RiffDB / RiffDB,PG / PG,RiffDB`. It retains all
+  five per-generation p50/p95 values, qualifies their median, and refuses when
+  the sorted central-three spread `x4 / x2` exceeds `1.20`.
   Scenario class is fixed before execution; every cell retains the unfavorable
   safe-application PostgreSQL ratio even though only the cloud absolute SLO and
-  frozen RiffDB low-water regression are unary release gates.
+  frozen RiffDB low-water regression are unary release gates. Preflight and
+  postflight V2 host evidence additionally binds the complete-cell CPU-steal
+  delta and refuses above the fixed 1.00-percent ceiling.
 
 ### Development performance sentinel
 

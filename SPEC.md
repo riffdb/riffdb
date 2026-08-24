@@ -6,7 +6,7 @@
 **Tagline:** *Vibe fast. Commit safely.*  
 **Category:** Contract-first operational database for agent-built applications  
 
-**Version:** 1.06
+**Version:** 1.07
 **Status:** Deployable Application Alpha architecture accepted; implementation gated by work packages
 **Date:** 24 August 2026
 **Audience:** Coding agents, database engineers, compiler engineers, security reviewers, and technical product leads  
@@ -37,6 +37,7 @@
 
 | Version | Date | Summary |
 |---|---|---|
+| 1.07 | 2026-08-24 | Accepted ADR-0146 after the first exact ADR-0143 cloud attempts proved that 100-operation generations remained scheduler-sensitive. Unary evidence retains five fixed process generations, 20 warmups, every extreme, the unchanged central-three 20-percent stability rule, and the retry prohibition while increasing each generation to exactly 1,000 measurements. New V2 evidence binds bounded whole-cell CPU-steal accounting under a fixed 1.00-percent ceiling. PERF-008's stale three-generation text is reconciled with PERF-018 and ADR-0143. |
 | 1.06 | 2026-08-24 | Accepted ADR-0143 and ADR-0144. Unary evidence now uses exactly five fixed process generations, qualifies the median generation, and requires the central three p50 and p95 observations for each backend to remain within 20 percent without performance-selected retries. Production command evidence accepts the closed `sync` and `group` durability set, rejects `memory` and unknown modes, and proves exact durability identity across response, replay, notification, and commit scan without exposing an application durability selector. |
 | 1.05 | 2026-08-23 | Accepted ADR-0142 after WP-670/WP-673 proved the universal 1.10-times PostgreSQL unary gate arithmetically unreachable without deleting required safety work. Mixed c32 throughput/p95 and the seed ceiling remain comparative gates; unary qualification becomes fixed N1/E2 absolute p50/p95 service levels plus a downward-only RiffDB low-water regression bank, while every safe-application PostgreSQL unary ratio remains mandatory published evidence. PERF-008 becomes the sole performance-threshold owner and PERF-005 retains its safety semantics without the superseded parity sentence. |
 | 1.04 | 2026-08-20 | Accepted ADR-0133 and registered QRY-006 through QRY-009 plus WP-654 for explicit compiler-owned covering indexes, atomic covered-value production, sealed positional result batches, additive negotiated compact named-query carriage, and direct typed Rust/Go/TypeScript/Python decoding. Existing index identities and grammar/IR-v1 empty covered values remain byte-exact; opted-in covering indexes use the least sufficient V14 contract bundle/grammar/IR identity. PERF-018 permits only the negotiated byte-equivalent representation change and retains every comparator and semantic obligation. |
@@ -7118,13 +7119,16 @@ ADR-0055.
     `open_ticket_with_labels` at p50 no greater than 10 ms and p95 no greater
     than 15 ms.
 
-  Unary qualification MUST use three counterbalanced independent process
+  Unary qualification MUST use five counterbalanced independent process
   generations per backend/scenario/host, with RiffDB restarted after common
-  setup and each generation running 20 same-scenario warmups followed by 100
-  measured operations over the frozen full dataset. The qualified statistic is
-  the median of the three per-generation p50 or p95 values. Evidence is invalid
-  when the largest/smallest statistic ratio exceeds 1.20, host validity or
-  correctness fails, or a semantic comparator input drifts. Every qualified
+  setup and each generation running 20 same-scenario warmups followed by
+  exactly 1,000 measured operations over the frozen full dataset. For each
+  backend and statistic, sort the five retained generation values as
+  `x1 <= x2 <= x3 <= x4 <= x5`; the qualified statistic is `x3`, and evidence
+  is invalid when `x4 / x2` exceeds 1.20. Both extremes remain mandatory
+  evidence and MUST NOT be deleted, replaced, or retried based on performance.
+  Evidence is also invalid when host validity or correctness fails or a
+  semantic comparator input drifts. Every qualified
   unary p50 and p95 MUST additionally remain at most 1.10 times its exact
   frozen RiffDB low-water baseline. A valid accepted release MAY ratchet an
   individual baseline down with a bound source receipt; moving one upward
@@ -8067,15 +8071,20 @@ behavior:
   only concurrency sweeps on an idle inventoried host; short, unstable,
   interfered, drifted, or incorrect runs are non-evidentiary.
   Unary qualification MUST additionally freeze ADR-0142's finite scenario
-  classes, five-generation 20-warmup/100-measurement process isolation,
+  classes, five-generation 20-warmup/1,000-measurement process isolation,
   absolute N1/E2 service levels, exact RiffDB low-water receipts and 1.10-times
   regression ceiling. Safe-application and minimal PostgreSQL unary results and
   ratios remain mandatory published evidence even though the ratios are not a
   unary release gate. A benchmark MUST reject missing or reclassified
   scenarios, missing hosts/backends/generations, greater-than-20-percent
   central-three p50 or p95 spread for either backend, performance-selected
-  retry, baseline identity drift, and any semantic or
-  correctness mismatch.
+  retry, baseline identity drift, and any semantic or correctness mismatch.
+  New qualification evidence MUST bind bounded V2 host-validity observations
+  across each complete measured cell and reject aggregate guest CPU steal
+  above 1.00 percent of elapsed aggregate CPU ticks, counter or boot/host
+  drift, or either existing bounded process/IO inventory failure. The steal
+  ceiling and unary measurement cardinality are release-owned constants and
+  MUST NOT be caller- or profile-selectable.
   ADR-0133 permits generated named-query clients to negotiate its exact
   schema-bound compact response arm in both RiffDB and comparator workloads.
   This is a representation-only amendment: the frozen dataset, operations,

@@ -48,6 +48,7 @@ if [[ "${1:-}" == "--self-test" ]]; then
         exit 2
     fi
     printf 'self-test: building riffdbd (release)\n'
+    ./scripts/app-baseline-host-validity --self-test
     host_fixture="$(mktemp "$task_tmp_root/riffdb-host-validity.XXXXXX")"
     set +e
     ./scripts/app-baseline-host-validity --interval-ms 50 >"$host_fixture"
@@ -55,13 +56,18 @@ if [[ "${1:-}" == "--self-test" ]]; then
     set -e
     [[ "$host_fixture_status" == 0 || "$host_fixture_status" == 3 ]] || exit 1
     jq -e '
-      .schema == "riffdb.app-baseline-host-validity/v1"
+      .schema == "riffdb.app-baseline-host-validity/v2"
       and (.valid | type == "boolean")
       and (.active_processes | type == "array")
       and (.interfering_processes | type == "array")
       and (.logical_cpus | type == "number")
       and (.hardware_identity.cpu_model | type == "string")
       and (.hardware_identity.operating_system | type == "object")
+      and (.boot_identity_sha256 | test("^[0-9a-f]{64}$"))
+      and (.cpu_accounting.total_ticks | type == "number")
+      and (.cpu_accounting.steal_ticks | type == "number")
+      and .whole_cell == null
+      and .thresholds.maximum_whole_cell_steal_percent == 1
       and .inventory_bounds.process_arguments_included == false
     ' "$host_fixture" >/dev/null
     receipt_fixture="$(mktemp "$task_tmp_root/riffdb-non-evidentiary.XXXXXX")"
@@ -1160,7 +1166,8 @@ write_backend_phase_failure_receipt() {
     if [[ -n "$host_validity_preflight" ]]; then
         postflight_path="$(mktemp "$task_tmp_root/riffdb-host-failure-postflight.XXXXXX")"
         set +e
-        ./scripts/app-baseline-host-validity >"$postflight_path"
+        ./scripts/app-baseline-host-validity \
+            --baseline-report "$host_validity_preflight" >"$postflight_path"
         postflight_status=$?
         set -e
         if ((postflight_status != 0 && postflight_status != 3)); then
@@ -1317,7 +1324,8 @@ fi
 if [[ -n "$host_validity_preflight" ]]; then
     host_validity_postflight="$(mktemp "$task_tmp_root/riffdb-host-postflight.XXXXXX")"
     set +e
-    ./scripts/app-baseline-host-validity >"$host_validity_postflight"
+    ./scripts/app-baseline-host-validity \
+        --baseline-report "$host_validity_preflight" >"$host_validity_postflight"
     host_post_status=$?
     set -e
     [[ "$host_post_status" == 0 || "$host_post_status" == 3 ]] || {
@@ -1331,6 +1339,7 @@ import sys
 
 report_path, preflight_path, postflight_path, deferred_text = sys.argv[1:]
 deferred_unary_stability = deferred_text == "1"
+wp674_receipt = __import__("os").environ.get("RIFFDB_APP_BASELINE_WP674_RECEIPT") == "1"
 report = json.load(open(report_path, encoding="utf-8"))
 preflight = json.load(open(preflight_path, encoding="utf-8"))
 postflight = json.load(open(postflight_path, encoding="utf-8"))
@@ -1374,7 +1383,7 @@ if report.get("schema") == "riffdb.app-baseline/v1":
         and len(scenario_rows) == 1
         and unary.get("scenario") == scenario_rows[0].get("scenario")
         and unary.get("same_scenario_warmups_after_restart") == 20
-        and unary.get("measured_operations_per_generation") == 100
+        and unary.get("measured_operations_per_generation") == (1000 if wp674_receipt else 100)
         and unary.get("process_generations") == (5 if deferred_unary_stability else 3)
     )
     correctness_clean = bool(scenario_rows) and all(
