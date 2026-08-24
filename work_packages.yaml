@@ -9906,6 +9906,13 @@ work_packages:
     scale: This package adds no data path. Every accepted track must state bounded work and future
       placement assumptions explicitly, and no package may require full-state memory, a global
       scan, or co-location beyond an already accepted authority boundary.
+  closure:
+    status: complete
+    evidence: docs/architecture/DEPLOYABLE-APPLICATION-ALPHA-FREEZE.md
+    decision: The accepted ADR-0105 through ADR-0112 architecture and requirement freeze, format
+      ownership, dependency reviews, negative-capability matrix, and implementation sequencing
+      shipped in commit 84f836e9. Current-head requirement coverage, generated diagrams,
+      handbook validation, and formatting remain green.
   human_review_triggers: *id001
 - id: WP-551
   name: Restore exact application-binding closure
@@ -9944,6 +9951,12 @@ work_packages:
       regeneration and reconciliation through existing symbolic surfaces.
     scale: Identity comparison and regeneration are bounded by one selected application manifest
       and its declared artifacts; no database rows or global application catalog are scanned.
+  closure:
+    status: complete
+    evidence: docs/architecture/DEPLOYABLE-APPLICATION-ALPHA.md
+    decision: Canonical agent-alpha regeneration and the exact lock, role, module, manifest, and
+      generated-client mismatch gates shipped in commit 91d04316. Current-head application-binding,
+      query-client generation, generated-artifact, requirement, and handbook checks all pass.
   human_review_triggers: *id001
 - id: WP-552
   name: Bank the alpha performance comparator evidence
@@ -9983,6 +9996,13 @@ work_packages:
     scale: Sweeps bound clients, time, dataset, artifacts, and retained diagnostics. Evidence tests
       concurrency and history without making benchmark-only state or full-memory operation part of
       the product contract.
+  closure:
+    status: complete
+    evidence: release/evidence/wp-552/README.md
+    decision: The frozen safe-app comparator and retained idle-host interactive and write-only
+      90-second, three-repetition corpus shipped in commit 6c436a48. The current-head self-test and
+      retained-evidence verifier pass with the recorded hashes, eligibility, stability, durability,
+      and zero-mismatch requirements intact.
   human_review_triggers: *id001
 - id: WP-553
   name: TLS-only remote application ingress and endpoint identity
@@ -10038,6 +10058,13 @@ work_packages:
       feature or dependency fail at build/test time rather than rely on deployment guidance.
     scale: Listener, handshake, stream, queue, and drain resources are bounded independently of
       database size. TLS wraps the partition-routable service and adds no co-located data premise.
+  closure:
+    status: complete
+    evidence: docs/operations/REMOTE-INGRESS.md
+    decision: TLS-only remote ingress, endpoint identity, proxy-header distrust, saturation bounds,
+      retained-last-good reload, and the confined ring/rustls dependency posture shipped in commit
+      175c0902. Current-head crate, real-process hostile-ingress, architecture, Protobuf, generated,
+      requirement, handbook, Clippy, and dependency-policy gates pass.
   human_review_triggers: *id001
 - id: WP-554
   name: Container deployment, health, and credential rotation
@@ -10082,6 +10109,15 @@ work_packages:
       listener or application-mounted database authority.
     scale: Rotation and health operate on bounded identity/configuration snapshots and connection
       pools; they do not scan application state or coordinate all future partitions atomically.
+  closure:
+    status: complete
+    evidence: release/container/README.md
+    decision: Authenticated health, bounded certificate and application-credential rotation,
+      Compose/Kubernetes deployment assets, and crash/retry coverage shipped in commit 184d78f0.
+      Current-head real-process rotation tests and Kubernetes rendering pass. This closure audit
+      could not rerun the Compose cell because this workstation lacks Docker Compose v2; it relies
+      on the accepted implementation evidence for that host-dependent cell and does not represent
+      the missing local prerequisite as a fresh pass.
   human_review_triggers: *id001
 - id: WP-555
   name: Rust driver host and local application protocol
@@ -10129,6 +10165,13 @@ work_packages:
       owner, so target-language code cannot weaken them.
     scale: Pools, queues, messages, streams, deadlines, and reconnect state are bounded per host;
       no application dataset is mirrored into driver memory.
+  closure:
+    status: complete
+    evidence: docs/sdks/DRIVER-HOST.md
+    decision: The application-only long-lived Rust host, bounded versioned local protocol,
+      protected socket, pooled remote transport, cancellation, uncertainty, and generated-catalog
+      boundary shipped in commit 04593f2e. Current-head crate and testkit suites, application and
+      workspace boundary checks, and a fresh 60-second driver_host_protocol fuzz run pass.
   human_review_triggers: *id001
 - id: WP-556
   name: Stable Go bindings and long-lived TypeScript transport
@@ -10172,6 +10215,12 @@ work_packages:
       remote request, capability, retry policy, or kernel/admin method outside the Rust host.
     scale: Language clients stream bounded messages through one retained host session and do not
       buffer unbounded pages, subscriptions, or complete datasets.
+  closure:
+    status: complete
+    evidence: docs/sdks/DRIVER-HOST.md
+    decision: Stable generated Go bindings and the retained TypeScript transport shipped in commit
+      d7830f05. Fresh installed Go and TypeScript application acceptances, canonical binding and
+      generation checks, requirement coverage, and handbook validation pass on current HEAD.
   human_review_triggers: *id001
 - id: WP-557
   name: Expanded Python wheel and runtime support
@@ -10211,6 +10260,14 @@ work_packages:
       credential parser, generic request, or unsafe fallback is available.
     scale: GIL release and bounded native pooling permit concurrency without per-row Python
       transport work or dataset residency, while platform claims remain a finite tested matrix.
+  closure:
+    status: complete
+    evidence: docs/python-driver.md
+    decision: The reviewed abi3 platform matrix, reproducible wheel and self-contained sdist,
+      unchanged Rust-owned sync/async facade, and packaging negatives shipped in commit 53b1a3c1.
+      A fresh protected-scratch audit reproduced both artifacts, installed each offline, ran the
+      native/runtime tests, verified all supported and unsupported platform cells, and passed
+      binding, generated, requirement, and dependency-policy checks.
   human_review_triggers: *id001
 - id: WP-558
   name: Cross-language driver conformance and deployment proof
@@ -10250,6 +10307,12 @@ work_packages:
       kernel imports, raw protocol access, or language-specific semantic weakening.
     scale: The corpus bounds clients, queues, streams, faults, and observations and tests pool
       saturation without assuming all data, tenants, or nodes are co-located.
+  closure:
+    status: complete
+    evidence: docs/architecture/DEPLOYABLE-APPLICATION-ALPHA.md
+    decision: The exact shared Rust, Go, TypeScript, and Python remote conformance corpus and
+      machine-readable manifests shipped in commit 7978947b. A fresh all-language remote run passes
+      with canonical bindings, generated artifacts, requirement coverage, and handbook checks.
   human_review_triggers: *id001
 - id: WP-559
   name: Replication tombstones and delete-aware durable validation
