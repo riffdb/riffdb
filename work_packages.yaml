@@ -13214,6 +13214,13 @@ work_packages:
       unsupported runtimes fail before deployment.
     scale: Static maxima cap direct relationships at 32 and the whole possible graph at 256 rows
       and 16 MiB; no recursive traversal, scan, dynamic index, or cross-partition discovery exists.
+  closure:
+    status: complete
+    evidence: docs/contracts/BOUNDED-COMMANDS.md
+    decision: V13 grammar, formatter, compiler proofs, executable IR, diagnostics, topology, and
+      compatibility fixtures encode only exhaustive one-hop indexed cascades with the accepted
+      32-relationship, 256-row, and 16-MiB bounds. Compiler, syntax, generated-artifact, topology,
+      requirement, handbook, formatting, Clippy, and 60-second contract-parser fuzz gates pass.
   human_review_triggers: *id001
 - id: WP-629
   name: Atomic one-hop cascade runtime, storage, and recovery
@@ -13261,6 +13268,14 @@ work_packages:
       control crosses the public boundary.
     scale: Each exact-prefix read stops at its compiled maximum plus one, the total possible graph
       is precharged to 256 rows and 16 MiB, and reevaluation remains bounded with no recursive scan.
+  closure:
+    status: complete
+    evidence: docs/contracts/BOUNDED-COMMANDS.md
+    decision: The shared runtime executes the sealed V13 plan through bounded exact-prefix reads,
+      row authorization, current-state validation, one canonical children-before-parent graph, and
+      the ordinary atomic commit, tombstone, changelog, recovery, and idempotency paths. Maximum-
+      plus-one and child-create races produce zero partial deletion, and current-HEAD runtime,
+      storage, commit, crash, recovery, generated, requirement, handbook, format, and Clippy gates pass.
   human_review_triggers: *id001
 - id: WP-630
   name: Generated cascade clients and Better Auth lifecycle acceptance
@@ -13940,6 +13955,14 @@ work_packages:
       or opt a secret-bearing query into an agent, stream, raw, kernel, or unredacted surface.
     scale: Static result and role sets are count/byte bounded, and runtime reuses the existing exact
       field-visibility release check without adding a scan, join, queue, retained row, or global lock.
+  closure:
+    status: complete
+    evidence: docs/riffql/LANGUAGE.md
+    decision: Exact leaf-level reveals declarations select least-sufficient V4 query and role
+      identities, derive only dedicated returned-field authority, retain shared fail-closed release,
+      and remain excluded from MCP and reactive surfaces. The acceptance rerun found and fixed a
+      contextual-reveals formatter ambiguity; its regression test, reproducer, and subsequent
+      60-second RiffQL fuzz cell pass with all compiler, policy, service, topology, and handbook gates.
   human_review_triggers: *id001
 - id: WP-635
   name: Exact secret-output widening approval and generated-client conformance
@@ -13996,6 +14019,14 @@ work_packages:
       named typed query method and no raw field, capability, transaction, transport, or MCP escape.
     scale: Authority sets, plans, diffs, approvals, receipts, client values, and diagnostics are
       count/byte bounded and add no database scan, retained stream, global state, or per-row metadata.
+  closure:
+    status: complete
+    evidence: docs/operations/APPLICATION-INSTALLATION-CAMPAIGNS.md
+    decision: Installation-plan V3 presents exact bounded Operation and QuerySecretOutput atoms,
+      requires predecessor-bound approval for every widening, narrows without silent authority,
+      and rotates credentials rather than mutating them. Rust, Go, TypeScript, and Python pass the
+      shared remote secret-output corpus, while binding, development-registry, topology, generated,
+      requirement, handbook, formatting, and workspace Clippy gates all pass.
   human_review_triggers: *id001
 - id: WP-636
   name: Operation-count growth and exact named-query execute attribution
