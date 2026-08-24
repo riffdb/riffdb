@@ -11135,6 +11135,13 @@ work_packages:
       manifest types admit only supported upgrade, export/reimport, or refusal outcomes.
     scale: Compatibility reads bounded manifests/registries and uses existing restartable migration;
       it neither loads nor rewrites full state merely to decide whether opening is safe.
+  closure:
+    status: complete
+    evidence: docs/compatibility.md
+    decision: The generated alpha durable-format manifest, release-pair refusal/upgrade policy,
+      backup compatibility range, fixture inventory, and pre-mutation format gate shipped in commit
+      ce852c46. Current-head manifest generation, release compatibility tests, storage/service/server/
+      CLI suites, generated artifacts, requirements, and handbook checks pass.
   human_review_triggers: *id001
 - id: WP-575
   name: Snapshot-consistent symbolic application export and reimport receipts
@@ -11187,6 +11194,13 @@ work_packages:
       whole-app/audit authority is explicit, and reimport can invoke only declared compiled plans.
     scale: Export is paged, leased, resumable, snapshot-bound, and byte/row/time bounded; neither
       server nor client holds the complete dataset in memory.
+  closure:
+    status: complete
+    evidence: docs/operations/APPLICATION-EXPORT.md
+    decision: Distinct export authority, snapshot-consistent paging, dependency-ordered portability
+      manifests, compiled-command reimport, resumable receipts, and four-domain operators shipped
+      through commits e5c43f07 through a1f8eff3. Fresh all-domain/all-language portability acceptance
+      passes and refreshes the OpenFGA receipt to its current exact contract and manifest identities.
   human_review_triggers: *id001
 - id: WP-576
   name: Remote offline backup, destructive restore, and adapter disaster drills
@@ -11232,6 +11246,14 @@ work_packages:
       convert a corrupt/incompatible artifact into a target.
     scale: Backup/restore streams/copies bounded files on the server and validates the exact closed
       inventory; it does not require database contents in memory or all databases offline together.
+  closure:
+    status: complete
+    evidence: release/evidence/alpha/disaster-recovery-v1.json
+    decision: Public remote offline backup, typed destructive restore, exact inventory validation,
+      restored-state conformance, and Better Auth disaster coverage shipped through commits 5c8c0a2c,
+      a2f7e416, and aa22e4e4. Current-head remote-backup tests pass. This audit could not rerun the
+      Compose container cell because Docker Compose v2 is unavailable on the workstation; it relies
+      on the tracked accepted remote receipt and does not claim a fresh container execution.
   human_review_triggers: *id001
 - id: WP-577
   name: Long-duration lifecycle and resource-growth harness
@@ -11275,6 +11297,14 @@ work_packages:
       interfaces; it cannot add a benchmark-only bypass or waive correctness to sustain load.
     scale: Load, clients, retention, artifacts, diagnostics, and fault cadence are explicitly bounded
       while duration and history are large enough to expose growth/recycling defects.
+  closure:
+    status: complete
+    evidence: docs/performance/alpha-endurance.md
+    decision: The bounded long-duration controller, lifecycle/fault action manifest, continuous
+      conformance, progress/starvation detection, retention lane, journal-generation observation,
+      resource-growth accounting, and tamper-evident receipts shipped through commits c96f2e92,
+      d275bd33, b81f79bd, and 6d976fed. Both self-tests and the focused harness suite pass; WP-578
+      remains the separate owner of the actual 72-hour evidence run.
   human_review_triggers: *id001
 - id: WP-578
   name: Portability, disaster-recovery, and 72-hour endurance evidence
