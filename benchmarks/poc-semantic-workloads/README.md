@@ -22,7 +22,7 @@ The stable report ID is `poc-semantic-workloads`; the summary schema is
 | `idempotent_replay` | equal-input retries of one committed command |
 | `commit_log_scan` | one frozen-fence contiguous authoritative scan |
 | `projection_catch_up` | one commit-log-to-published-frontier catch-up |
-| `restart_recovery` | at least three distinct positive database sizes |
+| `restart_recovery` | three increasing positive authoritative commit counts with positive, nondecreasing allocated database sizes |
 | `durability_mode` | exact `synchronous` and `group_commit` rows |
 
 Every row retains raw nanosecond samples and nearest-rank p50, p95, and p99.
@@ -87,6 +87,11 @@ Optional full-run controls are bounded environment variables:
 
 Changing these does not change the stable workload inventory. The report
 captures the effective values.
+
+The restart rows are ordered by authoritative commit count. Their physical file
+sizes are positive and nondecreasing, but may be equal across adjacent rows:
+redb and the durability journal preallocate bounded extents, so a larger logical
+history need not cross a physical allocation boundary in every sample.
 
 ## Contract Checks
 

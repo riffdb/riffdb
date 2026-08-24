@@ -88,9 +88,9 @@ use riffdb_testkit::authorization::{
 use riffdb_types::{
     ActorId, ActorKind, Audience, CanonicalRecord, CanonicalValue, CapabilityGrantV1, CapabilityId,
     CapabilityPermissionV1, CapabilityPermissionsV1, CommandId, CommitSequence, ContractLineage,
-    ContractVersion, DatabaseId, DigestKeyId, EntityFieldVisibilityV1, EntityKey, EntityVersion,
-    Environment, FieldId, IdempotencyKey, IncidentId, PartitionScopeV1, ProvenanceId, RequestId,
-    ServiceAuditPhaseV1, ServiceIngressKindV1, ServiceOperationV1, TenantScope, Timestamp,
+    ContractVersion, DatabaseId, DigestKeyId, EntityFieldVisibilityV1, EntityKey, EntityTypeId,
+    EntityVersion, Environment, FieldId, IdempotencyKey, IncidentId, PartitionScopeV1, ProvenanceId,
+    RequestId, ServiceAuditPhaseV1, ServiceIngressKindV1, ServiceOperationV1, TenantScope, Timestamp,
 };
 
 const BASE_SECONDS: i64 = 1_700_300_000;
@@ -818,6 +818,7 @@ struct MirroredEntities(Mutex<HashMap<EntityKey, MirroredEntity>>);
 #[derive(Clone)]
 struct MirroredEntity {
     version: EntityVersion,
+    latest_commit_sequence: CommitSequence,
     written_by: ContractVersion,
     fields: CanonicalRecord,
 }
@@ -856,23 +857,83 @@ impl MirroredEntities {
             .and_then(|builder| builder.push_i64(*fiscal_year))
             .map_err(|_| ())?;
         let key = key.finish().map_err(|_| ())?;
+        self.apply_post_image(
+            key,
+            result.commit_sequence(),
+            result.contract_version(),
+            fields.clone(),
+        )
+    }
+
+    fn apply_post_image(
+        &self,
+        key: EntityKey,
+        commit_sequence: CommitSequence,
+        written_by: ContractVersion,
+        fields: CanonicalRecord,
+    ) -> Result<(), ()> {
         let mut state = self.0.lock().map_err(|_| ())?;
-        let version = state.get(&key).map_or(EntityVersion::first(), |current| {
-            current
+        if let Some(current) = state.get_mut(&key) {
+            current.version = current
                 .version
                 .checked_next()
-                .expect("fixture entity version")
-        });
-        state.insert(
-            key,
-            MirroredEntity {
-                version,
-                written_by: result.contract_version(),
-                fields: fields.clone(),
-            },
-        );
+                .expect("fixture entity version");
+            if commit_sequence > current.latest_commit_sequence {
+                current.latest_commit_sequence = commit_sequence;
+                current.written_by = written_by;
+                current.fields = fields;
+            }
+        } else {
+            state.insert(
+                key,
+                MirroredEntity {
+                    version: EntityVersion::first(),
+                    latest_commit_sequence: commit_sequence,
+                    written_by,
+                    fields,
+                },
+            );
+        }
         Ok(())
     }
+}
+
+#[test]
+fn mirrored_entities_keep_the_newest_post_image_across_response_reordering() {
+    let entities = MirroredEntities::default();
+    let mut key = riffdb_types::EntityKeyBuilder::new(
+        EntityTypeId::new(1).expect("nonzero entity type"),
+    );
+    key.push_i64(1).expect("bounded entity key");
+    let key = key.finish().expect("canonical entity key");
+    let value_field = FieldId::new(1).expect("nonzero field");
+    let fields = |value| {
+        CanonicalRecord::new(vec![(value_field, CanonicalValue::I64(value))])
+            .expect("canonical fixture record")
+    };
+
+    entities
+        .apply_post_image(
+            key.clone(),
+            CommitSequence::new(3).expect("nonzero commit"),
+            ContractVersion::new(1).expect("nonzero contract version"),
+            fields(3),
+        )
+        .expect("newer post-image");
+    entities
+        .apply_post_image(
+            key.clone(),
+            CommitSequence::new(2).expect("nonzero commit"),
+            ContractVersion::new(1).expect("nonzero contract version"),
+            fields(2),
+        )
+        .expect("older post-image completes later");
+
+    let state = entities.0.lock().expect("mirror lock");
+    let current = state.get(&key).expect("mirrored entity");
+    assert_eq!(current.latest_commit_sequence.get(), 3);
+    assert_eq!(current.version.get(), 2);
+    assert_eq!(current.fields, fields(3));
 }
 
 struct TrackingBudgetService {

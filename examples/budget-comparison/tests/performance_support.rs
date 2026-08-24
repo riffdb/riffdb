@@ -729,8 +729,8 @@ fn restart_rows(config: &BenchmarkConfig) -> Vec<Value> {
             .len();
         assert!(database_size > 0, "database size is positive");
         assert!(
-            database_size > prior_size,
-            "restart benchmark database sizes must increase; size {database_size} did not exceed {prior_size}"
+            database_size >= prior_size,
+            "restart benchmark database size regressed; size {database_size} is below {prior_size}"
         );
         prior_size = database_size;
 
