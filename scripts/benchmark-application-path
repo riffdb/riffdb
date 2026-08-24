@@ -9,11 +9,12 @@ assert_wp275=0
 live=0
 while (($#)); do
     case "$1" in
+        --assert-wp205) shift ;;
         --assert-wp270) assert_wp270=1; shift ;;
         --assert-wp275) assert_wp275=1; shift ;;
         --live) live=1; shift ;;
         *)
-            echo "usage: scripts/benchmark-application-path [--assert-wp270] [--assert-wp275] [--live]" >&2
+            echo "usage: scripts/benchmark-application-path [--assert-wp205] [--assert-wp270] [--assert-wp275] [--live]" >&2
             exit 2
             ;;
     esac
