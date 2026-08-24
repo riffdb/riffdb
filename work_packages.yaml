@@ -6943,6 +6943,10 @@ work_packages:
   exit_gate: A fresh agent can complete the installed workflow from public docs without searching implementation source.
   human_review_triggers: *id001
 - id: WP-392
+  closure:
+    status: complete
+    evidence: evaluations/installed-first-application/campaigns/wp392-installed-01.json
+    decision: The immutable independent-agent campaign passed the installed multi-database workflow with least authority. Current HEAD also passes both source install/bootstrap smokes, the complete workspace suite, generation, requirements, formatting, Clippy, and dependency policy.
   name: Installed first real application acceptance
   depends_on: [WP-387, WP-388, WP-389, WP-390, WP-391]
   objective: Prove the complete legacy-to-multi installed application workflow under interruption and independent agent use.
@@ -6966,6 +6970,10 @@ work_packages:
   exit_gate: A fresh agent completes the installed multi-database application using only public surfaces and least authority.
   human_review_triggers: *id001
 - id: WP-393
+  closure:
+    status: complete
+    evidence: docs/getting-started/APPLICATION-MANIFEST.md
+    decision: Successor evolution preserves append-only compatibility, reports source-named incompatibilities, and keeps lock, deployment, and role identity exact. Current compiler, deployment, recovery, and generated-binding suites pass.
   name: Additive contract evolution and actionable deployment diagnostics
   depends_on: [WP-386]
   objective: Permit the approved bounded additive schema subset and preserve safe compiler and compatibility detail
@@ -6994,6 +7002,10 @@ work_packages:
     actionable bounded result on every surface, and no existing schema or durable row is reinterpreted.
   human_review_triggers: *id001
 - id: WP-394
+  closure:
+    status: complete
+    evidence: adr/0074-python-application-driver.md
+    decision: ADR-0074 is accepted and freezes the native Rust-backed Python surface, compatibility, retry, packaging, platform, and authority boundaries implemented by the successor packages.
   name: Python application-driver interface freeze
   depends_on: [WP-390]
   objective: Freeze the application-only Python package, native Rust bridge, value model, sync/async facade,
@@ -7014,6 +7026,10 @@ work_packages:
     Python or PyO3 production code is added.
   human_review_triggers: *id001
 - id: WP-395
+  closure:
+    status: complete
+    evidence: docs/python-driver.md
+    decision: Application manifest V2 and deterministic Python generation are implemented without changing V1 identity. Canonical binding generation and the installed Python scaffold acceptance pass on current HEAD.
   name: Python manifest V2 and generated bindings
   depends_on: [WP-393, WP-394]
   objective: Add exact V2 source/lock formats, explicit migration, and deterministic complete Python bindings while
@@ -7037,6 +7053,10 @@ work_packages:
   exit_gate: V1 remains exact, V2 deterministically locks Python, and every generated binding matches the accepted API.
   human_review_triggers: *id001
 - id: WP-396
+  closure:
+    status: complete
+    evidence: clients/python/runtime
+    decision: The Rust-backed Python runtime owns transport, cancellation, typed errors, exact values, credentials, and retry safety. Native architecture tests, wheel build, sync and async runtime tests, type checking, and fail-closed conversion tests pass.
   name: Rust-backed Python application runtime
   depends_on: [WP-393, WP-394]
   objective: Expose the existing stable Rust application client through a safe bounded PyO3 sync/async bridge without
@@ -7058,6 +7078,10 @@ work_packages:
   exit_gate: Python reaches native gRPC only through the checked Rust client and exposes no raw protocol or secret.
   human_review_triggers: *id001
 - id: WP-397
+  closure:
+    status: complete
+    evidence: scripts/check-python-package
+    decision: Reproducible cp313-abi3 wheels and source distributions install offline and expose the documented scaffold/runtime surface. Package inventory, reproducibility, installation, architecture, cargo-deny, and Python 3.14 acceptance pass; the documented ABI floor remains Python 3.13.
   name: Python scaffold and release artifacts
   depends_on: [WP-395, WP-396]
   objective: Make Python applications installable, scaffoldable, offline-buildable, and release-ready through pip and uv.
@@ -7079,6 +7103,10 @@ work_packages:
   exit_gate: A fresh Python 3.13 application builds and runs from the installed release without source-tree repair.
   human_review_triggers: *id001
 - id: WP-398
+  closure:
+    status: complete
+    evidence: scripts/agent-application-python-acceptance
+    decision: Installed Python sync and async clients pass two-database isolation, generated commands and queries, exact values, reactive values, error, cancellation, batch, and boundary parity with no raw-protocol fallback.
   name: Python cross-language and installed parity proof
   depends_on: [WP-397]
   objective: Publish final sync/async, cross-language, multi-database, packaging, and reproducibility evidence without
@@ -7106,6 +7134,10 @@ work_packages:
     semantic exception.
   human_review_triggers: *id001
 - id: WP-399
+  closure:
+    status: complete
+    evidence: docs/getting-started/APPLICATION-MANIFEST.md
+    decision: Lock and successor deployment share one canonical bundle identity and stale or raced identities fail before mutation. Exact application and migration recovery suites pass on current HEAD.
   name: Exact successor application identity before mutation
   depends_on: [WP-393, WP-395]
   objective: Make successor locking and deployment share one exact parent-aware candidate identity and reject every
@@ -7136,6 +7168,10 @@ work_packages:
     perform no mutation, exact retries resume, and application check never reports stale artifacts as exact.
   human_review_triggers: *id001
 - id: WP-400
+  closure:
+    status: complete
+    evidence: docs/getting-started/APPLICATION-MANIFEST.md
+    decision: Successor role widening preflights and explicitly reconciles the retained binding from the exact lock, with actionable stale-identity diagnostics and no authority widening outside the declared role. Deployment and generated-binding suites pass.
   name: Successor role reconciliation and pre-mutation application preflight
   depends_on: [WP-399]
   objective: Make every locked role path consume the exact parent-aware bundle and move every fallible local
@@ -7161,6 +7197,10 @@ work_packages:
     the action actually performed.
   human_review_triggers: *id001
 - id: WP-401
+  closure:
+    status: complete
+    evidence: docs/SUMMARY.md
+    decision: The repository-local handbook is navigable, generated-reference aware, and buildable without external runtime assets. The complete handbook check passes on current HEAD.
   name: Handbook foundation and documentation governance
   depends_on: [WP-400]
   objective: Establish the reproducible public handbook, curated navigation, maintenance rules, generated diagrams,
@@ -7182,6 +7222,10 @@ work_packages:
     changes have an explicit same-change documentation rule.
   human_review_triggers: *id001
 - id: WP-402
+  closure:
+    status: complete
+    evidence: docs/getting-started/FIRST-APPLICATION.md
+    decision: The public onboarding path covers install, contract authoring, named reads, typed commands, exact generation, local development, and MCP without implementation-source dependencies. Handbook snippets and installed smokes pass.
   name: Application-builder handbook
   depends_on: [WP-401]
   objective: Teach the implemented contract-first application workflow progressively across the supported public
@@ -7201,6 +7245,10 @@ work_packages:
     query the result, and understand the demonstrated PostgreSQL safety contrast using only the handbook.
   human_review_triggers: *id001
 - id: WP-403
+  closure:
+    status: complete
+    evidence: docs/operations/TROUBLESHOOTING.md
+    decision: Operations, security, backup/recovery, compatibility, diagnostics, and troubleshooting guidance are published and linked from the handbook. Generated references, links, snippets, and published Rust API checks pass.
   name: Operator and reference handbook
   depends_on: [WP-401]
   objective: Publish current operational, architecture, protocol, value, compatibility, and public-client references
@@ -7220,6 +7268,10 @@ work_packages:
     specification, source code, or historical work-package reports.
   human_review_triggers: *id001
 - id: WP-404
+  closure:
+    status: complete
+    evidence: scripts/handbook
+    decision: CI-grade handbook validation rejects stale generated references, broken links and snippets, and public API drift; the current handbook, generated artifacts, and application bindings all pass.
   name: Handbook acceptance and GitHub Pages publication
   depends_on: [WP-402, WP-403]
   objective: Enforce handbook freshness and publish the verified static artifact from the main branch.
@@ -7238,6 +7290,10 @@ work_packages:
     locally reproducible handbook artifact.
   human_review_triggers: *id001
 - id: WP-405
+  closure:
+    status: complete
+    evidence: adr/0076-offline-contract-migration-semantics.md
+    decision: ADR-0076 through ADR-0079 are accepted, the MIG requirement family is assigned, and the migration format, authority, recovery, and evidence boundaries are frozen before implementation.
   name: Contract migration architecture and format freeze
   depends_on: [WP-404]
   objective: Freeze robust offline contract-migration semantics, artifacts, storage recovery, authority, public
@@ -7262,6 +7318,10 @@ work_packages:
     and no production migration symbol or durable/public format exists before the freeze.
   human_review_triggers: *id001
 - id: WP-406
+  closure:
+    status: complete
+    evidence: docs/contracts/MIGRATIONS.md
+    decision: Exact parent, candidate, riffm source, migration IR, compatibility classification, and application-lock identity deterministically reproduce the strict migration bundle while retaining predecessor readers.
   name: Migration source, IR, compatibility, and application lock
   depends_on: [WP-405]
   objective: Compile exact parent-specific bounded migration source into canonical typed artifacts and make locked
@@ -7293,6 +7353,10 @@ work_packages:
     lock; every unsupported, ambiguous, stale, excessive, or unimplemented transform fails with a bounded span diagnostic.
   human_review_triggers: *id001
 - id: WP-407
+  closure:
+    status: complete
+    evidence: tests/migrations/contract_migration_model.rs
+    decision: The semantic coordinator, compiler-derived finite work plan, deterministic transforms, and independent reference model are implemented. Gate-A and generated-history tests pass in the complete workspace suite.
   name: Migration semantic coordinator and reference model
   depends_on: [WP-406]
   objective: Implement pure bounded transform/preflight semantics and the sole commit-owned migration mutation
@@ -7321,6 +7385,10 @@ work_packages:
     a mutation, and commits/events/outcomes/provenance/idempotency/sequences remain byte-identical.
   human_review_triggers: *id001
 - id: WP-408
+  closure:
+    status: complete
+    evidence: tests/recovery/contract_migration_recovery.rs
+    decision: Staged redb migration, private successor validation, atomic activation or predecessor restoration, and startup repair are implemented. All three process-level ignored recovery arms pass on current HEAD.
   name: Redb staged migration and crash recovery
   depends_on: [WP-407]
   objective: Add protected staged-copy, receipt/journal recovery, complete validation, atomic publication, and automatic
@@ -7360,6 +7428,10 @@ work_packages:
     exact backup before readiness, and sibling databases remain isolated throughout live and restarted maintenance.
   human_review_triggers: *id001
 - id: WP-409
+  closure:
+    status: complete
+    evidence: docs/operations/CONTRACT-MIGRATION-ACCEPTANCE.md
+    decision: Exact current migration authority gates start, status, retry, and public administration; retries resolve by operation identity and diagnostics redact private migration detail. CLI, service, gRPC, MCP, and authorization tests pass.
   name: Migration authorization and public administration
   depends_on: [WP-407, WP-408]
   objective: Expose check, apply, and observation only through dedicated least-authority gRPC, Rust SDK, and CLI
@@ -7394,6 +7466,10 @@ work_packages:
     CLI uses no direct storage path, and every MCP/application catalog remains migration-free.
   human_review_triggers: *id001
 - id: WP-410
+  closure:
+    status: complete
+    evidence: docs/operations/CONTRACT-MIGRATION-ACCEPTANCE.md
+    decision: Populated additive migrations preserve values and identities, backfill deterministically, rebuild declared derived state, and survive injected failure without mixed publication. Gate A and recovery suites pass.
   name: Additive data migration gate
   depends_on: [WP-409]
   objective: Prove the complete public workflow for required fields, indexes, relationships, uniqueness, invariants,
@@ -7422,6 +7498,10 @@ work_packages:
     correct, no partial state or history rewrite, and every injected failure returns a validated predecessor or successor.
   human_review_triggers: *id001
 - id: WP-411
+  closure:
+    status: complete
+    evidence: docs/contracts/MIGRATIONS.md
+    decision: Supported structural entity changes migrate deterministically with retained old identity/data, while unsupported or lossy classes fail before publication with source diagnostics. Structural migration tests pass.
   name: Structural entity migration gate
   depends_on: [WP-410]
   objective: Enable semantic renames, logical retirement, replacement fields/types, exhaustive enum mappings, and
@@ -7450,6 +7530,10 @@ work_packages:
     backup, and no old ID, value, event, outcome, or projection history is reinterpreted.
   human_review_triggers: *id001
 - id: WP-412
+  closure:
+    status: complete
+    evidence: docs/contracts/MIGRATIONS.md
+    decision: Rekey and repartition migrations publish only after complete collision, reference, and ownership proof; stale writers and ambiguous ownership fail closed. Key-ownership, recovery, and model tests pass.
   name: Key ownership and conflict migration gate
   depends_on: [WP-411]
   objective: Enable primary-key, partition, aggregate-membership, relationship-target, and conflict-domain evolution
@@ -7478,6 +7562,10 @@ work_packages:
     enter, and the crash matrix exposes neither old/new duplicates nor a partial conflict domain.
   human_review_triggers: *id001
 - id: WP-413
+  closure:
+    status: complete
+    evidence: release/evidence/wp413-migration-evolution-v1.json
+    decision: The receipted installed migration acceptance covers populated additive, structural, rekey, repartition, interruption, authorization, and performance cases. Current migration recovery, workspace, fuzz, handbook, generation, and requirement gates pass.
   name: Migration installed acceptance and operational proof
   depends_on: [WP-410, WP-411, WP-412]
   objective: Publish installed, documented, benchmarked, cross-version, authorization, and recovery evidence for the
@@ -7509,6 +7597,10 @@ work_packages:
     and PostgreSQL comparison evidence.
   human_review_triggers: *id001
 - id: WP-414
+  closure:
+    status: complete
+    evidence: adr/0080-partitioned-events-consumers-and-live-queries.md
+    decision: ADR-0080 is accepted, the P8 event, consumer, live-query, and contextual-subscription requirements have implementation and final-evidence owners, and the reactive durable-format boundaries are frozen.
   name: Reactive application architecture and format freeze
   depends_on: [WP-405]
   objective: Freeze partitioned event, durable consumer, live named-query, contextual subscription, causation,
@@ -7533,6 +7625,10 @@ work_packages:
     and existing event, projection, outbox, query, cursor, and application-format meanings remain explicit.
   human_review_triggers: *id001
 - id: WP-415
+  closure:
+    status: complete
+    evidence: docs/contracts/DOMAIN-EVENTS.md
+    decision: Typed partitioned domain events carry stable identity, version, causality, provenance, and exact partition ordering atomically with their commands. Symbolic catalog and replay tests pass.
   name: Partitioned domain event catalog and replay
   depends_on: [WP-414]
   objective: Make existing authoritative domain events symbolically streamable through compiler-proved partitions,
@@ -7566,6 +7662,10 @@ work_packages:
     routing is complete and recoverable, and no raw event/storage identity is required by application code.
   human_review_triggers: *id001
 - id: WP-416
+  closure:
+    status: complete
+    evidence: docs/reactive/MODULES.md
+    decision: Exact reactive modules bind contract, query, stream, subscription, role, and generated identities in one lock; unsafe or ambiguous reactive shapes fail at compile time with symbolic diagnostics.
   name: Reactive modules, exact locks, and symbolic roles
   depends_on: [WP-406, WP-414, WP-415]
   objective: Compile named streams and contextual subscriptions into exact reactive modules and derive least-authority
@@ -7599,6 +7699,10 @@ work_packages:
     name only domain operations, and every unsafe or unbounded shape fails before deployment.
   human_review_triggers: *id001
 - id: WP-417
+  closure:
+    status: complete
+    evidence: docs/reactive/CLIENTS.md
+    decision: Durable consumers implement bounded pull, checkpoint, lease, ack, nack, retry, dead-letter, replay, revocation, and restart semantics. Deterministic and process-recovery tests show no lost eligible event or duplicated business state.
   name: Durable event consumers and delivery recovery
   depends_on: [WP-415, WP-416]
   objective: Implement bounded partition-ordered at-least-once consumers with durable checkpoints, leases, ack/nack,
@@ -7633,6 +7737,10 @@ work_packages:
     and every public transition remains bounded, authorized, and recoverable.
   human_review_triggers: *id001
 - id: WP-418
+  closure:
+    status: complete
+    evidence: docs/reactive/LIVE-QUERIES.md
+    decision: Named bounded queries support race-free snapshot plus frontier, relevant-change catch-up, keyed patch/reset, exact resume, definition evolution, and authorization revalidation. Live-query and two-browser convergence tests pass.
   name: Live named RiffQL execution
   depends_on: [WP-415, WP-416]
   objective: Add race-free live execution for exact named queries using snapshot frontiers, durable commit catch-up,
@@ -7663,6 +7771,10 @@ work_packages:
     drift, revocation, restore, or pressure yields a typed reset/terminal without protected-data retention.
   human_review_triggers: *id001
 - id: WP-419
+  closure:
+    status: complete
+    evidence: docs/reactive/CLIENTS.md
+    decision: Rust, TypeScript, Python, CLI, MCP, SSE relay, and generated schemas expose the same exact reactive operations without raw protocol code or browser credentials. Cross-language bindings and relay acceptance pass.
   name: Generated reactive clients, CLI, MCP, and browser relay
   depends_on: [WP-417, WP-418]
   objective: Expose identical typed consumer and live-query behavior through generated Rust, TypeScript, Python, CLI,
@@ -7691,6 +7803,10 @@ work_packages:
     JavaScript receives no RiffDB credential, and MCP wakeups disclose no event or context payload.
   human_review_triggers: *id001
 - id: WP-420
+  closure:
+    status: complete
+    evidence: docs/reactive/CONTEXTUAL-SUBSCRIPTIONS.md
+    decision: Contextual subscriptions deliver one bounded authorized event-plus-query snapshot with causal fences, leases, capability-filtered reactions, idempotent command provenance, and payload-free MCP wakeups. Crash and retry suites pass.
   name: Contextual agent subscriptions and causal reactions
   depends_on: [WP-417, WP-418, WP-419]
   objective: Deliver durable event work with one-snapshot named-query context, capability-filtered commands,
@@ -7725,6 +7841,10 @@ work_packages:
     before or after command/ack produces neither lost work nor duplicated business state.
   human_review_triggers: *id001
 - id: WP-421
+  closure:
+    status: complete
+    evidence: release/evidence/wp421-reactive-fresh-agent-v1.json
+    decision: The immutable fresh-agent campaign and installed TicketDesk evidence close polling-free browser updates, reconnect/reset, contextual triage, reaction recovery, revocation, MCP wakeup, and boundary requirements. Current workspace and generated-binding regressions pass; current bundle resealing intentionally cannot replace the immutable historical campaign.
   name: TicketDesk reactive acceptance and safety proof
   depends_on: [WP-420]
   objective: Close P8 with installed TicketDesk browser, worker, agent, evolution, authorization, recovery, performance,
@@ -7758,6 +7878,10 @@ work_packages:
     internal source or kernel access.
   human_review_triggers: *id001
 - id: WP-422
+  closure:
+    status: complete
+    evidence: docs/performance/perf-013-014.md
+    decision: Validated-prefix checkpoints are durable hints only, fail open to full validation when absent or invalid, and are proven equivalent to full startup validation across clean, crash, and corruption arms. PERF-014 remains receipted evidence rather than a weakened correctness gate.
   name: Validated-prefix startup checkpoint (RT-A)
   depends_on: [WP-421]
   objective: Ship ADR-0085 Amendment 1 proof-carrying validated-prefix startup checkpoints that fail closed on
@@ -7784,6 +7908,10 @@ work_packages:
     before/after checkpoint commit reopens green; PERF-014 emits honest unclean/clean ratio without a hard gate.
   human_review_triggers: *id001
 - id: WP-423
+  closure:
+    status: complete
+    evidence: docs/compatibility.md
+    decision: Retention requires complete watermarks and same-transaction tombstones, is offline and fail-closed, preserves durable cursors and backup/restore coverage, and cannot expose partially pruned history. Recovery, storage, and compatibility suites pass.
   name: Retention watermark, tombstones, offline prune (RT-B)
   depends_on: [WP-422]
   objective: Ship ADR-0085 Amendment 2 hard-fence retention watermark, history tombstones, offline
