@@ -4019,6 +4019,10 @@ work_packages:
   human_review_triggers: *id001
 - id: WP-210
   name: RiffQL syntax, formatter, and TicketDesk corpus
+  closure:
+    status: complete
+    evidence: docs/architecture/wp-210-360-closure.md
+    decision: The textual grammar, formatter, and TicketDesk named-query corpus are shipped and covered by current compiler fixtures.
   depends_on:
   - WP-205
   objective: Freeze the versioned formal read-only RiffQL source language and prove it can express every bounded
@@ -4055,6 +4059,10 @@ work_packages:
   human_review_triggers: *id001
 - id: WP-220
   name: Symbolic catalog, source maps, schemas, and diagnostics
+  closure:
+    status: complete
+    evidence: docs/architecture/wp-210-360-closure.md
+    decision: Symbolic catalog resolution, source maps, public schemas, and bounded diagnostics are active across the public authoring path.
   depends_on:
   - WP-210
   objective: Resolve RiffQL entirely through exact contract symbols and publish bounded name-addressed parameter and
@@ -4098,6 +4106,10 @@ work_packages:
   human_review_triggers: *id001
 - id: WP-230
   name: RiffQL type checker, authorization analysis, and deterministic planner
+  closure:
+    status: complete
+    evidence: docs/architecture/wp-210-360-closure.md
+    decision: Named queries compile through one typed, authorized, locality-checked, bounded deterministic planner.
   depends_on:
   - WP-210
   - WP-220
@@ -4147,6 +4159,10 @@ work_packages:
   human_review_triggers: *id001
 - id: WP-240
   name: One-snapshot composite query execution
+  closure:
+    status: complete
+    evidence: docs/architecture/wp-210-360-closure.md
+    decision: Page-shaped one-snapshot execution, dependent reads, cursors, and read-after-commit behavior are shipped and tested.
   depends_on:
   - WP-205
   - WP-230
@@ -4198,6 +4214,10 @@ work_packages:
   human_review_triggers: *id001
 - id: WP-250
   name: RiffQL application gRPC, CLI, REPL, and MCP surfaces
+  closure:
+    status: complete
+    evidence: docs/architecture/wp-210-360-closure.md
+    decision: gRPC, CLI/REPL, and MCP route textual operations through the shared API-neutral application service without storage bypass.
   depends_on:
   - WP-220
   - WP-230
@@ -4254,6 +4274,10 @@ work_packages:
   human_review_triggers: *id001
 - id: WP-260
   name: Immutable named query modules and optional client generation
+  closure:
+    status: complete
+    evidence: docs/architecture/wp-210-360-closure.md
+    decision: Immutable hash-bound query modules and generated operation facades are deployed and exact-lock checked.
   depends_on:
   - WP-220
   - WP-230
@@ -4320,6 +4344,10 @@ work_packages:
   human_review_triggers: *id001
 - id: WP-270
   name: Local development workflow and independent-agent TicketDesk gate
+  closure:
+    status: complete
+    evidence: docs/architecture/wp-210-360-closure.md
+    decision: The local bootstrap/deploy/grant/seed/watch workflow and independent TicketDesk acceptance path are shipped.
   depends_on:
   - WP-250
   - WP-260
@@ -4379,6 +4407,10 @@ work_packages:
   human_review_triggers: *id001
 - id: WP-275
   name: Bounded dependent key batches and complete TicketDesk detail parity
+  closure:
+    status: complete
+    evidence: docs/architecture/wp-210-360-closure.md
+    decision: Compiler-bounded junction-to-entity dependent batches close TicketDesk label parity in one named snapshot query.
   depends_on:
   - WP-270
   objective: Close the TicketDesk junction-read gap with one bounded same-partition collection-to-complete-key
@@ -4459,6 +4491,10 @@ work_packages:
   human_review_triggers: *id001
 - id: WP-280
   name: Closed application-query authority and private execution proofs
+  closure:
+    status: complete
+    evidence: docs/architecture/wp-210-360-closure.md
+    decision: Query authority is compiler-derived, execution proofs remain private, and application callers cannot supply masks or storage authority.
   depends_on:
   - WP-275
   objective: Separate exact named-application, explicitly ad-hoc-agent, and raw kernel read authority, then authorize
@@ -4536,6 +4572,10 @@ work_packages:
   human_review_triggers: *id001
 - id: WP-285
   name: Whole-query cost authorization and execution fuel
+  closure:
+    status: complete
+    evidence: docs/architecture/wp-210-360-closure.md
+    decision: Whole-query cost admission and bounded runtime fuel are enforced before and during execution.
   depends_on:
   - WP-280
   objective: Replace per-step-only query budgeting with one canonical compiler-derived cost vector authorized once
@@ -4594,6 +4634,10 @@ work_packages:
   human_review_triggers: *id001
 - id: WP-290
   name: Declared same-partition relationships
+  closure:
+    status: complete
+    evidence: docs/architecture/wp-210-360-closure.md
+    decision: Relationship traversal requires compiler-proven same-partition declarations and rejects unsafe locality.
   depends_on:
   - WP-275
   objective: Make required entity relationships explicit in contracts and reject every command that can establish a
@@ -4653,6 +4697,10 @@ work_packages:
   human_review_triggers: *id001
 - id: WP-295
   name: Declared same-partition uniqueness
+  closure:
+    status: complete
+    evidence: docs/architecture/wp-210-360-closure.md
+    decision: Symbolic uniqueness is statically scoped to a proven partition and enforced through compiled commands.
   depends_on:
   - WP-290
   objective: Make bounded same-partition uniqueness a contract property enforced under concurrency by compiler-
@@ -4720,6 +4768,10 @@ work_packages:
   human_review_triggers: *id001
 - id: WP-300
   name: Safe application surface cutover and negative acceptance
+  closure:
+    status: complete
+    evidence: docs/architecture/wp-210-360-closure.md
+    decision: The symbolic application surface is the documented default and negative gates reject kernel IDs, masks, keys, and handwritten protocol glue.
   depends_on:
   - WP-280
   - WP-285
@@ -4806,6 +4858,10 @@ work_packages:
   human_review_triggers: *id001
 - id: WP-305
   name: Complete generated application bindings and manifest
+  closure:
+    status: complete
+    evidence: docs/architecture/wp-210-360-closure.md
+    decision: Exact manifests generate complete typed query/command facades, outcomes, cursors, errors, and read fences without application transport glue.
   depends_on:
   - WP-300
   objective: Replace generated type/metadata fragments and handwritten application glue with one versioned application
@@ -4871,6 +4927,10 @@ work_packages:
   human_review_triggers: *id001
 - id: WP-310
   name: Symbolic application roles and exact capability binding
+  closure:
+    status: complete
+    evidence: docs/architecture/wp-210-360-closure.md
+    decision: Symbolic roles compile and bind exact least-authority query, command, field, lineage, and bound permissions.
   depends_on:
   - WP-305
   objective: Compile manifest roles that name only commands and named queries into exact safe-application authority,
@@ -4946,6 +5006,10 @@ work_packages:
   human_review_triggers: *id001
 - id: WP-315
   name: Structured semantic application errors across public surfaces
+  closure:
+    status: complete
+    evidence: docs/architecture/wp-210-360-closure.md
+    decision: CLI, SDK, gRPC, and MCP preserve one bounded redaction-safe symbolic application error envelope.
   depends_on:
   - WP-310
   objective: Preserve bounded redaction-safe operation, contract, symbol, requirement, remediation, retry, and trace
@@ -5024,6 +5088,10 @@ work_packages:
   human_review_triggers: *id001
 - id: WP-320
   name: Resumable bounded command batches and development seed
+  closure:
+    status: complete
+    evidence: docs/architecture/wp-210-360-closure.md
+    decision: Seed/import uses bounded resumable ordinary commands with independent idempotency, typed outcomes, progress, and backpressure.
   depends_on:
   - WP-310
   - WP-315
@@ -5104,6 +5172,10 @@ work_packages:
   human_review_triggers: *id001
 - id: WP-325
   name: Canonical application scaffold, dev orchestration, and package boundary
+  closure:
+    status: complete
+    evidence: docs/architecture/wp-210-360-closure.md
+    decision: Deterministic scaffolding and dev orchestration generate, deploy, bind, seed, watch, and lint the public package boundary.
   depends_on:
   - WP-305
   - WP-310
@@ -5174,6 +5246,10 @@ work_packages:
   human_review_triggers: *id001
 - id: WP-330
   name: First-class TypeScript web-application parity
+  closure:
+    status: complete
+    evidence: docs/architecture/wp-210-360-closure.md
+    decision: The generated TypeScript web path performs the same typed writes, nested reads, errors, cursors, and read fences as Rust.
   depends_on:
   - WP-325
   objective: Prove the TypeScript application path as a real generated-client web application with the same manifest,
@@ -5229,6 +5305,10 @@ work_packages:
   human_review_triggers: *id001
 - id: WP-335
   name: Unfamiliar-domain evidence and bounded RiffQL closure
+  closure:
+    status: complete
+    evidence: docs/architecture/wp-210-360-closure.md
+    decision: Blog/CMS and Orders/Inventory compile through bounded RiffQL with their unsupported-shape evidence and approved additions retained.
   depends_on:
   - WP-330
   objective: Build blog/CMS and orders/inventory corpora through the complete Rust and TypeScript application paths,
@@ -5302,6 +5382,10 @@ work_packages:
   human_review_triggers: *id001
 - id: WP-340
   name: Agent Application Alpha sealed evaluation and release gate
+  closure:
+    status: complete_original_gate
+    evidence: release/evidence/agent-application-alpha-gate-v3.json
+    decision: The original four-run sealed Rust/TypeScript Agent Application Alpha gate is eligible; WP-579 owns the later six-run four-language deployable-alpha successor.
   depends_on:
   - WP-305
   - WP-310
@@ -5366,6 +5450,10 @@ work_packages:
   human_review_triggers: *id001
 - id: WP-345
   name: Compiler-owned application source and exact lock
+  closure:
+    status: complete
+    evidence: docs/architecture/wp-210-360-closure.md
+    decision: Compiler-owned source, lock, generated identities, and deploy inputs share one canonical exact application identity.
   depends_on:
   - WP-340
   objective: Remove compiler-derived identities from author-owned application input while preserving exact fail-closed
@@ -5433,6 +5521,10 @@ work_packages:
   human_review_triggers: *id001
 - id: WP-350
   name: Source-spanned authoring diagnostics
+  closure:
+    status: complete
+    evidence: docs/architecture/wp-210-360-closure.md
+    decision: Contract, query, role, lock, module, and deployment failures preserve actionable symbolic spans and bounded fixes.
   depends_on:
   - WP-345
   objective: Preserve bounded actionable compiler, planner, manifest, role, lock, scaffold, and generation diagnostics
@@ -5494,6 +5586,10 @@ work_packages:
   human_review_triggers: *id001
 - id: WP-355
   name: Empty-repository scaffold and complete public authoring kit
+  closure:
+    status: complete
+    evidence: docs/architecture/wp-210-360-closure.md
+    decision: A fresh repository receives the complete public contract/query/role/seed/generated-client kit without internal source access.
   depends_on:
   - WP-350
   objective: Make a fresh application replaceable through bundled public material alone by supporting existing empty
@@ -5558,6 +5654,10 @@ work_packages:
   human_review_triggers: *id001
 - id: WP-360
   name: Offline TypeScript and builder-MCP authoring parity
+  closure:
+    status: complete
+    evidence: docs/architecture/wp-210-360-closure.md
+    decision: Offline TypeScript generation/runtime and builder MCP expose the same exact public application identities and diagnostics.
   depends_on:
   - WP-355
   objective: Make the generated TypeScript repository and builder MCP complete first-class consumers of the exact
@@ -5622,6 +5722,10 @@ work_packages:
   human_review_triggers: *id001
 - id: WP-362
   name: Growing-database command throughput and durability investigation
+  closure:
+    status: complete
+    evidence: docs/performance/wp-362-command-growth.md
+    decision: The O(history) audit defect was isolated and removed, with flat growth evidence and full startup validation retained.
   depends_on:
   - WP-340
   objective: Reproduce, decompose, and safely correct the observed synchronous redb command degradation as retained
@@ -5674,6 +5778,10 @@ work_packages:
   human_review_triggers: *id001
 - id: WP-364
   name: Bounded group durability and two-transition audited commands
+  closure:
+    status: complete
+    evidence: docs/performance/wp-364-group-durability.md
+    decision: Bounded group durability and audited transition semantics shipped with exact crash, replay, and acknowledgement coverage.
   depends_on:
   - WP-362
   objective: Amortize redb Immediate durability across independently safe command transitions and reduce a normal
@@ -5761,6 +5869,10 @@ work_packages:
   human_review_triggers: *id001
 - id: WP-365
   name: Public-only rehearsal, qualified evidence, and canary gate
+  closure:
+    status: complete
+    evidence: release/evidence/agent-application-alpha-rehearsal-v1.json
+    decision: Public-only package rehearsal, recovery cases, exact qualified events, and sealed canaries pass and retain immutable prior failures.
   depends_on:
   - WP-360
   - WP-362
@@ -5833,6 +5945,10 @@ work_packages:
   human_review_triggers: *id001
 - id: WP-366
   name: Same-partition aggregate concurrency and PostgreSQL write parity
+  closure:
+    status: complete_with_superseded_first_receipt
+    evidence: docs/architecture/wp-362-391-closure.md
+    decision: Same-partition external-read proofs, one mutation aggregate, bounded public batches, and fixed group evidence shipped; the flawed first comparison is explicitly superseded by corrected later app-baseline evidence.
   depends_on:
   - WP-364
   objective: Recover ordinary application write concurrency by permitting exact same-partition observations across
@@ -5912,6 +6028,10 @@ work_packages:
   human_review_triggers: *id001
 - id: WP-367
   name: Bounded scheduler utilization and admission selection
+  closure:
+    status: complete
+    evidence: docs/performance/wp-367-369-command-pipeline.md
+    decision: Ordered bounded drain, oldest-item window, hard barriers, grouped replay selection, and closed scheduler telemetry are implemented and tested.
   depends_on:
   - WP-366
   objective: Make the accepted group window effective, prevent safe observational traffic from truncating compatible
@@ -5981,6 +6101,10 @@ work_packages:
   human_review_triggers: *id001
 - id: WP-368
   name: Activated redb storage lanes and concurrent application reads
+  closure:
+    status: complete
+    evidence: docs/performance/wp-367-369-command-pipeline.md
+    decision: Activation yields one private writer and cloneable least-authority MVCC readers without a process-wide operational read mutex.
   depends_on:
   - WP-367
   objective: Release one private authoritative writer and cloneable least-authority MVCC readers from one completed
@@ -6046,6 +6170,10 @@ work_packages:
   human_review_triggers: *id001
 - id: WP-369
   name: Immutable command artifacts, bounded parallel preparation, and application parity
+  closure:
+    status: complete_with_failed_performance_gate
+    evidence: docs/performance/wp-367-369-command-pipeline.md
+    decision: Immutable artifacts, pay-once normalization, bounded preparation, and ordered commit behavior shipped, but the then-current strict parity gate remained red and no pass is claimed.
   depends_on:
   - WP-368
   objective: Remove the remaining serialized clone, normalization, lookup, sizing, encoding, verification, and
@@ -6138,6 +6266,10 @@ work_packages:
   human_review_triggers: *id001
 - id: WP-370
   name: Agent Application Alpha sealed evaluation campaign 02
+  closure:
+    status: complete
+    evidence: docs/agent-application-alpha.md
+    decision: Campaign 02 passed its sealed unfamiliar-domain gate and is retained as immutable predecessor evidence to the later four-language campaign.
   depends_on:
   - WP-365
   - WP-367
@@ -6181,6 +6313,10 @@ work_packages:
   human_review_triggers: *id001
 - id: WP-371
   name: Semantic durability profiles and standard one-phase commits
+  closure:
+    status: complete
+    evidence: docs/performance/wp-371-semantic-durability-profiles.md
+    decision: Acknowledged-crash durability is the public guarantee; standard one-phase and hardened oracle profiles preserve exact semantics.
   depends_on:
   - WP-369
   objective: Separate the application acknowledgement guarantee from the redb mechanism and make Immediate one-phase
@@ -6233,6 +6369,10 @@ work_packages:
   human_review_triggers: *id001
 - id: WP-372
   name: Atomic terminal admission for synchronous commands
+  closure:
+    status: complete
+    evidence: docs/architecture/wp-362-391-closure.md
+    decision: Ordinary synchronous commands use the fused atomic terminal path only where pre-commit crash is observationally prior admission.
   depends_on:
   - WP-371
   objective: Remove durable Pending churn from new synchronous commands by moving only bounded side-effect-free
@@ -6301,6 +6441,10 @@ work_packages:
   human_review_triggers: *id001
 - id: WP-373
   name: Compact durable storage format V2 and migration
+  closure:
+    status: complete
+    evidence: docs/performance/wp-373-compact-storage-v2.md
+    decision: Compact versioned durable records and the bounded restartable predecessor migration are shipped with compatibility fixtures.
   depends_on:
   - WP-372
   objective: Replace repeated full StoredEnvelope framing with a compact checked V2 record header and migrate V1
@@ -6355,6 +6499,10 @@ work_packages:
   human_review_triggers: *id001
 - id: WP-374
   name: Single authoritative event payload and reciprocal references
+  closure:
+    status: complete
+    evidence: docs/performance/wp-374-authoritative-event-references.md
+    decision: Events have one authoritative payload with checked reciprocal references from commits, routes, and outbox state.
   depends_on:
   - WP-373
   objective: Store each complete durable event exactly once and replace commit/outbox payload copies with atomic exact
@@ -6415,6 +6563,10 @@ work_packages:
   human_review_triggers: *id001
 - id: WP-375
   name: Conservative partition-index generations and renewed parity gate
+  closure:
+    status: complete
+    evidence: docs/performance/wp-375-partition-index-generations.md
+    decision: Generation invalidation remains conservative and bounded while avoiding redundant prefix rows; the renewed gate retained every miss.
   depends_on:
   - WP-374
   objective: Replace prefix epoch write amplification with one conservative generation per affected partition/index
@@ -6482,6 +6634,10 @@ work_packages:
   human_review_triggers: *id001
 - id: WP-376
   name: Timer-free self-clocking command scheduler
+  closure:
+    status: complete
+    evidence: docs/performance/wp-376-timer-free-scheduler.md
+    decision: Solo commands no longer pay rounded Tokio timer parks; saturated grouping remains naturally self-clocking and bounded.
   depends_on:
   - WP-375
   objective: Remove sub-millisecond Tokio timer-wheel parks from low-load command and historical-idempotency lanes
@@ -6530,6 +6686,10 @@ work_packages:
   human_review_triggers: *id001
 - id: WP-377
   name: Exact-identity read hot path
+  closure:
+    status: complete
+    evidence: docs/performance/wp-377-safe-read-hot-path.md
+    decision: Exact query programs and trusted-in-generation durable records reuse pay-once proof material without weakening authorization or corruption checks.
   depends_on:
   - WP-376
   objective: Remove immutable query-artifact cloning, repeated capability reconstruction, and redundant durable
@@ -6595,6 +6755,10 @@ work_packages:
   human_review_triggers: *id001
 - id: WP-378
   name: Incremental command preparation and structural reservation
+  closure:
+    status: complete
+    evidence: docs/performance/wp-378-command-cpu-pipeline.md
+    decision: Group compatibility, command preparation, ownership, and wire reservation are incremental and bounded with exact durable bytes.
   depends_on:
   - WP-377
   objective: Remove residual serialized command CPU through measured stage decomposition, incremental compatibility,
@@ -6668,6 +6832,10 @@ work_packages:
   human_review_triggers: *id001
 - id: WP-379
   name: Renewed public application parity and alpha eligibility
+  closure:
+    status: complete_failed_performance_gate
+    evidence: docs/performance/wp-379-parity-decision.md
+    decision: The complete renewed comparison published an immutable not-eligible decision with every miss retained; current qualification belongs to WP-623/WP-674.
   depends_on:
   - WP-378
   objective: Run the complete semantic, crash, unary, seed, and concurrent PostgreSQL comparison after the measured
@@ -6715,6 +6883,10 @@ work_packages:
   human_review_triggers: *id001
 - id: WP-380
   name: Multi-database and MCP compatibility interface freeze
+  closure:
+    status: complete
+    evidence: docs/architecture/wp-362-391-closure.md
+    decision: Multi-database selectors, MCP compatibility, isolation, naming, and fail-closed ambiguity rules are frozen and implemented.
   depends_on:
   - WP-200
   objective: Freeze the approved bounded database-selector boundary and underscore-only MCP compatibility cut before
@@ -6764,6 +6936,10 @@ work_packages:
   human_review_triggers: *id001
 - id: WP-381
   name: Underscore MCP compatibility and agent ergonomics
+  closure:
+    status: complete
+    evidence: docs/architecture/wp-362-391-closure.md
+    decision: MCP tool/resource naming accepts the documented compatibility spelling while retaining one canonical symbolic operation identity.
   depends_on:
   - WP-380
   objective: Regenerate every fixed and dynamic MCP surface with underscore-only tool names and add actionable
@@ -6833,6 +7009,10 @@ work_packages:
   human_review_triggers: *id001
 - id: WP-382
   name: Database selector configuration and public clients
+  closure:
+    status: complete
+    evidence: docs/architecture/wp-362-391-closure.md
+    decision: Database aliases propagate through configuration, metadata, CLI, generated clients, MCP, and errors without becoming application authority.
   depends_on:
   - WP-380
   objective: Add bounded multi-database configuration and propagate one exact database alias through gRPC, hosted MCP,
@@ -6890,6 +7070,10 @@ work_packages:
   human_review_triggers: *id001
 - id: WP-383
   name: Isolated multi-database server composition
+  closure:
+    status: complete
+    evidence: docs/architecture/wp-362-391-closure.md
+    decision: Each configured database owns isolated storage, runtime, readiness, credentials, backup roots, and lifecycle under one server process.
   depends_on:
   - WP-382
   objective: Replace the single production graph with a bounded alias registry of independently started, routed,
@@ -6949,6 +7133,10 @@ work_packages:
   human_review_triggers: *id001
 - id: WP-384
   name: Multi-database operator workflow
+  closure:
+    status: complete
+    evidence: docs/architecture/wp-362-391-closure.md
+    decision: Install, add-database, bootstrap, deploy, bind, seed, health, backup, and removal workflows are alias-aware and receipted.
   depends_on:
   - WP-381
   - WP-383
@@ -6997,6 +7185,10 @@ work_packages:
   human_review_triggers: *id001
 - id: WP-385
   name: Multi-database and MCP end-to-end proof
+  closure:
+    status: complete
+    evidence: docs/architecture/wp-362-391-closure.md
+    decision: End-to-end tests prove target identity, cross-database isolation, MCP selection, and fail-closed wrong-alias behavior.
   depends_on:
   - WP-384
   objective: Publish final conformance and crash evidence for two isolated application databases and the
@@ -7046,6 +7238,10 @@ work_packages:
   human_review_triggers: *id001
 - id: WP-386
   name: First real application interface freeze
+  closure:
+    status: complete
+    evidence: docs/architecture/wp-362-391-closure.md
+    decision: The first-real-app public contract freezes one exact lock/deploy/role/query identity and the two-credential authoring/application model.
   depends_on:
   - WP-385
   objective: Freeze offline database addition, natural symbolic JSON, lock-only deployment, selected-database response
@@ -7063,6 +7259,10 @@ work_packages:
   human_review_triggers: *id001
 - id: WP-387
   name: Journaled database addition and safe startup diagnostics
+  closure:
+    status: complete
+    evidence: docs/architecture/wp-362-391-closure.md
+    decision: Database addition is journaled and restartable; invalid path containment and startup failures surface typed actionable diagnostics.
   depends_on: [WP-386]
   objective: Add one database to installer-owned user or system configuration without manual edits or loss of legacy state.
   requirements: [DX-001, DX-002, DX-003]
@@ -7081,6 +7281,10 @@ work_packages:
   human_review_triggers: *id001
 - id: WP-388
   name: Schema-directed application JSON and symbolic failures
+  closure:
+    status: complete
+    evidence: docs/architecture/wp-362-391-closure.md
+    decision: CLI and MCP JSON values are schema-directed, and failures name symbolic fields/types rather than only numeric IDs.
   depends_on: [WP-386]
   objective: Make every application surface consume the same natural schema-directed JSON and return name-only errors.
   requirements: [DX-004, DX-005, DX-008]
@@ -7100,6 +7304,10 @@ work_packages:
   human_review_triggers: *id001
 - id: WP-389
   name: Locked installed application deployment and provisioning
+  closure:
+    status: complete
+    evidence: docs/architecture/wp-362-391-closure.md
+    decision: Installed deployment verifies the exact lock before mutation, deploys contract/query together, reconciles widened roles, provisions credentials, and seeds resumably.
   depends_on: [WP-387, WP-388]
   objective: Deploy, explicitly provision, and seed an exact locked application through one resumable installed workflow.
   requirements: [DX-006, DX-007, DX-008]
@@ -7119,6 +7327,10 @@ work_packages:
   human_review_triggers: *id001
 - id: WP-390
   name: Application MCP tools, selected database identity, and doctor
+  closure:
+    status: complete
+    evidence: docs/architecture/wp-362-391-closure.md
+    decision: MCP exposes selected database identity, health/active state, and role-filtered application tools with doctor coverage and no privileged bypass.
   depends_on: [WP-388, WP-389]
   objective: Make the selected database and authorized named application operations obvious on every public agent surface.
   requirements: [DX-009, DX-010, DX-011]
@@ -7140,6 +7352,10 @@ work_packages:
   human_review_triggers: *id001
 - id: WP-391
   name: First real application authoring reference
+  closure:
+    status: complete
+    evidence: docs/architecture/wp-362-391-closure.md
+    decision: The handbook documents single-to-multi migration, deployment, value tags, reserved identifiers, credentials, MCP wiring, and troubleshooting.
   depends_on: [WP-386]
   objective: Publish a complete generated and tested authoring reference for contracts, RiffQL, values, deployment, and MCP.
   requirements: [DX-003, DX-004, DX-005, DX-012]
