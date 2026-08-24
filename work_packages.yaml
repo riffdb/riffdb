@@ -17191,14 +17191,15 @@ work_packages:
 - id: WP-674
   name: Portable unary SLO governance and frozen alpha baseline
   depends_on: [WP-654, WP-670, WP-673]
-  objective: After exact acceptance of ADR-0142, replace the unreachable universal unary
-    PostgreSQL ratio with fixed N1/E2 service levels and a non-rotatable RiffDB regression bank,
-    retain same-run PostgreSQL unary disclosure and every mixed/seed comparator obligation, and
-    hand WP-623 one internally consistent release gate.
+  objective: After exact acceptance of ADR-0142 and its ADR-0143 stability amendment, replace the
+    unreachable universal unary PostgreSQL ratio with fixed N1/E2 service levels and a
+    non-rotatable RiffDB regression bank, retain same-run PostgreSQL unary disclosure and every
+    mixed/seed comparator obligation, and hand WP-623 one internally consistent release gate.
   requirements: [PERF-005, PERF-008, PERF-018, END-007, END-008, END-009, END-010]
-  required_adrs: [ADR-0056, ADR-0059, ADR-0123, ADR-0132, ADR-0141, ADR-0142]
+  required_adrs: [ADR-0056, ADR-0059, ADR-0123, ADR-0132, ADR-0141, ADR-0142, ADR-0143]
   allowed_paths: [work_packages.yaml, SPEC.md, adr/README.md,
     adr/0142-portable-unary-service-levels-and-comparator-evidence.md,
+    adr/0143-fixed-generation-unary-stability.md,
     examples/app-baseline/**, benchmarks/**, scripts/**, release/**,
     tests/**, docs/SUMMARY.md, docs/performance/**, docs/operations/**]
   deliverables:
@@ -17209,11 +17210,12 @@ work_packages:
     and p95 ceilings, PostgreSQL ratios, exact RiffDB baseline identity, and per-scenario regression
     results without caller-selectable classification
   - Negative conformance for missing generations, hosts, backends or scenarios; greater-than-20-
-    percent repetition spread; host, workload, semantic or correctness drift; baseline rotation;
-    and attempted post-result reclassification
-  - Three counterbalanced 20-warmup/100-measurement process generations per unary scenario on N1,
-    E2, and workstation, binding the exact artifact and value-free report digests into the frozen
-    baseline receipt while preserving every unfavorable PostgreSQL comparison
+    percent central-three repetition spread; performance-selected retry; host, workload, semantic
+    or correctness drift; baseline rotation; and attempted post-result reclassification
+  - Five fixed counterbalanced 20-warmup/100-measurement process generations per unary scenario on
+    N1, E2, and workstation, retaining both extremes and binding the exact artifact and value-free
+    report digests into the frozen baseline receipt while preserving every unfavorable PostgreSQL
+    comparison
   - Paired unchanged c32 mixed and full-seed controls proving the governance implementation did
     not change the product, workload, comparator, durability, topology, or current public result
   - WP-623 dependency, deliverable, and exit-gate reconciliation plus closure of WP-671/WP-672 as
