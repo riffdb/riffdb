@@ -207,6 +207,7 @@ write_budget_report() {
     printf '%s\n' 'postgres_synchronous_commit=on'
     printf '%s\n' 'postgres_fsync=on'
     printf '%s\n' 'postgres_full_page_writes=on'
+    printf '%s\n' 'riffdb_durability_mode=group'
     printf '%s\n' 'postgres_filesystem=fixture'
     printf '%s\n' 'postgres_mount_options=rw'
     printf '%s\n' \
