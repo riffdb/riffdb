@@ -1,8 +1,8 @@
 # ADR-0144: Release-Evidence Durability-Mode Reconciliation
 
-- **Status:** Proposed
-- **Direction approved:** Not yet
-- **Exact text accepted:** No
+- **Status:** Accepted
+- **Direction approved:** 2026-08-24 (maintainer)
+- **Exact text accepted:** Yes, 2026-08-24 (maintainer)
 - **Decision deadline:** Before WP-200 changes or republishes its public budget
   comparison evidence
 - **Requires:** ADR-0058, ADR-0101, ADR-0132
@@ -10,8 +10,7 @@
   WP-200's read-only owner-package boundary for the named evidence adapter
 
 This record captures a conflict discovered while refreshing WP-200 evidence at
-current HEAD. It is not authoritative until the maintainer accepts its exact
-text.
+current HEAD. The maintainer accepted this exact text on 2026-08-24.
 
 ## Context
 
