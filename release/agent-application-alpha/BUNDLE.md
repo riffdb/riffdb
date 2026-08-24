@@ -19,9 +19,12 @@ application client is patched to the bundled public SDK, and network access is
 disabled. The bundle self-test creates a fresh application and completes
 `riffdb dev --seed --acceptance` through this offline path.
 
-A freshly scaffolded Rust repository includes its exact `Cargo.lock` from that
-sealed dependency set, so its first `cargo check --locked` remains offline and
-requires no dependency-resolution step.
+A freshly scaffolded Rust repository starts with the public registry-shaped
+`Cargo.lock`. On its first `riffdb dev` run, this predecessor source-SDK bundle
+reconciles that lock once, offline, against the exact bundled source patch and
+then executes Cargo with `--locked`. Later runs require no dependency-resolution
+step. Package-first bundles do not perform this reconciliation: their generated
+lock is already package-shaped and remains byte-identical.
 
 For TypeScript, `riffdb new --language typescript` materializes the exact
 compiler, Node types, product runtime, lockfile, build scripts, and HTTP starter
