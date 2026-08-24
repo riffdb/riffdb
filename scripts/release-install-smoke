@@ -124,8 +124,8 @@ if ! jq -e --arg fixture_digest "$fixture_digest" '
     and .writable_format_upgrade_receipt_versions == [1]
     and .readable_redb_layout_versions == [1]
     and .writable_redb_layout_versions == [1]
-    and .readable_offline_maintenance_receipt_versions == [1]
-    and .writable_offline_maintenance_receipt_versions == [1]
+    and .readable_offline_maintenance_receipt_versions == [1, 2]
+    and .writable_offline_maintenance_receipt_versions == [1, 2]
     and .readable_contract_migration_check_receipt_versions == [2]
     and .writable_contract_migration_check_receipt_versions == [2]
     and .downgrade == "unsupported"
