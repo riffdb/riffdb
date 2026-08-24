@@ -76,10 +76,18 @@ scenarios=(
 host_invalid_attempt() {
     local report="$1"
     [[ -f "$report" ]] && jq -e '
-      .schema == "riffdb.app-baseline/v1"
-      and (
-        .host_validity.preflight.valid == false
-        or .host_validity.postflight.valid == false
+      (
+        .schema == "riffdb.app-baseline/v1"
+        and (
+          .host_validity.preflight.valid == false
+          or .host_validity.postflight.valid == false
+        )
+      )
+      or (
+        .schema == "riffdb.app-baseline-non-evidentiary/v1"
+        and .status == "non_evidentiary"
+        and .reason.code == "host_interference"
+        and .evidence_eligibility.host_idle == false
       )
     ' "$report" >/dev/null 2>&1
 }
