@@ -14,6 +14,8 @@ pub const RIFFQL_LANGUAGE_VERSION_EXACT_RESULT_SET_V1: u32 = 4;
 pub const RIFFQL_LANGUAGE_VERSION_PROJECTED_VECTOR_V1: u32 = 5;
 /// Compiler-declared exact predicate and independent-order families.
 pub const RIFFQL_LANGUAGE_VERSION_EXACT_PREDICATE_V1: u32 = 6;
+/// Compiler-declared nullable total-order placement.
+pub const RIFFQL_LANGUAGE_VERSION_NULLABLE_EXACT_ORDER_V1: u32 = 7;
 /// Maximum compiler-declared causal projection wait.
 pub const MAX_PROJECTED_CAUSAL_WAIT_MS: u32 = 30_000;
 /// Maximum compiler-declared bounded projection lag.
@@ -272,6 +274,17 @@ pub struct OrderTerm {
     pub path: Spanned<Path>,
     /// Direction.
     pub direction: Spanned<Direction>,
+    /// Explicit placement for missing and null values.
+    pub null_placement: Option<Spanned<NullPlacement>>,
+}
+
+/// Closed source-level placement for missing and null order values.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum NullPlacement {
+    /// Place the shared no-value class before every present value.
+    First,
+    /// Place the shared no-value class after every present value.
+    Last,
 }
 
 /// Ordering direction.

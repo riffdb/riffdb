@@ -4,12 +4,12 @@ use crate::{
     DiagnosticCode, Direction, Document, Expression, FieldSelection, Identifier, Literal,
     MAX_AGGREGATE_BINDINGS, MAX_AGGREGATE_GROUP_KEYS, MAX_AGGREGATE_MEASURES, MAX_BINDINGS,
     MAX_COLLECTION_ITEMS, MAX_NESTING, MAX_PROJECTED_CAUSAL_WAIT_MS, MAX_PROJECTED_LAG_MS,
-    MAX_SYNTAX_ITEMS, OrderTerm, Parameter, ParseDiagnostic, ParseDiagnostics, Path,
+    MAX_SYNTAX_ITEMS, NullPlacement, OrderTerm, Parameter, ParseDiagnostic, ParseDiagnostics, Path,
     ProjectedFreshness, ProjectedSource, QueryBody, RIFFQL_LANGUAGE_VERSION,
     RIFFQL_LANGUAGE_VERSION_EXACT_PREDICATE_V1, RIFFQL_LANGUAGE_VERSION_EXACT_RESULT_SET_V1,
-    RIFFQL_LANGUAGE_VERSION_OPERATIONAL_V1, RIFFQL_LANGUAGE_VERSION_PROJECTED_VECTOR_V1,
-    RIFFQL_LANGUAGE_VERSION_SECRET_OUTPUT_V1, Selection, Span, Spanned, Take, TypeReference,
-    UnaryOperator,
+    RIFFQL_LANGUAGE_VERSION_NULLABLE_EXACT_ORDER_V1, RIFFQL_LANGUAGE_VERSION_OPERATIONAL_V1,
+    RIFFQL_LANGUAGE_VERSION_PROJECTED_VECTOR_V1, RIFFQL_LANGUAGE_VERSION_SECRET_OUTPUT_V1,
+    Selection, Span, Spanned, Take, TypeReference, UnaryOperator,
 };
 
 /// Parses one UTF-8 RiffQL source document in a supported language version.
@@ -145,6 +145,13 @@ impl Parser {
         };
         let language_version = if projected_source.is_some() {
             RIFFQL_LANGUAGE_VERSION_PROJECTED_VECTOR_V1
+        } else if body
+            .bindings
+            .iter()
+            .flat_map(|binding| &binding.order)
+            .any(|term| term.null_placement.is_some())
+        {
+            RIFFQL_LANGUAGE_VERSION_NULLABLE_EXACT_ORDER_V1
         } else if body_uses_rich_exact_result_set(&body) {
             RIFFQL_LANGUAGE_VERSION_EXACT_PREDICATE_V1
         } else if body_uses_exact_result_set(&body) {
@@ -353,7 +360,32 @@ impl Parser {
                         None,
                     ));
                 };
-                order.push(OrderTerm { path, direction });
+                let null_placement = if self.take_word("nulls").is_some() {
+                    if let Some(span) = self.take_word("first") {
+                        Some(Spanned {
+                            value: NullPlacement::First,
+                            span,
+                        })
+                    } else if let Some(span) = self.take_word("last") {
+                        Some(Spanned {
+                            value: NullPlacement::Last,
+                            span,
+                        })
+                    } else {
+                        return Err(self.error(
+                            DiagnosticCode::UnexpectedToken,
+                            "null placement requires first or last",
+                            Some("use nulls first or nulls last"),
+                        ));
+                    }
+                } else {
+                    None
+                };
+                order.push(OrderTerm {
+                    path,
+                    direction,
+                    null_placement,
+                });
                 if self.take(TokenKind::Comma).is_none() {
                     break;
                 }

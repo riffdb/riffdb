@@ -1,13 +1,15 @@
 //! Independent exact-predicate/order semantic and canonical-codec evidence.
 
+use std::cmp::Ordering;
 use std::collections::BTreeMap;
 
 use riffdb_query_ir::{
-    ExactComparisonProfileV1, ExactOrderDirectionV1, ExactOrderProgramV1, ExactOrderTermV1,
-    ExactParameterValueV1, ExactPredicateLeafV1, ExactPredicateNodeV1, ExactPredicateOperatorV1,
-    ExactPredicateProgramErrorV1, ExactPredicateProgramV1, ExactProviderRequirementV1,
-    ExactReferenceCellV1, ExactReferenceRowV1, ExactScalarV1, ExactValueSlotV1,
-    MAX_EXACT_BOOLEAN_BRANCHES_V1, MAX_EXACT_FAMILY_MEMBERS_V1,
+    ExactComparisonProfileV1, ExactOrderDirectionV1, ExactOrderProgramV1, ExactOrderProgramV2,
+    ExactOrderTermV1, ExactOrderTermV2, ExactParameterValueV1, ExactPredicateLeafV1,
+    ExactPredicateNodeV1, ExactPredicateOperatorV1, ExactPredicateProgramErrorV1,
+    ExactPredicateProgramV1, ExactPredicateProgramV2, ExactProviderRequirementV1,
+    ExactReferenceCellV1, ExactReferenceRowV1, ExactScalarV1, ExactStatePlacementV1,
+    ExactValueSlotV1, MAX_EXACT_BOOLEAN_BRANCHES_V1, MAX_EXACT_FAMILY_MEMBERS_V1,
 };
 use riffdb_types::{FieldId, ProjectionProviderPolicyModeV1};
 
@@ -454,4 +456,199 @@ fn randomized_history_matches_a_direct_two_valued_reference() {
             .map(|(_, id)| vec![ExactScalarV1::U64(id)])
             .collect::<Vec<_>>()
     );
+}
+
+#[test]
+fn nullable_order_uses_one_no_value_class_and_direction_never_reverses_placement() {
+    let order = ExactOrderProgramV2::new(vec![
+        ExactOrderTermV2::new(
+            field_id(5),
+            ExactComparisonProfileV1::U64,
+            ExactOrderDirectionV1::Descending,
+            ExactStatePlacementV1::NullsLastV1,
+            false,
+        ),
+        ExactOrderTermV2::new(
+            field_id(4),
+            ExactComparisonProfileV1::U64,
+            ExactOrderDirectionV1::Ascending,
+            ExactStatePlacementV1::PresentOnlyV1,
+            false,
+        ),
+        ExactOrderTermV2::new(
+            field_id(1),
+            ExactComparisonProfileV1::U64,
+            ExactOrderDirectionV1::Ascending,
+            ExactStatePlacementV1::PresentOnlyV1,
+            true,
+        ),
+    ])
+    .expect("nullable total order");
+    let program = ExactPredicateProgramV2::new(
+        leaf(
+            3,
+            ExactPredicateOperatorV1::GreaterEqual,
+            ExactComparisonProfileV1::U64,
+            Some(ExactValueSlotV1::Scalar(0)),
+        ),
+        vec![order],
+        0,
+        true,
+        10,
+        10,
+        requirement(),
+    )
+    .expect("nullable program");
+    let parameters = BTreeMap::from([(0, ExactParameterValueV1::Scalar(ExactScalarV1::U64(0)))]);
+    let rows = [
+        row(1, "one", 1, 20, ExactReferenceCellV1::Missing),
+        row(2, "two", 1, 10, ExactReferenceCellV1::Null),
+        row(
+            3,
+            "three",
+            1,
+            30,
+            ExactReferenceCellV1::Value(ExactScalarV1::U64(7)),
+        ),
+        row(
+            4,
+            "four",
+            1,
+            40,
+            ExactReferenceCellV1::Value(ExactScalarV1::U64(9)),
+        ),
+    ];
+    let result = program
+        .evaluate_reference(&rows, &parameters, program.members()[0], 0, 10)
+        .expect("nullable reference result");
+    assert_eq!(
+        result.entity_keys,
+        vec![
+            vec![ExactScalarV1::U64(4)],
+            vec![ExactScalarV1::U64(3)],
+            vec![ExactScalarV1::U64(2)],
+            vec![ExactScalarV1::U64(1)],
+        ]
+    );
+    let decoded = ExactPredicateProgramV2::from_canonical_bytes(program.canonical_bytes())
+        .expect("canonical nullable decode");
+    assert_eq!(decoded, program);
+}
+
+#[test]
+fn randomized_nullable_truth_table_matches_all_direction_placement_pairs() {
+    let parameters = BTreeMap::from([(0, ExactParameterValueV1::Scalar(ExactScalarV1::U64(0)))]);
+    let mut seed = 0x145_u64;
+    let mut rows = Vec::new();
+    let mut expected_rows = Vec::new();
+    for id in 1..=192_u64 {
+        seed = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+        let secondary = (seed >> 9) % 17;
+        let state = match seed % 3 {
+            0 => ExactReferenceCellV1::Missing,
+            1 => ExactReferenceCellV1::Null,
+            _ => ExactReferenceCellV1::Value(ExactScalarV1::U64((seed >> 17) % 31)),
+        };
+        let comparable = match &state {
+            ExactReferenceCellV1::Value(ExactScalarV1::U64(value)) => Some(*value),
+            _ => None,
+        };
+        rows.push(row(id, "value", 1, secondary, state));
+        expected_rows.push((id, secondary, comparable));
+    }
+
+    for (placement, direction) in [
+        (
+            ExactStatePlacementV1::NullsFirstV1,
+            ExactOrderDirectionV1::Ascending,
+        ),
+        (
+            ExactStatePlacementV1::NullsFirstV1,
+            ExactOrderDirectionV1::Descending,
+        ),
+        (
+            ExactStatePlacementV1::NullsLastV1,
+            ExactOrderDirectionV1::Ascending,
+        ),
+        (
+            ExactStatePlacementV1::NullsLastV1,
+            ExactOrderDirectionV1::Descending,
+        ),
+    ] {
+        let order = ExactOrderProgramV2::new(vec![
+            ExactOrderTermV2::new(
+                field_id(5),
+                ExactComparisonProfileV1::U64,
+                direction,
+                placement,
+                false,
+            ),
+            ExactOrderTermV2::new(
+                field_id(4),
+                ExactComparisonProfileV1::U64,
+                ExactOrderDirectionV1::Ascending,
+                ExactStatePlacementV1::PresentOnlyV1,
+                false,
+            ),
+            ExactOrderTermV2::new(
+                field_id(1),
+                ExactComparisonProfileV1::U64,
+                ExactOrderDirectionV1::Ascending,
+                ExactStatePlacementV1::PresentOnlyV1,
+                true,
+            ),
+        ])
+        .expect("truth-table order");
+        let program = ExactPredicateProgramV2::new(
+            leaf(
+                3,
+                ExactPredicateOperatorV1::GreaterEqual,
+                ExactComparisonProfileV1::U64,
+                Some(ExactValueSlotV1::Scalar(0)),
+            ),
+            vec![order],
+            0,
+            true,
+            192,
+            192,
+            requirement(),
+        )
+        .expect("truth-table program");
+        let mut expected = expected_rows.clone();
+        expected.sort_by(|left, right| {
+            let state = match (left.2, right.2) {
+                (None, None) => Ordering::Equal,
+                (None, Some(_)) => match placement {
+                    ExactStatePlacementV1::NullsFirstV1 => Ordering::Less,
+                    ExactStatePlacementV1::NullsLastV1 => Ordering::Greater,
+                    ExactStatePlacementV1::PresentOnlyV1 => unreachable!(),
+                },
+                (Some(_), None) => match placement {
+                    ExactStatePlacementV1::NullsFirstV1 => Ordering::Greater,
+                    ExactStatePlacementV1::NullsLastV1 => Ordering::Less,
+                    ExactStatePlacementV1::PresentOnlyV1 => unreachable!(),
+                },
+                (Some(left), Some(right)) => {
+                    let compared = left.cmp(&right);
+                    match direction {
+                        ExactOrderDirectionV1::Ascending => compared,
+                        ExactOrderDirectionV1::Descending => compared.reverse(),
+                    }
+                }
+            };
+            state
+                .then_with(|| left.1.cmp(&right.1))
+                .then_with(|| left.0.cmp(&right.0))
+        });
+        let result = program
+            .evaluate_reference(&rows, &parameters, program.members()[0], 0, 192)
+            .expect("truth-table result");
+        assert_eq!(
+            result.entity_keys,
+            expected
+                .into_iter()
+                .map(|(id, _, _)| vec![ExactScalarV1::U64(id)])
+                .collect::<Vec<_>>()
+        );
+    }
 }

@@ -7667,7 +7667,11 @@ behavior:
   and discarding rows or cursor pages is forbidden.
 - `OQ-005`: Top-N MUST use a total declared index/projection order or a fully
   charged compiler-bounded candidate set and MUST append a deterministic unique
-  tie-breaker.
+  tie-breaker. An order term whose admitted or installed-lineage values may be
+  missing or null MUST declare `nulls first` or `nulls last` in compiled source;
+  backend defaults and caller-selected placement are forbidden. Missing and
+  explicit null form one `NoValue` class for that term, and descending direction
+  MUST reverse only present-value comparison, never the declared state placement.
 - `OQ-006`: A cursor MUST bind predicate selection, ordering, module/plan,
   authorization, text profile, projection generation, database history, and
   snapshot; drift MUST fail closed or return an already-declared typed reset.
@@ -7769,7 +7773,9 @@ behavior:
   through indexed cardinality/order-statistic capability under static and
   runtime work accounting; walking prior rows or pages is forbidden. Offset
   stability is guaranteed only within the bound snapshot, and a new current-
-  snapshot request MAY observe intervening writes.
+  snapshot request MAY observe intervening writes. State-aware orders MUST apply
+  their compiler-declared `NoValue` placement before cardinality and ordinal
+  selection at the same authorized provider epoch.
 - `OQ-029`: An exact operational search method MUST remain one finite compiler-
   enumerated family of typed optional search, filter, total order, limit, and
   offset inputs. No request may carry a field/index/provider name, arbitrary

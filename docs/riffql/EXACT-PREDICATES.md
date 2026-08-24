@@ -56,6 +56,34 @@ query SearchUsers(
 }
 ```
 
+## Nullable order placement
+
+RiffQL V7 adds explicit placement for an order field that may be missing in an
+installed schema version or may contain null:
+
+```riffql
+order by subtitle asc nulls last, created_at desc nulls first, record_id asc
+```
+
+Only `nulls first` and `nulls last` are accepted. They are part of the named
+query and its plan/module identity; an application request cannot choose or
+override them. Omission is valid only when the compiler proves every admitted
+row and installed schema version has a present, non-null value. The complete
+ascending entity-key suffix is always present-only and cannot carry a null
+placement.
+
+For ordering, a missing field and an explicit null are one `NoValue` class.
+They compare equal for that term, so later order terms and finally the complete
+entity key resolve the tie. Direction changes only value-versus-value order:
+`desc nulls last` still places every `NoValue` after all present values. RiffDB
+does not inherit SQL, storage-engine, locale, or host-language null defaults and
+does not substitute a sentinel scalar.
+
+WP-675 makes the V7 source and its provider-independent V10 semantic/module
+artifacts compilable. Runtime execution remains fail-closed until provider-state
+V5 is activated by WP-676; there is no scan, request-time sort, page walk, or
+older-provider fallback during that interval.
+
 Every predicate and order field requires a declared partition-routed index.
 One missing index, invalid type, incomplete key tie-breaker, excessive Boolean
 shape, or unsupported family member rejects the complete named query with a
@@ -71,6 +99,16 @@ seals optional-family members, comparison profiles, policy mode, exact-count
 and ordinal requirements, independent order layouts, and static work/state
 bounds into its provider identity. Existing V1–V8 source, plan, module, and V1
 through V3 provider identities remain byte-exact.
+
+Explicit nullable placement selects the additive V7/V10/V10 identities even
+when the current field is required. Sources without placement continue to emit
+V6/V9/V9 when the complete present/non-null proof succeeds; earlier bytes and
+hashes are not reinterpreted.
+
+For a successor contract, compilation that omits placement must receive the
+complete contiguous lineage beginning at version 1. A current bundle by
+itself, an out-of-order lineage, or a lineage with a version gap is not proof
+and fails closed with a diagnostic suggesting `nulls first` or `nulls last`.
 
 V4 builds one policy-aligned partition in the background. Equality, range,
 set, state, and exact-text postings combine inside that provider. Each declared

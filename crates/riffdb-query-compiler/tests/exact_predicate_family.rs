@@ -1,11 +1,18 @@
 //! ADR-0134 semantic-family compiler acceptance without provider activation.
 
 use riffdb_contract_compiler::compile_contract_source;
-use riffdb_query_compiler::{PlannerDiagnosticCode, compile_exact_predicate_query_v1};
-use riffdb_query_ir::{
-    ExactPredicateOperatorV1, QUERY_IR_VERSION_EXACT_PREDICATE_V1, SymbolicCatalog,
+use riffdb_query_compiler::{
+    PlannerDiagnosticCode, compile_exact_predicate_query_v1,
+    compile_nullable_exact_predicate_query_v1,
 };
-use riffdb_riffql_syntax::{RIFFQL_LANGUAGE_VERSION_EXACT_PREDICATE_V1, parse_query};
+use riffdb_query_ir::{
+    ExactPredicateOperatorV1, ExactStatePlacementV1, QUERY_IR_VERSION_EXACT_PREDICATE_V1,
+    QUERY_IR_VERSION_NULLABLE_EXACT_ORDER_V1, SymbolicCatalog,
+};
+use riffdb_riffql_syntax::{
+    RIFFQL_LANGUAGE_VERSION_EXACT_PREDICATE_V1, RIFFQL_LANGUAGE_VERSION_NULLABLE_EXACT_ORDER_V1,
+    parse_query,
+};
 use riffdb_types::EXACT_PREDICATE_PROVIDER_STATE_SCHEMA_HASH_V4;
 use riffdb_types::ProjectionProviderPolicyModeV1;
 
@@ -172,5 +179,90 @@ query ReviewedUsers(
     assert_eq!(
         compiled.value_parameters(),
         &["before", "organization_id", "states"]
+    );
+}
+
+#[test]
+fn nullable_order_requires_and_seals_explicit_state_placement() {
+    let contract = CONTRACT
+        .replace("field created_at: u64", "field created_at: optional<u64>")
+        .replace(
+            "index by_created (organization_id, created_at, user_id)",
+            "index by_created (organization_id, created_at, user_id) presence(created_at)",
+        );
+    let query = QUERY
+        .replace("  $after: User.created_at?,\n", "")
+        .replace("      && when $after { created_at >= $after }\n", "")
+        .replace(
+            "order by created_at desc, user_id asc",
+            "order by created_at desc nulls last, user_id asc",
+        );
+    let document = parse_query(&query).expect("nullable order source");
+    assert_eq!(
+        document.language_version,
+        RIFFQL_LANGUAGE_VERSION_NULLABLE_EXACT_ORDER_V1
+    );
+    assert_eq!(QUERY_IR_VERSION_NULLABLE_EXACT_ORDER_V1, 10);
+    let compiled = compile_nullable_exact_predicate_query_v1(&document, &catalog(&contract))
+        .expect("nullable family");
+    assert_eq!(
+        compiled.program().orders()[0].terms()[0].placement(),
+        ExactStatePlacementV1::NullsLastV1
+    );
+    assert_eq!(
+        compiled.program().orders()[0].terms()[1].placement(),
+        ExactStatePlacementV1::PresentOnlyV1
+    );
+
+    let missing = query.replace(" desc nulls last", " desc");
+    let error = compile_exact_predicate_query_v1(
+        &parse_query(&missing).expect("legacy-shaped nullable source"),
+        &catalog(&contract),
+    )
+    .expect_err("implicit nullable placement must fail closed");
+    assert_eq!(
+        error.as_slice()[0].summary(),
+        "exact predicate order field lacks a complete present/non-null proof; add nulls first or nulls last"
+    );
+}
+
+#[test]
+fn omitted_placement_requires_a_complete_installed_lineage_proof() {
+    let successor_source = CONTRACT.replace("version 1", "version 2");
+    let successor = compile_contract_source(&successor_source).expect("successor contract");
+    let incomplete = SymbolicCatalog::from_bundle(&successor).expect("single-bundle catalog");
+    let error = compile_exact_predicate_query_v1(&parse_query(QUERY).expect("query"), &incomplete)
+        .expect_err("a successor bundle alone is not a complete lineage proof");
+    assert_eq!(
+        error.as_slice()[0].summary(),
+        "exact predicate order field lacks a complete present/non-null proof; add nulls first or nulls last"
+    );
+
+    let predecessor = compile_contract_source(CONTRACT).expect("predecessor contract");
+    let complete = SymbolicCatalog::from_lineage(&[predecessor, successor])
+        .expect("complete two-version lineage");
+    compile_exact_predicate_query_v1(&parse_query(QUERY).expect("query"), &complete)
+        .expect("lineage proves the required field existed and was non-null");
+}
+
+#[test]
+fn omitted_placement_rejects_incomplete_or_misordered_lineage_evidence() {
+    let first = compile_contract_source(CONTRACT).expect("first contract");
+    let third = compile_contract_source(&CONTRACT.replace("version 1", "version 3"))
+        .expect("third contract");
+    let error = SymbolicCatalog::from_lineage(&[first.clone(), third])
+        .expect_err("a version gap cannot prove historical presence");
+    assert_eq!(
+        error.as_slice()[0].summary(),
+        "contract lineage must contain every version in ascending order"
+    );
+
+    let second = compile_contract_source(&CONTRACT.replace("version 1", "version 2"))
+        .expect("second contract");
+    let error = SymbolicCatalog::from_lineage(&[second, first])
+        .expect_err("a reversed lineage cannot prove historical presence");
+    assert_eq!(
+        error.as_slice()[0].summary(),
+        "contract lineage must contain every version in ascending order"
     );
 }

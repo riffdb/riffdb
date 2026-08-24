@@ -46,6 +46,8 @@ fn generated_surfaces_cannot_accept_a_predicate_or_order_ast() {
             "ExactPredicateNodeV1",
             "ExactPredicateOperatorV1",
             "ExactOrderTermV1",
+            "ExactOrderTermV2",
+            "ExactStatePlacementV1",
             "provider_requirement",
         ] {
             assert!(
