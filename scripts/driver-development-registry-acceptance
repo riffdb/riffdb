@@ -31,12 +31,20 @@ cleanup() {
 trap cleanup EXIT
 
 distribution="${RIFFDB_DRIVER_DISTRIBUTION:-}"
+case "$(uname -m)" in
+    x86_64)
+        target=x86_64-unknown-linux-gnu
+        npm_cli_platform_package=@riffdb/cli-linux-x64
+        npm_other_cli_platform_package=@riffdb/cli-linux-arm64
+        ;;
+    aarch64)
+        target=aarch64-unknown-linux-gnu
+        npm_cli_platform_package=@riffdb/cli-linux-arm64
+        npm_other_cli_platform_package=@riffdb/cli-linux-x64
+        ;;
+    *) echo 'development registry acceptance requires a supported Linux architecture' >&2; exit 1 ;;
+esac
 if [[ -z "$distribution" ]]; then
-    case "$(uname -m)" in
-        x86_64) target=x86_64-unknown-linux-gnu ;;
-        aarch64) target=aarch64-unknown-linux-gnu ;;
-        *) echo 'development registry acceptance requires a supported Linux architecture' >&2; exit 1 ;;
-    esac
     cargo +1.97.0 build --release --locked -p riffdb-cli
     RIFFDB_PYTHON_COMPATIBILITY=manylinux_2_28 \
         ./scripts/build-python-distribution "$work_root/python"
@@ -120,7 +128,7 @@ rust_version="0.1.0-dev.$build_number"
 mkdir "$work_root/typescript"
 npm --cache "$work_root/npm-cache" --userconfig /dev/null install \
     --prefix "$work_root/typescript" \
-    "@riffdb/client@$npm_version" \
+    "@riffdb/client@$npm_version" "@riffdb/cli@$npm_version" \
     --registry http://127.0.0.1:4873/ \
     --ignore-scripts
 node --input-type=module -e \
@@ -128,8 +136,19 @@ node --input-type=module -e \
 cp fixtures/driver/development/typescript-empty-frontier-consumer.mjs \
     "$work_root/typescript/empty-frontier-consumer.mjs"
 node "$work_root/typescript/empty-frontier-consumer.mjs"
-node -e \
-    "const lock=require('$work_root/typescript/package-lock.json'); if(lock.packages['node_modules/@riffdb/client'].version !== '$npm_version') process.exit(1)"
+node - "$work_root/typescript/package-lock.json" "$npm_version" \
+    "$npm_cli_platform_package" "$npm_other_cli_platform_package" <<'JS'
+const [lockPath, version, platformPackage, absentPackage] = process.argv.slice(2);
+const packages = require(lockPath).packages;
+for (const name of ["@riffdb/client", "@riffdb/cli", platformPackage]) {
+  if (packages[`node_modules/${name}`]?.version !== version) process.exit(1);
+}
+if (packages[`node_modules/${absentPackage}`] !== undefined) process.exit(1);
+JS
+npm --cache "$work_root/npm-cache" --userconfig /dev/null ci \
+    --prefix "$work_root/typescript" \
+    --registry http://127.0.0.1:4873/ \
+    --ignore-scripts
 cp fixtures/adapters/better-auth/generated/typescript/client.ts \
     "$work_root/typescript/better-auth-client.ts"
 clients/typescript/runtime/node_modules/.bin/tsc \
