@@ -12427,6 +12427,14 @@ work_packages:
   acceptance_commands:
   - cargo test -p riffdb-commit --all-features
   - cargo test --workspace --all-features
+  closure:
+    status: complete
+    evidence: docs/architecture/WP-598-FRAMEWORK-PROFILE-VERIFICATION.md
+    decision: The coordinator audit admits grammar/IR pairs V7 through V10 one version at a time,
+      with anchored-event, secret/delete, framework-profile, and reimport-class evidence at the
+      whitelist site. The unchanged WP-598 race schedules pass, the next version remains refused,
+      and commit plus full-workspace acceptance is green without granting workers or callers new
+      derivation authority.
   human_review_triggers: *id001
 - id: WP-607
   name: Unseal entity delete for unique-carrying entities in the first delete format
@@ -12452,6 +12460,13 @@ work_packages:
   acceptance_commands:
   - cargo test -p riffdb-contract-compiler -p riffdb-commit --all-features
   - cargo test --test storage_recovery_matrix
+  closure:
+    status: complete
+    evidence: docs/architecture/WP-598-FRAMEWORK-PROFILE-VERIFICATION.md
+    decision: Unique-carrying entity deletion is unsealed only on the audited delete-aware path.
+      Compiler diagnostics, both FIFO delete/create schedules, value release and reinsertion,
+      reciprocal V2 tombstones, chain heads, checkpoint substitution, and recovery all pass while
+      missing or mismatched durable transition evidence remains fail-closed.
   human_review_triggers: *id001
 - id: WP-608
   name: Close mixed capsule and legacy command-history persistence
@@ -12486,6 +12501,13 @@ work_packages:
   - cargo test -p riffdb-storage-redb --all-features
   - cargo test -p riffdb-commit --test command_concurrency --all-features
   - cargo test -p riffdb-sim --test seeded_campaign --all-features
+  closure:
+    status: complete
+    evidence: docs/architecture/WP-608-MIXED-COMMAND-HISTORY-AUDIT.md
+    decision: Entity-bearing legacy uncapsulated commits now refuse before mutation, while the
+      production capsule-authoritative path remains unchanged. Both mixed-history orders reopen
+      cleanly, architecture tests prohibit unwalkable entity history, real missing evidence still
+      reports corruption, and the storage, command-schedule, and seeded-simulation gates pass.
   human_review_triggers: *id001
 - id: WP-609
   name: Rebase the durability journal before offline history retention
