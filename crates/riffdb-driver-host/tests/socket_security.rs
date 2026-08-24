@@ -14,11 +14,9 @@ struct TestRoot(PathBuf);
 impl TestRoot {
     fn new() -> Self {
         let unique = NEXT_ROOT.fetch_add(1, Ordering::Relaxed);
-        let path = std::env::current_dir()
-            .expect("working directory")
-            .join("target/dh-socket")
-            .join(format!("{}-{unique}", std::process::id()));
-        fs::create_dir_all(&path).expect("test root");
+        let path =
+            std::env::temp_dir().join(format!("riffdb-dh-socket-{}-{unique}", std::process::id()));
+        fs::create_dir(&path).expect("unique test root");
         fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).expect("permissions");
         Self(path)
     }
