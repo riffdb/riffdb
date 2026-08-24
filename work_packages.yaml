@@ -9002,6 +9002,11 @@ work_packages:
   exit_gate: Every concurrency point owns an independent telemetry delta and fresh database by
     default, write-only saturation exposes the physical durable ceiling, and no PERF-008 conclusion
     depends on cumulative shutdown-only counters or an accumulated-history curve.
+  closure:
+    status: complete
+    evidence: docs/performance/wp-449-writer-evidence.md
+    decision: Independent per-point writer deltas and fresh-history defaults shipped in 182fabec,
+      with the saturated writer and compatibility split identified without weakening semantics.
   human_review_triggers: *id001
 - id: WP-450
   name: Independent read and command admission topology
@@ -9030,6 +9035,11 @@ work_packages:
   - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
   exit_gate: Slow commands cannot occupy read-lane capacity, every lane remains bounded and drains
     deterministically, and the sole coordinator is still the only authoritative mutation owner.
+  closure:
+    status: complete
+    evidence: docs/performance/wp-449-473-closure.md
+    decision: Current production composition uses an independently bounded read-port driver and
+      sole command coordinator, with deterministic drain and no second mutation owner.
   human_review_triggers: *id001
 - id: WP-451
   name: Compiler-proved commutative child-append grouping
@@ -9068,6 +9078,11 @@ work_packages:
   exit_gate: Proved disjoint child appends sharing one hot aggregate co-commit and remain equivalent
     to FIFO serial execution; every unproved or overlapping command remains strictly serialized,
     barriers never move, and unary latency does not regain a timer park.
+  closure:
+    status: complete
+    evidence: docs/performance/wp-451-commutative-child-appends.md
+    decision: Compiler-proved child-append grouping shipped in d7b897ba; the implementation found
+      and fixed an unproved-member admission bug and retains deterministic regression coverage.
   human_review_triggers: *id001
 - id: WP-452
   name: Authoritative write-amplification budget
@@ -9099,6 +9114,11 @@ work_packages:
   - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
   exit_gate: The dominant physical writes are named by table and cause, selected reductions retain
     byte compatibility or a reviewed migration, and crash/reopen proves the complete command graph.
+  closure:
+    status: complete
+    evidence: docs/performance/wp-452-write-amplification.md
+    decision: The table-by-table write budget shipped in 972aa7cb; no unreviewed page, cache, or
+      durable-layout experiment was activated.
   human_review_triggers: *id001
 - id: WP-453
   name: Serial physical micro-batch decision and prototype
@@ -9133,6 +9153,11 @@ work_packages:
   exit_gate: The evidence either proves compatible grouping sufficient and records a defer decision,
     or the accepted prototype is observationally equivalent to sequential commands, exposes no
     partial state, and retains every fail-closed boundary before redb production activation.
+  closure:
+    status: complete
+    evidence: docs/performance/wp-453-decision-v1.json
+    decision: The proceed decision, accepted ADR-0095, memory semantics, and bounded FIFO serial
+      implementation shipped without partial visibility or premature acknowledgement.
   human_review_triggers: *id001
 - id: WP-454
   name: Renewed mixed-load PostgreSQL parity evidence
@@ -9163,6 +9188,11 @@ work_packages:
   exit_gate: Every PERF-008 threshold passes from fresh same-run evidence and all semantic, crash,
     compatibility, documentation, and generated-artifact checks remain green; otherwise alpha stays
     blocked with every miss retained.
+  closure:
+    status: complete_failed_performance_gate
+    evidence: docs/performance/wp-449-473-closure.md
+    decision: The renewed matrix completed and honestly failed the then-current parity threshold,
+      leaving alpha blocked. Later PERF-018 packages own current qualification; no pass is inferred.
   human_review_triggers: *id001
 - id: WP-455
   name: Columnar catch-up publication amplification
@@ -9191,6 +9221,11 @@ work_packages:
   exit_gate: Catch-up publishes the same latest race-free result and frontier with no reader-visible
     partial commit, holdback never overclaims state, checkpoint/reopen remains equivalent, and the
     full-seed run shows no regression.
+  closure:
+    status: complete
+    evidence: docs/performance/wp-455-columnar-publication.md
+    decision: Single-observable-boundary columnar publication shipped in 2fd9581d with holdback,
+      frontier, checkpoint/reopen, and no-regression coverage.
   human_review_triggers: *id001
 - id: WP-456
   name: Dynamic physical groups under a larger static safety ceiling
@@ -9233,6 +9268,11 @@ work_packages:
   exit_gate: Actual groups remain dynamically bounded by ready FIFO work, bytes, eligibility,
     barriers, and the oldest deadline; exact-bound recovery is all-or-absent; unary latency does not
     regress; and same-run seed evidence determines whether the enlarged ceiling reaches 3 seconds.
+  closure:
+    status: complete
+    evidence: docs/performance/wp-456-dynamic-group-ceiling.md
+    decision: Dynamic grouping under the fixed 256 ceiling shipped in 5424b5a0; safety inputs and
+      all-or-absent recovery remain authoritative, with the measured result retained honestly.
   human_review_triggers: *id001
 - id: WP-457
   name: Bounded generated-batch writer feeding
@@ -9287,6 +9327,11 @@ work_packages:
     requests remain at most 16 items, the coordinator remains independently count/byte bounded,
     the 128/192/256 sweep has no overload or semantic failure, unary p50 has no material regression,
     and the evidence records whether the full seed reaches 3 seconds.
+  closure:
+    status: complete
+    evidence: docs/performance/wp-457-writer-feeding.md
+    decision: The first bounded writer-feeding sweep shipped in a7009339 and retained its measured
+      knee rather than raising concurrency without evidence.
   human_review_triggers: *id001
 - id: WP-458
   name: Shared immutable command intent graph
@@ -9325,6 +9370,11 @@ work_packages:
   exit_gate: Command-context and intent clones share immutable checked allocations; every existing
     semantic, recovery, byte-compatibility, and backend test passes; and the full public seed shows
     no material total, staging, or unary regression against the WP-457 retained point.
+  closure:
+    status: complete
+    evidence: docs/performance/wp-458-shared-command-intent.md
+    decision: Shared immutable command contexts and intents shipped in 3d595eb8 with exact semantic,
+      byte, recovery, and retain-or-revert evidence.
   human_review_triggers: *id001
 - id: WP-459
   name: Consume staged command graphs after physical staging
@@ -9366,6 +9416,11 @@ work_packages:
   exit_gate: Backends retain only minimal post-staging evidence, grouped comparison creates no
     cloned expected-outcome vector, all semantic, recovery, and byte-compatibility suites pass, and
     the full public seed shows no material total, staging, or unary regression against WP-458.
+  closure:
+    status: complete
+    evidence: docs/performance/wp-459-consumed-staged-graphs.md
+    decision: Minimal post-staging evidence ownership shipped in ce309311 with exact grouped
+      outcomes and a retained paired improvement.
   human_review_triggers: *id001
 - id: WP-460
   name: Allocation-free reciprocal record validation
@@ -9398,6 +9453,11 @@ work_packages:
   exit_gate: Complete reciprocal validation remains semantically identical while allocating no
     temporary comparison vectors, post-staging evidence reuses the checked provenance event-ID
     allocation, all storage semantic and codec tests pass, and the public seed does not regress.
+  closure:
+    status: complete
+    evidence: docs/performance/wp-460-allocation-free-validation.md
+    decision: Allocation-free reciprocal validation shipped in cb09094d; all mismatch, codec,
+      storage, and public no-regression checks remain intact.
   human_review_triggers: *id001
 - id: WP-461
   name: Single-owner staged event collection
@@ -9434,6 +9494,11 @@ work_packages:
   exit_gate: One authoritative commit-owned durable-event collection supplies the complete staged
     graph, all reciprocal validation and recovery suites pass, durable bytes remain exact, and the
     public seed does not regress.
+  closure:
+    status: complete
+    evidence: docs/performance/wp-461-single-owner-events.md
+    decision: Commit-owned single-owner event storage shipped in 84b85ab0; the rejected Arc variant
+      was not retained and current semantics/recovery stay exact.
   human_review_triggers: *id001
 - id: WP-462
   name: Allocation-free sequence-free wire reservation
@@ -9464,6 +9529,11 @@ work_packages:
   - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
   exit_gate: The hot sequence-free reservation pass retains no intermediate length vectors, every
     existing bound and codec test passes unchanged, and the full public seed does not regress.
+  closure:
+    status: complete
+    evidence: docs/performance/wp-462-allocation-free-wire-reservation.md
+    decision: Direct bounded wire reservation shipped in 4bf20cc3 with one-over-limit, exact-bound,
+      codec, and architecture tests unchanged.
   human_review_triggers: *id001
 - id: WP-463
   name: Allocation-free read-dependency reciprocity
@@ -9496,6 +9566,11 @@ work_packages:
   exit_gate: Complete command-record validation retains exact durable/live dependency reciprocity
     without constructing a comparison collection, every mismatch remains fail closed, durable
     bytes and recovery remain unchanged, and the full public seed does not regress.
+  closure:
+    status: complete
+    evidence: docs/performance/wp-463-allocation-free-read-dependencies.md
+    decision: Direct canonical dependency reciprocity shipped in caa60a31 with every mismatch still
+      fail closed and durable/recovery behavior unchanged.
   human_review_triggers: *id001
 - id: WP-464
   name: Bounded authenticated batch-ingress coalescing
@@ -9535,6 +9610,11 @@ work_packages:
   exit_gate: ExecuteBatch authenticates once while every item remains an ordinary independently
     authorized command, cancellation and per-item carriage remain exact, no outer Tokio item task
     remains, durable and public bytes are unchanged, and the retained full seed does not regress.
+  closure:
+    status: complete
+    evidence: docs/performance/wp-464-bounded-batch-ingress.md
+    decision: Bounded batch ingress shipped in 206a24fe with one envelope authentication and
+      independent per-command authorization, identity, cancellation, and result semantics.
   human_review_triggers: *id001
 - id: WP-465
   name: Shared immutable capability grant collections
@@ -9570,6 +9650,11 @@ work_packages:
   exit_gate: Capability-grant clones share only immutable already-validated collections; canonical
     bytes, codecs, value equality, authorization, and redaction remain exact; all type, auth, and
     policy suites pass; and the retained public seed shows no material total or unary regression.
+  closure:
+    status: complete
+    evidence: docs/performance/wp-449-473-closure.md
+    decision: Immutable validated capability collections shipped in 5d1abadd; current type, auth,
+      policy, codec, equality, and redaction suites remain green.
   human_review_triggers: *id001
 - id: WP-466
   name: Redb physical commit amplification
@@ -9619,6 +9704,11 @@ work_packages:
   exit_gate: Every semantic and recovery suite passes; the selected production change is format
     compatible, keeps standard and hardened durability exact, materially reduces measured physical
     commit work or c32 commit time, improves focused throughput, and causes no material c1 regression.
+  closure:
+    status: complete
+    evidence: docs/performance/wp-466-durability-epochs.md
+    decision: Contended completion coalescing shipped in b9a9c960 with exact standard/hardened
+      semantics; deferred multi-group durability epochs remained disabled.
   human_review_triggers: *id001
 - id: WP-467
   name: Last-durable frontier and unpublished command typestate
@@ -9663,6 +9753,11 @@ work_packages:
   exit_gate: Unpublished redb roots are visible only to the epoch writer, cannot become committed
     application results before a known-successful Immediate tail, remain invisible to every reader
     and derived worker, and recover as a complete fenced prefix or the preceding durable frontier.
+  closure:
+    status: complete
+    evidence: docs/performance/wp-467-last-durable-frontier.md
+    decision: Last-durable frontier and unpublished typestate shipped in 9196b7ac; recovery and
+      visibility retain the preceding-or-complete fenced-prefix rule.
   human_review_triggers: *id001
 - id: WP-468
   name: Revisited bounded generated-batch writer feeding
@@ -9717,6 +9812,11 @@ work_packages:
   exit_gate: All three generated-language paths reject one above the shared bound before work,
     transport and coordinator safety bounds are unchanged, every semantic and recovery suite stays
     exact, and retained full-seed evidence is below three seconds with no material unary regression.
+  closure:
+    status: complete
+    evidence: docs/performance/wp-468-revisited-writer-feeding.md
+    decision: The evidence-driven generated batch increase shipped in 1de932d6 after intervening CPU
+      reductions, preserving all transport/coordinator bounds and clearing the engineering seed target.
   human_review_triggers: *id001
 - id: WP-469
   name: Fenced single-subgroup standard commit
@@ -9775,6 +9875,11 @@ work_packages:
     known-successful tail before release; singleton and hardened paths remain direct; every semantic,
     crash, recovery, and compatibility suite passes; focused evidence materially reduces physical
     commit cost or write latency without a material c1 regression.
+  closure:
+    status: complete
+    evidence: docs/performance/wp-469-fenced-single-subgroup.md
+    decision: The narrow fenced single-subgroup protocol shipped in 1780cdd9; multi-subgroup
+      collection stayed deferred and current crash/recovery coverage remains exact.
   human_review_triggers: *id001
 - id: WP-470
   name: Batched command-audit table access
@@ -9816,6 +9921,11 @@ work_packages:
   exit_gate: Every admission lifecycle, terminal link, and request-index row retains exact validation
     and durable bytes, all service-audit and recovery semantics pass, and retained full-seed evidence
     reduces audited command CPU or total seed without a material unary regression.
+  closure:
+    status: complete
+    evidence: docs/performance/wp-470-batched-command-audit-tables.md
+    decision: Batched command-audit table access shipped in af94a78a without caching or weakening
+      authoritative rows, link validation, durable bytes, or recovery.
   human_review_triggers: *id001
 - id: WP-471
   name: Revision-aware commit materialization
@@ -9859,6 +9969,11 @@ work_packages:
   exit_gate: All three readable commit revisions retain exact semantic and compatibility behavior,
     every corruption and recovery suite passes, and same-host evidence reduces current commit
     materialization CPU or total seed without a material unary regression.
+  closure:
+    status: complete
+    evidence: docs/performance/wp-471-revision-aware-commit.md
+    decision: Revision-aware materialization shipped in d64030cc with exact V1/V2/V3 semantics,
+      compatibility, corruption classification, and retained no-regression evidence.
   human_review_triggers: *id001
 - id: WP-472
   name: Single-pass commit materialization
@@ -9902,6 +10017,11 @@ work_packages:
   exit_gate: Every readable revision retains exact bytes, event-table authority, semantic result,
     corruption classification, and recovery behavior, while same-host evidence reduces current
     commit materialization CPU or total seed without a material unary regression.
+  closure:
+    status: complete
+    evidence: docs/performance/wp-472-single-pass-commit.md
+    decision: Prepared single-pass commit decode shipped in 39881e3f; exact bytes, event authority,
+      corruption, recovery, and validation order remain pinned.
   human_review_triggers: *id001
 - id: WP-473
   name: Sealed command-audit link evidence
@@ -9950,6 +10070,11 @@ work_packages:
     link retains full authoritative decoding, all audit/command/recovery semantics pass, and
     same-host evidence reduces validation/staging CPU or total seed without a material unary
     regression.
+  closure:
+    status: complete
+    evidence: docs/performance/wp-473-sealed-command-audit-links.md
+    decision: Sealed same-transaction audit-link evidence shipped in b11909d0 while every external,
+      recovered, and non-command link keeps full authoritative decoding.
   human_review_triggers: *id001
 - id: WP-494
   name: Segmented independent command-audit link resolution
