@@ -68,6 +68,29 @@ else
     default_rust_sdk="$installation_root/public/rust-sdk/crates/riffdb-client-rust"
 fi
 rust_sdk="${RIFFDB_RUST_SDK:-$default_rust_sdk}"
+rust_cargo_config=(--config "$installation_root/.cargo/config.toml")
+rust_source_sdk=false
+if [[ "$rust_sdk" != "$installation_root/public/rust-sdk/vendor/"* ]]; then
+    rust_source_sdk=true
+    rust_cargo_config+=(
+        --config "patch.crates-io.riffdb-client-rust.path=\"$rust_sdk\""
+    )
+fi
+prepare_rust_dependency_lock() {
+    # The predecessor source-SDK bundle embeds the public registry-shaped
+    # scaffold lock, but executes against its bundled source SDK. Reconcile
+    # that private dependency lock once, offline, before insisting on
+    # `--locked`; package-first bundles retain their registry-shaped lock and
+    # never enter this branch.
+    if [[ "$rust_source_sdk" == true ]] && ! cargo metadata --quiet --offline \
+        --locked --format-version 1 \
+        "${rust_cargo_config[@]}" \
+        --manifest-path "$application_root/Cargo.toml" >/dev/null 2>&1; then
+        CARGO_NET_OFFLINE=true cargo generate-lockfile --quiet \
+            "${rust_cargo_config[@]}" \
+            --manifest-path "$application_root/Cargo.toml"
+    fi
+}
 for executable in "$riffdb" "$riffdbd" "$boundary_check"; do
     [[ -x "$executable" ]] || {
         echo "installed development component is unavailable" >&2
@@ -463,11 +486,13 @@ if ((run)); then
             echo "installed Rust package is unavailable" >&2
             exit 1
         }
+        prepare_rust_dependency_lock
         RIFFDB_ENDPOINT="$endpoint" \
             RIFFDB_CREDENTIAL_FILE="$work_root/profile.credential" \
             RIFFDB_DATABASE=default \
             CARGO_TARGET_DIR="$work_root/application-target" \
             cargo run --quiet --offline --locked \
+            "${rust_cargo_config[@]}" \
             --manifest-path "$application_root/Cargo.toml" \
             -- "$endpoint" "$work_root/profile.credential" default
     elif [[ -f "$application_root/go.mod" ]]; then
@@ -524,11 +549,13 @@ if ((acceptance)); then
             echo "installed Rust package is unavailable" >&2
             exit 1
         }
+        prepare_rust_dependency_lock
         RIFFDB_ENDPOINT="$endpoint" \
             RIFFDB_CREDENTIAL_FILE="$work_root/profile.credential" \
             RIFFDB_DATABASE=default \
             CARGO_TARGET_DIR="$work_root/application-target" \
             cargo run --quiet --offline --locked \
+            "${rust_cargo_config[@]}" \
             --manifest-path "$application_root/Cargo.toml" \
             -- "$endpoint" "$work_root/profile.credential" default \
             >"$work_root/generated-application-client.stdout"

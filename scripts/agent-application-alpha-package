@@ -173,16 +173,19 @@ CARGO_TARGET_DIR="$temporary/.sdk-check-target" cargo check --quiet \
     --manifest-path "$temporary/public/rust-sdk/Cargo.toml" \
     -p riffdb-client-rust
 app_patch="patch.crates-io.riffdb-client-rust.path=\"$temporary/public/rust-sdk/crates/riffdb-client-rust\""
-if [[ "${RIFFDB_PACKAGE_FIRST_BUILD:-0}" == 1 ]]; then
-    # The successor package-first sealer validates a fresh registry-shaped
-    # scaffold after installing its signed package mirror. This predecessor
-    # sync exists only to close the third-party vendor set, so do not ask Cargo
-    # to reconcile the package-shaped application lock with the predecessor's
-    # source-tree patch.
-    rm "$temporary/.application-smoke/Cargo.lock"
-    CARGO_NET_OFFLINE=true cargo generate-lockfile --quiet \
-        --manifest-path "$temporary/.application-smoke/Cargo.toml" \
-        --config "$app_patch"
+# The scaffold lock is registry-shaped, while this sealed predecessor bundle
+# deliberately compiles the smoke application against the bundled source SDK.
+# Re-resolve that private smoke lock against the exact source patch before
+# asking `cargo vendor --locked` to synchronize it.  This became observable
+# once a bundled SDK crate gained another first-party path dependency: Cargo
+# correctly refused to mutate the registry-shaped lock under `--locked`.
+rm "$temporary/.application-smoke/Cargo.lock"
+CARGO_NET_OFFLINE=true cargo generate-lockfile --quiet \
+    --manifest-path "$temporary/.application-smoke/Cargo.toml" \
+    --config "$app_patch"
+if [[ "${RIFFDB_PACKAGE_FIRST_BUILD:-0}" != 1 ]]; then
+    cp "$temporary/.application-smoke/Cargo.lock" \
+        "$temporary/.application-smoke.Cargo.lock.expected"
 fi
 cargo vendor --quiet --locked --versioned-dirs \
     --manifest-path "$temporary/public/rust-sdk/Cargo.toml" \
@@ -195,8 +198,6 @@ CARGO_HOME="$temporary/.cargo" CARGO_NET_OFFLINE=true \
     --manifest-path "$temporary/public/rust-sdk/Cargo.toml" \
     -p riffdb-client-rust
 if [[ "${RIFFDB_PACKAGE_FIRST_BUILD:-0}" != 1 ]]; then
-    cp "$temporary/.application-smoke/Cargo.lock" \
-        "$temporary/.application-smoke.Cargo.lock.expected"
     rm "$temporary/.application-smoke/Cargo.lock"
     CARGO_HOME="$temporary/.cargo" CARGO_NET_OFFLINE=true \
         cargo generate-lockfile --quiet \
