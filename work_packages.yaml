@@ -12392,6 +12392,14 @@ work_packages:
       or application transport.
     scale: Grammar fixtures and every LSP document, request, traversal, diagnostic, completion,
       and response are independently count- and byte-bounded.
+  closure:
+    status: complete
+    evidence: docs/getting-started/EDITOR-TOOLING.md
+    decision: The merged compiler-backed LSP and generated tree-sitter grammars pass the exact
+      syntax/CLI, grammar-corpus, handbook, and requirement-coverage gates. Diagnostics retain
+      compiler parity, navigation and completion remain schema-fed and bounded, the VS Code
+      scaffold ships through the CLI distribution, and no editor path acquires database,
+      mutation, policy, or application-transport authority.
   human_review_triggers: *id001
 - id: WP-606
   name: Commit-coordinator index-derivation audit — admit IR bundle versions V7 through V10
