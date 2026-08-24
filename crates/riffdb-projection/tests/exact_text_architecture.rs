@@ -25,3 +25,41 @@ fn exact_text_provider_has_no_scan_full_text_or_framework_escape() {
         );
     }
 }
+
+#[test]
+fn nullable_exact_order_pays_proofs_once_and_has_no_request_time_escape() {
+    let provider = include_str!("../src/exact_predicate.rs");
+    let v5 = provider
+        .split_once("impl ExactPredicatePartitionIndexV5")
+        .expect("V5 provider")
+        .1
+        .split_once("struct BitSet")
+        .expect("V5 boundary")
+        .0;
+    assert!(
+        !v5.contains("provider_descriptor"),
+        "descriptor/layout proof belongs to provider binding, not V5 rows or probes"
+    );
+    let page = v5
+        .split_once("pub fn result_page")
+        .expect("V5 page")
+        .1
+        .split_once("pub const fn binding")
+        .expect("V5 page boundary")
+        .0;
+    for forbidden in [
+        "sort_by",
+        ".scan(",
+        "materialize",
+        "cursor_walk",
+        "page_walk",
+        "sentinel",
+        "cross_provider",
+        "provider_descriptor",
+    ] {
+        assert!(
+            !page.contains(forbidden),
+            "nullable request-time provider path contains {forbidden}"
+        );
+    }
+}

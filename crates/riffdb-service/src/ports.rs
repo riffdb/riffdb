@@ -1873,6 +1873,121 @@ impl fmt::Debug for ExactPredicateProjectionRequest {
     }
 }
 
+/// One compiler-owned nullable exact-order request after current authorization.
+#[derive(Clone)]
+pub struct NullableExactPredicateProjectionRequest {
+    query: Arc<riffdb_query_module::CompiledNullableExactPredicateResultSetV1>,
+    partition_key: PartitionKey,
+    partition_value: CanonicalValue,
+    policy_shape: ApplicationRoleHash,
+    row_policy: Option<Arc<AuthorizedQueryRowPolicyContextV1>>,
+    parameters: std::collections::BTreeMap<u16, ExactParameterValueV1>,
+    member: ExactPredicateFamilyMemberV1,
+    offset: u32,
+    limit: std::num::NonZeroU16,
+    minimum_epoch: Option<CommitSequence>,
+}
+
+impl NullableExactPredicateProjectionRequest {
+    /// Seals service-materialized values to one immutable V5 nullable program.
+    #[doc(hidden)]
+    #[allow(clippy::too_many_arguments)]
+    #[must_use]
+    pub fn new(
+        query: Arc<riffdb_query_module::CompiledNullableExactPredicateResultSetV1>,
+        partition_key: PartitionKey,
+        partition_value: CanonicalValue,
+        policy_shape: ApplicationRoleHash,
+        row_policy: Option<Arc<AuthorizedQueryRowPolicyContextV1>>,
+        parameters: std::collections::BTreeMap<u16, ExactParameterValueV1>,
+        member: ExactPredicateFamilyMemberV1,
+        offset: u32,
+        limit: std::num::NonZeroU16,
+        minimum_epoch: Option<CommitSequence>,
+    ) -> Self {
+        Self {
+            query,
+            partition_key,
+            partition_value,
+            policy_shape,
+            row_policy,
+            parameters,
+            member,
+            offset,
+            limit,
+            minimum_epoch,
+        }
+    }
+
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn query(
+        &self,
+    ) -> &Arc<riffdb_query_module::CompiledNullableExactPredicateResultSetV1> {
+        &self.query
+    }
+
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn partition_key(&self) -> &PartitionKey {
+        &self.partition_key
+    }
+
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn partition_value(&self) -> &CanonicalValue {
+        &self.partition_value
+    }
+
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn policy_shape(&self) -> ApplicationRoleHash {
+        self.policy_shape
+    }
+
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn row_policy(&self) -> Option<&Arc<AuthorizedQueryRowPolicyContextV1>> {
+        self.row_policy.as_ref()
+    }
+
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn parameters(&self) -> &std::collections::BTreeMap<u16, ExactParameterValueV1> {
+        &self.parameters
+    }
+
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn member(&self) -> ExactPredicateFamilyMemberV1 {
+        self.member
+    }
+
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn offset(&self) -> u32 {
+        self.offset
+    }
+
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn limit(&self) -> std::num::NonZeroU16 {
+        self.limit
+    }
+
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn minimum_epoch(&self) -> Option<CommitSequence> {
+        self.minimum_epoch
+    }
+}
+
+impl fmt::Debug for NullableExactPredicateProjectionRequest {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("NullableExactPredicateProjectionRequest([REDACTED])")
+    }
+}
+
 /// One exact predicate page/count observation from one provider epoch.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ExactPredicateProjectionResult {
@@ -1972,6 +2087,12 @@ pub trait ExactPredicateProjectionPort: Send + Sync {
     fn execute(
         &self,
         request: ExactPredicateProjectionRequest,
+    ) -> Result<ExactPredicateProjectionResult, ExactTextProjectionPortError>;
+
+    /// Executes one compiler-owned nullable-order request against V5 state.
+    fn execute_nullable(
+        &self,
+        request: NullableExactPredicateProjectionRequest,
     ) -> Result<ExactPredicateProjectionResult, ExactTextProjectionPortError>;
 }
 

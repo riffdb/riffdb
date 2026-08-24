@@ -6,16 +6,17 @@ use std::fmt;
 use std::num::NonZeroU16;
 
 use riffdb_projection::{
-    ExactPredicatePartitionIndexV4, ExactPredicateProviderErrorV1, ExactPredicateResultPageV1,
-    ExactTextPartitionIndexV2, ExactTextPartitionIndexV3, ExactTextResultRowV2,
-    ResultSetEpochProofV1,
+    ExactPredicatePartitionIndexV4, ExactPredicatePartitionIndexV5, ExactPredicateProviderErrorV1,
+    ExactPredicateResultPageV1, ExactPredicateResultPageV2, ExactTextPartitionIndexV2,
+    ExactTextPartitionIndexV3, ExactTextResultRowV2, ResultSetEpochProofV1,
 };
 use riffdb_query_ir::{
     ExactParameterValueV1, ExactPredicateFamilyMemberV1, ExactPredicateProgramV1,
-    ExactTextPlanFamilyV1, ProjectionResultSetPlanV2,
+    ExactPredicateProgramV2, ExactTextPlanFamilyV1, ProjectionResultSetPlanV2,
 };
 use riffdb_types::{
-    ApplicationRoleHash, CanonicalValue, CommitSequence, ExactTextNeedleV1, ExactTextOperatorV1,
+    ApplicationRoleHash, CanonicalValue, CommitSequence,
+    EXACT_PREDICATE_PROVIDER_STATE_SCHEMA_HASH_V5, ExactTextNeedleV1, ExactTextOperatorV1,
     ExactTextOrderV1, PartitionKeyHash, ProjectionGeneration, ProjectionProviderDescriptorHash,
     QueryPlanHash,
 };
@@ -65,6 +66,45 @@ pub fn execute_exact_predicate_result_set_v1(
         .find(|participant| participant.descriptor() == binding.descriptor())
         .ok_or(ExactPredicateResultSetErrorV1::EpochProofMismatch)?;
     if participant.state_schema_hash() != descriptor.state_identity().schema_hash()
+        || participant.history_incarnation() != binding.history_incarnation()
+        || participant.generation() != binding.generation()
+        || proof.selected_epoch() != binding.frontier()
+        || proof.selected_epoch() < participant.floor()
+        || proof.selected_epoch() > participant.ceiling()
+    {
+        return Err(ExactPredicateResultSetErrorV1::EpochProofMismatch);
+    }
+    provider
+        .result_page(parameters, member, offset, limit)
+        .map_err(map_exact_predicate_provider_error)
+}
+
+/// Executes one ADR-0145 nullable-order member under one authorized V5 epoch proof.
+#[allow(clippy::too_many_arguments)]
+pub fn execute_nullable_exact_predicate_result_set_v1(
+    plan_identity: QueryPlanHash,
+    program: &ExactPredicateProgramV2,
+    proof: &ResultSetEpochProofV1,
+    provider: &ExactPredicatePartitionIndexV5,
+    parameters: &BTreeMap<u16, ExactParameterValueV1>,
+    member: ExactPredicateFamilyMemberV1,
+    offset: u32,
+    limit: NonZeroU16,
+) -> Result<ExactPredicateResultPageV2, ExactPredicateResultSetErrorV1> {
+    let binding = provider.binding();
+    if binding.plan() != plan_identity
+        || binding.plan() != proof.plan_identity()
+        || binding.policy_shape() != proof.policy_shape_identity()
+        || binding.program() != program.identity()
+        || provider.program().identity() != program.identity()
+    {
+        return Err(ExactPredicateResultSetErrorV1::PlanMismatch);
+    }
+    let participant = proof
+        .participants()
+        .find(|participant| participant.descriptor() == binding.descriptor())
+        .ok_or(ExactPredicateResultSetErrorV1::EpochProofMismatch)?;
+    if participant.state_schema_hash() != EXACT_PREDICATE_PROVIDER_STATE_SCHEMA_HASH_V5
         || participant.history_incarnation() != binding.history_incarnation()
         || participant.generation() != binding.generation()
         || proof.selected_epoch() != binding.frontier()

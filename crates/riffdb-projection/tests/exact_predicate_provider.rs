@@ -4,14 +4,16 @@ use std::collections::BTreeMap;
 use std::num::NonZeroU16;
 
 use riffdb_projection::{
-    ExactPredicateIndexMutationV1, ExactPredicatePartitionIndexV4, ExactPredicateProviderBindingV1,
+    ExactPredicateIndexMutationV1, ExactPredicatePartitionIndexV4, ExactPredicatePartitionIndexV5,
+    ExactPredicateProviderBindingV1, ExactPredicateProviderBindingV2,
     ExactPredicateProviderErrorV1, ExactPredicateProviderRowV1,
 };
 use riffdb_query_ir::{
-    ExactComparisonProfileV1, ExactOrderDirectionV1, ExactOrderProgramV1, ExactOrderTermV1,
-    ExactParameterValueV1, ExactPredicateLeafV1, ExactPredicateNodeV1, ExactPredicateOperatorV1,
-    ExactPredicateProgramV1, ExactProviderRequirementV1, ExactReferenceCellV1, ExactReferenceRowV1,
-    ExactScalarV1, ExactValueSlotV1,
+    ExactComparisonProfileV1, ExactOrderDirectionV1, ExactOrderProgramV1, ExactOrderProgramV2,
+    ExactOrderTermV1, ExactOrderTermV2, ExactParameterValueV1, ExactPredicateLeafV1,
+    ExactPredicateNodeV1, ExactPredicateOperatorV1, ExactPredicateProgramV1,
+    ExactPredicateProgramV2, ExactProviderRequirementV1, ExactReferenceCellV1, ExactReferenceRowV1,
+    ExactScalarV1, ExactStatePlacementV1, ExactValueSlotV1,
 };
 use riffdb_types::{
     ApplicationRoleHash, CanonicalRecord, CanonicalValue, CommitSequence, EntityKey,
@@ -206,6 +208,104 @@ fn scalar_row(id: u32, cell: ExactReferenceCellV1) -> ExactPredicateProviderRowV
         ]),
         CanonicalRecord::new(vec![(field(1), CanonicalValue::U64(u64::from(id)))]).expect("output"),
     )
+}
+
+fn nullable_program(
+    profile: ExactComparisonProfileV1,
+    direction: ExactOrderDirectionV1,
+    placement: ExactStatePlacementV1,
+) -> ExactPredicateProgramV2 {
+    ExactPredicateProgramV2::new(
+        leaf(
+            1,
+            ExactPredicateOperatorV1::Exists,
+            ExactComparisonProfileV1::U64,
+            None,
+        ),
+        vec![
+            ExactOrderProgramV2::new(vec![
+                ExactOrderTermV2::new(field(2), profile, direction, placement, false),
+                ExactOrderTermV2::new(
+                    field(1),
+                    ExactComparisonProfileV1::U64,
+                    ExactOrderDirectionV1::Ascending,
+                    ExactStatePlacementV1::PresentOnlyV1,
+                    true,
+                ),
+            ])
+            .expect("nullable order"),
+        ],
+        0,
+        true,
+        32,
+        32,
+        ExactProviderRequirementV1::new(
+            ProjectionProviderPolicyModeV1::PartitionAligned,
+            32,
+            1_000_000,
+            16_384,
+        )
+        .expect("requirement"),
+    )
+    .expect("nullable program")
+}
+
+fn nullable_binding(
+    program: &ExactPredicateProgramV2,
+    frontier: u64,
+) -> ExactPredicateProviderBindingV2 {
+    ExactPredicateProviderBindingV2::new(
+        QueryPlanHash::from_bytes([0x41; 32]),
+        program,
+        ApplicationRoleHash::from_bytes([0x42; 32]),
+        PartitionKeyHash::from_bytes([0x43; 32]),
+        9,
+        ProjectionGeneration::new(4).expect("generation"),
+        sequence(frontier),
+    )
+    .expect("binding")
+}
+
+fn assert_nullable_page_equals_reference(
+    provider: &ExactPredicatePartitionIndexV5,
+    references: &[ExactReferenceRowV1],
+    offset: u32,
+    limit: u16,
+) {
+    let program = provider.program();
+    let expected = program
+        .evaluate_reference(
+            references,
+            &BTreeMap::new(),
+            program.members()[0],
+            offset,
+            limit,
+        )
+        .expect("reference");
+    let actual = provider
+        .result_page(
+            &BTreeMap::new(),
+            program.members()[0],
+            offset,
+            NonZeroU16::new(limit).expect("limit"),
+        )
+        .expect("provider result");
+    assert_eq!(actual.exact_total(), expected.total.expect("total"));
+    assert_eq!(
+        actual
+            .rows()
+            .iter()
+            .map(|row| row.key().clone())
+            .collect::<Vec<_>>(),
+        expected
+            .entity_keys
+            .iter()
+            .map(|values| match values.as_slice() {
+                [ExactScalarV1::U64(value)] => key(u32::try_from(*value).expect("id")),
+                _ => panic!("fixture key"),
+            })
+            .collect::<Vec<_>>()
+    );
 }
 
 fn assert_provider_equals_reference(
@@ -584,5 +684,131 @@ fn invalid_order_state_duplicate_epoch_and_window_preserve_prior_state() {
         ExactPredicatePartitionIndexV4::rebuild(binding(&program, 1), program, vec![extra_fields]),
         Err(ExactPredicateProviderErrorV1::Integrity),
         "undeclared fields cannot inflate or alter provider state"
+    );
+}
+
+#[test]
+fn nullable_v5_provider_matches_reference_for_both_state_placements() {
+    for (profile, values) in [
+        (
+            ExactComparisonProfileV1::U64,
+            [ExactScalarV1::U64(20), ExactScalarV1::U64(10)],
+        ),
+        (
+            ExactComparisonProfileV1::BinaryUtf8,
+            [
+                ExactScalarV1::String("zulu".to_owned()),
+                ExactScalarV1::String("alpha".to_owned()),
+            ],
+        ),
+        (
+            ExactComparisonProfileV1::Timestamp,
+            [ExactScalarV1::Timestamp(20), ExactScalarV1::Timestamp(-10)],
+        ),
+    ] {
+        let rows = vec![
+            scalar_row(1, ExactReferenceCellV1::Missing),
+            scalar_row(2, ExactReferenceCellV1::Null),
+            scalar_row(3, ExactReferenceCellV1::Value(values[0].clone())),
+            scalar_row(4, ExactReferenceCellV1::Value(values[1].clone())),
+        ];
+        let references = rows.iter().map(reference_row).collect::<Vec<_>>();
+        for placement in [
+            ExactStatePlacementV1::NullsFirstV1,
+            ExactStatePlacementV1::NullsLastV1,
+        ] {
+            for direction in [
+                ExactOrderDirectionV1::Ascending,
+                ExactOrderDirectionV1::Descending,
+            ] {
+                let program = nullable_program(profile, direction, placement);
+                let binding = nullable_binding(&program, 11);
+                let provider =
+                    ExactPredicatePartitionIndexV5::rebuild(binding, program.clone(), rows.clone())
+                        .expect("V5 provider");
+                for (offset, limit) in [(0, 32), (1, 2), (4, 1), (5, 3), (32, 1)] {
+                    assert_nullable_page_equals_reference(&provider, &references, offset, limit);
+                }
+                let bytes = provider.to_checkpoint_bytes().expect("V5 checkpoint");
+                assert_eq!(
+                    ExactPredicatePartitionIndexV5::from_checkpoint_bytes(&bytes)
+                        .expect("V5 recovery"),
+                    provider
+                );
+                assert_eq!(
+                    ExactPredicatePartitionIndexV4::from_checkpoint_bytes(&bytes),
+                    Err(ExactPredicateProviderErrorV1::UnsupportedFormat),
+                    "V4 cannot reinterpret V5 state"
+                );
+                let mut corrupt = bytes;
+                let middle = corrupt.len() / 2;
+                corrupt[middle] ^= 1;
+                assert_eq!(
+                    ExactPredicatePartitionIndexV5::from_checkpoint_bytes(&corrupt),
+                    Err(ExactPredicateProviderErrorV1::Integrity)
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn nullable_v5_state_transitions_are_atomic_and_survive_compaction() {
+    let program = nullable_program(
+        ExactComparisonProfileV1::BinaryUtf8,
+        ExactOrderDirectionV1::Ascending,
+        ExactStatePlacementV1::NullsFirstV1,
+    );
+    let mut provider = ExactPredicatePartitionIndexV5::rebuild(
+        nullable_binding(&program, 20),
+        program,
+        vec![
+            scalar_row(1, ExactReferenceCellV1::Missing),
+            scalar_row(2, ExactReferenceCellV1::Null),
+            scalar_row(
+                3,
+                ExactReferenceCellV1::Value(ExactScalarV1::String("middle".to_owned())),
+            ),
+        ],
+    )
+    .expect("provider");
+    let prior = provider.clone();
+    assert_eq!(
+        provider.apply(sequence(20), &[]),
+        Err(ExactPredicateProviderErrorV1::NonAdvancingEpoch)
+    );
+    assert_eq!(provider, prior);
+    provider
+        .apply(
+            sequence(21),
+            &[
+                ExactPredicateIndexMutationV1::Upsert(scalar_row(
+                    1,
+                    ExactReferenceCellV1::Value(ExactScalarV1::String("zulu".to_owned())),
+                )),
+                ExactPredicateIndexMutationV1::Upsert(scalar_row(2, ExactReferenceCellV1::Missing)),
+                ExactPredicateIndexMutationV1::Delete(key(3)),
+                ExactPredicateIndexMutationV1::Upsert(scalar_row(4, ExactReferenceCellV1::Null)),
+            ],
+        )
+        .expect("atomic transition epoch");
+    let references = [
+        scalar_row(
+            1,
+            ExactReferenceCellV1::Value(ExactScalarV1::String("zulu".to_owned())),
+        ),
+        scalar_row(2, ExactReferenceCellV1::Missing),
+        scalar_row(4, ExactReferenceCellV1::Null),
+    ]
+    .iter()
+    .map(reference_row)
+    .collect::<Vec<_>>();
+    assert_nullable_page_equals_reference(&provider, &references, 0, 32);
+    let checkpoint = provider.to_checkpoint_bytes().expect("checkpoint");
+    provider.compact().expect("compaction");
+    assert_eq!(
+        provider.to_checkpoint_bytes().expect("checkpoint"),
+        checkpoint,
+        "derived compaction cannot alter nullable order identity or bytes"
     );
 }

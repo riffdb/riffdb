@@ -80,8 +80,10 @@ does not inherit SQL, storage-engine, locale, or host-language null defaults and
 does not substitute a sentinel scalar.
 
 WP-675 makes the V7 source and its provider-independent V10 semantic/module
-artifacts compilable. Runtime execution remains fail-closed until provider-state
-V5 is activated by WP-676; there is no scan, request-time sort, page walk, or
+artifacts compilable. WP-676 activates rebuildable provider-state V5 and its
+internal exact-count/direct-ordinal execution lane. Application requests remain
+fail-closed until WP-677 connects that lane through the shared service and
+generated surfaces; there is no scan, request-time sort, page walk, or
 older-provider fallback during that interval.
 
 Every predicate and order field requires a declared partition-routed index.
@@ -117,6 +119,17 @@ bitset rank/select rather than walking skipped rows or pages. Bounded row-level
 policy admission happens before a row can enter the provider universe, so a
 denied row cannot affect complements, counts, ordering, ordinals, diagnostics,
 or lifecycle selection.
+
+V5 uses the same partition-scoped lifecycle and admission boundary for nullable
+orders. It stores missing and explicit null in one `NoValue` state class, with
+the compiler-selected first/last rank, and stores present values under the
+existing canonical scalar comparison. Optional text and timestamp orders are
+covered by the same state-aware index. Every V5 checkpoint binds the compiled
+program, descriptor, policy shape, partition, history incarnation, generation,
+frontier, and checksum; V4 refuses V5 bytes rather than reinterpreting them.
+Descriptor/layout validation is paid when a provider generation is bound, and
+the epoch proof is paid once for the opened result set—not once per row, term,
+probe, or returned item.
 
 Callers submit only the generated typed values for one named operation. They do
 not submit a predicate, field, operator, order, provider, plan member, policy,
