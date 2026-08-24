@@ -1324,11 +1324,13 @@ if [[ -n "$host_validity_preflight" ]]; then
         printf 'postflight host validity inventory failed\n' >&2
         exit 1
     }
-    python3 - "$report" "$host_validity_preflight" "$host_validity_postflight" <<'PY'
+    python3 - "$report" "$host_validity_preflight" "$host_validity_postflight" \
+        "$defer_unary_stability" <<'PY'
 import json
 import sys
 
-report_path, preflight_path, postflight_path = sys.argv[1:]
+report_path, preflight_path, postflight_path, deferred_text = sys.argv[1:]
+deferred_unary_stability = deferred_text == "1"
 report = json.load(open(report_path, encoding="utf-8"))
 preflight = json.load(open(preflight_path, encoding="utf-8"))
 postflight = json.load(open(postflight_path, encoding="utf-8"))
@@ -1341,12 +1343,29 @@ if not host_idle and "host_interference" not in reasons:
     reasons.append("host_interference")
 eligibility["reason_codes"] = reasons
 if report.get("schema") == "riffdb.app-baseline/v1":
-    summaries = (report.get("comparisons") or {}).get("rep_summaries") or {}
-    parity_stable = bool(summaries) and all(
-        isinstance(summary, dict) and summary.get("stability") == "stable"
-        for summary in summaries.values()
-    )
     comparisons = report.get("comparisons") or {}
+    summaries = comparisons.get("rep_summaries") or {}
+    if deferred_unary_stability:
+        unary_summaries = comparisons.get("unary_rep_summaries") or {}
+        def central_three_stable(summary):
+            values = sorted((summary or {}).get("values") or [])
+            return (
+                (summary or {}).get("reps") == 5
+                and len(values) == 5
+                and all(isinstance(value, (int, float)) and value > 0 for value in values)
+                and values[3] / values[1] <= 1.20
+            )
+        parity_stable = bool(unary_summaries) and all(
+            central_three_stable((entry.get(backend) or {}).get(statistic))
+            for entry in unary_summaries.values()
+            for backend in ("postgres", "riffdb")
+            for statistic in ("p50_ns", "p95_ns")
+        )
+    else:
+        parity_stable = bool(summaries) and all(
+            isinstance(summary, dict) and summary.get("stability") == "stable"
+            for summary in summaries.values()
+        )
     crosscheck = report.get("board_page_live_crosscheck") or {}
     unary = report.get("unary_qualification") or {}
     scenario_rows = comparisons.get("scenarios") or []
@@ -1356,14 +1375,14 @@ if report.get("schema") == "riffdb.app-baseline/v1":
         and unary.get("scenario") == scenario_rows[0].get("scenario")
         and unary.get("same_scenario_warmups_after_restart") == 20
         and unary.get("measured_operations_per_generation") == 100
-        and unary.get("process_generations") == 3
+        and unary.get("process_generations") == (5 if deferred_unary_stability else 3)
     )
     correctness_clean = bool(scenario_rows) and all(
         row.get("last_row_count_equal") is True for row in scenario_rows
     ) and (unary_exact or crosscheck.get("status") == "ok")
     required = {
         "same_device": report.get("same_device") is True,
-        "repetitions": int(report.get("reps") or 0) >= 3,
+        "repetitions": int(report.get("reps") or 0) >= (5 if deferred_unary_stability else 3),
         "environment": bool(report.get("environment")),
         "device_baseline": bool(report.get("device_baseline")),
         "postgres_durability": bool(report.get("postgres_durability")),

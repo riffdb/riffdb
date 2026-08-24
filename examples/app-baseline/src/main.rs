@@ -114,8 +114,8 @@ fn run() -> Result<(), String> {
         }
     }
 
-    // Ordinary parity remains interleaved PG/RiffDB. ADR-0142's qualification
-    // mode counterbalances backend order across its three generations.
+    // Ordinary parity remains interleaved PG/RiffDB. ADR-0142/0143 unary
+    // qualification counterbalances backend order across five generations.
     let mut pg_rep_seed_ns: Vec<u64> = Vec::new();
     let mut pg_rep_scenarios: Vec<Vec<riffdb_app_baseline_core::ScenarioResult>> = Vec::new();
     let mut rd_rep_seed_ns: Vec<u64> = Vec::new();
@@ -2675,6 +2675,7 @@ fn median_u64(values: &[u64]) -> u64 {
 fn scalar_summary(values: &[f64]) -> serde_json::Value {
     if values.is_empty() {
         return json!({
+            "values": [],
             "median": 0.0,
             "min": 0.0,
             "max": 0.0,
@@ -2695,6 +2696,7 @@ fn scalar_summary(values: &[f64]) -> serde_json::Value {
         "stable"
     };
     json!({
+        "values": values,
         "median": median,
         "min": min,
         "max": max,
@@ -2813,8 +2815,26 @@ fn attach_rep_summaries(
                         });
                     }
                 }
-                let p50_ratio_summary = scalar_summary(&p50_ratios);
-                let p95_ratio_summary = scalar_summary(&p95_ratios);
+                let mut p50_ratio_summary = scalar_summary(&p50_ratios);
+                let mut p95_ratio_summary = scalar_summary(&p95_ratios);
+                let pg_p50_summary = scalar_summary(&pg_p50s);
+                let pg_p95_summary = scalar_summary(&pg_p95s);
+                let rd_p50_summary = scalar_summary(&rd_p50s);
+                let rd_p95_summary = scalar_summary(&rd_p95s);
+                let qualified_ratio = |riffdb: &serde_json::Value,
+                                       postgres: &serde_json::Value| {
+                    let postgres = postgres["median"].as_f64().unwrap_or(0.0);
+                    let riffdb = riffdb["median"].as_f64().unwrap_or(0.0);
+                    if postgres <= 0.0 {
+                        f64::INFINITY
+                    } else {
+                        riffdb / postgres
+                    }
+                };
+                p50_ratio_summary["qualified_ratio_of_backend_medians"] =
+                    json!(qualified_ratio(&rd_p50_summary, &pg_p50_summary));
+                p95_ratio_summary["qualified_ratio_of_backend_medians"] =
+                    json!(qualified_ratio(&rd_p95_summary, &pg_p95_summary));
                 if let Some(row) = scenarios_json
                     .iter_mut()
                     .find(|row| row["scenario"].as_str() == Some(name.as_str()))
@@ -2836,12 +2856,12 @@ fn attach_rep_summaries(
                     name,
                     json!({
                         "postgres": {
-                            "p50_ns": scalar_summary(&pg_p50s),
-                            "p95_ns": scalar_summary(&pg_p95s),
+                            "p50_ns": pg_p50_summary,
+                            "p95_ns": pg_p95_summary,
                         },
                         "riffdb": {
-                            "p50_ns": scalar_summary(&rd_p50s),
-                            "p95_ns": scalar_summary(&rd_p95s),
+                            "p50_ns": rd_p50_summary,
+                            "p95_ns": rd_p95_summary,
                         },
                         "ratios_riffdb_over_postgres": {
                             "p50": p50_ratio_summary,
@@ -3801,11 +3821,17 @@ mod tests {
         attach_rep_summaries(&mut report, &[1, 1, 1], &postgres, &[1, 1, 1], &riffdb);
         let summary = &report["comparisons"]["unary_rep_summaries"]["point_get_ticket"];
         assert_eq!(summary["postgres"]["p50_ns"]["reps"], 3);
+        assert_eq!(summary["postgres"]["p50_ns"]["values"].as_array().map(Vec::len), Some(3));
         assert_eq!(summary["postgres"]["p95_ns"]["reps"], 3);
         assert_eq!(summary["riffdb"]["p50_ns"]["median"], 660.0);
         assert_eq!(summary["riffdb"]["p95_ns"]["median"], 1_100.0);
         assert_eq!(summary["ratios_riffdb_over_postgres"]["p50"]["median"], 2.0);
         assert_eq!(summary["ratios_riffdb_over_postgres"]["p95"]["median"], 2.0);
+        assert_eq!(
+            summary["ratios_riffdb_over_postgres"]["p50"]
+                ["qualified_ratio_of_backend_medians"],
+            2.0
+        );
         assert_eq!(
             report["comparisons"]["scenarios"][0]["ratio_riffdb_over_postgres_p95"]
                 ["median"],

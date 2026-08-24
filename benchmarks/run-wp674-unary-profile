@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Bank one host column of ADR-0142's frozen unary corpus.
+# Bank one host column of ADR-0142/0143's frozen unary corpus.
 set -euo pipefail
 export LC_ALL=C
 export TZ=UTC
@@ -50,8 +50,8 @@ mkdir -p "$output_dir"
 output_dir="$(cd "$output_dir" && pwd)"
 attempts_dir="$output_dir/attempts"
 mkdir -p "$attempts_dir"
-accepted_index="$output_dir/accepted-attempts.tsv"
-: >"$accepted_index"
+attempt_statuses="$attempts_dir/status.tsv"
+: >"$attempt_statuses"
 task_tmp_root="${RIFFDB_TMP_ROOT:-$HOME/tmp}"
 mkdir -p "$task_tmp_root"
 export TMPDIR="$task_tmp_root"
@@ -94,7 +94,7 @@ safe_app_attempt_shape_is_exact() {
       and .evidence_eligibility.comparison_complete == true
       and .qualification_candidate.schema == "riffdb.app-baseline-qualified-candidate/v1"
       and .unary_qualification.scenario == $scenario
-      and .unary_qualification.process_generations == 3
+      and .unary_qualification.process_generations == 5
       and .unary_qualification.same_scenario_warmups_after_restart == 20
       and .unary_qualification.measured_operations_per_generation == 100
       and (.comparisons.unary_rep_summaries[$scenario] != null)
@@ -104,15 +104,19 @@ safe_app_attempt_shape_is_exact() {
 safe_app_attempt_spread_is_valid() {
     local report="$1" scenario="$2"
     jq -e --arg scenario "$scenario" '
+      def central_three_stable:
+        (.values | sort) as $values |
+        .reps == 5
+        and ($values | length) == 5
+        and ($values | all(type == "number" and . > 0))
+        and (($values[3] / $values[1]) <= 1.20);
       .comparisons.unary_rep_summaries[$scenario] as $summary |
       [
         $summary.postgres.p50_ns,
         $summary.postgres.p95_ns,
         $summary.riffdb.p50_ns,
-        $summary.riffdb.p95_ns,
-        $summary.ratios_riffdb_over_postgres.p50,
-        $summary.ratios_riffdb_over_postgres.p95
-      ] | all(.reps == 3 and .spread_ratio <= 1.20)
+        $summary.riffdb.p95_ns
+      ] | all(central_three_stable)
     ' "$report" >/dev/null
 }
 
@@ -125,6 +129,7 @@ minimal_attempt_shape_is_exact() {
       and .evidence_eligibility.same_device_comparable == true
       and .evidence_eligibility.comparison_complete == true
       and .qualification_candidate.schema == "riffdb.app-baseline-qualified-candidate/v1"
+      and .reps == 5
       and ((.comparisons.unary_rep_summaries | length) == 14)
     ' "$report" >/dev/null
 }
@@ -132,123 +137,139 @@ minimal_attempt_shape_is_exact() {
 minimal_attempt_spread_is_valid() {
     local report="$1"
     jq -e '
+      def central_three_stable:
+        (.values | sort) as $values |
+        .reps == 5
+        and ($values | length) == 5
+        and ($values | all(type == "number" and . > 0))
+        and (($values[3] / $values[1]) <= 1.20);
       [.comparisons.unary_rep_summaries[] |
         .postgres.p50_ns,
         .postgres.p95_ns,
         .riffdb.p50_ns,
-        .riffdb.p95_ns,
-        .ratios_riffdb_over_postgres.p50,
-        .ratios_riffdb_over_postgres.p95
-      ] | all(.reps == 3 and .spread_ratio <= 1.20)
+        .riffdb.p95_ns
+      ] | all(central_three_stable)
     ' "$report" >/dev/null
 }
 
-for scenario in "${scenarios[@]}"; do
-    report="$output_dir/safe-app-$scenario.json"
-    accepted=0
-    for attempt in 1 2 3; do
-        attempt_report="$attempts_dir/safe-app-$scenario-attempt-$attempt.json"
-        printf 'WP-674 %s: safe-app %s attempt %s/3\n' "$profile" "$scenario" "$attempt"
+run_host_attempt() {
+    local attempt="$1" attempt_root="$attempts_dir/host-attempt-$1"
+    local scenario attempt_report attempt_status
+    mkdir -p "$attempt_root"
+    for scenario in "${scenarios[@]}"; do
+        attempt_report="$attempt_root/safe-app-$scenario.json"
+        printf 'WP-674 %s: host attempt %s/2, safe-app %s\n' \
+            "$profile" "$attempt" "$scenario"
         set +e
         RIFFDB_APP_BASELINE_UNARY_QUALIFICATION_SCENARIO="$scenario" \
         RIFFDB_APP_BASELINE_DEFER_UNARY_STABILITY=1 \
         RIFFDB_APP_BASELINE_WP674_RECEIPT=1 \
             ./benchmarks/run-app-baseline \
-                --full --samples 100 --warmup 20 --reps 3 --require-stable \
+                --full --samples 100 --warmup 20 --reps 5 --require-stable \
                 --postgres-comparator safe-app --output "$attempt_report"
         attempt_status=$?
         set -e
         if ((attempt_status != 0)); then
             if host_invalid_attempt "$attempt_report"; then
-                printf 'WP-674 %s: retaining host-invalid %s attempt %s\n' \
-                    "$profile" "$scenario" "$attempt" >&2
-                continue
+                return 10
             fi
-            printf 'WP-674 %s: non-retryable failure for %s attempt %s\n' \
+            printf 'WP-674 %s: non-retryable failure for %s in host attempt %s\n' \
                 "$profile" "$scenario" "$attempt" >&2
-            exit 1
+            return 1
         fi
         if ! safe_app_attempt_shape_is_exact "$attempt_report" "$scenario"; then
-            printf 'WP-674 %s: non-retryable evidence drift for %s attempt %s\n' \
+            printf 'WP-674 %s: non-retryable evidence drift for %s in host attempt %s\n' \
                 "$profile" "$scenario" "$attempt" >&2
-            exit 1
+            return 1
         fi
-        if safe_app_attempt_spread_is_valid "$attempt_report" "$scenario"; then
-            if ! jq -e '.evidence_eligibility.eligible == true' \
-                "$attempt_report" >/dev/null; then
-                printf 'WP-674 %s: non-retryable eligibility drift for %s attempt %s\n' \
-                    "$profile" "$scenario" "$attempt" >&2
-                exit 1
-            fi
-            cp "$attempt_report" "$report"
-            printf '%s\t%s\n' "$scenario" "$attempt" >>"$accepted_index"
-            accepted=1
-            break
+        if ! safe_app_attempt_spread_is_valid "$attempt_report" "$scenario"; then
+            printf 'WP-674 %s: unstable completed cell retained; retry prohibited: %s\n' \
+                "$profile" "$scenario" >&2
+            return 1
         fi
-        printf 'WP-674 %s: retaining rejected %s attempt %s\n' \
-            "$profile" "$scenario" "$attempt" >&2
+        if ! jq -e '.evidence_eligibility.eligible == true' \
+            "$attempt_report" >/dev/null; then
+            printf 'WP-674 %s: non-retryable eligibility drift for %s\n' \
+                "$profile" "$scenario" >&2
+            return 1
+        fi
     done
-    if ((accepted == 0)); then
-        printf 'WP-674 %s: no valid bounded attempt for %s\n' "$profile" "$scenario" >&2
-        exit 1
-    fi
-done
 
-minimal="$output_dir/minimal.json"
-minimal_accepted=0
-for attempt in 1 2 3; do
-    attempt_report="$attempts_dir/minimal-attempt-$attempt.json"
-    printf 'WP-674 %s: complete minimal-PostgreSQL disclosure attempt %s/3\n' \
+    attempt_report="$attempt_root/minimal.json"
+    printf 'WP-674 %s: host attempt %s/2, complete minimal disclosure\n' \
         "$profile" "$attempt"
     set +e
     RIFFDB_APP_BASELINE_DEFER_UNARY_STABILITY=1 \
     RIFFDB_APP_BASELINE_WP674_RECEIPT=1 \
         ./benchmarks/run-app-baseline \
-            --full --samples 100 --warmup 20 --reps 3 --require-stable \
+            --full --samples 100 --warmup 20 --reps 5 --require-stable \
             --postgres-comparator minimal --output "$attempt_report"
     attempt_status=$?
     set -e
     if ((attempt_status != 0)); then
         if host_invalid_attempt "$attempt_report"; then
-            printf 'WP-674 %s: retaining host-invalid minimal attempt %s\n' \
-                "$profile" "$attempt" >&2
-            continue
+            return 10
         fi
         printf 'WP-674 %s: non-retryable minimal failure at attempt %s\n' \
             "$profile" "$attempt" >&2
-        exit 1
+        return 1
     fi
     if ! minimal_attempt_shape_is_exact "$attempt_report"; then
         printf 'WP-674 %s: non-retryable minimal evidence drift at attempt %s\n' \
             "$profile" "$attempt" >&2
-        exit 1
+        return 1
     fi
-    if minimal_attempt_spread_is_valid "$attempt_report"; then
-        if ! jq -e '.evidence_eligibility.eligible == true' \
-            "$attempt_report" >/dev/null; then
-            printf 'WP-674 %s: non-retryable minimal eligibility drift at attempt %s\n' \
-                "$profile" "$attempt" >&2
-            exit 1
-        fi
-        cp "$attempt_report" "$minimal"
-        printf 'minimal\t%s\n' "$attempt" >>"$accepted_index"
-        minimal_accepted=1
+    if ! minimal_attempt_spread_is_valid "$attempt_report"; then
+        printf 'WP-674 %s: unstable completed minimal cell retained; retry prohibited\n' \
+            "$profile" >&2
+        return 1
+    fi
+    if ! jq -e '.evidence_eligibility.eligible == true' "$attempt_report" >/dev/null; then
+        printf 'WP-674 %s: non-retryable minimal eligibility drift\n' "$profile" >&2
+        return 1
+    fi
+    return 0
+}
+
+accepted_attempt=0
+for attempt in 1 2; do
+    set +e
+    run_host_attempt "$attempt"
+    status=$?
+    set -e
+    if ((status == 0)); then
+        printf '%s\taccepted\n' "$attempt" >>"$attempt_statuses"
+        accepted_attempt="$attempt"
         break
     fi
-    printf 'WP-674 %s: retaining rejected minimal attempt %s\n' \
-        "$profile" "$attempt" >&2
+    if ((status == 10)); then
+        printf '%s\thost_invalid\n' "$attempt" >>"$attempt_statuses"
+        printf 'WP-674 %s: retaining host-invalid attempt %s\n' \
+            "$profile" "$attempt" >&2
+        if ((attempt == 1)); then
+            continue
+        fi
+    fi
+    exit 1
 done
-if ((minimal_accepted == 0)); then
-    printf 'WP-674 %s: no valid bounded minimal disclosure attempt\n' "$profile" >&2
+if ((accepted_attempt == 0)); then
+    printf 'WP-674 %s: no accepted host attempt\n' "$profile" >&2
     exit 1
 fi
+
+accepted_root="$attempts_dir/host-attempt-$accepted_attempt"
+for scenario in "${scenarios[@]}"; do
+    cp "$accepted_root/safe-app-$scenario.json" "$output_dir/safe-app-$scenario.json"
+done
+minimal="$output_dir/minimal.json"
+cp "$accepted_root/minimal.json" "$minimal"
 
 source_revision="$(git rev-parse --verify HEAD)"
 cargo_lock_sha256="$(sha256sum Cargo.lock | awk '{print $1}')"
 harness_sha256="$(sha256sum benchmarks/run-app-baseline | awk '{print $1}')"
 fragment="$output_dir/profile-fragment.json"
 python3 - "$fragment" "$profile" "$hardware_class" "$source_revision" \
-    "$cargo_lock_sha256" "$harness_sha256" "$minimal" "$accepted_index" \
+    "$cargo_lock_sha256" "$harness_sha256" "$minimal" "$attempt_statuses" \
     "${scenarios[@]}" <<'PY'
 import hashlib
 import json
@@ -263,7 +284,7 @@ import sys
     cargo_lock_sha256,
     harness_sha256,
     minimal_path,
-    accepted_index_path,
+    attempt_statuses_path,
     *scenarios,
 ) = sys.argv[1:]
 root = Path(fragment_path).parent
@@ -271,7 +292,7 @@ root = Path(fragment_path).parent
 def reference(path: Path) -> dict[str, str]:
     encoded = path.read_bytes()
     return {
-        "path": path.name,
+        "path": path.relative_to(root).as_posix(),
         "sha256": hashlib.sha256(encoded).hexdigest(),
     }
 
@@ -279,27 +300,22 @@ reports = []
 for scenario in scenarios:
     path = root / f"safe-app-{scenario}.json"
     reports.append({"scenario": scenario, **reference(path)})
-accepted = {}
-for line in Path(accepted_index_path).read_text(encoding="utf-8").splitlines():
-    scenario, attempt = line.split("\t")
-    accepted[scenario] = int(attempt)
-attempt_reports = []
-for scenario in scenarios:
-    for attempt in range(1, accepted[scenario] + 1):
-        path = root / "attempts" / f"safe-app-{scenario}-attempt-{attempt}.json"
-        attempt_reports.append({
-            "scenario": scenario,
-            "attempt": attempt,
-            "status": "accepted" if attempt == accepted[scenario] else "rejected",
-            **reference(path),
-        })
-minimal_attempt_reports = []
-for attempt in range(1, accepted["minimal"] + 1):
-    path = root / "attempts" / f"minimal-attempt-{attempt}.json"
-    minimal_attempt_reports.append({
+host_attempts = []
+for line in Path(attempt_statuses_path).read_text(encoding="utf-8").splitlines():
+    attempt_text, status = line.split("\t")
+    attempt = int(attempt_text)
+    attempt_root = root / "attempts" / f"host-attempt-{attempt}"
+    attempt_reports = []
+    for scenario in scenarios:
+        path = attempt_root / f"safe-app-{scenario}.json"
+        if path.is_file():
+            attempt_reports.append({"scenario": scenario, **reference(path)})
+    minimal_attempt = attempt_root / "minimal.json"
+    host_attempts.append({
         "attempt": attempt,
-        "status": "accepted" if attempt == accepted["minimal"] else "rejected",
-        **reference(path),
+        "status": status,
+        "reports": attempt_reports,
+        "minimal_report": reference(minimal_attempt) if minimal_attempt.is_file() else None,
     })
 fragment = {
     "schema": "riffdb.wp-674-unary-profile/v1",
@@ -310,9 +326,8 @@ fragment = {
         "id": profile,
         "hardware_class": hardware_class,
         "reports": reports,
-        "attempt_reports": attempt_reports,
         "minimal_report": reference(Path(minimal_path)),
-        "minimal_attempt_reports": minimal_attempt_reports,
+        "host_attempts": host_attempts,
     },
 }
 Path(fragment_path).write_text(json.dumps(fragment, indent=2) + "\n", encoding="utf-8")

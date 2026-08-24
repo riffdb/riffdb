@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Bank or verify ADR-0142's portable unary performance baseline."""
+"""Bank or verify ADR-0142/0143's portable unary performance baseline."""
 
 from __future__ import annotations
 
@@ -23,12 +23,12 @@ CANDIDATE_SCHEMA = "riffdb.app-baseline-qualified-candidate/v1"
 MAX_MANIFEST_BYTES = 256 * 1024
 MAX_REPORT_BYTES = 32 * 1024 * 1024
 MAX_BASELINE_BYTES = 512 * 1024
-REPETITIONS = 3
+REPETITIONS = 5
 WARMUPS = 20
 MEASUREMENTS = 100
 MAX_SPREAD = 1.20
 MAX_REGRESSION = 1.10
-MAX_ATTEMPTS = 3
+MAX_HOST_ATTEMPTS = 2
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
 REVISION = re.compile(r"^[0-9a-f]{40}$")
 PROFILE_CLASSES = {
@@ -120,24 +120,35 @@ def scenario_class(name: str) -> str:
     fail(f"unknown frozen unary scenario {name}")
 
 
-def summary_value(summary: Any, label: str) -> float:
+def summary_value(summary: Any, label: str, *, require_stable: bool = True) -> float:
     if not isinstance(summary, dict):
         fail(f"{label} summary is absent")
     if summary.get("reps") != REPETITIONS:
-        fail(f"{label} does not contain exactly three generations")
+        fail(f"{label} does not contain exactly five generations")
+    values = summary.get("values")
+    if not isinstance(values, list) or len(values) != REPETITIONS:
+        fail(f"{label} does not retain all five generations")
+    retained = [require_number(value, f"{label}.values") for value in values]
+    if any(value <= 0 for value in retained):
+        fail(f"{label} contains a non-positive generation")
+    ordered = sorted(retained)
     median = require_number(summary.get("median"), f"{label}.median")
     minimum = require_number(summary.get("min"), f"{label}.min")
     maximum = require_number(summary.get("max"), f"{label}.max")
     spread = require_number(summary.get("spread_ratio"), f"{label}.spread_ratio")
-    if minimum > median or median > maximum:
-        fail(f"{label} median is outside min/max")
-    expected_spread = 1.0 if minimum == 0 and maximum == 0 else (
-        math.inf if minimum == 0 else maximum / minimum
-    )
+    if not math.isclose(minimum, ordered[0]) or not math.isclose(maximum, ordered[4]):
+        fail(f"{label} retained extremes differ from min/max")
+    if not math.isclose(median, ordered[2]):
+        fail(f"{label} qualified value is not the median of five")
+    expected_spread = maximum / minimum
     if not math.isclose(spread, expected_spread, rel_tol=1e-9, abs_tol=1e-9):
         fail(f"{label} spread arithmetic differs")
-    if spread > MAX_SPREAD:
-        fail(f"{label} spread {spread:.4f} exceeds {MAX_SPREAD:.2f}")
+    central_spread = ordered[3] / ordered[1]
+    if require_stable and central_spread > MAX_SPREAD:
+        fail(
+            f"{label} central-three spread {central_spread:.4f} "
+            f"exceeds {MAX_SPREAD:.2f}"
+        )
     return median
 
 
@@ -207,14 +218,10 @@ def verify_candidate(
 
 
 def verify_counterbalance(report: dict[str, Any], postgres: str, label: str) -> None:
-    expected = [
-        postgres,
-        "riffdb_public_grpc",
-        "riffdb_public_grpc",
-        postgres,
-        postgres,
-        "riffdb_public_grpc",
-    ]
+    expected = []
+    for generation in range(REPETITIONS):
+        pair = [postgres, "riffdb_public_grpc"]
+        expected.extend(pair if generation % 2 == 0 else reversed(pair))
     if report.get("backend_execution_order") != expected:
         fail(f"{label}: backend generations are not counterbalanced")
 
@@ -328,17 +335,17 @@ def verify_report(
                 f"{label}.{backend}.{statistic}",
             )
     for statistic in ("p50", "p95"):
-        result["ratios_riffdb_over_postgres"][statistic] = summary_value(
-            (entry.get("ratios_riffdb_over_postgres") or {}).get(statistic),
-            f"{label}.ratio.{statistic}",
-        )
-    for statistic in ("p50", "p95"):
         calculated = result["riffdb"][f"{statistic}_ns"] / result["postgres"][f"{statistic}_ns"]
-        reported = result["ratios_riffdb_over_postgres"][statistic]
-        # The median of ratios need not equal the ratio of medians. Preserve both
-        # and require only a finite, positive disclosure here.
-        if not math.isfinite(calculated) or not math.isfinite(reported):
-            fail(f"{label}: {statistic} comparison is not finite")
+        ratio_summary = (entry.get("ratios_riffdb_over_postgres") or {}).get(statistic)
+        summary_value(ratio_summary, f"{label}.ratio.{statistic}", require_stable=False)
+        reported = require_number(
+            ratio_summary.get("qualified_ratio_of_backend_medians")
+            if isinstance(ratio_summary, dict) else None,
+            f"{label}.ratio.{statistic}.qualified_ratio_of_backend_medians",
+        )
+        if not math.isclose(calculated, reported, rel_tol=1e-9, abs_tol=1e-9):
+            fail(f"{label}: {statistic} ratio is not derived from backend medians")
+        result["ratios_riffdb_over_postgres"][statistic] = reported
     result["profile"] = profile_id
     result["host_observation_sha256"] = host_digest
     result["hardware_identity_sha256"] = hardware_digest
@@ -430,10 +437,24 @@ def verify_minimal_report(
                     f"{label}.{scenario}.{backend}.{statistic}",
                 )
         for statistic in ("p50", "p95"):
-            metrics["ratios_riffdb_over_postgres"][statistic] = summary_value(
-                (entry.get("ratios_riffdb_over_postgres") or {}).get(statistic),
+            ratio_summary = (entry.get("ratios_riffdb_over_postgres") or {}).get(statistic)
+            summary_value(
+                ratio_summary,
                 f"{label}.{scenario}.ratio.{statistic}",
+                require_stable=False,
             )
+            calculated = (
+                metrics["riffdb"][f"{statistic}_ns"]
+                / metrics["postgres"][f"{statistic}_ns"]
+            )
+            reported = require_number(
+                ratio_summary.get("qualified_ratio_of_backend_medians")
+                if isinstance(ratio_summary, dict) else None,
+                f"{label}.{scenario}.ratio.{statistic}.qualified_ratio_of_backend_medians",
+            )
+            if not math.isclose(calculated, reported, rel_tol=1e-9, abs_tol=1e-9):
+                fail(f"{label}.{scenario}: ratio is not derived from backend medians")
+            metrics["ratios_riffdb_over_postgres"][statistic] = reported
         result[scenario] = metrics
     return result, binaries, host_digest, hardware_digest
 
@@ -471,9 +492,8 @@ def load_reports(
             "id",
             "hardware_class",
             "reports",
-            "attempt_reports",
             "minimal_report",
-            "minimal_attempt_reports",
+            "host_attempts",
         }:
             fail("profile shape is invalid")
         profile_id = profile["id"]
@@ -508,74 +528,82 @@ def load_reports(
         if digest != require_sha(reference["sha256"], f"{profile_id}.minimal"):
             fail(f"{profile_id}: minimal report digest differs")
         result[profile_id]["minimal"] = (report, digest)
-        attempts = profile.get("attempt_reports")
-        if not isinstance(attempts, list) or not attempts:
-            fail(f"{profile_id}: unary attempt inventory is absent")
-        attempts_by_scenario: dict[str, list[dict[str, Any]]] = {
-            scenario: [] for scenario in SCENARIOS
+        attempts = profile.get("host_attempts")
+        if (
+            not isinstance(attempts, list)
+            or not 1 <= len(attempts) <= MAX_HOST_ATTEMPTS
+        ):
+            fail(f"{profile_id}: bounded host-attempt inventory is invalid")
+        canonical_reports = {
+            row["scenario"]: row["sha256"] for row in profile["reports"]
         }
-        for attempt in attempts:
+        for index, attempt in enumerate(attempts, 1):
             if not isinstance(attempt, dict) or set(attempt) != {
-                "scenario",
-                "attempt",
-                "status",
-                "path",
-                "sha256",
+                "attempt", "status", "reports", "minimal_report"
             }:
-                fail(f"{profile_id}: unary attempt reference is invalid")
-            scenario = attempt.get("scenario")
-            if scenario not in SCENARIOS:
-                fail(f"{profile_id}: unary attempt scenario is invalid")
-            number = attempt.get("attempt")
-            if not isinstance(number, int) or isinstance(number, bool) or not 1 <= number <= MAX_ATTEMPTS:
-                fail(f"{profile_id}.{scenario}: attempt number is invalid")
-            relative = attempt.get("path")
-            if not isinstance(relative, str):
-                fail(f"{profile_id}.{scenario}: attempt path is invalid")
-            _, actual = load_json((manifest_path.parent / relative).resolve(), MAX_REPORT_BYTES)
-            if actual != require_sha(attempt.get("sha256"), f"{profile_id}.{scenario}.attempt"):
-                fail(f"{profile_id}.{scenario}: attempt digest differs")
-            attempts_by_scenario[scenario].append(attempt)
-        for scenario, entries in attempts_by_scenario.items():
-            entries.sort(key=lambda row: row["attempt"])
-            if not entries:
-                fail(f"{profile_id}.{scenario}: attempt inventory is absent")
-            if [row["attempt"] for row in entries] != list(range(1, len(entries) + 1)):
-                fail(f"{profile_id}.{scenario}: attempts are not contiguous")
-            if entries[-1].get("status") != "accepted" or any(
-                row.get("status") != "rejected" for row in entries[:-1]
-            ):
-                fail(f"{profile_id}.{scenario}: attempt disposition is invalid")
-            canonical = next(
-                row for row in profile["reports"] if row["scenario"] == scenario
-            )
-            if entries[-1]["sha256"] != canonical["sha256"]:
-                fail(f"{profile_id}.{scenario}: accepted attempt is not canonical")
-        minimal_attempts = profile.get("minimal_attempt_reports")
-        if not isinstance(minimal_attempts, list) or not minimal_attempts:
-            fail(f"{profile_id}: minimal attempt inventory is absent")
-        minimal_attempts.sort(key=lambda row: row.get("attempt", 0) if isinstance(row, dict) else 0)
-        for index, attempt in enumerate(minimal_attempts, 1):
-            if not isinstance(attempt, dict) or set(attempt) != {
-                "attempt",
-                "status",
-                "path",
-                "sha256",
-            }:
-                fail(f"{profile_id}: minimal attempt reference is invalid")
-            if attempt.get("attempt") != index or index > MAX_ATTEMPTS:
-                fail(f"{profile_id}: minimal attempts are not contiguous")
-            expected_status = "accepted" if index == len(minimal_attempts) else "rejected"
+                fail(f"{profile_id}: host-attempt shape is invalid")
+            if attempt.get("attempt") != index:
+                fail(f"{profile_id}: host attempts are not contiguous")
+            expected_status = "accepted" if index == len(attempts) else "host_invalid"
             if attempt.get("status") != expected_status:
-                fail(f"{profile_id}: minimal attempt disposition is invalid")
-            relative = attempt.get("path")
-            if not isinstance(relative, str):
-                fail(f"{profile_id}: minimal attempt path is invalid")
-            _, actual = load_json((manifest_path.parent / relative).resolve(), MAX_REPORT_BYTES)
-            if actual != require_sha(attempt.get("sha256"), f"{profile_id}.minimal.attempt"):
-                fail(f"{profile_id}: minimal attempt digest differs")
-        if minimal_attempts[-1]["sha256"] != profile["minimal_report"]["sha256"]:
-            fail(f"{profile_id}: accepted minimal attempt is not canonical")
+                fail(f"{profile_id}: performance-selected host retry was retained")
+            references = attempt.get("reports")
+            if not isinstance(references, list):
+                fail(f"{profile_id}: host-attempt reports are invalid")
+            observed: dict[str, tuple[dict[str, Any], str]] = {}
+            for reference in references:
+                if not isinstance(reference, dict) or set(reference) != {
+                    "scenario", "path", "sha256"
+                }:
+                    fail(f"{profile_id}: host-attempt report reference is invalid")
+                scenario = reference.get("scenario")
+                relative = reference.get("path")
+                if scenario not in SCENARIOS or scenario in observed or not isinstance(relative, str):
+                    fail(f"{profile_id}: host-attempt scenario inventory is invalid")
+                report, actual = load_json(
+                    (manifest_path.parent / relative).resolve(), MAX_REPORT_BYTES
+                )
+                if actual != require_sha(reference.get("sha256"), f"{profile_id}.host_attempt"):
+                    fail(f"{profile_id}.{scenario}: host-attempt digest differs")
+                observed[scenario] = (report, actual)
+            minimal_reference = attempt.get("minimal_report")
+            minimal_observed: tuple[dict[str, Any], str] | None = None
+            if minimal_reference is not None:
+                if not isinstance(minimal_reference, dict) or set(minimal_reference) != {
+                    "path", "sha256"
+                }:
+                    fail(f"{profile_id}: host-attempt minimal reference is invalid")
+                relative = minimal_reference.get("path")
+                if not isinstance(relative, str):
+                    fail(f"{profile_id}: host-attempt minimal path is invalid")
+                minimal_report, actual = load_json(
+                    (manifest_path.parent / relative).resolve(), MAX_REPORT_BYTES
+                )
+                if actual != require_sha(
+                    minimal_reference.get("sha256"), f"{profile_id}.host_attempt.minimal"
+                ):
+                    fail(f"{profile_id}: host-attempt minimal digest differs")
+                minimal_observed = (minimal_report, actual)
+            if expected_status == "accepted":
+                if set(observed) != SCENARIOS or minimal_observed is None:
+                    fail(f"{profile_id}: accepted host attempt is incomplete")
+                if {scenario: digest for scenario, (_, digest) in observed.items()} != canonical_reports:
+                    fail(f"{profile_id}: accepted host attempt is not canonical")
+                if minimal_observed[1] != profile["minimal_report"]["sha256"]:
+                    fail(f"{profile_id}: accepted minimal attempt is not canonical")
+            else:
+                retained = [report for report, _ in observed.values()]
+                if minimal_observed is not None:
+                    retained.append(minimal_observed[0])
+                if not retained or not any(
+                    isinstance(report.get("host_validity"), dict)
+                    and (
+                        (report["host_validity"].get("preflight") or {}).get("valid") is False
+                        or (report["host_validity"].get("postflight") or {}).get("valid") is False
+                    )
+                    for report in retained
+                ):
+                    fail(f"{profile_id}: replacement was not independently host-invalid")
     return result
 
 
@@ -639,22 +667,21 @@ def verify_corpus(
                 "hardware_identity_sha256": next(iter(hardware_digests)),
                 "host_inventory_sha256": host_digests,
                 "report_sha256": report_digests,
-                "attempt_report_sha256": [
+                "host_attempts": [
                     {
-                        "scenario": row["scenario"],
-                        "attempt": row["attempt"],
-                        "status": row["status"],
-                        "sha256": row["sha256"],
+                        "attempt": attempt["attempt"],
+                        "status": attempt["status"],
+                        "report_sha256": {
+                            row["scenario"]: row["sha256"]
+                            for row in attempt["reports"]
+                        },
+                        "minimal_report_sha256": (
+                            None
+                            if attempt["minimal_report"] is None
+                            else attempt["minimal_report"]["sha256"]
+                        ),
                     }
-                    for row in manifest_profile["attempt_reports"]
-                ],
-                "minimal_attempt_report_sha256": [
-                    {
-                        "attempt": row["attempt"],
-                        "status": row["status"],
-                        "sha256": row["sha256"],
-                    }
-                    for row in manifest_profile["minimal_attempt_reports"]
+                    for attempt in manifest_profile["host_attempts"]
                 ],
                 "minimal_postgres": minimal,
                 "scenarios": scenarios,
@@ -676,7 +703,7 @@ def verify_corpus(
             "measurements_per_generation": MEASUREMENTS,
             "maximum_spread_ratio": MAX_SPREAD,
             "maximum_riffdb_regression_ratio": MAX_REGRESSION,
-            "qualified_statistic": "median_of_three_per_generation_statistics",
+            "qualified_statistic": "median_of_five_with_central_three_stability",
         },
         "scenario_classes": {
             class_name: {
@@ -739,6 +766,7 @@ def verify_against_baseline(candidate: dict[str, Any], baseline: dict[str, Any])
 
 def fake_summary(value: float, spread: float = 1.0) -> dict[str, Any]:
     return {
+        "values": [value, value, value, value, value * spread],
         "median": value,
         "min": value,
         "max": value * spread,
@@ -746,6 +774,12 @@ def fake_summary(value: float, spread: float = 1.0) -> dict[str, Any]:
         "spread_ratio": spread,
         "stability": "stable",
     }
+
+
+def fake_ratio_summary(value: float) -> dict[str, Any]:
+    summary = fake_summary(value)
+    summary["qualified_ratio_of_backend_medians"] = value
+    return summary
 
 
 def fake_report(manifest: dict[str, Any], profile: str, scenario: str) -> dict[str, Any]:
@@ -810,6 +844,10 @@ def fake_report(manifest: dict[str, Any], profile: str, scenario: str) -> dict[s
             "postgres_safe_app",
             "postgres_safe_app",
             "riffdb_public_grpc",
+            "riffdb_public_grpc",
+            "postgres_safe_app",
+            "postgres_safe_app",
+            "riffdb_public_grpc",
         ],
         "backends": [
             {
@@ -851,8 +889,8 @@ def fake_report(manifest: dict[str, Any], profile: str, scenario: str) -> dict[s
                         "p95_ns": fake_summary(rd * 2),
                     },
                     "ratios_riffdb_over_postgres": {
-                        "p50": fake_summary(rd / pg),
-                        "p95": fake_summary(rd / pg),
+                        "p50": fake_ratio_summary(rd / pg),
+                        "p95": fake_ratio_summary(rd / pg),
                     },
                 }
             },
@@ -865,6 +903,10 @@ def fake_minimal_report(manifest: dict[str, Any], profile: str) -> dict[str, Any
     report = fake_report(manifest, profile, first)
     report.pop("unary_qualification")
     report["backend_execution_order"] = [
+        "postgres_minimal",
+        "riffdb_public_grpc",
+        "riffdb_public_grpc",
+        "postgres_minimal",
         "postgres_minimal",
         "riffdb_public_grpc",
         "riffdb_public_grpc",
@@ -953,26 +995,19 @@ def run_self_test(root: Path) -> None:
                 "id": profile_id,
                 "hardware_class": hardware_class,
                 "reports": references,
-                "attempt_reports": [
-                    {
-                        "scenario": reference["scenario"],
-                        "attempt": 1,
-                        "status": "accepted",
-                        "path": reference["path"],
-                        "sha256": reference["sha256"],
-                    }
-                    for reference in references
-                ],
                 "minimal_report": {
                     "path": minimal_path.name,
                     "sha256": hashlib.sha256(minimal_encoded.encode()).hexdigest(),
                 },
-                "minimal_attempt_reports": [
+                "host_attempts": [
                     {
                         "attempt": 1,
                         "status": "accepted",
-                        "path": minimal_path.name,
-                        "sha256": hashlib.sha256(minimal_encoded.encode()).hexdigest(),
+                        "reports": copy.deepcopy(references),
+                        "minimal_report": {
+                            "path": minimal_path.name,
+                            "sha256": hashlib.sha256(minimal_encoded.encode()).hexdigest(),
+                        },
                     }
                 ],
             }
@@ -992,7 +1027,7 @@ def run_self_test(root: Path) -> None:
         fail("missing scenario passed")
 
     invalid_attempt = copy.deepcopy(manifest)
-    invalid_attempt["profiles"][0]["attempt_reports"][0]["status"] = "rejected"
+    invalid_attempt["profiles"][0]["host_attempts"][0]["status"] = "host_invalid"
     try:
         verify_corpus(manifest_path, invalid_attempt)
     except ValueError:
@@ -1000,10 +1035,60 @@ def run_self_test(root: Path) -> None:
     else:
         fail("attempt inventory without one accepted terminal attempt passed")
 
+    performance_selected = copy.deepcopy(manifest)
+    accepted = performance_selected["profiles"][0]["host_attempts"][0]
+    accepted["attempt"] = 2
+    performance_selected["profiles"][0]["host_attempts"].insert(
+        0,
+        {
+            "attempt": 1,
+            "status": "host_invalid",
+            "reports": [copy.deepcopy(performance_selected["profiles"][0]["reports"][0])],
+            "minimal_report": None,
+        },
+    )
+    try:
+        verify_corpus(manifest_path, performance_selected)
+    except ValueError:
+        pass
+    else:
+        fail("performance-selected replacement passed as host-invalid")
+
+    too_many_attempts = copy.deepcopy(manifest)
+    attempt = too_many_attempts["profiles"][0]["host_attempts"][0]
+    too_many_attempts["profiles"][0]["host_attempts"] = [
+        {**copy.deepcopy(attempt), "attempt": number}
+        for number in (1, 2, 3)
+    ]
+    try:
+        verify_corpus(manifest_path, too_many_attempts)
+    except ValueError:
+        pass
+    else:
+        fail("a third host attempt passed")
+
+    extreme_report = fake_report(manifest, "n1", sorted(SCENARIOS)[0])
+    extreme = extreme_report["comparisons"]["unary_rep_summaries"][
+        sorted(SCENARIOS)[0]
+    ]["riffdb"]["p50_ns"]
+    extreme.update({
+        "values": [1_000_000.0, 2_000_000.0, 2_000_000.0, 2_000_000.0, 4_000_000.0],
+        "min": 1_000_000.0,
+        "median": 2_000_000.0,
+        "max": 4_000_000.0,
+        "spread_ratio": 4.0,
+    })
+    verify_report(extreme_report, manifest, "n1", sorted(SCENARIOS)[0], "extremes")
+
     report, _ = load_json(scratch / f"n1-{sorted(SCENARIOS)[0]}.json", MAX_REPORT_BYTES)
     entry = report["comparisons"]["unary_rep_summaries"][sorted(SCENARIOS)[0]]
-    entry["riffdb"]["p50_ns"]["max"] *= 1.21
-    entry["riffdb"]["p50_ns"]["spread_ratio"] = 1.21
+    entry["riffdb"]["p50_ns"].update({
+        "values": [1.0, 1.0, 1.21, 1.21, 1.21],
+        "min": 1.0,
+        "median": 1.21,
+        "max": 1.21,
+        "spread_ratio": 1.21,
+    })
     try:
         verify_report(report, manifest, "n1", sorted(SCENARIOS)[0], "spread")
     except ValueError:

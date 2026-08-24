@@ -98,10 +98,32 @@ def main() -> int:
         reports = profile.get("reports")
         if not isinstance(reports, list):
             fail(f"{expected}: reports are absent")
-        attempt_reports = profile.get("attempt_reports")
-        minimal_attempt_reports = profile.get("minimal_attempt_reports")
-        if not isinstance(attempt_reports, list) or not isinstance(minimal_attempt_reports, list):
-            fail(f"{expected}: bounded attempt inventory is absent")
+        host_attempts = profile.get("host_attempts")
+        if not isinstance(host_attempts, list) or not host_attempts:
+            fail(f"{expected}: bounded host-attempt inventory is absent")
+
+        def remap_host_attempt(attempt: Any) -> dict[str, Any]:
+            if not isinstance(attempt, dict) or set(attempt) != {
+                "attempt", "status", "reports", "minimal_report"
+            }:
+                fail(f"{expected}: host-attempt shape is invalid")
+            reports = attempt.get("reports")
+            if not isinstance(reports, list):
+                fail(f"{expected}: host-attempt reports are invalid")
+            minimal = attempt.get("minimal_report")
+            return {
+                "attempt": attempt.get("attempt"),
+                "status": attempt.get("status"),
+                "reports": [
+                    {
+                        "scenario": row.get("scenario"),
+                        **remap({"path": row.get("path"), "sha256": row.get("sha256")}),
+                    }
+                    for row in reports
+                    if isinstance(row, dict)
+                ],
+                "minimal_report": None if minimal is None else remap(minimal),
+            }
         profiles.append(
             {
                 "id": expected,
@@ -114,26 +136,8 @@ def main() -> int:
                     for row in reports
                     if isinstance(row, dict)
                 ],
-                "attempt_reports": [
-                    {
-                        "scenario": row.get("scenario"),
-                        "attempt": row.get("attempt"),
-                        "status": row.get("status"),
-                        **remap({"path": row.get("path"), "sha256": row.get("sha256")}),
-                    }
-                    for row in attempt_reports
-                    if isinstance(row, dict)
-                ],
                 "minimal_report": remap(profile.get("minimal_report")),
-                "minimal_attempt_reports": [
-                    {
-                        "attempt": row.get("attempt"),
-                        "status": row.get("status"),
-                        **remap({"path": row.get("path"), "sha256": row.get("sha256")}),
-                    }
-                    for row in minimal_attempt_reports
-                    if isinstance(row, dict)
-                ],
+                "host_attempts": [remap_host_attempt(attempt) for attempt in host_attempts],
             }
         )
     assert common is not None
