@@ -6,6 +6,11 @@ rust-version.workspace = true
 publish.workspace = true
 license.workspace = true
 
+# The baseline pins the contract IR as an explicit comparison-surface input;
+# current runner code consumes its values through the compiler facade.
+[package.metadata.cargo-machete]
+ignored = ["riffdb-contract-ir"]
+
 [dependencies]
 riffdb-app-baseline-core = { path = "../core", version = "0.1.0" }
 riffdb-api-grpc = { path = "../../../crates/riffdb-api-grpc", version = "0.1.0", default-features = false, features = ["client"] }

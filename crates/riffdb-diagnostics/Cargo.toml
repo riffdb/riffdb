@@ -6,6 +6,12 @@ rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
 
+# Syntax crates are intentional direct inputs to the diagnostic compatibility
+# boundary even when the current renderer reaches their values through the
+# compiler/module crates.
+[package.metadata.cargo-machete]
+ignored = ["riffdb-contract-syntax", "riffdb-riffql-syntax"]
+
 [features]
 default = []
 
