@@ -127,10 +127,10 @@ def write_tar(path: Path, files: dict[str, tuple[bytes, int]], epoch: int) -> No
 
 
 def materialize_npm(distribution: Path, output: Path, version: str, epoch: int) -> list[str]:
-    packages: list[str] = []
     sources = sorted((distribution / "npm").glob("*.tgz"))
     if not 1 <= len(sources) <= 8:
         fail("npm source inventory is outside the bound")
+    inventory: dict[str, tuple[Path, dict[str, tuple[bytes, int]], dict, int]] = {}
     for source in sources:
         files = read_tar(source, "package")
         package_entry = files.get("package/package.json")
@@ -142,21 +142,35 @@ def materialize_npm(distribution: Path, output: Path, version: str, epoch: int) 
         name = metadata.get("name")
         if not isinstance(name, str) or not re.fullmatch(r"@riffdb/[a-z0-9-]+", name):
             fail("npm package identity is outside the closed RiffDB scope")
+        if name in inventory:
+            fail("npm package identity is duplicated")
+        inventory[name] = (source, files, metadata, package_entry[1])
+
+    package_names = set(inventory)
+    for name in sorted(inventory):
+        source, files, metadata, package_mode = inventory[name]
         metadata["version"] = version
         for key in ("dependencies", "optionalDependencies", "peerDependencies"):
             dependencies = metadata.get(key, {})
             if not isinstance(dependencies, dict):
                 fail("npm dependency metadata is malformed")
             for dependency, requirement in list(dependencies.items()):
-                if dependency.startswith("@riffdb/") and requirement == BASE_VERSION:
-                    dependencies[dependency] = version
-        files["package/package.json"] = (canonical_json(metadata), package_entry[1])
+                if not dependency.startswith("@riffdb/"):
+                    continue
+                if dependency not in package_names:
+                    if key == "optionalDependencies":
+                        del dependencies[dependency]
+                        continue
+                    fail(f"npm {key} dependency is absent from the publication inventory")
+                if requirement != BASE_VERSION:
+                    fail("npm first-party dependency does not pin the production base version")
+                dependencies[dependency] = version
+        files["package/package.json"] = (canonical_json(metadata), package_mode)
         leaf = source.name.replace(BASE_VERSION, version)
         if leaf == source.name:
             fail("npm archive name lacks the production base version")
         write_tar(output / "npm/packages" / leaf, files, epoch)
-        packages.append(name)
-    return sorted(packages)
+    return sorted(package_names)
 
 
 def wheel_hash(content: bytes) -> str:

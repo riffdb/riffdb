@@ -90,7 +90,13 @@ Run the complete clean-consumer proof with:
 
 The acceptance creates four directories outside the repository, installs or
 resolves through the four native registry protocols, imports or compiles each
-runtime, checks exact lock metadata, and rejects repository paths. Rust's
+runtime, checks exact lock metadata, runs both `npm install` and a clean
+`npm ci`, and rejects repository paths. An npm development publication includes
+only the native CLI packages present in its source distribution. The publisher
+removes absent first-party platform packages from `@riffdb/cli`'s optional
+dependencies, while missing required or peer dependencies fail publication;
+therefore a generated lock file never names an unpublished platform package.
+Rust's
 third-party dependencies remain explicitly sourced from crates.io in the
 sparse metadata; all `riffdb-*` transitive crates remain on `riffdb-dev`.
 Development publications are unsigned prereleases and cannot be passed back
