@@ -89,6 +89,13 @@ pub const MAX_REACTIVE_MODULE_SOURCE_INPUT_BYTES: usize = 1_048_576;
 /// Maximum exact query modules admitted for one reactive compilation.
 pub const MAX_REACTIVE_QUERY_MODULE_INPUTS: usize = 32;
 
+/// Maximum time one exact-result request waits for its background-owned provider slot.
+const EXACT_PROVIDER_READINESS_WAIT: Duration = Duration::from_millis(250);
+/// Poll cadence for observing publication without blocking an async service worker.
+const EXACT_PROVIDER_READINESS_POLL: Duration = Duration::from_millis(10);
+/// Hard observation ceiling, including the initial provider attempt.
+const MAX_EXACT_PROVIDER_READINESS_OBSERVATIONS: u16 = 32;
+
 /// Bounded name-addressed values awaiting query-schema materialization.
 #[derive(Clone, Eq, PartialEq)]
 pub struct SymbolicQueryParameters(BTreeMap<String, SubmittedValue>);
@@ -3268,8 +3275,7 @@ async fn execute_exact_predicate_named_query(
         let failure = PublicError::storage_unavailable().into();
         return Err(finish_failure(&service, &context, &begun, failure).await);
     };
-    let observed = match exact.execute_provider(
-        provider.as_ref(),
+    let provider_request = exact.provider_request(
         execution_authorization
             .target()
             .partition()
@@ -3283,7 +3289,12 @@ async fn execute_exact_predicate_named_query(
         offset,
         limit,
         minimum_epoch,
-    ) {
+    );
+    let observed = match execute_exact_provider_with_readiness(&service, &context, &begun, || {
+        provider_request.execute(provider.as_ref())
+    })
+    .await?
+    {
         Ok(observed) => observed,
         Err(error) => {
             let Some(code) = exact_projection_application_code(error) else {
@@ -3343,6 +3354,24 @@ async fn execute_exact_predicate_named_query(
 enum ExactPredicateNamedQuery {
     PresentOnly(Arc<CompiledExactPredicateResultSetV1>),
     Nullable(Arc<CompiledNullableExactPredicateResultSetV1>),
+}
+
+#[derive(Clone)]
+enum ExactPredicateProviderRequest {
+    PresentOnly(ExactPredicateProjectionRequest),
+    Nullable(NullableExactPredicateProjectionRequest),
+}
+
+impl ExactPredicateProviderRequest {
+    fn execute(
+        &self,
+        provider: &dyn crate::ExactPredicateProjectionPort,
+    ) -> Result<ExactPredicateProjectionResult, ExactTextProjectionPortError> {
+        match self {
+            Self::PresentOnly(request) => provider.execute(request.clone()),
+            Self::Nullable(request) => provider.execute_nullable(request.clone()),
+        }
+    }
 }
 
 impl ExactPredicateNamedQuery {
@@ -3433,9 +3462,8 @@ impl ExactPredicateNamedQuery {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn execute_provider(
+    fn provider_request(
         &self,
-        provider: &dyn crate::ExactPredicateProjectionPort,
         partition_key: riffdb_types::PartitionKey,
         partition_value: CanonicalValue,
         policy_shape: riffdb_types::ApplicationRoleHash,
@@ -3445,22 +3473,10 @@ impl ExactPredicateNamedQuery {
         offset: u32,
         limit: NonZeroU16,
         minimum_epoch: Option<CommitSequence>,
-    ) -> Result<ExactPredicateProjectionResult, ExactTextProjectionPortError> {
+    ) -> ExactPredicateProviderRequest {
         match self {
-            Self::PresentOnly(exact) => provider.execute(ExactPredicateProjectionRequest::new(
-                Arc::clone(exact),
-                partition_key,
-                partition_value,
-                policy_shape,
-                row_policy,
-                parameters,
-                member,
-                offset,
-                limit,
-                minimum_epoch,
-            )),
-            Self::Nullable(exact) => {
-                provider.execute_nullable(NullableExactPredicateProjectionRequest::new(
+            Self::PresentOnly(exact) => {
+                ExactPredicateProviderRequest::PresentOnly(ExactPredicateProjectionRequest::new(
                     Arc::clone(exact),
                     partition_key,
                     partition_value,
@@ -3473,6 +3489,20 @@ impl ExactPredicateNamedQuery {
                     minimum_epoch,
                 ))
             }
+            Self::Nullable(exact) => ExactPredicateProviderRequest::Nullable(
+                NullableExactPredicateProjectionRequest::new(
+                    Arc::clone(exact),
+                    partition_key,
+                    partition_value,
+                    policy_shape,
+                    row_policy,
+                    parameters,
+                    member,
+                    offset,
+                    limit,
+                    minimum_epoch,
+                ),
+            ),
         }
     }
 }
@@ -3659,7 +3689,11 @@ async fn execute_exact_named_query(
         let failure = PublicError::storage_unavailable().into();
         return Err(finish_failure(&service, &context, &begun, failure).await);
     };
-    let observed = match provider.execute(request) {
+    let observed = match execute_exact_provider_with_readiness(&service, &context, &begun, || {
+        provider.execute(request.clone())
+    })
+    .await?
+    {
         Ok(observed) => observed,
         Err(error) => {
             let Some(code) = exact_projection_application_code(error) else {
@@ -3712,6 +3746,46 @@ async fn execute_exact_named_query(
     .ok_or_else(|| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?;
     finish_success(&service, &context, &begun).await?;
     Ok(result)
+}
+
+async fn execute_exact_provider_with_readiness<T>(
+    service: &RiffDbServiceInner,
+    context: &RequestContext,
+    begun: &crate::orchestration::BegunInvocation,
+    mut execute: impl FnMut() -> Result<T, ExactTextProjectionPortError>,
+) -> ServiceResult<Result<T, ExactTextProjectionPortError>> {
+    let readiness_deadline = Instant::now()
+        .checked_add(EXACT_PROVIDER_READINESS_WAIT)
+        .unwrap_or_else(|| context.control().deadline())
+        .min(context.control().deadline());
+    let mut observations = 0_u16;
+    loop {
+        observations = observations.saturating_add(1);
+        match execute() {
+            Ok(result) => return Ok(Ok(result)),
+            Err(
+                ExactTextProjectionPortError::Building
+                | ExactTextProjectionPortError::Rebuilding
+                | ExactTextProjectionPortError::FreshnessUnsatisfied,
+            ) if observations < MAX_EXACT_PROVIDER_READINESS_OBSERVATIONS
+                && Instant::now() < readiness_deadline =>
+            {
+                let wake_at = Instant::now()
+                    .checked_add(EXACT_PROVIDER_READINESS_POLL)
+                    .unwrap_or(readiness_deadline)
+                    .min(readiness_deadline);
+                wait_with_control(
+                    context.control(),
+                    service.providers.deadline_scheduler.as_ref(),
+                    service.providers.deadline_scheduler.wait_until(wake_at),
+                )
+                .await
+                .map_err(controlled_failure)?;
+                begun.reauthorize_read(service, context).await?;
+            }
+            Err(error) => return Ok(Err(error)),
+        }
+    }
 }
 
 const fn exact_projection_application_code(

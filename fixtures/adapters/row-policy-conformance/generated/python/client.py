@@ -23,7 +23,7 @@ def _compact_tag(value: object, tag: str, keys: frozenset[str]) -> dict[str, obj
 CONTRACT_LINEAGE: Final[str] = "AdapterRowPolicyConformance"
 CONTRACT_VERSION: Final[int] = 1
 CONTRACT_BUNDLE_HASH: Final[str] = "72bb73113b25e9ad21b0c7634965f69d7f301a728c19de01fc962438d731b40b"
-QUERY_MODULE_HASH: Final[str] = "aa9ab3298929270e3b046f153bc8e16b49acbbcbe2edf6a6107ecdbec79c8de2"
+QUERY_MODULE_HASH: Final[str] = "b19f62e03160616ec25b55dfb9ce59dfc538f02644c43cd2e5f69db246710462"
 
 class RunState(StrEnum):
     RUNNING = "Running"
@@ -161,7 +161,7 @@ class ListDocumentsFound:
 
 ListDocumentsResult: TypeAlias = ListDocumentsFound
 
-LIST_DRAFT_DOCUMENTS_QUERY_PLAN_HASH: Final[str] = "9b9c769167f47c4ed65480010fc2edb308677a7fdf2597e9422948f823405ec5"
+LIST_DRAFT_DOCUMENTS_QUERY_PLAN_HASH: Final[str] = "75db9dcfffe557bf5be980b2f204b1e070211d2d0b846f7b04b27858176bc41e"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ListDraftDocumentsParams:
@@ -223,7 +223,7 @@ class MetricDashboardFound:
 
 MetricDashboardResult: TypeAlias = MetricDashboardFound
 
-RUN_PAGE_QUERY_PLAN_HASH: Final[str] = "89ae7c0daff78fbcd7260be54fd08f5d9f283ec183c07ae7362ea15011df1462"
+RUN_PAGE_QUERY_PLAN_HASH: Final[str] = "e102ea39653b43aba2565605efbab38c54fd4c6ab1345a1e895449a902911a62"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class RunPageParams:
@@ -972,7 +972,7 @@ from collections.abc import AsyncIterator
 from typing import Any, cast
 from riffdb_application._binding import decode_record, encode_reactive_record
 
-DOCUMENT_ACTIVITY_REACTIVE_MODULE_HASH: Final[str] = "ee115b6d1fa33abce709099014a22594f109af6a5056f43f880b527aca67f390"
+DOCUMENT_ACTIVITY_REACTIVE_MODULE_HASH: Final[str] = "3964e3ed87e46dd7a53f1108d5df7d4c76b8f025d639dcffca8e5180ef7f6b09"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class DocumentListWatchParams:

@@ -1,0 +1,1 @@
+RDB-QP003|200..317|Account|no declared index proves the requested bounded order|index by_query on Account (organization_id, provider_id, external_id, user_id, account_id)

@@ -9,7 +9,7 @@ import (
 	riffdb "riffdb.dev/application"
 )
 
-const QueryModuleHash = "aa9ab3298929270e3b046f153bc8e16b49acbbcbe2edf6a6107ecdbec79c8de2"
+const QueryModuleHash = "b19f62e03160616ec25b55dfb9ce59dfc538f02644c43cd2e5f69db246710462"
 const ContractLineage = "AdapterRowPolicyConformance"
 const ContractVersion uint64 = 1
 const ContractBundleHash = "72bb73113b25e9ad21b0c7634965f69d7f301a728c19de01fc962438d731b40b"
@@ -529,7 +529,7 @@ func (client *Client) ListDocuments(ctx context.Context, parameters ListDocument
 input["organization_id"] = riffdb.UUID(parameters.OrganizationId)
 response, err := client.session.Invoke(ctx, ListDocumentsOperation, input, options); if err != nil { return QueryResult[ListDocumentsResult]{}, err }; if response.ApplicationHead == nil { return QueryResult[ListDocumentsResult]{}, errors.New("RiffDB driver omitted query frontier") }; value, err := decodeListDocumentsResult(response.Value); if err != nil { return QueryResult[ListDocumentsResult]{}, err }; identity := QueryIdentity{ContractLineage: ContractLineage, ContractVersion: ContractVersion, ContractBundleHash: ContractBundleHash, ModuleHash: QueryModuleHash, QueryName: "ListDocuments", PlanHash: ListDocumentsQueryPlanHash}; return QueryResult[ListDocumentsResult]{Value: value, Identity: identity, ApplicationHead: *response.ApplicationHead, NextCursor: response.Cursor}, nil }
 
-const ListDraftDocumentsQueryPlanHash = "9b9c769167f47c4ed65480010fc2edb308677a7fdf2597e9422948f823405ec5"
+const ListDraftDocumentsQueryPlanHash = "75db9dcfffe557bf5be980b2f204b1e070211d2d0b846f7b04b27858176bc41e"
 var ListDraftDocumentsOperation = riffdb.Operation{Name: "adapter_row_policy_conformance_list_draft_documents", InputSchemaHash: "799a4599acee58236808699c68fa11a389a5a96af21833264790bb3f8492760f"}
 func decodeListDraftDocumentsResult(value riffdb.Value) (ListDraftDocumentsResult, error) { fields, err := riffdb.RecordFields(value); if err != nil { return nil, err }; outcomeValue, err := requiredField(fields, "outcome"); if err != nil { return nil, err }; outcome, err := riffdb.EnumValue(outcomeValue); if err != nil { return nil, err }; var raw riffdb.Value; switch outcome {
 case "Found": result := ListDraftDocumentsFound{Outcome: outcome}
@@ -562,7 +562,7 @@ func (client *Client) MetricDashboard(ctx context.Context, parameters MetricDash
 input["organization_id"] = riffdb.UUID(parameters.OrganizationId)
 response, err := client.session.Invoke(ctx, MetricDashboardOperation, input, options); if err != nil { return QueryResult[MetricDashboardResult]{}, err }; if response.ApplicationHead == nil { return QueryResult[MetricDashboardResult]{}, errors.New("RiffDB driver omitted query frontier") }; value, err := decodeMetricDashboardResult(response.Value); if err != nil { return QueryResult[MetricDashboardResult]{}, err }; identity := QueryIdentity{ContractLineage: ContractLineage, ContractVersion: ContractVersion, ContractBundleHash: ContractBundleHash, ModuleHash: QueryModuleHash, QueryName: "MetricDashboard", PlanHash: MetricDashboardQueryPlanHash}; return QueryResult[MetricDashboardResult]{Value: value, Identity: identity, ApplicationHead: *response.ApplicationHead, NextCursor: response.Cursor}, nil }
 
-const RunPageQueryPlanHash = "89ae7c0daff78fbcd7260be54fd08f5d9f283ec183c07ae7362ea15011df1462"
+const RunPageQueryPlanHash = "e102ea39653b43aba2565605efbab38c54fd4c6ab1345a1e895449a902911a62"
 var RunPageOperation = riffdb.Operation{Name: "adapter_row_policy_conformance_run_page", InputSchemaHash: "f190422959264010043261e2e729bd70f0f42bb76d8eba4fc8ce28401c6697dd"}
 func decodeRunPageResult(value riffdb.Value) (RunPageResult, error) { fields, err := riffdb.RecordFields(value); if err != nil { return nil, err }; outcomeValue, err := requiredField(fields, "outcome"); if err != nil { return nil, err }; outcome, err := riffdb.EnumValue(outcomeValue); if err != nil { return nil, err }; var raw riffdb.Value; switch outcome {
 case "Found": result := RunPageFound{Outcome: outcome}
@@ -792,7 +792,7 @@ func leaseInput(parameters map[string]riffdb.Value, consumer string, deliveryID,
 func requiredString(fields map[string]riffdb.Value, name string) (string, error) { value, err := requiredField(fields, name); if err != nil { return "", err }; return riffdb.StringValue(value) }
 func requiredU64(fields map[string]riffdb.Value, name string) (uint64, error) { value, err := requiredField(fields, name); if err != nil { return 0, err }; return riffdb.U64Value(value) }
 func requiredU32(fields map[string]riffdb.Value, name string) (uint32, error) { value, err := requiredU64(fields, name); if err != nil || value > uint64(^uint32(0)) { return 0, errors.New("invalid RiffDB driver u32") }; return uint32(value), nil }
-const DocumentActivityReactiveModuleHash = "ee115b6d1fa33abce709099014a22594f109af6a5056f43f880b527aca67f390"
+const DocumentActivityReactiveModuleHash = "3964e3ed87e46dd7a53f1108d5df7d4c76b8f025d639dcffca8e5180ef7f6b09"
 
 type DocumentListWatchParams struct {
 	OrganizationId string

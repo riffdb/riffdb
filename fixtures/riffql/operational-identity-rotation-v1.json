@@ -3,7 +3,7 @@
     "application_source_hash": "4d2d96661a21c84188140774ee9736b8fb08fb90c07b6cb0136f827465d20a00",
     "artifacts": [
       {
-        "content_hash": "633f329fe4aaee581715e692040c9456c47d34b5d069242d9c04e9920580c66d",
+        "content_hash": "32b18347a79cff5bb01438642459c19df235d50df4e3a9a4b5392fbb234ee44a",
         "kind": "manifest",
         "path": "generated/riffdb.application.exact.json"
       },
@@ -13,46 +13,46 @@
         "path": "generated/riffdb.contract.bundle"
       },
       {
-        "content_hash": "9c2869bc851ac7291e039caaca1bc98280a9f59422f058e1f1ca258ca3ce0841",
+        "content_hash": "4c4d7f173042801d13328100cb43d7fc985bd8b18798a1fa16b1747afec1d46f",
         "kind": "rust",
         "path": "generated/rust/client.rs"
       },
       {
-        "content_hash": "b9e0e3e324a076fdc98fce0f0e4ca2b2cae8939d18a481755d3b085d95e100ab",
+        "content_hash": "afcb478c307d6d8105c312b64299ebb9125f491050fa00d4e18885b98464072e",
         "kind": "typescript",
         "path": "generated/typescript/client.ts"
       },
       {
-        "content_hash": "c2a40475ccfb52d03b6fdcd48c4ac74bb93a6104645533158f21646951dd8c12",
+        "content_hash": "d573f9c29f3cb3171177bb9d96e650cfb8f52746a44777dc6140dce23cfddced",
         "kind": "python",
         "path": "generated/python/client.py"
       },
       {
-        "content_hash": "3872513838b1e30e89df25f7c0b1b3aeb2c4541cd51a4f193bf5027f43adc09a",
+        "content_hash": "977ef0d3714fd77f2e6d289eafd0f8f1af564a49b022933e9970a76f067def92",
         "kind": "go",
         "path": "generated/go/client.go"
       },
       {
-        "content_hash": "2591d1a56502f065d3e8b82836705a800a2a7084414eb90420de8d1a9e52c223",
+        "content_hash": "46d2ef50a7e370f4d5c8553b824e2b438d7eb76fc2ccb43ccd8255e438b74e18",
         "kind": "mcp",
         "path": "generated/mcp/tools.json"
       }
     ],
     "language_version": 2,
-    "lock_hash": "49a07285694132b52d7bbf430c63344fb6f681cb10e96fa3d9fc140579e169ad",
-    "manifest_hash": "056552dcab3671faa51024c1f4c2e5efca0e58abb4c65b3147a428f57e0c6038",
-    "module_hash": "cab493c1344cfc048e031f6e1d9620f1250f8eafca128e7064c0c4bc9eaf4f86",
-    "plan_or_family_hash": "8b9f18dca09bee268a7e1dbfe61b468165d27fcc0447a76e8e879a00f282d740",
+    "lock_hash": "55f6fd7185a9393c3fd01e2a71f004c18f61ba1fadc6ec03b80cdceff9a4bff3",
+    "manifest_hash": "6f6fd866ff9a9c2bb6011e64543eb1e8edf3581926c311c0899586a00f1c32c7",
+    "module_hash": "eac022f01cf4b4b60999d55636af7c3b73ff609efe182ca657b447046b4f7d81",
+    "plan_or_family_hash": "061ebdde4be25b922c048d860cc7bd7a0b897daf87144670ae0b5e5cf1b79aae",
     "query_ir_version": 2,
     "query_module_format_version": 2,
     "query_source_hash": "874e9c580ed2642586842ba7076917b9d667214c8f6c72ef2b2185e0a095d4d7",
-    "role_hash": "973d0ee25c9b004d67752f4f5fa29a0581af04cedb539783d4099d3638dc5831"
+    "role_hash": "b6b8acab9256be0b3dd0f64839f60d9f40da23061c29cce45d8747c4ddc4edd2"
   },
   "aggregate_after": {
     "application_source_hash": "d91c75b14fc5b73d1b29ad2d6f2671fe2d2819e33e2d495de127cb8a9b156a2b",
     "artifacts": [
       {
-        "content_hash": "cc7c6b5ae837fca8f71b80f446ae283736d79bdc89d99f2b02c30d84b9a2a356",
+        "content_hash": "dd9fc41684a25132a180da66e47e0e9c89578342c2be1b26dcd371f22b8e4633",
         "kind": "manifest",
         "path": "generated/riffdb.application.exact.json"
       },
@@ -62,40 +62,40 @@
         "path": "generated/riffdb.contract.bundle"
       },
       {
-        "content_hash": "03af75f7dfbe715e647e1f89957677739a36be73b7eaf5268a38c1b3c7b5a940",
+        "content_hash": "dab348cd9cc2fe6c65beee904b473ca3f090b7693e370d72f1ced80c8fbc9e5d",
         "kind": "rust",
         "path": "generated/rust/client.rs"
       },
       {
-        "content_hash": "950de767cf02752993e63c1f437fe433b21ee472537866cee409b3cbf2ca8c48",
+        "content_hash": "4c6eac75363748108ec2ffbc77e78ce1ef0d27a5c2c38714bf7e251e620b1be2",
         "kind": "typescript",
         "path": "generated/typescript/client.ts"
       },
       {
-        "content_hash": "fe4b6d138317fefbbc3756bb3607d7559f292ab495eba0818733f32a58c064e0",
+        "content_hash": "8b5aa69e3d8074904a5ab1c86265bbc750d6ead960451426e88d23ea590dc63d",
         "kind": "python",
         "path": "generated/python/client.py"
       },
       {
-        "content_hash": "cd0f23aaa4c28648d2666d8b656249a98e6a1b9f8fad5dbea0b9b4b39bdf3037",
+        "content_hash": "9dd4a2867b638ffb0c9b86bd4474dd97b961faa1532ca0b54fbf844badd51471",
         "kind": "go",
         "path": "generated/go/client.go"
       },
       {
-        "content_hash": "48831e1dda996e5dce797afab4ffdd671b32629259a8b5d68d0c22954e04bdc6",
+        "content_hash": "ee8a431e12edf3e925e8ecfddf68669a6d221c5f7ac2f9c5ee460835c8e40db8",
         "kind": "mcp",
         "path": "generated/mcp/tools.json"
       }
     ],
     "language_version": 2,
-    "lock_hash": "3884de51a4a3fb3cc90fc0ff74529cf4eaa56e20d425c029713471826fe41701",
-    "manifest_hash": "8b253be83f997b08c24c6b824940666c8c9b9fb485478df61439728ad28cfd8b",
-    "module_hash": "43d4a0c523b923068a513e4be001bae315cc1c9bbd97ea00bdcab70fca164358",
-    "plan_or_family_hash": "ccbdeae5d9c65a6ea89c4d38fc7f85c4df3aaebb35d5a0fc6860824314a4668d",
+    "lock_hash": "9a1a8fd7339a949fb0d327cec5cfc4eafb581af98dbefe7c0aa5e87fbfd2a9e9",
+    "manifest_hash": "286eaf39057f09cdeb52f5891cf7a588efe6d405586ac221f75919c2cd31e218",
+    "module_hash": "dc13dd2ec2d81307d87f21eef83f199a0639e682b74adcc78e9c0fa748bc339d",
+    "plan_or_family_hash": "95022266ca71e324900fda3278513af9b45626762b9c5697a3cfffff89c7bfc5",
     "query_ir_version": 3,
     "query_module_format_version": 3,
     "query_source_hash": "979e0ba6f25e4d1fea8b59432a672b93a0cab1547a08e9765e77fb09f663afbc",
-    "role_hash": "126a2ce3c668410071d709b333fb06ed5f649828319bcb550dcc70498e2fdf3c"
+    "role_hash": "663b7315bf08a11826610e546aeb873cccffc5d7eafdb8c047d5370c558214eb"
   },
   "before": {
     "application_source_hash": "7522d678b45ccbefc1a9691fcca9f17f88ed005e18fa5fd0ca919be19787b495",
@@ -202,7 +202,7 @@
         "presence_mask": 0
       },
       {
-        "plan_hash": "2122f50dec2c6220d99e768b0651da0c30ba8d660846093c8f29345ea589b1c3",
+        "plan_hash": "3706ab53b1b553026132167c9f8f84787839a68698976c5aa116ea6a37262c14",
         "presence_mask": 1
       }
     ],

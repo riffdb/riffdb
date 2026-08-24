@@ -38,6 +38,10 @@ Canonical program bytes are hashed in the accepted
 `riffdb.query-plan/v1` domain. Explain output is a bounded, deterministic,
 name-only view of the same program. An absent compatible index produces
 `RDB-QP003` with a source span and a suggested symbolic index declaration.
+Every predicate and the complete total order must be represented by that one
+selected index. An order-compatible index cannot leave a predicate for
+post-scan filtering: doing so could apply `take`, an ordinal offset, or a
+continuation before the predicate and silently omit matches.
 
 RiffQL v1 does not perform an unbounded fallback scan, client-side sort,
 cross-partition join, or optimizer-dependent plan choice.

@@ -8,7 +8,7 @@ import (
 	riffdb "riffdb.dev/application"
 )
 
-const QueryModuleHash = "132487cd013120333bc8d8ca45aaa343ab1f94bbacb4577fe223869fa8324e9e"
+const QueryModuleHash = "590fdb5830f1355b30acfd495f3fba1259215109d5de7fd2790156153cd84b1d"
 const ContractLineage = "AdapterOperationalConformance"
 const ContractVersion uint64 = 1
 const ContractBundleHash = "5cf309d8ba731173e426e53ec66d41fad99cc95cbbbfd10ad67a2b5db9a86b9c"
@@ -729,7 +729,7 @@ func (client *Client) ListDraftDocuments(ctx context.Context, parameters ListDra
 input["site_id"] = riffdb.UUID(parameters.SiteId)
 response, err := client.session.Invoke(ctx, ListDraftDocumentsOperation, input, options); if err != nil { return QueryResult[ListDraftDocumentsResult]{}, err }; if response.ApplicationHead == nil { return QueryResult[ListDraftDocumentsResult]{}, errors.New("RiffDB driver omitted query frontier") }; value, err := decodeListDraftDocumentsResult(response.Value); if err != nil { return QueryResult[ListDraftDocumentsResult]{}, err }; identity := QueryIdentity{ContractLineage: ContractLineage, ContractVersion: ContractVersion, ContractBundleHash: ContractBundleHash, ModuleHash: QueryModuleHash, QueryName: "ListDraftDocuments", PlanHash: ListDraftDocumentsQueryPlanHash}; return QueryResult[ListDraftDocumentsResult]{Value: value, Identity: identity, ApplicationHead: *response.ApplicationHead, NextCursor: response.Cursor}, nil }
 
-const ListFgaTuplesQueryPlanHash = "85d4a53de22fe4f5dc7955c700a286b561e4e952810d0475c56802875bed188d"
+const ListFgaTuplesQueryPlanHash = "923ceaf6aa4f8627499a9b48a6d8334f93834d3c20ad8c2d8855d7015e49fac0"
 var ListFgaTuplesOperation = riffdb.Operation{Name: "adapter_operational_conformance_list_fga_tuples", InputSchemaHash: "27c9c86bf519199fd322abf08261f83aa8ccc37d4e70ee2c5c56fb32218327b8"}
 func decodeListFgaTuplesResult(value riffdb.Value) (ListFgaTuplesResult, error) { fields, err := riffdb.RecordFields(value); if err != nil { return nil, err }; outcomeValue, err := requiredField(fields, "outcome"); if err != nil { return nil, err }; outcome, err := riffdb.EnumValue(outcomeValue); if err != nil { return nil, err }; var raw riffdb.Value; switch outcome {
 case "Found": result := ListFgaTuplesFound{Outcome: outcome}
@@ -742,7 +742,7 @@ if parameters.Relation != nil { input["relation"] = riffdb.Optional(parameters.R
 if parameters.After != nil { input["after"] = riffdb.Optional(parameters.After, func(item string) riffdb.Value { return riffdb.String(item) }) }
 response, err := client.session.Invoke(ctx, ListFgaTuplesOperation, input, options); if err != nil { return QueryResult[ListFgaTuplesResult]{}, err }; if response.ApplicationHead == nil { return QueryResult[ListFgaTuplesResult]{}, errors.New("RiffDB driver omitted query frontier") }; value, err := decodeListFgaTuplesResult(response.Value); if err != nil { return QueryResult[ListFgaTuplesResult]{}, err }; identity := QueryIdentity{ContractLineage: ContractLineage, ContractVersion: ContractVersion, ContractBundleHash: ContractBundleHash, ModuleHash: QueryModuleHash, QueryName: "ListFgaTuples", PlanHash: ListFgaTuplesQueryPlanHash}; return QueryResult[ListFgaTuplesResult]{Value: value, Identity: identity, ApplicationHead: *response.ApplicationHead, NextCursor: response.Cursor}, nil }
 
-const ListPipelinesQueryPlanHash = "6244f84041b61b7a08f6c731df9da80796b252799e08340f07f7c0c19de5197c"
+const ListPipelinesQueryPlanHash = "7468c5218b334e3c26743f26efd3c880b245d32a5c3a431fcf80941f9bd4edb5"
 var ListPipelinesOperation = riffdb.Operation{Name: "adapter_operational_conformance_list_pipelines", InputSchemaHash: "b65aebbfae574d2ff265d2ee808221eaa967603fe08f956227425790289d3bea"}
 func decodeListPipelinesResult(value riffdb.Value) (ListPipelinesResult, error) { fields, err := riffdb.RecordFields(value); if err != nil { return nil, err }; outcomeValue, err := requiredField(fields, "outcome"); if err != nil { return nil, err }; outcome, err := riffdb.EnumValue(outcomeValue); if err != nil { return nil, err }; var raw riffdb.Value; switch outcome {
 case "Found": result := ListPipelinesFound{Outcome: outcome}

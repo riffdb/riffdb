@@ -25,27 +25,27 @@
     {
       "kind": "go",
       "path": "fixtures/adapters/operational-conformance/generated/go/client.go",
-      "sha256": "20b3561aa7aee4489a1793b041b61d1bb28b284461534ab89589448e9d208c10"
+      "sha256": "0840570b3bee7f793690ad32bc127909cab7c15ee166886caca202a2eade9289"
     },
     {
       "kind": "mcp",
       "path": "fixtures/adapters/operational-conformance/generated/mcp/tools.json",
-      "sha256": "446e45ae12676a4155d63079cc8b9742a93315c7c2c43f863c195862e4f2b59c"
+      "sha256": "49551dede480f48ebe2b18575ac88a94edc7ad3c313842b712f6dbd3e52cf887"
     },
     {
       "kind": "python",
       "path": "fixtures/adapters/operational-conformance/generated/python/client.py",
-      "sha256": "5b2925a4a213acd02ff07f33373a70ea33d3a2efd0b047ddd2d79641f21832b5"
+      "sha256": "60c0a4973d4b8ea3749d7f4e1449c8a01818fa008c5fb840083ff8ce55655875"
     },
     {
       "kind": "rust",
       "path": "fixtures/adapters/operational-conformance/generated/rust/client.rs",
-      "sha256": "13ef19ff31c7a5acdce45db827c76f5d1e78a844d525afd7ba79e8f241e0ac68"
+      "sha256": "a8d83f3636d3774cc9bc6794e58349123e21c18505144c2bceaf1263df0047d5"
     },
     {
       "kind": "typescript",
       "path": "fixtures/adapters/operational-conformance/generated/typescript/client.ts",
-      "sha256": "d5b75b38eb4e9329bc7a1034f42ad82fe674adbbb8bc1f7f29790be4b3372f65"
+      "sha256": "c2b91affd272593f359bd37d592e5cead24bef2285d2db26582a2d98668faa1f"
     }
   ],
   "nullable_exact_order_operations": [
@@ -71,7 +71,7 @@
     }
   ],
   "query_module": {
-    "module_hash": "132487cd013120333bc8d8ca45aaa343ab1f94bbacb4577fe223869fa8324e9e",
+    "module_hash": "590fdb5830f1355b30acfd495f3fba1259215109d5de7fd2790156153cd84b1d",
     "name": "adapter_operational_conformance",
     "version": 1
   },
@@ -102,7 +102,7 @@
   },
   "source_lock": {
     "path": "fixtures/adapters/operational-conformance/riffdb.application.lock.json",
-    "sha256": "7b00de49233574c62d7803f38e5c94fa51ca94c2581b8ec4e6aa68c4437b90b6"
+    "sha256": "3708b753ca4408ab58b5fc10c9a18e2e78c07c8edcb0c7c134f95090ae71e6c3"
   },
   "status": "development"
 }
