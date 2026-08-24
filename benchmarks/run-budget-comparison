@@ -95,6 +95,9 @@ rustc +1.97.0 \
     -o "$process_timer"
 
 postgres_image='postgres:18.4-bookworm@sha256:d9c83446333daec3f0588cc709adb80c26090b7f9f0f7ec8d43c243385d79818'
+# The exact release server built below selects the accepted production group
+# path. The public adapter independently rejects every response/commit mismatch.
+riffdb_durability_mode=group
 postgres_container="riffdb-wp200-budget-benchmark-$$"
 cleanup() {
     docker exec "$postgres_container" \
@@ -285,6 +288,7 @@ rust_verbose="$(rustc -vV)"
     printf 'postgres_synchronous_commit=%s\n' "$postgres_synchronous_commit"
     printf 'postgres_fsync=%s\n' "$postgres_fsync"
     printf 'postgres_full_page_writes=%s\n' "$postgres_full_page_writes"
+    printf 'riffdb_durability_mode=%s\n' "$riffdb_durability_mode"
     printf 'postgres_filesystem=%s\n' "$postgres_filesystem"
     printf 'postgres_mount_options=%s\n' "$postgres_mount_options"
     printf '%s\n' 'postgres_network=loopback-only ephemeral Docker publication'

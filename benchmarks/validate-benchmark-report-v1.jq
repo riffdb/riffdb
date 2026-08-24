@@ -253,10 +253,12 @@ elif $report_id == "budget-postgresql-riffdb" then
   and .methodology.contract_version == "LegalSpend v1"
   and .methodology.workload_distribution
       == "complete canonical sequential and contention workloads; RiffDB also executes the required same-key replay case"
-  and .methodology.durability_modes == [
-    "PostgreSQL synchronous_commit=on, fsync=on, full_page_writes=on",
-    "RiffDB synchronous"
-  ]
+  and .methodology.durability_modes[0]
+      == "PostgreSQL synchronous_commit=on, fsync=on, full_page_writes=on"
+  and (.methodology.durability_modes[1] ==
+         "RiffDB sync (exact response/commit identity checked)"
+       or .methodology.durability_modes[1] ==
+         "RiffDB group (exact response/commit identity checked)")
   and (.results | length == 2)
   and ([.results[].workload_id] == [
     "postgres_canonical_sequential_contention",
@@ -273,12 +275,17 @@ elif $report_id == "budget-postgresql-riffdb" then
     "stronger_riffdb_guarantees",
     "timing_scope"
   ]))
-  and .comparison_qualification.matched_semantics == [
+  and .comparison_qualification.matched_semantics[0:3] == [
     "typed canonical LegalSpend workload outcomes",
     "atomic exact-decimal row/entity mutation",
-    "same-budget conflict exclusion",
-    "synchronous acknowledged durability"
+    "same-budget conflict exclusion"
   ]
+  and (.comparison_qualification.matched_semantics[3] ==
+         "server-acknowledged durability (PostgreSQL synchronous; RiffDB sync)"
+       or .comparison_qualification.matched_semantics[3] ==
+         "server-acknowledged durability (PostgreSQL synchronous; RiffDB group)")
+  and ((.methodology.durability_modes[1] | startswith("RiffDB sync "))
+       == (.comparison_qualification.matched_semantics[3] | endswith("RiffDB sync)")))
   and .comparison_qualification.stronger_riffdb_guarantees == [
     "compiled command-only mutation",
     "idempotent uncertainty recovery",

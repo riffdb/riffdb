@@ -73,6 +73,42 @@ pub enum PublicCommandCompletion {
     Replayed,
 }
 
+/// The closed production durability identity retained by public evidence.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PublicCommandDurability {
+    /// The command used the synchronous production durability path.
+    Synchronous,
+    /// The command used the bounded group-durability production path.
+    Group,
+}
+
+impl PublicCommandDurability {
+    /// Returns the exact public response spelling.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Synchronous => "sync",
+            Self::Group => "group",
+        }
+    }
+
+    fn from_response(value: &str) -> Option<Self> {
+        match value {
+            "sync" => Some(Self::Synchronous),
+            "group" => Some(Self::Group),
+            _ => None,
+        }
+    }
+
+    fn from_commit(value: i32) -> Option<Self> {
+        match v1::CommandDurability::try_from(value).ok()? {
+            v1::CommandDurability::Synchronous => Some(Self::Synchronous),
+            v1::CommandDurability::Group => Some(Self::Group),
+            v1::CommandDurability::Unspecified => None,
+        }
+    }
+}
+
 /// Public metadata retained alongside a normalized command outcome.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PublicCommandMetadata {
@@ -84,6 +120,8 @@ pub struct PublicCommandMetadata {
     pub contract_version: ContractVersion,
     /// Checked compiler plan identity.
     pub plan_hash: [u8; 32],
+    /// Exact acknowledged production durability mode.
+    pub durability: PublicCommandDurability,
     /// Canonical public provenance resource locator.
     pub provenance_uri: String,
     /// Canonical public outcome resource locator.
@@ -327,10 +365,7 @@ impl RiffDbPublicBudgetAdapter {
             .map_err(|_| RiffDbPublicAdapterError::InvalidWorkload)?;
         if replay.metadata.completion != PublicCommandCompletion::Replayed
             || replay.metadata.commit_sequence != notified_sequence
-            || replay.metadata.contract_version.get() != notified_commit.contract_version
-            || replay.metadata.plan_hash.as_slice() != notified_commit.plan_hash
-            || replay.metadata.provenance_uri != notified_commit.provenance_uri
-            || notified_commit.durability != v1::CommandDurability::Synchronous as i32
+            || !commit_matches_response_metadata(&notified_commit, &replay.metadata)
             || notified_outcome != replay_outcome
             || replay.observation != expected
         {
@@ -587,12 +622,14 @@ impl RiffDbPublicBudgetAdapter {
             && notified_declared_outcome.outcome_name == replay_response.outcome_type;
         let same_plan_hash = replay.metadata.plan_hash.as_slice() == notified_commit.plan_hash;
         let same_provenance_uri = replay.metadata.provenance_uri == notified_commit.provenance_uri;
+        let same_commit_metadata = commit_matches_response_metadata(&notified_commit, &replay.metadata);
         let outcome_lookup_matches = lookup_response == replay_response;
         if replay.metadata.completion != PublicCommandCompletion::Replayed
             || !same_commit_sequence
             || !same_declared_outcome
             || !same_plan_hash
             || !same_provenance_uri
+            || !same_commit_metadata
             || !outcome_lookup_matches
             || !matches!(replay.observation.outcome, BudgetOutcome::Allocated { .. })
         {
@@ -1164,9 +1201,10 @@ fn response_metadata(
     let outcome_uri = response
         .outcome_uri
         .ok_or(RiffDbPublicAdapterError::InvalidResponse)?;
+    let durability = PublicCommandDurability::from_response(&response.durability_mode)
+        .ok_or(RiffDbPublicAdapterError::InvalidResponse)?;
     if contract_version.get() != CONTRACT_VERSION
         || &plan_hash != expected_plan_hash
-        || response.durability_mode != "sync"
         || response.provenance_uri.is_empty()
         || outcome_uri.is_empty()
     {
@@ -1177,6 +1215,7 @@ fn response_metadata(
         commit_sequence,
         contract_version,
         plan_hash,
+        durability,
         provenance_uri: response.provenance_uri,
         outcome_uri,
     })
@@ -1291,6 +1330,7 @@ fn commit_matches_response_metadata(commit: &v1::Commit, metadata: &PublicComman
         && commit.contract_version == metadata.contract_version.get()
         && commit.plan_hash.as_slice() == metadata.plan_hash
         && commit.provenance_uri == metadata.provenance_uri
+        && PublicCommandDurability::from_commit(commit.durability) == Some(metadata.durability)
 }
 
 fn checked_allocate_commit(
@@ -1309,7 +1349,7 @@ fn checked_allocate_commit(
         || commit.command_id != ALLOCATE_BUDGET_COMMAND_ID
         || commit.plan_hash.as_slice() != ALLOCATE_BUDGET_PLAN_HASH
         || commit.provenance_uri.is_empty()
-        || commit.durability != v1::CommandDurability::Synchronous as i32
+        || PublicCommandDurability::from_commit(commit.durability).is_none()
     {
         return Err(RiffDbPublicAdapterError::InvalidResponse);
     }
@@ -1453,6 +1493,8 @@ fn decode_notified_create_outcome(
     if outcome.outcome_id != 1 {
         return Err(RiffDbPublicAdapterError::InvalidResponse);
     }
+    let durability = PublicCommandDurability::from_commit(commit.durability)
+        .ok_or(RiffDbPublicAdapterError::InvalidResponse)?;
     command
         .decode_outcome(&v1::ExecuteCommandResponse {
             status: v1::execute_command_response::CompletionStatus::Replayed as i32,
@@ -1464,7 +1506,7 @@ fn decode_notified_create_outcome(
                 kind: outcome.value.clone().map(v1::value::Kind::RecordValue),
             }),
             provenance_uri: commit.provenance_uri.clone(),
-            durability_mode: "sync".to_owned(),
+            durability_mode: durability.as_str().to_owned(),
             outcome_uri: None,
             history_incarnation: 1,
         })
@@ -1479,6 +1521,8 @@ fn decode_notified_allocate_outcome(
         .outcome
         .as_ref()
         .ok_or(RiffDbPublicAdapterError::InvalidResponse)?;
+    let durability = PublicCommandDurability::from_commit(commit.durability)
+        .ok_or(RiffDbPublicAdapterError::InvalidResponse)?;
     command
         .decode_outcome(&v1::ExecuteCommandResponse {
             status: v1::execute_command_response::CompletionStatus::Replayed as i32,
@@ -1490,7 +1534,7 @@ fn decode_notified_allocate_outcome(
                 kind: outcome.value.clone().map(v1::value::Kind::RecordValue),
             }),
             provenance_uri: commit.provenance_uri.clone(),
-            durability_mode: "sync".to_owned(),
+            durability_mode: durability.as_str().to_owned(),
             outcome_uri: None,
             history_incarnation: 1,
         })
@@ -1657,6 +1701,32 @@ mod tests {
 
     use super::*;
 
+    fn command_response(durability_mode: &str) -> v1::ExecuteCommandResponse {
+        v1::ExecuteCommandResponse {
+            status: v1::execute_command_response::CompletionStatus::Committed as i32,
+            commit_sequence: 7,
+            contract_version: CONTRACT_VERSION,
+            plan_hash: CREATE_BUDGET_PLAN_HASH.to_vec(),
+            outcome_type: "BudgetCreated".to_owned(),
+            outcome: None,
+            provenance_uri: "riffdb://provenance/7".to_owned(),
+            durability_mode: durability_mode.to_owned(),
+            outcome_uri: Some("riffdb://outcomes/7".to_owned()),
+            history_incarnation: 1,
+        }
+    }
+
+    fn matching_commit(durability: v1::CommandDurability) -> v1::Commit {
+        v1::Commit {
+            commit_sequence: 7,
+            contract_version: CONTRACT_VERSION,
+            plan_hash: CREATE_BUDGET_PLAN_HASH.to_vec(),
+            provenance_uri: "riffdb://provenance/7".to_owned(),
+            durability: durability as i32,
+            ..v1::Commit::default()
+        }
+    }
+
     #[test]
     fn public_comparison_case_spellings_are_closed() {
         assert_eq!(PublicComparisonCase::Sequential.as_str(), "sequential");
@@ -1665,6 +1735,52 @@ mod tests {
             PublicComparisonCase::SameKeyReplay.as_str(),
             "same_key_replay"
         );
+    }
+
+    #[test]
+    fn public_command_metadata_accepts_only_closed_production_durability() {
+        for (spelling, expected) in [
+            ("sync", PublicCommandDurability::Synchronous),
+            ("group", PublicCommandDurability::Group),
+        ] {
+            let metadata = response_metadata(
+                command_response(spelling),
+                &CREATE_BUDGET_PLAN_HASH,
+            )
+            .expect("closed production durability is accepted");
+            assert_eq!(metadata.durability, expected);
+            assert_eq!(metadata.durability.as_str(), spelling);
+        }
+
+        for rejected in ["", "memory", "SYNC", "group_commit", "future"] {
+            assert_eq!(
+                response_metadata(command_response(rejected), &CREATE_BUDGET_PLAN_HASH),
+                Err(RiffDbPublicAdapterError::InvalidResponse),
+                "unexpected response durability {rejected:?} was accepted"
+            );
+        }
+    }
+
+    #[test]
+    fn public_commit_durability_must_match_the_response_exactly() {
+        let sync = response_metadata(command_response("sync"), &CREATE_BUDGET_PLAN_HASH)
+            .expect("sync metadata");
+        let group = response_metadata(command_response("group"), &CREATE_BUDGET_PLAN_HASH)
+            .expect("group metadata");
+        let sync_commit = matching_commit(v1::CommandDurability::Synchronous);
+        let group_commit = matching_commit(v1::CommandDurability::Group);
+        let mut unspecified = matching_commit(v1::CommandDurability::Unspecified);
+        let mut unknown = sync_commit.clone();
+        unknown.durability = 99;
+
+        assert!(commit_matches_response_metadata(&sync_commit, &sync));
+        assert!(commit_matches_response_metadata(&group_commit, &group));
+        assert!(!commit_matches_response_metadata(&sync_commit, &group));
+        assert!(!commit_matches_response_metadata(&group_commit, &sync));
+        assert!(!commit_matches_response_metadata(&unspecified, &sync));
+        unspecified.durability = -1;
+        assert!(!commit_matches_response_metadata(&unspecified, &sync));
+        assert!(!commit_matches_response_metadata(&unknown, &sync));
     }
 
     #[test]

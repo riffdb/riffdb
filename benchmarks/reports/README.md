@@ -36,6 +36,13 @@ also includes same-key replay, so the result is a qualified suite-level
 comparison, not a per-command TPS equivalence. This capture does not replace
 the six POC workload families above.
 
+The report names the exact production durability selected by the captured
+RiffDB server (`sync` or `group`). The public adapter accepts only that closed
+production set and requires the response, replay, commit notification, and
+exact-end commit scan to agree. Test-only `memory`, absent or unknown values,
+and cross-surface mismatches invalidate the evidence; applications receive no
+durability selector.
+
 Every budget timing row records the complete database-size sample distribution.
 PostgreSQL sizes are logical bytes returned by `pg_database_size` after the
 sample; RiffDB sizes are peak bytes of the exact `riffdb.redb` file observed
