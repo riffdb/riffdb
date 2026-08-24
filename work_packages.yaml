@@ -9566,6 +9566,14 @@ work_packages:
       No new single-node memory residency, full-state rewrite, or whole-history scan is introduced,
       so the billion-row tier is not foreclosed any further than the accepted segmented design
       already does.
+  closure:
+    status: complete
+    evidence: tests/storage_recovery/storage_recovery_matrix.rs
+    decision: Commit 73727d78 restored independent command-audit link resolution through the exact
+      canonical segment member while retaining full legacy-row reciprocity and fail-closed startup
+      validation. Current full-workspace, storage, commit, service, audit replay, recovery-matrix,
+      policy, formatting, and Clippy gates pass; known-command and control-plane replays retain one
+      exact original Succeeded link without adding any public or durable surface.
   human_review_triggers: *id001
 - id: WP-491
   name: Changelog emitter core at the storage boundary
@@ -9650,6 +9658,15 @@ work_packages:
     reconstruct the published snapshot byte-for-byte, an applied-but-unflushed subgroup is provably
     invisible with a recorded falsifiability transcript, a stalled consumer never delays
     publication, and no durable, registry, transport, or public surface changes.
+  closure:
+    status: complete
+    evidence: tests/storage_recovery/storage_recovery_matrix.rs
+    decision: Commit c48802b3 delivered the internal dual-frontier publication observer and closed
+      checksummed frame format at the storage boundary. Current full-workspace and recovery tests
+      prove gap-free reconstruction, intermediate post-image exactness, invisibility before fence,
+      typed lag without writer backpressure, fail-closed chain validation, and the absence of new
+      durable, capability, transport, MCP, or application surfaces; RE2 and later replication work
+      remain separately governed.
   human_review_triggers: *id001
 - id: WP-492
   name: Projected aggregate and group-by wire carriage (CP2b deferral closure)
@@ -9750,6 +9767,15 @@ work_packages:
     Rust SDK, and the CLI, and every value it returns equals the same value recomputed
     client-side from the rows it summarized over a real service, real storage, and real columnar
     apply; row-path bytes, packed goldens, preflight pins, and row plan hashes are unchanged.
+  closure:
+    status: complete
+    evidence: tests/service/projected_read_acceptance.rs
+    decision: Commit 078802c9 completed bounded projected aggregate/group-by carriage through the
+      additive wire arm, exhaustive adapter, Rust SDK, and CLI. Current full-workspace and focused
+      acceptance prove exact i128 decimal sums, absent-versus-null extrema, canonical group order,
+      policy and organization isolation, row-limit-clamped group volume, causal frontier parity,
+      and unchanged row/packed identities; the four explicitly listed query-language limitations
+      remain typed and documented.
   human_review_triggers: *id001
 - id: WP-495
   name: Public marketing website and early-access signup
@@ -9791,6 +9817,14 @@ work_packages:
   exit_gate: A clean checkout reproducibly builds and tests the public site, every marketing claim remains within
     the documented POC boundary, a verified signup enters the provider's double-opt-in flow without enumeration,
     and the pinned main-branch workflow can publish the artifact after environment credentials are provisioned.
+  closure:
+    status: complete
+    evidence: website/README.md
+    decision: Commit ea3f8ac6 delivered the pinned static Astro site, bounded same-origin double-opt-in
+      waitlist adapter, privacy and POC boundaries, accessibility and responsive behavior, and
+      least-privilege publication workflow. A clean npm install plus static checks, ten unit tests,
+      reproducible build, and sixteen desktop/mobile Playwright tests pass at current HEAD alongside
+      handbook and requirement checks; no database authority or semantic surface is introduced.
   human_review_triggers: *id001
 - id: WP-496
   name: Two-phase admitted command audit overlap at startup
@@ -9853,6 +9887,14 @@ work_packages:
       a derived entry actually collide, which is rare and bounded by the audit stream the matcher
       already walks once. No new scan, no new index, no additional memory residency - the same
       single pass over the AUDIT table and the same segment-derived cache the matcher already built.
+  closure:
+    status: complete
+    evidence: tests/storage_recovery/storage_recovery_matrix.rs
+    decision: Commit 47803ac3 made startup collapse only byte-equivalent physical and segment-derived
+      audit records at one sequence, preserving refusal for disagreement, malformed bytes, gaps, and
+      allocator drift. Current full-workspace and recovery tests prove atomic admitted Pending plus
+      Started durability, clean reopen and replay, one contiguous lifecycle, and both negative
+      neuter directions without changing durable formats or activating the dormant writer surface.
   human_review_triggers: *id001
 - id: WP-550
   name: Deployable application alpha architecture and requirement freeze
