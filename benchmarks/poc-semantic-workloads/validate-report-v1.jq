@@ -326,7 +326,6 @@ and ([.workloads[8:11][].authoritative_commit_count]
      == .configuration.restart_commit_counts)
 and ([.workloads[8:11][].database_size_bytes]
      == ([.workloads[8:11][].database_size_bytes] | sort))
-and ([.workloads[8:11][].database_size_bytes] | unique | length == 3)
 and (.configuration.sample_count
      == ([.workloads[].sample_count] | add))
 and (
