@@ -12,9 +12,9 @@ import sys
 
 ROOT = Path(__file__).resolve().parent.parent
 LOCK = ROOT / "fixtures/adapters/operational-conformance/riffdb.application.lock.json"
-PREDECESSOR = ROOT / "release/evidence/operational-query-capability-v1.json"
-PREDECESSOR_SHA256 = "fd310c4038e0c61a8c75bb47a309d93b0471438bf1620caae6fb40f91c426b28"
-OUTPUT = ROOT / "release/evidence/operational-query-capability-v2.json"
+PREDECESSOR = ROOT / "release/evidence/operational-query-capability-v2.json"
+PREDECESSOR_SHA256 = "63cb3eca67367c1a476d1db6a200afa05fd4f37b607b018d8b92d43c04b4a67e"
+OUTPUT = ROOT / "release/evidence/operational-query-capability-v3.json"
 V6_OPERATIONS = ("ReviewedDirectoryUsers", "SearchDirectoryUsers")
 V7_OPERATIONS = (
     "InventoryByObservedAscNullsLast",
@@ -45,7 +45,7 @@ def render() -> bytes:
         key=lambda artifact: artifact["kind"],
     )
     receipt = {
-        "schema": "riffdb.operational-query-capability/v2",
+        "schema": "riffdb.operational-query-capability/v3",
         "status": "development",
         "contract": {
             "lineage": lock["contract"]["lineage"],
@@ -86,6 +86,8 @@ def render() -> bytes:
             "nullable_order_placement": ["nulls_first", "nulls_last"],
             "provider_state_format": 5,
             "request_time_authoritative_scan": False,
+            "typescript_compact_helpers": "decoder_reachable_only",
+            "typescript_strict_unused_checks": True,
             "typed_generated_languages": ["go", "python", "rust", "typescript"],
         },
         "external_acceptance": {

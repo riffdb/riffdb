@@ -70,6 +70,14 @@ precision in tagged results. Generated decoding also restores it from the
 exact result schema when a compatible older tagged value omits the redundant
 field, while still rejecting a conflicting precision, scale, or currency.
 
+Generated clients are valid under standard strict TypeScript projects with
+both `noUnusedLocals` and `noUnusedParameters` enabled. Compact-carriage decoder
+helpers are emitted by reachability from the compiled result layouts: a client
+contains only the string, integer, timestamp, and shared payload helpers its
+generated decoders actually call. Do not copy unused decoder support into the
+generated file or disable an unused-symbol check to accommodate generated
+output.
+
 Generated command batch methods accept `concurrency` from 1 through 384 and at
 most 4,096 inputs. They use a bounded worker pool over ordinary generated
 commands; every item keeps its own identity and result, and the collection is

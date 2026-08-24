@@ -135,7 +135,7 @@ cp fixtures/adapters/better-auth/generated/typescript/client.ts \
 clients/typescript/runtime/node_modules/.bin/tsc \
     "$work_root/typescript/better-auth-client.ts" \
     --noEmit --target ES2022 --module NodeNext --moduleResolution NodeNext \
-    --strict --skipLibCheck
+    --strict --skipLibCheck --noUnusedLocals --noUnusedParameters
 
 python3 -m venv "$work_root/python-consumer"
 "$work_root/python-consumer/bin/pip" install \

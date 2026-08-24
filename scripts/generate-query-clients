@@ -221,8 +221,12 @@ if [[ "${1:-}" == "--check" ]]; then
         fixtures/driver/conformance-app/riffdb.application.json \
         --lock riffdb.application.lock.json --output json >/dev/null
     cargo check --quiet --manifest-path examples/agent-alpha/domains/rust/Cargo.toml
-    if command -v tsc >/dev/null 2>&1; then
-        tsc --noEmit --strict --target ES2022 \
+    typescript_tsc="$repo_root/clients/typescript/runtime/node_modules/.bin/tsc"
+    if [[ -x "$typescript_tsc" ]]; then
+        "$typescript_tsc" --noEmit --strict --noUnusedLocals --noUnusedParameters \
+            --target ES2022 "$generated/clients/typescript/ticketdesk/client.ts"
+    elif command -v tsc >/dev/null 2>&1; then
+        tsc --noEmit --strict --noUnusedLocals --noUnusedParameters --target ES2022 \
             "$generated/clients/typescript/ticketdesk/client.ts"
     else
         node --experimental-strip-types --check \

@@ -426,6 +426,7 @@ GOCACHE="$GOCACHE" GOPATH="$GOPATH" GOPROXY=off \
 clients/typescript/runtime/node_modules/.bin/tsc \
     "$work_root/application/generated/typescript/client.ts" \
     --target ES2022 --module NodeNext --moduleResolution NodeNext --strict --skipLibCheck \
+    --noUnusedLocals --noUnusedParameters \
     --outDir "$work_root/typescript"
 export RIFFDB_CONFORMANCE_TYPESCRIPT_RUNTIME="$repo_root/clients/typescript/runtime/dist/index.js"
 export RIFFDB_CONFORMANCE_TYPESCRIPT_GENERATED="$work_root/typescript/client.js"

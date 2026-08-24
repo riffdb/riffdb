@@ -155,37 +155,6 @@ export type VectorStalenessResult = { readonly kind: "staleness_summary"; readon
 export interface VectorModelVersionItem { readonly entityKey: Uint8Array; readonly model: string; readonly modelVersion: string; readonly embeddingWrite: bigint; }
 export type VectorModelVersionResult = { readonly kind: "model_version_summary"; readonly currentCount: bigint; readonly outdatedCount: bigint } | { readonly kind: "outdated_model_entities"; readonly items: ReadonlyArray<VectorModelVersionItem>; readonly observedFrontier: bigint | null };
 
-function compactPayload(value: CompactApplicationValue, expected: string): unknown {
-  if (typeof value !== "object" || value === null || Array.isArray(value) || value.type !== expected) throw new Error("invalid RiffDB compact value");
-  const keys = Object.keys(value);
-  if (expected === "null") { if (keys.length !== 1) throw new Error("invalid RiffDB compact value"); return null; }
-  if (keys.length !== 2 || !Object.hasOwn(value, "value")) throw new Error("invalid RiffDB compact value");
-  return value.value;
-}
-function compactString(value: CompactApplicationValue, expected: string, maximum: number): string {
-  const payload = compactPayload(value, expected);
-  if (typeof payload !== "string" || new TextEncoder().encode(payload).length > maximum) throw new Error("invalid RiffDB compact value");
-  return payload;
-}
-function compactInteger(value: CompactApplicationValue, expected: "i64" | "u64"): bigint {
-  const payload = compactPayload(value, expected);
-  if (typeof payload !== "string" || !/^-?(?:0|[1-9][0-9]*)$/.test(payload)) throw new Error("invalid RiffDB compact value");
-  const parsed = BigInt(payload);
-  if ((expected === "i64" && (parsed < -9223372036854775808n || parsed > 9223372036854775807n))
-      || (expected === "u64" && (parsed < 0n || parsed > 18446744073709551615n))) throw new Error("invalid RiffDB compact value");
-  return parsed;
-}
-function compactTimestamp(value: CompactApplicationValue): { readonly seconds: bigint; readonly nanos: number } {
-  const payload = compactPayload(value, "timestamp");
-  if (typeof payload !== "object" || payload === null || Array.isArray(payload)) throw new Error("invalid RiffDB compact value");
-  const record = payload as Record<string, unknown>;
-  if (Object.keys(record).length !== 2 || typeof record.seconds !== "string" || !/^-?(?:0|[1-9][0-9]*)$/.test(record.seconds)
-      || !Number.isInteger(record.nanos) || (record.nanos as number) < 0 || (record.nanos as number) >= 1_000_000_000) throw new Error("invalid RiffDB compact value");
-  const seconds = BigInt(record.seconds);
-  if (seconds < -9223372036854775808n || seconds > 9223372036854775807n) throw new Error("invalid RiffDB compact value");
-  return { seconds, nanos: record.nanos as number };
-}
-
 export const ITEM_PAGE_QUERY_PLAN_HASH = "d4816a9c447cb58923f690b2006dbc2758ed542694d5047f4c4e926b9d771ee5" as const;
 export interface ItemPageParams {
   readonly organization_id: string;
