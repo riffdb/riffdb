@@ -882,6 +882,12 @@ extra_args+=(--postgres-comparator "$postgres_comparator")
 if ((require_stable)) && [[ "$defer_unary_stability" == 0 ]]; then
     extra_args+=(--require-stable)
 fi
+if ((require_stable)) && [[ "$defer_unary_stability" == 1 ]]; then
+    # The binary otherwise derives require-stable from a dual-backend,
+    # multi-generation run. WP-674 performs the same frozen validation outside
+    # the binary so rejected attempts can be retained and audited.
+    extra_args+=(--allow-unstable)
+fi
 ((seed_only)) && extra_args+=(--seed-only)
 export RIFFDB_APP_BASELINE_POSTGRES_DATA_HOST="$postgres_database_root"
 ((assert_write_parity)) && extra_args+=(--assert-write-parity)
