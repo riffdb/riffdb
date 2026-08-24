@@ -1,12 +1,12 @@
 riffdb_fjall_conformance_capture_format=1
-git_revision=7a910946bbd21f8949eba317896990fb02dfce48
+git_revision=70d5635599a2415bf782478995a6af5c1368c5be
 git_dirty=false
 rust_version=1.97.0
 rust_target=x86_64-unknown-linux-gnu
 cpu=AMD Ryzen 9 7950X 16-Core Processor
-memory=      65206396 kB
-storage_medium=local Samsung SSD 990 PRO NVMe, ext4, noatime
-operating_system=Linux 7.0.12-gentoo-r1-x86_64 x86_64 GNU/Linux
+memory=      65205600 kB
+storage_medium=local NVMe filesystem (workstation)
+operating_system=Linux 7.1.8-gentoo-x86_64 x86_64 GNU/Linux
 filesystem=ext4 /dev/nvme0n1p2[/home/user/dev/riffdb]
 mount_options=rw,nosuid,nodev,noatime
 engine=fjall
@@ -58,20 +58,136 @@ performance_eligibility	not_publishable_conformance_failure
 decision_evidence	false
 reason	unchanged semantic and projection conformance cases are not implemented
 --- acceptance output ---
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.04s
-     Running unittests src/lib.rs (benchmarks/storage-fjall/target/debug/deps/riffdb_storage_fjall_comparison-53f2d00f5b3c4144)
+   Compiling cfg-if v1.0.4
+   Compiling proc-macro2 v1.0.107
+   Compiling typenum v1.20.1
+   Compiling quote v1.0.47
+   Compiling unicode-ident v1.0.24
+   Compiling libc v0.2.189
+   Compiling cmov v0.5.4
+   Compiling scopeguard v1.2.0
+   Compiling version_check v0.9.5
+   Compiling memchr v2.8.3
+   Compiling parking_lot_core v0.9.12
+   Compiling either v1.17.0
+   Compiling smallvec v1.15.2
+   Compiling equivalent v1.0.2
+   Compiling cpufeatures v0.3.0
+   Compiling log v0.4.33
+   Compiling regex-syntax v0.8.11
+   Compiling siphasher v1.0.3
+   Compiling anyhow v1.0.104
+   Compiling lalrpop-util v0.23.1
+   Compiling hashbrown v0.17.1
+   Compiling foldhash v0.1.5
+   Compiling crossbeam-utils v0.8.22
+   Compiling fixedbitset v0.5.7
+   Compiling term v1.2.1
+   Compiling new_debug_unreachable v1.0.6
+   Compiling same-file v1.0.6
+   Compiling bit-vec v0.9.1
+   Compiling rustix v1.1.4
+   Compiling keccak v0.1.6
+   Compiling precomputed-hash v0.1.1
+   Compiling unicode-xid v0.2.6
+   Compiling getrandom v0.4.3
+   Compiling crossbeam-epoch v0.9.20
+   Compiling once_cell v1.21.4
+   Compiling lock_api v0.4.14
+   Compiling linux-raw-sys v0.12.1
+   Compiling bitflags v2.13.1
+   Compiling fnv v1.0.7
+   Compiling bytes v1.12.1
+   Compiling walkdir v2.5.0
+   Compiling itertools v0.14.0
+   Compiling ena v0.14.4
+   Compiling zmij v1.0.23
+   Compiling crc-catalog v2.5.0
+   Compiling phf_shared v0.13.1
+   Compiling serde_core v1.0.229
+   Compiling byteorder-lite v0.1.0
+   Compiling fastrand v2.5.0
+   Compiling riffdb-riffql-syntax v0.1.0 (/home/user/dev/riffdb/crates/riffdb-riffql-syntax)
+   Compiling generic-array v0.14.7
+   Compiling hashbrown v0.15.5
+   Compiling ctutils v0.4.2
+   Compiling compare v0.0.6
+   Compiling bit-set v0.9.1
+   Compiling base64 v0.22.1
+   Compiling hashbrown v0.16.1
+   Compiling xxhash-rust v0.8.18
+   Compiling serde_json v1.0.150
+   Compiling spin v0.9.9
+   Compiling ascii-canvas v4.0.0
+   Compiling riffdb-query-syntax v0.1.0 (/home/user/dev/riffdb/crates/riffdb-query-syntax)
+   Compiling crc v3.4.0
+   Compiling itoa v1.0.18
+   Compiling varint-rs v2.2.1
+   Compiling byteview v0.10.2
+   Compiling interval-heap v0.0.5
+   Compiling self_cell v1.3.0
+   Compiling hashbrown v0.14.5
+   Compiling aho-corasick v1.1.4
+   Compiling rustc-hash v2.1.3
+   Compiling indexmap v2.14.0
+   Compiling sfa v1.0.0
+   Compiling flume v0.12.0
+   Compiling hybrid-array v0.4.14
+   Compiling quick_cache v0.6.24
+   Compiling crossbeam-skiplist v0.1.3
+   Compiling block-buffer v0.12.1
+   Compiling crypto-common v0.2.2
+   Compiling syn v2.0.119
+   Compiling crypto-common v0.1.7
+   Compiling block-buffer v0.10.4
+   Compiling petgraph v0.8.3
+   Compiling digest v0.10.7
+   Compiling parking_lot v0.12.5
+   Compiling dashmap v6.2.1
+   Compiling sha3 v0.10.9
+   Compiling regex-automata v0.4.16
+   Compiling string_cache v0.9.0
+   Compiling digest v0.11.3
+   Compiling hmac v0.13.0
+   Compiling sha2 v0.11.0
+   Compiling tempfile v3.27.0
+   Compiling riffdb-bench-root v0.1.0 (/home/user/dev/riffdb/crates/riffdb-bench-root)
+   Compiling riffdb-types v0.1.0 (/home/user/dev/riffdb/crates/riffdb-types)
+   Compiling prost-derive v0.14.4
+   Compiling enum_dispatch v0.3.13
+   Compiling lsm-tree v3.1.8
+   Compiling riffdb-contract-ir v0.1.0 (/home/user/dev/riffdb/crates/riffdb-contract-ir)
+   Compiling riffdb-errors v0.1.0 (/home/user/dev/riffdb/crates/riffdb-errors)
+   Compiling regex v1.13.1
+   Compiling logos-codegen v0.16.1
+   Compiling prost v0.14.4
+   Compiling lalrpop v0.23.1
+   Compiling riffdb-proto v0.1.0 (/home/user/dev/riffdb/crates/riffdb-proto)
+   Compiling logos-derive v0.16.1
+   Compiling logos v0.16.1
+   Compiling fjall v3.1.8
+   Compiling riffdb-query-ir v0.1.0 (/home/user/dev/riffdb/crates/riffdb-query-ir)
+   Compiling riffdb-invariant v0.1.0 (/home/user/dev/riffdb/crates/riffdb-invariant)
+   Compiling riffdb-query-compiler v0.1.0 (/home/user/dev/riffdb/crates/riffdb-query-compiler)
+   Compiling riffdb-contract-syntax v0.1.0 (/home/user/dev/riffdb/crates/riffdb-contract-syntax)
+   Compiling riffdb-storage-api v0.1.0 (/home/user/dev/riffdb/crates/riffdb-storage-api)
+   Compiling riffdb-query-module v0.1.0 (/home/user/dev/riffdb/crates/riffdb-query-module)
+   Compiling riffdb-storage-fjall-comparison v0.1.0 (/home/user/dev/riffdb/benchmarks/storage-fjall)
+   Compiling riffdb-catalog v0.1.0 (/home/user/dev/riffdb/crates/riffdb-catalog)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 15.41s
+     Running unittests src/lib.rs (benchmarks/storage-fjall/target/debug/deps/riffdb_storage_fjall_comparison-a56fc565ab466571)
 
 running 6 tests
 test adapter::tests::accepted_startup_migration_contract_is_identity_only ... ok
 test adapter::tests::batch_requires_strict_canonical_target_order ... ok
 test adapter::tests::table_inventory_matches_the_accepted_physical_names ... ok
-test migration_ledger::tests::instruction_ledger_can_stop_before_smaller_evidence_ledger ... ok
 test conformance::tests::semantic_failure_cannot_be_hidden_by_substrate_passes ... ok
+test migration_ledger::tests::instruction_ledger_can_stop_before_smaller_evidence_ledger ... ok
 test migration_ledger::tests::one_complete_row_is_never_split ... ok
 
 test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running tests/architecture.rs (benchmarks/storage-fjall/target/debug/deps/architecture-c46f1eeab6a00a64)
+     Running tests/architecture.rs (benchmarks/storage-fjall/target/debug/deps/architecture-3ea6f39bb15147f5)
 
 running 3 tests
 test workspace_is_isolated_and_fjall_is_exactly_pinned_without_defaults ... ok
@@ -80,16 +196,16 @@ test first_party_comparison_code_forbids_unsafe_and_does_not_claim_semantic_impl
 
 test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running tests/conformance.rs (benchmarks/storage-fjall/target/debug/deps/conformance-568fb05a268bec8a)
+     Running tests/conformance.rs (benchmarks/storage-fjall/target/debug/deps/conformance-a999e880621bcc85)
 
 running 3 tests
-test accepted_registry_is_exactly_twenty_seven_readable_and_twenty_six_writable ... ok
+test accepted_registry_is_exactly_ninety_four_readable_and_seventy_one_writable ... ok
 test comparison_compiles_against_the_current_sealed_trait_names ... ok
 test frozen_report_is_current_and_fail_closed ... ok
 
 test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running tests/dependency_inventory.rs (benchmarks/storage-fjall/target/debug/deps/dependency_inventory-d5bbb704c0b693a6)
+     Running tests/dependency_inventory.rs (benchmarks/storage-fjall/target/debug/deps/dependency_inventory-b6eed249a6bfc7dc)
 
 running 3 tests
 test benchmark_eligibility_is_frozen_fail_closed ... ok
@@ -98,7 +214,7 @@ test linux_normal_dependency_inventory_is_exact_and_unique ... ok
 
 test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running tests/migration_bounds.rs (benchmarks/storage-fjall/target/debug/deps/migration_bounds-7214e8ff9a83feb1)
+     Running tests/migration_bounds.rs (benchmarks/storage-fjall/target/debug/deps/migration_bounds-c937b2f28d9927c2)
 
 running 4 tests
 test an_oversized_complete_row_fails_instead_of_splitting_or_looping ... ok
@@ -108,7 +224,7 @@ test five_hundred_rows_fit_and_five_hundred_first_is_the_exact_continuation ... 
 
 test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running tests/substrate.rs (benchmarks/storage-fjall/target/debug/deps/substrate-efc6fcca5a465efa)
+     Running tests/substrate.rs (benchmarks/storage-fjall/target/debug/deps/substrate-28c1c7876874f79e)
 
 running 5 tests
 test exact_table_inventory_is_created_without_extra_riffdb_tables ... ok
@@ -117,7 +233,7 @@ test owned_snapshot_retains_one_consistent_prewrite_view ... ok
 test cross_keyspace_commit_is_atomic_and_survives_reopen ... ok
 test buffered_commits_become_group_durable_at_explicit_flush ... ok
 
-test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.10s
 
    Doc-tests riffdb_storage_fjall_comparison
 
@@ -125,6 +241,122 @@ running 0 tests
 
 test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-    Finished `bench` profile [optimized] target(s) in 0.02s
-  Executable benches src/lib.rs (benchmarks/storage-fjall/target/release/deps/riffdb_storage_fjall_comparison-8dab1e802e9cbc83)
-  Executable benches/storage_comparison.rs (benchmarks/storage-fjall/target/release/deps/storage_comparison-776aa2e1ebe58e81)
+   Compiling libc v0.2.189
+   Compiling cfg-if v1.0.4
+   Compiling proc-macro2 v1.0.107
+   Compiling unicode-ident v1.0.24
+   Compiling typenum v1.20.1
+   Compiling quote v1.0.47
+   Compiling cmov v0.5.4
+   Compiling parking_lot_core v0.9.12
+   Compiling version_check v0.9.5
+   Compiling memchr v2.8.3
+   Compiling cpufeatures v0.3.0
+   Compiling either v1.17.0
+   Compiling regex-syntax v0.8.11
+   Compiling lalrpop-util v0.23.1
+   Compiling smallvec v1.15.2
+   Compiling scopeguard v1.2.0
+   Compiling foldhash v0.1.5
+   Compiling equivalent v1.0.2
+   Compiling hashbrown v0.17.1
+   Compiling siphasher v1.0.3
+   Compiling anyhow v1.0.104
+   Compiling crossbeam-utils v0.8.22
+   Compiling precomputed-hash v0.1.1
+   Compiling fixedbitset v0.5.7
+   Compiling log v0.4.33
+   Compiling bit-vec v0.9.1
+   Compiling term v1.2.1
+   Compiling same-file v1.0.6
+   Compiling keccak v0.1.6
+   Compiling new_debug_unreachable v1.0.6
+   Compiling rustix v1.1.4
+   Compiling bitflags v2.13.1
+   Compiling crossbeam-epoch v0.9.20
+   Compiling unicode-xid v0.2.6
+   Compiling bit-set v0.9.1
+   Compiling ena v0.14.4
+   Compiling phf_shared v0.13.1
+   Compiling linux-raw-sys v0.12.1
+   Compiling getrandom v0.4.3
+   Compiling fnv v1.0.7
+   Compiling bytes v1.12.1
+   Compiling lock_api v0.4.14
+   Compiling zmij v1.0.23
+   Compiling once_cell v1.21.4
+   Compiling itertools v0.14.0
+   Compiling walkdir v2.5.0
+   Compiling generic-array v0.14.7
+   Compiling crc-catalog v2.5.0
+   Compiling ctutils v0.4.2
+   Compiling hashbrown v0.15.5
+   Compiling serde_core v1.0.229
+   Compiling byteorder-lite v0.1.0
+   Compiling fastrand v2.5.0
+   Compiling base64 v0.22.1
+   Compiling serde_json v1.0.150
+   Compiling hashbrown v0.16.1
+   Compiling ascii-canvas v4.0.0
+   Compiling xxhash-rust v0.8.18
+   Compiling compare v0.0.6
+   Compiling aho-corasick v1.1.4
+   Compiling riffdb-riffql-syntax v0.1.0 (/home/user/dev/riffdb/crates/riffdb-riffql-syntax)
+   Compiling indexmap v2.14.0
+   Compiling crc v3.4.0
+   Compiling self_cell v1.3.0
+   Compiling varint-rs v2.2.1
+   Compiling interval-heap v0.0.5
+   Compiling spin v0.9.9
+   Compiling byteview v0.10.2
+   Compiling riffdb-query-syntax v0.1.0 (/home/user/dev/riffdb/crates/riffdb-query-syntax)
+   Compiling itoa v1.0.18
+   Compiling rustc-hash v2.1.3
+   Compiling hashbrown v0.14.5
+   Compiling sfa v1.0.0
+   Compiling crossbeam-skiplist v0.1.3
+   Compiling flume v0.12.0
+   Compiling petgraph v0.8.3
+   Compiling hybrid-array v0.4.14
+   Compiling quick_cache v0.6.24
+   Compiling parking_lot v0.12.5
+   Compiling regex-automata v0.4.16
+   Compiling syn v2.0.119
+   Compiling crypto-common v0.1.7
+   Compiling block-buffer v0.10.4
+   Compiling string_cache v0.9.0
+   Compiling dashmap v6.2.1
+   Compiling digest v0.10.7
+   Compiling block-buffer v0.12.1
+   Compiling crypto-common v0.2.2
+   Compiling sha3 v0.10.9
+   Compiling digest v0.11.3
+   Compiling tempfile v3.27.0
+   Compiling riffdb-bench-root v0.1.0 (/home/user/dev/riffdb/crates/riffdb-bench-root)
+   Compiling hmac v0.13.0
+   Compiling sha2 v0.11.0
+   Compiling riffdb-types v0.1.0 (/home/user/dev/riffdb/crates/riffdb-types)
+   Compiling regex v1.13.1
+   Compiling logos-codegen v0.16.1
+   Compiling prost-derive v0.14.4
+   Compiling enum_dispatch v0.3.13
+   Compiling lsm-tree v3.1.8
+   Compiling lalrpop v0.23.1
+   Compiling prost v0.14.4
+   Compiling logos-derive v0.16.1
+   Compiling logos v0.16.1
+   Compiling riffdb-contract-ir v0.1.0 (/home/user/dev/riffdb/crates/riffdb-contract-ir)
+   Compiling riffdb-errors v0.1.0 (/home/user/dev/riffdb/crates/riffdb-errors)
+   Compiling riffdb-proto v0.1.0 (/home/user/dev/riffdb/crates/riffdb-proto)
+   Compiling fjall v3.1.8
+   Compiling riffdb-contract-syntax v0.1.0 (/home/user/dev/riffdb/crates/riffdb-contract-syntax)
+   Compiling riffdb-query-ir v0.1.0 (/home/user/dev/riffdb/crates/riffdb-query-ir)
+   Compiling riffdb-invariant v0.1.0 (/home/user/dev/riffdb/crates/riffdb-invariant)
+   Compiling riffdb-query-compiler v0.1.0 (/home/user/dev/riffdb/crates/riffdb-query-compiler)
+   Compiling riffdb-storage-api v0.1.0 (/home/user/dev/riffdb/crates/riffdb-storage-api)
+   Compiling riffdb-query-module v0.1.0 (/home/user/dev/riffdb/crates/riffdb-query-module)
+   Compiling riffdb-catalog v0.1.0 (/home/user/dev/riffdb/crates/riffdb-catalog)
+   Compiling riffdb-storage-fjall-comparison v0.1.0 (/home/user/dev/riffdb/benchmarks/storage-fjall)
+    Finished `bench` profile [optimized] target(s) in 25.61s
+  Executable benches src/lib.rs (benchmarks/storage-fjall/target/release/deps/riffdb_storage_fjall_comparison-6bc4a9b74c6579a5)
+  Executable benches/storage_comparison.rs (benchmarks/storage-fjall/target/release/deps/storage_comparison-c6329f1165cc5567)
