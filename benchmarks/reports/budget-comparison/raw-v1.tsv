@@ -1,48 +1,49 @@
 riffdb_budget_benchmark_capture_format=1
-git_revision=77630b930d81219d1bd77790ad5a27f7f7224aa4
+git_revision=94e39a9c532144714b344ed0421ce04d97f1b72e
 git_dirty=false
 rust_version=1.97.0
 rust_target=x86_64-unknown-linux-gnu
 cpu=AMD Ryzen 9 7950X 16-Core Processor
-memory=      65206396 kB
-storage_medium=local Samsung SSD 990 PRO NVMe, ext4, noatime
-operating_system=Linux 7.0.12-gentoo-r1-x86_64 x86_64 GNU/Linux
-database_root=/home/kevin/dev/riffdb/target/wp200/benchmarks/budget-comparison/database-roots
-filesystem=ext4 /dev/nvme0n1p2[/home/kevin/dev/riffdb]
-mount_options=rw,nosuid,nodev,noatime
+memory=      65205600 kB
+storage_medium=local NVMe filesystem (workstation)
+operating_system=Linux 7.1.8-gentoo-x86_64 x86_64 GNU/Linux
+database_root=/home/kevin/tmp/riffdb-release-evidence-b0cf1cb3/target/wp200/benchmarks/budget-comparison/database-roots
+filesystem=ext4 /dev/nvme0n1p2
+mount_options=rw,noatime
 postgres_image=postgres:18.4-bookworm@sha256:d9c83446333daec3f0588cc709adb80c26090b7f9f0f7ec8d43c243385d79818
 postgres_image_id=sha256:cefcc49b1cd34d41cdc0d09ab4a902ac75b8a6c1a0209ed838b6a82267304df3
 postgres_server_version_num=180004
 postgres_synchronous_commit=on
 postgres_fsync=on
 postgres_full_page_writes=on
-postgres_filesystem=ext4 /dev/nvme0n1p2[/home/kevin/dev/riffdb]
-postgres_mount_options=rw,nosuid,nodev,noatime
+riffdb_durability_mode=group
+postgres_filesystem=ext4 /dev/nvme0n1p2
+postgres_mount_options=rw,noatime
 postgres_network=loopback-only ephemeral Docker publication
 correctness_preflight=passed
 warmup_runs=2
 sample_count_per_workload=12
-sample	postgres_canonical_sequential_contention	1	744414803	7894719
-sample	riffdb_public_sequential_contention_replay	1	2555808040	1056768
-sample	postgres_canonical_sequential_contention	2	751192510	7894719
-sample	riffdb_public_sequential_contention_replay	2	2708432113	1056768
-sample	postgres_canonical_sequential_contention	3	749196589	7902911
-sample	riffdb_public_sequential_contention_replay	3	2632649548	1056768
-sample	postgres_canonical_sequential_contention	4	768082727	7919295
-sample	riffdb_public_sequential_contention_replay	4	2633535170	1056768
-sample	postgres_canonical_sequential_contention	5	746982743	7935679
-sample	riffdb_public_sequential_contention_replay	5	2613945914	1056768
-sample	postgres_canonical_sequential_contention	6	751238402	7935679
-sample	riffdb_public_sequential_contention_replay	6	2573533061	1056768
-sample	postgres_canonical_sequential_contention	7	753523316	7935679
-sample	riffdb_public_sequential_contention_replay	7	2582210507	1056768
-sample	postgres_canonical_sequential_contention	8	749169495	7952063
-sample	riffdb_public_sequential_contention_replay	8	2589736020	1056768
-sample	postgres_canonical_sequential_contention	9	755032010	7952063
-sample	riffdb_public_sequential_contention_replay	9	2612439622	1056768
-sample	postgres_canonical_sequential_contention	10	747207691	7976639
-sample	riffdb_public_sequential_contention_replay	10	2653589876	1056768
-sample	postgres_canonical_sequential_contention	11	745021908	7993023
-sample	riffdb_public_sequential_contention_replay	11	2562740864	1056768
-sample	postgres_canonical_sequential_contention	12	749224867	8001215
-sample	riffdb_public_sequential_contention_replay	12	2714999936	1056768
+sample	postgres_canonical_sequential_contention	1	963567925	7894719
+sample	riffdb_public_sequential_contention_replay	1	953267213	1056768
+sample	postgres_canonical_sequential_contention	2	748639929	7894719
+sample	riffdb_public_sequential_contention_replay	2	1165209145	1056768
+sample	postgres_canonical_sequential_contention	3	796498757	7902911
+sample	riffdb_public_sequential_contention_replay	3	980072846	1056768
+sample	postgres_canonical_sequential_contention	4	816379444	7919295
+sample	riffdb_public_sequential_contention_replay	4	941509901	1056768
+sample	postgres_canonical_sequential_contention	5	756824777	7935679
+sample	riffdb_public_sequential_contention_replay	5	973021404	1056768
+sample	postgres_canonical_sequential_contention	6	737187937	7935679
+sample	riffdb_public_sequential_contention_replay	6	1033279631	1056768
+sample	postgres_canonical_sequential_contention	7	767267104	7935679
+sample	riffdb_public_sequential_contention_replay	7	992660778	1056768
+sample	postgres_canonical_sequential_contention	8	761390131	7952063
+sample	riffdb_public_sequential_contention_replay	8	987603036	1056768
+sample	postgres_canonical_sequential_contention	9	760132164	7952063
+sample	riffdb_public_sequential_contention_replay	9	968544520	1056768
+sample	postgres_canonical_sequential_contention	10	729578591	7976639
+sample	riffdb_public_sequential_contention_replay	10	961907382	1056768
+sample	postgres_canonical_sequential_contention	11	743705396	7993023
+sample	riffdb_public_sequential_contention_replay	11	970433874	1056768
+sample	postgres_canonical_sequential_contention	12	743420753	8001215
+sample	riffdb_public_sequential_contention_replay	12	986853956	1056768
