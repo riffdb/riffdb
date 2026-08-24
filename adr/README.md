@@ -162,6 +162,7 @@ direction, merged draft, or implementation choice.
 | [0141](0141-public-gate-first-exclusive-application-lane.md) | Diagnostic-Gate-First Exclusive Application Lane | Accepted |
 | [0142](0142-portable-unary-service-levels-and-comparator-evidence.md) | Portable Unary Service Levels and Comparator Evidence | Accepted |
 | [0143](0143-fixed-generation-unary-stability.md) | Fixed-Generation Unary Stability Without Performance-Selected Retries | Proposed |
+| [0144](0144-release-evidence-durability-mode-reconciliation.md) | Release-Evidence Durability-Mode Reconciliation | Proposed |
 
 The human architecture review on 2026-07-12 approved the direction represented
 by ADR-0001 through ADR-0012. The human maintainer accepted ADR-0001 through
