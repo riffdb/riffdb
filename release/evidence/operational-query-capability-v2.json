@@ -1,0 +1,106 @@
+{
+  "contract": {
+    "bundle_hash": "5cf309d8ba731173e426e53ec66d41fad99cc95cbbbfd10ad67a2b5db9a86b9c",
+    "lineage": "AdapterOperationalConformance",
+    "version": 1
+  },
+  "exact_predicate_operations": [
+    {
+      "name": "ReviewedDirectoryUsers",
+      "plan_hash": "457adf856768f654148762864564e41ff64797a95b03d26ea3cf7a98c185aec3",
+      "source_hash": "87e39dd6bbab6ca3b9010d85a15f3bd3c2a87efc23af4b9e01e33a805a70dbc8"
+    },
+    {
+      "name": "SearchDirectoryUsers",
+      "plan_hash": "8f6844ea9aede080c04b455ec72c17970e4caf31c246e8d77197c0e3188afc86",
+      "source_hash": "ac655be6312c0175048dfdc16eb7d37763c184a371b4617dd3db8a7b46c93d99"
+    }
+  ],
+  "external_acceptance": {
+    "owner": "external_adapter_repository",
+    "required_evidence": "public framework routes delegate only to pinned generated operations",
+    "status": "not_proved_by_neutral_corpus"
+  },
+  "generated_artifacts": [
+    {
+      "kind": "go",
+      "path": "fixtures/adapters/operational-conformance/generated/go/client.go",
+      "sha256": "20b3561aa7aee4489a1793b041b61d1bb28b284461534ab89589448e9d208c10"
+    },
+    {
+      "kind": "mcp",
+      "path": "fixtures/adapters/operational-conformance/generated/mcp/tools.json",
+      "sha256": "446e45ae12676a4155d63079cc8b9742a93315c7c2c43f863c195862e4f2b59c"
+    },
+    {
+      "kind": "python",
+      "path": "fixtures/adapters/operational-conformance/generated/python/client.py",
+      "sha256": "5b2925a4a213acd02ff07f33373a70ea33d3a2efd0b047ddd2d79641f21832b5"
+    },
+    {
+      "kind": "rust",
+      "path": "fixtures/adapters/operational-conformance/generated/rust/client.rs",
+      "sha256": "13ef19ff31c7a5acdce45db827c76f5d1e78a844d525afd7ba79e8f241e0ac68"
+    },
+    {
+      "kind": "typescript",
+      "path": "fixtures/adapters/operational-conformance/generated/typescript/client.ts",
+      "sha256": "7f44c5940f0c14eb991bb76d9c836be2346ef6678d1a4f5a02f68715605ae1d0"
+    }
+  ],
+  "nullable_exact_order_operations": [
+    {
+      "name": "InventoryByObservedAscNullsLast",
+      "plan_hash": "65341f9676fd61e7e09084517bdd23f1c154086cddf13a48edf3956dec75607f",
+      "source_hash": "775695a73cc4af0c2e9332d0e79ad244e38dd11df96f87c634fd9d5ada7cc956"
+    },
+    {
+      "name": "InventoryByObservedDescNullsFirst",
+      "plan_hash": "422d504c4646f36995749bcdbbc14513d80d69219840dbb6bb9eb7fa1b949692",
+      "source_hash": "08f82b4fc3d5c419be69bef6329a991024d55afaba777f2e9402684b422153ce"
+    },
+    {
+      "name": "InventoryBySubtitleAscNullsFirst",
+      "plan_hash": "c2b711bc829fd7ca34acda9d7b25fef2b8d2e47bafc38528d362ce4a0e9cc555",
+      "source_hash": "c8ef0ebfa81a4167ae6be35185a3c06e2c98c0e51a4695f5ef4c30a419249fbc"
+    },
+    {
+      "name": "InventoryBySubtitleDescNullsLast",
+      "plan_hash": "386141e08e661147f5323e57fd6a4527915ecf6a51f8a6dcea335d2800459c3b",
+      "source_hash": "667b33207e83863a27f10835e25557753a2b4fa9c3793e4bbd1262a5875509da"
+    }
+  ],
+  "query_module": {
+    "module_hash": "132487cd013120333bc8d8ca45aaa343ab1f94bbacb4577fe223869fa8324e9e",
+    "name": "adapter_operational_conformance",
+    "version": 1
+  },
+  "schema": "riffdb.operational-query-capability/v2",
+  "semantics": {
+    "caller_supplied_structure": false,
+    "client_shaping": false,
+    "exact_total": true,
+    "finite_compiler_family": true,
+    "independent_total_order": true,
+    "missing_and_null_order_class": "NoValue",
+    "nullable_order_placement": [
+      "nulls_first",
+      "nulls_last"
+    ],
+    "ordinal_window": true,
+    "policy_before_index": true,
+    "provider_state_format": 5,
+    "request_time_authoritative_scan": false,
+    "typed_generated_languages": [
+      "go",
+      "python",
+      "rust",
+      "typescript"
+    ]
+  },
+  "source_lock": {
+    "path": "fixtures/adapters/operational-conformance/riffdb.application.lock.json",
+    "sha256": "acfb0282d96db03bc6e763c13f2499397062e4074884ebf9da633ba8ef2348d1"
+  },
+  "status": "development"
+}

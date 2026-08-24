@@ -22,8 +22,8 @@ def _compact_tag(value: object, tag: str, keys: frozenset[str]) -> dict[str, obj
 
 CONTRACT_LINEAGE: Final[str] = "AdapterOperationalConformance"
 CONTRACT_VERSION: Final[int] = 1
-CONTRACT_BUNDLE_HASH: Final[str] = "fa2e95c6c1c9226ae1d7b6cb0a01d822626973f5e427c6404547363bea8a3036"
-QUERY_MODULE_HASH: Final[str] = "47adab52831a2338255906aff0e02abf67b94e2fe8e7570d4cd8d6e5dff3a8c6"
+CONTRACT_BUNDLE_HASH: Final[str] = "5cf309d8ba731173e426e53ec66d41fad99cc95cbbbfd10ad67a2b5db9a86b9c"
+QUERY_MODULE_HASH: Final[str] = "132487cd013120333bc8d8ca45aaa343ab1f94bbacb4577fe223869fa8324e9e"
 
 class AuthSessionState(StrEnum):
     AUTH_ACTIVE = "AuthActive"
@@ -92,7 +92,15 @@ class AuthSignupInput:
     token_digest: str
     organization_id: UUID
 
-EXACT_DOCUMENTS_CONTAINS_ASC_QUERY_PLAN_HASH: Final[str] = "0f21077732901c06ae683666b7c07e231d6cb291267017bb8bb861f7c90b3297"
+@dataclass(frozen=True, slots=True, kw_only=True)
+class InventoryRecord:
+    subtitle: str | None
+    tie_rank: Annotated[int, "u64"]
+    record_id: UUID
+    observed_at: Timestamp | None
+    organization_id: UUID
+
+EXACT_DOCUMENTS_CONTAINS_ASC_QUERY_PLAN_HASH: Final[str] = "f41a39060a728d5133881f8252b021374463e54627139bd01f15223d0831618c"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ExactDocumentsContainsAscParams:
@@ -120,7 +128,7 @@ class ExactDocumentsContainsAscFound:
 
 ExactDocumentsContainsAscResult: TypeAlias = ExactDocumentsContainsAscFound
 
-EXACT_DOCUMENTS_ENDS_WITH_DESC_QUERY_PLAN_HASH: Final[str] = "bd352186ba39f7e1038e85a91e06b8cbd224a196af34feba4a72430607c2d577"
+EXACT_DOCUMENTS_ENDS_WITH_DESC_QUERY_PLAN_HASH: Final[str] = "36f0815a0d7af2d2ddaa25d6bca9756a157de510c5bd1f4c81c3036184b9c240"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ExactDocumentsEndsWithDescParams:
@@ -148,7 +156,7 @@ class ExactDocumentsEndsWithDescFound:
 
 ExactDocumentsEndsWithDescResult: TypeAlias = ExactDocumentsEndsWithDescFound
 
-EXACT_DOCUMENTS_STARTS_WITH_ASC_QUERY_PLAN_HASH: Final[str] = "85259a05f30c0251945b24526eeba7cae11517b97150d0a63bc5b4d19fd3dc4f"
+EXACT_DOCUMENTS_STARTS_WITH_ASC_QUERY_PLAN_HASH: Final[str] = "c01dc86f5c35164396c5d8de1ecc2882ce458f5276d62842e6a0ebb3d2b81207"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ExactDocumentsStartsWithAscParams:
@@ -176,7 +184,7 @@ class ExactDocumentsStartsWithAscFound:
 
 ExactDocumentsStartsWithAscResult: TypeAlias = ExactDocumentsStartsWithAscFound
 
-GET_AUTH_SESSION_QUERY_PLAN_HASH: Final[str] = "ff501d8e9d451380a46dc3d09fe6bb7f9400bba230da14c79aebb1bff23c80e6"
+GET_AUTH_SESSION_QUERY_PLAN_HASH: Final[str] = "5b79305e9145a91d5c27b9769ccc25489614ce483926bf086e5c852bb47c4f5a"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class GetAuthSessionParams:
@@ -203,7 +211,119 @@ class GetAuthSessionMissing:
 
 GetAuthSessionResult: TypeAlias = GetAuthSessionFound | GetAuthSessionMissing
 
-LIST_DRAFT_DOCUMENTS_QUERY_PLAN_HASH: Final[str] = "9dead995c1ef406726640f51793cd82a83f55b17b21376b55b8aeff59ee2238e"
+INVENTORY_BY_OBSERVED_ASC_NULLS_LAST_QUERY_PLAN_HASH: Final[str] = "65341f9676fd61e7e09084517bdd23f1c154086cddf13a48edf3956dec75607f"
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class InventoryByObservedAscNullsLastParams:
+    organization_id: UUID
+    limit: Annotated[int, "u64"] | None = None
+    offset: Annotated[int, "u64"] | None = None
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class InventoryByObservedAscNullsLastFoundRecords:
+    organization_id: UUID
+    record_id: UUID
+    subtitle: str | None
+    observed_at: Timestamp | None
+    tie_rank: Annotated[int, "u64"]
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class InventoryByObservedAscNullsLastFoundTotal:
+    value: Annotated[int, "u64"]
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class InventoryByObservedAscNullsLastFound:
+    records: tuple[InventoryByObservedAscNullsLastFoundRecords, ...]
+    total: InventoryByObservedAscNullsLastFoundTotal
+    outcome: Literal["Found"] = field(default="Found", init=False)
+
+InventoryByObservedAscNullsLastResult: TypeAlias = InventoryByObservedAscNullsLastFound
+
+INVENTORY_BY_OBSERVED_DESC_NULLS_FIRST_QUERY_PLAN_HASH: Final[str] = "422d504c4646f36995749bcdbbc14513d80d69219840dbb6bb9eb7fa1b949692"
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class InventoryByObservedDescNullsFirstParams:
+    organization_id: UUID
+    limit: Annotated[int, "u64"] | None = None
+    offset: Annotated[int, "u64"] | None = None
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class InventoryByObservedDescNullsFirstFoundRecords:
+    organization_id: UUID
+    record_id: UUID
+    subtitle: str | None
+    observed_at: Timestamp | None
+    tie_rank: Annotated[int, "u64"]
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class InventoryByObservedDescNullsFirstFoundTotal:
+    value: Annotated[int, "u64"]
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class InventoryByObservedDescNullsFirstFound:
+    records: tuple[InventoryByObservedDescNullsFirstFoundRecords, ...]
+    total: InventoryByObservedDescNullsFirstFoundTotal
+    outcome: Literal["Found"] = field(default="Found", init=False)
+
+InventoryByObservedDescNullsFirstResult: TypeAlias = InventoryByObservedDescNullsFirstFound
+
+INVENTORY_BY_SUBTITLE_ASC_NULLS_FIRST_QUERY_PLAN_HASH: Final[str] = "c2b711bc829fd7ca34acda9d7b25fef2b8d2e47bafc38528d362ce4a0e9cc555"
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class InventoryBySubtitleAscNullsFirstParams:
+    organization_id: UUID
+    limit: Annotated[int, "u64"] | None = None
+    offset: Annotated[int, "u64"] | None = None
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class InventoryBySubtitleAscNullsFirstFoundRecords:
+    organization_id: UUID
+    record_id: UUID
+    subtitle: str | None
+    observed_at: Timestamp | None
+    tie_rank: Annotated[int, "u64"]
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class InventoryBySubtitleAscNullsFirstFoundTotal:
+    value: Annotated[int, "u64"]
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class InventoryBySubtitleAscNullsFirstFound:
+    records: tuple[InventoryBySubtitleAscNullsFirstFoundRecords, ...]
+    total: InventoryBySubtitleAscNullsFirstFoundTotal
+    outcome: Literal["Found"] = field(default="Found", init=False)
+
+InventoryBySubtitleAscNullsFirstResult: TypeAlias = InventoryBySubtitleAscNullsFirstFound
+
+INVENTORY_BY_SUBTITLE_DESC_NULLS_LAST_QUERY_PLAN_HASH: Final[str] = "386141e08e661147f5323e57fd6a4527915ecf6a51f8a6dcea335d2800459c3b"
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class InventoryBySubtitleDescNullsLastParams:
+    organization_id: UUID
+    limit: Annotated[int, "u64"] | None = None
+    offset: Annotated[int, "u64"] | None = None
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class InventoryBySubtitleDescNullsLastFoundRecords:
+    organization_id: UUID
+    record_id: UUID
+    subtitle: str | None
+    observed_at: Timestamp | None
+    tie_rank: Annotated[int, "u64"]
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class InventoryBySubtitleDescNullsLastFoundTotal:
+    value: Annotated[int, "u64"]
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class InventoryBySubtitleDescNullsLastFound:
+    records: tuple[InventoryBySubtitleDescNullsLastFoundRecords, ...]
+    total: InventoryBySubtitleDescNullsLastFoundTotal
+    outcome: Literal["Found"] = field(default="Found", init=False)
+
+InventoryBySubtitleDescNullsLastResult: TypeAlias = InventoryBySubtitleDescNullsLastFound
+
+LIST_DRAFT_DOCUMENTS_QUERY_PLAN_HASH: Final[str] = "1b4a626141fd8f303b465f5e4d0237fe6e7e0d352d0c76adb5b6cef8bfcbb953"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ListDraftDocumentsParams:
@@ -222,7 +342,7 @@ class ListDraftDocumentsFound:
 
 ListDraftDocumentsResult: TypeAlias = ListDraftDocumentsFound
 
-LIST_FGA_TUPLES_QUERY_PLAN_HASH: Final[str] = "bf95e33c68b0b60470e6350fd2ff00e6796bcd30bbea264027da0e4d9d2e24c7"
+LIST_FGA_TUPLES_QUERY_PLAN_HASH: Final[str] = "85d4a53de22fe4f5dc7955c700a286b561e4e952810d0475c56802875bed188d"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ListFgaTuplesParams:
@@ -244,7 +364,7 @@ class ListFgaTuplesFound:
 
 ListFgaTuplesResult: TypeAlias = ListFgaTuplesFound
 
-LIST_PIPELINES_QUERY_PLAN_HASH: Final[str] = "7e288f33bddff226d13daa5be6f44fe68103a76a7280ec24430dd8d742032d76"
+LIST_PIPELINES_QUERY_PLAN_HASH: Final[str] = "6244f84041b61b7a08f6c731df9da80796b252799e08340f07f7c0c19de5197c"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ListPipelinesParams:
@@ -265,7 +385,7 @@ class ListPipelinesFound:
 
 ListPipelinesResult: TypeAlias = ListPipelinesFound
 
-METRIC_DASHBOARD_QUERY_PLAN_HASH: Final[str] = "252879f2e9260332e11195d20ab0607695fdda9677a57ad8910b817f544f7edc"
+METRIC_DASHBOARD_QUERY_PLAN_HASH: Final[str] = "e5a09fdec5ad5c364848118af929cf654c58dbb0b5ab59ba04aa9a910139dfa6"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class MetricDashboardParams:
@@ -286,7 +406,7 @@ class MetricDashboardFound:
 
 MetricDashboardResult: TypeAlias = MetricDashboardFound
 
-REVIEWED_DIRECTORY_USERS_QUERY_PLAN_HASH: Final[str] = "f0a936d2d4da23100acdbd9bcabfb9f0b0fa437b1f1f86c0b35d8b7db1821cc9"
+REVIEWED_DIRECTORY_USERS_QUERY_PLAN_HASH: Final[str] = "457adf856768f654148762864564e41ff64797a95b03d26ea3cf7a98c185aec3"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ReviewedDirectoryUsersParams:
@@ -317,7 +437,7 @@ class ReviewedDirectoryUsersFound:
 
 ReviewedDirectoryUsersResult: TypeAlias = ReviewedDirectoryUsersFound
 
-SEARCH_DIRECTORY_USERS_QUERY_PLAN_HASH: Final[str] = "1250e20a7e966e8fc33ab1733512afd031fbb2f5eec478229f3996b50ad820d6"
+SEARCH_DIRECTORY_USERS_QUERY_PLAN_HASH: Final[str] = "8f6844ea9aede080c04b455ec72c17970e4caf31c246e8d77197c0e3188afc86"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class SearchDirectoryUsersParams:
@@ -349,7 +469,7 @@ class SearchDirectoryUsersFound:
 
 SearchDirectoryUsersResult: TypeAlias = SearchDirectoryUsersFound
 
-SEARCH_DOCUMENTS_QUERY_PLAN_HASH: Final[str] = "e88baa94a51839d1ab277485551110e780ddc7c099ffbc767d02b9b96cfc1e4e"
+SEARCH_DOCUMENTS_QUERY_PLAN_HASH: Final[str] = "5348741f3bcd9ee91a1e27623f06f9075ae57c3baa926dc9608b738e414b36af"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class SearchDocumentsParams:
@@ -369,6 +489,27 @@ class SearchDocumentsFound:
     outcome: Literal["Found"] = field(default="Found", init=False)
 
 SearchDocumentsResult: TypeAlias = SearchDocumentsFound
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ChangeInventoryRecordStateInput:
+    subtitle: str | None
+    tie_rank: Annotated[int, "u64"]
+    record_id: UUID
+    request_id: UUID
+    observed_at: Timestamp | None
+    organization_id: UUID
+
+CHANGE_INVENTORY_RECORD_STATE_PLAN_HASH: Final[str] = "a28376c6856cdccf2f36184e5f0eeabe4fa0263678f27dec0207421b840f8682"
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ChangeInventoryRecordStateInventoryRecordMissing:
+    outcome: Literal["InventoryRecordMissing"] = field(default="InventoryRecordMissing", init=False)
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ChangeInventoryRecordStateInventoryRecordStateChanged:
+    record: InventoryRecord
+    outcome: Literal["InventoryRecordStateChanged"] = field(default="InventoryRecordStateChanged", init=False)
+
+ChangeInventoryRecordStateOutcome: TypeAlias = ChangeInventoryRecordStateInventoryRecordMissing | ChangeInventoryRecordStateInventoryRecordStateChanged
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class CreateAuthSessionsInput:
@@ -421,6 +562,40 @@ class CreateDocumentsDocumentAlreadyExists:
     outcome: Literal["DocumentAlreadyExists"] = field(default="DocumentAlreadyExists", init=False)
 
 CreateDocumentsOutcome: TypeAlias = CreateDocumentsDocumentsCreated | CreateDocumentsDocumentAlreadyExists
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class CreateInventoryRecordMissingInput:
+    tie_rank: Annotated[int, "u64"]
+    record_id: UUID
+    request_id: UUID
+    organization_id: UUID
+
+CREATE_INVENTORY_RECORD_MISSING_PLAN_HASH: Final[str] = "626eded520ef9d3e2298794687b83e28ee21959f6ffd763d8be7a1f39314e6de"
+@dataclass(frozen=True, slots=True, kw_only=True)
+class CreateInventoryRecordMissingInventoryRecordAlreadyExists:
+    outcome: Literal["InventoryRecordAlreadyExists"] = field(default="InventoryRecordAlreadyExists", init=False)
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class CreateInventoryRecordMissingInventoryRecordMissingCreated:
+    outcome: Literal["InventoryRecordMissingCreated"] = field(default="InventoryRecordMissingCreated", init=False)
+
+CreateInventoryRecordMissingOutcome: TypeAlias = CreateInventoryRecordMissingInventoryRecordAlreadyExists | CreateInventoryRecordMissingInventoryRecordMissingCreated
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class CreateInventoryRecordsInput:
+    records: tuple[InventoryRecord, ...]
+    request_id: UUID
+
+CREATE_INVENTORY_RECORDS_PLAN_HASH: Final[str] = "01c8d5f5476dae0cb2050c240296f9ebe9ba72d882905627b7491c7414abcde6"
+@dataclass(frozen=True, slots=True, kw_only=True)
+class CreateInventoryRecordsInventoryRecordsCreated:
+    outcome: Literal["InventoryRecordsCreated"] = field(default="InventoryRecordsCreated", init=False)
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class CreateInventoryRecordsInventoryRecordBatchAlreadyExists:
+    outcome: Literal["InventoryRecordBatchAlreadyExists"] = field(default="InventoryRecordBatchAlreadyExists", init=False)
+
+CreateInventoryRecordsOutcome: TypeAlias = CreateInventoryRecordsInventoryRecordsCreated | CreateInventoryRecordsInventoryRecordBatchAlreadyExists
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class CreatePipelinesInput:
@@ -524,6 +699,54 @@ class AdapterOperationalConformanceClient:
         }
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
+    def inventory_by_observed_asc_nulls_last(self, parameters: InventoryByObservedAscNullsLastParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[InventoryByObservedAscNullsLastResult]:
+        raw = self._transport._execute_named_query(
+            contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
+            contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
+            query_name="InventoryByObservedAscNullsLast", plan_hash=INVENTORY_BY_OBSERVED_ASC_NULLS_LAST_QUERY_PLAN_HASH,
+            parameters=encode_record(parameters), options=options,
+        )
+        outcomes = {
+            "Found": InventoryByObservedAscNullsLastFound,
+        }
+        return raw._map_value(lambda value: decode_variant(outcomes, value))
+
+    def inventory_by_observed_desc_nulls_first(self, parameters: InventoryByObservedDescNullsFirstParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[InventoryByObservedDescNullsFirstResult]:
+        raw = self._transport._execute_named_query(
+            contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
+            contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
+            query_name="InventoryByObservedDescNullsFirst", plan_hash=INVENTORY_BY_OBSERVED_DESC_NULLS_FIRST_QUERY_PLAN_HASH,
+            parameters=encode_record(parameters), options=options,
+        )
+        outcomes = {
+            "Found": InventoryByObservedDescNullsFirstFound,
+        }
+        return raw._map_value(lambda value: decode_variant(outcomes, value))
+
+    def inventory_by_subtitle_asc_nulls_first(self, parameters: InventoryBySubtitleAscNullsFirstParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[InventoryBySubtitleAscNullsFirstResult]:
+        raw = self._transport._execute_named_query(
+            contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
+            contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
+            query_name="InventoryBySubtitleAscNullsFirst", plan_hash=INVENTORY_BY_SUBTITLE_ASC_NULLS_FIRST_QUERY_PLAN_HASH,
+            parameters=encode_record(parameters), options=options,
+        )
+        outcomes = {
+            "Found": InventoryBySubtitleAscNullsFirstFound,
+        }
+        return raw._map_value(lambda value: decode_variant(outcomes, value))
+
+    def inventory_by_subtitle_desc_nulls_last(self, parameters: InventoryBySubtitleDescNullsLastParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[InventoryBySubtitleDescNullsLastResult]:
+        raw = self._transport._execute_named_query(
+            contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
+            contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
+            query_name="InventoryBySubtitleDescNullsLast", plan_hash=INVENTORY_BY_SUBTITLE_DESC_NULLS_LAST_QUERY_PLAN_HASH,
+            parameters=encode_record(parameters), options=options,
+        )
+        outcomes = {
+            "Found": InventoryBySubtitleDescNullsLastFound,
+        }
+        return raw._map_value(lambda value: decode_variant(outcomes, value))
+
     def list_draft_documents(self, parameters: ListDraftDocumentsParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ListDraftDocumentsResult]:
         raw = self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
@@ -608,6 +831,24 @@ class AdapterOperationalConformanceClient:
         }
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
+    def change_inventory_record_state(self, input: ChangeInventoryRecordStateInput) -> TypedCommandResult[ChangeInventoryRecordStateOutcome]:
+        raw = self._transport._execute_command(
+            contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
+            command_name="ChangeInventoryRecordState", plan_hash=CHANGE_INVENTORY_RECORD_STATE_PLAN_HASH,
+            input=encode_record(input), attempts=self._command_attempts,
+        )
+        outcomes = {
+            "InventoryRecordMissing": ChangeInventoryRecordStateInventoryRecordMissing,
+            "InventoryRecordStateChanged": ChangeInventoryRecordStateInventoryRecordStateChanged,
+        }
+        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+
+    def change_inventory_record_state_batch(
+        self, inputs: Sequence[ChangeInventoryRecordStateInput], options: CommandBatchOptions,
+        progress: Callable[[CommandBatchProgress], None] | None = None,
+    ) -> CommandBatchResult[ChangeInventoryRecordStateOutcome]:
+        return self._transport._command_batch(inputs, options, self.change_inventory_record_state, progress)
+
     def create_auth_sessions(self, input: CreateAuthSessionsInput) -> TypedCommandResult[CreateAuthSessionsOutcome]:
         if not 1 <= len(input.signups) <= 8:
             raise ValueError("invalid bounded collection length for CreateAuthSessions.signups")
@@ -677,6 +918,47 @@ class AdapterOperationalConformanceClient:
             if not 1 <= len(input.documents) <= 32:
                 raise ValueError("invalid bounded collection length for CreateDocuments.documents")
         return self._transport._command_batch(inputs, options, self.create_documents, progress)
+
+    def create_inventory_record_missing(self, input: CreateInventoryRecordMissingInput) -> TypedCommandResult[CreateInventoryRecordMissingOutcome]:
+        raw = self._transport._execute_command(
+            contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
+            command_name="CreateInventoryRecordMissing", plan_hash=CREATE_INVENTORY_RECORD_MISSING_PLAN_HASH,
+            input=encode_record(input), attempts=self._command_attempts,
+        )
+        outcomes = {
+            "InventoryRecordAlreadyExists": CreateInventoryRecordMissingInventoryRecordAlreadyExists,
+            "InventoryRecordMissingCreated": CreateInventoryRecordMissingInventoryRecordMissingCreated,
+        }
+        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+
+    def create_inventory_record_missing_batch(
+        self, inputs: Sequence[CreateInventoryRecordMissingInput], options: CommandBatchOptions,
+        progress: Callable[[CommandBatchProgress], None] | None = None,
+    ) -> CommandBatchResult[CreateInventoryRecordMissingOutcome]:
+        return self._transport._command_batch(inputs, options, self.create_inventory_record_missing, progress)
+
+    def create_inventory_records(self, input: CreateInventoryRecordsInput) -> TypedCommandResult[CreateInventoryRecordsOutcome]:
+        if not 1 <= len(input.records) <= 32:
+            raise ValueError("invalid bounded collection length for CreateInventoryRecords.records")
+        raw = self._transport._execute_command(
+            contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
+            command_name="CreateInventoryRecords", plan_hash=CREATE_INVENTORY_RECORDS_PLAN_HASH,
+            input=encode_record(input), attempts=self._command_attempts,
+        )
+        outcomes = {
+            "InventoryRecordsCreated": CreateInventoryRecordsInventoryRecordsCreated,
+            "InventoryRecordBatchAlreadyExists": CreateInventoryRecordsInventoryRecordBatchAlreadyExists,
+        }
+        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+
+    def create_inventory_records_batch(
+        self, inputs: Sequence[CreateInventoryRecordsInput], options: CommandBatchOptions,
+        progress: Callable[[CommandBatchProgress], None] | None = None,
+    ) -> CommandBatchResult[CreateInventoryRecordsOutcome]:
+        for input in inputs:
+            if not 1 <= len(input.records) <= 32:
+                raise ValueError("invalid bounded collection length for CreateInventoryRecords.records")
+        return self._transport._command_batch(inputs, options, self.create_inventory_records, progress)
 
     def create_pipelines(self, input: CreatePipelinesInput) -> TypedCommandResult[CreatePipelinesOutcome]:
         if not 1 <= len(input.pipelines) <= 32:
@@ -801,6 +1083,54 @@ class AsyncAdapterOperationalConformanceClient:
         }
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
+    async def inventory_by_observed_asc_nulls_last(self, parameters: InventoryByObservedAscNullsLastParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[InventoryByObservedAscNullsLastResult]:
+        raw = await self._transport._execute_named_query(
+            contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
+            contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
+            query_name="InventoryByObservedAscNullsLast", plan_hash=INVENTORY_BY_OBSERVED_ASC_NULLS_LAST_QUERY_PLAN_HASH,
+            parameters=encode_record(parameters), options=options,
+        )
+        outcomes = {
+            "Found": InventoryByObservedAscNullsLastFound,
+        }
+        return raw._map_value(lambda value: decode_variant(outcomes, value))
+
+    async def inventory_by_observed_desc_nulls_first(self, parameters: InventoryByObservedDescNullsFirstParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[InventoryByObservedDescNullsFirstResult]:
+        raw = await self._transport._execute_named_query(
+            contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
+            contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
+            query_name="InventoryByObservedDescNullsFirst", plan_hash=INVENTORY_BY_OBSERVED_DESC_NULLS_FIRST_QUERY_PLAN_HASH,
+            parameters=encode_record(parameters), options=options,
+        )
+        outcomes = {
+            "Found": InventoryByObservedDescNullsFirstFound,
+        }
+        return raw._map_value(lambda value: decode_variant(outcomes, value))
+
+    async def inventory_by_subtitle_asc_nulls_first(self, parameters: InventoryBySubtitleAscNullsFirstParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[InventoryBySubtitleAscNullsFirstResult]:
+        raw = await self._transport._execute_named_query(
+            contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
+            contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
+            query_name="InventoryBySubtitleAscNullsFirst", plan_hash=INVENTORY_BY_SUBTITLE_ASC_NULLS_FIRST_QUERY_PLAN_HASH,
+            parameters=encode_record(parameters), options=options,
+        )
+        outcomes = {
+            "Found": InventoryBySubtitleAscNullsFirstFound,
+        }
+        return raw._map_value(lambda value: decode_variant(outcomes, value))
+
+    async def inventory_by_subtitle_desc_nulls_last(self, parameters: InventoryBySubtitleDescNullsLastParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[InventoryBySubtitleDescNullsLastResult]:
+        raw = await self._transport._execute_named_query(
+            contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
+            contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
+            query_name="InventoryBySubtitleDescNullsLast", plan_hash=INVENTORY_BY_SUBTITLE_DESC_NULLS_LAST_QUERY_PLAN_HASH,
+            parameters=encode_record(parameters), options=options,
+        )
+        outcomes = {
+            "Found": InventoryBySubtitleDescNullsLastFound,
+        }
+        return raw._map_value(lambda value: decode_variant(outcomes, value))
+
     async def list_draft_documents(self, parameters: ListDraftDocumentsParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ListDraftDocumentsResult]:
         raw = await self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
@@ -885,6 +1215,24 @@ class AsyncAdapterOperationalConformanceClient:
         }
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
+    async def change_inventory_record_state(self, input: ChangeInventoryRecordStateInput) -> TypedCommandResult[ChangeInventoryRecordStateOutcome]:
+        raw = await self._transport._execute_command(
+            contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
+            command_name="ChangeInventoryRecordState", plan_hash=CHANGE_INVENTORY_RECORD_STATE_PLAN_HASH,
+            input=encode_record(input), attempts=self._command_attempts,
+        )
+        outcomes = {
+            "InventoryRecordMissing": ChangeInventoryRecordStateInventoryRecordMissing,
+            "InventoryRecordStateChanged": ChangeInventoryRecordStateInventoryRecordStateChanged,
+        }
+        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+
+    async def change_inventory_record_state_batch(
+        self, inputs: Sequence[ChangeInventoryRecordStateInput], options: CommandBatchOptions,
+        progress: Callable[[CommandBatchProgress], None] | None = None,
+    ) -> CommandBatchResult[ChangeInventoryRecordStateOutcome]:
+        return await self._transport._command_batch(inputs, options, self.change_inventory_record_state, progress)
+
     async def create_auth_sessions(self, input: CreateAuthSessionsInput) -> TypedCommandResult[CreateAuthSessionsOutcome]:
         if not 1 <= len(input.signups) <= 8:
             raise ValueError("invalid bounded collection length for CreateAuthSessions.signups")
@@ -954,6 +1302,47 @@ class AsyncAdapterOperationalConformanceClient:
             if not 1 <= len(input.documents) <= 32:
                 raise ValueError("invalid bounded collection length for CreateDocuments.documents")
         return await self._transport._command_batch(inputs, options, self.create_documents, progress)
+
+    async def create_inventory_record_missing(self, input: CreateInventoryRecordMissingInput) -> TypedCommandResult[CreateInventoryRecordMissingOutcome]:
+        raw = await self._transport._execute_command(
+            contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
+            command_name="CreateInventoryRecordMissing", plan_hash=CREATE_INVENTORY_RECORD_MISSING_PLAN_HASH,
+            input=encode_record(input), attempts=self._command_attempts,
+        )
+        outcomes = {
+            "InventoryRecordAlreadyExists": CreateInventoryRecordMissingInventoryRecordAlreadyExists,
+            "InventoryRecordMissingCreated": CreateInventoryRecordMissingInventoryRecordMissingCreated,
+        }
+        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+
+    async def create_inventory_record_missing_batch(
+        self, inputs: Sequence[CreateInventoryRecordMissingInput], options: CommandBatchOptions,
+        progress: Callable[[CommandBatchProgress], None] | None = None,
+    ) -> CommandBatchResult[CreateInventoryRecordMissingOutcome]:
+        return await self._transport._command_batch(inputs, options, self.create_inventory_record_missing, progress)
+
+    async def create_inventory_records(self, input: CreateInventoryRecordsInput) -> TypedCommandResult[CreateInventoryRecordsOutcome]:
+        if not 1 <= len(input.records) <= 32:
+            raise ValueError("invalid bounded collection length for CreateInventoryRecords.records")
+        raw = await self._transport._execute_command(
+            contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
+            command_name="CreateInventoryRecords", plan_hash=CREATE_INVENTORY_RECORDS_PLAN_HASH,
+            input=encode_record(input), attempts=self._command_attempts,
+        )
+        outcomes = {
+            "InventoryRecordsCreated": CreateInventoryRecordsInventoryRecordsCreated,
+            "InventoryRecordBatchAlreadyExists": CreateInventoryRecordsInventoryRecordBatchAlreadyExists,
+        }
+        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+
+    async def create_inventory_records_batch(
+        self, inputs: Sequence[CreateInventoryRecordsInput], options: CommandBatchOptions,
+        progress: Callable[[CommandBatchProgress], None] | None = None,
+    ) -> CommandBatchResult[CreateInventoryRecordsOutcome]:
+        for input in inputs:
+            if not 1 <= len(input.records) <= 32:
+                raise ValueError("invalid bounded collection length for CreateInventoryRecords.records")
+        return await self._transport._command_batch(inputs, options, self.create_inventory_records, progress)
 
     async def create_pipelines(self, input: CreatePipelinesInput) -> TypedCommandResult[CreatePipelinesOutcome]:
         if not 1 <= len(input.pipelines) <= 32:

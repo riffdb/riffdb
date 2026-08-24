@@ -1,5 +1,5 @@
 {
-  "application_manifest_hash": "2b1363120011ee72b2d9ec036ef0053ebd321c939aa6cb9019c32e7466a6a1c2",
+  "application_manifest_hash": "23b168524423115204052bb18605fe99b8ac79eb40125e6650a0fa55a4908eaa",
   "commands": [
     {
       "annotations": {
@@ -8,7 +8,142 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "contract_bundle_hash": "fa2e95c6c1c9226ae1d7b6cb0a01d822626973f5e427c6404547363bea8a3036",
+      "contract_bundle_hash": "5cf309d8ba731173e426e53ec66d41fad99cc95cbbbfd10ad67a2b5db9a86b9c",
+      "description": "Execute the exact ChangeInventoryRecordState compiled command from contract AdapterOperationalConformance.",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "observed_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "organization_id": {
+            "type": "string"
+          },
+          "record_id": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "subtitle": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "tie_rank": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "subtitle",
+          "tie_rank",
+          "record_id",
+          "request_id",
+          "observed_at",
+          "organization_id"
+        ],
+        "type": "object"
+      },
+      "name": "adapter_operational_conformance_change_inventory_record_state",
+      "operation_name": "ChangeInventoryRecordState",
+      "plan_hash": "a28376c6856cdccf2f36184e5f0eeabe4fa0263678f27dec0207421b840f8682",
+      "result_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "InventoryRecordMissing",
+                "type": "string"
+              }
+            },
+            "required": [
+              "outcome"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "InventoryRecordStateChanged",
+                "type": "string"
+              },
+              "record": {
+                "additionalProperties": false,
+                "properties": {
+                  "observed_at": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "organization_id": {
+                    "type": "string"
+                  },
+                  "record_id": {
+                    "type": "string"
+                  },
+                  "subtitle": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "tie_rank": {
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "subtitle",
+                  "tie_rank",
+                  "record_id",
+                  "observed_at",
+                  "organization_id"
+                ],
+                "type": "object"
+              }
+            },
+            "required": [
+              "record",
+              "outcome"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "title": "Run ChangeInventoryRecordState"
+    },
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "contract_bundle_hash": "5cf309d8ba731173e426e53ec66d41fad99cc95cbbbfd10ad67a2b5db9a86b9c",
       "description": "Execute the exact CreateAuthSessions compiled command from contract AdapterOperationalConformance.",
       "input_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -117,7 +252,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "contract_bundle_hash": "fa2e95c6c1c9226ae1d7b6cb0a01d822626973f5e427c6404547363bea8a3036",
+      "contract_bundle_hash": "5cf309d8ba731173e426e53ec66d41fad99cc95cbbbfd10ad67a2b5db9a86b9c",
       "description": "Execute the exact CreateDirectoryUsers compiled command from contract AdapterOperationalConformance.",
       "input_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -220,7 +355,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "contract_bundle_hash": "fa2e95c6c1c9226ae1d7b6cb0a01d822626973f5e427c6404547363bea8a3036",
+      "contract_bundle_hash": "5cf309d8ba731173e426e53ec66d41fad99cc95cbbbfd10ad67a2b5db9a86b9c",
       "description": "Execute the exact CreateDocuments compiled command from contract AdapterOperationalConformance.",
       "input_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -315,7 +450,183 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "contract_bundle_hash": "fa2e95c6c1c9226ae1d7b6cb0a01d822626973f5e427c6404547363bea8a3036",
+      "contract_bundle_hash": "5cf309d8ba731173e426e53ec66d41fad99cc95cbbbfd10ad67a2b5db9a86b9c",
+      "description": "Execute the exact CreateInventoryRecordMissing compiled command from contract AdapterOperationalConformance.",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "organization_id": {
+            "type": "string"
+          },
+          "record_id": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "tie_rank": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "tie_rank",
+          "record_id",
+          "request_id",
+          "organization_id"
+        ],
+        "type": "object"
+      },
+      "name": "adapter_operational_conformance_create_inventory_record_missing",
+      "operation_name": "CreateInventoryRecordMissing",
+      "plan_hash": "626eded520ef9d3e2298794687b83e28ee21959f6ffd763d8be7a1f39314e6de",
+      "result_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "InventoryRecordAlreadyExists",
+                "type": "string"
+              }
+            },
+            "required": [
+              "outcome"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "InventoryRecordMissingCreated",
+                "type": "string"
+              }
+            },
+            "required": [
+              "outcome"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "title": "Run CreateInventoryRecordMissing"
+    },
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "contract_bundle_hash": "5cf309d8ba731173e426e53ec66d41fad99cc95cbbbfd10ad67a2b5db9a86b9c",
+      "description": "Execute the exact CreateInventoryRecords compiled command from contract AdapterOperationalConformance.",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "records": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "observed_at": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "organization_id": {
+                  "type": "string"
+                },
+                "record_id": {
+                  "type": "string"
+                },
+                "subtitle": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "tie_rank": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "subtitle",
+                "tie_rank",
+                "record_id",
+                "observed_at",
+                "organization_id"
+              ],
+              "type": "object"
+            },
+            "maxItems": 32,
+            "minItems": 1,
+            "type": "array"
+          },
+          "request_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "records",
+          "request_id"
+        ],
+        "type": "object"
+      },
+      "name": "adapter_operational_conformance_create_inventory_records",
+      "operation_name": "CreateInventoryRecords",
+      "plan_hash": "01c8d5f5476dae0cb2050c240296f9ebe9ba72d882905627b7491c7414abcde6",
+      "result_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "InventoryRecordsCreated",
+                "type": "string"
+              }
+            },
+            "required": [
+              "outcome"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "InventoryRecordBatchAlreadyExists",
+                "type": "string"
+              }
+            },
+            "required": [
+              "outcome"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "title": "Run CreateInventoryRecords"
+    },
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "contract_bundle_hash": "5cf309d8ba731173e426e53ec66d41fad99cc95cbbbfd10ad67a2b5db9a86b9c",
       "description": "Execute the exact CreatePipelines compiled command from contract AdapterOperationalConformance.",
       "input_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -403,7 +714,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "contract_bundle_hash": "fa2e95c6c1c9226ae1d7b6cb0a01d822626973f5e427c6404547363bea8a3036",
+      "contract_bundle_hash": "5cf309d8ba731173e426e53ec66d41fad99cc95cbbbfd10ad67a2b5db9a86b9c",
       "description": "Execute the exact LogMetrics compiled command from contract AdapterOperationalConformance.",
       "input_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -495,7 +806,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "contract_bundle_hash": "fa2e95c6c1c9226ae1d7b6cb0a01d822626973f5e427c6404547363bea8a3036",
+      "contract_bundle_hash": "5cf309d8ba731173e426e53ec66d41fad99cc95cbbbfd10ad67a2b5db9a86b9c",
       "description": "Execute the exact WriteTuples compiled command from contract AdapterOperationalConformance.",
       "input_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -627,7 +938,7 @@
         ],
         "type": "object"
       },
-      "module_hash": "47adab52831a2338255906aff0e02abf67b94e2fe8e7570d4cd8d6e5dff3a8c6",
+      "module_hash": "132487cd013120333bc8d8ca45aaa343ab1f94bbacb4577fe223869fa8324e9e",
       "name": "adapter_operational_conformance_exact_documents_contains_asc",
       "operation_name": "ExactDocumentsContainsAsc",
       "result_schema": {
@@ -731,7 +1042,7 @@
         ],
         "type": "object"
       },
-      "module_hash": "47adab52831a2338255906aff0e02abf67b94e2fe8e7570d4cd8d6e5dff3a8c6",
+      "module_hash": "132487cd013120333bc8d8ca45aaa343ab1f94bbacb4577fe223869fa8324e9e",
       "name": "adapter_operational_conformance_exact_documents_ends_with_desc",
       "operation_name": "ExactDocumentsEndsWithDesc",
       "result_schema": {
@@ -835,7 +1146,7 @@
         ],
         "type": "object"
       },
-      "module_hash": "47adab52831a2338255906aff0e02abf67b94e2fe8e7570d4cd8d6e5dff3a8c6",
+      "module_hash": "132487cd013120333bc8d8ca45aaa343ab1f94bbacb4577fe223869fa8324e9e",
       "name": "adapter_operational_conformance_exact_documents_starts_with_asc",
       "operation_name": "ExactDocumentsStartsWithAsc",
       "result_schema": {
@@ -925,7 +1236,7 @@
         ],
         "type": "object"
       },
-      "module_hash": "47adab52831a2338255906aff0e02abf67b94e2fe8e7570d4cd8d6e5dff3a8c6",
+      "module_hash": "132487cd013120333bc8d8ca45aaa343ab1f94bbacb4577fe223869fa8324e9e",
       "name": "adapter_operational_conformance_get_auth_session",
       "operation_name": "GetAuthSession",
       "result_schema": {
@@ -997,6 +1308,454 @@
         "openWorldHint": false,
         "readOnlyHint": true
       },
+      "description": "Execute the exact InventoryByObservedAscNullsLast named query from immutable module adapter_operational_conformance.",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "limit": {
+            "maximum": 499,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "offset": {
+            "type": "string"
+          },
+          "organization_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "organization_id"
+        ],
+        "type": "object"
+      },
+      "module_hash": "132487cd013120333bc8d8ca45aaa343ab1f94bbacb4577fe223869fa8324e9e",
+      "name": "adapter_operational_conformance_inventory_by_observed_asc_nulls_last",
+      "operation_name": "InventoryByObservedAscNullsLast",
+      "result_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "Found",
+                "type": "string"
+              },
+              "records": {
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "observed_at": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "organization_id": {
+                      "type": "string"
+                    },
+                    "record_id": {
+                      "type": "string"
+                    },
+                    "subtitle": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "tie_rank": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "organization_id",
+                    "record_id",
+                    "subtitle",
+                    "observed_at",
+                    "tie_rank"
+                  ],
+                  "type": "object"
+                },
+                "maxItems": 499,
+                "type": "array"
+              },
+              "total": {
+                "additionalProperties": false,
+                "properties": {
+                  "value": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "value"
+                ],
+                "type": "object"
+              }
+            },
+            "required": [
+              "outcome",
+              "records",
+              "total"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "title": "Run InventoryByObservedAscNullsLast"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "Execute the exact InventoryByObservedDescNullsFirst named query from immutable module adapter_operational_conformance.",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "limit": {
+            "maximum": 499,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "offset": {
+            "type": "string"
+          },
+          "organization_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "organization_id"
+        ],
+        "type": "object"
+      },
+      "module_hash": "132487cd013120333bc8d8ca45aaa343ab1f94bbacb4577fe223869fa8324e9e",
+      "name": "adapter_operational_conformance_inventory_by_observed_desc_nulls_first",
+      "operation_name": "InventoryByObservedDescNullsFirst",
+      "result_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "Found",
+                "type": "string"
+              },
+              "records": {
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "observed_at": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "organization_id": {
+                      "type": "string"
+                    },
+                    "record_id": {
+                      "type": "string"
+                    },
+                    "subtitle": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "tie_rank": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "organization_id",
+                    "record_id",
+                    "subtitle",
+                    "observed_at",
+                    "tie_rank"
+                  ],
+                  "type": "object"
+                },
+                "maxItems": 499,
+                "type": "array"
+              },
+              "total": {
+                "additionalProperties": false,
+                "properties": {
+                  "value": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "value"
+                ],
+                "type": "object"
+              }
+            },
+            "required": [
+              "outcome",
+              "records",
+              "total"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "title": "Run InventoryByObservedDescNullsFirst"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "Execute the exact InventoryBySubtitleAscNullsFirst named query from immutable module adapter_operational_conformance.",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "limit": {
+            "maximum": 499,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "offset": {
+            "type": "string"
+          },
+          "organization_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "organization_id"
+        ],
+        "type": "object"
+      },
+      "module_hash": "132487cd013120333bc8d8ca45aaa343ab1f94bbacb4577fe223869fa8324e9e",
+      "name": "adapter_operational_conformance_inventory_by_subtitle_asc_nulls_first",
+      "operation_name": "InventoryBySubtitleAscNullsFirst",
+      "result_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "Found",
+                "type": "string"
+              },
+              "records": {
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "observed_at": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "organization_id": {
+                      "type": "string"
+                    },
+                    "record_id": {
+                      "type": "string"
+                    },
+                    "subtitle": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "tie_rank": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "organization_id",
+                    "record_id",
+                    "subtitle",
+                    "observed_at",
+                    "tie_rank"
+                  ],
+                  "type": "object"
+                },
+                "maxItems": 499,
+                "type": "array"
+              },
+              "total": {
+                "additionalProperties": false,
+                "properties": {
+                  "value": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "value"
+                ],
+                "type": "object"
+              }
+            },
+            "required": [
+              "outcome",
+              "records",
+              "total"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "title": "Run InventoryBySubtitleAscNullsFirst"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "Execute the exact InventoryBySubtitleDescNullsLast named query from immutable module adapter_operational_conformance.",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "limit": {
+            "maximum": 499,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "offset": {
+            "type": "string"
+          },
+          "organization_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "organization_id"
+        ],
+        "type": "object"
+      },
+      "module_hash": "132487cd013120333bc8d8ca45aaa343ab1f94bbacb4577fe223869fa8324e9e",
+      "name": "adapter_operational_conformance_inventory_by_subtitle_desc_nulls_last",
+      "operation_name": "InventoryBySubtitleDescNullsLast",
+      "result_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "Found",
+                "type": "string"
+              },
+              "records": {
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "observed_at": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "organization_id": {
+                      "type": "string"
+                    },
+                    "record_id": {
+                      "type": "string"
+                    },
+                    "subtitle": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "tie_rank": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "organization_id",
+                    "record_id",
+                    "subtitle",
+                    "observed_at",
+                    "tie_rank"
+                  ],
+                  "type": "object"
+                },
+                "maxItems": 499,
+                "type": "array"
+              },
+              "total": {
+                "additionalProperties": false,
+                "properties": {
+                  "value": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "value"
+                ],
+                "type": "object"
+              }
+            },
+            "required": [
+              "outcome",
+              "records",
+              "total"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "title": "Run InventoryBySubtitleDescNullsLast"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
       "description": "Execute the exact ListDraftDocuments named query from immutable module adapter_operational_conformance.",
       "input_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -1011,7 +1770,7 @@
         ],
         "type": "object"
       },
-      "module_hash": "47adab52831a2338255906aff0e02abf67b94e2fe8e7570d4cd8d6e5dff3a8c6",
+      "module_hash": "132487cd013120333bc8d8ca45aaa343ab1f94bbacb4577fe223869fa8324e9e",
       "name": "adapter_operational_conformance_list_draft_documents",
       "operation_name": "ListDraftDocuments",
       "result_schema": {
@@ -1107,7 +1866,7 @@
         ],
         "type": "object"
       },
-      "module_hash": "47adab52831a2338255906aff0e02abf67b94e2fe8e7570d4cd8d6e5dff3a8c6",
+      "module_hash": "132487cd013120333bc8d8ca45aaa343ab1f94bbacb4577fe223869fa8324e9e",
       "name": "adapter_operational_conformance_list_fga_tuples",
       "operation_name": "ListFgaTuples",
       "result_schema": {
@@ -1200,7 +1959,7 @@
         ],
         "type": "object"
       },
-      "module_hash": "47adab52831a2338255906aff0e02abf67b94e2fe8e7570d4cd8d6e5dff3a8c6",
+      "module_hash": "132487cd013120333bc8d8ca45aaa343ab1f94bbacb4577fe223869fa8324e9e",
       "name": "adapter_operational_conformance_list_pipelines",
       "operation_name": "ListPipelines",
       "result_schema": {
@@ -1269,7 +2028,7 @@
         ],
         "type": "object"
       },
-      "module_hash": "47adab52831a2338255906aff0e02abf67b94e2fe8e7570d4cd8d6e5dff3a8c6",
+      "module_hash": "132487cd013120333bc8d8ca45aaa343ab1f94bbacb4577fe223869fa8324e9e",
       "name": "adapter_operational_conformance_metric_dashboard",
       "operation_name": "MetricDashboard",
       "result_schema": {
@@ -1381,7 +2140,7 @@
         ],
         "type": "object"
       },
-      "module_hash": "47adab52831a2338255906aff0e02abf67b94e2fe8e7570d4cd8d6e5dff3a8c6",
+      "module_hash": "132487cd013120333bc8d8ca45aaa343ab1f94bbacb4577fe223869fa8324e9e",
       "name": "adapter_operational_conformance_reviewed_directory_users",
       "operation_name": "ReviewedDirectoryUsers",
       "result_schema": {
@@ -1513,7 +2272,7 @@
         ],
         "type": "object"
       },
-      "module_hash": "47adab52831a2338255906aff0e02abf67b94e2fe8e7570d4cd8d6e5dff3a8c6",
+      "module_hash": "132487cd013120333bc8d8ca45aaa343ab1f94bbacb4577fe223869fa8324e9e",
       "name": "adapter_operational_conformance_search_directory_users",
       "operation_name": "SearchDirectoryUsers",
       "result_schema": {
@@ -1628,7 +2387,7 @@
         ],
         "type": "object"
       },
-      "module_hash": "47adab52831a2338255906aff0e02abf67b94e2fe8e7570d4cd8d6e5dff3a8c6",
+      "module_hash": "132487cd013120333bc8d8ca45aaa343ab1f94bbacb4577fe223869fa8324e9e",
       "name": "adapter_operational_conformance_search_documents",
       "operation_name": "SearchDocuments",
       "result_schema": {

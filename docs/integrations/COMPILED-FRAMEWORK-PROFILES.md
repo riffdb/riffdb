@@ -46,8 +46,9 @@ capability, but neither its route vocabulary nor its userland policy becomes a
 RiffDB feature.
 
 External adapters can pin
-`release/evidence/operational-query-capability-v1.json`. The development
-receipt binds the neutral contract, module, V6 operation plans, and generated
+`release/evidence/operational-query-capability-v2.json`. The successor
+development receipt preserves the immutable V1 receipt and binds the neutral
+contract, module, V6 predicate plans, V7 nullable-order plans, and generated
 Rust/Go/TypeScript/Python artifacts to immutable hashes and records the safe
 execution properties being offered. It deliberately records external route
 acceptance as `not_proved_by_neutral_corpus`: the adapter repository must still

@@ -38,6 +38,15 @@ contract AdapterOperationalConformance version 1 {
     index directory_by_reviewed (organization_id, reviewed_at, user_id) presence(reviewed_at)
   }
 
+  entity InventoryRecord {
+    key (organization_id: uuid, record_id: uuid)
+    field subtitle: optional<string<128>>
+    field observed_at: optional<timestamp>
+    field tie_rank: u64
+    index inventory_by_subtitle (organization_id, subtitle, tie_rank, record_id) presence(subtitle)
+    index inventory_by_observed (organization_id, observed_at, tie_rank, record_id) presence(observed_at)
+  }
+
   entity Pipeline {
     key (organization_id: uuid, pipeline_id: uuid)
     field name: string<128>
@@ -90,6 +99,12 @@ contract AdapterOperationalConformance version 1 {
     root DirectoryUser
     partition_by organization_id
     conflict_key (organization_id, user_id)
+  }
+
+  aggregate InventoryRecords {
+    root InventoryRecord
+    partition_by organization_id
+    conflict_key (organization_id, record_id)
   }
 
   aggregate Pipelines {
@@ -163,6 +178,45 @@ contract AdapterOperationalConformance version 1 {
       set stored.reviewed_at = candidate.reviewed_at
     }
     return DirectoryUsersCreated {}
+  }
+
+  command CreateInventoryRecordMissing {
+    input request_id: uuid
+    input organization_id: uuid
+    input record_id: uuid
+    input tie_rank: u64
+    idempotency_key request_id
+    create InventoryRecord(organization_id, record_id) as record else InventoryRecordAlreadyExists {}
+    set record.tie_rank = tie_rank
+    return InventoryRecordMissingCreated {}
+  }
+
+  bulk command CreateInventoryRecords {
+    input request_id: uuid
+    input records: list<InventoryRecord, 1..32>
+    idempotency_key request_id
+    for candidate in records {
+      create InventoryRecord(candidate.organization_id, candidate.record_id) as record else InventoryRecordBatchAlreadyExists {}
+      set record.subtitle = candidate.subtitle
+      set record.observed_at = candidate.observed_at
+      set record.tie_rank = candidate.tie_rank
+    }
+    return InventoryRecordsCreated {}
+  }
+
+  command ChangeInventoryRecordState {
+    input request_id: uuid
+    input organization_id: uuid
+    input record_id: uuid
+    input subtitle: optional<string<128>>
+    input observed_at: optional<timestamp>
+    input tie_rank: u64
+    idempotency_key request_id
+    mutate InventoryRecord(organization_id, record_id) as record else InventoryRecordMissing {}
+    set record.subtitle = subtitle
+    set record.observed_at = observed_at
+    set record.tie_rank = tie_rank
+    return InventoryRecordStateChanged { record: record }
   }
 
   bulk command CreatePipelines {

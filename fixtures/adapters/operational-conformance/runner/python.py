@@ -12,6 +12,7 @@ from client import (
     ExactDocumentsStartsWithAscParams,
     GetAuthSessionFound,
     GetAuthSessionParams,
+    InventoryBySubtitleAscNullsFirstParams,
     ListDraftDocumentsParams,
     ListFgaTuplesParams,
     ListPipelinesParams,
@@ -133,6 +134,16 @@ def main() -> None:
         require(reviewed.total.value == 1 and len(reviewed.users) == 1
                 and reviewed.users[0].email == "álpha@example.test",
                 "V6 exact predicate range/existence page")
+        inventory = client.inventory_by_subtitle_asc_nulls_first(
+            InventoryBySubtitleAscNullsFirstParams(
+                organization_id=uid(70), limit=2, offset=0,
+            )
+        ).value
+        require(inventory.total.value == 6, "nullable exact total")
+        require(
+            [row.record_id for row in inventory.records] == [uid(73), uid(76)],
+            "nullable generated order",
+        )
 
         pipelines = client.list_pipelines(
             ListPipelinesParams(organization_id=uid(40), state="queued")
@@ -166,6 +177,7 @@ def main() -> None:
                 "exact_aggregates": True,
                 "exact_text_family": True,
                 "exact_predicate_family": True,
+                "nullable_exact_order": True,
                 "exact_total": True,
                 "numeric_offset": True,
                 "adapters": ["mlflow", "openfga", "better-auth", "woodpecker"],

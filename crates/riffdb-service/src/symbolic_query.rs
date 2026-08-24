@@ -47,7 +47,10 @@ use riffdb_query_ir::{
     QueryAccessKind, QueryAccessProgramV1, QueryDiagnostic, QueryPredicateOperator,
     QueryPredicateValue, SymbolicCatalog, resolve_query_surface,
 };
-use riffdb_query_module::{CompiledNamedQuery, NamedQuerySource, QueryModuleCandidate};
+use riffdb_query_module::{
+    CompiledExactPredicateResultSetV1, CompiledNamedQuery,
+    CompiledNullableExactPredicateResultSetV1, NamedQuerySource, QueryModuleCandidate,
+};
 use riffdb_riffql_syntax::{
     Document, Literal, MAX_IDENTIFIER_BYTES, ParseDiagnostic, Span, TypeReference, parse_query,
 };
@@ -70,10 +73,11 @@ use crate::{
     ApplicationCatalogCursorLookup, ApplicationCatalogCursorState, ContractSelection,
     CursorAccessError, CursorContractIdentity, CursorToken, ExactPredicateProjectionRequest,
     ExactPredicateProjectionResult, ExactTextProjectionPortError, ExactTextProjectionRequest,
-    ExactTextProjectionResult, InternalDefect, QueryCursorLookup, QueryCursorState,
-    ReadPipelineStage, RequestContext, RiffDbService, RiffDbServiceInner, ServiceAuditTargetMap,
-    ServiceFailure, ServiceFuture, ServiceResult, ServiceTelemetryEvent, SourceName, SubmittedEnum,
-    SubmittedValue, VectorProjectionPortError, VectorProjectionRequest,
+    ExactTextProjectionResult, InternalDefect, NullableExactPredicateProjectionRequest,
+    QueryCursorLookup, QueryCursorState, ReadPipelineStage, RequestContext, RiffDbService,
+    RiffDbServiceInner, ServiceAuditTargetMap, ServiceFailure, ServiceFuture, ServiceResult,
+    ServiceTelemetryEvent, SourceName, SubmittedEnum, SubmittedValue, VectorProjectionPortError,
+    VectorProjectionRequest,
 };
 
 /// Stricter application-surface source ceiling.
@@ -2604,7 +2608,15 @@ async fn execute_named_query(
             stage: ReadPipelineStage::PlanLookup,
             elapsed: plan_lookup_started.elapsed(),
         });
-    if let Some(exact) = query.shared_exact_predicate_result() {
+    let exact_predicate = query
+        .shared_exact_predicate_result()
+        .map(ExactPredicateNamedQuery::PresentOnly)
+        .or_else(|| {
+            query
+                .shared_nullable_exact_predicate_result()
+                .map(ExactPredicateNamedQuery::Nullable)
+        });
+    if let Some(exact) = exact_predicate {
         return execute_exact_predicate_named_query(
             service,
             context,
@@ -3119,7 +3131,7 @@ async fn execute_exact_predicate_named_query(
     service: Arc<RiffDbServiceInner>,
     context: RequestContext,
     bundle: riffdb_catalog::ValidatedContractBundle,
-    exact: Arc<riffdb_query_module::CompiledExactPredicateResultSetV1>,
+    exact: ExactPredicateNamedQuery,
     document: Arc<Document>,
     module_hash: QueryModuleHash,
     query_name: QueryOperationName,
@@ -3165,11 +3177,11 @@ async fn execute_exact_predicate_named_query(
     let limit = exact_u64_parameter(&document, &parameters, exact.limit_parameter())
         .and_then(|value| u16::try_from(value).ok())
         .and_then(NonZeroU16::new)
-        .filter(|limit| limit.get() <= exact.program().max_limit())
+        .filter(|limit| limit.get() <= exact.max_limit())
         .ok_or_else(|| validation_failure(ValidationCode::InvalidValue))?;
     let offset = exact_u64_parameter(&document, &parameters, exact.offset_parameter())
         .and_then(|value| u32::try_from(value).ok())
-        .filter(|offset| *offset <= exact.program().max_offset())
+        .filter(|offset| *offset <= exact.max_offset())
         .ok_or_else(|| validation_failure(ValidationCode::InvalidValue))?;
     let exact_parameters = exact
         .value_parameters()
@@ -3209,7 +3221,6 @@ async fn execute_exact_predicate_named_query(
         },
     )?;
     let member = exact
-        .program()
         .members()
         .iter()
         .copied()
@@ -3253,8 +3264,12 @@ async fn execute_exact_predicate_named_query(
         );
         return Err(finish_failure(&service, &context, &begun, failure).await);
     };
-    let request = ExactPredicateProjectionRequest::new(
-        Arc::clone(&exact),
+    let Some(provider) = service.providers.exact_predicate.as_ref() else {
+        let failure = PublicError::storage_unavailable().into();
+        return Err(finish_failure(&service, &context, &begun, failure).await);
+    };
+    let observed = match exact.execute_provider(
+        provider.as_ref(),
         execution_authorization
             .target()
             .partition()
@@ -3268,12 +3283,7 @@ async fn execute_exact_predicate_named_query(
         offset,
         limit,
         minimum_epoch,
-    );
-    let Some(provider) = service.providers.exact_predicate.as_ref() else {
-        let failure = PublicError::storage_unavailable().into();
-        return Err(finish_failure(&service, &context, &begun, failure).await);
-    };
-    let observed = match provider.execute(request) {
+    ) {
         Ok(observed) => observed,
         Err(error) => {
             let Some(code) = exact_projection_application_code(error) else {
@@ -3285,10 +3295,9 @@ async fn execute_exact_predicate_named_query(
         }
     };
     let descriptor = exact
-        .program()
-        .provider_descriptor()
+        .provider_descriptor_digest()
         .map_err(|_| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?;
-    if observed.provider() != descriptor.digest()
+    if observed.provider() != descriptor
         || minimum_epoch.is_some_and(|minimum| observed.epoch() < minimum)
     {
         let failure = service.internal_failure(OPERATION, InternalDefect::ProofMismatch);
@@ -3329,6 +3338,143 @@ async fn execute_exact_predicate_named_query(
     .ok_or_else(|| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?;
     finish_success(&service, &context, &begun).await?;
     Ok(result)
+}
+
+enum ExactPredicateNamedQuery {
+    PresentOnly(Arc<CompiledExactPredicateResultSetV1>),
+    Nullable(Arc<CompiledNullableExactPredicateResultSetV1>),
+}
+
+impl ExactPredicateNamedQuery {
+    fn representative_program(&self) -> &QueryAccessProgramV1 {
+        match self {
+            Self::PresentOnly(exact) => exact.representative_program(),
+            Self::Nullable(exact) => exact.representative_program(),
+        }
+    }
+
+    fn value_parameters(&self) -> &[String] {
+        match self {
+            Self::PresentOnly(exact) => exact.value_parameters(),
+            Self::Nullable(exact) => exact.value_parameters(),
+        }
+    }
+
+    fn presence_parameters(&self) -> &[String] {
+        match self {
+            Self::PresentOnly(exact) => exact.presence_parameters(),
+            Self::Nullable(exact) => exact.presence_parameters(),
+        }
+    }
+
+    fn limit_parameter(&self) -> &str {
+        match self {
+            Self::PresentOnly(exact) => exact.limit_parameter(),
+            Self::Nullable(exact) => exact.limit_parameter(),
+        }
+    }
+
+    fn offset_parameter(&self) -> &str {
+        match self {
+            Self::PresentOnly(exact) => exact.offset_parameter(),
+            Self::Nullable(exact) => exact.offset_parameter(),
+        }
+    }
+
+    fn max_limit(&self) -> u16 {
+        match self {
+            Self::PresentOnly(exact) => exact.program().max_limit(),
+            Self::Nullable(exact) => exact.program().max_limit(),
+        }
+    }
+
+    fn max_offset(&self) -> u32 {
+        match self {
+            Self::PresentOnly(exact) => exact.program().max_offset(),
+            Self::Nullable(exact) => exact.program().max_offset(),
+        }
+    }
+
+    fn members(&self) -> &[riffdb_query_ir::ExactPredicateFamilyMemberV1] {
+        match self {
+            Self::PresentOnly(exact) => exact.program().members(),
+            Self::Nullable(exact) => exact.program().members(),
+        }
+    }
+
+    fn identity(&self) -> QueryPlanHash {
+        match self {
+            Self::PresentOnly(exact) => exact.identity(),
+            Self::Nullable(exact) => exact.identity(),
+        }
+    }
+
+    fn authorization_cost(&self) -> riffdb_types::QueryCostVectorV1 {
+        match self {
+            Self::PresentOnly(exact) => exact.authorization_cost(),
+            Self::Nullable(exact) => exact.authorization_cost(),
+        }
+    }
+
+    fn provider_descriptor_digest(
+        &self,
+    ) -> Result<riffdb_types::ProjectionProviderDescriptorHash, ()> {
+        match self {
+            Self::PresentOnly(exact) => exact
+                .program()
+                .provider_descriptor()
+                .map(|value| value.digest()),
+            Self::Nullable(exact) => exact
+                .program()
+                .provider_descriptor()
+                .map(|value| value.digest()),
+        }
+        .map_err(|_| ())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn execute_provider(
+        &self,
+        provider: &dyn crate::ExactPredicateProjectionPort,
+        partition_key: riffdb_types::PartitionKey,
+        partition_value: CanonicalValue,
+        policy_shape: riffdb_types::ApplicationRoleHash,
+        row_policy: Option<Arc<AuthorizedQueryRowPolicyContextV1>>,
+        parameters: BTreeMap<u16, ExactParameterValueV1>,
+        member: riffdb_query_ir::ExactPredicateFamilyMemberV1,
+        offset: u32,
+        limit: NonZeroU16,
+        minimum_epoch: Option<CommitSequence>,
+    ) -> Result<ExactPredicateProjectionResult, ExactTextProjectionPortError> {
+        match self {
+            Self::PresentOnly(exact) => provider.execute(ExactPredicateProjectionRequest::new(
+                Arc::clone(exact),
+                partition_key,
+                partition_value,
+                policy_shape,
+                row_policy,
+                parameters,
+                member,
+                offset,
+                limit,
+                minimum_epoch,
+            )),
+            Self::Nullable(exact) => {
+                provider.execute_nullable(NullableExactPredicateProjectionRequest::new(
+                    Arc::clone(exact),
+                    partition_key,
+                    partition_value,
+                    policy_shape,
+                    row_policy,
+                    parameters,
+                    member,
+                    offset,
+                    limit,
+                    minimum_epoch,
+                ))
+            }
+        }
+    }
 }
 
 fn exact_parameter_value(value: &CanonicalValue) -> Option<ExactParameterValueV1> {
@@ -3713,7 +3859,7 @@ fn exact_result_response(
 }
 
 fn exact_predicate_result_response(
-    exact: &riffdb_query_module::CompiledExactPredicateResultSetV1,
+    exact: &ExactPredicateNamedQuery,
     document: &Document,
     module_hash: QueryModuleHash,
     observed: ExactPredicateProjectionResult,
@@ -5370,8 +5516,13 @@ query SearchUsers(
             exact.program().provider_descriptor().unwrap().digest(),
             3,
         );
+        let exact = ExactPredicateNamedQuery::PresentOnly(
+            query
+                .shared_exact_predicate_result()
+                .expect("shared exact plan"),
+        );
         let result = exact_predicate_result_response(
-            exact,
+            &exact,
             query.shared_document().as_ref(),
             module.identity(),
             observed,

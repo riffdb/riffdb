@@ -17481,4 +17481,28 @@ work_packages:
     scale: Family choices, inputs, outputs, request/response bytes, provider work, page/offset,
       generated decode, buffers, waits, retries, diagnostics, and publication artifacts are bounded;
       no client or server surface retains or materializes the matching population.
+  closure:
+    status: complete
+    completed_at: "2026-08-24"
+    requirements_satisfied: [OQ-001, OQ-003, OQ-004, OQ-005, OQ-006, OQ-015,
+      OQ-016, OQ-019, OQ-020, OQ-021, OQ-022, OQ-026, OQ-027, OQ-028, OQ-029,
+      OQ-030, API-001, MCP-001, MCP-020, MCP-021, MCP-023, MCP-025, MCP-026,
+      MCP-040, MCP-043, MCP-045, MCP-049]
+    evidence: The shared named-query service now dispatches V4 present-only and V5 nullable exact
+      families through one authorization, provider, epoch-proof, hydration, reauthorization, and
+      response path. A neutral InventoryRecord contract creates historical missing fields,
+      explicit nulls, and optional text/timestamp values; generated concurrent transitions and
+      four compiler-fixed order members prove both placements and directions, NoValue later-term
+      ties, exact totals, and zero/end/beyond/maximum direct offsets. One installed TLS deployment
+      passed Rust, Go, TypeScript, Python, CLI, and MCP schema conformance. Static guards reject
+      client filtering/sorting, storage access, and caller-supplied provider or order structure.
+      The immutable V1 capability receipt remains byte-exact and successor V2 pins every nullable
+      plan and generated artifact while explicitly leaving real framework routes to the external
+      adapter repository. All acceptance commands pass; the registry command used the retained
+      immutable Linux distribution because this host cannot itself emit a manylinux_2_28 wheel.
+    known_limitations: Numeric offsets intentionally provide bounded same-epoch ordinal selection,
+      not cross-request snapshot continuity; callers needing that property use generated cursors.
+      Provider rebuilds remain bounded full-partition derived work. No external framework route or
+      adapter acceptance is claimed by the neutral corpus.
+    follow_ups: []
   human_review_triggers: *id001

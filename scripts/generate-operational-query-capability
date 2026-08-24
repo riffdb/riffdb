@@ -12,8 +12,16 @@ import sys
 
 ROOT = Path(__file__).resolve().parent.parent
 LOCK = ROOT / "fixtures/adapters/operational-conformance/riffdb.application.lock.json"
-OUTPUT = ROOT / "release/evidence/operational-query-capability-v1.json"
+PREDECESSOR = ROOT / "release/evidence/operational-query-capability-v1.json"
+PREDECESSOR_SHA256 = "fd310c4038e0c61a8c75bb47a309d93b0471438bf1620caae6fb40f91c426b28"
+OUTPUT = ROOT / "release/evidence/operational-query-capability-v2.json"
 V6_OPERATIONS = ("ReviewedDirectoryUsers", "SearchDirectoryUsers")
+V7_OPERATIONS = (
+    "InventoryByObservedAscNullsLast",
+    "InventoryByObservedDescNullsFirst",
+    "InventoryBySubtitleAscNullsFirst",
+    "InventoryBySubtitleDescNullsLast",
+)
 
 
 def sha256(path: Path) -> str:
@@ -37,7 +45,7 @@ def render() -> bytes:
         key=lambda artifact: artifact["kind"],
     )
     receipt = {
-        "schema": "riffdb.operational-query-capability/v1",
+        "schema": "riffdb.operational-query-capability/v2",
         "status": "development",
         "contract": {
             "lineage": lock["contract"]["lineage"],
@@ -57,6 +65,14 @@ def render() -> bytes:
             }
             for name in V6_OPERATIONS
         ],
+        "nullable_exact_order_operations": [
+            {
+                "name": name,
+                "plan_hash": queries[name]["plan_hash"],
+                "source_hash": queries[name]["source_hash"],
+            }
+            for name in V7_OPERATIONS
+        ],
         "generated_artifacts": artifacts,
         "semantics": {
             "caller_supplied_structure": False,
@@ -66,7 +82,9 @@ def render() -> bytes:
             "independent_total_order": True,
             "ordinal_window": True,
             "policy_before_index": True,
-            "provider_state_format": 4,
+            "missing_and_null_order_class": "NoValue",
+            "nullable_order_placement": ["nulls_first", "nulls_last"],
+            "provider_state_format": 5,
             "request_time_authoritative_scan": False,
             "typed_generated_languages": ["go", "python", "rust", "typescript"],
         },
@@ -87,6 +105,9 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--check", action="store_true")
     arguments = parser.parse_args()
+    if not PREDECESSOR.exists() or sha256(PREDECESSOR) != PREDECESSOR_SHA256:
+        print(f"immutable predecessor receipt changed: {PREDECESSOR}", file=sys.stderr)
+        return 1
     expected = render()
     if arguments.check:
         if not OUTPUT.exists() or OUTPUT.read_bytes() != expected:

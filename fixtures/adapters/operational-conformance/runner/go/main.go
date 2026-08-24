@@ -164,6 +164,18 @@ func run() error {
 	if !ok || reviewedPage.Total.Value != 1 || len(reviewedPage.Users) != 1 || reviewedPage.Users[0].Email != "álpha@example.test" {
 		return errors.New("V6 exact predicate range/existence page")
 	}
+	limitTwo := uint32(2)
+	inventory, err := client.InventoryBySubtitleAscNullsFirst(ctx, generated.InventoryBySubtitleAscNullsFirstParams{
+		OrganizationId: id(70), Limit: &limitTwo, Offset: &offsetZero,
+	}, generated.QueryOptions{})
+	if err != nil {
+		return err
+	}
+	inventoryPage, ok := inventory.Value.(generated.InventoryBySubtitleAscNullsFirstFound)
+	if !ok || inventoryPage.Total.Value != 6 || len(inventoryPage.Records) != 2 ||
+		inventoryPage.Records[0].RecordId != id(73) || inventoryPage.Records[1].RecordId != id(76) {
+		return errors.New("nullable generated order and exact total")
+	}
 
 	queued := "queued"
 	pipelines, err := client.ListPipelines(ctx, generated.ListPipelinesParams{
@@ -197,7 +209,7 @@ func observation(language string) map[string]any {
 		"schema": "riffdb.adapter-operational-observation/v1", "language": language,
 		"catalog_preflight": true, "optional_filters": true, "stable_cursor": true,
 		"null_predicate": true, "binary_prefix": true, "exact_aggregates": true,
-		"exact_text_family": true, "exact_predicate_family": true, "exact_total": true, "numeric_offset": true,
+		"exact_text_family": true, "exact_predicate_family": true, "nullable_exact_order": true, "exact_total": true, "numeric_offset": true,
 		"adapters":            []string{"mlflow", "openfga", "better-auth", "woodpecker"},
 		"regression_adapters": []string{"payload"},
 	}
