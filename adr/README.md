@@ -166,6 +166,7 @@ direction, merged draft, or implementation choice.
 | [0145](0145-compiler-declared-nullable-total-order-placement.md) | Compiler-Declared Nullable Total-Order Placement | Accepted |
 | [0146](0146-fixed-generation-unary-sampling-and-cloud-host-validity.md) | Fixed-Generation Unary Sampling and Whole-Cell Cloud Host Validity | Accepted |
 | [0147](0147-aggregate-byte-budgets-for-atomic-collection-commands.md) | Aggregate Byte Budgets for Atomic Collection Commands | Accepted |
+| [0148](0148-one-driver-protocol-core-for-every-binding.md) | One Driver Protocol Core for Every Binding | Proposed |
 | [0149](0149-correlated-index-validation-work-budgets.md) | Correlated Index-Validation Work Budgets for Atomic Commands | Accepted |
 
 The human architecture review on 2026-07-12 approved the direction represented

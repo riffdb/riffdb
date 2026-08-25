@@ -7,6 +7,7 @@ from collections.abc import Hashable
 from dataclasses import fields, is_dataclass
 from decimal import Decimal
 from enum import StrEnum
+from collections.abc import Callable
 from functools import lru_cache
 from types import MappingProxyType
 from typing import Annotated, get_args, get_origin, get_type_hints
@@ -297,66 +298,138 @@ def _decode_decimal(value: object) -> Decimal:
 
 
 def _decode_typed(value: object, annotation: object) -> object:
+    return _decoder_for(annotation)(value)
+
+
+@lru_cache(maxsize=None)
+def _decoder_for(annotation: object) -> "Callable[[object], object]":
+    """Resolves one annotation to its decoder once, then reuses the closure.
+
+    An annotation is fixed by the generated dataclass, so the `get_origin`,
+    `get_args` and union tests that select a rule give the same answer for every
+    value of a field. Resolving them per value cost 1.15M `get_origin` calls and
+    5.6M `isinstance` calls in a fifteen-second single-client cell. The rules
+    below, including every rejection, are the ones that chain produced; the
+    concrete `Money`, `RiffDate` and `Timestamp` types are also captured here,
+    which removes the per-value package import from the hot path.
+    """
+    from . import Money, RiffDate, Timestamp
+
     vector_dimension = _vector_dimension(annotation)
     if vector_dimension is not None:
-        if (
-            not isinstance(value, dict)
-            or value.get("$riffdb") != "vector"
-            or not isinstance(value.get("components"), list)
-            or len(value["components"]) != vector_dimension
-        ):
-            raise TypeError("invalid RiffDB vector response")
-        components = tuple(value["components"])
-        if any(type(component) is not float or not math.isfinite(component) for component in components):
-            raise TypeError("invalid RiffDB vector response")
-        return components
+
+        def decode_vector(value: object) -> object:
+            if (
+                not isinstance(value, dict)
+                or value.get("$riffdb") != "vector"
+                or not isinstance(value.get("components"), list)
+                or len(value["components"]) != vector_dimension
+            ):
+                raise TypeError("invalid RiffDB vector response")
+            components = tuple(value["components"])
+            if any(
+                type(component) is not float or not math.isfinite(component)
+                for component in components
+            ):
+                raise TypeError("invalid RiffDB vector response")
+            return components
+
+        return decode_vector
     if get_origin(annotation) is Annotated:
         annotation = get_args(annotation)[0]
     origin = get_origin(annotation)
     arguments = get_args(annotation)
     if _is_union(origin):
-        if value is None and type(None) in arguments:
-            return None
-        return _decode_typed(value, next(item for item in arguments if item is not type(None)))
-    if origin is tuple:
-        if not isinstance(value, list):
-            raise TypeError("invalid RiffDB list response")
-        return tuple(_decode_typed(item, arguments[0]) for item in value)
-    if annotation in {bool, str, int}:
-        if type(value) is not annotation:
-            raise TypeError("invalid scalar RiffDB response")
-        return value
-    if annotation is bytes:
-        if not isinstance(value, dict) or value.get("$riffdb") != "bytes":
-            raise TypeError("invalid RiffDB bytes response")
-        return bytes.fromhex(str(value["value"]))
-    if annotation is Decimal:
-        return _decode_decimal(value)
-    if annotation is UUID:
-        if not isinstance(value, dict) or value.get("$riffdb") != "uuid":
-            raise TypeError("invalid RiffDB UUID response")
-        return UUID(str(value["value"]))
-    from . import Money, RiffDate, Timestamp
+        inner = _decoder_for(next(item for item in arguments if item is not type(None)))
+        optional = type(None) in arguments
 
+        def decode_union(value: object) -> object:
+            if value is None and optional:
+                return None
+            return inner(value)
+
+        return decode_union
+    if origin is tuple:
+        item_decoder = _decoder_for(arguments[0])
+
+        def decode_tuple(value: object) -> object:
+            if not isinstance(value, list):
+                raise TypeError("invalid RiffDB list response")
+            return tuple(item_decoder(item) for item in value)
+
+        return decode_tuple
+    if annotation in {bool, str, int}:
+        scalar = annotation
+
+        def decode_scalar(value: object) -> object:
+            if type(value) is not scalar:
+                raise TypeError("invalid scalar RiffDB response")
+            return value
+
+        return decode_scalar
+    if annotation is bytes:
+
+        def decode_bytes(value: object) -> object:
+            if not isinstance(value, dict) or value.get("$riffdb") != "bytes":
+                raise TypeError("invalid RiffDB bytes response")
+            return bytes.fromhex(str(value["value"]))
+
+        return decode_bytes
+    if annotation is Decimal:
+        return _decode_decimal
+    if annotation is UUID:
+
+        def decode_uuid(value: object) -> object:
+            if not isinstance(value, dict) or value.get("$riffdb") != "uuid":
+                raise TypeError("invalid RiffDB UUID response")
+            return UUID(str(value["value"]))
+
+        return decode_uuid
     if annotation is RiffDate:
-        if not isinstance(value, dict) or value.get("$riffdb") != "date":
-            raise TypeError("invalid RiffDB date response")
-        return RiffDate(int(value["value"]))
+
+        def decode_date(value: object) -> object:
+            if not isinstance(value, dict) or value.get("$riffdb") != "date":
+                raise TypeError("invalid RiffDB date response")
+            return RiffDate(int(value["value"]))
+
+        return decode_date
     if annotation is Timestamp:
-        if not isinstance(value, dict) or value.get("$riffdb") != "timestamp":
-            raise TypeError("invalid RiffDB timestamp response")
-        return Timestamp(int(value["seconds"]), int(value["nanos"]))
+
+        def decode_timestamp(value: object) -> object:
+            if not isinstance(value, dict) or value.get("$riffdb") != "timestamp":
+                raise TypeError("invalid RiffDB timestamp response")
+            return Timestamp(int(value["seconds"]), int(value["nanos"]))
+
+        return decode_timestamp
     if annotation is Money:
-        if not isinstance(value, dict) or value.get("$riffdb") != "money":
-            raise TypeError("invalid RiffDB money response")
-        return Money(str(value["currency"]), _decode_decimal(value["amount"]))
+
+        def decode_money(value: object) -> object:
+            if not isinstance(value, dict) or value.get("$riffdb") != "money":
+                raise TypeError("invalid RiffDB money response")
+            return Money(str(value["currency"]), _decode_decimal(value["amount"]))
+
+        return decode_money
     if isinstance(annotation, type) and issubclass(annotation, StrEnum):
-        if not isinstance(value, dict) or value.get("$riffdb") != "enum":
-            raise TypeError("invalid RiffDB enum response")
-        return annotation(str(value["value"]))
+        enum_type = annotation
+
+        def decode_enum(value: object) -> object:
+            if not isinstance(value, dict) or value.get("$riffdb") != "enum":
+                raise TypeError("invalid RiffDB enum response")
+            return enum_type(str(value["value"]))
+
+        return decode_enum
     if isinstance(annotation, type) and is_dataclass(annotation):
-        return decode_record(annotation, value)
-    raise TypeError("unsupported generated RiffDB response type")
+        record_type = annotation
+
+        def decode_nested(value: object) -> object:
+            return decode_record(record_type, value)
+
+        return decode_nested
+
+    def reject(_value: object) -> object:
+        raise TypeError("unsupported generated RiffDB response type")
+
+    return reject
 
 
 def _decode_record[T](record_type: type[T], value: object) -> T:
