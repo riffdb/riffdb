@@ -7543,6 +7543,16 @@ does not create a kernel or storage escape hatch.
   manifest and pass the same installed-artifact golden corpus for every claimed
   operation, value, error, pooling, cancellation, retry, read-after-commit,
   reactive, platform, and toolchain feature.
+- `DRV-015`: Exactly one first-party protocol core MUST own driver request
+  validation, value admission, depth/collection/byte bounds, duplicate-field
+  rejection, integral-number rules, request identity, and the closed public
+  error classes. A language binding MUST consume that core and MUST NOT widen,
+  narrow, reorder, reinterpret, or reimplement any of those rules, and MUST NOT
+  accept a request the core would refuse. The local-socket and in-process
+  transports MUST reproduce one conformance corpus identically, producing
+  byte-identical request material, identical canonical value graphs, and
+  identical public error classes; a binding that cannot reproduce an entry
+  fails, and the corpus MUST NOT be narrowed to keep a binding green.
 
 ### 24.5.3 Compiler-bounded collection mutations
 
