@@ -17891,3 +17891,77 @@ work_packages:
       retained-byte ceilings. No per-application cache, per-operation label, or unbounded retained
       state is added, and the in-process transport reuses the socket transport's admission bounds.
   human_review_triggers: *id001
+- id: WP-685
+  name: Ordinary binary text-key total ordering
+  depends_on: [WP-564, WP-565]
+  objective: Correct ordinary bounded operational planning so one declared binary_utf8_v1 text-key
+    index component may provide its canonical bytewise ascending or descending total order and
+    opaque cursor traversal without requiring a prefix predicate on the same field, while retaining
+    complete partition routing, index order, tie-breaker, cost, policy, and compatibility proofs.
+  requirements: [OQ-001, OQ-002, OQ-004, OQ-005, OQ-006, OQ-007, OQ-008,
+    OQ-009, OQ-015]
+  required_adrs: [ADR-0038, ADR-0051, ADR-0053, ADR-0055, ADR-0108,
+    ADR-0111, ADR-0124]
+  allowed_paths: [SPEC.md, work_packages.yaml, crates/riffdb-contract-ir/**,
+    crates/riffdb-query-ir/**, crates/riffdb-query-compiler/**,
+    crates/riffdb-query-executor/**, crates/riffdb-storage-api/**,
+    crates/riffdb-storage-memory/**, crates/riffdb-storage-redb/**,
+    crates/riffdb-testkit/**, fixtures/riffql/**, tests/operational_queries.rs,
+    scripts/**, docs/SUMMARY.md, docs/riffql/**,
+    docs/getting-started/OPERATIONAL-QUERIES.md]
+  deliverables:
+  - Planner eligibility recognizes a TextKey(binary_utf8_v1) index component as fully consumed by
+    the matching compiler-declared order term when it is not consumed by a prefix predicate; every
+    other encoded component still requires its existing predicate or nullable-order proof
+  - Ascending and descending compiler regressions prove a partition-routed index with complete
+    entity-key tie-breaker is selected without a text predicate, while an ordinary canonical string
+    component retains its distinct length-first order and incomplete order, mixed direction,
+    residual predicate, and unbounded shapes remain rejected
+  - An independent operational execution corpus freezes bytewise order where `doc-3` precedes
+    `doc6` although canonical length-first string order differs, and proves forward and reverse
+    two-page opaque-cursor traversal has no duplicate, omission, scan fallback, or order drift
+  - Public RiffQL planning and operational-query guidance documents that ordinary canonical string
+    components retain canonical length-first order and bytewise text order requires the declared
+    binary_utf8_v1 text-key profile; no external framework artifact or terminology enters RiffDB
+  - Existing source, query IR, module, cursor, storage, durable, wire, provider-state, generated
+    client, and compatibility identities remain byte-exact; newly accepted sources use the existing
+    identities and ordinary deployment rotation
+  acceptance_commands:
+  - cargo +1.97.0 test -p riffdb-query-compiler -p riffdb-query-executor --all-features
+  - cargo +1.97.0 test -p riffdb-testkit --test operational_queries --all-features
+  - cargo +1.97.0 test -p riffdb-storage-memory -p riffdb-storage-redb --all-features
+  - ./scripts/check-version-topology
+  - ./scripts/check-generated
+  - ./scripts/check-requirement-coverage
+  - ./scripts/check-workspace-policy
+  - ./scripts/handbook check
+  - cargo +1.97.0 fmt --all -- --check
+  - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: Every admitted ordinary bytewise text order is a complete partition-routed declared
+    index traversal with deterministic tie-breaker and exact forward/reverse cursor behavior;
+    length-first canonical indexes remain distinct, all unsupported shapes fail compilation, old
+    artifacts remain byte-exact, and no scan, client shaping, framework branch, or new identity lands.
+  standing_design_tests:
+    interface_safety: Applications still invoke only finite named operations with typed values and
+      opaque cursors; they cannot select encoding, collation, index, field, direction, predicate,
+      policy, cost, storage path, or fallback at request time.
+    scale: The compiler performs bounded index-shape comparison, runtime traverses only the declared
+      bounded page plus its continuation probe, and cursor, output, scan, memory, and diagnostic
+      ceilings remain unchanged with no population-sized materialization or page walk.
+  closure:
+    status: complete
+    completed_at: "2026-08-25"
+    requirements_satisfied: [OQ-001, OQ-002, OQ-004, OQ-005, OQ-006, OQ-007,
+      OQ-008, OQ-009, OQ-015]
+    evidence: The ordinary planner now accepts a declared binary_utf8_v1 text-key component when
+      the matching field is consumed by the complete compiler-declared order rather than a prefix
+      predicate. Compiler tests retain partition, full-suffix, direction, tie-breaker, and cursor
+      checks. The independent execution corpus traverses six encoded rows in one-row forward and
+      reverse pages and freezes doc-3 before doc6 without duplicate or omission. Compiler,
+      executor, memory, redb, recovery, topology, generated, coverage, policy, handbook, formatting,
+      and workspace Clippy gates pass; old compatibility identities and artifacts are unchanged.
+    known_limitations: Only the already available binary_utf8_v1 profile is executable;
+      unicode_fold_v1 remains unavailable. Ordinary cursor pages retain snapshot-bound continuation
+      semantics and do not provide numeric-offset stability across fresh requests.
+    follow_ups: []
+  human_review_triggers: *id001

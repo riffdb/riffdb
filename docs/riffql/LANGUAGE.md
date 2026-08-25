@@ -352,6 +352,17 @@ normalization, locale collation, tokenization, or relevance scoring. The
 Unicode tables and migration fixtures ship. A parsed spelling is not an
 executable feature unless every required storage and planning proof exists.
 
+That declared text-key component may also provide ordinary bounded ordering
+without a prefix predicate. For example, an index
+`(organization_id, title, document_id) text_key(title, binary_utf8_v1)` proves
+`order by title asc, document_id asc` after the partition equality, and proves
+the wholly reversed descending order as well. Ordering is by the original
+canonical UTF-8 bytes: `doc-3` sorts before `doc6`. A plain string index retains
+RiffDB's canonical length-first value order and is not reinterpreted as a text
+key. The compiler still requires the complete index suffix and deterministic
+key tie-breaker, and an opaque continuation remains bound to the exact plan,
+direction, text profile, index epoch, authorization, and snapshot.
+
 ## Exact indexed result sets (language version 4)
 
 An application that needs an exact whole-population total and numeric offset
