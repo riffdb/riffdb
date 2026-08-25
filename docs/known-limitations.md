@@ -59,11 +59,13 @@ These limits are part of the POC release posture, not hidden roadmap promises.
 - Ordinary row-store indexes currently execute exact equality, one bounded
   membership or presence/text-prefix branch, and the complete declared order.
   `binary_utf8_v1` membership is bytewise and cursor-safe when it supplies the
-  first remaining order term. Canonical range, inequality, and complement
-  predicates are refused until physical interval execution lands; multiple
-  branching dimensions, residual post-page filters, index intersections,
-  caller-selected plans, and general joins are unavailable. Recompile and
-  redeploy a refused named query rather than emulating it in application code.
+  first remaining order term. Order-preserving canonical numeric, time, UUID,
+  and enum components support one typed lower/upper interval or a two-range
+  `!=` complement when that component supplies the first remaining order term.
+  Canonical string ranges, multiple branching dimensions, overlapping unions,
+  residual post-page filters, index intersections, caller-selected plans, and
+  general joins are unavailable. Recompile and redeploy a refused named query
+  rather than emulating it in application code.
 - Vector search's exact and declared approximate tiers are application-reachable
   through the same named RiffQL operation. The server chooses exact search at
   or below the contract's per-organization `ann_threshold` and first-party HNSW

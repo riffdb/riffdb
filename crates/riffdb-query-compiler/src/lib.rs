@@ -2512,7 +2512,7 @@ const OPERATIONAL_COMPONENT_CAPABILITY_REGISTRY: [(
         OperationalComponentCapabilities {
             exact: true,
             membership: true,
-            range_or_complement: false,
+            range_or_complement: true,
             presence_state: false,
             prefix: false,
             order: true,
@@ -2783,7 +2783,7 @@ fn choose_access(
 
     let mut first_compatible = None;
     for index in entity.indexes() {
-        let Some(shape) = operational_access_shape(index, comparisons, binding) else {
+        let Some(shape) = operational_access_shape(entity, index, comparisons, binding) else {
             continue;
         };
         if !index.fields()[..shape.order_start]
@@ -2892,6 +2892,7 @@ fn suggested_index(
 }
 
 fn operational_access_shape(
+    entity: &EntitySymbol,
     index: &riffdb_query_ir::IndexSymbol,
     comparisons: &[Comparison<'_>],
     binding: &riffdb_riffql_syntax::Binding,
@@ -2909,11 +2910,77 @@ fn operational_access_shape(
         if matching.is_empty() {
             break;
         }
+        let capabilities =
+            operational_component_capabilities(index.internal_encodings()[order_start]);
+        if matching.iter().all(|(_, comparison)| {
+            matches!(
+                comparison.operator,
+                SourcePredicateOperator::Binary(
+                    BinaryOperator::NotEqual
+                        | BinaryOperator::Less
+                        | BinaryOperator::LessEqual
+                        | BinaryOperator::Greater
+                        | BinaryOperator::GreaterEqual
+                )
+            )
+        }) {
+            let has_complement = matching
+                .iter()
+                .any(|(_, comparison)| comparison.operator.is_binary(BinaryOperator::NotEqual));
+            let lower_count = matching
+                .iter()
+                .filter(|(_, comparison)| {
+                    matches!(
+                        comparison.operator,
+                        SourcePredicateOperator::Binary(
+                            BinaryOperator::Greater | BinaryOperator::GreaterEqual
+                        )
+                    )
+                })
+                .count();
+            let upper_count = matching
+                .iter()
+                .filter(|(_, comparison)| {
+                    matches!(
+                        comparison.operator,
+                        SourcePredicateOperator::Binary(
+                            BinaryOperator::Less | BinaryOperator::LessEqual
+                        )
+                    )
+                })
+                .count();
+            let canonical_order_is_physical = index.internal_encodings()[order_start]
+                == IndexFieldEncodingV1::Canonical
+                && entity.field(field).is_some_and(|field| {
+                    matches!(
+                        field.value_type().tag(),
+                        ValueTypeTag::I64
+                            | ValueTypeTag::U64
+                            | ValueTypeTag::Timestamp
+                            | ValueTypeTag::Date
+                            | ValueTypeTag::Uuid
+                            | ValueTypeTag::Enum
+                    )
+                });
+            let comparison_shape_is_finite = if has_complement {
+                matching.len() == 1
+            } else {
+                matching.len() <= 2 && lower_count <= 1 && upper_count <= 1
+            };
+            if !capabilities.range_or_complement
+                || !canonical_order_is_physical
+                || !comparison_shape_is_finite
+            {
+                return None;
+            }
+            for (comparison_index, _) in matching {
+                consumed[comparison_index] = true;
+            }
+            break;
+        }
         let [(comparison_index, comparison)] = matching.as_slice() else {
             return None;
         };
-        let capabilities =
-            operational_component_capabilities(index.internal_encodings()[order_start]);
         match comparison.operator {
             SourcePredicateOperator::Binary(BinaryOperator::Equal) if capabilities.exact => {
                 consumed[*comparison_index] = true;
@@ -2936,16 +3003,6 @@ fn operational_access_shape(
             SourcePredicateOperator::Unary(UnaryOperator::IsNotNull | UnaryOperator::Exists)
                 if capabilities.presence_state =>
             {
-                consumed[*comparison_index] = true;
-                break;
-            }
-            SourcePredicateOperator::Binary(
-                BinaryOperator::NotEqual
-                | BinaryOperator::Less
-                | BinaryOperator::LessEqual
-                | BinaryOperator::Greater
-                | BinaryOperator::GreaterEqual,
-            ) if capabilities.range_or_complement => {
                 consumed[*comparison_index] = true;
                 break;
             }
@@ -3286,7 +3343,7 @@ mod operational_component_registry_tests {
             super::OperationalComponentCapabilities {
                 exact: true,
                 membership: true,
-                range_or_complement: false,
+                range_or_complement: true,
                 presence_state: false,
                 prefix: false,
                 order: true,
