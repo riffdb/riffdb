@@ -17764,4 +17764,21 @@ work_packages:
     scale: The shared core keeps the existing bounded pool, in-flight, reorder, frame, value, and
       retained-byte ceilings. No per-application cache, per-operation label, or unbounded retained
       state is added, and the in-process transport reuses the socket transport's admission bounds.
+  closure:
+    status: complete
+    completed_at: "2026-08-25"
+    requirements_satisfied: [DRV-001, DRV-002, DRV-014, DRV-015]
+    evidence: riffdb-driver-host now owns one transport-neutral protocol core for canonical value
+      admission, request construction, response conversion, query and command dispatch, and closed
+      public error classification. The socket host and self-contained PyO3 wheel consume that core;
+      architecture tests prohibit duplicate Python parsers, bounds, error maps, and direct
+      riffdb-client-rust dependencies. A shared corpus proves byte-identical framed requests,
+      identical ApplicationValue graphs, and identical public error classes for accepted and
+      rejected values. The Python wheel runs its complete runtime suite without a daemon, and the
+      unchanged Rust, Go, TypeScript, Python, CLI, and MCP adapter corpus remains green.
+    known_limitations: This consolidation intentionally preserves every public binding surface and
+      transport shape; it makes no performance claim and adds no new protocol version. Existing
+      generated Python operation identity remains carried by the in-process typed request adapter
+      while canonical value admission and execution dispatch are owned by the shared core.
+    follow_ups: []
   human_review_triggers: *id001

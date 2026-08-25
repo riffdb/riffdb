@@ -100,6 +100,7 @@
 - [Projected Read and Benchmark Closure Audit](architecture/wp-430-448-closure.md)
 - [WP-656 Exact-predicate Semantic Closure](architecture/WP-656-EXACT-PREDICATE-SEMANTICS.md)
 - [WP-657 Indexed Exact-result Provider](architecture/WP-657-INDEXED-EXACT-PROVIDER.md)
+- [WP-682 Driver Protocol Consolidation Findings](architecture/WP-682-PRE-CONSOLIDATION-FINDINGS.md)
 - [Vector Acceptance Evidence](architecture/wp-595-vector-acceptance.md)
 - [Deployable Application Alpha Plan](architecture/DEPLOYABLE-APPLICATION-ALPHA.md)
   - [Alpha Architecture Freeze](architecture/DEPLOYABLE-APPLICATION-ALPHA-FREEZE.md)

@@ -1,0 +1,115 @@
+{
+  "schema": "riffdb.driver-protocol-conformance/v1",
+  "authoritative_rule": "riffdb-driver-host-v3",
+  "entries": [
+    {
+      "name": "null",
+      "driver_value": { "type": "null" },
+      "python_value": { "kind": "null" },
+      "expected": { "disposition": "accepted", "graph": { "type": "null" } }
+    },
+    {
+      "name": "signed-minimum",
+      "driver_value": { "type": "i64", "value": "-9223372036854775808" },
+      "python_value": { "kind": "i64", "value": -9223372036854775808 },
+      "expected": { "disposition": "accepted", "graph": { "type": "i64", "value": "-9223372036854775808" } }
+    },
+    {
+      "name": "unsigned-maximum",
+      "driver_value": { "type": "u64", "value": "18446744073709551615" },
+      "python_value": { "kind": "u64", "value": 18446744073709551615 },
+      "expected": { "disposition": "accepted", "graph": { "type": "u64", "value": "18446744073709551615" } }
+    },
+    {
+      "name": "uuid",
+      "driver_value": { "type": "uuid", "value": "018f47f0-6dc7-7000-8000-000000000001" },
+      "python_value": { "kind": "uuid", "value": "018f47f0-6dc7-7000-8000-000000000001" },
+      "expected": { "disposition": "accepted", "graph": { "type": "uuid", "value": "018f47f0-6dc7-7000-8000-000000000001" } }
+    },
+    {
+      "name": "bytes",
+      "driver_value": { "type": "bytes", "value": "AP8=" },
+      "python_value": { "kind": "bytes", "value": "00ff" },
+      "expected": { "disposition": "accepted", "graph": { "type": "bytes", "value": "00ff" } }
+    },
+    {
+      "name": "timestamp",
+      "driver_value": { "type": "timestamp", "value": { "seconds": "-1", "nanos": 999999999 } },
+      "python_value": { "kind": "timestamp", "seconds": -1, "nanos": 999999999 },
+      "expected": { "disposition": "accepted", "graph": { "type": "timestamp", "seconds": "-1", "nanos": 999999999 } }
+    },
+    {
+      "name": "decimal",
+      "driver_value": { "type": "decimal", "value": { "coefficient": "gA==", "scale": 2, "precision": 9 } },
+      "python_value": { "kind": "decimal", "coefficient": "80", "scale": 2, "precision": 9 },
+      "expected": { "disposition": "accepted", "graph": { "type": "decimal", "coefficient": "80", "scale": 2, "precision": 9 } }
+    },
+    {
+      "name": "vector-bits",
+      "driver_value": { "type": "vector", "value": { "component_bits": [0, 1069547520, 3222274048] } },
+      "python_value": { "kind": "vector", "components": [0.0, 1.5, -2.25] },
+      "expected": { "disposition": "accepted", "graph": { "type": "vector", "component_bits": [0, 1069547520, 3222274048] } }
+    },
+    {
+      "name": "nested-record",
+      "driver_value": {
+        "type": "record",
+        "value": {
+          "enabled": { "type": "bool", "value": true },
+          "labels": { "type": "list", "value": [{ "type": "enum", "value": "Urgent" }] }
+        }
+      },
+      "python_value": {
+        "kind": "record",
+        "value": {
+          "enabled": { "kind": "bool", "value": true },
+          "labels": { "kind": "list", "value": [{ "kind": "enum", "value": "Urgent" }] }
+        }
+      },
+      "expected": {
+        "disposition": "accepted",
+        "graph": {
+          "type": "record",
+          "value": {
+            "enabled": { "type": "bool", "value": true },
+            "labels": { "type": "list", "value": [{ "type": "enum", "value": "Urgent" }] }
+          }
+        }
+      }
+    },
+    {
+      "name": "signed-overflow",
+      "driver_value": { "type": "i64", "value": "9223372036854775808" },
+      "python_value": { "kind": "i64", "value": 9223372036854775808 },
+      "expected": { "disposition": "invalid_input" }
+    },
+    {
+      "name": "timestamp-nanos-overflow",
+      "driver_value": { "type": "timestamp", "value": { "seconds": "0", "nanos": 1000000000 } },
+      "python_value": { "kind": "timestamp", "seconds": 0, "nanos": 1000000000 },
+      "expected": { "disposition": "invalid_input" }
+    },
+    {
+      "name": "invalid-uuid-case",
+      "driver_value": { "type": "uuid", "value": "018F47F0-6DC7-7000-8000-000000000001" },
+      "python_value": { "kind": "uuid", "value": "018F47F0-6DC7-7000-8000-000000000001" },
+      "expected": { "disposition": "invalid_input" }
+    },
+    {
+      "name": "host-enum-symbol-bound",
+      "driver_value": { "type": "enum", "value": "not a symbol" },
+      "python_value": { "kind": "enum", "value": "not a symbol" },
+      "expected": { "disposition": "invalid_input" }
+    },
+    {
+      "name": "host-string-byte-bound",
+      "generator": { "kind": "string", "size": 262145 },
+      "expected": { "disposition": "invalid_input" }
+    },
+    {
+      "name": "host-collection-bound",
+      "generator": { "kind": "null_list", "size": 4097 },
+      "expected": { "disposition": "invalid_input" }
+    }
+  ]
+}

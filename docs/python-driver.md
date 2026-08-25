@@ -28,6 +28,15 @@ or the private native module. Both transports delegate gRPC status validation,
 request identity, bounded retry, and uncertain-outcome behavior to the stable
 Rust application client.
 
+The wheel's in-process PyO3 transport and the local-socket driver use one
+first-party Rust protocol core. That core alone admits values, applies nesting,
+collection, string, and frame bounds, constructs typed query and command
+requests, and classifies public failures. Python keeps its self-contained wheel
+and does not require `riffdb-driverd`; it also cannot accept a value the socket
+driver would reject. One collection is limited to 4,096 values, one string to
+262,144 UTF-8 bytes, and enum names use the closed generated-symbol alphabet.
+Compiled operation schemas may impose stricter limits.
+
 Generated named queries that the compiler proves fully covered negotiate a
 compact result from the native transport. The generated synchronous and
 asynchronous decoders validate the exact plan-owned entity, field order,
