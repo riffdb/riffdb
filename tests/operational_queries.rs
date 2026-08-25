@@ -5,11 +5,11 @@ use std::collections::BTreeMap;
 use riffdb_contract_compiler::compile_contract_source;
 use riffdb_query_compiler::compile_operational_query_family;
 use riffdb_query_executor::{
-    BoundPredicate, QueryBackendFault, QueryExecutionError, QueryParameters, QueryReadView,
-    QueryResultValue, QueryRow, QueryScanPage, bound_index_prefix_bytes_v1,
-    execute_operational_page_in_snapshot,
+    BoundPredicate, QueryBackendFault, QueryContinuation, QueryExecutionError, QueryOwnedSnapshot,
+    QueryParameters, QueryReadView, QueryResultValue, QueryRow, QueryScanPage,
+    bound_index_prefix_bytes_v1, execute_operational_page_in_snapshot,
 };
-use riffdb_query_ir::{QueryAccessStep, SymbolicCatalog};
+use riffdb_query_ir::{AccessDirection, QueryAccessKind, QueryAccessStep, SymbolicCatalog};
 use riffdb_riffql_syntax::parse_query;
 use riffdb_types::{CanonicalRecord, CanonicalValue, Timestamp};
 
@@ -77,6 +77,20 @@ query PrefixDocuments(
 }
 "#;
 
+const BINARY_ORDER_QUERY: &str = r#"
+query DocumentsByBinaryTitle(
+  $organization_id: Document.organization_id,
+  $after: Cursor?,
+) {
+  many documents from Document
+    where organization_id == $organization_id
+    order by title asc, document_id asc
+    take 1 after $after
+  return Found { documents: documents { document_id title } }
+  outcomes Found
+}
+"#;
+
 #[derive(Clone, Copy)]
 enum Presence {
     Missing,
@@ -132,16 +146,49 @@ impl QueryReadView for IndexedView {
         after: Option<&[u8]>,
         _policy: Option<&riffdb_policy::AuthorizedQueryRowPolicyContextV1>,
     ) -> Result<QueryScanPage, Self::Error> {
-        assert!(after.is_none(), "acceptance page fits in one bounded read");
         let prefixes = bound_index_prefix_bytes_v1(step, predicates).expect("sealed prefixes");
-        let rows = self
+        let direction = match step.access() {
+            QueryAccessKind::Index { direction, .. } => *direction,
+            _ => panic!("operational acceptance scan requires an index"),
+        };
+        let mut candidates = self
             .rows
             .iter()
             .filter(|(key, _)| prefixes.iter().any(|prefix| key.starts_with(prefix)))
-            .take(usize::try_from(limit).expect("bounded limit"))
+            .filter(|(key, _)| {
+                after.is_none_or(|after| match direction {
+                    AccessDirection::Forward => key.as_slice() > after,
+                    AccessDirection::Reverse => key.as_slice() < after,
+                })
+            })
+            .collect::<Vec<_>>();
+        if direction == AccessDirection::Reverse {
+            candidates.reverse();
+        }
+        let limit = usize::try_from(limit).expect("bounded limit");
+        let has_more = candidates.len() > limit;
+        let selected = candidates.into_iter().take(limit).collect::<Vec<_>>();
+        let continuation = has_more.then(|| {
+            selected
+                .last()
+                .expect("continued page is nonempty")
+                .0
+                .clone()
+        });
+        let rows = selected
+            .into_iter()
             .map(|(_, row)| row.clone())
-            .collect();
-        Ok(QueryScanPage::exact_end(rows, 1))
+            .collect::<Vec<_>>();
+        Ok(match continuation {
+            Some(continuation) => QueryScanPage::continued(
+                rows,
+                1,
+                u64::try_from(limit + 1).expect("bounded scan work"),
+                continuation,
+            )
+            .expect("bounded continuation"),
+            None => QueryScanPage::exact_end(rows, 1),
+        })
     }
 
     fn nearest(
@@ -158,7 +205,11 @@ impl QueryReadView for IndexedView {
     }
 }
 
-fn execute(source: &str, prefix: Option<&str>) -> Result<Vec<QueryRow>, QueryExecutionError> {
+fn execute_page(
+    source: &str,
+    prefix: Option<&str>,
+    prior: Option<&QueryContinuation>,
+) -> Result<QueryOwnedSnapshot, QueryExecutionError> {
     let bundle = compile_contract_source(CONTRACT).expect("contract");
     let catalog = SymbolicCatalog::from_bundle(&bundle).expect("catalog");
     let family =
@@ -205,6 +256,16 @@ fn execute(source: &str, prefix: Option<&str>) -> Result<Vec<QueryRow>, QueryExe
         Document {
             ordinal: 5,
             title: "ac",
+            deleted_at: Presence::Missing,
+        },
+        Document {
+            ordinal: 6,
+            title: "doc6",
+            deleted_at: Presence::Missing,
+        },
+        Document {
+            ordinal: 7,
+            title: "doc-3",
             deleted_at: Presence::Missing,
         },
     ];
@@ -271,17 +332,57 @@ fn execute(source: &str, prefix: Option<&str>) -> Result<Vec<QueryRow>, QueryExe
     }
     let parameters = QueryParameters::checked(parameter_values).expect("parameters");
     let mut view = IndexedView { rows: indexed };
-    let snapshot = execute_operational_page_in_snapshot(
+    execute_operational_page_in_snapshot(
         program,
         family.aggregates(),
         &parameters,
-        None,
+        prior,
         &mut view,
-    )?;
+    )
+}
+
+fn execute(source: &str, prefix: Option<&str>) -> Result<Vec<QueryRow>, QueryExecutionError> {
+    let snapshot = execute_page(source, prefix, None)?;
     match snapshot.fields().get("documents") {
         Some(QueryResultValue::Many(rows)) => Ok(rows.clone()),
         other => panic!("expected documents result, got {other:?}"),
     }
+}
+
+fn titles(rows: &[QueryRow]) -> Vec<&str> {
+    rows.iter()
+        .map(|row| match row.field("title") {
+            Some(CanonicalValue::String(value)) => value.as_str(),
+            other => panic!("title missing: {other:?}"),
+        })
+        .collect()
+}
+
+fn execute_all_cursor_pages(source: &str) -> Vec<QueryRow> {
+    let mut rows = Vec::new();
+    let mut prior = None;
+    loop {
+        let snapshot = execute_page(source, None, prior.as_ref()).expect("binary-order page");
+        match snapshot.fields().get("documents") {
+            Some(QueryResultValue::Many(page)) => rows.extend(page.iter().cloned()),
+            other => panic!("expected documents page, got {other:?}"),
+        }
+        let Some(lower) = snapshot.continuation() else {
+            break;
+        };
+        prior = Some(
+            QueryContinuation::checked(
+                snapshot
+                    .continuation_binding()
+                    .expect("continuation binding")
+                    .to_owned(),
+                lower.to_vec(),
+                snapshot.index_epochs().clone(),
+            )
+            .expect("checked continuation"),
+        );
+    }
+    rows
 }
 
 fn ordinals(rows: &[QueryRow]) -> Vec<u8> {
@@ -311,4 +412,24 @@ fn null_existence_and_binary_prefix_execute_without_scan_fallback() {
         ordinals(&execute(PREFIX_QUERY, Some("ab")).expect("prefix query")),
         [3, 4]
     );
+}
+
+#[test]
+fn binary_text_key_order_is_bytewise_and_cursor_exact_in_both_directions() {
+    let ascending = execute_all_cursor_pages(BINARY_ORDER_QUERY);
+    assert_eq!(
+        titles(&ascending),
+        ["a", "ab", "abacus", "ac", "doc-3", "doc6"]
+    );
+    assert_eq!(ordinals(&ascending), [2, 3, 4, 5, 7, 6]);
+
+    let descending_source = BINARY_ORDER_QUERY
+        .replace("title asc", "title desc")
+        .replace("document_id asc", "document_id desc");
+    let descending = execute_all_cursor_pages(&descending_source);
+    assert_eq!(
+        titles(&descending),
+        ["doc6", "doc-3", "ac", "abacus", "ab", "a"]
+    );
+    assert_eq!(ordinals(&descending), [6, 7, 5, 4, 3, 2]);
 }

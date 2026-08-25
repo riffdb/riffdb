@@ -54,6 +54,25 @@ the first page; supplying both the generated cursor parameter and the existing
 low-level cursor option fails locally instead of choosing one. Cursor bytes and
 server validation are unchanged.
 
+## Binary text-key ordering
+
+Use a declared `text_key(field, binary_utf8_v1)` index component when a named
+query must traverse text in exact UTF-8 byte order. It can supply the bounded
+`order by` suffix without requiring a prefix predicate on that field. For
+example:
+
+```riff
+index by_title (organization_id, title, document_id) text_key(title, binary_utf8_v1)
+```
+
+proves `order by title asc, document_id asc` after the required organization
+equality, or the wholly reversed descending order. In that order `doc-3`
+precedes `doc6`. A plain string index has canonical length-first ordering, so
+declare the text-key profile when bytewise interoperability matters. RiffDB
+still requires the complete deterministic index order, bounded `take`, and an
+opaque snapshot-bound cursor; callers cannot select the collation or index at
+runtime.
+
 ## Feature preflight
 
 The authorized application catalog returns the closed

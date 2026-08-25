@@ -5,9 +5,10 @@ use riffdb_query_compiler::{
     PlannerDiagnosticCode, compile_operational_query_family, compile_query,
 };
 use riffdb_query_ir::{
-    MAX_OPERATIONAL_PRESENCE_PARAMETERS, NamedTypeSchema, OperationalAggregateFunctionV1,
-    PageBound, QUERY_IR_VERSION_OPERATIONAL_AGGREGATE_V1, QueryDiagnosticCode,
-    QueryPredicateOperator, SourceSymbolKind, SymbolicCatalog, resolve_query_surface,
+    AccessDirection, MAX_OPERATIONAL_PRESENCE_PARAMETERS, NamedTypeSchema,
+    OperationalAggregateFunctionV1, PageBound, QUERY_IR_VERSION_OPERATIONAL_AGGREGATE_V1,
+    QueryAccessKind, QueryDiagnosticCode, QueryPredicateOperator, SourceSymbolKind,
+    SymbolicCatalog, resolve_query_surface,
 };
 use riffdb_riffql_syntax::parse_query;
 
@@ -97,9 +98,68 @@ query AccountByProvider(
 }
 "#;
 
+const BINARY_ORDER_CONTRACT: &str = r#"
+contract BinaryOrder version 1 {
+  entity Document {
+    key (organization_id: uuid, document_id: uuid)
+    field title: string<64>
+    index by_title (organization_id, title, document_id) text_key(title, binary_utf8_v1)
+  }
+  aggregate Documents {
+    root Document
+    partition_by organization_id
+    conflict_key (organization_id, document_id)
+  }
+}
+"#;
+
+const BINARY_ORDER_QUERY: &str = r#"
+query DocumentsByBinaryTitle(
+    $organization_id: Document.organization_id,
+    $after: Cursor?,
+) {
+    many documents from Document
+        where organization_id == $organization_id
+        order by title asc, document_id asc
+        take 1 after $after
+    return Found { documents: documents { document_id title } }
+    outcomes Found
+}
+"#;
+
 fn catalog(source: &str) -> SymbolicCatalog {
     let bundle = compile_contract_source(source).expect("contract");
     SymbolicCatalog::from_bundle(&bundle).expect("catalog")
+}
+
+#[test]
+fn binary_text_key_proves_ordinary_forward_and_reverse_cursor_order_without_prefix() {
+    let catalog = catalog(BINARY_ORDER_CONTRACT);
+    for (source, expected_direction) in [
+        (BINARY_ORDER_QUERY.to_owned(), AccessDirection::Forward),
+        (
+            BINARY_ORDER_QUERY
+                .replace("title asc", "title desc")
+                .replace("document_id asc", "document_id desc"),
+            AccessDirection::Reverse,
+        ),
+    ] {
+        let family = compile_operational_query_family(
+            &parse_query(&source).expect("binary-order query"),
+            &catalog,
+        )
+        .expect("declared binary text key proves the ordinary total order");
+        let program = family.select(&[]).expect("sole family member").program();
+        assert!(matches!(
+            program.steps()[0].access(),
+            QueryAccessKind::Index {
+                index,
+                direction,
+                ..
+            } if index == "by_title" && *direction == expected_direction
+        ));
+        assert_eq!(program.steps()[0].cursor_parameter(), Some("after"));
+    }
 }
 
 #[test]

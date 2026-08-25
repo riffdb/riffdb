@@ -25,8 +25,14 @@ forms only the finite discriminator prefixes required by the source predicate;
 it never fetches an unbounded candidate set to answer existence. A
 `text_key(field, binary_utf8_v1)` component uses a zero-escaped ordered-byte
 codec, allowing an exact leading-byte range while returning the original field
-value. Compiler, command index maintenance, and both storage readers consume
-the same versioned key schema.
+value. The same component may provide an ordinary bounded `order by field`
+suffix even when the query has no prefix predicate on that field. Its order is
+the exact UTF-8 byte order frozen by `binary_utf8_v1`, not the canonical
+length-first string order. The remaining index suffix must still equal the
+complete declared order, including its deterministic entity-key tie-breaker;
+forward and reverse cursor traversal use the same encoded key bytes. Compiler,
+command index maintenance, and both storage readers consume the same versioned
+key schema.
 
 The program contains ordered accesses, dependency edges, cardinality and row
 bounds, and the complete entity/field/index authorization requirement. The

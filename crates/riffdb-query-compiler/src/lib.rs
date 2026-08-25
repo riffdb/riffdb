@@ -2896,10 +2896,14 @@ fn operational_predicates_supported(
                                 == Some(index.fields()[position].as_str())
                     })
                 }
-                IndexFieldEncodingV1::TextKey(_) => comparisons.iter().any(|comparison| {
-                    comparison.field == index.fields()[position]
-                        && comparison.operator.is_binary(BinaryOperator::Prefix)
-                }),
+                IndexFieldEncodingV1::TextKey(_) => {
+                    comparisons.iter().any(|comparison| {
+                        comparison.field == index.fields()[position]
+                            && comparison.operator.is_binary(BinaryOperator::Prefix)
+                    }) || binding.order.iter().any(|term| {
+                        path_field(&term.path.value) == Some(index.fields()[position].as_str())
+                    })
+                }
             },
         )
 }
