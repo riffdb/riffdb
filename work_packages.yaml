@@ -17838,3 +17838,56 @@ work_packages:
       adapter acceptance is claimed by the neutral corpus.
     follow_ups: []
   human_review_triggers: *id001
+- id: WP-682
+  name: One driver protocol core for every binding
+  depends_on: [WP-604, WP-611]
+  objective: Remove the duplicated request-validation, value-marshalling, and error-mapping surface
+    between riffdb-driver-host and riffdb-client-python-native by giving the host one library
+    protocol core that every binding consumes, proving both transports agree before anything moves,
+    and preserving the self-contained Python wheel. No public surface, wire format, durable byte,
+    deployment artifact, or supported platform changes.
+  requirements: [DRV-001, DRV-002, DRV-014, DRV-015]
+  required_adrs: [ADR-0074, ADR-0106, ADR-0148]
+  allowed_paths: [work_packages.yaml, SPEC.md, adr/**, docs/**,
+    crates/riffdb-driver-host/**,
+    crates/riffdb-client-python-native/**,
+    clients/python/runtime/**,
+    tests/drivers/**,
+    fixtures/adapters/**]
+  deliverables:
+  - One conformance corpus, landed and green BEFORE any consolidation, driving the existing
+    socket path and the existing in-process path from the same entries and asserting
+    byte-identical request material, identical ApplicationValue graphs, and identical public
+    error classes; every disagreement found is recorded as a fixed finding naming the
+    driver-host rule as authoritative rather than silently adopted
+  - A library protocol surface on riffdb-driver-host exposing its request and response types,
+    validation, and dispatch with no transport of its own, consumed unchanged by the socket
+    transport
+  - riffdb-client-python-native rebuilt on that surface, retaining its PyO3 boundary and adding
+    no unsafe code, with its parallel parse_value, parse_command, and parse_query paths deleted
+    rather than left dormant
+  - Architecture tests proving the Python crate defines no value parser, bound, or error mapping
+    of its own, and that no binding crate reaches riffdb-client-rust except through the shared
+    core
+  - A wheel installation test proving the Python artifact still runs with no daemon present, and
+    an unchanged-daemon test proving an existing TypeScript application runs against it
+  acceptance_commands:
+  - cargo +1.97.0 test -p riffdb-driver-host --all-features
+  - cargo +1.97.0 test -p riffdb-client-python-native --all-features
+  - cargo +1.97.0 clippy --release -p riffdb-driver-host -p riffdb-client-python-native
+    --all-features --all-targets
+  - ./scripts/adapter-conformance
+  - ./scripts/check-requirement-coverage
+  - ./scripts/handbook check
+  exit_gate: One protocol core owns every value rule, bound, and error class; both transports
+    reproduce the complete conformance corpus identically; the Python wheel installs and runs with
+    no daemon; and no public surface, wire format, durable byte, or protocol version changed.
+  standing_design_tests:
+    interface_safety: An application still invokes only a compiled operation with typed input and
+      an idempotency identity. It cannot select a binding, transport, validation mode, protocol
+      version, or fallback, and every operation retains fresh authorization, transaction-current
+      dependency checks, atomic mutation and outcome, and typed uncertainty.
+    scale: The shared core keeps the existing bounded pool, in-flight, reorder, frame, value, and
+      retained-byte ceilings. No per-application cache, per-operation label, or unbounded retained
+      state is added, and the in-process transport reuses the socket transport's admission bounds.
+  human_review_triggers: *id001
