@@ -19,6 +19,14 @@ cargo test --locked --manifest-path examples/budget-comparison/Cargo.toml \
 The TicketDesk performance runner is under `examples/app-baseline`. Its README
 records the exact setup, workload, and measurement rules. Benchmark numbers are
 environment-specific; the checked semantic assertions are the durable result.
+`benchmarks/run-app-baseline-python` and
+`benchmarks/run-app-baseline-typescript` run that same mix from Python or
+TypeScript so the language-runtime cost is visible: PostgreSQL still implements
+the `postgres_safe_app` obligations in that language's SQL, while the RiffDB
+path uses the generated TicketDesk client with no application-language safety
+code (`riffdbd` enforces authorization, idempotency, audit, events, and
+outbox). TypeScript reaches `riffdbd` through `riffdb-driverd`. These runners
+are not release evidence.
 
 ## Patterns under test
 

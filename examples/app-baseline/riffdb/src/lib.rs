@@ -25,8 +25,8 @@ use riffdb_app_baseline_core::{
 };
 use riffdb_client_rust::ApplicationRecord;
 use riffdb_client_rust::{
-    ApplicationClientError, ApplicationContract, ApplicationUuid, ApplicationValue, AttemptBudget,
-    ApplicationSessionIdentity, BearerCredential, CallMetadata, GeneratedBatchError,
+    ApplicationClientError, ApplicationContract, ApplicationSessionIdentity, ApplicationUuid,
+    ApplicationValue, AttemptBudget, BearerCredential, CallMetadata, GeneratedBatchError,
     GeneratedBatchOptions, GeneratedBatchResult, NamedQuery, NamedQueryResult,
     StableApplicationClient,
 };
@@ -48,11 +48,10 @@ pub use projected::{
 };
 pub use server::{
     DATABASE_ROOT_ENV, DEFAULT_DATABASE_ROOT, MIN_FREE_BYTES, MIN_FREE_BYTES_FULL,
-    MIN_FREE_BYTES_SMOKE, RiffDbQueryExecuteEvidence, RiffDbQueryExecuteWindowEvidence,
-    RiffDbCompletionLaneEvidence, RiffDbReadStageEvidence, RiffDbServerSession,
-    RiffDbShutdownEvidence, RiffDbWriterEvidence,
-    ServerStartOptions, min_free_bytes_for_full, resolve_bench_root, resolve_database_root,
-    sweep_stale_session_dirs,
+    MIN_FREE_BYTES_SMOKE, RiffDbCompletionLaneEvidence, RiffDbQueryExecuteEvidence,
+    RiffDbQueryExecuteWindowEvidence, RiffDbReadStageEvidence, RiffDbServerSession,
+    RiffDbShutdownEvidence, RiffDbWriterEvidence, ServerStartOptions, min_free_bytes_for_full,
+    resolve_bench_root, resolve_database_root, sweep_stale_session_dirs,
 };
 
 /// Default in-flight seed commands (bounded client concurrency, not a bulk RPC).
@@ -67,9 +66,8 @@ pub use server::{
 const DEFAULT_SEED_CONCURRENCY: usize = 128;
 const MAX_SEED_CONCURRENCY: usize = 128;
 const TICKETDESK_APPLICATION_LOCK_HASH: [u8; 32] = [
-    0xf4, 0x8d, 0x43, 0xb9, 0x5f, 0x60, 0xd2, 0xc9, 0xb9, 0x4d, 0x12, 0x99, 0x80, 0x03, 0x6e,
-    0x00, 0x94, 0x01, 0xbe, 0x04, 0xbc, 0x58, 0x66, 0x9b, 0xfe, 0x89, 0x30, 0x88, 0x8e, 0x93,
-    0xc8, 0x5d,
+    0xf4, 0x8d, 0x43, 0xb9, 0x5f, 0x60, 0xd2, 0xc9, 0xb9, 0x4d, 0x12, 0x99, 0x80, 0x03, 0x6e, 0x00,
+    0x94, 0x01, 0xbe, 0x04, 0xbc, 0x58, 0x66, 0x9b, 0xfe, 0x89, 0x30, 0x88, 0x8e, 0x93, 0xc8, 0x5d,
 ];
 
 /// Public symbolic application backend.
@@ -187,6 +185,21 @@ impl RiffDbPublicBackend {
             history_incarnation,
             projected_gates_ready: false,
         })
+    }
+
+    /// Loopback gRPC URI for an independent generated application client.
+    #[must_use]
+    pub fn public_grpc_uri(&self) -> String {
+        self.endpoint.uri().to_string()
+    }
+
+    /// Runner bearer token for an independent generated application client.
+    ///
+    /// Callers must not log, print, or persist this value except into a
+    /// mode-0600 credential file owned by the Python comparison harness.
+    #[must_use]
+    pub fn runner_bearer_token(&self) -> &str {
+        &self.bearer_token
     }
 
     /// Opens an independent HTTP/2 connection with the same bounded metadata.
@@ -1665,8 +1678,8 @@ mod tests {
     #[test]
     fn generated_uuid_text_parser_preserves_binary_identity() {
         let expected = [
-            0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x01, 0x23, 0x45, 0x67, 0x89,
-            0xab, 0xcd, 0xef,
+            0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab,
+            0xcd, 0xef,
         ];
         assert_eq!(
             parse_uuid_text("01234567-89ab-cdef-0123-456789abcdef")

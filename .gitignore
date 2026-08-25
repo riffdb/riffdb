@@ -18,6 +18,16 @@
 # Python bytecode caches
 __pycache__/
 *.py[cod]
+*.egg-info/
+
+# Local maturin develop copies of the Python native extension
+/clients/python/runtime/src/riffdb_application/_native*.so
+
+# TypeScript app-baseline diagnostic (lock/generated artifacts are rebuilt by the launcher)
+/examples/app-baseline/typescript/node_modules/
+/examples/app-baseline/typescript/dist/
+/examples/app-baseline/typescript/generated/
+/examples/app-baseline/typescript/riffdb.application.lock.json
 
 # AI coding tools
 .serena
