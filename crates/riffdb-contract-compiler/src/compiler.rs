@@ -207,13 +207,9 @@ fn ir_compilation_error(
     error: IrValidationError,
     span: riffdb_contract_syntax::Span,
 ) -> CompilationError {
-    let code = match error {
-        IrValidationError::LimitExceeded { .. } | IrValidationError::SizeOverflow { .. } => {
-            crate::diagnostic::CompilerDiagnosticCode::BoundExceeded
-        }
-        _ => crate::diagnostic::CompilerDiagnosticCode::InvalidIr,
-    };
-    semantic_error(code, span)
+    CompilationError::Semantic(CompilerDiagnostics::single(
+        crate::diagnostic::CompilerDiagnostic::from_ir_error(error, span),
+    ))
 }
 
 fn semantic_error(
@@ -2161,11 +2157,30 @@ contract OptionalArithmetic version 1 {
     }
 
     #[test]
-    fn mutation_index_cross_product_is_rejected_during_checked_plan_lowering() {
-        compile_contract_source(&indexed_mutation_source(1_365))
-            .expect("exact combined validation-target boundary compiles");
-        let source = indexed_mutation_source(1_366);
-        assert_semantic_diagnostic_at(&source, CompilerDiagnosticCode::BoundExceeded, "Change");
+    fn mutation_index_delta_boundary_remains_independently_bounded() {
+        compile_contract_source(&indexed_mutation_source(2_048))
+            .expect("exact physical index-delta boundary compiles");
+        let source = indexed_mutation_source(2_049);
+        let error = validate_contract_source(&source).expect_err("one excess delta must reject");
+        let diagnostic = error
+            .semantic()
+            .expect("semantic diagnostics")
+            .as_slice()
+            .iter()
+            .find(|diagnostic| diagnostic.code() == CompilerDiagnosticCode::BoundExceeded)
+            .expect("bound diagnostic");
+        let observation = diagnostic.bound().expect("precise bound observation");
+
+        assert_eq!(
+            observation.resource(),
+            crate::CompilerBoundResource::CommandIndexEntryDeltas
+        );
+        assert_eq!(observation.actual(), 4_098);
+        assert_eq!(observation.maximum(), 4_096);
+        assert_eq!(
+            diagnostic.primary_span().start() as usize,
+            source.find("Change").expect("command span")
+        );
     }
 
     #[test]

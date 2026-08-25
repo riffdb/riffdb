@@ -1,4 +1,4 @@
-spec_version: '1.08'
+spec_version: '1.09'
 product: RiffDB
 repository: riffdb
 status: deployable-application-alpha-architecture-accepted
@@ -517,6 +517,132 @@ work_packages:
       database, role authority, transport, or application operation.
     scale: Validation visits one bounded path and Go package; process count, output, shutdown,
       driver connection, arguments, and diagnostics retain existing bounded runner limits.
+  human_review_triggers: *id001
+- id: WP-682
+  name: Correlated command index-work planning and precise bound diagnostics
+  depends_on: [WP-678]
+  objective: Implement ADR-0148's compiler-owned correlated index-work proof while retaining the
+    4,096 physical index-delta and all existing byte ceilings, and make every known RDB-C020
+    ceiling violation report its closed resource identity, actual value, and maximum safely.
+  requirements: [BLK-022, BLK-023, BLK-026, DSL-001, DSL-002, DSL-003,
+    DSL-004, DSL-005, DSL-006, DSL-007, DSL-008, DSL-009, DSL-010, DSL-011,
+    DSL-012, SAFE-004, SAFE-005, PERF-004, PERF-005]
+  required_adrs: [ADR-0002, ADR-0004, ADR-0011, ADR-0013, ADR-0023,
+    ADR-0031, ADR-0055, ADR-0107, ADR-0124, ADR-0147, ADR-0148]
+  allowed_paths: [SPEC.md, work_packages.yaml, adr/README.md,
+    adr/0148-correlated-index-validation-work-budgets.md,
+    release/version-topology-v1.json, crates/riffdb-types/**,
+    crates/riffdb-contract-ir/**, crates/riffdb-contract-compiler/**,
+    crates/riffdb-diagnostics/**, crates/riffdb-cli/**,
+    crates/riffdb-api-grpc/**, crates/riffdb-api-mcp/**,
+    clients/editor/**, fixtures/compiler/**, fixtures/contracts/**,
+    fixtures/proto/**, tests/**, scripts/**, docs/SUMMARY.md,
+    docs/contracts/**, docs/reference/**, docs/architecture/**]
+  deliverables:
+  - Shared checked constants retaining 4,096 index-entry deltas while bounding affected prefixes
+    and validation positions structurally at 65,535 and their exact D+A+V work at 65,535
+  - Conservative estimator with once-per-index whole-prefix, once-per-partition-route prefix,
+    unchanged-leading-component, old/new suffix, unique-occupancy, and collection-expansion
+    formulas; no caller-value or cross-element equality assumption
+  - ADR-0147-aware affine affected-state byte proof when exact value provenance is available, with
+    safe independent-maximum fallback and unchanged 16 MiB ceiling
+  - Closed RDB-C020 resource evidence carrying actual and maximum through compiler, CLI, MCP, gRPC,
+    LSP, source-span snapshots, and bounded redacted public rendering without a required wire-field
+    change
+  - Independent reduced-model/property tests proving every concrete derivation is no larger than
+    its compiled count/work/byte maxima, plus exact and plus-one neutral index-rich fixtures
+  - SPEC, accepted-ADR registry, compiler reference, and architecture documentation with no
+    external framework name, runtime mutation, storage change, coarse invalidation, or raised byte
+    limit in this package
+  acceptance_commands:
+  - cargo +1.97.0 test -p riffdb-types -p riffdb-contract-ir -p riffdb-contract-compiler -p riffdb-diagnostics --all-features
+  - ./scripts/check-generated
+  - ./scripts/check-requirement-coverage
+  - ./scripts/handbook check
+  - cargo +1.97.0 fmt --all -- --check
+  - cargo +1.97.0 clippy -p riffdb-types -p riffdb-contract-ir -p riffdb-contract-compiler -p riffdb-diagnostics --all-targets --all-features -- -D warnings
+  exit_gate: Every admitted plan proves D, A, V, D+A+V, and affected-state bytes within the exact
+    ADR-0148 limits; exact/plus-one failures report safe actionable evidence at the command span;
+    old plan bytes remain exact unless a separately audited successor is strictly required; and no
+    runtime, durable, framework, or public budget selector lands.
+  standing_design_tests:
+    interface_safety: Application authors declare only entities, indexes, typed inputs, and one
+      compiled command; the compiler exclusively owns costs, correlations, limits, diagnostics,
+      and admission, with no caller-selected work class or unsafe fallback.
+    scale: Compiler work is bounded by existing schema/plan ceilings; D is at most 4,096, A and V
+      at most 65,535, D+A+V at most 65,535, affected state at most 16 MiB, arithmetic is checked,
+      and no estimate depends on database rows, history, runtime equality, or backend scans.
+  human_review_triggers: *id001
+- id: WP-683
+  name: Correlated index-work runtime and durable successor conformance
+  depends_on: [WP-679, WP-682]
+  objective: Carry ADR-0148's admitted index-rich commands through one pay-once canonical
+    coordinator derivation, bounded storage transaction, and least-sufficient durable
+    capsule/segment successor, proving atomic 100-element behavior without weakening any byte,
+    durability, recovery, or interface guarantee.
+  requirements: [BLK-006, BLK-007, BLK-008, BLK-009, BLK-013, BLK-014,
+    BLK-019, BLK-020, BLK-021, BLK-022, BLK-024, BLK-025, BLK-027, ID-001,
+    ID-004, STO-001, STO-002, TXN-001, TXN-002, TXN-030, TXN-031, TXN-040,
+    TXN-041, TXN-042, TXN-043, TXN-044, SAFE-001, SAFE-004, SAFE-005,
+    PERF-004, PERF-005]
+  required_adrs: [ADR-0003, ADR-0004, ADR-0005, ADR-0006, ADR-0012,
+    ADR-0023, ADR-0038, ADR-0055, ADR-0059, ADR-0104, ADR-0107, ADR-0123,
+    ADR-0124, ADR-0129, ADR-0147, ADR-0148]
+  allowed_paths: [Cargo.lock, SPEC.md, work_packages.yaml, proto/**,
+    release/version-topology-v1.json, release/durable-format-manifest-v1.json,
+    crates/riffdb-types/**, crates/riffdb-contract-ir/**,
+    crates/riffdb-storage-api/**, crates/riffdb-storage-memory/**,
+    crates/riffdb-storage-redb/**, crates/riffdb-commit/**,
+    crates/riffdb-proto/**, crates/riffdb-runtime/**,
+    crates/riffdb-service/**, crates/riffdb-server/**,
+    crates/riffdb-observability/**, crates/riffdb-testkit/**,
+    crates/riffdb-sim/**, fixtures/proto/**, fixtures/contracts/**,
+    fixtures/adapters/bulk-conformance/**, tests/**, fuzz/**, scripts/**,
+    docs/SUMMARY.md, docs/contracts/**, docs/reference/**,
+    docs/architecture/**, docs/operations/**, docs/performance/**]
+  deliverables:
+  - One bounded coordinator builder that derives candidate index mutations and affected prefixes,
+    charges count/work/bytes incrementally, canonicalizes and deduplicates once, and seals the exact
+    set reused by validation, epoch reads/advances, reservation, and durable construction
+  - Storage semantic bounds separating 4,096 index deltas from 65,535 affected targets and
+    validation positions while enforcing D+A+V and every existing 16 MiB semantic/encoded cap in
+    memory and redb without scans or partial staging
+  - Least-sufficient successor command-capsule and segment identities for 4,097..=65,535 ordered
+    epoch transitions, with old identities frozen at 4,096, exact old bytes/readers, topology and
+    manifest registration, bounded decoder refusal, backup, checkpoint, and crash recovery
+  - Neutral index-rich 1, 9, 19, and 100 element corpus covering exact/plus-one count, work, byte,
+    idempotency, business/unique failure, concurrency, cancellation, rollback, provenance, events,
+    changelog order, complete-or-absent visibility, and remote memory/redb loopback
+  - Stage-attributed benchmark evidence for prefix derivation, canonicalization, epoch read,
+    reservation, epoch write, capsule encoding, and commit, with guards against quadratic work,
+    per-target plan decode, repeated canonical encoding, framework branches, split writes, coarse
+    invalidation, or caller budget control
+  acceptance_commands:
+  - cargo +1.97.0 test -p riffdb-storage-api -p riffdb-storage-memory -p riffdb-storage-redb -p riffdb-commit -p riffdb-proto -p riffdb-testkit -p riffdb-sim --all-features
+  - cargo +1.97.0 test -p riffdb-testkit --test bulk_command_recovery --all-features
+  - cargo +1.97.0 test --test storage_recovery_matrix --all-features
+  - ./scripts/adapter-bulk-command-acceptance --all-languages
+  - ./scripts/check-durable-format-manifest
+  - ./scripts/check-version-topology
+  - ./scripts/generate-proto --check
+  - ./scripts/check-workspace-policy
+  - ./scripts/check-generated
+  - ./scripts/check-requirement-coverage
+  - ./scripts/handbook check
+  - cargo +1.97.0 fmt --all -- --check
+  - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: One real neutral 100-element index-rich command atomically commits through memory and
+    redb under D+A+V and byte ceilings, uses the least-sufficient durable identity when required,
+    survives every scheduled/crash boundary, and exposes no framework branch, split, partial
+    result, coarse invalidation, unbounded allocation, or repeated plan-proof path.
+  standing_design_tests:
+    interface_safety: The generated invocation and shared service remain the only application
+      boundary; callers cannot choose index targets, validation mode, transaction, work budget,
+      durable identity, fallback, split, or partial behavior, and every result retains ordinary
+      authorization, idempotency, provenance, audit, durability, and uncertainty semantics.
+    scale: D is at most 4,096, A and V at most 65,535, D+A+V at most 65,535, all semantic and
+      encoded records retain their byte ceilings, concrete derivation is paid once per attempt,
+      storage work is linear in the sealed set, and no path scans data or history.
   human_review_triggers: *id001
 - id: WP-474
   name: Sealed entity post-image materialization

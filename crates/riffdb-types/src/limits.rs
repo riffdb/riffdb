@@ -27,11 +27,20 @@ pub const MAX_COMMAND_CONFLICT_KEYS_V1: usize = 256;
 /// Maximum worst-case index-entry deltas produced by one v1 command.
 pub const MAX_COMMAND_INDEX_DELTAS_V1: usize = 4_096;
 
-/// Maximum mutation-affected index-prefix epoch targets produced by one v1 command.
-pub const MAX_COMMAND_AFFECTED_INDEX_PREFIXES_V1: usize = 4_096;
+/// Maximum mutation-affected index-prefix epoch targets produced by one command.
+pub const MAX_COMMAND_AFFECTED_INDEX_PREFIXES_V1: usize = 65_535;
 
-/// Maximum transaction-current validation targets for one v1 command.
+/// Maximum binding/root validation positions represented by one v1 plan mask.
 pub const MAX_COMMAND_VALIDATION_TARGETS_V1: usize = 4_096;
+
+/// Maximum complete transaction-current validation positions for one command.
+pub const MAX_COMMAND_INDEX_VALIDATION_POSITIONS_V1: usize = 65_535;
+
+/// Maximum correlated index work for one command.
+///
+/// The charge is index-entry deltas plus mutation-affected prefix epochs plus
+/// complete transaction-current validation positions.
+pub const MAX_COMMAND_INDEX_WORK_UNITS_V1: usize = 65_535;
 
 /// Maximum semantic bytes retained for one v1 command's transaction-current read state.
 pub const MAX_COMMAND_READ_STATE_SEMANTIC_BYTES_V1: usize = 16 * 1024 * 1024;
@@ -129,8 +138,10 @@ mod tests {
         assert_eq!(MAX_KEY_BYTES, 4_096);
         assert_eq!(MAX_COMMAND_CONFLICT_KEYS_V1, 256);
         assert_eq!(MAX_COMMAND_INDEX_DELTAS_V1, 4_096);
-        assert_eq!(MAX_COMMAND_AFFECTED_INDEX_PREFIXES_V1, 4_096);
+        assert_eq!(MAX_COMMAND_AFFECTED_INDEX_PREFIXES_V1, 65_535);
         assert_eq!(MAX_COMMAND_VALIDATION_TARGETS_V1, 4_096);
+        assert_eq!(MAX_COMMAND_INDEX_VALIDATION_POSITIONS_V1, 65_535);
+        assert_eq!(MAX_COMMAND_INDEX_WORK_UNITS_V1, 65_535);
         assert_eq!(MAX_COMMAND_READ_STATE_SEMANTIC_BYTES_V1, 16_777_216);
         assert_eq!(MAX_NESTING_DEPTH, 32);
         assert_eq!(MAX_ACTOR_ID_BYTES, 256);

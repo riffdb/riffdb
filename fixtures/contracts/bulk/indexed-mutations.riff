@@ -1,0 +1,163 @@
+contract IndexedMutationBulk version 1 {
+  enum MutationOperation { Activate, Deactivate }
+
+  entity Partition {
+    key (partition_id: string<26>)
+  }
+
+  entity IndexedState {
+    key (
+      partition_id: string<26>,
+      category: string<128>,
+      item_id: string<256>,
+      relation: string<50>,
+      subject: string<512>
+    )
+    field subject_category: string<128>
+    field subject_id: string<256>
+    field subject_relation: string<50>
+    field subject_kind: string<7>
+    field qualifier: string<256>
+    field condition_context: optional<bytes<32768>>
+    field inserted_at: timestamp
+    field active: bool
+    field revision: u64
+    index all_active (
+      partition_id, active, category, item_id, relation, subject
+    )
+    index by_item (
+      partition_id, active, category, item_id, relation, subject
+    )
+    index by_category_relation (
+      partition_id, active, category, relation, item_id, subject
+    )
+    index by_category_subject (
+      partition_id, active, category, subject, item_id, relation
+    )
+    index by_item_subject (
+      partition_id, active, category, item_id, subject, relation
+    )
+    index by_subject (
+      partition_id, active, subject, category, item_id, relation
+    )
+    index by_relation_subject (
+      partition_id, active, relation, subject, category, item_id
+    )
+    index by_qualifier_item (
+      partition_id, active, qualifier, category, item_id, relation, subject
+    )
+    index by_qualifier_category_relation (
+      partition_id, active, qualifier, category, relation, item_id, subject
+    )
+    index by_qualifier_category_subject (
+      partition_id, active, qualifier, category, subject, item_id, relation
+    )
+    index by_qualifier_category_relation_subject (
+      partition_id, active, qualifier, category, relation, subject, item_id
+    )
+    index by_qualifier_item_subject (
+      partition_id, active, qualifier, category, item_id, subject, relation
+    )
+    index by_qualifier_subject (
+      partition_id, active, qualifier, subject, category, item_id, relation
+    )
+    index by_qualifier_relation_subject (
+      partition_id, active, qualifier, relation, subject, category, item_id
+    )
+    index reverse_by_subject (
+      partition_id, active, category, relation, subject, item_id
+    )
+    index related_by_category (
+      partition_id, active, category, item_id, relation,
+      subject_kind, subject_category, subject_relation, subject
+    )
+    index related_by_qualifier (
+      partition_id, active, qualifier, category, item_id, relation,
+      subject_kind, subject_category, subject_relation, subject
+    )
+    index reverse_by_qualifier (
+      partition_id, active, qualifier, category, relation, subject, item_id
+    )
+  }
+
+  entity MutationChange {
+    key (partition_id: string<26>, change_id: string<26>)
+    field category: string<128>
+    field item_id: string<256>
+    field relation: string<50>
+    field subject: string<512>
+    field operation: MutationOperation
+    field qualifier: string<256>
+    field condition_context: optional<bytes<32768>>
+    field inserted_at: timestamp
+    index by_partition_change (partition_id, change_id)
+    index by_partition_item_change (partition_id, category, change_id)
+  }
+
+  entity IndexedMutation {
+    key (partition_id: string<26>, change_id: string<26>)
+    field category: string<128>
+    field item_id: string<256>
+    field relation: string<50>
+    field subject: string<512>
+    field subject_category: string<128>
+    field subject_id: string<256>
+    field subject_relation: string<50>
+    field subject_kind: string<7>
+    field operation: MutationOperation
+    field qualifier: string<256>
+    field condition_context: optional<bytes<32768>>
+    field inserted_at: timestamp
+    field expected_active: bool
+    field next_active: bool
+    field expected_revision: u64
+  }
+
+  aggregate IndexedRecords {
+    root Partition
+    child IndexedState
+    child MutationChange
+    child IndexedMutation
+    partition_by partition_id
+    conflict_key (partition_id)
+  }
+
+  bulk command ApplyIndexedMutations {
+    input request_id: uuid
+    input mutations: list<IndexedMutation, 1..100> aggregate_bytes <= 900000
+    idempotency_key request_id
+    for mutation in mutations {
+      mutate IndexedState(
+        mutation.partition_id,
+        mutation.category,
+        mutation.item_id,
+        mutation.relation,
+        mutation.subject
+      ) as state else StateMissing {}
+      create MutationChange(mutation.partition_id, mutation.change_id) as change
+        else ChangeAlreadyExists {}
+      require state_revision: state.revision == mutation.expected_revision
+        else StateChanged {}
+      require state_activity: state.active == mutation.expected_active
+        else StateChanged {}
+      set state.subject_category = mutation.subject_category
+      set state.subject_id = mutation.subject_id
+      set state.subject_relation = mutation.subject_relation
+      set state.subject_kind = mutation.subject_kind
+      set state.qualifier = mutation.qualifier
+      set state.condition_context = mutation.condition_context
+      set state.inserted_at = mutation.inserted_at
+      set state.active = mutation.next_active
+      set state.revision = state.revision + 1
+      set change.category = mutation.category
+      set change.item_id = mutation.item_id
+      set change.relation = mutation.relation
+      set change.subject = mutation.subject
+      set change.operation = mutation.operation
+      set change.qualifier = mutation.qualifier
+      set change.condition_context = mutation.condition_context
+      set change.inserted_at = mutation.inserted_at
+    }
+    return IndexedMutationsApplied {}
+  }
+}

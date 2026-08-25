@@ -25,6 +25,23 @@ The conflict manager owns in-memory logical capabilities. It improves admission
 and ensures stable acquisition order; authoritative correctness still depends
 on transaction-current validation.
 
+### Correlated index-validation admission
+
+Index-rich commands use one compiler-owned work proof rather than independent
+small ceilings for prefix invalidation and validation. Physical index deltas
+remain capped at 4,096; affected prefix epochs and validation positions each
+have a 65,535 structural bound; and the exact sum of deltas, affected prefixes,
+and validation positions must remain at most 65,535. The existing 16 MiB
+semantic state and encoded-record ceilings remain separate.
+
+Collection planning may count the structurally shared complete partition-route
+prefix once per index. It never assumes equal application values across
+elements. Runtime execution derives, canonicalizes, deduplicates, and seals the
+concrete index target set once per command attempt; validation, epoch reads and
+advances, reservation, and durable construction reuse that set. Applications
+cannot select a larger budget, coarser invalidation mode, split execution, or
+partial result.
+
 ## Durable core
 
 The commit coordinator is the only owner allowed to assign application commit

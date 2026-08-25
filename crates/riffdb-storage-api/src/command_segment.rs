@@ -5,9 +5,9 @@ use std::fmt;
 use riffdb_types::{AdministrationSequence, CommitSequence, DatabaseId, MAX_KEY_BYTES};
 
 use crate::{
-    CommittedEntityTransitionV1, EntityChainStateV1, IndexEpochAdvanceV1, MAX_ENTITY_MUTATIONS,
-    MAX_EVENT_INTENTS, MAX_INDEX_DELTAS, MAX_STAGED_COMMANDS, StorageValueError,
-    StoredCommandCapsuleV1, StoredDurableEventV1,
+    CommittedEntityTransitionV1, EntityChainStateV1, IndexEpochAdvanceV1,
+    MAX_AFFECTED_INDEX_EPOCH_TARGETS, MAX_ENTITY_MUTATIONS, MAX_EVENT_INTENTS, MAX_STAGED_COMMANDS,
+    StorageValueError, StoredCommandCapsuleV1, StoredDurableEventV1,
 };
 
 /// Maximum exact derived-index entries retained by one segment or checkpoint.
@@ -245,7 +245,7 @@ impl StoredCommandCapsuleV2 {
         entity_transitions: Vec<CommittedEntityTransitionV1>,
     ) -> Result<Self, StorageValueError> {
         if base.commit().events().len() > MAX_EVENT_INTENTS
-            || index_generation_transitions.len() > MAX_INDEX_DELTAS
+            || index_generation_transitions.len() > MAX_AFFECTED_INDEX_EPOCH_TARGETS
             || entity_transitions.len() > MAX_ENTITY_MUTATIONS
             || index_generation_transitions
                 .windows(2)

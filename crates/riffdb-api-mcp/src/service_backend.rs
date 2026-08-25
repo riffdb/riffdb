@@ -3477,7 +3477,7 @@ fn compilation_diagnostics_payload(
                 .map(|diagnostic| {
                     Ok(SemanticDiagnostic {
                         code: diagnostic.code().as_str().to_owned(),
-                        summary: diagnostic.code().summary().to_owned(),
+                        summary: diagnostic.summary(),
                         help: diagnostic.code().help().map(str::to_owned),
                         primary_span: SourceSpanPayload {
                             start: diagnostic.primary_span().start(),

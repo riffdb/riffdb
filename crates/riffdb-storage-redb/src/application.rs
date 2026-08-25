@@ -189,15 +189,10 @@ fn capsulate_command_rows(
         capsules.push(capsule);
         terminals.push(terminal);
     }
-    let uses_v5 = capsules.iter().any(|capsule| {
-        capsule
-            .events()
-            .iter()
-            .any(|event| event.policy_anchor().is_some())
-    });
+    let wire_version = riffdb_storage_api::command_segment_wire_version_v1(&capsules);
     let access = &core.access;
     let (capsules, prepared_capsules) =
-        access.prepare_command_segment_capsules(capsules, uses_v5)?;
+        access.prepare_command_segment_capsules(capsules, wire_version)?;
     let segment = build_command_segment(access, capsules)?;
     let commit_key = encode_application_sequence_key(segment.first_commit_sequence());
     let (segment, encoded_segment, encoding_metrics) = match prepared_capsules {

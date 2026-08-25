@@ -885,7 +885,7 @@ fn command_segment_write_path_is_byte_identical_for_multi_command_nondefault_fie
     let prepared = draft
         .commands()
         .iter()
-        .map(|command| prepare_command_segment_capsule_v1(command, false))
+        .map(|command| prepare_command_segment_capsule_v1(command, CommandCapsuleWireVersionV1::V4))
         .collect::<Result<Vec<_>, _>>()
         .expect("command members prepare");
     let (sealed, streamed) =
@@ -899,7 +899,7 @@ fn command_segment_write_path_is_byte_identical_for_multi_command_nondefault_fie
         .commands()
         .iter()
         .rev()
-        .map(|command| prepare_command_segment_capsule_v1(command, false))
+        .map(|command| prepare_command_segment_capsule_v1(command, CommandCapsuleWireVersionV1::V4))
         .collect::<Result<Vec<_>, _>>()
         .expect("reordered members prepare");
     assert_eq!(
@@ -911,7 +911,7 @@ fn command_segment_write_path_is_byte_identical_for_multi_command_nondefault_fie
     let wrong_variant = sealed
         .commands()
         .iter()
-        .map(|command| prepare_command_segment_capsule_v1(command, true))
+        .map(|command| prepare_command_segment_capsule_v1(command, CommandCapsuleWireVersionV1::V5))
         .collect::<Result<Vec<_>, _>>()
         .expect("wrong-variant members prepare");
     assert_eq!(
@@ -973,7 +973,7 @@ fn anchored_event_uses_successor_command_and_segment_authority() {
     let prepared = draft
         .commands()
         .iter()
-        .map(|command| prepare_command_segment_capsule_v1(command, true))
+        .map(|command| prepare_command_segment_capsule_v1(command, CommandCapsuleWireVersionV1::V5))
         .collect::<Result<Vec<_>, _>>()
         .expect("anchored command members prepare");
     let (sealed, encoded) =
@@ -993,6 +993,80 @@ fn anchored_event_uses_successor_command_and_segment_authority() {
     assert_eq!(
         decode_command_segment_v1(encoded.as_bytes())
             .expect("anchored segment decodes")
+            .value(),
+        &sealed
+    );
+}
+
+#[test]
+fn correlated_index_work_uses_the_least_sufficient_durable_successor() {
+    let (base, atomic) = sample_command_capsule_v1();
+    let (_, epoch) = sample::index_records();
+    let transitions = (1_u32..=4_097)
+        .map(|index| {
+            crate::IndexEpochAdvanceV1::new(
+                crate::PartitionIndexTarget::new(
+                    sample::partition_key(),
+                    riffdb_types::IndexId::new(index).expect("nonzero index"),
+                ),
+                epoch.schema_binding().clone(),
+                riffdb_types::IndexEpochPosition::BeforeFirst,
+            )
+            .expect("canonical transition")
+        })
+        .collect::<Vec<_>>();
+    let capsule = crate::StoredCommandCapsuleV2::new(base, atomic.events().to_vec(), transitions)
+        .expect("expanded bounded capsule");
+    assert_eq!(
+        command_capsule_wire_version_v1(&capsule),
+        CommandCapsuleWireVersionV1::V6
+    );
+    let capsule_encoded = assert_round_trip(
+        capsule.clone(),
+        encode_command_capsule_v2,
+        decode_command_capsule_v2,
+    );
+    assert_eq!(
+        riffdb_proto::durable::readable_record_registry()
+            .decode(capsule_encoded.as_bytes())
+            .expect("V6 capsule envelope")
+            .record_type(),
+        "riffdb.storage.v1.StoredCommandCapsuleV6"
+    );
+
+    let manifest = crate::CommandSegmentManifestV1::new(vec![
+        crate::CommandDerivedIndexManifestEntryV1::new(
+            crate::CommandDerivedIndexKindV1::Idempotency,
+            crate::CommandDerivedMemberV1::Command,
+            vec![0x41],
+            0,
+            0,
+            capsule.commit_sequence(),
+        )
+        .expect("manifest entry"),
+    ])
+    .expect("manifest");
+    let draft = crate::StoredCommandSegmentV1::new(
+        sample::database_id(),
+        crate::HISTORY_INCARNATION_INITIAL,
+        None,
+        vec![capsule],
+        manifest,
+        crate::CommandSegmentDigestV1::from_bytes([0; 32]),
+    )
+    .expect("segment draft");
+    let (sealed, encoded) =
+        seal_and_encode_command_segment_v1(draft).expect("V5 segment successor seals");
+    assert_eq!(
+        riffdb_proto::durable::readable_record_registry()
+            .decode(encoded.as_bytes())
+            .expect("V5 segment envelope")
+            .record_type(),
+        "riffdb.storage.v1.StoredCommandSegmentV5"
+    );
+    assert_eq!(
+        decode_command_segment_v1(encoded.as_bytes())
+            .expect("V5 segment decodes")
             .value(),
         &sealed
     );

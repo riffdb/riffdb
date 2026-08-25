@@ -25,6 +25,7 @@ pub use compiler::{
     compile_contract_successor, validate_contract_source,
 };
 pub use diagnostic::{
-    CompilerDiagnostic, CompilerDiagnosticCode, CompilerDiagnostics, DiagnosticBoundsError,
+    CompilerBoundObservation, CompilerBoundResource, CompilerDiagnostic, CompilerDiagnosticCode,
+    CompilerDiagnostics, DiagnosticBoundsError,
 };
 pub use migration::compile_migration_source;

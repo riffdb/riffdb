@@ -51,6 +51,7 @@ const STORAGE_SOURCES: &[&str] = &[
     "riffdb/storage/v1/event_route_v1.proto",
     "riffdb/storage/v1/event_policy_anchor.proto",
     "riffdb/storage/v1/event_policy_command_authority_v5.proto",
+    "riffdb/storage/v1/correlated_index_work_command_authority_v6.proto",
     "riffdb/storage/v1/entity_references_v3.proto",
     "riffdb/storage/v1/entity_transitions_v4.proto",
     "riffdb/storage/v1/event_references_v2.proto",
@@ -98,6 +99,7 @@ const PRODUCTION_SOURCES: &[&str] = &[
     "riffdb/storage/v1/event_route_v1.proto",
     "riffdb/storage/v1/event_policy_anchor.proto",
     "riffdb/storage/v1/event_policy_command_authority_v5.proto",
+    "riffdb/storage/v1/correlated_index_work_command_authority_v6.proto",
     "riffdb/storage/v1/entity_references_v3.proto",
     "riffdb/storage/v1/entity_transitions_v4.proto",
     "riffdb/storage/v1/event_references_v2.proto",
@@ -640,6 +642,16 @@ const DURABLE_RECORDS: &[DurableRecord] = &[
         "StoredVectorProjectionControlV1",
         PayloadBound::Tiny,
     ),
+    durable(
+        "correlated_index_work_command_authority_v6.proto",
+        "StoredCommandCapsuleV6",
+        PayloadBound::EnvelopeMaximum,
+    ),
+    durable(
+        "correlated_index_work_command_authority_v6.proto",
+        "StoredCommandSegmentV5",
+        PayloadBound::EnvelopeMaximum,
+    ),
 ];
 
 const LEGACY_DURABLE_RECORD_COUNT: usize = 26;
@@ -1127,6 +1139,11 @@ fn main() -> Result<(), Box<dyn Error>> {
         .ok_or_else(|| {
             io::Error::other("durable vector-projection-control-v1 registry is incomplete")
         })?;
+    let correlated_index_work_command_authority_records = durable_registry
+        .get(current_v1_record_count + 60..current_v1_record_count + 62)
+        .ok_or_else(|| {
+            io::Error::other("durable correlated-index command-authority registry is incomplete")
+        })?;
     write_artifact(
         &output_root,
         "fixtures/proto/durable-registry.txt",
@@ -1584,6 +1601,26 @@ fn main() -> Result<(), Box<dyn Error>> {
     )?;
     write_artifact(
         &output_root,
+        "fixtures/proto/durable-correlated-index-work-command-authority-v6-schema-hashes.bin",
+        &durable_schema_hashes(correlated_index_work_command_authority_records),
+    )?;
+    write_artifact(
+        &output_root,
+        "fixtures/proto/durable-correlated-index-work-command-authority-v6-record-bounds.bin",
+        &durable_record_bounds(correlated_index_work_command_authority_records),
+    )?;
+    write_artifact(
+        &output_root,
+        "crates/riffdb-proto/fixtures/durable-correlated-index-work-command-authority-v6-schema-hashes.bin",
+        &durable_schema_hashes(correlated_index_work_command_authority_records),
+    )?;
+    write_artifact(
+        &output_root,
+        "crates/riffdb-proto/fixtures/durable-correlated-index-work-command-authority-v6-record-bounds.bin",
+        &durable_record_bounds(correlated_index_work_command_authority_records),
+    )?;
+    write_artifact(
+        &output_root,
         "fixtures/proto/durable-entity-transitions-v4-schema-hashes.bin",
         &durable_schema_hashes(entity_transitions_v4_records),
     )?;
@@ -1859,9 +1896,9 @@ struct BuiltDurableRecord {
 fn build_durable_registry(
     storage: &FileDescriptorSet,
 ) -> Result<Vec<BuiltDurableRecord>, Box<dyn Error>> {
-    if DURABLE_RECORDS.len() != 89 {
+    if DURABLE_RECORDS.len() != 91 {
         return Err(
-            io::Error::other("readable durable registry must contain exactly 89 records").into(),
+            io::Error::other("readable durable registry must contain exactly 91 records").into(),
         );
     }
     if storage.file.len() != STORAGE_SOURCES.len()
@@ -1885,9 +1922,9 @@ fn build_durable_registry(
         .iter()
         .map(|file| file.enum_type.len())
         .sum::<usize>();
-    if message_count != 178 || enum_count != 24 {
+    if message_count != 181 || enum_count != 24 {
         return Err(io::Error::other(format!(
-            "storage schema must contain exactly 178 messages and 24 enums; found {message_count} messages and {enum_count} enums"
+            "storage schema must contain exactly 181 messages and 24 enums; found {message_count} messages and {enum_count} enums"
         ))
         .into());
     }
@@ -2208,6 +2245,11 @@ fn durable_writable_registry_fixture(
     let vector_projection_control = records.get(current_v1_record_count + 59).ok_or_else(|| {
         io::Error::other("durable registry is missing StoredVectorProjectionControlV1")
     })?;
+    let correlated_index_work_command_authority = records
+        .get(current_v1_record_count + 60..current_v1_record_count + 62)
+        .ok_or_else(|| {
+            io::Error::other("durable registry is missing correlated-index command authority")
+        })?;
     let writable = legacy[..8]
         .iter()
         .chain(std::iter::once(v2))
@@ -2249,10 +2291,11 @@ fn durable_writable_registry_fixture(
         .chain(std::iter::once(vector_observation))
         .chain(std::iter::once(vector_evidence_index))
         .chain(std::iter::once(vector_health_observation))
-        .chain(std::iter::once(vector_projection_control));
+        .chain(std::iter::once(vector_projection_control))
+        .chain(correlated_index_work_command_authority.iter());
 
     let mut output = String::from("riffdb-durable-writable-registry-v1\n");
-    let _ = writeln!(output, "records {}", current_v1_record_count + 42);
+    let _ = writeln!(output, "records {}", current_v1_record_count + 44);
     for record in writable {
         let _ = write!(output, "{} schema-hash=", record.record_type);
         for byte in record.schema_hash {

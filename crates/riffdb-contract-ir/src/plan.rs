@@ -6,8 +6,9 @@ use riffdb_types::{
     AggregateTypeId, CommandId, ContractLineage, ContractVersion, EntityTypeId, EnumVariantId,
     EventTypeId, FieldId, IndexId, InvariantId, MAX_APPLICATION_REQUEST_BYTES_V1,
     MAX_COMMAND_AFFECTED_INDEX_PREFIXES_V1, MAX_COMMAND_CONFLICT_KEYS_V1,
-    MAX_COMMAND_INDEX_DELTAS_V1, MAX_COMMAND_READ_STATE_SEMANTIC_BYTES_V1,
-    MAX_COMMAND_VALIDATION_TARGETS_V1, MAX_KEY_BYTES, OutcomeId, PlanHash,
+    MAX_COMMAND_INDEX_DELTAS_V1, MAX_COMMAND_INDEX_VALIDATION_POSITIONS_V1,
+    MAX_COMMAND_INDEX_WORK_UNITS_V1, MAX_COMMAND_READ_STATE_SEMANTIC_BYTES_V1, MAX_KEY_BYTES,
+    OutcomeId, PlanHash,
 };
 
 use crate::{
@@ -2055,9 +2056,12 @@ impl CommandPlan {
             });
         }
 
+        let delete_checks = derive_delete_checks(&bindings, contract_schema)?;
         validate_worst_case_index_derivation(
+            &expressions,
             &bindings,
             &root_validation_reads,
+            &delete_checks,
             &instructions,
             collection_expansion.as_ref(),
             locality.partition_schema().maximum_encoded_bytes(),
@@ -2085,7 +2089,6 @@ impl CommandPlan {
         }
         let relationship_checks =
             derive_relationship_checks(&expressions, &bindings, &instructions, contract_schema)?;
-        let delete_checks = derive_delete_checks(&bindings, contract_schema)?;
         let unique_conflicts =
             derive_unique_conflicts(&expressions, &bindings, &instructions, contract_schema)?;
         checked_len(
@@ -3536,15 +3539,22 @@ struct WorstCaseIndexDerivation {
     unique_occupancy_bytes: usize,
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the validator receives the complete immutable command-plan components explicitly"
+)]
 fn validate_worst_case_index_derivation(
+    expressions: &ExpressionArena,
     bindings: &[BindingPlan],
     root_validation_reads: &[RootValidationReadPlan],
+    delete_checks: &[DeleteCheckPlanV1],
     instructions: &[Instruction],
     collection_expansion: Option<&CollectionExpansionPlanV1>,
     maximum_partition_key_bytes: usize,
     schema: &SchemaIr,
 ) -> Result<(), IrValidationError> {
     let derivation = worst_case_index_derivation(
+        expressions,
         bindings,
         instructions,
         collection_expansion,
@@ -3557,7 +3567,7 @@ fn validate_worst_case_index_derivation(
             (first..first + expansion.binding_count()).contains(&(binding.get() as usize))
         })
     };
-    let binding_count = bindings.iter().try_fold(0usize, |count, binding| {
+    let mut binding_count = bindings.iter().try_fold(0usize, |count, binding| {
         checked_index_derivation_add(
             count,
             if repeated(binding.id()) {
@@ -3580,10 +3590,45 @@ fn validate_worst_case_index_derivation(
                     },
                 )
             })?;
-    validate_worst_case_index_limits(derivation, binding_count, root_validation_read_count)
+    let mut influential_range_count = 0usize;
+    for check in delete_checks {
+        let multiplier = if repeated(check.binding()) {
+            collection_expansion.map_or(1, CollectionExpansionPlanV1::maximum_elements)
+        } else {
+            1
+        };
+        match check.mode() {
+            DeleteCheckModeV1::NoInbound => {}
+            DeleteCheckModeV1::Restrict { .. } => {
+                influential_range_count =
+                    checked_index_derivation_add(influential_range_count, multiplier)?;
+            }
+            DeleteCheckModeV1::Cascade { relationships } => {
+                influential_range_count = checked_index_derivation_add(
+                    influential_range_count,
+                    checked_index_derivation_mul(relationships.len(), multiplier)?,
+                )?;
+                let cascade_bindings =
+                    relationships.iter().try_fold(0usize, |total, relation| {
+                        checked_index_derivation_add(total, usize::from(relation.maximum()))
+                    })?;
+                binding_count = checked_index_derivation_add(
+                    binding_count,
+                    checked_index_derivation_mul(cascade_bindings, multiplier)?,
+                )?;
+            }
+        }
+    }
+    validate_worst_case_index_limits(
+        derivation,
+        binding_count,
+        root_validation_read_count,
+        influential_range_count,
+    )
 }
 
 fn worst_case_index_derivation(
+    expressions: &ExpressionArena,
     bindings: &[BindingPlan],
     instructions: &[Instruction],
     collection_expansion: Option<&CollectionExpansionPlanV1>,
@@ -3608,6 +3653,8 @@ fn worst_case_index_derivation(
     let mut index_entry_puts = 0usize;
     let mut non_whole_prefixes = 0usize;
     let mut non_whole_prefix_bytes = 0usize;
+    let mut aggregate_prefix_fixed_bytes = 0usize;
+    let mut aggregate_prefix_sources = Vec::new();
     let mut affected_indexes = BTreeSet::<IndexId>::new();
     let unique_indexes = schema
         .unique_keys()
@@ -3635,6 +3682,38 @@ fn worst_case_index_derivation(
                 1
             }
         });
+        let aggregate_bytes = collection_expansion
+            .filter(|_| multiplier > 1)
+            .and_then(CollectionExpansionPlanV1::maximum_aggregate_element_bytes);
+        let mut resulting_expressions = entity
+            .primary_key_fields()
+            .iter()
+            .copied()
+            .zip(binding.key_expressions().iter().copied())
+            .collect::<BTreeMap<_, _>>();
+        for instruction in instructions {
+            match instruction {
+                Instruction::SetField {
+                    binding: target,
+                    field,
+                    value,
+                }
+                | Instruction::SetEmbedding {
+                    binding: target,
+                    field,
+                    value,
+                    ..
+                } if *target == binding.id() => {
+                    resulting_expressions.insert(*field, *value);
+                }
+                _ => {}
+            }
+        }
+        let partition_route = if schema.aggregate_for_entity(entity.id()).is_some() {
+            schema.partition_route_fields(entity.id())?
+        } else {
+            Vec::new()
+        };
         for index in entity.indexes() {
             let earliest_changed_component = match binding.mode {
                 BindingMode::Read => continue,
@@ -3667,6 +3746,8 @@ fn worst_case_index_derivation(
             affected_indexes.insert(index.id());
 
             let mut cumulative_component_bytes = 0usize;
+            let mut cumulative_new_fixed_bytes = 0usize;
+            let mut cumulative_new_sources = Vec::new();
             for (position, component) in index.key_schema().components().iter().enumerate() {
                 cumulative_component_bytes = checked_index_derivation_add(
                     cumulative_component_bytes,
@@ -3676,23 +3757,92 @@ fn worst_case_index_derivation(
                     INDEX_PREFIX_TARGET_FIXED_SEMANTIC_BYTES_V1,
                     cumulative_component_bytes,
                 )?;
+                let direct_source = aggregate_bytes.and_then(|_| {
+                    index
+                        .fields()
+                        .get(position)
+                        .and_then(|field| resulting_expressions.get(field))
+                        .and_then(|expression| direct_aggregate_source(expressions, *expression))
+                });
+                if let Some(source) = direct_source {
+                    cumulative_new_sources.push(source);
+                } else {
+                    cumulative_new_fixed_bytes = checked_index_derivation_add(
+                        cumulative_new_fixed_bytes,
+                        component.maximum_payload_bytes(),
+                    )?;
+                }
                 let copies =
                     if earliest_changed_component.is_some_and(|earliest| position >= earliest) {
                         2
                     } else {
                         1
                     };
+                let prefix_multiplier = if multiplier > 1
+                    && position + 1 == partition_route.len()
+                    && index.fields().starts_with(&partition_route)
+                {
+                    1
+                } else {
+                    multiplier
+                };
                 non_whole_prefixes = checked_index_derivation_add(
                     non_whole_prefixes,
-                    checked_index_derivation_mul(copies, multiplier)?,
+                    checked_index_derivation_mul(copies, prefix_multiplier)?,
                 )?;
                 non_whole_prefix_bytes = checked_index_derivation_add(
                     non_whole_prefix_bytes,
                     checked_index_derivation_mul(
                         checked_index_derivation_mul(prefix_bytes, copies)?,
-                        multiplier,
+                        prefix_multiplier,
                     )?,
                 )?;
+                let affine_prefix_bytes = if prefix_multiplier == 1 || aggregate_bytes.is_none() {
+                    checked_index_derivation_mul(prefix_bytes, copies)?
+                } else {
+                    match binding.mode {
+                        BindingMode::Create => checked_index_derivation_mul(
+                            checked_index_derivation_add(
+                                INDEX_PREFIX_TARGET_FIXED_SEMANTIC_BYTES_V1,
+                                cumulative_new_fixed_bytes,
+                            )?,
+                            multiplier,
+                        )?,
+                        BindingMode::Delete => {
+                            checked_index_derivation_mul(prefix_bytes, multiplier)?
+                        }
+                        BindingMode::Mutate
+                            if earliest_changed_component
+                                .is_some_and(|earliest| position >= earliest) =>
+                        {
+                            let old = checked_index_derivation_mul(prefix_bytes, multiplier)?;
+                            let new = checked_index_derivation_mul(
+                                checked_index_derivation_add(
+                                    INDEX_PREFIX_TARGET_FIXED_SEMANTIC_BYTES_V1,
+                                    cumulative_new_fixed_bytes,
+                                )?,
+                                multiplier,
+                            )?;
+                            checked_index_derivation_add(old, new)?
+                        }
+                        BindingMode::Mutate | BindingMode::Read => {
+                            checked_index_derivation_mul(prefix_bytes, multiplier)?
+                        }
+                    }
+                };
+                aggregate_prefix_fixed_bytes = checked_index_derivation_add(
+                    aggregate_prefix_fixed_bytes,
+                    affine_prefix_bytes,
+                )?;
+                if prefix_multiplier > 1 && aggregate_bytes.is_some() {
+                    let new_prefix_is_present = binding.mode == BindingMode::Create
+                        || (binding.mode == BindingMode::Mutate
+                            && earliest_changed_component
+                                .is_some_and(|earliest| position >= earliest));
+                    if new_prefix_is_present {
+                        aggregate_prefix_sources.extend(cumulative_new_sources.iter().copied());
+                    }
+                }
             }
             if unique_indexes.contains(&index.id()) {
                 unique_occupancies = checked_index_derivation_add(unique_occupancies, multiplier)?;
@@ -3715,13 +3865,35 @@ fn worst_case_index_derivation(
 
     let affected_prefixes =
         checked_index_derivation_add(non_whole_prefixes, affected_indexes.len())?;
-    let affected_target_bytes = checked_index_derivation_add(
+    let independent_affected_target_bytes = checked_index_derivation_add(
         non_whole_prefix_bytes,
         checked_index_derivation_mul(
             affected_indexes.len(),
             INDEX_PREFIX_TARGET_FIXED_SEMANTIC_BYTES_V1,
         )?,
     )?;
+    let aggregate_affected_target_bytes = collection_expansion
+        .and_then(CollectionExpansionPlanV1::maximum_aggregate_element_bytes)
+        .map(|aggregate_bytes| {
+            checked_index_derivation_add(
+                checked_index_derivation_add(
+                    aggregate_prefix_fixed_bytes,
+                    checked_index_derivation_mul(
+                        aggregate_bytes,
+                        aggregate_copy_charge(aggregate_prefix_sources)?,
+                    )?,
+                )?,
+                checked_index_derivation_mul(
+                    affected_indexes.len(),
+                    INDEX_PREFIX_TARGET_FIXED_SEMANTIC_BYTES_V1,
+                )?,
+            )
+        })
+        .transpose()?;
+    let affected_target_bytes = aggregate_affected_target_bytes
+        .map_or(independent_affected_target_bytes, |affine| {
+            affine.min(independent_affected_target_bytes)
+        });
     let partition_semantic_bytes_per_put = checked_index_derivation_add(
         INDEX_ENTRY_V2_PARTITION_LENGTH_SEMANTIC_BYTES,
         maximum_partition_key_bytes,
@@ -3743,6 +3915,7 @@ fn validate_worst_case_index_limits(
     derivation: WorstCaseIndexDerivation,
     binding_count: usize,
     root_validation_read_count: usize,
+    influential_range_count: usize,
 ) -> Result<(), IrValidationError> {
     checked_len(
         "command worst-case index entry deltas",
@@ -3772,7 +3945,10 @@ fn validate_worst_case_index_limits(
 
     let validation_targets = checked_index_derivation_add(
         checked_index_derivation_add(
-            checked_index_derivation_add(binding_count, root_validation_read_count)?,
+            checked_index_derivation_add(
+                checked_index_derivation_add(binding_count, root_validation_read_count)?,
+                influential_range_count,
+            )?,
             derivation.affected_prefixes,
         )?,
         derivation.unique_occupancies,
@@ -3780,7 +3956,16 @@ fn validate_worst_case_index_limits(
     checked_len(
         "command worst-case validation targets",
         validation_targets,
-        MAX_COMMAND_VALIDATION_TARGETS_V1,
+        MAX_COMMAND_INDEX_VALIDATION_POSITIONS_V1,
+    )?;
+    let index_work = checked_index_derivation_add(
+        checked_index_derivation_add(derivation.index_entry_deltas, derivation.affected_prefixes)?,
+        validation_targets,
+    )?;
+    checked_len(
+        "command worst-case correlated index work units",
+        index_work,
+        MAX_COMMAND_INDEX_WORK_UNITS_V1,
     )?;
 
     let affected_epoch_state_bytes = checked_index_derivation_add(
@@ -6215,6 +6400,7 @@ pub(crate) mod tests {
             .expect("collection expansion")
         });
         worst_case_index_derivation(
+            &expressions,
             &bindings,
             &instructions,
             collection_expansion.as_ref(),
@@ -6318,6 +6504,7 @@ pub(crate) mod tests {
                 },
                 0,
                 0,
+                0,
             )
             .is_ok()
         );
@@ -6334,6 +6521,7 @@ pub(crate) mod tests {
                 },
                 0,
                 0,
+                0,
             ),
             Err(IrValidationError::LimitExceeded {
                 kind: "command worst-case index entry deltas",
@@ -6342,17 +6530,13 @@ pub(crate) mod tests {
             })
         );
 
-        let exact_prefixes = WorstCaseIndexDerivation {
-            affected_prefixes: MAX_COMMAND_AFFECTED_INDEX_PREFIXES_V1,
-            ..empty
-        };
-        assert!(validate_worst_case_index_limits(exact_prefixes, 0, 0).is_ok());
         assert_eq!(
             validate_worst_case_index_limits(
                 WorstCaseIndexDerivation {
                     affected_prefixes: MAX_COMMAND_AFFECTED_INDEX_PREFIXES_V1 + 1,
                     ..empty
                 },
+                0,
                 0,
                 0,
             ),
@@ -6365,11 +6549,40 @@ pub(crate) mod tests {
 
         assert!(
             validate_worst_case_index_limits(
+                empty,
+                MAX_COMMAND_INDEX_VALIDATION_POSITIONS_V1,
+                0,
+                0,
+            )
+            .is_ok()
+        );
+        assert_eq!(
+            validate_worst_case_index_limits(
+                empty,
+                MAX_COMMAND_INDEX_VALIDATION_POSITIONS_V1 + 1,
+                0,
+                0,
+            ),
+            Err(IrValidationError::LimitExceeded {
+                kind: "command worst-case validation targets",
+                actual: MAX_COMMAND_INDEX_VALIDATION_POSITIONS_V1 + 1,
+                maximum: MAX_COMMAND_INDEX_VALIDATION_POSITIONS_V1,
+            })
+        );
+
+        let exact_work_prefixes = (MAX_COMMAND_INDEX_WORK_UNITS_V1 - 1) / 2;
+        assert_eq!(
+            exact_work_prefixes + (exact_work_prefixes + 1),
+            MAX_COMMAND_INDEX_WORK_UNITS_V1
+        );
+        assert!(
+            validate_worst_case_index_limits(
                 WorstCaseIndexDerivation {
-                    affected_prefixes: MAX_COMMAND_VALIDATION_TARGETS_V1 - 1,
+                    affected_prefixes: exact_work_prefixes,
                     ..empty
                 },
                 1,
+                0,
                 0,
             )
             .is_ok()
@@ -6377,16 +6590,17 @@ pub(crate) mod tests {
         assert_eq!(
             validate_worst_case_index_limits(
                 WorstCaseIndexDerivation {
-                    affected_prefixes: MAX_COMMAND_VALIDATION_TARGETS_V1 - 1,
+                    affected_prefixes: exact_work_prefixes,
                     ..empty
                 },
                 2,
                 0,
+                0,
             ),
             Err(IrValidationError::LimitExceeded {
-                kind: "command worst-case validation targets",
-                actual: MAX_COMMAND_VALIDATION_TARGETS_V1 + 1,
-                maximum: MAX_COMMAND_VALIDATION_TARGETS_V1,
+                kind: "command worst-case correlated index work units",
+                actual: MAX_COMMAND_INDEX_WORK_UNITS_V1 + 1,
+                maximum: MAX_COMMAND_INDEX_WORK_UNITS_V1,
             })
         );
 
@@ -6402,6 +6616,7 @@ pub(crate) mod tests {
                 },
                 0,
                 0,
+                0,
             )
             .is_ok()
         );
@@ -6412,6 +6627,7 @@ pub(crate) mod tests {
                     affected_target_bytes: exact_state_target_bytes + 1,
                     ..empty
                 },
+                0,
                 0,
                 0,
             ),
@@ -6459,6 +6675,7 @@ pub(crate) mod tests {
                 },
                 0,
                 0,
+                0,
             ),
             Err(IrValidationError::InvalidDependency {
                 reason: "index put count exceeds complete index-delta count",
@@ -6473,6 +6690,7 @@ pub(crate) mod tests {
                         MAX_INDEX_ENTRY_V2_PARTITION_SEMANTIC_BYTES + 1,
                     ..empty
                 },
+                0,
                 0,
                 0,
             ),
@@ -6599,6 +6817,79 @@ pub(crate) mod tests {
                 unique_occupancy_bytes: 0,
             }
         );
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn reduced_partition_model_never_exceeds_the_compiler_prefix_and_work_estimate(
+            field_count in 1usize..10,
+            partition_seed in 0usize..10,
+            earliest_seed in 0usize..10,
+            elements in 1usize..=100,
+            create in proptest::bool::ANY,
+        ) {
+            let partition_fields = 1 + partition_seed % field_count;
+            let earliest_changed = if create {
+                None
+            } else {
+                Some(
+                    partition_fields
+                        + earliest_seed % (field_count - partition_fields + 1),
+                )
+            };
+            let copies = |position: usize| {
+                if earliest_changed.is_some_and(|earliest| position >= earliest) {
+                    2
+                } else {
+                    1
+                }
+            };
+            let estimated_prefixes = 1 + (0..field_count)
+                .map(|position| {
+                    copies(position)
+                        * if position + 1 == partition_fields { 1 } else { elements }
+                })
+                .sum::<usize>();
+            let concrete_adversarial_prefixes = 1 + (0..field_count)
+                .map(|position| {
+                    if position < partition_fields {
+                        1
+                    } else {
+                        copies(position) * elements
+                    }
+                })
+                .sum::<usize>();
+            let deltas = if create { elements } else { 2 * elements };
+            let estimated_validation = elements + estimated_prefixes;
+            let estimated_work = deltas + estimated_prefixes + estimated_validation;
+            let concrete_validation = elements + concrete_adversarial_prefixes;
+            let concrete_work = deltas + concrete_adversarial_prefixes + concrete_validation;
+
+            proptest::prop_assert!(concrete_adversarial_prefixes <= estimated_prefixes);
+            proptest::prop_assert!(concrete_validation <= estimated_validation);
+            proptest::prop_assert!(concrete_work <= estimated_work);
+
+            let admitted = validate_worst_case_index_limits(
+                WorstCaseIndexDerivation {
+                    index_entry_deltas: deltas,
+                    index_entry_puts: elements,
+                    index_entry_v2_partition_semantic_bytes: 0,
+                    affected_prefixes: estimated_prefixes,
+                    affected_target_bytes: 0,
+                    unique_occupancies: 0,
+                    unique_occupancy_bytes: 0,
+                },
+                elements,
+                0,
+                0,
+            )
+            .is_ok();
+            if admitted {
+                proptest::prop_assert!(concrete_adversarial_prefixes <= MAX_COMMAND_AFFECTED_INDEX_PREFIXES_V1);
+                proptest::prop_assert!(concrete_validation <= MAX_COMMAND_INDEX_VALIDATION_POSITIONS_V1);
+                proptest::prop_assert!(concrete_work <= MAX_COMMAND_INDEX_WORK_UNITS_V1);
+            }
+        }
     }
 
     pub(crate) fn minimal_mutation() -> (CommandPlan, SchemaIr) {

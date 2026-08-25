@@ -3025,7 +3025,7 @@ fn compilation_diagnostics_to_proto(
                 });
                 v1::SemanticDiagnostic {
                     code: code.as_str().to_owned(),
-                    summary: code.summary().to_owned(),
+                    summary: diagnostic.summary(),
                     help: code.help().map(str::to_owned),
                     primary_span: Some(v1::SourceSpan {
                         start: primary.start(),

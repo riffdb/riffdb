@@ -65,6 +65,12 @@ files
   riffdb/storage/v1/contextual_causation_v2.proto
     import riffdb/storage/v1/application.proto
     import riffdb/storage/v1/common.proto
+  riffdb/storage/v1/correlated_index_work_command_authority_v6.proto
+    import riffdb/storage/v1/application.proto
+    import riffdb/storage/v1/command_capsule_v1.proto
+    import riffdb/storage/v1/command_segment_v1.proto
+    import riffdb/storage/v1/entity_transitions_v4.proto
+    import riffdb/storage/v1/event_policy_command_authority_v5.proto
   riffdb/storage/v1/entity_references_v3.proto
     import riffdb/storage/v1/application.proto
     import riffdb/storage/v1/common.proto
@@ -969,6 +975,12 @@ messages
     3 index_generation_transitions repeated .riffdb.storage.v1.StoredIndexGenerationTransitionV1
     4 canonical_service_values optional bytes
     5 entity_transitions repeated .riffdb.storage.v1.StoredCommittedEntityTransitionV1
+  riffdb.storage.v1.StoredCommandCapsuleV6 fields=5
+    1 base optional .riffdb.storage.v1.StoredCommandCapsuleV1
+    2 events repeated .riffdb.storage.v1.StoredDurableEventVariantV1
+    3 index_generation_transitions repeated .riffdb.storage.v1.StoredIndexGenerationTransitionV1
+    4 canonical_service_values optional bytes
+    5 entity_transitions repeated .riffdb.storage.v1.StoredCommittedEntityTransitionV1
   riffdb.storage.v1.StoredCommandCausationV1 fields=2
     1 causing_event_id optional .riffdb.storage.v1.EventIdV1
     2 root_request_id optional bytes
@@ -1022,6 +1034,16 @@ messages
     7 last_administration_sequence optional uint64
     8 commands repeated .riffdb.storage.v1.StoredCommandCapsuleV5
     9 manifest optional .riffdb.storage.v1.CommandSegmentManifestV1
+  riffdb.storage.v1.StoredCommandSegmentBodyV5 fields=9
+    1 database_id optional bytes
+    2 history_incarnation optional uint64
+    3 predecessor_segment_hash optional bytes
+    4 first_commit_sequence optional uint64
+    5 last_commit_sequence optional uint64
+    6 first_administration_sequence optional uint64
+    7 last_administration_sequence optional uint64
+    8 commands repeated .riffdb.storage.v1.StoredCommandCapsuleV6
+    9 manifest optional .riffdb.storage.v1.CommandSegmentManifestV1
   riffdb.storage.v1.StoredCommandSegmentV1 fields=2
     1 body optional .riffdb.storage.v1.StoredCommandSegmentBodyV1
     2 segment_digest optional bytes
@@ -1033,6 +1055,9 @@ messages
     2 segment_digest optional bytes
   riffdb.storage.v1.StoredCommandSegmentV4 fields=2
     1 body optional .riffdb.storage.v1.StoredCommandSegmentBodyV4
+    2 segment_digest optional bytes
+  riffdb.storage.v1.StoredCommandSegmentV5 fields=2
+    1 body optional .riffdb.storage.v1.StoredCommandSegmentBodyV5
     2 segment_digest optional bytes
   riffdb.storage.v1.StoredCommitRecordV1 fields=15
     1 commit_sequence optional uint64

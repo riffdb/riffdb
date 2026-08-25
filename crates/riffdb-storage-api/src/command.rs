@@ -43,8 +43,8 @@ impl StoredCommandCausationV1 {
 use crate::{
     EntityTarget, ExecutablePlanRef, IdempotencyIdentity, IdempotencyLookupCandidatesV1,
     IndexRangeTarget, MAX_AFFECTED_INDEX_EPOCH_TARGETS, MAX_COMMAND_READ_TARGETS,
-    MAX_ENTITY_MUTATIONS, MAX_EVENT_INTENTS, MAX_READ_DEPENDENCIES, MAX_READ_SNAPSHOT_BYTES,
-    MAX_VALIDATION_TARGETS, PartitionIndexTarget, ReadDependencies, ReadSnapshot,
+    MAX_ENTITY_MUTATIONS, MAX_EVENT_INTENTS, MAX_INDEX_VALIDATION_POSITIONS, MAX_READ_DEPENDENCIES,
+    MAX_READ_SNAPSHOT_BYTES, PartitionIndexTarget, ReadDependencies, ReadSnapshot,
     StorageValueError, ValidationReadRequest, canonical_codec_storage_error,
 };
 
@@ -1360,7 +1360,7 @@ impl AffectedIndexEpochTargets {
             || targets
                 .len()
                 .checked_add(unique_targets.len())
-                .is_none_or(|count| count > MAX_VALIDATION_TARGETS)
+                .is_none_or(|count| count > MAX_INDEX_VALIDATION_POSITIONS)
         {
             return Err(StorageValueError::LimitExceeded);
         }
@@ -1790,21 +1790,21 @@ mod tests {
 
         let exact = AffectedIndexEpochTargets::with_unique(
             Vec::new(),
-            unique_targets(MAX_VALIDATION_TARGETS),
+            unique_targets(MAX_INDEX_VALIDATION_POSITIONS),
         )
         .expect("exact unique validation-position limit");
-        assert_eq!(exact.unique_targets().len(), MAX_VALIDATION_TARGETS);
+        assert_eq!(exact.unique_targets().len(), MAX_INDEX_VALIDATION_POSITIONS);
         assert_eq!(
             AffectedIndexEpochTargets::with_unique(
                 Vec::new(),
-                unique_targets(MAX_VALIDATION_TARGETS + 1)
+                unique_targets(MAX_INDEX_VALIDATION_POSITIONS + 1)
             ),
             Err(StorageValueError::LimitExceeded)
         );
         assert_eq!(
             AffectedIndexEpochTargets::with_unique(
                 vec![generation_target(IndexId::first())],
-                unique_targets(MAX_VALIDATION_TARGETS)
+                unique_targets(MAX_INDEX_VALIDATION_POSITIONS)
             ),
             Err(StorageValueError::LimitExceeded)
         );
