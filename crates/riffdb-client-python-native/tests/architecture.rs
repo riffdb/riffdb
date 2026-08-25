@@ -25,7 +25,8 @@ fn native_bridge_has_no_kernel_or_storage_dependency() {
     let manifest =
         fs::read_to_string(crate_root().join("Cargo.toml")).expect("read native manifest");
 
-    assert!(manifest.contains("riffdb-client-rust"));
+    assert!(manifest.contains("riffdb-driver-host"));
+    assert!(!manifest.contains("riffdb-client-rust"));
     for forbidden in [
         "riffdb-storage-",
         "riffdb-commit",
@@ -58,14 +59,18 @@ fn public_python_package_has_no_transport_fallback() {
 #[test]
 fn native_errors_and_credentials_are_closed() {
     let source = fs::read_to_string(crate_root().join("src/lib.rs")).expect("read native source");
+    let protocol_core =
+        fs::read_to_string(crate_root().join("../riffdb-driver-host/src/protocol_core.rs"))
+            .expect("read shared protocol core");
 
     assert!(source.contains("BearerCredential([REDACTED])"));
     assert!(source.contains("bearer credentials cannot be serialized"));
     assert!(source.contains("load_protected_bearer_credential"));
     assert!(source.contains("NativeError"));
-    assert!(source.contains("public_application_error_json"));
-    assert!(source.contains("ClientError::Public(_) | ClientError::Application(_) =>"));
-    assert!(source.contains("handled by semantic/public guards"));
+    assert!(source.contains("classify_client_error"));
+    assert!(protocol_core.contains("public_application_error_json"));
+    assert!(protocol_core.contains("ClientError::Public(_) | ClientError::Application(_) =>"));
+    assert!(protocol_core.contains("handled by semantic/public guards"));
     assert!(!source.contains("format!(\"{error}"));
     assert!(!source.contains("error.to_string()"));
 }

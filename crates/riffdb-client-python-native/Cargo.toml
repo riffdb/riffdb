@@ -16,8 +16,8 @@ doctest = false
 base64 = { version = "=0.22.1", default-features = false, features = ["alloc"] }
 pyo3.workspace = true
 pyo3-async-runtimes.workspace = true
-riffdb-client-rust = { version = "0.1.0", path = "../riffdb-client-rust", default-features = false }
 riffdb-config = { version = "0.1.0", path = "../riffdb-config", default-features = false }
+riffdb-driver-host = { version = "0.1.0", path = "../riffdb-driver-host", default-features = false }
 serde = { version = "=1.0.229", default-features = false, features = ["derive", "std"] }
 serde_json = { version = "=1.0.150", default-features = false, features = ["std"] }
 tokio = { version = "=1.52.0", default-features = false, features = ["rt-multi-thread", "sync"] }
