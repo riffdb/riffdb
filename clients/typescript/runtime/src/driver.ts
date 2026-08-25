@@ -454,6 +454,12 @@ function encodeFrame(value: Record<string, unknown>): Buffer {
  * Encodes the closed protocol without coercing u64 frontiers through the
  * JavaScript `number` domain. Only integral JSON numbers are admitted.
  */
+/** Deterministic UTF-16 code-unit ordering for protocol field names. */
+function compareFieldNames(left: string, right: string): number {
+  if (left < right) return -1;
+  return left > right ? 1 : 0;
+}
+
 function encodeJson(value: unknown, depth = 0): string {
   if (depth > MAX_VALUE_DEPTH + 4) throw new Error("RiffDB driver message exceeds the depth bound");
   if (value === null) return "null";
@@ -469,13 +475,27 @@ function encodeJson(value: unknown, depth = 0): string {
   }
   if (Array.isArray(value)) {
     if (value.length > MAX_COLLECTION_ITEMS) throw new Error("RiffDB driver collection exceeds its bound");
-    return `[${value.map((item) => encodeJson(item, depth + 1)).join(",")}]`;
+    const items: string[] = [];
+    for (const item of value) items.push(encodeJson(item, depth + 1));
+    return `[${items.join(",")}]`;
   }
   if (typeof value === "object" && value !== null) {
-    const entries = Object.entries(value).filter(([, item]) => item !== undefined);
-    if (entries.length > MAX_COLLECTION_ITEMS) throw new Error("RiffDB driver record exceeds its bound");
-    entries.sort(([left], [right]) => left.localeCompare(right));
-    return `{${entries.map(([name, item]) => `${JSON.stringify(name)}:${encodeJson(item, depth + 1)}`).join(",")}}`;
+    // One pass instead of entries/filter/sort/map, and code-unit ordering
+    // instead of `localeCompare`: collation is locale-dependent, so the
+    // "closed protocol" encoding was not actually deterministic across hosts,
+    // and full Unicode collation is far more work than field names need.
+    const names: string[] = [];
+    const record = value as Record<string, unknown>;
+    for (const name of Object.keys(record)) {
+      if (record[name] !== undefined) names.push(name);
+    }
+    if (names.length > MAX_COLLECTION_ITEMS) throw new Error("RiffDB driver record exceeds its bound");
+    names.sort(compareFieldNames);
+    const encoded: string[] = [];
+    for (const name of names) {
+      encoded.push(`${JSON.stringify(name)}:${encodeJson(record[name], depth + 1)}`);
+    }
+    return `{${encoded.join(",")}}`;
   }
   throw new Error("invalid RiffDB driver message");
 }
