@@ -7683,6 +7683,42 @@ does not create a kernel or storage escape hatch.
   and byte boundaries; least-sufficient durable selection; memory/redb parity;
   deterministic schedules; idempotency; rollback; crash recovery; provenance;
   events; changelog order; remote loopback; and bounded stage-cost evidence.
+- `BLK-028`: An ordinary idempotent command MAY contain exactly one compiler-
+  resolved, complete-primary-key, partition-local delete binding only for an
+  entity whose structural policy is `no_inbound`; caller-selected deletion,
+  multiple ordinary deletes, restrict, cascade, cross-partition work, set-null,
+  orphaning, and physical erasure remain forbidden on this unary path.
+- `BLK-029`: Every field or complete-record expression of an ordinary delete
+  binding MUST denote the exact immutable snapshot preimage used to construct
+  that delete mutation's prior image. It MUST NOT denote a tombstone, later
+  lookup, input reconstruction, or independently fetched record.
+- `BLK-030`: The compiler MUST include every returned, required, or event-bound
+  preimage field in accessed-field and authorization proofs, forbid sets on the
+  delete binding, and reject a second read/mutate/delete alias for the same
+  entity target. Complete-record use remains explicit and bounded.
+- `BLK-031`: A success outcome derived from a delete preimage MUST become
+  durable and releasable only in the same atomic graph as deletion of that
+  exact expected version and prior-image identity. A transaction-current
+  conflict MUST discard the evaluated graph and perform bounded whole-command
+  reevaluation; a stale preimage MUST never commit or be released.
+- `BLK-032`: Concurrent delete/delete execution against one row MUST commit at
+  most one consumed outcome. An update winner MUST cause reevaluation from the
+  updated preimage, and a delete winner MUST cause the declared zero-mutation
+  missing outcome; no last-write-wins or split read/delete window is permitted.
+- `BLK-033`: Replay of a unary delete idempotency identity MUST return the exact
+  persisted consumed or missing outcome without rereading current entity state
+  or attempting deletion again. Different-input reuse retains the existing
+  typed mismatch and uncertainty resolves only the original identity.
+- `BLK-034`: Returning a secret from a deleted preimage MUST require the same
+  compiler-declared reveal, role grant, plan/module binding, fresh release-time
+  authorization, generated metadata, and redaction as every other command
+  secret output. Delete authority MUST NOT imply reveal authority.
+- `BLK-035`: Supported unary delete/preimage source MUST compile without
+  `RDB-C023`; unsupported policy, count, target, and repeated-element-return
+  shapes MUST receive source-spanned bounded diagnostics. Runtime, recovery,
+  generated surfaces, and memory/redb evidence MUST prove exact preimage,
+  concurrency, replay, crash, secret, and atomicity semantics without adding
+  application-specific behavior.
 
 Compiler-bounded one-hop cascade deletion extends that closed bulk-command
 model without introducing recursive graph traversal or caller-selected delete
@@ -7891,6 +7927,109 @@ behavior:
   Any convenience iterator MUST require an explicit finite page or item bound
   and MUST NOT implement count, offset, filtering, sorting, or another public
   semantic by walking pages.
+- `OQ-032`: The compiler MUST own one closed operational index-component
+  capability registry mapping each canonical, presence-aware, and versioned
+  text-key encoding to its exact equality, bounded-membership, interval,
+  complement, state, prefix, order, and tie-break roles. Callers and backends
+  MUST NOT select or extend those roles at runtime.
+- `OQ-033`: Every ordinary index plan MUST prove one complete access shape:
+  partition and exact leading components, at most one accepted branching or
+  interval component, complete total-order suffix and tie-breaker, physical
+  lowering profile, work bounds, and authority. An unconsumed application
+  predicate or post-page residual filter MUST fail compilation.
+- `OQ-034`: Typed parameters and normalized set members MUST lower once per
+  step/request into one bounded immutable physical range schedule. Profile
+  validation, encoding, sorting, deduplication, and compatibility proof MUST
+  NOT repeat per row, page item, point read, or storage operation.
+- `OQ-035`: A bounded `in` predicate on `text_key(field, binary_utf8_v1)` MAY
+  supply the first remaining bytewise order component. Each distinct member
+  MUST be encoded by that profile, traversed as a disjoint exact prefix, and
+  share one page, continuation probe, scan/fuel, cursor, and output budget.
+- `OQ-036`: Multi-range traversal MUST produce one deterministic forward or
+  reverse total order by ordering disjoint ranges and each range consistently.
+  Cursor identity MUST bind the exact plan, normalized parameters, profile,
+  index epoch, direction, and last physical key; drift MUST fail closed.
+- `OQ-037`: Ordinary range, inequality, complement, presence, membership, and
+  text predicates MUST be physically applied before page and continuation
+  formation. A planner-admitted artifact without that proof MUST be refused
+  before storage access and refused for new activation until safely recompiled.
+- `OQ-038`: Canonical range, inequality, and finite complement execution MAY be
+  activated only through typed inclusive/exclusive physical intervals whose
+  selected component supplies the first remaining order term. Logical typed
+  comparison MUST NOT silently adopt a text-key byte comparator.
+- `OQ-039`: Index flexibility MUST independently charge set count/bytes, range
+  schedule, probes, inspected rows, policy/hydration, continuation, cursor, and
+  output. One limit applies to the complete range union; no per-range budget
+  multiplication, duplicate-index workaround, or hidden read/write
+  amplification is permitted.
+- `OQ-040`: Ordinary access and ADR-0130 providers MUST share frozen logical
+  equality, membership, range, state, profile, order, and tie-break meanings
+  while retaining separate runtimes, cost models, state, freshness, and epoch
+  contracts. No bitmap, row-ID, score, candidate, or materialization bridge is
+  implied.
+- `OQ-041`: Relationship composition MAY reuse only declared type-exact same-
+  partition mappings with independently bounded driver rows, target fan-out,
+  intermediate rows, probes, bytes, output, missing/duplicate/null semantics,
+  authority, and plan identity. Existing dependent complete-key batches MUST
+  conform to this model.
+- `OQ-042`: Arbitrary or caller-supplied joins, cross-partition joins,
+  Cartesian products, unbounded nested collections, recursive traversal,
+  materialize-all intermediates, and runtime cost-based join optimization are
+  forbidden. A new semijoin, existence, or one-to-many operator requires an
+  accepted real-consumer amendment.
+- `OQ-043`: Memory and redb MUST consume one semantic range and continuation
+  contract and pass a shared compiler/lowering/storage/cursor conformance
+  matrix. External frameworks remain acceptance evidence only; their schemas,
+  routes, adapters, and generated profiles MUST remain outside RiffDB.
+- `OQ-044`: One compiler-owned aggregate registry MUST define each function's
+  stable identity, inputs, `NoValue` and empty-set behavior, result and partial-
+  state schema, exact arithmetic, execution eligibility, bounds, and policy
+  classification across resolver, evaluator, provider, carriage, and generated
+  surfaces.
+- `OQ-045`: Existing `count`, `exact_count`, `sum`, `min`, `max`, and bounded
+  group-by meanings and bytes MUST remain exact. Ordinary `count()` folds only
+  its earlier bounded source; `exact_count` measures the complete admitted
+  provider population and neither may substitute for the other.
+- `OQ-046`: `count_present(field)` MUST count non-`NoValue` rows;
+  `count_distinct(field)` MUST count distinct canonical typed values including
+  `NoValue` as one value; and `count_distinct_present(field)` MUST exclude that
+  class. All return zero for empty input and require explicit independent
+  cardinality/state bounds.
+- `OQ-047`: `mean(field)` MUST return exact `ExactMeanV1 { total, count }`, with
+  `total` using the exact checked sum/Decimal/currency semantics and `count`
+  recording contributors. It MUST NOT perform implicit division, rounding,
+  scale selection, or floating-point arithmetic.
+- `OQ-048`: `any(field)` and `all(field)` MUST initially accept only required
+  Boolean fields and use exact empty identities `false` and `true`. Optional
+  Boolean folding requires a separately accepted three-valued truth table.
+- `OQ-049`: Every aggregate plan MUST identify bounded-source, bounded-grouped,
+  or exact-whole-result population semantics. Page folding, cursor walking,
+  post-policy contribution, mixed epochs, unbounded materialization, and
+  approximate answers under an exact identity are forbidden.
+- `OQ-050`: Exact aggregate partial states MUST use checked merge laws for
+  counts, sums, mean totals/counts, extrema, Boolean identities, and bounded
+  canonical distinct sets. Descriptor and compatibility validation MUST be
+  paid once per plan/provider generation, never per contribution or merge.
+- `OQ-051`: Row, group, distinct-value, state-byte, arithmetic, scanned-row,
+  projected-cell, and output bounds MUST be independent. A page limit MUST NOT
+  stand in for group or distinct cardinality, and exhaustion MUST release no
+  partial aggregate or group.
+- `OQ-052`: Whole-result aggregates, facets, page rows, totals, and ordinal
+  windows in one query MUST use one ADR-0130 provider epoch and policy
+  partition. Providers advertise only exact functions they can serve within
+  declared maintained state or complete bounded execution.
+- `OQ-053`: Persisted rebuildable aggregate/provider state MUST have ADR-0124
+  identity, fixtures, readable/writable window, rebuild, and retirement rules.
+  Transient registry refactors MUST NOT rotate existing plan hashes or create
+  unnecessary durable topology nodes.
+- `OQ-054`: Variance, deviation, covariance, percentile, histogram,
+  approximate distinct, top-k, ordered selectors, collection-producing folds,
+  and user-defined aggregates remain unavailable until a real-consumer ADR
+  freezes numerical, quality, order, bound, policy, epoch, and state semantics.
+- `OQ-055`: Aggregate differential, merge, policy/inference, authorization,
+  epoch, recovery, compatibility, generated-surface, and architecture evidence
+  MUST use generic corpora and prove no target-language callback, external-
+  framework branch, per-row descriptor proof, or unsafe fallback exists.
 
 ### 24.5.5 Compiled workflow concurrency
 
