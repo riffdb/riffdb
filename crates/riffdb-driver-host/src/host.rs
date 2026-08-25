@@ -12,10 +12,10 @@ use riffdb_client_rust::{
     ApplicationEventCheckpoint, ApplicationEventConsumer, ApplicationEventConsumerPublicStatus,
     ApplicationEventConsumerStatus, ApplicationEventId, ApplicationEventLeaseEvidence,
     ApplicationEventMutationResult, ApplicationEventPullDisposition, ApplicationLiveQueryUpdate,
-    ApplicationReactiveOperation, ApplicationRecord, ApplicationUuid, ApplicationValue,
-    AttemptBudget, CallMetadata, EventConsumerOptions, LiveQueryCursor, LiveQueryPatchOperation,
-    NamedQuery, QueryOptions, StableApplicationClient, VectorModelVersionItem, VectorStalenessItem,
-    VectorStateInspection, VectorStateInspectionKind, VectorStateInspectionResult, app_v1,
+    ApplicationReactiveOperation, ApplicationRecord, ApplicationValue, AttemptBudget, CallMetadata,
+    EventConsumerOptions, LiveQueryCursor, LiveQueryPatchOperation, NamedQuery, QueryOptions,
+    StableApplicationClient, VectorModelVersionItem, VectorStalenessItem, VectorStateInspection,
+    VectorStateInspectionKind, VectorStateInspectionResult, app_v1,
     raise_query_result as raise_wire_query_result, raise_value as raise_wire_value,
 };
 use riffdb_config::TlsClientConfig;
@@ -26,9 +26,13 @@ use crate::catalog::{
 };
 use crate::protocol::{
     DRIVER_PROTOCOL_VERSION, DRIVER_PROTOCOL_VERSION_V1, DRIVER_PROTOCOL_VERSION_V2,
-    DriverBatchItem, DriverBatchOutcome, DriverDecimal, DriverMoney, DriverPackedColumn,
-    DriverRequest, DriverResponse, DriverTimestamp, DriverValue, DriverVector, InvokeOptions,
+    DriverBatchItem, DriverBatchOutcome, DriverPackedColumn, DriverRequest, DriverResponse,
+    DriverTimestamp, DriverValue, InvokeOptions,
 };
+
+#[cfg(test)]
+#[path = "../../../tests/drivers/protocol_conformance.rs"]
+mod protocol_conformance;
 
 /// Exact alpha host build identity.
 pub const DRIVER_IDENTITY: &str = concat!("riffdb-driverd/", env!("CARGO_PKG_VERSION"));
@@ -632,9 +636,14 @@ impl DriverHost {
                 };
                 let attempts = AttemptBudget::new(options.maximum_attempts)
                     .expect("protocol checked nonzero attempt bound");
-                match client
-                    .execute_command(command, attempts, &self.inner.metadata)
-                    .await
+                match crate::dispatch_command(
+                    &mut client,
+                    &self.inner.metadata,
+                    command,
+                    attempts,
+                    None,
+                )
+                .await
                 {
                     Ok(result) => {
                         let mut fields = match result.outcome_value.map(raise_value) {
@@ -694,11 +703,15 @@ impl DriverHost {
                     Err(error) => return application_error(request_id, spec, error, false),
                 };
                 if accept_compact_result || accept_packed_result {
-                    match client
-                        .execute_named_query_wire(query, &self.inner.metadata)
-                        .await
+                    match crate::dispatch_named_query(
+                        &mut client,
+                        &self.inner.metadata,
+                        query,
+                        true,
+                    )
+                    .await
                     {
-                        Ok(response)
+                        Ok(crate::QueryDispatchResult::Wire(response))
                             if response.selected_result_encoding
                                 == app_v1::NamedResultEncoding::PackedV1 as i32
                                 && accept_packed_result =>
@@ -738,7 +751,7 @@ impl DriverHost {
                                 cursor: response.next_cursor,
                             }
                         }
-                        Ok(response)
+                        Ok(crate::QueryDispatchResult::Wire(response))
                             if response.selected_result_encoding
                                 == app_v1::NamedResultEncoding::CompactV1 as i32 =>
                         {
@@ -787,18 +800,38 @@ impl DriverHost {
                                 cursor: response.next_cursor,
                             }
                         }
-                        Ok(response) => match raise_wire_query_result(response) {
-                            Ok(result) => legacy_query_response(request_id, result),
-                            Err(error) => application_error(request_id, spec, error, false),
-                        },
+                        Ok(crate::QueryDispatchResult::Wire(response)) => {
+                            match raise_wire_query_result(response) {
+                                Ok(result) => legacy_query_response(request_id, result),
+                                Err(error) => application_error(request_id, spec, error, false),
+                            }
+                        }
+                        Ok(crate::QueryDispatchResult::Records(_)) => application_error(
+                            request_id,
+                            spec,
+                            ApplicationClientError::InvalidResponse,
+                            false,
+                        ),
                         Err(error) => application_error(request_id, spec, error, false),
                     }
                 } else {
-                    match client
-                        .execute_named_query(query, &self.inner.metadata)
-                        .await
+                    match crate::dispatch_named_query(
+                        &mut client,
+                        &self.inner.metadata,
+                        query,
+                        false,
+                    )
+                    .await
                     {
-                        Ok(result) => legacy_query_response(request_id, result),
+                        Ok(crate::QueryDispatchResult::Records(result)) => {
+                            legacy_query_response(request_id, result)
+                        }
+                        Ok(crate::QueryDispatchResult::Wire(_)) => application_error(
+                            request_id,
+                            spec,
+                            ApplicationClientError::InvalidResponse,
+                            false,
+                        ),
                         Err(error) => application_error(request_id, spec, error, false),
                     }
                 }
@@ -1596,122 +1629,10 @@ fn local_error(
 }
 
 fn lower_value(value: DriverValue) -> Result<ApplicationValue, DriverHostError> {
-    match value {
-        DriverValue::Null => Ok(ApplicationValue::Null),
-        DriverValue::Bool(value) => Ok(ApplicationValue::Bool(value)),
-        DriverValue::I64(value) => value
-            .parse()
-            .map(ApplicationValue::I64)
-            .map_err(|_| DriverHostError::InvalidValue),
-        DriverValue::U64(value) => value
-            .parse()
-            .map(ApplicationValue::U64)
-            .map_err(|_| DriverHostError::InvalidValue),
-        DriverValue::String(value) => Ok(ApplicationValue::String(value)),
-        DriverValue::Uuid(value) => ApplicationUuid::from_text(value)
-            .map(ApplicationValue::Uuid)
-            .map_err(|_| DriverHostError::InvalidValue),
-        DriverValue::Enum(value) => Ok(ApplicationValue::Enum(value)),
-        DriverValue::Bytes(value) => BASE64
-            .decode(value)
-            .map(ApplicationValue::Bytes)
-            .map_err(|_| DriverHostError::InvalidValue),
-        DriverValue::Date(value) => value
-            .parse()
-            .map(ApplicationValue::Date)
-            .map_err(|_| DriverHostError::InvalidValue),
-        DriverValue::Timestamp(value) => Ok(ApplicationValue::Timestamp {
-            seconds: value
-                .seconds
-                .parse()
-                .map_err(|_| DriverHostError::InvalidValue)?,
-            nanos: value.nanos,
-        }),
-        DriverValue::Decimal(value) => Ok(ApplicationValue::Decimal {
-            coefficient_twos_complement: BASE64
-                .decode(value.coefficient)
-                .map_err(|_| DriverHostError::InvalidValue)?,
-            scale: value.scale,
-            precision: value.precision,
-        }),
-        DriverValue::Money(value) => Ok(ApplicationValue::Money {
-            currency: value.currency,
-            amount: Box::new(ApplicationValue::Decimal {
-                coefficient_twos_complement: BASE64
-                    .decode(value.amount.coefficient)
-                    .map_err(|_| DriverHostError::InvalidValue)?,
-                scale: value.amount.scale,
-                precision: value.amount.precision,
-            }),
-        }),
-        DriverValue::Vector(value) => riffdb_types::CanonicalVector::new(
-            value
-                .component_bits
-                .into_iter()
-                .map(f32::from_bits)
-                .collect(),
-        )
-        .map(ApplicationValue::Vector)
-        .map_err(|_| DriverHostError::InvalidValue),
-        DriverValue::List(values) => values
-            .into_iter()
-            .map(lower_value)
-            .collect::<Result<Vec<_>, _>>()
-            .map(ApplicationValue::List),
-        DriverValue::Record(values) => values
-            .into_iter()
-            .map(|(name, value)| Ok((name, lower_value(value)?)))
-            .collect::<Result<BTreeMap<_, _>, _>>()
-            .map(ApplicationValue::Record),
-    }
+    crate::lower_driver_value(value).map_err(|_| DriverHostError::InvalidValue)
 }
 fn raise_value(value: ApplicationValue) -> DriverValue {
-    match value {
-        ApplicationValue::Null => DriverValue::Null,
-        ApplicationValue::Bool(value) => DriverValue::Bool(value),
-        ApplicationValue::I64(value) => DriverValue::I64(value.to_string()),
-        ApplicationValue::U64(value) => DriverValue::U64(value.to_string()),
-        ApplicationValue::Decimal {
-            coefficient_twos_complement,
-            scale,
-            precision,
-        } => DriverValue::Decimal(DriverDecimal {
-            coefficient: BASE64.encode(coefficient_twos_complement),
-            scale,
-            precision,
-        }),
-        ApplicationValue::Money { currency, amount } => match raise_value(*amount) {
-            DriverValue::Decimal(amount) => DriverValue::Money(DriverMoney { currency, amount }),
-            _ => DriverValue::Null,
-        },
-        ApplicationValue::String(value) => DriverValue::String(value),
-        ApplicationValue::Uuid(value) => DriverValue::Uuid(value.into_string()),
-        ApplicationValue::Enum(value) => DriverValue::Enum(value),
-        ApplicationValue::EnumIdentity { name, .. } => DriverValue::Enum(name),
-        ApplicationValue::Bytes(value) => DriverValue::Bytes(BASE64.encode(value)),
-        ApplicationValue::Date(value) => DriverValue::Date(value.to_string()),
-        ApplicationValue::Timestamp { seconds, nanos } => DriverValue::Timestamp(DriverTimestamp {
-            seconds: seconds.to_string(),
-            nanos,
-        }),
-        ApplicationValue::Vector(value) => DriverValue::Vector(DriverVector {
-            component_bits: value
-                .components()
-                .iter()
-                .copied()
-                .map(f32::to_bits)
-                .collect(),
-        }),
-        ApplicationValue::List(values) => {
-            DriverValue::List(values.into_iter().map(raise_value).collect())
-        }
-        ApplicationValue::Record(values) => DriverValue::Record(
-            values
-                .into_iter()
-                .map(|(name, value)| (name, raise_value(value)))
-                .collect(),
-        ),
-    }
+    crate::raise_driver_value(value)
 }
 fn raise_record(record: ApplicationRecord) -> DriverValue {
     DriverValue::Record(
@@ -2252,6 +2173,64 @@ fn raise_live_update(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn existing_socket_value_path_matches_the_shared_protocol_corpus() {
+        use crate::{
+            DriverRequest, DriverValue, FrameCodec, InvokeOptions, normalize_python_value_request,
+        };
+
+        const HASH: &str = "0000000000000000000000000000000000000000000000000000000000000000";
+        for entry in protocol_conformance::corpus().entries {
+            let value: DriverValue =
+                serde_json::from_value(protocol_conformance::driver_value(&entry))
+                    .expect("corpus driver value");
+            let request = DriverRequest::Invoke {
+                request_id: "in-process-binding".to_owned(),
+                operation: "BindingValue".to_owned(),
+                input_schema_hash: HASH.to_owned(),
+                input: BTreeMap::from([("value".to_owned(), value)]),
+                options: InvokeOptions {
+                    deadline_millis: 1,
+                    maximum_attempts: 1,
+                    read_after_commit: None,
+                    cursor: None,
+                    accept_compact_result: false,
+                    accept_packed_result: false,
+                },
+            };
+            let socket_material = FrameCodec::encode_request(&request);
+            let in_process =
+                normalize_python_value_request(protocol_conformance::python_value(&entry));
+            match (&socket_material, &in_process) {
+                (Ok(socket), Ok((_, in_process))) => assert_eq!(
+                    socket, in_process,
+                    "{} produced different request bytes across transports",
+                    entry.name
+                ),
+                (Err(_), Err(_)) => {}
+                _ => panic!(
+                    "{} produced different public error classes across transports",
+                    entry.name
+                ),
+            }
+            let observation = FrameCodec::encode_request(&request)
+                .and_then(|frame| FrameCodec::decode_request(&frame))
+                .map_err(|_| ())
+                .and_then(|request| {
+                    let DriverRequest::Invoke { mut input, .. } = request else {
+                        return Err(());
+                    };
+                    let value = input.remove("value").ok_or(())?;
+                    lower_value(value).map_err(|_| ())
+                })
+                .map_or_else(
+                    |_| protocol_conformance::invalid_input(),
+                    protocol_conformance::accepted,
+                );
+            protocol_conformance::assert_observation(&entry, observation);
+        }
+    }
     use std::fmt::Write as _;
 
     use sha2::{Digest as _, Sha256};

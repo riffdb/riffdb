@@ -1,8 +1,8 @@
 # ADR-0148: One Driver Protocol Core for Every Binding
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Direction approved:** 2026-08-25 (maintainer)
-- **Exact text accepted:** No
+- **Exact text accepted:** Yes, 2026-08-25 (maintainer, in session)
 - **Decision deadline:** Before WP-682 changes either driver's request
   validation, value marshalling, or error mapping
 - **Requires:** ADR-0074 and ADR-0106 accepted; amends the boundary both
@@ -46,7 +46,9 @@ result, and it replaces a self-contained abi3 wheel with a wheel plus a daemon
 the operator must obtain and run. Keeping two marshalling layers costs no
 throughput and every future driver feature twice.
 
-## Proposed Decision
+The maintainer accepted this exact text on 2026-08-25.
+
+## Decision
 
 ### 1. One protocol core, several bindings
 

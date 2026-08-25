@@ -65,3 +65,48 @@ fn established_local_sessions_are_long_lived_and_bounded_by_admission_not_idle_t
         "the bounded connection inventory replaces an established-session idle timeout"
     );
 }
+
+#[test]
+fn python_binding_has_no_parallel_value_query_command_or_error_core() {
+    let workspace = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(std::path::Path::parent)
+        .expect("workspace root");
+    let manifest =
+        fs::read_to_string(workspace.join("crates/riffdb-client-python-native/Cargo.toml"))
+            .expect("Python native manifest");
+    assert!(
+        !manifest.contains("riffdb-client-rust"),
+        "the binding must reach the application client only through the protocol core"
+    );
+    let source =
+        fs::read_to_string(workspace.join("crates/riffdb-client-python-native/src/lib.rs"))
+            .expect("Python native source");
+    for forbidden in [
+        "fn parse_value(",
+        "fn parse_query(",
+        "fn parse_command(",
+        "MAX_BRIDGE_DEPTH",
+        "MAX_BRIDGE_VALUES",
+        "fn non_application_client_error_kind(",
+        "fn public_application_error_json(",
+        "fn application_error_json(",
+    ] {
+        assert!(
+            !source.contains(forbidden),
+            "Python binding retained duplicated protocol rule: {forbidden}"
+        );
+    }
+    for required in [
+        "parse_in_process_query",
+        "parse_in_process_command",
+        "normalize_python_value",
+        "classify_application_client_error",
+        "classify_client_error",
+    ] {
+        assert!(
+            source.contains(required),
+            "Python binding does not consume shared core rule: {required}"
+        );
+    }
+}
