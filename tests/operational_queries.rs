@@ -19,8 +19,13 @@ contract OperationalQueries version 1 {
     key (organization_id: uuid, document_id: uuid)
     field deleted_at: optional<timestamp>
     field title: string<64>
+    field relation: string<64>
+    field user: string<256>
     index by_deleted (organization_id, deleted_at, document_id) presence(deleted_at)
     index by_title (organization_id, title, document_id) text_key(title, binary_utf8_v1)
+    index by_relation_user (organization_id, relation, user, document_id)
+      text_key(relation, binary_utf8_v1)
+      text_key(user, binary_utf8_v1)
   }
   aggregate Documents {
     root Document
@@ -91,6 +96,35 @@ query DocumentsByBinaryTitle(
 }
 "#;
 
+const BINARY_COMPONENT_ORDER_QUERY: &str = r#"
+query DocumentsByRelationAndUser(
+  $organization_id: Document.organization_id,
+  $after: Cursor?,
+) {
+  many documents from Document
+    where organization_id == $organization_id
+    order by relation asc, user asc, document_id asc
+    take 1 after $after
+  return Found { documents: documents { document_id relation user } }
+  outcomes Found
+}
+"#;
+
+const BINARY_COMPONENT_EQUALITY_QUERY: &str = r#"
+query DocumentsByExactRelation(
+  $organization_id: Document.organization_id,
+  $relation: Document.relation,
+  $after: Cursor?,
+) {
+  many documents from Document
+    where organization_id == $organization_id && relation == $relation
+    order by user asc, document_id asc
+    take 1 after $after
+  return Found { documents: documents { document_id relation user } }
+  outcomes Found
+}
+"#;
+
 #[derive(Clone, Copy)]
 enum Presence {
     Missing,
@@ -102,6 +136,8 @@ enum Presence {
 struct Document {
     ordinal: u8,
     title: &'static str,
+    relation: &'static str,
+    user: &'static str,
     deleted_at: Presence,
 }
 
@@ -208,6 +244,7 @@ impl QueryReadView for IndexedView {
 fn execute_page(
     source: &str,
     prefix: Option<&str>,
+    relation: Option<&str>,
     prior: Option<&QueryContinuation>,
 ) -> Result<QueryOwnedSnapshot, QueryExecutionError> {
     let bundle = compile_contract_source(CONTRACT).expect("contract");
@@ -241,31 +278,43 @@ fn execute_page(
         Document {
             ordinal: 2,
             title: "a",
+            relation: "rel6",
+            user: "x",
             deleted_at: Presence::Missing,
         },
         Document {
             ordinal: 3,
             title: "ab",
+            relation: "rel-3",
+            user: "x",
             deleted_at: Presence::Null,
         },
         Document {
             ordinal: 4,
             title: "abacus",
+            relation: "viewer",
+            user: "doc6",
             deleted_at: Presence::Value(Timestamp::new(10, 0).expect("timestamp")),
         },
         Document {
             ordinal: 5,
             title: "ac",
+            relation: "viewer",
+            user: "doc-3",
             deleted_at: Presence::Missing,
         },
         Document {
             ordinal: 6,
             title: "doc6",
+            relation: "owner",
+            user: "z",
             deleted_at: Presence::Missing,
         },
         Document {
             ordinal: 7,
             title: "doc-3",
+            relation: "editor",
+            user: "a",
             deleted_at: Presence::Missing,
         },
     ];
@@ -278,6 +327,14 @@ fn execute_page(
             (
                 field_id("title"),
                 CanonicalValue::string(document.title).expect("title"),
+            ),
+            (
+                field_id("relation"),
+                CanonicalValue::string(document.relation).expect("relation"),
+            ),
+            (
+                field_id("user"),
+                CanonicalValue::string(document.user).expect("user"),
             ),
         ];
         match document.deleted_at {
@@ -306,6 +363,14 @@ fn execute_page(
                 "title".to_owned(),
                 CanonicalValue::string(document.title).expect("title"),
             ),
+            (
+                "relation".to_owned(),
+                CanonicalValue::string(document.relation).expect("relation"),
+            ),
+            (
+                "user".to_owned(),
+                CanonicalValue::string(document.user).expect("user"),
+            ),
         ]);
         match document.deleted_at {
             Presence::Missing => {}
@@ -330,6 +395,12 @@ fn execute_page(
             CanonicalValue::string(prefix).expect("prefix"),
         );
     }
+    if let Some(relation) = relation {
+        parameter_values.insert(
+            "relation".to_owned(),
+            CanonicalValue::string(relation).expect("relation"),
+        );
+    }
     let parameters = QueryParameters::checked(parameter_values).expect("parameters");
     let mut view = IndexedView { rows: indexed };
     execute_operational_page_in_snapshot(
@@ -342,7 +413,7 @@ fn execute_page(
 }
 
 fn execute(source: &str, prefix: Option<&str>) -> Result<Vec<QueryRow>, QueryExecutionError> {
-    let snapshot = execute_page(source, prefix, None)?;
+    let snapshot = execute_page(source, prefix, None, None)?;
     match snapshot.fields().get("documents") {
         Some(QueryResultValue::Many(rows)) => Ok(rows.clone()),
         other => panic!("expected documents result, got {other:?}"),
@@ -358,11 +429,12 @@ fn titles(rows: &[QueryRow]) -> Vec<&str> {
         .collect()
 }
 
-fn execute_all_cursor_pages(source: &str) -> Vec<QueryRow> {
+fn execute_all_cursor_pages(source: &str, relation: Option<&str>) -> Vec<QueryRow> {
     let mut rows = Vec::new();
     let mut prior = None;
     loop {
-        let snapshot = execute_page(source, None, prior.as_ref()).expect("binary-order page");
+        let snapshot =
+            execute_page(source, None, relation, prior.as_ref()).expect("binary-order page");
         match snapshot.fields().get("documents") {
             Some(QueryResultValue::Many(page)) => rows.extend(page.iter().cloned()),
             other => panic!("expected documents page, got {other:?}"),
@@ -416,7 +488,7 @@ fn null_existence_and_binary_prefix_execute_without_scan_fallback() {
 
 #[test]
 fn binary_text_key_order_is_bytewise_and_cursor_exact_in_both_directions() {
-    let ascending = execute_all_cursor_pages(BINARY_ORDER_QUERY);
+    let ascending = execute_all_cursor_pages(BINARY_ORDER_QUERY, None);
     assert_eq!(
         titles(&ascending),
         ["a", "ab", "abacus", "ac", "doc-3", "doc6"]
@@ -426,10 +498,19 @@ fn binary_text_key_order_is_bytewise_and_cursor_exact_in_both_directions() {
     let descending_source = BINARY_ORDER_QUERY
         .replace("title asc", "title desc")
         .replace("document_id asc", "document_id desc");
-    let descending = execute_all_cursor_pages(&descending_source);
+    let descending = execute_all_cursor_pages(&descending_source, None);
     assert_eq!(
         titles(&descending),
         ["doc6", "doc-3", "ac", "abacus", "ab", "a"]
     );
     assert_eq!(ordinals(&descending), [6, 7, 5, 4, 3, 2]);
+}
+
+#[test]
+fn one_binary_text_index_executes_ordered_and_exact_equality_cursor_shapes() {
+    let wider = execute_all_cursor_pages(BINARY_COMPONENT_ORDER_QUERY, None);
+    assert_eq!(ordinals(&wider), [7, 6, 3, 2, 5, 4]);
+
+    let narrower = execute_all_cursor_pages(BINARY_COMPONENT_EQUALITY_QUERY, Some("viewer"));
+    assert_eq!(ordinals(&narrower), [5, 4]);
 }

@@ -127,6 +127,65 @@ query DocumentsByBinaryTitle(
 }
 "#;
 
+const SHARED_BINARY_COMPONENT_CONTRACT: &str = r#"
+contract SharedBinaryComponents version 1 {
+  entity Tuple {
+    key (store_id: uuid, object_type: string<64>, object_id: string<128>, relation: string<64>, user: string<256>)
+    field active: bool
+    index by_object (store_id, active, object_type, object_id, relation, user)
+      text_key(relation, binary_utf8_v1)
+      text_key(user, binary_utf8_v1)
+  }
+  aggregate Tuples {
+    root Tuple
+    partition_by store_id
+    conflict_key (store_id, object_type, object_id, relation, user)
+  }
+}
+"#;
+
+const SHARED_BINARY_ORDER_QUERY: &str = r#"
+query TuplesByObject(
+    $store_id: Tuple.store_id,
+    $active: Tuple.active,
+    $object_type: Tuple.object_type,
+    $object_id: Tuple.object_id,
+    $after: Cursor?,
+) {
+    many tuples from Tuple
+        where store_id == $store_id
+          && active == $active
+          && object_type == $object_type
+          && object_id == $object_id
+        order by relation asc, user asc
+        take 1 after $after
+    return Found { tuples: tuples { relation user } }
+    outcomes Found
+}
+"#;
+
+const SHARED_BINARY_EQUALITY_QUERY: &str = r#"
+query TuplesByObjectAndRelation(
+    $store_id: Tuple.store_id,
+    $active: Tuple.active,
+    $object_type: Tuple.object_type,
+    $object_id: Tuple.object_id,
+    $relation: Tuple.relation,
+    $after: Cursor?,
+) {
+    many tuples from Tuple
+        where store_id == $store_id
+          && active == $active
+          && object_type == $object_type
+          && object_id == $object_id
+          && relation == $relation
+        order by user asc
+        take 1 after $after
+    return Found { tuples: tuples { relation user } }
+    outcomes Found
+}
+"#;
+
 fn catalog(source: &str) -> SymbolicCatalog {
     let bundle = compile_contract_source(source).expect("contract");
     SymbolicCatalog::from_bundle(&bundle).expect("catalog")
@@ -160,6 +219,51 @@ fn binary_text_key_proves_ordinary_forward_and_reverse_cursor_order_without_pref
         ));
         assert_eq!(program.steps()[0].cursor_parameter(), Some("after"));
     }
+}
+
+#[test]
+fn one_binary_text_index_proves_ordered_and_exact_equality_prefix_shapes() {
+    let catalog = catalog(SHARED_BINARY_COMPONENT_CONTRACT);
+    for source in [SHARED_BINARY_ORDER_QUERY, SHARED_BINARY_EQUALITY_QUERY] {
+        let family = compile_operational_query_family(
+            &parse_query(source).expect("shared binary-component query"),
+            &catalog,
+        )
+        .expect("one text-key index proves both compiled shapes");
+        let program = family.select(&[]).expect("sole family member").program();
+        assert!(matches!(
+            program.steps()[0].access(),
+            QueryAccessKind::Index { index, direction: AccessDirection::Forward, .. }
+                if index == "by_object"
+        ));
+        assert_eq!(program.steps()[0].cursor_parameter(), Some("after"));
+    }
+}
+
+#[test]
+fn binary_text_order_does_not_reinterpret_other_typed_predicates() {
+    let source = SHARED_BINARY_EQUALITY_QUERY
+        .replace("relation == $relation", "relation >= $relation")
+        .replace("order by user asc", "order by relation asc, user asc");
+    let diagnostics = compile_operational_query_family(
+        &parse_query(&source).expect("binary range query"),
+        &catalog(SHARED_BINARY_COMPONENT_CONTRACT),
+    )
+    .expect_err("binary text order cannot reinterpret canonical string range semantics");
+    let diagnostic = &diagnostics.as_slice()[0];
+    assert_eq!(diagnostic.code(), PlannerDiagnosticCode::Unindexed);
+    assert_eq!(
+        format!(
+            "{}|{}..{}|{}|{}|{}\n",
+            diagnostic.code().as_str(),
+            diagnostic.primary().start,
+            diagnostic.primary().end,
+            diagnostic.symbol_path().join("."),
+            diagnostic.summary(),
+            diagnostic.suggested_index().unwrap_or("")
+        ),
+        include_str!("../../../fixtures/riffql/binary-text-range-unindexed.snapshot")
+    );
 }
 
 #[test]

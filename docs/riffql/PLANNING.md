@@ -28,11 +28,16 @@ codec, allowing an exact leading-byte range while returning the original field
 value. The same component may provide an ordinary bounded `order by field`
 suffix even when the query has no prefix predicate on that field. Its order is
 the exact UTF-8 byte order frozen by `binary_utf8_v1`, not the canonical
-length-first string order. The remaining index suffix must still equal the
-complete declared order, including its deterministic entity-key tie-breaker;
-forward and reverse cursor traversal use the same encoded key bytes. Compiler,
-command index maintenance, and both storage readers consume the same versioned
-key schema.
+length-first string order. Exact equality on that field consumes the complete
+text-key component and advances the ordered suffix, so one index can serve a
+wider `order by relation, user` query and a narrower `relation == $relation`
+plus `order by user` query. Runtime converts the typed equality string to the
+same physical profile bytes only while constructing the index prefix; residual
+predicate evaluation still compares the original typed value. The remaining
+index suffix must equal the complete declared order, including its deterministic
+entity-key tie-breaker; forward and reverse cursor traversal use the same
+encoded key bytes. Compiler, command index maintenance, and both storage readers
+consume the same versioned key schema.
 
 The program contains ordered accesses, dependency edges, cardinality and row
 bounds, and the complete entity/field/index authorization requirement. The

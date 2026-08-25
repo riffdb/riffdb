@@ -363,6 +363,15 @@ key. The compiler still requires the complete index suffix and deterministic
 key tie-breaker, and an opaque continuation remains bound to the exact plan,
 direction, text profile, index epoch, authorization, and snapshot.
 
+Exact equality consumes a complete `binary_utf8_v1` component as an index
+prefix. This permits progressively narrower compiled queries to reuse one
+declared index: `(organization_id, relation, user, document_id)` with text keys
+on `relation` and `user` proves both `order by relation, user, document_id` and,
+after `relation == $relation`, `order by user, document_id`. Equality retains
+the ordinary typed string truth semantics; the profile transform is used only
+to form the matching physical index prefix. Bounded `in` does not acquire this
+text-key-prefix rule.
+
 ## Exact indexed result sets (language version 4)
 
 An application that needs an exact whole-population total and numeric offset

@@ -13,6 +13,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::num::NonZeroU16;
 use std::sync::Arc;
 
+use riffdb_contract_ir::KeyComponentCodecV1;
 use riffdb_policy::{AuthorizedProjectedRowAdmissionV1, AuthorizedQueryRowPolicyContextV1};
 use riffdb_query_ir::{
     CoveredResultLayoutV1, NamedTypeSchema, OperationalAggregateFunctionV1, OperationalAggregateV1,
@@ -574,7 +575,7 @@ pub fn bound_index_prefix_bytes_v1(
         match predicate.operator() {
             QueryPredicateOperator::Equal => {
                 for values in &mut leading {
-                    values.push(predicate.value().clone());
+                    push_exact_index_prefix_value(schema, values, predicate.value())?;
                 }
             }
             QueryPredicateOperator::In => {
@@ -652,6 +653,29 @@ pub fn bound_index_prefix_bytes_v1(
         }
     }
     encode_complete_prefixes(schema, leading)
+}
+
+fn push_exact_index_prefix_value(
+    schema: &riffdb_contract_ir::KeySchema,
+    values: &mut Vec<CanonicalValue>,
+    logical: &CanonicalValue,
+) -> Result<(), QueryExecutionError> {
+    let component = schema
+        .components()
+        .get(values.len())
+        .ok_or(QueryExecutionError::InvalidProgram)?;
+    let physical = match (component.codec(), logical) {
+        (KeyComponentCodecV1::Canonical, value) => value.clone(),
+        (KeyComponentCodecV1::OrderedBytes, CanonicalValue::String(value)) => {
+            CanonicalValue::bytes(value.as_str().as_bytes().to_vec())
+                .map_err(|_| QueryExecutionError::InvalidProgram)?
+        }
+        (KeyComponentCodecV1::OrderedBytes, _) => {
+            return Err(QueryExecutionError::InvalidProgram);
+        }
+    };
+    values.push(physical);
+    Ok(())
 }
 
 fn encode_complete_prefixes(
