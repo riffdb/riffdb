@@ -862,9 +862,10 @@ impl GeneratedQuery for ListFgaTuplesQuery {
 
     fn named_query(self, options: QueryOptions) -> Result<NamedQuery, ApplicationClientError> {
         let mut parameters = BTreeMap::new();
+        let generated_cursor = self.0.after;
         parameters.insert("store_id".to_owned(), ApplicationValue::Uuid(ApplicationUuid::from_text(self.0.store_id)?));
         parameters.insert("relation".to_owned(), match self.0.relation { Some(value) => ApplicationValue::String(value), None => ApplicationValue::Null });
-        parameters.insert("after".to_owned(), match self.0.after { Some(value) => ApplicationValue::String(value), None => ApplicationValue::Null });
+        let options = options.with_generated_cursor(generated_cursor)?;
         NamedQuery::new(
             ApplicationContract::Exact {
                 lineage: CONTRACT_LINEAGE.to_owned(),
@@ -936,9 +937,10 @@ impl GeneratedQuery for ListPipelinesQuery {
 
     fn named_query(self, options: QueryOptions) -> Result<NamedQuery, ApplicationClientError> {
         let mut parameters = BTreeMap::new();
+        let generated_cursor = self.0.after;
         parameters.insert("organization_id".to_owned(), ApplicationValue::Uuid(ApplicationUuid::from_text(self.0.organization_id)?));
         parameters.insert("state".to_owned(), match self.0.state { Some(value) => ApplicationValue::String(value), None => ApplicationValue::Null });
-        parameters.insert("after".to_owned(), match self.0.after { Some(value) => ApplicationValue::String(value), None => ApplicationValue::Null });
+        let options = options.with_generated_cursor(generated_cursor)?;
         NamedQuery::new(
             ApplicationContract::Exact {
                 lineage: CONTRACT_LINEAGE.to_owned(),
@@ -1280,9 +1282,10 @@ impl GeneratedQuery for SearchDocumentsQuery {
 
     fn named_query(self, options: QueryOptions) -> Result<NamedQuery, ApplicationClientError> {
         let mut parameters = BTreeMap::new();
+        let generated_cursor = self.0.after;
         parameters.insert("site_id".to_owned(), ApplicationValue::Uuid(ApplicationUuid::from_text(self.0.site_id)?));
         parameters.insert("title_prefix".to_owned(), ApplicationValue::String(self.0.title_prefix));
-        parameters.insert("after".to_owned(), match self.0.after { Some(value) => ApplicationValue::String(value), None => ApplicationValue::Null });
+        let options = options.with_generated_cursor(generated_cursor)?;
         NamedQuery::new(
             ApplicationContract::Exact {
                 lineage: CONTRACT_LINEAGE.to_owned(),

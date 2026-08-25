@@ -769,7 +769,11 @@ function validateDriverValue(value: unknown, depth: number): DriverValue {
   if (type === "bool" && typeof item.value === "boolean") return item as unknown as DriverValue;
   if (type === "i64") { BigInt(boundedPattern(item.value, /^-?[0-9]{1,20}$/)); return item as unknown as DriverValue; }
   if (type === "u64") { BigInt(boundedPattern(item.value, /^[0-9]{1,20}$/)); return item as unknown as DriverValue; }
-  if ((type === "string" || type === "bytes") && typeof item.value === "string" && item.value.length <= 262_144) return item as unknown as DriverValue;
+  if (type === "string" && typeof item.value === "string" && item.value.length <= 262_144) return item as unknown as DriverValue;
+  // Byte values use padded Base64 on this bounded JSON protocol. Their
+  // canonical decoded size is checked by the generated facade and service;
+  // the unchanged frame limit bounds the local representation.
+  if (type === "bytes" && typeof item.value === "string" && item.value.length <= MAX_FRAME_BYTES) return item as unknown as DriverValue;
   if (type === "uuid" && typeof item.value === "string" && UUID.test(item.value)) return item as unknown as DriverValue;
   if (type === "enum" && typeof item.value === "string" && SYMBOL.test(item.value)) return item as unknown as DriverValue;
   if (type === "date") { boundedPattern(item.value, /^-?[0-9]{1,11}$/); return item as unknown as DriverValue; }

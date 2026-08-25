@@ -1,4 +1,4 @@
-spec_version: '1.07'
+spec_version: '1.08'
 product: RiffDB
 repository: riffdb
 status: deployable-application-alpha-architecture-accepted
@@ -311,6 +311,212 @@ work_packages:
   - ./scripts/generate-proto --check
   exit_gate: Canonicalization, ordering, decimal, assigned-type zero rejection, hash-domain separation, and
     error-redaction property tests pass.
+  human_review_triggers: *id001
+- id: WP-678
+  name: Aggregate collection-byte language, proof, and IR successors
+  depends_on: [WP-560, WP-612]
+  objective: Implement ADR-0147's one compiler-owned aggregate canonical-element-byte constraint
+    for the list expanded by an atomic collection command, deriving a finite conservative copy
+    coefficient and least-sufficient versioned identities without raising any existing ceiling.
+  requirements: [BLK-015, BLK-016, BLK-017, BLK-018, DSL-001, DSL-002,
+    DSL-003, DSL-004, DSL-005, DSL-006, DSL-007, DSL-008, DSL-009, DSL-010,
+    DSL-011, DSL-012, SAFE-004, SAFE-005, PERF-004, PERF-005]
+  required_adrs: [ADR-0002, ADR-0011, ADR-0013, ADR-0031, ADR-0055,
+    ADR-0107, ADR-0124, ADR-0147]
+  allowed_paths: [SPEC.md, work_packages.yaml, adr/README.md,
+    adr/0147-aggregate-byte-budgets-for-atomic-collection-commands.md,
+    release/version-topology-v1.json, crates/riffdb-types/**,
+    crates/riffdb-contract-syntax/**, crates/riffdb-contract-ir/**,
+    crates/riffdb-contract-compiler/**, crates/riffdb-diagnostics/**,
+    crates/riffdb-cli/assets/editor/**, clients/editor/**, fixtures/compiler/**,
+    fixtures/contracts/**, fuzz/**, tests/**, scripts/**, docs/SUMMARY.md,
+    docs/contracts/**, docs/architecture/**]
+  deliverables:
+  - Source grammar and formatter for one positive `aggregate_bytes` constraint only on the single
+    expanded list, with source-spanned refusals for duplicates, non-literals, zero/excess,
+    ordinary commands, unexpanded/nested lists, and multiple pools
+  - Independent canonical element-byte semantics retaining every per-value and cardinality bound,
+    plus a closed conservative flow analysis deriving fixed bytes and maximum copy coefficient
+    across command input, bindings, mutations, and events
+  - Least-sufficient grammar/executable-IR/bundle V16 successor carrying the declared aggregate
+    maximum and derived coefficient in plan/root hashes; V1 through V15 remain readable and
+    byte-exact and declaration-free commands retain their prior writer
+  - Positive neutral 1..100 bounded-context source and negative/property corpus covering exact
+    bound, plus one, arithmetic overflow, optional values, copies, events, unsupported flows, and
+    unchanged 16 MiB graph refusal
+  - Topology, format registry, source-span snapshots, fixtures, editor assets, public contract
+    documentation, and architecture checks proving no runtime, framework branch, transaction,
+    split policy, or raised global ceiling lands in this package
+  acceptance_commands:
+  - cargo +1.97.0 test -p riffdb-types -p riffdb-contract-syntax -p riffdb-contract-ir -p riffdb-contract-compiler -p riffdb-diagnostics --all-features
+  - cargo +nightly-2026-07-12 fuzz run contract_parser -- -max_total_time=60
+  - ./scripts/check-version-topology
+  - ./scripts/check-generated
+  - ./scripts/check-requirement-coverage
+  - ./scripts/handbook check
+  - cargo +1.97.0 fmt --all -- --check
+  - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: Every admitted aggregate constraint has one canonical meaning, finite compiler-derived
+    graph proof, versioned identity, independent boundary result, and source-spanned failure; old
+    artifacts remain exact and no runtime or global resource ceiling changes.
+  standing_design_tests:
+    interface_safety: Callers provide only typed element values; they cannot choose the aggregate
+      ceiling, copy coefficient, graph budget, split behavior, transaction, or encoding, and the
+      compiler rejects any flow it cannot prove.
+    scale: Cardinality, individual values, aggregate canonical bytes, coefficient, fixed bytes,
+      complete graph, IR, fixtures, diagnostics, and compiler work are statically bounded with
+      checked arithmetic and no compression or deduplication assumption.
+  human_review_triggers: *id001
+- id: WP-679
+  name: Aggregate collection-byte runtime and generated acceptance
+  depends_on: [WP-561, WP-562, WP-678]
+  objective: Enforce ADR-0147's compiled aggregate byte constraint before effects in generated
+    clients and the first-party Rust service/runtime, preserving one atomic idempotent command and
+    proving neutral 100-element conformance across every public language surface.
+  requirements: [BLK-006, BLK-007, BLK-008, BLK-009, BLK-013, BLK-014,
+    BLK-019, BLK-020, BLK-021, ID-001, ID-004, OUT-001, OUT-002, REC-001,
+    REC-002, STO-001, STO-002, TXN-001, TXN-010, TXN-011, TXN-012, TXN-013,
+    TXN-040, TXN-041, TXN-042, TXN-043, TXN-044, AAA-001, AAA-002, AAA-003,
+    AAA-004, AAA-005, AAA-009, AAA-010]
+  required_adrs: [ADR-0003, ADR-0004, ADR-0005, ADR-0012, ADR-0031,
+    ADR-0055, ADR-0058, ADR-0059, ADR-0093, ADR-0095, ADR-0100, ADR-0101,
+    ADR-0102, ADR-0104, ADR-0106, ADR-0107, ADR-0129, ADR-0147]
+  allowed_paths: [Cargo.lock, SPEC.md, work_packages.yaml, proto/**,
+    fixtures/proto/**, crates/riffdb-types/**, crates/riffdb-contract-ir/**,
+    crates/riffdb-invariant/**, crates/riffdb-catalog/**, crates/riffdb-runtime/**,
+    crates/riffdb-auth/**, crates/riffdb-policy/**, crates/riffdb-idempotency/**,
+    crates/riffdb-service/**, crates/riffdb-storage-api/**,
+    crates/riffdb-storage-memory/**, crates/riffdb-storage-redb/**,
+    crates/riffdb-commit/**, crates/riffdb-proto/**, crates/riffdb-api-grpc/**,
+    crates/riffdb-api-mcp/**, crates/riffdb-client-rust/**,
+    crates/riffdb-driver-host/**, crates/riffdb-query-module/**,
+    crates/riffdb-cli/**, crates/riffdb-server/**, crates/riffdb-observability/**,
+    crates/riffdb-testkit/**, clients/**, templates/**,
+    fixtures/adapters/bulk-conformance/**, fixtures/application-parity/**,
+    fixtures/driver/**, examples/**, tests/**, scripts/**, release/**,
+    docs/SUMMARY.md, docs/contracts/**, docs/getting-started/**,
+    docs/integrations/**, docs/reference/**]
+  deliverables:
+  - Generated Rust, Go, TypeScript, Python, CLI, and MCP metadata and preflight compute the exact
+    canonical aggregate sum while retaining individual/count checks and never splitting one command
+  - Application-service validation recomputes the bound with checked arithmetic before effectful
+    evaluation and runtime validates the concrete expanded graph before coordinator submission;
+    typed redacted errors distinguish count, individual, aggregate, and graph overflow
+  - Neutral `PolicyMutation` fixture proves 1, 9, 19, and 100 small elements; individual 524,288-
+    byte context acceptance; individual/aggregate/graph plus-one refusal; authorization, duplicate,
+    business-failure, cancellation, idempotency, overlap, event, provenance, and atomicity semantics
+  - Memory/redb, deterministic schedule, process crash, remote TLS, driver-host, CLI, MCP, and all-
+    language generated observations with static guards excluding external framework artifacts,
+    raw mutation/transaction access, and handwritten transport encoding
+  acceptance_commands:
+  - cargo +1.97.0 test -p riffdb-runtime -p riffdb-service -p riffdb-storage-api -p riffdb-storage-memory -p riffdb-storage-redb -p riffdb-commit --all-features
+  - cargo +1.97.0 test -p riffdb-testkit --test bulk_command_recovery --all-features
+  - cargo +1.97.0 test --test storage_recovery_matrix --all-features
+  - ./scripts/adapter-bulk-command-acceptance --all-languages
+  - ./scripts/check-application-bindings
+  - ./scripts/generate-proto --check
+  - ./scripts/check-workspace-policy
+  - ./scripts/check-generated
+  - ./scripts/check-requirement-coverage
+  - ./scripts/handbook check
+  - cargo +1.97.0 fmt --all -- --check
+  - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: Every public surface rejects the same over-budget value before effects and accepts one
+    real 100-element command as one ordinary atomic durable result; crashes expose complete outcome
+    or absence, and no split, partial result, framework branch, or alternate runtime path exists.
+  standing_design_tests:
+    interface_safety: Generated preflight is advisory and the Rust service remains authoritative;
+      no caller chooses budgets, coefficients, graph size, transactions, partial success, or split
+      behavior, and every accepted mutation follows ordinary authorization and commit semantics.
+    scale: Canonical aggregate sizing is linear in one already count/byte-bounded input and paid
+      once per invocation, never per authorization atom, conflict, retry, mutation row, or durable
+      transition; allocations and diagnostics remain within existing request/graph ceilings.
+  human_review_triggers: *id001
+- id: WP-680
+  name: Generated named-query cursor routing correction
+  depends_on: [WP-658, WP-677]
+  objective: Route compiler-typed cursor parameters through the existing protected continuation
+    option in every generated language facade, removing the need for handwritten adapter routing
+    without changing cursor bytes, query semantics, or low-level transport APIs.
+  requirements: [OQ-004, OQ-006, OQ-015, OQ-016, OQ-031, API-001, SAFE-001]
+  required_adrs: [ADR-0040, ADR-0051, ADR-0052, ADR-0053, ADR-0055,
+    ADR-0106, ADR-0108, ADR-0111, ADR-0120, ADR-0124, ADR-0147]
+  allowed_paths: [SPEC.md, work_packages.yaml, crates/riffdb-query-module/**,
+    crates/riffdb-application/**, crates/riffdb-client-rust/**,
+    crates/riffdb-driver-host/**, clients/**, templates/**, fixtures/**,
+    tests/**, scripts/**, docs/SUMMARY.md, docs/riffql/**, docs/sdks/**,
+    docs/getting-started/**, docs/reference/**]
+  deliverables:
+  - Generated Rust, Go, TypeScript, and Python methods recognize the exact cursor/optional-cursor
+    parameter, omit it from symbolic input, and route a present value only to `Options.Cursor`
+  - Shared first-page, continuation, null/absent, malformed, wrong-operation, wrong-database/
+    history, expiry, cancellation, and bounded-response fixtures preserving existing cursor bytes
+  - Architecture negatives prohibit client page walks for count, offset, filtering, sorting, or
+    other semantics; any iterator convenience has an explicit finite page/item limit
+  - Regenerated clients, package fixtures, SDK documentation, and compatibility evidence proving
+    existing low-level `Options.Cursor` callers remain unchanged
+  acceptance_commands:
+  - cargo +1.97.0 test -p riffdb-query-module -p riffdb-application -p riffdb-client-rust -p riffdb-driver-host --all-features
+  - ./scripts/adapter-operational-query-acceptance --all-languages
+  - ./scripts/driver-conformance --all-languages --remote
+  - ./scripts/check-application-bindings
+  - ./scripts/check-generated
+  - ./scripts/check-requirement-coverage
+  - ./scripts/handbook check
+  - cargo +1.97.0 fmt --all -- --check
+  - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: Every generated language resumes the same named query by passing its typed cursor only
+    through the protected continuation field, all identity/staleness failures remain exact, and no
+    client implements database semantics by walking pages.
+  standing_design_tests:
+    interface_safety: A caller supplies only an opaque typed cursor to one generated named method;
+      it cannot choose an operation, plan, provider, epoch, order, predicate, or fallback, and a
+      mismatch fails before or inside the unchanged shared service path.
+    scale: One call processes one bounded cursor and one bounded page; optional helpers require a
+      finite caller-owned stop and no hidden population/page walk is generated.
+  human_review_triggers: *id001
+- id: WP-681
+  name: Repository-confined Go development runner package
+  depends_on: [WP-325, WP-611]
+  objective: Let `riffdb dev --run` execute one explicit repository-relative Go `main` package in
+    a library module while preserving the module-root default, protected driver-host boundary,
+    direct argv execution, application identity, and source/installed workflow parity.
+  requirements: [DX-004, DX-026, DX-029, DX-031, DX-041, NET-012, DRV-002,
+    DRV-003, DRV-004, DRV-011]
+  required_adrs: [ADR-0007, ADR-0040, ADR-0041, ADR-0055, ADR-0056,
+    ADR-0105, ADR-0106, ADR-0120, ADR-0147]
+  allowed_paths: [SPEC.md, work_packages.yaml, crates/riffdb-cli/**,
+    fixtures/application-boundaries/**, fixtures/driver/**, templates/**,
+    tests/**, scripts/riffdb-dev*, scripts/*driver*, scripts/check-generated,
+    docs/SUMMARY.md, docs/getting-started/**, docs/sdks/**, docs/reference/**]
+  deliverables:
+  - Source and installed `riffdb dev --run --go-runner-package PATH` support with default `.`, one
+    canonical repository-relative directory, direct `go run` argv, and a bounded startup summary
+  - Validation rejects empty/absolute/parent/traversal/symlink escape, nested-module ambiguity,
+    missing or non-main package, multiple runner manifests, argument injection, and missing Go
+    before the runner receives credentials or a driver-host connection
+  - Library-module fixture with dedicated command package plus interruption, source/installed
+    parity, driver-host trust ownership, no-shell, and application-boundary conformance
+  - Handbook/CLI reference updates stating the option is development process configuration and
+    changes no contract, module, role, plan, lock, or production application identity
+  acceptance_commands:
+  - cargo +1.97.0 test -p riffdb-cli --all-features
+  - ./scripts/riffdb-dev-acceptance
+  - ./scripts/check-application-boundary
+  - ./scripts/check-generated
+  - ./scripts/check-requirement-coverage
+  - ./scripts/handbook check
+  - cargo +1.97.0 fmt --all -- --check
+  - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: A library Go module runs one checked nested `main` package through the ordinary
+    generated driver path in source and installed workflows, while every escape/ambiguity/injection
+    case fails before protected values are exposed and module-root behavior remains unchanged.
+  standing_design_tests:
+    interface_safety: The option chooses only one repository-confined Go source package for the
+      local development process; it cannot choose an executable, flags, shell, endpoint, credential,
+      database, role authority, transport, or application operation.
+    scale: Validation visits one bounded path and Go package; process count, output, shutdown,
+      driver connection, arguments, and diagnostics retain existing bounded runner limits.
   human_review_triggers: *id001
 - id: WP-474
   name: Sealed entity post-image materialization

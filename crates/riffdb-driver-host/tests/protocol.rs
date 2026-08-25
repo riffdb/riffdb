@@ -2,12 +2,39 @@
 
 use std::collections::BTreeMap;
 
+use base64::{Engine as _, engine::general_purpose::STANDARD};
 use riffdb_driver_host::{
     DRIVER_ERROR_REGISTRY_HASH, DRIVER_PROTOCOL_VERSION, DRIVER_VALUE_REGISTRY_HASH, DriverRequest,
     DriverResponse, DriverValue, DriverVector, FrameCodec, InvokeOptions, ProtocolError,
 };
 
 const HASH: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+#[test]
+fn byte_values_retain_the_canonical_half_mebibyte_boundary_over_base64() {
+    let request = DriverRequest::Invoke {
+        request_id: "bytes-1".to_owned(),
+        operation: "policy_write_mutations".to_owned(),
+        input_schema_hash: HASH.to_owned(),
+        input: BTreeMap::from([(
+            "context".to_owned(),
+            DriverValue::Bytes(STANDARD.encode(vec![0xa5; 524_288])),
+        )]),
+        options: InvokeOptions {
+            deadline_millis: 10_000,
+            maximum_attempts: 3,
+            read_after_commit: None,
+            cursor: None,
+            accept_compact_result: false,
+            accept_packed_result: false,
+        },
+    };
+    let encoded = FrameCodec::encode_request(&request).expect("bounded byte request");
+    assert_eq!(
+        FrameCodec::decode_request(&encoded).expect("decode bounded byte request"),
+        request
+    );
+}
 
 #[test]
 fn request_round_trip_is_exact_and_name_addressed() {

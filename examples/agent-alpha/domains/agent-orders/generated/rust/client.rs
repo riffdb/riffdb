@@ -74,10 +74,11 @@ impl GeneratedQuery for CustomerHistoryQuery {
 
     fn named_query(self, options: QueryOptions) -> Result<NamedQuery, ApplicationClientError> {
         let mut parameters = BTreeMap::new();
+        let generated_cursor = self.0.after;
         parameters.insert("store_id".to_owned(), ApplicationValue::Uuid(ApplicationUuid::from_text(self.0.store_id)?));
         parameters.insert("customer_id".to_owned(), ApplicationValue::Uuid(ApplicationUuid::from_text(self.0.customer_id)?));
-        parameters.insert("after".to_owned(), match self.0.after { Some(value) => ApplicationValue::String(value), None => ApplicationValue::Null });
         parameters.insert("limit".to_owned(), ApplicationValue::U64(self.0.limit));
+        let options = options.with_generated_cursor(generated_cursor)?;
         NamedQuery::new(
             ApplicationContract::Exact {
                 lineage: CONTRACT_LINEAGE.to_owned(),
@@ -181,9 +182,10 @@ impl GeneratedQuery for InventoryDashboardQuery {
 
     fn named_query(self, options: QueryOptions) -> Result<NamedQuery, ApplicationClientError> {
         let mut parameters = BTreeMap::new();
+        let generated_cursor = self.0.after;
         parameters.insert("store_id".to_owned(), ApplicationValue::Uuid(ApplicationUuid::from_text(self.0.store_id)?));
-        parameters.insert("after".to_owned(), match self.0.after { Some(value) => ApplicationValue::String(value), None => ApplicationValue::Null });
         parameters.insert("limit".to_owned(), ApplicationValue::U64(self.0.limit));
+        let options = options.with_generated_cursor(generated_cursor)?;
         NamedQuery::new(
             ApplicationContract::Exact {
                 lineage: CONTRACT_LINEAGE.to_owned(),
@@ -277,10 +279,11 @@ impl GeneratedQuery for OpenOrdersQuery {
 
     fn named_query(self, options: QueryOptions) -> Result<NamedQuery, ApplicationClientError> {
         let mut parameters = BTreeMap::new();
+        let generated_cursor = self.0.after;
         parameters.insert("store_id".to_owned(), ApplicationValue::Uuid(ApplicationUuid::from_text(self.0.store_id)?));
         parameters.insert("status".to_owned(), ApplicationValue::Enum(self.0.status));
-        parameters.insert("after".to_owned(), match self.0.after { Some(value) => ApplicationValue::String(value), None => ApplicationValue::Null });
         parameters.insert("limit".to_owned(), ApplicationValue::U64(self.0.limit));
+        let options = options.with_generated_cursor(generated_cursor)?;
         NamedQuery::new(
             ApplicationContract::Exact {
                 lineage: CONTRACT_LINEAGE.to_owned(),

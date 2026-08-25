@@ -600,6 +600,8 @@ pub struct BulkIteration {
 pub struct InputDeclaration {
     /// The input field syntax.
     pub field: TypedField,
+    /// Optional aggregate canonical bytes across elements of the expanded list.
+    pub aggregate_bytes: Option<Spanned<String>>,
 }
 
 /// A named value observed by the service and sealed before evaluation.

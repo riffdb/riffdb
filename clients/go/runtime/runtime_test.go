@@ -121,6 +121,23 @@ func TestPackedCanonicalScalarDecodersRejectWrongTags(t *testing.T) {
 	}
 }
 
+func TestCanonicalValueEncodedLengthMatchesNestedDocumentShape(t *testing.T) {
+	value := Record(map[string]Value{
+		"context": BytesFrom([]byte{0, 1, 2, 3}),
+	})
+	length, err := CanonicalValueEncodedLength(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// record version/tag/count + field ID + bytes version/tag/length/payload
+	if length != 6+4+6+4 {
+		t.Fatalf("canonical length changed: %d", length)
+	}
+	if _, err = CanonicalValueEncodedLength(Value{Type: "peer-kind"}); err == nil {
+		t.Fatal("unknown canonical value kind was accepted")
+	}
+}
+
 func TestRequestIdentityPrefixesAreUniqueAcrossConcurrentSessions(t *testing.T) {
 	first := &Session{requestPrefix: newSessionRequestPrefix()}
 	second := &Session{requestPrefix: newSessionRequestPrefix()}

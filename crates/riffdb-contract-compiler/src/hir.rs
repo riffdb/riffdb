@@ -489,6 +489,8 @@ pub(crate) struct HirCollectionExpansion {
     pub(crate) input_field: FieldId,
     pub(crate) minimum_elements: usize,
     pub(crate) maximum_elements: usize,
+    pub(crate) maximum_aggregate_element_bytes: Option<usize>,
+    pub(crate) aggregate_bytes_span: Option<Span>,
     pub(crate) element_type: ValueType,
     pub(crate) first_binding: BindingId,
     pub(crate) binding_count: usize,
@@ -2018,7 +2020,16 @@ fn lower_commands(
         let mut collection_element_scope = None;
         let mut collection_bounds = None;
         match (source.kind, source.bulk_iteration.as_ref()) {
-            (CommandKind::Ordinary, None) => {}
+            (CommandKind::Ordinary, None) => {
+                for input in &source.inputs {
+                    if let Some(bound) = &input.value.aggregate_bytes {
+                        diagnostics.push(CompilerDiagnostic::new(
+                            CompilerDiagnosticCode::InvalidType,
+                            bound.span,
+                        ));
+                    }
+                }
+            }
             (CommandKind::Ordinary, Some(iteration)) => diagnostics.push(CompilerDiagnostic::new(
                 CompilerDiagnosticCode::InvalidExpression,
                 iteration.span,
@@ -2037,6 +2048,17 @@ fn lower_commands(
                     .find(|input| input.field.name == iteration.value.collection.value);
                 match (matching_source, matching_hir) {
                     (Some(source_input), Some(input)) => {
+                        for candidate in &source.inputs {
+                            if let Some(bound) = &candidate.value.aggregate_bytes
+                                && candidate.value.field.name.value
+                                    != iteration.value.collection.value
+                            {
+                                diagnostics.push(CompilerDiagnostic::new(
+                                    CompilerDiagnosticCode::InvalidType,
+                                    bound.span,
+                                ));
+                            }
+                        }
                         let TypeExpression::List {
                             element: _,
                             minimum,
@@ -2061,6 +2083,24 @@ fn lower_commands(
                             .as_ref()
                             .and_then(|minimum| minimum.value.parse::<usize>().ok());
                         let source_maximum = source_maximum.value.parse::<usize>().ok();
+                        let maximum_aggregate_element_bytes = source_input
+                            .value
+                            .aggregate_bytes
+                            .as_ref()
+                            .and_then(|bound| bound.value.parse::<usize>().ok());
+                        if let Some(bound) = &source_input.value.aggregate_bytes
+                            && maximum_aggregate_element_bytes.is_none_or(|bound| {
+                                bound == 0
+                                    || bound
+                                        > riffdb_contract_ir::MAX_COLLECTION_COMMAND_GRAPH_BYTES_V1
+                            })
+                        {
+                            diagnostics.push(CompilerDiagnostic::new(
+                                CompilerDiagnosticCode::BoundExceeded,
+                                bound.span,
+                            ));
+                            continue;
+                        }
                         let Some(minimum) = parsed_minimum else {
                             diagnostics.push(CompilerDiagnostic::new(
                                 CompilerDiagnosticCode::InvalidType,
@@ -2110,6 +2150,12 @@ fn lower_commands(
                             input.field.id,
                             minimum,
                             maximum,
+                            maximum_aggregate_element_bytes,
+                            source_input
+                                .value
+                                .aggregate_bytes
+                                .as_ref()
+                                .map(|bound| bound.span),
                             element_type.clone(),
                             iteration.span,
                         ));
@@ -2996,7 +3042,15 @@ fn lower_commands(
             }
         }
         let collection_expansion = collection_bounds.and_then(
-            |(input_field, minimum_elements, maximum_elements, element_type, span)| {
+            |(
+                input_field,
+                minimum_elements,
+                maximum_elements,
+                maximum_aggregate_element_bytes,
+                aggregate_bytes_span,
+                element_type,
+                span,
+            )| {
                 let binding_count = bindings
                     .iter()
                     .filter(|binding| binding.collection_local)
@@ -3020,6 +3074,8 @@ fn lower_commands(
                     input_field,
                     minimum_elements,
                     maximum_elements,
+                    maximum_aggregate_element_bytes,
+                    aggregate_bytes_span,
                     element_type,
                     first_binding: BindingId::new(first_binding),
                     binding_count,

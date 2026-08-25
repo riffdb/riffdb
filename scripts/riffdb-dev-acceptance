@@ -4,6 +4,25 @@ set -euo pipefail
 repo_root="$(git rev-parse --show-toplevel)"
 cd "$repo_root"
 
+runner_validation_root="$(mktemp -d "${TMPDIR:-/tmp}/riffdb-go-runner-validation.XXXXXX")"
+cleanup() {
+    rm -rf "$runner_validation_root"
+}
+trap cleanup EXIT
+printf '{}\n' >"$runner_validation_root/riffdb.application.json"
+printf 'module example.invalid/runner\n\ngo 1.24\n' >"$runner_validation_root/go.mod"
+if ./scripts/riffdb-dev --application-root "$runner_validation_root" --run \
+    --go-runner-package ../escape \
+    >"$runner_validation_root/stdout" 2>"$runner_validation_root/stderr"; then
+    echo "source Go runner accepted parent traversal" >&2
+    exit 1
+fi
+grep -Fq 'canonical repository-relative directory' "$runner_validation_root/stderr"
+if grep -q '^riffdb-dev-ready-v1' "$runner_validation_root/stdout"; then
+    echo "source Go runner exposed readiness before rejecting its package" >&2
+    exit 1
+fi
+
 output="$(cargo run --quiet -p riffdb-cli -- dev \
     --role ticketdesk-application \
     --seed-dir fixtures/batches \

@@ -1,5 +1,5 @@
 {
-  "application_manifest_hash": "6c37c3424265bc4fc15c131644b5bcb22357af09033625046fb76c47c02bd1da",
+  "application_manifest_hash": "772b8d71c25ec5a92e3ccd41f6d8f669408fa8af6cb2a3f94c1ca369ebda17d1",
   "commands": [
     {
       "annotations": {
@@ -8,7 +8,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "contract_bundle_hash": "76ecefdc9074b4837cff72902b270ccdf7a60aec64ea1b741586fc9e8051a9d1",
+      "contract_bundle_hash": "f01d15f5388a91e74ca01d5a36a35aefd5d0faf4e525480c82b7eef142ab5315",
       "description": "Execute the exact CreateDocumentGraphs compiled command from contract AdapterBulkConformance.",
       "input_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -59,7 +59,7 @@
       },
       "name": "adapter_bulk_conformance_create_document_graphs",
       "operation_name": "CreateDocumentGraphs",
-      "plan_hash": "0f2e989bccbce786f0adf113f4902f0647765c1308d23d852a2cb4088d2c4fbc",
+      "plan_hash": "94d2e95cffe5b23eb5ee7eaede65de0fd6b6517b7121b92d740c41a633ae6fdd",
       "result_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "oneOf": [
@@ -113,7 +113,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "contract_bundle_hash": "76ecefdc9074b4837cff72902b270ccdf7a60aec64ea1b741586fc9e8051a9d1",
+      "contract_bundle_hash": "f01d15f5388a91e74ca01d5a36a35aefd5d0faf4e525480c82b7eef142ab5315",
       "description": "Execute the exact CreatePipelinesWithSteps compiled command from contract AdapterBulkConformance.",
       "input_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -164,7 +164,7 @@
       },
       "name": "adapter_bulk_conformance_create_pipelines_with_steps",
       "operation_name": "CreatePipelinesWithSteps",
-      "plan_hash": "1370b0e3712586e736eb0a13a45435632dc1534f3693fe7f1f17b51eae9ba51e",
+      "plan_hash": "a672e97dc400e84e91801d31f208d6e2e77b0f07bcad30c08063f03e71054ac6",
       "result_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "oneOf": [
@@ -218,7 +218,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "contract_bundle_hash": "76ecefdc9074b4837cff72902b270ccdf7a60aec64ea1b741586fc9e8051a9d1",
+      "contract_bundle_hash": "f01d15f5388a91e74ca01d5a36a35aefd5d0faf4e525480c82b7eef142ab5315",
       "description": "Execute the exact CreateRestrictChildren compiled command from contract AdapterBulkConformance.",
       "input_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -261,7 +261,7 @@
       },
       "name": "adapter_bulk_conformance_create_restrict_children",
       "operation_name": "CreateRestrictChildren",
-      "plan_hash": "6b197b17628ae0bc6235b3261614a87782ba07e12afb91d890d576873b2dc820",
+      "plan_hash": "325122db5811aeefaa498bd3d8d0e05d2879ff4329a7c0fd2f1336cf018e66e1",
       "result_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "oneOf": [
@@ -315,7 +315,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "contract_bundle_hash": "76ecefdc9074b4837cff72902b270ccdf7a60aec64ea1b741586fc9e8051a9d1",
+      "contract_bundle_hash": "f01d15f5388a91e74ca01d5a36a35aefd5d0faf4e525480c82b7eef142ab5315",
       "description": "Execute the exact CreateRestrictParents compiled command from contract AdapterBulkConformance.",
       "input_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -354,7 +354,7 @@
       },
       "name": "adapter_bulk_conformance_create_restrict_parents",
       "operation_name": "CreateRestrictParents",
-      "plan_hash": "68fff2aeba68e48145357fbfc171cf0e99a4519451b9b6e7c3e21db55595c17f",
+      "plan_hash": "477220cf0cb888cf4638de6e08dd3dc3ea2b8bb33230113430538833d78bee1c",
       "result_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "oneOf": [
@@ -395,7 +395,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "contract_bundle_hash": "76ecefdc9074b4837cff72902b270ccdf7a60aec64ea1b741586fc9e8051a9d1",
+      "contract_bundle_hash": "f01d15f5388a91e74ca01d5a36a35aefd5d0faf4e525480c82b7eef142ab5315",
       "description": "Execute the exact DeleteRestrictParents compiled command from contract AdapterBulkConformance.",
       "input_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -425,7 +425,7 @@
       },
       "name": "adapter_bulk_conformance_delete_restrict_parents",
       "operation_name": "DeleteRestrictParents",
-      "plan_hash": "ad9d08a9791fed072ade420cec9baad7ed7c18516e5eee0927704689c5c2748f",
+      "plan_hash": "708fdfb224ee8e0a76940ed05cca04efe4c0a7286d5334f24ed65941192b8cc7",
       "result_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "oneOf": [
@@ -479,7 +479,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "contract_bundle_hash": "76ecefdc9074b4837cff72902b270ccdf7a60aec64ea1b741586fc9e8051a9d1",
+      "contract_bundle_hash": "f01d15f5388a91e74ca01d5a36a35aefd5d0faf4e525480c82b7eef142ab5315",
       "description": "Execute the exact LogMetrics compiled command from contract AdapterBulkConformance.",
       "input_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -571,7 +571,104 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "contract_bundle_hash": "76ecefdc9074b4837cff72902b270ccdf7a60aec64ea1b741586fc9e8051a9d1",
+      "contract_bundle_hash": "f01d15f5388a91e74ca01d5a36a35aefd5d0faf4e525480c82b7eef142ab5315",
+      "description": "Execute the exact WritePolicyMutations compiled command from contract AdapterBulkConformance.",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "mutations": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "context": {
+                  "anyOf": [
+                    {
+                      "contentEncoding": "base64",
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "mutation_id": {
+                  "type": "string"
+                },
+                "organization_id": {
+                  "type": "string"
+                },
+                "relation": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "context",
+                "relation",
+                "mutation_id",
+                "organization_id"
+              ],
+              "type": "object"
+            },
+            "maxItems": 100,
+            "minItems": 1,
+            "type": "array",
+            "x-riffdb-aggregateCanonicalElementBytes": 900000
+          },
+          "request_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "mutations",
+          "request_id"
+        ],
+        "type": "object"
+      },
+      "name": "adapter_bulk_conformance_write_policy_mutations",
+      "operation_name": "WritePolicyMutations",
+      "plan_hash": "23bc5e089a0f3f7dcb560f42517cc3eed3a337875c0c63384244b5139eb74083",
+      "result_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "PolicyMutationExists",
+                "type": "string"
+              }
+            },
+            "required": [
+              "outcome"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "PolicyMutationsWritten",
+                "type": "string"
+              }
+            },
+            "required": [
+              "outcome"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "title": "Run WritePolicyMutations"
+    },
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "contract_bundle_hash": "f01d15f5388a91e74ca01d5a36a35aefd5d0faf4e525480c82b7eef142ab5315",
       "description": "Execute the exact WriteTuples compiled command from contract AdapterBulkConformance.",
       "input_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -685,7 +782,7 @@
         ],
         "type": "object"
       },
-      "module_hash": "42bc762077726e0b077b8c936aafe13fcca696b8efe1cda05aa46bf3a8054e16",
+      "module_hash": "037c90a0762bb68c521a2e9f9ff30056c43b0f86df7f19fe9ce8fbc83c05fc45",
       "name": "adapter_bulk_conformance_get_fga_tuple",
       "operation_name": "GetFgaTuple",
       "result_schema": {

@@ -236,7 +236,7 @@ PYTHONPATH="$work_root/application/generated/python" \
     "$work_root/python-venv/bin/python" fixtures/adapters/bulk-conformance/runner/python.py \
     >"$work_root/python.json"
 
-expected='{"adapters":["mlflow","openfga","payload","woodpecker"],"bounded_preflight":true,"replayed":true,"schema":"riffdb.adapter-bulk-observation/v1"}'
+expected='{"adapters":["mlflow","openfga","payload","woodpecker"],"bounded_preflight":true,"neutral_aggregate":true,"replayed":true,"schema":"riffdb.adapter-bulk-observation/v1"}'
 for language in rust go typescript python; do
     observed="$(jq -cS 'del(.language, .atomic_conflict, .delete_restrict)' "$work_root/$language.json")"
     [[ "$observed" == "$expected" ]] || {
@@ -249,6 +249,11 @@ jq -e '.atomic_conflict == true and .delete_restrict == true' "$work_root/rust.j
 jq -e '.commands[] | select(.name | endswith("write_tuples"))
        | .input_schema.properties.tuples.minItems == 1
          and .input_schema.properties.tuples.maxItems == 128' \
+    fixtures/adapters/bulk-conformance/generated/mcp/tools.json >/dev/null
+jq -e '.commands[] | select(.name | endswith("write_policy_mutations"))
+       | .input_schema.properties.mutations.minItems == 1
+         and .input_schema.properties.mutations.maxItems == 100
+         and .input_schema.properties.mutations["x-riffdb-aggregateCanonicalElementBytes"] == 900000' \
     fixtures/adapters/bulk-conformance/generated/mcp/tools.json >/dev/null
 
 if rg -n 'riffdb[_-](kernel|storage)|GetEntity|ScanIndex|raw[_ -]?(mutation|transaction)|entity_type_id|field_id|index_id' \

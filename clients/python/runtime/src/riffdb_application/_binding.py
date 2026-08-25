@@ -195,6 +195,60 @@ def encode_value(value: object, annotation: object) -> dict[str, object]:
         raise InvalidInput("generated application input is invalid") from None
 
 
+def canonical_value_encoded_length(value: dict[str, object]) -> int:
+    """Return the exact ADR-0011 canonical v1 document length of an encoded value."""
+    kind = value.get("kind")
+    if kind == "null":
+        return 2
+    if kind == "bool":
+        return 3
+    if kind in {"i64", "u64"}:
+        return 10
+    if kind == "decimal":
+        return 20
+    if kind == "money":
+        return 23
+    if kind == "string":
+        raw = value.get("value")
+        if not isinstance(raw, str):
+            raise ValueError("invalid RiffDB string value")
+        return 6 + len(raw.encode("utf-8"))
+    if kind == "bytes":
+        raw = value.get("value")
+        if not isinstance(raw, str) or len(raw) % 2 != 0:
+            raise ValueError("invalid RiffDB bytes value")
+        return 6 + len(bytes.fromhex(raw))
+    if kind == "timestamp":
+        return 14
+    if kind == "date":
+        return 6
+    if kind == "uuid":
+        return 18
+    if kind == "enum":
+        return 10
+    if kind == "vector":
+        components = value.get("components")
+        if not isinstance(components, list):
+            raise ValueError("invalid RiffDB vector value")
+        return 6 + 4 * len(components)
+    if kind == "list":
+        items = value.get("value")
+        if not isinstance(items, list) or not all(isinstance(item, dict) for item in items):
+            raise ValueError("invalid RiffDB list value")
+        return 6 + sum(
+            canonical_value_encoded_length(typing.cast(dict[str, object], item)) for item in items
+        )
+    if kind == "record":
+        record = value.get("value")
+        if not isinstance(record, dict) or not all(isinstance(item, dict) for item in record.values()):
+            raise ValueError("invalid RiffDB record value")
+        return 6 + sum(
+            4 + canonical_value_encoded_length(typing.cast(dict[str, object], item))
+            for item in record.values()
+        )
+    raise ValueError("invalid RiffDB value kind")
+
+
 def encode_reactive_record(
     value: object,
     schema: dict[str, dict[str, object]],

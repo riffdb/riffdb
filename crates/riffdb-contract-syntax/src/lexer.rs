@@ -175,6 +175,8 @@ pub(crate) enum Token {
     Active,
     #[token("input")]
     Input,
+    #[token("aggregate_bytes")]
+    AggregateBytes,
     #[token("idempotency_key")]
     IdempotencyKey,
     #[token("read")]

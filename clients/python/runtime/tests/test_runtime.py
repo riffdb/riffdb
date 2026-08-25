@@ -33,6 +33,7 @@ from riffdb_application import (
 from riffdb_application import _translate_native, _validate_batch, _vector_inspection_result
 from riffdb_application import _native
 from riffdb_application._binding import (
+    canonical_value_encoded_length,
     decode_record,
     decode_variant,
     encode_reactive_record,
@@ -65,6 +66,12 @@ class ReactiveParameters:
 
 
 class RuntimeTests(unittest.TestCase):
+    def test_canonical_value_length_matches_nested_document_shape(self) -> None:
+        value = {"kind": "record", "value": {"context": {"kind": "bytes", "value": "00010203"}}}
+        self.assertEqual(canonical_value_encoded_length(value), 6 + 4 + 6 + 4)
+        with self.assertRaises(ValueError):
+            canonical_value_encoded_length({"kind": "peer-kind"})
+
     def test_vector_inspection_results_are_closed_and_cursor_bytes_are_exact(self) -> None:
         summary = _vector_inspection_result(
             {

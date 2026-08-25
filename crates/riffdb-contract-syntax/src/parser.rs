@@ -1196,7 +1196,10 @@ impl NodeCounter {
             .saturating_add(1);
         self.collection(items, MAX_DECLARATION_ITEMS, span)?;
         for input in &command.inputs {
-            self.add(2, input.span)?;
+            self.add(
+                2 + usize::from(input.value.aggregate_bytes.is_some()),
+                input.span,
+            )?;
             self.typed_field(&input.value.field)?;
         }
         for value in &command.service_values {

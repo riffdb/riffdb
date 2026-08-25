@@ -92,6 +92,9 @@ pub(crate) enum TopLevel {
         /// Runs the repository's generated application against the local server.
         #[arg(long, conflicts_with_all = ["watch", "acceptance"])]
         run: bool,
+        /// Repository-relative Go main-package directory used by `--run`.
+        #[arg(long, default_value = ".", value_name = "PATH", requires = "run")]
+        go_runner_package: OsString,
         #[arg(long)]
         seed: bool,
         #[arg(long, value_name = "DIRECTORY")]
@@ -1637,6 +1640,22 @@ mod tests {
                 ..
             }
         ));
+        let nested_go = Cli::try_parse_from([
+            "riffdb",
+            "dev",
+            "--run",
+            "--go-runner-package",
+            "cmd/server",
+        ])
+        .expect("accepted nested Go runner package");
+        assert!(matches!(
+            nested_go.command,
+            TopLevel::Dev { go_runner_package, .. }
+                if go_runner_package == "cmd/server"
+        ));
+        assert!(
+            Cli::try_parse_from(["riffdb", "dev", "--go-runner-package", "cmd/server"]).is_err()
+        );
         assert!(Cli::try_parse_from(["riffdb", "dev", "--run", "--watch"]).is_err());
     }
 

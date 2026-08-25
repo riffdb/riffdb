@@ -40,6 +40,41 @@ fn application() -> (riffdb_contract_ir::ContractBundle, QueryModule) {
     (contract, module)
 }
 
+fn aggregate_budget_application() -> (riffdb_contract_ir::ContractBundle, QueryModule) {
+    let contract = compile_contract_source(include_str!(
+        "../../../fixtures/compiler/aggregate-collection-budget/contract.riff"
+    ))
+    .expect("aggregate-budget contract");
+    let query = NamedQuerySource::new(
+        "GetPolicyMutation",
+        r#"
+query GetPolicyMutation(
+    $organization_id: PolicyMutation.organization_id,
+    $mutation_id: PolicyMutation.mutation_id,
+) {
+    one mutation from PolicyMutation
+        where organization_id == $organization_id
+            && mutation_id == $mutation_id
+        else NotFound
+    return Found { mutation: mutation { organization_id mutation_id relation } }
+    outcomes Found | NotFound
+}
+"#,
+    )
+    .expect("query source");
+    let module = QueryModule::compile(
+        QueryModuleCandidate::new(
+            QueryModuleName::new("policy_mutation_budget").expect("module name"),
+            QueryModuleVersion::new(1).expect("module version"),
+            vec![query],
+        )
+        .expect("module candidate"),
+        &contract,
+    )
+    .expect("query module");
+    (contract, module)
+}
+
 #[test]
 fn generated_collection_surfaces_preflight_the_exact_compiled_bounds() {
     let (contract, module) = application();
@@ -105,4 +140,37 @@ fn generated_collection_surfaces_expose_no_generic_write_escape_hatch() {
             );
         }
     }
+}
+
+#[test]
+fn generated_collection_surfaces_publish_and_preflight_aggregate_bytes() {
+    let (contract, module) = aggregate_budget_application();
+
+    let rust = generate_rust_application_client(&module, &contract, &[]);
+    assert!(rust.contains("wire_canonical_value_encoded_len(&encoded)?"));
+    assert!(rust.contains("aggregate_element_bytes > 900000"));
+
+    let go = generate_go_application_client(&module, &contract, &[]);
+    assert!(go.contains("riffdb.CanonicalValueEncodedLength(encoded)"));
+    assert!(go.contains("length > 900000-aggregateElementBytes"));
+
+    let typescript = generate_typescript_application_client(&module, &contract, &[]);
+    assert!(typescript.contains(r#""aggregateCanonicalElementBytes":900000"#));
+
+    let python =
+        generate_python_application_client(&module, &contract, &[]).expect("Python client");
+    assert!(python.contains("canonical_value_encoded_length(encode_value(item"));
+    assert!(python.contains("aggregate_element_bytes > 900000"));
+
+    let command_tool = generate_mcp_commands(&module, &contract)
+        .expect("MCP commands")
+        .into_iter()
+        .find(|tool| tool.operation_name == "WritePolicyMutations")
+        .expect("WritePolicyMutations tool");
+    let schema: serde_json::Value =
+        serde_json::from_str(&command_tool.input_schema).expect("input schema");
+    assert_eq!(
+        schema["properties"]["mutations"]["x-riffdb-aggregateCanonicalElementBytes"],
+        900_000
+    );
 }

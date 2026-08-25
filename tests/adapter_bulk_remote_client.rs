@@ -188,6 +188,46 @@ async fn run_async() -> TestResult<()> {
         "Woodpecker replay",
     )?;
 
+    let oversized = generated::WritePolicyMutationsInput {
+        mutations: vec![
+            policy_mutation(&id(60), &id(61), Some(vec![0; 450_000])),
+            policy_mutation(&id(60), &id(62), Some(vec![0; 450_000])),
+        ],
+        request_id: id(63),
+    };
+    if oversized.idempotent_command().is_ok() {
+        return Err("aggregate byte overflow crossed Rust preflight".into());
+    }
+    for (count, start, organization, request) in [
+        (9usize, 70u8, 64u8, 65u8),
+        (19, 80, 66, 67),
+        (100, 100, 68, 69),
+    ] {
+        let organization_id = id(organization);
+        let mutations = (0..count)
+            .map(|offset| {
+                policy_mutation(
+                    &organization_id,
+                    &id(start + u8::try_from(offset).expect("bounded mutation offset")),
+                    (count == 100 && offset == 0).then(|| vec![0xa5; 524_288]),
+                )
+            })
+            .collect();
+        expect(
+            matches!(
+                client
+                    .write_policy_mutations(generated::WritePolicyMutationsInput {
+                        mutations,
+                        request_id: id(request),
+                    })
+                    .await?
+                    .outcome,
+                generated::WritePolicyMutationsOutcome::PolicyMutationsWritten
+            ),
+            "neutral aggregate collection",
+        )?;
+    }
+
     let tenant = id(50);
     let parent_a = generated::RestrictParent {
         parent_id: id(51),
@@ -299,10 +339,24 @@ async fn run_async() -> TestResult<()> {
             "atomic_conflict": true,
             "replayed": true,
             "delete_restrict": true,
+            "neutral_aggregate": true,
             "adapters": ["mlflow", "openfga", "payload", "woodpecker"],
         })
     );
     Ok(())
+}
+
+fn policy_mutation(
+    organization_id: &str,
+    mutation_id: &str,
+    context: Option<Vec<u8>>,
+) -> generated::PolicyMutation {
+    generated::PolicyMutation {
+        context,
+        relation: "viewer".to_owned(),
+        mutation_id: mutation_id.to_owned(),
+        organization_id: organization_id.to_owned(),
+    }
 }
 
 fn tuple(store_id: &str, tuple_id: &str) -> generated::FgaTuple {

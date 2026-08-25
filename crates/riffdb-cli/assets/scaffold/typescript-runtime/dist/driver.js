@@ -670,7 +670,12 @@ function validateDriverValue(value, depth) {
         BigInt(boundedPattern(item.value, /^[0-9]{1,20}$/));
         return item;
     }
-    if ((type === "string" || type === "bytes") && typeof item.value === "string" && item.value.length <= 262_144)
+    if (type === "string" && typeof item.value === "string" && item.value.length <= 262_144)
+        return item;
+    // Byte values use padded Base64 on this bounded JSON protocol. Their
+    // canonical decoded size is checked by the generated facade and service;
+    // the unchanged frame limit bounds the local representation.
+    if (type === "bytes" && typeof item.value === "string" && item.value.length <= MAX_FRAME_BYTES)
         return item;
     if (type === "uuid" && typeof item.value === "string" && UUID.test(item.value))
         return item;

@@ -737,9 +737,9 @@ raw, err = requiredField(fields, "tuples"); if err != nil { return nil, err }; r
 return result, nil
 default: return nil, errors.New("RiffDB driver returned unknown query outcome") } }
 func (client *Client) ListFgaTuples(ctx context.Context, parameters ListFgaTuplesParams, options QueryOptions) (QueryResult[ListFgaTuplesResult], error) { input := map[string]riffdb.Value{}
+if parameters.After != nil { if options.Cursor != "" { return QueryResult[ListFgaTuplesResult]{}, errors.New("generated cursor conflicts with query options") }; options.Cursor = *parameters.After }
 input["store_id"] = riffdb.UUID(parameters.StoreId)
 if parameters.Relation != nil { input["relation"] = riffdb.Optional(parameters.Relation, func(item string) riffdb.Value { return riffdb.String(item) }) }
-if parameters.After != nil { input["after"] = riffdb.Optional(parameters.After, func(item string) riffdb.Value { return riffdb.String(item) }) }
 response, err := client.session.Invoke(ctx, ListFgaTuplesOperation, input, options); if err != nil { return QueryResult[ListFgaTuplesResult]{}, err }; if response.ApplicationHead == nil { return QueryResult[ListFgaTuplesResult]{}, errors.New("RiffDB driver omitted query frontier") }; value, err := decodeListFgaTuplesResult(response.Value); if err != nil { return QueryResult[ListFgaTuplesResult]{}, err }; identity := QueryIdentity{ContractLineage: ContractLineage, ContractVersion: ContractVersion, ContractBundleHash: ContractBundleHash, ModuleHash: QueryModuleHash, QueryName: "ListFgaTuples", PlanHash: ListFgaTuplesQueryPlanHash}; return QueryResult[ListFgaTuplesResult]{Value: value, Identity: identity, ApplicationHead: *response.ApplicationHead, NextCursor: response.Cursor}, nil }
 
 const ListPipelinesQueryPlanHash = "7468c5218b334e3c26743f26efd3c880b245d32a5c3a431fcf80941f9bd4edb5"
@@ -750,9 +750,9 @@ raw, err = requiredField(fields, "pipelines"); if err != nil { return nil, err }
 return result, nil
 default: return nil, errors.New("RiffDB driver returned unknown query outcome") } }
 func (client *Client) ListPipelines(ctx context.Context, parameters ListPipelinesParams, options QueryOptions) (QueryResult[ListPipelinesResult], error) { input := map[string]riffdb.Value{}
+if parameters.After != nil { if options.Cursor != "" { return QueryResult[ListPipelinesResult]{}, errors.New("generated cursor conflicts with query options") }; options.Cursor = *parameters.After }
 input["organization_id"] = riffdb.UUID(parameters.OrganizationId)
 if parameters.State != nil { input["state"] = riffdb.Optional(parameters.State, func(item string) riffdb.Value { return riffdb.String(item) }) }
-if parameters.After != nil { input["after"] = riffdb.Optional(parameters.After, func(item string) riffdb.Value { return riffdb.String(item) }) }
 response, err := client.session.Invoke(ctx, ListPipelinesOperation, input, options); if err != nil { return QueryResult[ListPipelinesResult]{}, err }; if response.ApplicationHead == nil { return QueryResult[ListPipelinesResult]{}, errors.New("RiffDB driver omitted query frontier") }; value, err := decodeListPipelinesResult(response.Value); if err != nil { return QueryResult[ListPipelinesResult]{}, err }; identity := QueryIdentity{ContractLineage: ContractLineage, ContractVersion: ContractVersion, ContractBundleHash: ContractBundleHash, ModuleHash: QueryModuleHash, QueryName: "ListPipelines", PlanHash: ListPipelinesQueryPlanHash}; return QueryResult[ListPipelinesResult]{Value: value, Identity: identity, ApplicationHead: *response.ApplicationHead, NextCursor: response.Cursor}, nil }
 
 const MetricDashboardQueryPlanHash = "e5a09fdec5ad5c364848118af929cf654c58dbb0b5ab59ba04aa9a910139dfa6"
@@ -807,9 +807,9 @@ raw, err = requiredField(fields, "documents"); if err != nil { return nil, err }
 return result, nil
 default: return nil, errors.New("RiffDB driver returned unknown query outcome") } }
 func (client *Client) SearchDocuments(ctx context.Context, parameters SearchDocumentsParams, options QueryOptions) (QueryResult[SearchDocumentsResult], error) { input := map[string]riffdb.Value{}
+if parameters.After != nil { if options.Cursor != "" { return QueryResult[SearchDocumentsResult]{}, errors.New("generated cursor conflicts with query options") }; options.Cursor = *parameters.After }
 input["site_id"] = riffdb.UUID(parameters.SiteId)
 input["title_prefix"] = riffdb.String(parameters.TitlePrefix)
-if parameters.After != nil { input["after"] = riffdb.Optional(parameters.After, func(item string) riffdb.Value { return riffdb.String(item) }) }
 response, err := client.session.Invoke(ctx, SearchDocumentsOperation, input, options); if err != nil { return QueryResult[SearchDocumentsResult]{}, err }; if response.ApplicationHead == nil { return QueryResult[SearchDocumentsResult]{}, errors.New("RiffDB driver omitted query frontier") }; value, err := decodeSearchDocumentsResult(response.Value); if err != nil { return QueryResult[SearchDocumentsResult]{}, err }; identity := QueryIdentity{ContractLineage: ContractLineage, ContractVersion: ContractVersion, ContractBundleHash: ContractBundleHash, ModuleHash: QueryModuleHash, QueryName: "SearchDocuments", PlanHash: SearchDocumentsQueryPlanHash}; return QueryResult[SearchDocumentsResult]{Value: value, Identity: identity, ApplicationHead: *response.ApplicationHead, NextCursor: response.Cursor}, nil }
 
 const ChangeInventoryRecordStatePlanHash = "a28376c6856cdccf2f36184e5f0eeabe4fa0263678f27dec0207421b840f8682"

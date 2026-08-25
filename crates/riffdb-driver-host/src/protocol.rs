@@ -930,7 +930,14 @@ fn validate_values<'a>(
     }
     for value in values {
         match value {
-            DriverValue::String(value) | DriverValue::Bytes(value) if value.len() > 262_144 => {
+            DriverValue::String(value) if value.len() > 262_144 => {
+                return Err(ProtocolError::InvalidBounds);
+            }
+            // Bytes use padded Base64 on the local JSON protocol, so their wire
+            // representation is larger than the canonical value checked by the
+            // generated facade and application service. The frame ceiling remains
+            // the authoritative local-transport allocation bound.
+            DriverValue::Bytes(value) if value.len() > MAX_DRIVER_FRAME_BYTES => {
                 return Err(ProtocolError::InvalidBounds);
             }
             DriverValue::I64(value) if value.len() > 20 || value.parse::<i64>().is_err() => {

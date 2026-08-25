@@ -993,11 +993,18 @@ class TicketDeskClient:
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
     def list_comments(self, parameters: ListCommentsParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ListCommentsResult]:
+        encoded_parameters = encode_record(parameters)
+        generated_cursor = parameters.after
+        if generated_cursor is not None:
+            if options.cursor is not None:
+                raise ValueError("generated cursor conflicts with query options")
+            options = QueryOptions(cursor=generated_cursor, read_after_commit=options.read_after_commit)
+        encoded_parameters.pop("after", None)
         raw = self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
             query_name="ListComments", plan_hash=LIST_COMMENTS_QUERY_PLAN_HASH,
-            parameters=encode_record(parameters), options=options,
+            parameters=encoded_parameters, options=options,
         )
         outcomes = {
             "Found": ListCommentsFound,
@@ -1005,11 +1012,18 @@ class TicketDeskClient:
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
     def list_tickets(self, parameters: ListTicketsParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ListTicketsResult]:
+        encoded_parameters = encode_record(parameters)
+        generated_cursor = parameters.after
+        if generated_cursor is not None:
+            if options.cursor is not None:
+                raise ValueError("generated cursor conflicts with query options")
+            options = QueryOptions(cursor=generated_cursor, read_after_commit=options.read_after_commit)
+        encoded_parameters.pop("after", None)
         raw = self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
             query_name="ListTickets", plan_hash=LIST_TICKETS_QUERY_PLAN_HASH,
-            parameters=encode_record(parameters), options=options,
+            parameters=encoded_parameters, options=options,
         )
         outcomes = {
             "Found": ListTicketsFound,
@@ -1017,11 +1031,18 @@ class TicketDeskClient:
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
     def list_tickets_by_assignee(self, parameters: ListTicketsByAssigneeParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ListTicketsByAssigneeResult]:
+        encoded_parameters = encode_record(parameters)
+        generated_cursor = parameters.after
+        if generated_cursor is not None:
+            if options.cursor is not None:
+                raise ValueError("generated cursor conflicts with query options")
+            options = QueryOptions(cursor=generated_cursor, read_after_commit=options.read_after_commit)
+        encoded_parameters.pop("after", None)
         raw = self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
             query_name="ListTicketsByAssignee", plan_hash=LIST_TICKETS_BY_ASSIGNEE_QUERY_PLAN_HASH,
-            parameters=encode_record(parameters), options=options,
+            parameters=encoded_parameters, options=options,
         )
         outcomes = {
             "Found": ListTicketsByAssigneeFound,
@@ -1029,11 +1050,18 @@ class TicketDeskClient:
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
     def project_members(self, parameters: ProjectMembersParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ProjectMembersResult]:
+        encoded_parameters = encode_record(parameters)
+        generated_cursor = parameters.after
+        if generated_cursor is not None:
+            if options.cursor is not None:
+                raise ValueError("generated cursor conflicts with query options")
+            options = QueryOptions(cursor=generated_cursor, read_after_commit=options.read_after_commit)
+        encoded_parameters.pop("after", None)
         raw = self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
             query_name="ProjectMembers", plan_hash=PROJECT_MEMBERS_QUERY_PLAN_HASH,
-            parameters=encode_record(parameters), options=options,
+            parameters=encoded_parameters, options=options,
         )
         outcomes = {
             "Found": ProjectMembersFound,
@@ -1068,11 +1096,18 @@ class TicketDeskClient:
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
     def ticket_page_paged(self, parameters: TicketPagePagedParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[TicketPagePagedResult]:
+        encoded_parameters = encode_record(parameters)
+        generated_cursor = parameters.comments_after
+        if generated_cursor is not None:
+            if options.cursor is not None:
+                raise ValueError("generated cursor conflicts with query options")
+            options = QueryOptions(cursor=generated_cursor, read_after_commit=options.read_after_commit)
+        encoded_parameters.pop("comments_after", None)
         raw = self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
             query_name="TicketPagePaged", plan_hash=TICKET_PAGE_PAGED_QUERY_PLAN_HASH,
-            parameters=encode_record(parameters), options=options,
+            parameters=encoded_parameters, options=options,
         )
         outcomes = {
             "Found": TicketPagePagedFound,
@@ -1383,11 +1418,18 @@ class AsyncTicketDeskClient:
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
     async def list_comments(self, parameters: ListCommentsParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ListCommentsResult]:
+        encoded_parameters = encode_record(parameters)
+        generated_cursor = parameters.after
+        if generated_cursor is not None:
+            if options.cursor is not None:
+                raise ValueError("generated cursor conflicts with query options")
+            options = QueryOptions(cursor=generated_cursor, read_after_commit=options.read_after_commit)
+        encoded_parameters.pop("after", None)
         raw = await self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
             query_name="ListComments", plan_hash=LIST_COMMENTS_QUERY_PLAN_HASH,
-            parameters=encode_record(parameters), options=options,
+            parameters=encoded_parameters, options=options,
         )
         outcomes = {
             "Found": ListCommentsFound,
@@ -1395,11 +1437,18 @@ class AsyncTicketDeskClient:
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
     async def list_tickets(self, parameters: ListTicketsParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ListTicketsResult]:
+        encoded_parameters = encode_record(parameters)
+        generated_cursor = parameters.after
+        if generated_cursor is not None:
+            if options.cursor is not None:
+                raise ValueError("generated cursor conflicts with query options")
+            options = QueryOptions(cursor=generated_cursor, read_after_commit=options.read_after_commit)
+        encoded_parameters.pop("after", None)
         raw = await self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
             query_name="ListTickets", plan_hash=LIST_TICKETS_QUERY_PLAN_HASH,
-            parameters=encode_record(parameters), options=options,
+            parameters=encoded_parameters, options=options,
         )
         outcomes = {
             "Found": ListTicketsFound,
@@ -1407,11 +1456,18 @@ class AsyncTicketDeskClient:
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
     async def list_tickets_by_assignee(self, parameters: ListTicketsByAssigneeParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ListTicketsByAssigneeResult]:
+        encoded_parameters = encode_record(parameters)
+        generated_cursor = parameters.after
+        if generated_cursor is not None:
+            if options.cursor is not None:
+                raise ValueError("generated cursor conflicts with query options")
+            options = QueryOptions(cursor=generated_cursor, read_after_commit=options.read_after_commit)
+        encoded_parameters.pop("after", None)
         raw = await self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
             query_name="ListTicketsByAssignee", plan_hash=LIST_TICKETS_BY_ASSIGNEE_QUERY_PLAN_HASH,
-            parameters=encode_record(parameters), options=options,
+            parameters=encoded_parameters, options=options,
         )
         outcomes = {
             "Found": ListTicketsByAssigneeFound,
@@ -1419,11 +1475,18 @@ class AsyncTicketDeskClient:
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
     async def project_members(self, parameters: ProjectMembersParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ProjectMembersResult]:
+        encoded_parameters = encode_record(parameters)
+        generated_cursor = parameters.after
+        if generated_cursor is not None:
+            if options.cursor is not None:
+                raise ValueError("generated cursor conflicts with query options")
+            options = QueryOptions(cursor=generated_cursor, read_after_commit=options.read_after_commit)
+        encoded_parameters.pop("after", None)
         raw = await self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
             query_name="ProjectMembers", plan_hash=PROJECT_MEMBERS_QUERY_PLAN_HASH,
-            parameters=encode_record(parameters), options=options,
+            parameters=encoded_parameters, options=options,
         )
         outcomes = {
             "Found": ProjectMembersFound,
@@ -1458,11 +1521,18 @@ class AsyncTicketDeskClient:
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
     async def ticket_page_paged(self, parameters: TicketPagePagedParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[TicketPagePagedResult]:
+        encoded_parameters = encode_record(parameters)
+        generated_cursor = parameters.comments_after
+        if generated_cursor is not None:
+            if options.cursor is not None:
+                raise ValueError("generated cursor conflicts with query options")
+            options = QueryOptions(cursor=generated_cursor, read_after_commit=options.read_after_commit)
+        encoded_parameters.pop("comments_after", None)
         raw = await self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
             query_name="TicketPagePaged", plan_hash=TICKET_PAGE_PAGED_QUERY_PLAN_HASH,
-            parameters=encode_record(parameters), options=options,
+            parameters=encoded_parameters, options=options,
         )
         outcomes = {
             "Found": TicketPagePagedFound,

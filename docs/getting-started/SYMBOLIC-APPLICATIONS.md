@@ -47,6 +47,11 @@ down the server when the runner exits or is interrupted. Go and TypeScript use
 the private first-party driver-host socket; no runner receives operator or
 kernel authority.
 
+For a Go library module whose executable is a nested `main` package, select it
+explicitly with `--go-runner-package cmd/server`. The path is repository-confined
+and is validated before the local driver or credentials are created; the
+module-root default remains `.`.
+
 Current application command and RiffQL plans retain the accepted grammar-v1
 global tenant requirement. `riffdb dev` therefore accepts only an explicitly
 global development role. A tenant-scoped role is rejected before the

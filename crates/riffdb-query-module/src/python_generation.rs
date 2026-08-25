@@ -337,16 +337,22 @@ pub fn generate_python_client(
 ) -> Result<String, PythonGenerationError> {
     validate_names(module, contract)?;
     let has_vector_inspection = !vector_inspection_facades(module, contract).is_empty();
+    let has_aggregate_collection_budget = contract.commands().iter().any(|command| {
+        command
+            .collection_expansion()
+            .is_some_and(|expansion| expansion.maximum_aggregate_element_bytes().is_some())
+    });
     let vector_runtime_imports = if has_vector_inspection {
         "\n             TypedVectorInspectionResult, VectorInspectionOptions, VectorModelVersionResult,\n\
              VectorStalenessResult, WorkflowSuccessorRevision"
     } else {
         " WorkflowSuccessorRevision"
     };
-    let vector_binding_import = if has_vector_inspection {
-        ", encode_value"
-    } else {
-        ""
+    let binding_imports = match (has_vector_inspection, has_aggregate_collection_budget) {
+        (true, true) => ", canonical_value_encoded_length, encode_value",
+        (true, false) => ", encode_value",
+        (false, true) => ", canonical_value_encoded_length, encode_value",
+        (false, false) => "",
     };
     let vector_typing_import = if has_vector_inspection { ", cast" } else { "" };
     let mut output = String::new();
@@ -365,7 +371,7 @@ pub fn generate_python_client(
              CommandBatchProgress, CommandBatchResult, Money, QueryOptions, RiffDate,\n\
              SyncApplicationTransport, Timestamp, TypedCommandResult, TypedQueryResult,{vector_runtime_imports},\n\
          )\n\
-         from riffdb_application._binding import decode_variant, encode_record{vector_binding_import}\n"
+         from riffdb_application._binding import decode_variant, encode_record{binding_imports}\n"
     )
     .expect("String writes cannot fail");
     output.push_str(
@@ -1324,9 +1330,28 @@ fn emit_client(
         } else {
             ""
         };
+        let cursor = query
+            .plan()
+            .schemas()
+            .parameters()
+            .iter()
+            .find(|parameter| is_cursor(parameter.value_type()));
+        let (parameter_prelude, parameter_argument) = cursor.map_or_else(
+            || (String::new(), "encode_record(parameters)".to_owned()),
+            |parameter| {
+                let field = python_identifier(parameter.name());
+                (
+                    format!(
+                        "        encoded_parameters = encode_record(parameters)\n        generated_cursor = parameters.{field}\n        if generated_cursor is not None:\n            if options.cursor is not None:\n                raise ValueError(\"generated cursor conflicts with query options\")\n            options = QueryOptions(cursor=generated_cursor, read_after_commit=options.read_after_commit)\n        encoded_parameters.pop({:?}, None)\n",
+                        parameter.name()
+                    ),
+                    "encoded_parameters".to_owned(),
+                )
+            },
+        );
         writeln!(
             output,
-            "    {async_token}def {method}(self, parameters: {name}Params, options: QueryOptions = QueryOptions()) -> TypedQueryResult[{name}Result]:\n        raw = {await_token}self._transport._execute_named_query(\n            contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,\n            contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,\n            query_name={wire_name:?}, plan_hash={constant}_QUERY_PLAN_HASH,\n            parameters=encode_record(parameters), options=options,\n{compact_argument}        )\n        outcomes = {{",
+            "    {async_token}def {method}(self, parameters: {name}Params, options: QueryOptions = QueryOptions()) -> TypedQueryResult[{name}Result]:\n{parameter_prelude}        raw = {await_token}self._transport._execute_named_query(\n            contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,\n            contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,\n            query_name={wire_name:?}, plan_hash={constant}_QUERY_PLAN_HASH,\n            parameters={parameter_argument}, options=options,\n{compact_argument}        )\n        outcomes = {{",
             constant = screaming_snake(wire_name),
         )
         .expect("String writes cannot fail");
@@ -1383,7 +1408,7 @@ fn emit_client(
                 .record()
                 .field(expansion.input_field())
                 .expect("validated collection input field");
-            format!(
+            let mut validation = format!(
                 "        if not {minimum} <= len(input.{field}) <= {maximum}:\n            raise ValueError({message:?})\n",
                 minimum = expansion.minimum_elements(),
                 maximum = expansion.maximum_elements(),
@@ -1393,7 +1418,22 @@ fn emit_client(
                     command.name(),
                     field.name()
                 ),
-            )
+            );
+            if let Some(maximum) = expansion.maximum_aggregate_element_bytes() {
+                let element_type = python_contract_type(expansion.element_type(), contract);
+                write!(
+                    validation,
+                    "        aggregate_element_bytes = sum(canonical_value_encoded_length(encode_value(item, {element_type})) for item in input.{field})\n        if aggregate_element_bytes > {maximum}:\n            raise ValueError({message:?})\n",
+                    field = python_identifier(field.name()),
+                    message = format!(
+                        "invalid aggregate collection bytes for {}.{}",
+                        command.name(),
+                        field.name()
+                    ),
+                )
+                .expect("String writes cannot fail");
+            }
+            validation
         });
         writeln!(
             output,
@@ -1451,8 +1491,9 @@ fn emit_client(
                 .as_deref()
                 .map_or_else(String::new, |validation| {
                     let nested = validation
-                        .replace("        if ", "            if ")
-                        .replace("\n            raise", "\n                raise");
+                        .lines()
+                        .map(|line| format!("    {line}\n"))
+                        .collect::<String>();
                     format!("        for input in inputs:\n{nested}")
                 });
         writeln!(

@@ -887,6 +887,26 @@ fn execute_collection_command(
     let expansion = plan
         .collection_expansion()
         .ok_or(ExecutionFault::Integrity)?;
+    let CanonicalValue::List(elements) =
+        record_field(input, expansion.input_field()).ok_or(ExecutionFault::Integrity)?
+    else {
+        return Err(ExecutionFault::Integrity);
+    };
+    if let Some(maximum) = expansion.maximum_aggregate_element_bytes() {
+        let mut observed = 0usize;
+        for element in elements.values() {
+            observed = observed
+                .checked_add(
+                    encode_canonical_value(element)
+                        .map_err(map_canonical_codec_error)?
+                        .len(),
+                )
+                .ok_or(ExecutionFault::ResourceLimit)?;
+            if observed > maximum {
+                return Err(ExecutionFault::ResourceLimit);
+            }
+        }
+    }
     let facts =
         derive_input_command_facts(plan, input.clone()).map_err(map_prepared_evaluation_error)?;
     if facts.partition_key() != context.partition_key()
@@ -929,11 +949,6 @@ fn execute_collection_command(
         }
     }
 
-    let CanonicalValue::List(elements) =
-        record_field(input, expansion.input_field()).ok_or(ExecutionFault::Integrity)?
-    else {
-        return Err(ExecutionFault::Integrity);
-    };
     let first_instruction = expansion.first_instruction() as usize;
     let instruction_end = first_instruction
         .checked_add(expansion.instruction_count())

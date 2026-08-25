@@ -391,7 +391,24 @@ fn emit_query_methods(
             emit_go_compact_query_decoder(output, name.as_str(), shape, contract);
         }
         writeln!(output, "func (client *Client) {name}(ctx context.Context, parameters {name}Params, options QueryOptions) (QueryResult[{name}Result], error) {{ input := map[string]riffdb.Value{{}}").unwrap();
+        if let Some(cursor) = query
+            .plan()
+            .schemas()
+            .parameters()
+            .iter()
+            .find(|parameter| is_cursor(parameter.value_type()))
+        {
+            let field = go_public(cursor.name());
+            writeln!(
+                output,
+                "if parameters.{field} != nil {{ if options.Cursor != \"\" {{ return QueryResult[{name}Result]{{}}, errors.New(\"generated cursor conflicts with query options\") }}; options.Cursor = *parameters.{field} }}"
+            )
+            .unwrap();
+        }
         for parameter in query.plan().schemas().parameters() {
+            if is_cursor(parameter.value_type()) {
+                continue;
+            }
             let field = go_public(parameter.name());
             if parameter.has_default()
                 || matches!(
@@ -634,6 +651,18 @@ fn emit_command_methods(
                     field.name()
                 ),
             ));
+            if let Some(maximum) = expansion.maximum_aggregate_element_bytes() {
+                let encoded = encode_expr("item", expansion.element_type(), contract);
+                input_checks.push(format!(
+                    "aggregateElementBytes := 0; for _, item := range input.{field} {{ encoded := {encoded}; length, err := riffdb.CanonicalValueEncodedLength(encoded); if err != nil || length > {maximum}-aggregateElementBytes {{ return errors.New({message:?}) }}; aggregateElementBytes += length }}",
+                    field = go_public(field.name()),
+                    message = format!(
+                        "invalid aggregate collection bytes for {}.{}",
+                        command.name(),
+                        field.name()
+                    ),
+                ));
+            }
         }
         for field in command.input().record().fields() {
             if field.value_type().tag() == ValueTypeTag::Vector {
@@ -1488,6 +1517,11 @@ fn decimal_type_parts(type_name: &str) -> Option<(u8, u8)> {
     let body = type_name.strip_prefix("decimal<")?.strip_suffix('>')?;
     let (precision, scale) = body.split_once(',')?;
     Some((precision.parse().ok()?, scale.parse().ok()?))
+}
+
+fn is_cursor(value_type: &NamedTypeSchema) -> bool {
+    matches!(value_type, NamedTypeSchema::Cursor)
+        || matches!(value_type, NamedTypeSchema::Optional(inner) if is_cursor(inner))
 }
 
 fn schema_hash(schema: &str) -> String {

@@ -16,6 +16,9 @@ from client import (
     LogMetricsMetricsLogged,
     Metric,
     PipelineGraphInput,
+    PolicyMutation,
+    WritePolicyMutationsInput,
+    WritePolicyMutationsPolicyMutationsWritten,
     WriteTuplesInput,
     WriteTuplesTuplesWritten,
 )
@@ -141,6 +144,58 @@ def main() -> None:
             "Woodpecker replay",
         )
 
+        try:
+            client.write_policy_mutations(
+                WritePolicyMutationsInput(
+                    request_id=uid(800),
+                    mutations=(
+                        PolicyMutation(
+                            organization_id=uid(801),
+                            mutation_id=uid(802),
+                            relation="viewer",
+                            context=bytes(450_000),
+                        ),
+                        PolicyMutation(
+                            organization_id=uid(801),
+                            mutation_id=uid(803),
+                            relation="viewer",
+                            context=bytes(450_000),
+                        ),
+                    ),
+                )
+            )
+        except ValueError:
+            aggregate_bounded = True
+        else:
+            aggregate_bounded = False
+        require(aggregate_bounded, "aggregate byte preflight")
+
+        for count, start, organization, request in (
+            (9, 900, 890, 891),
+            (19, 910, 892, 893),
+            (100, 1000, 894, 895),
+        ):
+            mutations = tuple(
+                PolicyMutation(
+                    organization_id=uid(organization),
+                    mutation_id=uid(start + index),
+                    relation="viewer",
+                    context=bytes(524_288) if count == 100 and index == 0 else None,
+                )
+                for index in range(count)
+            )
+            require(
+                isinstance(
+                    client.write_policy_mutations(
+                        WritePolicyMutationsInput(
+                            request_id=uid(request), mutations=mutations
+                        )
+                    ).outcome,
+                    WritePolicyMutationsPolicyMutationsWritten,
+                ),
+                "neutral aggregate outcome",
+            )
+
     print(
         json.dumps(
             {
@@ -148,6 +203,7 @@ def main() -> None:
                 "language": "python",
                 "bounded_preflight": True,
                 "replayed": True,
+                "neutral_aggregate": True,
                 "adapters": ["mlflow", "openfga", "payload", "woodpecker"],
             },
             separators=(",", ":"),

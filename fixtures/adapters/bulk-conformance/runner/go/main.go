@@ -49,7 +49,7 @@ func run() error {
 		RoleDefinitionHash:      document.RoleDefinitionHash,
 		RemoteIdentityHash:      document.RemoteIdentityHash,
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 	session, err := riffdb.Connect(ctx, os.Getenv("RIFFDB_CONFORMANCE_SOCKET"), identity)
 	if err != nil {
@@ -125,11 +125,55 @@ func run() error {
 		return errors.New("Go Woodpecker replay")
 	}
 
+	largeA := make([]byte, 450_000)
+	largeB := make([]byte, 450_000)
+	if _, err = client.WritePolicyMutations(ctx, generated.WritePolicyMutationsInput{
+		RequestId: id(280),
+		Mutations: []generated.PolicyMutation{
+			{OrganizationId: id(281), MutationId: id(282), Relation: "viewer", Context: &largeA},
+			{OrganizationId: id(281), MutationId: id(283), Relation: "viewer", Context: &largeB},
+		},
+	}); err == nil {
+		return errors.New("aggregate byte overflow crossed Go preflight")
+	}
+	for _, item := range []struct{ count, start, organization, request int }{
+		{9, 900, 890, 891},
+		{19, 910, 892, 893},
+		{100, 1000, 894, 895},
+	} {
+		result, writeErr := client.WritePolicyMutations(ctx, generated.WritePolicyMutationsInput{
+			RequestId: id(item.request),
+			Mutations: policyMutations(item.count, item.start, item.organization),
+		})
+		if writeErr != nil {
+			return fmt.Errorf("write %d neutral aggregate mutations: %w", item.count, writeErr)
+		}
+		if _, ok := result.Outcome.(generated.WritePolicyMutationsPolicyMutationsWritten); !ok {
+			return errors.New("Go neutral aggregate outcome")
+		}
+	}
+
 	return json.NewEncoder(os.Stdout).Encode(map[string]any{
 		"schema": "riffdb.adapter-bulk-observation/v1", "language": "go",
-		"bounded_preflight": true, "replayed": true,
+		"bounded_preflight": true, "replayed": true, "neutral_aggregate": true,
 		"adapters": []string{"mlflow", "openfga", "payload", "woodpecker"},
 	})
+}
+
+func policyMutations(count, start, organization int) []generated.PolicyMutation {
+	mutations := make([]generated.PolicyMutation, count)
+	for index := range mutations {
+		mutations[index] = generated.PolicyMutation{
+			OrganizationId: id(organization),
+			MutationId:     id(start + index),
+			Relation:       "viewer",
+		}
+		if count == 100 && index == 0 {
+			context := make([]byte, 524_288)
+			mutations[index].Context = &context
+		}
+	}
+	return mutations
 }
 
 func id(suffix int) string {

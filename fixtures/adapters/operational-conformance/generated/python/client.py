@@ -760,11 +760,18 @@ class AdapterOperationalConformanceClient:
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
     def list_fga_tuples(self, parameters: ListFgaTuplesParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ListFgaTuplesResult]:
+        encoded_parameters = encode_record(parameters)
+        generated_cursor = parameters.after
+        if generated_cursor is not None:
+            if options.cursor is not None:
+                raise ValueError("generated cursor conflicts with query options")
+            options = QueryOptions(cursor=generated_cursor, read_after_commit=options.read_after_commit)
+        encoded_parameters.pop("after", None)
         raw = self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
             query_name="ListFgaTuples", plan_hash=LIST_FGA_TUPLES_QUERY_PLAN_HASH,
-            parameters=encode_record(parameters), options=options,
+            parameters=encoded_parameters, options=options,
         )
         outcomes = {
             "Found": ListFgaTuplesFound,
@@ -772,11 +779,18 @@ class AdapterOperationalConformanceClient:
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
     def list_pipelines(self, parameters: ListPipelinesParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ListPipelinesResult]:
+        encoded_parameters = encode_record(parameters)
+        generated_cursor = parameters.after
+        if generated_cursor is not None:
+            if options.cursor is not None:
+                raise ValueError("generated cursor conflicts with query options")
+            options = QueryOptions(cursor=generated_cursor, read_after_commit=options.read_after_commit)
+        encoded_parameters.pop("after", None)
         raw = self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
             query_name="ListPipelines", plan_hash=LIST_PIPELINES_QUERY_PLAN_HASH,
-            parameters=encode_record(parameters), options=options,
+            parameters=encoded_parameters, options=options,
         )
         outcomes = {
             "Found": ListPipelinesFound,
@@ -820,11 +834,18 @@ class AdapterOperationalConformanceClient:
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
     def search_documents(self, parameters: SearchDocumentsParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[SearchDocumentsResult]:
+        encoded_parameters = encode_record(parameters)
+        generated_cursor = parameters.after
+        if generated_cursor is not None:
+            if options.cursor is not None:
+                raise ValueError("generated cursor conflicts with query options")
+            options = QueryOptions(cursor=generated_cursor, read_after_commit=options.read_after_commit)
+        encoded_parameters.pop("after", None)
         raw = self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
             query_name="SearchDocuments", plan_hash=SEARCH_DOCUMENTS_QUERY_PLAN_HASH,
-            parameters=encode_record(parameters), options=options,
+            parameters=encoded_parameters, options=options,
         )
         outcomes = {
             "Found": SearchDocumentsFound,
@@ -1144,11 +1165,18 @@ class AsyncAdapterOperationalConformanceClient:
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
     async def list_fga_tuples(self, parameters: ListFgaTuplesParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ListFgaTuplesResult]:
+        encoded_parameters = encode_record(parameters)
+        generated_cursor = parameters.after
+        if generated_cursor is not None:
+            if options.cursor is not None:
+                raise ValueError("generated cursor conflicts with query options")
+            options = QueryOptions(cursor=generated_cursor, read_after_commit=options.read_after_commit)
+        encoded_parameters.pop("after", None)
         raw = await self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
             query_name="ListFgaTuples", plan_hash=LIST_FGA_TUPLES_QUERY_PLAN_HASH,
-            parameters=encode_record(parameters), options=options,
+            parameters=encoded_parameters, options=options,
         )
         outcomes = {
             "Found": ListFgaTuplesFound,
@@ -1156,11 +1184,18 @@ class AsyncAdapterOperationalConformanceClient:
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
     async def list_pipelines(self, parameters: ListPipelinesParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ListPipelinesResult]:
+        encoded_parameters = encode_record(parameters)
+        generated_cursor = parameters.after
+        if generated_cursor is not None:
+            if options.cursor is not None:
+                raise ValueError("generated cursor conflicts with query options")
+            options = QueryOptions(cursor=generated_cursor, read_after_commit=options.read_after_commit)
+        encoded_parameters.pop("after", None)
         raw = await self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
             query_name="ListPipelines", plan_hash=LIST_PIPELINES_QUERY_PLAN_HASH,
-            parameters=encode_record(parameters), options=options,
+            parameters=encoded_parameters, options=options,
         )
         outcomes = {
             "Found": ListPipelinesFound,
@@ -1204,11 +1239,18 @@ class AsyncAdapterOperationalConformanceClient:
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
     async def search_documents(self, parameters: SearchDocumentsParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[SearchDocumentsResult]:
+        encoded_parameters = encode_record(parameters)
+        generated_cursor = parameters.after
+        if generated_cursor is not None:
+            if options.cursor is not None:
+                raise ValueError("generated cursor conflicts with query options")
+            options = QueryOptions(cursor=generated_cursor, read_after_commit=options.read_after_commit)
+        encoded_parameters.pop("after", None)
         raw = await self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
             contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
             query_name="SearchDocuments", plan_hash=SEARCH_DOCUMENTS_QUERY_PLAN_HASH,
-            parameters=encode_record(parameters), options=options,
+            parameters=encoded_parameters, options=options,
         )
         outcomes = {
             "Found": SearchDocumentsFound,

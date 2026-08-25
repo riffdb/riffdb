@@ -47,6 +47,13 @@ page shape. Do not decode it. An invalid, expired, cross-principal, or stale
 cursor is a typed failure; clients must not silently restart from the first
 page.
 
+When a named query declares `Cursor` or `Cursor?`, generated Rust, Go,
+TypeScript, and Python methods route a present value to the protected query
+options cursor. They omit it from the symbolic parameter record. Absence means
+the first page; supplying both the generated cursor parameter and the existing
+low-level cursor option fails locally instead of choosing one. Cursor bytes and
+server validation are unchanged.
+
 ## Feature preflight
 
 The authorized application catalog returns the closed

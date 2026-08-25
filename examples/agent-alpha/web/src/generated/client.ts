@@ -116,7 +116,7 @@ export type ApplicationValueSchema =
   | { readonly kind: "decimal"; readonly precision?: number; readonly scale?: number }
   | { readonly kind: "money"; readonly precision?: number; readonly scale?: number; readonly currency?: string }
   | { readonly kind: "optional"; readonly value: ApplicationValueSchema }
-  | { readonly kind: "list"; readonly value: ApplicationValueSchema; readonly minimum?: number; readonly maximum?: number }
+  | { readonly kind: "list"; readonly value: ApplicationValueSchema; readonly minimum?: number; readonly maximum?: number; readonly aggregateCanonicalElementBytes?: number }
   | { readonly kind: "record"; readonly fields: ReadonlyArray<{ readonly name: string; readonly schema: ApplicationValueSchema; readonly wireId?: number }> };
 export interface DriverOperationIdentity { readonly name: string; readonly inputSchemaHash: string; }
 export interface CompactApplicationValue { readonly type: string; readonly value?: unknown; }

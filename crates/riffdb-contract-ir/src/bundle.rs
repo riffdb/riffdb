@@ -75,6 +75,8 @@ pub const BUNDLE_FORMAT_VERSION_V13: u32 = 13;
 pub const BUNDLE_FORMAT_VERSION_V14: u32 = 14;
 /// Bundle framing containing production vector model and replay metadata.
 pub const BUNDLE_FORMAT_VERSION_V15: u32 = 15;
+/// Bundle framing containing aggregate collection-byte constraints.
+pub const BUNDLE_FORMAT_VERSION_V16: u32 = 16;
 /// Canonical grammar version represented by a bundle.
 pub const GRAMMAR_VERSION_V1: u32 = 1;
 /// Contract grammar containing compiled workflows and service-owned values.
@@ -105,6 +107,8 @@ pub const GRAMMAR_VERSION_V13: u32 = 13;
 pub const GRAMMAR_VERSION_V14: u32 = 14;
 /// Contract grammar containing production vector declarations.
 pub const GRAMMAR_VERSION_V15: u32 = 15;
+/// Contract grammar containing aggregate collection-byte constraints.
+pub const GRAMMAR_VERSION_V16: u32 = 16;
 /// Executable IR version represented by a bundle.
 pub const EXECUTABLE_IR_VERSION_V1: u32 = 1;
 /// Executable IR containing compiled workflow transitions and service values.
@@ -135,6 +139,8 @@ pub const EXECUTABLE_IR_VERSION_V13: u32 = 13;
 pub const EXECUTABLE_IR_VERSION_V14: u32 = 14;
 /// Executable IR containing production vector model and replay metadata.
 pub const EXECUTABLE_IR_VERSION_V15: u32 = 15;
+/// Executable IR containing aggregate collection-byte bounds and copy proofs.
+pub const EXECUTABLE_IR_VERSION_V16: u32 = 16;
 
 const RELATIONSHIP_SCHEMA_EXTENSION: u32 = 0xffff_fffe;
 const UNIQUE_KEY_SCHEMA_EXTENSION: u32 = 0xffff_fffd;
@@ -1062,7 +1068,9 @@ impl ContractBundle {
         mcp_command_names: McpCommandNameRegistryV2,
         compatibility: CompatibilityReport,
     ) -> Result<Self, IrValidationError> {
-        let version = if schema.requires_ir_v15() {
+        let version = if commands.iter().any(CommandPlan::requires_ir_v16) {
+            BUNDLE_FORMAT_VERSION_V16
+        } else if schema.requires_ir_v15() {
             BUNDLE_FORMAT_VERSION_V15
         } else if schema.requires_ir_v14() {
             BUNDLE_FORMAT_VERSION_V14
@@ -1196,6 +1204,10 @@ impl ContractBundle {
                 BUNDLE_FORMAT_VERSION_V15,
                 GRAMMAR_VERSION_V15,
                 EXECUTABLE_IR_VERSION_V15
+            ) | (
+                BUNDLE_FORMAT_VERSION_V16,
+                GRAMMAR_VERSION_V16,
+                EXECUTABLE_IR_VERSION_V16
             )
         ) || (ir_version < EXECUTABLE_IR_VERSION_V2
             && (!workflows.is_empty() || commands.iter().any(CommandPlan::requires_ir_v2)))
@@ -1219,6 +1231,8 @@ impl ContractBundle {
                 && (schema.requires_ir_v13() || commands.iter().any(CommandPlan::requires_ir_v13)))
             || (ir_version < EXECUTABLE_IR_VERSION_V14 && schema.requires_ir_v14())
             || (ir_version < EXECUTABLE_IR_VERSION_V15 && schema.requires_ir_v15())
+            || (ir_version < EXECUTABLE_IR_VERSION_V16
+                && commands.iter().any(CommandPlan::requires_ir_v16))
             || (ir_version >= EXECUTABLE_IR_VERSION_V6
                 && commands
                     .iter()
@@ -1908,7 +1922,9 @@ pub(crate) fn compute_command_plan_hash(
 ) -> Result<PlanHash, IrValidationError> {
     let mut writer = Writer::new(MAX_BUNDLE_BYTES);
     writer.raw(COMMAND_PLAN_MAGIC)?;
-    let ir_version = if plan.requires_ir_v11() {
+    let ir_version = if plan.requires_ir_v16() {
+        EXECUTABLE_IR_VERSION_V16
+    } else if plan.requires_ir_v11() {
         EXECUTABLE_IR_VERSION_V11
     } else if plan.requires_ir_v10() {
         EXECUTABLE_IR_VERSION_V10
@@ -3026,7 +3042,9 @@ fn encode_command_bundle_entry(
     command: &CommandPlan,
     schema: &SchemaIr,
 ) -> Result<(), IrValidationError> {
-    let ir_version = if command.requires_ir_v11() {
+    let ir_version = if command.requires_ir_v16() {
+        EXECUTABLE_IR_VERSION_V16
+    } else if command.requires_ir_v11() {
         EXECUTABLE_IR_VERSION_V11
     } else if command.requires_ir_v10() {
         EXECUTABLE_IR_VERSION_V10
@@ -3064,7 +3082,9 @@ fn encode_command_semantics(
     schema: &SchemaIr,
     include_display_names: bool,
 ) -> Result<(), IrValidationError> {
-    let ir_version = if command.requires_ir_v11() {
+    let ir_version = if command.requires_ir_v16() {
+        EXECUTABLE_IR_VERSION_V16
+    } else if command.requires_ir_v11() {
         EXECUTABLE_IR_VERSION_V11
     } else if command.requires_ir_v10() {
         EXECUTABLE_IR_VERSION_V10
@@ -3128,7 +3148,7 @@ fn encode_command_semantics_versioned(
     if ir_version >= EXECUTABLE_IR_VERSION_V5 {
         writer.bool(command.collection_expansion().is_some())?;
         if let Some(expansion) = command.collection_expansion() {
-            encode_collection_expansion(writer, expansion)?;
+            encode_collection_expansion(writer, expansion, ir_version)?;
         }
     }
 
@@ -3311,6 +3331,7 @@ fn encode_command_semantics_versioned(
 fn encode_collection_expansion(
     writer: &mut Writer,
     expansion: &CollectionExpansionPlanV1,
+    ir_version: u32,
 ) -> Result<(), IrValidationError> {
     writer.u32(expansion.input_field().get())?;
     writer.u32(expansion.minimum_elements() as u32)?;
@@ -3320,7 +3341,19 @@ fn encode_collection_expansion(
     writer.u32(expansion.binding_count() as u32)?;
     writer.u32(expansion.first_instruction())?;
     writer.u32(expansion.instruction_count() as u32)?;
-    writer.u8(expansion.duplicate_policy() as u8)
+    writer.u8(expansion.duplicate_policy() as u8)?;
+    if ir_version >= EXECUTABLE_IR_VERSION_V16 {
+        writer.bool(expansion.maximum_aggregate_element_bytes().is_some())?;
+        if let Some(maximum) = expansion.maximum_aggregate_element_bytes() {
+            writer.u32(maximum as u32)?;
+            writer.u32(expansion.maximum_copy_coefficient().ok_or(
+                IrValidationError::InvalidDependency {
+                    reason: "aggregate collection plan lacks copy coefficient",
+                },
+            )? as u32)?;
+        }
+    }
+    Ok(())
 }
 
 fn encode_outcome_schema(
@@ -3759,6 +3792,10 @@ fn decode_bundle(bytes: &[u8]) -> Result<ContractBundle, IrValidationError> {
             BUNDLE_FORMAT_VERSION_V15,
             GRAMMAR_VERSION_V15,
             EXECUTABLE_IR_VERSION_V15
+        ) | (
+            BUNDLE_FORMAT_VERSION_V16,
+            GRAMMAR_VERSION_V16,
+            EXECUTABLE_IR_VERSION_V16
         )
     ) {
         return Err(IrValidationError::UnsupportedVersion {
@@ -5177,7 +5214,7 @@ fn decode_command_versioned(
         });
     }
     let collection_expansion = if ir_version >= EXECUTABLE_IR_VERSION_V5 && reader.bool()? {
-        Some(decode_collection_expansion(reader)?)
+        Some(decode_collection_expansion(reader, ir_version)?)
     } else {
         None
     };
@@ -5675,6 +5712,7 @@ fn decode_binding_mode(tag: u8, ir_version: u32) -> Result<BindingMode, IrValida
 
 fn decode_collection_expansion(
     reader: &mut Reader<'_>,
+    ir_version: u32,
 ) -> Result<CollectionExpansionPlanV1, IrValidationError> {
     let input_field = decode_field_id(reader)?;
     let minimum_elements = decode_len(
@@ -5709,17 +5747,44 @@ fn decode_collection_expansion(
             });
         }
     };
-    CollectionExpansionPlanV1::new(
+    let mut expansion = CollectionExpansionPlanV1::new(
         input_field,
         minimum_elements,
         maximum_elements,
-        element_type,
+        element_type.clone(),
         first_binding,
         binding_count,
         first_instruction,
         instruction_count,
         duplicate_policy,
-    )
+    )?;
+    if ir_version >= EXECUTABLE_IR_VERSION_V16 && reader.bool()? {
+        let maximum = reader.u32()? as usize;
+        checked_len(
+            "collection aggregate element bytes",
+            maximum,
+            crate::MAX_COLLECTION_COMMAND_GRAPH_BYTES_V1,
+        )?;
+        let coefficient = decode_len(
+            reader,
+            "collection aggregate byte copy coefficient",
+            crate::MAX_COMMAND_ITEMS,
+        )?;
+        expansion = CollectionExpansionPlanV1::new_with_aggregate_bytes(
+            input_field,
+            minimum_elements,
+            maximum_elements,
+            element_type,
+            first_binding,
+            binding_count,
+            first_instruction,
+            instruction_count,
+            duplicate_policy,
+            maximum,
+        )?;
+        expansion.set_maximum_copy_coefficient(coefficient)?;
+    }
+    Ok(expansion)
 }
 
 fn decode_locality(reader: &mut Reader<'_>) -> Result<LocalityPlan, IrValidationError> {

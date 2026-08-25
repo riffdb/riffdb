@@ -47,7 +47,7 @@ use crate::{
 };
 
 /// Maximum bytes accepted in one structurally decoded service request.
-pub const MAX_SERVICE_REQUEST_BYTES: usize = 1_048_576;
+pub const MAX_SERVICE_REQUEST_BYTES: usize = riffdb_types::MAX_APPLICATION_REQUEST_BYTES_V1;
 
 const STRUCTURAL_LENGTH_BYTES: usize = 4;
 const STRUCTURAL_OPTION_BYTES: usize = 1;

@@ -116,7 +116,7 @@ export type ApplicationValueSchema =
   | { readonly kind: "decimal"; readonly precision?: number; readonly scale?: number }
   | { readonly kind: "money"; readonly precision?: number; readonly scale?: number; readonly currency?: string }
   | { readonly kind: "optional"; readonly value: ApplicationValueSchema }
-  | { readonly kind: "list"; readonly value: ApplicationValueSchema; readonly minimum?: number; readonly maximum?: number }
+  | { readonly kind: "list"; readonly value: ApplicationValueSchema; readonly minimum?: number; readonly maximum?: number; readonly aggregateCanonicalElementBytes?: number }
   | { readonly kind: "record"; readonly fields: ReadonlyArray<{ readonly name: string; readonly schema: ApplicationValueSchema; readonly wireId?: number }> };
 export interface DriverOperationIdentity { readonly name: string; readonly inputSchemaHash: string; }
 export interface CompactApplicationValue { readonly type: string; readonly value?: unknown; }
@@ -359,22 +359,31 @@ export class AgentOrdersClient {
   }
 
   public async customerHistory(parameters: CustomerHistoryParams, options: QueryOptions = {}): Promise<TypedQueryResult<CustomerHistoryResult>> {
-    const request = customerHistory(parameters);
-    const result = await this.transport.executeNamedQuery<CustomerHistoryParams, CustomerHistoryResult>(request, options);
+    const { after: generatedCursor, ...routedParameters } = parameters;
+    if (generatedCursor != null && options.cursor !== undefined) throw new Error("generated cursor conflicts with query options");
+    const routedOptions: QueryOptions = generatedCursor == null ? options : { ...options, cursor: generatedCursor };
+    const request = customerHistory(routedParameters as unknown as CustomerHistoryParams);
+    const result = await this.transport.executeNamedQuery<CustomerHistoryParams, CustomerHistoryResult>(request, routedOptions);
     if (!acceptsIdentity(request, result.identity)) throw new Error("RiffDB application identity mismatch");
     return result;
   }
 
   public async inventoryDashboard(parameters: InventoryDashboardParams, options: QueryOptions = {}): Promise<TypedQueryResult<InventoryDashboardResult>> {
-    const request = inventoryDashboard(parameters);
-    const result = await this.transport.executeNamedQuery<InventoryDashboardParams, InventoryDashboardResult>(request, options);
+    const { after: generatedCursor, ...routedParameters } = parameters;
+    if (generatedCursor != null && options.cursor !== undefined) throw new Error("generated cursor conflicts with query options");
+    const routedOptions: QueryOptions = generatedCursor == null ? options : { ...options, cursor: generatedCursor };
+    const request = inventoryDashboard(routedParameters as unknown as InventoryDashboardParams);
+    const result = await this.transport.executeNamedQuery<InventoryDashboardParams, InventoryDashboardResult>(request, routedOptions);
     if (!acceptsIdentity(request, result.identity)) throw new Error("RiffDB application identity mismatch");
     return result;
   }
 
   public async openOrders(parameters: OpenOrdersParams, options: QueryOptions = {}): Promise<TypedQueryResult<OpenOrdersResult>> {
-    const request = openOrders(parameters);
-    const result = await this.transport.executeNamedQuery<OpenOrdersParams, OpenOrdersResult>(request, options);
+    const { after: generatedCursor, ...routedParameters } = parameters;
+    if (generatedCursor != null && options.cursor !== undefined) throw new Error("generated cursor conflicts with query options");
+    const routedOptions: QueryOptions = generatedCursor == null ? options : { ...options, cursor: generatedCursor };
+    const request = openOrders(routedParameters as unknown as OpenOrdersParams);
+    const result = await this.transport.executeNamedQuery<OpenOrdersParams, OpenOrdersResult>(request, routedOptions);
     if (!acceptsIdentity(request, result.identity)) throw new Error("RiffDB application identity mismatch");
     return result;
   }

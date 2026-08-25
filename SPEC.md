@@ -6,7 +6,7 @@
 **Tagline:** *Vibe fast. Commit safely.*  
 **Category:** Contract-first operational database for agent-built applications  
 
-**Version:** 1.07
+**Version:** 1.08
 **Status:** Deployable Application Alpha architecture accepted; implementation gated by work packages
 **Date:** 24 August 2026
 **Audience:** Coding agents, database engineers, compiler engineers, security reviewers, and technical product leads  
@@ -37,6 +37,7 @@
 
 | Version | Date | Summary |
 |---|---|---|
+| 1.08 | 2026-08-24 | Accepted ADR-0147 and registered BLK-015 through BLK-021, OQ-031, DX-041, and WP-678 through WP-681. Atomic collection commands may declare one canonical aggregate element-byte constraint while preserving every individual value, cardinality, mutation-instance, one-partition, and 16 MiB complete-graph ceiling. The compiler derives a conservative byte-copy coefficient; generated clients and the Rust service enforce the same bound before effects. Generated cursor parameters route through the existing protected continuation option, and `riffdb dev --run` gains one repository-confined Go runner-package selector without changing application identity. |
 | 1.07 | 2026-08-24 | Accepted ADR-0146 after the first exact ADR-0143 cloud attempts proved that 100-operation generations remained scheduler-sensitive. Unary evidence retains five fixed process generations, 20 warmups, every extreme, the unchanged central-three 20-percent stability rule, and the retry prohibition while increasing each generation to exactly 1,000 measurements. New V2 evidence binds bounded whole-cell CPU-steal accounting under a fixed 1.00-percent ceiling. PERF-008's stale three-generation text is reconciled with PERF-018 and ADR-0143. |
 | 1.06 | 2026-08-24 | Accepted ADR-0143 and ADR-0144. Unary evidence now uses exactly five fixed process generations, qualifies the median generation, and requires the central three p50 and p95 observations for each backend to remain within 20 percent without performance-selected retries. Production command evidence accepts the closed `sync` and `group` durability set, rejects `memory` and unknown modes, and proves exact durability identity across response, replay, notification, and commit scan without exposing an application durability selector. |
 | 1.05 | 2026-08-23 | Accepted ADR-0142 after WP-670/WP-673 proved the universal 1.10-times PostgreSQL unary gate arithmetically unreachable without deleting required safety work. Mixed c32 throughput/p95 and the seed ceiling remain comparative gates; unary qualification becomes fixed N1/E2 absolute p50/p95 service levels plus a downward-only RiffDB low-water regression bank, while every safe-application PostgreSQL unary ratio remains mandatory published evidence. PERF-008 becomes the sole performance-threshold owner and PERF-005 retains its safety semantics without the superseded parity sentence. |
@@ -568,6 +569,15 @@ prerelease versions MUST remain mechanically separate from the signed release
 publication path. Production distribution qualification MUST reject a
 development manifest or development registry destination, and development
 publication MUST never invoke or impersonate the production signing workflow.
+
+`DX-041` `riffdb dev --run` and its installed equivalent MAY accept one
+development-only repository-relative Go runner-package directory. The default
+MUST remain the module root. The path MUST be canonical, remain below the
+checked application root, name exactly one buildable `main` package, and be
+passed to `go run` without a shell or caller-supplied flags. Absolute paths,
+parent traversal, symlink escape, nested-module ambiguity, non-main packages,
+and argument injection MUST fail before runner execution. Contract, module,
+role, plan, and application-lock identity MUST remain unchanged.
 
 ## 4.4 Additive contract evolution
 
@@ -7589,6 +7599,42 @@ does not create a kernel or storage escape hatch.
   MUST share one schema/outcome/error corpus and prove OpenFGA, MLflow, Payload,
   and Woodpecker atomic collection shapes without handwritten transport or raw
   storage access.
+- `BLK-015`: The one list expanded by a `bulk command` MAY declare one positive
+  compiler-owned `aggregate_bytes` literal bounding the sum of complete
+  ADR-0011 canonical element documents. The bound MUST NOT use JSON, Protobuf,
+  host-object, compressed, deduplicated, referenced, or in-memory size and MUST
+  NOT be caller-selected or negotiated.
+- `BLK-016`: Aggregate headroom MUST NOT weaken the list cardinality or any
+  individual string, bytes, record, nesting, collection, command, mutation,
+  transport, or diagnostic bound. An individual over-limit value MUST fail
+  even when aggregate headroom remains, and a command without the clause MUST
+  retain its exact existing independent-maximum meaning and writer identity.
+- `BLK-017`: Compilation MUST derive a finite conservative maximum copy
+  coefficient from the closed expression, binding, instruction, mutation, and
+  event plan and prove fixed bytes plus the declared aggregate bytes times that
+  coefficient within the unchanged 16 MiB complete canonical input and write-
+  graph ceiling. Unproved flow, arithmetic overflow, or an excessive result
+  MUST fail with a source-spanned diagnostic; callers cannot state the
+  coefficient.
+- `BLK-018`: Aggregate collection sizing MUST use least-sufficient successor
+  grammar, executable-IR, and bundle identities registered under ADR-0124.
+  Older artifacts, hashes, locks, and bytes MUST remain readable and exact;
+  old readers MUST reject the successor before deployment, and no decoder
+  retirement or authoritative stored-record format change is authorized.
+- `BLK-019`: Generated Rust, Go, TypeScript, Python, CLI, and MCP collection
+  surfaces MUST publish and preflight the same count, individual-value, and
+  canonical aggregate-byte constraints without splitting, truncating, subset
+  retry, partial outcomes, framework-specific logic, or handwritten encoding.
+- `BLK-020`: The first-party Rust application service MUST canonicalize and
+  recompute aggregate bytes with checked arithmetic before effectful
+  evaluation, conflict acquisition, staging, or journaling. The deterministic
+  runtime MUST additionally validate the concrete expanded graph against 16
+  MiB before the commit coordinator; client preflight is never authority.
+- `BLK-021`: A framework-neutral bounded-context corpus MUST prove one through
+  100 elements, individual and aggregate exact-bound/plus-one cases, nine- and
+  nineteen-element atomic sets, business failure, authorization, cancellation,
+  idempotency, concurrency, crash recovery, provenance, events, and complete-
+  or-absent visibility across memory/redb and every generated surface.
 
 Compiler-bounded one-hop cascade deletion extends that closed bulk-command
 model without introducing recursive graph traversal or caller-selected delete
@@ -7788,6 +7834,15 @@ behavior:
   no adapter-side filter, count, sort, page walk, or query AST, but that profile,
   its generated clients, route host, and route-level evidence MUST live in the
   owning external adapter repository rather than the RiffDB repository.
+- `OQ-031`: A generated named-query parameter whose compiler type is `cursor`
+  or optional `cursor` MUST route its non-null value only through the existing
+  protected continuation option and MUST NOT encode it as an ordinary symbolic
+  parameter. Null or absence means the first page. Operation, module, plan,
+  authorization, database history, epoch, expiry, and cursor-byte semantics
+  remain unchanged; low-level callers already using the option remain exact.
+  Any convenience iterator MUST require an explicit finite page or item bound
+  and MUST NOT implement count, offset, filtering, sorting, or another public
+  semantic by walking pages.
 
 ### 24.5.5 Compiled workflow concurrency
 

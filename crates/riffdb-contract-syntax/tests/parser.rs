@@ -71,6 +71,42 @@ contract BulkSurface version 1 {
 }
 
 #[test]
+fn parses_one_aggregate_collection_byte_constraint() {
+    let source = r#"
+contract AggregateBudget version 1 {
+  entity Mutation {
+    key (tenant_id: uuid, mutation_id: uuid)
+    field context: bytes<524288>
+  }
+  bulk command WriteMutations {
+    input request_id: uuid
+    input mutations: list<Mutation, 1..100> aggregate_bytes <= 7000000
+    idempotency_key request_id
+    for mutation in mutations {
+      create Mutation(mutation.tenant_id, mutation.mutation_id) as row else Exists {}
+      set row.context = mutation.context
+    }
+    return Written {}
+  }
+}
+"#;
+    let document = parse_contract(source).expect("aggregate byte constraint parses");
+    let Declaration::Command(command) = &document.contract.value.declarations[1].value else {
+        panic!("second declaration must be bulk command");
+    };
+    let bound = command.inputs[1]
+        .value
+        .aggregate_bytes
+        .as_ref()
+        .expect("aggregate byte bound");
+    assert_eq!(bound.value, "7000000");
+    assert_eq!(
+        bound.span.start() as usize,
+        source.find("7000000").expect("bound source")
+    );
+}
+
+#[test]
 fn parses_closed_reimport_commands_without_application_command_phases() {
     let source = r#"
 contract PortableSessions version 1 {

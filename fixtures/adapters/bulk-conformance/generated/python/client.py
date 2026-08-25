@@ -13,7 +13,7 @@ AsyncApplicationTransport, AttemptBudget, CommandBatchOptions,
 CommandBatchProgress, CommandBatchResult, Money, QueryOptions, RiffDate,
 SyncApplicationTransport, Timestamp, TypedCommandResult, TypedQueryResult, WorkflowSuccessorRevision,
 )
-from riffdb_application._binding import decode_variant, encode_record
+from riffdb_application._binding import decode_variant, encode_record, canonical_value_encoded_length, encode_value
 
 def _compact_tag(value: object, tag: str, keys: frozenset[str]) -> dict[str, object]:
     if not isinstance(value, dict) or value.get("$riffdb") != tag or frozenset(value) != keys:
@@ -22,8 +22,8 @@ def _compact_tag(value: object, tag: str, keys: frozenset[str]) -> dict[str, obj
 
 CONTRACT_LINEAGE: Final[str] = "AdapterBulkConformance"
 CONTRACT_VERSION: Final[int] = 1
-CONTRACT_BUNDLE_HASH: Final[str] = "76ecefdc9074b4837cff72902b270ccdf7a60aec64ea1b741586fc9e8051a9d1"
-QUERY_MODULE_HASH: Final[str] = "42bc762077726e0b077b8c936aafe13fcca696b8efe1cda05aa46bf3a8054e16"
+CONTRACT_BUNDLE_HASH: Final[str] = "f01d15f5388a91e74ca01d5a36a35aefd5d0faf4e525480c82b7eef142ab5315"
+QUERY_MODULE_HASH: Final[str] = "037c90a0762bb68c521a2e9f9ff30056c43b0f86df7f19fe9ce8fbc83c05fc45"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class Metric:
@@ -67,6 +67,13 @@ class RestrictChild:
     tenant_id: UUID
 
 @dataclass(frozen=True, slots=True, kw_only=True)
+class PolicyMutation:
+    context: bytes | None
+    relation: str
+    mutation_id: UUID
+    organization_id: UUID
+
+@dataclass(frozen=True, slots=True, kw_only=True)
 class RestrictParent:
     parent_id: UUID
     tenant_id: UUID
@@ -94,7 +101,7 @@ class PipelineGraphInput:
     pipeline_id: UUID
     organization_id: UUID
 
-GET_FGA_TUPLE_QUERY_PLAN_HASH: Final[str] = "ac28dc6f793848f268b840ee57db4bfca36d132f7df9e06053c0f1d8f228851c"
+GET_FGA_TUPLE_QUERY_PLAN_HASH: Final[str] = "3ea9d730dc275ffbbf2b9fc1770baedd82b77778f1a5c13ccce047207bbc3a13"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class GetFgaTupleParams:
@@ -125,7 +132,7 @@ class CreateDocumentGraphsInput:
     documents: tuple[DocumentGraphInput, ...]
     request_id: UUID
 
-CREATE_DOCUMENT_GRAPHS_PLAN_HASH: Final[str] = "0f2e989bccbce786f0adf113f4902f0647765c1308d23d852a2cb4088d2c4fbc"
+CREATE_DOCUMENT_GRAPHS_PLAN_HASH: Final[str] = "94d2e95cffe5b23eb5ee7eaede65de0fd6b6517b7121b92d740c41a633ae6fdd"
 @dataclass(frozen=True, slots=True, kw_only=True)
 class CreateDocumentGraphsDocumentAlreadyExists:
     outcome: Literal["DocumentAlreadyExists"] = field(default="DocumentAlreadyExists", init=False)
@@ -145,7 +152,7 @@ class CreatePipelinesWithStepsInput:
     pipelines: tuple[PipelineGraphInput, ...]
     request_id: UUID
 
-CREATE_PIPELINES_WITH_STEPS_PLAN_HASH: Final[str] = "1370b0e3712586e736eb0a13a45435632dc1534f3693fe7f1f17b51eae9ba51e"
+CREATE_PIPELINES_WITH_STEPS_PLAN_HASH: Final[str] = "a672e97dc400e84e91801d31f208d6e2e77b0f07bcad30c08063f03e71054ac6"
 @dataclass(frozen=True, slots=True, kw_only=True)
 class CreatePipelinesWithStepsPipelinesCreated:
     outcome: Literal["PipelinesCreated"] = field(default="PipelinesCreated", init=False)
@@ -165,7 +172,7 @@ class CreateRestrictChildrenInput:
     children: tuple[RestrictChild, ...]
     request_id: UUID
 
-CREATE_RESTRICT_CHILDREN_PLAN_HASH: Final[str] = "6b197b17628ae0bc6235b3261614a87782ba07e12afb91d890d576873b2dc820"
+CREATE_RESTRICT_CHILDREN_PLAN_HASH: Final[str] = "325122db5811aeefaa498bd3d8d0e05d2879ff4329a7c0fd2f1336cf018e66e1"
 @dataclass(frozen=True, slots=True, kw_only=True)
 class CreateRestrictChildrenChildAlreadyExists:
     outcome: Literal["ChildAlreadyExists"] = field(default="ChildAlreadyExists", init=False)
@@ -185,7 +192,7 @@ class CreateRestrictParentsInput:
     parents: tuple[RestrictParent, ...]
     request_id: UUID
 
-CREATE_RESTRICT_PARENTS_PLAN_HASH: Final[str] = "68fff2aeba68e48145357fbfc171cf0e99a4519451b9b6e7c3e21db55595c17f"
+CREATE_RESTRICT_PARENTS_PLAN_HASH: Final[str] = "477220cf0cb888cf4638de6e08dd3dc3ea2b8bb33230113430538833d78bee1c"
 @dataclass(frozen=True, slots=True, kw_only=True)
 class CreateRestrictParentsParentAlreadyExists:
     outcome: Literal["ParentAlreadyExists"] = field(default="ParentAlreadyExists", init=False)
@@ -202,7 +209,7 @@ class DeleteRestrictParentsInput:
     parent_ids: tuple[UUID, ...]
     request_id: UUID
 
-DELETE_RESTRICT_PARENTS_PLAN_HASH: Final[str] = "ad9d08a9791fed072ade420cec9baad7ed7c18516e5eee0927704689c5c2748f"
+DELETE_RESTRICT_PARENTS_PLAN_HASH: Final[str] = "708fdfb224ee8e0a76940ed05cca04efe4c0a7286d5334f24ed65941192b8cc7"
 @dataclass(frozen=True, slots=True, kw_only=True)
 class DeleteRestrictParentsParentMissing:
     outcome: Literal["ParentMissing"] = field(default="ParentMissing", init=False)
@@ -232,6 +239,22 @@ class LogMetricsMetricAlreadyExists:
     outcome: Literal["MetricAlreadyExists"] = field(default="MetricAlreadyExists", init=False)
 
 LogMetricsOutcome: TypeAlias = LogMetricsMetricsLogged | LogMetricsMetricAlreadyExists
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class WritePolicyMutationsInput:
+    mutations: tuple[PolicyMutation, ...]
+    request_id: UUID
+
+WRITE_POLICY_MUTATIONS_PLAN_HASH: Final[str] = "23bc5e089a0f3f7dcb560f42517cc3eed3a337875c0c63384244b5139eb74083"
+@dataclass(frozen=True, slots=True, kw_only=True)
+class WritePolicyMutationsPolicyMutationExists:
+    outcome: Literal["PolicyMutationExists"] = field(default="PolicyMutationExists", init=False)
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class WritePolicyMutationsPolicyMutationsWritten:
+    outcome: Literal["PolicyMutationsWritten"] = field(default="PolicyMutationsWritten", init=False)
+
+WritePolicyMutationsOutcome: TypeAlias = WritePolicyMutationsPolicyMutationExists | WritePolicyMutationsPolicyMutationsWritten
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class WriteTuplesInput:
@@ -408,6 +431,35 @@ class AdapterBulkConformanceClient:
             if not 1 <= len(input.metrics) <= 128:
                 raise ValueError("invalid bounded collection length for LogMetrics.metrics")
         return self._transport._command_batch(inputs, options, self.log_metrics, progress)
+
+    def write_policy_mutations(self, input: WritePolicyMutationsInput) -> TypedCommandResult[WritePolicyMutationsOutcome]:
+        if not 1 <= len(input.mutations) <= 100:
+            raise ValueError("invalid bounded collection length for WritePolicyMutations.mutations")
+        aggregate_element_bytes = sum(canonical_value_encoded_length(encode_value(item, PolicyMutation)) for item in input.mutations)
+        if aggregate_element_bytes > 900000:
+            raise ValueError("invalid aggregate collection bytes for WritePolicyMutations.mutations")
+        raw = self._transport._execute_command(
+            contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
+            command_name="WritePolicyMutations", plan_hash=WRITE_POLICY_MUTATIONS_PLAN_HASH,
+            input=encode_record(input), attempts=self._command_attempts,
+        )
+        outcomes = {
+            "PolicyMutationExists": WritePolicyMutationsPolicyMutationExists,
+            "PolicyMutationsWritten": WritePolicyMutationsPolicyMutationsWritten,
+        }
+        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+
+    def write_policy_mutations_batch(
+        self, inputs: Sequence[WritePolicyMutationsInput], options: CommandBatchOptions,
+        progress: Callable[[CommandBatchProgress], None] | None = None,
+    ) -> CommandBatchResult[WritePolicyMutationsOutcome]:
+        for input in inputs:
+            if not 1 <= len(input.mutations) <= 100:
+                raise ValueError("invalid bounded collection length for WritePolicyMutations.mutations")
+            aggregate_element_bytes = sum(canonical_value_encoded_length(encode_value(item, PolicyMutation)) for item in input.mutations)
+            if aggregate_element_bytes > 900000:
+                raise ValueError("invalid aggregate collection bytes for WritePolicyMutations.mutations")
+        return self._transport._command_batch(inputs, options, self.write_policy_mutations, progress)
 
     def write_tuples(self, input: WriteTuplesInput) -> TypedCommandResult[WriteTuplesOutcome]:
         if not 1 <= len(input.tuples) <= 128:
@@ -591,6 +643,35 @@ class AsyncAdapterBulkConformanceClient:
             if not 1 <= len(input.metrics) <= 128:
                 raise ValueError("invalid bounded collection length for LogMetrics.metrics")
         return await self._transport._command_batch(inputs, options, self.log_metrics, progress)
+
+    async def write_policy_mutations(self, input: WritePolicyMutationsInput) -> TypedCommandResult[WritePolicyMutationsOutcome]:
+        if not 1 <= len(input.mutations) <= 100:
+            raise ValueError("invalid bounded collection length for WritePolicyMutations.mutations")
+        aggregate_element_bytes = sum(canonical_value_encoded_length(encode_value(item, PolicyMutation)) for item in input.mutations)
+        if aggregate_element_bytes > 900000:
+            raise ValueError("invalid aggregate collection bytes for WritePolicyMutations.mutations")
+        raw = await self._transport._execute_command(
+            contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
+            command_name="WritePolicyMutations", plan_hash=WRITE_POLICY_MUTATIONS_PLAN_HASH,
+            input=encode_record(input), attempts=self._command_attempts,
+        )
+        outcomes = {
+            "PolicyMutationExists": WritePolicyMutationsPolicyMutationExists,
+            "PolicyMutationsWritten": WritePolicyMutationsPolicyMutationsWritten,
+        }
+        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+
+    async def write_policy_mutations_batch(
+        self, inputs: Sequence[WritePolicyMutationsInput], options: CommandBatchOptions,
+        progress: Callable[[CommandBatchProgress], None] | None = None,
+    ) -> CommandBatchResult[WritePolicyMutationsOutcome]:
+        for input in inputs:
+            if not 1 <= len(input.mutations) <= 100:
+                raise ValueError("invalid bounded collection length for WritePolicyMutations.mutations")
+            aggregate_element_bytes = sum(canonical_value_encoded_length(encode_value(item, PolicyMutation)) for item in input.mutations)
+            if aggregate_element_bytes > 900000:
+                raise ValueError("invalid aggregate collection bytes for WritePolicyMutations.mutations")
+        return await self._transport._command_batch(inputs, options, self.write_policy_mutations, progress)
 
     async def write_tuples(self, input: WriteTuplesInput) -> TypedCommandResult[WriteTuplesOutcome]:
         if not 1 <= len(input.tuples) <= 128:

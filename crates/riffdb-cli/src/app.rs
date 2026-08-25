@@ -805,21 +805,23 @@ pub async fn run() -> ExitCode {
         role,
         watch,
         run,
+        go_runner_package,
         seed,
         seed_dir,
         seed_concurrency,
         acceptance,
     } = &cli.command
     {
-        return run_dev(
+        return run_dev(DevInvocation {
             role,
-            *watch,
-            *run,
-            *seed,
-            seed_dir.as_deref(),
+            watch: *watch,
+            run: *run,
+            go_runner_package,
+            seed: *seed,
+            seed_dir: seed_dir.as_deref(),
             seed_concurrency,
-            *acceptance,
-        );
+            acceptance: *acceptance,
+        });
     }
     let identity = command_identity(&cli.command);
     let environment = ProcessEnvironment;
@@ -1299,15 +1301,18 @@ fn project_identity_state(
     }
 }
 
-fn run_dev(
-    role: &str,
+struct DevInvocation<'a> {
+    role: &'a str,
     watch: bool,
     run: bool,
+    go_runner_package: &'a std::ffi::OsStr,
     seed: bool,
-    seed_dir: Option<&std::ffi::OsStr>,
-    seed_concurrency: &str,
+    seed_dir: Option<&'a std::ffi::OsStr>,
+    seed_concurrency: &'a str,
     acceptance: bool,
-) -> ExitCode {
+}
+
+fn run_dev(invocation: DevInvocation<'_>) -> ExitCode {
     let application_root = match std::env::current_dir() {
         Ok(directory) => directory,
         Err(_) => {
@@ -1325,20 +1330,28 @@ fn run_dev(
         return ExitCode::FAILURE;
     };
     let mut command = ProcessCommand::new(script);
-    command.args(["--role", role, "--seed-concurrency", seed_concurrency]);
+    command.args([
+        "--role",
+        invocation.role,
+        "--seed-concurrency",
+        invocation.seed_concurrency,
+    ]);
     if application_root.join("riffdb.application.json").is_file() {
         command.arg("--application-root").arg(&application_root);
     }
-    if watch {
+    if invocation.watch {
         command.arg("--watch");
     }
-    if run {
+    if invocation.run {
         command.arg("--run");
+        command
+            .arg("--go-runner-package")
+            .arg(invocation.go_runner_package);
     }
-    if seed {
+    if invocation.seed {
         command.arg("--seed");
     }
-    if let Some(seed_dir) = seed_dir {
+    if let Some(seed_dir) = invocation.seed_dir {
         let seed_dir = Path::new(seed_dir);
         command.arg("--seed-dir").arg(if seed_dir.is_absolute() {
             seed_dir.to_path_buf()
@@ -1346,7 +1359,7 @@ fn run_dev(
             application_root.join(seed_dir)
         });
     }
-    if acceptance {
+    if invocation.acceptance {
         command.arg("--acceptance");
     }
     match command.status() {

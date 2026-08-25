@@ -10,6 +10,8 @@ cd "$repo_root"
 role=application
 watch=0
 run=0
+go_runner_package=.
+go_runner_package_set=0
 acceptance=0
 seed_dir=
 seed_builtin=0
@@ -26,6 +28,11 @@ while (($#)); do
             ;;
         --watch) watch=1; shift ;;
         --run) run=1; shift ;;
+        --go-runner-package)
+            go_runner_package="${2-}"
+            go_runner_package_set=1
+            shift 2
+            ;;
         --acceptance) acceptance=1; shift ;;
         --seed-dir)
             seed_dir="${2:-}"
@@ -37,7 +44,7 @@ while (($#)); do
             shift 2
             ;;
         *)
-            echo "usage: riffdb-dev [--application-root DIR] [--role application|ROLE] [--watch|--run] [--seed] [--seed-dir DIR] [--seed-concurrency 1..8] [--acceptance]" >&2
+            echo "usage: riffdb-dev [--application-root DIR] [--role application|ROLE] [--watch|--run] [--go-runner-package PATH] [--seed] [--seed-dir DIR] [--seed-concurrency 1..8] [--acceptance]" >&2
             exit 2
             ;;
     esac
@@ -47,10 +54,14 @@ if ((run && (watch || acceptance))); then
     echo "--run cannot be combined with --watch or --acceptance" >&2
     exit 2
 fi
+if ((go_runner_package_set && !run)); then
+    echo "--go-runner-package requires --run" >&2
+    exit 2
+fi
 
 generic_application=0
 if [[ -n "$application_root" ]]; then
-    application_root="$(cd "$application_root" && pwd)"
+    application_root="$(cd "$application_root" && pwd -P)"
     [[ -f "$application_root/riffdb.application.json" ]] || {
         echo "application root has no riffdb.application.json" >&2
         exit 2
@@ -66,6 +77,100 @@ else
             ;;
     esac
 fi
+
+runner_manifest=
+go_runner_argument=.
+validate_run_configuration() {
+    ((run)) || return 0
+    ((generic_application)) || {
+        echo "--run requires an application repository" >&2
+        exit 2
+    }
+    local runner_count=0
+    local candidate
+    for candidate in Cargo.toml go.mod package.json pyproject.toml; do
+        if [[ -f "$application_root/$candidate" ]]; then
+            runner_manifest="$candidate"
+            ((runner_count += 1))
+        fi
+    done
+    if ((runner_count != 1)); then
+        echo "application root must contain exactly one supported runner manifest" >&2
+        exit 2
+    fi
+    if [[ "$runner_manifest" != go.mod ]]; then
+        if ((go_runner_package_set)); then
+            echo "--go-runner-package requires a Go application repository" >&2
+            exit 2
+        fi
+        return 0
+    fi
+    command -v go >/dev/null 2>&1 || {
+        echo "required Go runner tool is missing: go" >&2
+        exit 1
+    }
+    [[ -n "$go_runner_package" && ${#go_runner_package} -le 256 ]] || {
+        echo "Go runner package must be a nonempty repository-relative path of at most 256 bytes" >&2
+        exit 2
+    }
+    if [[ "$go_runner_package" != . ]]; then
+        [[ "$go_runner_package" != /* && "$go_runner_package" != *\\* \
+            && "$go_runner_package" != */ && "$go_runner_package" != *//* ]] || {
+            echo "Go runner package must be a canonical repository-relative directory" >&2
+            exit 2
+        }
+        local component
+        local -a components
+        IFS=/ read -r -a components <<<"$go_runner_package"
+        for component in "${components[@]}"; do
+            [[ -n "$component" && "$component" != . && "$component" != .. \
+                && "$component" =~ ^[A-Za-z0-9._-]+$ ]] || {
+                echo "Go runner package must be a canonical repository-relative directory" >&2
+                exit 2
+            }
+        done
+    fi
+    local selected="$application_root/$go_runner_package"
+    [[ -d "$selected" ]] || {
+        echo "Go runner package directory is unavailable" >&2
+        exit 2
+    }
+    local selected_real
+    selected_real="$(cd "$selected" && pwd -P)"
+    if [[ "$go_runner_package" == . ]]; then
+        [[ "$selected_real" == "$application_root" ]] || {
+            echo "Go runner package escapes the application repository" >&2
+            exit 2
+        }
+    else
+        [[ "$selected_real" == "$application_root/$go_runner_package" ]] || {
+            echo "Go runner package is noncanonical or escapes the application repository" >&2
+            exit 2
+        }
+    fi
+    local prefix="$application_root"
+    if [[ "$go_runner_package" != . ]]; then
+        for component in "${components[@]}"; do
+            prefix="$prefix/$component"
+            [[ ! -f "$prefix/go.mod" ]] || {
+                echo "Go runner package crosses a nested module boundary" >&2
+                exit 2
+            }
+        done
+        go_runner_argument="./$go_runner_package"
+    fi
+    local package_name
+    package_name="$(GOTOOLCHAIN=local go -C "$application_root" list -f '{{.Name}}' "$go_runner_argument" 2>/dev/null)" || {
+        echo "Go runner package could not be loaded" >&2
+        exit 2
+    }
+    [[ "$package_name" == main ]] || {
+        echo "Go runner package must declare package main" >&2
+        exit 2
+    }
+}
+
+validate_run_configuration
 [[ "$seed_concurrency" =~ ^[1-8]$ ]] || {
     echo "seed concurrency must be in 1..8" >&2
     exit 2
@@ -694,18 +799,6 @@ printf 'riffdb-dev-ready-v1\t%s\t%s\t%s\n' \
     "$endpoint" "$work_root/profile.credential" "$reported_role"
 
 if ((run)); then
-    ((generic_application)) || {
-        echo "--run requires an application repository" >&2
-        exit 2
-    }
-    runner_count=0
-    for runner_manifest in Cargo.toml go.mod package.json pyproject.toml; do
-        [[ -f "$application_root/$runner_manifest" ]] && ((runner_count += 1))
-    done
-    if ((runner_count != 1)); then
-        echo "application root must contain exactly one supported runner manifest" >&2
-        exit 2
-    fi
     driver_arguments=()
     if ((driver_runner)); then
         manifest_hash="$(jq -er '.exact_manifest_hash' "$application_root/riffdb.application.lock.json")"
@@ -730,13 +823,10 @@ if ((run)); then
             --config "$app_patch" \
             -- "$endpoint" "$work_root/profile.credential" default
     elif [[ -f "$application_root/go.mod" ]]; then
-        command -v go >/dev/null 2>&1 || {
-            echo "required Go runner tool is missing: go" >&2
-            exit 1
-        }
+        printf 'riffdb-dev-runner-v1\tlanguage=go\tpackage=%s\n' "$go_runner_package"
         (
             cd "$application_root"
-            GOTOOLCHAIN=local go run . "${driver_arguments[@]}"
+            GOTOOLCHAIN=local go run "$go_runner_argument" "${driver_arguments[@]}"
         )
     elif [[ -f "$application_root/package.json" ]]; then
         for tool in node npm; do

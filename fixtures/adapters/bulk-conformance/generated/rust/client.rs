@@ -5,11 +5,11 @@ use riffdb_client_rust::{ApplicationCardinality, ApplicationClientError, Applica
 pub use riffdb_client_rust::QueryOptions;
 use riffdb_client_rust::v1::value::Kind as WireKind;
 
-pub const QUERY_MODULE_HASH: [u8; 32] = [0x42, 0xbc, 0x76, 0x20, 0x77, 0x72, 0x6e, 0x0b, 0x07, 0x7b, 0x8c, 0x93, 0x6a, 0xaf, 0xe1, 0x3f, 0xcc, 0xa6, 0x96, 0xb8, 0xef, 0xe1, 0xcd, 0xa0, 0x5a, 0xa4, 0x6b, 0xf3, 0xa8, 0x05, 0x4e, 0x16];
+pub const QUERY_MODULE_HASH: [u8; 32] = [0x03, 0x7c, 0x90, 0xa0, 0x76, 0x2b, 0xb6, 0x8c, 0x52, 0x1a, 0x2e, 0x9f, 0x9f, 0xf3, 0x00, 0x56, 0xc4, 0x3b, 0x0f, 0x86, 0xdf, 0x7f, 0x19, 0xfe, 0x9c, 0xe8, 0xfb, 0xc8, 0x3c, 0x05, 0xfc, 0x45];
 pub const CONTRACT_LINEAGE: &str = "AdapterBulkConformance";
 pub const CONTRACT_VERSION: u64 = 1;
 
-pub const CONTRACT_BUNDLE_HASH: [u8; 32] = [0x76, 0xec, 0xef, 0xdc, 0x90, 0x74, 0xb4, 0x83, 0x7c, 0xff, 0x72, 0x90, 0x2b, 0x27, 0x0c, 0xcd, 0xf7, 0xa6, 0x0a, 0xec, 0x64, 0xea, 0x1b, 0x74, 0x15, 0x86, 0xfc, 0x9e, 0x80, 0x51, 0xa9, 0xd1];
+pub const CONTRACT_BUNDLE_HASH: [u8; 32] = [0xf0, 0x1d, 0x15, 0xf5, 0x38, 0x8a, 0x91, 0xe7, 0x4c, 0xa0, 0x1d, 0x5a, 0x36, 0xa3, 0x5a, 0xef, 0xd5, 0xd0, 0xfa, 0xf4, 0xe5, 0x25, 0x48, 0x0c, 0x82, 0xb7, 0xee, 0xf1, 0x42, 0xab, 0x53, 0x15];
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DecimalValue {
@@ -58,7 +58,7 @@ pub enum GetFgaTupleResult {
     TupleNotFound(Box<GetFgaTupleTupleNotFound>),
 }
 
-pub const GET_FGA_TUPLE_QUERY_PLAN_HASH: [u8; 32] = [0xac, 0x28, 0xdc, 0x6f, 0x79, 0x38, 0x48, 0xf2, 0x68, 0xb8, 0x40, 0xee, 0x57, 0xdb, 0x4b, 0xfc, 0xa3, 0x6d, 0x13, 0x2f, 0x7d, 0xf9, 0xe0, 0x60, 0x53, 0xc0, 0xf1, 0xd8, 0xf2, 0x28, 0x85, 0x1c];
+pub const GET_FGA_TUPLE_QUERY_PLAN_HASH: [u8; 32] = [0x3e, 0xa9, 0xd7, 0x30, 0xdc, 0x27, 0x5f, 0xfb, 0xbf, 0x2b, 0x9f, 0xc1, 0x77, 0x0b, 0xae, 0xdd, 0x82, 0xb7, 0x77, 0x78, 0xf1, 0xa5, 0xc1, 0x3c, 0xcc, 0xe0, 0x47, 0x20, 0x7b, 0xbc, 0x3a, 0x13];
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct GetFgaTupleQuery(pub GetFgaTupleParams);
 impl GeneratedQuery for GetFgaTupleQuery {
@@ -292,6 +292,36 @@ fn decode_restrict_child_entity(value: v1::Value) -> Result<RestrictChild, Gener
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PolicyMutation {
+    pub context: Option<Vec<u8>>,
+    pub relation: String,
+    pub mutation_id: String,
+    pub organization_id: String,
+}
+
+fn encode_policy_mutation_entity(value: &PolicyMutation) -> Result<v1::Value, GeneratedCommandError> {
+    let fields = vec![
+        v1::ValueField { field_id: Some(1), name: String::new(), value: Some(match &value.context.as_ref() { Some(value) => wire_bytes(Clone::clone(value)), None => wire_null() }) },
+        v1::ValueField { field_id: Some(2), name: String::new(), value: Some(wire_string(Clone::clone(&value.relation))) },
+        v1::ValueField { field_id: Some(3), name: String::new(), value: Some(wire_uuid(&value.mutation_id)?) },
+        v1::ValueField { field_id: Some(4), name: String::new(), value: Some(wire_uuid(&value.organization_id)?) },
+    ];
+    Ok(v1::Value { kind: Some(WireKind::RecordValue(v1::ValueRecord { fields })) })
+}
+
+fn decode_policy_mutation_entity(value: v1::Value) -> Result<PolicyMutation, GeneratedCommandError> {
+    let mut fields = wire_record_fields(value)?;
+    let entity = PolicyMutation {
+        context: decode_wire_optional(take_wire_field(&mut fields, 1)?, decode_wire_bytes)?,
+        relation: decode_wire_string(take_wire_field(&mut fields, 2)?)?,
+        mutation_id: decode_wire_uuid(take_wire_field(&mut fields, 3)?)?,
+        organization_id: decode_wire_uuid(take_wire_field(&mut fields, 4)?)?,
+    };
+    if !fields.is_empty() { return Err(GeneratedCommandError::InvalidOutcomeShape); }
+    Ok(entity)
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RestrictParent {
     pub parent_id: String,
     pub tenant_id: String,
@@ -427,7 +457,7 @@ pub enum CreateDocumentGraphsOutcome {
     RevisionAlreadyExists,
 }
 
-const CREATE_DOCUMENT_GRAPHS_PLAN_HASH: [u8; 32] = [0x0f, 0x2e, 0x98, 0x9b, 0xcc, 0xbc, 0xe7, 0x86, 0xf0, 0xad, 0xf1, 0x13, 0xf4, 0x90, 0x2f, 0x06, 0x47, 0x76, 0x5c, 0x13, 0x08, 0xd2, 0x3d, 0x85, 0x2a, 0x2c, 0xb4, 0x08, 0x8d, 0x2c, 0x4f, 0xbc];
+const CREATE_DOCUMENT_GRAPHS_PLAN_HASH: [u8; 32] = [0x94, 0xd2, 0xe9, 0x5c, 0xff, 0xe5, 0xb2, 0x3e, 0xb5, 0xee, 0x7e, 0xae, 0xde, 0x65, 0xde, 0x0f, 0xd6, 0xb6, 0x51, 0x7b, 0x71, 0x21, 0xb9, 0x2d, 0x74, 0x0c, 0x41, 0xa6, 0x33, 0xae, 0x6f, 0xdd];
 impl GeneratedCommand for CreateDocumentGraphsInput {
     type Outcome = CreateDocumentGraphsOutcome;
 
@@ -478,7 +508,7 @@ pub enum CreatePipelinesWithStepsOutcome {
     PipelineAlreadyExists,
 }
 
-const CREATE_PIPELINES_WITH_STEPS_PLAN_HASH: [u8; 32] = [0x13, 0x70, 0xb0, 0xe3, 0x71, 0x25, 0x86, 0xe7, 0x36, 0xeb, 0x0a, 0x13, 0xa4, 0x54, 0x35, 0x63, 0x2d, 0xc1, 0x53, 0x4f, 0x36, 0x93, 0xfe, 0x7f, 0x1f, 0x17, 0xb5, 0x1e, 0xae, 0x9b, 0xa5, 0x1e];
+const CREATE_PIPELINES_WITH_STEPS_PLAN_HASH: [u8; 32] = [0xa6, 0x72, 0xe9, 0x7d, 0xc4, 0x00, 0xe8, 0x4e, 0x91, 0x80, 0x1d, 0x31, 0xf2, 0x08, 0xd6, 0xe2, 0xe7, 0x7b, 0x0f, 0x07, 0xbc, 0xad, 0x30, 0xc0, 0x80, 0x63, 0xf0, 0x3e, 0x71, 0x05, 0x4a, 0xc6];
 impl GeneratedCommand for CreatePipelinesWithStepsInput {
     type Outcome = CreatePipelinesWithStepsOutcome;
 
@@ -529,7 +559,7 @@ pub enum CreateRestrictChildrenOutcome {
     RestrictChildrenCreated,
 }
 
-const CREATE_RESTRICT_CHILDREN_PLAN_HASH: [u8; 32] = [0x6b, 0x19, 0x7b, 0x17, 0x62, 0x8a, 0xe0, 0xbc, 0x62, 0x35, 0xb3, 0x26, 0x16, 0x14, 0xa8, 0x77, 0x82, 0xba, 0x07, 0xe1, 0x2a, 0xfb, 0x91, 0xd8, 0x90, 0xd5, 0x76, 0x87, 0x3b, 0x2d, 0xc8, 0x20];
+const CREATE_RESTRICT_CHILDREN_PLAN_HASH: [u8; 32] = [0x32, 0x51, 0x22, 0xdb, 0x58, 0x11, 0xae, 0xef, 0xaa, 0x49, 0x8b, 0xd3, 0xd8, 0xd0, 0xe0, 0x5d, 0x28, 0x79, 0xff, 0x43, 0x29, 0xa7, 0xc0, 0xfd, 0x2f, 0x13, 0x36, 0xcf, 0x01, 0x8e, 0x66, 0xe1];
 impl GeneratedCommand for CreateRestrictChildrenInput {
     type Outcome = CreateRestrictChildrenOutcome;
 
@@ -578,7 +608,7 @@ pub enum CreateRestrictParentsOutcome {
     RestrictParentsCreated,
 }
 
-const CREATE_RESTRICT_PARENTS_PLAN_HASH: [u8; 32] = [0x68, 0xff, 0xf2, 0xae, 0xba, 0x68, 0xe4, 0x81, 0x45, 0x35, 0x7f, 0xbf, 0xc1, 0x71, 0xcf, 0x0e, 0x99, 0xa4, 0x51, 0x94, 0x51, 0xb9, 0xb6, 0xe7, 0xc3, 0xe2, 0x1d, 0xb5, 0x55, 0x95, 0xc1, 0x7f];
+const CREATE_RESTRICT_PARENTS_PLAN_HASH: [u8; 32] = [0x47, 0x72, 0x20, 0xcf, 0x0c, 0xb8, 0x88, 0xcf, 0x46, 0x38, 0xde, 0x6e, 0x08, 0xdd, 0x3d, 0xc3, 0xea, 0x2b, 0x8b, 0xb3, 0x32, 0x30, 0x11, 0x34, 0x30, 0x53, 0x88, 0x33, 0xd7, 0x8b, 0xee, 0x1c];
 impl GeneratedCommand for CreateRestrictParentsInput {
     type Outcome = CreateRestrictParentsOutcome;
 
@@ -629,7 +659,7 @@ pub enum DeleteRestrictParentsOutcome {
     RestrictParentsDeleted,
 }
 
-const DELETE_RESTRICT_PARENTS_PLAN_HASH: [u8; 32] = [0xad, 0x9d, 0x08, 0xa9, 0x79, 0x1f, 0xed, 0x07, 0x2a, 0xde, 0x42, 0x0c, 0xec, 0x9b, 0xaa, 0xd7, 0xed, 0x7c, 0x18, 0x51, 0x6e, 0x5e, 0xee, 0x09, 0x27, 0x70, 0x46, 0x89, 0xc5, 0xc2, 0x74, 0x8f];
+const DELETE_RESTRICT_PARENTS_PLAN_HASH: [u8; 32] = [0x70, 0x8f, 0xdf, 0xb2, 0x24, 0xee, 0x8e, 0x0a, 0x76, 0x94, 0x0e, 0xd0, 0x5c, 0xca, 0x04, 0xef, 0xe4, 0xc0, 0xa7, 0x28, 0x6d, 0x53, 0x34, 0xf2, 0x4e, 0xd6, 0x59, 0x41, 0x19, 0x2b, 0x8c, 0xc7];
 impl GeneratedCommand for DeleteRestrictParentsInput {
     type Outcome = DeleteRestrictParentsOutcome;
 
@@ -708,6 +738,60 @@ impl GeneratedCommand for LogMetricsInput {
         match response.outcome_type.as_str() {
             "MetricsLogged" => if fields.is_empty() { Ok(Self::Outcome::MetricsLogged) } else { Err(GeneratedCommandError::InvalidOutcomeShape) },
             "MetricAlreadyExists" => if fields.is_empty() { Ok(Self::Outcome::MetricAlreadyExists) } else { Err(GeneratedCommandError::InvalidOutcomeShape) },
+            _ => Err(GeneratedCommandError::InvalidOutcomeShape),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WritePolicyMutationsInput {
+    pub mutations: Vec<PolicyMutation>,
+    pub request_id: String,
+}
+
+#[allow(clippy::large_enum_variant)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum WritePolicyMutationsOutcome {
+    PolicyMutationExists,
+
+    PolicyMutationsWritten,
+}
+
+const WRITE_POLICY_MUTATIONS_PLAN_HASH: [u8; 32] = [0x23, 0xbc, 0x5e, 0x08, 0x9a, 0x0f, 0x3f, 0x7d, 0xcb, 0x56, 0x0f, 0x42, 0x51, 0x7c, 0xc3, 0xee, 0xd3, 0xa3, 0x37, 0x87, 0x5c, 0x0c, 0x63, 0x38, 0x42, 0x44, 0xb5, 0x13, 0x9e, 0xb7, 0x40, 0x83];
+impl GeneratedCommand for WritePolicyMutationsInput {
+    type Outcome = WritePolicyMutationsOutcome;
+
+    fn idempotent_command(&self) -> Result<IdempotentCommand, GeneratedCommandError> {
+
+        if self.mutations.is_empty() || self.mutations.len() > 100 { return Err(GeneratedCommandError::InvalidInputShape); }
+        let mut aggregate_element_bytes = 0usize;
+        for value in &self.mutations {
+            let encoded = encode_policy_mutation_entity(value)?;
+            aggregate_element_bytes = aggregate_element_bytes.checked_add(wire_canonical_value_encoded_len(&encoded)?).ok_or(GeneratedCommandError::InvalidInputShape)?;
+            if aggregate_element_bytes > 900000 { return Err(GeneratedCommandError::InvalidInputShape); }
+        }
+        let fields = vec![
+            wire_named_field("mutations", v1::Value { kind: Some(WireKind::ListValue(v1::ValueList { values: (self.mutations).iter().map(encode_policy_mutation_entity).collect::<Result<Vec<_>, GeneratedCommandError>>()? })) }),
+            wire_named_field("request_id", wire_uuid(&self.request_id)?),
+        ];
+        IdempotentCommand::new("WritePolicyMutations", Some(CONTRACT_VERSION), wire_record(fields)).map_err(Into::into)
+    }
+
+    fn outcome_request(&self, request_id: riffdb_client_rust::RequestId) -> Result<v1::GetOutcomeRequest, GeneratedCommandError> {
+        Ok(v1::GetOutcomeRequest {
+            request_id: request_id.into_bytes().to_vec(),
+            contract_lineage: CONTRACT_LINEAGE.to_owned(),
+            command_name: "WritePolicyMutations".to_owned(),
+            idempotency_key: self.request_id.clone(),
+            outcome_uri: None,
+        })
+    }
+
+    fn decode_outcome(&self, response: &v1::ExecuteCommandResponse) -> Result<Self::Outcome, GeneratedCommandError> {
+        let fields = wire_outcome_fields(response, &WRITE_POLICY_MUTATIONS_PLAN_HASH)?;
+        match response.outcome_type.as_str() {
+            "PolicyMutationExists" => if fields.is_empty() { Ok(Self::Outcome::PolicyMutationExists) } else { Err(GeneratedCommandError::InvalidOutcomeShape) },
+            "PolicyMutationsWritten" => if fields.is_empty() { Ok(Self::Outcome::PolicyMutationsWritten) } else { Err(GeneratedCommandError::InvalidOutcomeShape) },
             _ => Err(GeneratedCommandError::InvalidOutcomeShape),
         }
     }
@@ -886,6 +970,21 @@ impl AdapterBulkConformanceClient {
         self.client.execute_generated_command_batch_with_progress(inputs, options, self.command_attempts, &self.metadata, progress).await
     }
 
+    pub async fn write_policy_mutations(&mut self, input: WritePolicyMutationsInput) -> Result<TypedCommandResult<WritePolicyMutationsOutcome>, ApplicationClientError> {
+        self.client.execute_generated_command(&input, self.command_attempts, &self.metadata).await.map_err(Into::into)
+    }
+
+    pub async fn write_policy_mutations_batch(&self, inputs: Vec<WritePolicyMutationsInput>, options: GeneratedBatchOptions) -> Result<GeneratedBatchResult<WritePolicyMutationsOutcome>, GeneratedBatchError> {
+        self.client.execute_generated_command_batch(inputs, options, self.command_attempts, &self.metadata).await
+    }
+
+    pub async fn write_policy_mutations_batch_with_progress<F>(&self, inputs: Vec<WritePolicyMutationsInput>, options: GeneratedBatchOptions, progress: F) -> Result<GeneratedBatchResult<WritePolicyMutationsOutcome>, GeneratedBatchError>
+    where
+        F: FnMut(GeneratedBatchProgress),
+    {
+        self.client.execute_generated_command_batch_with_progress(inputs, options, self.command_attempts, &self.metadata, progress).await
+    }
+
     pub async fn write_tuples(&mut self, input: WriteTuplesInput) -> Result<TypedCommandResult<WriteTuplesOutcome>, ApplicationClientError> {
         self.client.execute_generated_command(&input, self.command_attempts, &self.metadata).await.map_err(Into::into)
     }
@@ -1006,4 +1105,26 @@ fn decode_wire_money(value: v1::Value, expected_currency: &str) -> Result<MoneyV
     let amount = value.amount.ok_or(GeneratedCommandError::InvalidOutcomeShape)?;
     if value.currency != expected_currency || amount.scale != 2 || amount.precision != Some(38) { return Err(GeneratedCommandError::InvalidOutcomeShape); }
     Ok(MoneyValue { currency: value.currency, amount: DecimalValue { coefficient_twos_complement: amount.coefficient_twos_complement, scale: amount.scale, precision: amount.precision } })
+}
+fn wire_canonical_value_encoded_len(value: &v1::Value) -> Result<usize, GeneratedCommandError> {
+    let checked_add = |left: usize, right: usize| left.checked_add(right).ok_or(GeneratedCommandError::InvalidInputShape);
+    match value.kind.as_ref().ok_or(GeneratedCommandError::InvalidInputShape)? {
+        WireKind::NullValue(_) => Ok(2),
+        WireKind::BoolValue(_) => Ok(3),
+        WireKind::I64Value(_) | WireKind::U64Value(_) => Ok(10),
+        WireKind::DecimalValue(_) => Ok(20),
+        WireKind::MoneyValue(_) => Ok(23),
+        WireKind::StringValue(value) => checked_add(6, value.len()),
+        WireKind::BytesValue(value) => checked_add(6, value.len()),
+        WireKind::TimestampValue(_) => Ok(14),
+        WireKind::DateValue(_) => Ok(6),
+        WireKind::UuidValue(value) if value.len() == 16 => Ok(18),
+        WireKind::UuidValue(_) => Err(GeneratedCommandError::InvalidInputShape),
+        WireKind::EnumValue(_) => Ok(10),
+        WireKind::VectorValue(value) => checked_add(6, value.components.len().checked_mul(4).ok_or(GeneratedCommandError::InvalidInputShape)?),
+        WireKind::ListValue(value) => value.values.iter().try_fold(6usize, |total, item| checked_add(total, wire_canonical_value_encoded_len(item)?)),
+        WireKind::RecordValue(value) => value.fields.iter().try_fold(6usize, |total, field| {
+            checked_add(checked_add(total, 4)?, wire_canonical_value_encoded_len(field.value.as_ref().ok_or(GeneratedCommandError::InvalidInputShape)?)?)
+        }),
+    }
 }
