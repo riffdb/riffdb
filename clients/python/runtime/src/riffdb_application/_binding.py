@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 import types
 import typing
+from collections.abc import Hashable
 from dataclasses import fields, is_dataclass
 from decimal import Decimal
 from enum import StrEnum
@@ -147,8 +148,6 @@ def _encode_typed(value: object, annotation: object) -> dict[str, object]:
         return {"kind": "record", "value": encode_record(value)}
     raise TypeError("unsupported generated RiffDB field type")
 
-
-
 @lru_cache(maxsize=None)
 def _resolved_hints(record_type: type) -> "MappingProxyType[str, object]":
     """Resolved annotations for one generated dataclass.
@@ -164,7 +163,8 @@ def _resolved_hints(record_type: type) -> "MappingProxyType[str, object]":
 @lru_cache(maxsize=None)
 def _init_field_names(record_type: type) -> frozenset[str]:
     """Names of the init fields of one generated dataclass."""
-    return frozenset(item.name for item in fields(record_type) if item.init)  # type: ignore[arg-type]
+    return frozenset(item.name for item in fields(record_type) if item.init)
+
 
 def _encode_record(value: object) -> dict[str, dict[str, object]]:
     if not is_dataclass(value) or isinstance(value, type):
@@ -362,8 +362,9 @@ def _decode_typed(value: object, annotation: object) -> object:
 def _decode_record[T](record_type: type[T], value: object) -> T:
     if not isinstance(value, dict):
         raise TypeError("invalid RiffDB record response")
-    hints = _resolved_hints(record_type)
-    expected = _init_field_names(record_type)
+    cache_key = typing.cast(Hashable, record_type)
+    hints = _resolved_hints(cache_key)
+    expected = _init_field_names(cache_key)
     if set(value) - {"outcome"} != expected:
         raise TypeError("invalid RiffDB record response")
     return record_type(**{name: _decode_typed(value[name], hints[name]) for name in expected})
