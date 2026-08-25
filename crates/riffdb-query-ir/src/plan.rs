@@ -644,6 +644,17 @@ impl QueryAccessStep {
                     && !predicates.iter().any(|predicate| {
                         matches!(predicate.value, QueryPredicateValue::BindingFieldSet { .. })
                     })
+                    && predicates.iter().all(|predicate| {
+                        matches!(
+                            predicate.operator,
+                            QueryPredicateOperator::Equal
+                                | QueryPredicateOperator::In
+                                | QueryPredicateOperator::IsNull
+                                | QueryPredicateOperator::IsNotNull
+                                | QueryPredicateOperator::Exists
+                                | QueryPredicateOperator::Prefix
+                        )
+                    })
             }
             QueryAccessKind::DependentPointBatch {
                 key_fields,

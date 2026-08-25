@@ -2493,6 +2493,80 @@ impl SourcePredicateOperator {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct OperationalComponentCapabilities {
+    exact: bool,
+    membership: bool,
+    range_or_complement: bool,
+    presence_state: bool,
+    prefix: bool,
+    order: bool,
+}
+
+const OPERATIONAL_COMPONENT_CAPABILITY_REGISTRY: [(
+    IndexFieldEncodingV1,
+    OperationalComponentCapabilities,
+); 4] = [
+    (
+        IndexFieldEncodingV1::Canonical,
+        OperationalComponentCapabilities {
+            exact: true,
+            membership: true,
+            range_or_complement: false,
+            presence_state: false,
+            prefix: false,
+            order: true,
+        },
+    ),
+    (
+        IndexFieldEncodingV1::Presence,
+        OperationalComponentCapabilities {
+            exact: false,
+            membership: false,
+            range_or_complement: false,
+            presence_state: true,
+            prefix: false,
+            order: true,
+        },
+    ),
+    (
+        IndexFieldEncodingV1::TextKey(TextKeyProfileV1::BinaryUtf8),
+        OperationalComponentCapabilities {
+            exact: true,
+            membership: true,
+            range_or_complement: false,
+            presence_state: false,
+            prefix: true,
+            order: true,
+        },
+    ),
+    (
+        IndexFieldEncodingV1::TextKey(TextKeyProfileV1::UnicodeFold),
+        OperationalComponentCapabilities {
+            exact: false,
+            membership: false,
+            range_or_complement: false,
+            presence_state: false,
+            prefix: false,
+            order: false,
+        },
+    ),
+];
+
+fn operational_component_capabilities(
+    encoding: IndexFieldEncodingV1,
+) -> OperationalComponentCapabilities {
+    OPERATIONAL_COMPONENT_CAPABILITY_REGISTRY
+        .iter()
+        .find_map(|(candidate, capabilities)| (*candidate == encoding).then_some(*capabilities))
+        .expect("closed registry covers every operational component encoding")
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct OperationalAccessShape {
+    order_start: usize,
+}
+
 fn comparisons(expression: &Expression) -> Vec<Comparison<'_>> {
     let mut output = Vec::new();
     collect_comparisons(expression, &mut output);
@@ -2709,61 +2783,16 @@ fn choose_access(
 
     let mut first_compatible = None;
     for index in entity.indexes() {
-        if !operational_predicates_supported(index, comparisons, binding) {
+        let Some(shape) = operational_access_shape(index, comparisons, binding) else {
             continue;
-        }
-        let mut order_start = 0;
-        while order_start < index.fields().len() {
-            let field = index.fields()[order_start].as_str();
-            let encoding = index.internal_encodings()[order_start];
-            let equality = comparisons.iter().any(|comparison| {
-                comparison.field == field
-                    && comparison.operator.is_binary(BinaryOperator::Equal)
-                    && matches!(
-                        encoding,
-                        IndexFieldEncodingV1::Canonical
-                            | IndexFieldEncodingV1::TextKey(TextKeyProfileV1::BinaryUtf8)
-                    )
-            });
-            if equality {
-                order_start += 1;
-                continue;
-            }
-            let membership = comparisons.iter().any(|comparison| {
-                comparison.field == field
-                    && comparison.operator.is_binary(BinaryOperator::In)
-                    && encoding == IndexFieldEncodingV1::Canonical
-            });
-            let exact_null = comparisons.iter().any(|comparison| {
-                comparison.field == field
-                    && comparison.operator == SourcePredicateOperator::Unary(UnaryOperator::IsNull)
-                    && encoding == IndexFieldEncodingV1::Presence
-            });
-            if exact_null {
-                order_start += 1;
-                continue;
-            }
-            if !membership {
-                break;
-            }
-            break;
-        }
-        if order_start == 0
-            && !comparisons.iter().any(|comparison| {
-                comparison.field == index.fields()[0]
-                    && (comparison.operator.is_binary(BinaryOperator::Equal)
-                        || comparison.operator.is_binary(BinaryOperator::In))
-            })
-        {
-            continue;
-        }
-        if !index.fields()[..order_start]
+        };
+        if !index.fields()[..shape.order_start]
             .iter()
             .any(|field| field == entity.partition_field())
         {
             continue;
         }
-        let expected = &index.fields()[order_start..];
+        let expected = &index.fields()[shape.order_start..];
         if expected.len() != order_fields.len()
             || !expected
                 .iter()
@@ -2862,66 +2891,103 @@ fn suggested_index(
     })
 }
 
-fn operational_predicates_supported(
+fn operational_access_shape(
     index: &riffdb_query_ir::IndexSymbol,
     comparisons: &[Comparison<'_>],
     binding: &riffdb_riffql_syntax::Binding,
-) -> bool {
-    let predicates_match = comparisons.iter().all(|comparison| {
-        let Some(position) = index
-            .fields()
+) -> Option<OperationalAccessShape> {
+    let mut consumed = vec![false; comparisons.len()];
+    let mut order_start = 0;
+
+    while order_start < index.fields().len() {
+        let field = index.fields()[order_start].as_str();
+        let matching = comparisons
             .iter()
-            .position(|field| field == comparison.field)
-        else {
-            return false;
-        };
-        match comparison.operator {
-            SourcePredicateOperator::Unary(_) => {
-                index.internal_encodings()[position] == IndexFieldEncodingV1::Presence
-            }
-            SourcePredicateOperator::Binary(BinaryOperator::Prefix) => matches!(
-                index.internal_encodings()[position],
-                IndexFieldEncodingV1::TextKey(_)
-            ),
-            SourcePredicateOperator::Binary(BinaryOperator::Equal) => !matches!(
-                index.internal_encodings()[position],
-                IndexFieldEncodingV1::TextKey(profile)
-                    if profile != TextKeyProfileV1::BinaryUtf8
-            ),
-            _ => !matches!(
-                index.internal_encodings()[position],
-                IndexFieldEncodingV1::TextKey(_)
-            ),
+            .enumerate()
+            .filter(|(_, comparison)| comparison.field == field)
+            .collect::<Vec<_>>();
+        if matching.is_empty() {
+            break;
         }
-    });
-    predicates_match
-        && index.internal_encodings().iter().enumerate().all(
-            |(position, encoding)| match encoding {
-                IndexFieldEncodingV1::Canonical => true,
-                IndexFieldEncodingV1::Presence => {
-                    comparisons.iter().any(|comparison| {
-                        comparison.field == index.fields()[position]
-                            && matches!(comparison.operator, SourcePredicateOperator::Unary(_))
-                    }) || binding.order.iter().any(|term| {
-                        term.null_placement.is_some()
-                            && path_field(&term.path.value)
-                                == Some(index.fields()[position].as_str())
-                    })
-                }
-                IndexFieldEncodingV1::TextKey(_) => {
-                    comparisons.iter().any(|comparison| {
-                        comparison.field == index.fields()[position]
-                            && (comparison.operator.is_binary(BinaryOperator::Prefix)
-                                || (matches!(
-                                    encoding,
-                                    IndexFieldEncodingV1::TextKey(TextKeyProfileV1::BinaryUtf8)
-                                ) && comparison.operator.is_binary(BinaryOperator::Equal)))
-                    }) || binding.order.iter().any(|term| {
-                        path_field(&term.path.value) == Some(index.fields()[position].as_str())
-                    })
-                }
-            },
-        )
+        let [(comparison_index, comparison)] = matching.as_slice() else {
+            return None;
+        };
+        let capabilities =
+            operational_component_capabilities(index.internal_encodings()[order_start]);
+        match comparison.operator {
+            SourcePredicateOperator::Binary(BinaryOperator::Equal) if capabilities.exact => {
+                consumed[*comparison_index] = true;
+                order_start += 1;
+            }
+            SourcePredicateOperator::Unary(UnaryOperator::IsNull)
+                if capabilities.presence_state =>
+            {
+                consumed[*comparison_index] = true;
+                order_start += 1;
+            }
+            SourcePredicateOperator::Binary(BinaryOperator::In) if capabilities.membership => {
+                consumed[*comparison_index] = true;
+                break;
+            }
+            SourcePredicateOperator::Binary(BinaryOperator::Prefix) if capabilities.prefix => {
+                consumed[*comparison_index] = true;
+                break;
+            }
+            SourcePredicateOperator::Unary(UnaryOperator::IsNotNull | UnaryOperator::Exists)
+                if capabilities.presence_state =>
+            {
+                consumed[*comparison_index] = true;
+                break;
+            }
+            SourcePredicateOperator::Binary(
+                BinaryOperator::NotEqual
+                | BinaryOperator::Less
+                | BinaryOperator::LessEqual
+                | BinaryOperator::Greater
+                | BinaryOperator::GreaterEqual,
+            ) if capabilities.range_or_complement => {
+                consumed[*comparison_index] = true;
+                break;
+            }
+            _ => return None,
+        }
+    }
+
+    if consumed.iter().any(|consumed| !consumed) {
+        return None;
+    }
+
+    let order_fields = binding
+        .order
+        .iter()
+        .filter_map(|term| path_field(&term.path.value))
+        .collect::<Vec<_>>();
+    let remaining_fields = &index.fields()[order_start..];
+    if remaining_fields.len() != order_fields.len()
+        || !remaining_fields
+            .iter()
+            .map(String::as_str)
+            .eq(order_fields.iter().copied())
+    {
+        return None;
+    }
+    for (position, term) in (order_start..index.fields().len()).zip(&binding.order) {
+        let encoding = index.internal_encodings()[position];
+        let capabilities = operational_component_capabilities(encoding);
+        let present_only = comparisons.iter().any(|comparison| {
+            comparison.field == index.fields()[position]
+                && comparison.operator == SourcePredicateOperator::Unary(UnaryOperator::IsNotNull)
+        });
+        if !capabilities.order
+            || (encoding == IndexFieldEncodingV1::Presence
+                && !present_only
+                && term.null_placement.is_none())
+        {
+            return None;
+        }
+    }
+
+    Some(OperationalAccessShape { order_start })
 }
 
 fn maximum_rows(binding: &riffdb_riffql_syntax::Binding) -> Result<u64, PlannerDiagnostics> {
@@ -3203,4 +3269,65 @@ fn internal() -> PlannerDiagnostics {
         "resolved query could not form a closed access program",
         None,
     )
+}
+
+#[cfg(test)]
+mod operational_component_registry_tests {
+    use super::{
+        IndexFieldEncodingV1, OPERATIONAL_COMPONENT_CAPABILITY_REGISTRY, TextKeyProfileV1,
+        operational_component_capabilities,
+    };
+
+    #[test]
+    fn closed_registry_freezes_every_executable_component_role() {
+        assert_eq!(OPERATIONAL_COMPONENT_CAPABILITY_REGISTRY.len(), 4);
+        assert_eq!(
+            operational_component_capabilities(IndexFieldEncodingV1::Canonical),
+            super::OperationalComponentCapabilities {
+                exact: true,
+                membership: true,
+                range_or_complement: false,
+                presence_state: false,
+                prefix: false,
+                order: true,
+            }
+        );
+        assert_eq!(
+            operational_component_capabilities(IndexFieldEncodingV1::Presence),
+            super::OperationalComponentCapabilities {
+                exact: false,
+                membership: false,
+                range_or_complement: false,
+                presence_state: true,
+                prefix: false,
+                order: true,
+            }
+        );
+        assert_eq!(
+            operational_component_capabilities(IndexFieldEncodingV1::TextKey(
+                TextKeyProfileV1::BinaryUtf8,
+            )),
+            super::OperationalComponentCapabilities {
+                exact: true,
+                membership: true,
+                range_or_complement: false,
+                presence_state: false,
+                prefix: true,
+                order: true,
+            }
+        );
+        assert_eq!(
+            operational_component_capabilities(IndexFieldEncodingV1::TextKey(
+                TextKeyProfileV1::UnicodeFold,
+            )),
+            super::OperationalComponentCapabilities {
+                exact: false,
+                membership: false,
+                range_or_complement: false,
+                presence_state: false,
+                prefix: false,
+                order: false,
+            }
+        );
+    }
 }

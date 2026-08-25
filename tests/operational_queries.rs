@@ -50,7 +50,7 @@ const NOT_NULL_QUERY: &str = r#"
 query NotNullDocuments($organization_id: Document.organization_id) {
   many documents from Document
     where organization_id == $organization_id && deleted_at is not null
-    order by deleted_at asc, document_id asc
+    order by deleted_at asc nulls first, document_id asc
     take 10
   return Found { documents: documents { document_id deleted_at } }
   outcomes Found
@@ -61,7 +61,7 @@ const EXISTS_QUERY: &str = r#"
 query ExistingDocuments($organization_id: Document.organization_id) {
   many documents from Document
     where organization_id == $organization_id && exists deleted_at
-    order by deleted_at asc, document_id asc
+    order by deleted_at asc nulls first, document_id asc
     take 10
   return Found { documents: documents { document_id deleted_at } }
   outcomes Found
@@ -119,6 +119,21 @@ query DocumentsByExactRelation(
   many documents from Document
     where organization_id == $organization_id && relation == $relation
     order by user asc, document_id asc
+    take 1 after $after
+  return Found { documents: documents { document_id relation user } }
+  outcomes Found
+}
+"#;
+
+const BINARY_COMPONENT_MEMBERSHIP_QUERY: &str = r#"
+query DocumentsByRelations(
+  $organization_id: Document.organization_id,
+  $relations: Set<Document.relation>,
+  $after: Cursor?,
+) {
+  many documents from Document
+    where organization_id == $organization_id && relation in $relations
+    order by relation asc, user asc, document_id asc
     take 1 after $after
   return Found { documents: documents { document_id relation user } }
   outcomes Found
@@ -245,6 +260,7 @@ fn execute_page(
     source: &str,
     prefix: Option<&str>,
     relation: Option<&str>,
+    relations: Option<&[&str]>,
     prior: Option<&QueryContinuation>,
 ) -> Result<QueryOwnedSnapshot, QueryExecutionError> {
     let bundle = compile_contract_source(CONTRACT).expect("contract");
@@ -401,6 +417,18 @@ fn execute_page(
             CanonicalValue::string(relation).expect("relation"),
         );
     }
+    if let Some(relations) = relations {
+        parameter_values.insert(
+            "relations".to_owned(),
+            CanonicalValue::list(
+                relations
+                    .iter()
+                    .map(|relation| CanonicalValue::string(*relation).expect("relation member"))
+                    .collect(),
+            )
+            .expect("bounded relation set"),
+        );
+    }
     let parameters = QueryParameters::checked(parameter_values).expect("parameters");
     let mut view = IndexedView { rows: indexed };
     execute_operational_page_in_snapshot(
@@ -413,7 +441,7 @@ fn execute_page(
 }
 
 fn execute(source: &str, prefix: Option<&str>) -> Result<Vec<QueryRow>, QueryExecutionError> {
-    let snapshot = execute_page(source, prefix, None, None)?;
+    let snapshot = execute_page(source, prefix, None, None, None)?;
     match snapshot.fields().get("documents") {
         Some(QueryResultValue::Many(rows)) => Ok(rows.clone()),
         other => panic!("expected documents result, got {other:?}"),
@@ -434,7 +462,35 @@ fn execute_all_cursor_pages(source: &str, relation: Option<&str>) -> Vec<QueryRo
     let mut prior = None;
     loop {
         let snapshot =
-            execute_page(source, None, relation, prior.as_ref()).expect("binary-order page");
+            execute_page(source, None, relation, None, prior.as_ref()).expect("binary-order page");
+        match snapshot.fields().get("documents") {
+            Some(QueryResultValue::Many(page)) => rows.extend(page.iter().cloned()),
+            other => panic!("expected documents page, got {other:?}"),
+        }
+        let Some(lower) = snapshot.continuation() else {
+            break;
+        };
+        prior = Some(
+            QueryContinuation::checked(
+                snapshot
+                    .continuation_binding()
+                    .expect("continuation binding")
+                    .to_owned(),
+                lower.to_vec(),
+                snapshot.index_epochs().clone(),
+            )
+            .expect("checked continuation"),
+        );
+    }
+    rows
+}
+
+fn execute_all_membership_cursor_pages(source: &str, relations: &[&str]) -> Vec<QueryRow> {
+    let mut rows = Vec::new();
+    let mut prior = None;
+    loop {
+        let snapshot = execute_page(source, None, None, Some(relations), prior.as_ref())
+            .expect("binary-membership page");
         match snapshot.fields().get("documents") {
             Some(QueryResultValue::Many(page)) => rows.extend(page.iter().cloned()),
             other => panic!("expected documents page, got {other:?}"),
@@ -513,4 +569,22 @@ fn one_binary_text_index_executes_ordered_and_exact_equality_cursor_shapes() {
 
     let narrower = execute_all_cursor_pages(BINARY_COMPONENT_EQUALITY_QUERY, Some("viewer"));
     assert_eq!(ordinals(&narrower), [5, 4]);
+}
+
+#[test]
+fn binary_text_membership_uses_bytewise_prefix_order_and_one_global_cursor() {
+    let ascending = execute_all_membership_cursor_pages(
+        BINARY_COMPONENT_MEMBERSHIP_QUERY,
+        &["rel-3", "rel6", "rel-3"],
+    );
+    assert_eq!(ordinals(&ascending), [3, 2]);
+
+    let descending_source = BINARY_COMPONENT_MEMBERSHIP_QUERY
+        .replace("relation asc", "relation desc")
+        .replace("user asc", "user desc")
+        .replace("document_id asc", "document_id desc");
+    let descending = execute_all_membership_cursor_pages(&descending_source, &["rel6", "rel-3"]);
+    assert_eq!(ordinals(&descending), [2, 3]);
+
+    assert!(execute_all_membership_cursor_pages(BINARY_COMPONENT_MEMBERSHIP_QUERY, &[]).is_empty());
 }
