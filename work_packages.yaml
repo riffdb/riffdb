@@ -518,19 +518,19 @@ work_packages:
     scale: Validation visits one bounded path and Go package; process count, output, shutdown,
       driver connection, arguments, and diagnostics retain existing bounded runner limits.
   human_review_triggers: *id001
-- id: WP-682
+- id: WP-683
   name: Correlated command index-work planning and precise bound diagnostics
   depends_on: [WP-678]
-  objective: Implement ADR-0148's compiler-owned correlated index-work proof while retaining the
+  objective: Implement ADR-0149's compiler-owned correlated index-work proof while retaining the
     4,096 physical index-delta and all existing byte ceilings, and make every known RDB-C020
     ceiling violation report its closed resource identity, actual value, and maximum safely.
   requirements: [BLK-022, BLK-023, BLK-026, DSL-001, DSL-002, DSL-003,
     DSL-004, DSL-005, DSL-006, DSL-007, DSL-008, DSL-009, DSL-010, DSL-011,
     DSL-012, SAFE-004, SAFE-005, PERF-004, PERF-005]
   required_adrs: [ADR-0002, ADR-0004, ADR-0011, ADR-0013, ADR-0023,
-    ADR-0031, ADR-0055, ADR-0107, ADR-0124, ADR-0147, ADR-0148]
+    ADR-0031, ADR-0055, ADR-0107, ADR-0124, ADR-0147, ADR-0149]
   allowed_paths: [SPEC.md, work_packages.yaml, adr/README.md,
-    adr/0148-correlated-index-validation-work-budgets.md,
+    adr/0149-correlated-index-validation-work-budgets.md,
     release/version-topology-v1.json, crates/riffdb-types/**,
     crates/riffdb-contract-ir/**, crates/riffdb-contract-compiler/**,
     crates/riffdb-diagnostics/**, crates/riffdb-cli/**,
@@ -562,7 +562,7 @@ work_packages:
   - cargo +1.97.0 fmt --all -- --check
   - cargo +1.97.0 clippy -p riffdb-types -p riffdb-contract-ir -p riffdb-contract-compiler -p riffdb-diagnostics --all-targets --all-features -- -D warnings
   exit_gate: Every admitted plan proves D, A, V, D+A+V, and affected-state bytes within the exact
-    ADR-0148 limits; exact/plus-one failures report safe actionable evidence at the command span;
+    ADR-0149 limits; exact/plus-one failures report safe actionable evidence at the command span;
     old plan bytes remain exact unless a separately audited successor is strictly required; and no
     runtime, durable, framework, or public budget selector lands.
   standing_design_tests:
@@ -573,10 +573,10 @@ work_packages:
       at most 65,535, D+A+V at most 65,535, affected state at most 16 MiB, arithmetic is checked,
       and no estimate depends on database rows, history, runtime equality, or backend scans.
   human_review_triggers: *id001
-- id: WP-683
+- id: WP-684
   name: Correlated index-work runtime and durable successor conformance
-  depends_on: [WP-679, WP-682]
-  objective: Carry ADR-0148's admitted index-rich commands through one pay-once canonical
+  depends_on: [WP-679, WP-683]
+  objective: Carry ADR-0149's admitted index-rich commands through one pay-once canonical
     coordinator derivation, bounded storage transaction, and least-sufficient durable
     capsule/segment successor, proving atomic 100-element behavior without weakening any byte,
     durability, recovery, or interface guarantee.
@@ -587,7 +587,7 @@ work_packages:
     PERF-004, PERF-005]
   required_adrs: [ADR-0003, ADR-0004, ADR-0005, ADR-0006, ADR-0012,
     ADR-0023, ADR-0038, ADR-0055, ADR-0059, ADR-0104, ADR-0107, ADR-0123,
-    ADR-0124, ADR-0129, ADR-0147, ADR-0148]
+    ADR-0124, ADR-0129, ADR-0147, ADR-0149]
   allowed_paths: [Cargo.lock, SPEC.md, work_packages.yaml, proto/**,
     release/version-topology-v1.json, release/durable-format-manifest-v1.json,
     crates/riffdb-types/**, crates/riffdb-contract-ir/**,
