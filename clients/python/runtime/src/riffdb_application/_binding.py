@@ -6,6 +6,8 @@ import typing
 from dataclasses import fields, is_dataclass
 from decimal import Decimal
 from enum import StrEnum
+from functools import lru_cache
+from types import MappingProxyType
 from typing import Annotated, get_args, get_origin, get_type_hints
 from uuid import UUID
 
@@ -146,10 +148,28 @@ def _encode_typed(value: object, annotation: object) -> dict[str, object]:
     raise TypeError("unsupported generated RiffDB field type")
 
 
+
+@lru_cache(maxsize=None)
+def _resolved_hints(record_type: type) -> "MappingProxyType[str, object]":
+    """Resolved annotations for one generated dataclass.
+
+    `get_type_hints` re-evaluates string annotations by compiling them, which
+    is far too expensive to repeat per decoded record. Generated classes are
+    immutable for the life of the process, so the resolution is cached and the
+    result is exposed read-only so a caller cannot mutate the shared mapping.
+    """
+    return MappingProxyType(dict(get_type_hints(record_type, include_extras=True)))
+
+
+@lru_cache(maxsize=None)
+def _init_field_names(record_type: type) -> frozenset[str]:
+    """Names of the init fields of one generated dataclass."""
+    return frozenset(item.name for item in fields(record_type) if item.init)  # type: ignore[arg-type]
+
 def _encode_record(value: object) -> dict[str, dict[str, object]]:
     if not is_dataclass(value) or isinstance(value, type):
         raise TypeError("generated RiffDB input must be a dataclass instance")
-    hints = get_type_hints(type(value), include_extras=True)
+    hints = _resolved_hints(type(value))
     return {
         item.name: _encode_typed(getattr(value, item.name), hints[item.name])
         for item in fields(value)
@@ -288,8 +308,8 @@ def _decode_typed(value: object, annotation: object) -> object:
 def _decode_record[T](record_type: type[T], value: object) -> T:
     if not isinstance(value, dict):
         raise TypeError("invalid RiffDB record response")
-    hints = get_type_hints(record_type, include_extras=True)
-    expected = {item.name for item in fields(record_type) if item.init}  # type: ignore[arg-type]
+    hints = _resolved_hints(record_type)
+    expected = _init_field_names(record_type)
     if set(value) - {"outcome"} != expected:
         raise TypeError("invalid RiffDB record response")
     return record_type(**{name: _decode_typed(value[name], hints[name]) for name in expected})
