@@ -29,5 +29,9 @@ __pycache__/
 /examples/app-baseline/typescript/generated/
 /examples/app-baseline/typescript/riffdb.application.lock.json
 
+# Go app-baseline lock/generated artifacts are rebuilt by the launcher
+/examples/app-baseline/golang/generated/
+/examples/app-baseline/golang/riffdb.application.lock.json
+
 # AI coding tools
 .serena
