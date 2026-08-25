@@ -344,6 +344,24 @@ obligations. Reports use schema
 ./benchmarks/run-app-baseline-typescript --smoke --backend riffdb
 ```
 
+A Go runner of the same mix exists for the same language-runtime question.
+PostgreSQL still implements the `postgres_safe_app` obligations in Go SQL. The
+RiffDB path uses the generated TicketDesk client with **no Go safety code**;
+`riffdb-driverd` and `riffdbd` (Rust) enforce those obligations. Reports use
+schema `riffdb.app-baseline-golang-safe-app/v1` and set `evidentiary: false`.
+
+```bash
+./benchmarks/run-app-baseline-golang --smoke --load-clients 8 \
+  --load-duration-secs 5 --load-warmup-secs 1
+
+./benchmarks/run-app-baseline-golang --full --load-concurrency-sweep \
+  --load-duration-secs 30 --load-warmup-secs 5 \
+  --output target/app-baseline/golang-safe-app.json
+
+./benchmarks/run-app-baseline-golang --smoke --backend postgres
+./benchmarks/run-app-baseline-golang --smoke --backend riffdb
+```
+
 ### Resource and fairness attribution
 
 Each load point samples PostgreSQL database/WAL counters or `riffdbd` process

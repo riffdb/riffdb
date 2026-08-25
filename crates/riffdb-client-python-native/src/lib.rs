@@ -13,28 +13,32 @@ use base64::engine::general_purpose::STANDARD as BASE64;
 use pyo3::exceptions::PyTypeError;
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyModule, PyType};
-use riffdb_client_rust::{
-    ApplicationCardinality, ApplicationClientError, ApplicationCommand, ApplicationContextualBatch,
-    ApplicationContextualReaction, ApplicationContract, ApplicationEventBatch,
-    ApplicationEventCheckpoint, ApplicationEventConsumerPublicStatus, ApplicationEventId,
-    ApplicationEventLeaseEvidence, ApplicationEventMutationResult, ApplicationEventProgressCursor,
-    ApplicationEventPullDisposition, ApplicationLiveQueryUpdate, ApplicationReactiveOperation,
-    ApplicationRecord, ApplicationValue, AttemptBudget, BearerCredential, CallMetadata,
-    ClientError, DatabaseAlias, DetailsFreeStatus, EventConsumerOptions, LiveQueryCursor,
-    NamedQuery, PublicError, QueryOptions, StableApplicationClient, TraceParent,
-    VectorStateInspection, VectorStateInspectionKind, VectorStateInspectionResult, app_v1,
-    load_protected_bearer_credential, raise_query_result, raise_value as raise_wire_value,
-};
 use riffdb_config::{
     CanonicalHttpsEndpoint, ProtectedFilePath, TlsClientConfig, TlsServerIdentity,
+};
+use riffdb_driver_host::in_process::{
+    ApplicationCardinality, ApplicationClientError, ApplicationCommand, ApplicationCommandResult,
+    ApplicationContextualBatch, ApplicationContextualReaction, ApplicationContract,
+    ApplicationEventBatch, ApplicationEventCheckpoint, ApplicationEventConsumer,
+    ApplicationEventConsumerPublicStatus, ApplicationEventConsumerStatus, ApplicationEventId,
+    ApplicationEventLeaseEvidence, ApplicationEventMutationResult, ApplicationEventProgressCursor,
+    ApplicationEventPullDisposition, ApplicationLiveQueryUpdate, ApplicationReactiveOperation,
+    ApplicationRecord, ApplicationValue, BearerCredential, CallMetadata, ClientError,
+    DatabaseAlias, EventConsumerOptions, LiveQueryCursor, LiveQueryPatchOperation,
+    NamedQueryResult, StableApplicationClient, TraceParent, VectorStateInspection,
+    VectorStateInspectionKind, VectorStateInspectionResult, app_v1,
+    load_protected_bearer_credential, raise_query_result, raise_value as raise_wire_value,
+};
+use riffdb_driver_host::{
+    BindingError, ProtocolCoreError, QueryDispatchResult, application_value_to_python_json,
+    classify_application_client_error, classify_client_error, dispatch_command,
+    dispatch_named_query, normalize_python_value, parse_in_process_command, parse_in_process_query,
 };
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 use tokio::runtime::{Builder, Runtime};
 
 const MAX_BRIDGE_BYTES: usize = 4 * 1_024 * 1_024;
-const MAX_BRIDGE_DEPTH: usize = 32;
-const MAX_BRIDGE_VALUES: usize = 100_000;
 
 mod exceptions {
     #![allow(missing_docs)]
@@ -198,40 +202,42 @@ impl NativeSyncClient {
     }
 
     fn execute_named_query(&self, py: Python<'_>, request: &str) -> PyResult<String> {
-        let request = parse_query(request)?;
+        let request = parse_in_process_query(request).map_err(protocol_core_error)?;
         let mut client = self.client()?;
-        if request.accept_compact_result || request.accept_packed_result {
-            let result = py
-                .detach(|| {
-                    self.runtime
-                        .block_on(client.execute_named_query_wire(request.query, &self.metadata))
-                })
-                .map_err(application_client_error)?;
-            render_wire_query_result(result)
-        } else {
-            let result = py
-                .detach(|| {
-                    self.runtime
-                        .block_on(client.execute_named_query(request.query, &self.metadata))
-                })
-                .map_err(application_client_error)?;
-            render_query_result(result)
+        let wire = request.accept_compact_result || request.accept_packed_result;
+        let result = py
+            .detach(|| {
+                self.runtime.block_on(dispatch_named_query(
+                    &mut client,
+                    &self.metadata,
+                    request.query,
+                    wire,
+                ))
+            })
+            .map_err(application_client_error)?;
+        match result {
+            QueryDispatchResult::Wire(result) => render_wire_query_result(result),
+            QueryDispatchResult::Records(result) => render_query_result(result),
         }
     }
 
     fn execute_command(&self, py: Python<'_>, request: &str) -> PyResult<String> {
-        let request = parse_command(request)?;
+        let request = parse_in_process_command(request).map_err(protocol_core_error)?;
         let mut client = self.client()?;
         let result = py
             .detach(|| {
-                self.runtime.block_on(client.execute_command(
+                self.runtime.block_on(dispatch_command(
+                    &mut client,
+                    &self.metadata,
                     request.command,
                     request.attempts,
-                    &self.metadata,
+                    Some((
+                        request.expected_contract_version,
+                        request.expected_plan_hash,
+                    )),
                 ))
             })
             .map_err(application_client_error)?;
-        validate_command_identity(&request.expected, &result)?;
         render_command_result(result)
     }
 
@@ -345,7 +351,9 @@ fn connect_async_verified_tls<'py>(
 #[pyfunction]
 fn validate_bridge_value(source: &str) -> PyResult<()> {
     let value: Value = parse_json(source)?;
-    parse_value(value, 0, &mut ValueBudget::default()).map(|_| ())
+    normalize_python_value(value)
+        .map(|_| ())
+        .map_err(protocol_core_error)
 }
 
 #[pymethods]
@@ -355,22 +363,17 @@ impl NativeAsyncClient {
         py: Python<'py>,
         request: String,
     ) -> PyResult<Bound<'py, PyAny>> {
-        let request = parse_query(&request)?;
+        let request = parse_in_process_query(&request).map_err(protocol_core_error)?;
         let mut client = self.client()?;
         let metadata = self.metadata.clone();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            if request.accept_compact_result {
-                let result = client
-                    .execute_named_query_wire(request.query, &metadata)
-                    .await
-                    .map_err(application_client_error)?;
-                render_wire_query_result(result)
-            } else {
-                let result = client
-                    .execute_named_query(request.query, &metadata)
-                    .await
-                    .map_err(application_client_error)?;
-                render_query_result(result)
+            let wire = request.accept_compact_result || request.accept_packed_result;
+            match dispatch_named_query(&mut client, &metadata, request.query, wire)
+                .await
+                .map_err(application_client_error)?
+            {
+                QueryDispatchResult::Wire(result) => render_wire_query_result(result),
+                QueryDispatchResult::Records(result) => render_query_result(result),
             }
         })
     }
@@ -380,15 +383,22 @@ impl NativeAsyncClient {
         py: Python<'py>,
         request: String,
     ) -> PyResult<Bound<'py, PyAny>> {
-        let request = parse_command(&request)?;
+        let request = parse_in_process_command(&request).map_err(protocol_core_error)?;
         let mut client = self.client()?;
         let metadata = self.metadata.clone();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let result = client
-                .execute_command(request.command, request.attempts, &metadata)
-                .await
-                .map_err(application_client_error)?;
-            validate_command_identity(&request.expected, &result)?;
+            let result = dispatch_command(
+                &mut client,
+                &metadata,
+                request.command,
+                request.attempts,
+                Some((
+                    request.expected_contract_version,
+                    request.expected_plan_hash,
+                )),
+            )
+            .await
+            .map_err(application_client_error)?;
             render_command_result(result)
         })
     }
@@ -523,7 +533,11 @@ impl NativeAsyncClient {
                 )
                 .await
                 .map_err(application_client_error)?;
-            validate_command_identity(&request.expected, &result)?;
+            validate_command_identity(
+                request.expected.contract_version,
+                request.expected.plan_hash,
+                &result,
+            )?;
             render_command_result(result)
         })
     }
@@ -651,30 +665,6 @@ impl NativeAsyncClient {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct QueryRequest {
-    contract_lineage: String,
-    contract_version: u64,
-    contract_bundle_hash: String,
-    module_hash: String,
-    query_name: String,
-    plan_hash: String,
-    parameters: BTreeMap<String, Value>,
-    cursor: Option<String>,
-    read_after_commit: Option<u64>,
-    #[serde(default)]
-    accept_compact_result: bool,
-    #[serde(default)]
-    accept_packed_result: bool,
-}
-
-struct ParsedQuery {
-    query: NamedQuery,
-    accept_compact_result: bool,
-    accept_packed_result: bool,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
 struct VectorInspectionRequest {
     contract_lineage: String,
     contract_version: u64,
@@ -693,17 +683,6 @@ struct ParsedVectorInspection {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct CommandRequest {
-    contract_lineage: String,
-    contract_version: u64,
-    command_name: String,
-    plan_hash: String,
-    input: BTreeMap<String, Value>,
-    maximum_submissions: u32,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
 struct ReactiveConsumerRequest {
     reactive_module_hash: String,
     operation_name: String,
@@ -716,12 +695,12 @@ struct ReactiveConsumerRequest {
 }
 
 struct ParsedReactiveConsumer {
-    consumer: riffdb_client_rust::ApplicationEventConsumer,
+    consumer: ApplicationEventConsumer,
     options: EventConsumerOptions,
 }
 
 struct ParsedContextualConsumer {
-    consumer: riffdb_client_rust::ApplicationEventConsumer,
+    consumer: ApplicationEventConsumer,
     maximum_wait_nanos: u64,
 }
 
@@ -753,10 +732,15 @@ struct ContextualReactionRequest {
 }
 
 struct ParsedContextualReaction {
-    consumer: riffdb_client_rust::ApplicationEventConsumer,
+    consumer: ApplicationEventConsumer,
     reaction: ApplicationContextualReaction,
     command: ApplicationCommand,
     expected: CommandResponseIdentity,
+}
+
+struct CommandResponseIdentity {
+    contract_version: u64,
+    plan_hash: [u8; 32],
 }
 
 #[derive(Deserialize)]
@@ -783,7 +767,7 @@ struct ReactiveMutationRequest {
 }
 
 struct ParsedReactiveMutation {
-    consumer: riffdb_client_rust::ApplicationEventConsumer,
+    consumer: ApplicationEventConsumer,
     action: String,
     evidence: ApplicationEventLeaseEvidence,
     retry_delay_nanos: u64,
@@ -801,7 +785,7 @@ struct ReactiveSeekRequest {
 }
 
 struct ParsedReactiveSeek {
-    consumer: riffdb_client_rust::ApplicationEventConsumer,
+    consumer: ApplicationEventConsumer,
     target: ParsedReactiveSeekTarget,
 }
 
@@ -829,10 +813,14 @@ fn parse_reactive_values(
     operation_name: String,
     parameters: BTreeMap<String, Value>,
 ) -> PyResult<ApplicationReactiveOperation> {
-    let mut budget = ValueBudget::default();
     let parameters = parameters
         .into_iter()
-        .map(|(name, value)| Ok((name, parse_value(value, 0, &mut budget)?)))
+        .map(|(name, value)| {
+            Ok((
+                name,
+                normalize_python_value(value).map_err(protocol_core_error)?,
+            ))
+        })
         .collect::<PyResult<BTreeMap<_, _>>>()?;
     ApplicationReactiveOperation::new(parse_hash(&module_hash)?, operation_name, parameters)
         .map_err(application_client_error)
@@ -845,9 +833,8 @@ fn parse_reactive_consumer(source: &str) -> PyResult<ParsedReactiveConsumer> {
         request.operation_name,
         request.parameters,
     )?;
-    let consumer =
-        riffdb_client_rust::ApplicationEventConsumer::new(operation, request.consumer_name)
-            .map_err(application_client_error)?;
+    let consumer = ApplicationEventConsumer::new(operation, request.consumer_name)
+        .map_err(application_client_error)?;
     Ok(ParsedReactiveConsumer {
         consumer,
         options: EventConsumerOptions {
@@ -882,11 +869,15 @@ fn parse_contextual_reaction(source: &str) -> PyResult<ParsedContextualReaction>
         return Err(native_error("invalid_input", None));
     }
     let plan_hash = parse_hash(&request.plan_hash)?;
-    let mut budget = ValueBudget::default();
     let input = request
         .input
         .into_iter()
-        .map(|(name, value)| Ok((name, parse_value(value, 0, &mut budget)?)))
+        .map(|(name, value)| {
+            Ok((
+                name,
+                normalize_python_value(value).map_err(protocol_core_error)?,
+            ))
+        })
         .collect::<PyResult<BTreeMap<_, _>>>()?;
     let command = ApplicationCommand::new(
         request.command_name.clone(),
@@ -921,15 +912,15 @@ fn reactive_consumer(
     operation_name: String,
     parameters: BTreeMap<String, Value>,
     consumer_name: String,
-) -> PyResult<riffdb_client_rust::ApplicationEventConsumer> {
-    riffdb_client_rust::ApplicationEventConsumer::new(
+) -> PyResult<ApplicationEventConsumer> {
+    ApplicationEventConsumer::new(
         parse_reactive_values(module_hash, operation_name, parameters)?,
         consumer_name,
     )
     .map_err(application_client_error)
 }
 
-fn parse_reactive_identity(source: &str) -> PyResult<riffdb_client_rust::ApplicationEventConsumer> {
+fn parse_reactive_identity(source: &str) -> PyResult<ApplicationEventConsumer> {
     let request: ReactiveIdentityRequest = parse_json(source)?;
     reactive_consumer(
         request.reactive_module_hash,
@@ -1022,62 +1013,10 @@ fn parse_live_query(source: &str) -> PyResult<ParsedLiveQuery> {
     })
 }
 
-fn parse_query(source: &str) -> PyResult<ParsedQuery> {
-    let request: QueryRequest = parse_json(source)?;
-    if request.accept_packed_result && !request.accept_compact_result {
-        return Err(native_error("invalid_input", None));
-    }
-    let bundle_hash = parse_hash(&request.contract_bundle_hash)?;
-    let module_hash = parse_hash(&request.module_hash)?;
-    let plan_hash = parse_hash(&request.plan_hash)?;
-    let mut budget = ValueBudget::default();
-    let parameters = request
-        .parameters
-        .into_iter()
-        .map(|(name, value)| Ok((name, parse_value(value, 0, &mut budget)?)))
-        .collect::<PyResult<BTreeMap<_, _>>>()?;
-    let mut options = QueryOptions::new();
-    if let Some(cursor) = request.cursor {
-        options = options.after(cursor);
-    }
-    if let Some(sequence) = request.read_after_commit {
-        options = options.read_after_commit(sequence);
-    }
-    let accept_compact_result = request.accept_compact_result;
-    let accept_packed_result = request.accept_packed_result;
-    let query = NamedQuery::new(
-        ApplicationContract::Exact {
-            lineage: request.contract_lineage,
-            version: request.contract_version,
-            bundle_hash: Some(bundle_hash),
-        },
-        request.query_name,
-        Some(module_hash),
-        parameters,
-        None,
-    )
-    .and_then(|query| {
-        let query = query.expect_plan_hash(plan_hash);
-        let query = if accept_packed_result {
-            query.accept_packed_result_v1()
-        } else {
-            query
-        };
-        query.with_options(options)
-    })
-    .map_err(application_client_error)?;
-    Ok(ParsedQuery {
-        query,
-        accept_compact_result,
-        accept_packed_result,
-    })
-}
-
 fn parse_vector_inspection(source: &str) -> PyResult<ParsedVectorInspection> {
     let request: VectorInspectionRequest = parse_json(source)?;
     let bundle_hash = parse_hash(&request.contract_bundle_hash)?;
-    let mut budget = ValueBudget::default();
-    let partition = parse_value(request.partition, 0, &mut budget)?;
+    let partition = normalize_python_value(request.partition).map_err(protocol_core_error)?;
     let kind = match request.inspection_kind.as_str() {
         "staleness" => VectorStateInspectionKind::Stale,
         "model_versions" => VectorStateInspectionKind::OutdatedModel,
@@ -1101,200 +1040,20 @@ fn parse_vector_inspection(source: &str) -> PyResult<ParsedVectorInspection> {
     Ok(ParsedVectorInspection { inspection })
 }
 
-struct ParsedCommand {
-    command: ApplicationCommand,
-    attempts: AttemptBudget,
-    expected: CommandResponseIdentity,
-}
-
-struct CommandResponseIdentity {
-    contract_version: u64,
-    plan_hash: [u8; 32],
-}
-
-fn parse_command(source: &str) -> PyResult<ParsedCommand> {
-    let request: CommandRequest = parse_json(source)?;
-    let plan_hash = parse_hash(&request.plan_hash)?;
-    if request.contract_lineage.is_empty() || request.contract_lineage.len() > 256 {
-        return Err(native_error("invalid_input", None));
-    }
-    let mut budget = ValueBudget::default();
-    let input = request
-        .input
-        .into_iter()
-        .map(|(name, value)| Ok((name, parse_value(value, 0, &mut budget)?)))
-        .collect::<PyResult<BTreeMap<_, _>>>()?;
-    let command =
-        ApplicationCommand::new(request.command_name, Some(request.contract_version), input)
-            .map_err(application_client_error)?;
-    let attempts = AttemptBudget::new(request.maximum_submissions)
-        .ok_or_else(|| native_error("invalid_input", None))?;
-    Ok(ParsedCommand {
-        command,
-        attempts,
-        expected: CommandResponseIdentity {
-            contract_version: request.contract_version,
-            plan_hash,
-        },
-    })
-}
-
 fn validate_command_identity(
-    expected: &CommandResponseIdentity,
-    result: &riffdb_client_rust::ApplicationCommandResult,
+    expected_contract_version: u64,
+    expected_plan_hash: [u8; 32],
+    result: &ApplicationCommandResult,
 ) -> PyResult<()> {
-    if result.contract_version != expected.contract_version
-        || result.plan_hash != expected.plan_hash
+    if result.contract_version != expected_contract_version
+        || result.plan_hash != expected_plan_hash
     {
         return Err(native_error("protocol_error", None));
     }
     Ok(())
 }
 
-#[derive(Default)]
-struct ValueBudget {
-    values: usize,
-}
-
-fn parse_value(value: Value, depth: usize, budget: &mut ValueBudget) -> PyResult<ApplicationValue> {
-    if depth > MAX_BRIDGE_DEPTH {
-        return Err(native_error("invalid_input", None));
-    }
-    budget.values = budget
-        .values
-        .checked_add(1)
-        .ok_or_else(|| native_error("invalid_input", None))?;
-    if budget.values > MAX_BRIDGE_VALUES {
-        return Err(native_error("invalid_input", None));
-    }
-    let object = value
-        .as_object()
-        .ok_or_else(|| native_error("invalid_input", None))?;
-    let kind = exact_string(object, "kind")?;
-    match kind {
-        "null" if object.len() == 1 => Ok(ApplicationValue::Null),
-        "bool" if object.len() == 2 => exact_value(object, "value")?
-            .as_bool()
-            .map(ApplicationValue::Bool)
-            .ok_or_else(|| native_error("invalid_input", None)),
-        "i64" if object.len() == 2 => exact_value(object, "value")?
-            .as_i64()
-            .map(ApplicationValue::I64)
-            .ok_or_else(|| native_error("invalid_input", None)),
-        "u64" if object.len() == 2 => exact_value(object, "value")?
-            .as_u64()
-            .map(ApplicationValue::U64)
-            .ok_or_else(|| native_error("invalid_input", None)),
-        "string" if object.len() == 2 => Ok(ApplicationValue::String(
-            exact_string(object, "value")?.to_owned(),
-        )),
-        "uuid" if object.len() == 2 => Ok(ApplicationValue::Uuid(
-            riffdb_client_rust::ApplicationUuid::from_text(
-                exact_string(object, "value")?.to_owned(),
-            )
-            .map_err(|_| native_error("invalid_input", None))?,
-        )),
-        "enum" if object.len() == 2 => Ok(ApplicationValue::Enum(
-            exact_string(object, "value")?.to_owned(),
-        )),
-        "enum" if object.len() == 4 => Ok(ApplicationValue::EnumIdentity {
-            type_id: exact_value(object, "type_id")?
-                .as_u64()
-                .and_then(|value| u32::try_from(value).ok())
-                .filter(|value| *value != 0)
-                .ok_or_else(|| native_error("invalid_input", None))?,
-            variant_id: exact_value(object, "variant_id")?
-                .as_u64()
-                .and_then(|value| u32::try_from(value).ok())
-                .filter(|value| *value != 0)
-                .ok_or_else(|| native_error("invalid_input", None))?,
-            name: exact_string(object, "value")?.to_owned(),
-        }),
-        "bytes" if object.len() == 2 => Ok(ApplicationValue::Bytes(parse_hex(exact_string(
-            object, "value",
-        )?)?)),
-        "date" if object.len() == 2 => Ok(ApplicationValue::Date(
-            exact_value(object, "value")?
-                .as_i64()
-                .and_then(|value| i32::try_from(value).ok())
-                .ok_or_else(|| native_error("invalid_input", None))?,
-        )),
-        "timestamp" if object.len() == 3 => Ok(ApplicationValue::Timestamp {
-            seconds: exact_value(object, "seconds")?
-                .as_i64()
-                .ok_or_else(|| native_error("invalid_input", None))?,
-            nanos: exact_value(object, "nanos")?
-                .as_u64()
-                .and_then(|value| u32::try_from(value).ok())
-                .filter(|value| *value < 1_000_000_000)
-                .ok_or_else(|| native_error("invalid_input", None))?,
-        }),
-        "decimal" if matches!(object.len(), 3 | 4) => Ok(ApplicationValue::Decimal {
-            coefficient_twos_complement: parse_hex(exact_string(object, "coefficient")?)?,
-            scale: exact_value(object, "scale")?
-                .as_u64()
-                .and_then(|value| u32::try_from(value).ok())
-                .ok_or_else(|| native_error("invalid_input", None))?,
-            precision: object
-                .get("precision")
-                .map(|value| {
-                    value
-                        .as_u64()
-                        .and_then(|value| u32::try_from(value).ok())
-                        .ok_or_else(|| native_error("invalid_input", None))
-                })
-                .transpose()?,
-        }),
-        "money" if object.len() == 3 => Ok(ApplicationValue::Money {
-            currency: exact_string(object, "currency")?.to_owned(),
-            amount: Box::new(parse_value(
-                exact_value(object, "amount")?.clone(),
-                depth + 1,
-                budget,
-            )?),
-        }),
-        "vector" if object.len() == 2 => {
-            let components = exact_value(object, "components")?
-                .as_array()
-                .ok_or_else(|| native_error("invalid_input", None))?
-                .iter()
-                .map(|component| {
-                    component
-                        .as_f64()
-                        .filter(|value| value.is_finite())
-                        .map(|value| value as f32)
-                        .filter(|value| value.is_finite())
-                        .ok_or_else(|| native_error("invalid_input", None))
-                })
-                .collect::<PyResult<Vec<_>>>()?;
-            riffdb_client_rust::CanonicalVector::new(components)
-                .map(ApplicationValue::Vector)
-                .map_err(|_| native_error("invalid_input", None))
-        }
-        "list" if object.len() == 2 => Ok(ApplicationValue::List(
-            exact_value(object, "value")?
-                .as_array()
-                .ok_or_else(|| native_error("invalid_input", None))?
-                .iter()
-                .cloned()
-                .map(|value| parse_value(value, depth + 1, budget))
-                .collect::<PyResult<Vec<_>>>()?,
-        )),
-        "record" if object.len() == 2 => Ok(ApplicationValue::Record(
-            exact_value(object, "value")?
-                .as_object()
-                .ok_or_else(|| native_error("invalid_input", None))?
-                .iter()
-                .map(|(name, value)| {
-                    Ok((name.clone(), parse_value(value.clone(), depth + 1, budget)?))
-                })
-                .collect::<PyResult<BTreeMap<_, _>>>()?,
-        )),
-        _ => Err(native_error("invalid_input", None)),
-    }
-}
-
-fn render_query_result(result: riffdb_client_rust::NamedQueryResult) -> PyResult<String> {
+fn render_query_result(result: NamedQueryResult) -> PyResult<String> {
     let mut value = Map::new();
     value.insert("outcome".to_owned(), Value::String(result.outcome));
     for (name, field) in result.fields {
@@ -1467,7 +1226,7 @@ fn render_wire_query_result(response: app_v1::ExecuteQueryResponse) -> PyResult<
     }))
 }
 
-fn render_command_result(result: riffdb_client_rust::ApplicationCommandResult) -> PyResult<String> {
+fn render_command_result(result: ApplicationCommandResult) -> PyResult<String> {
     let mut outcome = match result.outcome_value {
         Some(ApplicationValue::Record(fields)) => fields
             .into_iter()
@@ -1613,9 +1372,7 @@ fn event_status_json(status: ApplicationEventConsumerPublicStatus) -> serde_json
     }
 }
 
-fn exact_event_status_json(
-    status: riffdb_client_rust::ApplicationEventConsumerStatus,
-) -> serde_json::Value {
+fn exact_event_status_json(status: ApplicationEventConsumerStatus) -> serde_json::Value {
     let checkpoint = match status.checkpoint {
         ApplicationEventCheckpoint::BeforeFirst => "before-first".to_owned(),
         ApplicationEventCheckpoint::After(event_id) => {
@@ -1694,7 +1451,7 @@ fn render_live_update(update: ApplicationLiveQueryUpdate) -> PyResult<String> {
     serialize(&value)
 }
 
-fn named_result_value(result: riffdb_client_rust::NamedQueryResult) -> PyResult<Value> {
+fn named_result_value(result: NamedQueryResult) -> PyResult<Value> {
     let mut value = Map::new();
     value.insert("outcome".to_owned(), Value::String(result.outcome));
     for (name, field) in result.fields {
@@ -1721,8 +1478,7 @@ fn named_result_value(result: riffdb_client_rust::NamedQueryResult) -> PyResult<
     Ok(Value::Object(value))
 }
 
-fn live_patch_json(operation: riffdb_client_rust::LiveQueryPatchOperation) -> Value {
-    use riffdb_client_rust::LiveQueryPatchOperation;
+fn live_patch_json(operation: LiveQueryPatchOperation) -> Value {
     match operation {
         LiveQueryPatchOperation::Insert { index, record } => {
             json!({"type":"insert", "index":index, "record":record_to_json(record)})
@@ -1752,45 +1508,7 @@ fn record_to_json(record: ApplicationRecord) -> Value {
 }
 
 fn value_to_json(value: ApplicationValue) -> Value {
-    match value {
-        ApplicationValue::Null => Value::Null,
-        ApplicationValue::Bool(value) => Value::Bool(value),
-        ApplicationValue::I64(value) => json!(value),
-        ApplicationValue::U64(value) => json!(value),
-        ApplicationValue::Decimal {
-            coefficient_twos_complement,
-            scale,
-            precision,
-        } => {
-            json!({"$riffdb": "decimal", "coefficient": hex(&coefficient_twos_complement), "scale": scale, "precision": precision})
-        }
-        ApplicationValue::Money { currency, amount } => {
-            json!({"$riffdb": "money", "currency": currency, "amount": value_to_json(*amount)})
-        }
-        ApplicationValue::String(value) => Value::String(value),
-        ApplicationValue::Uuid(value) => json!({"$riffdb": "uuid", "value": value.into_string()}),
-        ApplicationValue::Enum(value) => json!({"$riffdb": "enum", "value": value}),
-        ApplicationValue::EnumIdentity { name, .. } => {
-            json!({"$riffdb": "enum", "value": name})
-        }
-        ApplicationValue::Bytes(value) => json!({"$riffdb": "bytes", "value": hex(&value)}),
-        ApplicationValue::Date(value) => json!({"$riffdb": "date", "value": value}),
-        ApplicationValue::Timestamp { seconds, nanos } => {
-            json!({"$riffdb": "timestamp", "seconds": seconds, "nanos": nanos})
-        }
-        ApplicationValue::Vector(value) => {
-            json!({"$riffdb": "vector", "components": value.into_components()})
-        }
-        ApplicationValue::List(values) => {
-            Value::Array(values.into_iter().map(value_to_json).collect())
-        }
-        ApplicationValue::Record(fields) => Value::Object(
-            fields
-                .into_iter()
-                .map(|(name, value)| (name, value_to_json(value)))
-                .collect(),
-        ),
-    }
+    application_value_to_python_json(value)
 }
 
 fn parse_json<T: for<'de> Deserialize<'de>>(source: &str) -> PyResult<T> {
@@ -1857,91 +1575,20 @@ fn parse_hex(value: &str) -> PyResult<Vec<u8>> {
         .collect()
 }
 
-fn exact_value<'a>(object: &'a Map<String, Value>, key: &str) -> PyResult<&'a Value> {
-    object
-        .get(key)
-        .ok_or_else(|| native_error("invalid_input", None))
-}
-
-fn exact_string<'a>(object: &'a Map<String, Value>, key: &str) -> PyResult<&'a str> {
-    exact_value(object, key)?
-        .as_str()
-        .ok_or_else(|| native_error("invalid_input", None))
-}
-
 fn application_client_error(error: ApplicationClientError) -> PyErr {
-    match error {
-        ApplicationClientError::InvalidInput => native_error("invalid_input", None),
-        ApplicationClientError::InvalidResponse => native_error("protocol_error", None),
-        ApplicationClientError::IdentifierUnavailable => native_error("connection_failure", None),
-        ApplicationClientError::Client(error) => client_error(error),
-    }
+    binding_error(classify_application_client_error(error))
+}
+
+fn protocol_core_error(_error: ProtocolCoreError) -> PyErr {
+    native_error("invalid_input", None)
 }
 
 fn client_error(error: ClientError) -> PyErr {
-    if let Some(error) = error.application_error() {
-        return native_error("application", Some(application_error_json(error)));
-    }
-    if let Some(error) = error.public_error() {
-        return native_error("application", Some(public_application_error_json(error)));
-    }
-    native_error(non_application_client_error_kind(&error), None)
+    binding_error(classify_client_error(error))
 }
 
-fn non_application_client_error_kind(error: &ClientError) -> &'static str {
-    match error {
-        ClientError::DetailsFree(DetailsFreeStatus::TransportUnavailable)
-        | ClientError::ConnectionFailure
-        | ClientError::IdentifierGeneration(_)
-        | ClientError::Tls(_) => "connection_failure",
-        ClientError::OutcomeUnknown(_) => "outcome_unknown",
-        ClientError::Protocol(_) => "protocol_error",
-        ClientError::Public(_) | ClientError::Application(_) => {
-            unreachable!("handled by semantic/public guards")
-        }
-        ClientError::DetailsFree(_) => "protocol_error",
-    }
-}
-
-fn public_application_error_json(error: &PublicError) -> Value {
-    let code = error.application_code_hint().unwrap_or_else(|| {
-        riffdb_client_rust::ApplicationErrorCode::from_public_kind(error.kind())
-    });
-    json!({
-        "code": code.as_str(),
-        "message": code.safe_message(),
-        "category": code.category().as_str(),
-        "recovery_action": code.recovery_action().as_str(),
-        "operation": "ApplicationRequest",
-        "contract_lineage": Value::Null,
-        "contract_version": Value::Null,
-        "operation_symbol": Value::Null,
-        "symbol_path": [],
-        "source_span": Value::Null,
-        "fixes": code.fixes().iter().map(|fix| fix.as_str()).collect::<Vec<_>>(),
-        "trace_id": Value::Null,
-        "incident_id": error.incident_id().map(ToString::to_string),
-    })
-}
-
-fn application_error_json(error: &riffdb_client_rust::ApplicationError) -> Value {
-    let context = error.context();
-    let contract = context.contract();
-    json!({
-        "code": error.code().as_str(),
-        "message": error.safe_message(),
-        "category": error.category().as_str(),
-        "recovery_action": error.recovery_action().as_str(),
-        "operation": error.operation().as_str(),
-        "contract_lineage": contract.map(|(lineage, _)| lineage.as_str()),
-        "contract_version": contract.map(|(_, version)| version.get()),
-        "operation_symbol": context.operation_symbol(),
-        "symbol_path": context.symbol_path(),
-        "source_span": context.source_span().map(|span| json!({"start": span.start(), "end": span.end()})),
-        "fixes": error.fixes().iter().map(|fix| fix.as_str()).collect::<Vec<_>>(),
-        "trace_id": context.trace_id().map(|value| value.to_string()),
-        "incident_id": error.incident_id().map(ToString::to_string),
-    })
+fn binding_error(error: BindingError) -> PyErr {
+    native_error(error.kind, error.details)
 }
 
 fn native_error(kind: &str, details: Option<Value>) -> PyErr {

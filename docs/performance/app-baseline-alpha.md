@@ -46,6 +46,11 @@ examples/app-baseline/resilience/run
 # RiffDB client (no TypeScript safety; riffdb-driverd/riffdbd enforce).
 ./benchmarks/run-app-baseline-typescript --full --load-concurrency-sweep \
   --load-duration-secs 30 --load-warmup-secs 5
+
+# Same Go mix: postgres_safe_app (safety in Go SQL) vs generated
+# RiffDB client (no Go safety; riffdb-driverd/riffdbd enforce).
+./benchmarks/run-app-baseline-golang --full --load-concurrency-sweep \
+  --load-duration-secs 30 --load-warmup-secs 5
 ```
 
 All temporary build/test roots honor `RIFFDB_TMP_ROOT` and default to
@@ -267,13 +272,14 @@ RiffDB load timings use public named RiffQL and symbolic commands. They never
 use storage/kernel APIs, numeric schema IDs, field masks, or encoded keys.
 Language runtime/package setup is reported independently and excluded from
 database ratios. The Rust harness times both backends with Rust clients.
-`benchmarks/run-app-baseline-python` and
-`benchmarks/run-app-baseline-typescript` run the same interactive mix from
-Python or TypeScript against `postgres_safe_app` (authorization, idempotency,
+`benchmarks/run-app-baseline-python`,
+`benchmarks/run-app-baseline-typescript`, and
+`benchmarks/run-app-baseline-golang` run the same interactive mix from
+Python, TypeScript, or Go against `postgres_safe_app` (authorization, idempotency,
 audit, event, and outbox implemented in that language's SQL) and the generated
 TicketDesk client (no application-language safety code; `riffdbd` enforces
-those in Rust, with TypeScript reaching it through `riffdb-driverd`). Those
-reports are `evidentiary: false` and must not replace the Rust harness.
+those in Rust, with TypeScript and Go reaching it through `riffdb-driverd`).
+Those reports are `evidentiary: false` and must not replace the Rust harness.
 
 Closed-loop throughput measures completions under self-throttled clients.
 Open-loop throughput measures offered/admitted/completed demand and queueing.
