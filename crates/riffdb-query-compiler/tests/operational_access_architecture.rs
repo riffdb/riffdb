@@ -31,12 +31,34 @@ fn one_compiler_registry_and_one_executor_lowering_own_component_semantics() {
         1,
         "logical exact values have one physical prefix transform"
     );
+    assert_eq!(
+        executor
+            .matches("pub fn bound_index_range_schedule_v1")
+            .count(),
+        1,
+        "all ordinary selections have one physical range-schedule owner"
+    );
+    assert_eq!(
+        executor
+            .matches("fn encode_canonical_interval_schedule")
+            .count(),
+        1,
+        "typed interval lowering has one executor owner"
+    );
 
     for path in [
         "crates/riffdb-storage-memory/src/query.rs",
         "crates/riffdb-storage-redb/src/query.rs",
     ] {
         let storage = fs::read_to_string(root.join(path)).expect("storage query source");
+        assert!(
+            storage.contains("bound_index_range_schedule_v1") && storage.contains("resume_window"),
+            "storage adapter {path} must consume the shared range and continuation contract"
+        );
+        assert!(
+            !storage.contains("bound_index_prefix_bytes_v1"),
+            "storage adapter {path} must not retain the prefix-only planner"
+        );
         for forbidden in ["TextKeyProfileV1", "BinaryUtf8", "UnicodeFold"] {
             assert!(
                 !storage.contains(forbidden),

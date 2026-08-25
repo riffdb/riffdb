@@ -16,9 +16,9 @@ use std::sync::Arc;
 use riffdb_contract_ir::KeyComponentCodecV1;
 use riffdb_policy::{AuthorizedProjectedRowAdmissionV1, AuthorizedQueryRowPolicyContextV1};
 use riffdb_query_ir::{
-    CoveredResultLayoutV1, NamedTypeSchema, OperationalAggregateFunctionV1, OperationalAggregateV1,
-    PageBound, QueryAccessKind, QueryAccessProgramV1, QueryAccessStep, QueryLiteral,
-    QueryPredicateOperator, QueryPredicateValue, QueryRowLimit,
+    AccessDirection, CoveredResultLayoutV1, NamedTypeSchema, OperationalAggregateFunctionV1,
+    OperationalAggregateV1, PageBound, QueryAccessKind, QueryAccessProgramV1, QueryAccessStep,
+    QueryLiteral, QueryPredicateOperator, QueryPredicateValue, QueryRowLimit,
 };
 use riffdb_riffql_syntax::Cardinality;
 use riffdb_types::{
@@ -29,7 +29,10 @@ use riffdb_types::{
 
 /// Maximum checked submitted parameters.
 pub const MAX_QUERY_PARAMETERS: usize = 1_024;
-/// Maximum pay-once physical prefix schedule produced for one index step.
+/// Maximum pay-once physical schedule produced for one index step.
+///
+/// The historical prefix-oriented name remains stable; WP-688 charges both
+/// endpoints of every normalized interval against this same ceiling.
 pub const MAX_OPERATIONAL_PREFIX_SCHEDULE_BYTES: usize = 4 * 1_024 * 1_024;
 /// Maximum fields copied into one owned row.
 pub const MAX_QUERY_ROW_FIELDS: usize = 1_024;
@@ -571,31 +574,190 @@ impl BoundPredicate {
     }
 }
 
-/// Encodes the exact finite set of physical index prefixes selected by predicates.
+/// One normalized half-open physical index interval.
+///
+/// This is a transient compiler/executor witness. It is never serialized,
+/// hashed independently, or exposed through an application surface.
 #[doc(hidden)]
-pub fn bound_index_prefix_bytes_v1(
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BoundIndexRangeV1 {
+    start_inclusive: Vec<u8>,
+    end_exclusive: Vec<u8>,
+}
+
+impl BoundIndexRangeV1 {
+    fn checked(start_inclusive: Vec<u8>, end_exclusive: Vec<u8>) -> Option<Self> {
+        (start_inclusive < end_exclusive).then_some(Self {
+            start_inclusive,
+            end_exclusive,
+        })
+    }
+
+    /// Inclusive physical start.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn start_inclusive(&self) -> &[u8] {
+        &self.start_inclusive
+    }
+
+    /// Exclusive physical end.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn end_exclusive(&self) -> &[u8] {
+        &self.end_exclusive
+    }
+
+    /// Applies the shared forward/reverse continuation truth table.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn resume_window<'a>(
+        &'a self,
+        direction: AccessDirection,
+        after: Option<&'a [u8]>,
+    ) -> Option<BoundIndexRangeWindowV1<'a>> {
+        let Some(after) = after else {
+            return Some(BoundIndexRangeWindowV1 {
+                start_inclusive: &self.start_inclusive,
+                end_exclusive: &self.end_exclusive,
+                skip_start_equal: false,
+            });
+        };
+        match direction {
+            AccessDirection::Forward if after >= self.end_exclusive.as_slice() => None,
+            AccessDirection::Forward if after < self.start_inclusive.as_slice() => {
+                Some(BoundIndexRangeWindowV1 {
+                    start_inclusive: &self.start_inclusive,
+                    end_exclusive: &self.end_exclusive,
+                    skip_start_equal: false,
+                })
+            }
+            AccessDirection::Forward => Some(BoundIndexRangeWindowV1 {
+                start_inclusive: after,
+                end_exclusive: &self.end_exclusive,
+                skip_start_equal: true,
+            }),
+            AccessDirection::Reverse if after <= self.start_inclusive.as_slice() => None,
+            AccessDirection::Reverse if after >= self.end_exclusive.as_slice() => {
+                Some(BoundIndexRangeWindowV1 {
+                    start_inclusive: &self.start_inclusive,
+                    end_exclusive: &self.end_exclusive,
+                    skip_start_equal: false,
+                })
+            }
+            AccessDirection::Reverse => Some(BoundIndexRangeWindowV1 {
+                start_inclusive: &self.start_inclusive,
+                end_exclusive: after,
+                skip_start_equal: false,
+            }),
+        }
+    }
+}
+
+/// One resumed half-open range window shared by memory and redb.
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct BoundIndexRangeWindowV1<'a> {
+    start_inclusive: &'a [u8],
+    end_exclusive: &'a [u8],
+    skip_start_equal: bool,
+}
+
+impl<'a> BoundIndexRangeWindowV1<'a> {
+    /// Inclusive physical start supplied to storage.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn start_inclusive(self) -> &'a [u8] {
+        self.start_inclusive
+    }
+
+    /// Exclusive physical end supplied to storage.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn end_exclusive(self) -> &'a [u8] {
+        self.end_exclusive
+    }
+
+    /// Whether a forward adapter must exclude the exact continuation key.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn skip_start_equal(self) -> bool {
+        self.skip_start_equal
+    }
+}
+
+/// One bounded immutable range schedule in physical traversal order.
+#[doc(hidden)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BoundIndexRangeScheduleV1 {
+    ranges: Vec<BoundIndexRangeV1>,
+}
+
+impl BoundIndexRangeScheduleV1 {
+    /// Disjoint physical ranges in forward or reverse traversal order.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn ranges(&self) -> &[BoundIndexRangeV1] {
+        &self.ranges
+    }
+}
+
+/// Lowers every ordinary predicate into one finite physical range schedule.
+#[doc(hidden)]
+pub fn bound_index_range_schedule_v1(
     step: &QueryAccessStep,
     predicates: &[BoundPredicate],
-) -> Result<Vec<Vec<u8>>, QueryExecutionError> {
-    let QueryAccessKind::Index { fields, .. } = step.access() else {
+) -> Result<BoundIndexRangeScheduleV1, QueryExecutionError> {
+    let QueryAccessKind::Index {
+        fields, direction, ..
+    } = step.access()
+    else {
         return Err(QueryExecutionError::InvalidProgram);
     };
     let schema = step
         .internal_index_key_schema()
         .ok_or(QueryExecutionError::InvalidProgram)?;
     let mut leading = vec![Vec::<CanonicalValue>::new()];
+    let mut consumed = 0usize;
     for field in fields {
-        let Some(predicate) = predicates
+        let matching = predicates
             .iter()
-            .find(|predicate| predicate.field() == field)
-        else {
-            return encode_complete_prefixes(schema, leading);
+            .filter(|predicate| predicate.field() == field)
+            .collect::<Vec<_>>();
+        if matching.is_empty() {
+            if consumed != predicates.len() {
+                return Err(QueryExecutionError::InvalidProgram);
+            }
+            return encode_prefix_schedule(schema, leading, *direction);
+        }
+        if matching.iter().all(|predicate| {
+            matches!(
+                predicate.operator(),
+                QueryPredicateOperator::NotEqual
+                    | QueryPredicateOperator::Less
+                    | QueryPredicateOperator::LessEqual
+                    | QueryPredicateOperator::Greater
+                    | QueryPredicateOperator::GreaterEqual
+            )
+        }) {
+            if leading.len() != 1 || consumed + matching.len() != predicates.len() {
+                return Err(QueryExecutionError::InvalidProgram);
+            }
+            return encode_canonical_interval_schedule(
+                schema,
+                leading.pop().ok_or(QueryExecutionError::InvalidProgram)?,
+                &matching,
+                *direction,
+            );
+        }
+        let [predicate] = matching.as_slice() else {
+            return Err(QueryExecutionError::InvalidProgram);
         };
         match predicate.operator() {
             QueryPredicateOperator::Equal => {
                 for values in &mut leading {
                     push_exact_index_prefix_value(schema, values, predicate.value())?;
                 }
+                consumed += 1;
             }
             QueryPredicateOperator::In => {
                 let CanonicalValue::List(items) = predicate.value() else {
@@ -612,7 +774,10 @@ pub fn bound_index_prefix_bytes_v1(
                         leading.push(expanded);
                     }
                 }
-                return encode_complete_prefixes(schema, leading);
+                if consumed + 1 != predicates.len() {
+                    return Err(QueryExecutionError::InvalidProgram);
+                }
+                return encode_prefix_schedule(schema, leading, *direction);
             }
             QueryPredicateOperator::IsNull => {
                 for values in &mut leading {
@@ -627,12 +792,16 @@ pub fn bound_index_prefix_bytes_v1(
                     values.push(CanonicalValue::U64(riffdb_contract_ir::PRESENCE_NULL_V1));
                     values.push(payload);
                 }
+                consumed += 1;
             }
             QueryPredicateOperator::IsNotNull => {
                 for values in &mut leading {
                     values.push(CanonicalValue::U64(riffdb_contract_ir::PRESENCE_VALUE_V1));
                 }
-                return encode_complete_prefixes(schema, leading);
+                if consumed + 1 != predicates.len() {
+                    return Err(QueryExecutionError::InvalidProgram);
+                }
+                return encode_prefix_schedule(schema, leading, *direction);
             }
             QueryPredicateOperator::Exists => {
                 let prior = std::mem::take(&mut leading);
@@ -646,13 +815,19 @@ pub fn bound_index_prefix_bytes_v1(
                         leading.push(expanded);
                     }
                 }
-                return encode_complete_prefixes(schema, leading);
+                if consumed + 1 != predicates.len() {
+                    return Err(QueryExecutionError::InvalidProgram);
+                }
+                return encode_prefix_schedule(schema, leading, *direction);
             }
             QueryPredicateOperator::Prefix => {
                 let CanonicalValue::String(prefix) = predicate.value() else {
                     return Err(QueryExecutionError::InvalidProgram);
                 };
-                return leading
+                if consumed + 1 != predicates.len() {
+                    return Err(QueryExecutionError::InvalidProgram);
+                }
+                let prefixes = leading
                     .into_iter()
                     .map(|values| {
                         schema
@@ -660,7 +835,8 @@ pub fn bound_index_prefix_bytes_v1(
                             .map(|prefix| prefix.as_bytes().to_vec())
                             .map_err(|_| QueryExecutionError::InvalidProgram)
                     })
-                    .collect();
+                    .collect::<Result<Vec<_>, _>>()?;
+                return encode_physical_prefix_schedule(prefixes, *direction);
             }
             QueryPredicateOperator::NotEqual
             | QueryPredicateOperator::Less
@@ -671,7 +847,10 @@ pub fn bound_index_prefix_bytes_v1(
             }
         }
     }
-    encode_complete_prefixes(schema, leading)
+    if consumed != predicates.len() {
+        return Err(QueryExecutionError::InvalidProgram);
+    }
+    encode_prefix_schedule(schema, leading, *direction)
 }
 
 fn push_exact_index_prefix_value(
@@ -697,11 +876,12 @@ fn push_exact_index_prefix_value(
     Ok(())
 }
 
-fn encode_complete_prefixes(
+fn encode_prefix_schedule(
     schema: &riffdb_contract_ir::KeySchema,
     prefixes: Vec<Vec<CanonicalValue>>,
-) -> Result<Vec<Vec<u8>>, QueryExecutionError> {
-    let mut encoded = prefixes
+    direction: AccessDirection,
+) -> Result<BoundIndexRangeScheduleV1, QueryExecutionError> {
+    let encoded = prefixes
         .into_iter()
         .map(|values| {
             schema
@@ -710,19 +890,159 @@ fn encode_complete_prefixes(
                 .map_err(|_| QueryExecutionError::InvalidProgram)
         })
         .collect::<Result<Vec<_>, _>>()?;
-    encoded.sort_unstable();
-    let unique_len = encoded.len();
-    encoded.dedup();
-    if encoded.len() != unique_len {
+    encode_physical_prefix_schedule(encoded, direction)
+}
+
+fn encode_physical_prefix_schedule(
+    prefixes: Vec<Vec<u8>>,
+    direction: AccessDirection,
+) -> Result<BoundIndexRangeScheduleV1, QueryExecutionError> {
+    let ranges = prefixes
+        .into_iter()
+        .map(|prefix| {
+            let end =
+                exclusive_prefix_end_v1(&prefix).ok_or(QueryExecutionError::InvalidProgram)?;
+            BoundIndexRangeV1::checked(prefix, end).ok_or(QueryExecutionError::InvalidProgram)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    finish_range_schedule(ranges, direction)
+}
+
+fn encode_canonical_interval_schedule(
+    schema: &riffdb_contract_ir::KeySchema,
+    leading: Vec<CanonicalValue>,
+    predicates: &[&BoundPredicate],
+    direction: AccessDirection,
+) -> Result<BoundIndexRangeScheduleV1, QueryExecutionError> {
+    let component = schema
+        .components()
+        .get(leading.len())
+        .ok_or(QueryExecutionError::InvalidProgram)?;
+    if component.codec() != KeyComponentCodecV1::Canonical
+        || predicates.is_empty()
+        || predicates.len() > 2
+        || predicates
+            .iter()
+            .any(|predicate| !canonical_interval_value_supported(predicate.value()))
+    {
         return Err(QueryExecutionError::InvalidProgram);
     }
-    let schedule_bytes = encoded
+    let leading_start = schema
+        .encode_index_prefix(&leading)
+        .map(|prefix| prefix.as_bytes().to_vec())
+        .map_err(|_| QueryExecutionError::InvalidProgram)?;
+    let leading_end =
+        exclusive_prefix_end_v1(&leading_start).ok_or(QueryExecutionError::InvalidProgram)?;
+    let exact_bounds = predicates
         .iter()
-        .try_fold(0usize, |total, prefix| total.checked_add(prefix.len()));
+        .map(|predicate| {
+            let mut values = leading.clone();
+            push_exact_index_prefix_value(schema, &mut values, predicate.value())?;
+            let exact_start = schema
+                .encode_index_prefix(&values)
+                .map(|prefix| prefix.as_bytes().to_vec())
+                .map_err(|_| QueryExecutionError::InvalidProgram)?;
+            let exact_end =
+                exclusive_prefix_end_v1(&exact_start).ok_or(QueryExecutionError::InvalidProgram)?;
+            Ok((*predicate, exact_start, exact_end))
+        })
+        .collect::<Result<Vec<_>, QueryExecutionError>>()?;
+
+    if let [(predicate, exact_start, exact_end)] = exact_bounds.as_slice()
+        && predicate.operator() == QueryPredicateOperator::NotEqual
+    {
+        let ranges = [
+            BoundIndexRangeV1::checked(leading_start, exact_start.clone()),
+            BoundIndexRangeV1::checked(exact_end.clone(), leading_end),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+        return finish_range_schedule(ranges, direction);
+    }
+    if exact_bounds
+        .iter()
+        .any(|(predicate, _, _)| predicate.operator() == QueryPredicateOperator::NotEqual)
+    {
+        return Err(QueryExecutionError::InvalidProgram);
+    }
+
+    let mut start = leading_start;
+    let mut end = leading_end;
+    let mut lower_seen = false;
+    let mut upper_seen = false;
+    for (predicate, exact_start, exact_end) in exact_bounds {
+        match predicate.operator() {
+            QueryPredicateOperator::Greater if !lower_seen => {
+                start = exact_end;
+                lower_seen = true;
+            }
+            QueryPredicateOperator::GreaterEqual if !lower_seen => {
+                start = exact_start;
+                lower_seen = true;
+            }
+            QueryPredicateOperator::Less if !upper_seen => {
+                end = exact_start;
+                upper_seen = true;
+            }
+            QueryPredicateOperator::LessEqual if !upper_seen => {
+                end = exact_end;
+                upper_seen = true;
+            }
+            _ => return Err(QueryExecutionError::InvalidProgram),
+        }
+    }
+    let ranges = BoundIndexRangeV1::checked(start, end).into_iter().collect();
+    finish_range_schedule(ranges, direction)
+}
+
+fn canonical_interval_value_supported(value: &CanonicalValue) -> bool {
+    matches!(
+        value,
+        CanonicalValue::I64(_)
+            | CanonicalValue::U64(_)
+            | CanonicalValue::Timestamp(_)
+            | CanonicalValue::Date(_)
+            | CanonicalValue::Uuid(_)
+            | CanonicalValue::Enum { .. }
+    )
+}
+
+fn finish_range_schedule(
+    mut ranges: Vec<BoundIndexRangeV1>,
+    direction: AccessDirection,
+) -> Result<BoundIndexRangeScheduleV1, QueryExecutionError> {
+    ranges.sort_unstable_by(|left, right| {
+        left.start_inclusive
+            .cmp(&right.start_inclusive)
+            .then_with(|| left.end_exclusive.cmp(&right.end_exclusive))
+    });
+    if ranges
+        .windows(2)
+        .any(|pair| pair[0].end_exclusive > pair[1].start_inclusive)
+    {
+        return Err(QueryExecutionError::InvalidProgram);
+    }
+    let schedule_bytes = ranges.iter().try_fold(0usize, |total, range| {
+        total
+            .checked_add(range.start_inclusive.len())?
+            .checked_add(range.end_exclusive.len())
+    });
     if schedule_bytes.is_none_or(|bytes| bytes > MAX_OPERATIONAL_PREFIX_SCHEDULE_BYTES) {
         return Err(QueryExecutionError::BoundExceeded);
     }
-    Ok(encoded)
+    if direction == AccessDirection::Reverse {
+        ranges.reverse();
+    }
+    Ok(BoundIndexRangeScheduleV1 { ranges })
+}
+
+fn exclusive_prefix_end_v1(prefix: &[u8]) -> Option<Vec<u8>> {
+    let mut upper = prefix.to_vec();
+    let position = upper.iter().rposition(|byte| *byte != u8::MAX)?;
+    upper[position] = upper[position].saturating_add(1);
+    upper.truncate(position + 1);
+    Some(upper)
 }
 
 /// Owned result of one bounded index access inside the current read view.
@@ -3134,8 +3454,11 @@ query OptionalMinimumSummary($organization_id: Ticket.organization_id) {
         )
     }
 
-    fn matching_prefix(prefixes: &[Vec<u8>], key: &[u8]) -> bool {
-        prefixes.iter().any(|prefix| key.starts_with(prefix))
+    fn matching_range(schedule: &BoundIndexRangeScheduleV1, key: &[u8]) -> bool {
+        schedule
+            .ranges()
+            .iter()
+            .any(|range| key >= range.start_inclusive() && key < range.end_exclusive())
     }
 
     #[test]
@@ -3149,8 +3472,8 @@ query OptionalMinimumSummary($organization_id: Ticket.organization_id) {
         let (bundle, null_step) = compiled_operational_step(NULL_DOCUMENTS);
         let null_predicates = bind_predicates(&null_step, &parameters, &BTreeMap::new())
             .expect("bound null predicates");
-        let null_prefixes =
-            bound_index_prefix_bytes_v1(&null_step, &null_predicates).expect("null prefixes");
+        let null_ranges =
+            bound_index_range_schedule_v1(&null_step, &null_predicates).expect("null ranges");
         let entity = &bundle.schema().entities()[0];
         let index = entity
             .indexes()
@@ -3205,10 +3528,7 @@ query OptionalMinimumSummary($organization_id: Ticket.organization_id) {
                         .expect("entity key"),
                 )
                 .expect("index key");
-            assert_eq!(
-                matching_prefix(&null_prefixes, key.as_bytes()),
-                expected_null
-            );
+            assert_eq!(matching_range(&null_ranges, key.as_bytes()), expected_null);
         }
 
         let (_, exists_step) = compiled_operational_step(EXISTING_DOCUMENTS);
@@ -3253,8 +3573,8 @@ query OptionalMinimumSummary($organization_id: Ticket.organization_id) {
         let (bundle, step) = compiled_operational_step(PREFIX_DOCUMENTS);
         let predicates =
             bind_predicates(&step, &parameters, &BTreeMap::new()).expect("bound predicates");
-        let prefixes = bound_index_prefix_bytes_v1(&step, &predicates).expect("prefix range");
-        assert_eq!(prefixes.len(), 1);
+        let ranges = bound_index_range_schedule_v1(&step, &predicates).expect("prefix range");
+        assert_eq!(ranges.ranges().len(), 1);
         let entity = &bundle.schema().entities()[0];
         let index = entity
             .indexes()
@@ -3304,11 +3624,7 @@ query OptionalMinimumSummary($organization_id: Ticket.organization_id) {
                 .key_schema()
                 .encode_index(&values, entity_key)
                 .expect("index key");
-            assert_eq!(
-                matching_prefix(&prefixes, key.as_bytes()),
-                expected,
-                "{title}"
-            );
+            assert_eq!(matching_range(&ranges, key.as_bytes()), expected, "{title}");
         }
     }
 

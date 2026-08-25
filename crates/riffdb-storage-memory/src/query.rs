@@ -285,17 +285,8 @@ impl QueryReadView for MemoryQueryView<'_> {
         let schema = step
             .internal_index_key_schema()
             .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
-        let mut prefixes = riffdb_query_executor::bound_index_prefix_bytes_v1(step, predicates)
+        let schedule = riffdb_query_executor::bound_index_range_schedule_v1(step, predicates)
             .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
-        prefixes.sort_unstable();
-        let unique_len = prefixes.len();
-        prefixes.dedup();
-        if prefixes.len() != unique_len {
-            return Err(storage_error(StorageErrorKind::InvariantViolation));
-        }
-        if *direction == AccessDirection::Reverse {
-            prefixes.reverse();
-        }
         let partition_value = self
             .parameters
             .get(self.program.partition_parameter())
@@ -324,37 +315,19 @@ impl QueryReadView for MemoryQueryView<'_> {
         let scan_ceiling = usize::try_from(riffdb_query_executor::MAX_QUERY_SCANNED_ROWS)
             .map_err(|_| storage_error(StorageErrorKind::LimitExceeded))?;
         let plan = RowMaterializePlan::for_step(self.program, step)?;
-        'prefixes: for prefix in prefixes {
-            let upper = exclusive_prefix_end(prefix.as_slice())
-                .ok_or_else(|| storage_error(StorageErrorKind::InvariantViolation))?;
-            if after.is_some_and(|after| match direction {
-                AccessDirection::Forward => upper.as_slice() <= after,
-                AccessDirection::Reverse => prefix.as_slice() > after,
-            }) {
+        'ranges: for range in schedule.ranges() {
+            let Some(window) = range.resume_window(*direction, after) else {
                 continue;
-            }
-            let start =
-                self.state
-                    .index_entries
-                    .partition_point(|entry| match (direction, after) {
-                        (AccessDirection::Forward, Some(after))
-                            if after.starts_with(prefix.as_slice()) =>
-                        {
-                            entry.key().as_bytes() <= after
-                        }
-                        _ => entry.key().as_bytes() < prefix.as_slice(),
-                    });
+            };
+            let start = self.state.index_entries.partition_point(|entry| {
+                entry.key().as_bytes() < window.start_inclusive()
+                    || (window.skip_start_equal()
+                        && entry.key().as_bytes() == window.start_inclusive())
+            });
             let end = self
                 .state
                 .index_entries
-                .partition_point(|entry| match (direction, after) {
-                    (AccessDirection::Reverse, Some(after))
-                        if after.starts_with(prefix.as_slice()) =>
-                    {
-                        entry.key().as_bytes() < after
-                    }
-                    _ => entry.key().as_bytes() < upper.as_slice(),
-                });
+                .partition_point(|entry| entry.key().as_bytes() < window.end_exclusive());
             let matching = self
                 .state
                 .index_entries
@@ -388,7 +361,7 @@ impl QueryReadView for MemoryQueryView<'_> {
                         };
                         entries.push((entry.key().clone(), row));
                         if entries.len() == fetch_limit {
-                            break 'prefixes;
+                            break 'ranges;
                         }
                     }
                 }
@@ -419,7 +392,7 @@ impl QueryReadView for MemoryQueryView<'_> {
                         };
                         entries.push((entry.key().clone(), row));
                         if entries.len() == fetch_limit {
-                            break 'prefixes;
+                            break 'ranges;
                         }
                     }
                 }
@@ -753,6 +726,23 @@ query ProjectMembers(
     outcomes Found
 }
 "#;
+    const MEMBERS_RANGE_QUERY: &str = r#"
+query ProjectMembersInRange(
+    $organization_id: Organization.organization_id,
+    $project_id: Project.project_id,
+    $lower: ProjectMember.user_id,
+    $upper: ProjectMember.user_id,
+    $after: Cursor?,
+) {
+    many memberships from ProjectMember
+        where organization_id == $organization_id && project_id == $project_id
+          && user_id >= $lower && user_id < $upper
+        order by user_id asc
+        take 1 after $after
+    return Found { members: memberships { user_id role } }
+    outcomes Found
+}
+"#;
 
     #[test]
     fn point_query_materializes_an_owned_result_from_one_state_view() {
@@ -968,6 +958,64 @@ query ProjectMembers(
                 }),
             first_user.as_ref()
         );
+
+        let range_program = compile_query(
+            &parse_query(MEMBERS_RANGE_QUERY).expect("parse range"),
+            &catalog,
+        )
+        .expect("range program");
+        let range_parameters = QueryParameters::checked(BTreeMap::from([
+            ("organization_id".to_owned(), organization.clone()),
+            ("project_id".to_owned(), project.clone()),
+            ("lower".to_owned(), CanonicalValue::Uuid([3; 16])),
+            ("upper".to_owned(), CanonicalValue::Uuid([5; 16])),
+        ]))
+        .expect("range parameters");
+        let mut range_view = MemoryQueryView {
+            state: &state,
+            program: &range_program,
+            parameters: &range_parameters,
+        };
+        let range_first =
+            execute_page_in_snapshot(&range_program, &range_parameters, None, &mut range_view)
+                .expect("first range page");
+        assert!(matches!(
+            range_first.fields().get("members"),
+            Some(QueryResultValue::Many(rows))
+                if rows.len() == 1
+                    && rows[0].field("user_id") == Some(&CanonicalValue::Uuid([3; 16]))
+        ));
+        let range_cursor = QueryContinuation::checked(
+            range_first
+                .continuation_binding()
+                .expect("range continuation binding")
+                .to_owned(),
+            range_first
+                .continuation()
+                .expect("range continuation")
+                .to_vec(),
+            range_first.index_epochs().clone(),
+        )
+        .expect("range cursor");
+        let mut range_second_view = MemoryQueryView {
+            state: &state,
+            program: &range_program,
+            parameters: &range_parameters,
+        };
+        let range_second = execute_page_in_snapshot(
+            &range_program,
+            &range_parameters,
+            Some(&range_cursor),
+            &mut range_second_view,
+        )
+        .expect("second range page");
+        assert!(matches!(
+            range_second.fields().get("members"),
+            Some(QueryResultValue::Many(rows))
+                if rows.len() == 1
+                    && rows[0].field("user_id") == Some(&CanonicalValue::Uuid([4; 16]))
+        ));
+        assert!(range_second.continuation().is_none());
 
         // A policy-hidden first row cannot consume `take 1` or become the
         // continuation identity. Only user 4 is authorized, so the same scan

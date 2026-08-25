@@ -7,7 +7,7 @@ use riffdb_query_compiler::compile_operational_query_family;
 use riffdb_query_executor::{
     BoundPredicate, QueryBackendFault, QueryContinuation, QueryExecutionError, QueryOwnedSnapshot,
     QueryParameters, QueryReadView, QueryResultValue, QueryRow, QueryScanPage,
-    bound_index_prefix_bytes_v1, execute_operational_page_in_snapshot,
+    bound_index_range_schedule_v1, execute_operational_page_in_snapshot,
 };
 use riffdb_query_ir::{AccessDirection, QueryAccessKind, QueryAccessStep, SymbolicCatalog};
 use riffdb_riffql_syntax::parse_query;
@@ -21,11 +21,13 @@ contract OperationalQueries version 1 {
     field title: string<64>
     field relation: string<64>
     field user: string<256>
+    field sequence: u64
     index by_deleted (organization_id, deleted_at, document_id) presence(deleted_at)
     index by_title (organization_id, title, document_id) text_key(title, binary_utf8_v1)
     index by_relation_user (organization_id, relation, user, document_id)
       text_key(relation, binary_utf8_v1)
       text_key(user, binary_utf8_v1)
+    index by_sequence (organization_id, sequence, document_id)
   }
   aggregate Documents {
     root Document
@@ -140,6 +142,37 @@ query DocumentsByRelations(
 }
 "#;
 
+const CANONICAL_RANGE_QUERY: &str = r#"
+query DocumentsBySequenceRange(
+  $organization_id: Document.organization_id,
+  $lower: Document.sequence,
+  $upper: Document.sequence,
+  $after: Cursor?,
+) {
+  many documents from Document
+    where organization_id == $organization_id && sequence >= $lower && sequence < $upper
+    order by sequence asc, document_id asc
+    take 1 after $after
+  return Found { documents: documents { document_id sequence } }
+  outcomes Found
+}
+"#;
+
+const CANONICAL_COMPLEMENT_QUERY: &str = r#"
+query DocumentsExceptSequence(
+  $organization_id: Document.organization_id,
+  $excluded: Document.sequence,
+  $after: Cursor?,
+) {
+  many documents from Document
+    where organization_id == $organization_id && sequence != $excluded
+    order by sequence asc, document_id asc
+    take 1 after $after
+  return Found { documents: documents { document_id sequence } }
+  outcomes Found
+}
+"#;
+
 #[derive(Clone, Copy)]
 enum Presence {
     Missing,
@@ -197,7 +230,8 @@ impl QueryReadView for IndexedView {
         after: Option<&[u8]>,
         _policy: Option<&riffdb_policy::AuthorizedQueryRowPolicyContextV1>,
     ) -> Result<QueryScanPage, Self::Error> {
-        let prefixes = bound_index_prefix_bytes_v1(step, predicates).expect("sealed prefixes");
+        let schedule =
+            bound_index_range_schedule_v1(step, predicates).expect("sealed range schedule");
         let direction = match step.access() {
             QueryAccessKind::Index { direction, .. } => *direction,
             _ => panic!("operational acceptance scan requires an index"),
@@ -205,7 +239,12 @@ impl QueryReadView for IndexedView {
         let mut candidates = self
             .rows
             .iter()
-            .filter(|(key, _)| prefixes.iter().any(|prefix| key.starts_with(prefix)))
+            .filter(|(key, _)| {
+                schedule.ranges().iter().any(|range| {
+                    key.as_slice() >= range.start_inclusive()
+                        && key.as_slice() < range.end_exclusive()
+                })
+            })
             .filter(|(key, _)| {
                 after.is_none_or(|after| match direction {
                     AccessDirection::Forward => key.as_slice() > after,
@@ -261,6 +300,8 @@ fn execute_page(
     prefix: Option<&str>,
     relation: Option<&str>,
     relations: Option<&[&str]>,
+    range: Option<(u64, u64)>,
+    excluded: Option<u64>,
     prior: Option<&QueryContinuation>,
 ) -> Result<QueryOwnedSnapshot, QueryExecutionError> {
     let bundle = compile_contract_source(CONTRACT).expect("contract");
@@ -352,6 +393,10 @@ fn execute_page(
                 field_id("user"),
                 CanonicalValue::string(document.user).expect("user"),
             ),
+            (
+                field_id("sequence"),
+                CanonicalValue::U64(u64::from(document.ordinal)),
+            ),
         ];
         match document.deleted_at {
             Presence::Missing => {}
@@ -386,6 +431,10 @@ fn execute_page(
             (
                 "user".to_owned(),
                 CanonicalValue::string(document.user).expect("user"),
+            ),
+            (
+                "sequence".to_owned(),
+                CanonicalValue::U64(u64::from(document.ordinal)),
             ),
         ]);
         match document.deleted_at {
@@ -429,6 +478,13 @@ fn execute_page(
             .expect("bounded relation set"),
         );
     }
+    if let Some((lower, upper)) = range {
+        parameter_values.insert("lower".to_owned(), CanonicalValue::U64(lower));
+        parameter_values.insert("upper".to_owned(), CanonicalValue::U64(upper));
+    }
+    if let Some(excluded) = excluded {
+        parameter_values.insert("excluded".to_owned(), CanonicalValue::U64(excluded));
+    }
     let parameters = QueryParameters::checked(parameter_values).expect("parameters");
     let mut view = IndexedView { rows: indexed };
     execute_operational_page_in_snapshot(
@@ -441,7 +497,7 @@ fn execute_page(
 }
 
 fn execute(source: &str, prefix: Option<&str>) -> Result<Vec<QueryRow>, QueryExecutionError> {
-    let snapshot = execute_page(source, prefix, None, None, None)?;
+    let snapshot = execute_page(source, prefix, None, None, None, None, None)?;
     match snapshot.fields().get("documents") {
         Some(QueryResultValue::Many(rows)) => Ok(rows.clone()),
         other => panic!("expected documents result, got {other:?}"),
@@ -461,8 +517,8 @@ fn execute_all_cursor_pages(source: &str, relation: Option<&str>) -> Vec<QueryRo
     let mut rows = Vec::new();
     let mut prior = None;
     loop {
-        let snapshot =
-            execute_page(source, None, relation, None, prior.as_ref()).expect("binary-order page");
+        let snapshot = execute_page(source, None, relation, None, None, None, prior.as_ref())
+            .expect("binary-order page");
         match snapshot.fields().get("documents") {
             Some(QueryResultValue::Many(page)) => rows.extend(page.iter().cloned()),
             other => panic!("expected documents page, got {other:?}"),
@@ -489,8 +545,48 @@ fn execute_all_membership_cursor_pages(source: &str, relations: &[&str]) -> Vec<
     let mut rows = Vec::new();
     let mut prior = None;
     loop {
-        let snapshot = execute_page(source, None, None, Some(relations), prior.as_ref())
-            .expect("binary-membership page");
+        let snapshot = execute_page(
+            source,
+            None,
+            None,
+            Some(relations),
+            None,
+            None,
+            prior.as_ref(),
+        )
+        .expect("binary-membership page");
+        match snapshot.fields().get("documents") {
+            Some(QueryResultValue::Many(page)) => rows.extend(page.iter().cloned()),
+            other => panic!("expected documents page, got {other:?}"),
+        }
+        let Some(lower) = snapshot.continuation() else {
+            break;
+        };
+        prior = Some(
+            QueryContinuation::checked(
+                snapshot
+                    .continuation_binding()
+                    .expect("continuation binding")
+                    .to_owned(),
+                lower.to_vec(),
+                snapshot.index_epochs().clone(),
+            )
+            .expect("checked continuation"),
+        );
+    }
+    rows
+}
+
+fn execute_all_interval_cursor_pages(
+    source: &str,
+    range: Option<(u64, u64)>,
+    excluded: Option<u64>,
+) -> Vec<QueryRow> {
+    let mut rows = Vec::new();
+    let mut prior = None;
+    loop {
+        let snapshot = execute_page(source, None, None, None, range, excluded, prior.as_ref())
+            .expect("canonical interval page");
         match snapshot.fields().get("documents") {
             Some(QueryResultValue::Many(page)) => rows.extend(page.iter().cloned()),
             other => panic!("expected documents page, got {other:?}"),
@@ -587,4 +683,30 @@ fn binary_text_membership_uses_bytewise_prefix_order_and_one_global_cursor() {
     assert_eq!(ordinals(&descending), [2, 3]);
 
     assert!(execute_all_membership_cursor_pages(BINARY_COMPONENT_MEMBERSHIP_QUERY, &[]).is_empty());
+}
+
+#[test]
+fn canonical_intervals_and_complements_share_exact_forward_reverse_cursors() {
+    let ascending = execute_all_interval_cursor_pages(CANONICAL_RANGE_QUERY, Some((3, 7)), None);
+    assert_eq!(ordinals(&ascending), [3, 4, 5, 6]);
+
+    let descending_source = CANONICAL_RANGE_QUERY
+        .replace("sequence asc", "sequence desc")
+        .replace("document_id asc", "document_id desc");
+    let descending = execute_all_interval_cursor_pages(&descending_source, Some((3, 7)), None);
+    assert_eq!(ordinals(&descending), [6, 5, 4, 3]);
+
+    let complement = execute_all_interval_cursor_pages(CANONICAL_COMPLEMENT_QUERY, None, Some(4));
+    assert_eq!(ordinals(&complement), [2, 3, 5, 6, 7]);
+
+    let reverse_complement_source = CANONICAL_COMPLEMENT_QUERY
+        .replace("sequence asc", "sequence desc")
+        .replace("document_id asc", "document_id desc");
+    let reverse_complement =
+        execute_all_interval_cursor_pages(&reverse_complement_source, None, Some(4));
+    assert_eq!(ordinals(&reverse_complement), [7, 6, 5, 3, 2]);
+
+    assert!(
+        execute_all_interval_cursor_pages(CANONICAL_RANGE_QUERY, Some((7, 3)), None).is_empty()
+    );
 }

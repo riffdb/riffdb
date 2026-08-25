@@ -382,13 +382,24 @@ Cartesian prefix product or a residual filter.
 
 The ordinary executable component matrix is closed: canonical components
 support exact equality, bounded membership at the first remaining order term,
-and canonical order; presence components support state selection and explicit
-state placement; `binary_utf8_v1` supports equality, bounded membership,
-leading-byte prefix, and bytewise order; `unicode_fold_v1` remains unavailable.
-Canonical ranges and inequality/complement predicates are temporarily
-unavailable until typed physical intervals apply them before page and cursor
-formation. Recompile and redeploy the named query after that capability lands;
-RiffDB never substitutes a post-page filter or scan.
+canonical order, and typed intervals for order-preserving `i64`, `u64`,
+`timestamp`, `date`, `uuid`, and enum components; presence components support
+state selection and explicit state placement; `binary_utf8_v1` supports
+equality, bounded membership, leading-byte prefix, and bytewise order;
+`unicode_fold_v1` remains unavailable. A lower and upper comparison form one
+half-open physical interval. `!=` forms at most two disjoint complement
+intervals. Inclusive source bounds are normalized around the complete encoded
+component before storage traversal, and the interval component must be the
+first remaining total-order term.
+
+All intervals in one query share a single page limit, continuation probe, scan
+budget, cursor, and output budget. Reverse traversal reverses both interval
+order and the rows inside each interval. Contradictory submitted bounds return
+an exact empty page without scanning. Canonical length-prefixed strings do not
+preserve logical text comparison and therefore cannot prove a range; declare an
+accepted text/provider profile rather than relying on comparator substitution.
+Multiple interval dimensions, overlapping unions, intersections, skip scans,
+and post-page residual predicates remain unavailable.
 
 ## Exact indexed result sets (language version 4)
 

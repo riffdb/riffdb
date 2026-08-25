@@ -648,6 +648,11 @@ impl QueryAccessStep {
                         matches!(
                             predicate.operator,
                             QueryPredicateOperator::Equal
+                                | QueryPredicateOperator::NotEqual
+                                | QueryPredicateOperator::Less
+                                | QueryPredicateOperator::LessEqual
+                                | QueryPredicateOperator::Greater
+                                | QueryPredicateOperator::GreaterEqual
                                 | QueryPredicateOperator::In
                                 | QueryPredicateOperator::IsNull
                                 | QueryPredicateOperator::IsNotNull

@@ -907,55 +907,32 @@ impl QueryReadView for RedbQueryView<'_> {
             .map_err(|_| storage_error(StorageErrorKind::LimitExceeded))?;
         let mut inspected = 0usize;
         let mut partition_candidates = 0usize;
-        let mut prefixes = riffdb_query_executor::bound_index_prefix_bytes_v1(step, predicates)
+        let schedule = riffdb_query_executor::bound_index_range_schedule_v1(step, predicates)
             .map_err(|_| invariant())?;
-        prefixes.sort_unstable();
-        let unique_len = prefixes.len();
-        prefixes.dedup();
-        if prefixes.len() != unique_len {
-            return Err(invariant());
-        }
-        if *direction == AccessDirection::Reverse {
-            prefixes.reverse();
-        }
         let plan = RowMaterializePlan::for_step(self.program, step)?;
 
         self.touch_indexes();
-        'prefixes: for prefix in prefixes {
-            let upper = exclusive_prefix_end(prefix.as_slice()).ok_or_else(invariant)?;
-            if after.is_some_and(|after| match direction {
-                AccessDirection::Forward => upper.as_slice() <= after,
-                AccessDirection::Reverse => prefix.as_slice() > after,
-            }) {
+        'ranges: for range in schedule.ranges() {
+            let Some(window) = range.resume_window(*direction, after) else {
                 continue;
-            }
+            };
             let remaining_scan = scan_ceiling.saturating_sub(inspected);
             if remaining_scan == 0 {
                 return Err(storage_error(StorageErrorKind::LimitExceeded));
             }
             let rows = match direction {
-                AccessDirection::Forward => {
-                    let start = after
-                        .filter(|after| after.starts_with(prefix.as_slice()))
-                        .unwrap_or(prefix.as_slice());
-                    self.transaction.read_range(
-                        JournalTable::SecondaryIndexes,
-                        start,
-                        &upper,
-                        remaining_scan,
-                    )?
-                }
-                AccessDirection::Reverse => {
-                    let end = after
-                        .filter(|after| after.starts_with(prefix.as_slice()))
-                        .unwrap_or(upper.as_slice());
-                    self.transaction.read_range_reverse(
-                        JournalTable::SecondaryIndexes,
-                        prefix.as_slice(),
-                        end,
-                        remaining_scan,
-                    )?
-                }
+                AccessDirection::Forward => self.transaction.read_range(
+                    JournalTable::SecondaryIndexes,
+                    window.start_inclusive(),
+                    window.end_exclusive(),
+                    remaining_scan,
+                )?,
+                AccessDirection::Reverse => self.transaction.read_range_reverse(
+                    JournalTable::SecondaryIndexes,
+                    window.start_inclusive(),
+                    window.end_exclusive(),
+                    remaining_scan,
+                )?,
             };
             let inspected_this_prefix = rows.len();
             inspected = inspected
@@ -963,7 +940,8 @@ impl QueryReadView for RedbQueryView<'_> {
                 .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
             for entry in rows {
                 if matches!(direction, AccessDirection::Forward)
-                    && after.is_some_and(|after| entry.0.as_ref() == after)
+                    && window.skip_start_equal()
+                    && entry.0.as_ref() == window.start_inclusive()
                 {
                     continue;
                 }
@@ -998,7 +976,7 @@ impl QueryReadView for RedbQueryView<'_> {
                 }
                 entries.push((decoded.0, row));
                 if entries.len() == fetch_limit {
-                    break 'prefixes;
+                    break 'ranges;
                 }
             }
             if inspected_this_prefix == remaining_scan {
@@ -1083,54 +1061,31 @@ impl QueryReadView for RedbQueryView<'_> {
                 }
             })
             .collect::<Result<Vec<_>, _>>()?;
-        let mut prefixes = riffdb_query_executor::bound_index_prefix_bytes_v1(step, predicates)
+        let schedule = riffdb_query_executor::bound_index_range_schedule_v1(step, predicates)
             .map_err(|_| invariant())?;
-        prefixes.sort_unstable();
-        let unique_len = prefixes.len();
-        prefixes.dedup();
-        if prefixes.len() != unique_len {
-            return Err(invariant());
-        }
-        if *direction == AccessDirection::Reverse {
-            prefixes.reverse();
-        }
 
         self.touch_indexes();
-        'prefixes: for prefix in prefixes {
-            let upper = exclusive_prefix_end(prefix.as_slice()).ok_or_else(invariant)?;
-            if after.is_some_and(|after| match direction {
-                AccessDirection::Forward => upper.as_slice() <= after,
-                AccessDirection::Reverse => prefix.as_slice() > after,
-            }) {
+        'ranges: for range in schedule.ranges() {
+            let Some(window) = range.resume_window(*direction, after) else {
                 continue;
-            }
+            };
             let remaining_scan = scan_ceiling.saturating_sub(inspected);
             if remaining_scan == 0 {
                 return Err(storage_error(StorageErrorKind::LimitExceeded));
             }
             let rows = match direction {
-                AccessDirection::Forward => {
-                    let start = after
-                        .filter(|after| after.starts_with(prefix.as_slice()))
-                        .unwrap_or(prefix.as_slice());
-                    self.transaction.read_range(
-                        JournalTable::SecondaryIndexes,
-                        start,
-                        &upper,
-                        remaining_scan,
-                    )?
-                }
-                AccessDirection::Reverse => {
-                    let end = after
-                        .filter(|after| after.starts_with(prefix.as_slice()))
-                        .unwrap_or(upper.as_slice());
-                    self.transaction.read_range_reverse(
-                        JournalTable::SecondaryIndexes,
-                        prefix.as_slice(),
-                        end,
-                        remaining_scan,
-                    )?
-                }
+                AccessDirection::Forward => self.transaction.read_range(
+                    JournalTable::SecondaryIndexes,
+                    window.start_inclusive(),
+                    window.end_exclusive(),
+                    remaining_scan,
+                )?,
+                AccessDirection::Reverse => self.transaction.read_range_reverse(
+                    JournalTable::SecondaryIndexes,
+                    window.start_inclusive(),
+                    window.end_exclusive(),
+                    remaining_scan,
+                )?,
             };
             let inspected_this_prefix = rows.len();
             inspected = inspected
@@ -1138,7 +1093,8 @@ impl QueryReadView for RedbQueryView<'_> {
                 .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
             for entry in rows {
                 if matches!(direction, AccessDirection::Forward)
-                    && after.is_some_and(|after| entry.0.as_ref() == after)
+                    && window.skip_start_equal()
+                    && entry.0.as_ref() == window.start_inclusive()
                 {
                     continue;
                 }
@@ -1197,7 +1153,7 @@ impl QueryReadView for RedbQueryView<'_> {
                 }
                 entries.push((entry_key, values));
                 if entries.len() == fetch_limit {
-                    break 'prefixes;
+                    break 'ranges;
                 }
             }
             if inspected_this_prefix == remaining_scan {
@@ -1508,6 +1464,23 @@ query ProjectMembers(
     outcomes Found
 }
 "#;
+    const MEMBERS_RANGE_QUERY: &str = r#"
+query ProjectMembersInRange(
+    $organization_id: Organization.organization_id,
+    $project_id: Project.project_id,
+    $lower: ProjectMember.user_id,
+    $upper: ProjectMember.user_id,
+    $after: Cursor?,
+) {
+    many memberships from ProjectMember
+        where organization_id == $organization_id && project_id == $project_id
+          && user_id >= $lower && user_id < $upper
+        order by user_id asc
+        take 1 after $after
+    return Found { members: memberships { user_id role } }
+    outcomes Found
+}
+"#;
     const BOARD_QUERY: &str = include_str!("../../../queries/ticketdesk/board_page_450.riffq");
     /// Whole-directory scope: the database and every side file it grows live
     /// in one [`crate::test_path::ScopedDirectory`] removed on drop — pass,
@@ -1784,8 +1757,8 @@ query ProjectMembers(
         access_write.commit().expect("commit");
 
         let parameters = QueryParameters::checked(BTreeMap::from([
-            ("organization_id".to_owned(), organization),
-            ("project_id".to_owned(), project),
+            ("organization_id".to_owned(), organization.clone()),
+            ("project_id".to_owned(), project.clone()),
         ]))
         .expect("parameters");
         let _serial = QUERY_TABLE_OPEN_TEST_LOCK
@@ -1834,6 +1807,50 @@ query ProjectMembers(
             Some(QueryResultValue::Many(rows))
                 if rows.len() == 1 && rows[0].field("user_id").cloned() != first_user
         ));
+
+        let range_program = compile_query(
+            &parse_query(MEMBERS_RANGE_QUERY).expect("parse range"),
+            &catalog,
+        )
+        .expect("range program");
+        let range_parameters = QueryParameters::checked(BTreeMap::from([
+            ("organization_id".to_owned(), organization),
+            ("project_id".to_owned(), project),
+            ("lower".to_owned(), CanonicalValue::Uuid([3; 16])),
+            ("upper".to_owned(), CanonicalValue::Uuid([5; 16])),
+        ]))
+        .expect("range parameters");
+        let range_first = ports
+            .execute_query_page(&range_program, &range_parameters, None)
+            .expect("first range page");
+        assert!(matches!(
+            range_first.fields().get("members"),
+            Some(QueryResultValue::Many(rows))
+                if rows.len() == 1
+                    && rows[0].field("user_id") == Some(&CanonicalValue::Uuid([3; 16]))
+        ));
+        let range_cursor = QueryContinuation::checked(
+            range_first
+                .continuation_binding()
+                .expect("range continuation binding")
+                .to_owned(),
+            range_first
+                .continuation()
+                .expect("range continuation")
+                .to_vec(),
+            range_first.index_epochs().clone(),
+        )
+        .expect("range cursor");
+        let range_second = ports
+            .execute_query_page(&range_program, &range_parameters, Some(&range_cursor))
+            .expect("second range page");
+        assert!(matches!(
+            range_second.fields().get("members"),
+            Some(QueryResultValue::Many(rows))
+                if rows.len() == 1
+                    && rows[0].field("user_id") == Some(&CanonicalValue::Uuid([4; 16]))
+        ));
+        assert!(range_second.continuation().is_none());
     }
 
     #[test]

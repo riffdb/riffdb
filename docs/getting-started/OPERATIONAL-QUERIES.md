@@ -101,29 +101,37 @@ fall back to canonical string ordering.
 
 ## Closed ordinary access matrix
 
-| Index component | Exact | Bounded `in` | Prefix | Order |
-|---|---:|---:|---:|---:|
-| Canonical scalar | yes | first remaining order term | no | canonical |
-| Presence-aware | state only | no | no | explicit accepted state placement |
-| `binary_utf8_v1` | yes | first remaining order term | exact leading bytes | UTF-8 bytes |
-| `unicode_fold_v1` | unavailable | unavailable | unavailable | unavailable |
+| Index component | Exact | Bounded `in` | Interval / complement | Prefix | Order |
+|---|---:|---:|---:|---:|---:|
+| Canonical scalar | yes | first remaining order term | ordered numeric/time/UUID/enum scalars | no | canonical |
+| Presence-aware | state only | no | no | no | explicit accepted state placement |
+| `binary_utf8_v1` | yes | first remaining order term | no | exact leading bytes | UTF-8 bytes |
+| `unicode_fold_v1` | unavailable | unavailable | unavailable | unavailable | unavailable |
 
-Canonical ranges, inequalities, and complements remain unavailable in the
-ordinary row-store plane until their typed physical intervals are installed.
-The compiler rejects those sources at the predicate span because evaluating a
-range after `take` could omit matches or create the wrong cursor. An older
-module containing such an unproved ordinary plan is refused as query
-unavailable with `refresh_contract` guidance; recompile and redeploy rather
-than filtering a returned page. Multiple branching predicates, joins,
-provider bridges, caller-selected indexes, and client page walking remain
-unsupported.
+For an order-preserving canonical `i64`, `u64`, `timestamp`, `date`, `uuid`, or
+enum component, `<`, `<=`, `>`, and `>=` compile to inclusive/exclusive
+physical endpoints. One lower and one upper bound may form an interval; `!=`
+forms two disjoint complement intervals. The selected component must supply the
+first remaining order term. Memory and redb traverse the same normalized
+half-open schedule, including reverse continuation across an interval boundary,
+under one page, plus-one probe, scan, hydration, cursor, and output budget.
+Contradictory runtime bounds produce an exact empty page without a scan.
+
+Canonical length-prefixed strings are not logical text-order ranges, and a
+`binary_utf8_v1` component cannot reinterpret typed range operators. Multiple
+branching dimensions, overlapping unions, joins, provider bridges,
+caller-selected indexes, and client page walking remain unsupported. An older
+module whose range was never physically proved is refused as query unavailable
+with `refresh_contract` guidance; recompile and redeploy rather than filtering
+a returned page.
 
 The repository audit found no active unsafe ordinary fixture: Ticketdesk's
 canonical membership, the presence and binary-prefix conformance queries, and
 dependent complete-key batches all constrain storage before page selection.
 The richer directory filtering fixture uses the separately governed exact
-result-set provider. Historical external ordinary queries using canonical
-ranges or inequality require a rebuild after physical interval support lands.
+result-set provider. Historical external ordinary range queries require
+recompilation so the compiler can prove their physical interval shape;
+unsupported scalar or multi-branch forms remain refused.
 
 ## Feature preflight
 

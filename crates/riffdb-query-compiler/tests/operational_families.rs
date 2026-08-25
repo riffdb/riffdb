@@ -313,7 +313,7 @@ fn binary_text_order_does_not_reinterpret_other_typed_predicates() {
 }
 
 #[test]
-fn ordinary_range_predicate_cannot_be_deferred_until_after_the_page_bound() {
+fn canonical_range_predicate_is_physically_ordered_before_the_page_bound() {
     let source = r#"
 query TicketsUpdatedAfter(
     $organization_id: Ticket.organization_id,
@@ -327,24 +327,43 @@ query TicketsUpdatedAfter(
     outcomes Found
 }
 "#;
-    let diagnostics = compile_operational_query_family(
+    let family = compile_operational_query_family(
         &parse_query(source).expect("range query"),
         &catalog(CONTRACT),
     )
-    .expect_err("an unlowered interval cannot be evaluated after the page bound");
-    let diagnostic = &diagnostics.as_slice()[0];
-    assert_eq!(diagnostic.code(), PlannerDiagnosticCode::Unindexed);
+    .expect("a canonical timestamp interval is a complete physical access shape");
+    let program = family.select(&[]).expect("sole family member").program();
+    assert!(program.steps()[0].predicates().iter().any(|predicate| {
+        predicate.field() == "updated_at"
+            && predicate.operator() == QueryPredicateOperator::GreaterEqual
+    }));
+}
+
+#[test]
+fn multiple_interval_branches_remain_unavailable() {
+    let source = r#"
+query TicketsWithConflictingLowers(
+    $organization_id: Ticket.organization_id,
+    $first: Ticket.updated_at,
+    $second: Ticket.updated_at,
+) {
+    many tickets from Ticket
+        where organization_id == $organization_id
+          && updated_at >= $first && updated_at > $second
+        order by updated_at asc, ticket_id asc
+        take 25
+    return Found { tickets: tickets { ticket_id updated_at } }
+    outcomes Found
+}
+"#;
+    let diagnostics = compile_operational_query_family(
+        &parse_query(source).expect("conflicting range query"),
+        &catalog(CONTRACT),
+    )
+    .expect_err("two lower branches require an unavailable intersection strategy");
     assert_eq!(
-        format!(
-            "{}|{}..{}|{}|{}|{}\n",
-            diagnostic.code().as_str(),
-            diagnostic.primary().start,
-            diagnostic.primary().end,
-            diagnostic.symbol_path().join("."),
-            diagnostic.summary(),
-            diagnostic.suggested_index().unwrap_or("")
-        ),
-        include_str!("../../../fixtures/riffql/canonical-range-unavailable.snapshot")
+        diagnostics.as_slice()[0].code(),
+        PlannerDiagnosticCode::Unindexed
     );
 }
 

@@ -1,1 +1,0 @@
-RDB-QP003|157..221|Ticket|no declared index proves the requested bounded order|index by_query on Ticket (organization_id, updated_at, ticket_id)
