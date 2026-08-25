@@ -2,6 +2,10 @@ import { createConnection, type Socket } from "node:net";
 
 const MAX_FRAME_BYTES = 1_048_576;
 const MAX_PENDING_REQUESTS = 256;
+/** Decimal digits always inside `Number.MAX_SAFE_INTEGER` (9007199254740991). */
+const SAFE_INTEGER_DIGITS = 15;
+const MIN_SAFE_INTEGER_EXACT = BigInt(Number.MIN_SAFE_INTEGER);
+const MAX_SAFE_INTEGER_EXACT = BigInt(Number.MAX_SAFE_INTEGER);
 const MAX_COLLECTION_ITEMS = 4_096;
 const MAX_VALUE_DEPTH = 32;
 const HASH = /^[0-9a-f]{64}$/;
@@ -550,34 +554,69 @@ class ExactJsonParser {
   }
 
   #string(): string {
+    // Scans by code unit and takes one slice. An unescaped body is already its
+    // own decoding, so the common case avoids per-character concatenation and
+    // the nested `JSON.parse`; escapes fall back to it for exact unescaping.
+    const source = this.source;
     const start = this.#position;
-    this.#position += 1;
-    let escaped = false;
-    while (this.#position < this.source.length) {
-      const character = this.source[this.#position];
-      this.#position += 1;
-      if (escaped) { escaped = false; continue; }
-      if (character === "\\") { escaped = true; continue; }
-      if (character === '"') {
-        const decoded: unknown = JSON.parse(this.source.slice(start, this.#position));
-        if (typeof decoded !== "string") throw new Error("invalid RiffDB driver JSON");
-        return decoded;
+    let position = start + 1;
+    let escapes = false;
+    for (;;) {
+      if (position >= source.length) throw new Error("invalid RiffDB driver JSON");
+      const code = source.charCodeAt(position);
+      if (code === 0x22) break;
+      if (code === 0x5c) {
+        escapes = true;
+        position += 2;
+        continue;
       }
-      if (character !== undefined && character.charCodeAt(0) < 0x20) throw new Error("invalid RiffDB driver JSON");
+      if (code < 0x20) throw new Error("invalid RiffDB driver JSON");
+      position += 1;
     }
-    throw new Error("invalid RiffDB driver JSON");
+    this.#position = position + 1;
+    if (!escapes) return source.slice(start + 1, position);
+    const decoded: unknown = JSON.parse(source.slice(start, this.#position));
+    if (typeof decoded !== "string") throw new Error("invalid RiffDB driver JSON");
+    return decoded;
   }
 
   #integer(): number | string {
-    const remainder = this.source.slice(this.#position);
-    const match = /^-?(?:0|[1-9][0-9]*)/.exec(remainder);
-    if (match === null) throw new Error("invalid RiffDB driver JSON");
-    this.#position += match[0].length;
-    const next = this.source[this.#position];
-    if (next === "." || next === "e" || next === "E") throw new Error("non-integral RiffDB driver JSON number");
-    const exact = BigInt(match[0]);
-    if (exact >= BigInt(Number.MIN_SAFE_INTEGER) && exact <= BigInt(Number.MAX_SAFE_INTEGER)) return Number(exact);
-    return match[0];
+    // Scans in place. The previous form sliced the whole remaining payload and
+    // ran a regex on the copy for every number, so a message cost O(n^2) in its
+    // own length, and it built three BigInts per number including the bounds.
+    const source = this.source;
+    const start = this.#position;
+    let position = start;
+    if (source.charCodeAt(position) === 0x2d) position += 1;
+    const digits = position;
+    const first = source.charCodeAt(position);
+    if (first === 0x30) {
+      position += 1;
+    } else if (first >= 0x31 && first <= 0x39) {
+      position += 1;
+      for (;;) {
+        const code = source.charCodeAt(position);
+        if (code >= 0x30 && code <= 0x39) {
+          position += 1;
+          continue;
+        }
+        break;
+      }
+    } else {
+      throw new Error("invalid RiffDB driver JSON");
+    }
+    this.#position = position;
+    const next = source.charCodeAt(position);
+    if (next === 0x2e || next === 0x65 || next === 0x45) {
+      throw new Error("non-integral RiffDB driver JSON number");
+    }
+    const text = source.slice(start, position);
+    // Any run this short is exactly representable, so the safe-integer bound
+    // needs no BigInt at all.
+    if (position - digits <= SAFE_INTEGER_DIGITS) return Number(text);
+    const exact = BigInt(text);
+    if (exact >= MIN_SAFE_INTEGER_EXACT && exact <= MAX_SAFE_INTEGER_EXACT) return Number(exact);
+    return text;
   }
 
   #literal<T>(text: string, value: T): T {
@@ -587,7 +626,20 @@ class ExactJsonParser {
   }
 
   #space(): void {
-    while (/\s/u.test(this.source[this.#position] ?? "")) this.#position += 1;
+    // RFC 8259 whitespace is exactly space, tab, LF and CR. The previous
+    // `/\s/u` test allocated a one-character string and ran a Unicode regex per
+    // position, and also admitted separators JSON does not allow.
+    const source = this.source;
+    let position = this.#position;
+    for (;;) {
+      const code = source.charCodeAt(position);
+      if (code === 0x20 || code === 0x09 || code === 0x0a || code === 0x0d) {
+        position += 1;
+        continue;
+      }
+      break;
+    }
+    this.#position = position;
   }
 }
 
