@@ -40,3 +40,20 @@ fn adapter_collection_sources_compile_to_one_bounded_v5_plan() {
         );
     }
 }
+
+#[test]
+fn neutral_index_rich_hundred_element_command_passes_correlated_budgets() {
+    let source = include_str!("../../../fixtures/contracts/bulk/indexed-mutations.riff");
+    let bundle =
+        compile_contract_source(source).expect("neutral index-rich collection source must compile");
+    let plan = bundle
+        .commands()
+        .iter()
+        .find(|plan| plan.name() == "ApplyIndexedMutations")
+        .expect("indexed mutation plan");
+    let expansion = plan.collection_expansion().expect("collection expansion");
+
+    assert_eq!(expansion.maximum_elements(), 100);
+    assert_eq!(expansion.maximum_aggregate_element_bytes(), Some(900_000));
+    assert_eq!(bundle.ir_version(), 16);
+}

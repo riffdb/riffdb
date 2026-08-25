@@ -5,7 +5,8 @@ use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 
 use riffdb_storage_api::{
-    PreparedCommandSegmentCapsuleV1, StoredCommandCapsuleV2, prepare_command_segment_capsule_v1,
+    CommandCapsuleWireVersionV1, PreparedCommandSegmentCapsuleV1, StoredCommandCapsuleV2,
+    prepare_command_segment_capsule_v1,
 };
 
 const MAX_COMMAND_SEGMENT_PREPARATION_WORKERS: usize = 8;
@@ -20,7 +21,7 @@ enum PreparationTask {
     Prepare {
         ordinal: usize,
         capsules: Vec<StoredCommandCapsuleV2>,
-        uses_v5: bool,
+        wire_version: CommandCapsuleWireVersionV1,
         completion: mpsc::Sender<PreparedChunk>,
     },
 }
@@ -75,13 +76,13 @@ impl CommandSegmentPreparationPool {
                             PreparationTask::Prepare {
                                 ordinal,
                                 capsules,
-                                uses_v5,
+                                wire_version,
                                 completion,
                             } => {
                                 let prepared = capsules
                                     .iter()
                                     .map(|capsule| {
-                                        prepare_command_segment_capsule_v1(capsule, uses_v5)
+                                        prepare_command_segment_capsule_v1(capsule, wire_version)
                                             .map_err(|_| ())
                                     })
                                     .collect();
@@ -113,7 +114,7 @@ impl CommandSegmentPreparationPool {
     pub(crate) fn prepare(
         &self,
         capsules: Vec<StoredCommandCapsuleV2>,
-        uses_v5: bool,
+        wire_version: CommandCapsuleWireVersionV1,
     ) -> Result<
         (
             Vec<StoredCommandCapsuleV2>,
@@ -140,7 +141,7 @@ impl CommandSegmentPreparationPool {
                 .send(PreparationTask::Prepare {
                     ordinal,
                     capsules: chunk,
-                    uses_v5,
+                    wire_version,
                     completion: completion.clone(),
                 })
                 .map_err(|_| ())?;

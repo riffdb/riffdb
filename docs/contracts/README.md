@@ -37,6 +37,31 @@ transaction, cross-partition write, or runtime-only integrity convention.
 The authoritative constants live in the parser and compiler. The generated
 language reference is checked against the parser grammar in CI.
 
+## Command index-work bounds
+
+Mutating plans prove secondary-index work before plan hashing. The compiler
+keeps physical index-entry removals and additions at 4,096, permits at most
+65,535 exact affected prefix epochs and complete validation positions, and
+also requires their correlated charge to fit:
+
+```text
+index-entry deltas + affected prefix epochs + validation positions <= 65,535
+```
+
+Affected targets and their current epoch observations must independently fit
+the 16 MiB command read-state ceiling. A bounded collection shares its proved
+partition prefix across elements, but the compiler assumes no equality among
+caller values, entity keys, other index fields, or different elements. When a
+collection declares `aggregate_bytes`, the same checked aggregate bound may
+limit copies of element-sourced bytes in index prefixes; count and work charges
+are never reduced by byte correlation.
+
+An exceeded known ceiling is reported as `RDB-C020` with a closed resource
+identity and the checked `actual` and `maximum` integers. These diagnostics
+contain compiler-owned plan metadata only—never submitted values, keys, stored
+rows, or backend details. There is no application-selectable work budget,
+runtime fallback, partial command, or automatic command split.
+
 ## Author workflow
 
 ```text

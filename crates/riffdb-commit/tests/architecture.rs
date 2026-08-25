@@ -529,7 +529,9 @@ fn command_index_derivation_preserves_the_sealed_storage_progression_chain() {
         "PartitionIndexTarget::new(partition.clone(), index.id())",
         "MAX_INDEX_DELTAS",
         "MAX_AFFECTED_INDEX_EPOCH_TARGETS",
-        "MAX_VALIDATION_TARGETS",
+        "MAX_COMMAND_READ_TARGETS",
+        "MAX_INDEX_VALIDATION_POSITIONS",
+        "MAX_INDEX_WORK_UNITS",
         "MAX_READ_SNAPSHOT_BYTES",
         "CommandIndexError::internal_defect()",
     ] {

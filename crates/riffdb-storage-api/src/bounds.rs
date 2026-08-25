@@ -12,6 +12,11 @@ pub const MAX_COMMAND_READ_TARGETS: usize = riffdb_types::MAX_COMMAND_VALIDATION
 pub const MAX_READ_DEPENDENCIES: usize = 4_096;
 /// Maximum validation targets in one command.
 pub const MAX_VALIDATION_TARGETS: usize = riffdb_types::MAX_COMMAND_VALIDATION_TARGETS_V1;
+/// Maximum complete index-validation positions in one command.
+pub const MAX_INDEX_VALIDATION_POSITIONS: usize =
+    riffdb_types::MAX_COMMAND_INDEX_VALIDATION_POSITIONS_V1;
+/// Maximum correlated index work (`D + A + V`) in one command.
+pub const MAX_INDEX_WORK_UNITS: usize = riffdb_types::MAX_COMMAND_INDEX_WORK_UNITS_V1;
 /// Maximum entity mutations in one command.
 pub const MAX_ENTITY_MUTATIONS: usize = 4_096;
 /// Maximum index deltas in one command.
@@ -176,6 +181,14 @@ mod tests {
         assert_eq!(
             MAX_VALIDATION_TARGETS,
             riffdb_types::MAX_COMMAND_VALIDATION_TARGETS_V1
+        );
+        assert_eq!(
+            MAX_INDEX_VALIDATION_POSITIONS,
+            riffdb_types::MAX_COMMAND_INDEX_VALIDATION_POSITIONS_V1
+        );
+        assert_eq!(
+            MAX_INDEX_WORK_UNITS,
+            riffdb_types::MAX_COMMAND_INDEX_WORK_UNITS_V1
         );
         assert_eq!(
             MAX_COMMAND_READ_TARGETS,

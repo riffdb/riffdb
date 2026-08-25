@@ -1,0 +1,37 @@
+syntax = "proto3";
+
+package riffdb.storage.v1;
+
+import "riffdb/storage/v1/application.proto";
+import "riffdb/storage/v1/command_capsule_v1.proto";
+import "riffdb/storage/v1/command_segment_v1.proto";
+import "riffdb/storage/v1/entity_transitions_v4.proto";
+import "riffdb/storage/v1/event_policy_command_authority_v5.proto";
+
+// Successor command authority whose structural preflight admits the larger,
+// correlated index-generation transition bound. Earlier capsule identities
+// remain byte-frozen at their original 4,096-item bound.
+message StoredCommandCapsuleV6 {
+  StoredCommandCapsuleV1 base = 1;
+  repeated StoredDurableEventVariantV1 events = 2;
+  repeated StoredIndexGenerationTransitionV1 index_generation_transitions = 3;
+  bytes canonical_service_values = 4;
+  repeated StoredCommittedEntityTransitionV1 entity_transitions = 5;
+}
+
+message StoredCommandSegmentBodyV5 {
+  bytes database_id = 1;
+  uint64 history_incarnation = 2;
+  bytes predecessor_segment_hash = 3;
+  uint64 first_commit_sequence = 4;
+  uint64 last_commit_sequence = 5;
+  uint64 first_administration_sequence = 6;
+  uint64 last_administration_sequence = 7;
+  repeated StoredCommandCapsuleV6 commands = 8;
+  CommandSegmentManifestV1 manifest = 9;
+}
+
+message StoredCommandSegmentV5 {
+  StoredCommandSegmentBodyV5 body = 1;
+  bytes segment_digest = 2;
+}

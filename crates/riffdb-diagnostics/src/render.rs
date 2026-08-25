@@ -87,7 +87,7 @@ pub fn render_compilation_diagnostics(
                     diagnostic.code().as_str(),
                     span.start(),
                     span.end(),
-                    diagnostic.code().summary()
+                    diagnostic.summary()
                 )?;
                 if let Some(related) = diagnostic.related_span() {
                     writeln!(
@@ -296,8 +296,12 @@ impl From<fmt::Error> for DiagnosticRenderError {
 
 #[cfg(test)]
 mod tests {
-    use riffdb_contract_compiler::{CompilationError, compile_contract_source};
+    use riffdb_contract_compiler::{
+        CompilationError, CompilerBoundResource, CompilerDiagnostic, CompilerDiagnostics,
+        compile_contract_source,
+    };
     use riffdb_contract_ir::KeyPurpose;
+    use riffdb_contract_syntax::Span;
     use riffdb_types::{AggregateTypeId, EntityTypeId, IndexId};
 
     use super::*;
@@ -330,6 +334,23 @@ mod tests {
         let report = render_compilation_diagnostics(&error).expect("bounded report");
         assert!(!report.as_str().contains(canary));
         assert!(matches!(error, CompilationError::Syntax(_)));
+    }
+
+    #[test]
+    fn compiler_bound_renderer_preserves_closed_actual_and_maximum() {
+        let error = CompilationError::Semantic(CompilerDiagnostics::single(
+            CompilerDiagnostic::bound_exceeded(
+                CompilerBoundResource::CommandCorrelatedIndexWork,
+                65_536,
+                65_535,
+                Span::new(12, 20).expect("span"),
+            ),
+        ));
+        let report = render_compilation_diagnostics(&error).expect("bounded report");
+
+        assert!(report.as_str().contains(
+            "RDB-C020 span=12..20 summary=command_correlated_index_work is 65536; maximum is 65535"
+        ));
     }
 
     #[test]

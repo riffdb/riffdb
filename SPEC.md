@@ -6,9 +6,9 @@
 **Tagline:** *Vibe fast. Commit safely.*  
 **Category:** Contract-first operational database for agent-built applications  
 
-**Version:** 1.08
+**Version:** 1.09
 **Status:** Deployable Application Alpha architecture accepted; implementation gated by work packages
-**Date:** 24 August 2026
+**Date:** 25 August 2026
 **Audience:** Coding agents, database engineers, compiler engineers, security reviewers, and technical product leads  
 **Working binaries:** `riffdbd`, `riffdb`, `riffdb-mcp`  
 **Working URI scheme:** `riffdb://`  
@@ -37,6 +37,7 @@
 
 | Version | Date | Summary |
 |---|---|---|
+| 1.09 | 2026-08-25 | Accepted ADR-0148 and registered BLK-022 through BLK-027 plus WP-682 and WP-683. Physical index-entry deltas remain capped at 4,096 while affected-prefix epochs and validation positions gain 65,535-entry structural maxima beneath one compiler-owned 65,535-unit correlated index-work budget and the unchanged byte ceilings. Collection planning may use only proved partition and aggregate-byte correlations; runtime derives one sealed canonical target set per attempt; least-sufficient durable capsule/segment successors preserve old 4,096-transition identities; and RDB-C020 reports a closed resource identity, actual value, and maximum without application data. |
 | 1.08 | 2026-08-24 | Accepted ADR-0147 and registered BLK-015 through BLK-021, OQ-031, DX-041, and WP-678 through WP-681. Atomic collection commands may declare one canonical aggregate element-byte constraint while preserving every individual value, cardinality, mutation-instance, one-partition, and 16 MiB complete-graph ceiling. The compiler derives a conservative byte-copy coefficient; generated clients and the Rust service enforce the same bound before effects. Generated cursor parameters route through the existing protected continuation option, and `riffdb dev --run` gains one repository-confined Go runner-package selector without changing application identity. |
 | 1.07 | 2026-08-24 | Accepted ADR-0146 after the first exact ADR-0143 cloud attempts proved that 100-operation generations remained scheduler-sensitive. Unary evidence retains five fixed process generations, 20 warmups, every extreme, the unchanged central-three 20-percent stability rule, and the retry prohibition while increasing each generation to exactly 1,000 measurements. New V2 evidence binds bounded whole-cell CPU-steal accounting under a fixed 1.00-percent ceiling. PERF-008's stale three-generation text is reconciled with PERF-018 and ADR-0143. |
 | 1.06 | 2026-08-24 | Accepted ADR-0143 and ADR-0144. Unary evidence now uses exactly five fixed process generations, qualifies the median generation, and requires the central three p50 and p95 observations for each backend to remain within 20 percent without performance-selected retries. Production command evidence accepts the closed `sync` and `group` durability set, rejects `memory` and unknown modes, and proves exact durability identity across response, replay, notification, and commit scan without exposing an application durability selector. |
@@ -2508,17 +2509,20 @@ non-derivable coverage is corruption and MUST fail closed without entity-read
 fallback.
 
 Checked command-plan construction conservatively computes the maximum successful
-grammar/IR-v1 index shape before hashing or activation. It rejects a mutating
-plan if that shape can exceed 4,096 index-entry mutations, 4,096 distinct
-mutation-affected prefix targets, 4,096 combined binding, root-validation, and
-affected-prefix validation positions, or the 16 MiB affected-target/current-
-epoch-state bound. The estimator may conservatively reject a shape whose actual
-runtime values would deduplicate across bindings; this is a permitted lower
-compiler acceptance limit, not a relaxation of a storage ceiling. It adds no IR
-field, encoding tag, durable value, or plan-hash input. Runtime derivation and
-storage constructors retain incremental count and byte guards as defense in
-depth; a canonical checked plan reaching one is an internal integrity defect,
-never a durable or public command `ResourceLimit` outcome.
+grammar/IR index shape before hashing or activation. Physical index-entry deltas
+remain capped at 4,096. Affected prefix epochs and validation positions each
+have a 65,535-entry structural maximum, and the sum of index-entry deltas,
+affected prefix epochs, and complete validation positions MUST NOT exceed
+65,535 correlated index-work units. Affected targets plus current epoch state
+remain capped at 16 MiB. The estimator may use only statically proved whole-
+index, one-partition, unchanged-leading-component, and ADR-0147 aggregate-byte
+correlations; it MUST NOT assume equality among caller values or distinct
+elements. Runtime derivation and storage constructors retain incremental count,
+work, and byte guards as defense in depth; a canonical checked plan reaching one
+is an internal integrity defect, never a durable or public command
+`ResourceLimit` outcome. Existing durable command-capsule identities retain
+their exact 4,096-transition maximum; larger admitted target sets require the
+least-sufficient ADR-0148 successor identity.
 
 An influential `IndexRangeEpoch` dependency and a mutation-affected epoch target
 serve different purposes and MUST NOT be inferred from one another. The first is
@@ -2980,9 +2984,11 @@ features disabled and no optional features, directly owned only by
 human review. Approval of the dependency does not replace WP-070 semantic
 conformance and process crash/reopen evidence.
 
-The v1 semantic storage hard ceilings are 4,096 binding observations, read
-dependencies, validation targets, mutations, index deltas, event intents, or
-outbox intents per command; 1 MiB per canonical entity/event/outcome value;
+The semantic storage hard ceilings are 4,096 binding observations, read
+dependencies, mutations, index deltas, event intents, or outbox intents per
+command; 65,535 affected prefix epochs and 65,535 validation positions beneath
+one 65,535-unit correlated index-work ceiling; 1 MiB per canonical
+entity/event/outcome value;
 16 MiB per owned snapshot; 15 MiB per pre-commit intent or commit-record semantic
 payload; 256 commands and 16 MiB aggregate staged write set per write transaction;
 500 rows and 4 MiB per generic scan page; independently, 500 complete index rows
@@ -7635,6 +7641,36 @@ does not create a kernel or storage escape hatch.
   nineteen-element atomic sets, business failure, authorization, cancellation,
   idempotency, concurrency, crash recovery, provenance, events, and complete-
   or-absent visibility across memory/redb and every generated surface.
+- `BLK-022`: Compilation MUST retain the 4,096 physical index-entry-delta
+  ceiling and compute affected prefix epochs `A`, complete validation positions
+  `V`, and correlated index work `D + A + V`. `A` and `V` are each structurally
+  capped at 65,535 and the correlated sum MUST NOT exceed 65,535 units; callers
+  and configuration cannot raise any ceiling.
+- `BLK-023`: Collection index planning MAY reduce a conservative estimate only
+  from the checked whole-index, one-partition, unchanged-leading-component, and
+  ADR-0147 aggregate-byte correlations. Aggregate bytes MAY improve the 16 MiB
+  affected-state byte proof but MUST NOT reduce count or work units; equality,
+  compression, optional absence, or runtime deduplication MUST NOT be assumed.
+- `BLK-024`: The coordinator MUST derive, charge, canonically sort, deduplicate,
+  and seal one concrete affected-prefix set per command attempt. Validation,
+  epoch reads and advances, reservation, and durable encoding MUST reuse that
+  set without per-target plan decode or re-expansion; every runtime guard remains
+  fail-closed defense in depth.
+- `BLK-025`: More than 4,096 durable index-generation transitions MUST use
+  least-sufficient successor command-capsule and segment identities with a
+  65,535-entry structural maximum and unchanged semantic/envelope byte ceilings.
+  Every old identity retains its exact 4,096 maximum and byte-exact decoder;
+  unsupported readers MUST refuse the successor before mutation.
+- `BLK-026`: `RDB-C020` ceiling violations MUST report one closed compiler
+  resource identity plus checked actual and maximum integers consistently
+  through compiler, CLI, MCP, gRPC, and LSP rendering. Diagnostics MUST remain
+  bounded and MUST NOT expose application values, keys, prefixes, secrets,
+  storage contents, or internal debug strings.
+- `BLK-027`: A framework-neutral index-rich corpus MUST prove 1, 9, 19, and 100
+  element atomic commands; exact and plus-one delta, prefix, validation, work,
+  and byte boundaries; least-sufficient durable selection; memory/redb parity;
+  deterministic schedules; idempotency; rollback; crash recovery; provenance;
+  events; changelog order; remote loopback; and bounded stage-cost evidence.
 
 Compiler-bounded one-hop cascade deletion extends that closed bulk-command
 model without introducing recursive graph traversal or caller-selected delete

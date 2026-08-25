@@ -5,6 +5,109 @@ use std::fmt;
 
 use riffdb_contract_syntax::Span;
 
+/// Closed compiler-owned resource names permitted in bounded diagnostics.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum CompilerBoundResource {
+    /// Physical secondary-index removals and additions.
+    CommandIndexEntryDeltas,
+    /// Mutation-affected complete index-prefix epoch buckets.
+    CommandAffectedPrefixEpochs,
+    /// Complete transaction-current command validation positions.
+    CommandValidationPositions,
+    /// ADR-0148's `D + A + V` command work charge.
+    CommandCorrelatedIndexWork,
+    /// Semantic bytes retained for affected targets and epoch observations.
+    CommandAffectedEpochStateBytes,
+    /// Complete collection-command canonical graph bytes.
+    CommandGraphBytes,
+    /// Canonical bytes across one aggregate-bounded collection input.
+    AggregateCollectionBytes,
+    /// Canonical key bytes.
+    KeyBytes,
+    /// Canonical value bytes.
+    ValueBytes,
+    /// A declaration or other structurally bounded compiler collection.
+    DeclarationCount,
+    /// Redacted fallback for a ceiling not yet assigned a narrower public name.
+    CompiledArtifact,
+}
+
+impl CompilerBoundResource {
+    /// Stable value-free spelling used in public diagnostics.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::CommandIndexEntryDeltas => "command_index_entry_deltas",
+            Self::CommandAffectedPrefixEpochs => "command_affected_prefix_epochs",
+            Self::CommandValidationPositions => "command_validation_positions",
+            Self::CommandCorrelatedIndexWork => "command_correlated_index_work",
+            Self::CommandAffectedEpochStateBytes => "command_affected_epoch_state_bytes",
+            Self::CommandGraphBytes => "command_graph_bytes",
+            Self::AggregateCollectionBytes => "aggregate_collection_bytes",
+            Self::KeyBytes => "key_bytes",
+            Self::ValueBytes => "value_bytes",
+            Self::DeclarationCount => "declaration_count",
+            Self::CompiledArtifact => "compiled_artifact",
+        }
+    }
+
+    pub(crate) fn from_ir_kind(kind: &'static str) -> Self {
+        match kind {
+            "command worst-case index entry deltas" | "command worst-case index entry puts" => {
+                Self::CommandIndexEntryDeltas
+            }
+            "command worst-case affected index prefixes" => Self::CommandAffectedPrefixEpochs,
+            "command worst-case validation targets" => Self::CommandValidationPositions,
+            "command worst-case correlated index work units" => Self::CommandCorrelatedIndexWork,
+            "command worst-case affected epoch state bytes" => Self::CommandAffectedEpochStateBytes,
+            value if value.contains("collection command") && value.contains("graph") => {
+                Self::CommandGraphBytes
+            }
+            value if value.contains("aggregate") && value.contains("byte") => {
+                Self::AggregateCollectionBytes
+            }
+            value if value.contains("key") && value.contains("byte") => Self::KeyBytes,
+            value if value.contains("value") && value.contains("byte") => Self::ValueBytes,
+            value
+                if value.contains("declaration")
+                    || value.contains("fields")
+                    || value.contains("entries") =>
+            {
+                Self::DeclarationCount
+            }
+            _ => Self::CompiledArtifact,
+        }
+    }
+}
+
+/// Safe checked evidence attached to one `RDB-C020` ceiling violation.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct CompilerBoundObservation {
+    resource: CompilerBoundResource,
+    actual: usize,
+    maximum: usize,
+}
+
+impl CompilerBoundObservation {
+    /// Closed compiler resource.
+    #[must_use]
+    pub const fn resource(self) -> CompilerBoundResource {
+        self.resource
+    }
+
+    /// Checked observed plan/schema amount.
+    #[must_use]
+    pub const fn actual(self) -> usize {
+        self.actual
+    }
+
+    /// Checked immutable maximum.
+    #[must_use]
+    pub const fn maximum(self) -> usize {
+        self.maximum
+    }
+}
+
 /// Maximum number of semantic diagnostics returned by one compilation.
 pub const MAX_COMPILER_DIAGNOSTICS: usize = 32;
 
@@ -460,6 +563,7 @@ pub struct CompilerDiagnostic {
     code: CompilerDiagnosticCode,
     primary_span: Span,
     related_span: Option<Span>,
+    bound: Option<CompilerBoundObservation>,
 }
 
 impl CompilerDiagnostic {
@@ -470,6 +574,48 @@ impl CompilerDiagnostic {
             code,
             primary_span,
             related_span: None,
+            bound: None,
+        }
+    }
+
+    /// Constructs a precise value-free `RDB-C020` ceiling observation.
+    #[must_use]
+    pub const fn bound_exceeded(
+        resource: CompilerBoundResource,
+        actual: usize,
+        maximum: usize,
+        primary_span: Span,
+    ) -> Self {
+        Self {
+            code: CompilerDiagnosticCode::BoundExceeded,
+            primary_span,
+            related_span: None,
+            bound: Some(CompilerBoundObservation {
+                resource,
+                actual,
+                maximum,
+            }),
+        }
+    }
+
+    /// Converts checked IR validation while preserving safe ceiling evidence.
+    #[must_use]
+    pub fn from_ir_error(error: riffdb_contract_ir::IrValidationError, primary_span: Span) -> Self {
+        match error {
+            riffdb_contract_ir::IrValidationError::LimitExceeded {
+                kind,
+                actual,
+                maximum,
+            } => Self::bound_exceeded(
+                CompilerBoundResource::from_ir_kind(kind),
+                actual,
+                maximum,
+                primary_span,
+            ),
+            riffdb_contract_ir::IrValidationError::SizeOverflow { .. } => {
+                Self::new(CompilerDiagnosticCode::BoundExceeded, primary_span)
+            }
+            _ => Self::new(CompilerDiagnosticCode::InvalidIr, primary_span),
         }
     }
 
@@ -497,11 +643,33 @@ impl CompilerDiagnostic {
     pub const fn related_span(&self) -> Option<Span> {
         self.related_span
     }
+
+    /// Returns precise checked bound evidence when this is a known ceiling.
+    #[must_use]
+    pub const fn bound(&self) -> Option<CompilerBoundObservation> {
+        self.bound
+    }
+
+    /// Returns the bounded public summary, including actionable bound evidence.
+    #[must_use]
+    pub fn summary(&self) -> String {
+        self.bound.map_or_else(
+            || self.code.summary().to_owned(),
+            |bound| {
+                format!(
+                    "{} is {}; maximum is {}",
+                    bound.resource.as_str(),
+                    bound.actual,
+                    bound.maximum
+                )
+            },
+        )
+    }
 }
 
 impl fmt::Display for CompilerDiagnostic {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(formatter, "{}: {}", self.code.as_str(), self.code.summary())
+        write!(formatter, "{}: {}", self.code.as_str(), self.summary())
     }
 }
 
@@ -523,6 +691,7 @@ impl CompilerDiagnostics {
                 diagnostic.primary_span.end(),
                 diagnostic.code,
                 diagnostic.related_span,
+                diagnostic.bound,
             )
         });
         diagnostics.dedup();
@@ -600,7 +769,7 @@ mod tests {
     }
 
     #[test]
-    fn external_messages_are_static_and_related_spans_are_preserved() {
+    fn external_messages_are_bounded_and_related_spans_are_preserved() {
         let primary = Span::new(10, 20).expect("valid primary span");
         let related = Span::new(1, 9).expect("valid related span");
         let diagnostic =
@@ -611,6 +780,52 @@ mod tests {
             "RDB-C203: two commands normalize to the same MCP command tool name"
         );
         assert_eq!(diagnostic.related_span(), Some(related));
+    }
+
+    #[test]
+    fn bound_diagnostics_preserve_closed_resource_actual_maximum_and_span() {
+        let primary = Span::new(30, 44).expect("valid command span");
+        let diagnostic = CompilerDiagnostic::from_ir_error(
+            riffdb_contract_ir::IrValidationError::LimitExceeded {
+                kind: "command worst-case affected index prefixes",
+                actual: 23_320,
+                maximum: 4_096,
+            },
+            primary,
+        );
+
+        assert_eq!(diagnostic.code(), CompilerDiagnosticCode::BoundExceeded);
+        assert_eq!(diagnostic.primary_span(), primary);
+        let observation = diagnostic.bound().expect("known bound observation");
+        assert_eq!(
+            observation.resource(),
+            CompilerBoundResource::CommandAffectedPrefixEpochs
+        );
+        assert_eq!(observation.actual(), 23_320);
+        assert_eq!(observation.maximum(), 4_096);
+        assert_eq!(
+            diagnostic.to_string(),
+            "RDB-C020: command_affected_prefix_epochs is 23320; maximum is 4096"
+        );
+    }
+
+    #[test]
+    fn unknown_ir_limit_kinds_are_redacted_without_losing_checked_counts() {
+        let primary = Span::new(1, 2).expect("valid span");
+        let diagnostic = CompilerDiagnostic::from_ir_error(
+            riffdb_contract_ir::IrValidationError::LimitExceeded {
+                kind: "internal implementation detail",
+                actual: 9,
+                maximum: 8,
+            },
+            primary,
+        );
+
+        assert_eq!(diagnostic.summary(), "compiled_artifact is 9; maximum is 8");
+        assert_eq!(
+            diagnostic.bound().map(CompilerBoundObservation::resource),
+            Some(CompilerBoundResource::CompiledArtifact)
+        );
     }
 
     #[test]

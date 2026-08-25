@@ -29,9 +29,10 @@ use riffdb_storage_api::{
     EncodedWriteSetUpperBoundResultV1, EntityMutation, EntityObservation, EntityTarget,
     EvaluatedCommand, IdempotencyLookupCandidatesV1, IndexEntryMutationV1, IndexEpochAdvanceError,
     IndexEpochAdvanceV1, IndexRangePrefixBuilder, IndexRangeTarget,
-    MAX_AFFECTED_INDEX_EPOCH_TARGETS, MAX_INDEX_DELTAS, MAX_READ_SNAPSHOT_BYTES,
-    MAX_VALIDATION_TARGETS, PartitionIndexTarget, ReadSnapshot, SnapshotRequest, StorageError,
-    StoredIndexEntryV2, TransactionCurrentState, UniqueIndexTarget, UniqueOccupancyKind,
+    MAX_AFFECTED_INDEX_EPOCH_TARGETS, MAX_COMMAND_READ_TARGETS, MAX_INDEX_DELTAS,
+    MAX_INDEX_VALIDATION_POSITIONS, MAX_INDEX_WORK_UNITS, MAX_READ_SNAPSHOT_BYTES,
+    PartitionIndexTarget, ReadSnapshot, SnapshotRequest, StorageError, StoredIndexEntryV2,
+    TransactionCurrentState, UniqueIndexTarget, UniqueOccupancyKind,
     ValidatedCommandWriteSetShapeV1, VectorEvidenceReadRequestV1, VectorEvidenceReadTargetV1,
     VectorEvidenceTransitionPlanV1, command_write_set_upper_bound_with_vector_evidence_v1,
 };
@@ -1288,15 +1289,23 @@ struct IndexDerivationBuilder {
     affected_targets: BTreeSet<PartitionIndexTarget>,
     unique_targets: BTreeSet<UniqueIndexTarget>,
     validation_positions: usize,
+    index_work_units: usize,
     affected_current_semantic_bytes: usize,
 }
 
 impl IndexDerivationBuilder {
-    fn new(binding_count: usize, root_count: usize) -> Result<Self, CommandIndexError> {
+    fn new(
+        binding_count: usize,
+        root_count: usize,
+        range_count: usize,
+    ) -> Result<Self, CommandIndexError> {
         let validation_positions = binding_count
             .checked_add(root_count)
+            .and_then(|value| value.checked_add(range_count))
             .ok_or_else(CommandIndexError::internal_defect)?;
-        if validation_positions > MAX_VALIDATION_TARGETS {
+        if validation_positions > MAX_COMMAND_READ_TARGETS
+            || validation_positions > MAX_INDEX_WORK_UNITS
+        {
             return Err(CommandIndexError::internal_defect());
         }
         Ok(Self {
@@ -1305,16 +1314,19 @@ impl IndexDerivationBuilder {
             affected_targets: BTreeSet::new(),
             unique_targets: BTreeSet::new(),
             validation_positions,
+            index_work_units: validation_positions,
             affected_current_semantic_bytes: AFFECTED_CURRENT_STATE_FIXED_BYTES_V1,
         })
     }
 
     fn push_entry(&mut self, mutation: IndexEntryMutationV1) -> Result<(), CommandIndexError> {
         if self.entry_mutations.len() >= MAX_INDEX_DELTAS
-            || !self.entry_keys.insert(mutation.key().clone())
+            || self.entry_keys.contains(mutation.key())
         {
             return Err(CommandIndexError::internal_defect());
         }
+        self.charge_work(1)?;
+        self.entry_keys.insert(mutation.key().clone());
         self.entry_mutations.push(mutation);
         Ok(())
     }
@@ -1330,7 +1342,7 @@ impl IndexDerivationBuilder {
             .validation_positions
             .checked_add(1)
             .ok_or_else(CommandIndexError::internal_defect)?;
-        if next_positions > MAX_VALIDATION_TARGETS {
+        if next_positions > MAX_INDEX_VALIDATION_POSITIONS {
             return Err(CommandIndexError::internal_defect());
         }
         let observation_bytes = target
@@ -1347,6 +1359,7 @@ impl IndexDerivationBuilder {
         if next_bytes > MAX_READ_SNAPSHOT_BYTES {
             return Err(CommandIndexError::internal_defect());
         }
+        self.charge_work(2)?;
         self.affected_targets.insert(target);
         self.validation_positions = next_positions;
         self.affected_current_semantic_bytes = next_bytes;
@@ -1363,7 +1376,7 @@ impl IndexDerivationBuilder {
             .validation_positions
             .checked_add(1)
             .ok_or_else(CommandIndexError::internal_defect)?;
-        if next_positions > MAX_VALIDATION_TARGETS {
+        if next_positions > MAX_INDEX_VALIDATION_POSITIONS {
             return Err(CommandIndexError::internal_defect());
         }
         let observation_bytes = target
@@ -1381,9 +1394,22 @@ impl IndexDerivationBuilder {
         if next_bytes > MAX_READ_SNAPSHOT_BYTES {
             return Err(CommandIndexError::internal_defect());
         }
+        self.charge_work(1)?;
         self.unique_targets.insert(target);
         self.validation_positions = next_positions;
         self.affected_current_semantic_bytes = next_bytes;
+        Ok(())
+    }
+
+    fn charge_work(&mut self, units: usize) -> Result<(), CommandIndexError> {
+        let next = self
+            .index_work_units
+            .checked_add(units)
+            .ok_or_else(CommandIndexError::internal_defect)?;
+        if next > MAX_INDEX_WORK_UNITS {
+            return Err(CommandIndexError::internal_defect());
+        }
+        self.index_work_units = next;
         Ok(())
     }
 
@@ -1627,6 +1653,7 @@ fn derive_grammar_v1_indexes(
             .checked_add(request.cascade_targets().len())
             .ok_or_else(CommandIndexError::internal_defect)?,
         request.root_validation_targets().len(),
+        request.range_targets().len(),
     )?;
     let schema_binding = DurableKeySchemaBindingV1::from_plan(resolved.reference());
     for (binding_position, plan_index) in facts.binding_plan_indices().iter().enumerate() {
@@ -3846,7 +3873,7 @@ contract ReimportEraRows version 1 {
             CanonicalValue::bytes(vec![0, 1, 2]).expect("bytes"),
             string("exact"),
         ];
-        let mut builder = IndexDerivationBuilder::new(0, 0).expect("builder");
+        let mut builder = IndexDerivationBuilder::new(0, 0, 0).expect("builder");
         let partition = PartitionKeyBuilder::new(AggregateTypeId::first())
             .finish()
             .expect("partition key");
@@ -3990,7 +4017,7 @@ contract ReimportEraRows version 1 {
         let record = CanonicalRecord::new(vec![(id_field, id), (title_field, string("a\0title"))])
             .expect("text record");
         let values = index_values(title, &record).expect("ordered text values");
-        let mut builder = IndexDerivationBuilder::new(0, 0).expect("builder");
+        let mut builder = IndexDerivationBuilder::new(0, 0, 0).expect("builder");
         let partition = PartitionKeyBuilder::new(AggregateTypeId::first())
             .finish()
             .expect("partition key");
@@ -4022,14 +4049,14 @@ contract ReimportEraRows version 1 {
         )
         .expect("fixture indexes");
         let entry = derived.entry_mutations[0].clone();
-        let mut duplicate = IndexDerivationBuilder::new(0, 0).expect("builder");
+        let mut duplicate = IndexDerivationBuilder::new(0, 0, 0).expect("builder");
         duplicate.push_entry(entry.clone()).expect("first key");
         assert_eq!(
             duplicate.push_entry(entry.clone()),
             Err(CommandIndexError::internal_defect())
         );
 
-        let mut delta_limit = IndexDerivationBuilder::new(0, 0).expect("builder");
+        let mut delta_limit = IndexDerivationBuilder::new(0, 0, 0).expect("builder");
         delta_limit.entry_mutations = vec![entry; MAX_INDEX_DELTAS - 1];
         delta_limit
             .push_entry(derived.entry_mutations[1].clone())
@@ -4040,36 +4067,32 @@ contract ReimportEraRows version 1 {
             Err(CommandIndexError::internal_defect())
         );
 
-        assert!(IndexDerivationBuilder::new(MAX_VALIDATION_TARGETS, 0).is_ok());
+        assert!(IndexDerivationBuilder::new(MAX_COMMAND_READ_TARGETS, 0, 0).is_ok());
         assert_eq!(
-            IndexDerivationBuilder::new(MAX_VALIDATION_TARGETS, 1)
+            IndexDerivationBuilder::new(MAX_COMMAND_READ_TARGETS, 1, 0)
                 .err()
                 .expect("positions over limit"),
             CommandIndexError::internal_defect()
         );
-        let mut position_limit =
-            IndexDerivationBuilder::new(MAX_VALIDATION_TARGETS, 0).expect("exact positions");
+        let position_limit = IndexDerivationBuilder::new(MAX_COMMAND_READ_TARGETS, 0, 0)
+            .expect("exact ordinary read positions");
         assert_eq!(
-            position_limit.insert_target(generation_target(IndexId::first())),
-            Err(CommandIndexError::internal_defect())
+            position_limit.validation_positions,
+            MAX_COMMAND_READ_TARGETS
         );
 
-        let mut target_limit = IndexDerivationBuilder::new(0, 0).expect("builder");
-        for raw in 1..=u32::try_from(MAX_AFFECTED_INDEX_EPOCH_TARGETS).expect("u32 bound") {
+        let mut target_limit = IndexDerivationBuilder::new(0, 0, 0).expect("builder");
+        let exact_work_targets = MAX_INDEX_WORK_UNITS / 2;
+        for raw in 1..=u32::try_from(exact_work_targets).expect("u32 bound") {
             target_limit
                 .insert_target(generation_target(IndexId::new(raw).expect("index ID")))
                 .expect("exact affected-target bound");
         }
-        assert_eq!(
-            target_limit.affected_targets.len(),
-            MAX_AFFECTED_INDEX_EPOCH_TARGETS
-        );
+        assert_eq!(target_limit.affected_targets.len(), exact_work_targets);
         assert_eq!(
             target_limit.insert_target(generation_target(
-                IndexId::new(
-                    u32::try_from(MAX_AFFECTED_INDEX_EPOCH_TARGETS + 1).expect("u32 bound"),
-                )
-                .expect("index ID"),
+                IndexId::new(u32::try_from(exact_work_targets + 1).expect("u32 bound"),)
+                    .expect("index ID"),
             )),
             Err(CommandIndexError::internal_defect())
         );
@@ -4078,7 +4101,7 @@ contract ReimportEraRows version 1 {
         let observation_bytes = exact_byte_target.partition_key().as_bytes().len()
             + INDEX_RANGE_TARGET_FIXED_BYTES_V1
             + MAX_INDEX_EPOCH_POSITION_BYTES_V1;
-        let mut byte_limit = IndexDerivationBuilder::new(0, 0).expect("builder");
+        let mut byte_limit = IndexDerivationBuilder::new(0, 0, 0).expect("builder");
         byte_limit.affected_current_semantic_bytes = MAX_READ_SNAPSHOT_BYTES - observation_bytes;
         byte_limit
             .insert_target(exact_byte_target)

@@ -2277,6 +2277,30 @@ impl SchemaIr {
             .find(|aggregate| aggregate.owns(entity))
     }
 
+    /// Returns the entity fields that form its complete aggregate partition route.
+    ///
+    /// The fields are in canonical entity-key order and are guaranteed equal
+    /// across every repeated binding of one checked collection command.
+    pub(crate) fn partition_route_fields(
+        &self,
+        entity: EntityTypeId,
+    ) -> Result<Vec<FieldId>, IrValidationError> {
+        let aggregate =
+            self.aggregate_for_entity(entity)
+                .ok_or(IrValidationError::InvalidReference {
+                    kind: "entity aggregate owner",
+                })?;
+        let root = self
+            .entity(aggregate.root())
+            .ok_or(IrValidationError::InvalidReference {
+                kind: "aggregate root entity",
+            })?;
+        let entity = self
+            .entity(entity)
+            .ok_or(IrValidationError::InvalidReference { kind: "entity" })?;
+        aggregate_partition_route_fields(aggregate, root, entity)
+    }
+
     fn validate_enum_references(&self) -> Result<(), IrValidationError> {
         for record in self.entities.iter().map(EntitySchema::record) {
             for field in record.fields() {

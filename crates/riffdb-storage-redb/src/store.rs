@@ -4121,7 +4121,7 @@ impl RedbWriteAccess {
     pub(crate) fn prepare_command_segment_capsules(
         &self,
         capsules: Vec<riffdb_storage_api::StoredCommandCapsuleV2>,
-        uses_v5: bool,
+        wire_version: riffdb_storage_api::CommandCapsuleWireVersionV1,
     ) -> Result<
         (
             Vec<riffdb_storage_api::StoredCommandCapsuleV2>,
@@ -4131,7 +4131,7 @@ impl RedbWriteAccess {
     > {
         self.shared
             .command_segment_preparation
-            .prepare(capsules, uses_v5)
+            .prepare(capsules, wire_version)
             .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))
     }
 

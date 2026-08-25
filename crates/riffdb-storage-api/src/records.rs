@@ -18,11 +18,11 @@ use crate::{
     AssignedCommandSequence, CommitIntent, DeclaredOutcome, DurableKeySchemaBindingV1,
     EntityMutation, EntityTarget, ExecutablePlanRef, ExpectedEntityState, IdempotencyIdentity,
     IndexEpochPosition, MAX_COMMIT_CONFLICT_HASHES, MAX_ENTITY_MUTATIONS, MAX_EVENT_INTENTS,
-    MAX_INDEX_DELTAS, MAX_STAGED_WRITE_BYTES, MAX_VALIDATION_TARGETS, PartitionIndexTarget,
-    StorageValueError, StoredAdmittedProvenanceClaimsV1, StoredReadDependenciesV1,
-    StoredServiceAuditRecordV1, StructurallyDecodedIndexRangePrefixV1, VectorEvidenceMutationV1,
-    VectorEvidenceTransitionPlanV1, actor_semantic_bytes, canonical_codec_storage_error,
-    canonical_record_bytes, framed_bytes,
+    MAX_INDEX_DELTAS, MAX_INDEX_VALIDATION_POSITIONS, MAX_INDEX_WORK_UNITS, MAX_STAGED_WRITE_BYTES,
+    PartitionIndexTarget, StorageValueError, StoredAdmittedProvenanceClaimsV1,
+    StoredReadDependenciesV1, StoredServiceAuditRecordV1, StructurallyDecodedIndexRangePrefixV1,
+    VectorEvidenceMutationV1, VectorEvidenceTransitionPlanV1, actor_semantic_bytes,
+    canonical_codec_storage_error, canonical_record_bytes, framed_bytes,
 };
 
 /// The durability contract used for one completed engine commit.
@@ -2234,10 +2234,19 @@ impl ValidatedCommandWriteSetShapeV1 {
             .binding_targets()
             .len()
             .checked_add(validation.root_validation_targets().len())
+            .and_then(|value| value.checked_add(validation.cascade_targets().len()))
             .and_then(|value| value.checked_add(validation.range_targets().len()))
             .and_then(|value| value.checked_add(affected_targets.as_slice().len()))
+            .and_then(|value| value.checked_add(affected_targets.unique_targets().len()))
             .ok_or(StorageValueError::SizeOverflow)?;
-        if validation_target_count > MAX_VALIDATION_TARGETS {
+        let index_work = index_entries
+            .len()
+            .checked_add(affected_targets.as_slice().len())
+            .and_then(|value| value.checked_add(validation_target_count))
+            .ok_or(StorageValueError::SizeOverflow)?;
+        if validation_target_count > MAX_INDEX_VALIDATION_POSITIONS
+            || index_work > MAX_INDEX_WORK_UNITS
+        {
             return Err(StorageValueError::LimitExceeded);
         }
         validate_index_entries(&index_entries)?;
@@ -3156,7 +3165,7 @@ fn validate_index_entries(entries: &[IndexEntryMutationV1]) -> Result<(), Storag
 }
 
 fn validate_index_epochs(epochs: &[IndexEpochAdvanceV1]) -> Result<(), StorageValueError> {
-    if epochs.len() > MAX_INDEX_DELTAS {
+    if epochs.len() > crate::MAX_AFFECTED_INDEX_EPOCH_TARGETS {
         return Err(StorageValueError::LimitExceeded);
     }
     if epochs

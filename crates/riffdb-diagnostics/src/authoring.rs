@@ -18,6 +18,7 @@ pub const MAX_AUTHORING_DIAGNOSTIC_BYTES: usize = 65_536;
 const MAX_SOURCE_PATH_BYTES: usize = 512;
 const MAX_SYMBOL_PATH_COMPONENTS: usize = 16;
 const MAX_SYMBOL_COMPONENT_BYTES: usize = 256;
+const MAX_SUMMARY_BYTES: usize = 1_024;
 
 /// Closed authoring pipeline stage.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -316,7 +317,7 @@ pub struct AuthoringDiagnostic {
     path: AuthoringSourcePath,
     span: Option<AuthoringSourceSpan>,
     symbol_path: Vec<String>,
-    summary: &'static str,
+    summary: String,
     cause: AuthoringCause,
     fixes: Vec<AuthoringFix>,
     file_change: FileChangeDisposition,
@@ -354,10 +355,10 @@ impl AuthoringDiagnostic {
         &self.symbol_path
     }
 
-    /// Registry-owned summary.
+    /// Bounded value-free summary.
     #[must_use]
-    pub const fn summary(&self) -> &'static str {
-        self.summary
+    pub fn summary(&self) -> &str {
+        &self.summary
     }
 
     /// Closed cause.
@@ -439,7 +440,7 @@ impl AuthoringDiagnostics {
                         path.clone(),
                         Some((span.start(), span.end())),
                         Vec::new(),
-                        contract_semantic_summary(code),
+                        contract_semantic_summary(diagnostic),
                         cause,
                         fixes,
                     )
@@ -769,11 +770,14 @@ fn diagnostic_value(
     path: AuthoringSourcePath,
     span: Option<(u32, u32)>,
     symbol_path: Vec<String>,
-    summary: &'static str,
+    summary: impl Into<String>,
     cause: AuthoringCause,
     mut fixes: Vec<AuthoringFix>,
 ) -> Result<AuthoringDiagnostic, AuthoringDiagnosticBoundsError> {
+    let summary = summary.into();
     if symbol_path.len() > MAX_SYMBOL_PATH_COMPONENTS
+        || summary.is_empty()
+        || summary.len() > MAX_SUMMARY_BYTES
         || symbol_path.iter().any(|component| {
             component.is_empty()
                 || component.len() > MAX_SYMBOL_COMPONENT_BYTES
@@ -859,18 +863,16 @@ fn contract_semantic_class(
     }
 }
 
-fn contract_semantic_summary(
-    code: riffdb_contract_compiler::CompilerDiagnosticCode,
-) -> &'static str {
+fn contract_semantic_summary(diagnostic: &riffdb_contract_compiler::CompilerDiagnostic) -> String {
     use riffdb_contract_compiler::CompilerDiagnosticCode as Code;
-    match code {
+    match diagnostic.code() {
         Code::CrossPartitionMutation => {
-            "atomic command writes span multiple aggregate roots or partition routes"
+            "atomic command writes span multiple aggregate roots or partition routes".to_owned()
         }
         Code::MissingRelationshipRead => {
-            "relationship proof must read the exact target before mutation and reuse the same key expressions"
+            "relationship proof must read the exact target before mutation and reuse the same key expressions".to_owned()
         }
-        _ => code.summary(),
+        _ => diagnostic.summary(),
     }
 }
 

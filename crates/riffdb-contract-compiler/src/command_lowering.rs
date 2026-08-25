@@ -1630,13 +1630,7 @@ fn ir_diagnostic(span: Span) -> CompilerDiagnostic {
 }
 
 fn ir_error_diagnostic(error: IrValidationError, span: Span) -> CompilerDiagnostic {
-    let code = match error {
-        IrValidationError::LimitExceeded { .. } | IrValidationError::SizeOverflow { .. } => {
-            CompilerDiagnosticCode::BoundExceeded
-        }
-        _ => CompilerDiagnosticCode::InvalidIr,
-    };
-    CompilerDiagnostic::new(code, span)
+    CompilerDiagnostic::from_ir_error(error, span)
 }
 
 #[cfg(test)]

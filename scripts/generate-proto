@@ -121,6 +121,10 @@ artifacts=(
     fixtures/proto/durable-event-reference-v2-record-bounds.bin
     fixtures/proto/durable-event-reference-v2-schema-hashes.bin
     fixtures/proto/durable-event-reference-v2-wire-vectors.txt
+    fixtures/proto/durable-correlated-index-work-command-authority-v6-record-bounds.bin
+    fixtures/proto/durable-correlated-index-work-command-authority-v6-schema-hashes.bin
+    crates/riffdb-proto/fixtures/durable-correlated-index-work-command-authority-v6-record-bounds.bin
+    crates/riffdb-proto/fixtures/durable-correlated-index-work-command-authority-v6-schema-hashes.bin
     fixtures/proto/durable-registry-v2-record-bound.bin
     fixtures/proto/durable-registry-v2-schema-hash.bin
     fixtures/proto/durable-index-v2-wire-vector.txt
