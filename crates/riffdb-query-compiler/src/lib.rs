@@ -2719,7 +2719,11 @@ fn choose_access(
             let equality = comparisons.iter().any(|comparison| {
                 comparison.field == field
                     && comparison.operator.is_binary(BinaryOperator::Equal)
-                    && encoding == IndexFieldEncodingV1::Canonical
+                    && matches!(
+                        encoding,
+                        IndexFieldEncodingV1::Canonical
+                            | IndexFieldEncodingV1::TextKey(TextKeyProfileV1::BinaryUtf8)
+                    )
             });
             if equality {
                 order_start += 1;
@@ -2879,7 +2883,15 @@ fn operational_predicates_supported(
                 index.internal_encodings()[position],
                 IndexFieldEncodingV1::TextKey(_)
             ),
-            _ => true,
+            SourcePredicateOperator::Binary(BinaryOperator::Equal) => !matches!(
+                index.internal_encodings()[position],
+                IndexFieldEncodingV1::TextKey(profile)
+                    if profile != TextKeyProfileV1::BinaryUtf8
+            ),
+            _ => !matches!(
+                index.internal_encodings()[position],
+                IndexFieldEncodingV1::TextKey(_)
+            ),
         }
     });
     predicates_match
@@ -2899,7 +2911,11 @@ fn operational_predicates_supported(
                 IndexFieldEncodingV1::TextKey(_) => {
                     comparisons.iter().any(|comparison| {
                         comparison.field == index.fields()[position]
-                            && comparison.operator.is_binary(BinaryOperator::Prefix)
+                            && (comparison.operator.is_binary(BinaryOperator::Prefix)
+                                || (matches!(
+                                    encoding,
+                                    IndexFieldEncodingV1::TextKey(TextKeyProfileV1::BinaryUtf8)
+                                ) && comparison.operator.is_binary(BinaryOperator::Equal)))
                     }) || binding.order.iter().any(|term| {
                         path_field(&term.path.value) == Some(index.fields()[position].as_str())
                     })

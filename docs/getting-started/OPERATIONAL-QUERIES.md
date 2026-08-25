@@ -73,6 +73,14 @@ still requires the complete deterministic index order, bounded `take`, and an
 opaque snapshot-bound cursor; callers cannot select the collation or index at
 runtime.
 
+The same component also supports exact equality as a complete index-prefix
+term. For example, an index ordered by `(organization_id, relation, user,
+document_id)` with `binary_utf8_v1` text keys on `relation` and `user` can back
+both `order by relation, user, document_id` and `relation == $relation` followed
+by `order by user, document_id`. This is one maintained index: the compiler
+must prove each named shape independently, and the runtime does not walk pages
+or filter after `take`.
+
 ## Feature preflight
 
 The authorized application catalog returns the closed

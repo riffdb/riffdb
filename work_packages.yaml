@@ -1,4 +1,4 @@
-spec_version: '1.09'
+spec_version: '1.11'
 product: RiffDB
 repository: riffdb
 status: deployable-application-alpha-architecture-accepted
@@ -17980,5 +17980,77 @@ work_packages:
     known_limitations: Only the already available binary_utf8_v1 profile is executable;
       unicode_fold_v1 remains unavailable. Ordinary cursor pages retain snapshot-bound continuation
       semantics and do not provide numeric-offset stability across fresh requests.
+    follow_ups: []
+  human_review_triggers: *id001
+- id: WP-686
+  name: Exact binary text-key equality prefixes
+  depends_on: [WP-564, WP-565, WP-685]
+  objective: Correct ordinary bounded operational planning and execution so one declared
+    binary_utf8_v1 text-key component may be consumed either by exact equality or by the complete
+    compiler-declared order suffix, allowing progressively narrower named queries to share one
+    maintained index without weakening partition, order, cursor, cost, or policy proofs.
+  requirements: [OQ-001, OQ-002, OQ-004, OQ-005, OQ-006, OQ-007, OQ-008,
+    OQ-009, OQ-015]
+  required_adrs: [ADR-0038, ADR-0051, ADR-0053, ADR-0055, ADR-0108,
+    ADR-0111, ADR-0124]
+  allowed_paths: [SPEC.md, work_packages.yaml, crates/riffdb-query-compiler/**,
+    crates/riffdb-query-executor/**, crates/riffdb-testkit/**,
+    fixtures/riffql/**, tests/operational_queries.rs, scripts/**, docs/SUMMARY.md, docs/riffql/**,
+    docs/getting-started/OPERATIONAL-QUERIES.md]
+  deliverables:
+  - Planner eligibility advances an exact equality prefix across a
+    TextKey(binary_utf8_v1) component and recognizes the same component as an ordered suffix in a
+    wider query; prefix, order, partition, deterministic tie-breaker, and residual-predicate
+    checks remain fail-closed
+  - Execution lowers a typed logical string equality to the selected text-key component's exact
+    physical binary_utf8_v1 bytes once while forming the bounded index prefix; row predicate
+    evaluation continues to compare the original typed field value
+  - Compiler and independent execution regressions prove wider and narrower cursor-paged query
+    shapes select the same index and preserve bytewise order for length-divergent values without
+    duplicate, omission, scan fallback, or duplicate index maintenance
+  - Public planning and operational-query guidance explains that one declared text-key component
+    supports exact equality, leading-byte prefix, and bytewise order in compatible compiled query
+    shapes; no external adapter or framework surface enters RiffDB
+  - Existing grammar, source, query IR, module, cursor, storage, durable, wire, provider-state,
+    generated-client, and compatibility identities remain byte-exact; newly accepted sources use
+    the existing identities and ordinary deployment rotation
+  acceptance_commands:
+  - cargo +1.97.0 test -p riffdb-query-compiler -p riffdb-query-executor --all-features
+  - cargo +1.97.0 test -p riffdb-testkit --test operational_queries --all-features
+  - cargo +1.97.0 test -p riffdb-storage-memory -p riffdb-storage-redb --all-features
+  - ./scripts/check-version-topology
+  - ./scripts/check-generated
+  - ./scripts/check-requirement-coverage
+  - ./scripts/check-workspace-policy
+  - ./scripts/handbook check
+  - cargo +1.97.0 fmt --all -- --check
+  - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: One binary_utf8_v1 index proves both wider ordered and narrower exact-equality-prefix
+    query shapes with exact cursor traversal and no duplicate index, scan, client shaping, new
+    identity, framework branch, or weakened bound.
+  standing_design_tests:
+    interface_safety: Applications still invoke only finite named operations with typed values and
+      opaque cursors; they cannot select encoding, collation, index, field, direction, predicate,
+      policy, cost, storage path, or fallback at request time.
+    scale: Equality narrows the existing ordered index prefix and runtime traverses only the
+      declared bounded page plus its continuation probe. Index maintenance remains one delta per
+      declared index, with no page walk, population materialization, or extra provider work.
+  closure:
+    status: complete
+    completed_at: "2026-08-25"
+    requirements_satisfied: [OQ-001, OQ-002, OQ-004, OQ-005, OQ-006, OQ-007,
+      OQ-008, OQ-009, OQ-015]
+    evidence: The ordinary planner now advances exact equality across a binary_utf8_v1 text-key
+      component while rejecting range and other canonical predicates that the physical profile
+      cannot prove. Runtime lowers the typed string to the existing ordered-byte component only
+      when constructing the bounded index prefix. Compiler and independent execution regressions
+      prove wider relation/user ordering and narrower relation equality plus user ordering select
+      the same index, traverse one-row cursor pages without duplicate or omission, and preserve
+      bytewise rel-3-before-rel6 and doc-3-before-doc6 order. Compiler, executor, memory, redb,
+      recovery, topology, generated, coverage, policy, handbook, formatting, and workspace Clippy
+      gates pass; old compatibility identities and artifacts are unchanged.
+    known_limitations: Exact equality-prefix consumption is limited to the executable
+      binary_utf8_v1 profile. unicode_fold_v1 remains unavailable, and bounded in or canonical
+      range predicates do not acquire binary text-key prefix semantics.
     follow_ups: []
   human_review_triggers: *id001
