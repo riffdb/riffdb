@@ -14,7 +14,7 @@ pub enum CompilerBoundResource {
     CommandAffectedPrefixEpochs,
     /// Complete transaction-current command validation positions.
     CommandValidationPositions,
-    /// ADR-0148's `D + A + V` command work charge.
+    /// ADR-0149's `D + A + V` command work charge.
     CommandCorrelatedIndexWork,
     /// Semantic bytes retained for affected targets and epoch observations.
     CommandAffectedEpochStateBytes,

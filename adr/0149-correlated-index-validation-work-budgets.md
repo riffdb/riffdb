@@ -1,4 +1,4 @@
-# ADR-0148: Correlated Index-Validation Work Budgets for Atomic Commands
+# ADR-0149: Correlated Index-Validation Work Budgets for Atomic Commands
 
 - **Status:** Accepted
 - **Direction approved:** 2026-08-25 (maintainer, in session)
@@ -14,7 +14,7 @@
   change the 4,096 index-entry-delta, 256 mutation-instance, one-partition,
   16 MiB read-state, 15 MiB pre-commit-intent, or 16 MiB staged-write and
   durable-envelope ceilings
-- **Defines or blocks:** Proposed WP-682 and WP-683, and resumption of external
+- **Defines or blocks:** Proposed WP-683 and WP-684, and resumption of external
   adapters whose bounded atomic commands maintain many compiler-declared
   indexes
 
@@ -198,11 +198,11 @@ concurrency semantics and require a separate accepted decision if ever needed.
 
 ### 4. Add least-sufficient durable command-capsule and segment successors
 
-WP-683 adds a new durable command-capsule identity whose index-generation-
+WP-684 adds a new durable command-capsule identity whose index-generation-
 transition collection permits at most 65,535 entries and remains bounded by the
 existing complete semantic and 16 MiB envelope charges. The current topology
 suggests `StoredCommandCapsuleV6`, `StoredCommandSegmentBodyV5`, and
-`StoredCommandSegmentV5`; WP-683 must audit the durable schema registry,
+`StoredCommandSegmentV5`; WP-684 must audit the durable schema registry,
 manifest, tag allocation, and version topology immediately before assigning
 those names or numbers. An intervening identity causes administrative
 renumbering, never reuse.
@@ -361,7 +361,7 @@ adapter repository.
 ## Compatibility
 
 Contract source syntax and generated application method signatures do not
-change. Plan hashes may change only if WP-682 must carry a new compiler-derived
+change. Plan hashes may change only if WP-683 must carry a new compiler-derived
 coefficient or budget identity; the topology audit must prefer constructor-
 validated derived metadata when no runtime consumer needs serialized plan
 state. If executable IR changes, it receives a least-sufficient successor and
@@ -425,9 +425,9 @@ recovery are unchanged.
   will cover correlated index-work admission, correlation-safe byte proof,
   pay-once concrete derivation, durable successor compatibility, precise bound
   diagnostics, and neutral 100-element atomic conformance.
-- **Proposed WP-682:** compiler estimator, correlated limits, precise
+- **Proposed WP-683:** compiler estimator, correlated limits, precise
   diagnostics, SPEC/ADR reconciliation, fixtures, and documentation.
-- **Proposed WP-683:** coordinator/storage bounds, durable capsule/segment
+- **Proposed WP-684:** coordinator/storage bounds, durable capsule/segment
   successors, backend/crash/performance conformance, immutable development
   publication, and neutral remote acceptance.
 

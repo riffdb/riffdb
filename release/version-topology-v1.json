@@ -325,7 +325,7 @@
       "lifecycle": {"active":["2"],"read_only":[],"retirement_candidate":[],"retired":[]},
       "reserved_identity_policy": "Record tags, revisions, schema hashes, and symbolic types are never reused.",
       "evidence": ["fixtures/proto/durable-readable-registry.txt", "fixtures/proto/durable-writable-registry.txt"], "checks": ["./scripts/check-durable-format-manifest"],
-      "last_change": {"classification":"new_domain_identity","decision":"ADR-0148 / WP-683 correlated index-work command authority"},
+      "last_change": {"classification":"new_domain_identity","decision":"ADR-0149 / WP-684 correlated index-work command authority"},
       "durable_manifest": {"readable_key":"readable_registry_versions","writable_key":"writable_registry_versions"}
     },
     {
