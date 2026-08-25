@@ -58,6 +58,8 @@ if [[ "${1:-}" == "--check" ]]; then
       ]
     ' fixtures/application-locks/row-policy-rotation-v1.json >/dev/null
     diff -u clients/typescript/ticketdesk/client.ts "$generated/clients/typescript/ticketdesk/client.ts"
+    diff -u examples/app-baseline/typescript/src/ticketdesk-client.ts \
+        "$generated/clients/typescript/ticketdesk/client.ts"
     diff -u clients/go/ticketdesk/client.go "$generated/clients/go/ticketdesk/client.go"
     diff -u clients/python/ticketdesk/generated.py "$generated/clients/python/ticketdesk/generated.py"
     diff -u fixtures/riffql/operational-identity-rotation-v1.json \
@@ -238,6 +240,8 @@ fi
 cargo run --quiet -p riffdb-query-module --example generate_clients -- "$repo_root"
 cargo run --quiet -p riffdb-query-module --example generate_agent_alpha_clients -- "$repo_root"
 gofmt -w "$repo_root/clients/go/ticketdesk/client.go"
+cp "$repo_root/clients/typescript/ticketdesk/client.ts" \
+    "$repo_root/examples/app-baseline/typescript/src/ticketdesk-client.ts"
 
 # Generated application clients are part of the exact application closure.
 # Refresh the owning locks in the same operation so the normal generation path
