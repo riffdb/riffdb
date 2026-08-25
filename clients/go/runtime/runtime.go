@@ -229,17 +229,34 @@ func RecordFields(value Value) (map[string]Value, error) {
 	}
 	output := make(map[string]Value, len(fields))
 	for name, raw := range fields {
-		encoded, err := json.Marshal(raw)
-		if err != nil {
-			return nil, errors.New("invalid RiffDB record value")
-		}
-		var field Value
-		if json.Unmarshal(encoded, &field) != nil || validateValue(field, 0) != nil {
+		field, ok := valueFromDecoded(raw)
+		if !ok || validateValue(field, 0) != nil {
 			return nil, errors.New("invalid RiffDB record value")
 		}
 		output[name] = field
 	}
 	return output, nil
+}
+
+// valueFromDecoded reads one already-decoded driver value without a second
+// pass through encoding/json.
+//
+// Value carries only Type and Value, so marshalling a decoded field and
+// immediately unmarshalling it back cost two reflective JSON operations per
+// field and per list item -- 250 of them for a twenty-five row, five column
+// response -- to reproduce the map that was already in hand. Unmarshalling into
+// Value ignores unknown keys and requires a string "type", which is what this
+// reproduces; nested values stay the decoded any they already were.
+func valueFromDecoded(raw any) (Value, bool) {
+	object, ok := raw.(map[string]any)
+	if !ok {
+		return Value{}, false
+	}
+	kind, ok := object["type"].(string)
+	if !ok {
+		return Value{}, false
+	}
+	return Value{Type: kind, Value: object["value"]}, true
 }
 func ListItems(value Value) ([]Value, error) {
 	if value.Type != "list" {
@@ -254,10 +271,11 @@ func ListItems(value Value) ([]Value, error) {
 	}
 	output := make([]Value, len(raw))
 	for index, item := range raw {
-		encoded, _ := json.Marshal(item)
-		if json.Unmarshal(encoded, &output[index]) != nil || validateValue(output[index], 0) != nil {
+		value, ok := valueFromDecoded(item)
+		if !ok || validateValue(value, 0) != nil {
 			return nil, errors.New("invalid RiffDB list value")
 		}
+		output[index] = value
 	}
 	return output, nil
 }
