@@ -1,6 +1,10 @@
 import { createConnection } from "node:net";
 const MAX_FRAME_BYTES = 1_048_576;
 const MAX_PENDING_REQUESTS = 256;
+/** Decimal digits always inside `Number.MAX_SAFE_INTEGER` (9007199254740991). */
+const SAFE_INTEGER_DIGITS = 15;
+const MIN_SAFE_INTEGER_EXACT = BigInt(Number.MIN_SAFE_INTEGER);
+const MAX_SAFE_INTEGER_EXACT = BigInt(Number.MAX_SAFE_INTEGER);
 const MAX_COLLECTION_ITEMS = 4_096;
 const MAX_VALUE_DEPTH = 32;
 const HASH = /^[0-9a-f]{64}$/;
@@ -283,7 +287,7 @@ function lowerOptions(options) {
     };
 }
 function encodeFrame(value) {
-    const body = Buffer.from(encodeJson(value), "utf8");
+    const body = Buffer.from(encodeFrameBody(value), "utf8");
     if (body.length < 2 || body.length > MAX_FRAME_BYTES)
         throw new Error("RiffDB driver request exceeds the frame bound");
     const frame = Buffer.allocUnsafe(body.length + 4);
@@ -295,6 +299,12 @@ function encodeFrame(value) {
  * Encodes the closed protocol without coercing u64 frontiers through the
  * JavaScript `number` domain. Only integral JSON numbers are admitted.
  */
+/** Deterministic UTF-16 code-unit ordering for protocol field names. */
+function compareFieldNames(left, right) {
+    if (left < right)
+        return -1;
+    return left > right ? 1 : 0;
+}
 function encodeJson(value, depth = 0) {
     if (depth > MAX_VALUE_DEPTH + 4)
         throw new Error("RiffDB driver message exceeds the depth bound");
@@ -317,18 +327,69 @@ function encodeJson(value, depth = 0) {
     if (Array.isArray(value)) {
         if (value.length > MAX_COLLECTION_ITEMS)
             throw new Error("RiffDB driver collection exceeds its bound");
-        return `[${value.map((item) => encodeJson(item, depth + 1)).join(",")}]`;
+        const items = [];
+        for (const item of value)
+            items.push(encodeJson(item, depth + 1));
+        return `[${items.join(",")}]`;
     }
     if (typeof value === "object" && value !== null) {
-        const entries = Object.entries(value).filter(([, item]) => item !== undefined);
-        if (entries.length > MAX_COLLECTION_ITEMS)
+        // One pass instead of entries/filter/sort/map, and code-unit ordering
+        // instead of `localeCompare`: collation is locale-dependent, so the
+        // "closed protocol" encoding was not actually deterministic across hosts,
+        // and full Unicode collation is far more work than field names need.
+        const names = [];
+        const record = value;
+        for (const name of Object.keys(record)) {
+            if (record[name] !== undefined)
+                names.push(name);
+        }
+        if (names.length > MAX_COLLECTION_ITEMS)
             throw new Error("RiffDB driver record exceeds its bound");
-        entries.sort(([left], [right]) => left.localeCompare(right));
-        return `{${entries.map(([name, item]) => `${JSON.stringify(name)}:${encodeJson(item, depth + 1)}`).join(",")}}`;
+        names.sort(compareFieldNames);
+        const encoded = [];
+        for (const name of names) {
+            encoded.push(`${JSON.stringify(name)}:${encodeJson(record[name], depth + 1)}`);
+        }
+        return `{${encoded.join(",")}}`;
     }
     throw new Error("invalid RiffDB driver message");
 }
-/** Parses integral JSON while preserving integers outside Number's exact range. */
+/**
+ * Serializes one frame, preferring V8's C++ serializer.
+ *
+ * `JSON.stringify` throws on a bigint, and this protocol carries bigint in only
+ * two places: the handshake's `contract_version`, sent once per session, and an
+ * explicit read-after-commit fence, which is absent unless the caller asks for
+ * one. The ordinary per-operation frame therefore takes the fast path, and
+ * anything holding a bigint falls back to the exact encoder, which keeps the
+ * full u64 range.
+ *
+ * The fast path emits fields in insertion order rather than sorted order, and
+ * leaves the collection and depth bounds to `validate_request` on the host.
+ * Both are outbound frames this client constructs itself.
+ */
+function encodeFrameBody(value) {
+    try {
+        return JSON.stringify(value);
+    }
+    catch {
+        return encodeJson(value);
+    }
+}
+/**
+ * Parses integral JSON while preserving integers outside Number's exact range.
+ *
+ * This stays on the exact parser deliberately. A native `JSON.parse` fast path
+ * measures faster, but it turns a frontier above `Number.MAX_SAFE_INTEGER` into
+ * an imprecise double, which the envelope validators then reject; the exact
+ * parser instead returns those digits as a string that converts to an exact
+ * `BigInt`. Rejecting a legitimate large frontier is a functional regression,
+ * and `u64 frontiers remain exact across the JSON number protocol` covers it.
+ * Guarding the fast path needs a scan for bare integers of sixteen or more
+ * digits, and because application u64 values travel as twenty-digit strings the
+ * scan cannot be anchored on a literal, so it costs about 1.4us on a 4 KiB
+ * frame and gives most of the win back.
+ */
 function decodeJson(value) {
     const parser = new ExactJsonParser(value);
     return parser.parse();
@@ -422,44 +483,78 @@ class ExactJsonParser {
         }
     }
     #string() {
+        // Scans by code unit and takes one slice. An unescaped body is already its
+        // own decoding, so the common case avoids per-character concatenation and
+        // the nested `JSON.parse`; escapes fall back to it for exact unescaping.
+        const source = this.source;
         const start = this.#position;
-        this.#position += 1;
-        let escaped = false;
-        while (this.#position < this.source.length) {
-            const character = this.source[this.#position];
-            this.#position += 1;
-            if (escaped) {
-                escaped = false;
-                continue;
-            }
-            if (character === "\\") {
-                escaped = true;
-                continue;
-            }
-            if (character === '"') {
-                const decoded = JSON.parse(this.source.slice(start, this.#position));
-                if (typeof decoded !== "string")
-                    throw new Error("invalid RiffDB driver JSON");
-                return decoded;
-            }
-            if (character !== undefined && character.charCodeAt(0) < 0x20)
+        let position = start + 1;
+        let escapes = false;
+        for (;;) {
+            if (position >= source.length)
                 throw new Error("invalid RiffDB driver JSON");
+            const code = source.charCodeAt(position);
+            if (code === 0x22)
+                break;
+            if (code === 0x5c) {
+                escapes = true;
+                position += 2;
+                continue;
+            }
+            if (code < 0x20)
+                throw new Error("invalid RiffDB driver JSON");
+            position += 1;
         }
-        throw new Error("invalid RiffDB driver JSON");
+        this.#position = position + 1;
+        if (!escapes)
+            return source.slice(start + 1, position);
+        const decoded = JSON.parse(source.slice(start, this.#position));
+        if (typeof decoded !== "string")
+            throw new Error("invalid RiffDB driver JSON");
+        return decoded;
     }
     #integer() {
-        const remainder = this.source.slice(this.#position);
-        const match = /^-?(?:0|[1-9][0-9]*)/.exec(remainder);
-        if (match === null)
+        // Scans in place. The previous form sliced the whole remaining payload and
+        // ran a regex on the copy for every number, so a message cost O(n^2) in its
+        // own length, and it built three BigInts per number including the bounds.
+        const source = this.source;
+        const start = this.#position;
+        let position = start;
+        if (source.charCodeAt(position) === 0x2d)
+            position += 1;
+        const digits = position;
+        const first = source.charCodeAt(position);
+        if (first === 0x30) {
+            position += 1;
+        }
+        else if (first >= 0x31 && first <= 0x39) {
+            position += 1;
+            for (;;) {
+                const code = source.charCodeAt(position);
+                if (code >= 0x30 && code <= 0x39) {
+                    position += 1;
+                    continue;
+                }
+                break;
+            }
+        }
+        else {
             throw new Error("invalid RiffDB driver JSON");
-        this.#position += match[0].length;
-        const next = this.source[this.#position];
-        if (next === "." || next === "e" || next === "E")
+        }
+        this.#position = position;
+        const next = source.charCodeAt(position);
+        if (next === 0x2e || next === 0x65 || next === 0x45) {
             throw new Error("non-integral RiffDB driver JSON number");
-        const exact = BigInt(match[0]);
-        if (exact >= BigInt(Number.MIN_SAFE_INTEGER) && exact <= BigInt(Number.MAX_SAFE_INTEGER))
+        }
+        const text = source.slice(start, position);
+        // Any run this short is exactly representable, so the safe-integer bound
+        // needs no BigInt at all.
+        if (position - digits <= SAFE_INTEGER_DIGITS)
+            return Number(text);
+        const exact = BigInt(text);
+        if (exact >= MIN_SAFE_INTEGER_EXACT && exact <= MAX_SAFE_INTEGER_EXACT)
             return Number(exact);
-        return match[0];
+        return text;
     }
     #literal(text, value) {
         if (!this.source.startsWith(text, this.#position))
@@ -468,8 +563,20 @@ class ExactJsonParser {
         return value;
     }
     #space() {
-        while (/\s/u.test(this.source[this.#position] ?? ""))
-            this.#position += 1;
+        // RFC 8259 whitespace is exactly space, tab, LF and CR. The previous
+        // `/\s/u` test allocated a one-character string and ran a Unicode regex per
+        // position, and also admitted separators JSON does not allow.
+        const source = this.source;
+        let position = this.#position;
+        for (;;) {
+            const code = source.charCodeAt(position);
+            if (code === 0x20 || code === 0x09 || code === 0x0a || code === 0x0d) {
+                position += 1;
+                continue;
+            }
+            break;
+        }
+        this.#position = position;
     }
 }
 function decodeResult(response) {
