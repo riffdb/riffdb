@@ -81,6 +81,50 @@ by `order by user, document_id`. This is one maintained index: the compiler
 must prove each named shape independently, and the runtime does not walk pages
 or filter after `take`.
 
+It also supports one bounded membership branch when the text component is the
+first remaining order term:
+
+```riffql
+where organization_id == $organization_id
+  && object_id in $object_ids
+order by object_id asc, relation asc, user asc
+take 25 after $after
+```
+
+Declare `object_id` as `text_key(object_id, binary_utf8_v1)` in that shared
+index. RiffDB canonicalizes the submitted set once, lowers each distinct member
+to an exact byte prefix once, orders the prefixes physically, and applies one
+global page, plus-one probe, scan budget, and cursor across the union. Empty
+sets return an exact empty page. Forward and reverse traversal both retain
+bytewise order, so length-divergent values such as `doc-3` and `doc6` do not
+fall back to canonical string ordering.
+
+## Closed ordinary access matrix
+
+| Index component | Exact | Bounded `in` | Prefix | Order |
+|---|---:|---:|---:|---:|
+| Canonical scalar | yes | first remaining order term | no | canonical |
+| Presence-aware | state only | no | no | explicit accepted state placement |
+| `binary_utf8_v1` | yes | first remaining order term | exact leading bytes | UTF-8 bytes |
+| `unicode_fold_v1` | unavailable | unavailable | unavailable | unavailable |
+
+Canonical ranges, inequalities, and complements remain unavailable in the
+ordinary row-store plane until their typed physical intervals are installed.
+The compiler rejects those sources at the predicate span because evaluating a
+range after `take` could omit matches or create the wrong cursor. An older
+module containing such an unproved ordinary plan is refused as query
+unavailable with `refresh_contract` guidance; recompile and redeploy rather
+than filtering a returned page. Multiple branching predicates, joins,
+provider bridges, caller-selected indexes, and client page walking remain
+unsupported.
+
+The repository audit found no active unsafe ordinary fixture: Ticketdesk's
+canonical membership, the presence and binary-prefix conformance queries, and
+dependent complete-key batches all constrain storage before page selection.
+The richer directory filtering fixture uses the separately governed exact
+result-set provider. Historical external ordinary queries using canonical
+ranges or inequality require a rebuild after physical interval support lands.
+
 ## Feature preflight
 
 The authorized application catalog returns the closed

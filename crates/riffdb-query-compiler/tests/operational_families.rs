@@ -186,6 +186,26 @@ query TuplesByObjectAndRelation(
 }
 "#;
 
+const SHARED_BINARY_MEMBERSHIP_QUERY: &str = r#"
+query TuplesByObjects(
+    $store_id: Tuple.store_id,
+    $active: Tuple.active,
+    $object_type: Tuple.object_type,
+    $object_ids: Set<Tuple.object_id>,
+    $after: Cursor?,
+) {
+    many tuples from Tuple
+        where store_id == $store_id
+          && active == $active
+          && object_type == $object_type
+          && object_id in $object_ids
+        order by object_id asc, relation asc, user asc
+        take 1 after $after
+    return Found { tuples: tuples { object_id relation user } }
+    outcomes Found
+}
+"#;
+
 fn catalog(source: &str) -> SymbolicCatalog {
     let bundle = compile_contract_source(source).expect("contract");
     SymbolicCatalog::from_bundle(&bundle).expect("catalog")
@@ -241,6 +261,32 @@ fn one_binary_text_index_proves_ordered_and_exact_equality_prefix_shapes() {
 }
 
 #[test]
+fn binary_text_key_proves_bounded_membership_and_bytewise_order() {
+    let contract = SHARED_BINARY_COMPONENT_CONTRACT.replace(
+        "    index by_object (store_id, active, object_type, object_id, relation, user)",
+        concat!(
+            "    index by_object (store_id, active, object_type, object_id, relation, user)\n",
+            "      text_key(object_id, binary_utf8_v1)"
+        ),
+    );
+    let family = compile_operational_query_family(
+        &parse_query(SHARED_BINARY_MEMBERSHIP_QUERY).expect("binary membership query"),
+        &catalog(&contract),
+    )
+    .expect("one binary text-key index proves bounded membership and order");
+    let program = family.select(&[]).expect("sole family member").program();
+    assert!(matches!(
+        program.steps()[0].access(),
+        QueryAccessKind::Index { index, direction: AccessDirection::Forward, .. }
+            if index == "by_object"
+    ));
+    assert!(program.steps()[0].predicates().iter().any(|predicate| {
+        predicate.field() == "object_id" && predicate.operator() == QueryPredicateOperator::In
+    }));
+    assert_eq!(program.steps()[0].cursor_parameter(), Some("after"));
+}
+
+#[test]
 fn binary_text_order_does_not_reinterpret_other_typed_predicates() {
     let source = SHARED_BINARY_EQUALITY_QUERY
         .replace("relation == $relation", "relation >= $relation")
@@ -263,6 +309,42 @@ fn binary_text_order_does_not_reinterpret_other_typed_predicates() {
             diagnostic.suggested_index().unwrap_or("")
         ),
         include_str!("../../../fixtures/riffql/binary-text-range-unindexed.snapshot")
+    );
+}
+
+#[test]
+fn ordinary_range_predicate_cannot_be_deferred_until_after_the_page_bound() {
+    let source = r#"
+query TicketsUpdatedAfter(
+    $organization_id: Ticket.organization_id,
+    $updated_at: Ticket.updated_at,
+) {
+    many tickets from Ticket
+        where organization_id == $organization_id && updated_at >= $updated_at
+        order by updated_at asc, ticket_id asc
+        take 25
+    return Found { tickets: tickets { ticket_id updated_at } }
+    outcomes Found
+}
+"#;
+    let diagnostics = compile_operational_query_family(
+        &parse_query(source).expect("range query"),
+        &catalog(CONTRACT),
+    )
+    .expect_err("an unlowered interval cannot be evaluated after the page bound");
+    let diagnostic = &diagnostics.as_slice()[0];
+    assert_eq!(diagnostic.code(), PlannerDiagnosticCode::Unindexed);
+    assert_eq!(
+        format!(
+            "{}|{}..{}|{}|{}|{}\n",
+            diagnostic.code().as_str(),
+            diagnostic.primary().start,
+            diagnostic.primary().end,
+            diagnostic.symbol_path().join("."),
+            diagnostic.summary(),
+            diagnostic.suggested_index().unwrap_or("")
+        ),
+        include_str!("../../../fixtures/riffql/canonical-range-unavailable.snapshot")
     );
 }
 
@@ -455,7 +537,7 @@ fn declared_operational_indexes_lower_to_sealed_predicates() {
         ),
         (
             "exists deleted_at",
-            "order by deleted_at asc, updated_at asc, ticket_id asc",
+            "order by deleted_at asc nulls first, updated_at asc, ticket_id asc",
             "y_deleted",
             QueryPredicateOperator::Exists,
         ),

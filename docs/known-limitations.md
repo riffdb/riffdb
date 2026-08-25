@@ -56,6 +56,14 @@ These limits are part of the POC release posture, not hidden roadmap promises.
   presentation.
 - There is no general SQL surface, arbitrary transaction callback, analytical
   join engine, distributed transaction, replication, failover, or consensus.
+- Ordinary row-store indexes currently execute exact equality, one bounded
+  membership or presence/text-prefix branch, and the complete declared order.
+  `binary_utf8_v1` membership is bytewise and cursor-safe when it supplies the
+  first remaining order term. Canonical range, inequality, and complement
+  predicates are refused until physical interval execution lands; multiple
+  branching dimensions, residual post-page filters, index intersections,
+  caller-selected plans, and general joins are unavailable. Recompile and
+  redeploy a refused named query rather than emulating it in application code.
 - Vector search's exact and declared approximate tiers are application-reachable
   through the same named RiffQL operation. The server chooses exact search at
   or below the contract's per-organization `ann_threshold` and first-party HNSW

@@ -369,8 +369,26 @@ declared index: `(organization_id, relation, user, document_id)` with text keys
 on `relation` and `user` proves both `order by relation, user, document_id` and,
 after `relation == $relation`, `order by user, document_id`. Equality retains
 the ordinary typed string truth semantics; the profile transform is used only
-to form the matching physical index prefix. Bounded `in` does not acquire this
-text-key-prefix rule.
+to form the matching physical index prefix.
+
+Bounded `in` may consume one `binary_utf8_v1` component when that component is
+also the first remaining order term. Each canonical set member becomes one
+disjoint exact byte prefix; the complete set shares one page limit, scan
+budget, plus-one continuation probe, and opaque cursor. Submitted sets are
+sorted and deduplicated once, and an empty set returns an exact empty page
+without storage work. Multiple `in` dimensions and an `in` predicate followed
+by another filtered index component are rejected rather than forming a
+Cartesian prefix product or a residual filter.
+
+The ordinary executable component matrix is closed: canonical components
+support exact equality, bounded membership at the first remaining order term,
+and canonical order; presence components support state selection and explicit
+state placement; `binary_utf8_v1` supports equality, bounded membership,
+leading-byte prefix, and bytewise order; `unicode_fold_v1` remains unavailable.
+Canonical ranges and inequality/complement predicates are temporarily
+unavailable until typed physical intervals apply them before page and cursor
+formation. Recompile and redeploy the named query after that capability lands;
+RiffDB never substitutes a post-page filter or scan.
 
 ## Exact indexed result sets (language version 4)
 

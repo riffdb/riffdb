@@ -29,6 +29,8 @@ use riffdb_types::{
 
 /// Maximum checked submitted parameters.
 pub const MAX_QUERY_PARAMETERS: usize = 1_024;
+/// Maximum pay-once physical prefix schedule produced for one index step.
+pub const MAX_OPERATIONAL_PREFIX_SCHEDULE_BYTES: usize = 4 * 1_024 * 1_024;
 /// Maximum fields copied into one owned row.
 pub const MAX_QUERY_ROW_FIELDS: usize = 1_024;
 /// Scan-bound constants and helpers shared with deploy-time resolution.
@@ -250,10 +252,27 @@ impl VectorInspectionSnapshotV1 {
 pub struct QueryParameters(BTreeMap<String, CanonicalValue>);
 
 impl QueryParameters {
-    /// Validates bounded unique parameter names.
-    pub fn checked(values: BTreeMap<String, CanonicalValue>) -> Option<Self> {
-        (values.len() <= MAX_QUERY_PARAMETERS && values.keys().all(|name| !name.is_empty()))
-            .then_some(Self(values))
+    /// Validates bounded unique parameter names and canonicalizes set values once.
+    pub fn checked(mut values: BTreeMap<String, CanonicalValue>) -> Option<Self> {
+        if values.len() > MAX_QUERY_PARAMETERS || values.keys().any(|name| name.is_empty()) {
+            return None;
+        }
+        for value in values.values_mut() {
+            let CanonicalValue::List(items) = value else {
+                continue;
+            };
+            let mut normalized = items
+                .values()
+                .iter()
+                .map(|item| encode_canonical_value(item).map(|encoded| (encoded, item.clone())))
+                .collect::<Result<Vec<_>, _>>()
+                .ok()?;
+            normalized.sort_unstable_by(|left, right| left.0.cmp(&right.0));
+            normalized.dedup_by(|left, right| left.0 == right.0);
+            *value = CanonicalValue::list(normalized.into_iter().map(|(_, item)| item).collect())
+                .ok()?;
+        }
+        Some(Self(values))
     }
 
     /// Resolves one exact parameter.
@@ -582,14 +601,14 @@ pub fn bound_index_prefix_bytes_v1(
                 let CanonicalValue::List(items) = predicate.value() else {
                     return Err(QueryExecutionError::InvalidProgram);
                 };
-                if items.values().is_empty() || items.values().len() > MAX_QUERY_PARAMETERS {
+                if items.values().len() > MAX_QUERY_PARAMETERS {
                     return Err(QueryExecutionError::BoundExceeded);
                 }
                 let prior = std::mem::take(&mut leading);
                 for values in prior {
                     for item in items.values() {
                         let mut expanded = values.clone();
-                        expanded.push(item.clone());
+                        push_exact_index_prefix_value(schema, &mut expanded, item)?;
                         leading.push(expanded);
                     }
                 }
@@ -648,7 +667,7 @@ pub fn bound_index_prefix_bytes_v1(
             | QueryPredicateOperator::LessEqual
             | QueryPredicateOperator::Greater
             | QueryPredicateOperator::GreaterEqual => {
-                return encode_complete_prefixes(schema, leading);
+                return Err(QueryExecutionError::InvalidProgram);
             }
         }
     }
@@ -682,7 +701,7 @@ fn encode_complete_prefixes(
     schema: &riffdb_contract_ir::KeySchema,
     prefixes: Vec<Vec<CanonicalValue>>,
 ) -> Result<Vec<Vec<u8>>, QueryExecutionError> {
-    prefixes
+    let mut encoded = prefixes
         .into_iter()
         .map(|values| {
             schema
@@ -690,7 +709,20 @@ fn encode_complete_prefixes(
                 .map(|prefix| prefix.as_bytes().to_vec())
                 .map_err(|_| QueryExecutionError::InvalidProgram)
         })
-        .collect()
+        .collect::<Result<Vec<_>, _>>()?;
+    encoded.sort_unstable();
+    let unique_len = encoded.len();
+    encoded.dedup();
+    if encoded.len() != unique_len {
+        return Err(QueryExecutionError::InvalidProgram);
+    }
+    let schedule_bytes = encoded
+        .iter()
+        .try_fold(0usize, |total, prefix| total.checked_add(prefix.len()));
+    if schedule_bytes.is_none_or(|bytes| bytes > MAX_OPERATIONAL_PREFIX_SCHEDULE_BYTES) {
+        return Err(QueryExecutionError::BoundExceeded);
+    }
+    Ok(encoded)
 }
 
 /// Owned result of one bounded index access inside the current read view.
@@ -1561,7 +1593,7 @@ fn execute_operational_page_in_snapshot_with_policy<V: QueryReadView>(
             .iter()
             .map(|name| Arc::<str>::from(name.as_str()))
             .collect();
-        let (mut rows, scalar_predicates) = match step.access() {
+        let (mut rows, scalar_predicates, predicates_must_match) = match step.access() {
             riffdb_query_ir::QueryAccessKind::Point { .. } => {
                 let predicates = bind_predicates(step, parameters, &bindings)?;
                 fuel.points(1)?;
@@ -1571,6 +1603,7 @@ fn execute_operational_page_in_snapshot_with_policy<V: QueryReadView>(
                         .into_iter()
                         .collect::<Vec<_>>(),
                     Some(predicates),
+                    false,
                 )
             }
             riffdb_query_ir::QueryAccessKind::DependentPointBatch {
@@ -1631,7 +1664,7 @@ fn execute_operational_page_in_snapshot_with_policy<V: QueryReadView>(
                         Ok(row)
                     })
                     .collect::<Result<Vec<_>, _>>()?;
-                (rows, None)
+                (rows, None, false)
             }
             riffdb_query_ir::QueryAccessKind::Index { index, .. } => {
                 let predicates = bind_predicates(step, parameters, &bindings)?;
@@ -1721,6 +1754,7 @@ fn execute_operational_page_in_snapshot_with_policy<V: QueryReadView>(
                 (
                     page.rows,
                     (!predicates_already_applied).then_some(predicates),
+                    true,
                 )
             }
             riffdb_query_ir::QueryAccessKind::Nearest { .. } => {
@@ -1744,7 +1778,7 @@ fn execute_operational_page_in_snapshot_with_policy<V: QueryReadView>(
                     return Err(QueryExecutionError::BoundExceeded);
                 }
                 fuel.scans(page.scanned_rows)?;
-                (page.rows, Some(predicates))
+                (page.rows, Some(predicates), false)
             }
         };
         fuel.intermediates(
@@ -1754,7 +1788,16 @@ fn execute_operational_page_in_snapshot_with_policy<V: QueryReadView>(
             return Err(QueryExecutionError::InvalidProgram);
         }
         if let Some(predicates) = &scalar_predicates {
-            rows.retain(|row| predicates_match(row, predicates).unwrap_or(false));
+            if predicates_must_match {
+                if rows
+                    .iter()
+                    .any(|row| predicates_match(row, predicates) != Ok(true))
+                {
+                    return Err(QueryExecutionError::InvalidProgram);
+                }
+            } else {
+                rows.retain(|row| predicates_match(row, predicates).unwrap_or(false));
+            }
         }
         if rows.len() as u64 > step.maximum_rows() {
             return Err(QueryExecutionError::BoundExceeded);
@@ -2662,7 +2705,7 @@ fn validate_canonical_set(value: &CanonicalValue) -> Result<(), ()> {
     let CanonicalValue::List(values) = value else {
         return Err(());
     };
-    if values.values().is_empty() || values.values().len() > MAX_QUERY_PARAMETERS {
+    if values.values().len() > MAX_QUERY_PARAMETERS {
         return Err(());
     }
     let encoded = values
@@ -2961,7 +3004,7 @@ query NullDocuments($organization_id: Document.organization_id) {
 query ExistingDocuments($organization_id: Document.organization_id) {
     many documents from Document
         where organization_id == $organization_id && exists deleted_at
-        order by deleted_at asc, document_id asc
+        order by deleted_at asc nulls first, document_id asc
         take 10
     return Found { documents: documents { document_id deleted_at } }
     outcomes Found
