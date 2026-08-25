@@ -442,7 +442,7 @@ function lowerOptions(options: DriverInvokeOptions): Record<string, unknown> {
 }
 
 function encodeFrame(value: Record<string, unknown>): Buffer {
-  const body = Buffer.from(encodeJson(value), "utf8");
+  const body = Buffer.from(encodeFrameBody(value), "utf8");
   if (body.length < 2 || body.length > MAX_FRAME_BYTES) throw new Error("RiffDB driver request exceeds the frame bound");
   const frame = Buffer.allocUnsafe(body.length + 4);
   frame.writeUInt32BE(body.length, 0);
@@ -500,7 +500,42 @@ function encodeJson(value: unknown, depth = 0): string {
   throw new Error("invalid RiffDB driver message");
 }
 
-/** Parses integral JSON while preserving integers outside Number's exact range. */
+/**
+ * Serializes one frame, preferring V8's C++ serializer.
+ *
+ * `JSON.stringify` throws on a bigint, and this protocol carries bigint in only
+ * two places: the handshake's `contract_version`, sent once per session, and an
+ * explicit read-after-commit fence, which is absent unless the caller asks for
+ * one. The ordinary per-operation frame therefore takes the fast path, and
+ * anything holding a bigint falls back to the exact encoder, which keeps the
+ * full u64 range.
+ *
+ * The fast path emits fields in insertion order rather than sorted order, and
+ * leaves the collection and depth bounds to `validate_request` on the host.
+ * Both are outbound frames this client constructs itself.
+ */
+function encodeFrameBody(value: unknown): string {
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return encodeJson(value);
+  }
+}
+
+/**
+ * Parses integral JSON while preserving integers outside Number's exact range.
+ *
+ * This stays on the exact parser deliberately. A native `JSON.parse` fast path
+ * measures faster, but it turns a frontier above `Number.MAX_SAFE_INTEGER` into
+ * an imprecise double, which the envelope validators then reject; the exact
+ * parser instead returns those digits as a string that converts to an exact
+ * `BigInt`. Rejecting a legitimate large frontier is a functional regression,
+ * and `u64 frontiers remain exact across the JSON number protocol` covers it.
+ * Guarding the fast path needs a scan for bare integers of sixteen or more
+ * digits, and because application u64 values travel as twenty-digit strings the
+ * scan cannot be anchored on a literal, so it costs about 1.4us on a 4 KiB
+ * frame and gives most of the win back.
+ */
 function decodeJson(value: string): unknown {
   const parser = new ExactJsonParser(value);
   return parser.parse();
