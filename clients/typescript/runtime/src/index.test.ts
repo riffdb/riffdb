@@ -34,6 +34,43 @@ test("generated collection schemas reject counts before transport", async () => 
   );
 });
 
+test("generated collection schemas reject aggregate canonical bytes before transport", async () => {
+  const transport = new CliApplicationTransport({
+    riffdbPath: "/does-not-exist/riffdb",
+    endpoint: "http://127.0.0.1:7443",
+    credentialFile: "/does-not-exist/credential",
+  });
+  await assert.rejects(
+    transport.executeCommand({
+      contractLineage: "BulkContract",
+      contractVersion: 1,
+      commandName: "WritePolicyMutations",
+      planHash: "a".repeat(64),
+      input: { mutations: [{ context: Uint8Array.of(0, 1, 2, 3) }] },
+      idempotencyKey: "aggregate-budget",
+      inputSchema: {
+        kind: "record",
+        fields: [{
+          name: "mutations",
+          schema: {
+            kind: "list",
+            minimum: 1,
+            maximum: 100,
+            aggregateCanonicalElementBytes: 19,
+            value: {
+              kind: "record",
+              fields: [{ name: "context", schema: { kind: "bytes" } }],
+            },
+          },
+        }],
+      },
+      outcomeSchemas: { Written: { kind: "record", fields: [] } },
+      decodeError: () => new Error("unexpected application error"),
+    }, 1),
+    /invalid generated application input/,
+  );
+});
+
 test("exact decimal helpers remove handwritten coefficient encoding", () => {
   assert.deepEqual(exactMoney("USD", "25.00"), {
     currency: "USD",

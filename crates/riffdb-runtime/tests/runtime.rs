@@ -25,6 +25,10 @@ const BULK_TUPLE_SOURCE: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../fixtures/contracts/bulk/openfga-tuples.riff"
 ));
+const AGGREGATE_COLLECTION_BUDGET_SOURCE: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../fixtures/compiler/aggregate-collection-budget/contract.riff"
+));
 const BULK_DELETE_SOURCE: &str = r#"
 contract BulkDeleteRuntime version 1 {
   entity Row {
@@ -1042,6 +1046,95 @@ fn bounded_collection_create_executes_as_one_complete_evaluated_graph() {
             CanonicalValue::string("document:first").expect("object"),
             CanonicalValue::string("document:second").expect("object"),
         ]
+    );
+}
+
+#[test]
+fn aggregate_collection_bytes_reject_before_effect_evaluation() {
+    let bundle = compile_contract_source(AGGREGATE_COLLECTION_BUDGET_SOURCE)
+        .expect("aggregate collection fixture compiles");
+    let plan = command(&bundle, "WritePolicyMutations");
+    let mutation = bundle
+        .schema()
+        .entities()
+        .iter()
+        .find(|entity| entity.name() == "PolicyMutation")
+        .expect("policy mutation entity");
+    let organization_id = [0x31; 16];
+    let element = |ordinal: u8| {
+        CanonicalValue::Record(
+            CanonicalRecord::new(
+                mutation
+                    .record()
+                    .fields()
+                    .iter()
+                    .map(|field| {
+                        let value = match field.name() {
+                            "organization_id" => CanonicalValue::Uuid(organization_id),
+                            "mutation_id" => CanonicalValue::Uuid([ordinal; 16]),
+                            "relation" => CanonicalValue::string("reader").expect("relation"),
+                            "context" => CanonicalValue::Bytes(
+                                CanonicalBytes::new(vec![ordinal; 475_000])
+                                    .expect("individual context remains valid"),
+                            ),
+                            other => panic!("unexpected mutation field {other}"),
+                        };
+                        (field.id(), value)
+                    })
+                    .collect(),
+            )
+            .expect("mutation record"),
+        )
+    };
+    let input = input_record(
+        plan.input().record(),
+        [
+            ("request_id", CanonicalValue::Uuid([0x21; 16])),
+            (
+                "mutations",
+                CanonicalValue::List(
+                    CanonicalList::new((1..=2).map(element).collect())
+                        .expect("bounded mutation list"),
+                ),
+            ),
+        ],
+    );
+    let facts = derive_input_command_facts(plan, input.clone()).expect("collection facts");
+    let targets = facts
+        .binding_plan_indices()
+        .iter()
+        .zip(facts.binding_entity_keys())
+        .map(|(index, key)| {
+            EntityTarget::new(plan.bindings()[*index as usize].entity_type(), key.clone())
+                .expect("binding target")
+        })
+        .collect::<Vec<_>>();
+    let request = SnapshotRequest::new(plan_ref(&bundle, plan), targets.clone(), vec![], vec![])
+        .expect("snapshot request");
+    let snapshot = ReadSnapshot::new(
+        &request,
+        None,
+        targets.into_iter().map(EntityObservation::Absent).collect(),
+        vec![],
+        vec![],
+    )
+    .expect("snapshot");
+    let context = TransactionContext::new(
+        RequestId::from_unix_milliseconds_and_random(1, [0x12; 10]).expect("request ID"),
+        AdmittedActorContext::new(
+            ActorId::new("runtime-test").expect("actor"),
+            ActorKind::Service,
+            TenantScope::Global,
+            None,
+        ),
+        plan_ref(&bundle, plan),
+        LogicalTime::new(Timestamp::new(1, 0).expect("time")),
+        facts.partition_key().clone(),
+    );
+
+    assert_eq!(
+        execute_command(&bundle, &input, &snapshot, &context, EvaluationBudget::v1()),
+        Err(ExecutionFault::ResourceLimit)
     );
 }
 

@@ -596,17 +596,34 @@ fn lower_command(
     let result = if let Some(expansion) = &command.collection_expansion {
         let (first_instruction, instruction_count) =
             repeated_instruction_range.ok_or_else(|| vec![ir_diagnostic(expansion.span)])?;
-        let expansion = CollectionExpansionPlanV1::new(
-            expansion.input_field,
-            expansion.minimum_elements,
-            expansion.maximum_elements,
-            expansion.element_type.clone(),
-            expansion.first_binding,
-            expansion.binding_count,
-            first_instruction,
-            instruction_count,
-            CollectionDuplicatePolicyV1::Reject,
-        )
+        let expansion = if let Some(maximum_aggregate_element_bytes) =
+            expansion.maximum_aggregate_element_bytes
+        {
+            CollectionExpansionPlanV1::new_with_aggregate_bytes(
+                expansion.input_field,
+                expansion.minimum_elements,
+                expansion.maximum_elements,
+                expansion.element_type.clone(),
+                expansion.first_binding,
+                expansion.binding_count,
+                first_instruction,
+                instruction_count,
+                CollectionDuplicatePolicyV1::Reject,
+                maximum_aggregate_element_bytes,
+            )
+        } else {
+            CollectionExpansionPlanV1::new(
+                expansion.input_field,
+                expansion.minimum_elements,
+                expansion.maximum_elements,
+                expansion.element_type.clone(),
+                expansion.first_binding,
+                expansion.binding_count,
+                first_instruction,
+                instruction_count,
+                CollectionDuplicatePolicyV1::Reject,
+            )
+        }
         .map_err(|_| vec![ir_diagnostic(expansion.span)])?;
         if command.invocation_class == CommandInvocationClass::Reimport {
             CommandPlan::new_reimport_collection(
@@ -671,7 +688,14 @@ fn lower_command(
             schema,
         )
     };
-    result.map_err(|error| vec![ir_error_diagnostic(error, command.span)])
+    result.map_err(|error| {
+        let span = command
+            .collection_expansion
+            .as_ref()
+            .and_then(|expansion| expansion.aggregate_bytes_span)
+            .unwrap_or(command.span);
+        vec![ir_error_diagnostic(error, span)]
+    })
 }
 
 fn lower_secret_reveals(command: &HirCommand, outcomes: &[&HirOutcome]) -> Vec<SecretRevealSpecV1> {

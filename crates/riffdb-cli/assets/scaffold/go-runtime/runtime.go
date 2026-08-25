@@ -126,6 +126,99 @@ func Values[T any](items []T, encode func(T) Value) Value {
 	return List(output)
 }
 
+// CanonicalValueEncodedLength returns the exact ADR-0011 canonical v1 document
+// length for one already-typed application value without allocating that document.
+func CanonicalValueEncodedLength(value Value) (int, error) {
+	add := func(left, right int) (int, error) {
+		if right < 0 || left > int(^uint(0)>>1)-right {
+			return 0, errors.New("RiffDB canonical value length overflow")
+		}
+		return left + right, nil
+	}
+	switch value.Type {
+	case "null":
+		return 2, nil
+	case "bool":
+		return 3, nil
+	case "i64", "u64":
+		return 10, nil
+	case "decimal":
+		return 20, nil
+	case "money":
+		return 23, nil
+	case "string":
+		text, ok := value.Value.(string)
+		if !ok {
+			return 0, errors.New("invalid RiffDB string value")
+		}
+		return add(6, len([]byte(text)))
+	case "bytes":
+		text, ok := value.Value.(string)
+		if !ok {
+			return 0, errors.New("invalid RiffDB bytes value")
+		}
+		decoded, err := base64.StdEncoding.DecodeString(text)
+		if err != nil {
+			return 0, errors.New("invalid RiffDB bytes value")
+		}
+		return add(6, len(decoded))
+	case "timestamp":
+		return 14, nil
+	case "date":
+		return 6, nil
+	case "uuid":
+		return 18, nil
+	case "enum":
+		return 10, nil
+	case "vector":
+		vector, ok := value.Value.(Vector)
+		if !ok {
+			return 0, errors.New("invalid RiffDB vector value")
+		}
+		components, err := add(0, len(vector.ComponentBits)*4)
+		if err != nil {
+			return 0, err
+		}
+		return add(6, components)
+	case "list":
+		items, err := ListItems(value)
+		if err != nil {
+			return 0, err
+		}
+		total := 6
+		for _, item := range items {
+			length, err := CanonicalValueEncodedLength(item)
+			if err != nil {
+				return 0, err
+			}
+			total, err = add(total, length)
+			if err != nil {
+				return 0, err
+			}
+		}
+		return total, nil
+	case "record":
+		fields, err := RecordFields(value)
+		if err != nil {
+			return 0, err
+		}
+		total := 6
+		for _, field := range fields {
+			length, err := CanonicalValueEncodedLength(field)
+			if err != nil {
+				return 0, err
+			}
+			total, err = add(total, 4+length)
+			if err != nil {
+				return 0, err
+			}
+		}
+		return total, nil
+	default:
+		return 0, errors.New("invalid RiffDB value kind")
+	}
+}
+
 func RecordFields(value Value) (map[string]Value, error) {
 	fields, ok := value.Value.(map[string]any)
 	if value.Type != "record" || !ok {

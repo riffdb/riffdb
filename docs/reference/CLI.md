@@ -321,15 +321,17 @@ Options:
 
       --run
           Runs the repository's generated application against the local server
+      --go-runner-package <PATH>
+          Repository-relative Go main-package directory used by `--run` [default: .]
       --output <human|json>
           [possible values: human, json]
-      --seed
-
       --max-attempts <1..10>
 
-      --seed-dir <DIRECTORY>
+      --seed
 
       --credential-file <PATH>
+
+      --seed-dir <DIRECTORY>
 
       --seed-concurrency <1..8>
           [default: 8]

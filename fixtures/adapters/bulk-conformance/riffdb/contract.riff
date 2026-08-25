@@ -56,6 +56,17 @@ contract AdapterBulkConformance version 1 {
     reference restrict_parent (tenant_id, parent_id) -> RestrictParent(tenant_id, parent_id)
   }
 
+  entity PolicyMutation {
+    key (organization_id: uuid, mutation_id: uuid)
+    field relation: string<64>
+    field context: optional<bytes<524288>>
+  }
+
+  event PolicyMutationWritten {
+    organization_id: uuid
+    mutation_id: uuid
+  }
+
   aggregate FgaTuples {
     root FgaTuple
     partition_by store_id
@@ -89,6 +100,28 @@ contract AdapterBulkConformance version 1 {
     child RestrictChild
     partition_by tenant_id
     conflict_key (tenant_id)
+  }
+
+  aggregate PolicyMutations {
+    root PolicyMutation
+    partition_by organization_id
+    conflict_key (organization_id, mutation_id)
+  }
+
+  bulk command WritePolicyMutations {
+    input request_id: uuid
+    input mutations: list<PolicyMutation, 1..100> aggregate_bytes <= 900000
+    idempotency_key request_id
+    for mutation in mutations {
+      create PolicyMutation(mutation.organization_id, mutation.mutation_id) as stored else PolicyMutationExists {}
+      set stored.relation = mutation.relation
+      set stored.context = mutation.context
+      emit PolicyMutationWritten {
+        organization_id: mutation.organization_id,
+        mutation_id: mutation.mutation_id
+      }
+    }
+    return PolicyMutationsWritten {}
   }
 
   bulk command WriteTuples {

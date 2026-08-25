@@ -5,11 +5,11 @@ use std::fmt::Write;
 use riffdb_types::{CommandId, EnumVariantId, EventTypeId, FieldId, InvariantId, OutcomeId};
 
 use crate::{
-    BindingId, BindingPlan, CommandPlan, CommitCheckPlan, ConflictDerivationPlan,
-    DeleteCheckModeV1, DeleteCheckPlanV1, EventConstruction, ExecutionClass, ExprId,
-    ExpressionArena, ExpressionKind, KeySchema, OutcomeSchema, RelationshipCheckPlan,
-    RootValidationReadPlan, SecretRevealSpecV1, UniqueConflictPlan, WorkflowLeaseFields,
-    WorkflowLeaseOperation,
+    BindingId, BindingPlan, CollectionExpansionPlanV1, CommandPlan, CommitCheckPlan,
+    ConflictDerivationPlan, DeleteCheckModeV1, DeleteCheckPlanV1, EventConstruction,
+    ExecutionClass, ExprId, ExpressionArena, ExpressionKind, KeySchema, OutcomeSchema,
+    RelationshipCheckPlan, RootValidationReadPlan, SecretRevealSpecV1, UniqueConflictPlan,
+    WorkflowLeaseFields, WorkflowLeaseOperation,
 };
 
 /// Value-free structural explanation of one exact workflow transition.
@@ -122,6 +122,7 @@ pub struct CommandExplain {
     execution_class: ExecutionClass,
     partition_component_count: usize,
     conflict_key_count: usize,
+    collection_expansion: Option<CollectionExpansionPlanV1>,
     bindings: Vec<BindingId>,
     read_fields: Vec<(BindingId, FieldId)>,
     write_fields: Vec<(BindingId, FieldId)>,
@@ -355,6 +356,7 @@ impl CommandExplain {
             partition_component_count: plan.locality().partition_schema().components().len(),
             conflict_key_count: plan.locality().conflict_keys().len()
                 + plan.unique_conflicts().len(),
+            collection_expansion: plan.collection_expansion().cloned(),
             bindings,
             read_fields,
             write_fields,
@@ -398,6 +400,11 @@ impl CommandExplain {
     #[must_use]
     pub const fn conflict_key_count(&self) -> usize {
         self.conflict_key_count
+    }
+    /// Checked collection expansion, including aggregate byte proof when declared.
+    #[must_use]
+    pub const fn collection_expansion(&self) -> Option<&CollectionExpansionPlanV1> {
+        self.collection_expansion.as_ref()
     }
     /// Dense bindings.
     #[must_use]
@@ -524,6 +531,25 @@ impl CommandExplain {
         let mut output = String::new();
         let _ = writeln!(output, "command:{}", self.command_id.get());
         let _ = writeln!(output, "execution:{:?}", self.execution_class);
+        if let Some((expansion, maximum, coefficient)) =
+            self.collection_expansion.as_ref().and_then(|expansion| {
+                Some((
+                    expansion,
+                    expansion.maximum_aggregate_element_bytes()?,
+                    expansion.maximum_copy_coefficient()?,
+                ))
+            })
+        {
+            let _ = writeln!(
+                output,
+                "collection:field={} elements={}..{} aggregate-element-bytes={} copy-coefficient={}",
+                expansion.input_field().get(),
+                expansion.minimum_elements(),
+                expansion.maximum_elements(),
+                maximum,
+                coefficient
+            );
+        }
         for (index, expression) in self.expressions.nodes().iter().enumerate() {
             let operation = match expression.kind() {
                 ExpressionKind::Constant(_) => "constant(redacted)".to_owned(),

@@ -116,7 +116,7 @@ export type ApplicationValueSchema =
   | { readonly kind: "decimal"; readonly precision?: number; readonly scale?: number }
   | { readonly kind: "money"; readonly precision?: number; readonly scale?: number; readonly currency?: string }
   | { readonly kind: "optional"; readonly value: ApplicationValueSchema }
-  | { readonly kind: "list"; readonly value: ApplicationValueSchema; readonly minimum?: number; readonly maximum?: number }
+  | { readonly kind: "list"; readonly value: ApplicationValueSchema; readonly minimum?: number; readonly maximum?: number; readonly aggregateCanonicalElementBytes?: number }
   | { readonly kind: "record"; readonly fields: ReadonlyArray<{ readonly name: string; readonly schema: ApplicationValueSchema; readonly wireId?: number }> };
 export interface DriverOperationIdentity { readonly name: string; readonly inputSchemaHash: string; }
 export interface CompactApplicationValue { readonly type: string; readonly value?: unknown; }
@@ -710,29 +710,41 @@ export class TicketDeskClient {
   }
 
   public async listComments(parameters: ListCommentsParams, options: QueryOptions = {}): Promise<TypedQueryResult<ListCommentsResult>> {
-    const request = listComments(parameters);
-    const result = await this.transport.executeNamedQuery<ListCommentsParams, ListCommentsResult>(request, options);
+    const { after: generatedCursor, ...routedParameters } = parameters;
+    if (generatedCursor != null && options.cursor !== undefined) throw new Error("generated cursor conflicts with query options");
+    const routedOptions: QueryOptions = generatedCursor == null ? options : { ...options, cursor: generatedCursor };
+    const request = listComments(routedParameters as unknown as ListCommentsParams);
+    const result = await this.transport.executeNamedQuery<ListCommentsParams, ListCommentsResult>(request, routedOptions);
     if (!acceptsIdentity(request, result.identity)) throw new Error("RiffDB application identity mismatch");
     return result;
   }
 
   public async listTickets(parameters: ListTicketsParams, options: QueryOptions = {}): Promise<TypedQueryResult<ListTicketsResult>> {
-    const request = listTickets(parameters);
-    const result = await this.transport.executeNamedQuery<ListTicketsParams, ListTicketsResult>(request, options);
+    const { after: generatedCursor, ...routedParameters } = parameters;
+    if (generatedCursor != null && options.cursor !== undefined) throw new Error("generated cursor conflicts with query options");
+    const routedOptions: QueryOptions = generatedCursor == null ? options : { ...options, cursor: generatedCursor };
+    const request = listTickets(routedParameters as unknown as ListTicketsParams);
+    const result = await this.transport.executeNamedQuery<ListTicketsParams, ListTicketsResult>(request, routedOptions);
     if (!acceptsIdentity(request, result.identity)) throw new Error("RiffDB application identity mismatch");
     return result;
   }
 
   public async listTicketsByAssignee(parameters: ListTicketsByAssigneeParams, options: QueryOptions = {}): Promise<TypedQueryResult<ListTicketsByAssigneeResult>> {
-    const request = listTicketsByAssignee(parameters);
-    const result = await this.transport.executeNamedQuery<ListTicketsByAssigneeParams, ListTicketsByAssigneeResult>(request, options);
+    const { after: generatedCursor, ...routedParameters } = parameters;
+    if (generatedCursor != null && options.cursor !== undefined) throw new Error("generated cursor conflicts with query options");
+    const routedOptions: QueryOptions = generatedCursor == null ? options : { ...options, cursor: generatedCursor };
+    const request = listTicketsByAssignee(routedParameters as unknown as ListTicketsByAssigneeParams);
+    const result = await this.transport.executeNamedQuery<ListTicketsByAssigneeParams, ListTicketsByAssigneeResult>(request, routedOptions);
     if (!acceptsIdentity(request, result.identity)) throw new Error("RiffDB application identity mismatch");
     return result;
   }
 
   public async projectMembers(parameters: ProjectMembersParams, options: QueryOptions = {}): Promise<TypedQueryResult<ProjectMembersResult>> {
-    const request = projectMembers(parameters);
-    const result = await this.transport.executeNamedQuery<ProjectMembersParams, ProjectMembersResult>(request, options);
+    const { after: generatedCursor, ...routedParameters } = parameters;
+    if (generatedCursor != null && options.cursor !== undefined) throw new Error("generated cursor conflicts with query options");
+    const routedOptions: QueryOptions = generatedCursor == null ? options : { ...options, cursor: generatedCursor };
+    const request = projectMembers(routedParameters as unknown as ProjectMembersParams);
+    const result = await this.transport.executeNamedQuery<ProjectMembersParams, ProjectMembersResult>(request, routedOptions);
     if (!acceptsIdentity(request, result.identity)) throw new Error("RiffDB application identity mismatch");
     return result;
   }
@@ -752,8 +764,11 @@ export class TicketDeskClient {
   }
 
   public async ticketPagePaged(parameters: TicketPagePagedParams, options: QueryOptions = {}): Promise<TypedQueryResult<TicketPagePagedResult>> {
-    const request = ticketPagePaged(parameters);
-    const result = await this.transport.executeNamedQuery<TicketPagePagedParams, TicketPagePagedResult>(request, options);
+    const { comments_after: generatedCursor, ...routedParameters } = parameters;
+    if (generatedCursor != null && options.cursor !== undefined) throw new Error("generated cursor conflicts with query options");
+    const routedOptions: QueryOptions = generatedCursor == null ? options : { ...options, cursor: generatedCursor };
+    const request = ticketPagePaged(routedParameters as unknown as TicketPagePagedParams);
+    const result = await this.transport.executeNamedQuery<TicketPagePagedParams, TicketPagePagedResult>(request, routedOptions);
     if (!acceptsIdentity(request, result.identity)) throw new Error("RiffDB application identity mismatch");
     return result;
   }

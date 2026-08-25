@@ -82,5 +82,20 @@ They are substitution evidence used only to open the generated application
 session. The workflow supports `go.mod` as a first-class runner manifest and
 runs with the caller's selected offline module source.
 
+A Go library module can keep its executable in one dedicated package:
+
+```bash
+riffdb dev --seed --run --go-runner-package cmd/server
+```
+
+The default remains `.`. The option accepts only one canonical,
+repository-relative directory inside the root module and requires that package
+to declare `package main`. Absolute paths, parent traversal, symlink escapes,
+nested modules, non-main packages, and flag-like executable selection fail
+before the driver starts or credentials exist. RiffDB invokes `go run` directly
+with the checked package and prints it in the bounded runner summary. This is
+development process configuration only: it changes no contract, query module,
+role, application lock, plan, or production identity.
+
 Current limitation: the Go/driver-host path is Linux-only in the alpha. The Go
 runtime has no pure-Go remote fallback.

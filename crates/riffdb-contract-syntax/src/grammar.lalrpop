@@ -498,8 +498,9 @@ ServiceValueKind: Spanned<ServiceValueKind> = {
 };
 
 InputDeclaration: Spanned<InputDeclaration> = {
-    <lo:@L> "input" <field:TypedField> <hi:@R>
-        => parser::spanned(InputDeclaration { field }, lo, hi),
+    <lo:@L> "input" <field:TypedField>
+        <aggregate_bytes:("aggregate_bytes" "<=" <UnsignedInteger>)?> <hi:@R>
+        => parser::spanned(InputDeclaration { field, aggregate_bytes }, lo, hi),
 };
 
 IdempotencyClause: Spanned<IdempotencyClause> = {
@@ -1007,6 +1008,7 @@ extern {
         "expired" => Token::Expired,
         "active" => Token::Active,
         "input" => Token::Input,
+        "aggregate_bytes" => Token::AggregateBytes,
         "idempotency_key" => Token::IdempotencyKey,
         "read" => Token::Read,
         "mutate" => Token::Mutate,

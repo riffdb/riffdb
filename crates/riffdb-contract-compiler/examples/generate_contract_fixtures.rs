@@ -264,6 +264,42 @@ contract ProductionEmbeddingShape version 1 {
 }
 "#;
 
+/// Aggregate collection-byte fixture (ADR-0147 / WP-678): pins the V16
+/// correlated input/graph proof without naming an external framework.
+const AGGREGATE_COLLECTION_BUDGET_SOURCE: &str = r#"
+contract PolicyMutationShape version 1 {
+  entity PolicyMutation {
+    key (organization_id: uuid, mutation_id: uuid)
+    field relation: string<64>
+    field context: optional<bytes<524288>>
+  }
+  event PolicyMutationWritten {
+    organization_id: uuid
+    mutation_id: uuid
+  }
+  aggregate PolicyMutations {
+    root PolicyMutation
+    partition_by organization_id
+    conflict_key (organization_id, mutation_id)
+  }
+  bulk command WritePolicyMutations {
+    input request_id: uuid
+    input mutations: list<PolicyMutation, 1..100> aggregate_bytes <= 900000
+    idempotency_key request_id
+    for mutation in mutations {
+      create PolicyMutation(mutation.organization_id, mutation.mutation_id) as stored else Exists {}
+      set stored.relation = mutation.relation
+      set stored.context = mutation.context
+      emit PolicyMutationWritten {
+        organization_id: mutation.organization_id,
+        mutation_id: mutation.mutation_id
+      }
+    }
+    return Written {}
+  }
+}
+"#;
+
 fn main() -> Result<(), Box<dyn Error>> {
     let output_root = parse_output_root()?;
     let fixture_root = output_root.join("fixtures/compiler");
@@ -346,6 +382,35 @@ fn main() -> Result<(), Box<dyn Error>> {
                 .commands()
                 .first()
                 .ok_or("production embedding fixture command is absent")?,
+        )
+        .render_text(),
+    )?;
+
+    let aggregate_collection_bundle = compile_contract_source(AGGREGATE_COLLECTION_BUDGET_SOURCE)?;
+    let aggregate_collection_root = fixture_root.join("aggregate-collection-budget");
+    fs::create_dir_all(&aggregate_collection_root)?;
+    fs::write(
+        aggregate_collection_root.join("contract.riff"),
+        AGGREGATE_COLLECTION_BUDGET_SOURCE,
+    )?;
+    fs::write(
+        aggregate_collection_root.join("bundle.bin"),
+        aggregate_collection_bundle.canonical_bytes(),
+    )?;
+    fs::write(
+        aggregate_collection_root.join("bundle-hash.txt"),
+        format!(
+            "{}\n",
+            hex(aggregate_collection_bundle.bundle_hash().as_bytes())
+        ),
+    )?;
+    fs::write(
+        aggregate_collection_root.join("command-explain.txt"),
+        CommandExplain::from_plan(
+            aggregate_collection_bundle
+                .commands()
+                .first()
+                .ok_or("aggregate collection fixture command is absent")?,
         )
         .render_text(),
     )?;

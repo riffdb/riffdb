@@ -539,10 +539,11 @@ impl GeneratedQuery for ListCommentsQuery {
 
     fn named_query(self, options: QueryOptions) -> Result<NamedQuery, ApplicationClientError> {
         let mut parameters = BTreeMap::new();
+        let generated_cursor = self.0.after;
         parameters.insert("organization_id".to_owned(), ApplicationValue::Uuid(ApplicationUuid::from_text(self.0.organization_id)?));
         parameters.insert("ticket_id".to_owned(), ApplicationValue::Uuid(ApplicationUuid::from_text(self.0.ticket_id)?));
-        parameters.insert("after".to_owned(), match self.0.after { Some(value) => ApplicationValue::String(value), None => ApplicationValue::Null });
         parameters.insert("limit".to_owned(), ApplicationValue::U64(self.0.limit));
+        let options = options.with_generated_cursor(generated_cursor)?;
         NamedQuery::new(
             ApplicationContract::Exact {
                 lineage: CONTRACT_LINEAGE.to_owned(),
@@ -620,11 +621,12 @@ impl GeneratedQuery for ListTicketsQuery {
 
     fn named_query(self, options: QueryOptions) -> Result<NamedQuery, ApplicationClientError> {
         let mut parameters = BTreeMap::new();
+        let generated_cursor = self.0.after;
         parameters.insert("organization_id".to_owned(), ApplicationValue::Uuid(ApplicationUuid::from_text(self.0.organization_id)?));
         parameters.insert("project_id".to_owned(), ApplicationValue::Uuid(ApplicationUuid::from_text(self.0.project_id)?));
         parameters.insert("statuses".to_owned(), ApplicationValue::List(self.0.statuses.into_iter().map(ApplicationValue::Enum).collect()));
-        parameters.insert("after".to_owned(), match self.0.after { Some(value) => ApplicationValue::String(value), None => ApplicationValue::Null });
         parameters.insert("limit".to_owned(), ApplicationValue::U64(self.0.limit));
+        let options = options.with_generated_cursor(generated_cursor)?;
         NamedQuery::new(
             ApplicationContract::Exact {
                 lineage: CONTRACT_LINEAGE.to_owned(),
@@ -705,11 +707,12 @@ impl GeneratedQuery for ListTicketsByAssigneeQuery {
 
     fn named_query(self, options: QueryOptions) -> Result<NamedQuery, ApplicationClientError> {
         let mut parameters = BTreeMap::new();
+        let generated_cursor = self.0.after;
         parameters.insert("organization_id".to_owned(), ApplicationValue::Uuid(ApplicationUuid::from_text(self.0.organization_id)?));
         parameters.insert("assignee_id".to_owned(), ApplicationValue::Uuid(ApplicationUuid::from_text(self.0.assignee_id)?));
         parameters.insert("statuses".to_owned(), ApplicationValue::List(self.0.statuses.into_iter().map(ApplicationValue::Enum).collect()));
-        parameters.insert("after".to_owned(), match self.0.after { Some(value) => ApplicationValue::String(value), None => ApplicationValue::Null });
         parameters.insert("limit".to_owned(), ApplicationValue::U64(self.0.limit));
+        let options = options.with_generated_cursor(generated_cursor)?;
         NamedQuery::new(
             ApplicationContract::Exact {
                 lineage: CONTRACT_LINEAGE.to_owned(),
@@ -783,9 +786,10 @@ impl GeneratedQuery for ProjectMembersQuery {
 
     fn named_query(self, options: QueryOptions) -> Result<NamedQuery, ApplicationClientError> {
         let mut parameters = BTreeMap::new();
+        let generated_cursor = self.0.after;
         parameters.insert("organization_id".to_owned(), ApplicationValue::Uuid(ApplicationUuid::from_text(self.0.organization_id)?));
         parameters.insert("project_id".to_owned(), ApplicationValue::Uuid(ApplicationUuid::from_text(self.0.project_id)?));
-        parameters.insert("after".to_owned(), match self.0.after { Some(value) => ApplicationValue::String(value), None => ApplicationValue::Null });
+        let options = options.with_generated_cursor(generated_cursor)?;
         NamedQuery::new(
             ApplicationContract::Exact {
                 lineage: CONTRACT_LINEAGE.to_owned(),
@@ -1220,9 +1224,10 @@ impl GeneratedQuery for TicketPagePagedQuery {
 
     fn named_query(self, options: QueryOptions) -> Result<NamedQuery, ApplicationClientError> {
         let mut parameters = BTreeMap::new();
+        let generated_cursor = self.0.comments_after;
         parameters.insert("organization_id".to_owned(), ApplicationValue::Uuid(ApplicationUuid::from_text(self.0.organization_id)?));
         parameters.insert("ticket_id".to_owned(), ApplicationValue::Uuid(ApplicationUuid::from_text(self.0.ticket_id)?));
-        parameters.insert("comments_after".to_owned(), match self.0.comments_after { Some(value) => ApplicationValue::String(value), None => ApplicationValue::Null });
+        let options = options.with_generated_cursor(generated_cursor)?;
         NamedQuery::new(
             ApplicationContract::Exact {
                 lineage: CONTRACT_LINEAGE.to_owned(),

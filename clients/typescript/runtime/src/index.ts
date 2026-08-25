@@ -26,7 +26,7 @@ export type ApplicationValueSchema =
   | { readonly kind: "money"; readonly precision?: number; readonly scale?: number; readonly currency?: string }
   | { readonly kind: "enum"; readonly typeId?: number; readonly variants?: Readonly<Record<string, number>> }
   | { readonly kind: "optional"; readonly value: ApplicationValueSchema }
-  | { readonly kind: "list"; readonly value: ApplicationValueSchema; readonly minimum?: number; readonly maximum?: number }
+  | { readonly kind: "list"; readonly value: ApplicationValueSchema; readonly minimum?: number; readonly maximum?: number; readonly aggregateCanonicalElementBytes?: number }
   | { readonly kind: "record"; readonly fields: ReadonlyArray<{ readonly name: string; readonly schema: ApplicationValueSchema; readonly wireId?: number }> };
 
 /** One exact fixed-point value accepted by generated decimal fields. */
@@ -1299,6 +1299,15 @@ function encodeDriverValue(value: unknown, schema: ApplicationValueSchema): Driv
         || value.length > (schema.maximum ?? 4_096)) {
       throw new Error("invalid generated RiffDB list input");
     }
+    if (schema.aggregateCanonicalElementBytes !== undefined) {
+      let aggregate = 0;
+      for (const item of value) {
+        aggregate += canonicalValueEncodedLength(item, schema.value);
+        if (!Number.isSafeInteger(aggregate) || aggregate > schema.aggregateCanonicalElementBytes) {
+          throw new Error("invalid generated RiffDB input");
+        }
+      }
+    }
     return { type: "list", value: value.map((item) => encodeDriverValue(item, schema.value)) };
   }
   if (schema.kind === "record") {
@@ -1675,6 +1684,15 @@ function encodeValue(value: unknown, schema: ApplicationValueSchema): unknown {
         || (schema.maximum !== undefined && value.length > schema.maximum)) {
       throw new Error("invalid generated application input");
     }
+    if (schema.aggregateCanonicalElementBytes !== undefined) {
+      let aggregate = 0;
+      for (const item of value) {
+        aggregate += canonicalValueEncodedLength(item, schema.value);
+        if (!Number.isSafeInteger(aggregate) || aggregate > schema.aggregateCanonicalElementBytes) {
+          throw new Error("invalid generated application input");
+        }
+      }
+    }
     return value.map((item) => encodeValue(item, schema.value));
   }
   if (schema.kind === "record") {
@@ -1767,6 +1785,48 @@ function encodeValue(value: unknown, schema: ApplicationValueSchema): unknown {
       return value;
     default:
       throw new Error("generated application scalar is not supported by the CLI transport");
+  }
+}
+
+function canonicalValueEncodedLength(value: unknown, schema: ApplicationValueSchema): number {
+  if (schema.kind === "optional") {
+    return value === null || value === undefined ? 2 : canonicalValueEncodedLength(value, schema.value);
+  }
+  if (schema.kind === "list") {
+    if (!Array.isArray(value)) throw new Error("invalid generated application input");
+    return value.reduce((total, item) => total + canonicalValueEncodedLength(item, schema.value), 6);
+  }
+  if (schema.kind === "record") {
+    const input = exactObject(value);
+    return schema.fields.reduce((total, field) => {
+      const fieldValue = input[field.name];
+      if (fieldValue === undefined && field.schema.kind !== "optional") {
+        throw new Error("invalid generated application input");
+      }
+      return total + 4 + canonicalValueEncodedLength(fieldValue, field.schema);
+    }, 6);
+  }
+  switch (schema.kind) {
+    case "bool": return 3;
+    case "i64":
+    case "u64": return 10;
+    case "decimal": return 20;
+    case "money": return 23;
+    case "string":
+    case "cursor": return 6 + new TextEncoder().encode(expectBoundedString(value, 262_144)).byteLength;
+    case "bytes": {
+      if (!(value instanceof Uint8Array)) throw new Error("invalid generated application input");
+      return 6 + value.byteLength;
+    }
+    case "timestamp": return 14;
+    case "date": return 6;
+    case "uuid": return 18;
+    case "enum": return 10;
+    case "vector": {
+      if (!Array.isArray(value)) throw new Error("invalid generated application input");
+      return 6 + value.length * 4;
+    }
+    default: throw new Error("invalid generated application input");
   }
 }
 

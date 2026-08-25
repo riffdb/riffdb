@@ -35,7 +35,8 @@ use riffdb_types::{
     CanonicalCodecError, CanonicalList, CanonicalRecord, CanonicalValue, CommandId, Decimal,
     DecimalSpec, FieldId, GeneratedArtifactHash, IdempotencyKey, MAX_DECIMAL_PRECISION, Money,
     OutcomeId, ScopedPartitionV1, ServiceAuditLinkV1, ServiceAuditPhaseV1, ServiceAuditTargetsV1,
-    ServiceOperationV1, TenantScope, encode_canonical_record, hash_generated_artifact,
+    ServiceOperationV1, TenantScope, encode_canonical_record, encode_canonical_value,
+    hash_generated_artifact,
 };
 
 use crate::orchestration::{AuditScope, BegunInvocation};
@@ -1683,6 +1684,7 @@ fn normalize_command_input(
     let normalized =
         CanonicalRecord::new(normalized).map_err(|_| InputPreparationError::Integrity)?;
     validate_embedding_metadata_inputs(selected, selected_schema, &normalized)?;
+    validate_collection_aggregate_bytes(selected, &normalized)?;
     match encode_canonical_record(&normalized) {
         Ok(_) => Ok(normalized),
         Err(CanonicalCodecError::DocumentTooLarge { .. }) => Err(InputPreparationError::Public(
@@ -1690,6 +1692,53 @@ fn normalize_command_input(
         )),
         Err(_) => Err(InputPreparationError::Integrity),
     }
+}
+
+fn validate_collection_aggregate_bytes(
+    plan: &CommandPlan,
+    normalized: &CanonicalRecord,
+) -> Result<(), InputPreparationError> {
+    let Some(expansion) = plan.collection_expansion() else {
+        return Ok(());
+    };
+    let Some(maximum) = expansion.maximum_aggregate_element_bytes() else {
+        return Ok(());
+    };
+    let value = normalized
+        .fields()
+        .iter()
+        .find_map(|(field, value)| (*field == expansion.input_field()).then_some(value))
+        .ok_or(InputPreparationError::Integrity)?;
+    let CanonicalValue::List(elements) = value else {
+        return Err(InputPreparationError::Integrity);
+    };
+    let mut observed = 0usize;
+    for element in elements.values() {
+        let encoded = encode_canonical_value(element).map_err(|error| match error {
+            CanonicalCodecError::DocumentTooLarge { .. }
+            | CanonicalCodecError::StringTooLarge { .. }
+            | CanonicalCodecError::BytesTooLarge { .. }
+            | CanonicalCodecError::TooManyEntries { .. }
+            | CanonicalCodecError::NestingTooDeep { .. } => {
+                InputPreparationError::Public(PublicError::validation(ValidationIssues::one(
+                    field_issue(ValidationCode::TooLong, expansion.input_field()),
+                )))
+            }
+            _ => InputPreparationError::Integrity,
+        })?;
+        observed = observed
+            .checked_add(encoded.len())
+            .ok_or(InputPreparationError::Integrity)?;
+        if observed > maximum {
+            return Err(InputPreparationError::Public(PublicError::validation(
+                ValidationIssues::one(field_issue(
+                    ValidationCode::TooLong,
+                    expansion.input_field(),
+                )),
+            )));
+        }
+    }
+    Ok(())
 }
 
 fn validate_embedding_metadata_inputs(
@@ -2940,12 +2989,12 @@ mod tests {
         IdempotencyKeyDigest, StoredAdmittedProvenanceClaimsV1, StoredOutcomeV1,
     };
     use riffdb_types::{
-        ActorId, ActorKind, AdmittedActorContext, AggregateTypeId, CanonicalInputHash,
-        CanonicalVector, CommandId, CommitSequence, ContractBundleHash, ContractLineage,
-        ContractVersion, CurrencyCode, DatabaseId, DigestKeyId, EnumTypeId, EnumVariantId,
-        Environment, FieldId, IncidentId, LogicalTime, OutcomeId, PartitionKeyBuilder, PlanHash,
-        ProvenanceId, RequestId, TenantId, TenantScope, Timestamp, hash_command_input,
-        hash_partition_key,
+        ActorId, ActorKind, AdmittedActorContext, AggregateTypeId, CanonicalBytes,
+        CanonicalInputHash, CanonicalVector, CommandId, CommitSequence, ContractBundleHash,
+        ContractLineage, ContractVersion, CurrencyCode, DatabaseId, DigestKeyId, EnumTypeId,
+        EnumVariantId, Environment, FieldId, IncidentId, LogicalTime, OutcomeId,
+        PartitionKeyBuilder, PlanHash, ProvenanceId, RequestId, TenantId, TenantScope, Timestamp,
+        hash_command_input, hash_partition_key,
     };
 
     use crate::{SourceName, SubmittedDecimal, SubmittedEnum, SubmittedField, SubmittedMoney};
@@ -4027,6 +4076,72 @@ contract EmbeddingInput version 1 {
                 &[ValidationPathSegment::Field(field)]
             );
         }
+    }
+
+    #[test]
+    fn aggregate_collection_byte_failure_uses_the_declared_collection_path() {
+        let bundle = compile_contract_source(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../fixtures/compiler/aggregate-collection-budget/contract.riff"
+        )))
+        .expect("aggregate collection fixture compiles");
+        let plan = command(&bundle);
+        let entity = bundle
+            .schema()
+            .entities()
+            .iter()
+            .find(|entity| entity.name() == "PolicyMutation")
+            .expect("policy mutation entity");
+        let mutation = |ordinal: u8| {
+            CanonicalValue::Record(
+                CanonicalRecord::new(
+                    entity
+                        .record()
+                        .fields()
+                        .iter()
+                        .map(|field| {
+                            let value = match field.name() {
+                                "organization_id" => CanonicalValue::Uuid([0x31; 16]),
+                                "mutation_id" => CanonicalValue::Uuid([ordinal; 16]),
+                                "relation" => CanonicalValue::string("reader").expect("relation"),
+                                "context" => CanonicalValue::Bytes(
+                                    CanonicalBytes::new(vec![ordinal; 475_000])
+                                        .expect("individual context remains valid"),
+                                ),
+                                other => panic!("unexpected mutation field {other}"),
+                            };
+                            (field.id(), value)
+                        })
+                        .collect(),
+                )
+                .expect("mutation record"),
+            )
+        };
+        let mutations = field_id(plan, "mutations");
+        let input = CanonicalRecord::new(vec![
+            (
+                field_id(plan, "request_id"),
+                CanonicalValue::Uuid([0x21; 16]),
+            ),
+            (
+                mutations,
+                CanonicalValue::List(
+                    CanonicalList::new((1..=2).map(mutation).collect())
+                        .expect("bounded mutation list"),
+                ),
+            ),
+        ])
+        .expect("command input");
+        let issue = issue(
+            normalize_command_input(plan, bundle.schema(), plan, &submitted_input(input))
+                .expect_err("aggregate overflow rejects before admission"),
+        );
+
+        assert_eq!(issue.code(), ValidationCode::TooLong);
+        assert_eq!(
+            issue.path().segments(),
+            &[ValidationPathSegment::Field(mutations)]
+        );
     }
 
     #[test]

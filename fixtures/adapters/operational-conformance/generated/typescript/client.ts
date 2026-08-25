@@ -116,7 +116,7 @@ export type ApplicationValueSchema =
   | { readonly kind: "decimal"; readonly precision?: number; readonly scale?: number }
   | { readonly kind: "money"; readonly precision?: number; readonly scale?: number; readonly currency?: string }
   | { readonly kind: "optional"; readonly value: ApplicationValueSchema }
-  | { readonly kind: "list"; readonly value: ApplicationValueSchema; readonly minimum?: number; readonly maximum?: number }
+  | { readonly kind: "list"; readonly value: ApplicationValueSchema; readonly minimum?: number; readonly maximum?: number; readonly aggregateCanonicalElementBytes?: number }
   | { readonly kind: "record"; readonly fields: ReadonlyArray<{ readonly name: string; readonly schema: ApplicationValueSchema; readonly wireId?: number }> };
 export interface DriverOperationIdentity { readonly name: string; readonly inputSchemaHash: string; }
 export interface CompactApplicationValue { readonly type: string; readonly value?: unknown; }
@@ -631,15 +631,21 @@ export class AdapterOperationalConformanceClient {
   }
 
   public async listFgaTuples(parameters: ListFgaTuplesParams, options: QueryOptions = {}): Promise<TypedQueryResult<ListFgaTuplesResult>> {
-    const request = listFgaTuples(parameters);
-    const result = await this.transport.executeNamedQuery<ListFgaTuplesParams, ListFgaTuplesResult>(request, options);
+    const { after: generatedCursor, ...routedParameters } = parameters;
+    if (generatedCursor != null && options.cursor !== undefined) throw new Error("generated cursor conflicts with query options");
+    const routedOptions: QueryOptions = generatedCursor == null ? options : { ...options, cursor: generatedCursor };
+    const request = listFgaTuples(routedParameters as unknown as ListFgaTuplesParams);
+    const result = await this.transport.executeNamedQuery<ListFgaTuplesParams, ListFgaTuplesResult>(request, routedOptions);
     if (!acceptsIdentity(request, result.identity)) throw new Error("RiffDB application identity mismatch");
     return result;
   }
 
   public async listPipelines(parameters: ListPipelinesParams, options: QueryOptions = {}): Promise<TypedQueryResult<ListPipelinesResult>> {
-    const request = listPipelines(parameters);
-    const result = await this.transport.executeNamedQuery<ListPipelinesParams, ListPipelinesResult>(request, options);
+    const { after: generatedCursor, ...routedParameters } = parameters;
+    if (generatedCursor != null && options.cursor !== undefined) throw new Error("generated cursor conflicts with query options");
+    const routedOptions: QueryOptions = generatedCursor == null ? options : { ...options, cursor: generatedCursor };
+    const request = listPipelines(routedParameters as unknown as ListPipelinesParams);
+    const result = await this.transport.executeNamedQuery<ListPipelinesParams, ListPipelinesResult>(request, routedOptions);
     if (!acceptsIdentity(request, result.identity)) throw new Error("RiffDB application identity mismatch");
     return result;
   }
@@ -666,8 +672,11 @@ export class AdapterOperationalConformanceClient {
   }
 
   public async searchDocuments(parameters: SearchDocumentsParams, options: QueryOptions = {}): Promise<TypedQueryResult<SearchDocumentsResult>> {
-    const request = searchDocuments(parameters);
-    const result = await this.transport.executeNamedQuery<SearchDocumentsParams, SearchDocumentsResult>(request, options);
+    const { after: generatedCursor, ...routedParameters } = parameters;
+    if (generatedCursor != null && options.cursor !== undefined) throw new Error("generated cursor conflicts with query options");
+    const routedOptions: QueryOptions = generatedCursor == null ? options : { ...options, cursor: generatedCursor };
+    const request = searchDocuments(routedParameters as unknown as SearchDocumentsParams);
+    const result = await this.transport.executeNamedQuery<SearchDocumentsParams, SearchDocumentsResult>(request, routedOptions);
     if (!acceptsIdentity(request, result.identity)) throw new Error("RiffDB application identity mismatch");
     return result;
   }

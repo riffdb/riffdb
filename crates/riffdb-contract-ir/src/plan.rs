@@ -4,10 +4,10 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use riffdb_types::{
     AggregateTypeId, CommandId, ContractLineage, ContractVersion, EntityTypeId, EnumVariantId,
-    EventTypeId, FieldId, IndexId, InvariantId, MAX_COMMAND_AFFECTED_INDEX_PREFIXES_V1,
-    MAX_COMMAND_CONFLICT_KEYS_V1, MAX_COMMAND_INDEX_DELTAS_V1,
-    MAX_COMMAND_READ_STATE_SEMANTIC_BYTES_V1, MAX_COMMAND_VALIDATION_TARGETS_V1, MAX_KEY_BYTES,
-    OutcomeId, PlanHash,
+    EventTypeId, FieldId, IndexId, InvariantId, MAX_APPLICATION_REQUEST_BYTES_V1,
+    MAX_COMMAND_AFFECTED_INDEX_PREFIXES_V1, MAX_COMMAND_CONFLICT_KEYS_V1,
+    MAX_COMMAND_INDEX_DELTAS_V1, MAX_COMMAND_READ_STATE_SEMANTIC_BYTES_V1,
+    MAX_COMMAND_VALIDATION_TARGETS_V1, MAX_KEY_BYTES, OutcomeId, PlanHash,
 };
 
 use crate::{
@@ -106,6 +106,8 @@ pub struct CollectionExpansionPlanV1 {
     first_instruction: u32,
     instruction_count: usize,
     duplicate_policy: CollectionDuplicatePolicyV1,
+    maximum_aggregate_element_bytes: Option<usize>,
+    maximum_copy_coefficient: Option<usize>,
 }
 
 impl CollectionExpansionPlanV1 {
@@ -148,7 +150,70 @@ impl CollectionExpansionPlanV1 {
             first_instruction,
             instruction_count,
             duplicate_policy,
+            maximum_aggregate_element_bytes: None,
+            maximum_copy_coefficient: None,
         })
+    }
+
+    /// Creates a collection descriptor with one aggregate canonical element-byte ceiling.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_with_aggregate_bytes(
+        input_field: FieldId,
+        minimum_elements: usize,
+        maximum_elements: usize,
+        element_type: crate::ValueType,
+        first_binding: BindingId,
+        binding_count: usize,
+        first_instruction: u32,
+        instruction_count: usize,
+        duplicate_policy: CollectionDuplicatePolicyV1,
+        maximum_aggregate_element_bytes: usize,
+    ) -> Result<Self, IrValidationError> {
+        let mut expansion = Self::new(
+            input_field,
+            minimum_elements,
+            maximum_elements,
+            element_type,
+            first_binding,
+            binding_count,
+            first_instruction,
+            instruction_count,
+            duplicate_policy,
+        )?;
+        if maximum_aggregate_element_bytes == 0
+            || maximum_aggregate_element_bytes > MAX_COLLECTION_COMMAND_GRAPH_BYTES_V1
+        {
+            return Err(IrValidationError::LimitExceeded {
+                kind: "collection aggregate element bytes",
+                actual: maximum_aggregate_element_bytes,
+                maximum: MAX_COLLECTION_COMMAND_GRAPH_BYTES_V1,
+            });
+        }
+        expansion.maximum_aggregate_element_bytes = Some(maximum_aggregate_element_bytes);
+        Ok(expansion)
+    }
+
+    pub(crate) fn set_maximum_copy_coefficient(
+        &mut self,
+        coefficient: usize,
+    ) -> Result<(), IrValidationError> {
+        if coefficient == 0 || coefficient > MAX_COMMAND_ITEMS {
+            return Err(IrValidationError::LimitExceeded {
+                kind: "collection aggregate byte copy coefficient",
+                actual: coefficient,
+                maximum: MAX_COMMAND_ITEMS,
+            });
+        }
+        if self
+            .maximum_copy_coefficient
+            .is_some_and(|stored| stored != coefficient)
+        {
+            return Err(IrValidationError::InvalidDependency {
+                reason: "collection aggregate byte copy coefficient does not match plan",
+            });
+        }
+        self.maximum_copy_coefficient = Some(coefficient);
+        Ok(())
     }
 
     /// Command input containing the submitted list.
@@ -165,6 +230,16 @@ impl CollectionExpansionPlanV1 {
     #[must_use]
     pub const fn maximum_elements(&self) -> usize {
         self.maximum_elements
+    }
+    /// Maximum summed canonical element-document bytes, when correlated sizing is enabled.
+    #[must_use]
+    pub const fn maximum_aggregate_element_bytes(&self) -> Option<usize> {
+        self.maximum_aggregate_element_bytes
+    }
+    /// Compiler-derived maximum copies of aggregate-variable element bytes in the full graph.
+    #[must_use]
+    pub const fn maximum_copy_coefficient(&self) -> Option<usize> {
+        self.maximum_copy_coefficient
     }
     /// Exact list element type.
     #[must_use]
@@ -1712,7 +1787,7 @@ impl CommandPlan {
         locality: LocalityPlan,
         mut commit_checks: Vec<CommitCheckPlan>,
         instructions: Vec<Instruction>,
-        collection_expansion: Option<CollectionExpansionPlanV1>,
+        mut collection_expansion: Option<CollectionExpansionPlanV1>,
         mut secret_reveals: Vec<SecretRevealSpecV1>,
         secret_reveal_validation: SecretRevealValidation,
         invocation_class: CommandInvocationClass,
@@ -1773,13 +1848,21 @@ impl CommandPlan {
                 &instructions,
                 contract_schema,
             )?;
-            validate_collection_graph_bytes(
+            let coefficient = validate_collection_graph_bytes(
                 expansion,
+                &name,
                 &input,
+                &expressions,
                 &bindings,
                 &instructions,
                 contract_schema,
             )?;
+            if let Some(coefficient) = coefficient {
+                collection_expansion
+                    .as_mut()
+                    .expect("validated collection expansion")
+                    .set_maximum_copy_coefficient(coefficient)?;
+            }
         } else if bindings
             .iter()
             .any(|binding| binding.mode() == BindingMode::Delete)
@@ -2116,6 +2199,13 @@ impl CommandPlan {
         self.bindings
             .iter()
             .any(|binding| binding.cascade_failure.is_some())
+    }
+    /// Whether this command carries aggregate collection-byte semantics.
+    #[must_use]
+    pub fn requires_ir_v16(&self) -> bool {
+        self.collection_expansion
+            .as_ref()
+            .is_some_and(|expansion| expansion.maximum_aggregate_element_bytes().is_some())
     }
     /// Whether this command requires the distinct reimport invocation class in IR v10.
     #[must_use]
@@ -2550,11 +2640,25 @@ fn validate_collection_expansion(
 
 fn validate_collection_graph_bytes(
     expansion: &CollectionExpansionPlanV1,
+    command_name: &str,
     input: &CommandInputSchema,
+    expressions: &ExpressionArena,
     bindings: &[BindingPlan],
     instructions: &[Instruction],
     schema: &SchemaIr,
-) -> Result<(), IrValidationError> {
+) -> Result<Option<usize>, IrValidationError> {
+    if expansion.maximum_aggregate_element_bytes().is_some() {
+        return validate_aggregate_collection_graph_bytes(
+            expansion,
+            command_name,
+            input,
+            expressions,
+            bindings,
+            instructions,
+            schema,
+        )
+        .map(Some);
+    }
     let mut total = maximum_record_value_bytes(input.record(), schema, 0)?;
     let first_binding = expansion.first_binding().get() as usize;
     let binding_end = first_binding + expansion.binding_count();
@@ -2675,7 +2779,411 @@ fn validate_collection_graph_bytes(
         "collection command canonical input and write graph bytes",
         total,
         MAX_COLLECTION_COMMAND_GRAPH_BYTES_V1,
-    )
+    )?;
+    Ok(None)
+}
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+enum AggregateElementSource {
+    Whole,
+    Field(FieldId),
+}
+
+fn direct_aggregate_source(
+    expressions: &ExpressionArena,
+    expression: ExprId,
+) -> Option<AggregateElementSource> {
+    match expressions.get(expression)?.kind() {
+        ExpressionKind::CollectionElement => Some(AggregateElementSource::Whole),
+        ExpressionKind::CollectionElementField(field) => {
+            Some(AggregateElementSource::Field(*field))
+        }
+        _ => None,
+    }
+}
+
+fn aggregate_copy_charge<I>(sources: I) -> Result<usize, IrValidationError>
+where
+    I: IntoIterator<Item = AggregateElementSource>,
+{
+    let mut counts = BTreeMap::new();
+    for source in sources {
+        let count = counts.entry(source).or_insert(0usize);
+        *count = count
+            .checked_add(1)
+            .ok_or(IrValidationError::SizeOverflow {
+                kind: "collection aggregate byte copy coefficient",
+            })?;
+    }
+    let whole = counts
+        .get(&AggregateElementSource::Whole)
+        .copied()
+        .unwrap_or(0);
+    let most_copied_field = counts
+        .iter()
+        .filter_map(|(source, count)| match source {
+            AggregateElementSource::Whole => None,
+            AggregateElementSource::Field(_) => Some(*count),
+        })
+        .max()
+        .unwrap_or(0);
+    whole
+        .checked_add(most_copied_field)
+        .ok_or(IrValidationError::SizeOverflow {
+            kind: "collection aggregate byte copy coefficient",
+        })
+}
+
+fn validate_aggregate_collection_graph_bytes(
+    expansion: &CollectionExpansionPlanV1,
+    command_name: &str,
+    input: &CommandInputSchema,
+    expressions: &ExpressionArena,
+    bindings: &[BindingPlan],
+    instructions: &[Instruction],
+    schema: &SchemaIr,
+) -> Result<usize, IrValidationError> {
+    let aggregate_bytes =
+        expansion
+            .maximum_aggregate_element_bytes()
+            .ok_or(IrValidationError::InvalidReference {
+                kind: "collection aggregate byte maximum",
+            })?;
+    let mut fixed_bytes = 6usize;
+    // ExecuteCommandRequest framing: command name, optional exact version,
+    // framed SubmittedRecord, and the record field count. Generated clients
+    // submit source field names, so their fixed identity bytes are included.
+    let mut request_bytes = 4usize
+        .checked_add(command_name.len())
+        .and_then(|bytes| bytes.checked_add(1 + 8 + 4 + 4))
+        .ok_or(IrValidationError::SizeOverflow {
+            kind: "collection aggregate public request bytes",
+        })?;
+    for field in input.record().fields() {
+        fixed_bytes = fixed_bytes
+            .checked_add(4)
+            .ok_or(IrValidationError::SizeOverflow {
+                kind: "collection aggregate fixed input bytes",
+            })?;
+        if field.id() == expansion.input_field() {
+            fixed_bytes = fixed_bytes
+                .checked_add(6)
+                .ok_or(IrValidationError::SizeOverflow {
+                    kind: "collection aggregate fixed input bytes",
+                })?;
+            request_bytes = request_bytes
+                .checked_add(5 + field.name().len())
+                .and_then(|bytes| bytes.checked_add(5))
+                .and_then(|bytes| bytes.checked_add(aggregate_bytes))
+                .and_then(|bytes| {
+                    aggregate_structural_overhead(expansion.element_type(), schema, 0)
+                        .ok()
+                        .and_then(|overhead| {
+                            overhead
+                                .checked_mul(expansion.maximum_elements())
+                                .and_then(|overhead| bytes.checked_add(overhead))
+                        })
+                })
+                .ok_or(IrValidationError::SizeOverflow {
+                    kind: "collection aggregate public request bytes",
+                })?;
+        } else {
+            fixed_bytes = fixed_bytes
+                .checked_add(maximum_typed_value_bytes(field.value_type(), schema, 1)?)
+                .ok_or(IrValidationError::SizeOverflow {
+                    kind: "collection aggregate fixed input bytes",
+                })?;
+            request_bytes = request_bytes
+                .checked_add(5 + field.name().len())
+                .and_then(|bytes| {
+                    maximum_submitted_value_bytes(field.value_type(), schema, 0)
+                        .ok()
+                        .and_then(|value| bytes.checked_add(value))
+                })
+                .ok_or(IrValidationError::SizeOverflow {
+                    kind: "collection aggregate public request bytes",
+                })?;
+        }
+    }
+    checked_len(
+        "collection aggregate public request bytes",
+        request_bytes,
+        MAX_APPLICATION_REQUEST_BYTES_V1,
+    )?;
+
+    let first_binding = expansion.first_binding().get() as usize;
+    let binding_end = first_binding.checked_add(expansion.binding_count()).ok_or(
+        IrValidationError::SizeOverflow {
+            kind: "collection aggregate binding range",
+        },
+    )?;
+    let first_instruction = expansion.first_instruction() as usize;
+    let instruction_end = first_instruction
+        .checked_add(expansion.instruction_count())
+        .ok_or(IrValidationError::SizeOverflow {
+            kind: "collection aggregate instruction range",
+        })?;
+    let repeated_instructions = &instructions[first_instruction..instruction_end];
+    let mut coefficient = 1usize;
+
+    for (position, binding) in bindings.iter().enumerate() {
+        let entity =
+            schema
+                .entity(binding.entity_type())
+                .ok_or(IrValidationError::InvalidReference {
+                    kind: "collection aggregate graph entity",
+                })?;
+        if !(first_binding..binding_end).contains(&position)
+            || !matches!(binding.mode(), BindingMode::Create | BindingMode::Mutate)
+            || binding.cascade_failure().is_some()
+        {
+            if matches!(binding.mode(), BindingMode::Create | BindingMode::Mutate)
+                || binding.cascade_failure().is_some()
+            {
+                let copies = if (first_binding..binding_end).contains(&position) {
+                    expansion.maximum_elements()
+                } else {
+                    1
+                };
+                fixed_bytes = fixed_bytes
+                    .checked_add(
+                        maximum_record_value_bytes(entity.record(), schema, 0)?
+                            .checked_mul(copies)
+                            .ok_or(IrValidationError::SizeOverflow {
+                                kind: "collection aggregate fixed graph bytes",
+                            })?,
+                    )
+                    .ok_or(IrValidationError::SizeOverflow {
+                        kind: "collection aggregate fixed graph bytes",
+                    })?;
+            }
+            continue;
+        }
+
+        let mut expressions_by_field = BTreeMap::new();
+        for (field, expression) in entity
+            .primary_key_fields()
+            .iter()
+            .copied()
+            .zip(binding.key_expressions().iter().copied())
+        {
+            expressions_by_field.insert(field, expression);
+        }
+        for instruction in repeated_instructions {
+            match instruction {
+                Instruction::SetField {
+                    binding: target,
+                    field,
+                    value,
+                }
+                | Instruction::SetEmbedding {
+                    binding: target,
+                    field,
+                    value,
+                    ..
+                } if *target == binding.id() => {
+                    expressions_by_field.insert(*field, *value);
+                }
+                _ => {}
+            }
+        }
+        let mut sources = Vec::new();
+        let mut per_record_fixed = 6usize;
+        for field in entity.record().fields() {
+            per_record_fixed =
+                per_record_fixed
+                    .checked_add(4)
+                    .ok_or(IrValidationError::SizeOverflow {
+                        kind: "collection aggregate fixed entity bytes",
+                    })?;
+            let source = expressions_by_field
+                .get(&field.id())
+                .and_then(|expression| direct_aggregate_source(expressions, *expression));
+            if let Some(source) = source {
+                sources.push(source);
+            } else {
+                per_record_fixed = per_record_fixed
+                    .checked_add(maximum_typed_value_bytes(field.value_type(), schema, 1)?)
+                    .ok_or(IrValidationError::SizeOverflow {
+                        kind: "collection aggregate fixed entity bytes",
+                    })?;
+            }
+        }
+        fixed_bytes = fixed_bytes
+            .checked_add(
+                per_record_fixed
+                    .checked_mul(expansion.maximum_elements())
+                    .ok_or(IrValidationError::SizeOverflow {
+                        kind: "collection aggregate fixed entity bytes",
+                    })?,
+            )
+            .ok_or(IrValidationError::SizeOverflow {
+                kind: "collection aggregate fixed entity bytes",
+            })?;
+        coefficient = coefficient
+            .checked_add(aggregate_copy_charge(sources)?)
+            .ok_or(IrValidationError::SizeOverflow {
+                kind: "collection aggregate byte copy coefficient",
+            })?;
+    }
+
+    for (position, instruction) in instructions.iter().enumerate() {
+        let Instruction::EmitEvent(event) = instruction else {
+            continue;
+        };
+        let declared =
+            schema
+                .event(event.event_type())
+                .ok_or(IrValidationError::InvalidReference {
+                    kind: "collection aggregate graph event",
+                })?;
+        if !(first_instruction..instruction_end).contains(&position) {
+            fixed_bytes = fixed_bytes
+                .checked_add(maximum_record_value_bytes(declared.payload(), schema, 0)?)
+                .ok_or(IrValidationError::SizeOverflow {
+                    kind: "collection aggregate fixed event bytes",
+                })?;
+            continue;
+        }
+        let mappings = event
+            .payload()
+            .fields()
+            .iter()
+            .map(|mapping| (mapping.field_id(), mapping.expression()))
+            .collect::<BTreeMap<_, _>>();
+        let mut sources = Vec::new();
+        let mut per_event_fixed = 6usize;
+        for field in declared.payload().fields() {
+            per_event_fixed =
+                per_event_fixed
+                    .checked_add(4)
+                    .ok_or(IrValidationError::SizeOverflow {
+                        kind: "collection aggregate fixed event bytes",
+                    })?;
+            let source = mappings
+                .get(&field.id())
+                .and_then(|expression| direct_aggregate_source(expressions, *expression));
+            if let Some(source) = source {
+                sources.push(source);
+            } else {
+                per_event_fixed = per_event_fixed
+                    .checked_add(maximum_typed_value_bytes(field.value_type(), schema, 1)?)
+                    .ok_or(IrValidationError::SizeOverflow {
+                        kind: "collection aggregate fixed event bytes",
+                    })?;
+            }
+        }
+        fixed_bytes = fixed_bytes
+            .checked_add(
+                per_event_fixed
+                    .checked_mul(expansion.maximum_elements())
+                    .ok_or(IrValidationError::SizeOverflow {
+                        kind: "collection aggregate fixed event bytes",
+                    })?,
+            )
+            .ok_or(IrValidationError::SizeOverflow {
+                kind: "collection aggregate fixed event bytes",
+            })?;
+        coefficient = coefficient
+            .checked_add(aggregate_copy_charge(sources)?)
+            .ok_or(IrValidationError::SizeOverflow {
+                kind: "collection aggregate byte copy coefficient",
+            })?;
+    }
+
+    let total = aggregate_bytes
+        .checked_mul(coefficient)
+        .and_then(|variable| fixed_bytes.checked_add(variable))
+        .ok_or(IrValidationError::SizeOverflow {
+            kind: "collection aggregate command graph bytes",
+        })?;
+    checked_len(
+        "collection command canonical input and write graph bytes",
+        total,
+        MAX_COLLECTION_COMMAND_GRAPH_BYTES_V1,
+    )?;
+    Ok(coefficient)
+}
+
+fn aggregate_structural_overhead(
+    value_type: &crate::ValueType,
+    schema: &SchemaIr,
+    depth: usize,
+) -> Result<usize, IrValidationError> {
+    if depth >= 32 {
+        return Err(IrValidationError::LimitExceeded {
+            kind: "collection aggregate request depth",
+            actual: depth,
+            maximum: 32,
+        });
+    }
+    if let Some(inner) = value_type.optional_inner() {
+        return aggregate_structural_overhead(inner, schema, depth + 1);
+    }
+    if let Some((element, maximum)) = value_type.list_parts() {
+        return aggregate_structural_overhead(element, schema, depth + 1)?
+            .checked_mul(maximum)
+            .ok_or(IrValidationError::SizeOverflow {
+                kind: "collection aggregate request overhead",
+            });
+    }
+    if let Some(record_ref) = value_type.record_ref() {
+        let record = referenced_record(record_ref, schema)?;
+        return record.fields().iter().try_fold(0usize, |total, field| {
+            total
+                .checked_add(1 + field.name().len())
+                .and_then(|bytes| {
+                    aggregate_structural_overhead(field.value_type(), schema, depth + 1)
+                        .ok()
+                        .and_then(|overhead| bytes.checked_add(overhead))
+                })
+                .ok_or(IrValidationError::SizeOverflow {
+                    kind: "collection aggregate request overhead",
+                })
+        });
+    }
+    if let Some(enum_id) = value_type.enum_type_id() {
+        let maximum_name = schema
+            .enumeration(enum_id)
+            .ok_or(IrValidationError::InvalidReference {
+                kind: "collection aggregate request enum",
+            })?
+            .variants()
+            .iter()
+            .map(|variant| variant.name().len())
+            .max()
+            .unwrap_or(0);
+        return Ok(maximum_name.saturating_sub(2));
+    }
+    Ok(0)
+}
+
+fn maximum_submitted_value_bytes(
+    value_type: &crate::ValueType,
+    schema: &SchemaIr,
+    depth: usize,
+) -> Result<usize, IrValidationError> {
+    maximum_typed_value_bytes(value_type, schema, depth)?
+        .checked_add(aggregate_structural_overhead(value_type, schema, depth)?)
+        .ok_or(IrValidationError::SizeOverflow {
+            kind: "collection aggregate public request bytes",
+        })
+}
+
+fn referenced_record<'a>(
+    record_ref: &RecordTypeRef,
+    schema: &'a SchemaIr,
+) -> Result<&'a RecordSchema, IrValidationError> {
+    match record_ref {
+        RecordTypeRef::Entity(entity) => schema.entity(*entity).map(crate::EntitySchema::record),
+        RecordTypeRef::Event(event) => schema.event(*event).map(crate::EventSchema::payload),
+        RecordTypeRef::CommandInput(_)
+        | RecordTypeRef::CommandOutcome { .. }
+        | RecordTypeRef::ProjectionResult(_) => None,
+    }
+    .ok_or(IrValidationError::InvalidReference {
+        kind: "collection aggregate request record",
+    })
 }
 
 fn maximum_record_value_bytes(

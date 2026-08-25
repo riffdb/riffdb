@@ -25,7 +25,7 @@
     {
       "kind": "go",
       "path": "fixtures/adapters/operational-conformance/generated/go/client.go",
-      "sha256": "0840570b3bee7f793690ad32bc127909cab7c15ee166886caca202a2eade9289"
+      "sha256": "10078deea2125fec6d942af690c6e2d27369897d968e541bd123e19f39e775e7"
     },
     {
       "kind": "mcp",
@@ -35,17 +35,17 @@
     {
       "kind": "python",
       "path": "fixtures/adapters/operational-conformance/generated/python/client.py",
-      "sha256": "60c0a4973d4b8ea3749d7f4e1449c8a01818fa008c5fb840083ff8ce55655875"
+      "sha256": "9e77058b20d89e35fb28ba5f3c51e3cbc1dcdf78ac19c2f4d1eb244b7862bcb6"
     },
     {
       "kind": "rust",
       "path": "fixtures/adapters/operational-conformance/generated/rust/client.rs",
-      "sha256": "a8d83f3636d3774cc9bc6794e58349123e21c18505144c2bceaf1263df0047d5"
+      "sha256": "8f3699b518a07d2aa46dc04d1a3d461ce0e51173df3c78ce4fab09ce0239a848"
     },
     {
       "kind": "typescript",
       "path": "fixtures/adapters/operational-conformance/generated/typescript/client.ts",
-      "sha256": "c2b91affd272593f359bd37d592e5cead24bef2285d2db26582a2d98668faa1f"
+      "sha256": "851a187c0bc90dab695f5b569d46f9f78aceb592023556fc3dfbf2a388bc47d6"
     }
   ],
   "nullable_exact_order_operations": [
@@ -102,7 +102,7 @@
   },
   "source_lock": {
     "path": "fixtures/adapters/operational-conformance/riffdb.application.lock.json",
-    "sha256": "3708b753ca4408ab58b5fc10c9a18e2e78c07c8edcb0c7c134f95090ae71e6c3"
+    "sha256": "a0c4dbec6606aaff45f45b7730140547b2a231ba714ad945c6cadd6964e3766c"
   },
   "status": "development"
 }

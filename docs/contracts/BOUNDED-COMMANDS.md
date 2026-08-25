@@ -1,6 +1,6 @@
 # Bounded Collection Commands
 
-> Alpha surface: grammar, executable IR v5, atomic runtime execution, and generated Rust, Go,
+> Alpha surface: grammar, executable IR v16, atomic runtime execution, and generated Rust, Go,
 > TypeScript, Python, and MCP bindings are implemented. Collection commands use the ordinary
 > symbolic command service; they do not introduce a generic transaction API. Compiler-bounded
 > one-hop cascade grammar, executable IR V13, and the command/runtime/storage path are implemented.
@@ -131,18 +131,55 @@ events, provenance, idempotency record, and commit record are one atomic command
 or retry can expose only the complete persisted result or complete absence; an element-level
 partial result is not part of the protocol.
 
-The shipped Better Auth adapter exercises this surface through the generated Rust, Go, TypeScript,
-and Python clients: deleting a user removes its bounded account, session, and verification-token
-rows atomically. The identity and session model remains application-owned; RiffDB supplies only the
-compiled data command, authorization, and durability guarantees. Secret-bearing session reads are
-available only through explicitly generated application clients and are intentionally omitted from
-MCP and reactive display surfaces.
+External adapters can exercise this surface through generated Rust, Go, TypeScript, and Python
+clients while retaining their own identity, session, and application models. RiffDB supplies only
+the generic compiled data command, authorization, and durability guarantees.
+
+## Correlated aggregate element bytes (V16)
+
+When a list's individual element maximum multiplied by its cardinality would reject a useful
+atomic command, the expanded input may declare one smaller aggregate bound:
+
+```riff
+bulk command WritePolicyMutations {
+    input request_id: uuid
+    input mutations: list<PolicyMutation, 1..100>
+        aggregate_bytes <= 900000
+    idempotency_key request_id
+
+    for mutation in mutations {
+        create PolicyMutation(mutation.organization_id, mutation.mutation_id) as stored
+            else Exists {}
+        set stored.context = mutation.context
+    }
+
+    return Written {}
+}
+```
+
+The number is compiler-owned, positive, and applies only to the single list expanded by the bulk
+command. It is the sum of the complete ADR-0011 canonical documents for the submitted elements;
+it is not JSON, Protobuf, compressed, or in-memory size. Every element still obeys its individual
+type and byte bounds, and the list still obeys its count bound.
+
+The compiler derives how many times element-variable bytes can appear in the canonical command
+input, entity mutations, and events. It proves both the unchanged 1 MiB public request envelope
+and `fixed bytes + aggregate bytes * derived copy coefficient <= 16 MiB`. Unsupported flows,
+arithmetic overflow, or either excessive result fails at the source clause. The coefficient is
+stored in executable IR V16 and cannot be selected by an application or caller.
+
+Generated Rust, Go, TypeScript, and Python methods compute the exact canonical sum before opening
+the transport. MCP publishes `x-riffdb-aggregateCanonicalElementBytes` on the list schema. The
+service recomputes the sum authoritatively before effects, and the deterministic runtime retains
+the complete graph check. No layer splits, truncates, retries a subset, or returns partial element
+outcomes.
 
 ## Client and CLI preflight
 
 Generated Rust, Go, TypeScript, and Python methods carry the compiler's exact inclusive list
 minimum and maximum. They reject an out-of-range collection before invoking the transport. The
-generated MCP JSON Schema carries the same `minItems` and `maxItems`. Canonical command encoding
+generated MCP JSON Schema carries the same `minItems`, `maxItems`, and any compiled aggregate
+canonical-element-byte extension. Canonical command encoding
 also enforces the fixed document-byte ceiling before a request is sent; no client silently splits
 one atomic collection command into smaller writes.
 

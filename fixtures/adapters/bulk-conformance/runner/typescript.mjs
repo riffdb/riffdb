@@ -55,11 +55,43 @@ try {
   assert((await client.createPipelinesWithSteps(pipelines)).outcome.outcome === "PipelinesCreated", "Woodpecker outcome");
   assert((await client.createPipelinesWithSteps(pipelines)).replayed, "Woodpecker replay");
 
+  let aggregateBounded = false;
+  try {
+    await client.writePolicyMutations({
+      request_id: id(600),
+      mutations: [
+        { organization_id: id(601), mutation_id: id(602), relation: "viewer", context: new Uint8Array(450_000) },
+        { organization_id: id(601), mutation_id: id(603), relation: "viewer", context: new Uint8Array(450_000) },
+      ],
+    });
+  } catch (error) {
+    aggregateBounded = String(error).includes("generated RiffDB input");
+  }
+  assert(aggregateBounded, "aggregate byte preflight");
+
+  for (const [count, start, organization, request] of [
+    [9, 700, 690, 691],
+    [19, 710, 692, 693],
+    [100, 800, 694, 695],
+  ]) {
+    const mutations = Array.from({ length: count }, (_, index) => ({
+      organization_id: id(organization),
+      mutation_id: id(start + index),
+      relation: "viewer",
+      context: count === 100 && index === 0 ? new Uint8Array(524_288) : null,
+    }));
+    assert(
+      (await client.writePolicyMutations({ request_id: id(request), mutations })).outcome.outcome === "PolicyMutationsWritten",
+      "neutral aggregate outcome",
+    );
+  }
+
   console.log(JSON.stringify({
     schema: "riffdb.adapter-bulk-observation/v1",
     language: "typescript",
     bounded_preflight: true,
     replayed: true,
+    neutral_aggregate: true,
     adapters: ["mlflow", "openfga", "payload", "woodpecker"],
   }));
 } finally {

@@ -71,6 +71,63 @@ test("one retained session handshakes once and multiplexes exact operations", as
   }
 });
 
+test("driver transport carries a canonical half-mebibyte byte value within its frame", async () => {
+  const fixture = await DriverFixture.start((request) => request.type === "invoke" ? {
+    type: "result", request_id: request.request_id,
+    value: { type: "record", value: { outcome: { type: "enum", value: "Written" } } },
+    application_head: 1, cursor: null, replayed: false,
+  } : undefined);
+  try {
+    const transport = await DriverApplicationTransport.connect({ socketPath: fixture.path, identity });
+    const context = Buffer.alloc(524_288, 0xa5).toString("base64");
+    await transport.invoke(
+      { name: "policy_write_mutations", inputSchemaHash: HASH },
+      { context: { type: "bytes", value: context } },
+    );
+    assert.match(fixture.lastRequest, /"type":"bytes"/u);
+    await transport.shutdown();
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("generated driver transport rejects aggregate canonical bytes before invocation", async () => {
+  const fixture = await DriverFixture.start(() => undefined);
+  try {
+    const driver = await DriverApplicationTransport.connect({ socketPath: fixture.path, identity });
+    const transport = new DriverGeneratedApplicationTransport(driver);
+    await assert.rejects(
+      transport.executeCommand({
+        driverOperation: { name: "policy_write_mutations", inputSchemaHash: HASH },
+        contractLineage: "Policy",
+        contractVersion: 1,
+        commandName: "WritePolicyMutations",
+        planHash: HASH,
+        input: { contexts: [new Uint8Array(450_000), new Uint8Array(450_000)] },
+        idempotencyKey: "request-1",
+        inputSchema: {
+          kind: "record",
+          fields: [{
+            name: "contexts",
+            schema: {
+              kind: "list", minimum: 1, maximum: 100,
+              aggregateCanonicalElementBytes: 900_000,
+              value: { kind: "bytes" },
+            },
+          }],
+        },
+        outcomeSchemas: { Written: { kind: "record", fields: [] } },
+        decodeError: () => new Error("application error"),
+      }, 3),
+      /invalid generated RiffDB input/u,
+    );
+    assert.equal(fixture.invocations, 0);
+    await driver.shutdown();
+  } finally {
+    await fixture.close();
+  }
+});
+
 test("an empty-database query preserves application frontier zero", async () => {
   const fixture = await DriverFixture.start((request) => request.type === "invoke" ? {
     type: "result", request_id: request.request_id,

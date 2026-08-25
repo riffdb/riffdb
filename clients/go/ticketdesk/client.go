@@ -2204,11 +2204,14 @@ func decodeListCommentsResult(value riffdb.Value) (ListCommentsResult, error) {
 }
 func (client *Client) ListComments(ctx context.Context, parameters ListCommentsParams, options QueryOptions) (QueryResult[ListCommentsResult], error) {
 	input := map[string]riffdb.Value{}
+	if parameters.After != nil {
+		if options.Cursor != "" {
+			return QueryResult[ListCommentsResult]{}, errors.New("generated cursor conflicts with query options")
+		}
+		options.Cursor = *parameters.After
+	}
 	input["organization_id"] = riffdb.UUID(parameters.OrganizationId)
 	input["ticket_id"] = riffdb.UUID(parameters.TicketId)
-	if parameters.After != nil {
-		input["after"] = riffdb.Optional(parameters.After, func(item string) riffdb.Value { return riffdb.String(item) })
-	}
 	if parameters.Limit != nil {
 		input["limit"] = riffdb.U64(uint64(*parameters.Limit))
 	}
@@ -2325,12 +2328,15 @@ func decodeListTicketsResult(value riffdb.Value) (ListTicketsResult, error) {
 }
 func (client *Client) ListTickets(ctx context.Context, parameters ListTicketsParams, options QueryOptions) (QueryResult[ListTicketsResult], error) {
 	input := map[string]riffdb.Value{}
+	if parameters.After != nil {
+		if options.Cursor != "" {
+			return QueryResult[ListTicketsResult]{}, errors.New("generated cursor conflicts with query options")
+		}
+		options.Cursor = *parameters.After
+	}
 	input["organization_id"] = riffdb.UUID(parameters.OrganizationId)
 	input["project_id"] = riffdb.UUID(parameters.ProjectId)
 	input["statuses"] = riffdb.Values(parameters.Statuses, func(item TicketStatus) riffdb.Value { return riffdb.Enum(string(item)) })
-	if parameters.After != nil {
-		input["after"] = riffdb.Optional(parameters.After, func(item string) riffdb.Value { return riffdb.String(item) })
-	}
 	if parameters.Limit != nil {
 		input["limit"] = riffdb.U64(uint64(*parameters.Limit))
 	}
@@ -2447,12 +2453,15 @@ func decodeListTicketsByAssigneeResult(value riffdb.Value) (ListTicketsByAssigne
 }
 func (client *Client) ListTicketsByAssignee(ctx context.Context, parameters ListTicketsByAssigneeParams, options QueryOptions) (QueryResult[ListTicketsByAssigneeResult], error) {
 	input := map[string]riffdb.Value{}
+	if parameters.After != nil {
+		if options.Cursor != "" {
+			return QueryResult[ListTicketsByAssigneeResult]{}, errors.New("generated cursor conflicts with query options")
+		}
+		options.Cursor = *parameters.After
+	}
 	input["organization_id"] = riffdb.UUID(parameters.OrganizationId)
 	input["assignee_id"] = riffdb.UUID(parameters.AssigneeId)
 	input["statuses"] = riffdb.Values(parameters.Statuses, func(item TicketStatus) riffdb.Value { return riffdb.Enum(string(item)) })
-	if parameters.After != nil {
-		input["after"] = riffdb.Optional(parameters.After, func(item string) riffdb.Value { return riffdb.String(item) })
-	}
 	if parameters.Limit != nil {
 		input["limit"] = riffdb.U64(uint64(*parameters.Limit))
 	}
@@ -2529,11 +2538,14 @@ func decodeProjectMembersResult(value riffdb.Value) (ProjectMembersResult, error
 }
 func (client *Client) ProjectMembers(ctx context.Context, parameters ProjectMembersParams, options QueryOptions) (QueryResult[ProjectMembersResult], error) {
 	input := map[string]riffdb.Value{}
+	if parameters.After != nil {
+		if options.Cursor != "" {
+			return QueryResult[ProjectMembersResult]{}, errors.New("generated cursor conflicts with query options")
+		}
+		options.Cursor = *parameters.After
+	}
 	input["organization_id"] = riffdb.UUID(parameters.OrganizationId)
 	input["project_id"] = riffdb.UUID(parameters.ProjectId)
-	if parameters.After != nil {
-		input["after"] = riffdb.Optional(parameters.After, func(item string) riffdb.Value { return riffdb.String(item) })
-	}
 	response, err := client.session.Invoke(ctx, ProjectMembersOperation, input, options)
 	if err != nil {
 		return QueryResult[ProjectMembersResult]{}, err
@@ -3240,11 +3252,14 @@ func decodeTicketPagePagedResult(value riffdb.Value) (TicketPagePagedResult, err
 }
 func (client *Client) TicketPagePaged(ctx context.Context, parameters TicketPagePagedParams, options QueryOptions) (QueryResult[TicketPagePagedResult], error) {
 	input := map[string]riffdb.Value{}
+	if parameters.CommentsAfter != nil {
+		if options.Cursor != "" {
+			return QueryResult[TicketPagePagedResult]{}, errors.New("generated cursor conflicts with query options")
+		}
+		options.Cursor = *parameters.CommentsAfter
+	}
 	input["organization_id"] = riffdb.UUID(parameters.OrganizationId)
 	input["ticket_id"] = riffdb.UUID(parameters.TicketId)
-	if parameters.CommentsAfter != nil {
-		input["comments_after"] = riffdb.Optional(parameters.CommentsAfter, func(item string) riffdb.Value { return riffdb.String(item) })
-	}
 	response, err := client.session.Invoke(ctx, TicketPagePagedOperation, input, options)
 	if err != nil {
 		return QueryResult[TicketPagePagedResult]{}, err

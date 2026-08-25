@@ -116,7 +116,7 @@ export type ApplicationValueSchema =
   | { readonly kind: "decimal"; readonly precision?: number; readonly scale?: number }
   | { readonly kind: "money"; readonly precision?: number; readonly scale?: number; readonly currency?: string }
   | { readonly kind: "optional"; readonly value: ApplicationValueSchema }
-  | { readonly kind: "list"; readonly value: ApplicationValueSchema; readonly minimum?: number; readonly maximum?: number }
+  | { readonly kind: "list"; readonly value: ApplicationValueSchema; readonly minimum?: number; readonly maximum?: number; readonly aggregateCanonicalElementBytes?: number }
   | { readonly kind: "record"; readonly fields: ReadonlyArray<{ readonly name: string; readonly schema: ApplicationValueSchema; readonly wireId?: number }> };
 export interface DriverOperationIdentity { readonly name: string; readonly inputSchemaHash: string; }
 export interface CompactApplicationValue { readonly type: string; readonly value?: unknown; }
@@ -360,8 +360,11 @@ export class AgentBlogClient {
   }
 
   public async moderationQueue(parameters: ModerationQueueParams, options: QueryOptions = {}): Promise<TypedQueryResult<ModerationQueueResult>> {
-    const request = moderationQueue(parameters);
-    const result = await this.transport.executeNamedQuery<ModerationQueueParams, ModerationQueueResult>(request, options);
+    const { after: generatedCursor, ...routedParameters } = parameters;
+    if (generatedCursor != null && options.cursor !== undefined) throw new Error("generated cursor conflicts with query options");
+    const routedOptions: QueryOptions = generatedCursor == null ? options : { ...options, cursor: generatedCursor };
+    const request = moderationQueue(routedParameters as unknown as ModerationQueueParams);
+    const result = await this.transport.executeNamedQuery<ModerationQueueParams, ModerationQueueResult>(request, routedOptions);
     if (!acceptsIdentity(request, result.identity)) throw new Error("RiffDB application identity mismatch");
     return result;
   }
@@ -374,15 +377,21 @@ export class AgentBlogClient {
   }
 
   public async postPage(parameters: PostPageParams, options: QueryOptions = {}): Promise<TypedQueryResult<PostPageResult>> {
-    const request = postPage(parameters);
-    const result = await this.transport.executeNamedQuery<PostPageParams, PostPageResult>(request, options);
+    const { comments_after: generatedCursor, ...routedParameters } = parameters;
+    if (generatedCursor != null && options.cursor !== undefined) throw new Error("generated cursor conflicts with query options");
+    const routedOptions: QueryOptions = generatedCursor == null ? options : { ...options, cursor: generatedCursor };
+    const request = postPage(routedParameters as unknown as PostPageParams);
+    const result = await this.transport.executeNamedQuery<PostPageParams, PostPageResult>(request, routedOptions);
     if (!acceptsIdentity(request, result.identity)) throw new Error("RiffDB application identity mismatch");
     return result;
   }
 
   public async publicFeed(parameters: PublicFeedParams, options: QueryOptions = {}): Promise<TypedQueryResult<PublicFeedResult>> {
-    const request = publicFeed(parameters);
-    const result = await this.transport.executeNamedQuery<PublicFeedParams, PublicFeedResult>(request, options);
+    const { after: generatedCursor, ...routedParameters } = parameters;
+    if (generatedCursor != null && options.cursor !== undefined) throw new Error("generated cursor conflicts with query options");
+    const routedOptions: QueryOptions = generatedCursor == null ? options : { ...options, cursor: generatedCursor };
+    const request = publicFeed(routedParameters as unknown as PublicFeedParams);
+    const result = await this.transport.executeNamedQuery<PublicFeedParams, PublicFeedResult>(request, routedOptions);
     if (!acceptsIdentity(request, result.identity)) throw new Error("RiffDB application identity mismatch");
     return result;
   }

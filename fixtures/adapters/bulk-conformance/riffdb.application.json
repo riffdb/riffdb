@@ -37,7 +37,8 @@
         "CreatePipelinesWithSteps",
         "CreateRestrictParents",
         "CreateRestrictChildren",
-        "DeleteRestrictParents"
+        "DeleteRestrictParents",
+        "WritePolicyMutations"
       ],
       "event_streams": [],
       "watch_queries": [],

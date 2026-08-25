@@ -12,11 +12,11 @@ use riffdb_contract_ir::{
     EXECUTABLE_IR_VERSION_V6, EXECUTABLE_IR_VERSION_V7, EXECUTABLE_IR_VERSION_V8,
     EXECUTABLE_IR_VERSION_V9, EXECUTABLE_IR_VERSION_V10, EXECUTABLE_IR_VERSION_V11,
     EXECUTABLE_IR_VERSION_V12, EXECUTABLE_IR_VERSION_V13, EXECUTABLE_IR_VERSION_V14,
-    EXECUTABLE_IR_VERSION_V15, ExecutionClass, GRAMMAR_VERSION_V1, GRAMMAR_VERSION_V2,
-    GRAMMAR_VERSION_V3, GRAMMAR_VERSION_V4, GRAMMAR_VERSION_V5, GRAMMAR_VERSION_V6,
-    GRAMMAR_VERSION_V7, GRAMMAR_VERSION_V8, GRAMMAR_VERSION_V9, GRAMMAR_VERSION_V10,
-    GRAMMAR_VERSION_V11, GRAMMAR_VERSION_V12, GRAMMAR_VERSION_V13, GRAMMAR_VERSION_V14,
-    GRAMMAR_VERSION_V15, IndexSchema,
+    EXECUTABLE_IR_VERSION_V15, EXECUTABLE_IR_VERSION_V16, ExecutionClass, GRAMMAR_VERSION_V1,
+    GRAMMAR_VERSION_V2, GRAMMAR_VERSION_V3, GRAMMAR_VERSION_V4, GRAMMAR_VERSION_V5,
+    GRAMMAR_VERSION_V6, GRAMMAR_VERSION_V7, GRAMMAR_VERSION_V8, GRAMMAR_VERSION_V9,
+    GRAMMAR_VERSION_V10, GRAMMAR_VERSION_V11, GRAMMAR_VERSION_V12, GRAMMAR_VERSION_V13,
+    GRAMMAR_VERSION_V14, GRAMMAR_VERSION_V15, GRAMMAR_VERSION_V16, IndexSchema,
 };
 use riffdb_invariant::{InputDerivedCommandFacts, derive_input_command_facts};
 #[cfg(test)]
@@ -1544,6 +1544,13 @@ impl IndexDerivationBuilder {
 //   Evidence: `production_embedding_v15_preserves_ordinary_index_derivation`
 //   compiles and executes a real V15 mutation, pins its atomic evidence
 //   intent, and derives exactly the ordinary scalar index transition.
+// (V16, V16) — aggregate collection-byte proof (ADR-0147 / WP-679).
+// - The successor changes command input admission metadata only. Index keys,
+//   cover values, post-images, and transaction-current derivation are the
+//   existing typed values after the service/runtime have enforced the sealed
+//   aggregate ceiling.
+// - The commit path neither observes nor recomputes caller byte budgets and
+//   does not split, truncate, or otherwise reinterpret the atomic command.
 const fn index_derivation_version_supported(grammar: u32, ir: u32) -> bool {
     matches!(
         (grammar, ir),
@@ -1562,6 +1569,7 @@ const fn index_derivation_version_supported(grammar: u32, ir: u32) -> bool {
             | (GRAMMAR_VERSION_V13, EXECUTABLE_IR_VERSION_V13)
             | (GRAMMAR_VERSION_V14, EXECUTABLE_IR_VERSION_V14)
             | (GRAMMAR_VERSION_V15, EXECUTABLE_IR_VERSION_V15)
+            | (GRAMMAR_VERSION_V16, EXECUTABLE_IR_VERSION_V16)
     )
 }
 
@@ -1915,7 +1923,7 @@ mod tests {
         for grammar in 0..=16_u32 {
             for ir in 0..=16_u32 {
                 let audited_identity_pair =
-                    grammar == ir && (GRAMMAR_VERSION_V1..=GRAMMAR_VERSION_V15).contains(&grammar);
+                    grammar == ir && (GRAMMAR_VERSION_V1..=GRAMMAR_VERSION_V16).contains(&grammar);
                 assert_eq!(
                     index_derivation_version_supported(grammar, ir),
                     audited_identity_pair,

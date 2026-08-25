@@ -1498,6 +1498,21 @@ impl QueryOptions {
         self
     }
 
+    /// Routes one compiler-typed generated cursor without overriding a low-level option.
+    #[doc(hidden)]
+    pub fn with_generated_cursor(
+        mut self,
+        cursor: Option<String>,
+    ) -> Result<Self, ApplicationClientError> {
+        if self.cursor.is_some() && cursor.is_some() {
+            return Err(ApplicationClientError::InvalidInput);
+        }
+        if cursor.is_some() {
+            self.cursor = cursor;
+        }
+        Ok(self)
+    }
+
     /// Requires a snapshot at or after one observed application commit.
     #[must_use]
     pub const fn read_after_commit(mut self, commit_sequence: u64) -> Self {
@@ -2458,6 +2473,30 @@ mod tests {
             .with_options(QueryOptions::new().read_after_commit(0))
             .is_err()
         );
+    }
+
+    #[test]
+    fn generated_cursor_routing_preserves_low_level_options_and_rejects_collision() {
+        let routed = QueryOptions::new()
+            .read_after_commit(41)
+            .with_generated_cursor(Some("generated-cursor".to_owned()))
+            .expect("generated cursor");
+        assert_eq!(routed.cursor.as_deref(), Some("generated-cursor"));
+        assert_eq!(routed.read_after_commit, Some(41));
+
+        let first_page = QueryOptions::new()
+            .read_after_commit(42)
+            .with_generated_cursor(None)
+            .expect("first page");
+        assert_eq!(first_page.cursor, None);
+        assert_eq!(first_page.read_after_commit, Some(42));
+
+        assert!(matches!(
+            QueryOptions::new()
+                .after("low-level-cursor")
+                .with_generated_cursor(Some("generated-cursor".to_owned())),
+            Err(ApplicationClientError::InvalidInput)
+        ));
     }
 
     #[test]

@@ -165,6 +165,7 @@ direction, merged draft, or implementation choice.
 | [0144](0144-release-evidence-durability-mode-reconciliation.md) | Release-Evidence Durability-Mode Reconciliation | Accepted |
 | [0145](0145-compiler-declared-nullable-total-order-placement.md) | Compiler-Declared Nullable Total-Order Placement | Accepted |
 | [0146](0146-fixed-generation-unary-sampling-and-cloud-host-validity.md) | Fixed-Generation Unary Sampling and Whole-Cell Cloud Host Validity | Accepted |
+| [0147](0147-aggregate-byte-budgets-for-atomic-collection-commands.md) | Aggregate Byte Budgets for Atomic Collection Commands | Accepted |
 
 The human architecture review on 2026-07-12 approved the direction represented
 by ADR-0001 through ADR-0012. The human maintainer accepted ADR-0001 through

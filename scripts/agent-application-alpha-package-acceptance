@@ -146,13 +146,28 @@ rg -q '^Welcome to run-rust$' <<<"$rust_run_output"
 
 go_run_root="$work_root/go-run"
 "$bundle/bin/riffdb" new run-go --language go --directory "$go_run_root" >/dev/null
+mkdir -p "$go_run_root/cmd/server"
+mv "$go_run_root/main.go" "$go_run_root/cmd/server/main.go"
+if (
+    cd "$go_run_root"
+    "$bundle/bin/riffdb" dev --run --go-runner-package ../escape
+) >"$work_root/go-traversal.stdout" 2>"$work_root/go-traversal.stderr"; then
+    echo "installed Go runner accepted parent traversal" >&2
+    exit 1
+fi
+rg -Fq 'canonical repository-relative directory' "$work_root/go-traversal.stderr"
+if rg -q '^riffdb-dev-ready-v1' "$work_root/go-traversal.stdout"; then
+    echo "installed Go runner exposed readiness before rejecting its package" >&2
+    exit 1
+fi
 go_run_output="$(
     cd "$go_run_root"
     GOCACHE="$work_root/go-cache" GOMODCACHE="$work_root/go-mod-cache" \
         GOEXPERIMENT= GOPROXY=off GOTOOLCHAIN=local \
-        "$bundle/bin/riffdb" dev --seed --run
+        "$bundle/bin/riffdb" dev --seed --run --go-runner-package cmd/server
 )"
 rg -q '^riffdb-dev-ready-v1' <<<"$go_run_output"
+rg -Fxq $'riffdb-dev-runner-v1\tlanguage=go\tpackage=cmd/server' <<<"$go_run_output"
 rg -Fq '"schema":"riffdb.application-parity/v1"' <<<"$go_run_output" || {
     printf '%s\n' "$go_run_output" >&2
     echo "installed Go application omitted its parity observation" >&2

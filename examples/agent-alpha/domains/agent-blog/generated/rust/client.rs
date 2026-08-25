@@ -64,10 +64,11 @@ impl GeneratedQuery for ModerationQueueQuery {
 
     fn named_query(self, options: QueryOptions) -> Result<NamedQuery, ApplicationClientError> {
         let mut parameters = BTreeMap::new();
+        let generated_cursor = self.0.after;
         parameters.insert("site_id".to_owned(), ApplicationValue::Uuid(ApplicationUuid::from_text(self.0.site_id)?));
         parameters.insert("status".to_owned(), ApplicationValue::Enum(self.0.status));
-        parameters.insert("after".to_owned(), match self.0.after { Some(value) => ApplicationValue::String(value), None => ApplicationValue::Null });
         parameters.insert("limit".to_owned(), ApplicationValue::U64(self.0.limit));
+        let options = options.with_generated_cursor(generated_cursor)?;
         NamedQuery::new(
             ApplicationContract::Exact {
                 lineage: CONTRACT_LINEAGE.to_owned(),
@@ -282,9 +283,10 @@ impl GeneratedQuery for PostPageQuery {
 
     fn named_query(self, options: QueryOptions) -> Result<NamedQuery, ApplicationClientError> {
         let mut parameters = BTreeMap::new();
+        let generated_cursor = self.0.comments_after;
         parameters.insert("site_id".to_owned(), ApplicationValue::Uuid(ApplicationUuid::from_text(self.0.site_id)?));
         parameters.insert("post_id".to_owned(), ApplicationValue::Uuid(ApplicationUuid::from_text(self.0.post_id)?));
-        parameters.insert("comments_after".to_owned(), match self.0.comments_after { Some(value) => ApplicationValue::String(value), None => ApplicationValue::Null });
+        let options = options.with_generated_cursor(generated_cursor)?;
         NamedQuery::new(
             ApplicationContract::Exact {
                 lineage: CONTRACT_LINEAGE.to_owned(),
@@ -408,10 +410,11 @@ impl GeneratedQuery for PublicFeedQuery {
 
     fn named_query(self, options: QueryOptions) -> Result<NamedQuery, ApplicationClientError> {
         let mut parameters = BTreeMap::new();
+        let generated_cursor = self.0.after;
         parameters.insert("site_id".to_owned(), ApplicationValue::Uuid(ApplicationUuid::from_text(self.0.site_id)?));
         parameters.insert("status".to_owned(), ApplicationValue::Enum(self.0.status));
-        parameters.insert("after".to_owned(), match self.0.after { Some(value) => ApplicationValue::String(value), None => ApplicationValue::Null });
         parameters.insert("limit".to_owned(), ApplicationValue::U64(self.0.limit));
+        let options = options.with_generated_cursor(generated_cursor)?;
         NamedQuery::new(
             ApplicationContract::Exact {
                 lineage: CONTRACT_LINEAGE.to_owned(),

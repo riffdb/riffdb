@@ -3,6 +3,9 @@
 /// Maximum encoded size of one canonical value document, in bytes.
 pub const MAX_CANONICAL_DOCUMENT_BYTES: usize = 1024 * 1024;
 
+/// Maximum structurally decoded bytes in one public application-service request.
+pub const MAX_APPLICATION_REQUEST_BYTES_V1: usize = 1024 * 1024;
+
 /// Maximum UTF-8 byte length of one canonical string value.
 pub const MAX_STRING_BYTES: usize = 1024 * 1024;
 
@@ -118,6 +121,7 @@ mod tests {
     #[test]
     fn limits_match_the_v1_contract() {
         assert_eq!(MAX_CANONICAL_DOCUMENT_BYTES, 1_048_576);
+        assert_eq!(MAX_APPLICATION_REQUEST_BYTES_V1, 1_048_576);
         assert_eq!(MAX_STRING_BYTES, 1_048_576);
         assert_eq!(MAX_BYTES_VALUE_BYTES, 1_048_576);
         assert_eq!(MAX_LIST_ENTRIES, 65_535);

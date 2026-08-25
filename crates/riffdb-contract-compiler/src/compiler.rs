@@ -288,6 +288,30 @@ mod tests {
         );
     }
 
+    fn assert_semantic_diagnostic_exists_at(
+        source: &str,
+        code: CompilerDiagnosticCode,
+        exact_source: &str,
+    ) {
+        let error = validate_contract_source(source).expect_err("source must reject");
+        let start = source.find(exact_source).expect("source span");
+        let end = start + exact_source.len();
+        assert!(
+            error
+                .semantic()
+                .expect("semantic diagnostics")
+                .as_slice()
+                .iter()
+                .any(|diagnostic| {
+                    diagnostic.code() == code
+                        && diagnostic.primary_span().start() as usize == start
+                        && diagnostic.primary_span().end() as usize == end
+                }),
+            "expected {code:?} at {start}..{end}, got {:?}",
+            error.semantic().expect("semantic diagnostics").as_slice()
+        );
+    }
+
     #[test]
     fn delete_bindings_lower_with_one_complete_checked_policy_proof() {
         let bulk = r#"
@@ -812,6 +836,143 @@ contract OversizedBulk version 1 {
 }
 "#;
         assert_semantic_diagnostic_at(source, CompilerDiagnosticCode::BoundExceeded, "PutItems");
+    }
+
+    #[test]
+    fn aggregate_collection_budget_admits_one_hundred_individually_large_elements() {
+        let source = r#"
+contract AggregateBulk version 1 {
+  entity Mutation {
+    key (tenant_id: uuid, mutation_id: uuid)
+    field context: bytes<524288>
+  }
+  aggregate Mutations {
+    root Mutation
+    partition_by tenant_id
+    conflict_key (tenant_id, mutation_id)
+  }
+  bulk command WriteMutations {
+    input request_id: uuid
+    input mutations: list<Mutation, 1..100> aggregate_bytes <= 900000
+    idempotency_key request_id
+    for mutation in mutations {
+      create Mutation(mutation.tenant_id, mutation.mutation_id) as row else Exists {}
+      set row.context = mutation.context
+    }
+    return Written {}
+  }
+}
+"#;
+        let bundle = compile_contract_source(source).expect("aggregate collection compiles");
+        assert_eq!(bundle.grammar_version(), 16);
+        assert_eq!(bundle.ir_version(), 16);
+        let plan = bundle
+            .commands()
+            .iter()
+            .find(|command| command.name() == "WriteMutations")
+            .expect("aggregate collection command");
+        let expansion = plan.collection_expansion().expect("collection expansion");
+        assert_eq!(expansion.maximum_elements(), 100);
+        assert_eq!(expansion.maximum_aggregate_element_bytes(), Some(900_000));
+        assert_eq!(expansion.maximum_copy_coefficient(), Some(2));
+        let decoded = riffdb_contract_ir::ContractBundle::decode(bundle.canonical_bytes())
+            .expect("V16 bundle decodes");
+        assert_eq!(decoded.canonical_bytes(), bundle.canonical_bytes());
+    }
+
+    #[test]
+    fn aggregate_collection_budget_counts_optional_event_copies_conservatively() {
+        let source = r#"
+contract AggregateEventBulk version 1 {
+  entity Mutation {
+    key (tenant_id: uuid, mutation_id: uuid)
+    field context: optional<bytes<524288>>
+  }
+  event MutationWritten {
+    context: optional<bytes<524288>>
+  }
+  aggregate Mutations {
+    root Mutation
+    partition_by tenant_id
+    conflict_key (tenant_id, mutation_id)
+  }
+  bulk command WriteMutations {
+    input request_id: uuid
+    input mutations: list<Mutation, 1..100> aggregate_bytes <= 900000
+    idempotency_key request_id
+    for mutation in mutations {
+      create Mutation(mutation.tenant_id, mutation.mutation_id) as row else Exists {}
+      set row.context = mutation.context
+      emit MutationWritten { context: mutation.context }
+    }
+    return Written {}
+  }
+}
+"#;
+        let bundle = compile_contract_source(source).expect("aggregate event collection compiles");
+        let expansion = bundle.commands()[0]
+            .collection_expansion()
+            .expect("collection expansion");
+        assert_eq!(expansion.maximum_copy_coefficient(), Some(3));
+
+        let oversized = source.replace("900000", "1048576");
+        assert_semantic_diagnostic_at(&oversized, CompilerDiagnosticCode::BoundExceeded, "1048576");
+    }
+
+    #[test]
+    fn aggregate_collection_budget_rejects_invalid_placement_and_literals_at_the_clause() {
+        let ordinary = r#"
+contract OrdinaryBudget version 1 {
+  command Read {
+    input values: list<uuid, 1..2> aggregate_bytes <= 777
+    return Done {}
+  }
+}
+"#;
+        assert_semantic_diagnostic_at(ordinary, CompilerDiagnosticCode::InvalidType, "777");
+
+        let unexpanded = r#"
+contract UnexpandedBudget version 1 {
+  entity Row { key (tenant_id: uuid, row_id: uuid) }
+  aggregate Rows { root Row partition_by tenant_id conflict_key (tenant_id, row_id) }
+  bulk command PutRows {
+    input request_id: uuid
+    input metadata: list<uuid, 1..2> aggregate_bytes <= 888
+    input rows: list<Row, 1..2>
+    idempotency_key request_id
+    for row in rows {
+      create Row(row.tenant_id, row.row_id) as stored else Exists {}
+    }
+    return Written {}
+  }
+}
+"#;
+        assert_semantic_diagnostic_exists_at(
+            unexpanded,
+            CompilerDiagnosticCode::InvalidType,
+            "888",
+        );
+
+        for invalid in ["0", "16777217"] {
+            let source = format!(
+                r#"
+contract InvalidBudget version 1 {{
+  entity Row {{ key (tenant_id: uuid, row_id: uuid) }}
+  aggregate Rows {{ root Row partition_by tenant_id conflict_key (tenant_id, row_id) }}
+  bulk command PutRows {{
+    input request_id: uuid
+    input rows: list<Row, 1..2> aggregate_bytes <= {invalid}
+    idempotency_key request_id
+    for row in rows {{
+      create Row(row.tenant_id, row.row_id) as stored else Exists {{}}
+    }}
+    return Written {{}}
+  }}
+}}
+"#
+            );
+            assert_semantic_diagnostic_at(&source, CompilerDiagnosticCode::BoundExceeded, invalid);
+        }
     }
 
     #[test]
