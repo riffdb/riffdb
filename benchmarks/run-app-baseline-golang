@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# TypeScript TicketDesk load: postgres_safe_app (safety in TypeScript SQL) vs
+# Go TicketDesk load: postgres_safe_app (safety in Go SQL) vs
 # generated RiffDB client (safety in riffdbd / Rust via riffdb-driverd).
 # Not evidentiary.
 set -euo pipefail
@@ -12,7 +12,7 @@ cd "$repo_root"
 
 usage() {
     printf '%s\n' \
-        'usage: benchmarks/run-app-baseline-typescript [--smoke|--full]' \
+        'usage: benchmarks/run-app-baseline-golang [--smoke|--full]' \
         '         [--backend postgres|riffdb|both]' \
         '         [--load-clients N] [--load-duration-secs N] [--load-warmup-secs N]' \
         '         [--load-concurrency-sweep] [--output PATH]' \
@@ -20,7 +20,7 @@ usage() {
     exit 2
 }
 
-ts_root="$repo_root/examples/app-baseline/typescript"
+go_root="$repo_root/examples/app-baseline/golang"
 task_tmp_root="${RIFFDB_TMP_ROOT:-$HOME/tmp}"
 mkdir -p "$task_tmp_root"
 export TMPDIR="$task_tmp_root"
@@ -53,10 +53,22 @@ case "$backend" in
     *) usage ;;
 esac
 
+command -v go >/dev/null 2>&1 || {
+    printf 'go toolchain required for benchmarks/run-app-baseline-golang\n' >&2
+    exit 1
+}
+
+go_bin="$task_tmp_root/riffdb-app-baseline-golang-$$"
+(
+    cd "$go_root"
+    go test ./...
+    go build -o "$go_bin" .
+)
+
 postgres_url="${RIFFDB_APP_BASELINE_POSTGRES_URL:-}"
 own_postgres=0
 postgres_container=""
-postgres_label="riffdb.app-baseline.typescript=1"
+postgres_label="riffdb.app-baseline.golang=1"
 image='postgres:18.4-bookworm@sha256:d9c83446333daec3f0588cc709adb80c26090b7f9f0f7ec8d43c243385d79818'
 work_root=""
 server_pid=""
@@ -77,6 +89,7 @@ cleanup() {
     if [[ -n "$work_root" ]]; then
         rm -rf "$work_root"
     fi
+    rm -f "$go_bin"
 }
 trap cleanup EXIT INT TERM HUP
 
@@ -90,11 +103,6 @@ sock.close()
 PY
 }
 
-if [[ ! -x "$ts_root/node_modules/.bin/tsc" ]]; then
-    npm --prefix "$ts_root" install --no-fund --no-audit
-fi
-npm --prefix "$ts_root" run --silent build
-
 if ((want_postgres)) && [[ -z "$postgres_url" ]]; then
     command -v docker >/dev/null 2>&1 || {
         printf 'docker required when --postgres-url / RIFFDB_APP_BASELINE_POSTGRES_URL is unset\n' >&2
@@ -102,9 +110,10 @@ if ((want_postgres)) && [[ -z "$postgres_url" ]]; then
     }
     docker pull "$image" >/dev/null
     host_port="$(pick_free_loopback_port)"
-    postgres_container="riffdb-app-baseline-typescript-$$"
-    postgres_data="$repo_root/target/perf-db/app-baseline-typescript"
+    postgres_container="riffdb-app-baseline-golang-$$"
+    postgres_data="$repo_root/target/perf-db/app-baseline-golang"
     mkdir -p "$postgres_data"
+    chmod 777 "$postgres_data"
     extra_pg=()
     for arg in "${filtered_args[@]+"${filtered_args[@]}"}"; do
         if [[ "$arg" == "--load-concurrency-sweep" ]]; then
@@ -124,11 +133,11 @@ if ((want_postgres)) && [[ -z "$postgres_url" ]]; then
     run_rc=$?
     set -e
     if ((run_rc != 0)); then
-        printf 'failed to start host-network Postgres for the TypeScript load\n' >&2
+        printf 'failed to start host-network Postgres for the Go load\n' >&2
         exit 1
     fi
     own_postgres=1
-    postgres_url="postgres://riffdb:riffdb@127.0.0.1:${host_port}/riffdb_app_baseline"
+    postgres_url="postgres://riffdb:riffdb@127.0.0.1:${host_port}/riffdb_app_baseline?sslmode=disable"
     printf 'postgres connect path: host network loopback (no docker-proxy) port=%s\n' "$host_port" >&2
     pg_ready=0
     for _ in $(seq 1 80); do
@@ -140,16 +149,16 @@ if ((want_postgres)) && [[ -z "$postgres_url" ]]; then
     done
     if ((pg_ready == 0)); then
         docker logs "$postgres_container" >&2 || true
-        printf 'typescript Postgres did not become ready on port %s\n' "$host_port" >&2
+        printf 'golang Postgres did not become ready on port %s\n' "$host_port" >&2
         exit 1
     fi
 fi
 
-node_args=()
+go_args=()
 if ((want_postgres)); then
-    node_args+=(--backend "$backend" --postgres-url "$postgres_url")
+    go_args+=(--backend "$backend" --postgres-url "$postgres_url")
 else
-    node_args+=(--backend riffdb)
+    go_args+=(--backend riffdb)
 fi
 
 if ((want_riffdb)); then
@@ -173,7 +182,7 @@ if ((want_riffdb)); then
             riffdbd="${CARGO_TARGET_DIR}/release/riffdbd"
         fi
     fi
-    work_root="$(mktemp -d "$task_tmp_root/riffdb-app-baseline-typescript.XXXXXX")"
+    work_root="$(mktemp -d "$task_tmp_root/riffdb-app-baseline-golang.XXXXXX")"
     dev_tls_root="$repo_root/crates/riffdb-server/tests/fixtures"
     dev_tls_key="$work_root/server.key"
     cp "$dev_tls_root/localhost-key.pem" "$dev_tls_key"
@@ -192,7 +201,7 @@ if ((want_riffdb)); then
     printf 'locking and generating TicketDesk application artifacts\n'
     app_root="$work_root/app"
     mkdir -p "$app_root/riffdb/queries"
-    cp "$ts_root/riffdb.application.json" "$app_root/riffdb.application.json"
+    cp "$go_root/riffdb.application.json" "$app_root/riffdb.application.json"
     cp "$repo_root/examples/app-baseline/contracts/ticketdesk.riff" "$app_root/riffdb/contract.riff"
     cp "$repo_root"/queries/ticketdesk/*.riffq "$app_root/riffdb/queries/"
     (
@@ -230,14 +239,14 @@ EOF
     exec {ready_fd}<"$work_root/ready.fifo"
     IFS= read -r -t 60 ready_line <&"$ready_fd" || {
         cat "$work_root/riffdbd.stderr" >&2
-        printf 'typescript riffdbd did not become ready\n' >&2
+        printf 'golang riffdbd did not become ready\n' >&2
         exit 1
     }
     exec {ready_fd}<&-
     case "$ready_line" in
         riffdbd-ready-v1$'\t'*) address="${ready_line#*$'\t'}" ;;
         *)
-            printf 'typescript riffdbd returned invalid readiness\n' >&2
+            printf 'golang riffdbd returned invalid readiness\n' >&2
             exit 1
             ;;
     esac
@@ -261,7 +270,7 @@ EOF
         --contract-version 1 >"$work_root/module.json"
     "${operator[@]}" role bind "$application_manifest" \
         --role TicketDeskLoadApplication \
-        --principal app:ticketdesk-app-baseline-typescript \
+        --principal app:ticketdesk-app-baseline-golang \
         --actor-kind service \
         --lifetime-seconds 86400 \
         --audience riffdb-grpc-loopback \
@@ -297,7 +306,7 @@ EOF
     done
     [[ -S "$driver_socket" ]] || {
         cat "$work_root/driver.stderr" >&2
-        printf 'typescript riffdb-driverd did not become ready\n' >&2
+        printf 'golang riffdb-driverd did not become ready\n' >&2
         exit 1
     }
     manifest_hash="$(jq -er '.exact_manifest_hash' "$application_lock")"
@@ -331,10 +340,10 @@ EOF
             remoteIdentityHash: $remoteIdentityHash
           }
         }' >"$identity_path"
-    export RIFFDB_TYPESCRIPT_DRIVER_IDENTITY="$identity_path"
+    export RIFFDB_GOLANG_DRIVER_IDENTITY="$identity_path"
     printf 'riffdb connect path: generated client via riffdb-driverd %s\n' "$driver_socket" >&2
-    node_args+=(--riffdb-identity "$identity_path")
+    go_args+=(--riffdb-identity "$identity_path")
     unset RIFFDB_TLS_TRUST_ROOT RIFFDB_TLS_SERVER_NAME
 fi
 
-node ${RIFFDB_NODE_FLAGS:-} -- "$ts_root/dist/index.js" "${node_args[@]}" "${filtered_args[@]+"${filtered_args[@]}"}"
+"$go_bin" "${go_args[@]}" "${filtered_args[@]+"${filtered_args[@]}"}"
