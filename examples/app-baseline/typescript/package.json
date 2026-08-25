@@ -1,0 +1,22 @@
+{
+  "name": "riffdb-app-baseline-typescript",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "TypeScript TicketDesk load: postgres_safe_app (safety in SQL) vs generated RiffDB client (safety in riffdbd)",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "check": "tsc -p tsconfig.json --noEmit",
+    "test": "npm run build && node --test dist/ids.test.js dist/schema.test.js",
+    "start": "node dist/index.js"
+  },
+  "dependencies": {
+    "@riffdb/application": "file:../../../clients/typescript/runtime",
+    "pg": "8.16.3"
+  },
+  "devDependencies": {
+    "@types/node": "26.1.2",
+    "@types/pg": "8.15.5",
+    "typescript": "7.0.2"
+  }
+}

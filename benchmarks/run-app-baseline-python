@@ -1,0 +1,218 @@
+#!/usr/bin/env bash
+# Python TicketDesk load: postgres_safe_app (safety in Python SQL) vs
+# generated RiffDB client (safety in riffdbd / Rust). Not evidentiary.
+set -euo pipefail
+export LC_ALL=C
+export TZ=UTC
+
+repo_root="$(git rev-parse --show-toplevel)"
+cd "$repo_root"
+
+usage() {
+    printf '%s\n' \
+        'usage: benchmarks/run-app-baseline-python [--smoke|--full]' \
+        '         [--backend postgres|riffdb|both]' \
+        '         [--load-clients N] [--load-duration-secs N] [--load-warmup-secs N]' \
+        '         [--load-concurrency-sweep] [--output PATH]' \
+        '         [--postgres-url URL] [--riffdb-endpoint URL] [--riffdb-credential PATH]' >&2
+    exit 2
+}
+
+python_root="$repo_root/examples/app-baseline/python"
+venv_root="${RIFFDB_APP_BASELINE_PYTHON_VENV:-$repo_root/target/app-baseline/python-venv}"
+task_tmp_root="${RIFFDB_TMP_ROOT:-$HOME/tmp}"
+mkdir -p "$task_tmp_root" "$(dirname "$venv_root")"
+export TMPDIR="$task_tmp_root"
+
+backend="both"
+want_postgres=1
+want_riffdb=1
+filtered_args=()
+prev=""
+for arg in "$@"; do
+    if [[ "$prev" == "--backend" ]]; then
+        backend="$arg"
+        prev=""
+        continue
+    fi
+    if [[ "$arg" == "--backend" ]]; then
+        prev="$arg"
+        continue
+    fi
+    if [[ "$arg" == --backend=* ]]; then
+        backend="${arg#--backend=}"
+        continue
+    fi
+    filtered_args+=("$arg")
+done
+case "$backend" in
+    postgres) want_riffdb=0 ;;
+    riffdb) want_postgres=0 ;;
+    both) ;;
+    *) usage ;;
+esac
+
+if [[ ! -x "$venv_root/bin/python" ]]; then
+    uv venv "$venv_root"
+fi
+uv pip install --python "$venv_root/bin/python" -q -e "$python_root"
+if ((want_riffdb)); then
+    uv pip install --python "$venv_root/bin/python" -q maturin
+    (
+        cd "$repo_root/clients/python/runtime"
+        VIRTUAL_ENV="$venv_root" PATH="$venv_root/bin:$PATH" \
+            "$venv_root/bin/maturin" develop --uv --release --quiet
+    )
+fi
+
+postgres_url="${RIFFDB_APP_BASELINE_POSTGRES_URL:-}"
+own_postgres=0
+postgres_container=""
+postgres_label="riffdb.app-baseline.python=1"
+image='postgres:18.4-bookworm@sha256:d9c83446333daec3f0588cc709adb80c26090b7f9f0f7ec8d43c243385d79818'
+bridge_pid=""
+credential_path="$task_tmp_root/riffdb-python-bridge.credential"
+keepalive_path="$task_tmp_root/riffdb-python-bridge.alive"
+
+cleanup() {
+    rm -f "$keepalive_path"
+    if [[ -n "$bridge_pid" ]]; then
+        for _ in $(seq 1 50); do
+            if ! kill -0 "$bridge_pid" >/dev/null 2>&1; then
+                break
+            fi
+            sleep 0.1
+        done
+        kill "$bridge_pid" >/dev/null 2>&1 || true
+        wait "$bridge_pid" >/dev/null 2>&1 || true
+    fi
+    if ((own_postgres)) && [[ -n "$postgres_container" ]]; then
+        docker rm -f "$postgres_container" >/dev/null 2>&1 || true
+    fi
+    rm -f "$credential_path"
+}
+trap cleanup EXIT INT TERM HUP
+
+pick_free_loopback_port() {
+    python3 - <<'PY'
+import socket
+sock = socket.socket()
+sock.bind(("127.0.0.1", 0))
+print(sock.getsockname()[1])
+sock.close()
+PY
+}
+
+if ((want_postgres)) && [[ -z "$postgres_url" ]]; then
+    command -v docker >/dev/null 2>&1 || {
+        printf 'docker required when --postgres-url / RIFFDB_APP_BASELINE_POSTGRES_URL is unset\n' >&2
+        exit 1
+    }
+    docker pull "$image" >/dev/null
+    host_port="$(pick_free_loopback_port)"
+    postgres_container="riffdb-app-baseline-python-$$"
+    postgres_data="$repo_root/target/perf-db/app-baseline-python"
+    mkdir -p "$postgres_data"
+    extra_pg=()
+    for arg in "${filtered_args[@]+"${filtered_args[@]}"}"; do
+        if [[ "$arg" == "--load-concurrency-sweep" ]]; then
+            extra_pg+=(-c max_connections=200)
+        fi
+    done
+    set +e
+    docker run -d --rm \
+        --name "$postgres_container" \
+        --label "$postgres_label" \
+        --network=host \
+        -e POSTGRES_USER=riffdb \
+        -e POSTGRES_PASSWORD=riffdb \
+        -e POSTGRES_DB=riffdb_app_baseline \
+        --mount "type=bind,source=$postgres_data,target=/var/lib/postgresql" \
+        "$image" -c "port=${host_port}" "${extra_pg[@]}" >/dev/null
+    run_rc=$?
+    set -e
+    if ((run_rc != 0)); then
+        printf 'failed to start host-network Postgres for the Python load\n' >&2
+        exit 1
+    fi
+    own_postgres=1
+    postgres_url="postgres://riffdb:riffdb@127.0.0.1:${host_port}/riffdb_app_baseline"
+    printf 'postgres connect path: host network loopback (no docker-proxy) port=%s\n' "$host_port" >&2
+    for _ in $(seq 1 80); do
+        if docker exec "$postgres_container" pg_isready -h 127.0.0.1 -p "$host_port" -U riffdb >/dev/null 2>&1; then
+            break
+        fi
+        sleep 0.25
+    done
+fi
+
+py_args=()
+if ((want_postgres)); then
+    py_args+=(--backend "$backend" --postgres-url "$postgres_url")
+else
+    py_args+=(--backend riffdb)
+fi
+
+if ((want_riffdb)); then
+    if [[ -z "${RIFFDB_APP_BASELINE_RIFFDBD_BIN:-}" ]]; then
+        printf 'building riffdbd (release)\n'
+        cargo +1.97.0 build --locked --release -p riffdb-server --bin riffdbd
+        export RIFFDB_APP_BASELINE_RIFFDBD_BIN="$repo_root/target/release/riffdbd"
+    fi
+    printf 'building python riffdbd bridge\n'
+    cargo +1.97.0 build --locked --release --manifest-path examples/app-baseline/Cargo.toml \
+        --bin riffdb-app-baseline-python-bridge
+    if [[ -n "${CARGO_TARGET_DIR:-}" ]]; then
+        bridge_bin="$CARGO_TARGET_DIR/release/riffdb-app-baseline-python-bridge"
+    else
+        bridge_bin="$repo_root/examples/app-baseline/target/release/riffdb-app-baseline-python-bridge"
+        if [[ ! -x "$bridge_bin" ]]; then
+            bridge_bin="$repo_root/target/release/riffdb-app-baseline-python-bridge"
+        fi
+    fi
+    if [[ ! -x "$bridge_bin" ]]; then
+        printf 'python riffdbd bridge binary not found at %s\n' "$bridge_bin" >&2
+        exit 1
+    fi
+    export RIFFDB_PYTHON_BRIDGE_CREDENTIAL="$credential_path"
+    : >"$keepalive_path"
+    export RIFFDB_PYTHON_BRIDGE_KEEPALIVE="$keepalive_path"
+    full_env=0
+    for arg in "${filtered_args[@]+"${filtered_args[@]}"}"; do
+        if [[ "$arg" == "--full" ]]; then
+            full_env=1
+        fi
+    done
+    if ((full_env)); then
+        export RIFFDB_PYTHON_BRIDGE_FULL=1
+    fi
+    bridge_log="$task_tmp_root/riffdb-python-bridge.log"
+    "$bridge_bin" >"$bridge_log" 2>&1 &
+    bridge_pid=$!
+    ready=""
+    for _ in $(seq 1 240); do
+        if grep -q '^riffdb-python-bridge-ready-v1' "$bridge_log" 2>/dev/null; then
+            ready="$(grep '^riffdb-python-bridge-ready-v1' "$bridge_log" | tail -1)"
+            break
+        fi
+        if ! kill -0 "$bridge_pid" >/dev/null 2>&1; then
+            printf 'python riffdbd bridge exited before ready\n' >&2
+            cat "$bridge_log" >&2 || true
+            exit 1
+        fi
+        sleep 0.25
+    done
+    [[ -n "$ready" ]] || {
+        printf 'python riffdbd bridge did not become ready\n' >&2
+        cat "$bridge_log" >&2 || true
+        exit 1
+    }
+    endpoint="$(printf '%s\n' "$ready" | awk -F '\t' '{print $2}')"
+    export RIFFDB_PYTHON_BRIDGE_ENDPOINT="$endpoint"
+    printf 'riffdb connect path: generated client %s\n' "$endpoint" >&2
+    py_args+=(--riffdb-endpoint "$endpoint" --riffdb-credential "$credential_path")
+fi
+
+export PYTHONPATH="$python_root${PYTHONPATH:+:$PYTHONPATH}"
+export PYTHONUNBUFFERED=1
+"$venv_root/bin/python" -m riffdb_app_baseline_python "${py_args[@]}" "${filtered_args[@]+"${filtered_args[@]}"}"

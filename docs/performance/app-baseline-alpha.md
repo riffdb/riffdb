@@ -36,6 +36,16 @@ application surface, then separately tests sustained demand and recovery.
 examples/app-baseline/resilience/run
 ./scripts/app-baseline-language-conformance
 ./benchmarks/run-app-baseline --alpha-matrix
+
+# Same Python mix: postgres_safe_app (safety in Python SQL) vs generated
+# RiffDB client (no Python safety; riffdbd/Rust enforces). Not release evidence.
+./benchmarks/run-app-baseline-python --full --load-concurrency-sweep \
+  --load-duration-secs 30 --load-warmup-secs 5
+
+# Same TypeScript mix: postgres_safe_app (safety in TypeScript SQL) vs generated
+# RiffDB client (no TypeScript safety; riffdb-driverd/riffdbd enforce).
+./benchmarks/run-app-baseline-typescript --full --load-concurrency-sweep \
+  --load-duration-secs 30 --load-warmup-secs 5
 ```
 
 All temporary build/test roots honor `RIFFDB_TMP_ROOT` and default to
@@ -256,7 +266,14 @@ the second profile measures their cost rather than claiming otherwise.
 RiffDB load timings use public named RiffQL and symbolic commands. They never
 use storage/kernel APIs, numeric schema IDs, field masks, or encoded keys.
 Language runtime/package setup is reported independently and excluded from
-database ratios.
+database ratios. The Rust harness times both backends with Rust clients.
+`benchmarks/run-app-baseline-python` and
+`benchmarks/run-app-baseline-typescript` run the same interactive mix from
+Python or TypeScript against `postgres_safe_app` (authorization, idempotency,
+audit, event, and outbox implemented in that language's SQL) and the generated
+TicketDesk client (no application-language safety code; `riffdbd` enforces
+those in Rust, with TypeScript reaching it through `riffdb-driverd`). Those
+reports are `evidentiary: false` and must not replace the Rust harness.
 
 Closed-loop throughput measures completions under self-throttled clients.
 Open-loop throughput measures offered/admitted/completed demand and queueing.

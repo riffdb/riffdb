@@ -1,0 +1,13 @@
+[project]
+name = "riffdb-app-baseline-python"
+version = "0.1.0"
+description = "Python TicketDesk load: postgres_safe_app (safety in SQL) vs generated RiffDB client (safety in riffdbd)"
+requires-python = ">=3.12"
+dependencies = ["psycopg[binary]>=3.2"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["riffdb_app_baseline_python*"]

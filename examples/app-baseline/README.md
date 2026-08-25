@@ -296,6 +296,54 @@ does not imply PostgreSQL cannot be safe; it measures the cost of implementing
 the obligations RiffDB enforces by construction. Backend IDs are
 `postgres_minimal` and `postgres_safe_app` so reports cannot blur the claim.
 
+The Rust harness measures both backends with Rust clients. A Python runner
+exists so the **same application mix** can be timed with Python on both sides,
+which is the interesting language-runtime question: in the Rust comparator,
+safety work is already in Rust on both paths.
+
+| Python backend | Application code | Where safety runs |
+|----------------|------------------|-------------------|
+| `postgres_safe_app` | Python + SQL | Python SQL: authorization, idempotency, audit, event, outbox in one transaction |
+| `riffdb_public_grpc` | generated TicketDesk client only | **No Python safety code.** `riffdbd` (Rust) enforces those obligations |
+
+It is **not** evidentiary: database ratios stay on the Rust harness (WP-443).
+Python reports use schema `riffdb.app-baseline-python-safe-app/v1` and set
+`evidentiary: false`.
+
+```bash
+# default --backend both: Python+SQL-safety vs Python generated client / Rust safety
+./benchmarks/run-app-baseline-python --smoke --load-clients 8 \
+  --load-duration-secs 5 --load-warmup-secs 1
+
+# same interactive mix / concurrency sweep as the Rust safe-app comparator
+./benchmarks/run-app-baseline-python --full --load-concurrency-sweep \
+  --load-duration-secs 30 --load-warmup-secs 5 \
+  --output target/app-baseline/python-safe-app.json
+
+# one backend
+./benchmarks/run-app-baseline-python --smoke --backend postgres
+./benchmarks/run-app-baseline-python --smoke --backend riffdb
+```
+
+A TypeScript runner of the same mix exists for the same language-runtime
+question. PostgreSQL still implements the `postgres_safe_app` obligations in
+TypeScript SQL. The RiffDB path uses the generated TicketDesk client with **no
+TypeScript safety code**; `riffdb-driverd` and `riffdbd` (Rust) enforce those
+obligations. Reports use schema
+`riffdb.app-baseline-typescript-safe-app/v1` and set `evidentiary: false`.
+
+```bash
+./benchmarks/run-app-baseline-typescript --smoke --load-clients 8 \
+  --load-duration-secs 5 --load-warmup-secs 1
+
+./benchmarks/run-app-baseline-typescript --full --load-concurrency-sweep \
+  --load-duration-secs 30 --load-warmup-secs 5 \
+  --output target/app-baseline/typescript-safe-app.json
+
+./benchmarks/run-app-baseline-typescript --smoke --backend postgres
+./benchmarks/run-app-baseline-typescript --smoke --backend riffdb
+```
+
 ### Resource and fairness attribution
 
 Each load point samples PostgreSQL database/WAL counters or `riffdbd` process

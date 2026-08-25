@@ -1,0 +1,340 @@
+#!/usr/bin/env bash
+# TypeScript TicketDesk load: postgres_safe_app (safety in TypeScript SQL) vs
+# generated RiffDB client (safety in riffdbd / Rust via riffdb-driverd).
+# Not evidentiary.
+set -euo pipefail
+export LC_ALL=C
+export TZ=UTC
+umask 077
+
+repo_root="$(git rev-parse --show-toplevel)"
+cd "$repo_root"
+
+usage() {
+    printf '%s\n' \
+        'usage: benchmarks/run-app-baseline-typescript [--smoke|--full]' \
+        '         [--backend postgres|riffdb|both]' \
+        '         [--load-clients N] [--load-duration-secs N] [--load-warmup-secs N]' \
+        '         [--load-concurrency-sweep] [--output PATH]' \
+        '         [--postgres-url URL] [--riffdb-identity PATH]' >&2
+    exit 2
+}
+
+ts_root="$repo_root/examples/app-baseline/typescript"
+task_tmp_root="${RIFFDB_TMP_ROOT:-$HOME/tmp}"
+mkdir -p "$task_tmp_root"
+export TMPDIR="$task_tmp_root"
+
+backend="both"
+want_postgres=1
+want_riffdb=1
+filtered_args=()
+prev=""
+for arg in "$@"; do
+    if [[ "$prev" == "--backend" ]]; then
+        backend="$arg"
+        prev=""
+        continue
+    fi
+    if [[ "$arg" == "--backend" ]]; then
+        prev="$arg"
+        continue
+    fi
+    if [[ "$arg" == --backend=* ]]; then
+        backend="${arg#--backend=}"
+        continue
+    fi
+    filtered_args+=("$arg")
+done
+case "$backend" in
+    postgres) want_riffdb=0 ;;
+    riffdb) want_postgres=0 ;;
+    both) ;;
+    *) usage ;;
+esac
+
+postgres_url="${RIFFDB_APP_BASELINE_POSTGRES_URL:-}"
+own_postgres=0
+postgres_container=""
+postgres_label="riffdb.app-baseline.typescript=1"
+image='postgres:18.4-bookworm@sha256:d9c83446333daec3f0588cc709adb80c26090b7f9f0f7ec8d43c243385d79818'
+work_root=""
+server_pid=""
+driver_pid=""
+
+cleanup() {
+    if [[ -n "$driver_pid" ]]; then
+        kill -TERM "$driver_pid" >/dev/null 2>&1 || true
+        wait "$driver_pid" >/dev/null 2>&1 || true
+    fi
+    if [[ -n "$server_pid" ]]; then
+        kill -TERM "$server_pid" >/dev/null 2>&1 || true
+        wait "$server_pid" >/dev/null 2>&1 || true
+    fi
+    if ((own_postgres)) && [[ -n "$postgres_container" ]]; then
+        docker rm -f "$postgres_container" >/dev/null 2>&1 || true
+    fi
+    if [[ -n "$work_root" ]]; then
+        rm -rf "$work_root"
+    fi
+}
+trap cleanup EXIT INT TERM HUP
+
+pick_free_loopback_port() {
+    python3 - <<'PY'
+import socket
+sock = socket.socket()
+sock.bind(("127.0.0.1", 0))
+print(sock.getsockname()[1])
+sock.close()
+PY
+}
+
+if [[ ! -x "$ts_root/node_modules/.bin/tsc" ]]; then
+    npm --prefix "$ts_root" install --no-fund --no-audit
+fi
+npm --prefix "$ts_root" run --silent build
+
+if ((want_postgres)) && [[ -z "$postgres_url" ]]; then
+    command -v docker >/dev/null 2>&1 || {
+        printf 'docker required when --postgres-url / RIFFDB_APP_BASELINE_POSTGRES_URL is unset\n' >&2
+        exit 1
+    }
+    docker pull "$image" >/dev/null
+    host_port="$(pick_free_loopback_port)"
+    postgres_container="riffdb-app-baseline-typescript-$$"
+    postgres_data="$repo_root/target/perf-db/app-baseline-typescript"
+    mkdir -p "$postgres_data"
+    extra_pg=()
+    for arg in "${filtered_args[@]+"${filtered_args[@]}"}"; do
+        if [[ "$arg" == "--load-concurrency-sweep" ]]; then
+            extra_pg+=(-c max_connections=200)
+        fi
+    done
+    set +e
+    docker run -d \
+        --name "$postgres_container" \
+        --label "$postgres_label" \
+        --network=host \
+        -e POSTGRES_USER=riffdb \
+        -e POSTGRES_PASSWORD=riffdb \
+        -e POSTGRES_DB=riffdb_app_baseline \
+        --mount "type=bind,source=$postgres_data,target=/var/lib/postgresql" \
+        "$image" -c "port=${host_port}" "${extra_pg[@]}" >/dev/null
+    run_rc=$?
+    set -e
+    if ((run_rc != 0)); then
+        printf 'failed to start host-network Postgres for the TypeScript load\n' >&2
+        exit 1
+    fi
+    own_postgres=1
+    postgres_url="postgres://riffdb:riffdb@127.0.0.1:${host_port}/riffdb_app_baseline"
+    printf 'postgres connect path: host network loopback (no docker-proxy) port=%s\n' "$host_port" >&2
+    pg_ready=0
+    for _ in $(seq 1 80); do
+        if docker exec "$postgres_container" pg_isready -h 127.0.0.1 -p "$host_port" -U riffdb >/dev/null 2>&1; then
+            pg_ready=1
+            break
+        fi
+        sleep 0.25
+    done
+    if ((pg_ready == 0)); then
+        docker logs "$postgres_container" >&2 || true
+        printf 'typescript Postgres did not become ready on port %s\n' "$host_port" >&2
+        exit 1
+    fi
+fi
+
+node_args=()
+if ((want_postgres)); then
+    node_args+=(--backend "$backend" --postgres-url "$postgres_url")
+else
+    node_args+=(--backend riffdb)
+fi
+
+if ((want_riffdb)); then
+    if [[ -z "${RIFFDB_APP_BASELINE_RIFFDBD_BIN:-}" ]]; then
+        printf 'building riffdbd, riffdb, riffdb-driverd (release)\n'
+        cargo +1.97.0 build --locked --release \
+            -p riffdb-server --bin riffdbd \
+            -p riffdb-cli --bin riffdb \
+            -p riffdb-driver-host --bin riffdb-driverd
+        export RIFFDB_APP_BASELINE_RIFFDBD_BIN="$repo_root/target/release/riffdbd"
+    else
+        cargo +1.97.0 build --locked --release -p riffdb-cli --bin riffdb -p riffdb-driver-host --bin riffdb-driverd
+    fi
+    riffdbd="${RIFFDB_APP_BASELINE_RIFFDBD_BIN}"
+    riffdb="$repo_root/target/release/riffdb"
+    driverd="$repo_root/target/release/riffdb-driverd"
+    if [[ -n "${CARGO_TARGET_DIR:-}" ]]; then
+        riffdb="${CARGO_TARGET_DIR}/release/riffdb"
+        driverd="${CARGO_TARGET_DIR}/release/riffdb-driverd"
+        if [[ -z "${RIFFDB_APP_BASELINE_RIFFDBD_BIN:-}" ]]; then
+            riffdbd="${CARGO_TARGET_DIR}/release/riffdbd"
+        fi
+    fi
+    work_root="$(mktemp -d "$task_tmp_root/riffdb-app-baseline-typescript.XXXXXX")"
+    dev_tls_root="$repo_root/crates/riffdb-server/tests/fixtures"
+    dev_tls_key="$work_root/server.key"
+    cp "$dev_tls_root/localhost-key.pem" "$dev_tls_key"
+    chmod 0600 "$dev_tls_key"
+    mkdir -p "$work_root/backups" "$work_root/query-module"
+    mkfifo "$work_root/ready.fifo"
+    capability_key="$(od -An -tx1 -N32 /dev/urandom | tr -d ' \n')"
+    idempotency_key="$(od -An -tx1 -N32 /dev/urandom | tr -d ' \n')"
+    printf 'riffdb-capability-digest-keys-v1\n1:%s\n' "$capability_key" >"$work_root/capability.keys"
+    printf 'riffdb-idempotency-digest-keys-v1\n1:%s\n' "$idempotency_key" >"$work_root/idempotency.keys"
+    index=0
+    for query in "$repo_root"/queries/ticketdesk/*.riffq; do
+        cp -- "$query" "$work_root/query-module/$(printf '%04d.riffq' "$index")"
+        index=$((index + 1))
+    done
+    printf 'locking and generating TicketDesk application artifacts\n'
+    app_root="$work_root/app"
+    mkdir -p "$app_root/riffdb/queries"
+    cp "$ts_root/riffdb.application.json" "$app_root/riffdb.application.json"
+    cp "$repo_root/examples/app-baseline/contracts/ticketdesk.riff" "$app_root/riffdb/contract.riff"
+    cp "$repo_root"/queries/ticketdesk/*.riffq "$app_root/riffdb/queries/"
+    (
+        cd "$app_root"
+        "$riffdb" application lock riffdb.application.json --write
+        "$riffdb" application generate riffdb.application.json --locked
+    )
+    application_manifest="$app_root/generated/riffdb.application.exact.json"
+    application_lock="$app_root/riffdb.application.lock.json"
+    contract="$app_root/riffdb/contract.riff"
+    dev_port_hex="$(od -An -tx2 -N2 /dev/urandom | tr -d ' \n')"
+    dev_port=$((49152 + 0x$dev_port_hex % 16384))
+    cat >"$work_root/riffdbd.toml" <<EOF
+[server]
+database = "$work_root/riffdb.redb"
+environment = "local-dev"
+audience = "riffdb-grpc-loopback"
+capability_keys = "$work_root/capability.keys"
+idempotency_keys = "$work_root/idempotency.keys"
+
+[server.application_listener]
+mode = "direct_tls"
+listen = "127.0.0.1:$dev_port"
+public_endpoint = "https://127.0.0.1:$dev_port"
+certificate_chain = "$dev_tls_root/localhost-cert.pem"
+private_key = "$dev_tls_key"
+
+[maintenance]
+backup_root = "$work_root/backups"
+EOF
+    chmod 0600 "$work_root/riffdbd.toml"
+    "$riffdbd" --config "$work_root/riffdbd.toml" \
+        </dev/null >"$work_root/ready.fifo" 2>"$work_root/riffdbd.stderr" &
+    server_pid=$!
+    exec {ready_fd}<"$work_root/ready.fifo"
+    IFS= read -r -t 60 ready_line <&"$ready_fd" || {
+        cat "$work_root/riffdbd.stderr" >&2
+        printf 'typescript riffdbd did not become ready\n' >&2
+        exit 1
+    }
+    exec {ready_fd}<&-
+    case "$ready_line" in
+        riffdbd-ready-v1$'\t'*) address="${ready_line#*$'\t'}" ;;
+        *)
+            printf 'typescript riffdbd returned invalid readiness\n' >&2
+            exit 1
+            ;;
+    esac
+    endpoint="https://$address"
+    export RIFFDB_TLS_TRUST_ROOT="$dev_tls_root/test-ca.pem"
+    export RIFFDB_TLS_SERVER_NAME=127.0.0.1
+    bootstrap_request="$repo_root/release/config/bootstrap-ticketdesk-dev.json"
+    "$riffdb" --endpoint "$endpoint" --output json \
+        capability bootstrap \
+        --request "$bootstrap_request" \
+        --generate "$work_root/bootstrap.credential" \
+        --bearer-output "$work_root/operator.credential" \
+        >"$work_root/bootstrap.json"
+    operator=("$riffdb" --endpoint "$endpoint" --output json --credential-file "$work_root/operator.credential")
+    "${operator[@]}" contract deploy "$contract" >"$work_root/contract.json"
+    "${operator[@]}" query deploy "$work_root/query-module" \
+        --module-name ticketdesk \
+        --module-version 1 \
+        --expected-active any \
+        --contract-lineage TicketDesk \
+        --contract-version 1 >"$work_root/module.json"
+    "${operator[@]}" role bind "$application_manifest" \
+        --role TicketDeskLoadApplication \
+        --principal app:ticketdesk-app-baseline-typescript \
+        --actor-kind service \
+        --lifetime-seconds 86400 \
+        --audience riffdb-grpc-loopback \
+        --credential-output "$work_root/profile.credential" >"$work_root/role.json"
+    driver_socket="$work_root/riffdb-driver.sock"
+    cat >"$work_root/driver.toml" <<EOF
+[driver]
+socket = "$driver_socket"
+
+[application]
+lock_file = "$application_lock"
+manifest_file = "$application_manifest"
+operation_catalog_file = "$app_root/generated/mcp/tools.json"
+database = "default"
+role = "TicketDeskLoadApplication"
+
+[remote]
+endpoint = "$endpoint"
+tls_trust_root = "$dev_tls_root/test-ca.pem"
+tls_server_name = "127.0.0.1"
+credential_file = "$work_root/profile.credential"
+pool_connections = 8
+streams_per_connection = 64
+EOF
+    chmod 0600 "$work_root/driver.toml"
+    "$driverd" "$work_root/driver.toml" \
+        >"$work_root/driver.stdout" 2>"$work_root/driver.stderr" &
+    driver_pid=$!
+    driver_deadline=$((SECONDS + 30))
+    while [[ ! -S "$driver_socket" && "$SECONDS" -lt "$driver_deadline" ]]; do
+        kill -0 "$driver_pid" >/dev/null 2>&1 || break
+        sleep 0.05
+    done
+    [[ -S "$driver_socket" ]] || {
+        cat "$work_root/driver.stderr" >&2
+        printf 'typescript riffdb-driverd did not become ready\n' >&2
+        exit 1
+    }
+    manifest_hash="$(jq -er '.exact_manifest_hash' "$application_lock")"
+    catalog_hash="$(jq -er '.artifacts[] | select(.kind == "mcp") | .content_hash' "$application_lock")"
+    role_hash="$(jq -er --arg role TicketDeskLoadApplication '.roles[] | select(.definition.name == $role) | .definition_hash' "$application_lock")"
+    bundle_hash="$(jq -er '.contract.bundle_hash' "$application_lock")"
+    remote_hash="$(printf '%s' "$endpoint|127.0.0.1" | sha256sum | cut -d' ' -f1)"
+    identity_path="$work_root/driver-identity.json"
+    jq -n \
+        --arg socketPath "$driver_socket" \
+        --arg applicationManifestHash "$manifest_hash" \
+        --arg operationCatalogHash "$catalog_hash" \
+        --arg contractLineage TicketDesk \
+        --arg contractVersion "1" \
+        --arg contractBundleHash "$bundle_hash" \
+        --arg database default \
+        --arg role TicketDeskLoadApplication \
+        --arg roleDefinitionHash "$role_hash" \
+        --arg remoteIdentityHash "$remote_hash" \
+        '{
+          socketPath: $socketPath,
+          identity: {
+            applicationManifestHash: $applicationManifestHash,
+            operationCatalogHash: $operationCatalogHash,
+            contractLineage: $contractLineage,
+            contractVersion: $contractVersion,
+            contractBundleHash: $contractBundleHash,
+            database: $database,
+            role: $role,
+            roleDefinitionHash: $roleDefinitionHash,
+            remoteIdentityHash: $remoteIdentityHash
+          }
+        }' >"$identity_path"
+    export RIFFDB_TYPESCRIPT_DRIVER_IDENTITY="$identity_path"
+    printf 'riffdb connect path: generated client via riffdb-driverd %s\n' "$driver_socket" >&2
+    node_args+=(--riffdb-identity "$identity_path")
+    unset RIFFDB_TLS_TRUST_ROOT RIFFDB_TLS_SERVER_NAME
+fi
+
+node -- "$ts_root/dist/index.js" "${node_args[@]}" "${filtered_args[@]+"${filtered_args[@]}"}"
