@@ -68,6 +68,70 @@ impl AggregateSemanticIdentityV1 {
     }
 }
 
+/// Closed exact aggregate semantics advertised by one provider descriptor.
+///
+/// The set is derived from the provider kind plus its sealed `MEASURE` stage;
+/// it is transient compatibility metadata and does not add a second durable
+/// descriptor encoding. New query/module identities still carry the selected
+/// aggregate semantics themselves.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct AggregateSemanticSetV1(u16);
+
+impl AggregateSemanticSetV1 {
+    /// No aggregate semantics are executable.
+    pub const NONE: Self = Self(0);
+    /// Exact functions implemented by the bounded/grouped columnar evaluator.
+    pub const BOUNDED_EXACT_CORE: Self = Self(
+        semantic_bit(AggregateSemanticIdentityV1::Count)
+            | semantic_bit(AggregateSemanticIdentityV1::Sum)
+            | semantic_bit(AggregateSemanticIdentityV1::Min)
+            | semantic_bit(AggregateSemanticIdentityV1::Max)
+            | semantic_bit(AggregateSemanticIdentityV1::CountPresent)
+            | semantic_bit(AggregateSemanticIdentityV1::CountDistinct)
+            | semantic_bit(AggregateSemanticIdentityV1::CountDistinctPresent)
+            | semantic_bit(AggregateSemanticIdentityV1::Mean)
+            | semantic_bit(AggregateSemanticIdentityV1::Any)
+            | semantic_bit(AggregateSemanticIdentityV1::All),
+    );
+    /// Exact whole-population cardinality implemented by the indexed exact
+    /// result provider.
+    pub const EXACT_COUNT_ONLY: Self = Self(semantic_bit(AggregateSemanticIdentityV1::ExactCount));
+
+    /// Whether this checked provider set contains one semantic identity.
+    #[must_use]
+    pub const fn contains(self, identity: AggregateSemanticIdentityV1) -> bool {
+        self.0 & semantic_bit(identity) != 0
+    }
+
+    /// Number of advertised exact semantic identities.
+    #[must_use]
+    pub const fn len(self) -> u32 {
+        self.0.count_ones()
+    }
+
+    /// Whether no aggregate semantic is advertised.
+    #[must_use]
+    pub const fn is_empty(self) -> bool {
+        self.0 == 0
+    }
+}
+
+const fn semantic_bit(identity: AggregateSemanticIdentityV1) -> u16 {
+    1 << match identity {
+        AggregateSemanticIdentityV1::Count => 0,
+        AggregateSemanticIdentityV1::ExactCount => 1,
+        AggregateSemanticIdentityV1::Sum => 2,
+        AggregateSemanticIdentityV1::Min => 3,
+        AggregateSemanticIdentityV1::Max => 4,
+        AggregateSemanticIdentityV1::CountPresent => 5,
+        AggregateSemanticIdentityV1::CountDistinct => 6,
+        AggregateSemanticIdentityV1::CountDistinctPresent => 7,
+        AggregateSemanticIdentityV1::Mean => 8,
+        AggregateSemanticIdentityV1::Any => 9,
+        AggregateSemanticIdentityV1::All => 10,
+    }
+}
+
 /// Compiler-accepted input shape for one aggregate function.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AggregateInputClassV1 {

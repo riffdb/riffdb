@@ -1,6 +1,6 @@
 # Aggregate semantic registry v1
 
-Status: WP-693 registry evidence and WP-694 exact aggregate core implemented.
+Status: WP-693 registry, WP-694 exact core, and WP-695 provider integration implemented.
 
 ADR-0152 assigns aggregate meaning to one closed compiler-owned registry. The
 registry is implemented in `riffdb-types::aggregate_semantic_registry_v1` so
@@ -62,6 +62,23 @@ measure, page item, or partial merge. Policy-aligned partitioning is the
 primary provider enforcement mode; bounded row admission is secondary and
 still occurs before contribution, count, grouping, ordering, or limiting.
 Refusal releases no partial aggregate.
+
+## Exact provider capability subsets
+
+`ProjectionProviderDescriptorV1::aggregate_semantics()` derives the exact
+function subset from the descriptor's sealed provider kind and `MEASURE`
+stage. The real columnar provider advertises the ten bounded/grouped exact
+functions and deliberately does not advertise `exact_count`. The indexed
+exact-result provider advertises only `exact_count`; the vector provider
+advertises none. A descriptor without `MEASURE` advertises an empty set even
+when its provider kind has an aggregate executor.
+
+This view is transient compatibility metadata. It changes no provider V1
+bytes, state layout, digest, or topology node; selected functions remain
+sealed in the additive RiffQL V8, query-IR V11, and query-module V11
+artifacts. Architecture tests enumerate the complete registry against every
+real provider subset and reject treating the union as one provider's
+capability.
 
 ## Durable-state classification
 
