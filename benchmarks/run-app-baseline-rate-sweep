@@ -1,0 +1,135 @@
+#!/usr/bin/env bash
+# Latency at fixed offered load, across a rate curve.
+#
+# The closed-loop sweeps answer "what does this saturate at". They cannot answer
+# "what latency does a caller see at N operations per second", because with zero
+# think time the offered load is defined by how fast the server replies: a
+# slower backend is simply asked for less work. A service level is written
+# against the second question, so this driver holds the arrival rate fixed with
+# the harness's existing Poisson open-loop generator and lets latency move.
+#
+# It shells out to one of the language runners once per rate rather than adding
+# a rate dimension inside the harness, so the frozen PERF-018 reporting path is
+# untouched.
+#
+# Not evidentiary. Reports carry evidentiary: false like every other cell here.
+set -euo pipefail
+export LC_ALL=C
+export TZ=UTC
+
+repo_root="$(git rev-parse --show-toplevel)"
+cd "$repo_root"
+
+usage() {
+    printf '%s\n' \
+        'usage: benchmarks/run-app-baseline-rate-sweep [options]' \
+        '         --language rust|typescript|python|golang   (default: typescript)' \
+        '         --backend  riffdb|postgres|both            (default: both)' \
+        '         --scale    smoke|full|production           (default: production)' \
+        '         --rates    "500 2000 5000 10000 20000"' \
+        '         --clients N            worker cap, must exceed the queue the' \
+        '                                rate implies (default: 128)' \
+        '         --duration-secs N      measured window per rate (default: 30)' \
+        '         --warmup-secs N        (default: 5)' \
+        '         --queue-depth N        bounded client queue (default: 4096)' \
+        '         --output DIR           (default: target/app-baseline/rate-sweep-runs)' >&2
+    exit 2
+}
+
+language="typescript"
+backend="both"
+scale="production"
+rates="500 2000 5000 10000 20000"
+clients=128
+duration=30
+warmup=5
+queue_depth=4096
+output_dir="target/app-baseline/rate-sweep-runs"
+
+while (($#)); do
+    case "$1" in
+        --language) language="${2:-}"; shift 2 ;;
+        --backend) backend="${2:-}"; shift 2 ;;
+        --scale) scale="${2:-}"; shift 2 ;;
+        --rates) rates="${2:-}"; shift 2 ;;
+        --clients) clients="${2:-}"; shift 2 ;;
+        --duration-secs) duration="${2:-}"; shift 2 ;;
+        --warmup-secs) warmup="${2:-}"; shift 2 ;;
+        --queue-depth) queue_depth="${2:-}"; shift 2 ;;
+        --output) output_dir="${2:-}"; shift 2 ;;
+        -h|--help) usage ;;
+        *) printf 'unknown argument: %s\n' "$1" >&2; usage ;;
+    esac
+done
+
+runner="benchmarks/run-app-baseline-${language}"
+[[ -x "$runner" ]] || { printf 'no runner for language %s\n' "$language" >&2; exit 2; }
+
+case "$scale" in
+    smoke) scale_flag="--smoke" ;;
+    full) scale_flag="--full" ;;
+    production) scale_flag="--production" ;;
+    *) printf 'unknown scale %s\n' "$scale" >&2; usage ;;
+esac
+
+stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+run_dir="$output_dir/rate-${language}-${stamp}"
+mkdir -p "$run_dir"
+
+printf 'rate sweep: language=%s backend=%s scale=%s clients=%s rates="%s"\n' \
+    "$language" "$backend" "$scale" "$clients" "$rates" >&2
+printf 'writing %s\n' "$run_dir" >&2
+
+for rate in $rates; do
+    printf '\n=== offered %s ops/s ===\n' "$rate" >&2
+    # A rate the backend cannot absorb shows up as client_queue_rejected and a
+    # growing queue_delay rather than as a lower number, which is the point: the
+    # curve is meant to show where a service level stops holding.
+    "$runner" \
+        "$scale_flag" \
+        --backend "$backend" \
+        --load-clients "$clients" \
+        --load-duration-secs "$duration" \
+        --load-warmup-secs "$warmup" \
+        --load-open-loop-rate "$rate" \
+        --load-open-loop-queue-depth "$queue_depth" \
+        --output "$run_dir/rate-${rate}.json" \
+        || printf 'rate %s did not complete; retained whatever it wrote\n' "$rate" >&2
+done
+
+printf '\n=== summary ===\n' >&2
+python3 - "$run_dir" <<'PY'
+import json, pathlib, sys
+
+run = pathlib.Path(sys.argv[1])
+rows = []
+for path in sorted(run.glob("rate-*.json"), key=lambda p: int(p.stem.split("-")[1])):
+    try:
+        report = json.loads(path.read_text())
+    except Exception as error:  # a cell that died mid-write is reported, not hidden
+        rows.append((path.stem, f"unreadable: {error}", "", "", "", ""))
+        continue
+    for point in report.get("load", []) or report.get("load_points", []):
+        arrival = point.get("open_loop") or {}
+        latency = point.get("aggregate") or {}
+        rows.append((
+            point.get("backend_id", "?"),
+            arrival.get("offered_rate_per_sec", "?"),
+            arrival.get("completed_ops_s", "?"),
+            round((latency.get("p50_ns") or 0) / 1e6, 3),
+            round((latency.get("p99_ns") or 0) / 1e6, 3),
+            arrival.get("client_queue_rejected", "?"),
+        ))
+
+if not rows:
+    print("no readable cells", file=sys.stderr)
+    sys.exit(1)
+
+head = ("backend", "offered/s", "completed/s", "p50 ms", "p99 ms", "rejected")
+widths = [max(len(str(r[i])) for r in ([head] + rows)) for i in range(len(head))]
+line = lambda cells: "  ".join(str(c).ljust(widths[i]) for i, c in enumerate(cells))
+print(line(head))
+print("  ".join("-" * w for w in widths))
+for row in rows:
+    print(line(row))
+PY

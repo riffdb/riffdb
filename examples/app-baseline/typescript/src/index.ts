@@ -8,7 +8,8 @@ import { LoadReport, SWEEP_CLIENTS, printLoadSummary, runClosedLoop, type LoadCo
 import { PostgresDriver } from "./postgres.js";
 import { RiffDbDriver, readDriverIdentity } from "./riffdb.js";
 import { OBLIGATIONS } from "./schema.js";
-import { fullScale, generateSeed, smokeScale, type Scale } from "./seed.js";
+import { fullScale,
+  productionScale, generateSeed, smokeScale, type Scale } from "./seed.js";
 
 function argValue(argv: string[], name: string): string | undefined {
   const index = argv.indexOf(name);
@@ -26,7 +27,11 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
     console.error("backend must be postgres|riffdb|both");
     return 2;
   }
-  const scale: Scale = hasFlag(argv, "--full") ? fullScale() : smokeScale();
+  const scale: Scale = hasFlag(argv, "--production")
+    ? productionScale()
+    : hasFlag(argv, "--full")
+      ? fullScale()
+      : smokeScale();
   const dataset = generateSeed(scale);
   const sweep = hasFlag(argv, "--load-concurrency-sweep");
   const clients = sweep

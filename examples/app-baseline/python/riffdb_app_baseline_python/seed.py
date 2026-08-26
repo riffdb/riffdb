@@ -19,6 +19,8 @@ from .ids import (
 )
 
 FULL_BOARD_DENSE_OPEN = 600
+# Contract maximum for comment.body (string<256> in ticketdesk.riff).
+MAX_COMMENT_BODY_BYTES = 256
 
 
 def _sized_text(prefix: str, target_bytes: int) -> str:
@@ -47,6 +49,23 @@ class Scale:
     @classmethod
     def full(cls) -> Scale:
         return cls(10, 50, 10, 5, 20, 4, 5, 2, FULL_BOARD_DENSE_OPEN, 0)
+
+    @classmethod
+    def production(cls) -> Scale:
+        """A help desk with real history and real text.
+
+        ``full`` seeds roughly 14,600 rows and 2,000 tickets with no payload
+        bytes, so every index is shallow, the whole set is resident, and comment
+        bodies are short generated labels. That measures protocol and CPU cost
+        rather than a database. This tier seeds roughly 120,000 tickets and
+        600,000 comments across 200 tenants with realistic body length.
+
+        It is NOT the frozen PERF-018 comparator dataset and must not replace
+        it. Keep these numbers identical to ``Scale::production`` in the Rust
+        core, the TypeScript harness, and the Go harness; every harness carries
+        its own copy.
+        """
+        return cls(200, 40, 12, 6, 50, 5, 12, 3, FULL_BOARD_DENSE_OPEN, MAX_COMMENT_BODY_BYTES)
 
 
 @dataclass(frozen=True, slots=True)

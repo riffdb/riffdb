@@ -225,9 +225,13 @@ impl SeedDataset {
                             comment_id: uuid_from_ordinal(NS_COMMENT, comment_ordinal),
                             ticket_id,
                             author_id: author.user_id,
+                            // Clamped like the title above: the contract caps
+                            // comment.body at string<256>, and exceeding it
+                            // fails the command with RDB-INPUT-0101 rather than
+                            // truncating.
                             body: sized_text(
                                 format!("comment body {org_i}/{project_i}/{ticket_i}/{comment_i}"),
-                                scale.payload_bytes,
+                                scale.payload_bytes.min(crate::MAX_COMMENT_BODY_BYTES),
                             ),
                         });
                     }

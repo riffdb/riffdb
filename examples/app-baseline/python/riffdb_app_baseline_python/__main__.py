@@ -23,6 +23,7 @@ def main(argv: list[str] | None = None) -> int:
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--smoke", action="store_true")
     mode.add_argument("--full", action="store_true")
+    mode.add_argument("--production", action="store_true")
     parser.add_argument("--load", default="interactive", choices=["interactive"])
     parser.add_argument("--load-clients", type=int, default=8)
     parser.add_argument("--load-duration-secs", type=float, default=5)
@@ -41,7 +42,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--output", default=None)
     args = parser.parse_args(argv)
 
-    scale = Scale.full() if args.full else Scale.smoke()
+    if args.production:
+        scale = Scale.production()
+    elif args.full:
+        scale = Scale.full()
+    else:
+        scale = Scale.smoke()
     dataset = SeedDataset.generate(scale)
     clients = list(SWEEP_CLIENTS) if args.load_concurrency_sweep else [max(1, args.load_clients)]
     drivers = []

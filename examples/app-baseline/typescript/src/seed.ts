@@ -15,6 +15,9 @@ import {
   uuidFromOrdinal,
 } from "./ids.js";
 
+/** Contract maximum for comment.body (string<256> in ticketdesk.riff). */
+export const MAX_COMMENT_BODY_BYTES = 256;
+
 export const FULL_BOARD_DENSE_OPEN = 600;
 
 export interface Scale {
@@ -42,6 +45,34 @@ export function smokeScale(): Scale {
     labelsPerTicket: 2,
     boardDenseOpen: 0,
     payloadBytes: 0,
+  };
+}
+
+/**
+ * Production-shaped profile: a help desk with real history and real text.
+ *
+ * `full` seeds roughly 14,600 rows and 2,000 tickets with `payloadBytes: 0`, so
+ * every index is shallow, the whole set is resident, and comment bodies are
+ * short generated labels. That measures protocol and CPU cost rather than a
+ * database. This tier seeds roughly 120,000 tickets and 600,000 comments across
+ * 200 tenants with realistic body length.
+ *
+ * It is NOT the frozen PERF-018 comparator dataset and must not replace it.
+ * Keep these numbers identical to `Scale::production` in the Rust core, the Go
+ * harness, and the Python harness; every harness carries its own copy.
+ */
+export function productionScale(): Scale {
+  return {
+    organizations: 200,
+    usersPerOrg: 40,
+    projectsPerOrg: 12,
+    membersPerProject: 6,
+    ticketsPerProject: 50,
+    commentsPerTicket: 5,
+    labelsPerOrg: 12,
+    labelsPerTicket: 3,
+    boardDenseOpen: FULL_BOARD_DENSE_OPEN,
+    payloadBytes: MAX_COMMENT_BODY_BYTES,
   };
 }
 

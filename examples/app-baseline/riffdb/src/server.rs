@@ -62,7 +62,25 @@ const COMPLETION_LANE_PREFIX: &str = "riffdb-completion-lane-v1\t";
 const QUERY_EXECUTE_WINDOWS_PREFIX: &str = "riffdb-query-execute-windows-v1\t";
 const SHUTDOWN_STAGES_PREFIX: &str = "riffdb-shutdown-stages-v1\t";
 const PROCESS_START_TIMEOUT: Duration = Duration::from_secs(90);
-const PROCESS_STOP_TIMEOUT: Duration = Duration::from_secs(15);
+/// Clean-shutdown budget.
+///
+/// Graceful shutdown checkpoints the published journal suffix, so the cost
+/// scales with how much was written. Fifteen seconds is ample for the `full`
+/// dataset's 19,220 commands but not for the `production` tier's 1.1 million:
+/// a validation run seeded successfully in 271 s and then failed with
+/// "shutdown timeout; child unresponsive after kill". `RIFFDB_STOP_TIMEOUT_SECS`
+/// overrides it for a larger dataset; the default stays generous rather than
+/// tight so a slow host does not read as a hang.
+const PROCESS_STOP_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// Clean-shutdown budget, with an environment override for large datasets.
+fn process_stop_timeout() -> Duration {
+    std::env::var("RIFFDB_STOP_TIMEOUT_SECS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|seconds| (1..=3_600).contains(seconds))
+        .map_or(PROCESS_STOP_TIMEOUT, Duration::from_secs)
+}
 /// Keep the last N stderr lines for crash diagnosis (panic / OOM messages).
 const STDERR_RING_LINES: usize = 200;
 /// Soft byte cap for the retained stderr ring (in addition to the line cap).
@@ -1315,7 +1333,7 @@ impl ServerProcess {
             let _ = stdin.write_all(b"shutdown\n");
             let _ = stdin.flush();
         }
-        let evidence = match self.exited.recv_timeout(PROCESS_STOP_TIMEOUT) {
+        let evidence = match self.exited.recv_timeout(process_stop_timeout()) {
             Ok(status) => {
                 self.exit_observed = true;
                 let status = status?;
@@ -1394,11 +1412,27 @@ fn read_server_stdout(
 ) -> usize {
     let mut reader = BufReader::new(stream);
     let mut line = String::new();
-    let ready = reader
-        .read_line(&mut line)
-        .map(|_| line.trim_end().to_owned());
+    // Scan for the ready line rather than assuming it is the first thing on
+    // stdout. At `full` scale startup is quiet enough that it always was, but a
+    // larger database can print before announcing its address, and requiring
+    // line one produced "bad ready line" with an empty stderr tail -- a
+    // confusing symptom for a daemon that had in fact started. The caller's
+    // timeout still bounds this loop.
+    let mut total = 0_usize;
+    let ready = loop {
+        line.clear();
+        match reader.read_line(&mut line) {
+            Ok(0) => break Err(io::Error::other("server stdout closed before ready")),
+            Ok(_) => {
+                total += line.len();
+                if line.starts_with(READY_PREFIX) {
+                    break Ok(line.trim_end().to_owned());
+                }
+            }
+            Err(error) => break Err(error),
+        }
+    };
     let _ = ready_sender.send(ready);
-    let mut total = line.len();
     let mut write_completion_groups = None;
     let mut dispatch_reasons = None;
     let mut read_stages = None;

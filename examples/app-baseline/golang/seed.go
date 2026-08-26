@@ -30,6 +30,36 @@ func smokeScale() scale {
 	}
 }
 
+// productionScale is a help desk with real history and real text.
+//
+// fullScale seeds roughly 14,600 rows and 2,000 tickets with no payload bytes,
+// so every index is shallow, the whole set is resident, and comment bodies are
+// short generated labels. That measures protocol and CPU cost rather than a
+// database. This tier seeds roughly 120,000 tickets and 600,000 comments across
+// 200 tenants with realistic body length.
+//
+// It is NOT the frozen PERF-018 comparator dataset and must not replace it.
+// Keep these numbers identical to Scale::production in the Rust core, the
+// TypeScript harness, and the Python harness; every harness carries its own copy.
+// maxCommentBodyBytes is the contract maximum for comment.body
+// (string<256> in ticketdesk.riff). Seeding above it fails RDB-INPUT-0101.
+const maxCommentBodyBytes = 256
+
+func productionScale() scale {
+	return scale{
+		organizations:     200,
+		usersPerOrg:       40,
+		projectsPerOrg:    12,
+		membersPerProject: 6,
+		ticketsPerProject: 50,
+		commentsPerTicket: 5,
+		labelsPerOrg:      12,
+		labelsPerTicket:   3,
+		boardDenseOpen:    fullBoardDenseOpen,
+		payloadBytes:      maxCommentBodyBytes,
+	}
+}
+
 func fullScale() scale {
 	return scale{
 		organizations:     10,

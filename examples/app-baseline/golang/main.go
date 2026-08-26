@@ -40,9 +40,12 @@ func run(argv []string) int {
 		return 2
 	}
 	var s scale
-	if hasFlag(argv, "--full") {
+	switch {
+	case hasFlag(argv, "--production"):
+		s = productionScale()
+	case hasFlag(argv, "--full"):
 		s = fullScale()
-	} else {
+	default:
 		s = smokeScale()
 	}
 	dataset := generateSeed(s)
