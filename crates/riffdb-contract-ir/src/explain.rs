@@ -176,6 +176,12 @@ impl CommandExplain {
                 _ => None,
             })
             .collect::<Vec<_>>();
+        write_fields.extend(plan.bindings().iter().flat_map(|binding| {
+            binding
+                .initializer()
+                .iter()
+                .map(move |initialized| (binding.id(), initialized.field_id()))
+        }));
         for instruction in plan.instructions() {
             if let crate::Instruction::WorkflowLease {
                 binding,
@@ -203,6 +209,7 @@ impl CommandExplain {
             }
         }
         write_fields.sort_unstable();
+        write_fields.dedup();
         let workflow_transitions = plan
             .instructions()
             .iter()
@@ -629,6 +636,20 @@ impl CommandExplain {
                 binding.complete_record_access(),
                 fields
             );
+            if !binding.initializer().is_empty() {
+                let initializer = binding
+                    .initializer()
+                    .iter()
+                    .map(|field| format!("{}:{}", field.field_id().get(), field.expression().get()))
+                    .collect::<Vec<_>>()
+                    .join(",");
+                let _ = writeln!(
+                    output,
+                    "initialize:{} fields=[{}] state-independent:true",
+                    binding.id().get(),
+                    initializer
+                );
+            }
         }
         for check in &self.relationship_checks {
             let _ = writeln!(

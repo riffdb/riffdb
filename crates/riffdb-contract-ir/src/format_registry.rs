@@ -125,6 +125,7 @@ tag_registry!(binding_mode, "Binding mode", {
     MUTATE = 0x02 => "mutate",
     CREATE = 0x03 => "create",
     DELETE = 0x04 => "delete",
+    INIT_OR_MUTATE = 0x05 => "initialize or mutate",
 });
 tag_registry!(delete_policy_mode, "Delete policy mode", {
     NO_INBOUND = 0x01 => "no inbound relationship",
@@ -2204,6 +2205,7 @@ mod tests {
                 BindingMode::Mutate,
                 BindingMode::Create,
                 BindingMode::Delete,
+                BindingMode::InitOrMutate,
             ]
             .map(|value| value as u8),
             registry_values(binding_mode::REGISTRY).as_slice()

@@ -1,0 +1,20 @@
+command:1
+execution:IdempotentMutation
+expression:0 type=ValueType(Uuid) op=input-field:4
+expression:1 type=ValueType(Uuid) op=input-field:2
+expression:2 type=ValueType(Bool) op=constant(redacted)
+expression:3 type=ValueType(U64) op=constant(redacted)
+expression:4 type=ValueType(Bool) op=constant(redacted)
+expression:5 type=ValueType(Bytes(64)) op=input-field:1
+expression:6 type=ValueType(U64) op=bound-field:0:3
+expression:7 type=ValueType(U64) op=constant(redacted)
+expression:8 type=ValueType(U64) op=binary:Add:6:7
+expression:9 type=ValueType(U64) op=bound-field:0:3
+partition:expr=0 purpose=Partition(AggregateTypeId(1)) components=1
+conflict:0 purpose=Conflict(AggregateTypeId(1)) expressions=[0,1]
+binding:0 mode=InitOrMutate entity=1 complete=false reads=[3]
+initialize:0 fields=[1:2,3:3] state-independent:true
+write:0:1
+write:0:2
+write:0:3
+outcome:1 fields=[1:ValueType(U64)]

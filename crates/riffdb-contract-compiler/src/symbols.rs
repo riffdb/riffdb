@@ -518,29 +518,18 @@ fn allocate_command_symbols(
         .as_ref()
         .map_or(&[][..], |iteration| iteration.value.bindings.as_slice());
     for binding in command.bindings.iter().chain(collection_bindings) {
-        let entity_binding = match &binding.value {
-            riffdb_contract_syntax::ast::Binding::Read(binding)
-            | riffdb_contract_syntax::ast::Binding::Mutate(binding)
-            | riffdb_contract_syntax::ast::Binding::Create(binding)
-            | riffdb_contract_syntax::ast::Binding::Delete(binding) => binding,
-        };
-        binding_names.insert(&entity_binding.binding, diagnostics);
-        if let Some(input_span) = inputs.names.get(&entity_binding.binding.value) {
+        let binding_name = binding.value.name();
+        binding_names.insert(binding_name, diagnostics);
+        if let Some(input_span) = inputs.names.get(&binding_name.value) {
             diagnostics.push(
-                CompilerDiagnostic::new(
-                    CompilerDiagnosticCode::DuplicateName,
-                    entity_binding.binding.span,
-                )
-                .with_related_span(*input_span),
+                CompilerDiagnostic::new(CompilerDiagnosticCode::DuplicateName, binding_name.span)
+                    .with_related_span(*input_span),
             );
         }
-        if let Some(value_span) = service_values.names.get(&entity_binding.binding.value) {
+        if let Some(value_span) = service_values.names.get(&binding_name.value) {
             diagnostics.push(
-                CompilerDiagnostic::new(
-                    CompilerDiagnosticCode::DuplicateName,
-                    entity_binding.binding.span,
-                )
-                .with_related_span(*value_span),
+                CompilerDiagnostic::new(CompilerDiagnosticCode::DuplicateName, binding_name.span)
+                    .with_related_span(*value_span),
             );
         }
     }
@@ -562,24 +551,20 @@ fn allocate_command_symbols(
         outcome_occurrences.push(&failure.value);
     }
     for binding in command.bindings.iter().chain(collection_bindings) {
-        let entity_binding = match &binding.value {
-            riffdb_contract_syntax::ast::Binding::Read(binding)
-            | riffdb_contract_syntax::ast::Binding::Mutate(binding)
-            | riffdb_contract_syntax::ast::Binding::Create(binding)
-            | riffdb_contract_syntax::ast::Binding::Delete(binding) => binding,
+        let Some(failure) = binding.value.failure() else {
+            continue;
         };
-        let failure = &entity_binding.failure;
         rejection_names
             .entry(failure.value.name.value.clone())
             .or_insert(failure.value.name.span);
         outcome_occurrences.push(&failure.value);
-        if let Some(restriction_failure) = &entity_binding.restriction_failure {
+        if let Some(restriction_failure) = binding.value.restriction_failure() {
             rejection_names
                 .entry(restriction_failure.value.name.value.clone())
                 .or_insert(restriction_failure.value.name.span);
             outcome_occurrences.push(&restriction_failure.value);
         }
-        if let Some(cascade_failure) = &entity_binding.cascade_failure {
+        if let Some(cascade_failure) = binding.value.cascade_failure() {
             rejection_names
                 .entry(cascade_failure.value.name.value.clone())
                 .or_insert(cascade_failure.value.name.span);
@@ -710,6 +695,7 @@ fn allocate_command_symbols(
                 binding.value,
                 riffdb_contract_syntax::ast::Binding::Mutate(_)
                     | riffdb_contract_syntax::ast::Binding::Create(_)
+                    | riffdb_contract_syntax::ast::Binding::InitOrMutate(_)
                     | riffdb_contract_syntax::ast::Binding::Delete(_)
             )
         });

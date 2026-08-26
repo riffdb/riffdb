@@ -77,6 +77,8 @@ pub const BUNDLE_FORMAT_VERSION_V14: u32 = 14;
 pub const BUNDLE_FORMAT_VERSION_V15: u32 = 15;
 /// Bundle framing containing aggregate collection-byte constraints.
 pub const BUNDLE_FORMAT_VERSION_V16: u32 = 16;
+/// Bundle framing containing compiler-sealed initialized mutable bindings.
+pub const BUNDLE_FORMAT_VERSION_V17: u32 = 17;
 /// Canonical grammar version represented by a bundle.
 pub const GRAMMAR_VERSION_V1: u32 = 1;
 /// Contract grammar containing compiled workflows and service-owned values.
@@ -109,6 +111,8 @@ pub const GRAMMAR_VERSION_V14: u32 = 14;
 pub const GRAMMAR_VERSION_V15: u32 = 15;
 /// Contract grammar containing aggregate collection-byte constraints.
 pub const GRAMMAR_VERSION_V16: u32 = 16;
+/// Contract grammar containing initialized mutable bindings.
+pub const GRAMMAR_VERSION_V17: u32 = 17;
 /// Executable IR version represented by a bundle.
 pub const EXECUTABLE_IR_VERSION_V1: u32 = 1;
 /// Executable IR containing compiled workflow transitions and service values.
@@ -141,6 +145,8 @@ pub const EXECUTABLE_IR_VERSION_V14: u32 = 14;
 pub const EXECUTABLE_IR_VERSION_V15: u32 = 15;
 /// Executable IR containing aggregate collection-byte bounds and copy proofs.
 pub const EXECUTABLE_IR_VERSION_V16: u32 = 16;
+/// Executable IR containing initialized mutable binding plans.
+pub const EXECUTABLE_IR_VERSION_V17: u32 = 17;
 
 const RELATIONSHIP_SCHEMA_EXTENSION: u32 = 0xffff_fffe;
 const UNIQUE_KEY_SCHEMA_EXTENSION: u32 = 0xffff_fffd;
@@ -1068,7 +1074,9 @@ impl ContractBundle {
         mcp_command_names: McpCommandNameRegistryV2,
         compatibility: CompatibilityReport,
     ) -> Result<Self, IrValidationError> {
-        let version = if commands.iter().any(CommandPlan::requires_ir_v16) {
+        let version = if commands.iter().any(CommandPlan::requires_ir_v17) {
+            BUNDLE_FORMAT_VERSION_V17
+        } else if commands.iter().any(CommandPlan::requires_ir_v16) {
             BUNDLE_FORMAT_VERSION_V16
         } else if schema.requires_ir_v15() {
             BUNDLE_FORMAT_VERSION_V15
@@ -1208,6 +1216,10 @@ impl ContractBundle {
                 BUNDLE_FORMAT_VERSION_V16,
                 GRAMMAR_VERSION_V16,
                 EXECUTABLE_IR_VERSION_V16
+            ) | (
+                BUNDLE_FORMAT_VERSION_V17,
+                GRAMMAR_VERSION_V17,
+                EXECUTABLE_IR_VERSION_V17
             )
         ) || (ir_version < EXECUTABLE_IR_VERSION_V2
             && (!workflows.is_empty() || commands.iter().any(CommandPlan::requires_ir_v2)))
@@ -1233,6 +1245,8 @@ impl ContractBundle {
             || (ir_version < EXECUTABLE_IR_VERSION_V15 && schema.requires_ir_v15())
             || (ir_version < EXECUTABLE_IR_VERSION_V16
                 && commands.iter().any(CommandPlan::requires_ir_v16))
+            || (ir_version < EXECUTABLE_IR_VERSION_V17
+                && commands.iter().any(CommandPlan::requires_ir_v17))
             || (ir_version >= EXECUTABLE_IR_VERSION_V6
                 && commands
                     .iter()
@@ -1922,7 +1936,9 @@ pub(crate) fn compute_command_plan_hash(
 ) -> Result<PlanHash, IrValidationError> {
     let mut writer = Writer::new(MAX_BUNDLE_BYTES);
     writer.raw(COMMAND_PLAN_MAGIC)?;
-    let ir_version = if plan.requires_ir_v16() {
+    let ir_version = if plan.requires_ir_v17() {
+        EXECUTABLE_IR_VERSION_V17
+    } else if plan.requires_ir_v16() {
         EXECUTABLE_IR_VERSION_V16
     } else if plan.requires_ir_v11() {
         EXECUTABLE_IR_VERSION_V11
@@ -3042,7 +3058,9 @@ fn encode_command_bundle_entry(
     command: &CommandPlan,
     schema: &SchemaIr,
 ) -> Result<(), IrValidationError> {
-    let ir_version = if command.requires_ir_v16() {
+    let ir_version = if command.requires_ir_v17() {
+        EXECUTABLE_IR_VERSION_V17
+    } else if command.requires_ir_v16() {
         EXECUTABLE_IR_VERSION_V16
     } else if command.requires_ir_v11() {
         EXECUTABLE_IR_VERSION_V11
@@ -3082,7 +3100,9 @@ fn encode_command_semantics(
     schema: &SchemaIr,
     include_display_names: bool,
 ) -> Result<(), IrValidationError> {
-    let ir_version = if command.requires_ir_v16() {
+    let ir_version = if command.requires_ir_v17() {
+        EXECUTABLE_IR_VERSION_V17
+    } else if command.requires_ir_v16() {
         EXECUTABLE_IR_VERSION_V16
     } else if command.requires_ir_v11() {
         EXECUTABLE_IR_VERSION_V11
@@ -3387,7 +3407,25 @@ fn encode_binding(
         writer.u32(field.get())?;
     }
     writer.bool(binding.complete_record_access())?;
-    encode_outcome_construction(writer, binding.failure())?;
+    if ir_version >= EXECUTABLE_IR_VERSION_V17 {
+        writer.u32(binding.initializer().len() as u32)?;
+        for field in binding.initializer() {
+            writer.u32(field.field_id().get())?;
+            writer.u32(field.expression().get())?;
+        }
+        writer.bool(binding.failure().is_some())?;
+        if let Some(failure) = binding.failure() {
+            encode_outcome_construction(writer, failure)?;
+        }
+    } else {
+        let failure = binding
+            .failure()
+            .ok_or(IrValidationError::UnsupportedVersion {
+                kind: "initialized mutable binding executable IR",
+                value: ir_version,
+            })?;
+        encode_outcome_construction(writer, failure)?;
+    }
     if ir_version >= EXECUTABLE_IR_VERSION_V6 {
         writer.bool(binding.restriction_failure().is_some())?;
         if let Some(failure) = binding.restriction_failure() {
@@ -3796,6 +3834,10 @@ fn decode_bundle(bytes: &[u8]) -> Result<ContractBundle, IrValidationError> {
             BUNDLE_FORMAT_VERSION_V16,
             GRAMMAR_VERSION_V16,
             EXECUTABLE_IR_VERSION_V16
+        ) | (
+            BUNDLE_FORMAT_VERSION_V17,
+            GRAMMAR_VERSION_V17,
+            EXECUTABLE_IR_VERSION_V17
         )
     ) {
         return Err(IrValidationError::UnsupportedVersion {
@@ -5671,7 +5713,32 @@ fn decode_binding(
         accessed_fields.push(decode_field_id(reader)?);
     }
     let complete_record_access = reader.bool()?;
-    let failure = decode_outcome_construction(reader, outcomes, arena)?;
+    let initializer = if ir_version >= EXECUTABLE_IR_VERSION_V17 {
+        let count = decode_len(
+            reader,
+            "binding initializer fields",
+            crate::MAX_COMMAND_ITEMS,
+        )?;
+        let mut fields = Vec::with_capacity(count);
+        for _ in 0..count {
+            fields.push(FieldExpression::new(
+                decode_field_id(reader)?,
+                ExprId::new(reader.u32()?),
+            ));
+        }
+        fields
+    } else {
+        Vec::new()
+    };
+    let failure = if ir_version >= EXECUTABLE_IR_VERSION_V17 {
+        if reader.bool()? {
+            Some(decode_outcome_construction(reader, outcomes, arena)?)
+        } else {
+            None
+        }
+    } else {
+        Some(decode_outcome_construction(reader, outcomes, arena)?)
+    };
     let restriction_failure = if ir_version >= EXECUTABLE_IR_VERSION_V6 && reader.bool()? {
         Some(decode_outcome_construction(reader, outcomes, arena)?)
     } else {
@@ -5682,19 +5749,39 @@ fn decode_binding(
     } else {
         None
     };
-    BindingPlan::new_with_delete_failures(
-        id,
-        name,
-        mode,
-        entity_type,
-        key_schema,
-        key_expressions,
-        accessed_fields,
-        complete_record_access,
-        failure,
-        restriction_failure,
-        cascade_failure,
-    )
+    if mode == BindingMode::InitOrMutate {
+        if failure.is_some() || restriction_failure.is_some() || cascade_failure.is_some() {
+            return Err(IrValidationError::InvalidDependency {
+                reason: "initialized mutable binding carries a failure outcome",
+            });
+        }
+        BindingPlan::new_initialized(
+            id,
+            name,
+            entity_type,
+            key_schema,
+            key_expressions,
+            accessed_fields,
+            complete_record_access,
+            initializer,
+        )
+    } else {
+        BindingPlan::new_with_delete_failures(
+            id,
+            name,
+            mode,
+            entity_type,
+            key_schema,
+            key_expressions,
+            accessed_fields,
+            complete_record_access,
+            failure.ok_or(IrValidationError::InvalidDependency {
+                reason: "ordinary binding omits its failure outcome",
+            })?,
+            restriction_failure,
+            cascade_failure,
+        )
+    }
 }
 
 fn decode_binding_mode(tag: u8, ir_version: u32) -> Result<BindingMode, IrValidationError> {
@@ -5703,6 +5790,9 @@ fn decode_binding_mode(tag: u8, ir_version: u32) -> Result<BindingMode, IrValida
         binding_tag::MUTATE => Ok(BindingMode::Mutate),
         binding_tag::CREATE => Ok(BindingMode::Create),
         binding_tag::DELETE if ir_version >= EXECUTABLE_IR_VERSION_V5 => Ok(BindingMode::Delete),
+        binding_tag::INIT_OR_MUTATE if ir_version >= EXECUTABLE_IR_VERSION_V17 => {
+            Ok(BindingMode::InitOrMutate)
+        }
         tag => Err(IrValidationError::UnknownTag {
             kind: "binding mode",
             tag,

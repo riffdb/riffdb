@@ -215,11 +215,17 @@ pub fn execute_command(
                     service_values: context.service_values(),
                 };
                 let mut evaluation = evaluator.batch(&values);
-                let outcome = construct_outcome(binding.failure(), &mut evaluation)?;
+                let outcome = construct_outcome(
+                    binding.failure().ok_or(ExecutionFault::Integrity)?,
+                    &mut evaluation,
+                )?;
                 return finish_declared(plan, snapshot, budget, outcome, vec![], vec![], vec![]);
             }
             (
-                BindingMode::Read | BindingMode::Mutate | BindingMode::Delete,
+                BindingMode::Read
+                | BindingMode::Mutate
+                | BindingMode::InitOrMutate
+                | BindingMode::Delete,
                 EntityObservation::Present(record),
             ) => {
                 let entity = bundle
@@ -246,6 +252,42 @@ pub fn execute_command(
                     binding.key_schema(),
                     target,
                 )?));
+            }
+            (BindingMode::InitOrMutate, EntityObservation::Absent(target)) => {
+                let entity = bundle
+                    .schema()
+                    .entity(binding.entity_type())
+                    .ok_or(ExecutionFault::Integrity)?;
+                records.push(Some(initialize_create_record(
+                    entity.record(),
+                    entity.primary_key_fields(),
+                    binding.key_schema(),
+                    target,
+                )?));
+                for initialized in binding.initializer() {
+                    let value = {
+                        let values = RuntimeValues {
+                            schema: bundle.schema(),
+                            plan,
+                            input,
+                            records: &records,
+                            roots: &[],
+                            tx_time: context.tx_time(),
+                            service_values: context.service_values(),
+                        };
+                        evaluator
+                            .batch(&values)
+                            .evaluate(initialized.expression())?
+                    };
+                    set_working_field(
+                        bundle.schema(),
+                        plan,
+                        &mut records,
+                        binding.id(),
+                        initialized.field_id(),
+                        value,
+                    )?;
+                }
             }
         }
     }
@@ -1055,7 +1097,10 @@ fn execute_collection_command(
                         element,
                     );
                     let mut evaluation = evaluator.batch(&values);
-                    let outcome = construct_outcome(binding.failure(), &mut evaluation)?;
+                    let outcome = construct_outcome(
+                        binding.failure().ok_or(ExecutionFault::Integrity)?,
+                        &mut evaluation,
+                    )?;
                     return finish_declared(
                         plan,
                         snapshot,
@@ -1067,7 +1112,10 @@ fn execute_collection_command(
                     );
                 }
                 (
-                    BindingMode::Read | BindingMode::Mutate | BindingMode::Delete,
+                    BindingMode::Read
+                    | BindingMode::Mutate
+                    | BindingMode::InitOrMutate
+                    | BindingMode::Delete,
                     EntityObservation::Present(record),
                 ) => {
                     let entity = bundle
@@ -1094,6 +1142,42 @@ fn execute_collection_command(
                         binding.key_schema(),
                         target,
                     )?);
+                }
+                (BindingMode::InitOrMutate, EntityObservation::Absent(target)) => {
+                    let entity = bundle
+                        .schema()
+                        .entity(binding.entity_type())
+                        .ok_or(ExecutionFault::Integrity)?;
+                    records[binding_index] = Some(initialize_create_record(
+                        entity.record(),
+                        entity.primary_key_fields(),
+                        binding.key_schema(),
+                        target,
+                    )?);
+                    for initialized in binding.initializer() {
+                        let value = {
+                            let values = CollectionRuntimeValues::new(
+                                bundle.schema(),
+                                plan,
+                                input,
+                                &records,
+                                &[],
+                                context,
+                                element,
+                            );
+                            evaluator
+                                .batch(&values)
+                                .evaluate(initialized.expression())?
+                        };
+                        set_working_field(
+                            bundle.schema(),
+                            plan,
+                            &mut records,
+                            binding.id(),
+                            initialized.field_id(),
+                            value,
+                        )?;
+                    }
                 }
             }
         }
@@ -1324,6 +1408,15 @@ fn execute_collection_command(
                     EntityMutation::Create(image)
                 }
                 (BindingMode::Mutate, EntityObservation::Present(record)) => {
+                    EntityMutation::Replace {
+                        expected_version: record.entity_version(),
+                        post_image: image,
+                    }
+                }
+                (BindingMode::InitOrMutate, EntityObservation::Absent(_)) => {
+                    EntityMutation::Create(image)
+                }
+                (BindingMode::InitOrMutate, EntityObservation::Present(record)) => {
                     EntityMutation::Replace {
                         expected_version: record.entity_version(),
                         post_image: image,
@@ -1875,7 +1968,10 @@ fn set_working_field(
         .get(binding_id.get() as usize)
         .filter(|binding| binding.id() == binding_id)
         .ok_or(ExecutionFault::Integrity)?;
-    if !matches!(binding.mode(), BindingMode::Mutate | BindingMode::Create) {
+    if !matches!(
+        binding.mode(),
+        BindingMode::Mutate | BindingMode::Create | BindingMode::InitOrMutate
+    ) {
         return Err(ExecutionFault::Integrity);
     }
     let field = schema
@@ -1979,6 +2075,15 @@ fn push_mutations(
                 expected_version: record.entity_version(),
                 post_image: image,
             },
+            (BindingMode::InitOrMutate, EntityObservation::Absent(_)) => {
+                EntityMutation::Create(image)
+            }
+            (BindingMode::InitOrMutate, EntityObservation::Present(record)) => {
+                EntityMutation::Replace {
+                    expected_version: record.entity_version(),
+                    post_image: image,
+                }
+            }
             (BindingMode::Delete, EntityObservation::Present(record)) => {
                 let check = plan
                     .delete_checks()

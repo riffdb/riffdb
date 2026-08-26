@@ -85,6 +85,8 @@ pub enum BindingMode {
     Create = crate::format_registry::binding_mode::CREATE,
     /// Checked removal of current entity and index state while history remains retained.
     Delete = crate::format_registry::binding_mode::DELETE,
+    /// Mutable entity whose absent path begins from a compiler-declared initializer.
+    InitOrMutate = crate::format_registry::binding_mode::INIT_OR_MUTATE,
 }
 
 /// The closed first-release duplicate policy for collection commands.
@@ -452,7 +454,8 @@ pub struct BindingPlan {
     key_expressions: Vec<ExprId>,
     accessed_fields: Vec<FieldId>,
     complete_record_access: bool,
-    failure: OutcomeConstruction,
+    initializer: Vec<FieldExpression>,
+    failure: Option<OutcomeConstruction>,
     restriction_failure: Option<OutcomeConstruction>,
     cascade_failure: Option<OutcomeConstruction>,
 }
@@ -500,7 +503,7 @@ impl BindingPlan {
         failure: OutcomeConstruction,
         restriction_failure: Option<OutcomeConstruction>,
     ) -> Result<Self, IrValidationError> {
-        Self::new_with_delete_failures(
+        Self::new_internal(
             id,
             name,
             mode,
@@ -509,7 +512,8 @@ impl BindingPlan {
             key_expressions,
             accessed_fields,
             complete_record_access,
-            failure,
+            Vec::new(),
+            Some(failure),
             restriction_failure,
             None,
         )
@@ -525,9 +529,68 @@ impl BindingPlan {
         entity_type: EntityTypeId,
         key_schema: KeySchema,
         key_expressions: Vec<ExprId>,
-        mut accessed_fields: Vec<FieldId>,
+        accessed_fields: Vec<FieldId>,
         complete_record_access: bool,
         failure: OutcomeConstruction,
+        restriction_failure: Option<OutcomeConstruction>,
+        cascade_failure: Option<OutcomeConstruction>,
+    ) -> Result<Self, IrValidationError> {
+        Self::new_internal(
+            id,
+            name,
+            mode,
+            entity_type,
+            key_schema,
+            key_expressions,
+            accessed_fields,
+            complete_record_access,
+            Vec::new(),
+            Some(failure),
+            restriction_failure,
+            cascade_failure,
+        )
+    }
+
+    /// Creates an initialized mutable binding with no missing-row failure branch.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_initialized(
+        id: BindingId,
+        name: impl Into<String>,
+        entity_type: EntityTypeId,
+        key_schema: KeySchema,
+        key_expressions: Vec<ExprId>,
+        accessed_fields: Vec<FieldId>,
+        complete_record_access: bool,
+        initializer: Vec<FieldExpression>,
+    ) -> Result<Self, IrValidationError> {
+        Self::new_internal(
+            id,
+            name,
+            BindingMode::InitOrMutate,
+            entity_type,
+            key_schema,
+            key_expressions,
+            accessed_fields,
+            complete_record_access,
+            initializer,
+            None,
+            None,
+            None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn new_internal(
+        id: BindingId,
+        name: impl Into<String>,
+        mode: BindingMode,
+        entity_type: EntityTypeId,
+        key_schema: KeySchema,
+        key_expressions: Vec<ExprId>,
+        mut accessed_fields: Vec<FieldId>,
+        complete_record_access: bool,
+        mut initializer: Vec<FieldExpression>,
+        failure: Option<OutcomeConstruction>,
         restriction_failure: Option<OutcomeConstruction>,
         cascade_failure: Option<OutcomeConstruction>,
     ) -> Result<Self, IrValidationError> {
@@ -544,6 +607,22 @@ impl BindingPlan {
         if accessed_fields.windows(2).any(|pair| pair[0] == pair[1]) {
             return Err(IrValidationError::NonCanonicalOrder {
                 kind: "binding accessed fields",
+            });
+        }
+        initializer.sort_by_key(|field| field.field_id());
+        if initializer
+            .windows(2)
+            .any(|pair| pair[0].field_id() == pair[1].field_id())
+        {
+            return Err(IrValidationError::NonCanonicalOrder {
+                kind: "binding initializer fields",
+            });
+        }
+        if (mode == BindingMode::InitOrMutate) != failure.is_none()
+            || (mode != BindingMode::InitOrMutate && !initializer.is_empty())
+        {
+            return Err(IrValidationError::InvalidDependency {
+                reason: "initialized mutable binding initializer/failure shape mismatch",
             });
         }
         if restriction_failure.is_some() && mode != BindingMode::Delete {
@@ -570,6 +649,7 @@ impl BindingPlan {
             key_expressions,
             accessed_fields,
             complete_record_access,
+            initializer,
             failure,
             restriction_failure,
             cascade_failure,
@@ -616,10 +696,15 @@ impl BindingPlan {
     pub const fn complete_record_access(&self) -> bool {
         self.complete_record_access
     }
-    /// Declared missing/duplicate outcome.
+    /// Absent-state initializer in stable field-ID order.
     #[must_use]
-    pub const fn failure(&self) -> &OutcomeConstruction {
-        &self.failure
+    pub fn initializer(&self) -> &[FieldExpression] {
+        &self.initializer
+    }
+    /// Declared missing/duplicate outcome, absent for initialized mutation.
+    #[must_use]
+    pub const fn failure(&self) -> Option<&OutcomeConstruction> {
+        self.failure.as_ref()
     }
     /// Declared failure when an indexed-restrict delete observes an inbound reference.
     #[must_use]
@@ -2052,7 +2137,10 @@ impl CommandPlan {
             && !bindings.iter().any(|binding| {
                 matches!(
                     binding.mode,
-                    BindingMode::Mutate | BindingMode::Create | BindingMode::Delete
+                    BindingMode::Mutate
+                        | BindingMode::Create
+                        | BindingMode::InitOrMutate
+                        | BindingMode::Delete
                 )
             })
         {
@@ -2233,6 +2321,13 @@ impl CommandPlan {
             .as_ref()
             .is_some_and(|expansion| expansion.maximum_aggregate_element_bytes().is_some())
     }
+    /// Whether this command carries compiler-sealed initialized mutation semantics.
+    #[must_use]
+    pub fn requires_ir_v17(&self) -> bool {
+        self.bindings
+            .iter()
+            .any(|binding| binding.mode == BindingMode::InitOrMutate)
+    }
     /// Whether this command requires the distinct reimport invocation class in IR v10.
     #[must_use]
     pub const fn requires_ir_v10(&self) -> bool {
@@ -2375,6 +2470,7 @@ impl CommandPlan {
             match binding.mode() {
                 BindingMode::Read => {}
                 BindingMode::Mutate => return None,
+                BindingMode::InitOrMutate => return None,
                 BindingMode::Delete => return None,
                 BindingMode::Create => {
                     if aggregate
@@ -2418,7 +2514,9 @@ fn validate_secret_reveals(
 ) -> Result<(), IrValidationError> {
     let mut flows = Vec::<(SecretRevealDestinationV1, ExprId, bool)>::new();
     for binding in bindings {
-        append_outcome_secret_flows(&mut flows, binding.failure());
+        if let Some(outcome) = binding.failure() {
+            append_outcome_secret_flows(&mut flows, outcome);
+        }
         if let Some(outcome) = binding.restriction_failure() {
             append_outcome_secret_flows(&mut flows, outcome);
         }
@@ -2746,7 +2844,10 @@ fn validate_collection_graph_bytes(
             }
             continue;
         }
-        if !matches!(binding.mode(), BindingMode::Create | BindingMode::Mutate) {
+        if !matches!(
+            binding.mode(),
+            BindingMode::Create | BindingMode::Mutate | BindingMode::InitOrMutate
+        ) {
             continue;
         }
         let entity =
@@ -2960,11 +3061,16 @@ fn validate_aggregate_collection_graph_bytes(
                     kind: "collection aggregate graph entity",
                 })?;
         if !(first_binding..binding_end).contains(&position)
-            || !matches!(binding.mode(), BindingMode::Create | BindingMode::Mutate)
+            || !matches!(
+                binding.mode(),
+                BindingMode::Create | BindingMode::Mutate | BindingMode::InitOrMutate
+            )
             || binding.cascade_failure().is_some()
         {
-            if matches!(binding.mode(), BindingMode::Create | BindingMode::Mutate)
-                || binding.cascade_failure().is_some()
+            if matches!(
+                binding.mode(),
+                BindingMode::Create | BindingMode::Mutate | BindingMode::InitOrMutate
+            ) || binding.cascade_failure().is_some()
             {
                 let copies = if (first_binding..binding_end).contains(&position) {
                     expansion.maximum_elements()
@@ -3312,10 +3418,12 @@ fn derive_relationship_checks(
         })
         .collect::<BTreeMap<_, _>>();
     let mut checks = Vec::new();
-    for source_binding in bindings
-        .iter()
-        .filter(|binding| matches!(binding.mode(), BindingMode::Create | BindingMode::Mutate))
-    {
+    for source_binding in bindings.iter().filter(|binding| {
+        matches!(
+            binding.mode(),
+            BindingMode::Create | BindingMode::Mutate | BindingMode::InitOrMutate
+        )
+    }) {
         let source_entity = schema.entity(source_binding.entity_type()).ok_or(
             IrValidationError::InvalidReference {
                 kind: "relationship source entity",
@@ -3326,11 +3434,13 @@ fn derive_relationship_checks(
             .iter()
             .filter(|relationship| relationship.source_entity() == source_binding.entity_type())
         {
-            let changes = source_binding.mode() == BindingMode::Create
-                || relationship
-                    .source_fields()
-                    .iter()
-                    .any(|field| writes.contains_key(&(source_binding.id(), *field)));
+            let changes = matches!(
+                source_binding.mode(),
+                BindingMode::Create | BindingMode::InitOrMutate
+            ) || relationship
+                .source_fields()
+                .iter()
+                .any(|field| writes.contains_key(&(source_binding.id(), *field)));
             if !changes {
                 continue;
             }
@@ -3341,6 +3451,13 @@ fn derive_relationship_checks(
                     writes
                         .get(&(source_binding.id(), *field))
                         .copied()
+                        .or_else(|| {
+                            source_binding
+                                .initializer()
+                                .iter()
+                                .find(|initialized| initialized.field_id() == *field)
+                                .map(|initialized| initialized.expression())
+                        })
                         .or_else(|| {
                             source_entity
                                 .primary_key_fields()
@@ -3360,7 +3477,10 @@ fn derive_relationship_checks(
                 if target.id() >= source_binding.id()
                     || !matches!(
                         target.mode(),
-                        BindingMode::Read | BindingMode::Mutate | BindingMode::Create
+                        BindingMode::Read
+                            | BindingMode::Mutate
+                            | BindingMode::Create
+                            | BindingMode::InitOrMutate
                     )
                     || target.entity_type() != relationship.target_entity()
                     || target.key_expressions().len() != resulting.len()
@@ -3463,10 +3583,12 @@ fn derive_unique_conflicts(
         })
         .collect::<BTreeMap<_, _>>();
     let mut conflicts = Vec::new();
-    for binding in bindings
-        .iter()
-        .filter(|binding| matches!(binding.mode(), BindingMode::Create | BindingMode::Mutate))
-    {
+    for binding in bindings.iter().filter(|binding| {
+        matches!(
+            binding.mode(),
+            BindingMode::Create | BindingMode::Mutate | BindingMode::InitOrMutate
+        )
+    }) {
         let entity =
             schema
                 .entity(binding.entity_type())
@@ -3483,11 +3605,13 @@ fn derive_unique_conflicts(
             .iter()
             .filter(|unique| unique.source_entity() == entity.id())
         {
-            let changes = binding.mode() == BindingMode::Create
-                || unique
-                    .fields()
-                    .iter()
-                    .any(|field| writes.contains_key(&(binding.id(), *field)));
+            let changes = matches!(
+                binding.mode(),
+                BindingMode::Create | BindingMode::InitOrMutate
+            ) || unique
+                .fields()
+                .iter()
+                .any(|field| writes.contains_key(&(binding.id(), *field)));
             if !changes {
                 continue;
             }
@@ -3495,13 +3619,25 @@ fn derive_unique_conflicts(
                 .fields()
                 .iter()
                 .map(|field| {
-                    writes.get(&(binding.id(), *field)).copied().or_else(|| {
-                        entity
-                            .primary_key_fields()
-                            .iter()
-                            .position(|key| key == field)
-                            .and_then(|position| binding.key_expressions().get(position).copied())
-                    })
+                    writes
+                        .get(&(binding.id(), *field))
+                        .copied()
+                        .or_else(|| {
+                            binding
+                                .initializer()
+                                .iter()
+                                .find(|initialized| initialized.field_id() == *field)
+                                .map(|initialized| initialized.expression())
+                        })
+                        .or_else(|| {
+                            entity
+                                .primary_key_fields()
+                                .iter()
+                                .position(|key| key == field)
+                                .and_then(|position| {
+                                    binding.key_expressions().get(position).copied()
+                                })
+                        })
                 })
                 .collect::<Option<Vec<_>>>()
                 .ok_or(IrValidationError::InvalidDependency {
@@ -3714,6 +3850,9 @@ fn worst_case_index_derivation(
             .copied()
             .zip(binding.key_expressions().iter().copied())
             .collect::<BTreeMap<_, _>>();
+        for initialized in binding.initializer() {
+            resulting_expressions.insert(initialized.field_id(), initialized.expression());
+        }
         for instruction in instructions {
             match instruction {
                 Instruction::SetField {
@@ -3742,6 +3881,10 @@ fn worst_case_index_derivation(
                 BindingMode::Read => continue,
                 BindingMode::Create => None,
                 BindingMode::Delete => None,
+                BindingMode::InitOrMutate => index
+                    .fields()
+                    .iter()
+                    .position(|field| assigned.contains(field)),
                 BindingMode::Mutate => {
                     let Some(position) = index
                         .fields()
@@ -3754,10 +3897,17 @@ fn worst_case_index_derivation(
                 }
             };
 
-            let entry_delta = if matches!(binding.mode, BindingMode::Create | BindingMode::Delete) {
-                1
-            } else {
-                2
+            let entry_delta = match binding.mode {
+                BindingMode::Create | BindingMode::Delete => 1,
+                BindingMode::Mutate => 2,
+                BindingMode::InitOrMutate => {
+                    if earliest_changed_component.is_some() {
+                        2
+                    } else {
+                        1
+                    }
+                }
+                BindingMode::Read => unreachable!("read bindings were skipped"),
             };
             index_entry_deltas = checked_index_derivation_add(
                 index_entry_deltas,
@@ -3834,7 +3984,7 @@ fn worst_case_index_derivation(
                         BindingMode::Delete => {
                             checked_index_derivation_mul(prefix_bytes, multiplier)?
                         }
-                        BindingMode::Mutate
+                        BindingMode::Mutate | BindingMode::InitOrMutate
                             if earliest_changed_component
                                 .is_some_and(|earliest| position >= earliest) =>
                         {
@@ -3848,7 +3998,7 @@ fn worst_case_index_derivation(
                             )?;
                             checked_index_derivation_add(old, new)?
                         }
-                        BindingMode::Mutate | BindingMode::Read => {
+                        BindingMode::Mutate | BindingMode::InitOrMutate | BindingMode::Read => {
                             checked_index_derivation_mul(prefix_bytes, multiplier)?
                         }
                     }
@@ -3859,9 +4009,11 @@ fn worst_case_index_derivation(
                 )?;
                 if prefix_multiplier > 1 && aggregate_bytes.is_some() {
                     let new_prefix_is_present = binding.mode == BindingMode::Create
-                        || (binding.mode == BindingMode::Mutate
-                            && earliest_changed_component
-                                .is_some_and(|earliest| position >= earliest));
+                        || (matches!(
+                            binding.mode,
+                            BindingMode::Mutate | BindingMode::InitOrMutate
+                        ) && earliest_changed_component
+                            .is_some_and(|earliest| position >= earliest));
                     if new_prefix_is_present {
                         aggregate_prefix_sources.extend(cumulative_new_sources.iter().copied());
                     }
@@ -4059,7 +4211,9 @@ fn validate_declared_constructions(
         Ok(())
     };
     for binding in bindings {
-        validate_outcome(&binding.failure, false)?;
+        if let Some(failure) = &binding.failure {
+            validate_outcome(failure, false)?;
+        }
     }
     for instruction in instructions {
         match instruction {
@@ -4285,7 +4439,9 @@ fn validate_collection_expression_uses(
         for expression in binding.key_expressions() {
             reject(*expression)?;
         }
-        reject_outcome(binding.failure())?;
+        if let Some(failure) = binding.failure() {
+            reject_outcome(failure)?;
+        }
     }
     for read in root_validation_reads
         .iter()
@@ -4300,7 +4456,10 @@ fn validate_collection_expression_uses(
         .filter(|binding| {
             matches!(
                 binding.mode(),
-                BindingMode::Mutate | BindingMode::Create | BindingMode::Delete
+                BindingMode::Mutate
+                    | BindingMode::Create
+                    | BindingMode::InitOrMutate
+                    | BindingMode::Delete
             )
         })
         .collect::<Vec<_>>();
@@ -4399,7 +4558,10 @@ fn validate_binding_plans(
         if entity.primary_key() != &binding.key_schema
             || (matches!(
                 binding.mode,
-                BindingMode::Mutate | BindingMode::Create | BindingMode::Delete
+                BindingMode::Mutate
+                    | BindingMode::Create
+                    | BindingMode::InitOrMutate
+                    | BindingMode::Delete
             ) && owner.id() != locality.aggregate_id)
         {
             return Err(IrValidationError::InvalidDependency {
@@ -4433,12 +4595,45 @@ fn validate_binding_plans(
                 kind: "binding accessed field",
             });
         }
-        for field in &binding.failure.payload.fields {
-            let dependencies = arena.dependencies(field.expression)?;
-            if !dependencies.is_input_computable() || dependencies.uses_transaction_time() {
+        let key_fields = entity
+            .primary_key_fields()
+            .iter()
+            .copied()
+            .collect::<BTreeSet<_>>();
+        for initialized in binding.initializer() {
+            let field = entity.record().field(initialized.field_id()).ok_or(
+                IrValidationError::InvalidReference {
+                    kind: "binding initializer field",
+                },
+            )?;
+            let expression =
+                arena
+                    .get(initialized.expression())
+                    .ok_or(IrValidationError::InvalidReference {
+                        kind: "binding initializer expression",
+                    })?;
+            let dependencies = arena.dependencies(initialized.expression())?;
+            if key_fields.contains(&initialized.field_id())
+                || expression.result_type() != field.value_type()
+                || !dependencies.bindings().is_empty()
+                || !dependencies.schema_fields().is_empty()
+                || !dependencies.root_validation_reads().is_empty()
+                || !dependencies.source_event_fields().is_empty()
+                || dependencies.uses_transaction_date()
+            {
                 return Err(IrValidationError::InvalidDependency {
-                    reason: "binding failure outcome is not input/constant-only",
+                    reason: "binding initializer is not state-independent with the declared type",
                 });
+            }
+        }
+        if let Some(failure) = &binding.failure {
+            for field in &failure.payload.fields {
+                let dependencies = arena.dependencies(field.expression)?;
+                if !dependencies.is_input_computable() || dependencies.uses_transaction_time() {
+                    return Err(IrValidationError::InvalidDependency {
+                        reason: "binding failure outcome is not input/constant-only",
+                    });
+                }
             }
         }
     }
@@ -4508,7 +4703,10 @@ fn validate_root_validation_reads(
         for binding in bindings.iter().filter(|binding| {
             matches!(
                 binding.mode,
-                BindingMode::Mutate | BindingMode::Create | BindingMode::Delete
+                BindingMode::Mutate
+                    | BindingMode::Create
+                    | BindingMode::InitOrMutate
+                    | BindingMode::Delete
             ) && binding.entity_type != root.id()
         }) {
             let prefix = binding
@@ -4561,7 +4759,10 @@ fn validate_root_validation_reads(
         )?;
         if !matches!(
             source.mode,
-            BindingMode::Mutate | BindingMode::Create | BindingMode::Delete
+            BindingMode::Mutate
+                | BindingMode::Create
+                | BindingMode::InitOrMutate
+                | BindingMode::Delete
         ) || source.entity_type == root.id()
             || read.entity_type != root.id()
             || read.key_schema != *root.primary_key()
@@ -4668,7 +4869,10 @@ fn validate_locality(
         .filter(|binding| {
             matches!(
                 binding.mode,
-                BindingMode::Mutate | BindingMode::Create | BindingMode::Delete
+                BindingMode::Mutate
+                    | BindingMode::Create
+                    | BindingMode::InitOrMutate
+                    | BindingMode::Delete
             )
         })
         .collect::<Vec<_>>();
@@ -5141,7 +5345,12 @@ fn validate_commit_checks(
 
     let postimage_bindings = bindings
         .iter()
-        .filter(|binding| matches!(binding.mode, BindingMode::Mutate | BindingMode::Create))
+        .filter(|binding| {
+            matches!(
+                binding.mode,
+                BindingMode::Mutate | BindingMode::Create | BindingMode::InitOrMutate
+            )
+        })
         .collect::<Vec<_>>();
     let mut expected = Vec::new();
     for binding in &postimage_bindings {
@@ -5167,7 +5376,10 @@ fn validate_commit_checks(
         for binding in bindings.iter().filter(|binding| {
             matches!(
                 binding.mode,
-                BindingMode::Mutate | BindingMode::Create | BindingMode::Delete
+                BindingMode::Mutate
+                    | BindingMode::Create
+                    | BindingMode::InitOrMutate
+                    | BindingMode::Delete
             )
         }) {
             if binding.mode == BindingMode::Delete && binding.entity_type == aggregate.root() {
@@ -5297,8 +5509,11 @@ fn validate_instruction_stream(
             let entity = schema
                 .entity(binding.entity_type)
                 .expect("validated binding entity");
-            if binding.mode == BindingMode::Create {
-                entity
+            if matches!(
+                binding.mode,
+                BindingMode::Create | BindingMode::InitOrMutate
+            ) {
+                let mut fields = entity
                     .record()
                     .fields()
                     .iter()
@@ -5307,7 +5522,14 @@ fn validate_instruction_stream(
                             || field.value_type().is_optional()
                     })
                     .map(FieldSchema::id)
-                    .collect::<BTreeSet<_>>()
+                    .collect::<BTreeSet<_>>();
+                fields.extend(
+                    binding
+                        .initializer()
+                        .iter()
+                        .map(|initialized| initialized.field_id()),
+                );
+                fields
             } else {
                 entity
                     .record()
@@ -5523,8 +5745,10 @@ fn validate_instruction_stream(
                     .iter()
                     .map(crate::EnumVariantSchema::id)
                     .collect::<BTreeSet<_>>();
-                if binding_plan.mode != BindingMode::Mutate
-                    || entity.primary_key_fields().contains(state_field)
+                if !matches!(
+                    binding_plan.mode,
+                    BindingMode::Mutate | BindingMode::InitOrMutate
+                ) || entity.primary_key_fields().contains(state_field)
                     || !assigned.insert((*binding, *state_field))
                     || source_states.is_empty()
                     || !source_states.windows(2).all(|pair| pair[0] < pair[1])
@@ -5675,11 +5899,13 @@ fn validate_instruction_stream(
                     .iter()
                     .map(|outcome| outcome.outcome_id)
                     .collect::<BTreeSet<_>>();
-                if binding_plan.mode != BindingMode::Mutate
-                    || owner
-                        .value_type()
-                        .optional_inner()
-                        .is_none_or(|inner| inner.tag() != ValueTypeTag::Uuid)
+                if !matches!(
+                    binding_plan.mode,
+                    BindingMode::Mutate | BindingMode::InitOrMutate
+                ) || owner
+                    .value_type()
+                    .optional_inner()
+                    .is_none_or(|inner| inner.tag() != ValueTypeTag::Uuid)
                     || expiry
                         .value_type()
                         .optional_inner()
@@ -5746,17 +5972,24 @@ fn validate_instruction_stream(
             }
         }
     }
-    for binding in bindings
-        .iter()
-        .filter(|binding| binding.mode == BindingMode::Create)
-    {
+    for binding in bindings.iter().filter(|binding| {
+        matches!(
+            binding.mode,
+            BindingMode::Create | BindingMode::InitOrMutate
+        )
+    }) {
         let entity = schema
             .entity(binding.entity_type)
             .expect("validated binding entity");
         for field in entity.record().fields().iter().filter(|field| {
             !entity.primary_key_fields().contains(&field.id()) && !field.value_type().is_optional()
         }) {
-            if !assigned.contains(&(binding.id, field.id())) {
+            let definitely_initialized = if binding.mode == BindingMode::Create {
+                assigned.contains(&(binding.id, field.id()))
+            } else {
+                initialized[binding.id.get() as usize].contains(&field.id())
+            };
+            if !definitely_initialized {
                 return Err(IrValidationError::InvalidInstructionStream {
                     reason: "required create field is not definitely assigned exactly once",
                 });
@@ -5838,8 +6071,13 @@ fn validate_read_dependencies(
         include(check.predicate)?;
     }
     for binding in bindings {
-        for field in &binding.failure.payload.fields {
-            include(field.expression)?;
+        for initialized in binding.initializer() {
+            include(initialized.expression())?;
+        }
+        if let Some(failure) = &binding.failure {
+            for field in &failure.payload.fields {
+                include(field.expression)?;
+            }
         }
     }
     for instruction in instructions {
@@ -5977,8 +6215,13 @@ fn validate_root_validation_expression_uses(
         for expression in &binding.key_expressions {
             reject(*expression)?;
         }
-        for field in &binding.failure.payload.fields {
-            reject(field.expression)?;
+        for initialized in binding.initializer() {
+            reject(initialized.expression())?;
+        }
+        if let Some(failure) = &binding.failure {
+            for field in &failure.payload.fields {
+                reject(field.expression)?;
+            }
         }
     }
     reject(locality.partition_expression)?;
@@ -6059,14 +6302,10 @@ fn validate_command_expression_reachability(
     let mut roots = Vec::new();
     for binding in bindings {
         roots.extend(binding.key_expressions.iter().copied());
-        roots.extend(
-            binding
-                .failure
-                .payload
-                .fields
-                .iter()
-                .map(|field| field.expression),
-        );
+        roots.extend(binding.initializer.iter().map(|field| field.expression()));
+        if let Some(failure) = &binding.failure {
+            roots.extend(failure.payload.fields.iter().map(|field| field.expression));
+        }
     }
     for read in root_validation_reads {
         roots.extend(read.key_expressions.iter().copied());
@@ -6189,8 +6428,13 @@ fn validate_idempotency(
         for expression in &binding.key_expressions {
             collect(*expression)?;
         }
-        for field in &binding.failure.payload.fields {
-            collect(field.expression)?;
+        for initialized in binding.initializer() {
+            collect(initialized.expression())?;
+        }
+        if let Some(failure) = &binding.failure {
+            for field in &failure.payload.fields {
+                collect(field.expression)?;
+            }
         }
     }
     for read in root_validation_reads {
@@ -6404,18 +6648,34 @@ pub(crate) mod tests {
             OutcomeConstruction::new(&failure, vec![], &expressions).expect("failure outcome");
         let bindings = (0..binding_count)
             .map(|position| {
-                BindingPlan::new(
-                    BindingId::new(u32::try_from(position).expect("binding position fits u32")),
-                    format!("row_{position}"),
-                    mode,
-                    entity_id,
-                    entity_key.clone(),
-                    vec![ExprId::new(0)],
-                    vec![],
-                    false,
-                    failure.clone(),
-                )
-                .expect("binding")
+                let id =
+                    BindingId::new(u32::try_from(position).expect("binding position fits u32"));
+                if mode == BindingMode::InitOrMutate {
+                    BindingPlan::new_initialized(
+                        id,
+                        format!("row_{position}"),
+                        entity_id,
+                        entity_key.clone(),
+                        vec![ExprId::new(0)],
+                        vec![],
+                        false,
+                        vec![],
+                    )
+                    .expect("initialized binding")
+                } else {
+                    BindingPlan::new(
+                        id,
+                        format!("row_{position}"),
+                        mode,
+                        entity_id,
+                        entity_key.clone(),
+                        vec![ExprId::new(0)],
+                        vec![],
+                        false,
+                        failure.clone(),
+                    )
+                    .expect("binding")
+                }
             })
             .collect::<Vec<_>>();
         let instructions = (0..binding_count)
@@ -6830,6 +7090,32 @@ pub(crate) mod tests {
                 unique_occupancies: 0,
                 unique_occupancy_bytes: 0,
             }
+        );
+        assert_eq!(
+            index_estimator_derivation(BindingMode::InitOrMutate, &[first], 1, None),
+            WorstCaseIndexDerivation {
+                index_entry_deltas: 2,
+                index_entry_puts: 1,
+                index_entry_v2_partition_semantic_bytes: 18,
+                affected_prefixes: 7,
+                affected_target_bytes: 194,
+                unique_occupancies: 0,
+                unique_occupancy_bytes: 0,
+            },
+            "initialized transition charges max(create, replace), never their sum"
+        );
+        assert_eq!(
+            index_estimator_derivation(BindingMode::InitOrMutate, &[unrelated], 1, None),
+            WorstCaseIndexDerivation {
+                index_entry_deltas: 1,
+                index_entry_puts: 1,
+                index_entry_v2_partition_semantic_bytes: 18,
+                affected_prefixes: 4,
+                affected_target_bytes: 104,
+                unique_occupancies: 0,
+                unique_occupancy_bytes: 0,
+            },
+            "an unchanged present index does not inflate the absent-create alternative"
         );
         assert_eq!(
             index_estimator_derivation(BindingMode::Mutate, &[first], 2, None),
@@ -8171,7 +8457,7 @@ pub(crate) mod tests {
             vec![ExprId::new(2)],
             vec![],
             false,
-            child.failure.clone(),
+            child.failure.clone().expect("ordinary failure"),
         )
         .expect("root binding");
         assert!(

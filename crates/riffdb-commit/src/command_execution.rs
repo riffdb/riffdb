@@ -1547,6 +1547,7 @@ pub(super) fn command_group_deferred_pipeline_footprint<'a>(
                 }
                 riffdb_contract_ir::BindingMode::Mutate
                 | riffdb_contract_ir::BindingMode::Create
+                | riffdb_contract_ir::BindingMode::InitOrMutate
                 | riffdb_contract_ir::BindingMode::Delete => {
                     footprint.writes.insert(target);
                 }
@@ -1586,6 +1587,7 @@ impl CompatibleCommandGroup {
                 }
                 riffdb_contract_ir::BindingMode::Mutate
                 | riffdb_contract_ir::BindingMode::Create
+                | riffdb_contract_ir::BindingMode::InitOrMutate
                 | riffdb_contract_ir::BindingMode::Delete => {
                     writes.insert(target.clone());
                 }
@@ -1614,6 +1616,7 @@ impl CompatibleCommandGroup {
                 }
                 riffdb_contract_ir::BindingMode::Mutate
                 | riffdb_contract_ir::BindingMode::Create
+                | riffdb_contract_ir::BindingMode::InitOrMutate
                 | riffdb_contract_ir::BindingMode::Delete => {
                     writes.insert(target);
                 }

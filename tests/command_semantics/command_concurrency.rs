@@ -27,6 +27,86 @@ use support::{
 };
 
 #[test]
+fn initialized_transition_revalidates_absent_and_present_races_without_stale_conversion() {
+    let database = BulkRowsDatabase::create("initialized-transition-races");
+    let ports = database.open();
+    let row = [0x40; 16];
+    let first = database.prepare_initialized_put(&ports, &[row], 0x41, 0x51, 0x61);
+    let second = database.prepare_initialized_put(&ports, &[row], 0x42, 0x52, 0x62);
+    let third = database.prepare_initialized_put(&ports, &[row], 0x43, 0x53, 0x63);
+    let fourth = database.prepare_initialized_put(&ports, &[row], 0x44, 0x54, 0x64);
+    let notifications = Arc::new(RecordingApplicationCommitNotifications::default());
+    let coordinator = start_coordinator_with_notifications(
+        ports,
+        Arc::new(FixedAdmissionClock::new(command_timestamp())),
+        Arc::new(IncrementingProvenanceSource::new(0x71)),
+        notifications.clone(),
+    );
+    let executor = coordinator.command_executor();
+
+    let outcomes = runtime().block_on(async {
+        let first = executor
+            .reserve_capacity()
+            .await
+            .expect("reserve first absent transition")
+            .submit(first)
+            .expect("submit first absent transition");
+        let second = executor
+            .reserve_capacity()
+            .await
+            .expect("reserve second absent transition")
+            .submit(second)
+            .expect("submit second absent transition");
+        let first = first.completion().await.expect("first absent completion");
+        let second = second.completion().await.expect("second absent completion");
+
+        let third = executor
+            .reserve_capacity()
+            .await
+            .expect("reserve first present transition")
+            .submit(third)
+            .expect("submit first present transition");
+        let fourth = executor
+            .reserve_capacity()
+            .await
+            .expect("reserve second present transition")
+            .submit(fourth)
+            .expect("submit second present transition");
+        let third = third.completion().await.expect("first present completion");
+        let fourth = fourth
+            .completion()
+            .await
+            .expect("second present completion");
+        [first, second, third, fourth]
+    });
+    assert!(
+        outcomes
+            .iter()
+            .all(|outcome| matches!(outcome, CommandExecutionResult::Committed(_)))
+    );
+    assert_eq!(
+        notifications.sequences(),
+        vec![
+            CommitSequence::first(),
+            CommitSequence::new(2).expect("second sequence"),
+            CommitSequence::new(3).expect("third sequence"),
+            CommitSequence::new(4).expect("fourth sequence"),
+        ]
+    );
+
+    drop(executor);
+    coordinator
+        .shutdown()
+        .expect("drain initialized-transition coordinator");
+    let reopened = database.open();
+    database.assert_row_versions(
+        &reopened,
+        &[row],
+        riffdb_types::EntityVersion::new(4).expect("fourth version"),
+    );
+}
+
+#[test]
 fn unary_delete_race_commits_one_preimage_and_replays_after_reopen() {
     let database = BulkRowsDatabase::create("unary-delete-race");
     let ports = database.open();
