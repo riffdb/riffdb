@@ -21,7 +21,7 @@ use riffdb_query_ir::{
     ProjectionResultSetPlanV2, ProjectionResultSetPlanV2Error, QueryAccessKind,
     QueryAccessProgramV1, QueryAccessStep, QueryLiteral, QueryPredicate, QueryPredicateOperator,
     QueryPredicateValue, QueryRowLimit, ResultSetOutputShapeV1, ResultSetWindowBoundsV2,
-    ResultSetWindowV1, SymbolicCatalog, resolve_query_surface,
+    ResultSetWindowV1, SymbolicCatalog, resolve_query_surface, source_aggregate_semantic_identity,
 };
 use riffdb_riffql_syntax::{
     AggregateFunction, BinaryOperator, Cardinality, Direction, Document, Expression,
@@ -29,12 +29,12 @@ use riffdb_riffql_syntax::{
     Span, Spanned, TypeReference, UnaryOperator,
 };
 use riffdb_types::{
-    EXACT_TEXT_PROVIDER_STATE_SCHEMA_HASH_V1, EXACT_TEXT_PROVIDER_STATE_SCHEMA_HASH_V2,
-    EXACT_TEXT_PROVIDER_STATE_SCHEMA_HASH_V3, FieldId, MAX_EXACT_TEXT_NEEDLE_BYTES_V1,
-    MAX_EXACT_TEXT_ROWS_PER_PARTITION_V1, MAX_EXACT_TEXT_TERMS_PER_ROW_V1,
-    MAX_EXACT_TEXT_VALUE_BYTES_V1, ProjectionProviderCapabilitiesV1,
-    ProjectionProviderDescriptorV1, ProjectionProviderKindV1, ProjectionProviderPolicyModeV1,
-    ProjectionProviderPostureV1, ProjectionProviderStateIdentityV1,
+    AggregateResultSchemaV1, AggregateSemanticIdentityV1, EXACT_TEXT_PROVIDER_STATE_SCHEMA_HASH_V1,
+    EXACT_TEXT_PROVIDER_STATE_SCHEMA_HASH_V2, EXACT_TEXT_PROVIDER_STATE_SCHEMA_HASH_V3, FieldId,
+    MAX_EXACT_TEXT_NEEDLE_BYTES_V1, MAX_EXACT_TEXT_ROWS_PER_PARTITION_V1,
+    MAX_EXACT_TEXT_TERMS_PER_ROW_V1, MAX_EXACT_TEXT_VALUE_BYTES_V1,
+    ProjectionProviderCapabilitiesV1, ProjectionProviderDescriptorV1, ProjectionProviderKindV1,
+    ProjectionProviderPolicyModeV1, ProjectionProviderPostureV1, ProjectionProviderStateIdentityV1,
     ProjectionProviderStaticBoundsV1, QueryCostVectorV1,
 };
 
@@ -431,7 +431,8 @@ pub fn compile_exact_text_query_v1(
     if aggregate.source.value != binding.name.value
         || !aggregate.group_by.is_empty()
         || aggregate.measures.len() != 1
-        || aggregate.measures[0].function.value != AggregateFunction::ExactCount
+        || source_aggregate_semantic_identity(aggregate.measures[0].function.value)
+            != AggregateSemanticIdentityV1::ExactCount
         || aggregate.measures[0].field.is_some()
     {
         return Err(exact_text_diagnostic(
@@ -878,7 +879,9 @@ fn rewrite_exact_metadata(document: &mut Document, exact_field: &str, needle_par
     }
     for aggregate in &mut document.body.aggregates {
         for measure in &mut aggregate.measures {
-            if measure.function.value == AggregateFunction::ExactCount {
+            if source_aggregate_semantic_identity(measure.function.value)
+                == AggregateSemanticIdentityV1::ExactCount
+            {
                 measure.function.value = AggregateFunction::Count;
             }
         }
@@ -2292,11 +2295,15 @@ impl QueryCostAccumulator {
                 )?;
             }
             for measure in aggregate.measures() {
-                let value_bytes = match measure.function() {
-                    riffdb_query_ir::OperationalAggregateFunctionV1::Count => 10,
-                    riffdb_query_ir::OperationalAggregateFunctionV1::Sum => 48,
-                    riffdb_query_ir::OperationalAggregateFunctionV1::Min
-                    | riffdb_query_ir::OperationalAggregateFunctionV1::Max => {
+                let value_bytes = match measure
+                    .function()
+                    .semantic_identity()
+                    .descriptor()
+                    .result_schema()
+                {
+                    AggregateResultSchemaV1::U64 => 10,
+                    AggregateResultSchemaV1::ExactDecimalAtInputScale => 48,
+                    AggregateResultSchemaV1::OptionalInputScalar => {
                         aggregate_field_bytes(entity, measure.input_field().ok_or_else(internal)?)?
                     }
                 };

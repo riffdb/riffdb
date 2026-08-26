@@ -7,7 +7,8 @@ use std::fmt;
 use riffdb_contract_ir::{ValueType, ValueTypeTag};
 use riffdb_policy::{AuthorizedProjectedRowAdmissionV1, MAX_PROJECTED_POLICY_CANDIDATES_V1};
 use riffdb_types::{
-    CanonicalValue, EntityKey, EntityTypeId, EntityVersion, FieldId, encode_canonical_value,
+    AggregateInputClassV1, AggregateSemanticIdentityV1, CanonicalValue, EntityKey, EntityTypeId,
+    EntityVersion, FieldId, encode_canonical_value,
 };
 
 use crate::definition::RegisteredDefinition;
@@ -90,6 +91,19 @@ pub enum AggregateOp {
         /// Field to maximize.
         field: FieldId,
     },
+}
+
+impl AggregateOp {
+    /// Returns the shared semantic identity implemented by this provider arm.
+    #[must_use]
+    pub const fn semantic_identity(&self) -> AggregateSemanticIdentityV1 {
+        match self {
+            Self::Count => AggregateSemanticIdentityV1::Count,
+            Self::Sum { .. } => AggregateSemanticIdentityV1::Sum,
+            Self::Min { .. } => AggregateSemanticIdentityV1::Min,
+            Self::Max { .. } => AggregateSemanticIdentityV1::Max,
+        }
+    }
 }
 
 /// Optional group-by specification.
@@ -972,13 +986,14 @@ fn compute_aggregate<'a, I>(
 where
     I: Iterator<Item = &'a MergedRow>,
 {
-    match agg {
-        AggregateOp::Count => {
+    let semantic = agg.semantic_identity();
+    match semantic {
+        AggregateSemanticIdentityV1::Count => {
             let count = rows.count() as u64;
             Ok(AggregateValue::Count(count))
         }
-        AggregateOp::Sum { field } => {
-            let idx = projected_field_index(definition, *field)?;
+        AggregateSemanticIdentityV1::Sum => {
+            let idx = projected_field_index(definition, aggregate_input_field(agg)?)?;
             let mut sum: i128 = 0;
             for row in rows {
                 sum = sum
@@ -987,8 +1002,8 @@ where
             }
             Ok(AggregateValue::Sum(sum))
         }
-        AggregateOp::Min { field } => {
-            let idx = projected_field_index(definition, *field)?;
+        AggregateSemanticIdentityV1::Min => {
+            let idx = projected_field_index(definition, aggregate_input_field(agg)?)?;
             let mut min: Option<CanonicalValue> = None;
             for row in rows {
                 let value = &row.cells[idx];
@@ -1005,8 +1020,8 @@ where
             }
             Ok(AggregateValue::Scalar(min))
         }
-        AggregateOp::Max { field } => {
-            let idx = projected_field_index(definition, *field)?;
+        AggregateSemanticIdentityV1::Max => {
+            let idx = projected_field_index(definition, aggregate_input_field(agg)?)?;
             let mut max: Option<CanonicalValue> = None;
             for row in rows {
                 let value = &row.cells[idx];
@@ -1023,6 +1038,18 @@ where
             }
             Ok(AggregateValue::Scalar(max))
         }
+        AggregateSemanticIdentityV1::ExactCount => Err(QueryError::InvalidAggregate(
+            "unsupported aggregate semantic",
+        )),
+    }
+}
+
+fn aggregate_input_field(aggregate: &AggregateOp) -> Result<FieldId, QueryError> {
+    match aggregate {
+        AggregateOp::Sum { field } | AggregateOp::Min { field } | AggregateOp::Max { field } => {
+            Ok(*field)
+        }
+        AggregateOp::Count => Err(QueryError::InvalidAggregate("missing field")),
     }
 }
 
@@ -1182,10 +1209,11 @@ fn validate_aggregate_field(
     definition: &RegisteredDefinition,
     agg: &AggregateOp,
 ) -> Result<(), QueryError> {
-    match agg {
-        AggregateOp::Count => Ok(()),
-        AggregateOp::Sum { field } | AggregateOp::Min { field } | AggregateOp::Max { field } => {
-            projected_field_index(definition, *field).map(|_| ())
+    match agg.semantic_identity().descriptor().input_class() {
+        AggregateInputClassV1::NoField => Ok(()),
+        AggregateInputClassV1::ExactNumericField | AggregateInputClassV1::OrderedScalarField => {
+            let field = aggregate_input_field(agg)?;
+            projected_field_index(definition, field).map(|_| ())
         }
     }
 }

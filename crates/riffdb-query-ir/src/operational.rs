@@ -2,7 +2,11 @@
 
 use std::sync::Arc;
 
-use riffdb_types::{QueryCostVectorV1, QueryPlanHash, hash_query_plan};
+use riffdb_riffql_syntax::AggregateFunction;
+use riffdb_types::{
+    AggregateInputClassV1, AggregateSemanticIdentityV1, QueryCostVectorV1, QueryPlanHash,
+    hash_query_plan,
+};
 
 use crate::{
     AuthorizationEntityAccess, MAX_QUERY_ARTIFACT_BYTES, NamedTypeSchema, PageBound,
@@ -17,6 +21,20 @@ pub const MAX_OPERATIONAL_PRESENCE_PARAMETERS: usize = 8;
 /// Maximum compiler-enumerated access plans in one operational family.
 pub const MAX_OPERATIONAL_PLAN_MEMBERS: usize = 1 << MAX_OPERATIONAL_PRESENCE_PARAMETERS;
 
+/// Maps the unchanged source syntax arms to the shared semantic registry.
+#[must_use]
+pub const fn source_aggregate_semantic_identity(
+    function: AggregateFunction,
+) -> AggregateSemanticIdentityV1 {
+    match function {
+        AggregateFunction::Count => AggregateSemanticIdentityV1::Count,
+        AggregateFunction::ExactCount => AggregateSemanticIdentityV1::ExactCount,
+        AggregateFunction::Sum => AggregateSemanticIdentityV1::Sum,
+        AggregateFunction::Min => AggregateSemanticIdentityV1::Min,
+        AggregateFunction::Max => AggregateSemanticIdentityV1::Max,
+    }
+}
+
 /// Closed aggregate functions shared with the projected exact evaluator.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum OperationalAggregateFunctionV1 {
@@ -28,6 +46,26 @@ pub enum OperationalAggregateFunctionV1 {
     Min,
     /// Maximum contributed value, absent for an empty input.
     Max,
+}
+
+impl OperationalAggregateFunctionV1 {
+    /// Returns the shared semantic identity represented by this durable IR arm.
+    #[must_use]
+    pub const fn semantic_identity(self) -> AggregateSemanticIdentityV1 {
+        match self {
+            Self::Count => AggregateSemanticIdentityV1::Count,
+            Self::Sum => AggregateSemanticIdentityV1::Sum,
+            Self::Min => AggregateSemanticIdentityV1::Min,
+            Self::Max => AggregateSemanticIdentityV1::Max,
+        }
+    }
+
+    pub(crate) fn durable_tag(self) -> u8 {
+        self.semantic_identity()
+            .descriptor()
+            .operational_ir_tag()
+            .expect("every operational aggregate has its frozen v1 tag")
+    }
 }
 
 /// One resolved grouping field.
@@ -99,11 +137,10 @@ impl OperationalAggregateMeasureV1 {
         input_field: Option<String>,
         result_type: NamedTypeSchema,
     ) -> Option<Self> {
-        let input_is_valid = match function {
-            OperationalAggregateFunctionV1::Count => input_field.is_none(),
-            OperationalAggregateFunctionV1::Sum
-            | OperationalAggregateFunctionV1::Min
-            | OperationalAggregateFunctionV1::Max => {
+        let input_is_valid = match function.semantic_identity().descriptor().input_class() {
+            AggregateInputClassV1::NoField => input_field.is_none(),
+            AggregateInputClassV1::ExactNumericField
+            | AggregateInputClassV1::OrderedScalarField => {
                 input_field.as_ref().is_some_and(|field| !field.is_empty())
             }
         };
