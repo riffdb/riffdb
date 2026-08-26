@@ -876,6 +876,30 @@ work_packages:
       no caller-selected structure, approximation, provider, policy, precision, or fallback.
     scale: All row/group/distinct/state/scan/output and evidence dimensions are fixed and bounded;
       no database-wide memory, unbounded materialization, or duration-proportional state exists.
+  closure:
+    status: complete
+    completed_at: "2026-08-25"
+    requirements_satisfied: [OQ-044, OQ-045, OQ-046, OQ-047, OQ-048, OQ-049,
+      OQ-050, OQ-051, OQ-052, OQ-053, OQ-054, OQ-055]
+    evidence: The final closure corpus proves the merge identity, partition independence, and
+      canonical order of every registered exact partial state over empty, NoValue, duplicate,
+      one-row, and bounded multi-chunk inputs. Its architecture inventory binds those laws to the
+      existing randomized reference differential, ordinary executor, grouped columnar,
+      exact-provider, compaction, recovery, policy-before-contribution, generated-schema, and gRPC
+      evidence. The public handbook matrix identifies all eleven exact functions, empty and
+      NoValue results, refusal boundaries, provider subsets, epoch behavior, and deferred families.
+      Architecture negatives keep approximation, ordered-set and collection aggregates,
+      user-defined functions, floating-point state, per-row compatibility proof, callbacks,
+      framework branches, and speculative provider bridges absent. Full workspace, remote
+      four-language driver, topology, generated-artifact, requirement-coverage, policy, handbook,
+      formatting, and Clippy gates pass together. The package-first driver fixture generator now
+      selects its named CreateItem command rather than relying on role-command array position,
+      preserving exact generated identity evidence when unrelated commands are added.
+    known_limitations: Approximate statistics, ordered-set and collection aggregates, windows,
+      user-defined functions, provider bridges, and BM25 execution remain deliberately deferred.
+      Provider capability subsets remain exact; columnar supplies its bounded fold family,
+      indexed exact results supply exact_count, and vector providers supply neither.
+    follow_ups: []
   human_review_triggers: *id001
 - id: WP-678
   name: Aggregate collection-byte language, proof, and IR successors
