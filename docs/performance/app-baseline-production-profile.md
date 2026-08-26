@@ -91,6 +91,16 @@ holding.
   scenario negotiates it, so the columnar plane is untested at any scale.
 - **No attachments, SLA timers, reporting aggregations, saved views with deep
   pagination, bulk operations, or email ingestion.**
+- **Clean shutdown needs a much larger budget.** Graceful shutdown checkpoints
+  the published journal suffix, and at this size that measured about 21 seconds
+  against 16 ms for a second, already-checkpointed shutdown
+  (`riffdb-shutdown-stages-v1` puts nearly all of it in the final stage). The
+  harness budgeted 15 seconds, so it SIGKILLed the daemon mid-checkpoint, and
+  the next daemon then exited without a ready line because it was opening a
+  database left mid-write. Both are fixed here, but the operational point stands
+  on its own: a 4.7 GB database takes tens of seconds to close cleanly, and
+  nothing outside this profile measures that. Set
+  `RIFFDB_STOP_TIMEOUT_SECS` generously for larger datasets.
 - **Only the Rust harness seeds concurrently.** `examples/app-baseline/riffdb`
   seeds with `DEFAULT_SEED_CONCURRENCY: usize = 128`; the TypeScript harness
   seeds with a sequential `for`/`await` loop over one session, and Go and Python
@@ -108,6 +118,44 @@ holding.
   in agreement; a first run that seeds in two seconds instead of minutes is the
   only current symptom. This mirrors the duplication ADR-0148 addresses for the
   drivers and deserves the same treatment.
+
+## Open finding: the measured process cannot start at this size
+
+`--seed-only` completes cleanly at this tier: 1,112,350 commands in 192 s at
+5,794 ops/s, a clean 21 s shutdown, a valid report, exit 0. The full load path
+does not, and fails after the seed at `restart_for_measurement`:
+
+```text
+app-baseline failed: riffdbd process failed: server stdout closed before ready; stderr_tail=
+```
+
+The daemon's stdout closes without a ready line and stderr is empty, so the
+restarted process exits during startup. This is not the shutdown budget: it
+reproduces with `RIFFDB_STOP_TIMEOUT_SECS=1800`, and the seed-only path proves
+shutdown is clean. It is not `PROCESS_START_TIMEOUT` either; that would report a
+ready timeout rather than a closed stdout.
+
+The leading hypothesis is `MAX_STARTUP_EVIDENCE_INDEX_BYTES`, a 512 MiB bound in
+`crates/riffdb-storage-redb/src/startup.rs` on the startup validation evidence
+index. The seeded database is 4.7 GB, so the index this tier asks startup to
+build may exceed that bound, and the resulting failure is not reaching the
+harness's stderr tail. That is unconfirmed: confirming it needs a database that
+survives the run, and the harness removes its root on exit.
+
+To reproduce with a retained database, seed in the background, wait for
+`phase=done`, and copy the root before the harness exits:
+
+```bash
+RIFFDB_STOP_TIMEOUT_SECS=1800 ./examples/app-baseline/target/release/riffdb-app-baseline \
+  --production --skip-postgres --seed-only \
+  --database-root target/perf-db/keep --riffdbd-bin ./target/release/riffdbd &
+# once "phase=done" appears: cp -a target/perf-db/keep /somewhere-else
+# then start riffdbd against the copy directly and read its own output
+```
+
+Two things follow regardless of the cause. A silent exit is the wrong failure
+shape for a startup refusal, and whatever bound is being hit is a real
+operational ceiling that no profile smaller than this one can observe.
 
 ## What this does not change
 
