@@ -72,6 +72,13 @@ These limits are part of the POC release posture, not hidden roadmap promises.
   products, recursion, and runtime join optimization are unavailable. Recompile
   and redeploy a refused named query rather than emulating it in application
   code.
+- The WP-690 external receipt is intentionally a narrow source-compilation
+  acceptance for shared bytewise equality, membership, and order. It is not a
+  full external application or framework-conformance result. That consumer's
+  separate canonical-string range sources remain correctly refused because
+  length-prefixed canonical string order cannot prove lexical range semantics;
+  they require an accepted text-range profile or a redesigned named query, not
+  client filtering or comparator substitution.
 - Vector search's exact and declared approximate tiers are application-reachable
   through the same named RiffQL operation. The server chooses exact search at
   or below the contract's per-organization `ann_threshold` and first-party HNSW

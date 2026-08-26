@@ -1,0 +1,57 @@
+contract OperationalAccessCorpus version 1 {
+  enum Visibility { Public, Private }
+
+  entity CatalogLabel {
+    key (workspace_id: uuid, label_id: uuid)
+    field name: string<64>
+  }
+
+  entity CatalogItem {
+    key (workspace_id: uuid, item_id: uuid)
+    field code: string<64>
+    field kind: string<32>
+    field score: i64
+    field published_at: optional<timestamp>
+    field visibility: Visibility
+    field label_id: uuid
+    index by_code (workspace_id, code, item_id) text_key(code, binary_utf8_v1)
+    index by_kind (workspace_id, kind, item_id)
+    index by_kind_label (workspace_id, kind, label_id, item_id)
+    index by_score (workspace_id, score, item_id)
+    index by_published (workspace_id, published_at, item_id) presence(published_at)
+    reference label (workspace_id, label_id) -> CatalogLabel(workspace_id, label_id)
+  }
+
+  entity CatalogAssignment {
+    key (workspace_id: uuid, label_id: uuid)
+    field item_code: string<64>
+    index all_assignments (workspace_id, label_id)
+    reference label (workspace_id, label_id) -> CatalogLabel(workspace_id, label_id)
+  }
+
+  aggregate CatalogLabels {
+    root CatalogLabel
+    partition_by workspace_id
+    conflict_key (workspace_id, label_id)
+  }
+
+  aggregate CatalogItems {
+    root CatalogItem
+    partition_by workspace_id
+    conflict_key (workspace_id, item_id)
+  }
+
+  aggregate CatalogAssignments {
+    root CatalogAssignment
+    partition_by workspace_id
+    conflict_key (workspace_id, label_id)
+  }
+
+  row policy CatalogLabelAccess on CatalogLabel {
+    allow read when true
+  }
+
+  row policy CatalogItemAccess on CatalogItem {
+    allow read when visibility == Public
+  }
+}

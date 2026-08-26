@@ -133,6 +133,38 @@ result-set provider. Historical external ordinary range queries require
 recompilation so the compiler can prove their physical interval shape;
 unsupported scalar or multi-branch forms remain refused.
 
+## Extending ordinary access paths
+
+Ordinary access support is a closed compiler matrix, not a collection of
+backend conveniences. Adding an encoding, comparison profile, role, or role
+combination requires all of the following in one reviewed change:
+
+1. Freeze the logical equality/order meaning and the exact compatible
+   component roles.
+2. Prove one complete partition prefix, branching or interval component,
+   total-order suffix, unique tie-breaker, authority set, and static bounds.
+3. Lower typed values once per step and request into the shared immutable range
+   schedule; never validate profiles or construct ranges per row.
+4. Pass the same forward/reverse, exact-end/plus-one, cursor, policy, fuel, and
+   cancellation matrix in memory and redb.
+5. Add a real-consumer amendment for any new relationship shape and separately
+   bound driver rows, fan-out, intermediates, probes, bytes, output, missing
+   behavior, policy, and identity.
+
+The neutral application at
+`fixtures/riffql/operational-access-corpus-v1` freezes equality, canonical and
+binary-text membership, prefix, typed interval and complement, nullable state
+and order, forward/reverse cursor, row-policy authority, and dependent complete-
+key shapes. Its exact lock and Rust, Go, TypeScript, Python, and MCP artifacts
+are checked by `scripts/generate-operational-access-corpus --check`.
+
+`fixtures/riffql/operational-query-capability-v4.json` binds that corpus, the
+unchanged V3 capability receipt, and a value-free external tuple-consumer
+source-compilation receipt. The external receipt proves only the named access
+shapes it lists. It deliberately does not copy an external contract, schema,
+route, adapter, generated profile, or stored value into RiffDB, and it does not
+claim full framework conformance.
+
 ## Feature preflight
 
 The authorized application catalog returns the closed
