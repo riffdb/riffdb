@@ -119,83 +119,90 @@ holding.
   only current symptom. This mirrors the duplication ADR-0148 addresses for the
   drivers and deserves the same treatment.
 
-## Confirmed defect: startup indexes every command ever executed
+## Confirmed defect: startup materialises one evidence entry per live row
 
 `--seed-only` completes cleanly at this tier: 1,112,350 commands in 192 s at
 5,794 ops/s, a clean 21 s shutdown, exit 0. The measured process then cannot
-start against the seeded database, and the harness reports:
-
-```text
-app-baseline failed: riffdbd process failed: server stdout closed before ready
-```
+start against the seeded database.
 
 ### Root cause
 
-Startup builds a historical evidence plan and refuses when its in-memory index
-exceeds `MAX_STARTUP_EVIDENCE_INDEX_BYTES`, 512 MiB, in
-`crates/riffdb-storage-redb/src/startup.rs`. Tracing each collector that feeds
-`build_historical_evidence_plan`:
+Startup builds a *paginated* historical evidence plan, but it materialises the
+whole ordered locator list up front and refuses when that index exceeds
+`MAX_STARTUP_EVIDENCE_INDEX_BYTES`, 512 MiB. Distinct entries and charged bytes
+per collector, measured:
 
 ```text
-plan after bundles:          rows=1
-plan after migration_edges:  rows=1
-plan after plans:            rows=1112351     <- one locator per command, ever
-plan after active_catalog:   rows=1112352
+after bundle_locators:                  distinct=1   bytes=85
+after contract_migration_edge_locators: distinct=1   bytes=85
+after plan_locators:                    distinct=9   bytes=1565
+after active_catalog_locator:           distinct=10  bytes=1629
+                                        (never reaches the next line)
 LIMIT site=evidence_plan index=536871037
 ```
 
-`collect_plan_locators` inserts **one locator per historical command**. Startup
-memory and time therefore grow linearly with every command the database has
-ever executed, and past roughly a million lifetime commands the index crosses
-512 MiB and the database will not open. For a help desk at this profile's rate
-that is days to weeks of operation.
+The catalog-shaped collectors are trivial: **ten entries, 1,629 bytes**. The
+budget is consumed entirely inside `collect_persisted_key_locators`, which walks
+`ENTITIES` and `SECONDARY_INDEXES` and inserts one locator per row, retaining
+each row's key bytes. This profile holds roughly 1.1 million entities and a
+comparable number of index rows, at roughly 488 bytes charged per entry.
+
+So the ceiling scales with **live data size, not history length**: a RiffDB
+database holding more than roughly a million rows cannot be opened. Retention
+does not help, because these are current-state rows rather than history.
 
 The failure surfaces as `CatalogErrorKind::Storage`, because the plan is built
 under catalog resolution.
 
-### The validated-prefix checkpoint is NOT the problem
+### Two earlier characterisations in this document were wrong
 
-An earlier revision of this document blamed the ADR-0085 validated-prefix
-checkpoint, on evidence that turned out to be a measurement artefact: the
-database inspected had been copied mid-run, after the seed but before the
-post-seed checkpoint write, so its stale `commit_sequence = 0` was the expected
-state of that snapshot rather than a defect.
+Both are recorded because the corrections matter more than the guesses:
 
-Traced end to end on the real path, the checkpoint mechanism works exactly as
-designed:
+- The ADR-0085 validated-prefix checkpoint was blamed first, on evidence from a
+  database copied mid-run, after the seed but before the post-seed checkpoint
+  write, so its stale `commit_sequence = 0` was that snapshot's expected state.
+  Traced end to end the mechanism works: the suffix materialises at shutdown
+  (19,856 to 19,878 commit rows) and the next boot loads `seq=1112350`.
+  `ensure_command_cache` is bounded by it and stays inside budget.
+- `collect_plan_locators` was blamed second, on an insert-call counter that
+  counted 1,112,351 calls. The insert closure already deduplicates by order key
+  and charges nothing for a repeat, so those 1.1 million calls collapse to
+  **nine** distinct plans. Plan collection is not the problem.
 
-```text
-checkpoint IGNORED reason=Absent      <- first boot, empty database
-checkpoint OK seq=0                   <- correct for an empty predecessor
-barrier before: commits_rows=19856
-barrier after:  commits_rows=19878    <- suffix materialised at shutdown
-checkpoint OK seq=1112350             <- full head recorded and reloaded
-```
+### The fix
 
-`ensure_command_cache` is bounded by that checkpoint and does not blow its
-budget. `build_historical_evidence_plan` is a separate index that the checkpoint
-does not bound at all, which is why a working checkpoint does not save the boot.
+The order key is a typed tag plus natural key components, not a hash
+(`0x01` bundle, `0x02` plan reference, `0x03` active catalog, `0x04` persisted
+key), so evidence is grouped by kind and then ordered within kind. The plan is
+already consumed as a cursor: `next_index` walks it and each item is
+materialised on demand from the table.
 
-### The fix, for review
+The materialised list is therefore unnecessary for the high-cardinality kinds.
+Replace it with a lazy per-kind cursor: keep the handful of catalog-shaped
+entries materialised, and for persisted keys and index migrations iterate the
+source table in place, since the table's own order already agrees with the
+order key within a contract version. The bound then caps what it was meant to
+cap, and startup memory stops scaling with row count.
 
-Bound plan-locator collection by the validated-prefix checkpoint, exactly as
-`ensure_command_cache` already is: the checkpoint attests that the prefix was
-validated, so only the suffix needs locators. The pattern is established in the
-same file, and `build_historical_evidence_plan` already receives
-`StartupValidationInputs`.
+Four properties must be preserved and are the substance of the work rather than
+the mechanism:
 
-That is not applied here because it changes what startup trusts. Whether the
-checkpoint's attestation covers the historical *evidence* the plan proves --
-`InvalidHistoricalEvidence` names evidence that is "incomplete, reordered,
-repeated, or misbound" -- is an ADR-0085 semantics question. If it does, this is
-a small change to a known pattern. If it does not, bounding the collection would
-weaken corruption detection to make a boot succeed, which is the wrong trade.
+1. the exact evidence sequence, kind by kind, byte for byte;
+2. every rejection the collectors perform *while walking* -- for example
+   `collect_persisted_key_locators` refuses a row whose decoded target does not
+   match its physical key;
+3. the pagination cursor semantics, including `last_historical_key` and the
+   `ExactEnd` boundary; and
+4. the fail-closed behaviour on any decode or reciprocity failure.
 
-What is fixed here is the diagnostic. `kind=startup` alone named neither the
-subsystem nor the class; a startup refusal now names the closed `StorageErrorKind`,
-`StartupIntegrityFailure`, or `CatalogErrorKind` discriminant. Finding this
-defect took five instrumentation cycles, three of which existed only to learn
-which of those three it was.
+This is a scoped refactor of a fail-closed path, not a patch, and it needs a
+fixture-based test proving the evidence sequence is identical before and after.
+It is written up here rather than applied so it can be done with that test
+rather than under time pressure.
+
+What is fixed here is the diagnostic. A startup refusal now names the closed
+`StorageErrorKind`, `StartupIntegrityFailure`, or `CatalogErrorKind`
+discriminant instead of only `kind=startup`.
 
 ## What this does not change
 
