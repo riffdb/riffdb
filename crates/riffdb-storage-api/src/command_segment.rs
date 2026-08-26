@@ -257,9 +257,7 @@ impl StoredCommandCapsuleV2 {
                     transition.command_sequence() != base.commit_sequence()
                         || usize::try_from(transition.mutation_ordinal()).ok() != Some(ordinal)
                 })
-            || entity_transitions
-                .windows(2)
-                .any(|pair| pair[0].target() >= pair[1].target())
+            || !entity_transitions_have_strict_canonical_target_order(&entity_transitions)
         {
             return Err(StorageValueError::IdentityMismatch);
         }
@@ -363,6 +361,71 @@ impl StoredCommandCapsuleV2 {
     #[must_use]
     pub fn entity_transitions(&self) -> &[CommittedEntityTransitionV1] {
         &self.entity_transitions
+    }
+}
+
+fn entity_transitions_have_strict_canonical_target_order(
+    entity_transitions: &[CommittedEntityTransitionV1],
+) -> bool {
+    entity_transitions.windows(2).all(|pair| {
+        pair[0].target().canonical_target_key() < pair[1].target().canonical_target_key()
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use riffdb_types::{EntityKeyBuilder, EntityRecordHash, EntityTypeId, EntityVersion};
+
+    use super::*;
+    use crate::EntityTarget;
+
+    fn transition(
+        mutation_ordinal: u32,
+        first_component: &str,
+        second_component: &str,
+        hash_tag: u8,
+    ) -> CommittedEntityTransitionV1 {
+        let entity_type = EntityTypeId::new(7).expect("entity type");
+        let mut key = EntityKeyBuilder::new(entity_type);
+        key.push_str(first_component).expect("first key component");
+        key.push_str(second_component)
+            .expect("second key component");
+        let target = EntityTarget::new(entity_type, key.finish().expect("entity key"))
+            .expect("entity target");
+        CommittedEntityTransitionV1::new(
+            CommitSequence::new(1).expect("commit sequence"),
+            mutation_ordinal,
+            target,
+            EntityChainStateV1::NeverExisted,
+            0,
+            None,
+            EntityChainStateV1::Live {
+                version: EntityVersion::new(1).expect("entity version"),
+                value_hash: EntityRecordHash::from_bytes([hash_tag; 32]),
+            },
+        )
+        .expect("entity transition")
+    }
+
+    #[test]
+    fn capsule_transition_order_uses_the_canonical_storage_target_key() {
+        let shorter = transition(0, "z", "x", 1);
+        let longer = transition(1, "a", "length-divergent-value", 2);
+
+        assert!(longer.target() < shorter.target());
+        assert!(shorter.target().canonical_target_key() < longer.target().canonical_target_key());
+        assert!(entity_transitions_have_strict_canonical_target_order(&[
+            shorter.clone(),
+            longer.clone(),
+        ]));
+        assert!(!entity_transitions_have_strict_canonical_target_order(&[
+            longer,
+            shorter.clone(),
+        ]));
+        assert!(!entity_transitions_have_strict_canonical_target_order(&[
+            shorter.clone(),
+            shorter,
+        ]));
     }
 }
 
