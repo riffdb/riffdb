@@ -88,7 +88,8 @@ A Go library module can keep its executable in one dedicated package:
 riffdb dev --seed --run --go-runner-package cmd/server
 ```
 
-The default remains `.`. The option accepts only one canonical,
+For a detected Go repository, the default remains `.`; omitting the option does
+not classify a TypeScript, Rust, or Python repository as Go. The option accepts only one canonical,
 repository-relative directory inside the root module and requires that package
 to declare `package main`. Absolute paths, parent traversal, symlink escapes,
 nested modules, non-main packages, and flag-like executable selection fail

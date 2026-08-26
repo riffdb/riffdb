@@ -1106,6 +1106,22 @@ work_packages:
       database, role authority, transport, or application operation.
     scale: Validation visits one bounded path and Go package; process count, output, shutdown,
       driver connection, arguments, and diagnostics retain existing bounded runner limits.
+  closure:
+    status: complete
+    completed_at: "2026-08-26"
+    requirements_satisfied: [DX-004, DX-026, DX-029, DX-031, DX-041, NET-012,
+      DRV-002, DRV-003, DRV-004, DRV-011]
+    evidence: The public CLI retains whether --go-runner-package was explicitly supplied and
+      forwards the option only in that case. Omitted runner configuration remains language-neutral,
+      so the shared source and installed scripts detect package.json and preserve their npm build
+      then start path; detected Go repositories still default to the module-root package. CLI parser,
+      exact argument-vector, and external-process regressions prove omission versus explicit dot,
+      while the repository-confined Go validation, symbolic development orchestration, application
+      boundary, generated-reference, requirement, handbook, formatting, and workspace Clippy gates
+      pass without changing the script, protected driver-host boundary, or application identity.
+    known_limitations: The Go driver-host development path retains its documented Linux-only alpha
+      limitation. This package adds no production runner selection or caller-selected executable.
+    follow_ups: []
   human_review_triggers: *id001
 - id: WP-683
   name: Correlated command index-work planning and precise bound diagnostics

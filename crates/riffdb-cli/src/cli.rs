@@ -93,8 +93,8 @@ pub(crate) enum TopLevel {
         #[arg(long, conflicts_with_all = ["watch", "acceptance"])]
         run: bool,
         /// Repository-relative Go main-package directory used by `--run`.
-        #[arg(long, default_value = ".", value_name = "PATH", requires = "run")]
-        go_runner_package: OsString,
+        #[arg(long, value_name = "PATH", requires = "run")]
+        go_runner_package: Option<OsString>,
         #[arg(long)]
         seed: bool,
         #[arg(long, value_name = "DIRECTORY")]
@@ -1637,6 +1637,7 @@ mod tests {
             TopLevel::Dev {
                 run: true,
                 seed: true,
+                go_runner_package: None,
                 ..
             }
         ));
@@ -1651,7 +1652,7 @@ mod tests {
         assert!(matches!(
             nested_go.command,
             TopLevel::Dev { go_runner_package, .. }
-                if go_runner_package == "cmd/server"
+                if go_runner_package.as_deref() == Some(std::ffi::OsStr::new("cmd/server"))
         ));
         assert!(
             Cli::try_parse_from(["riffdb", "dev", "--go-runner-package", "cmd/server"]).is_err()
