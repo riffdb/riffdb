@@ -322,7 +322,7 @@ Options:
       --run
           Runs the repository's generated application against the local server
       --go-runner-package <PATH>
-          Repository-relative Go main-package directory used by `--run` [default: .]
+          Repository-relative Go main-package directory used by `--run`
       --output <human|json>
           [possible values: human, json]
       --max-attempts <1..10>

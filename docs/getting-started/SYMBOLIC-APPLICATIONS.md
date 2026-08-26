@@ -50,7 +50,10 @@ kernel authority.
 For a Go library module whose executable is a nested `main` package, select it
 explicitly with `--go-runner-package cmd/server`. The path is repository-confined
 and is validated before the local driver or credentials are created; the
-module-root default remains `.`.
+module-root default remains `.` after the runner detects a Go repository. When
+the option is omitted, the CLI forwards no Go-only configuration: the runner
+detects `package.json` applications and executes `npm run build` followed by
+`npm run start` as usual.
 
 Current application command and RiffQL plans retain the accepted grammar-v1
 global tenant requirement. `riffdb dev` therefore accepts only an explicitly
