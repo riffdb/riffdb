@@ -1,0 +1,812 @@
+{
+  "application_manifest_hash": "2db2a9c4440929d71cca5e8d6459e6147f97a5c33f3f39ae9ac97823563a2a23",
+  "commands": [],
+  "reactive_tools": [],
+  "schema": "riffdb-generated-application-operations/v2",
+  "tools": [
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "Execute the exact ItemsByCode named query from immutable module operational_access_corpus.",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "after": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "code": {
+            "type": "string"
+          },
+          "workspace_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "workspace_id",
+          "code"
+        ],
+        "type": "object"
+      },
+      "module_hash": "b1018ceabd9840a0eb71a05346f880b7278113c3c68bc35805a265c27222b1d1",
+      "name": "operational_access_corpus_items_by_code",
+      "operation_name": "ItemsByCode",
+      "result_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "items": {
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "item_id": {
+                      "type": "string"
+                    },
+                    "kind": {
+                      "type": "string"
+                    },
+                    "published_at": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "score": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "item_id",
+                    "code",
+                    "kind",
+                    "score",
+                    "published_at"
+                  ],
+                  "type": "object"
+                },
+                "maxItems": 16,
+                "type": "array"
+              },
+              "outcome": {
+                "const": "Found",
+                "type": "string"
+              }
+            },
+            "required": [
+              "outcome",
+              "items"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "title": "Run ItemsByCode"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "Execute the exact ItemsByCodePrefix named query from immutable module operational_access_corpus.",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "after": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "prefix": {
+            "type": "string"
+          },
+          "workspace_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "workspace_id",
+          "prefix"
+        ],
+        "type": "object"
+      },
+      "module_hash": "b1018ceabd9840a0eb71a05346f880b7278113c3c68bc35805a265c27222b1d1",
+      "name": "operational_access_corpus_items_by_code_prefix",
+      "operation_name": "ItemsByCodePrefix",
+      "result_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "items": {
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "item_id": {
+                      "type": "string"
+                    },
+                    "kind": {
+                      "type": "string"
+                    },
+                    "published_at": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "score": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "item_id",
+                    "code",
+                    "kind",
+                    "score",
+                    "published_at"
+                  ],
+                  "type": "object"
+                },
+                "maxItems": 16,
+                "type": "array"
+              },
+              "outcome": {
+                "const": "Found",
+                "type": "string"
+              }
+            },
+            "required": [
+              "outcome",
+              "items"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "title": "Run ItemsByCodePrefix"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "Execute the exact ItemsByCodes named query from immutable module operational_access_corpus.",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "after": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "codes": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 64,
+            "type": "array",
+            "uniqueItems": true
+          },
+          "workspace_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "workspace_id",
+          "codes"
+        ],
+        "type": "object"
+      },
+      "module_hash": "b1018ceabd9840a0eb71a05346f880b7278113c3c68bc35805a265c27222b1d1",
+      "name": "operational_access_corpus_items_by_codes",
+      "operation_name": "ItemsByCodes",
+      "result_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "items": {
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "item_id": {
+                      "type": "string"
+                    },
+                    "kind": {
+                      "type": "string"
+                    },
+                    "published_at": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "score": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "item_id",
+                    "code",
+                    "kind",
+                    "score",
+                    "published_at"
+                  ],
+                  "type": "object"
+                },
+                "maxItems": 16,
+                "type": "array"
+              },
+              "outcome": {
+                "const": "Found",
+                "type": "string"
+              }
+            },
+            "required": [
+              "outcome",
+              "items"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "title": "Run ItemsByCodes"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "Execute the exact ItemsByCodesReverse named query from immutable module operational_access_corpus.",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "after": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "codes": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 64,
+            "type": "array",
+            "uniqueItems": true
+          },
+          "workspace_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "workspace_id",
+          "codes"
+        ],
+        "type": "object"
+      },
+      "module_hash": "b1018ceabd9840a0eb71a05346f880b7278113c3c68bc35805a265c27222b1d1",
+      "name": "operational_access_corpus_items_by_codes_reverse",
+      "operation_name": "ItemsByCodesReverse",
+      "result_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "items": {
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "item_id": {
+                      "type": "string"
+                    },
+                    "kind": {
+                      "type": "string"
+                    },
+                    "published_at": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "score": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "item_id",
+                    "code",
+                    "kind",
+                    "score",
+                    "published_at"
+                  ],
+                  "type": "object"
+                },
+                "maxItems": 16,
+                "type": "array"
+              },
+              "outcome": {
+                "const": "Found",
+                "type": "string"
+              }
+            },
+            "required": [
+              "outcome",
+              "items"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "title": "Run ItemsByCodesReverse"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "Execute the exact ItemsByKinds named query from immutable module operational_access_corpus.",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "after": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "kinds": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 64,
+            "type": "array",
+            "uniqueItems": true
+          },
+          "workspace_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "workspace_id",
+          "kinds"
+        ],
+        "type": "object"
+      },
+      "module_hash": "b1018ceabd9840a0eb71a05346f880b7278113c3c68bc35805a265c27222b1d1",
+      "name": "operational_access_corpus_items_by_kinds",
+      "operation_name": "ItemsByKinds",
+      "result_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "items": {
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "item_id": {
+                      "type": "string"
+                    },
+                    "kind": {
+                      "type": "string"
+                    },
+                    "published_at": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "score": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "item_id",
+                    "code",
+                    "kind",
+                    "score",
+                    "published_at"
+                  ],
+                  "type": "object"
+                },
+                "maxItems": 16,
+                "type": "array"
+              },
+              "outcome": {
+                "const": "Found",
+                "type": "string"
+              }
+            },
+            "required": [
+              "outcome",
+              "items"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "title": "Run ItemsByKinds"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "Execute the exact ItemsInScoreWindow named query from immutable module operational_access_corpus.",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "after": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "maximum": {
+            "type": "string"
+          },
+          "minimum": {
+            "type": "string"
+          },
+          "workspace_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "workspace_id",
+          "minimum",
+          "maximum"
+        ],
+        "type": "object"
+      },
+      "module_hash": "b1018ceabd9840a0eb71a05346f880b7278113c3c68bc35805a265c27222b1d1",
+      "name": "operational_access_corpus_items_in_score_window",
+      "operation_name": "ItemsInScoreWindow",
+      "result_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "items": {
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "item_id": {
+                      "type": "string"
+                    },
+                    "kind": {
+                      "type": "string"
+                    },
+                    "published_at": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "score": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "item_id",
+                    "code",
+                    "kind",
+                    "score",
+                    "published_at"
+                  ],
+                  "type": "object"
+                },
+                "maxItems": 16,
+                "type": "array"
+              },
+              "outcome": {
+                "const": "Found",
+                "type": "string"
+              }
+            },
+            "required": [
+              "outcome",
+              "items"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "title": "Run ItemsInScoreWindow"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "Execute the exact ItemsOutsideScore named query from immutable module operational_access_corpus.",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "after": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "excluded": {
+            "type": "string"
+          },
+          "workspace_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "workspace_id",
+          "excluded"
+        ],
+        "type": "object"
+      },
+      "module_hash": "b1018ceabd9840a0eb71a05346f880b7278113c3c68bc35805a265c27222b1d1",
+      "name": "operational_access_corpus_items_outside_score",
+      "operation_name": "ItemsOutsideScore",
+      "result_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "items": {
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "item_id": {
+                      "type": "string"
+                    },
+                    "kind": {
+                      "type": "string"
+                    },
+                    "published_at": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "score": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "item_id",
+                    "code",
+                    "kind",
+                    "score",
+                    "published_at"
+                  ],
+                  "type": "object"
+                },
+                "maxItems": 16,
+                "type": "array"
+              },
+              "outcome": {
+                "const": "Found",
+                "type": "string"
+              }
+            },
+            "required": [
+              "outcome",
+              "items"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "title": "Run ItemsOutsideScore"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "Execute the exact ItemsWithLabels named query from immutable module operational_access_corpus.",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "workspace_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "workspace_id"
+        ],
+        "type": "object"
+      },
+      "module_hash": "b1018ceabd9840a0eb71a05346f880b7278113c3c68bc35805a265c27222b1d1",
+      "name": "operational_access_corpus_items_with_labels",
+      "operation_name": "ItemsWithLabels",
+      "result_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "items": {
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "item_code": {
+                      "type": "string"
+                    },
+                    "label_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "label_id",
+                    "item_code"
+                  ],
+                  "type": "object"
+                },
+                "maxItems": 16,
+                "type": "array"
+              },
+              "labels": {
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "label_id": {
+                      "type": "string"
+                    },
+                    "name": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "label_id",
+                    "name"
+                  ],
+                  "type": "object"
+                },
+                "maxItems": 16,
+                "type": "array"
+              },
+              "outcome": {
+                "const": "Found",
+                "type": "string"
+              }
+            },
+            "required": [
+              "outcome",
+              "items",
+              "labels"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "IntegrityFailure",
+                "type": "string"
+              }
+            },
+            "required": [
+              "outcome"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "title": "Run ItemsWithLabels"
+    }
+  ]
+}

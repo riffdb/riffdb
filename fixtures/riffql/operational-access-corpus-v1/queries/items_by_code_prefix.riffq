@@ -1,0 +1,12 @@
+query ItemsByCodePrefix(
+    $workspace_id: CatalogItem.workspace_id,
+    $prefix: CatalogItem.code,
+    $after: Cursor?,
+) {
+    many items from CatalogItem
+        where workspace_id == $workspace_id && code prefix $prefix
+        order by code asc, item_id asc
+        take 16 after $after
+    return Found { items: items { item_id code kind score published_at } }
+    outcomes Found
+}

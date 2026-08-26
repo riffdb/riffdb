@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(git rev-parse --show-toplevel)"
+corpus="$repo_root/fixtures/riffql/operational-access-corpus-v1"
+mode="--write"
+if [[ "${1:-}" == "--check" ]]; then
+    mode="--check"
+fi
+
+cd "$corpus"
+cargo_bin="${CARGO:-cargo}"
+if [[ -x "${HOME}/.cargo/bin/cargo" ]]; then
+    cargo_bin="${CARGO:-${HOME}/.cargo/bin/cargo}"
+fi
+"$cargo_bin" +1.97.0 run --quiet \
+    --manifest-path "$repo_root/Cargo.toml" \
+    -p riffdb-cli -- application lock "$mode"

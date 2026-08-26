@@ -1,0 +1,12 @@
+query ItemsOutsideScore(
+    $workspace_id: CatalogItem.workspace_id,
+    $excluded: CatalogItem.score,
+    $after: Cursor?,
+) {
+    many items from CatalogItem
+        where workspace_id == $workspace_id && score != $excluded
+        order by score desc, item_id desc
+        take 16 after $after
+    return Found { items: items { item_id code kind score published_at } }
+    outcomes Found
+}

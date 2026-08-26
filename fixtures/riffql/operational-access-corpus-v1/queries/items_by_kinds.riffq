@@ -1,0 +1,12 @@
+query ItemsByKinds(
+    $workspace_id: CatalogItem.workspace_id,
+    $kinds: Set<CatalogItem.kind>,
+    $after: Cursor?,
+) {
+    many items from CatalogItem
+        where workspace_id == $workspace_id && kind in $kinds
+        order by kind asc, item_id asc
+        take 16 after $after
+    return Found { items: items { item_id code kind score published_at } }
+    outcomes Found
+}
