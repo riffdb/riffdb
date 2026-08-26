@@ -1,0 +1,29 @@
+
+contract InitializedStateTransitionShape version 1 {
+  entity State {
+    key (organization_id: uuid, state_id: uuid)
+    field active: bool
+    field revision: u64
+    field payload: bytes<64>
+  }
+  aggregate States {
+    root State
+    partition_by organization_id
+    conflict_key (organization_id, state_id)
+  }
+  command PutState {
+    input request_id: uuid
+    input organization_id: uuid
+    input state_id: uuid
+    input payload: bytes<64>
+    idempotency_key request_id
+    init_or_mutate State(organization_id, state_id) as state initialize {
+      active: false,
+      revision: 0,
+    }
+    set state.active = true
+    set state.payload = payload
+    set state.revision = state.revision + 1
+    return Written { revision: state.revision }
+  }
+}

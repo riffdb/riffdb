@@ -718,18 +718,23 @@ fn compile_application_role_inner(
             .ok_or_else(|| ApplicationRoleError::new(ApplicationRoleErrorKind::UnknownOperation))?;
         let mut requires_row_policy = false;
         for binding in command.bindings() {
-            let operation = match binding.mode() {
-                BindingMode::Read => RowPolicyOperationV1::Read,
-                BindingMode::Mutate => RowPolicyOperationV1::Update,
-                BindingMode::Create => RowPolicyOperationV1::Create,
-                BindingMode::Delete => RowPolicyOperationV1::Delete,
+            let operations: &[RowPolicyOperationV1] = match binding.mode() {
+                BindingMode::Read => &[RowPolicyOperationV1::Read],
+                BindingMode::Mutate => &[RowPolicyOperationV1::Update],
+                BindingMode::Create => &[RowPolicyOperationV1::Create],
+                BindingMode::InitOrMutate => {
+                    &[RowPolicyOperationV1::Create, RowPolicyOperationV1::Update]
+                }
+                BindingMode::Delete => &[RowPolicyOperationV1::Delete],
             };
-            require_policy_operation(
-                contract,
-                &selected_policies,
-                binding.entity_type(),
-                operation,
-            )?;
+            for operation in operations {
+                require_policy_operation(
+                    contract,
+                    &selected_policies,
+                    binding.entity_type(),
+                    *operation,
+                )?;
+            }
             requires_row_policy |= contract
                 .row_policies()
                 .policies()

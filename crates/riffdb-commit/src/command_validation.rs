@@ -1316,7 +1316,9 @@ fn validate_evaluated_output(
     if evaluated.mutations().is_empty() {
         let declared_rejection = outcome.outcome_id() != plan.success_outcome()
             && (plan.bindings().iter().any(|binding| {
-                binding.failure().outcome_id() == outcome.outcome_id()
+                binding
+                    .failure()
+                    .is_some_and(|failure| failure.outcome_id() == outcome.outcome_id())
                     || binding
                         .restriction_failure()
                         .is_some_and(|failure| failure.outcome_id() == outcome.outcome_id())
@@ -1619,6 +1621,18 @@ fn prove_mutation_coverage(
         match (binding.mode(), mutation, observation) {
             (BindingMode::Create, EntityMutation::Create(_), EntityObservation::Absent(_)) => {}
             (
+                BindingMode::InitOrMutate,
+                EntityMutation::Create(_),
+                EntityObservation::Absent(_),
+            ) => {}
+            (
+                BindingMode::InitOrMutate,
+                EntityMutation::Replace {
+                    expected_version, ..
+                },
+                EntityObservation::Present(record),
+            ) if *expected_version == record.entity_version() => {}
+            (
                 BindingMode::Mutate,
                 EntityMutation::Replace {
                     expected_version, ..
@@ -1633,7 +1647,14 @@ fn prove_mutation_coverage(
                 EntityObservation::Present(record),
             ) if *expected_version == record.entity_version() => {}
             (BindingMode::Read, _, _)
-            | (BindingMode::Create | BindingMode::Mutate | BindingMode::Delete, _, _) => {
+            | (
+                BindingMode::Create
+                | BindingMode::Mutate
+                | BindingMode::InitOrMutate
+                | BindingMode::Delete,
+                _,
+                _,
+            ) => {
                 return Err(CommandValidationError::integrity());
             }
         }
@@ -1865,7 +1886,10 @@ fn assemble_transaction_current_values(
                 }
                 EntityObservation::Absent(_) => return Err(CommandValidationError::integrity()),
             },
-            BindingMode::Mutate | BindingMode::Create | BindingMode::Delete => {
+            BindingMode::Mutate
+            | BindingMode::Create
+            | BindingMode::InitOrMutate
+            | BindingMode::Delete => {
                 let mutation_index = coverage
                     .get(slot)
                     .copied()
@@ -2074,7 +2098,9 @@ fn validate_post_image_and_project(
         .collect::<Vec<_>>();
     match (mode, current) {
         (BindingMode::Create, EntityObservation::Absent(_)) if post_unknown.is_empty() => {}
-        (BindingMode::Mutate, EntityObservation::Present(record)) => {
+        (BindingMode::InitOrMutate, EntityObservation::Absent(_)) if post_unknown.is_empty() => {}
+        (BindingMode::InitOrMutate, EntityObservation::Present(record))
+        | (BindingMode::Mutate, EntityObservation::Present(record)) => {
             materialize_current_entity_record(schema, entity, target, record, plan)?;
             let current_unknown = record
                 .fields()
@@ -2093,7 +2119,11 @@ fn validate_post_image_and_project(
             }
         }
         (
-            BindingMode::Read | BindingMode::Create | BindingMode::Mutate | BindingMode::Delete,
+            BindingMode::Read
+            | BindingMode::Create
+            | BindingMode::Mutate
+            | BindingMode::InitOrMutate
+            | BindingMode::Delete,
             _,
         ) => {
             return Err(CommandValidationError::integrity());

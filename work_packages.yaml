@@ -1007,7 +1007,7 @@ work_packages:
   acceptance_commands:
   - cargo +1.97.0 test -p riffdb-runtime -p riffdb-commit -p riffdb-policy -p riffdb-service --all-features
   - cargo +1.97.0 test -p riffdb-storage-memory -p riffdb-storage-redb -p riffdb-testkit --all-features
-  - cargo +1.97.0 test -p riffdb-testkit --test command_semantics --all-features
+  - cargo +1.97.0 test -p riffdb-commit --test command_concurrency --all-features
   - cargo +1.97.0 test -p riffdb-testkit --test bulk_command_recovery --all-features
   - ./scripts/check-version-topology
   - ./scripts/check-generated

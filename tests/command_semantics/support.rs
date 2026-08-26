@@ -152,6 +152,21 @@ contract BulkRowsRecovery version 1 {
     }
     return Written {}
   }
+  bulk command InitRows {
+    input request_id: uuid
+    input rows: list<Row, 1..8>
+    idempotency_key request_id
+    for row in rows {
+      init_or_mutate Row(row.tenant_id, row.row_id) as stored initialize {
+        value: 0,
+      }
+      init_or_mutate Child(row.tenant_id, row.row_id, row.row_id)
+        as stored_child initialize {}
+      set stored.value = row.value
+      emit RowWritten { row_id: row.row_id, value: stored.value }
+    }
+    return Written {}
+  }
   bulk command DeleteRows {
     input request_id: uuid
     input tenant_id: uuid
@@ -472,6 +487,66 @@ impl BulkRowsDatabase {
     }
 
     #[allow(clippy::too_many_arguments)]
+    pub(crate) fn prepare_initialized_put(
+        &self,
+        ports: &RedbOperationalPorts,
+        row_ids: &[[u8; 16]],
+        input_request_seed: u8,
+        digest_seed: u8,
+        admission_request_seed: u8,
+    ) -> CommandExecutionPreparation {
+        let plan = self.command_plan("InitRows");
+        let row_schema = self
+            .checked_bundle
+            .bundle()
+            .schema()
+            .entity(self.row_entity_type)
+            .expect("Row schema")
+            .record();
+        let rows = row_ids
+            .iter()
+            .enumerate()
+            .map(|(ordinal, row_id)| {
+                CanonicalValue::Record(input_record(
+                    row_schema,
+                    [
+                        ("tenant_id", CanonicalValue::Uuid(ORGANIZATION_ID)),
+                        ("row_id", CanonicalValue::Uuid(*row_id)),
+                        (
+                            "value",
+                            CanonicalValue::I64(
+                                i64::try_from(ordinal + 1).expect("bounded row ordinal"),
+                            ),
+                        ),
+                    ],
+                ))
+            })
+            .collect::<Vec<_>>();
+        let input = input_record(
+            plan.input().record(),
+            [
+                (
+                    "request_id",
+                    CanonicalValue::Uuid(uuid_bytes(input_request_seed)),
+                ),
+                (
+                    "rows",
+                    CanonicalValue::List(CanonicalList::new(rows).expect("bounded row list")),
+                ),
+            ],
+        );
+        let caller_key = canonical_uuid_text(input_request_seed);
+        self.prepare_command(
+            ports,
+            plan,
+            input,
+            &caller_key,
+            digest_seed,
+            admission_request_seed,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn prepare_delete(
         &self,
         ports: &RedbOperationalPorts,
@@ -695,6 +770,26 @@ impl BulkRowsDatabase {
                 expected,
                 "each cascade child must share its root's atomic visibility state"
             );
+        }
+    }
+
+    pub(crate) fn assert_row_versions(
+        &self,
+        ports: &RedbOperationalPorts,
+        row_ids: &[[u8; 16]],
+        expected: EntityVersion,
+    ) {
+        for row_id in row_ids {
+            let row = ports
+                .read_entity(&self.row_target(*row_id))
+                .expect("read initialized row")
+                .expect("initialized row exists");
+            let child = ports
+                .read_entity(&self.child_target(*row_id, *row_id))
+                .expect("read initialized child")
+                .expect("initialized child exists");
+            assert_eq!(row.entity_version(), expected);
+            assert_eq!(child.entity_version(), expected);
         }
     }
 

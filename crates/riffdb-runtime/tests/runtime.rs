@@ -7,7 +7,7 @@ use riffdb_contract_ir::{CommandPlan, ContractBundle, RecordSchema};
 use riffdb_invariant::{ExpressionValueSource, derive_input_command_facts, evaluate_expression};
 use riffdb_runtime::{ExecutionFault, ExecutionResult, TransactionContext, execute_command};
 use riffdb_storage_api::{
-    DurableKeySchemaBindingV1, EntityObservation, EntityTarget, EvaluationBudget,
+    DurableKeySchemaBindingV1, EntityMutation, EntityObservation, EntityTarget, EvaluationBudget,
     ExecutablePlanRef, IndexRangeEntry, IndexRangeObservation, IndexRangePrefixBuilder,
     IndexRangeTarget, ReadDependency, ReadSnapshot, SnapshotRequest, StoredEntityRecordV1,
 };
@@ -29,6 +29,52 @@ const AGGREGATE_COLLECTION_BUDGET_SOURCE: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../fixtures/compiler/aggregate-collection-budget/contract.riff"
 ));
+const INITIALIZED_STATE_SOURCE: &str = r#"
+contract InitializedStateRuntime version 1 {
+  entity State {
+    key (organization_id: uuid, state_id: uuid)
+    field active: bool
+    field revision: u64
+    field payload: bytes<64>
+  }
+  aggregate States {
+    root State
+    partition_by organization_id
+    conflict_key (organization_id, state_id)
+  }
+  command PutState {
+    input request_id: uuid
+    input organization_id: uuid
+    input state_id: uuid
+    input payload: bytes<64>
+    idempotency_key request_id
+    init_or_mutate State(organization_id, state_id) as state initialize {
+      active: false,
+      revision: 0,
+    }
+    set state.active = true
+    set state.payload = payload
+    set state.revision = state.revision + 1
+    return Written { revision: state.revision }
+  }
+  bulk command PutStates {
+    input request_id: uuid
+    input states: list<State, 1..100>
+    idempotency_key request_id
+    for state_input in states {
+      init_or_mutate State(state_input.organization_id, state_input.state_id)
+        as state initialize {
+          active: false,
+          revision: 0,
+        }
+      set state.active = true
+      set state.payload = state_input.payload
+      set state.revision = state.revision + 1
+    }
+    return Written { revision: 0 }
+  }
+}
+"#;
 const BULK_DELETE_SOURCE: &str = r#"
 contract BulkDeleteRuntime version 1 {
   entity Row {
@@ -3506,6 +3552,311 @@ fn prepared_locality_arithmetic_failure_is_integrity_not_business_arithmetic() {
     assert_eq!(
         execute_command(&bundle, &input, &snapshot, &context, EvaluationBudget::v1()),
         Err(ExecutionFault::Integrity)
+    );
+}
+
+#[test]
+fn initialized_state_absence_emits_exactly_one_create() {
+    let (bundle, input) = initialized_state_fixture();
+    let plan = command(&bundle, "PutState");
+    let target = derive_binding_target(plan, &input, 0);
+    let read_snapshot = snapshot(
+        plan_ref(&bundle, plan),
+        vec![EntityObservation::Absent(target.clone())],
+    );
+    let transaction = context(
+        &bundle,
+        plan,
+        &input,
+        LogicalTime::new(Timestamp::new(100, 0).expect("time")),
+    );
+    let ExecutionResult::CommitRequired(evaluated) = execute_command(
+        &bundle,
+        &input,
+        &read_snapshot,
+        &transaction,
+        EvaluationBudget::v1(),
+    )
+    .expect("absent initialized mutation evaluates") else {
+        panic!("initialized mutation requires commit");
+    };
+    assert_eq!(evaluated.mutations().len(), 1);
+    let EntityMutation::Create(image) = &evaluated.mutations()[0] else {
+        panic!("absent observation must select create");
+    };
+    assert_eq!(image.target(), &target);
+    assert_initialized_state(&bundle, image.fields(), 1);
+}
+
+#[test]
+fn initialized_state_presence_emits_revision_checked_replace() {
+    let (bundle, input) = initialized_state_fixture();
+    let plan = command(&bundle, "PutState");
+    let target = derive_binding_target(plan, &input, 0);
+    let entity = bundle
+        .schema()
+        .entity(target.entity_type_id())
+        .expect("state entity");
+    let stored = stored_record_with_version(
+        &bundle,
+        plan,
+        target.clone(),
+        EntityVersion::new(7).expect("version seven"),
+        input_record(
+            entity.record(),
+            [
+                ("organization_id", CanonicalValue::Uuid([0x31; 16])),
+                ("state_id", CanonicalValue::Uuid([0x32; 16])),
+                ("active", CanonicalValue::Bool(false)),
+                ("revision", CanonicalValue::U64(7)),
+                (
+                    "payload",
+                    CanonicalValue::Bytes(CanonicalBytes::new(vec![0x01]).expect("stored payload")),
+                ),
+            ],
+        ),
+    );
+    let read_snapshot = snapshot(
+        plan_ref(&bundle, plan),
+        vec![EntityObservation::Present(stored)],
+    );
+    let transaction = context(
+        &bundle,
+        plan,
+        &input,
+        LogicalTime::new(Timestamp::new(101, 0).expect("time")),
+    );
+    let ExecutionResult::CommitRequired(evaluated) = execute_command(
+        &bundle,
+        &input,
+        &read_snapshot,
+        &transaction,
+        EvaluationBudget::v1(),
+    )
+    .expect("present initialized mutation evaluates") else {
+        panic!("initialized mutation requires commit");
+    };
+    assert_eq!(evaluated.mutations().len(), 1);
+    let EntityMutation::Replace {
+        expected_version,
+        post_image,
+    } = &evaluated.mutations()[0]
+    else {
+        panic!("present observation must select replace");
+    };
+    assert_eq!(
+        *expected_version,
+        EntityVersion::new(7).expect("version seven")
+    );
+    assert_eq!(post_image.target(), &target);
+    assert_initialized_state(&bundle, post_image.fields(), 8);
+}
+
+#[test]
+fn initialized_state_bulk_selects_one_mutation_for_absent_present_and_mixed_targets() {
+    #[derive(Clone, Copy)]
+    enum InitialState {
+        AllAbsent,
+        AllPresent,
+        Mixed,
+    }
+
+    for count in [1usize, 9, 19, 100] {
+        for initial_state in [
+            InitialState::AllAbsent,
+            InitialState::AllPresent,
+            InitialState::Mixed,
+        ] {
+            let bundle = compile_contract_source(INITIALIZED_STATE_SOURCE)
+                .expect("initialized-state contract compiles");
+            let plan = command(&bundle, "PutStates");
+            let entity = bundle.schema().entities().first().expect("state entity");
+            let states = (0..count)
+                .map(|position| {
+                    CanonicalValue::Record(input_record(
+                        entity.record(),
+                        [
+                            ("organization_id", CanonicalValue::Uuid([0x31; 16])),
+                            (
+                                "state_id",
+                                CanonicalValue::Uuid(
+                                    [u8::try_from(position + 1).expect("bounded position"); 16],
+                                ),
+                            ),
+                            ("active", CanonicalValue::Bool(false)),
+                            ("revision", CanonicalValue::U64(0)),
+                            (
+                                "payload",
+                                CanonicalValue::Bytes(
+                                    CanonicalBytes::new(vec![
+                                        u8::try_from(position).expect("bounded position"),
+                                    ])
+                                    .expect("payload"),
+                                ),
+                            ),
+                        ],
+                    ))
+                })
+                .collect();
+            let input = input_record(
+                plan.input().record(),
+                [
+                    ("request_id", CanonicalValue::Uuid([0x30; 16])),
+                    (
+                        "states",
+                        CanonicalValue::List(CanonicalList::new(states).expect("bounded states")),
+                    ),
+                ],
+            );
+            let facts = derive_input_command_facts(plan, input.clone()).expect("command facts");
+            let observations = facts
+                .binding_plan_indices()
+                .iter()
+                .zip(facts.binding_entity_keys())
+                .enumerate()
+                .map(|(position, (binding_index, key))| {
+                    let target = EntityTarget::new(
+                        plan.bindings()[*binding_index as usize].entity_type(),
+                        key.clone(),
+                    )
+                    .expect("binding target");
+                    let present = match initial_state {
+                        InitialState::AllAbsent => false,
+                        InitialState::AllPresent => true,
+                        InitialState::Mixed => position % 2 == 1,
+                    };
+                    if present {
+                        EntityObservation::Present(stored_record_with_version(
+                            &bundle,
+                            plan,
+                            target,
+                            EntityVersion::new(7).expect("version"),
+                            input_record(
+                                entity.record(),
+                                [
+                                    ("organization_id", CanonicalValue::Uuid([0x31; 16])),
+                                    (
+                                        "state_id",
+                                        CanonicalValue::Uuid(
+                                            [u8::try_from(position + 1).expect("bounded position");
+                                                16],
+                                        ),
+                                    ),
+                                    ("active", CanonicalValue::Bool(false)),
+                                    ("revision", CanonicalValue::U64(7)),
+                                    (
+                                        "payload",
+                                        CanonicalValue::Bytes(
+                                            CanonicalBytes::new(vec![0xff]).expect("old payload"),
+                                        ),
+                                    ),
+                                ],
+                            ),
+                        ))
+                    } else {
+                        EntityObservation::Absent(target)
+                    }
+                })
+                .collect::<Vec<_>>();
+            let read_snapshot = snapshot(plan_ref(&bundle, plan), observations.clone());
+            let transaction = TransactionContext::new(
+                RequestId::from_unix_milliseconds_and_random(1, [0x12; 10]).expect("request ID"),
+                AdmittedActorContext::new(
+                    ActorId::new("runtime-test").expect("actor"),
+                    ActorKind::Service,
+                    TenantScope::Global,
+                    None,
+                ),
+                plan_ref(&bundle, plan),
+                LogicalTime::new(Timestamp::new(102, 0).expect("time")),
+                facts.partition_key().clone(),
+            );
+            let ExecutionResult::CommitRequired(evaluated) = execute_command(
+                &bundle,
+                &input,
+                &read_snapshot,
+                &transaction,
+                EvaluationBudget::v1(),
+            )
+            .expect("bulk initialized mutation evaluates") else {
+                panic!("bulk initialized mutation requires commit");
+            };
+            assert_eq!(evaluated.mutations().len(), count);
+            for (position, (observation, mutation)) in
+                observations.iter().zip(evaluated.mutations()).enumerate()
+            {
+                match (observation, mutation) {
+                    (EntityObservation::Absent(_), EntityMutation::Create(image)) => {
+                        assert_eq!(
+                            field(image.fields(), entity_field(&bundle, "State", "revision")),
+                            &CanonicalValue::U64(1)
+                        );
+                    }
+                    (
+                        EntityObservation::Present(_),
+                        EntityMutation::Replace {
+                            expected_version,
+                            post_image,
+                        },
+                    ) => {
+                        assert_eq!(*expected_version, EntityVersion::new(7).expect("version"));
+                        assert_eq!(
+                            field(
+                                post_image.fields(),
+                                entity_field(&bundle, "State", "revision")
+                            ),
+                            &CanonicalValue::U64(8)
+                        );
+                    }
+                    _ => panic!("target {position} selected the wrong mutation alternative"),
+                }
+            }
+        }
+    }
+}
+
+fn initialized_state_fixture() -> (ContractBundle, CanonicalRecord) {
+    let bundle = compile_contract_source(INITIALIZED_STATE_SOURCE)
+        .expect("initialized-state contract compiles");
+    let plan = command(&bundle, "PutState");
+    let input = input_record(
+        plan.input().record(),
+        [
+            ("request_id", CanonicalValue::Uuid([0x30; 16])),
+            ("organization_id", CanonicalValue::Uuid([0x31; 16])),
+            ("state_id", CanonicalValue::Uuid([0x32; 16])),
+            (
+                "payload",
+                CanonicalValue::Bytes(CanonicalBytes::new(vec![0x99]).expect("payload")),
+            ),
+        ],
+    );
+    (bundle, input)
+}
+
+fn assert_initialized_state(bundle: &ContractBundle, fields: &CanonicalRecord, revision: u64) {
+    let entity = bundle.schema().entities().first().expect("state entity");
+    let field = |name: &str| {
+        let id = entity
+            .record()
+            .fields()
+            .iter()
+            .find(|field| field.name() == name)
+            .expect("declared field")
+            .id();
+        fields
+            .fields()
+            .binary_search_by_key(&id, |(candidate, _)| *candidate)
+            .ok()
+            .and_then(|index| fields.fields().get(index))
+            .map(|(_, value)| value)
+            .expect("post-image field")
+    };
+    assert_eq!(field("active"), &CanonicalValue::Bool(true));
+    assert_eq!(field("revision"), &CanonicalValue::U64(revision));
+    assert_eq!(
+        field("payload"),
+        &CanonicalValue::Bytes(CanonicalBytes::new(vec![0x99]).expect("payload"))
     );
 }
 

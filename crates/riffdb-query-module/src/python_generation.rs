@@ -4,7 +4,7 @@ use std::collections::BTreeSet;
 use std::fmt::{self, Write as _};
 
 use riffdb_contract_ir::{ContractBundle, RecordTypeRef, ValueType, ValueTypeTag};
-use riffdb_contract_syntax::ast::{Binding, Declaration, EntityItem, OutcomeExpression};
+use riffdb_contract_syntax::ast::{Declaration, EntityItem, OutcomeExpression};
 use riffdb_query_ir::{
     NamedTypeSchema, ReactiveModulePlanV1, ReactiveOperationPlanV1, ReactiveParameterV1,
 };
@@ -224,12 +224,7 @@ fn locate_contract_outcome<'a>(
     command
         .bindings
         .iter()
-        .map(|binding| match &binding.value {
-            Binding::Read(binding)
-            | Binding::Mutate(binding)
-            | Binding::Create(binding)
-            | Binding::Delete(binding) => &binding.failure.value,
-        })
+        .filter_map(|binding| binding.value.failure().map(|failure| &failure.value))
         .chain(
             command
                 .requirements
