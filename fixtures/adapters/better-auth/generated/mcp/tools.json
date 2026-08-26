@@ -572,6 +572,14 @@
             ],
             "type": "object"
           }
+        ],
+        "x-riffdb-secretOutputs": [
+          {
+            "entity": "Session",
+            "field": "session",
+            "outcome": "SessionRefreshed",
+            "sourceField": "token_digest"
+          }
         ]
       },
       "title": "Run RefreshSession"
@@ -704,6 +712,14 @@
               "outcome"
             ],
             "type": "object"
+          }
+        ],
+        "x-riffdb-secretOutputs": [
+          {
+            "entity": "Session",
+            "field": "session",
+            "outcome": "SessionRevoked",
+            "sourceField": "token_digest"
           }
         ]
       },

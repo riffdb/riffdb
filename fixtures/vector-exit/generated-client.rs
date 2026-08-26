@@ -165,7 +165,7 @@ impl CreateEmbeddedDocumentInput {
     pub fn embedding_model_version(&self) -> &str { &self.submitted_version }
 }
 
-#[allow(clippy::large_enum_variant)]
+#[allow(clippy::enum_variant_names, clippy::large_enum_variant)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CreateEmbeddedDocumentOutcome {
     Created {

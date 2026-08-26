@@ -690,7 +690,7 @@ pub struct AddOrderLineInput {
     pub idempotency_key: String,
 }
 
-#[allow(clippy::large_enum_variant)]
+#[allow(clippy::enum_variant_names, clippy::large_enum_variant)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum AddOrderLineOutcome {
     Created {
@@ -793,7 +793,7 @@ pub struct CreateCustomerInput {
     pub idempotency_key: String,
 }
 
-#[allow(clippy::large_enum_variant)]
+#[allow(clippy::enum_variant_names, clippy::large_enum_variant)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CreateCustomerOutcome {
     Created {
@@ -871,7 +871,7 @@ pub struct CreateInventoryInput {
     pub idempotency_key: String,
 }
 
-#[allow(clippy::large_enum_variant)]
+#[allow(clippy::enum_variant_names, clippy::large_enum_variant)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CreateInventoryOutcome {
     Created {
@@ -960,7 +960,7 @@ pub struct CreateOrderInput {
     pub idempotency_key: String,
 }
 
-#[allow(clippy::large_enum_variant)]
+#[allow(clippy::enum_variant_names, clippy::large_enum_variant)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CreateOrderOutcome {
     Created {
@@ -1040,7 +1040,7 @@ pub struct CreateProductInput {
     pub idempotency_key: String,
 }
 
-#[allow(clippy::large_enum_variant)]
+#[allow(clippy::enum_variant_names, clippy::large_enum_variant)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CreateProductOutcome {
     Created {
@@ -1119,7 +1119,7 @@ pub struct CreateStoreInput {
     pub idempotency_key: String,
 }
 
-#[allow(clippy::large_enum_variant)]
+#[allow(clippy::enum_variant_names, clippy::large_enum_variant)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CreateStoreOutcome {
     Created {
@@ -1186,7 +1186,7 @@ pub struct ReserveInventoryInput {
     pub idempotency_key: String,
 }
 
-#[allow(clippy::large_enum_variant)]
+#[allow(clippy::enum_variant_names, clippy::large_enum_variant)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ReserveInventoryOutcome {
     Reserved {

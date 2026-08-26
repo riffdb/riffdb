@@ -32,7 +32,7 @@
       "environment": "development",
       "tenant_scope": "global",
       "queries": ["ItemPage", "ItemSecret", "SearchItems"],
-      "commands": ["CreateItem"],
+      "commands": ["ConsumeToken", "CreateItem", "IssueToken"],
       "event_streams": [],
       "watch_queries": [],
       "agent_subscriptions": []

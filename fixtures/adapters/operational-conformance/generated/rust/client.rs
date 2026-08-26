@@ -1628,7 +1628,7 @@ pub struct ChangeInventoryRecordStateInput {
     pub organization_id: String,
 }
 
-#[allow(clippy::large_enum_variant)]
+#[allow(clippy::enum_variant_names, clippy::large_enum_variant)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ChangeInventoryRecordStateOutcome {
     InventoryRecordMissing,
@@ -1687,7 +1687,7 @@ pub struct CreateAuthSessionsInput {
     pub request_id: String,
 }
 
-#[allow(clippy::large_enum_variant)]
+#[allow(clippy::enum_variant_names, clippy::large_enum_variant)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CreateAuthSessionsOutcome {
     SessionsCreated,
@@ -1738,7 +1738,7 @@ pub struct CreateDirectoryUsersInput {
     pub request_id: String,
 }
 
-#[allow(clippy::large_enum_variant)]
+#[allow(clippy::enum_variant_names, clippy::large_enum_variant)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CreateDirectoryUsersOutcome {
     DirectoryUsersCreated,
@@ -1786,7 +1786,7 @@ pub struct CreateDocumentsInput {
     pub request_id: String,
 }
 
-#[allow(clippy::large_enum_variant)]
+#[allow(clippy::enum_variant_names, clippy::large_enum_variant)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CreateDocumentsOutcome {
     DocumentsCreated,
@@ -1836,7 +1836,7 @@ pub struct CreateInventoryRecordMissingInput {
     pub organization_id: String,
 }
 
-#[allow(clippy::large_enum_variant)]
+#[allow(clippy::enum_variant_names, clippy::large_enum_variant)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CreateInventoryRecordMissingOutcome {
     InventoryRecordAlreadyExists,
@@ -1885,7 +1885,7 @@ pub struct CreateInventoryRecordsInput {
     pub request_id: String,
 }
 
-#[allow(clippy::large_enum_variant)]
+#[allow(clippy::enum_variant_names, clippy::large_enum_variant)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CreateInventoryRecordsOutcome {
     InventoryRecordsCreated,
@@ -1933,7 +1933,7 @@ pub struct CreatePipelinesInput {
     pub request_id: String,
 }
 
-#[allow(clippy::large_enum_variant)]
+#[allow(clippy::enum_variant_names, clippy::large_enum_variant)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CreatePipelinesOutcome {
     PipelinesCreated,
@@ -1981,7 +1981,7 @@ pub struct LogMetricsInput {
     pub request_id: String,
 }
 
-#[allow(clippy::large_enum_variant)]
+#[allow(clippy::enum_variant_names, clippy::large_enum_variant)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum LogMetricsOutcome {
     MetricsLogged,
@@ -2029,7 +2029,7 @@ pub struct WriteTuplesInput {
     pub request_id: String,
 }
 
-#[allow(clippy::large_enum_variant)]
+#[allow(clippy::enum_variant_names, clippy::large_enum_variant)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum WriteTuplesOutcome {
     TuplesWritten,

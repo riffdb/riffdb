@@ -30,6 +30,7 @@ const ROW_IDS: [[u8; 16]; 4] = [[0x61; 16], [0x62; 16], [0x63; 16], [0x64; 16]];
 enum Operation {
     Put,
     Delete,
+    Consume,
 }
 
 impl Operation {
@@ -37,6 +38,7 @@ impl Operation {
         match self {
             Self::Put => "put",
             Self::Delete => "delete",
+            Self::Consume => "consume",
         }
     }
 
@@ -44,6 +46,7 @@ impl Operation {
         match self {
             Self::Put => 0xa1,
             Self::Delete => 0xa2,
+            Self::Consume => 0xa3,
         }
     }
 
@@ -51,6 +54,7 @@ impl Operation {
         match self {
             Self::Put => 0xb1,
             Self::Delete => 0xb2,
+            Self::Consume => 0xb3,
         }
     }
 }
@@ -90,7 +94,7 @@ impl CrashPhase {
 
 #[test]
 fn collection_create_and_delete_are_complete_or_absent_across_process_crash() {
-    for operation in [Operation::Delete, Operation::Put] {
+    for operation in [Operation::Delete, Operation::Put, Operation::Consume] {
         for phase in [CrashPhase::BeforeCommit, CrashPhase::AfterCommit] {
             run_crash_case(operation, phase);
         }
@@ -306,7 +310,7 @@ fn bulk_command_recovery_child() {
 fn run_crash_case(operation: Operation, phase: CrashPhase) {
     let label = format!("{}-{}", operation.label(), phase.label());
     let database = BulkRowsDatabase::create(&label);
-    if operation == Operation::Delete {
+    if matches!(operation, Operation::Delete | Operation::Consume) {
         let outcome = execute_healthy(&database, Operation::Put, 0x91, 0xe1, 0xf1, 0x81);
         let ports = database.open();
         database.assert_rows_present(&ports, &ROW_IDS, true);
@@ -339,8 +343,13 @@ fn run_crash_case(operation: Operation, phase: CrashPhase) {
     let expected_present = match operation {
         Operation::Put => durable_visibility,
         Operation::Delete => !durable_visibility,
+        Operation::Consume => true,
     };
-    database.assert_rows_present(&ports, &ROW_IDS, expected_present);
+    if operation == Operation::Consume {
+        database.assert_child_present(&ports, ROW_IDS[0], ROW_IDS[0], !durable_visibility);
+    } else {
+        database.assert_rows_present(&ports, &ROW_IDS, expected_present);
+    }
 
     let replay_preparation = preparation(&database, &ports, operation, 0xc2);
     let provenance = Arc::new(CountingProvenanceSource::new(0xd2));
@@ -376,11 +385,17 @@ fn run_crash_case(operation: Operation, phase: CrashPhase) {
         .expect("drain recovered collection coordinator");
 
     let ports = database.open();
-    database.assert_rows_present(&ports, &ROW_IDS, operation == Operation::Put);
-    database.assert_commit_graph(&ports, replay.stored_outcome(), ROW_IDS.len());
+    if operation == Operation::Consume {
+        database.assert_child_present(&ports, ROW_IDS[0], ROW_IDS[0], false);
+        database.assert_commit_graph(&ports, replay.stored_outcome(), 0);
+    } else {
+        database.assert_rows_present(&ports, &ROW_IDS, operation == Operation::Put);
+        database.assert_commit_graph(&ports, replay.stored_outcome(), ROW_IDS.len());
+    }
     let expected_sequence = match operation {
         Operation::Put => CommitSequence::first(),
         Operation::Delete => CommitSequence::new(2).expect("second sequence"),
+        Operation::Consume => CommitSequence::new(2).expect("second sequence"),
     };
     assert_eq!(replay.stored_outcome().commit_sequence(), expected_sequence);
 }
@@ -402,6 +417,14 @@ fn execute_healthy(
         Operation::Delete => {
             database.prepare_delete(&ports, &ROW_IDS, input_seed, digest_seed, admission_seed)
         }
+        Operation::Consume => database.prepare_consume_child(
+            &ports,
+            ROW_IDS[0],
+            ROW_IDS[0],
+            input_seed,
+            digest_seed,
+            admission_seed,
+        ),
     };
     let coordinator = start_coordinator(
         ports,
@@ -456,6 +479,14 @@ fn preparation(
             operation.digest_seed(),
             admission_seed,
         ),
+        Operation::Consume => database.prepare_consume_child(
+            ports,
+            ROW_IDS[0],
+            ROW_IDS[0],
+            operation.input_seed(),
+            operation.digest_seed(),
+            admission_seed,
+        ),
     }
 }
 
@@ -465,6 +496,8 @@ fn parse_mode(mode: &str) -> (Operation, CrashPhase) {
         "put-after" => (Operation::Put, CrashPhase::AfterCommit),
         "delete-before" => (Operation::Delete, CrashPhase::BeforeCommit),
         "delete-after" => (Operation::Delete, CrashPhase::AfterCommit),
+        "consume-before" => (Operation::Consume, CrashPhase::BeforeCommit),
+        "consume-after" => (Operation::Consume, CrashPhase::AfterCommit),
         _ => panic!("unknown bulk recovery child mode"),
     }
 }

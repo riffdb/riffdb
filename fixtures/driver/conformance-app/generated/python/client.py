@@ -22,8 +22,8 @@ def _compact_tag(value: object, tag: str, keys: frozenset[str]) -> dict[str, obj
 
 CONTRACT_LINEAGE: Final[str] = "DriverConformance"
 CONTRACT_VERSION: Final[int] = 1
-CONTRACT_BUNDLE_HASH: Final[str] = "3c62e62ed9ae163cb49ec2733b55c6c8c6ec13f18e700f2de218ee10c58e69ea"
-QUERY_MODULE_HASH: Final[str] = "617a781639cc99054763abfcaa3878194732bb6693136016652ef143f653c454"
+CONTRACT_BUNDLE_HASH: Final[str] = "2fcc01955fcad80a8b6ac5fc6149e95b96889d29182301eb416b8cd1fa70bb0a"
+QUERY_MODULE_HASH: Final[str] = "d5edf8b81ecca77cfe91a63f53c2a8f4d3f06835029b197194bfc99af9bbfd07"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class Item:
@@ -33,7 +33,16 @@ class Item:
     token_digest: str
     organization_id: UUID
 
-ITEM_PAGE_QUERY_PLAN_HASH: Final[str] = "d4816a9c447cb58923f690b2006dbc2758ed542694d5047f4c4e926b9d771ee5"
+@dataclass(frozen=True, slots=True, kw_only=True)
+class OneTimeToken:
+    value: str
+    token_id: UUID
+    issued_at: Timestamp
+    expires_at: Timestamp
+    identifier: str
+    organization_id: UUID
+
+ITEM_PAGE_QUERY_PLAN_HASH: Final[str] = "9c8e71698d90affe0c0a080ae0e0c935d51ad15a16178fe9cc7f191a008cb247"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ItemPageParams:
@@ -58,7 +67,7 @@ class ItemPageNotFound:
 
 ItemPageResult: TypeAlias = ItemPageFound | ItemPageNotFound
 
-ITEM_SECRET_QUERY_PLAN_HASH: Final[str] = "6927ccdbdb7a1b0c9a503a4a4c1930cd5b7eee16e7b505a92c086ebd94b02935"
+ITEM_SECRET_QUERY_PLAN_HASH: Final[str] = "09274963037e62e6ac2ece71b554cce04f70b00c41096fe771b1b1094e393aa9"
 ITEM_SECRET_SECRET_OUTPUTS: Final[tuple[tuple[str, str, str], ...]] = (
     ("ItemSecret", "Item", "token_digest"),
 )
@@ -84,7 +93,7 @@ class ItemSecretNotFound:
 
 ItemSecretResult: TypeAlias = ItemSecretFound | ItemSecretNotFound
 
-SEARCH_ITEMS_QUERY_PLAN_HASH: Final[str] = "d34a5799407213975e82b27e3391d823608317db7326a7fe8b898586e5ce2755"
+SEARCH_ITEMS_QUERY_PLAN_HASH: Final[str] = "c1cd3b841799feb49d22c23af8dd5784fb87b8fb7019b0a99d22ae391afb2097"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class SearchItemsParams:
@@ -113,6 +122,39 @@ class SearchItemsFound:
 
 SearchItemsResult: TypeAlias = SearchItemsFound
 
+CONSUME_TOKEN_SECRET_OUTPUTS: Final[tuple[tuple[str, str, str, str], ...]] = (
+    ("TokenConsumed", "value", "OneTimeToken", "value"),
+)
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ConsumeTokenInput:
+    token_id: UUID
+    request_id: UUID
+    organization_id: UUID
+
+CONSUME_TOKEN_PLAN_HASH: Final[str] = "da9bd3f011355d787c5939e270ee331aea5e20560887d9e3591fb62b0e7ebe8f"
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ConsumeTokenTokenExpired:
+    outcome: Literal["TokenExpired"] = field(default="TokenExpired", init=False)
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ConsumeTokenTokenMissing:
+    outcome: Literal["TokenMissing"] = field(default="TokenMissing", init=False)
+
+@dataclass(frozen=True, slots=True, kw_only=True, repr=False)
+class ConsumeTokenTokenConsumed:
+    value: str
+    token_id: UUID
+    issued_at: Timestamp
+    expires_at: Timestamp
+    identifier: str
+    outcome: Literal["TokenConsumed"] = field(default="TokenConsumed", init=False)
+
+    def __repr__(self) -> str:
+        return "ConsumeTokenTokenConsumed(<secret outputs redacted>)"
+
+ConsumeTokenOutcome: TypeAlias = ConsumeTokenTokenExpired | ConsumeTokenTokenMissing | ConsumeTokenTokenConsumed
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class CreateItemInput:
     title: str
@@ -132,6 +174,28 @@ class CreateItemItemExists:
     outcome: Literal["ItemExists"] = field(default="ItemExists", init=False)
 
 CreateItemOutcome: TypeAlias = CreateItemCreated | CreateItemItemExists
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class IssueTokenInput:
+    value: str
+    token_id: UUID
+    expires_at: Timestamp
+    identifier: str
+    request_id: UUID
+    organization_id: UUID
+
+ISSUE_TOKEN_PLAN_HASH: Final[str] = "dcb17bcfe14d85d58fc46e49c031b1bd3642c8f9beca51101c1e368fb05eba86"
+@dataclass(frozen=True, slots=True, kw_only=True)
+class IssueTokenTokenIssued:
+    token_id: UUID
+    issued_at: Timestamp
+    outcome: Literal["TokenIssued"] = field(default="TokenIssued", init=False)
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class IssueTokenTokenAlreadyExists:
+    outcome: Literal["TokenAlreadyExists"] = field(default="TokenAlreadyExists", init=False)
+
+IssueTokenOutcome: TypeAlias = IssueTokenTokenIssued | IssueTokenTokenAlreadyExists
 
 class DriverConformanceClient:
     def __init__(self, transport: SyncApplicationTransport, command_attempts: AttemptBudget) -> None:
@@ -176,6 +240,25 @@ class DriverConformanceClient:
         }
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
+    def consume_token(self, input: ConsumeTokenInput) -> TypedCommandResult[ConsumeTokenOutcome]:
+        raw = self._transport._execute_command(
+            contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
+            command_name="ConsumeToken", plan_hash=CONSUME_TOKEN_PLAN_HASH,
+            input=encode_record(input), attempts=self._command_attempts,
+        )
+        outcomes = {
+            "TokenExpired": ConsumeTokenTokenExpired,
+            "TokenMissing": ConsumeTokenTokenMissing,
+            "TokenConsumed": ConsumeTokenTokenConsumed,
+        }
+        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+
+    def consume_token_batch(
+        self, inputs: Sequence[ConsumeTokenInput], options: CommandBatchOptions,
+        progress: Callable[[CommandBatchProgress], None] | None = None,
+    ) -> CommandBatchResult[ConsumeTokenOutcome]:
+        return self._transport._command_batch(inputs, options, self.consume_token, progress)
+
     def create_item(self, input: CreateItemInput) -> TypedCommandResult[CreateItemOutcome]:
         raw = self._transport._execute_command(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
@@ -193,6 +276,24 @@ class DriverConformanceClient:
         progress: Callable[[CommandBatchProgress], None] | None = None,
     ) -> CommandBatchResult[CreateItemOutcome]:
         return self._transport._command_batch(inputs, options, self.create_item, progress)
+
+    def issue_token(self, input: IssueTokenInput) -> TypedCommandResult[IssueTokenOutcome]:
+        raw = self._transport._execute_command(
+            contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
+            command_name="IssueToken", plan_hash=ISSUE_TOKEN_PLAN_HASH,
+            input=encode_record(input), attempts=self._command_attempts,
+        )
+        outcomes = {
+            "TokenIssued": IssueTokenTokenIssued,
+            "TokenAlreadyExists": IssueTokenTokenAlreadyExists,
+        }
+        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+
+    def issue_token_batch(
+        self, inputs: Sequence[IssueTokenInput], options: CommandBatchOptions,
+        progress: Callable[[CommandBatchProgress], None] | None = None,
+    ) -> CommandBatchResult[IssueTokenOutcome]:
+        return self._transport._command_batch(inputs, options, self.issue_token, progress)
 
 class AsyncDriverConformanceClient:
     def __init__(self, transport: AsyncApplicationTransport, command_attempts: AttemptBudget) -> None:
@@ -237,6 +338,25 @@ class AsyncDriverConformanceClient:
         }
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
+    async def consume_token(self, input: ConsumeTokenInput) -> TypedCommandResult[ConsumeTokenOutcome]:
+        raw = await self._transport._execute_command(
+            contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
+            command_name="ConsumeToken", plan_hash=CONSUME_TOKEN_PLAN_HASH,
+            input=encode_record(input), attempts=self._command_attempts,
+        )
+        outcomes = {
+            "TokenExpired": ConsumeTokenTokenExpired,
+            "TokenMissing": ConsumeTokenTokenMissing,
+            "TokenConsumed": ConsumeTokenTokenConsumed,
+        }
+        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+
+    async def consume_token_batch(
+        self, inputs: Sequence[ConsumeTokenInput], options: CommandBatchOptions,
+        progress: Callable[[CommandBatchProgress], None] | None = None,
+    ) -> CommandBatchResult[ConsumeTokenOutcome]:
+        return await self._transport._command_batch(inputs, options, self.consume_token, progress)
+
     async def create_item(self, input: CreateItemInput) -> TypedCommandResult[CreateItemOutcome]:
         raw = await self._transport._execute_command(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
@@ -254,3 +374,21 @@ class AsyncDriverConformanceClient:
         progress: Callable[[CommandBatchProgress], None] | None = None,
     ) -> CommandBatchResult[CreateItemOutcome]:
         return await self._transport._command_batch(inputs, options, self.create_item, progress)
+
+    async def issue_token(self, input: IssueTokenInput) -> TypedCommandResult[IssueTokenOutcome]:
+        raw = await self._transport._execute_command(
+            contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
+            command_name="IssueToken", plan_hash=ISSUE_TOKEN_PLAN_HASH,
+            input=encode_record(input), attempts=self._command_attempts,
+        )
+        outcomes = {
+            "TokenIssued": IssueTokenTokenIssued,
+            "TokenAlreadyExists": IssueTokenTokenAlreadyExists,
+        }
+        return raw._map_outcome(lambda value: decode_variant(outcomes, value))
+
+    async def issue_token_batch(
+        self, inputs: Sequence[IssueTokenInput], options: CommandBatchOptions,
+        progress: Callable[[CommandBatchProgress], None] | None = None,
+    ) -> CommandBatchResult[IssueTokenOutcome]:
+        return await self._transport._command_batch(inputs, options, self.issue_token, progress)

@@ -172,7 +172,7 @@ pub struct ClaimRunInput {
     pub expected_revision: u64,
 }
 
-#[allow(clippy::large_enum_variant)]
+#[allow(clippy::enum_variant_names, clippy::large_enum_variant)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ClaimRunOutcome {
     ClaimStale,
@@ -254,7 +254,7 @@ pub struct CompleteRunInput {
     pub expected_revision: u64,
 }
 
-#[allow(clippy::large_enum_variant)]
+#[allow(clippy::enum_variant_names, clippy::large_enum_variant)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CompleteRunOutcome {
     FenceStale,
@@ -339,7 +339,7 @@ pub struct ReleaseRunInput {
     pub expected_revision: u64,
 }
 
-#[allow(clippy::large_enum_variant)]
+#[allow(clippy::enum_variant_names, clippy::large_enum_variant)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ReleaseRunOutcome {
     RunMissing,

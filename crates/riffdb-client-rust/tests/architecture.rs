@@ -81,7 +81,7 @@ fn reviewed_transport_and_entropy_graph_remains_exact() {
 
 #[test]
 fn python_adapter_collapses_tls_failures_without_exposing_configuration() {
-    assert!(PYTHON_NATIVE.contains("| ClientError::Tls(_) => \"connection_failure\""));
+    assert!(PYTHON_NATIVE.contains("binding_error(classify_client_error(error))"));
     assert!(!PYTHON_NATIVE.contains("TlsClientFailure::"));
 }
 

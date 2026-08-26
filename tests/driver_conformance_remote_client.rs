@@ -113,6 +113,66 @@ async fn run_async() -> TestResult<()> {
     if !replay.replayed {
         return Err("second Rust command did not replay".into());
     }
+    let token_id = "018f0f8b-7c6d-7e31-8a4f-000000000111".to_owned();
+    let token_value = "rust-one-time-secret-must-not-log".to_owned();
+    let issued = client
+        .issue_token(generated::IssueTokenInput {
+            value: token_value.clone(),
+            token_id: token_id.clone(),
+            expires_at: generated::TimestampValue {
+                seconds: 4_102_444_800,
+                nanos: 0,
+            },
+            identifier: "rust-loopback".to_owned(),
+            request_id: "018f0f8b-7c6d-7e31-8a4f-000000000112".to_owned(),
+            organization_id: organization_id.clone(),
+        })
+        .await?;
+    if !matches!(
+        issued.outcome,
+        generated::IssueTokenOutcome::TokenIssued { .. }
+    ) {
+        return Err("Rust token issue did not create the token".into());
+    }
+    let consume_input = generated::ConsumeTokenInput {
+        token_id: token_id.clone(),
+        request_id: "018f0f8b-7c6d-7e31-8a4f-000000000113".to_owned(),
+        organization_id: organization_id.clone(),
+    };
+    let consumed = client.consume_token(consume_input.clone()).await?;
+    let generated::ConsumeTokenOutcome::TokenConsumed {
+        value,
+        token_id: returned_token_id,
+        identifier,
+        ..
+    } = &consumed.outcome
+    else {
+        return Err("Rust token consume did not return the deleted preimage".into());
+    };
+    if value != &token_value
+        || returned_token_id != &token_id
+        || identifier != "rust-loopback"
+        || format!("{:?}", consumed.outcome).contains(&token_value)
+    {
+        return Err("Rust deleted preimage or redacted Debug was incorrect".into());
+    }
+    let consumed_replay = client.consume_token(consume_input).await?;
+    if !consumed_replay.replayed || consumed_replay.outcome != consumed.outcome {
+        return Err("Rust token consume did not replay the persisted preimage".into());
+    }
+    let missing = client
+        .consume_token(generated::ConsumeTokenInput {
+            token_id: token_id.clone(),
+            request_id: "018f0f8b-7c6d-7e31-8a4f-000000000114".to_owned(),
+            organization_id: organization_id.clone(),
+        })
+        .await?;
+    if !matches!(
+        missing.outcome,
+        generated::ConsumeTokenOutcome::TokenMissing
+    ) {
+        return Err("Rust second consumer did not observe the atomic delete".into());
+    }
     let page = client
         .item_page_after_commit(
             generated::ItemPageParams {
@@ -217,6 +277,10 @@ async fn run_async() -> TestResult<()> {
             "secret_redacted": true,
             "exact_query": "Found",
             "exact_total": 1,
+            "consume": "TokenConsumed",
+            "consume_replayed": true,
+            "consume_missing": true,
+            "delete_preimage_redacted": true,
         })
     );
     Ok(())

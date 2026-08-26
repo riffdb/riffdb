@@ -174,6 +174,15 @@ contract BulkRowsRecovery version 1 {
     create Child(tenant_id, row_id, child_id) as stored_child else Exists {}
     return ExtraChildCreated {}
   }
+  command ConsumeChild {
+    input request_id: uuid
+    input tenant_id: uuid
+    input row_id: uuid
+    input child_id: uuid
+    idempotency_key request_id
+    delete Child(tenant_id, row_id, child_id) as consumed else ChildMissing {}
+    return ChildConsumed { child_id: consumed.child_id }
+  }
 }
 "#;
 const FRAMEWORK_PROFILE_SOURCE: &str =
@@ -513,6 +522,40 @@ impl BulkRowsDatabase {
         admission_request_seed: u8,
     ) -> CommandExecutionPreparation {
         let plan = self.command_plan("PutExtraChild");
+        let input = input_record(
+            plan.input().record(),
+            [
+                (
+                    "request_id",
+                    CanonicalValue::Uuid(uuid_bytes(input_request_seed)),
+                ),
+                ("tenant_id", CanonicalValue::Uuid(ORGANIZATION_ID)),
+                ("row_id", CanonicalValue::Uuid(row_id)),
+                ("child_id", CanonicalValue::Uuid(child_id)),
+            ],
+        );
+        let caller_key = canonical_uuid_text(input_request_seed);
+        self.prepare_command(
+            ports,
+            plan,
+            input,
+            &caller_key,
+            digest_seed,
+            admission_request_seed,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn prepare_consume_child(
+        &self,
+        ports: &RedbOperationalPorts,
+        row_id: [u8; 16],
+        child_id: [u8; 16],
+        input_request_seed: u8,
+        digest_seed: u8,
+        admission_request_seed: u8,
+    ) -> CommandExecutionPreparation {
+        let plan = self.command_plan("ConsumeChild");
         let input = input_record(
             plan.input().record(),
             [

@@ -1,0 +1,41 @@
+{
+  "schema": "riffdb.application-source/v6",
+  "application": "one-time-token-acceptance",
+  "contract": {
+    "source": "contract.riff",
+    "lineage": "OneTimeTokenAcceptance",
+    "version": 1
+  },
+  "generation": {
+    "go": "generated/go/client.go",
+    "rust": "generated/rust/client.rs",
+    "typescript": "generated/typescript/client.ts",
+    "python": "generated/python/client.py",
+    "mcp": "generated/mcp/tools.json"
+  },
+  "migrations": [],
+  "query_modules": [
+    {
+      "name": "one_time_tokens",
+      "version": 1,
+      "queries": [
+        { "name": "GetToken", "source": "queries/get_token.riffq" }
+      ]
+    }
+  ],
+  "reactive_modules": [],
+  "roles": [
+    {
+      "name": "TokenApplication",
+      "environment": "development",
+      "tenant_scope": "global",
+      "queries": ["GetToken"],
+      "commands": ["ConsumeToken", "IssueToken"],
+      "event_streams": [],
+      "watch_queries": [],
+      "agent_subscriptions": [],
+      "row_policies": []
+    }
+  ],
+  "seed_inputs": []
+}
