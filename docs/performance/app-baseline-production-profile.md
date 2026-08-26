@@ -119,115 +119,83 @@ holding.
   only current symptom. This mirrors the duplication ADR-0148 addresses for the
   drivers and deserves the same treatment.
 
-## Confirmed defect: a database outgrows its own startup validation
+## Confirmed defect: startup indexes every command ever executed
 
 `--seed-only` completes cleanly at this tier: 1,112,350 commands in 192 s at
-5,794 ops/s, a clean 21 s shutdown, exit 0. The resulting 4.7 GB database then
-**cannot be reopened**. Reproduced outside the harness by starting `riffdbd`
-directly against a retained copy:
+5,794 ops/s, a clean 21 s shutdown, exit 0. The measured process then cannot
+start against the seeded database, and the harness reports:
 
 ```text
-riffdbd startup validation refused the database class=LimitExceeded
-riffdbd terminated without reaching a clean process boundary kind=startup
+app-baseline failed: riffdbd process failed: server stdout closed before ready
 ```
 
-### The state on disk
+### Root cause
 
-Measured directly out of redb on a retained copy, bypassing RiffDB startup:
-
-| Fact | Value |
-| --- | ---: |
-| commands seeded | 1,112,350 |
-| database size | 4.7 GB |
-| `COMMITS` rows | 20,141 |
-| `COMMITS` bytes | 1,955,566,503 |
-| validated-prefix checkpoint | **present** |
-| its `checkpoint_commit_sequence` | **0** |
-
-A checkpoint claiming sequence 0 over 1.96 GB of committed command segments is
-the whole defect: `ensure_command_cache` treats 0 as "no usable prefix" and
-walks every row, which crosses 512 MiB and refuses.
-
-### The chain
-
-1. Startup validation refuses with `StorageError { kind: LimitExceeded }`.
-2. The bound is `MAX_STARTUP_EVIDENCE_INDEX_BYTES`, 512 MiB, in
-   `crates/riffdb-storage-redb/src/startup.rs`. The commit-row walk in
-   `ensure_command_cache` accumulated 536,911,967 bytes — 512.06 MiB, just over.
-3. That walk is checkpoint-aware and is *supposed* to be bounded: with a
-   validated-prefix checkpoint it ranges only over commits after the checkpoint
-   sequence, and only when `checkpoint_sequence == 0` does it walk all history.
-   It observed `checkpoint_sequence = 0`.
-4. The checkpoint is not missing because shutdown skipped it. Graceful shutdown
-   reports the write succeeding. But the following startup either loads it with
-   `checkpoint_commit_sequence = 0` or reports
-   `CheckpointIgnoreReason::Absent`, so the fast path never engages on any boot.
-
-So the validated-prefix checkpoint, whose purpose under ADR-0085 is to bound
-startup validation cost, is written and then does not bound anything. At `full`
-scale that is invisible: 19,220 commands never approach 512 MiB, and every boot
-silently pays full validation. At this tier the same defect is fatal.
-
-### The write path is not simply broken
-
-Instrumenting `build_checkpoint_from_snapshot` at `full` scale shows it recording
-the head correctly when the commits are visible to it:
+Startup builds a historical evidence plan and refuses when its in-memory index
+exceeds `MAX_STARTUP_EVIDENCE_INDEX_BYTES`, 512 MiB, in
+`crates/riffdb-storage-redb/src/startup.rs`. Tracing each collector that feeds
+`build_historical_evidence_plan`:
 
 ```text
-build_checkpoint: commits_rows=0   head=0
-build_checkpoint: commits_rows=349 head=19220   <- immediately after the seed
-build_checkpoint: commits_rows=0   head=0
+plan after bundles:          rows=1
+plan after migration_edges:  rows=1
+plan after plans:            rows=1112351     <- one locator per command, ever
+plan after active_catalog:   rows=1112352
+LIMIT site=evidence_plan index=536871037
 ```
 
-The zero rows are fresh per-generation databases, where zero is the right
-answer. So the mechanism is sound and the production database's checkpoint was
-written against a view in which `COMMITS` was empty, even though 1.96 GB of it
-exists on disk.
+`collect_plan_locators` inserts **one locator per historical command**. Startup
+memory and time therefore grow linearly with every command the database has
+ever executed, and past roughly a million lifetime commands the index crosses
+512 MiB and the database will not open. For a help desk at this profile's rate
+that is days to weeks of operation.
 
-`write_validated_prefix_checkpoint` is ordered to prevent exactly that: it calls
-`checkpoint_published_journal_suffix_for_barrier()` to materialise the published
-journal suffix into redb *before* opening the read transaction that builds the
-checkpoint. Two candidate mechanisms remain, and distinguishing them is the next
-step:
+The failure surfaces as `CatalogErrorKind::Storage`, because the plan is built
+under catalog resolution.
 
-1. the barrier materialisation did not complete at this size, and its failure is
-   non-fatal by ADR-0019 A1 design, so the write proceeded against an
-   unmaterialised view; or
-2. the post-seed shutdown wrote its checkpoint before the suffix reached
-   `COMMITS`, and the rows observed on disk were materialised later by recovery
-   replay during one of the failed reopen attempts.
+### The validated-prefix checkpoint is NOT the problem
 
-The conservative repair, for review rather than applied here, is a monotonicity
-guard: a checkpoint write must not lower the recorded commit sequence while
-`database_id`, `history_incarnation` and the retention watermark are unchanged,
-because absent a retention or incarnation change a head cannot legitimately go
-backwards. That is a refusal, not a trust widening. It is deliberately not
-implemented until mechanism 1 or 2 is settled, because if the barrier is the
-problem then the guard hides it rather than fixing it.
+An earlier revision of this document blamed the ADR-0085 validated-prefix
+checkpoint, on evidence that turned out to be a measurement artefact: the
+database inspected had been copied mid-run, after the seed but before the
+post-seed checkpoint write, so its stale `commit_sequence = 0` was the expected
+state of that snapshot rather than a defect.
 
-### Why the real fix is not attempted here
+Traced end to end on the real path, the checkpoint mechanism works exactly as
+designed:
 
-The repair belongs inside startup validation, which is a fail-closed boundary
-that exists to detect corruption. Making the checkpoint engage without first
-establishing, against ADR-0085's intended semantics, exactly which commit head
-it should record and when it is legitimately reusable would risk skipping
-validation of real history — a safety regression traded for a benchmark. That
-needs the maintainer's judgment, not a patch from a profiling exercise.
+```text
+checkpoint IGNORED reason=Absent      <- first boot, empty database
+checkpoint OK seq=0                   <- correct for an empty predecessor
+barrier before: commits_rows=19856
+barrier after:  commits_rows=19878    <- suffix materialised at shutdown
+checkpoint OK seq=1112350             <- full head recorded and reloaded
+```
 
-What is fixed here is the diagnostic. A startup refusal previously printed only
-`kind=startup` and exited with empty stdout, so a database that had outgrown a
-validation bound and one that was genuinely corrupt produced identical output.
-It now names the closed `StorageErrorKind`, which carries no path, key, value or
-identity. Diagnosing this defect required a full instrumentation cycle through
-five layers; the next reader gets it from the first line.
+`ensure_command_cache` is bounded by that checkpoint and does not blow its
+budget. `build_historical_evidence_plan` is a separate index that the checkpoint
+does not bound at all, which is why a working checkpoint does not save the boot.
 
-### Consequence worth stating plainly
+### The fix, for review
 
-Independently of this benchmark, a RiffDB database whose retained commit history
-exceeds roughly 512 MiB of evidence appears to become unopenable, because the
-mechanism designed to bound that cost is not engaging. History retention
-(ADR-0085) prunes history and would delay it, but nothing in the current
-evidence suggests the ceiling itself moves.
+Bound plan-locator collection by the validated-prefix checkpoint, exactly as
+`ensure_command_cache` already is: the checkpoint attests that the prefix was
+validated, so only the suffix needs locators. The pattern is established in the
+same file, and `build_historical_evidence_plan` already receives
+`StartupValidationInputs`.
+
+That is not applied here because it changes what startup trusts. Whether the
+checkpoint's attestation covers the historical *evidence* the plan proves --
+`InvalidHistoricalEvidence` names evidence that is "incomplete, reordered,
+repeated, or misbound" -- is an ADR-0085 semantics question. If it does, this is
+a small change to a known pattern. If it does not, bounding the collection would
+weaken corruption detection to make a boot succeed, which is the wrong trade.
+
+What is fixed here is the diagnostic. `kind=startup` alone named neither the
+subsystem nor the class; a startup refusal now names the closed `StorageErrorKind`,
+`StartupIntegrityFailure`, or `CatalogErrorKind` discriminant. Finding this
+defect took five instrumentation cycles, three of which existed only to learn
+which of those three it was.
 
 ## What this does not change
 
