@@ -6,9 +6,9 @@
 **Tagline:** *Vibe fast. Commit safely.*  
 **Category:** Contract-first operational database for agent-built applications  
 
-**Version:** 1.11
+**Version:** 1.12
 **Status:** Deployable Application Alpha architecture accepted; implementation gated by work packages
-**Date:** 25 August 2026
+**Date:** 26 August 2026
 **Audience:** Coding agents, database engineers, compiler engineers, security reviewers, and technical product leads  
 **Working binaries:** `riffdbd`, `riffdb`, `riffdb-mcp`  
 **Working URI scheme:** `riffdb://`  
@@ -37,6 +37,7 @@
 
 | Version | Date | Summary |
 |---|---|---|
+| 1.12 | 2026-08-26 | Accepted ADR-0153 and registered BLK-036 through BLK-045 plus WP-697 through WP-699 for one compiler-sealed `init_or_mutate` exact-key binding. An absent observation uses compiler-declared initial fields and produces one create; a present observation uses the revalidated preimage and produces one replace; both follow one common checked suffix. Create/update authority, policy, idempotency, atomic outcome/event/provenance, collection and index-work bounds, and pay-once proofs remain mandatory. V17 is least-sufficient and old contracts remain byte-exact. General upsert, conditional command blocks, state-origin exposure, framework behavior, and caller-selected conflict semantics remain forbidden pending real-consumer review and exact acceptance. |
 | 1.11 | 2026-08-25 | Corrected accepted ADR-0108 exact text-key equality: a declared `binary_utf8_v1` component MAY consume an exact typed string equality while forming an ordinary bounded index prefix, so compatible wider ordered and narrower equality-prefix named queries can share one maintained index. Runtime transforms the bound string to the existing physical ordered bytes only for prefix formation; logical predicate evaluation, complete declared order, cursor identity, and every existing partition, policy, and cost proof remain unchanged. Registered WP-686. |
 | 1.10 | 2026-08-25 | Clarified accepted ADR-0108 ordering: a declared `binary_utf8_v1` text-key component MAY provide the ordinary bounded total order of an operational query without also carrying a prefix predicate. The selected index, partition equality prefix, complete compiler-declared order, deterministic key tie-breaker, opaque cursor binding, and all existing cost and authorization checks remain mandatory; canonical length-first string indexes do not acquire bytewise text ordering. Registered WP-685. |
 | 1.09 | 2026-08-25 | Accepted ADR-0149 and registered BLK-022 through BLK-027 plus WP-683 and WP-684. Physical index-entry deltas remain capped at 4,096 while affected-prefix epochs and validation positions gain 65,535-entry structural maxima beneath one compiler-owned 65,535-unit correlated index-work budget and the unchanged byte ceilings. Collection planning may use only proved partition and aggregate-byte correlations; runtime derives one sealed canonical target set per attempt; least-sufficient durable capsule/segment successors preserve old 4,096-transition identities; and RDB-C020 reports a closed resource identity, actual value, and maximum without application data. |
@@ -7719,6 +7720,55 @@ does not create a kernel or storage escape hatch.
   generated surfaces, and memory/redb evidence MUST prove exact preimage,
   concurrency, replay, crash, secret, and atomicity semantics without adding
   application-specific behavior.
+- `BLK-036`: Contract source MAY declare one `init_or_mutate` binding for a
+  compiler-resolved entity and complete input-computable primary key. An absent
+  observation MUST construct its working record from the key and declared
+  initializer and produce one create; a present observation MUST use the exact
+  current preimage and produce one revision-checked replace. Both MUST execute
+  one common checked instruction suffix.
+- `BLK-037`: Initializer fields MUST be unique, typed, non-key, canonically
+  ordered in executable IR, and limited to constants, command inputs,
+  service-owned values, deterministic transaction context, and the current
+  bounded collection element. Self/other-binding, query, projection, storage,
+  clock, randomness, callback, and runtime-selected dependencies are forbidden.
+- `BLK-038`: Definite-assignment analysis MUST prove separately that every
+  absent-path field is initialized before read and that every successful create
+  postimage is complete, while present-path fields come from the revalidated
+  preimage. Runtime MUST NOT invent defaults or expose a state-origin value.
+- `BLK-039`: One initialized mutable binding MUST retain one exact presence or
+  version/hash snapshot dependency, one conflict capability, and at most one
+  authoritative entity mutation. A conflict MUST discard the complete
+  evaluated graph and reevaluate; it MUST NOT convert create to replace or
+  replace to create after validation.
+- `BLK-040`: Invocation authority MUST include both create and update operation
+  classes before storage access. The selected create or update row policy MUST
+  run over the exact initializer/successor or preimage/successor respectively;
+  denial MUST NOT reveal presence, values, policy exclusion, or partial work.
+- `BLK-041`: Requirements, relationships, uniqueness, invariants, secrets,
+  events, outcomes, provenance, admission, replay, and recovery MUST use the
+  same selected working record and retain existing atomicity and redaction.
+  Initialization grants no read, output, reveal, or last-write-wins authority.
+- `BLK-042`: An initialized mutable binding MAY occur in the existing bounded
+  collection template only when every target, initializer, route, dependency,
+  mutation, and charge is statically derivable. Duplicate/aliased targets,
+  cross-partition work, nested iteration, and multiple sequential mutations of
+  one row remain rejected.
+- `BLK-043`: Static mutation and index work MUST charge the conservative maximum
+  of the absent-create and present-replace alternatives, not their sum, while
+  runtime charges only the selected alternative. Every existing index-delta,
+  prefix, validation, correlated-work, graph-byte, element, and partition
+  ceiling remains unchanged.
+- `BLK-044`: The new binding MUST use least-sufficient V17 grammar, executable-
+  IR, and bundle identities with a distinct tag and canonical initializer
+  encoding. V1 through V16 source, plan, bundle, lock, role, and generated bytes
+  MUST remain exact; old readers MUST reject V17 before activation with typed
+  upgrade guidance and no decoder retirement.
+- `BLK-045`: Generic ordinary and 1/9/19/100-element corpora MUST prove absent,
+  present, mixed, business-failure, concurrency, policy, index, crash, replay,
+  and every generated-surface behavior. Acceptance MUST prove one observation
+  and one mutation per target with no dormant-row command, internal service
+  recursion, generic upsert/branching, framework code, or per-index repeated
+  initializer/compatibility proof.
 
 Compiler-bounded one-hop cascade deletion extends that closed bulk-command
 model without introducing recursive graph traversal or caller-selected delete

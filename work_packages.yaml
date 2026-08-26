@@ -1,4 +1,4 @@
-spec_version: '1.11'
+spec_version: '1.12'
 product: RiffDB
 repository: riffdb
 status: deployable-application-alpha-architecture-accepted
@@ -900,6 +900,191 @@ work_packages:
       Provider capability subsets remain exact; columnar supplies its bounded fold family,
       indexed exact results supply exact_count, and vector providers supply neither.
     follow_ups: []
+  human_review_triggers: *id001
+- id: WP-697
+  name: Initialized state-transition language compiler and V17 identity
+  depends_on: [WP-560, WP-612, WP-678, WP-683]
+  objective: Implement ADR-0153's exact-key `init_or_mutate` source and compiler semantics with
+    state-independent typed initializer dataflow, path-sensitive definite assignment, complete
+    create/update authority and cost proofs, and least-sufficient V17 identities without adding
+    general branching, generic upsert, or a framework-specific path.
+  requirements: [BLK-009, BLK-036, BLK-037, BLK-038, BLK-040, BLK-042,
+    BLK-043, BLK-044, DSL-001, DSL-002, DSL-003, DSL-004, DSL-005, DSL-006,
+    DSL-007, DSL-008, DSL-009, DSL-010, DSL-011, DSL-012, SAFE-004, SAFE-005]
+  required_adrs: [ADR-0002, ADR-0003, ADR-0012, ADR-0031, ADR-0055,
+    ADR-0107, ADR-0124, ADR-0129, ADR-0147, ADR-0149, ADR-0153]
+  allowed_paths: [SPEC.md, work_packages.yaml, adr/README.md,
+    adr/0153-compiler-sealed-initialized-state-transitions.md,
+    release/version-topology-v1.json, crates/riffdb-types/**,
+    crates/riffdb-contract-syntax/**, crates/riffdb-contract-ir/**,
+    crates/riffdb-contract-compiler/**, crates/riffdb-diagnostics/**,
+    crates/riffdb-cli/assets/editor/**, clients/editor/**, fixtures/compiler/**,
+    fixtures/contracts/**, fuzz/**, tests/**, scripts/**, docs/SUMMARY.md,
+    docs/contracts/**, docs/architecture/**, docs/known-limitations.md]
+  deliverables:
+  - Exact init_or_mutate binding and initializer grammar, formatter, syntax AST, source spans,
+    bounded item accounting, editor grammar, and diagnostics, with no absent/present blocks,
+    state-origin expression, dynamic outcome, callback, conflict selector, or alternate target
+  - One checked initialized mutable binding plan whose initializer fields are canonical FieldId-
+    ordered, unique, non-key, typed, and limited to constants/input/service/transaction/current-
+    element values, with all other entity, query, projection, storage, clock, randomness, and
+    runtime-selected dependencies rejected
+  - Path-sensitive command analysis proving absent-path read-before-initialize safety and complete
+    create postimages while retaining present-preimage behavior, common requirements/effects,
+    relationships, uniqueness, invariants, secrets, events, outcomes, and one exact target
+  - Static authorization and explain metadata containing the union of create/update operation and
+    field authority, plus row-policy applicability for both possible states without exposing state
+    origin through a caller field or generated option
+  - Conservative alternative cost proof using max(absent create, present replace), not the sum,
+    under unchanged collection, byte, mutation, index-delta, affected-prefix, validation-position,
+    correlated-work, and one-partition ceilings
+  - Least-sufficient grammar/executable-IR/bundle V17 tags and canonical initializer encoding,
+    topology registration, golden/hash/lock fixtures, old-reader rejection, and byte-exact V1-V16
+    writer regression with no durable decoder retirement
+  acceptance_commands:
+  - cargo +1.97.0 test -p riffdb-contract-syntax -p riffdb-contract-ir -p riffdb-contract-compiler --all-features
+  - cargo +1.97.0 test -p riffdb-diagnostics --all-features
+  - ./scripts/check-version-topology
+  - ./scripts/check-generated
+  - ./scripts/check-requirement-coverage
+  - ./scripts/check-workspace-policy
+  - ./scripts/handbook check
+  - cargo +1.97.0 fmt --all -- --check
+  - cargo +1.97.0 clippy -p riffdb-contract-syntax -p riffdb-contract-ir -p riffdb-contract-compiler -p riffdb-diagnostics --all-targets --all-features -- -D warnings
+  exit_gate: Valid ordinary and collection initialized transitions lower to one exact V17 binding
+    with complete dataflow, authority, locality, conflict, relationship, uniqueness, secret, and
+    max-alternative cost proofs; invalid shapes fail at source spans; old contracts retain their
+    exact bytes; and no general branch, upsert, origin flag, framework path, or unregistered identity
+    exists.
+  standing_design_tests:
+    interface_safety: The application declares one exact entity/key, initializer, and common command
+      suffix. It cannot choose runtime state, conflict target, overwrite policy, transaction,
+      authority, budget, retry, or fallback, and generated callers receive no new unsafe option.
+    scale: Compiler work is bounded by existing binding/field/expression/collection limits and
+      charges the maximum of two sealed alternatives once; no population scan, dynamic graph,
+      per-index initializer evaluation, or cross-partition state is introduced.
+  human_review_triggers: *id001
+- id: WP-698
+  name: Initialized state-transition runtime coordinator and storage conformance
+  depends_on: [WP-561, WP-679, WP-684, WP-697]
+  objective: Execute ADR-0153 initialized mutable bindings as one absence-or-presence observation
+    and exactly one create-or-replace mutation per target, preserving whole-command revalidation,
+    atomicity, idempotency, policy, index work, recovery, and bounded bulk behavior across memory
+    and redb without an internal command or dormant authoritative row.
+  requirements: [BLK-036, BLK-038, BLK-039, BLK-040, BLK-041, BLK-042,
+    BLK-043, BLK-045, TXN-010, TXN-011, TXN-012, TXN-013, PERF-004, PERF-005]
+  required_adrs: [ADR-0002, ADR-0003, ADR-0004, ADR-0005, ADR-0012,
+    ADR-0023, ADR-0055, ADR-0107, ADR-0124, ADR-0129, ADR-0147, ADR-0149,
+    ADR-0153]
+  allowed_paths: [SPEC.md, work_packages.yaml,
+    adr/0153-compiler-sealed-initialized-state-transitions.md,
+    release/version-topology-v1.json, proto/**, crates/riffdb-types/**,
+    crates/riffdb-contract-ir/**, crates/riffdb-invariant/**,
+    crates/riffdb-runtime/**, crates/riffdb-storage-api/**,
+    crates/riffdb-storage-memory/**, crates/riffdb-storage-redb/**,
+    crates/riffdb-commit/**, crates/riffdb-policy/**, crates/riffdb-service/**,
+    crates/riffdb-testkit/**, fixtures/**, tests/**, fuzz/**, scripts/**,
+    docs/contracts/**, docs/architecture/**, docs/known-limitations.md]
+  deliverables:
+  - Snapshot materialization for one initialized mutable target that preserves exact absence or
+    present version/hash evidence and constructs a bounded provisional absent-path record without
+    changing storage or invoking another service operation
+  - Deterministic common-suffix execution producing exactly Create for a revalidated absence or
+    revision-checked Replace for a revalidated presence, with no create-plus-replace graph, dormant
+    row, implicit default, state-origin result, or stale mutation conversion
+  - Coordinator validation and deterministic schedules for absent/absent, absent/present,
+    update/update, delete/recreate, cancellation, retry exhaustion, and policy revision, discarding
+    every stale graph before durable outcome or event release
+  - Create/update authority union plus selected row/field policy, relationship, uniqueness,
+    invariant, secret, event, provenance, idempotency, uncertain response, replay, and redaction
+    equivalence to the existing individual binding modes
+  - Ordinary and bounded collection execution over all-absent, all-present, and mixed observations,
+    including 1/9/19/100 elements, duplicates, aliasing, aggregate bytes, graph bytes, business
+    rejection, complete-or-absent visibility, and exact memory/redb parity
+  - Runtime physical work charges only the selected create or replace alternative; stage evidence
+    proves one entity mutation per target and unchanged correlated index-work ceilings, with
+    initializer/compatibility proof never repeated per field, index, validation target, or retry
+  acceptance_commands:
+  - cargo +1.97.0 test -p riffdb-runtime -p riffdb-commit -p riffdb-policy -p riffdb-service --all-features
+  - cargo +1.97.0 test -p riffdb-storage-memory -p riffdb-storage-redb -p riffdb-testkit --all-features
+  - cargo +1.97.0 test -p riffdb-testkit --test command_semantics --all-features
+  - cargo +1.97.0 test -p riffdb-testkit --test bulk_command_recovery --all-features
+  - ./scripts/check-version-topology
+  - ./scripts/check-generated
+  - ./scripts/check-requirement-coverage
+  - ./scripts/check-workspace-policy
+  - cargo +1.97.0 fmt --all -- --check
+  - cargo +1.97.0 clippy -p riffdb-runtime -p riffdb-commit -p riffdb-policy -p riffdb-service -p riffdb-storage-memory -p riffdb-storage-redb -p riffdb-testkit --all-targets --all-features -- -D warnings
+  exit_gate: Every initialized binding commits exactly one transaction-current create or replace
+    with one atomic outcome/event/provenance graph, exact replay and crash recovery, selected policy,
+    bounded mixed collection behavior, and honest alternative work accounting; no stale result,
+    dormant row, internal command, double mutation, framework behavior, or weakened ceiling remains.
+  standing_design_tests:
+    interface_safety: Runtime derives the mutation kind only from revalidated authoritative state;
+      no caller value, transport, adapter, configuration, or backend can choose the path or bypass
+      authorization, policy, validation, atomicity, idempotency, durability, or provenance.
+    scale: Each target costs one point observation and one selected mutation beneath existing finite
+      collection, graph, index, validation, byte, retry, and partition limits; no scan, cross-
+      partition coordination, or duration/population-proportional state exists.
+  human_review_triggers: *id001
+- id: WP-699
+  name: Initialized transition generated recovery performance and external acceptance
+  depends_on: [WP-562, WP-565, WP-692, WP-698]
+  objective: Close ADR-0153 across every generated/public surface, compatibility and crash recovery,
+    generic lifecycle performance evidence, handbook guidance, and a value-free external-consumer
+    receipt while retaining all adapter code and framework semantics in their owning repositories.
+  requirements: [BLK-036, BLK-039, BLK-040, BLK-041, BLK-042, BLK-043,
+    BLK-044, BLK-045, DRV-007, DRV-008, DRV-012, DRV-014, SAFE-004, SAFE-005,
+    PERF-004, PERF-005]
+  required_adrs: [ADR-0055, ADR-0107, ADR-0124, ADR-0129, ADR-0142,
+    ADR-0147, ADR-0148, ADR-0149, ADR-0153]
+  allowed_paths: [SPEC.md, work_packages.yaml,
+    adr/0153-compiler-sealed-initialized-state-transitions.md,
+    release/version-topology-v1.json, proto/**, crates/**, clients/**,
+    templates/**, fixtures/**, examples/**, tests/**, benchmarks/**, scripts/**,
+    docs/**]
+  deliverables:
+  - Deterministic generated Rust, Go, TypeScript, Python, CLI, MCP, local-driver, and remote-gRPC
+    operation identity/outcome/error/authorization conformance without a caller-visible state path,
+    conflict mode, transaction handle, or handwritten binding behavior
+  - Generic lifecycle application using one initialized transition for absent, present, mixed bulk,
+    business rejection, event, secret, policy, and replay cases, with all generated artifacts and
+    documentation discoverable from docs/SUMMARY.md
+  - Process-level memory/redb crash and restart campaign across admission, snapshot, evaluation,
+    staging, durability, publication, lost response, retry, and retained V1-V16/V17 deployment
+    windows, with no decoder retirement or unexplained recovery state
+  - Stage-attributed benchmark proving one generated command and one entity mutation replace the
+    generic dormant-create-plus-replace sequence, reporting service, validation, index, journal,
+    durability, and response costs without changing ADR-0142 gates or claiming external parity
+  - Value-free external capability receipt confirming the consumer can compile and execute its
+    initialized bulk transition; the receipt may report bounded operation-count and timing deltas
+    but contains no external schema, route, adapter source, generated profile, or framework-specific
+    RiffDB branch
+  - Final architecture inventory and handbook text separating database capability from consumer
+    query batching, iterator buffering, redundant-read elimination, safe immutable-root caching, and
+    its own business semantics
+  acceptance_commands:
+  - cargo +1.97.0 test --workspace --all-features
+  - ./scripts/driver-conformance --all-languages --remote
+  - ./scripts/check-version-topology
+  - ./scripts/check-generated
+  - ./scripts/check-requirement-coverage
+  - ./scripts/check-workspace-policy
+  - ./scripts/handbook check
+  - cargo +1.97.0 fmt --all -- --check
+  - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: Every public surface, backend, restart path, policy case, bound, and compatibility
+    window preserves the exact initialized-transition semantics; generic evidence proves the
+    redundant durable transition is removed; the external receipt is green; and no framework code,
+    caller-selected upsert behavior, unsafe branch, stale artifact, warning, or unexplained failure
+    remains.
+  standing_design_tests:
+    interface_safety: Generated callers see only the finite named command's existing typed input and
+      closed outcome union; initialization, selected mutation, policy, work, retry, durability, and
+      recovery remain compiler/runtime-owned with no unsafe public selector.
+    scale: Evidence is bounded by declared ordinary/collection maxima and reports constant per-plan
+      plus per-selected-target work; no unbounded benchmark state, cursor walk, scan, cross-
+      partition operation, or application-sized retained proof is introduced.
   human_review_triggers: *id001
 - id: WP-678
   name: Aggregate collection-byte language, proof, and IR successors
