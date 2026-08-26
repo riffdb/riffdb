@@ -171,6 +171,7 @@ direction, merged draft, or implementation choice.
 | [0150](0150-compiler-sealed-operational-access-path-algebra.md) | Compiler-Sealed Operational Access-Path Algebra and Bounded Relationship Composition | Accepted |
 | [0151](0151-atomic-delete-and-return-preimage.md) | Atomic Unary Delete and Return of the Revalidated Preimage | Accepted |
 | [0152](0152-closed-exact-aggregate-function-families.md) | Closed Exact Aggregate Function Families Across Query Providers | Accepted |
+| [0153](0153-compiler-sealed-initialized-state-transitions.md) | Compiler-Sealed Initialized State Transitions | Accepted |
 
 The human architecture review on 2026-07-12 approved the direction represented
 by ADR-0001 through ADR-0012. The human maintainer accepted ADR-0001 through
