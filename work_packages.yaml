@@ -810,6 +810,28 @@ work_packages:
       compiler-sealed; callers cannot request a provider superset, approximation, or fallback.
     scale: Provider work is partition-scoped with independent row/group/distinct/state/output bounds
       and pay-once proofs; no database-wide or cross-provider materialization is required.
+  closure:
+    status: complete
+    completed_at: "2026-08-25"
+    requirements_satisfied: [OQ-013, OQ-017, OQ-019, OQ-020, OQ-021, OQ-022,
+      OQ-024, OQ-044, OQ-046, OQ-047, OQ-048, OQ-049, OQ-050, OQ-051,
+      OQ-052, OQ-053, OQ-055]
+    evidence: The sealed provider descriptor now exposes one closed exact aggregate semantic subset
+      derived from its already-versioned provider kind and MEASURE stage. The real columnar adapter
+      advertises and executes the ten bounded/grouped exact functions but not exact_count; the
+      indexed exact-result adapter advertises only exact_count; vector and non-MEASURE descriptors
+      advertise none. Compiler architecture tests enumerate all eleven registry identities and
+      prove that provider subsets never collapse into their union, while real columnar and exact-
+      text conformance tests bind those advertisements to their executable adapters. Existing
+      result-set epoch proofs, partition-first policy admission, catalog-generation validation,
+      exact page/count execution, columnar grouped/whole folds, rebuild/compaction suites, and
+      memory/redb recovery suites pass as one provider integration matrix. The capability view is
+      transient and preserves provider V1 bytes, digests, state layouts, and topology exactly.
+    known_limitations: No provider bridge or composite executor is introduced. The indexed exact-
+      result provider continues to offer only maintained exact_count; it does not claim columnar
+      folds or facets. Differential merge-law, inference, mixed-version, generated-surface, and
+      external generic application closure remains WP-696.
+    follow_ups: [WP-696]
   human_review_triggers: *id001
 - id: WP-696
   name: Aggregate differential security compatibility and final evidence

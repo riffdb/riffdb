@@ -5,7 +5,7 @@ mod common;
 
 use riffdb_storage_api::CommittedEntityReferenceV2;
 use riffdb_types::{
-    CanonicalValue, CommitSequence, EntityVersion, FrontierPosition,
+    AggregateSemanticIdentityV1, CanonicalValue, CommitSequence, EntityVersion, FrontierPosition,
     ProjectionProviderCapabilitiesV1, ProjectionProviderKindV1, ProjectionProviderPolicyModeV1,
     ProjectionProviderPostureV1, ProjectionProviderStaticBoundsV1,
 };
@@ -1820,4 +1820,20 @@ fn columnar_provider_descriptor_matches_real_reference_engine_contract() {
             .capabilities()
             .contains(ProjectionProviderCapabilitiesV1::RANK)
     );
+    let aggregate_semantics = descriptor.aggregate_semantics();
+    for semantic in [
+        AggregateSemanticIdentityV1::Count,
+        AggregateSemanticIdentityV1::Sum,
+        AggregateSemanticIdentityV1::Min,
+        AggregateSemanticIdentityV1::Max,
+        AggregateSemanticIdentityV1::CountPresent,
+        AggregateSemanticIdentityV1::CountDistinct,
+        AggregateSemanticIdentityV1::CountDistinctPresent,
+        AggregateSemanticIdentityV1::Mean,
+        AggregateSemanticIdentityV1::Any,
+        AggregateSemanticIdentityV1::All,
+    ] {
+        assert!(aggregate_semantics.contains(semantic));
+    }
+    assert!(!aggregate_semantics.contains(AggregateSemanticIdentityV1::ExactCount));
 }
