@@ -98,6 +98,7 @@ fn validate_command(
     command: &HirCommand,
     diagnostics: &mut Vec<CompilerDiagnostic>,
 ) {
+    validate_ordinary_delete_shape(hir, command, diagnostics);
     let mut cascade_bindings = command.bindings.iter().filter(|binding| {
         hir.entity(binding.entity_id).is_some_and(|entity| {
             matches!(
@@ -252,7 +253,7 @@ fn validate_command(
                     ));
                     continue;
                 };
-                if state.mode == BindingMode::Read
+                if matches!(state.mode, BindingMode::Read | BindingMode::Delete)
                     || state.key_fields.contains(field)
                     || !written.insert((*binding, *field))
                 {
@@ -285,7 +286,7 @@ fn validate_command(
                     ));
                     continue;
                 };
-                if state.mode == BindingMode::Read
+                if matches!(state.mode, BindingMode::Read | BindingMode::Delete)
                     || state.key_fields.contains(field)
                     || !written.insert((*binding, *field))
                 {
@@ -444,6 +445,69 @@ fn validate_command(
     validate_outcome_shapes(&outcomes, diagnostics);
     validate_secret_flows(hir, command, &outcomes, diagnostics);
     validate_secret_taint(secret_input, command, &influential_roots, diagnostics);
+}
+
+fn validate_ordinary_delete_shape(
+    hir: &TypedContractHir,
+    command: &HirCommand,
+    diagnostics: &mut Vec<CompilerDiagnostic>,
+) {
+    if command.collection_expansion.is_some() {
+        return;
+    }
+    let deletes = command
+        .bindings
+        .iter()
+        .filter(|binding| binding.mode == BindingMode::Delete)
+        .collect::<Vec<_>>();
+    let Some(first) = deletes.first().copied() else {
+        return;
+    };
+    for binding in deletes.iter().skip(1) {
+        diagnostics.push(
+            CompilerDiagnostic::new(
+                CompilerDiagnosticCode::InvalidDeletePolicy,
+                binding.entity_span,
+            )
+            .with_related_span(first.entity_span),
+        );
+    }
+    for binding in &deletes {
+        if hir.entity(binding.entity_id).is_none_or(|entity| {
+            !matches!(
+                entity.delete_policy.as_ref(),
+                Some(crate::hir::HirDeletePolicy::NoInbound { .. })
+            )
+        }) {
+            diagnostics.push(CompilerDiagnostic::new(
+                CompilerDiagnosticCode::InvalidDeletePolicy,
+                binding.entity_span,
+            ));
+        }
+    }
+    for candidate in &command.bindings {
+        if candidate.id == first.id || candidate.entity_id != first.entity_id {
+            continue;
+        }
+        let same_target = candidate.arguments.len() == first.arguments.len()
+            && candidate
+                .arguments
+                .iter()
+                .zip(&first.arguments)
+                .all(|(candidate, deleted)| {
+                    command_expression_fingerprint(&command.expressions, candidate.id)
+                        == command_expression_fingerprint(&command.expressions, deleted.id)
+                });
+        if same_target {
+            diagnostics.push(
+                CompilerDiagnostic::new(
+                    CompilerDiagnosticCode::InvalidBinding,
+                    candidate.entity_span,
+                )
+                .with_related_span(first.entity_span),
+            );
+        }
+    }
 }
 
 fn validate_cascade_binding(

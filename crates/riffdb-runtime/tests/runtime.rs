@@ -48,6 +48,44 @@ contract BulkDeleteRuntime version 1 {
   }
 }
 "#;
+const UNARY_DELETE_PREIMAGE_SOURCE: &str = r#"
+contract UnaryDeleteRuntime version 1 {
+  entity OneTimeToken {
+    key (organization_id: uuid, token_id: uuid)
+    field identifier: string<256>
+    field secret value: string<512>
+    delete_policy no_inbound
+  }
+  event TokenConsumed {
+    identifier: string<256>
+    value: string<512>
+  }
+  aggregate OneTimeTokens {
+    root OneTimeToken
+    partition_by organization_id
+    conflict_key (organization_id, token_id)
+  }
+  command ConsumeToken {
+    input request_id: uuid
+    input organization_id: uuid
+    input token_id: uuid
+    input expected_identifier: string<256>
+    idempotency_key request_id
+    delete OneTimeToken(organization_id, token_id) as token else TokenMissing {}
+    require identifier_matches: token.identifier == expected_identifier
+      else TokenMismatch {}
+    emit TokenConsumed {
+      identifier: token.identifier,
+      value: token.value reveals token.value
+    }
+    return TokenConsumed {
+      token_id: token.token_id,
+      identifier: token.identifier,
+      value: token.value reveals token.value
+    }
+  }
+}
+"#;
 const CASCADE_DELETE_SOURCE: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../fixtures/compiler/cascade/contract.riff"
@@ -549,6 +587,492 @@ fn bounded_collection_delete_retains_exact_predecessors_without_post_delete_rows
         );
         assert_eq!(mutation.post_image().fields(), predecessor.fields());
     }
+}
+
+#[test]
+fn unary_delete_uses_one_preimage_for_require_event_outcome_and_mutation() {
+    let bundle = compile_contract_source(UNARY_DELETE_PREIMAGE_SOURCE)
+        .expect("unary delete fixture compiles");
+    let plan = command(&bundle, "ConsumeToken");
+    let organization_id = CanonicalValue::Uuid([0x71; 16]);
+    let token_id = CanonicalValue::Uuid([0x72; 16]);
+    let identifier = CanonicalValue::string("consume@example.invalid").expect("identifier");
+    let secret = CanonicalValue::string("one-time-secret").expect("secret");
+    let input = input_record(
+        plan.input().record(),
+        [
+            ("request_id", CanonicalValue::Uuid([0x73; 16])),
+            ("organization_id", organization_id.clone()),
+            ("token_id", token_id.clone()),
+            ("expected_identifier", identifier.clone()),
+        ],
+    );
+    let target = derive_binding_target(plan, &input, 0);
+    let entity = bundle
+        .schema()
+        .entities()
+        .iter()
+        .find(|entity| entity.name() == "OneTimeToken")
+        .expect("token entity");
+    let preimage = input_record(
+        entity.record(),
+        [
+            ("organization_id", organization_id),
+            ("token_id", token_id.clone()),
+            ("identifier", identifier.clone()),
+            ("value", secret.clone()),
+        ],
+    );
+    let stored = stored_record(&bundle, plan, target, preimage.clone());
+    let snapshot = snapshot(
+        plan_ref(&bundle, plan),
+        vec![EntityObservation::Present(stored)],
+    );
+    let execution_context = context(
+        &bundle,
+        plan,
+        &input,
+        LogicalTime::new(Timestamp::new(30, 0).expect("time")),
+    );
+
+    let ExecutionResult::CommitRequired(evaluated) = execute_command(
+        &bundle,
+        &input,
+        &snapshot,
+        &execution_context,
+        EvaluationBudget::v1(),
+    )
+    .expect("unary delete evaluates") else {
+        panic!("unary delete requires commit");
+    };
+    assert_eq!(evaluated.mutations().len(), 1);
+    let mutation = &evaluated.mutations()[0];
+    assert!(mutation.is_delete());
+    assert_eq!(mutation.post_image().fields(), &preimage);
+    assert_eq!(evaluated.event_intents().len(), 1);
+    assert_eq!(
+        field(
+            evaluated.event_intents()[0].payload(),
+            event_field(&bundle, "TokenConsumed", "value"),
+        ),
+        &secret,
+    );
+    assert_eq!(
+        field(
+            evaluated.outcome().value(),
+            outcome_field(plan, "TokenConsumed", "token_id"),
+        ),
+        &token_id,
+    );
+    assert_eq!(
+        field(
+            evaluated.outcome().value(),
+            outcome_field(plan, "TokenConsumed", "identifier"),
+        ),
+        &identifier,
+    );
+    assert_eq!(
+        field(
+            evaluated.outcome().value(),
+            outcome_field(plan, "TokenConsumed", "value"),
+        ),
+        &secret,
+    );
+    let debug = format!("{evaluated:?}");
+    assert_eq!(debug, "EvaluatedCommand([REDACTED])");
+    assert!(!debug.contains("one-time-secret"));
+}
+
+#[test]
+fn unary_delete_preserves_unknown_preimage_fields_but_does_not_expose_them() {
+    let source = UNARY_DELETE_PREIMAGE_SOURCE.replace(
+        concat!(
+            "      token_id: token.token_id,\n",
+            "      identifier: token.identifier,\n",
+            "      value: token.value reveals token.value\n",
+        ),
+        "      token: token reveals token.value\n",
+    );
+    let bundle = compile_contract_source(&source).expect("complete preimage fixture compiles");
+    let plan = command(&bundle, "ConsumeToken");
+    let organization_id = CanonicalValue::Uuid([0x81; 16]);
+    let token_id = CanonicalValue::Uuid([0x82; 16]);
+    let identifier = CanonicalValue::string("future@example.invalid").expect("identifier");
+    let secret = CanonicalValue::string("future-safe-secret").expect("secret");
+    let input = unary_delete_input(
+        plan,
+        [0x83; 16],
+        organization_id.clone(),
+        token_id.clone(),
+        identifier.clone(),
+    );
+    let target = derive_binding_target(plan, &input, 0);
+    let entity = bundle
+        .schema()
+        .entities()
+        .iter()
+        .find(|entity| entity.name() == "OneTimeToken")
+        .expect("token entity");
+    let declared = input_record(
+        entity.record(),
+        [
+            ("organization_id", organization_id),
+            ("token_id", token_id),
+            ("identifier", identifier),
+            ("value", secret),
+        ],
+    );
+    let future_field = FieldId::new(65_000).expect("future field ID");
+    let future_value = CanonicalValue::string("future-private-value").expect("future value");
+    let mut stored_fields = declared.fields().to_vec();
+    stored_fields.push((future_field, future_value.clone()));
+    let observation = EntityObservation::Present(stored_record(
+        &bundle,
+        plan,
+        target,
+        CanonicalRecord::new(stored_fields).expect("forward-compatible stored preimage"),
+    ));
+
+    let evaluated = evaluate_unary_delete(&bundle, plan, &input, observation, 33);
+    assert_eq!(
+        field(evaluated.mutations()[0].post_image().fields(), future_field),
+        &future_value,
+    );
+    let token_field = outcome_field(plan, "TokenConsumed", "token");
+    let CanonicalValue::Record(returned) = field(evaluated.outcome().value(), token_field) else {
+        panic!("complete preimage output is a record");
+    };
+    assert!(
+        returned
+            .fields()
+            .iter()
+            .all(|(field_id, _)| *field_id != future_field),
+        "unknown stored fields remain mutation evidence but are not public schema output",
+    );
+}
+
+#[test]
+fn unary_delete_absence_returns_the_declared_zero_mutation_outcome() {
+    let bundle = compile_contract_source(UNARY_DELETE_PREIMAGE_SOURCE)
+        .expect("unary delete fixture compiles");
+    let plan = command(&bundle, "ConsumeToken");
+    let input = input_record(
+        plan.input().record(),
+        [
+            ("request_id", CanonicalValue::Uuid([0x74; 16])),
+            ("organization_id", CanonicalValue::Uuid([0x71; 16])),
+            ("token_id", CanonicalValue::Uuid([0x72; 16])),
+            (
+                "expected_identifier",
+                CanonicalValue::string("consume@example.invalid").expect("identifier"),
+            ),
+        ],
+    );
+    let target = derive_binding_target(plan, &input, 0);
+    let snapshot = snapshot(
+        plan_ref(&bundle, plan),
+        vec![EntityObservation::Absent(target)],
+    );
+    let execution_context = context(
+        &bundle,
+        plan,
+        &input,
+        LogicalTime::new(Timestamp::new(31, 0).expect("time")),
+    );
+    let ExecutionResult::CommitRequired(evaluated) = execute_command(
+        &bundle,
+        &input,
+        &snapshot,
+        &execution_context,
+        EvaluationBudget::v1(),
+    )
+    .expect("missing unary delete evaluates") else {
+        panic!("missing result is persisted for idempotent replay");
+    };
+    assert_eq!(
+        evaluated.outcome().outcome_id(),
+        outcome_id(plan, "TokenMissing"),
+    );
+    assert!(evaluated.mutations().is_empty());
+    assert!(evaluated.event_intents().is_empty());
+}
+
+#[test]
+fn unary_delete_requirement_failure_does_not_delete_or_emit() {
+    let bundle = compile_contract_source(UNARY_DELETE_PREIMAGE_SOURCE)
+        .expect("unary delete fixture compiles");
+    let plan = command(&bundle, "ConsumeToken");
+    let organization_id = CanonicalValue::Uuid([0x75; 16]);
+    let token_id = CanonicalValue::Uuid([0x76; 16]);
+    let input = input_record(
+        plan.input().record(),
+        [
+            ("request_id", CanonicalValue::Uuid([0x77; 16])),
+            ("organization_id", organization_id.clone()),
+            ("token_id", token_id.clone()),
+            (
+                "expected_identifier",
+                CanonicalValue::string("different@example.invalid").expect("identifier"),
+            ),
+        ],
+    );
+    let target = derive_binding_target(plan, &input, 0);
+    let entity = bundle
+        .schema()
+        .entities()
+        .iter()
+        .find(|entity| entity.name() == "OneTimeToken")
+        .expect("token entity");
+    let stored = stored_record(
+        &bundle,
+        plan,
+        target,
+        input_record(
+            entity.record(),
+            [
+                ("organization_id", organization_id),
+                ("token_id", token_id),
+                (
+                    "identifier",
+                    CanonicalValue::string("actual@example.invalid").expect("identifier"),
+                ),
+                (
+                    "value",
+                    CanonicalValue::string("must-not-escape").expect("secret"),
+                ),
+            ],
+        ),
+    );
+    let snapshot = snapshot(
+        plan_ref(&bundle, plan),
+        vec![EntityObservation::Present(stored)],
+    );
+    let execution_context = context(
+        &bundle,
+        plan,
+        &input,
+        LogicalTime::new(Timestamp::new(32, 0).expect("time")),
+    );
+    let ExecutionResult::CommitRequired(evaluated) = execute_command(
+        &bundle,
+        &input,
+        &snapshot,
+        &execution_context,
+        EvaluationBudget::v1(),
+    )
+    .expect("requirement refusal evaluates") else {
+        panic!("refusal is persisted for idempotent replay");
+    };
+    assert_eq!(
+        evaluated.outcome().outcome_id(),
+        outcome_id(plan, "TokenMismatch"),
+    );
+    assert!(evaluated.mutations().is_empty());
+    assert!(evaluated.event_intents().is_empty());
+}
+
+#[test]
+fn unary_delete_update_reevaluation_never_returns_the_stale_preimage() {
+    let bundle = compile_contract_source(UNARY_DELETE_PREIMAGE_SOURCE)
+        .expect("unary delete fixture compiles");
+    let plan = command(&bundle, "ConsumeToken");
+    let organization_id = CanonicalValue::Uuid([0x78; 16]);
+    let token_id = CanonicalValue::Uuid([0x79; 16]);
+    let identifier = CanonicalValue::string("stable@example.invalid").expect("identifier");
+    let input = unary_delete_input(
+        plan,
+        [0x7a; 16],
+        organization_id.clone(),
+        token_id.clone(),
+        identifier.clone(),
+    );
+    let target = derive_binding_target(plan, &input, 0);
+    let old_secret = CanonicalValue::string("old-secret").expect("old secret");
+    let new_secret = CanonicalValue::string("new-secret").expect("new secret");
+    let old = unary_token_observation(
+        &bundle,
+        plan,
+        target.clone(),
+        EntityVersion::first(),
+        organization_id.clone(),
+        token_id.clone(),
+        identifier.clone(),
+        old_secret.clone(),
+    );
+    let stale = evaluate_unary_delete(&bundle, plan, &input, old, 40);
+    assert_eq!(unary_outcome_value(plan, &stale), &old_secret);
+
+    let updated = unary_token_observation(
+        &bundle,
+        plan,
+        target.clone(),
+        EntityVersion::new(2).expect("version two"),
+        organization_id,
+        token_id,
+        identifier,
+        new_secret.clone(),
+    );
+    let reevaluated = evaluate_unary_delete(&bundle, plan, &input, updated, 41);
+    assert_eq!(unary_outcome_value(plan, &reevaluated), &new_secret);
+    assert_eq!(
+        reevaluated.mutations()[0].expected_version(),
+        Some(EntityVersion::new(2).expect("version two")),
+    );
+    assert_ne!(stale.outcome(), reevaluated.outcome());
+
+    let missing =
+        evaluate_unary_delete(&bundle, plan, &input, EntityObservation::Absent(target), 42);
+    assert_eq!(
+        missing.outcome().outcome_id(),
+        outcome_id(plan, "TokenMissing"),
+    );
+    assert!(missing.mutations().is_empty());
+}
+
+#[test]
+fn unary_delete_delete_schedule_has_one_consumed_and_one_missing_result() {
+    let bundle = compile_contract_source(UNARY_DELETE_PREIMAGE_SOURCE)
+        .expect("unary delete fixture compiles");
+    let plan = command(&bundle, "ConsumeToken");
+    let organization_id = CanonicalValue::Uuid([0x7b; 16]);
+    let token_id = CanonicalValue::Uuid([0x7c; 16]);
+    let identifier = CanonicalValue::string("race@example.invalid").expect("identifier");
+    let first_input = unary_delete_input(
+        plan,
+        [0x7d; 16],
+        organization_id.clone(),
+        token_id.clone(),
+        identifier.clone(),
+    );
+    let second_input = unary_delete_input(
+        plan,
+        [0x7e; 16],
+        organization_id.clone(),
+        token_id.clone(),
+        identifier.clone(),
+    );
+    let target = derive_binding_target(plan, &first_input, 0);
+    assert_eq!(target, derive_binding_target(plan, &second_input, 0));
+    let present = unary_token_observation(
+        &bundle,
+        plan,
+        target.clone(),
+        EntityVersion::first(),
+        organization_id,
+        token_id,
+        identifier,
+        CanonicalValue::string("single-winner-secret").expect("secret"),
+    );
+    let first_candidate = evaluate_unary_delete(&bundle, plan, &first_input, present.clone(), 50);
+    let second_stale_candidate = evaluate_unary_delete(&bundle, plan, &second_input, present, 50);
+    assert_eq!(first_candidate.mutations().len(), 1);
+    assert_eq!(second_stale_candidate.mutations().len(), 1);
+
+    let second_reevaluated = evaluate_unary_delete(
+        &bundle,
+        plan,
+        &second_input,
+        EntityObservation::Absent(target),
+        51,
+    );
+    assert_eq!(
+        first_candidate.outcome().outcome_id(),
+        outcome_id(plan, "TokenConsumed"),
+    );
+    assert_eq!(
+        second_reevaluated.outcome().outcome_id(),
+        outcome_id(plan, "TokenMissing"),
+    );
+    assert!(second_reevaluated.mutations().is_empty());
+}
+
+fn unary_delete_input(
+    plan: &CommandPlan,
+    request_id: [u8; 16],
+    organization_id: CanonicalValue,
+    token_id: CanonicalValue,
+    identifier: CanonicalValue,
+) -> CanonicalRecord {
+    input_record(
+        plan.input().record(),
+        [
+            ("request_id", CanonicalValue::Uuid(request_id)),
+            ("organization_id", organization_id),
+            ("token_id", token_id),
+            ("expected_identifier", identifier),
+        ],
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn unary_token_observation(
+    bundle: &ContractBundle,
+    plan: &CommandPlan,
+    target: EntityTarget,
+    version: EntityVersion,
+    organization_id: CanonicalValue,
+    token_id: CanonicalValue,
+    identifier: CanonicalValue,
+    secret: CanonicalValue,
+) -> EntityObservation {
+    let entity = bundle
+        .schema()
+        .entities()
+        .iter()
+        .find(|entity| entity.name() == "OneTimeToken")
+        .expect("token entity");
+    EntityObservation::Present(stored_record_with_version(
+        bundle,
+        plan,
+        target,
+        version,
+        input_record(
+            entity.record(),
+            [
+                ("organization_id", organization_id),
+                ("token_id", token_id),
+                ("identifier", identifier),
+                ("value", secret),
+            ],
+        ),
+    ))
+}
+
+fn evaluate_unary_delete(
+    bundle: &ContractBundle,
+    plan: &CommandPlan,
+    input: &CanonicalRecord,
+    observation: EntityObservation,
+    time: i64,
+) -> riffdb_storage_api::EvaluatedCommand {
+    let snapshot = snapshot(plan_ref(bundle, plan), vec![observation]);
+    let execution_context = context(
+        bundle,
+        plan,
+        input,
+        LogicalTime::new(Timestamp::new(time, 0).expect("time")),
+    );
+    let ExecutionResult::CommitRequired(evaluated) = execute_command(
+        bundle,
+        input,
+        &snapshot,
+        &execution_context,
+        EvaluationBudget::v1(),
+    )
+    .expect("unary delete evaluates") else {
+        panic!("unary delete requires commit");
+    };
+    evaluated
+}
+
+fn unary_outcome_value<'a>(
+    plan: &CommandPlan,
+    evaluated: &'a riffdb_storage_api::EvaluatedCommand,
+) -> &'a CanonicalValue {
+    field(
+        evaluated.outcome().value(),
+        outcome_field(plan, "TokenConsumed", "value"),
+    )
 }
 
 #[test]

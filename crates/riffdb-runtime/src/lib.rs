@@ -200,8 +200,10 @@ pub fn execute_command(
     let mut records = Vec::with_capacity(plan.bindings().len());
     for (binding, observation) in plan.bindings().iter().zip(snapshot.bindings()) {
         match (binding.mode(), observation) {
-            (BindingMode::Delete, _) => return Err(ExecutionFault::Integrity),
-            (BindingMode::Read | BindingMode::Mutate, EntityObservation::Absent(_))
+            (
+                BindingMode::Read | BindingMode::Mutate | BindingMode::Delete,
+                EntityObservation::Absent(_),
+            )
             | (BindingMode::Create, EntityObservation::Present(_)) => {
                 let values = RuntimeValues {
                     schema: bundle.schema(),
@@ -216,7 +218,10 @@ pub fn execute_command(
                 let outcome = construct_outcome(binding.failure(), &mut evaluation)?;
                 return finish_declared(plan, snapshot, budget, outcome, vec![], vec![], vec![]);
             }
-            (BindingMode::Read | BindingMode::Mutate, EntityObservation::Present(record)) => {
+            (
+                BindingMode::Read | BindingMode::Mutate | BindingMode::Delete,
+                EntityObservation::Present(record),
+            ) => {
                 let entity = bundle
                     .schema()
                     .entity(binding.entity_type())
@@ -1962,20 +1967,32 @@ fn push_mutations(
             .entity(binding.entity_type())
             .ok_or(ExecutionFault::Integrity)?;
         validate_entity_post_image(schema, entity.record(), record)?;
-        let post_image = EntityPostImage::new(
+        let image = EntityPostImage::new(
             observation.target().clone(),
             plan.contract_version(),
             record.clone(),
         )
         .map_err(map_storage_value_error)?;
         let mutation = match (binding.mode(), observation) {
-            (BindingMode::Create, EntityObservation::Absent(_)) => {
-                EntityMutation::Create(post_image)
-            }
+            (BindingMode::Create, EntityObservation::Absent(_)) => EntityMutation::Create(image),
             (BindingMode::Mutate, EntityObservation::Present(record)) => EntityMutation::Replace {
                 expected_version: record.entity_version(),
-                post_image,
+                post_image: image,
             },
+            (BindingMode::Delete, EntityObservation::Present(record)) => {
+                let check = plan
+                    .delete_checks()
+                    .iter()
+                    .find(|check| check.binding() == binding.id())
+                    .ok_or(ExecutionFault::Integrity)?;
+                if !matches!(check.mode(), DeleteCheckModeV1::NoInbound) {
+                    return Err(ExecutionFault::Integrity);
+                }
+                EntityMutation::Delete {
+                    expected_version: record.entity_version(),
+                    prior_image: image,
+                }
+            }
             _ => return Err(ExecutionFault::Integrity),
         };
         builder

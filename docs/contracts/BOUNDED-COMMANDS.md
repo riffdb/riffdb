@@ -1,4 +1,4 @@
-# Bounded Collection Commands
+# Bounded Delete Commands
 
 > Alpha surface: grammar, executable IR v16, atomic runtime execution, and generated Rust, Go,
 > TypeScript, Python, and MCP bindings are implemented. Collection commands use the ordinary
@@ -6,6 +6,48 @@
 > one-hop cascade grammar, executable IR V13, and the command/runtime/storage path are implemented.
 > Generated Rust, Go, TypeScript, and Python cascade facades expose the declared typed success and
 > overflow outcomes; generated MCP deliberately omits secret-bearing query output.
+
+## Atomic unary delete and preimage return
+
+An ordinary idempotent `command` may delete exactly one complete-primary-key,
+partition-local entity whose structural policy is `no_inbound`. The delete binding denotes the
+immutable transaction-current preimage: requirements, explicit events, and the declared outcome
+all read the same record and version carried as the delete mutation's prior image.
+
+```riff
+command ConsumeToken {
+    input request_id: uuid
+    input organization_id: uuid
+    input token_id: uuid
+    idempotency_key request_id
+
+    delete OneTimeToken(organization_id, token_id)
+        as token
+        else TokenMissing {}
+
+    return TokenConsumed {
+        identifier: token.identifier,
+        value: token.value reveals token.value
+    }
+}
+```
+
+Absence selects `TokenMissing` with no mutation. If another command updates or deletes the row
+after evaluation, transaction-current validation discards the entire evaluated graph and performs
+bounded whole-command reevaluation. Therefore an update winner supplies the new preimage, while a
+delete winner supplies the missing outcome; a stale preimage is never persisted or released.
+Idempotent replay returns the already-persisted consumed or missing outcome without another read or
+delete attempt.
+
+All returned, required, and event-bound preimage fields are compiler-declared access dependencies.
+Complete-record use remains explicit and schema-bounded; forward-compatible unknown stored fields
+remain in the mutation's prior-image evidence but do not become public output. Secret fields require
+an explicit `reveals` declaration and independent release-time field authority—delete permission
+does not grant reveal permission. Sets, a second alias for the target, multiple ordinary deletes,
+`restrict`, `cascade`, and caller-selected targets receive source diagnostics. Those broader
+deletion policies remain available only through the compiler-bounded collection forms below.
+
+## Compiler-bounded collection commands
 
 RiffDB collection writes are compiled commands, not caller-defined transactions. A `bulk command`
 may expand exactly one bounded list, once, with no nesting or data-dependent iteration. The
@@ -68,8 +110,8 @@ guess a release conflict for a value visible only in that predecessor. Ordered e
 intentional: a create submitted before the delete still receives the typed unique conflict, while
 a create admitted after the committed delete may reuse the released value. `RDB-C044`, the former
 feature seal for this audited path, is retired; unsafe deletion policy remains the source-spanned
-`RDB-C045` refusal. Ordinary commands do not gain delete syntax—the accepted first delete format
-remains a compiler-bounded collection command.
+`RDB-C045` refusal. Ordinary commands support only the single exact-key `no_inbound` form described
+above; indexed restrict and cascade deletion remain compiler-bounded collection commands.
 
 ## Compiler-bounded one-hop cascade (V13)
 

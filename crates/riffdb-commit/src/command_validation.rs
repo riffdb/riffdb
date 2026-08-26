@@ -2276,6 +2276,24 @@ contract BulkDeleteValidation version 1 {
   }
 }
 "#;
+    const UNARY_DELETE_SOURCE: &str = r#"
+contract UnaryDeleteValidation version 1 {
+  entity Row {
+    key (tenant_id: uuid, row_id: uuid)
+    field value: i64
+    delete_policy no_inbound
+  }
+  aggregate Rows { root Row partition_by tenant_id conflict_key (tenant_id, row_id) }
+  command ConsumeRow {
+    input request_id: uuid
+    input tenant_id: uuid
+    input row_id: uuid
+    idempotency_key request_id
+    delete Row(tenant_id, row_id) as row else Missing {}
+    return Consumed { value: row.value }
+  }
+}
+"#;
 
     #[test]
     fn collection_mutations_cover_every_concrete_slot_before_commit() {
@@ -2488,6 +2506,53 @@ contract BulkDeleteValidation version 1 {
             ),
             Ok(CheckedCommandDecision::NonZero(_))
         ));
+    }
+
+    #[test]
+    fn unary_delete_validation_binds_outcome_and_mutation_to_one_current_predecessor() {
+        let prepared = prepare(
+            UNARY_DELETE_SOURCE,
+            "ConsumeRow",
+            &[
+                ("request_id", CanonicalValue::Uuid([0xa1; 16])),
+                ("tenant_id", CanonicalValue::Uuid([0xa2; 16])),
+                ("row_id", CanonicalValue::Uuid([0xa3; 16])),
+            ],
+        );
+        let present = prepared.present_binding(
+            0,
+            first_version(),
+            &[("value", CanonicalValue::I64(7))],
+            Vec::new(),
+            &[],
+        );
+        let fixture = evaluate(prepared, vec![present], Vec::new());
+        assert_eq!(fixture.evaluated.mutations().len(), 1);
+        assert!(fixture.evaluated.mutations()[0].is_delete());
+        assert!(matches!(
+            validation(&fixture),
+            Ok(CheckedCommandDecision::NonZero(_))
+        ));
+
+        let updated = fixture.prepared.present_binding(
+            0,
+            next_version(),
+            &[("value", CanonicalValue::I64(9))],
+            Vec::new(),
+            &[],
+        );
+        let changed_current = TransactionCurrentState::new(
+            fixture.evaluated.validation_request(),
+            vec![updated],
+            Vec::new(),
+            Vec::new(),
+        )
+        .expect("changed current state");
+        assert_ne!(
+            dependencies_from_current(&changed_current).expect("current dependencies"),
+            *fixture.evaluated.read_dependencies(),
+            "the stale outcome must be discarded before semantic validation",
+        );
     }
 
     const ZERO_REJECT_SOURCE: &str = r#"
