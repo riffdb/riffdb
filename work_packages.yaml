@@ -742,6 +742,26 @@ work_packages:
       budgets are compiled; callers submit values only and cannot select an unsafe fold or fallback.
     scale: Source rows, groups, distinct values, state bytes, arithmetic, scans, cells, and output
       are independently finite; no page walk, unbounded set, or database-wide memory is introduced.
+  closure:
+    status: complete
+    completed_at: "2026-08-25"
+    requirements_satisfied: [OQ-011, OQ-012, OQ-013, OQ-044, OQ-045, OQ-046,
+      OQ-047, OQ-048, OQ-049, OQ-050, OQ-051, OQ-053, OQ-055]
+    evidence: RiffQL language V8, query IR V11, and query module V11 add count_present,
+      count_distinct, count_distinct_present, mean, any, and all through the shared semantic
+      registry. Compiler-owned type checks and independent row, group, distinct, state,
+      arithmetic, and output budgets seal every plan. Authoritative and columnar evaluators share
+      exact NoValue, empty-set, canonical-distinct, Boolean, and ExactMeanV1 total/count semantics,
+      with typed whole-result refusal before release. Service, gRPC, MCP, CLI, and generated Rust,
+      Go, TypeScript, and Python surfaces carry the structural mean result without floating point
+      or target-language aggregation logic. Focused package suites, remote driver conformance,
+      topology, generated-artifact, requirement-coverage, workspace-policy, handbook, formatting,
+      and workspace Clippy gates pass.
+    known_limitations: Matched-epoch provider capability advertisement and combined page, total,
+      facets, and aggregate proofs remain WP-695. Differential recovery, security, compatibility,
+      and external generic acceptance remain WP-696. Approximate and advanced statistical families
+      remain descriptor sketches only and have no executable or persisted state.
+    follow_ups: [WP-695, WP-696]
   human_review_triggers: *id001
 - id: WP-695
   name: Aggregate columnar and exact-provider capability integration

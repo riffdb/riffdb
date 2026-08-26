@@ -69,19 +69,20 @@ use riffdb_query_compiler::{
 };
 use riffdb_query_ir::{
     AuthorizationEntityAccess, CoveredResultLayoutV1, NamedQuerySchemas, OperationalQueryFamilyV1,
-    QUERY_IR_VERSION_COVERED_RESULT_V1, QUERY_IR_VERSION_EXACT_FILTERED_RESULT_SET_V1,
-    QUERY_IR_VERSION_EXACT_PREDICATE_V1, QUERY_IR_VERSION_EXACT_RESULT_SET_V1,
-    QUERY_IR_VERSION_NULLABLE_EXACT_ORDER_V1, QUERY_IR_VERSION_OPERATIONAL_AGGREGATE_V1,
-    QUERY_IR_VERSION_OPERATIONAL_V1, QUERY_IR_VERSION_PROJECTED_VECTOR_V1,
-    QUERY_IR_VERSION_SECRET_OUTPUT_V1, QUERY_IR_VERSION_V1, QueryAccessProgramV1, QuerySourceMap,
-    SecretOutputRequirement, SourceSymbolKind, SymbolicCatalog,
+    QUERY_IR_VERSION_COVERED_RESULT_V1, QUERY_IR_VERSION_EXACT_AGGREGATE_V1,
+    QUERY_IR_VERSION_EXACT_FILTERED_RESULT_SET_V1, QUERY_IR_VERSION_EXACT_PREDICATE_V1,
+    QUERY_IR_VERSION_EXACT_RESULT_SET_V1, QUERY_IR_VERSION_NULLABLE_EXACT_ORDER_V1,
+    QUERY_IR_VERSION_OPERATIONAL_AGGREGATE_V1, QUERY_IR_VERSION_OPERATIONAL_V1,
+    QUERY_IR_VERSION_PROJECTED_VECTOR_V1, QUERY_IR_VERSION_SECRET_OUTPUT_V1, QUERY_IR_VERSION_V1,
+    QueryAccessProgramV1, QuerySourceMap, SecretOutputRequirement, SourceSymbolKind,
+    SymbolicCatalog,
 };
 use riffdb_riffql_syntax::{
     Document, MAX_IDENTIFIER_BYTES, MAX_SOURCE_BYTES, ParseDiagnostics, RIFFQL_LANGUAGE_VERSION,
-    RIFFQL_LANGUAGE_VERSION_EXACT_PREDICATE_V1, RIFFQL_LANGUAGE_VERSION_EXACT_RESULT_SET_V1,
-    RIFFQL_LANGUAGE_VERSION_NULLABLE_EXACT_ORDER_V1, RIFFQL_LANGUAGE_VERSION_OPERATIONAL_V1,
-    RIFFQL_LANGUAGE_VERSION_PROJECTED_VECTOR_V1, RIFFQL_LANGUAGE_VERSION_SECRET_OUTPUT_V1,
-    format_query, parse_query,
+    RIFFQL_LANGUAGE_VERSION_EXACT_AGGREGATE_V1, RIFFQL_LANGUAGE_VERSION_EXACT_PREDICATE_V1,
+    RIFFQL_LANGUAGE_VERSION_EXACT_RESULT_SET_V1, RIFFQL_LANGUAGE_VERSION_NULLABLE_EXACT_ORDER_V1,
+    RIFFQL_LANGUAGE_VERSION_OPERATIONAL_V1, RIFFQL_LANGUAGE_VERSION_PROJECTED_VECTOR_V1,
+    RIFFQL_LANGUAGE_VERSION_SECRET_OUTPUT_V1, format_query, parse_query,
 };
 use riffdb_types::{
     ContractBundleHash, ContractLineage, ContractVersion, QueryCostVectorV1, QueryModuleHash,
@@ -117,6 +118,8 @@ pub const QUERY_MODULE_FORMAT_VERSION_PROJECTED_VECTOR_V1: u32 = 8;
 pub const QUERY_MODULE_FORMAT_VERSION_EXACT_PREDICATE_V1: u32 = 9;
 /// Additive module codec carrying nullable exact-order placement.
 pub const QUERY_MODULE_FORMAT_VERSION_NULLABLE_EXACT_ORDER_V1: u32 = 10;
+/// Additive module codec carrying the exact aggregate core and independent budgets.
+pub const QUERY_MODULE_FORMAT_VERSION_EXACT_AGGREGATE_V1: u32 = 11;
 /// Maximum queries retained in one immutable module.
 pub const MAX_MODULE_QUERIES: usize = 4_096;
 /// Maximum canonical bytes for one immutable module.
@@ -821,6 +824,12 @@ impl QueryModule {
     #[must_use]
     pub fn format_version(&self) -> u32 {
         if self.queries.iter().any(|query| {
+            query
+                .operational_family()
+                .is_some_and(|family| family.surface().has_exact_aggregate_core())
+        }) {
+            QUERY_MODULE_FORMAT_VERSION_EXACT_AGGREGATE_V1
+        } else if self.queries.iter().any(|query| {
             matches!(
                 query.plan(),
                 CompiledNamedQueryPlan::NullableExactPredicateV1(_)
@@ -1299,6 +1308,11 @@ fn encode_module(
             .operational_family()
             .is_some_and(|family| !family.aggregates().is_empty())
     });
+    let exact_aggregate = queries.iter().any(|query| {
+        query
+            .operational_family()
+            .is_some_and(|family| family.surface().has_exact_aggregate_core())
+    });
     let secret_output = queries
         .iter()
         .any(|query| !query.plan().secret_outputs().is_empty());
@@ -1312,7 +1326,9 @@ fn encode_module(
             .projected_source()
             .is_some()
     });
-    let format_version = if nullable_exact_order {
+    let format_version = if exact_aggregate {
+        QUERY_MODULE_FORMAT_VERSION_EXACT_AGGREGATE_V1
+    } else if nullable_exact_order {
         QUERY_MODULE_FORMAT_VERSION_NULLABLE_EXACT_ORDER_V1
     } else if exact_predicate {
         QUERY_MODULE_FORMAT_VERSION_EXACT_PREDICATE_V1
@@ -1342,7 +1358,9 @@ fn encode_module(
     output.extend_from_slice(&contract.contract_version().get().to_be_bytes());
     output.extend_from_slice(contract.bundle_hash().as_bytes());
     output.extend_from_slice(
-        &if nullable_exact_order {
+        &if exact_aggregate {
+            RIFFQL_LANGUAGE_VERSION_EXACT_AGGREGATE_V1
+        } else if nullable_exact_order {
             RIFFQL_LANGUAGE_VERSION_NULLABLE_EXACT_ORDER_V1
         } else if exact_predicate {
             RIFFQL_LANGUAGE_VERSION_EXACT_PREDICATE_V1
@@ -1360,7 +1378,9 @@ fn encode_module(
         .to_be_bytes(),
     );
     output.extend_from_slice(
-        &if nullable_exact_order {
+        &if exact_aggregate {
+            QUERY_IR_VERSION_EXACT_AGGREGATE_V1
+        } else if nullable_exact_order {
             QUERY_IR_VERSION_NULLABLE_EXACT_ORDER_V1
         } else if exact_predicate {
             QUERY_IR_VERSION_EXACT_PREDICATE_V1
@@ -1454,6 +1474,7 @@ fn decode_candidate(bytes: &[u8]) -> Result<DecodedCandidate, QueryModuleError> 
             | QUERY_MODULE_FORMAT_VERSION_PROJECTED_VECTOR_V1
             | QUERY_MODULE_FORMAT_VERSION_EXACT_PREDICATE_V1
             | QUERY_MODULE_FORMAT_VERSION_NULLABLE_EXACT_ORDER_V1
+            | QUERY_MODULE_FORMAT_VERSION_EXACT_AGGREGATE_V1
     ) {
         return Err(QueryModuleError::new(
             QueryModuleErrorKind::UnsupportedVersion,
@@ -1515,6 +1536,10 @@ fn decode_candidate(bytes: &[u8]) -> Result<DecodedCandidate, QueryModuleError> 
             language_version == RIFFQL_LANGUAGE_VERSION_NULLABLE_EXACT_ORDER_V1
                 && ir_version == QUERY_IR_VERSION_NULLABLE_EXACT_ORDER_V1
         }
+        QUERY_MODULE_FORMAT_VERSION_EXACT_AGGREGATE_V1 => {
+            language_version == RIFFQL_LANGUAGE_VERSION_EXACT_AGGREGATE_V1
+                && ir_version == QUERY_IR_VERSION_EXACT_AGGREGATE_V1
+        }
         _ => false,
     };
     if !versions_match {
@@ -1551,7 +1576,8 @@ fn decode_candidate(bytes: &[u8]) -> Result<DecodedCandidate, QueryModuleError> 
                 | QUERY_MODULE_FORMAT_VERSION_COVERED_RESULT_V1
                 | QUERY_MODULE_FORMAT_VERSION_PROJECTED_VECTOR_V1
                 | QUERY_MODULE_FORMAT_VERSION_EXACT_PREDICATE_V1
-                | QUERY_MODULE_FORMAT_VERSION_NULLABLE_EXACT_ORDER_V1 => 10,
+                | QUERY_MODULE_FORMAT_VERSION_NULLABLE_EXACT_ORDER_V1
+                | QUERY_MODULE_FORMAT_VERSION_EXACT_AGGREGATE_V1 => 10,
                 QUERY_MODULE_FORMAT_VERSION_OPERATIONAL_AGGREGATE_V1 => 9,
                 _ => 7,
             };

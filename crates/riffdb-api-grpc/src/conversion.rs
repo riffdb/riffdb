@@ -624,7 +624,7 @@ fn symbolic_record_into_proto(
     enum_names: &riffdb_service::SharedEnumVariantNames,
     record: SymbolicResultRecord,
 ) -> Result<app_v1::ResultRecord, Status> {
-    let (entity, fields, exact_decimals) = record.into_parts();
+    let (entity, fields, exact_decimals, exact_means) = record.into_parts();
     let mut fields = fields
         .into_iter()
         .map(|(name, value)| {
@@ -648,6 +648,38 @@ fn symbolic_record_into_proto(
                             value.scale(),
                         ),
                     )),
+                }),
+            }),
+    );
+    fields.extend(
+        exact_means
+            .into_iter()
+            .map(|(name, value)| app_v1::Parameter {
+                name: name.to_string(),
+                value: Some(v1::Value {
+                    kind: Some(v1::value::Kind::RecordValue(v1::ValueRecord {
+                        fields: vec![
+                            v1::ValueField {
+                                field_id: None,
+                                name: "total".to_owned(),
+                                value: Some(v1::Value {
+                                    kind: Some(v1::value::Kind::DecimalValue(
+                                        riffdb_proto::aggregate_decimal_sum_to_proto(
+                                            value.coefficient(),
+                                            value.scale(),
+                                        ),
+                                    )),
+                                }),
+                            },
+                            v1::ValueField {
+                                field_id: None,
+                                name: "count".to_owned(),
+                                value: Some(v1::Value {
+                                    kind: Some(v1::value::Kind::U64Value(value.count())),
+                                }),
+                            },
+                        ],
+                    })),
                 }),
             }),
     );
@@ -931,6 +963,40 @@ fn live_record_to_proto(
                             value.scale(),
                         ),
                     )),
+                }),
+            }),
+    );
+    fields.extend(
+        record
+            .exact_means()
+            .iter()
+            .map(|(name, value)| v1::ValueField {
+                field_id: None,
+                name: name.to_string(),
+                value: Some(v1::Value {
+                    kind: Some(v1::value::Kind::RecordValue(v1::ValueRecord {
+                        fields: vec![
+                            v1::ValueField {
+                                field_id: None,
+                                name: "total".to_owned(),
+                                value: Some(v1::Value {
+                                    kind: Some(v1::value::Kind::DecimalValue(
+                                        riffdb_proto::aggregate_decimal_sum_to_proto(
+                                            value.coefficient(),
+                                            value.scale(),
+                                        ),
+                                    )),
+                                }),
+                            },
+                            v1::ValueField {
+                                field_id: None,
+                                name: "count".to_owned(),
+                                value: Some(v1::Value {
+                                    kind: Some(v1::value::Kind::U64Value(value.count())),
+                                }),
+                            },
+                        ],
+                    })),
                 }),
             }),
     );
@@ -7665,6 +7731,54 @@ mod tests {
         assert_eq!(total.precision, None);
         let submitted = submitted_decimal(total).expect("full i128 coefficient");
         assert_eq!(submitted.coefficient(), i128::MAX);
+    }
+
+    #[test]
+    fn symbolic_exact_mean_crosses_the_public_record_carrier_exactly() {
+        let record = SymbolicResultRecord::from_exact_mean_for_test(
+            Arc::<str>::from("summary"),
+            Arc::<str>::from("mean_amount"),
+            i128::MAX,
+            3,
+            17,
+        );
+        let wire = symbolic_record_into_proto(&Arc::new(BTreeMap::new()), record)
+            .expect("exact mean record conversion");
+        let mean = wire.fields[0]
+            .value
+            .as_ref()
+            .and_then(|value| value.kind.as_ref());
+        let Some(v1::value::Kind::RecordValue(mean)) = mean else {
+            panic!("exact mean was not a public record")
+        };
+        assert_eq!(
+            mean.fields
+                .iter()
+                .map(|field| field.name.as_str())
+                .collect::<Vec<_>>(),
+            ["total", "count"]
+        );
+        let total = mean.fields[0]
+            .value
+            .as_ref()
+            .and_then(|value| value.kind.as_ref());
+        let Some(v1::value::Kind::DecimalValue(total)) = total else {
+            panic!("exact mean total was not a public decimal")
+        };
+        assert_eq!(total.scale, 3);
+        assert_eq!(
+            submitted_decimal(total)
+                .expect("full i128 coefficient")
+                .coefficient(),
+            i128::MAX
+        );
+        assert!(matches!(
+            mean.fields[1]
+                .value
+                .as_ref()
+                .and_then(|value| value.kind.as_ref()),
+            Some(v1::value::Kind::U64Value(17))
+        ));
     }
 
     fn hex_decode(hex: &str) -> Vec<u8> {

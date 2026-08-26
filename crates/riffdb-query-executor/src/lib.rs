@@ -1578,6 +1578,15 @@ pub enum QueryAggregateCell {
         /// Declared decimal scale.
         scale: u8,
     },
+    /// Exact mean partial state returned without division or rounding.
+    ExactMean {
+        /// Checked signed total coefficient at the declared scale.
+        coefficient: i128,
+        /// Declared decimal scale.
+        scale: u8,
+        /// Exact contributing row count.
+        count: u64,
+    },
 }
 
 /// One name-addressed aggregate result record.
@@ -2434,8 +2443,10 @@ fn evaluate_operational_aggregate(
     parameters: &QueryParameters,
 ) -> Result<QueryResultValue, QueryExecutionError> {
     let maximum_groups = resolve_page_bound(aggregate.maximum_groups(), parameters)?;
+    let mut fuel = AggregateExecutionFuel::new(aggregate);
     let mut groups = BTreeMap::<Vec<u8>, (Vec<CanonicalValue>, Vec<&QueryRow>)>::new();
     if aggregate.group_keys().is_empty() {
+        fuel.consume_state(1)?;
         groups.insert(Vec::new(), (Vec::new(), rows.iter().collect()));
     } else {
         for row in rows {
@@ -2452,11 +2463,20 @@ fn evaluate_operational_aggregate(
                 })
                 .collect::<Result<Vec<_>, _>>()?;
             let encoded = encode_group_key(&keys)?;
-            groups
-                .entry(encoded)
-                .or_insert_with(|| (keys, Vec::new()))
-                .1
-                .push(row);
+            match groups.entry(encoded) {
+                std::collections::btree_map::Entry::Vacant(entry) => {
+                    let state_bytes = entry
+                        .key()
+                        .len()
+                        .checked_add(32)
+                        .ok_or(QueryExecutionError::BoundExceeded)?;
+                    fuel.consume_state(state_bytes)?;
+                    entry.insert((keys, vec![row]));
+                }
+                std::collections::btree_map::Entry::Occupied(mut entry) => {
+                    entry.get_mut().1.push(row);
+                }
+            }
             if groups.len() as u64 > maximum_groups {
                 return Err(QueryExecutionError::BoundExceeded);
             }
@@ -2478,7 +2498,7 @@ fn evaluate_operational_aggregate(
             if !selected.contains(measure.alias()) {
                 continue;
             }
-            let cell = evaluate_aggregate_measure(aggregate, measure, &grouped_rows)?;
+            let cell = evaluate_aggregate_measure(aggregate, measure, &grouped_rows, &mut fuel)?;
             if let Some(cell) = cell {
                 fields.insert(Arc::<str>::from(measure.alias()), cell);
             }
@@ -2499,14 +2519,52 @@ fn evaluate_operational_aggregate(
     }
 }
 
+struct AggregateExecutionFuel {
+    remaining_state_bytes: usize,
+    remaining_arithmetic_operations: usize,
+    maximum_distinct_values_per_measure: usize,
+}
+
+impl AggregateExecutionFuel {
+    fn new(aggregate: &OperationalAggregateV1) -> Self {
+        let budget = aggregate.execution_budget();
+        Self {
+            remaining_state_bytes: budget.maximum_state_bytes() as usize,
+            remaining_arithmetic_operations: budget.maximum_arithmetic_operations() as usize,
+            maximum_distinct_values_per_measure: usize::from(
+                budget.maximum_distinct_values_per_measure(),
+            ),
+        }
+    }
+
+    fn consume_state(&mut self, bytes: usize) -> Result<(), QueryExecutionError> {
+        self.remaining_state_bytes = self
+            .remaining_state_bytes
+            .checked_sub(bytes)
+            .ok_or(QueryExecutionError::BoundExceeded)?;
+        Ok(())
+    }
+
+    fn consume_operations(&mut self, operations: usize) -> Result<(), QueryExecutionError> {
+        self.remaining_arithmetic_operations = self
+            .remaining_arithmetic_operations
+            .checked_sub(operations)
+            .ok_or(QueryExecutionError::BoundExceeded)?;
+        Ok(())
+    }
+}
+
 fn evaluate_aggregate_measure(
     aggregate: &OperationalAggregateV1,
     measure: &riffdb_query_ir::OperationalAggregateMeasureV1,
     rows: &[&QueryRow],
+    fuel: &mut AggregateExecutionFuel,
 ) -> Result<Option<QueryAggregateCell>, QueryExecutionError> {
     let semantic = measure.function().semantic_identity();
+    fuel.consume_operations(rows.len())?;
     match semantic {
         AggregateSemanticIdentityV1::Count => {
+            fuel.consume_state(std::mem::size_of::<u64>())?;
             Ok(Some(QueryAggregateCell::Canonical(CanonicalValue::U64(
                 u64::try_from(rows.len()).map_err(|_| QueryExecutionError::BoundExceeded)?,
             ))))
@@ -2536,6 +2594,7 @@ fn evaluate_aggregate_measure(
                     .checked_add(contribution)
                     .ok_or(QueryExecutionError::AggregateOverflow)?;
             }
+            fuel.consume_state(std::mem::size_of::<i128>() + std::mem::size_of::<u8>())?;
             Ok(Some(QueryAggregateCell::ExactDecimal {
                 coefficient,
                 scale,
@@ -2562,11 +2621,23 @@ fn evaluate_aggregate_measure(
                             AggregateSemanticIdentityV1::Max => ordering == Ordering::Greater,
                             AggregateSemanticIdentityV1::Count
                             | AggregateSemanticIdentityV1::ExactCount
-                            | AggregateSemanticIdentityV1::Sum => unreachable!(),
+                            | AggregateSemanticIdentityV1::Sum
+                            | AggregateSemanticIdentityV1::CountPresent
+                            | AggregateSemanticIdentityV1::CountDistinct
+                            | AggregateSemanticIdentityV1::CountDistinctPresent
+                            | AggregateSemanticIdentityV1::Mean
+                            | AggregateSemanticIdentityV1::Any
+                            | AggregateSemanticIdentityV1::All => unreachable!(),
                         };
                         if replace { value } else { current }
                     }
                 });
+            }
+            if let Some(value) = selected_value {
+                fuel.consume_state(
+                    canonical_value_encoded_len(value)
+                        .map_err(|_| QueryExecutionError::InvalidProgram)?,
+                )?;
             }
             match selected_value {
                 Some(value) => Ok(Some(QueryAggregateCell::Canonical(value.clone()))),
@@ -2581,8 +2652,128 @@ fn evaluate_aggregate_measure(
                 None => Ok(Some(QueryAggregateCell::Canonical(CanonicalValue::Null))),
             }
         }
+        AggregateSemanticIdentityV1::CountPresent => {
+            let field = measure
+                .input_field()
+                .ok_or(QueryExecutionError::InvalidProgram)?;
+            let mut count = 0_u64;
+            for row in rows {
+                let value = aggregate_input_value(aggregate, row, field)?;
+                if !matches!(value, CanonicalValue::Null) {
+                    count = count
+                        .checked_add(1)
+                        .ok_or(QueryExecutionError::AggregateOverflow)?;
+                }
+            }
+            fuel.consume_state(std::mem::size_of::<u64>())?;
+            Ok(Some(QueryAggregateCell::Canonical(CanonicalValue::U64(
+                count,
+            ))))
+        }
+        AggregateSemanticIdentityV1::CountDistinct
+        | AggregateSemanticIdentityV1::CountDistinctPresent => {
+            let field = measure
+                .input_field()
+                .ok_or(QueryExecutionError::InvalidProgram)?;
+            let mut distinct = BTreeSet::new();
+            for row in rows {
+                let value = aggregate_input_value(aggregate, row, field)?;
+                if semantic == AggregateSemanticIdentityV1::CountDistinctPresent
+                    && matches!(value, CanonicalValue::Null)
+                {
+                    continue;
+                }
+                let encoded = encode_canonical_value(value)
+                    .map_err(|_| QueryExecutionError::InvalidProgram)?;
+                if !distinct.contains(&encoded) {
+                    if distinct.len() >= fuel.maximum_distinct_values_per_measure {
+                        return Err(QueryExecutionError::BoundExceeded);
+                    }
+                    fuel.consume_state(
+                        encoded
+                            .len()
+                            .checked_add(32)
+                            .ok_or(QueryExecutionError::BoundExceeded)?,
+                    )?;
+                    distinct.insert(encoded);
+                }
+            }
+            let count =
+                u64::try_from(distinct.len()).map_err(|_| QueryExecutionError::BoundExceeded)?;
+            Ok(Some(QueryAggregateCell::Canonical(CanonicalValue::U64(
+                count,
+            ))))
+        }
+        AggregateSemanticIdentityV1::Mean => {
+            let field = measure
+                .input_field()
+                .ok_or(QueryExecutionError::InvalidProgram)?;
+            let scale = aggregate_mean_scale(measure.result_type())?;
+            let mut coefficient = 0_i128;
+            let mut count = 0_u64;
+            for row in rows {
+                let value = aggregate_input_value(aggregate, row, field)?;
+                let contribution = match value {
+                    CanonicalValue::I64(value) => i128::from(*value),
+                    CanonicalValue::U64(value) => i128::from(*value),
+                    CanonicalValue::Decimal(value) if value.spec().scale() == scale => {
+                        value.coefficient()
+                    }
+                    _ => return Err(QueryExecutionError::InvalidProgram),
+                };
+                coefficient = coefficient
+                    .checked_add(contribution)
+                    .ok_or(QueryExecutionError::AggregateOverflow)?;
+                count = count
+                    .checked_add(1)
+                    .ok_or(QueryExecutionError::AggregateOverflow)?;
+            }
+            fuel.consume_state(
+                std::mem::size_of::<i128>()
+                    + std::mem::size_of::<u8>()
+                    + std::mem::size_of::<u64>(),
+            )?;
+            Ok(Some(QueryAggregateCell::ExactMean {
+                coefficient,
+                scale,
+                count,
+            }))
+        }
+        AggregateSemanticIdentityV1::Any | AggregateSemanticIdentityV1::All => {
+            let field = measure
+                .input_field()
+                .ok_or(QueryExecutionError::InvalidProgram)?;
+            let mut result = semantic == AggregateSemanticIdentityV1::All;
+            for row in rows {
+                let CanonicalValue::Bool(value) = aggregate_input_value(aggregate, row, field)?
+                else {
+                    return Err(QueryExecutionError::InvalidProgram);
+                };
+                if semantic == AggregateSemanticIdentityV1::Any {
+                    result |= *value;
+                } else {
+                    result &= *value;
+                }
+            }
+            fuel.consume_state(std::mem::size_of::<bool>())?;
+            Ok(Some(QueryAggregateCell::Canonical(CanonicalValue::Bool(
+                result,
+            ))))
+        }
         AggregateSemanticIdentityV1::ExactCount => Err(QueryExecutionError::InvalidProgram),
     }
+}
+
+fn aggregate_input_value<'a>(
+    aggregate: &OperationalAggregateV1,
+    row: &'a QueryRow,
+    field: &str,
+) -> Result<&'a CanonicalValue, QueryExecutionError> {
+    row.field(field)
+        .ok_or_else(|| QueryExecutionError::MissingField {
+            entity: aggregate.source_entity().to_owned(),
+            field: field.to_owned(),
+        })
 }
 
 fn aggregate_sum_scale(result_type: &NamedTypeSchema) -> Result<u8, QueryExecutionError> {
@@ -2599,6 +2790,17 @@ fn aggregate_sum_scale(result_type: &NamedTypeSchema) -> Result<u8, QueryExecuti
     scale
         .parse::<u8>()
         .map_err(|_| QueryExecutionError::InvalidProgram)
+}
+
+fn aggregate_mean_scale(result_type: &NamedTypeSchema) -> Result<u8, QueryExecutionError> {
+    let NamedTypeSchema::Record(fields) = result_type else {
+        return Err(QueryExecutionError::InvalidProgram);
+    };
+    let total = fields
+        .iter()
+        .find(|field| field.name() == "total")
+        .ok_or(QueryExecutionError::InvalidProgram)?;
+    aggregate_sum_scale(total.value_type())
 }
 
 fn resolve_page_bound(
@@ -2803,6 +3005,9 @@ fn encoded_aggregate_rows(
                 QueryAggregateCell::Canonical(value) => canonical_value_encoded_len(value)
                     .map_err(|_| QueryExecutionError::InvalidProgram)?,
                 QueryAggregateCell::ExactDecimal { .. } => 18,
+                // Includes the structural `total`/`count` record framing in
+                // addition to the 25 payload bytes.
+                QueryAggregateCell::ExactMean { .. } => 80,
             };
             bytes = bytes
                 .checked_add(field.len() as u64)
@@ -3208,6 +3413,8 @@ contract OperationalAggregate version 1 {
     key (organization_id: uuid, ticket_id: uuid)
     field status: string<32>
     field story_points: i64
+    field label: optional<string<32>>
+    field enabled: bool
     index by_status (organization_id, status, ticket_id)
   }
   aggregate Tickets {
@@ -3264,6 +3471,40 @@ query EmptySummary($organization_id: Ticket.organization_id) {
         min(story_points) as minimum_points
     }
     return Found { summary: summary { ticket_count total_points minimum_points } }
+    outcomes Found
+}
+"#;
+
+    const EXACT_CORE_SUMMARY: &str = r#"
+query ExactCoreSummary($organization_id: Ticket.organization_id) {
+    many tickets from Ticket
+        where organization_id == $organization_id
+        order by status asc, ticket_id asc
+        take 5
+    aggregate summary from tickets {
+        count_present(label) as present_labels
+        count_distinct(label) as distinct_labels
+        count_distinct_present(label) as distinct_present_labels
+        mean(story_points) as mean_points
+        any(enabled) as any_enabled
+        all(enabled) as all_enabled
+    }
+    return Found { summary: summary {
+        present_labels distinct_labels distinct_present_labels
+        mean_points any_enabled all_enabled
+    } }
+    outcomes Found
+}
+"#;
+
+    const DISTINCT_BUDGET_SUMMARY: &str = r#"
+query DistinctBudgetSummary($organization_id: Ticket.organization_id) {
+    many tickets from Ticket
+        where organization_id == $organization_id
+        order by status asc, ticket_id asc
+        take 300
+    aggregate summary from tickets { count_distinct(label) as distinct_labels }
+    return Found { summary: summary { distinct_labels } }
     outcomes Found
 }
 "#;
@@ -3756,6 +3997,173 @@ query OptionalMinimumSummary($organization_id: Ticket.organization_id) {
                 coefficient: 10,
                 scale: 0,
             })
+        );
+    }
+
+    #[test]
+    fn exact_aggregate_core_freezes_novalue_empty_and_mean_state() {
+        let bundle = compile_contract_source(AGGREGATE_CONTRACT).expect("contract");
+        let catalog = SymbolicCatalog::from_bundle(&bundle).expect("catalog");
+        let family = compile_operational_query_family(
+            &parse_query(EXACT_CORE_SUMMARY).expect("query"),
+            &catalog,
+        )
+        .expect("family");
+        let parameters = QueryParameters::checked(BTreeMap::from([(
+            "organization_id".to_owned(),
+            CanonicalValue::Uuid([1; 16]),
+        )]))
+        .expect("parameters");
+        let tickets = vec![
+            row(
+                "Ticket",
+                &[
+                    ("organization_id", CanonicalValue::Uuid([1; 16])),
+                    ("ticket_id", CanonicalValue::Uuid([2; 16])),
+                    ("status", CanonicalValue::string("Open").expect("status")),
+                    ("story_points", CanonicalValue::I64(3)),
+                    ("label", CanonicalValue::Null),
+                    ("enabled", CanonicalValue::Bool(false)),
+                ],
+            ),
+            row(
+                "Ticket",
+                &[
+                    ("organization_id", CanonicalValue::Uuid([1; 16])),
+                    ("ticket_id", CanonicalValue::Uuid([3; 16])),
+                    ("status", CanonicalValue::string("Open").expect("status")),
+                    ("story_points", CanonicalValue::I64(5)),
+                    ("label", CanonicalValue::string("alpha").expect("label")),
+                    ("enabled", CanonicalValue::Bool(true)),
+                ],
+            ),
+            row(
+                "Ticket",
+                &[
+                    ("organization_id", CanonicalValue::Uuid([1; 16])),
+                    ("ticket_id", CanonicalValue::Uuid([4; 16])),
+                    ("status", CanonicalValue::string("Open").expect("status")),
+                    ("story_points", CanonicalValue::I64(7)),
+                    ("label", CanonicalValue::string("alpha").expect("label")),
+                    ("enabled", CanonicalValue::Bool(true)),
+                ],
+            ),
+        ];
+        let execute = |rows| {
+            let mut view = FakeView {
+                rows: BTreeMap::from([("tickets".to_owned(), rows)]),
+            };
+            execute_operational_page_in_snapshot(
+                family.select(&[]).expect("sole member").program(),
+                family.aggregates(),
+                &parameters,
+                None,
+                &mut view,
+            )
+            .expect("execute")
+        };
+
+        let snapshot = execute(tickets);
+        let Some(QueryResultValue::AggregateOne(summary)) = snapshot.fields().get("summary") else {
+            panic!("summary missing")
+        };
+        for (name, expected) in [
+            ("present_labels", 2),
+            ("distinct_labels", 2),
+            ("distinct_present_labels", 1),
+        ] {
+            assert_eq!(
+                summary.fields().get(name),
+                Some(&QueryAggregateCell::Canonical(CanonicalValue::U64(
+                    expected
+                )))
+            );
+        }
+        assert_eq!(
+            summary.fields().get("mean_points"),
+            Some(&QueryAggregateCell::ExactMean {
+                coefficient: 15,
+                scale: 0,
+                count: 3,
+            })
+        );
+        assert_eq!(
+            summary.fields().get("any_enabled"),
+            Some(&QueryAggregateCell::Canonical(CanonicalValue::Bool(true)))
+        );
+        assert_eq!(
+            summary.fields().get("all_enabled"),
+            Some(&QueryAggregateCell::Canonical(CanonicalValue::Bool(false)))
+        );
+
+        let empty = execute(Vec::new());
+        let Some(QueryResultValue::AggregateOne(summary)) = empty.fields().get("summary") else {
+            panic!("empty summary missing")
+        };
+        assert_eq!(
+            summary.fields().get("mean_points"),
+            Some(&QueryAggregateCell::ExactMean {
+                coefficient: 0,
+                scale: 0,
+                count: 0,
+            })
+        );
+        assert_eq!(
+            summary.fields().get("any_enabled"),
+            Some(&QueryAggregateCell::Canonical(CanonicalValue::Bool(false)))
+        );
+        assert_eq!(
+            summary.fields().get("all_enabled"),
+            Some(&QueryAggregateCell::Canonical(CanonicalValue::Bool(true)))
+        );
+    }
+
+    #[test]
+    fn distinct_budget_exhaustion_withholds_the_complete_aggregate() {
+        let bundle = compile_contract_source(AGGREGATE_CONTRACT).expect("contract");
+        let catalog = SymbolicCatalog::from_bundle(&bundle).expect("catalog");
+        let family = compile_operational_query_family(
+            &parse_query(DISTINCT_BUDGET_SUMMARY).expect("query"),
+            &catalog,
+        )
+        .expect("family");
+        let parameters = QueryParameters::checked(BTreeMap::from([(
+            "organization_id".to_owned(),
+            CanonicalValue::Uuid([1; 16]),
+        )]))
+        .expect("parameters");
+        let tickets = (0_u16..=256)
+            .map(|ordinal| {
+                let mut ticket_id = [0_u8; 16];
+                ticket_id[14..].copy_from_slice(&ordinal.to_be_bytes());
+                row(
+                    "Ticket",
+                    &[
+                        ("organization_id", CanonicalValue::Uuid([1; 16])),
+                        ("ticket_id", CanonicalValue::Uuid(ticket_id)),
+                        ("status", CanonicalValue::string("Open").expect("status")),
+                        ("story_points", CanonicalValue::I64(1)),
+                        (
+                            "label",
+                            CanonicalValue::string(format!("label-{ordinal:03}")).expect("label"),
+                        ),
+                        ("enabled", CanonicalValue::Bool(true)),
+                    ],
+                )
+            })
+            .collect();
+        let mut view = FakeView {
+            rows: BTreeMap::from([("tickets".to_owned(), tickets)]),
+        };
+        assert_eq!(
+            execute_operational_page_in_snapshot(
+                family.select(&[]).expect("sole member").program(),
+                family.aggregates(),
+                &parameters,
+                None,
+                &mut view,
+            ),
+            Err(QueryExecutionError::BoundExceeded)
         );
     }
 

@@ -98,6 +98,13 @@ fields, authorization union, cost, and the source-row-limit group clamp. At
 runtime the selected member access and all folds execute in one engine-owned
 snapshot; no storage scan fallback or client-side fold exists.
 
+Language-version-8 aggregate queries use query-IR/module version 11. The plan
+seals exact distinct cardinality, partial-state byte, and arithmetic-operation
+ceilings independently from its source row, group, scan, cell, and output
+bounds. The reference and columnar evaluators consume those resources across
+the whole result, apply row policy before contribution, and withhold every
+aggregate cell if any dimension is exhausted.
+
 Declared relationship metadata may justify symbolic navigation only when it
 lowers to the target's complete primary-key point read or an already bounded
 dependent-key batch. It cannot infer colocation, omit a partition predicate,

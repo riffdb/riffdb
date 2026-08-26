@@ -1,6 +1,6 @@
 # Aggregate semantic registry v1
 
-Status: WP-693 checked architecture evidence; existing behavior only.
+Status: WP-693 registry evidence and WP-694 exact aggregate core implemented.
 
 ADR-0152 assigns aggregate meaning to one closed compiler-owned registry. The
 registry is implemented in `riffdb-types::aggregate_semantic_registry_v1` so
@@ -18,6 +18,12 @@ written in a compiled named RiffQL document.
 | `sum` | `AggregateFunction::Sum`; registry spelling `sum`; one exact numeric field | `OperationalAggregateFunctionV1::Sum`; frozen tag `2`; widened decimal schema at source scale | checked `i128` coefficient plus compiler scale; `QueryAggregateCell::ExactDecimal`; empty exact zero | `AggregateOp::Sum`; `AggregateValue::Sum(i128)`; columnar whole/group fold | version-3 module schema emits the existing decimal shape; Rust/Go/TypeScript/Python use their existing exact-decimal value; operational and columnar aggregate fixtures |
 | `min` | `AggregateFunction::Min`; registry spelling `min`; one ordered scalar | `OperationalAggregateFunctionV1::Min`; frozen tag `3`; optional input scalar schema | frozen typed comparison; canonical scalar cell; outer absence only for an empty population | `AggregateOp::Min`; `AggregateValue::Scalar`; columnar whole/group fold | version-3 module preserves optional scalar schema; generated optional canonical value; empty/`NoValue` and columnar fixtures |
 | `max` | `AggregateFunction::Max`; registry spelling `max`; one ordered scalar | `OperationalAggregateFunctionV1::Max`; frozen tag `4`; optional input scalar schema | frozen typed comparison; canonical scalar cell; outer absence only for an empty population | `AggregateOp::Max`; `AggregateValue::Scalar`; columnar whole/group fold | version-3 module preserves optional scalar schema; generated optional canonical value; empty/`NoValue` and columnar fixtures |
+| `count_present` | one canonical scalar field | frozen tag `5`; `u64` | excludes `NoValue`; empty `0` | matching columnar whole/group fold | version-11 module and ordinary generated `u64` |
+| `count_distinct` | one canonical scalar field | frozen tag `6`; `u64` | bounded canonical encoded set; includes `NoValue`; empty `0` | matching bounded columnar fold | version-11 module and ordinary generated `u64` |
+| `count_distinct_present` | one canonical scalar field | frozen tag `7`; `u64` | bounded canonical encoded set excluding `NoValue`; empty `0` | matching bounded columnar fold | version-11 module and ordinary generated `u64` |
+| `mean` | one required exact numeric field | frozen tag `8`; `ExactMeanV1` record | checked `i128` total plus `u64` count; empty `{0,0}`; no division | `AggregateValue::ExactMean` | version-11 structural `{ total, count }` in Rust/Go/TypeScript/Python, gRPC, and MCP |
+| `any` | one required Boolean field | frozen tag `9`; Boolean | checked disjunction; empty `false` | matching columnar fold | version-11 ordinary generated Boolean |
+| `all` | one required Boolean field | frozen tag `10`; Boolean | checked conjunction; empty `true` | matching columnar fold | version-11 ordinary generated Boolean |
 
 `group by` is a population/result-shaping construct, not a sixth function. Its
 resolved keys remain `OperationalAggregateGroupKeyV1`, groups retain canonical
@@ -59,11 +65,11 @@ Refusal releases no partial aggregate.
 
 ## Durable-state classification
 
-The v1 registry and its descriptors are transient compiler vocabulary. They
-are neither serialized nor hashed and therefore add no version-topology node.
-The existing operational tags `1` through `4`, query-IR/module versions, plan
-hashes, result/wire values, generated artifacts, and provider-state identities
-remain byte-exact.
+The v1 registry and its descriptors remain transient compiler vocabulary and
+are not serialized as a registry object. WP-694's executable function tags,
+budgets, result algebra, and source meanings are release-significant and use
+RiffQL version 8 plus query-IR/module version 11. Existing operational tags `1`
+through `4` and query-IR/module version-3 aggregate artifacts remain byte-exact.
 
 An in-memory partial accumulator used only during one bounded evaluation is
 also transient. A future executable artifact that embeds a registry identity,

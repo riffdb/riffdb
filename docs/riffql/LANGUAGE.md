@@ -477,7 +477,7 @@ temporary query unavailability; divergence, retired snapshots, and an
 unsatisfied freshness floor return the typed `RDB-PROJECTION-0101` through
 `RDB-PROJECTION-0103` application errors.
 
-## Bounded exact aggregates (language version 2)
+## Bounded exact aggregates (language versions 2 and 8)
 
 Version 2 also reserves a closed aggregate declaration over one earlier,
 bounded collection binding:
@@ -512,10 +512,19 @@ query TicketSummary($organization_id: Ticket.organization_id) {
 ```
 
 The grammar is deliberately closed: a query may declare at most 16 aggregate
-results, each with at most eight grouping keys and 16 measures. The only
-functions are `count()`, `sum(field)`, `min(field)`, and `max(field)`. Function
-names, input fields, aliases, grouping keys, and the source binding are source
-declarations; callers cannot submit any of them at runtime.
+results, each with at most eight grouping keys and 16 measures. Version 2
+provides `count()`, `sum(field)`, `min(field)`, and `max(field)`. Additive
+language version 8 is selected when a query uses any of:
+
+- `count_present(field)`, which excludes canonical `NoValue`;
+- `count_distinct(field)`, which includes `NoValue` as one exact typed value;
+- `count_distinct_present(field)`, which excludes `NoValue`;
+- `mean(field)`, which returns `ExactMeanV1 { total, count }` without division,
+  rounding, or floating point; or
+- `any(field)` and `all(field)` over required Boolean fields.
+
+Function names, input fields, aliases, grouping keys, and the source binding
+are source declarations; callers cannot submit any of them at runtime.
 
 This syntax and its version-3 query-module representation are executable for
 named queries. Finite-family compilation resolves every grouping and
@@ -531,6 +540,12 @@ checked signed 128-bit accumulator and cross the public boundary as a decimal
 with the source scale and no false precision assertion. Overflow, group-bound
 exhaustion, fuel exhaustion, or a malformed backend row withholds the complete
 query result—there is no partial aggregate response.
+
+The exact aggregate core independently bounds admitted rows, groups, distinct
+values per measure/group, partial-state bytes, checked arithmetic operations,
+scans, result cells, and encoded output. Empty distinct and present counts are
+zero; empty `mean` is `{ total: 0, count: 0 }`; empty `any` is `false`; and
+empty `all` is `true`. A bound or arithmetic failure refuses the whole query.
 
 Grouped rows are ordered by the canonical encoded group key and their count is
 clamped by the source `take` value, including a submitted `Limit`. Version 1

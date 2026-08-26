@@ -95,6 +95,7 @@
 - [System Overview](architecture/OVERVIEW.md)
 - [Command Execution Path](architecture/COMMAND-PATH.md)
 - [Composite Read Views](architecture/COMPOSITE-READ-VIEWS.md)
+- [Aggregate Semantic Registry](architecture/aggregate-semantic-registry-v1.md)
 - [Application Authoring Closure Audit](architecture/wp-210-360-closure.md)
 - [Durability and Multi-Database Closure Audit](architecture/wp-362-391-closure.md)
 - [Projected Read and Benchmark Closure Audit](architecture/wp-430-448-closure.md)

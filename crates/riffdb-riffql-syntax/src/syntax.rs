@@ -16,6 +16,8 @@ pub const RIFFQL_LANGUAGE_VERSION_PROJECTED_VECTOR_V1: u32 = 5;
 pub const RIFFQL_LANGUAGE_VERSION_EXACT_PREDICATE_V1: u32 = 6;
 /// Compiler-declared nullable total-order placement.
 pub const RIFFQL_LANGUAGE_VERSION_NULLABLE_EXACT_ORDER_V1: u32 = 7;
+/// Additive exact aggregate core function family.
+pub const RIFFQL_LANGUAGE_VERSION_EXACT_AGGREGATE_V1: u32 = 8;
 /// Maximum compiler-declared causal projection wait.
 pub const MAX_PROJECTED_CAUSAL_WAIT_MS: u32 = 30_000;
 /// Maximum compiler-declared bounded projection lag.
@@ -201,6 +203,18 @@ pub enum AggregateFunction {
     Min,
     /// Maximum value or the shared empty-set absence.
     Max,
+    /// Exact count of rows whose field is not `NoValue`.
+    CountPresent,
+    /// Exact count of distinct canonical typed values, including `NoValue`.
+    CountDistinct,
+    /// Exact count of distinct canonical typed values excluding `NoValue`.
+    CountDistinctPresent,
+    /// Exact mergeable total and contributing-row count.
+    Mean,
+    /// Boolean disjunction over a required field.
+    Any,
+    /// Boolean conjunction over a required field.
+    All,
 }
 
 /// Expected binding cardinality.

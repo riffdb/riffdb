@@ -2,8 +2,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use riffdb_contract_ir::{ValueType, ValueTypeTag};
 use riffdb_riffql_syntax::{
-    Cardinality, Document, Expression, FieldSelection, Literal, Path, Selection, Span,
-    TypeReference, format_query,
+    Cardinality, Document, Expression, FieldSelection, Literal, Path,
+    RIFFQL_LANGUAGE_VERSION_EXACT_AGGREGATE_V1, Selection, Span, TypeReference, format_query,
 };
 use riffdb_types::{
     AggregateSemanticIdentityV1, ContractBundleHash, ContractLineage, ContractVersion,
@@ -11,10 +11,12 @@ use riffdb_types::{
 };
 
 use crate::{
-    EntitySymbol, MAX_QUERY_ARTIFACT_BYTES, MAX_SOURCE_MAP_ENTRIES, NamedFieldSchema,
-    NamedParameterSchema, NamedQuerySchemas, NamedResultBranchSchema, NamedTypeSchema,
-    OperationalAggregateFunctionV1, OperationalAggregateGroupKeyV1, OperationalAggregateMeasureV1,
-    OperationalAggregateV1, PageBound, QUERY_IR_VERSION_OPERATIONAL_AGGREGATE_V1,
+    AggregateExecutionBudgetV1, EntitySymbol, MAX_AGGREGATE_ARITHMETIC_OPERATIONS_V1,
+    MAX_AGGREGATE_DISTINCT_VALUES_V1, MAX_AGGREGATE_STATE_BYTES_V1, MAX_QUERY_ARTIFACT_BYTES,
+    MAX_SOURCE_MAP_ENTRIES, NamedFieldSchema, NamedParameterSchema, NamedQuerySchemas,
+    NamedResultBranchSchema, NamedTypeSchema, OperationalAggregateFunctionV1,
+    OperationalAggregateGroupKeyV1, OperationalAggregateMeasureV1, OperationalAggregateV1,
+    PageBound, QUERY_IR_VERSION_EXACT_AGGREGATE_V1, QUERY_IR_VERSION_OPERATIONAL_AGGREGATE_V1,
     QUERY_IR_VERSION_PROJECTED_VECTOR_V1, QUERY_IR_VERSION_SECRET_OUTPUT_V1, QUERY_IR_VERSION_V1,
     QueryDiagnostic, QueryDiagnosticCode, QueryDiagnosticStage, QueryDiagnostics, SymbolicCatalog,
     page_take_within_scan_bound, source_aggregate_semantic_identity,
@@ -273,6 +275,8 @@ impl ResolvedQueryV1 {
     pub fn ir_version(&self) -> u32 {
         if self.projected {
             QUERY_IR_VERSION_PROJECTED_VECTOR_V1
+        } else if self.has_exact_aggregate_core() {
+            QUERY_IR_VERSION_EXACT_AGGREGATE_V1
         } else if self.secret_outputs.is_empty() {
             // Declaration-free member access programs retain their original
             // V1 identity. Operational and aggregate versions belong to the
@@ -281,6 +285,24 @@ impl ResolvedQueryV1 {
         } else {
             QUERY_IR_VERSION_SECRET_OUTPUT_V1
         }
+    }
+
+    /// Whether the surface contains an ADR-0152 additive aggregate semantic.
+    #[must_use]
+    pub fn has_exact_aggregate_core(&self) -> bool {
+        self.aggregates.iter().any(|aggregate| {
+            aggregate.measures().iter().any(|measure| {
+                matches!(
+                    measure.function().semantic_identity(),
+                    AggregateSemanticIdentityV1::CountPresent
+                        | AggregateSemanticIdentityV1::CountDistinct
+                        | AggregateSemanticIdentityV1::CountDistinctPresent
+                        | AggregateSemanticIdentityV1::Mean
+                        | AggregateSemanticIdentityV1::Any
+                        | AggregateSemanticIdentityV1::All
+                )
+            })
+        })
     }
 
     /// Exact contract identity.
@@ -657,6 +679,98 @@ impl<'a> Resolver<'a> {
                         ));
                         (function, Some(field_name), result)
                     }
+                    AggregateSemanticIdentityV1::CountPresent
+                    | AggregateSemanticIdentityV1::CountDistinct
+                    | AggregateSemanticIdentityV1::CountDistinctPresent => {
+                        let field = measure
+                            .field
+                            .as_ref()
+                            .ok_or_else(|| self.aggregate_invariant(measure.function.span))?;
+                        let (field_name, field_type) = self.resolve_aggregate_field(
+                            &source,
+                            source_name,
+                            &field.value,
+                            field.span,
+                        )?;
+                        if matches!(field_type.tag(), ValueTypeTag::List | ValueTypeTag::Record) {
+                            return Err(self.diagnostic(
+                                QueryDiagnosticCode::InvalidType,
+                                field.span,
+                                vec![source.entity.name().to_owned(), field_name],
+                                "count_present/distinct input must be a canonical scalar field",
+                            ));
+                        }
+                        let function = match semantic {
+                            AggregateSemanticIdentityV1::CountPresent => {
+                                OperationalAggregateFunctionV1::CountPresent
+                            }
+                            AggregateSemanticIdentityV1::CountDistinct => {
+                                OperationalAggregateFunctionV1::CountDistinct
+                            }
+                            AggregateSemanticIdentityV1::CountDistinctPresent => {
+                                OperationalAggregateFunctionV1::CountDistinctPresent
+                            }
+                            _ => return Err(self.aggregate_invariant(measure.function.span)),
+                        };
+                        (
+                            function,
+                            Some(field_name),
+                            NamedTypeSchema::Scalar("u64".to_owned()),
+                        )
+                    }
+                    AggregateSemanticIdentityV1::Mean => {
+                        let field = measure
+                            .field
+                            .as_ref()
+                            .ok_or_else(|| self.aggregate_invariant(measure.function.span))?;
+                        let (field_name, field_type) = self.resolve_aggregate_field(
+                            &source,
+                            source_name,
+                            &field.value,
+                            field.span,
+                        )?;
+                        let total = self.aggregate_sum_type(&field_type, field.span)?;
+                        (
+                            OperationalAggregateFunctionV1::Mean,
+                            Some(field_name),
+                            NamedTypeSchema::Record(vec![
+                                NamedFieldSchema::new("total".to_owned(), total),
+                                NamedFieldSchema::new(
+                                    "count".to_owned(),
+                                    NamedTypeSchema::Scalar("u64".to_owned()),
+                                ),
+                            ]),
+                        )
+                    }
+                    AggregateSemanticIdentityV1::Any | AggregateSemanticIdentityV1::All => {
+                        let field = measure
+                            .field
+                            .as_ref()
+                            .ok_or_else(|| self.aggregate_invariant(measure.function.span))?;
+                        let (field_name, field_type) = self.resolve_aggregate_field(
+                            &source,
+                            source_name,
+                            &field.value,
+                            field.span,
+                        )?;
+                        if field_type.tag() != ValueTypeTag::Bool {
+                            return Err(self.diagnostic(
+                                QueryDiagnosticCode::InvalidType,
+                                field.span,
+                                vec![source.entity.name().to_owned(), field_name],
+                                "any/all input must be a required bool field",
+                            ));
+                        }
+                        (
+                            if semantic == AggregateSemanticIdentityV1::Any {
+                                OperationalAggregateFunctionV1::Any
+                            } else {
+                                OperationalAggregateFunctionV1::All
+                            },
+                            Some(field_name),
+                            NamedTypeSchema::Scalar("bool".to_owned()),
+                        )
+                    }
                 };
                 result_fields.insert(alias.clone(), result_type.clone());
                 self.push_map(
@@ -687,6 +801,25 @@ impl<'a> Resolver<'a> {
                     )
                 })?
             };
+            let maximum_input_rows = match source.take.as_ref() {
+                Some(PageBound::Literal(value)) => *value,
+                Some(PageBound::Parameter(_)) => crate::max_query_page_take(),
+                None => return Err(self.aggregate_invariant(aggregate.source.span)),
+            };
+            let maximum_arithmetic_operations = maximum_input_rows
+                .checked_mul(
+                    u64::try_from(measures.len())
+                        .map_err(|_| self.aggregate_invariant(aggregate.name.span))?,
+                )
+                .and_then(|value| u32::try_from(value).ok())
+                .filter(|value| *value <= MAX_AGGREGATE_ARITHMETIC_OPERATIONS_V1)
+                .ok_or_else(|| self.aggregate_invariant(aggregate.name.span))?;
+            let execution_budget = AggregateExecutionBudgetV1::checked(
+                MAX_AGGREGATE_DISTINCT_VALUES_V1,
+                MAX_AGGREGATE_STATE_BYTES_V1,
+                maximum_arithmetic_operations,
+            )
+            .ok_or_else(|| self.aggregate_invariant(aggregate.name.span))?;
             let resolved = OperationalAggregateV1::checked(
                 name.to_owned(),
                 source_name.to_owned(),
@@ -694,6 +827,7 @@ impl<'a> Resolver<'a> {
                 group_keys,
                 measures,
                 maximum_groups.clone(),
+                execution_budget,
             )
             .ok_or_else(|| self.aggregate_invariant(aggregate.name.span))?;
             self.aggregates.insert(
@@ -1587,7 +1721,9 @@ fn canonical_surface(
     );
     bytes.extend_from_slice(IR_MAGIC);
     bytes.extend_from_slice(
-        &if document.projected_source.is_some() {
+        &if document.language_version == RIFFQL_LANGUAGE_VERSION_EXACT_AGGREGATE_V1 {
+            QUERY_IR_VERSION_EXACT_AGGREGATE_V1
+        } else if document.projected_source.is_some() {
             QUERY_IR_VERSION_PROJECTED_VECTOR_V1
         } else if !secret_outputs.is_empty() {
             QUERY_IR_VERSION_SECRET_OUTPUT_V1
@@ -1639,6 +1775,26 @@ fn canonical_surface(
                 encode_named_type(&mut bytes, measure.result_type())?;
             }
             encode_page_bound(&mut bytes, aggregate.maximum_groups())?;
+            if document.language_version == RIFFQL_LANGUAGE_VERSION_EXACT_AGGREGATE_V1 {
+                bytes.extend_from_slice(
+                    &aggregate
+                        .execution_budget()
+                        .maximum_distinct_values_per_measure()
+                        .to_be_bytes(),
+                );
+                bytes.extend_from_slice(
+                    &aggregate
+                        .execution_budget()
+                        .maximum_state_bytes()
+                        .to_be_bytes(),
+                );
+                bytes.extend_from_slice(
+                    &aggregate
+                        .execution_budget()
+                        .maximum_arithmetic_operations()
+                        .to_be_bytes(),
+                );
+            }
         }
     }
     push_count(&mut bytes, schemas.parameters().len())?;

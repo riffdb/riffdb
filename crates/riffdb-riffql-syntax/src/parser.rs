@@ -6,10 +6,11 @@ use crate::{
     MAX_COLLECTION_ITEMS, MAX_NESTING, MAX_PROJECTED_CAUSAL_WAIT_MS, MAX_PROJECTED_LAG_MS,
     MAX_SYNTAX_ITEMS, NullPlacement, OrderTerm, Parameter, ParseDiagnostic, ParseDiagnostics, Path,
     ProjectedFreshness, ProjectedSource, QueryBody, RIFFQL_LANGUAGE_VERSION,
-    RIFFQL_LANGUAGE_VERSION_EXACT_PREDICATE_V1, RIFFQL_LANGUAGE_VERSION_EXACT_RESULT_SET_V1,
-    RIFFQL_LANGUAGE_VERSION_NULLABLE_EXACT_ORDER_V1, RIFFQL_LANGUAGE_VERSION_OPERATIONAL_V1,
-    RIFFQL_LANGUAGE_VERSION_PROJECTED_VECTOR_V1, RIFFQL_LANGUAGE_VERSION_SECRET_OUTPUT_V1,
-    Selection, Span, Spanned, Take, TypeReference, UnaryOperator,
+    RIFFQL_LANGUAGE_VERSION_EXACT_AGGREGATE_V1, RIFFQL_LANGUAGE_VERSION_EXACT_PREDICATE_V1,
+    RIFFQL_LANGUAGE_VERSION_EXACT_RESULT_SET_V1, RIFFQL_LANGUAGE_VERSION_NULLABLE_EXACT_ORDER_V1,
+    RIFFQL_LANGUAGE_VERSION_OPERATIONAL_V1, RIFFQL_LANGUAGE_VERSION_PROJECTED_VECTOR_V1,
+    RIFFQL_LANGUAGE_VERSION_SECRET_OUTPUT_V1, Selection, Span, Spanned, Take, TypeReference,
+    UnaryOperator,
 };
 
 /// Parses one UTF-8 RiffQL source document in a supported language version.
@@ -143,7 +144,9 @@ impl Parser {
             selection,
             outcomes,
         };
-        let language_version = if projected_source.is_some() {
+        let language_version = if body_uses_exact_aggregate_core(&body) {
+            RIFFQL_LANGUAGE_VERSION_EXACT_AGGREGATE_V1
+        } else if projected_source.is_some() {
             RIFFQL_LANGUAGE_VERSION_PROJECTED_VECTOR_V1
         } else if body
             .bindings
@@ -560,6 +563,18 @@ impl Parser {
             TokenKind::Ident(value) if value == "sum" => (AggregateFunction::Sum, true),
             TokenKind::Ident(value) if value == "min" => (AggregateFunction::Min, true),
             TokenKind::Ident(value) if value == "max" => (AggregateFunction::Max, true),
+            TokenKind::Ident(value) if value == "count_present" => {
+                (AggregateFunction::CountPresent, true)
+            }
+            TokenKind::Ident(value) if value == "count_distinct" => {
+                (AggregateFunction::CountDistinct, true)
+            }
+            TokenKind::Ident(value) if value == "count_distinct_present" => {
+                (AggregateFunction::CountDistinctPresent, true)
+            }
+            TokenKind::Ident(value) if value == "mean" => (AggregateFunction::Mean, true),
+            TokenKind::Ident(value) if value == "any" => (AggregateFunction::Any, true),
+            TokenKind::Ident(value) if value == "all" => (AggregateFunction::All, true),
             _ => {
                 return Err(ParseDiagnostics::one(ParseDiagnostic::new(
                     DiagnosticCode::UnexpectedToken,
@@ -1265,6 +1280,22 @@ fn body_uses_exact_result_set(body: &QueryBody) -> bool {
             .measures
             .iter()
             .any(|measure| measure.function.value == AggregateFunction::ExactCount)
+    })
+}
+
+fn body_uses_exact_aggregate_core(body: &QueryBody) -> bool {
+    body.aggregates.iter().any(|aggregate| {
+        aggregate.measures.iter().any(|measure| {
+            matches!(
+                measure.function.value,
+                AggregateFunction::CountPresent
+                    | AggregateFunction::CountDistinct
+                    | AggregateFunction::CountDistinctPresent
+                    | AggregateFunction::Mean
+                    | AggregateFunction::Any
+                    | AggregateFunction::All
+            )
+        })
     })
 }
 

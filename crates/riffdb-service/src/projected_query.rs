@@ -1059,12 +1059,12 @@ fn map_query_error(service: &RiffDbServiceInner, error: QueryError) -> ServiceFa
                 ApplicationErrorCode::QueryInvalid,
             )
         }
-        QueryError::ScanBudgetExceeded { .. } | QueryError::GroupCardinalityExceeded { .. } => {
-            application_validation_failure(
-                ValidationCode::InvalidValue,
-                ApplicationErrorCode::QueryUnavailable,
-            )
-        }
+        QueryError::ScanBudgetExceeded { .. }
+        | QueryError::GroupCardinalityExceeded { .. }
+        | QueryError::AggregateBudgetExceeded { .. } => application_validation_failure(
+            ValidationCode::InvalidValue,
+            ApplicationErrorCode::QueryUnavailable,
+        ),
         QueryError::PrimaryKeyDecode | QueryError::PolicyAdmissionMismatch => service
             .internal_failure(
                 ServiceOperationV1::ExecuteProjectedQuery,
@@ -1116,7 +1116,13 @@ impl ResolvedBody {
                 AggregateOp::Count => None,
                 AggregateOp::Sum { field }
                 | AggregateOp::Min { field }
-                | AggregateOp::Max { field } => Some(*field),
+                | AggregateOp::Max { field }
+                | AggregateOp::CountPresent { field }
+                | AggregateOp::CountDistinct { field }
+                | AggregateOp::CountDistinctPresent { field }
+                | AggregateOp::Mean { field }
+                | AggregateOp::Any { field }
+                | AggregateOp::All { field } => Some(*field),
             }
         }
         let mut fields: Vec<FieldId> = self
@@ -1432,6 +1438,12 @@ fn extend_with_aggregate_shape(payload: &mut Vec<u8>, op: &AggregateOp) {
         AggregateOp::Sum { field } => (2, Some(*field)),
         AggregateOp::Min { field } => (3, Some(*field)),
         AggregateOp::Max { field } => (4, Some(*field)),
+        AggregateOp::CountPresent { field } => (5, Some(*field)),
+        AggregateOp::CountDistinct { field } => (6, Some(*field)),
+        AggregateOp::CountDistinctPresent { field } => (7, Some(*field)),
+        AggregateOp::Mean { field } => (8, Some(*field)),
+        AggregateOp::Any { field } => (9, Some(*field)),
+        AggregateOp::All { field } => (10, Some(*field)),
     };
     payload.push(kind);
     match field {

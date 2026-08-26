@@ -60,7 +60,7 @@ fn one_registry_is_consumed_by_every_existing_semantic_layer() {
 }
 
 #[test]
-fn unchanged_parser_and_formatter_cover_the_registry_exactly() {
+fn parser_and_formatter_cover_the_expanded_registry_exactly() {
     let source = r#"
 query AggregateInventory() {
     many rows from Row where organization_id == organization_id order by row_id asc take 1
@@ -70,8 +70,18 @@ query AggregateInventory() {
         sum(amount) as sum_value
         min(amount) as min_value
         max(amount) as max_value
+        count_present(optional_amount) as count_present_value
+        count_distinct(optional_amount) as count_distinct_value
+        count_distinct_present(optional_amount) as count_distinct_present_value
+        mean(amount) as mean_value
+        any(enabled) as any_value
+        all(enabled) as all_value
     }
-    return Found { result: result { count_value exact_count_value sum_value min_value max_value } }
+    return Found { result: result {
+        count_value exact_count_value sum_value min_value max_value
+        count_present_value count_distinct_value count_distinct_present_value
+        mean_value any_value all_value
+    } }
     outcomes Found
 }
 "#;
@@ -148,9 +158,9 @@ fn inventory_accounts_for_result_wire_generation_and_future_shapes() {
 
     for classification in [
         "transient compiler vocabulary",
-        "neither serialized nor hashed",
+        "not serialized as a registry object",
         "release-significant under ADR-0124",
-        "no version-topology node",
+        "query-IR/module version 11",
         "pay-once",
     ] {
         assert!(

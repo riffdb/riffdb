@@ -4,6 +4,13 @@
 //! into query IR, provider state, plan hashes, wire messages, or generated SDK
 //! artifacts. Existing durable tags remain owned by their original formats.
 
+/// Maximum distinct canonical values retained by one exact measure/group.
+pub const MAX_AGGREGATE_DISTINCT_VALUES_V1: u16 = 256;
+/// Maximum transient aggregate partial-state bytes in one query result.
+pub const MAX_AGGREGATE_STATE_BYTES_V1: u32 = 1_048_576;
+/// Maximum exact contribution/merge arithmetic operations in one aggregate.
+pub const MAX_AGGREGATE_ARITHMETIC_OPERATIONS_V1: u32 = 8_192;
+
 /// Stable semantic identity for the aggregate functions available before
 /// ADR-0152 expansion.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -18,6 +25,18 @@ pub enum AggregateSemanticIdentityV1 {
     Min,
     /// Maximum under the field's frozen typed comparator.
     Max,
+    /// Exact count of present values.
+    CountPresent,
+    /// Exact distinct count including `NoValue`.
+    CountDistinct,
+    /// Exact distinct count excluding `NoValue`.
+    CountDistinctPresent,
+    /// Exact total and contributing count without division.
+    Mean,
+    /// Boolean disjunction.
+    Any,
+    /// Boolean conjunction.
+    All,
 }
 
 impl AggregateSemanticIdentityV1 {
@@ -39,6 +58,12 @@ impl AggregateSemanticIdentityV1 {
             Self::Sum => &AGGREGATE_SEMANTIC_REGISTRY_V1[2],
             Self::Min => &AGGREGATE_SEMANTIC_REGISTRY_V1[3],
             Self::Max => &AGGREGATE_SEMANTIC_REGISTRY_V1[4],
+            Self::CountPresent => &AGGREGATE_SEMANTIC_REGISTRY_V1[5],
+            Self::CountDistinct => &AGGREGATE_SEMANTIC_REGISTRY_V1[6],
+            Self::CountDistinctPresent => &AGGREGATE_SEMANTIC_REGISTRY_V1[7],
+            Self::Mean => &AGGREGATE_SEMANTIC_REGISTRY_V1[8],
+            Self::Any => &AGGREGATE_SEMANTIC_REGISTRY_V1[9],
+            Self::All => &AGGREGATE_SEMANTIC_REGISTRY_V1[10],
         }
     }
 }
@@ -52,6 +77,10 @@ pub enum AggregateInputClassV1 {
     ExactNumericField,
     /// One ordered scalar field, including an optional field's `NoValue` state.
     OrderedScalarField,
+    /// One scalar field with canonical typed equality.
+    CanonicalScalarField,
+    /// One required Boolean field.
+    RequiredBooleanField,
 }
 
 /// How the aggregate treats the canonical optional `NoValue` state.
@@ -63,6 +92,10 @@ pub enum AggregateNoValueRuleV1 {
     InvalidInputType,
     /// `NoValue` is a real value under the frozen typed comparator.
     ComparableState,
+    /// `NoValue` does not contribute.
+    Excluded,
+    /// `NoValue` contributes as one canonical distinct value.
+    DistinctValue,
 }
 
 /// Exact result returned for an empty input population.
@@ -74,6 +107,12 @@ pub enum AggregateEmptyResultV1 {
     ExactNumericZero,
     /// Outer absence, distinct from a contributed `NoValue`.
     Absent,
+    /// Exact mean state with zero total and zero count.
+    ExactMeanZero,
+    /// Boolean false.
+    BooleanFalse,
+    /// Boolean true.
+    BooleanTrue,
 }
 
 /// Compiler-resolved public result schema family.
@@ -85,6 +124,10 @@ pub enum AggregateResultSchemaV1 {
     ExactDecimalAtInputScale,
     /// Optional copy of the compiler-resolved input scalar type.
     OptionalInputScalar,
+    /// Exact `ExactMeanV1 { total, count }` record.
+    ExactMeanV1,
+    /// Required Boolean scalar.
+    Bool,
 }
 
 /// Mergeable partial-state family admitted by an exact provider.
@@ -96,6 +139,14 @@ pub enum AggregatePartialStateV1 {
     CheckedI128AtInputScale,
     /// Optional scalar selected using the frozen typed comparator.
     OptionalOrderedScalar,
+    /// Bounded canonical typed value set.
+    BoundedCanonicalSet,
+    /// Checked exact total and unsigned count.
+    ExactMeanV1,
+    /// Boolean disjunction state.
+    BooleanAny,
+    /// Boolean conjunction state.
+    BooleanAll,
 }
 
 /// Arithmetic or comparison rule used by the exact evaluator.
@@ -107,6 +158,14 @@ pub enum AggregateArithmeticV1 {
     CheckedI128,
     /// The input field's canonical frozen typed comparator.
     FrozenTypedComparator,
+    /// Canonical typed equality with checked bounded-set growth.
+    CanonicalDistinctSet,
+    /// Checked exact total and checked unsigned count.
+    CheckedExactMean,
+    /// Boolean disjunction.
+    BooleanOr,
+    /// Boolean conjunction.
+    BooleanAnd,
 }
 
 /// Static execution-family eligibility for one aggregate semantic.
@@ -377,13 +436,22 @@ const EXACT_COUNT_BUDGETS: AggregateBudgetDimensionsV1 = AggregateBudgetDimensio
     diagnostic_work: AggregateBudgetBoundV1::CompilerPlan,
 };
 
+const EXACT_DISTINCT_BUDGETS: AggregateBudgetDimensionsV1 = AggregateBudgetDimensionsV1 {
+    input_rows: AggregateBudgetBoundV1::CompilerPlan,
+    distinct_values: AggregateBudgetBoundV1::CompilerPlan,
+    groups: AggregateBudgetBoundV1::CompilerPlanWhenGrouped,
+    state_bytes: AggregateBudgetBoundV1::CompilerPlan,
+    output_bytes: AggregateBudgetBoundV1::CompilerPlan,
+    diagnostic_work: AggregateBudgetBoundV1::CompilerPlan,
+};
+
 const EXACT_POLICY: AggregatePolicyV1 = AggregatePolicyV1 {
     admits_rows_before_aggregation: true,
     partition_scoped_primary: true,
     withholds_partial_results: true,
 };
 
-const AGGREGATE_SEMANTIC_REGISTRY_V1: [AggregateSemanticDescriptorV1; 5] = [
+const AGGREGATE_SEMANTIC_REGISTRY_V1: [AggregateSemanticDescriptorV1; 11] = [
     AggregateSemanticDescriptorV1 {
         identity: AggregateSemanticIdentityV1::Count,
         source_spelling: "count",
@@ -450,6 +518,90 @@ const AGGREGATE_SEMANTIC_REGISTRY_V1: [AggregateSemanticDescriptorV1; 5] = [
         partial_state: AggregatePartialStateV1::OptionalOrderedScalar,
         arithmetic: AggregateArithmeticV1::FrozenTypedComparator,
         operational_ir_tag: Some(4),
+        eligibility: BOUNDED_AND_PROVIDER,
+        budgets: EXACT_BUDGETS,
+        policy: EXACT_POLICY,
+    },
+    AggregateSemanticDescriptorV1 {
+        identity: AggregateSemanticIdentityV1::CountPresent,
+        source_spelling: "count_present",
+        input_class: AggregateInputClassV1::CanonicalScalarField,
+        no_value_rule: AggregateNoValueRuleV1::Excluded,
+        empty_result: AggregateEmptyResultV1::UnsignedZero,
+        result_schema: AggregateResultSchemaV1::U64,
+        partial_state: AggregatePartialStateV1::CheckedU64,
+        arithmetic: AggregateArithmeticV1::CheckedU64,
+        operational_ir_tag: Some(5),
+        eligibility: BOUNDED_AND_PROVIDER,
+        budgets: EXACT_BUDGETS,
+        policy: EXACT_POLICY,
+    },
+    AggregateSemanticDescriptorV1 {
+        identity: AggregateSemanticIdentityV1::CountDistinct,
+        source_spelling: "count_distinct",
+        input_class: AggregateInputClassV1::CanonicalScalarField,
+        no_value_rule: AggregateNoValueRuleV1::DistinctValue,
+        empty_result: AggregateEmptyResultV1::UnsignedZero,
+        result_schema: AggregateResultSchemaV1::U64,
+        partial_state: AggregatePartialStateV1::BoundedCanonicalSet,
+        arithmetic: AggregateArithmeticV1::CanonicalDistinctSet,
+        operational_ir_tag: Some(6),
+        eligibility: BOUNDED_AND_PROVIDER,
+        budgets: EXACT_DISTINCT_BUDGETS,
+        policy: EXACT_POLICY,
+    },
+    AggregateSemanticDescriptorV1 {
+        identity: AggregateSemanticIdentityV1::CountDistinctPresent,
+        source_spelling: "count_distinct_present",
+        input_class: AggregateInputClassV1::CanonicalScalarField,
+        no_value_rule: AggregateNoValueRuleV1::Excluded,
+        empty_result: AggregateEmptyResultV1::UnsignedZero,
+        result_schema: AggregateResultSchemaV1::U64,
+        partial_state: AggregatePartialStateV1::BoundedCanonicalSet,
+        arithmetic: AggregateArithmeticV1::CanonicalDistinctSet,
+        operational_ir_tag: Some(7),
+        eligibility: BOUNDED_AND_PROVIDER,
+        budgets: EXACT_DISTINCT_BUDGETS,
+        policy: EXACT_POLICY,
+    },
+    AggregateSemanticDescriptorV1 {
+        identity: AggregateSemanticIdentityV1::Mean,
+        source_spelling: "mean",
+        input_class: AggregateInputClassV1::ExactNumericField,
+        no_value_rule: AggregateNoValueRuleV1::InvalidInputType,
+        empty_result: AggregateEmptyResultV1::ExactMeanZero,
+        result_schema: AggregateResultSchemaV1::ExactMeanV1,
+        partial_state: AggregatePartialStateV1::ExactMeanV1,
+        arithmetic: AggregateArithmeticV1::CheckedExactMean,
+        operational_ir_tag: Some(8),
+        eligibility: BOUNDED_AND_PROVIDER,
+        budgets: EXACT_BUDGETS,
+        policy: EXACT_POLICY,
+    },
+    AggregateSemanticDescriptorV1 {
+        identity: AggregateSemanticIdentityV1::Any,
+        source_spelling: "any",
+        input_class: AggregateInputClassV1::RequiredBooleanField,
+        no_value_rule: AggregateNoValueRuleV1::InvalidInputType,
+        empty_result: AggregateEmptyResultV1::BooleanFalse,
+        result_schema: AggregateResultSchemaV1::Bool,
+        partial_state: AggregatePartialStateV1::BooleanAny,
+        arithmetic: AggregateArithmeticV1::BooleanOr,
+        operational_ir_tag: Some(9),
+        eligibility: BOUNDED_AND_PROVIDER,
+        budgets: EXACT_BUDGETS,
+        policy: EXACT_POLICY,
+    },
+    AggregateSemanticDescriptorV1 {
+        identity: AggregateSemanticIdentityV1::All,
+        source_spelling: "all",
+        input_class: AggregateInputClassV1::RequiredBooleanField,
+        no_value_rule: AggregateNoValueRuleV1::InvalidInputType,
+        empty_result: AggregateEmptyResultV1::BooleanTrue,
+        result_schema: AggregateResultSchemaV1::Bool,
+        partial_state: AggregatePartialStateV1::BooleanAll,
+        arithmetic: AggregateArithmeticV1::BooleanAnd,
+        operational_ir_tag: Some(10),
         eligibility: BOUNDED_AND_PROVIDER,
         budgets: EXACT_BUDGETS,
         policy: EXACT_POLICY,
