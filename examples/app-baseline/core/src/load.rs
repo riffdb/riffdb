@@ -179,6 +179,16 @@ pub const RIFFDB_MAX_LOAD_CLIENTS: usize = 128;
 /// Same workload mix and measure window at each point; only concurrency changes.
 /// Order is low → high so the curve is monotonic in client count.
 pub const LOAD_CONCURRENCY_SWEEP_CLIENTS: &[usize] = &[1, 8, 32, 128];
+
+/// Fixed Poisson arrival rates for `--load-rate-sweep`, in operations/second.
+///
+/// A closed loop with zero think time answers "what does this saturate at",
+/// which is a capacity question. It cannot answer "what latency does a caller
+/// see at a given load", because offered load is defined by how fast the server
+/// replies. These rates hold offered load fixed and let latency move, which is
+/// the shape a service level is written against. Order is low to high so the
+/// curve shows where queue delay departs from service time.
+pub const LOAD_RATE_SWEEP_OPS_PER_SEC: &[u64] = &[500, 2_000, 5_000, 10_000, 20_000];
 /// Max clients under saturate (knee-sweep friendly; not auto-forced).
 pub const RIFFDB_SATURATE_LOAD_CLIENTS: usize = 512;
 /// Default long-lived concurrent workers per logical load client when

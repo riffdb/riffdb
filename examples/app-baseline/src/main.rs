@@ -3122,6 +3122,16 @@ impl Args {
                     warmups = 2;
                     full = true;
                 }
+                // Production-shaped dataset. Shares `--full`'s sampling and
+                // host-validity rules but is a separate profile: it is not the
+                // frozen PERF-018 comparator dataset and its receipts are
+                // reported under their own scale name.
+                "--production" => {
+                    scale = Scale::production();
+                    samples = 9;
+                    warmups = 2;
+                    full = true;
+                }
                 "--samples" => {
                     samples = args
                         .next()

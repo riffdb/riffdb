@@ -6,6 +6,21 @@
 /// `board_page_450` returns a real 450-row page under the scan ceiling.
 pub const FULL_BOARD_DENSE_OPEN: u32 = 600;
 
+/// Contract maximum for `comment.body` (`string<256>` in ticketdesk.riff).
+///
+/// Seeding above it fails the command with `RDB-INPUT-0101`. Real help desk
+/// comments are longer than this; carrying that would require widening the
+/// contract, which also defines the frozen comparator dataset, so it is out of
+/// scope here and noted as a known limitation of the profile.
+pub const MAX_COMMENT_BODY_BYTES: u32 = 256;
+
+/// Open-ticket density for the board cell under the production profile.
+///
+/// Held at the `full` value on purpose: `board_page_450` reads one bounded
+/// page, and the point of the production profile is the size of the data
+/// *around* that page, not a wider page.
+pub const PRODUCTION_BOARD_DENSE_OPEN: u32 = FULL_BOARD_DENSE_OPEN;
+
 /// Row-count knobs for the TicketDesk seed.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Scale {
@@ -99,6 +114,37 @@ impl Scale {
         orgs + users + projects + members + tickets + comments + labels + ticket_labels
     }
 
+    /// Production-shaped profile: a help desk with real history and real text.
+    ///
+    /// `smoke` and `full` are deliberately small. `full` seeds roughly 14,600
+    /// rows and 2,000 tickets with `payload_bytes: 0`, so every index is
+    /// shallow, the whole set is resident, and comment bodies are short
+    /// generated labels. That measures protocol and CPU cost rather than a
+    /// database, and it under-measures any write path whose cost scales with
+    /// bytes.
+    ///
+    /// This profile seeds roughly 120,000 tickets and 600,000 comments across
+    /// 200 tenants, with comment bodies at a realistic length. It is NOT the
+    /// frozen `PERF-018` comparator dataset and must never replace it: those
+    /// gates, their banked receipts, and the seed ceiling are all stated
+    /// against `full`. Use this to learn where the two engines actually differ
+    /// at size, and report it as its own profile.
+    #[must_use]
+    pub const fn production() -> Self {
+        Self {
+            organizations: 200,
+            users_per_org: 40,
+            projects_per_org: 12,
+            members_per_project: 6,
+            tickets_per_project: 50,
+            comments_per_ticket: 5,
+            labels_per_org: 12,
+            labels_per_ticket: 3,
+            board_dense_open: PRODUCTION_BOARD_DENSE_OPEN,
+            payload_bytes: MAX_COMMENT_BODY_BYTES,
+        }
+    }
+
     /// Profile name for reports.
     #[must_use]
     pub const fn name(self) -> &'static str {
@@ -120,6 +166,15 @@ impl Scale {
             && self.payload_bytes == Self::full().payload_bytes
         {
             "full"
+        } else if self.organizations == Self::production().organizations
+            && self.tickets_per_project == Self::production().tickets_per_project
+            && self.board_dense_open == Self::production().board_dense_open
+            && self.projects_per_org == Self::production().projects_per_org
+            && self.comments_per_ticket == Self::production().comments_per_ticket
+            && self.labels_per_ticket == Self::production().labels_per_ticket
+            && self.payload_bytes == Self::production().payload_bytes
+        {
+            "production"
         } else {
             "custom"
         }

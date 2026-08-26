@@ -682,13 +682,14 @@ fn parse_args() -> Result<Args, String> {
             "--scale" => {
                 let value = arguments
                     .next()
-                    .ok_or_else(|| "--scale requires smoke or full".to_owned())?
+                    .ok_or_else(|| "--scale requires smoke, full, or production".to_owned())?
                     .into_string()
                     .map_err(|_| "--scale must be UTF-8".to_owned())?;
                 scale = match value.as_str() {
                     "smoke" => Scale::smoke(),
                     "full" => Scale::full(),
-                    _ => return Err("--scale must be smoke or full".to_owned()),
+                    "production" => Scale::production(),
+                    _ => return Err("--scale must be smoke, full, or production".to_owned()),
                 };
             }
             "--samples-per-client" => {
@@ -742,7 +743,7 @@ fn parse_args() -> Result<Args, String> {
             "--help" | "-h" => {
                 return Err(
                     "usage: riffdb-client-transport-diagnostic --riffdbd-bin PATH \
-                     [--output PATH] [--scale smoke|full] \
+                     [--output PATH] [--scale smoke|full|production] \
                      [--clients 1,8,32] \
                      [--bounded-session-shadow] \
                      [--bounded-session-first] \
