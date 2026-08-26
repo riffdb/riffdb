@@ -56,6 +56,11 @@ These limits are part of the POC release posture, not hidden roadmap promises.
   presentation.
 - There is no general SQL surface, arbitrary transaction callback, analytical
   join engine, distributed transaction, replication, failover, or consensus.
+- An ordinary command may atomically delete and return the transaction-current preimage of exactly
+  one complete-key, partition-local `no_inbound` entity. Multiple ordinary deletes, inbound
+  `restrict` or `cascade`, set-null, orphaning, cross-partition deletion, and physical erasure are
+  unavailable on that unary path; use the separately compiler-bounded collection deletion forms
+  where supported. Delete authority never implies secret-output authority.
 - Ordinary row-store indexes currently execute exact equality, one bounded
   membership or presence/text-prefix branch, and the complete declared order.
   `binary_utf8_v1` membership is bytewise and cursor-safe when it supplies the

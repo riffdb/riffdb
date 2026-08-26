@@ -1864,13 +1864,33 @@ impl CommandPlan {
                     .expect("validated collection expansion")
                     .set_maximum_copy_coefficient(coefficient)?;
             }
-        } else if bindings
-            .iter()
-            .any(|binding| binding.mode() == BindingMode::Delete)
-        {
-            return Err(IrValidationError::InvalidDependency {
-                reason: "checked delete requires one collection expansion plan",
-            });
+        } else {
+            let deletes = bindings
+                .iter()
+                .filter(|binding| binding.mode() == BindingMode::Delete)
+                .collect::<Vec<_>>();
+            if deletes.len() > 1 {
+                return Err(IrValidationError::LimitExceeded {
+                    kind: "ordinary delete bindings",
+                    actual: deletes.len(),
+                    maximum: 1,
+                });
+            }
+            if let Some(binding) = deletes.first() {
+                let policy = contract_schema.delete_policy(binding.entity_type()).ok_or(
+                    IrValidationError::InvalidDependency {
+                        reason: "ordinary delete lacks one checked structural deletion policy",
+                    },
+                )?;
+                if !matches!(policy.mode(), crate::DeletePolicyModeV1::NoInbound)
+                    || binding.restriction_failure().is_some()
+                    || binding.cascade_failure().is_some()
+                {
+                    return Err(IrValidationError::InvalidDependency {
+                        reason: "ordinary delete requires the no_inbound policy",
+                    });
+                }
+            }
         }
         for outcome in &outcomes {
             for field in outcome.payload().fields() {
@@ -1960,6 +1980,9 @@ impl CommandPlan {
         )?;
         contract_schema.validate_expression_enum_constants(&expressions)?;
         validate_binding_plans(&expressions, &bindings, &locality, contract_schema)?;
+        if collection_expansion.is_none() {
+            validate_ordinary_delete_aliases(&expressions, &bindings)?;
+        }
         validate_root_validation_reads(
             &expressions,
             &bindings,
@@ -4422,6 +4445,34 @@ fn validate_binding_plans(
     Ok(())
 }
 
+fn validate_ordinary_delete_aliases(
+    arena: &ExpressionArena,
+    bindings: &[BindingPlan],
+) -> Result<(), IrValidationError> {
+    let Some(deleted) = bindings
+        .iter()
+        .find(|binding| binding.mode() == BindingMode::Delete)
+    else {
+        return Ok(());
+    };
+    for candidate in bindings {
+        if candidate.id() == deleted.id() || candidate.entity_type() != deleted.entity_type() {
+            continue;
+        }
+        if expression_tuples_equal(
+            arena,
+            candidate.key_expressions(),
+            arena,
+            deleted.key_expressions(),
+        )? {
+            return Err(IrValidationError::InvalidDependency {
+                reason: "ordinary delete target has a second binding alias",
+            });
+        }
+    }
+    Ok(())
+}
+
 fn validate_root_validation_reads(
     arena: &ExpressionArena,
     bindings: &[BindingPlan],
@@ -5324,7 +5375,7 @@ fn validate_instruction_stream(
                     .record()
                     .field(*field)
                     .ok_or(IrValidationError::InvalidReference { kind: "set field" })?;
-                if binding_plan.mode == BindingMode::Read
+                if matches!(binding_plan.mode, BindingMode::Read | BindingMode::Delete)
                     || entity.primary_key_fields().contains(field)
                     || schema
                         .vector_production_spec(binding_plan.entity_type, *field)
@@ -5386,7 +5437,7 @@ fn validate_instruction_stream(
                         None
                     }
                 });
-                if binding_plan.mode == BindingMode::Read
+                if matches!(binding_plan.mode, BindingMode::Read | BindingMode::Delete)
                     || entity.primary_key_fields().contains(field)
                     || !assigned.insert((*binding, *field))
                     || schema
