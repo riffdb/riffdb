@@ -131,6 +131,23 @@ riffdbd startup validation refused the database class=LimitExceeded
 riffdbd terminated without reaching a clean process boundary kind=startup
 ```
 
+### The state on disk
+
+Measured directly out of redb on a retained copy, bypassing RiffDB startup:
+
+| Fact | Value |
+| --- | ---: |
+| commands seeded | 1,112,350 |
+| database size | 4.7 GB |
+| `COMMITS` rows | 20,141 |
+| `COMMITS` bytes | 1,955,566,503 |
+| validated-prefix checkpoint | **present** |
+| its `checkpoint_commit_sequence` | **0** |
+
+A checkpoint claiming sequence 0 over 1.96 GB of committed command segments is
+the whole defect: `ensure_command_cache` treats 0 as "no usable prefix" and
+walks every row, which crosses 512 MiB and refuses.
+
 ### The chain
 
 1. Startup validation refuses with `StorageError { kind: LimitExceeded }`.
@@ -151,7 +168,44 @@ startup validation cost, is written and then does not bound anything. At `full`
 scale that is invisible: 19,220 commands never approach 512 MiB, and every boot
 silently pays full validation. At this tier the same defect is fatal.
 
-### Why this is not fixed here
+### The write path is not simply broken
+
+Instrumenting `build_checkpoint_from_snapshot` at `full` scale shows it recording
+the head correctly when the commits are visible to it:
+
+```text
+build_checkpoint: commits_rows=0   head=0
+build_checkpoint: commits_rows=349 head=19220   <- immediately after the seed
+build_checkpoint: commits_rows=0   head=0
+```
+
+The zero rows are fresh per-generation databases, where zero is the right
+answer. So the mechanism is sound and the production database's checkpoint was
+written against a view in which `COMMITS` was empty, even though 1.96 GB of it
+exists on disk.
+
+`write_validated_prefix_checkpoint` is ordered to prevent exactly that: it calls
+`checkpoint_published_journal_suffix_for_barrier()` to materialise the published
+journal suffix into redb *before* opening the read transaction that builds the
+checkpoint. Two candidate mechanisms remain, and distinguishing them is the next
+step:
+
+1. the barrier materialisation did not complete at this size, and its failure is
+   non-fatal by ADR-0019 A1 design, so the write proceeded against an
+   unmaterialised view; or
+2. the post-seed shutdown wrote its checkpoint before the suffix reached
+   `COMMITS`, and the rows observed on disk were materialised later by recovery
+   replay during one of the failed reopen attempts.
+
+The conservative repair, for review rather than applied here, is a monotonicity
+guard: a checkpoint write must not lower the recorded commit sequence while
+`database_id`, `history_incarnation` and the retention watermark are unchanged,
+because absent a retention or incarnation change a head cannot legitimately go
+backwards. That is a refusal, not a trust widening. It is deliberately not
+implemented until mechanism 1 or 2 is settled, because if the barrier is the
+problem then the guard hides it rather than fixing it.
+
+### Why the real fix is not attempted here
 
 The repair belongs inside startup validation, which is a fail-closed boundary
 that exists to detect corruption. Making the checkpoint engage without first
