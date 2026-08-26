@@ -493,11 +493,28 @@ pub fn riffdbd_main() -> ExitCode {
             // full instrumentation cycle to tell apart. `StorageErrorKind` is a
             // closed enum carrying no path, key, value, or identity, so naming
             // it leaks nothing the lifecycle kind does not already.
-            if let DaemonError::Startup(RedbStartupError::Storage(ref storage)) = error {
-                eprintln!(
-                    "riffdbd startup validation refused the database class={:?}",
-                    storage.kind()
-                );
+            if let DaemonError::Startup(ref startup) = error {
+                match startup {
+                    RedbStartupError::Storage(storage) => eprintln!(
+                        "riffdbd startup validation refused the database class={:?}",
+                        storage.kind()
+                    ),
+                    RedbStartupError::Integrity(reason) => eprintln!(
+                        "riffdbd startup validation refused the database integrity={reason:?}"
+                    ),
+                    RedbStartupError::Catalog(catalog) => {
+                        eprintln!(
+                            "riffdbd startup validation refused the database catalog={:?}",
+                            catalog.kind()
+                        );
+                    }
+                    RedbStartupError::Identifier(_) => {
+                        eprintln!(
+                            "riffdbd startup validation refused the database class=identifier"
+                        );
+                    }
+                    RedbStartupError::Format(_) => {}
+                }
             }
             eprintln!(
                 "riffdbd terminated without reaching a clean process boundary kind={}",
