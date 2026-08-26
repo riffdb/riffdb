@@ -44,7 +44,9 @@ These limits are part of the POC release posture, not hidden roadmap promises.
   evidence. The synchronized report records no production gap, but this is
   crash evidence for the POC matrix rather than a general disaster-recovery
   guarantee.
-- Projected ad-hoc aggregates are deliberately narrow. `count`, `sum`, `min`,
+- Named bounded RiffQL aggregates support exact row/present/distinct counts,
+  exact sum and mean state, min/max, and Boolean any/all. The separate
+  projected ad-hoc CLI remains deliberately narrow: `count`, `sum`, `min`,
   and `max` with bounded `group_by` are available; `sum` accepts integer
   columns only and rejects decimal or money columns with a typed
   `type_mismatch`. One ungrouped request computes exactly one function — ask

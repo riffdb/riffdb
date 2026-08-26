@@ -64,6 +64,8 @@ pub const QUERY_IR_VERSION_PROJECTED_VECTOR_V1: u32 = 8;
 pub const QUERY_IR_VERSION_EXACT_PREDICATE_V1: u32 = 9;
 /// Canonical exact predicate IR with nullable total-order placement.
 pub const QUERY_IR_VERSION_NULLABLE_EXACT_ORDER_V1: u32 = 10;
+/// Additive operational aggregate core IR identity.
+pub const QUERY_IR_VERSION_EXACT_AGGREGATE_V1: u32 = 11;
 /// Maximum public query schema and canonical IR bytes.
 pub const MAX_QUERY_ARTIFACT_BYTES: usize = 4_194_304;
 /// Maximum source-map entries.

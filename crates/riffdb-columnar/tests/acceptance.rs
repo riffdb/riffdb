@@ -555,6 +555,41 @@ fn acceptance_query_range_sort_limit_aggregates_group_by_budgets() {
             .expect("agg");
         assert!(matches!(result, QueryResult::Aggregate(_)));
     }
+    for (op, expected) in [
+        (
+            AggregateOp::CountPresent { field: title },
+            riffdb_columnar::AggregateValue::Count(4),
+        ),
+        (
+            AggregateOp::CountDistinct { field: title },
+            riffdb_columnar::AggregateValue::Count(4),
+        ),
+        (
+            AggregateOp::CountDistinctPresent { field: title },
+            riffdb_columnar::AggregateValue::Count(4),
+        ),
+        (
+            AggregateOp::Mean { field: priority },
+            riffdb_columnar::AggregateValue::ExactMean {
+                total: 100,
+                count: 4,
+            },
+        ),
+    ] {
+        let result = engine
+            .query(&ColumnarQueryRequest {
+                org_scope: CanonicalValue::Uuid(org),
+                select: Vec::new(),
+                predicates: Vec::new(),
+                order: Vec::new(),
+                limit: None,
+                group_by: None,
+                aggregate: Some(op),
+                budget: QueryBudget::default(),
+            })
+            .expect("exact core aggregate");
+        assert_eq!(result, QueryResult::Aggregate(expected));
+    }
 
     // Group-by status
     let groups = engine

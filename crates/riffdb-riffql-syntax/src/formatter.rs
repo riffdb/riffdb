@@ -157,6 +157,12 @@ pub fn format_query(document: &Document) -> String {
                 AggregateFunction::Sum => "sum(",
                 AggregateFunction::Min => "min(",
                 AggregateFunction::Max => "max(",
+                AggregateFunction::CountPresent => "count_present(",
+                AggregateFunction::CountDistinct => "count_distinct(",
+                AggregateFunction::CountDistinctPresent => "count_distinct_present(",
+                AggregateFunction::Mean => "mean(",
+                AggregateFunction::Any => "any(",
+                AggregateFunction::All => "all(",
             });
             if let Some(field) = &measure.field {
                 output.push_str(&format_path(&field.value));

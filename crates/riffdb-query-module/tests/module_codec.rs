@@ -4,6 +4,7 @@ use riffdb_contract_compiler::compile_contract_source;
 use riffdb_query_module::{
     ApplicationManifest, CompiledNamedQuery, CompiledNamedQueryPlan, ManifestErrorKind,
     NamedQuerySource, QUERY_MODULE_FORMAT_VERSION_COVERED_RESULT_V1,
+    QUERY_MODULE_FORMAT_VERSION_EXACT_AGGREGATE_V1,
     QUERY_MODULE_FORMAT_VERSION_OPERATIONAL_AGGREGATE_V1,
     QUERY_MODULE_FORMAT_VERSION_OPERATIONAL_V1, QUERY_MODULE_FORMAT_VERSION_V1, QueryModule,
     QueryModuleCandidate, QueryModuleErrorKind, QueryModuleName, QueryModuleVersion,
@@ -359,6 +360,84 @@ query TicketSummary($organization_id: Ticket.organization_id) {
     let decoded = QueryModule::decode_and_validate(module.canonical_bytes(), &bundle)
         .expect("strict aggregate decode");
     assert_eq!(decoded, module);
+}
+
+#[test]
+fn exact_aggregate_core_uses_v11_and_generates_one_structural_mean_schema() {
+    const CONTRACT: &str = r#"
+contract ExactAggregateCore version 1 {
+  entity Entry {
+    key (organization_id: uuid, entry_id: uuid)
+    field category: optional<string<32>>
+    field amount: i64
+    field enabled: bool
+    index by_entry (organization_id, entry_id)
+  }
+  aggregate Entries {
+    root Entry
+    partition_by organization_id
+    conflict_key (organization_id, entry_id)
+  }
+}
+"#;
+    const QUERY: &str = r#"
+query EntrySummary($organization_id: Entry.organization_id) {
+    many entries from Entry
+        where organization_id == $organization_id
+        order by entry_id asc
+        take 25
+    aggregate summary from entries {
+        count_present(category) as present_categories
+        count_distinct(category) as distinct_categories
+        count_distinct_present(category) as distinct_present_categories
+        mean(amount) as mean_amount
+        any(enabled) as any_enabled
+        all(enabled) as all_enabled
+    }
+    return Found { summary: summary {
+        present_categories distinct_categories distinct_present_categories
+        mean_amount any_enabled all_enabled
+    } }
+    outcomes Found
+}
+"#;
+    let bundle = compile_contract_source(CONTRACT).expect("contract");
+    let candidate = QueryModuleCandidate::new(
+        QueryModuleName::new("exact_aggregate_core").expect("name"),
+        QueryModuleVersion::new(1).expect("version"),
+        vec![NamedQuerySource::new("EntrySummary", QUERY).expect("query")],
+    )
+    .expect("candidate");
+    let module = QueryModule::compile(candidate, &bundle).expect("module");
+    assert_eq!(
+        module.format_version(),
+        QUERY_MODULE_FORMAT_VERSION_EXACT_AGGREGATE_V1
+    );
+    assert_eq!(
+        QueryModule::decode_and_validate(module.canonical_bytes(), &bundle).expect("decode"),
+        module
+    );
+
+    let rust = generate_rust_client(&module, &bundle);
+    let go = generate_go_client(&module, &bundle);
+    let typescript = generate_typescript_client(&module, &bundle);
+    let python = generate_python_client(&module, &bundle).expect("python");
+    for generated in [&rust, &go, &typescript, &python] {
+        assert!(generated.contains("mean_amount"));
+        assert!(generated.contains("total"));
+        assert!(generated.contains("count"));
+        assert!(generated.contains("any_enabled"));
+        assert!(generated.contains("all_enabled"));
+    }
+    let tools = generate_mcp_tools(&module).expect("mcp");
+    assert_eq!(tools.len(), 1);
+    let schema: serde_json::Value =
+        serde_json::from_str(&tools[0].result_schema).expect("result schema");
+    assert_eq!(
+        schema["oneOf"][0]["properties"]["summary"]["properties"]["mean_amount"]["properties"]["count"]
+            ["type"],
+        "string"
+    );
 }
 
 #[test]

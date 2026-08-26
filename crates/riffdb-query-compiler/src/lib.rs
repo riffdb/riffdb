@@ -2303,6 +2303,8 @@ impl QueryCostAccumulator {
                 {
                     AggregateResultSchemaV1::U64 => 10,
                     AggregateResultSchemaV1::ExactDecimalAtInputScale => 48,
+                    AggregateResultSchemaV1::ExactMeanV1 => 80,
+                    AggregateResultSchemaV1::Bool => 1,
                     AggregateResultSchemaV1::OptionalInputScalar => {
                         aggregate_field_bytes(entity, measure.input_field().ok_or_else(internal)?)?
                     }
