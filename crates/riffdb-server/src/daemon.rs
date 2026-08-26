@@ -485,6 +485,20 @@ pub fn riffdbd_main() -> ExitCode {
             // Stable, non-secret lifecycle kind only — never dump raw sources.
             // App-baseline and operators need the discriminant to diagnose mid-run
             // process death (e.g. transport_ended vs runtime_stopped).
+            //
+            // A startup refusal also names the closed storage class that caused
+            // it. `kind=startup` alone is not diagnosable: a database that has
+            // outgrown a startup validation bound and one that is genuinely
+            // corrupt both print the same line and exit silently, which cost a
+            // full instrumentation cycle to tell apart. `StorageErrorKind` is a
+            // closed enum carrying no path, key, value, or identity, so naming
+            // it leaks nothing the lifecycle kind does not already.
+            if let DaemonError::Startup(RedbStartupError::Storage(ref storage)) = error {
+                eprintln!(
+                    "riffdbd startup validation refused the database class={:?}",
+                    storage.kind()
+                );
+            }
             eprintln!(
                 "riffdbd terminated without reaching a clean process boundary kind={}",
                 error.kind()

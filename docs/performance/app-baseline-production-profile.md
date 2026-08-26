@@ -119,43 +119,61 @@ holding.
   only current symptom. This mirrors the duplication ADR-0148 addresses for the
   drivers and deserves the same treatment.
 
-## Open finding: the measured process cannot start at this size
+## Confirmed defect: a database outgrows its own startup validation
 
 `--seed-only` completes cleanly at this tier: 1,112,350 commands in 192 s at
-5,794 ops/s, a clean 21 s shutdown, a valid report, exit 0. The full load path
-does not, and fails after the seed at `restart_for_measurement`:
+5,794 ops/s, a clean 21 s shutdown, exit 0. The resulting 4.7 GB database then
+**cannot be reopened**. Reproduced outside the harness by starting `riffdbd`
+directly against a retained copy:
 
 ```text
-app-baseline failed: riffdbd process failed: server stdout closed before ready; stderr_tail=
+riffdbd startup validation refused the database class=LimitExceeded
+riffdbd terminated without reaching a clean process boundary kind=startup
 ```
 
-The daemon's stdout closes without a ready line and stderr is empty, so the
-restarted process exits during startup. This is not the shutdown budget: it
-reproduces with `RIFFDB_STOP_TIMEOUT_SECS=1800`, and the seed-only path proves
-shutdown is clean. It is not `PROCESS_START_TIMEOUT` either; that would report a
-ready timeout rather than a closed stdout.
+### The chain
 
-The leading hypothesis is `MAX_STARTUP_EVIDENCE_INDEX_BYTES`, a 512 MiB bound in
-`crates/riffdb-storage-redb/src/startup.rs` on the startup validation evidence
-index. The seeded database is 4.7 GB, so the index this tier asks startup to
-build may exceed that bound, and the resulting failure is not reaching the
-harness's stderr tail. That is unconfirmed: confirming it needs a database that
-survives the run, and the harness removes its root on exit.
+1. Startup validation refuses with `StorageError { kind: LimitExceeded }`.
+2. The bound is `MAX_STARTUP_EVIDENCE_INDEX_BYTES`, 512 MiB, in
+   `crates/riffdb-storage-redb/src/startup.rs`. The commit-row walk in
+   `ensure_command_cache` accumulated 536,911,967 bytes — 512.06 MiB, just over.
+3. That walk is checkpoint-aware and is *supposed* to be bounded: with a
+   validated-prefix checkpoint it ranges only over commits after the checkpoint
+   sequence, and only when `checkpoint_sequence == 0` does it walk all history.
+   It observed `checkpoint_sequence = 0`.
+4. The checkpoint is not missing because shutdown skipped it. Graceful shutdown
+   reports the write succeeding. But the following startup either loads it with
+   `checkpoint_commit_sequence = 0` or reports
+   `CheckpointIgnoreReason::Absent`, so the fast path never engages on any boot.
 
-To reproduce with a retained database, seed in the background, wait for
-`phase=done`, and copy the root before the harness exits:
+So the validated-prefix checkpoint, whose purpose under ADR-0085 is to bound
+startup validation cost, is written and then does not bound anything. At `full`
+scale that is invisible: 19,220 commands never approach 512 MiB, and every boot
+silently pays full validation. At this tier the same defect is fatal.
 
-```bash
-RIFFDB_STOP_TIMEOUT_SECS=1800 ./examples/app-baseline/target/release/riffdb-app-baseline \
-  --production --skip-postgres --seed-only \
-  --database-root target/perf-db/keep --riffdbd-bin ./target/release/riffdbd &
-# once "phase=done" appears: cp -a target/perf-db/keep /somewhere-else
-# then start riffdbd against the copy directly and read its own output
-```
+### Why this is not fixed here
 
-Two things follow regardless of the cause. A silent exit is the wrong failure
-shape for a startup refusal, and whatever bound is being hit is a real
-operational ceiling that no profile smaller than this one can observe.
+The repair belongs inside startup validation, which is a fail-closed boundary
+that exists to detect corruption. Making the checkpoint engage without first
+establishing, against ADR-0085's intended semantics, exactly which commit head
+it should record and when it is legitimately reusable would risk skipping
+validation of real history — a safety regression traded for a benchmark. That
+needs the maintainer's judgment, not a patch from a profiling exercise.
+
+What is fixed here is the diagnostic. A startup refusal previously printed only
+`kind=startup` and exited with empty stdout, so a database that had outgrown a
+validation bound and one that was genuinely corrupt produced identical output.
+It now names the closed `StorageErrorKind`, which carries no path, key, value or
+identity. Diagnosing this defect required a full instrumentation cycle through
+five layers; the next reader gets it from the first line.
+
+### Consequence worth stating plainly
+
+Independently of this benchmark, a RiffDB database whose retained commit history
+exceeds roughly 512 MiB of evidence appears to become unopenable, because the
+mechanism designed to bound that cost is not engaging. History retention
+(ADR-0085) prunes history and would delay it, but nothing in the current
+evidence suggests the ceiling itself moves.
 
 ## What this does not change
 
