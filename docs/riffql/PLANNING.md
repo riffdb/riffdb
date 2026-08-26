@@ -92,6 +92,43 @@ snapshot as the source scan. They do not become public N+1 requests. Null,
 duplicate, noncanonical, over-bound, or missing dependent keys fail closed
 before a partial result can be released.
 
+`explain` remains value-free and names a dependent collection as `dependent
+primary-key batch from source.binding_field`. The complete target/source
+mapping, dependencies, and absence outcome are already sealed in canonical
+plan bytes; changing any of them changes plan identity. WP-689 deliberately
+keeps existing explain bytes stable because application manifests include that
+representation.
+
+The current repository-wide relationship inventory is deliberately closed to
+three shapes: an exact complete-key point, a singular-key-driven separately
+bounded index access, and ADR-0054's dependent complete-key point batch. A new
+semijoin, correlated existence test, bounded one-to-many expansion, or other
+composition requires a real-consumer amendment with independent fan-out,
+intermediate, probe, byte, output, policy, snapshot, and identity evidence.
+Arbitrary or caller-supplied joins, cross-partition work, Cartesian products,
+recursion, and runtime join optimization remain unavailable.
+
+WP-689 validates that inventory against three independent applications:
+TicketDesk, agent-blog, and agent-orders. Its checked fixture records every
+current source/target mapping together with the access shape, driver and target
+row maxima, complete access-key byte maximum, missing behavior, cursor
+eligibility, authority ownership, and plan-identity participation. The current
+dependent batches are TicketDesk labels (50), blog tags (32), order-line
+products (100), and inventory products (499). Exact point dependencies have a
+one-row driver and target. Singular-key-driven index reads retain their own
+declared `take`, scan, point, byte, output, and optional opaque-cursor bounds;
+they do not become a relationship runtime operator.
+
+Required point or batch targets select their declared absence outcome. An
+optional point produces `None`, and an empty bounded-index driver produces an
+empty collection. A row-policy-denied point is intentionally indistinguishable
+from a missing point, preventing an existence leak. A dependent batch is
+all-or-nothing: empty input produces an empty collection, while null,
+duplicate, noncanonical, out-of-order, over-bound, missing, or policy-denied
+targets release neither partial rows nor a cursor. Memory and redb preserve
+input position and apply one shared row-policy context while the same
+engine-owned snapshot remains open.
+
 ## Whole-query authorization and execution fuel
 
 ADR-0055, WP-280, and WP-285 establish the exact application-query

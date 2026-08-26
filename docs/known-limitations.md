@@ -64,8 +64,14 @@ These limits are part of the POC release posture, not hidden roadmap promises.
   `!=` complement when that component supplies the first remaining order term.
   Canonical string ranges, multiple branching dimensions, overlapping unions,
   residual post-page filters, index intersections, caller-selected plans, and
-  general joins are unavailable. Recompile and redeploy a refused named query
-  rather than emulating it in application code.
+  general joins are unavailable. Relationship composition is limited to
+  compiler-declared same-partition complete-key points, singular-key-driven
+  separately bounded index reads, and one ordered dependent complete-key batch
+  with zero-or-one target per distinct driver key. Semijoins, correlated
+  existence tests, one-to-many expansion, cross-partition joins, Cartesian
+  products, recursion, and runtime join optimization are unavailable. Recompile
+  and redeploy a refused named query rather than emulating it in application
+  code.
 - Vector search's exact and declared approximate tiers are application-reachable
   through the same named RiffQL operation. The server chooses exact search at
   or below the contract's per-organization `ann_threshold` and first-party HNSW
