@@ -1181,12 +1181,11 @@ fn query_explain_lines(query: &CompiledNamedQuery) -> Vec<String> {
                         "operational.aggregate.{}.measure.{}={}",
                         aggregate.name(),
                         measure.alias(),
-                        match measure.function() {
-                            riffdb_query_ir::OperationalAggregateFunctionV1::Count => "count",
-                            riffdb_query_ir::OperationalAggregateFunctionV1::Sum => "sum",
-                            riffdb_query_ir::OperationalAggregateFunctionV1::Min => "min",
-                            riffdb_query_ir::OperationalAggregateFunctionV1::Max => "max",
-                        }
+                        measure
+                            .function()
+                            .semantic_identity()
+                            .descriptor()
+                            .source_spelling()
                     ));
                 }
             }

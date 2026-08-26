@@ -3,6 +3,7 @@
 //! Canonical domain types shared across RiffDB semantic boundaries.
 
 mod actor;
+mod aggregate;
 mod capability;
 mod capability_grant;
 mod codec;
@@ -31,6 +32,7 @@ mod value;
 mod vector;
 
 pub use actor::*;
+pub use aggregate::*;
 pub use capability::*;
 pub use capability_grant::*;
 pub use codec::*;

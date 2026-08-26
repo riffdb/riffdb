@@ -16,15 +16,15 @@ use std::sync::Arc;
 use riffdb_contract_ir::KeyComponentCodecV1;
 use riffdb_policy::{AuthorizedProjectedRowAdmissionV1, AuthorizedQueryRowPolicyContextV1};
 use riffdb_query_ir::{
-    AccessDirection, CoveredResultLayoutV1, NamedTypeSchema, OperationalAggregateFunctionV1,
-    OperationalAggregateV1, PageBound, QueryAccessKind, QueryAccessProgramV1, QueryAccessStep,
-    QueryLiteral, QueryPredicateOperator, QueryPredicateValue, QueryRowLimit,
+    AccessDirection, CoveredResultLayoutV1, NamedTypeSchema, OperationalAggregateV1, PageBound,
+    QueryAccessKind, QueryAccessProgramV1, QueryAccessStep, QueryLiteral, QueryPredicateOperator,
+    QueryPredicateValue, QueryRowLimit,
 };
 use riffdb_riffql_syntax::Cardinality;
 use riffdb_types::{
-    CanonicalValue, CommitSequence, ContractLineage, EmbeddingMetadata, EntityKey, EntityTypeId,
-    FieldId, PartitionKey, PartitionKeyHash, QueryCostVectorV1, canonical_value_encoded_len,
-    encode_canonical_value, hash_partition_key,
+    AggregateSemanticIdentityV1, CanonicalValue, CommitSequence, ContractLineage,
+    EmbeddingMetadata, EntityKey, EntityTypeId, FieldId, PartitionKey, PartitionKeyHash,
+    QueryCostVectorV1, canonical_value_encoded_len, encode_canonical_value, hash_partition_key,
 };
 
 /// Maximum checked submitted parameters.
@@ -2504,13 +2504,14 @@ fn evaluate_aggregate_measure(
     measure: &riffdb_query_ir::OperationalAggregateMeasureV1,
     rows: &[&QueryRow],
 ) -> Result<Option<QueryAggregateCell>, QueryExecutionError> {
-    match measure.function() {
-        OperationalAggregateFunctionV1::Count => {
+    let semantic = measure.function().semantic_identity();
+    match semantic {
+        AggregateSemanticIdentityV1::Count => {
             Ok(Some(QueryAggregateCell::Canonical(CanonicalValue::U64(
                 u64::try_from(rows.len()).map_err(|_| QueryExecutionError::BoundExceeded)?,
             ))))
         }
-        OperationalAggregateFunctionV1::Sum => {
+        AggregateSemanticIdentityV1::Sum => {
             let field = measure
                 .input_field()
                 .ok_or(QueryExecutionError::InvalidProgram)?;
@@ -2540,7 +2541,7 @@ fn evaluate_aggregate_measure(
                 scale,
             }))
         }
-        OperationalAggregateFunctionV1::Min | OperationalAggregateFunctionV1::Max => {
+        AggregateSemanticIdentityV1::Min | AggregateSemanticIdentityV1::Max => {
             let field = measure
                 .input_field()
                 .ok_or(QueryExecutionError::InvalidProgram)?;
@@ -2556,11 +2557,12 @@ fn evaluate_aggregate_measure(
                     None => value,
                     Some(current) => {
                         let ordering = aggregate_scalar_order(value, current)?;
-                        let replace = match measure.function() {
-                            OperationalAggregateFunctionV1::Min => ordering == Ordering::Less,
-                            OperationalAggregateFunctionV1::Max => ordering == Ordering::Greater,
-                            OperationalAggregateFunctionV1::Count
-                            | OperationalAggregateFunctionV1::Sum => unreachable!(),
+                        let replace = match semantic {
+                            AggregateSemanticIdentityV1::Min => ordering == Ordering::Less,
+                            AggregateSemanticIdentityV1::Max => ordering == Ordering::Greater,
+                            AggregateSemanticIdentityV1::Count
+                            | AggregateSemanticIdentityV1::ExactCount
+                            | AggregateSemanticIdentityV1::Sum => unreachable!(),
                         };
                         if replace { value } else { current }
                     }
@@ -2579,6 +2581,7 @@ fn evaluate_aggregate_measure(
                 None => Ok(Some(QueryAggregateCell::Canonical(CanonicalValue::Null))),
             }
         }
+        AggregateSemanticIdentityV1::ExactCount => Err(QueryExecutionError::InvalidProgram),
     }
 }
 

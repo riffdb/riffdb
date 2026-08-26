@@ -2,12 +2,12 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use riffdb_contract_ir::{ValueType, ValueTypeTag};
 use riffdb_riffql_syntax::{
-    AggregateFunction, Cardinality, Document, Expression, FieldSelection, Literal, Path, Selection,
-    Span, TypeReference, format_query,
+    Cardinality, Document, Expression, FieldSelection, Literal, Path, Selection, Span,
+    TypeReference, format_query,
 };
 use riffdb_types::{
-    ContractBundleHash, ContractLineage, ContractVersion, EntityTypeId, FieldId,
-    MAX_DECIMAL_PRECISION,
+    AggregateSemanticIdentityV1, ContractBundleHash, ContractLineage, ContractVersion,
+    EntityTypeId, FieldId, MAX_DECIMAL_PRECISION,
 };
 
 use crate::{
@@ -17,7 +17,7 @@ use crate::{
     OperationalAggregateV1, PageBound, QUERY_IR_VERSION_OPERATIONAL_AGGREGATE_V1,
     QUERY_IR_VERSION_PROJECTED_VECTOR_V1, QUERY_IR_VERSION_SECRET_OUTPUT_V1, QUERY_IR_VERSION_V1,
     QueryDiagnostic, QueryDiagnosticCode, QueryDiagnosticStage, QueryDiagnostics, SymbolicCatalog,
-    page_take_within_scan_bound,
+    page_take_within_scan_bound, source_aggregate_semantic_identity,
 };
 
 const IR_MAGIC: &[u8] = b"RIFFDB-QUERY-SURFACE\0";
@@ -598,18 +598,20 @@ impl<'a> Resolver<'a> {
                         "duplicate aggregate result field",
                     ));
                 }
-                let (function, input_field, result_type) = match measure.function.value {
+                let semantic = source_aggregate_semantic_identity(measure.function.value);
+                let (function, input_field, result_type) = match semantic {
                     // `exact_count` has the same public scalar schema as the
                     // bounded operational count. Its whole-population
                     // semantics are retained by the exact result-set plan;
                     // the ordinary operational compiler rejects it before
                     // member lowering.
-                    AggregateFunction::Count | AggregateFunction::ExactCount => (
+                    AggregateSemanticIdentityV1::Count
+                    | AggregateSemanticIdentityV1::ExactCount => (
                         OperationalAggregateFunctionV1::Count,
                         None,
                         NamedTypeSchema::Scalar("u64".to_owned()),
                     ),
-                    AggregateFunction::Sum => {
+                    AggregateSemanticIdentityV1::Sum => {
                         let field = measure
                             .field
                             .as_ref()
@@ -626,7 +628,7 @@ impl<'a> Resolver<'a> {
                             self.aggregate_sum_type(&field_type, field.span)?,
                         )
                     }
-                    AggregateFunction::Min | AggregateFunction::Max => {
+                    AggregateSemanticIdentityV1::Min | AggregateSemanticIdentityV1::Max => {
                         let field = measure
                             .field
                             .as_ref()
@@ -645,7 +647,7 @@ impl<'a> Resolver<'a> {
                                 "min/max input must be an ordered scalar field",
                             ));
                         }
-                        let function = if measure.function.value == AggregateFunction::Min {
+                        let function = if semantic == AggregateSemanticIdentityV1::Min {
                             OperationalAggregateFunctionV1::Min
                         } else {
                             OperationalAggregateFunctionV1::Max
@@ -1626,12 +1628,7 @@ fn canonical_surface(
             push_count(&mut bytes, aggregate.measures().len())?;
             for measure in aggregate.measures() {
                 push_bytes(&mut bytes, measure.alias().as_bytes())?;
-                bytes.push(match measure.function() {
-                    OperationalAggregateFunctionV1::Count => 1,
-                    OperationalAggregateFunctionV1::Sum => 2,
-                    OperationalAggregateFunctionV1::Min => 3,
-                    OperationalAggregateFunctionV1::Max => 4,
-                });
+                bytes.push(measure.function().durable_tag());
                 match measure.input_field() {
                     Some(field) => {
                         bytes.push(1);

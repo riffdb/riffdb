@@ -672,6 +672,24 @@ work_packages:
       function, field, precision, approximation, state, provider, policy, epoch, bound, or fallback.
     scale: Registry and descriptor validation are fixed/pay-once; sketches allocate no runtime state;
       existing bounded/grouped/provider work retains its current finite limits.
+  closure:
+    status: complete
+    completed_at: "2026-08-25"
+    requirements_satisfied: [OQ-011, OQ-012, OQ-013, OQ-017, OQ-022, OQ-024,
+      OQ-044, OQ-045, OQ-049, OQ-050, OQ-052, OQ-053, OQ-054]
+    evidence: One closed transient registry now owns the five existing RiffQL aggregate semantic
+      descriptors and is consumed by source-to-semantic resolution, frozen operational tags,
+      compiler cost derivation, authoritative execution, module explanation, and the existing
+      columnar engine. Checked architecture evidence inventories parser/formatter, exact-count
+      providers, group-by, result, wire, generated, fixture, and separate durable materialized-
+      projection arms. Exact variance, approximate-cardinality, and percentile/histogram sketches
+      cover numerical, quality, state, epoch, policy, bound, and durable-identity dimensions only on
+      paper. Package tests, topology, generated, coverage, policy, formatting, and workspace Clippy
+      gates pass without changing existing durable bytes or adding a topology identity.
+    known_limitations: The registry describes only the five already executable semantics; ADR-0152's
+      additional exact core remains WP-694. Materialized projection Count/Sum state remains a
+      separately versioned write-time DSL and is not advertised as a RiffQL provider capability.
+    follow_ups: [WP-694, WP-695, WP-696]
   human_review_triggers: *id001
 - id: WP-694
   name: Exact aggregate core functions and generated result algebra
