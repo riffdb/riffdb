@@ -1,4 +1,4 @@
-spec_version: '1.12'
+spec_version: '1.13'
 product: RiffDB
 repository: riffdb
 status: deployable-application-alpha-architecture-accepted
@@ -1085,6 +1085,199 @@ work_packages:
     scale: Evidence is bounded by declared ordinary/collection maxima and reports constant per-plan
       plus per-selected-target work; no unbounded benchmark state, cursor walk, scan, cross-
       partition operation, or application-sized retained proof is introduced.
+  human_review_triggers: *id001
+- id: WP-700
+  name: Profile-aware binary text interval compiler and storage conformance
+  depends_on: [WP-688, WP-690]
+  objective: Implement ADR-0154's strict, inclusive, and complement intervals over the existing
+    binary_utf8_v1 physical order through one compiler-sealed ordinary access shape and the shared
+    memory/redb range schedule, without a ULID branch, residual filter, or durable-format change.
+  requirements: [OQ-001, OQ-002, OQ-003, OQ-004, OQ-005, OQ-006, OQ-008,
+    OQ-009, OQ-015, OQ-032, OQ-033, OQ-034, OQ-036, OQ-037, OQ-039, OQ-040,
+    OQ-043, OQ-056, OQ-057, OQ-058, OQ-059, OQ-060]
+  required_adrs: [ADR-0038, ADR-0051, ADR-0053, ADR-0055, ADR-0108,
+    ADR-0111, ADR-0124, ADR-0129, ADR-0134, ADR-0145, ADR-0150, ADR-0154]
+  allowed_paths: [SPEC.md, work_packages.yaml, adr/README.md,
+    adr/0154-profile-aware-binary-text-intervals.md,
+    release/version-topology-v1.json, crates/riffdb-query-ir/**,
+    crates/riffdb-query-compiler/**, crates/riffdb-query-executor/**,
+    crates/riffdb-storage-api/**, crates/riffdb-storage-memory/**,
+    crates/riffdb-storage-redb/**, crates/riffdb-testkit/**,
+    fixtures/riffql/**, fixtures/query-modules/**, tests/**, fuzz/**, scripts/**,
+    docs/SUMMARY.md, docs/riffql/**,
+    docs/getting-started/OPERATIONAL-QUERIES.md, docs/known-limitations.md]
+  deliverables:
+  - Closed registry admission for binary_utf8_v1 range/complement only after an exact partition
+    prefix and only when the component supplies the first remaining complete order term and key
+    tie-breaker, with source-spanned refusal for every incomplete shape
+  - Pay-once endpoint lowering for lower-only, upper-only, strict, inclusive, closed/open, empty,
+    contradictory, and two-range complement cases using exact ordered-byte component prefixes
+  - One memory/redb forward/reverse range and cursor truth table under global page, plus-one, scan,
+    hydration, output, parameter, range-count, and encoded-byte bounds
+  - Logical predicate, authorization, row-policy, cancellation, redaction, and activation-time
+    unavailable conformance proving no post-page filter, physical-byte output, or per-row proof
+  - Compatibility evidence that old plans and indexes remain byte-exact and no query-IR, cursor,
+    storage, index-key, wire, or generated-method version is silently reinterpreted
+  acceptance_commands:
+  - cargo +1.97.0 test -p riffdb-query-ir -p riffdb-query-compiler -p riffdb-query-executor --all-features
+  - cargo +1.97.0 test -p riffdb-storage-memory -p riffdb-storage-redb -p riffdb-testkit --all-features
+  - cargo +1.97.0 test -p riffdb-testkit --test operational_queries --all-features
+  - ./scripts/check-version-topology
+  - ./scripts/check-generated
+  - ./scripts/check-requirement-coverage
+  - ./scripts/check-workspace-policy
+  - ./scripts/handbook check
+  - cargo +1.97.0 fmt --all -- --check
+  - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: One declared binary_utf8_v1 index physically enforces bytewise lower/upper/complement
+    intervals before page formation with exact memory/redb order and cursor parity, unchanged global
+    bounds and old artifacts, and no ULID/framework branch, scan, residual filter, or unsafe selector.
+  standing_design_tests:
+    interface_safety: Callers submit only typed bounded values to one generated named query and
+      cannot choose a profile, index, collation, range shape, cursor binding, policy, cost, or
+      fallback; every incomplete shape fails before storage.
+    scale: At most one interval or two complement ranges exist beneath one exact partition prefix
+      and one global finite work budget; no population materialization, page walk, cross-partition
+      scan, or per-row compatibility proof is introduced.
+  human_review_triggers: *id001
+- id: WP-701
+  name: Binary text interval generated and external acceptance
+  depends_on: [WP-700, WP-565]
+  objective: Close ADR-0154 across generated/public surfaces, handbook and architecture guidance,
+    compatibility gates, and one value-free external consumer receipt while retaining every
+    external schema, route, token convention, and adapter artifact in its owning repository.
+  requirements: [OQ-004, OQ-005, OQ-006, OQ-015, OQ-016, OQ-030, OQ-043,
+    OQ-056, OQ-057, OQ-058, OQ-059, OQ-060, OQ-061, DRV-007, DRV-008,
+    DRV-012, DRV-014, SAFE-004, SAFE-005]
+  required_adrs: [ADR-0055, ADR-0108, ADR-0112, ADR-0124, ADR-0129,
+    ADR-0148, ADR-0150, ADR-0154]
+  allowed_paths: [SPEC.md, work_packages.yaml,
+    adr/0154-profile-aware-binary-text-intervals.md,
+    release/version-topology-v1.json, crates/**, clients/**, fixtures/**,
+    examples/**, tests/**, scripts/**, docs/**]
+  deliverables:
+  - Framework-neutral changelog-shaped corpus over length-divergent and multibyte strings proving
+    raw logical token return, strict horizon exclusion, total bytewise order, page continuation,
+    policy, and bounds through every generated and transport surface
+  - Value-free external capability receipt confirming one consumer can compile and execute a strict
+    lower/upper binary-text interval without client filtering, cursor walking, duplicate indexes,
+    or a database-owned external-token conversion
+  - Final compatibility, topology, architecture, handbook, limitation, and requirement-coverage
+    evidence with no external schema, adapter source, framework-specific branch, or parity claim
+  acceptance_commands:
+  - cargo +1.97.0 test --workspace --all-features
+  - ./scripts/driver-conformance --all-languages --remote
+  - ./scripts/check-version-topology
+  - ./scripts/check-generated
+  - ./scripts/check-requirement-coverage
+  - ./scripts/check-workspace-policy
+  - ./scripts/handbook check
+  - cargo +1.97.0 fmt --all -- --check
+  - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: Every generated and transport surface agrees with the compiler/storage bytewise
+    interval contract, the external receipt is green and value-free, documentation is complete,
+    and no raw physical bytes, unsafe plan choice, framework code, or unexplained failure remains.
+  standing_design_tests:
+    interface_safety: Generated callers expose only the named query's typed values and opaque RiffDB
+      cursor; they cannot select physical semantics, and returning a logical string does not grant
+      storage, index, protocol, or cursor authority.
+    scale: Every corpus and receipt uses one partition, finite endpoints, bounded pages, and declared
+      scan/output ceilings; no external population or duration-proportional state is retained.
+  human_review_triggers: *id001
+- id: WP-702
+  name: Sparse generated-surface source manifest and lock identities
+  depends_on: [WP-602, WP-612]
+  objective: Implement ADR-0155's closed sparse application-source V7 generation declaration,
+    manifest V5, lock V8, and one compiler-owned target registry while preserving every older
+    source/manifest/lock byte and preventing local project configuration from changing exact identity.
+  requirements: [DX-004, DX-006, DX-013, DX-014, DX-015, DX-016, DX-017,
+    DX-018, DX-042, DX-043, DX-044, DX-045, DX-047, DX-048, DX-049,
+    VER-001, VER-002, VER-003, VER-004, VER-005, VER-006, VER-007, VER-008]
+  required_adrs: [ADR-0052, ADR-0055, ADR-0057, ADR-0075, ADR-0112,
+    ADR-0120, ADR-0121, ADR-0124, ADR-0155]
+  allowed_paths: [SPEC.md, work_packages.yaml, adr/README.md,
+    adr/0155-selectively-declared-generated-application-surfaces.md,
+    release/version-topology-v1.json, crates/riffdb-types/**,
+    crates/riffdb-query-module/**, crates/riffdb-cli/**, fixtures/**,
+    tests/**, scripts/**, docs/SUMMARY.md, docs/getting-started/**,
+    docs/sdks/**, docs/versioning-and-retirement.md, docs/known-limitations.md]
+  deliverables:
+  - Application-source V7 parser and canonicalizer accepting a nonempty unique-path subset of the
+    five closed target kinds, plus manifest V5 and lock V8 carrying exactly that declared set
+  - One compiler-owned declared-surface registry used by parsing, generation, artifact-kind mapping,
+    lock validation, publication, checking, installation, scaffolding, and diagnostics
+  - Exact in-memory generation and hashing for every declared surface, zero generation/toolchain
+    discovery for absent surfaces, and typed refusal when local configuration selects an undeclared
+    kind or an artifact inventory is missing, extra, stale, unsafe, or inconsistent
+  - Least-sufficient topology, canonical fixtures, old-reader rejection, migration preview, and
+    byte-exact V1-V6 source, V1-V4 manifest, and V1-V7 lock compatibility with no decoder retirement
+  - Architecture evidence that generator selection cannot change runtime commands, queries, roles,
+    policy, hosted protocols, storage, outcomes, cost, or first-party Rust driver ownership
+  acceptance_commands:
+  - cargo +1.97.0 test -p riffdb-query-module -p riffdb-cli --all-features
+  - ./scripts/check-version-topology
+  - ./scripts/check-generated
+  - ./scripts/check-requirement-coverage
+  - ./scripts/check-workspace-policy
+  - ./scripts/handbook check
+  - cargo +1.97.0 fmt --all -- --check
+  - cargo +1.97.0 clippy -p riffdb-query-module -p riffdb-cli --all-targets --all-features -- -D warnings
+  exit_gate: Sparse V7 source deterministically yields exact V5 manifest and V8 lock inventories from
+    one registry, older bytes remain exact, absent targets incur no artifact or toolchain work, and
+    local configuration or generated language code cannot alter authoritative identity or semantics.
+  standing_design_tests:
+    interface_safety: Applications select only safe first-party generated artifact kinds and paths;
+      they cannot supply implementations, alter runtime authority, bypass exact locking, or replace
+      the Rust-owned driver and service boundary.
+    scale: At most five targets are validated and generated once per compilation beneath existing
+      path/artifact/lock byte ceilings, with no runtime, row, query, or database-sized work.
+  human_review_triggers: *id001
+- id: WP-703
+  name: Selective generation project packaging and external conformance
+  depends_on: [WP-611, WP-702]
+  objective: Close ADR-0155 with truthful singleton and multi-surface project workflows, installed
+    package behavior, compatibility and filesystem recovery, cross-driver conformance, and a fresh
+    Go-only external package that requires no unrelated generated target or toolchain.
+  requirements: [DX-013, DX-014, DX-016, DX-017, DX-026, DX-027, DX-028,
+    DX-029, DX-030, DX-031, DX-037, DX-038, DX-039, DX-040, DX-042, DX-043,
+    DX-044, DX-045, DX-046, DX-047, DX-048, DX-049, DRV-007, DRV-008,
+    DRV-012, DRV-014]
+  required_adrs: [ADR-0055, ADR-0112, ADR-0120, ADR-0121, ADR-0124,
+    ADR-0148, ADR-0155]
+  allowed_paths: [SPEC.md, work_packages.yaml,
+    adr/0155-selectively-declared-generated-application-surfaces.md,
+    release/version-topology-v1.json, crates/**, clients/**, templates/**,
+    fixtures/**, examples/**, tests/**, scripts/**, release/distribution/**,
+    docs/**, .github/workflows/**]
+  deliverables:
+  - Fresh Rust-only, Go-only, TypeScript-only, Python-only, MCP-only, and representative polyglot
+    init/generate/check/diff/push-preview/install/dev workflows with exact selected artifact trees
+  - Go-only external package proving native installation, generation, lock validation, go test, and
+    local-driver execution without npm, TypeScript, Python, MCP output, or a generated Rust facade
+  - Symmetric global generator and MCP semantic conformance proving omission from one package does
+    not weaken any supported surface or change hosted protocol authority
+  - Filesystem interruption, existing undeclared file, symlink, collision, migration preview,
+    development publication inventory, compatibility, handbook, and architecture evidence
+  acceptance_commands:
+  - cargo +1.97.0 test --workspace --all-features
+  - ./scripts/driver-conformance --all-languages --remote
+  - ./scripts/check-driver-development-registry
+  - ./scripts/check-version-topology
+  - ./scripts/check-generated
+  - ./scripts/check-requirement-coverage
+  - ./scripts/check-workspace-policy
+  - ./scripts/handbook check
+  - cargo +1.97.0 fmt --all -- --check
+  - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: Every declared target set produces one exact bounded artifact inventory and truthful
+    project/package workflow, the Go-only external acceptance is green without unrelated toolchains,
+    all global surfaces retain parity, and no stale artifact, local identity drift, protocol change,
+    target-language semantic branch, warning, or unexplained failure remains.
+  standing_design_tests:
+    interface_safety: Project and package users can select only compiler-generated safe facade kinds;
+      no selector grants transport, transaction, authorization, storage, MCP, or guarantee bypass.
+    scale: Target sets contain at most five entries and acceptance uses bounded fresh packages and
+      fixture trees; generation retains no database state and performs no operation-proportional work.
   human_review_triggers: *id001
 - id: WP-678
   name: Aggregate collection-byte language, proof, and IR successors
