@@ -635,6 +635,12 @@ impl QueryAccessStep {
         let access_is_valid = match &access {
             QueryAccessKind::Point { key_fields } => {
                 !key_fields.is_empty()
+                    && key_fields.iter().all(|field| {
+                        predicates.iter().any(|predicate| {
+                            predicate.field == *field
+                                && predicate.operator == QueryPredicateOperator::Equal
+                        })
+                    })
                     && !predicates.iter().any(|predicate| {
                         matches!(predicate.value, QueryPredicateValue::BindingFieldSet { .. })
                     })
@@ -692,6 +698,23 @@ impl QueryAccessStep {
                         })
                         .count()
                         == 1
+                    && predicates
+                        .iter()
+                        .all(|predicate| key_fields.contains(&predicate.field))
+                    && key_fields.iter().all(|field| {
+                        predicates.iter().any(|predicate| {
+                            predicate.field == *field
+                                && (predicate.operator == QueryPredicateOperator::Equal
+                                    || (predicate.operator == QueryPredicateOperator::In
+                                        && matches!(
+                                            &predicate.value,
+                                            QueryPredicateValue::BindingFieldSet {
+                                                binding,
+                                                field
+                                            } if binding == source_binding && field == source_field
+                                        )))
+                        })
+                    })
             }
             QueryAccessKind::Nearest {
                 vector_field,
@@ -1017,6 +1040,7 @@ impl QueryAccessProgramV1 {
                 .windows(2)
                 .any(|pair| pair[0].entity >= pair[1].entity)
             || cost.access_steps() != steps.len() as u64
+            || !relationship_composition_is_valid(&steps)
         {
             return None;
         }
@@ -1151,6 +1175,54 @@ impl QueryAccessProgramV1 {
     pub const fn explain(&self) -> &QueryPlanExplain {
         &self.explain
     }
+}
+
+fn relationship_composition_is_valid(steps: &[QueryAccessStep]) -> bool {
+    let mut prior = std::collections::BTreeMap::<&str, &QueryAccessStep>::new();
+    for step in steps {
+        if prior.contains_key(step.binding.as_str())
+            || step
+                .dependencies
+                .iter()
+                .any(|dependency| !prior.contains_key(dependency.as_str()))
+        {
+            return false;
+        }
+        for predicate in &step.predicates {
+            match &predicate.value {
+                QueryPredicateValue::BindingField { binding, .. } => {
+                    if prior.get(binding.as_str()).is_none_or(|source| {
+                        source.cardinality == Cardinality::Many
+                            || !step.dependencies.contains(binding)
+                    }) {
+                        return false;
+                    }
+                }
+                QueryPredicateValue::BindingFieldSet { binding, .. } => {
+                    if prior.get(binding.as_str()).is_none_or(|source| {
+                        source.cardinality != Cardinality::Many
+                            || !step.dependencies.contains(binding)
+                    }) {
+                        return false;
+                    }
+                }
+                QueryPredicateValue::Parameter(_)
+                | QueryPredicateValue::Literal(_)
+                | QueryPredicateValue::EnumVariant { .. } => {}
+            }
+        }
+        if let QueryAccessKind::DependentPointBatch { source_binding, .. } = &step.access
+            && prior.get(source_binding.as_str()).is_none_or(|source| {
+                source.cardinality != Cardinality::Many
+                    || source.maximum_rows < step.maximum_rows
+                    || !step.dependencies.contains(source_binding)
+            })
+        {
+            return false;
+        }
+        prior.insert(step.binding.as_str(), step);
+    }
+    true
 }
 
 struct ProgramSurface<'a> {

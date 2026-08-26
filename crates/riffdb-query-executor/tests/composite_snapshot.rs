@@ -437,6 +437,36 @@ fn all_accesses_use_one_owned_snapshot_and_respect_cardinality() {
     ));
     view.rows.insert(
         "ticket_labels".to_owned(),
+        (1_u8..=50)
+            .map(|value| ticket_label(CanonicalValue::Uuid([value; 16])))
+            .collect(),
+    );
+    view.rows.insert(
+        "labels".to_owned(),
+        (1_u8..=50)
+            .map(|value| {
+                row(
+                    "Label",
+                    [
+                        ("organization_id", CanonicalValue::Uuid([1; 16])),
+                        ("label_id", CanonicalValue::Uuid([value; 16])),
+                        (
+                            "name",
+                            CanonicalValue::string(format!("label-{value}")).expect("label name"),
+                        ),
+                    ],
+                )
+            })
+            .collect(),
+    );
+    let maximum = execute_in_snapshot(&program, &parameters, &mut view).expect("maximum batch");
+    assert!(matches!(
+        maximum.fields().get("labels"),
+        Some(QueryResultValue::Many(rows)) if rows.len() == 50
+    ));
+
+    view.rows.insert(
+        "ticket_labels".to_owned(),
         (0_u8..51)
             .map(|value| ticket_label(CanonicalValue::Uuid([value; 16])))
             .collect(),

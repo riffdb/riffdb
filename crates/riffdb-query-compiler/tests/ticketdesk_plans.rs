@@ -237,6 +237,45 @@ fn list_and_detail_choose_expected_physical_accesses() {
             .any(|selected| selected == field)),
         "dependency-only fields must not leak into the public result"
     );
+
+    let mut reordered_steps = detail.steps().to_vec();
+    let source = reordered_steps
+        .iter()
+        .position(|candidate| candidate.binding() == "ticket_labels")
+        .expect("dependent source");
+    let target = reordered_steps
+        .iter()
+        .position(|candidate| candidate.binding() == "labels")
+        .expect("dependent target");
+    reordered_steps.swap(source, target);
+    assert!(
+        QueryAccessProgramV1::checked(
+            detail.contract().clone(),
+            detail.surface().clone(),
+            detail.name().map(str::to_owned),
+            detail.partition_parameter().to_owned(),
+            reordered_steps,
+            detail.authorization().to_vec(),
+            detail.cost(),
+        )
+        .is_none(),
+        "a dependent target cannot precede its compiler-declared driver"
+    );
+
+    let reassigned_reporter = query("ticket_page").replace(
+        "user_id == ticket.reporter_id",
+        "user_id == ticket.assignee_id",
+    );
+    let reassigned_reporter = compile_query(
+        &parse_query(&reassigned_reporter).expect("reassigned parse"),
+        &catalog,
+    )
+    .expect("reassigned plan");
+    assert_ne!(
+        detail.identity(),
+        reassigned_reporter.identity(),
+        "the exact relationship mapping participates in plan identity"
+    );
 }
 
 #[test]
