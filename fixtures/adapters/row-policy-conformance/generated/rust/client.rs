@@ -891,7 +891,7 @@ pub struct AttemptDocumentTransferInput {
     pub organization_id: String,
 }
 
-#[allow(clippy::large_enum_variant)]
+#[allow(clippy::enum_variant_names, clippy::large_enum_variant)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum AttemptDocumentTransferOutcome {
     DocumentMissing,
@@ -951,7 +951,7 @@ pub struct ChangeDocumentAccessInput {
     pub organization_id: String,
 }
 
-#[allow(clippy::large_enum_variant)]
+#[allow(clippy::enum_variant_names, clippy::large_enum_variant)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ChangeDocumentAccessOutcome {
     DocumentMissing,
@@ -1016,7 +1016,7 @@ pub struct CreateArtifactInput {
     pub organization_id: String,
 }
 
-#[allow(clippy::large_enum_variant)]
+#[allow(clippy::enum_variant_names, clippy::large_enum_variant)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CreateArtifactOutcome {
     ArtifactExists,
@@ -1085,7 +1085,7 @@ pub struct CreateDocumentInput {
     pub organization_id: String,
 }
 
-#[allow(clippy::large_enum_variant)]
+#[allow(clippy::enum_variant_names, clippy::large_enum_variant)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CreateDocumentOutcome {
     DocumentExists,
@@ -1152,7 +1152,7 @@ pub struct CreateExperimentInput {
     pub organization_id: String,
 }
 
-#[allow(clippy::large_enum_variant)]
+#[allow(clippy::enum_variant_names, clippy::large_enum_variant)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CreateExperimentOutcome {
     ExperimentExists,
@@ -1218,7 +1218,7 @@ pub struct CreateRunInput {
     pub organization_id: String,
 }
 
-#[allow(clippy::large_enum_variant)]
+#[allow(clippy::enum_variant_names, clippy::large_enum_variant)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CreateRunOutcome {
     RunExists,
@@ -1282,7 +1282,7 @@ pub struct FinishRunInput {
     pub expected_revision: u64,
 }
 
-#[allow(clippy::large_enum_variant)]
+#[allow(clippy::enum_variant_names, clippy::large_enum_variant)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum FinishRunOutcome {
     RunMissing,
@@ -1354,7 +1354,7 @@ pub struct LogMetricInput {
     pub organization_id: String,
 }
 
-#[allow(clippy::large_enum_variant)]
+#[allow(clippy::enum_variant_names, clippy::large_enum_variant)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum LogMetricOutcome {
     MetricExists,

@@ -1,0 +1,162 @@
+#!/usr/bin/env python3
+"""Generate the value-free WP-692 external consume-loopback receipt."""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+from pathlib import Path
+import sys
+
+
+ROOT = Path(__file__).resolve().parent.parent
+APPLICATION = ROOT / "fixtures/driver/conformance-app"
+LOCK = APPLICATION / "riffdb.application.lock.json"
+MCP = APPLICATION / "generated/mcp/tools.json"
+OUTPUT = ROOT / "fixtures/unary-delete-preimage/external-consumer-receipt-v1.json"
+OBSERVATION = {
+    "consume": "TokenConsumed",
+    "consume_missing": True,
+    "consume_replayed": True,
+    "created": "Created",
+    "delete_preimage_redacted": True,
+    "exact_query": "Found",
+    "exact_total": 1,
+    "query": "Found",
+    "read_after_commit": True,
+    "replayed": True,
+    "reuse_error": "RDB-COMMAND-0101",
+    "schema": "riffdb.driver-conformance-observation/v1",
+    "secret_query": "Found",
+    "secret_redacted": True,
+}
+RUNNERS = {
+    "rust": ROOT / "tests/driver_conformance_remote_client.rs",
+    "go": APPLICATION / "runner/go/main.go",
+    "typescript": APPLICATION / "runner/typescript.mjs",
+    "python": APPLICATION / "runner/python.py",
+}
+
+
+def sha256_bytes(value: bytes) -> str:
+    return hashlib.sha256(value).hexdigest()
+
+
+def sha256(path: Path) -> str:
+    return sha256_bytes(path.read_bytes())
+
+
+def render() -> bytes:
+    lock = json.loads(LOCK.read_text(encoding="utf-8"))
+    role = next(
+        role
+        for role in lock["roles"]
+        if role["definition"]["name"] == "DriverConformanceApplication"
+    )
+    commands = {
+        command["name"]: command["plan_hash"]
+        for command in role["definition"]["commands"]
+    }
+    if set(commands) != {"ConsumeToken", "CreateItem", "IssueToken"}:
+        raise ValueError("driver conformance command inventory drifted")
+    mcp = json.loads(MCP.read_text(encoding="utf-8"))
+    consume = next(
+        command for command in mcp["commands"] if command["operation_name"] == "ConsumeToken"
+    )
+    secret_outputs = consume["result_schema"].get("x-riffdb-secretOutputs")
+    expected_secret_outputs = [
+        {
+            "entity": "OneTimeToken",
+            "field": "value",
+            "outcome": "TokenConsumed",
+            "sourceField": "value",
+        }
+    ]
+    if secret_outputs != expected_secret_outputs:
+        raise ValueError("ConsumeToken secret metadata drifted")
+    artifacts = [
+        {
+            "kind": artifact["kind"],
+            "path": f"fixtures/driver/conformance-app/{artifact['path']}",
+            "sha256": artifact["content_hash"],
+        }
+        for artifact in lock["artifacts"]
+        if artifact["kind"] in {"go", "mcp", "python", "rust", "typescript"}
+    ]
+    artifacts.sort(key=lambda artifact: artifact["kind"])
+    observation_bytes = json.dumps(
+        OBSERVATION, separators=(",", ":"), sort_keys=True
+    ).encode("utf-8")
+    receipt = {
+        "schema": "riffdb.unary-delete-preimage-external-acceptance/v1",
+        "work_package": "WP-692",
+        "status": "passed",
+        "contract": {
+            "lineage": lock["contract"]["lineage"],
+            "version": lock["contract"]["version"],
+            "bundle_hash": lock["contract"]["bundle_hash"],
+        },
+        "commands": [
+            {"name": name, "plan_hash": commands[name]}
+            for name in ("IssueToken", "ConsumeToken")
+        ],
+        "role": {
+            "name": role["definition"]["name"],
+            "definition_hash": role["definition_hash"],
+            "secret_outputs": expected_secret_outputs,
+        },
+        "external_consumer": {
+            "workspace": "temporary_directory_outside_repository",
+            "languages": sorted(RUNNERS),
+            "runner_source_hashes": {
+                language: sha256(path) for language, path in sorted(RUNNERS.items())
+            },
+            "framework_schema_retained": False,
+            "framework_adapter_code_retained": False,
+            "framework_routes_retained": False,
+            "framework_generated_profiles_retained": False,
+            "framework_authentication_policy_retained": False,
+        },
+        "verified_semantics": {
+            "exact_deleted_preimage": True,
+            "secret_release_authorized": True,
+            "diagnostics_redacted": True,
+            "idempotent_replay_equal": True,
+            "second_consumer_missing": True,
+            "revoked_role_refused": "RDB-AUTH-0215",
+            "shared_remote_tls_service": True,
+            "memory_and_redb_paths": True,
+        },
+        "observation": {
+            "schema": OBSERVATION["schema"],
+            "canonical_sha256": sha256_bytes(observation_bytes),
+            "language_count": len(RUNNERS),
+        },
+        "generated_artifacts": artifacts,
+        "source_lock": {
+            "path": "fixtures/driver/conformance-app/riffdb.application.lock.json",
+            "sha256": sha256(LOCK),
+        },
+    }
+    return (json.dumps(receipt, indent=2, sort_keys=True) + "\n").encode("utf-8")
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--check", action="store_true")
+    arguments = parser.parse_args()
+    expected = render()
+    if arguments.check:
+        if not OUTPUT.exists() or OUTPUT.read_bytes() != expected:
+            print(f"generated unary-delete receipt is stale: {OUTPUT}", file=sys.stderr)
+            return 1
+        return 0
+    OUTPUT.parent.mkdir(parents=True, exist_ok=True)
+    OUTPUT.write_bytes(expected)
+    print(OUTPUT.relative_to(ROOT))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

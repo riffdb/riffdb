@@ -1,5 +1,5 @@
 {
-  "application_manifest_hash": "1d048c73f131a2b84dd962f8f41300de9d92e3db98f177279c9dbd4c9037cab6",
+  "application_manifest_hash": "bf5ab595acb8f5a57cf5e3a3d032b812a67caffcecf4cd7842c0a014c1f74baa",
   "commands": [
     {
       "annotations": {
@@ -8,7 +8,114 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "contract_bundle_hash": "3c62e62ed9ae163cb49ec2733b55c6c8c6ec13f18e700f2de218ee10c58e69ea",
+      "contract_bundle_hash": "2fcc01955fcad80a8b6ac5fc6149e95b96889d29182301eb416b8cd1fa70bb0a",
+      "description": "Execute the exact ConsumeToken compiled command from contract DriverConformance.",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "organization_id": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "token_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "token_id",
+          "request_id",
+          "organization_id"
+        ],
+        "type": "object"
+      },
+      "name": "driver_conformance_consume_token",
+      "operation_name": "ConsumeToken",
+      "plan_hash": "da9bd3f011355d787c5939e270ee331aea5e20560887d9e3591fb62b0e7ebe8f",
+      "result_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "TokenExpired",
+                "type": "string"
+              }
+            },
+            "required": [
+              "outcome"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "TokenMissing",
+                "type": "string"
+              }
+            },
+            "required": [
+              "outcome"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "expires_at": {
+                "type": "string"
+              },
+              "identifier": {
+                "type": "string"
+              },
+              "issued_at": {
+                "type": "string"
+              },
+              "outcome": {
+                "const": "TokenConsumed",
+                "type": "string"
+              },
+              "token_id": {
+                "type": "string"
+              },
+              "value": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "value",
+              "token_id",
+              "issued_at",
+              "expires_at",
+              "identifier",
+              "outcome"
+            ],
+            "type": "object"
+          }
+        ],
+        "x-riffdb-secretOutputs": [
+          {
+            "entity": "OneTimeToken",
+            "field": "value",
+            "outcome": "TokenConsumed",
+            "sourceField": "value"
+          }
+        ]
+      },
+      "title": "Run ConsumeToken"
+    },
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "contract_bundle_hash": "2fcc01955fcad80a8b6ac5fc6149e95b96889d29182301eb416b8cd1fa70bb0a",
       "description": "Execute the exact CreateItem compiled command from contract DriverConformance.",
       "input_schema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -78,6 +185,92 @@
         ]
       },
       "title": "Run CreateItem"
+    },
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "contract_bundle_hash": "2fcc01955fcad80a8b6ac5fc6149e95b96889d29182301eb416b8cd1fa70bb0a",
+      "description": "Execute the exact IssueToken compiled command from contract DriverConformance.",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "expires_at": {
+            "type": "string"
+          },
+          "identifier": {
+            "type": "string"
+          },
+          "organization_id": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "token_id": {
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "value",
+          "token_id",
+          "expires_at",
+          "identifier",
+          "request_id",
+          "organization_id"
+        ],
+        "type": "object"
+      },
+      "name": "driver_conformance_issue_token",
+      "operation_name": "IssueToken",
+      "plan_hash": "dcb17bcfe14d85d58fc46e49c031b1bd3642c8f9beca51101c1e368fb05eba86",
+      "result_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "issued_at": {
+                "type": "string"
+              },
+              "outcome": {
+                "const": "TokenIssued",
+                "type": "string"
+              },
+              "token_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "token_id",
+              "issued_at",
+              "outcome"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "TokenAlreadyExists",
+                "type": "string"
+              }
+            },
+            "required": [
+              "outcome"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "title": "Run IssueToken"
     }
   ],
   "reactive_tools": [],
@@ -108,7 +301,7 @@
         ],
         "type": "object"
       },
-      "module_hash": "617a781639cc99054763abfcaa3878194732bb6693136016652ef143f653c454",
+      "module_hash": "d5edf8b81ecca77cfe91a63f53c2a8f4d3f06835029b197194bfc99af9bbfd07",
       "name": "driver_conformance_item_secret",
       "operation_name": "ItemSecret",
       "result_schema": {
@@ -184,7 +377,7 @@
         ],
         "type": "object"
       },
-      "module_hash": "617a781639cc99054763abfcaa3878194732bb6693136016652ef143f653c454",
+      "module_hash": "d5edf8b81ecca77cfe91a63f53c2a8f4d3f06835029b197194bfc99af9bbfd07",
       "name": "driver_conformance_item_page",
       "operation_name": "ItemPage",
       "result_schema": {
@@ -288,7 +481,7 @@
         ],
         "type": "object"
       },
-      "module_hash": "617a781639cc99054763abfcaa3878194732bb6693136016652ef143f653c454",
+      "module_hash": "d5edf8b81ecca77cfe91a63f53c2a8f4d3f06835029b197194bfc99af9bbfd07",
       "name": "driver_conformance_search_items",
       "operation_name": "SearchItems",
       "result_schema": {

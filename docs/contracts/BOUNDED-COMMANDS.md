@@ -47,6 +47,20 @@ does not grant reveal permission. Sets, a second alias for the target, multiple 
 `restrict`, `cascade`, and caller-selected targets receive source diagnostics. Those broader
 deletion policies remain available only through the compiler-bounded collection forms below.
 
+Generated Rust, Go, TypeScript, and Python clients expose the same closed consumed/missing outcome
+union and publish exact symbolic metadata for every secret outcome field. Generated MCP command
+schemas carry that same value-free metadata. TypeScript also generates a structured-redaction
+helper, while Rust, Go, and Python redact the default diagnostic representation. MCP never gains a
+raw delete or transaction method.
+CLI and transport uncertainty recovery retain the original idempotency identity, so a response lost
+after commit resolves to the persisted outcome rather than executing another delete.
+
+The value-free external acceptance receipt at
+`fixtures/unary-delete-preimage/external-consumer-receipt-v1.json` binds the generic consume plans
+and generated artifacts to a Rust, Go, TypeScript, and Python loopback over one real TLS service.
+The harness creates consumer workspaces outside the repository; no framework schema, adapter,
+route, generated profile, or authentication policy is retained by RiffDB.
+
 ## Compiler-bounded collection commands
 
 RiffDB collection writes are compiled commands, not caller-defined transactions. A `bulk command`

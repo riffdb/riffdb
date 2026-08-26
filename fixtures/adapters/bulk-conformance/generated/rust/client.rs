@@ -447,7 +447,7 @@ pub struct CreateDocumentGraphsInput {
     pub request_id: String,
 }
 
-#[allow(clippy::large_enum_variant)]
+#[allow(clippy::enum_variant_names, clippy::large_enum_variant)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CreateDocumentGraphsOutcome {
     DocumentAlreadyExists,
@@ -498,7 +498,7 @@ pub struct CreatePipelinesWithStepsInput {
     pub request_id: String,
 }
 
-#[allow(clippy::large_enum_variant)]
+#[allow(clippy::enum_variant_names, clippy::large_enum_variant)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CreatePipelinesWithStepsOutcome {
     PipelinesCreated,
@@ -549,7 +549,7 @@ pub struct CreateRestrictChildrenInput {
     pub request_id: String,
 }
 
-#[allow(clippy::large_enum_variant)]
+#[allow(clippy::enum_variant_names, clippy::large_enum_variant)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CreateRestrictChildrenOutcome {
     ChildAlreadyExists,
@@ -600,7 +600,7 @@ pub struct CreateRestrictParentsInput {
     pub request_id: String,
 }
 
-#[allow(clippy::large_enum_variant)]
+#[allow(clippy::enum_variant_names, clippy::large_enum_variant)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CreateRestrictParentsOutcome {
     ParentAlreadyExists,
@@ -649,7 +649,7 @@ pub struct DeleteRestrictParentsInput {
     pub request_id: String,
 }
 
-#[allow(clippy::large_enum_variant)]
+#[allow(clippy::enum_variant_names, clippy::large_enum_variant)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum DeleteRestrictParentsOutcome {
     ParentMissing,
@@ -701,7 +701,7 @@ pub struct LogMetricsInput {
     pub request_id: String,
 }
 
-#[allow(clippy::large_enum_variant)]
+#[allow(clippy::enum_variant_names, clippy::large_enum_variant)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum LogMetricsOutcome {
     MetricsLogged,
@@ -749,7 +749,7 @@ pub struct WritePolicyMutationsInput {
     pub request_id: String,
 }
 
-#[allow(clippy::large_enum_variant)]
+#[allow(clippy::enum_variant_names, clippy::large_enum_variant)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum WritePolicyMutationsOutcome {
     PolicyMutationExists,
@@ -803,7 +803,7 @@ pub struct WriteTuplesInput {
     pub request_id: String,
 }
 
-#[allow(clippy::large_enum_variant)]
+#[allow(clippy::enum_variant_names, clippy::large_enum_variant)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum WriteTuplesOutcome {
     TuplesWritten,

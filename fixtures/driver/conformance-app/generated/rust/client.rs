@@ -5,11 +5,11 @@ use riffdb_client_rust::{ApplicationCardinality, ApplicationClientError, Applica
 pub use riffdb_client_rust::QueryOptions;
 use riffdb_client_rust::v1::value::Kind as WireKind;
 
-pub const QUERY_MODULE_HASH: [u8; 32] = [0x61, 0x7a, 0x78, 0x16, 0x39, 0xcc, 0x99, 0x05, 0x47, 0x63, 0xab, 0xfc, 0xaa, 0x38, 0x78, 0x19, 0x47, 0x32, 0xbb, 0x66, 0x93, 0x13, 0x60, 0x16, 0x65, 0x2e, 0xf1, 0x43, 0xf6, 0x53, 0xc4, 0x54];
+pub const QUERY_MODULE_HASH: [u8; 32] = [0xd5, 0xed, 0xf8, 0xb8, 0x1e, 0xcc, 0xa7, 0x7c, 0xfe, 0x91, 0xa6, 0x3f, 0x53, 0xc2, 0xa8, 0xf4, 0xd3, 0xf0, 0x68, 0x35, 0x02, 0x9b, 0x19, 0x71, 0x94, 0xbf, 0xc9, 0x9a, 0xf9, 0xbb, 0xfd, 0x07];
 pub const CONTRACT_LINEAGE: &str = "DriverConformance";
 pub const CONTRACT_VERSION: u64 = 1;
 
-pub const CONTRACT_BUNDLE_HASH: [u8; 32] = [0x3c, 0x62, 0xe6, 0x2e, 0xd9, 0xae, 0x16, 0x3c, 0xb4, 0x9e, 0xc2, 0x73, 0x3b, 0x55, 0xc6, 0xc8, 0xc6, 0xec, 0x13, 0xf1, 0x8e, 0x70, 0x0f, 0x2d, 0xe2, 0x18, 0xee, 0x10, 0xc5, 0x8e, 0x69, 0xea];
+pub const CONTRACT_BUNDLE_HASH: [u8; 32] = [0x2f, 0xcc, 0x01, 0x95, 0x5f, 0xca, 0xd8, 0x0a, 0x8b, 0x6a, 0xc5, 0xfc, 0x61, 0x49, 0xe9, 0x5b, 0x96, 0x88, 0x9d, 0x29, 0x18, 0x23, 0x01, 0xeb, 0x41, 0x6b, 0x8c, 0xd1, 0xfa, 0x70, 0xbb, 0x0a];
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DecimalValue {
@@ -57,7 +57,7 @@ pub enum ItemPageResult {
     NotFound(Box<ItemPageNotFound>),
 }
 
-pub const ITEM_PAGE_QUERY_PLAN_HASH: [u8; 32] = [0xd4, 0x81, 0x6a, 0x9c, 0x44, 0x7c, 0xb5, 0x89, 0x23, 0xf6, 0x90, 0xb2, 0x00, 0x6d, 0xbc, 0x27, 0x58, 0xed, 0x54, 0x26, 0x94, 0xd5, 0x04, 0x7f, 0x4c, 0x4e, 0x92, 0x6b, 0x9d, 0x77, 0x1e, 0xe5];
+pub const ITEM_PAGE_QUERY_PLAN_HASH: [u8; 32] = [0x9c, 0x8e, 0x71, 0x69, 0x8d, 0x90, 0xaf, 0xfe, 0x0c, 0x0a, 0x08, 0x0a, 0xe0, 0xe0, 0xc9, 0x35, 0xd5, 0x1a, 0xd1, 0x5a, 0x16, 0x17, 0x8f, 0xe9, 0xcc, 0x7f, 0x19, 0x1a, 0x00, 0x8c, 0xb2, 0x47];
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ItemPageQuery(pub ItemPageParams);
 impl GeneratedQuery for ItemPageQuery {
@@ -160,7 +160,7 @@ pub enum ItemSecretResult {
     NotFound(Box<ItemSecretNotFound>),
 }
 
-pub const ITEM_SECRET_QUERY_PLAN_HASH: [u8; 32] = [0x69, 0x27, 0xcc, 0xdb, 0xdb, 0x7a, 0x1b, 0x0c, 0x9a, 0x50, 0x3a, 0x4a, 0x4c, 0x19, 0x30, 0xcd, 0x5b, 0x7e, 0xee, 0x16, 0xe7, 0xb5, 0x05, 0xa9, 0x2c, 0x08, 0x6e, 0xbd, 0x94, 0xb0, 0x29, 0x35];
+pub const ITEM_SECRET_QUERY_PLAN_HASH: [u8; 32] = [0x09, 0x27, 0x49, 0x63, 0x03, 0x7e, 0x62, 0xe6, 0xac, 0x2e, 0xce, 0x71, 0xb5, 0x54, 0xcc, 0xe0, 0x4f, 0x70, 0xb0, 0x0c, 0x41, 0x09, 0x6f, 0xe7, 0x71, 0xb1, 0xb1, 0x09, 0x4e, 0x39, 0x3a, 0xa9];
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ItemSecretQuery(pub ItemSecretParams);
 impl GeneratedQuery for ItemSecretQuery {
@@ -245,7 +245,7 @@ pub enum SearchItemsResult {
     Found(Box<SearchItemsFound>),
 }
 
-pub const SEARCH_ITEMS_QUERY_PLAN_HASH: [u8; 32] = [0xd3, 0x4a, 0x57, 0x99, 0x40, 0x72, 0x13, 0x97, 0x5e, 0x82, 0xb2, 0x7e, 0x33, 0x91, 0xd8, 0x23, 0x60, 0x83, 0x17, 0xdb, 0x73, 0x26, 0xa7, 0xfe, 0x8b, 0x89, 0x85, 0x86, 0xe5, 0xce, 0x27, 0x55];
+pub const SEARCH_ITEMS_QUERY_PLAN_HASH: [u8; 32] = [0xc1, 0xcd, 0x3b, 0x84, 0x17, 0x99, 0xfe, 0xb4, 0x9d, 0x22, 0xc2, 0x3a, 0xf8, 0xdd, 0x57, 0x84, 0xfb, 0x87, 0xb8, 0xfb, 0x70, 0x19, 0xb0, 0xa9, 0x9d, 0x22, 0xae, 0x39, 0x1a, 0xfb, 0x20, 0x97];
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SearchItemsQuery(pub SearchItemsParams);
 impl GeneratedQuery for SearchItemsQuery {
@@ -340,6 +340,118 @@ fn decode_item_entity(value: v1::Value) -> Result<Item, GeneratedCommandError> {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OneTimeToken {
+    pub value: String,
+    pub token_id: String,
+    pub issued_at: TimestampValue,
+    pub expires_at: TimestampValue,
+    pub identifier: String,
+    pub organization_id: String,
+}
+
+fn encode_one_time_token_entity(value: &OneTimeToken) -> Result<v1::Value, GeneratedCommandError> {
+    let fields = vec![
+        v1::ValueField { field_id: Some(1), name: String::new(), value: Some(wire_string(Clone::clone(&value.value))) },
+        v1::ValueField { field_id: Some(2), name: String::new(), value: Some(wire_uuid(&value.token_id)?) },
+        v1::ValueField { field_id: Some(3), name: String::new(), value: Some(wire_timestamp(&value.issued_at)?) },
+        v1::ValueField { field_id: Some(4), name: String::new(), value: Some(wire_timestamp(&value.expires_at)?) },
+        v1::ValueField { field_id: Some(5), name: String::new(), value: Some(wire_string(Clone::clone(&value.identifier))) },
+        v1::ValueField { field_id: Some(6), name: String::new(), value: Some(wire_uuid(&value.organization_id)?) },
+    ];
+    Ok(v1::Value { kind: Some(WireKind::RecordValue(v1::ValueRecord { fields })) })
+}
+
+fn decode_one_time_token_entity(value: v1::Value) -> Result<OneTimeToken, GeneratedCommandError> {
+    let mut fields = wire_record_fields(value)?;
+    let entity = OneTimeToken {
+        value: decode_wire_string(take_wire_field(&mut fields, 1)?)?,
+        token_id: decode_wire_uuid(take_wire_field(&mut fields, 2)?)?,
+        issued_at: decode_wire_timestamp(take_wire_field(&mut fields, 3)?)?,
+        expires_at: decode_wire_timestamp(take_wire_field(&mut fields, 4)?)?,
+        identifier: decode_wire_string(take_wire_field(&mut fields, 5)?)?,
+        organization_id: decode_wire_uuid(take_wire_field(&mut fields, 6)?)?,
+    };
+    if !fields.is_empty() { return Err(GeneratedCommandError::InvalidOutcomeShape); }
+    Ok(entity)
+}
+
+pub const CONSUME_TOKEN_SECRET_OUTPUTS: &[(&str, &str, &str, &str)] = &[
+    ("TokenConsumed", "value", "OneTimeToken", "value"),
+];
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ConsumeTokenInput {
+    pub token_id: String,
+    pub request_id: String,
+    pub organization_id: String,
+}
+
+#[allow(clippy::enum_variant_names, clippy::large_enum_variant)]
+#[derive(Clone, Eq, PartialEq)]
+pub enum ConsumeTokenOutcome {
+    TokenExpired,
+
+    TokenMissing,
+
+    TokenConsumed {
+        value: String,
+        token_id: String,
+        issued_at: TimestampValue,
+        expires_at: TimestampValue,
+        identifier: String,
+    },
+}
+
+impl std::fmt::Debug for ConsumeTokenOutcome {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { formatter.write_str("ConsumeTokenOutcome([REDACTED])") }
+}
+
+const CONSUME_TOKEN_PLAN_HASH: [u8; 32] = [0xda, 0x9b, 0xd3, 0xf0, 0x11, 0x35, 0x5d, 0x78, 0x7c, 0x59, 0x39, 0xe2, 0x70, 0xee, 0x33, 0x1a, 0xea, 0x5e, 0x20, 0x56, 0x08, 0x87, 0xd9, 0xe3, 0x59, 0x1f, 0xb6, 0x2b, 0x0e, 0x7e, 0xbe, 0x8f];
+impl GeneratedCommand for ConsumeTokenInput {
+    type Outcome = ConsumeTokenOutcome;
+
+    fn idempotent_command(&self) -> Result<IdempotentCommand, GeneratedCommandError> {
+
+        let fields = vec![
+            wire_named_field("token_id", wire_uuid(&self.token_id)?),
+            wire_named_field("request_id", wire_uuid(&self.request_id)?),
+            wire_named_field("organization_id", wire_uuid(&self.organization_id)?),
+        ];
+        IdempotentCommand::new("ConsumeToken", Some(CONTRACT_VERSION), wire_record(fields)).map_err(Into::into)
+    }
+
+    fn outcome_request(&self, request_id: riffdb_client_rust::RequestId) -> Result<v1::GetOutcomeRequest, GeneratedCommandError> {
+        Ok(v1::GetOutcomeRequest {
+            request_id: request_id.into_bytes().to_vec(),
+            contract_lineage: CONTRACT_LINEAGE.to_owned(),
+            command_name: "ConsumeToken".to_owned(),
+            idempotency_key: self.request_id.clone(),
+            outcome_uri: None,
+        })
+    }
+
+    fn decode_outcome(&self, response: &v1::ExecuteCommandResponse) -> Result<Self::Outcome, GeneratedCommandError> {
+        let mut fields = wire_outcome_fields(response, &CONSUME_TOKEN_PLAN_HASH)?;
+        match response.outcome_type.as_str() {
+            "TokenExpired" => if fields.is_empty() { Ok(Self::Outcome::TokenExpired) } else { Err(GeneratedCommandError::InvalidOutcomeShape) },
+            "TokenMissing" => if fields.is_empty() { Ok(Self::Outcome::TokenMissing) } else { Err(GeneratedCommandError::InvalidOutcomeShape) },
+            "TokenConsumed" => {
+                let outcome = Self::Outcome::TokenConsumed {
+                    value: decode_wire_string(take_wire_field(&mut fields, 1)?)?,
+                    token_id: decode_wire_uuid(take_wire_field(&mut fields, 2)?)?,
+                    issued_at: decode_wire_timestamp(take_wire_field(&mut fields, 3)?)?,
+                    expires_at: decode_wire_timestamp(take_wire_field(&mut fields, 4)?)?,
+                    identifier: decode_wire_string(take_wire_field(&mut fields, 5)?)?,
+                };
+                if !fields.is_empty() { return Err(GeneratedCommandError::InvalidOutcomeShape); }
+                Ok(outcome)
+            },
+            _ => Err(GeneratedCommandError::InvalidOutcomeShape),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CreateItemInput {
     pub title: String,
     pub item_id: String,
@@ -348,7 +460,7 @@ pub struct CreateItemInput {
     pub organization_id: String,
 }
 
-#[allow(clippy::large_enum_variant)]
+#[allow(clippy::enum_variant_names, clippy::large_enum_variant)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CreateItemOutcome {
     Created,
@@ -395,6 +507,71 @@ impl GeneratedCommand for CreateItemInput {
                 if !fields.is_empty() { return Err(GeneratedCommandError::InvalidOutcomeShape); }
                 Ok(outcome)
             },
+            _ => Err(GeneratedCommandError::InvalidOutcomeShape),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct IssueTokenInput {
+    pub value: String,
+    pub token_id: String,
+    pub expires_at: TimestampValue,
+    pub identifier: String,
+    pub request_id: String,
+    pub organization_id: String,
+}
+
+#[allow(clippy::enum_variant_names, clippy::large_enum_variant)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum IssueTokenOutcome {
+    TokenIssued {
+        token_id: String,
+        issued_at: TimestampValue,
+    },
+
+    TokenAlreadyExists,
+}
+
+const ISSUE_TOKEN_PLAN_HASH: [u8; 32] = [0xdc, 0xb1, 0x7b, 0xcf, 0xe1, 0x4d, 0x85, 0xd5, 0x8f, 0xc4, 0x6e, 0x49, 0xc0, 0x31, 0xb1, 0xbd, 0x36, 0x42, 0xc8, 0xf9, 0xbe, 0xca, 0x51, 0x10, 0x1c, 0x1e, 0x36, 0x8f, 0xb0, 0x5e, 0xba, 0x86];
+impl GeneratedCommand for IssueTokenInput {
+    type Outcome = IssueTokenOutcome;
+
+    fn idempotent_command(&self) -> Result<IdempotentCommand, GeneratedCommandError> {
+
+        let fields = vec![
+            wire_named_field("value", wire_string(Clone::clone(&self.value))),
+            wire_named_field("token_id", wire_uuid(&self.token_id)?),
+            wire_named_field("expires_at", wire_timestamp(&self.expires_at)?),
+            wire_named_field("identifier", wire_string(Clone::clone(&self.identifier))),
+            wire_named_field("request_id", wire_uuid(&self.request_id)?),
+            wire_named_field("organization_id", wire_uuid(&self.organization_id)?),
+        ];
+        IdempotentCommand::new("IssueToken", Some(CONTRACT_VERSION), wire_record(fields)).map_err(Into::into)
+    }
+
+    fn outcome_request(&self, request_id: riffdb_client_rust::RequestId) -> Result<v1::GetOutcomeRequest, GeneratedCommandError> {
+        Ok(v1::GetOutcomeRequest {
+            request_id: request_id.into_bytes().to_vec(),
+            contract_lineage: CONTRACT_LINEAGE.to_owned(),
+            command_name: "IssueToken".to_owned(),
+            idempotency_key: self.request_id.clone(),
+            outcome_uri: None,
+        })
+    }
+
+    fn decode_outcome(&self, response: &v1::ExecuteCommandResponse) -> Result<Self::Outcome, GeneratedCommandError> {
+        let mut fields = wire_outcome_fields(response, &ISSUE_TOKEN_PLAN_HASH)?;
+        match response.outcome_type.as_str() {
+            "TokenIssued" => {
+                let outcome = Self::Outcome::TokenIssued {
+                    token_id: decode_wire_uuid(take_wire_field(&mut fields, 1)?)?,
+                    issued_at: decode_wire_timestamp(take_wire_field(&mut fields, 2)?)?,
+                };
+                if !fields.is_empty() { return Err(GeneratedCommandError::InvalidOutcomeShape); }
+                Ok(outcome)
+            },
+            "TokenAlreadyExists" => if fields.is_empty() { Ok(Self::Outcome::TokenAlreadyExists) } else { Err(GeneratedCommandError::InvalidOutcomeShape) },
             _ => Err(GeneratedCommandError::InvalidOutcomeShape),
         }
     }
@@ -461,6 +638,21 @@ impl DriverConformanceClient {
         self.client.execute_generated_query(SearchItemsQuery(parameters), options, &self.metadata).await
     }
 
+    pub async fn consume_token(&mut self, input: ConsumeTokenInput) -> Result<TypedCommandResult<ConsumeTokenOutcome>, ApplicationClientError> {
+        self.client.execute_generated_command(&input, self.command_attempts, &self.metadata).await.map_err(Into::into)
+    }
+
+    pub async fn consume_token_batch(&self, inputs: Vec<ConsumeTokenInput>, options: GeneratedBatchOptions) -> Result<GeneratedBatchResult<ConsumeTokenOutcome>, GeneratedBatchError> {
+        self.client.execute_generated_command_batch(inputs, options, self.command_attempts, &self.metadata).await
+    }
+
+    pub async fn consume_token_batch_with_progress<F>(&self, inputs: Vec<ConsumeTokenInput>, options: GeneratedBatchOptions, progress: F) -> Result<GeneratedBatchResult<ConsumeTokenOutcome>, GeneratedBatchError>
+    where
+        F: FnMut(GeneratedBatchProgress),
+    {
+        self.client.execute_generated_command_batch_with_progress(inputs, options, self.command_attempts, &self.metadata, progress).await
+    }
+
     pub async fn create_item(&mut self, input: CreateItemInput) -> Result<TypedCommandResult<CreateItemOutcome>, ApplicationClientError> {
         self.client.execute_generated_command(&input, self.command_attempts, &self.metadata).await.map_err(Into::into)
     }
@@ -470,6 +662,21 @@ impl DriverConformanceClient {
     }
 
     pub async fn create_item_batch_with_progress<F>(&self, inputs: Vec<CreateItemInput>, options: GeneratedBatchOptions, progress: F) -> Result<GeneratedBatchResult<CreateItemOutcome>, GeneratedBatchError>
+    where
+        F: FnMut(GeneratedBatchProgress),
+    {
+        self.client.execute_generated_command_batch_with_progress(inputs, options, self.command_attempts, &self.metadata, progress).await
+    }
+
+    pub async fn issue_token(&mut self, input: IssueTokenInput) -> Result<TypedCommandResult<IssueTokenOutcome>, ApplicationClientError> {
+        self.client.execute_generated_command(&input, self.command_attempts, &self.metadata).await.map_err(Into::into)
+    }
+
+    pub async fn issue_token_batch(&self, inputs: Vec<IssueTokenInput>, options: GeneratedBatchOptions) -> Result<GeneratedBatchResult<IssueTokenOutcome>, GeneratedBatchError> {
+        self.client.execute_generated_command_batch(inputs, options, self.command_attempts, &self.metadata).await
+    }
+
+    pub async fn issue_token_batch_with_progress<F>(&self, inputs: Vec<IssueTokenInput>, options: GeneratedBatchOptions, progress: F) -> Result<GeneratedBatchResult<IssueTokenOutcome>, GeneratedBatchError>
     where
         F: FnMut(GeneratedBatchProgress),
     {

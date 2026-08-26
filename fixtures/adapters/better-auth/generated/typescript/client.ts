@@ -269,7 +269,15 @@ export interface RefreshSessionInput {
   readonly successor_token_digest: string;
 }
 
+export const REFRESH_SESSION_SECRET_OUTPUTS = [
+  { outcome: "SessionRefreshed", field: "session", entity: "Session", sourceField: "token_digest" },
+] as const;
+
 export type RefreshSessionOutcome = { readonly outcome: "SessionRefreshed"; readonly session: { readonly state: string; readonly user_id: string; readonly expires_at: { readonly seconds: bigint; readonly nanos: number }; readonly session_id: string; readonly token_digest: string; readonly organization_id: string } } | { readonly outcome: "RefreshSessionStale" } | { readonly outcome: "RefreshSessionExpired" } | { readonly outcome: "RefreshSessionMissing" } | { readonly outcome: "RefreshSessionRevoked" };
+
+export function redactRefreshSessionOutcome(value: RefreshSessionOutcome): { readonly outcome: string; readonly redactedSecretOutputs: typeof REFRESH_SESSION_SECRET_OUTPUTS } {
+  return { outcome: value.outcome, redactedSecretOutputs: REFRESH_SESSION_SECRET_OUTPUTS };
+}
 
 export const REFRESH_SESSION_PLAN_HASH = "bec158663a6511372e7f497f3d0ed5ae9ffa45a0a39b7b54d71a817d9fd31067" as const;
 export function refreshSession(input: RefreshSessionInput): CommandRequest<RefreshSessionInput, RefreshSessionOutcome> {
@@ -284,7 +292,15 @@ export interface RevokeSessionInput {
   readonly expected_revision: bigint;
 }
 
+export const REVOKE_SESSION_SECRET_OUTPUTS = [
+  { outcome: "SessionRevoked", field: "session", entity: "Session", sourceField: "token_digest" },
+] as const;
+
 export type RevokeSessionOutcome = { readonly outcome: "SessionRevoked"; readonly session: { readonly state: string; readonly user_id: string; readonly expires_at: { readonly seconds: bigint; readonly nanos: number }; readonly session_id: string; readonly token_digest: string; readonly organization_id: string } } | { readonly outcome: "RevokeSessionStale" } | { readonly outcome: "RevokeSessionMissing" } | { readonly outcome: "SessionAlreadyRevoked" };
+
+export function redactRevokeSessionOutcome(value: RevokeSessionOutcome): { readonly outcome: string; readonly redactedSecretOutputs: typeof REVOKE_SESSION_SECRET_OUTPUTS } {
+  return { outcome: value.outcome, redactedSecretOutputs: REVOKE_SESSION_SECRET_OUTPUTS };
+}
 
 export const REVOKE_SESSION_PLAN_HASH = "309062f50ee35eea4b2ab7393c8a3be74547a3d7e05995eb6b8c6cecc9f39813" as const;
 export function revokeSession(input: RevokeSessionInput): CommandRequest<RevokeSessionInput, RevokeSessionOutcome> {

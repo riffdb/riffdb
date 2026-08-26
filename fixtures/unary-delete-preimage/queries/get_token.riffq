@@ -1,0 +1,12 @@
+query GetToken(
+  $organization_id: OneTimeToken.organization_id,
+  $token_id: OneTimeToken.token_id,
+) {
+  one token from OneTimeToken
+    where organization_id == $organization_id && token_id == $token_id
+    else TokenMissing
+  return TokenFound {
+    token: token { organization_id token_id identifier expires_at issued_at }
+  }
+  outcomes TokenFound | TokenMissing
+}

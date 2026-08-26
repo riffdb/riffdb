@@ -61,7 +61,7 @@
 - [Contract Language Overview](contracts/README.md)
 - [Authoring Reference](contracts/AUTHORING.md)
 - [Language Reference](contracts/LANGUAGE.md)
-- [Bounded Collection Commands](contracts/BOUNDED-COMMANDS.md)
+- [Bounded Delete Commands](contracts/BOUNDED-COMMANDS.md)
 - [Command and Invariant Cookbook](contracts/COMMAND-INVARIANT-COOKBOOK.md)
 - [Unsafe Patterns and Corrections](contracts/examples/NEGATIVE-EXAMPLES.md)
 
