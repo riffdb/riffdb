@@ -9,7 +9,7 @@ use riffdb_types::{
 #[test]
 fn registry_freezes_every_existing_aggregate_semantic() {
     let registry = aggregate_semantic_registry_v1();
-    assert_eq!(registry.len(), 5);
+    assert_eq!(registry.len(), 11);
 
     let identities = registry
         .iter()
@@ -23,6 +23,12 @@ fn registry_freezes_every_existing_aggregate_semantic() {
             AggregateSemanticIdentityV1::Sum,
             AggregateSemanticIdentityV1::Min,
             AggregateSemanticIdentityV1::Max,
+            AggregateSemanticIdentityV1::CountPresent,
+            AggregateSemanticIdentityV1::CountDistinct,
+            AggregateSemanticIdentityV1::CountDistinctPresent,
+            AggregateSemanticIdentityV1::Mean,
+            AggregateSemanticIdentityV1::Any,
+            AggregateSemanticIdentityV1::All,
         ]
     );
 
