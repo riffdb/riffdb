@@ -6,7 +6,7 @@
 **Tagline:** *Vibe fast. Commit safely.*  
 **Category:** Contract-first operational database for agent-built applications  
 
-**Version:** 1.12
+**Version:** 1.13
 **Status:** Deployable Application Alpha architecture accepted; implementation gated by work packages
 **Date:** 26 August 2026
 **Audience:** Coding agents, database engineers, compiler engineers, security reviewers, and technical product leads  
@@ -37,6 +37,7 @@
 
 | Version | Date | Summary |
 |---|---|---|
+| 1.13 | 2026-08-26 | Accepted ADR-0154 and ADR-0155. Registered OQ-056 through OQ-061 plus WP-700/WP-701 for compiler-sealed strict, inclusive, and complement intervals over the existing `binary_utf8_v1` physical order, with one partition prefix, total order, cursor, policy, and global work contract and no ULID-specific or durable-format branch. Registered DX-042 through DX-049 plus WP-702/WP-703 for sparse source V7 generated-surface declarations, manifest V5, lock V8, exact compiler-owned artifact inventories, and reproducible single-surface application packages. Existing source V1-V6, manifest V1-V4, lock V1-V7, indexes, query plans, storage, protocols, and runtime authority remain unchanged and readable. |
 | 1.12 | 2026-08-26 | Accepted ADR-0153 and registered BLK-036 through BLK-045 plus WP-697 through WP-699 for one compiler-sealed `init_or_mutate` exact-key binding. An absent observation uses compiler-declared initial fields and produces one create; a present observation uses the revalidated preimage and produces one replace; both follow one common checked suffix. Create/update authority, policy, idempotency, atomic outcome/event/provenance, collection and index-work bounds, and pay-once proofs remain mandatory. V17 is least-sufficient and old contracts remain byte-exact. General upsert, conditional command blocks, state-origin exposure, framework behavior, and caller-selected conflict semantics remain forbidden pending real-consumer review and exact acceptance. |
 | 1.11 | 2026-08-25 | Corrected accepted ADR-0108 exact text-key equality: a declared `binary_utf8_v1` component MAY consume an exact typed string equality while forming an ordinary bounded index prefix, so compatible wider ordered and narrower equality-prefix named queries can share one maintained index. Runtime transforms the bound string to the existing physical ordered bytes only for prefix formation; logical predicate evaluation, complete declared order, cursor identity, and every existing partition, policy, and cost proof remain unchanged. Registered WP-686. |
 | 1.10 | 2026-08-25 | Clarified accepted ADR-0108 ordering: a declared `binary_utf8_v1` text-key component MAY provide the ordinary bounded total order of an operational query without also carrying a prefix predicate. The selected index, partition equality prefix, complete compiler-declared order, deterministic key tie-breaker, opaque cursor binding, and all existing cost and authorization checks remain mandatory; canonical length-first string indexes do not acquire bytewise text ordering. Registered WP-685. |
@@ -582,6 +583,53 @@ passed to `go run` without a shell or caller-supplied flags. Absolute paths,
 parent traversal, symlink escape, nested-module ambiguity, non-main packages,
 and argument injection MUST fail before runner execution. Contract, module,
 role, plan, and application-lock identity MUST remain unchanged.
+
+`DX-042` Application source V7 MUST declare one nonempty closed sparse map of
+generated `rust`, `go`, `typescript`, `python`, and `mcp` surfaces. Present
+targets MUST have unique bounded workspace-relative paths; absent targets MUST
+not be generated, materialized, hashed as generated artifacts, freshness-
+checked, installed, or required through an unrelated ecosystem toolchain.
+
+`DX-043` The symbolic application source MUST be the sole authority for the
+exact generated-surface set. Local project configuration MAY materialize only
+a subset of declared surfaces and MUST NOT add an undeclared target or cause
+the compiler-owned application lock to vary across machines.
+
+`DX-044` Source parsing, canonical generation, artifact-kind mapping, lock
+compilation, project publication, checking, installation, scaffolding, and
+development publication MUST derive from one compiler-owned declared-surface
+registry. Every declared artifact is generated and hashed exactly once per
+compilation; every absent surface incurs no generation or toolchain discovery.
+
+`DX-045` Selective generation MUST use the least-sufficient additive
+`riffdb.application-source/v7`, `riffdb.application-manifest/v5`, and
+`riffdb.application-lock/v8` identities. Source V1-V6, manifest V1-V4, and lock
+V1-V7 bytes and required artifact sets MUST remain supported for their
+registered windows, and no decoder may be retired by this change.
+
+`DX-046` `riffdb init` and the installed development workflow MUST produce and
+execute truthful Rust-only, Go-only, TypeScript-only, Python-only, and MCP-only
+application packages. A Go-only package MUST pass generation, exact checking,
+installation, and loopback execution without npm, TypeScript, Python, or a
+generated Rust application facade.
+
+`DX-047` Generated-surface selection MUST affect only compiler-owned package
+artifacts and their exact identities. It MUST NOT change commands, queries,
+roles, row policy, hosted protocol availability, authorization, storage,
+outcomes, cost classes, or runtime behavior, and every selected language
+facade MUST retain the first-party Rust driver boundary.
+
+`DX-048` Adding or removing a declared surface MUST produce an exact proposed
+source/manifest/lock identity change through the existing review ceremony. A
+migration helper MUST be read-only unless explicitly asked to write, MUST NOT
+infer intent from installed toolchains, and MUST NOT delete an undeclared or
+formerly generated file.
+
+`DX-049` Singleton and representative multi-surface fixtures, fresh external
+packages, old-version compatibility, filesystem interruption, and global
+driver/MCP conformance MUST prove one bounded declared-surface registry with no
+local-config-derived lock, unconditional MCP artifact, target-language semantic
+branch, raw transport escape, or value-bearing diagnostic.
 
 ## 4.4 Additive contract evolution
 
@@ -8080,6 +8128,35 @@ behavior:
   epoch, recovery, compatibility, generated-surface, and architecture evidence
   MUST use generic corpora and prove no target-language callback, external-
   framework branch, per-row descriptor proof, or unsafe fallback exists.
+- `OQ-056`: A bounded string range or complement MAY execute through a declared
+  `text_key(field, binary_utf8_v1)` component only when every preceding index
+  component is an exact partition-bound prefix, that text component supplies
+  the first remaining order term, and the query declares the complete total
+  order with its deterministic key tie-breaker.
+- `OQ-057`: Binary-text `<`, `<=`, `>`, `>=`, and `!=` MUST use exact valid
+  UTF-8 bytewise order with no normalization, collation, case folding, numeric
+  chunking, token parsing, or canonical length-first substitution. Runtime MUST
+  encode each endpoint through the selected profile once before storage.
+- `OQ-058`: One binary-text predicate cell MAY contain at most one lower and
+  one upper bound or one two-range complement. All ranges MUST share one page,
+  plus-one probe, scan/fuel, hydration, output, direction, and snapshot-bound
+  cursor contract; contradictory bounds return an exact empty page without a
+  scan.
+- `OQ-059`: Every binary-text interval predicate MUST be physically consumed
+  before page, continuation, policy-admitted result, and output formation.
+  Authorization, partition routing, row policy, endpoint bytes, and diagnostics
+  remain bounded, and profile/compatibility proof MUST be paid once per plan
+  and request rather than per row or storage operation.
+- `OQ-060`: Binary-text interval support MUST reuse the existing index-key
+  encoding and ordinary range schedule unless implementation proves a new
+  identity necessary. Existing artifacts remain byte-exact; an insufficient
+  activation gate MUST stop for ADR-0124 review rather than reinterpret an old
+  plan or fail after partial execution.
+- `OQ-061`: Generated Rust, Go, TypeScript, Python, CLI, MCP, local-driver, and
+  remote-gRPC surfaces MUST preserve identical binary-text interval semantics
+  and return original logical strings, never physical bytes. External receipts
+  remain value-free and MUST NOT introduce a ULID/framework branch or claim a
+  database-owned external continuation token.
 
 ### 24.5.5 Compiled workflow concurrency
 
