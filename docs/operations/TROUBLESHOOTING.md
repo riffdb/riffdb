@@ -17,6 +17,13 @@ user, or startup integrity validation rejecting incomplete durable evidence.
 Correct configuration or restore from a verified backup; do not delete records
 inside the database.
 
+An orderly stop normally permits bounded validation on the next start. A
+forced kill, incomplete drain, storage repair, restore, migration, or invalid
+clean-close lifecycle record instead selects complete validation automatically.
+This can make one restart materially slower without indicating a startup
+deadline failure. Do not remove or modify private metadata to force either
+path. See [Startup Integrity and Clean Restarts](STARTUP-INTEGRITY.md).
+
 If stderr reports `RDB-FORMAT-0101`, keep the service stopped and inspect the
 same immutable decision explicitly:
 
@@ -29,6 +36,13 @@ Follow only the returned action. A declared same-epoch transition uses
 epoch requires the retained source binary and the documented symbolic
 export/reimport ceremony. Never remove the marker or upgrade receipt, copy a
 marker from another database, or look for a force/reset flag.
+
+If a clean restart reports corruption only when a particular record is used,
+that is the documented accessed-row integrity boundary, not evidence that
+validation was disabled. Keep the service stopped if the error affects required
+authority or active application state, retain the incident ID, and restore from
+a verified backup when directed. The POC does not yet expose its specified
+offline full-integrity scrub as a public command.
 
 ## CLI connects to the wrong database
 

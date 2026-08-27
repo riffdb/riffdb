@@ -62,12 +62,12 @@ use crate::keys::{
 use crate::layout::{
     AUDIT, AUDIT_BY_REQUEST, BYTE_TABLES, COMMITS, ENTITIES, ENTITY_CHAIN_HEADS, EVENT_ROUTES,
     EVENTS, INDEX_EPOCHS, META, META_ADMINISTRATION_SEQUENCE, META_APPLICATION_SEQUENCE,
-    META_CAPABILITY_BOOTSTRAP, META_CHANGELOG_V2_ROTATION_RECEIPT, META_DATABASE_ID,
-    META_FORMAT_VERSION, META_HISTORY_INCARNATION, META_INDEX_EPOCH_ROWS_REPAIRED, META_KEYS,
-    META_RECORD_REGISTRY, META_RETENTION_HOLDS, META_RETENTION_WATERMARK,
-    META_VALIDATED_PREFIX_CHECKPOINT, OUTBOX, SECONDARY_INDEXES, TABLE_NAMES,
-    VALIDATED_PREFIX_ENTITY_HEADS, VECTOR_EVIDENCE, VECTOR_EVIDENCE_INDEX, VECTOR_OBSERVATIONS,
-    VECTOR_PROJECTION_CONTROLS, create_all_tables,
+    META_CAPABILITY_BOOTSTRAP, META_CHANGELOG_V2_ROTATION_RECEIPT, META_CLEAN_CLOSE_LIFECYCLE,
+    META_DATABASE_ID, META_FORMAT_VERSION, META_HISTORY_INCARNATION,
+    META_INDEX_EPOCH_ROWS_REPAIRED, META_KEYS, META_RECORD_REGISTRY, META_RETENTION_HOLDS,
+    META_RETENTION_WATERMARK, META_VALIDATED_PREFIX_CHECKPOINT, OUTBOX, SECONDARY_INDEXES,
+    TABLE_NAMES, VALIDATED_PREFIX_ENTITY_HEADS, VECTOR_EVIDENCE, VECTOR_EVIDENCE_INDEX,
+    VECTOR_OBSERVATIONS, VECTOR_PROJECTION_CONTROLS, create_all_tables,
 };
 use crate::media::{DynStorageBackend, JournalMedia, RealJournalMedia, RedbStorageMedia};
 use crate::transient::{
@@ -119,6 +119,12 @@ pub(crate) struct SharedRedb {
     application_commit_profile: RedbCommitProfile,
     mutation_gate: ExclusiveGate,
     write_fenced: AtomicBool,
+    /// True when redb invoked repair while opening this handle. Engine repair
+    /// always disqualifies carried clean-close evidence for this generation.
+    engine_repaired_at_open: bool,
+    /// Set only by the verified ADR-0157 startup handoff. Operational
+    /// composition uses it to keep rebuildable population accelerators cold.
+    pub(crate) bounded_clean_startup: AtomicBool,
     durable_commit_epoch: AtomicU64,
     /// Predecessor read root installed before the first unpublished subgroup.
     ///
@@ -354,6 +360,118 @@ impl SharedRedb {
                 self.checkpoint_ignored[reason.index()].load(Ordering::Relaxed),
             )
         })
+    }
+
+    pub(crate) fn verified_clean_close_lifecycle(
+        &self,
+        transaction: &ReadTransaction,
+        database_id: DatabaseId,
+        history_incarnation: u64,
+    ) -> Result<Option<crate::clean_close::CleanCloseLifecycle>, StorageError> {
+        if self.engine_repaired_at_open {
+            return Ok(None);
+        }
+        let meta = transaction.open_table(META).map_err(table_error)?;
+        let Some(encoded) = meta
+            .get(META_CLEAN_CLOSE_LIFECYCLE)
+            .map_err(precommit_storage_error)?
+        else {
+            return Ok(None);
+        };
+        let Ok(lifecycle) = crate::clean_close::CleanCloseLifecycle::decode(encoded.value()) else {
+            return Ok(None);
+        };
+        if lifecycle.database_id() != database_id
+            || lifecycle.history_incarnation() != history_incarnation
+            || !matches!(
+                lifecycle.state(),
+                crate::clean_close::CleanCloseState::Clean(_)
+            )
+        {
+            return Ok(None);
+        }
+        drop(encoded);
+        drop(meta);
+        let application_frontier = read_commit_tail(transaction)?;
+        let administration_frontier = read_administration_tail(transaction)?;
+        let header_digest = match crate::journal::verify_clean_close_header_digest_with_media(
+            self.journal_media.as_ref(),
+            &self.path,
+            database_id,
+            application_frontier,
+            administration_frontier,
+        ) {
+            Ok(digest) => digest,
+            Err(crate::journal::JournalIoError::Corrupt) => return Ok(None),
+            Err(error) => return Err(recovery_journal_error(error)),
+        };
+        let binding =
+            match crate::clean_close::bounded_state_binding_hash(transaction, header_digest) {
+                Ok(binding) => binding,
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        StorageErrorKind::CorruptData | StorageErrorKind::LimitExceeded
+                    ) =>
+                {
+                    return Ok(None);
+                }
+                Err(error) => return Err(error),
+            };
+        if lifecycle.state() != crate::clean_close::CleanCloseState::Clean(binding) {
+            return Ok(None);
+        }
+        Ok(Some(lifecycle))
+    }
+
+    pub(crate) fn advance_dirty_lifecycle_before_activation(
+        &self,
+        database_id: DatabaseId,
+        history_incarnation: u64,
+        verified_clean: Option<crate::clean_close::CleanCloseLifecycle>,
+    ) -> Result<(), StorageError> {
+        let mut transaction = self.database.begin_write().map_err(transaction_error)?;
+        transaction
+            .set_durability(Durability::Immediate)
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+        let mut meta = transaction.open_table(META).map_err(table_error)?;
+        let current = meta
+            .get(META_CLEAN_CLOSE_LIFECYCLE)
+            .map_err(precommit_storage_error)?
+            .map(|encoded| crate::clean_close::CleanCloseLifecycle::decode(encoded.value()));
+        let next = match (verified_clean, current) {
+            (Some(expected), Some(Ok(observed))) if expected == observed => {
+                expected.successor_dirty()
+            }
+            (Some(_), _) => return Err(storage_error(StorageErrorKind::CorruptData)),
+            (None, Some(Ok(observed)))
+                if observed.database_id() == database_id
+                    && observed.history_incarnation() == history_incarnation =>
+            {
+                observed.successor_dirty()
+            }
+            (None, None | Some(Err(_))) => {
+                crate::clean_close::CleanCloseLifecycle::dirty(database_id, history_incarnation, 1)
+            }
+            (None, Some(Ok(_))) => {
+                crate::clean_close::CleanCloseLifecycle::dirty(database_id, history_incarnation, 1)
+            }
+        }
+        .map_err(|error| match error {
+            crate::clean_close::CleanCloseCodecError::GenerationExhausted => {
+                storage_error(StorageErrorKind::SequenceExhausted)
+            }
+            crate::clean_close::CleanCloseCodecError::Invalid => {
+                storage_error(StorageErrorKind::CorruptData)
+            }
+        })?;
+        let encoded = next
+            .encode()
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+        meta.insert(META_CLEAN_CLOSE_LIFECYCLE, encoded.as_slice())
+            .map_err(precommit_storage_error)?;
+        drop(meta);
+        self.commit_durable(transaction)
     }
 
     pub(crate) fn commit_durable(&self, transaction: WriteTransaction) -> Result<(), StorageError> {
@@ -950,6 +1068,7 @@ enum RegistryMigration {
     VectorObservations,
     VectorHealthObservations,
     VectorProjectionControls,
+    CleanCloseLifecycle,
 }
 
 const FORMAT_MIGRATION_MAX_ROWS: usize = 500;
@@ -1044,6 +1163,12 @@ pub(crate) const PRE_VECTOR_HEALTH_OBSERVATION_REGISTRY_DIGEST: [u8; 32] = [
 pub(crate) const PRE_VECTOR_PROJECTION_CONTROL_REGISTRY_DIGEST: [u8; 32] = [
     0x84, 0x54, 0x2f, 0x62, 0xcf, 0xa3, 0x45, 0x05, 0xd7, 0x88, 0xe8, 0xfb, 0x82, 0x5c, 0xd4, 0x24,
     0xea, 0xcb, 0x1b, 0x49, 0x5b, 0xda, 0x5b, 0x53, 0xf9, 0x53, 0xf6, 0x68, 0x96, 0x77, 0x33, 0x37,
+];
+/// Sole predecessor registry accepted by ADR-0157 before the additive
+/// clean-close lifecycle record became readable and writable.
+pub(crate) const PRE_CLEAN_CLOSE_LIFECYCLE_REGISTRY_DIGEST: [u8; 32] = [
+    0x55, 0xb6, 0x04, 0x06, 0xf6, 0x56, 0x87, 0xad, 0x6d, 0x5b, 0x16, 0x7f, 0xd4, 0x28, 0x16, 0x00,
+    0x39, 0x90, 0x10, 0x25, 0x8f, 0x75, 0x2a, 0xb1, 0x41, 0x28, 0xb4, 0x31, 0x56, 0xe6, 0x8e, 0xcc,
 ];
 
 /// Last observed redb repair progress in basis points (0..=10_000), for recovery telemetry.
@@ -1264,8 +1389,11 @@ impl RedbStore {
             publish_initialized_current_marker_with_media(journal_media.as_ref(), path, witness)
                 .map_err(format_preflight_storage_error)?;
         }
+        let repair_observed = Arc::new(AtomicBool::new(false));
+        let repair_observed_callback = Arc::clone(&repair_observed);
         let mut builder = Builder::new();
-        builder.set_repair_callback(|session| {
+        builder.set_repair_callback(move |session| {
+            repair_observed_callback.store(true, Ordering::Release);
             // Bounded progress telemetry only; do not enable quick_repair
             // (quick_repair forces two-phase commit, conflicting with Standard).
             let progress = session.progress();
@@ -1292,6 +1420,8 @@ impl RedbStore {
                 application_commit_profile,
                 mutation_gate: ExclusiveGate::default(),
                 write_fenced: AtomicBool::new(false),
+                engine_repaired_at_open: repair_observed.load(Ordering::Acquire),
+                bounded_clean_startup: AtomicBool::new(false),
                 durable_commit_epoch: AtomicU64::new(0),
                 durable_read_frontier: RwLock::new(None),
                 composite_publication: RwLock::new(None),
@@ -1509,6 +1639,10 @@ impl RedbStore {
                     == &SchemaHash::from_bytes(PRE_VECTOR_PROJECTION_CONTROL_REGISTRY_DIGEST)
                 {
                     RegistryMigration::VectorProjectionControls
+                } else if observed.value()
+                    == &SchemaHash::from_bytes(PRE_CLEAN_CLOSE_LIFECYCLE_REGISTRY_DIGEST)
+                {
+                    RegistryMigration::CleanCloseLifecycle
                 } else {
                     return Err(storage_error(StorageErrorKind::IncompatibleFormat));
                 }
@@ -1770,6 +1904,19 @@ impl RedbStore {
             publish_record_registry(
                 &self.shared,
                 SchemaHash::from_bytes(PRE_VECTOR_PROJECTION_CONTROL_REGISTRY_DIGEST),
+                SchemaHash::from_bytes(PRE_CLEAN_CLOSE_LIFECYCLE_REGISTRY_DIGEST),
+            )?;
+        }
+        if format == StorageFormatVersion::V2
+            && (matches!(registry_migration, RegistryMigration::CleanCloseLifecycle)
+                || observed_registry_digest(&self.shared)?
+                    == SchemaHash::from_bytes(PRE_CLEAN_CLOSE_LIFECYCLE_REGISTRY_DIGEST))
+        {
+            // Additive record-only transition. Absence is the frozen
+            // predecessor state and deliberately earns no fast startup.
+            publish_record_registry(
+                &self.shared,
+                SchemaHash::from_bytes(PRE_CLEAN_CLOSE_LIFECYCLE_REGISTRY_DIGEST),
                 riffdb_storage_api::proto_codec::current_record_registry_digest(),
             )?;
         }
@@ -2091,6 +2238,14 @@ impl RedbStore {
                 Err(error)
             }
         }
+    }
+
+    /// Writes the private ADR-0157 clean-close lifecycle as the final
+    /// authoritative graceful-shutdown mutation.
+    pub fn write_clean_close_lifecycle(&self) -> Result<(), StorageError> {
+        let _lease = self.acquire_mutation_lease()?;
+        self.ensure_writable()?;
+        self.shared.write_final_clean_close_lifecycle()
     }
 
     /// Failed checkpoint writes after clean validation (non-fatal; counted).
@@ -3706,6 +3861,17 @@ impl RedbStore {
 fn activate_operational_ports(
     shared: Arc<SharedRedb>,
 ) -> Result<RedbOperationalPorts, StorageError> {
+    if shared.bounded_clean_startup.load(Ordering::Acquire) {
+        let state = shared
+            .transient_indexes
+            .read()
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+        if !matches!(*state, TransientIndexState::Dormant) {
+            return Err(storage_error(StorageErrorKind::InvariantViolation));
+        }
+        drop(state);
+        return Ok(RedbOperationalPorts { shared });
+    }
     let transaction = shared.database.begin_read().map_err(transaction_error)?;
     let indexes = TransientIndexes::rebuild(&transaction)?;
     drop(transaction);
@@ -3722,6 +3888,13 @@ fn activate_operational_ports(
 }
 
 impl RedbOperationalPorts {
+    /// True when this handle reached readiness through verified bounded
+    /// clean-close startup and intentionally left population caches cold.
+    #[doc(hidden)]
+    pub fn clean_close_fast_startup(&self) -> bool {
+        self.shared.bounded_clean_startup.load(Ordering::Acquire)
+    }
+
     pub(crate) fn standard_writer_journal_enabled(&self) -> bool {
         self.shared.application_commit_profile == RedbCommitProfile::Standard
     }
@@ -3842,6 +4015,14 @@ impl RedbOperationalPorts {
             shared: Arc::clone(&self.shared),
         }
         .write_validated_prefix_checkpoint()
+    }
+
+    /// Writes the final private clean-close lifecycle certificate.
+    pub fn write_clean_close_lifecycle(&self) -> Result<(), StorageError> {
+        RedbStore {
+            shared: Arc::clone(&self.shared),
+        }
+        .write_clean_close_lifecycle()
     }
 
     /// Failed checkpoint writes after clean validation (non-fatal; counted).
@@ -4064,6 +4245,7 @@ impl RedbOperationalPorts {
     }
 
     pub(crate) fn outbox_intent_last(&self) -> Result<Option<riffdb_types::EventId>, StorageError> {
+        self.shared.ensure_transient_indexes_ready()?;
         let state = self
             .shared
             .transient_indexes
@@ -4107,10 +4289,25 @@ impl RedbOperationalPorts {
             return Err(storage_error(StorageErrorKind::Unavailable));
         }
         drop(state);
-        // Dormant low-level conformance handles have no readiness accelerator;
-        // rebuild a private exact view instead of treating absence as proof.
-        let transaction = self.begin_read()?;
-        let indexes = TransientIndexes::rebuild(&transaction)?;
+        if !self.shared.bounded_clean_startup.load(Ordering::Acquire) {
+            // Dormant low-level conformance handles retain the historical
+            // private exact-view behavior; only a verified clean operational
+            // handle installs a deferred shared accelerator.
+            let transaction = self.begin_read()?;
+            let indexes = TransientIndexes::rebuild(&transaction)?;
+            return indexes
+                .partition_event_route_page(partition_hash, after, requested_upper, limit)
+                .ok_or_else(|| storage_error(StorageErrorKind::Unavailable))?;
+        }
+        self.shared.ensure_transient_indexes_ready()?;
+        let state = self
+            .shared
+            .transient_indexes
+            .read()
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+        let TransientIndexState::Ready(indexes) = &*state else {
+            return Err(storage_error(StorageErrorKind::Unavailable));
+        };
         indexes
             .partition_event_route_page(partition_hash, after, requested_upper, limit)
             .ok_or_else(|| storage_error(StorageErrorKind::Unavailable))?
@@ -5418,6 +5615,108 @@ impl SharedRedb {
         self.commit_durable(transaction)?;
         self.refresh_durable_read_frontier()?;
         self.finish_journal_checkpoint(runtime)
+    }
+
+    fn write_final_clean_close_lifecycle(self: &Arc<Self>) -> Result<(), StorageError> {
+        // Materialize every acknowledged published suffix before taking the
+        // one final read used for both frontier and bounded-root proof.
+        self.checkpoint_published_journal_suffix_for_barrier()?;
+        // Even a never-written database needs the selected recyclable extent
+        // header named by ADR-0157. Initializing the runtime creates that
+        // canonical empty extent; the spare is scratch and is removed before
+        // certification because clean evidence permits no scratch name.
+        {
+            let mut frontier = self
+                .durable_read_frontier
+                .write()
+                .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+            if frontier.is_none() {
+                *frontier = Some(Arc::new(
+                    self.database.begin_read().map_err(transaction_error)?,
+                ));
+            }
+        }
+        drop(self.journal_runtime()?);
+        let spare = crate::journal::spare_journal_path(&self.path);
+        match self.journal_media.remove_file(&spare) {
+            Ok(()) => crate::journal::sync_parent_directory_with_media(
+                self.journal_media.as_ref(),
+                &spare,
+            )
+            .map_err(journal_io_error)?,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => return Err(storage_error(StorageErrorKind::Unavailable)),
+        }
+        let transaction = self.database.begin_read().map_err(transaction_error)?;
+        let database_id = read_identity_from_read_transaction(&transaction)?;
+        let meta = transaction.open_table(META).map_err(table_error)?;
+        let history = meta
+            .get(META_HISTORY_INCARNATION)
+            .map_err(precommit_storage_error)?
+            .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?;
+        let history_incarnation = *decode_history_incarnation_v1(history.value())
+            .map_err(crate::error::codec_error)?
+            .value();
+        let lifecycle_bytes = meta
+            .get(META_CLEAN_CLOSE_LIFECYCLE)
+            .map_err(precommit_storage_error)?
+            .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?;
+        let lifecycle = crate::clean_close::CleanCloseLifecycle::decode(lifecycle_bytes.value())
+            .map_err(|_| storage_error(StorageErrorKind::CorruptData))?;
+        if lifecycle.database_id() != database_id
+            || lifecycle.history_incarnation() != history_incarnation
+            || lifecycle.state() != crate::clean_close::CleanCloseState::Dirty
+        {
+            return Err(storage_error(StorageErrorKind::CorruptData));
+        }
+        drop(lifecycle_bytes);
+        drop(history);
+        drop(meta);
+        let application_frontier = read_commit_tail(&transaction)?;
+        let administration_frontier = read_administration_tail(&transaction)?;
+        let journal_header_digest = crate::journal::verify_clean_close_header_digest_with_media(
+            self.journal_media.as_ref(),
+            &self.path,
+            database_id,
+            application_frontier,
+            administration_frontier,
+        )
+        .map_err(recovery_journal_error)?;
+        let binding =
+            crate::clean_close::bounded_state_binding_hash(&transaction, journal_header_digest)?;
+        drop(transaction);
+
+        let clean = lifecycle
+            .successor_clean(binding)
+            .map_err(|error| match error {
+                crate::clean_close::CleanCloseCodecError::GenerationExhausted => {
+                    storage_error(StorageErrorKind::SequenceExhausted)
+                }
+                crate::clean_close::CleanCloseCodecError::Invalid => {
+                    storage_error(StorageErrorKind::CorruptData)
+                }
+            })?;
+        let encoded = clean
+            .encode()
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+        let mut write = self.database.begin_write().map_err(transaction_error)?;
+        write
+            .set_durability(Durability::Immediate)
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+        let mut meta = write.open_table(META).map_err(table_error)?;
+        let current = meta
+            .get(META_CLEAN_CLOSE_LIFECYCLE)
+            .map_err(precommit_storage_error)?
+            .ok_or_else(|| storage_error(StorageErrorKind::CorruptData))?;
+        if crate::clean_close::CleanCloseLifecycle::decode(current.value()).ok() != Some(lifecycle)
+        {
+            return Err(storage_error(StorageErrorKind::CorruptData));
+        }
+        drop(current);
+        meta.insert(META_CLEAN_CLOSE_LIFECYCLE, encoded.as_slice())
+            .map_err(precommit_storage_error)?;
+        drop(meta);
+        self.commit_durable(write)
     }
 
     fn capture_or_initialize_composite_view(
@@ -7113,11 +7412,58 @@ impl SharedRedb {
         }
     }
 
+    pub(crate) fn ensure_transient_indexes_ready(self: &Arc<Self>) -> Result<(), StorageError> {
+        {
+            let state = self
+                .transient_indexes
+                .read()
+                .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+            match &*state {
+                TransientIndexState::Ready(_) => return Ok(()),
+                TransientIndexState::Invalid => {
+                    return Err(storage_error(StorageErrorKind::Unavailable));
+                }
+                TransientIndexState::Dormant => {}
+            }
+        }
+        let _lease = self.mutation_gate.acquire()?;
+        {
+            let state = self
+                .transient_indexes
+                .read()
+                .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+            match &*state {
+                TransientIndexState::Ready(_) => return Ok(()),
+                TransientIndexState::Invalid => {
+                    return Err(storage_error(StorageErrorKind::Unavailable));
+                }
+                TransientIndexState::Dormant => {}
+            }
+        }
+        self.checkpoint_published_journal_suffix_for_barrier()?;
+        let transaction = self.database.begin_read().map_err(transaction_error)?;
+        let indexes = TransientIndexes::rebuild(&transaction)?;
+        drop(transaction);
+        let mut state = self
+            .transient_indexes
+            .write()
+            .map_err(|_| storage_error(StorageErrorKind::InvariantViolation))?;
+        if !matches!(*state, TransientIndexState::Dormant) {
+            return Err(storage_error(StorageErrorKind::InvariantViolation));
+        }
+        *state = TransientIndexState::Ready(indexes);
+        Ok(())
+    }
+
     fn pending_outbox_page(
-        &self,
+        self: &Arc<Self>,
         after: Option<riffdb_types::EventId>,
         limit: usize,
     ) -> Result<(Vec<riffdb_types::EventId>, bool), StorageError> {
+        if limit == 0 {
+            return Ok((Vec::new(), false));
+        }
+        self.ensure_transient_indexes_ready()?;
         let state = self
             .transient_indexes
             .read()
@@ -7133,10 +7479,14 @@ impl SharedRedb {
     }
 
     fn undelivered_outbox_page(
-        &self,
+        self: &Arc<Self>,
         after: Option<riffdb_types::EventId>,
         limit: usize,
     ) -> Result<(Vec<riffdb_types::EventId>, bool), StorageError> {
+        if limit == 0 {
+            return Ok((Vec::new(), false));
+        }
+        self.ensure_transient_indexes_ready()?;
         let state = self
             .transient_indexes
             .read()
@@ -7526,6 +7876,11 @@ where
             META_CHANGELOG_V2_ROTATION_RECEIPT => {
                 riffdb_storage_api::decode_changelog_v2_rotation_receipt_v1(value.value())
                     .map_err(crate::error::codec_error)?;
+            }
+            META_CLEAN_CLOSE_LIFECYCLE => {
+                // Invalid lifecycle evidence falls back to complete startup;
+                // identity reads must not turn it into an open refusal.
+                let _ = crate::clean_close::CleanCloseLifecycle::decode(value.value());
             }
             _ => return Err(storage_error(StorageErrorKind::InvariantViolation)),
         }

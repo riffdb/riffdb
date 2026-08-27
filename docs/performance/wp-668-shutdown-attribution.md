@@ -13,7 +13,8 @@ times:
 5. notification closure;
 6. commit-coordinator drain;
 7. blocking-port drain; and
-8. the final validated-prefix checkpoint.
+8. final storage close: the optional validated-prefix checkpoint followed by
+   the immediately durable clean-close lifecycle mutation.
 
 The benchmark parser treats the receipt as optional, so a control server from
 before WP-668 remains parseable and reports absent stage evidence. The harness
@@ -52,7 +53,8 @@ coordinator, or blocking-port shutdown behavior.
 
 The delay has two owners rather than one:
 
-- The final validated-prefix checkpoint is the stable owner. It consumes
+- The stage formerly named the final validated-prefix checkpoint is the stable
+  owner in these pre-clean-certificate receipts. It consumes
   50.7% to 96.3% of graph wall across the eight cloud generations and remains
   material even after read-only generations.
 - Columnar drain is the variable owner. It consumes 2.7% to 83.6% on N1 and
@@ -67,6 +69,12 @@ validated-prefix checkpoint and prove whether its stable cost is pay-per-use
 revalidation, durable encoding, redb apply, or the durability fence. It must
 not weaken ADR-0019's non-fatal final-checkpoint semantics or move work into an
 acknowledged-write path without a predeclared interactive-tail guard.
+
+Current builds retain the eight-stage receipt identity and attribute both the
+optional checkpoint and the final clean-close lifecycle commit to stage 8.
+These historical measurements therefore do not isolate certificate-commit
+cost. New PERF-019 evidence must separately distinguish drain, checkpoint, and
+final lifecycle durability before drawing a shutdown attribution conclusion.
 
 The harness-observed wall exceeds graph wall by 115 to 306 milliseconds on the
 cloud receipts. That is an explicitly named outer boundary—transport/process

@@ -6,7 +6,7 @@
 **Tagline:** *Vibe fast. Commit safely.*  
 **Category:** Contract-first operational database for agent-built applications  
 
-**Version:** 1.13
+**Version:** 1.14
 **Status:** Deployable Application Alpha architecture accepted; implementation gated by work packages
 **Date:** 26 August 2026
 **Audience:** Coding agents, database engineers, compiler engineers, security reviewers, and technical product leads  
@@ -37,6 +37,7 @@
 
 | Version | Date | Summary |
 |---|---|---|
+| 1.14 | 2026-08-26 | Accepted ADR-0156 and ADR-0157 and registered STO-023, REC-004, PERF-019, WP-704, and WP-705 for an automatic conventional clean-close fast path. One private engine-atomic CLEAN/DIRTY lifecycle certificate may replace population-wide validation only after every writer and journal suffix drains and only when bounded identity, frontier, catalog, and authority roots match; its exact key, seven-field Protobuf identity, hashes, bounded-root framing, checked generation, and registry migration are frozen, and it is durably replaced by DIRTY before writers reactivate. Missing, dirty, stale, repaired, migrated, restored, or contradictory state retains complete validation. Latent unrelated corruption may be detected on access or explicit scrub rather than before clean readiness. No caller or operator can select the fast path, and no signing key or hostile-offline-write claim is added. |
 | 1.13 | 2026-08-26 | Accepted ADR-0154 and ADR-0155. Registered OQ-056 through OQ-061 plus WP-700/WP-701 for compiler-sealed strict, inclusive, and complement intervals over the existing `binary_utf8_v1` physical order, with one partition prefix, total order, cursor, policy, and global work contract and no ULID-specific or durable-format branch. Registered DX-042 through DX-049 plus WP-702/WP-703 for sparse source V7 generated-surface declarations, manifest V5, lock V8, exact compiler-owned artifact inventories, and reproducible single-surface application packages. Existing source V1-V6, manifest V1-V4, lock V1-V7, indexes, query plans, storage, protocols, and runtime authority remain unchanged and readable. |
 | 1.12 | 2026-08-26 | Accepted ADR-0153 and registered BLK-036 through BLK-045 plus WP-697 through WP-699 for one compiler-sealed `init_or_mutate` exact-key binding. An absent observation uses compiler-declared initial fields and produces one create; a present observation uses the revalidated preimage and produces one replace; both follow one common checked suffix. Create/update authority, policy, idempotency, atomic outcome/event/provenance, collection and index-work bounds, and pay-once proofs remain mandatory. V17 is least-sufficient and old contracts remain byte-exact. General upsert, conditional command blocks, state-origin exposure, framework behavior, and caller-selected conflict semantics remain forbidden pending real-consumer review and exact acceptance. |
 | 1.11 | 2026-08-25 | Corrected accepted ADR-0108 exact text-key equality: a declared `binary_utf8_v1` component MAY consume an exact typed string equality while forming an ordinary bounded index prefix, so compatible wider ordered and narrower equality-prefix named queries can share one maintained index. Runtime transforms the bound string to the existing physical ordered bytes only for prefix formation; logical predicate evaluation, complete declared order, cursor identity, and every existing partition, policy, and cost proof remain unchanged. Registered WP-686. |
@@ -3163,18 +3164,21 @@ commit allocator state; administration audit allocator state; the active
 contract pointer and its catalog-consistency data; the singleton
 `capability_bootstrap/v1` marker; the compact `record_registry/v2` digest; the
 `history_incarnation/v1` fence (ADR-0072); and the optional
-`index_epoch_rows_repaired/v1` one-shot repair marker. Application and
+`index_epoch_rows_repaired/v1` one-shot repair marker. ADR-0156 additionally
+permits the optional private versioned clean-close lifecycle record once its
+exact field/tag amendment is accepted and registered. Application and
 administration allocator metadata starts at 1; zero is unassigned and every
 advance uses checked arithmetic. Committing the maximum representable sequence
 atomically leaves the corresponding allocator in an explicit exhausted semantic
 state; it never wraps or advertises another numeric value.
 
-The POC defines no durable node identity, clean-shutdown marker, or persisted
-last-successful-integrity-check value. Every production startup MUST run the
-complete accepted read-only authoritative integrity and metadata-consistency
-validation before readiness, regardless of whether the prior process terminated
-gracefully. Graceful shutdown remains required process-lifecycle behavior but
-MUST NOT write a clean-shutdown marker or substitute authoritative metadata.
+The POC defines no durable node identity or persisted last-successful-integrity-
+check value. A production startup MUST either verify and durably consume the
+private ADR-0156 clean-close certificate plus its bounded readiness roots before
+activating any writer, or run the complete accepted read-only authoritative
+integrity and metadata-consistency validation before readiness. No caller,
+configuration, or operator request may select the certificate path or force it
+after absence, repair, mismatch, migration, restore, or uncertainty.
 
 ## 10.3 Record envelope
 
@@ -3195,6 +3199,20 @@ The payload is a typed Protobuf message. The outer checksum provides early corru
 `STO-021` Unknown future record types MUST cause a controlled startup error, not silent deletion or reinterpretation.
 
 `STO-022` POC storage migrations MAY be offline but MUST be restartable and idempotent.
+
+`STO-023` A clean-close certificate MUST be one private, versioned,
+canonically encoded, engine-atomic lifecycle record written with Immediate
+durability only after all admission and writers stop, every published journal
+frame reaches the matching redb checkpoint, and its bounded database,
+incarnation, registry, allocator, frontier, catalog, bootstrap, and journal
+bindings are reread from final authoritative state. It MUST be the last
+authoritative mutation of that process generation, MUST be durably consumed or
+replaced by dirty state before any next-generation writer activates, and MUST
+fall back to complete validation on every absence, decode failure, repair,
+binding mismatch, incompatible format, migration, restore, or uncertainty. Its
+production and verification MUST NOT scan population-sized tables, and it MUST
+NOT claim authenticity against a principal with offline database-file write
+access.
 
 The `riffdb.storage.v1` readable compatibility registry contains exactly the
 accepted 26 top-level `StoredEnvelope` payload tuples below, with their existing
@@ -3475,6 +3493,15 @@ offline, and a terminal receipt must be durable before readiness.
 from commits; source entities and commit records MUST not depend on projection
 state for correctness. Rebuild MUST NOT lower the published frontier of one exact
 `ProjectionIdentity` or expose candidate rows.
+
+`REC-004` Startup after a missing, consumed, malformed, stale, repaired,
+migrated, restored, or otherwise ineligible clean-close certificate MUST execute
+the existing complete structural and catalog-semantic recovery path through
+exact end. Clean eligibility MUST be consumed durably before any writer or
+derived worker activates, so every crash boundary observes either the reusable
+unchanged clean state or an unambiguously dirty next generation. Repeated
+fallback, certificate consumption, and crash recovery MUST create no command,
+event, outcome, provenance, audit, projection, outbox, or allocator advance.
 
 ## 10.7 Storage benchmark gate
 
@@ -8466,6 +8493,16 @@ behavior:
   obligations, authorization, durability, isolation, workload weights,
   correctness reconciliation, calculations, and host-validity rules remain
   unchanged, and legacy requests continue to use the legacy arm.
+- `PERF-019`: Clean-certificate startup and graceful certificate production
+  MUST retain bounded heap and perform no entity-, index-, history-, event-,
+  audit-, provenance-, projection-, outbox-, or idempotency-population walk.
+  Release evidence MUST report engine open, bounded-root validation,
+  certificate consumption, readiness, drain, final certificate commit, and
+  total wall time separately on at least the 65,536-row and production-scale
+  checkpoints. Dirty complete validation remains separately measured under
+  PERF-013/PERF-014. A PostgreSQL comparison is non-evidentiary unless the
+  harness owns equivalent server lifecycle and integrity work for both
+  backends.
 
 ### 24.5.11 Secret field classification and display-surface redaction
 

@@ -247,6 +247,15 @@ Detection residual risk: clients that omit `observed_history_incarnation` keep
 working unvalidated and can still silently bind stale observations. Adopt the
 field for any long-lived cursor, subscription, or sequence-derived assumption.
 
+A backup may physically contain the source database's private clean-close
+lifecycle record, but restore never treats that record as permission to skip
+validation. Destructive restore changes the history incarnation and staged
+restore performs complete validation; the lifecycle is therefore stale and is
+consumed or replaced as dirty before the restored database can activate
+writers. A later graceful shutdown may produce a new clean record bound to the
+restored incarnation. Copying backup artifacts or a database file cannot forge
+clean eligibility.
+
 A destructive restore removes every observation created after the backup's
 included frontier. The removed application and administration sequence suffixes
 may later be reused for different records. An idempotency key that existed only

@@ -174,6 +174,8 @@ direction, merged draft, or implementation choice.
 | [0153](0153-compiler-sealed-initialized-state-transitions.md) | Compiler-Sealed Initialized State Transitions | Accepted |
 | [0154](0154-profile-aware-binary-text-intervals.md) | Profile-Aware Binary Text Intervals for Bounded Operational Queries | Accepted |
 | [0155](0155-selectively-declared-generated-application-surfaces.md) | Selectively Declared Generated Application Surfaces | Accepted |
+| [0156](0156-clean-close-certificate-fast-startup.md) | Clean-Close Certificate Fast Startup | Accepted |
+| [0157](0157-clean-close-lifecycle-durable-identity.md) | Clean-Close Lifecycle Durable Identity | Accepted |
 
 The human architecture review on 2026-07-12 approved the direction represented
 by ADR-0001 through ADR-0012. The human maintainer accepted ADR-0001 through

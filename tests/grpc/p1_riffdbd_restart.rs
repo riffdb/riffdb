@@ -1491,15 +1491,16 @@ fn assert_graceful_shutdown_checkpoint(
              S={expected_sequence}; found {bound:?}"
         )));
     }
-    // (2) The next open verifies it, taking the fast path.
+    // (2) The next open verifies either the conventional clean-close proof or
+    // the retained validated-prefix checkpoint, taking a bounded fast path.
     let store = RedbStore::open(database_path)
         .map_err(|error| test_failure(format!("checkpoint reopen failed: {error:?}")))?;
     let session = store
         .begin_structural_evidence(daemon_startup_inputs())
         .map_err(|error| test_failure(format!("evidence session failed: {error:?}")))?;
-    if !session.checkpoint_verified() {
+    if !session.clean_close_fast_path() && !session.checkpoint_verified() {
         return Err(test_failure(
-            "the shutdown checkpoint must verify on the next open (fast path)",
+            "graceful shutdown evidence must verify on the next open (fast path)",
         ));
     }
     drop(session);

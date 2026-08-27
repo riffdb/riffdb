@@ -9,7 +9,9 @@ use crate::error::{
     codec_error, commit_error, database_error, precommit_storage_error, storage_error, table_error,
     transaction_error,
 };
-use crate::layout::{META, META_VALIDATED_PREFIX_CHECKPOINT, SECONDARY_INDEXES};
+use crate::layout::{
+    META, META_CLEAN_CLOSE_LIFECYCLE, META_VALIDATED_PREFIX_CHECKPOINT, SECONDARY_INDEXES,
+};
 
 /// Replaces every canonical V2 secondary-index row in a stopped database with
 /// its canonical V1 migration source.
@@ -56,6 +58,14 @@ pub fn downgrade_all_index_rows_to_v1_fixture(path: &Path) -> Result<usize, Stor
                 .map_err(precommit_storage_error)?;
         }
     }
+    // This test-only stopped-database rewrite happens after the source process
+    // closed. It must invalidate that process's clean evidence so startup takes
+    // the complete migration-discovery path.
+    transaction
+        .open_table(META)
+        .map_err(table_error)?
+        .remove(META_CLEAN_CLOSE_LIFECYCLE)
+        .map_err(precommit_storage_error)?;
     transaction.commit().map_err(commit_error)?;
     Ok(replacements.len())
 }
