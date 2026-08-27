@@ -1,4 +1,4 @@
-spec_version: '1.15'
+spec_version: '1.16'
 product: RiffDB
 repository: riffdb
 status: deployable-application-alpha-architecture-accepted
@@ -1517,6 +1517,115 @@ work_packages:
       target code cannot bypass authoritative validation or select an uncompiled operation or cursor route.
     scale: Generated checks are constant-time, each page is one bounded invocation/backend request, fixtures
       are finite, and no page walk, overfetch, per-row proof, or machine-dependent timing gate is introduced.
+  human_review_triggers: *id001
+- id: WP-708
+  name: Page-cardinality-independent named-query cursor identity
+  depends_on: [WP-565, WP-703, WP-706, WP-707]
+  objective: Implement ADR-0159's cursor-specific invariant-parameter hash so an ordinary ordered
+    named query may resume from the exact prior position with a different valid runtime page
+    cardinality while every semantic, authority, snapshot, provider, and compatibility binding
+    remains fail-closed.
+  requirements: [OQ-004, OQ-006, OQ-015, OQ-016, OQ-022, OQ-031, OQ-036,
+    OQ-043, OQ-062, OQ-064, OQ-066, OQ-068, OQ-069, OQ-070, OQ-071,
+    DRV-012, DRV-014, DRV-015, DRV-016, DRV-017]
+  required_adrs: [ADR-0027, ADR-0051, ADR-0052, ADR-0055, ADR-0108,
+    ADR-0112, ADR-0124, ADR-0130, ADR-0134, ADR-0150, ADR-0158, ADR-0159]
+  allowed_paths: [SPEC.md, work_packages.yaml, adr/README.md,
+    adr/0159-page-cardinality-independent-query-cursors.md,
+    crates/riffdb-query-ir/**, crates/riffdb-query-executor/**,
+    crates/riffdb-query-module/**, crates/riffdb-service/**,
+    crates/riffdb-storage-memory/**, crates/riffdb-storage-redb/**,
+    crates/riffdb-testkit/**, tests/operational_queries.rs,
+    tests/drivers/**, fixtures/driver/**, scripts/driver-conformance,
+    docs/SUMMARY.md, docs/riffql/**, docs/getting-started/**,
+    docs/compatibility.md, docs/known-limitations.md]
+  deliverables:
+  - >-
+    One compiler-derived closed set of eligible runtime cardinality parameters: every use must be
+    the row limit of an ordinary ordered cursor-paged access; nearest K, unpaged bindings, mixed
+    use, literals, and every non-limit parameter remain identity-bearing
+  - One cursor-specific canonical invariant-parameter hash domain used only by process-local named-
+    query cursor lookup; shared query parameter, live-query, consumer, source, IR, module, plan,
+    lock, token, protocol, storage, and durable identities remain byte-exact
+  - Authoritative pre-data-work validation of the newly submitted limit followed by exact resumed
+    execution at the prior snapshot/epoch position, with 1-to-maximum and maximum-to-1 forward and
+    reverse pages having no duplicate, omission, restart, or authority drift
+  - Negative semantic evidence for changed partition/filter/set/presence/plan/declared maximum,
+    capability revision, snapshot/epoch, invalid limit, unpaged limit, and nearest K
+  - Rust, Go, TypeScript, Python, CLI, MCP, local-driver, and remote-gRPC parity using the unchanged
+    generated method and opaque token, plus handbook and compatibility guidance
+  acceptance_commands:
+  - cargo +1.97.0 test -p riffdb-query-ir -p riffdb-query-executor -p riffdb-query-module -p riffdb-service --all-features
+  - cargo +1.97.0 test -p riffdb-testkit --test operational_queries --all-features
+  - cargo +1.97.0 test -p riffdb-storage-memory -p riffdb-storage-redb --all-features
+  - ./scripts/driver-conformance --all-languages --remote
+  - ./scripts/check-application-bindings
+  - ./scripts/check-version-topology
+  - ./scripts/check-generated
+  - ./scripts/check-requirement-coverage
+  - ./scripts/check-workspace-policy
+  - ./scripts/handbook check
+  - cargo +1.97.0 fmt --all -- --check
+  - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: Only eligible invocation cardinality values are absent from cursor lookup; every other
+    identity remains exact, changed valid page sizes traverse the same snapshot-bound ordered stream,
+    invalid drift fails before data work, all language paths agree, and no durable/wire identity rotates.
+  standing_design_tests:
+    interface_safety: The compiler selects exclusion from immutable plan structure; callers cannot
+      annotate hash fields or exceed the existing limit domain, and fresh Rust-owned authorization,
+      policy, epoch, and continuation validation remains authoritative on every invocation.
+    scale: Hash derivation is once per bounded request, resumed execution remains one compiled page,
+      and no server materialization, hidden page walk, per-row proof, or raised ceiling is introduced.
+  human_review_triggers: *id001
+- id: WP-709
+  name: Exact external larger-page coalescing acceptance
+  depends_on: [WP-707, WP-708]
+  objective: Close ADR-0159's narrow interoperability exception with framework-neutral exact append-
+    only multi-page evidence and a value-free external-consumer receipt, retaining every framework
+    artifact and upstream page allocation in its owning adapter repository.
+  requirements: [OQ-004, OQ-016, OQ-030, OQ-031, OQ-068, OQ-069, OQ-070,
+    OQ-071, OQ-072, OQ-073, OQ-074, DRV-012, DRV-014, DRV-016, DRV-017]
+  required_adrs: [ADR-0055, ADR-0112, ADR-0120, ADR-0121, ADR-0124,
+    ADR-0148, ADR-0155, ADR-0158, ADR-0159]
+  allowed_paths: [SPEC.md, work_packages.yaml,
+    adr/0159-page-cardinality-independent-query-cursors.md,
+    crates/riffdb-query-executor/**, crates/riffdb-service/**,
+    crates/riffdb-testkit/**, tests/drivers/**, fixtures/driver/**,
+    scripts/driver-conformance, scripts/adapter-conformance,
+    docs/SUMMARY.md, docs/riffql/**, docs/getting-started/**,
+    docs/compatibility.md, docs/known-limitations.md]
+  deliverables:
+  - Framework-neutral client corpus requesting finite pages smaller than, equal to, and larger than
+    one compiled RiffDB maximum; it requests min(remaining, MAX), follows one token chain, appends
+    every row once in order, and returns the final token unchanged or none on true exhaustion
+  - Deterministic cancellation and injected cursor/authorization/provider/transport failure at each
+    boundary proving no partial success, restart, filter, sort, count, dedupe, discard, offset walk,
+    raw query, storage access, or unbounded allocation enters the RiffDB side
+  - Semantic invocation-count and backend-page evidence with no wall-clock threshold, plus large
+    finite requested-size arithmetic that exhausts a small dataset without preallocating the request
+  - Value-free external receipt pinning exact RiffDB/application identities and upstream conformance;
+    no external schema, route, package, adapter source, framework name, or false parity claim lands here
+  acceptance_commands:
+  - cargo +1.97.0 test -p riffdb-query-executor -p riffdb-service -p riffdb-testkit --all-features
+  - ./scripts/driver-conformance --all-languages --remote
+  - ./scripts/adapter-conformance --all-domains --all-languages
+  - ./scripts/check-version-topology
+  - ./scripts/check-generated
+  - ./scripts/check-requirement-coverage
+  - ./scripts/check-workspace-policy
+  - ./scripts/handbook check
+  - cargo +1.97.0 fmt --all -- --check
+  - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: Exact append-only external page translation passes generic and real-consumer evidence
+    without weakening one RiffDB invocation, exposing partial success, adding framework code, or
+    converting cursor walking into filtering, counting, sorting, offset, discard, or hidden fallback.
+  standing_design_tests:
+    interface_safety: RiffDB still exposes only one bounded generated page; the owning adapter may
+      preserve its authoritative finite page contract solely by exact ordered append under one opaque
+      cursor chain and cannot select database semantics or release partial protected results.
+    scale: Every RiffDB call remains bounded by its compiled maximum; external count arithmetic is
+      checked and finite, test populations remain bounded, and a future streaming optimization requires
+      a separate accepted flow-control and partial-failure decision.
   human_review_triggers: *id001
 - id: WP-678
   name: Aggregate collection-byte language, proof, and IR successors

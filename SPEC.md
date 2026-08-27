@@ -6,9 +6,9 @@
 **Tagline:** *Vibe fast. Commit safely.*  
 **Category:** Contract-first operational database for agent-built applications  
 
-**Version:** 1.15
+**Version:** 1.16
 **Status:** Deployable Application Alpha architecture accepted; implementation gated by work packages
-**Date:** 26 August 2026
+**Date:** 27 August 2026
 **Audience:** Coding agents, database engineers, compiler engineers, security reviewers, and technical product leads  
 **Working binaries:** `riffdbd`, `riffdb`, `riffdb-mcp`  
 **Working URI scheme:** `riffdb://`  
@@ -37,6 +37,7 @@
 
 | Version | Date | Summary |
 |---|---|---|
+| 1.16 | 2026-08-27 | Accepted ADR-0159 and registered OQ-068 through OQ-074, DRV-017, and WP-708/WP-709. An ordinary ordered `take $limit after $cursor` continuation binds a cursor-specific hash of every invariant parameter while the submitted page cardinality may change within the same immutable compiled domain. Plan, declared maximum, predicates, order, authority, history, snapshot, and provider epoch remain bound; nearest/vector K and every non-page semantic input remain identity-bearing. One narrow append-only external-adapter exception may coalesce bounded RiffDB pages when an authoritative upstream interface requires a larger exact page, without raising RiffDB ceilings, filtering, sorting, counting, discarding, restarting, or adding framework code to RiffDB. |
 | 1.15 | 2026-08-27 | Accepted ADR-0158 and registered OQ-062 through OQ-067, DX-050, DRV-016, and WP-706/WP-707. RiffQL adds the closed query-only `Limit<MAX>` refinement with an implicit minimum of one and a maximum through 499. Planner cost, role authority, generated schemas, runtime validation, and result budgets use the declared maximum rather than the default or submitted value. RiffQL V9, query IR V12, and query-module format V12 are additive successors; old `Limit` source and every V1-V8/V1-V11/V1-V11 artifact remain byte-exact and readable. No global ceiling, protocol, storage format, provider algorithm, or external-framework branch changes. |
 | 1.14 | 2026-08-26 | Accepted ADR-0156 and ADR-0157 and registered STO-023, REC-004, PERF-019, WP-704, and WP-705 for an automatic conventional clean-close fast path. One private engine-atomic CLEAN/DIRTY lifecycle certificate may replace population-wide validation only after every writer and journal suffix drains and only when bounded identity, frontier, catalog, and authority roots match; its exact key, seven-field Protobuf identity, hashes, bounded-root framing, checked generation, and registry migration are frozen, and it is durably replaced by DIRTY before writers reactivate. Missing, dirty, stale, repaired, migrated, restored, or contradictory state retains complete validation. Latent unrelated corruption may be detected on access or explicit scrub rather than before clean readiness. No caller or operator can select the fast path, and no signing key or hostile-offline-write claim is added. |
 | 1.13 | 2026-08-26 | Accepted ADR-0154 and ADR-0155. Registered OQ-056 through OQ-061 plus WP-700/WP-701 for compiler-sealed strict, inclusive, and complement intervals over the existing `binary_utf8_v1` physical order, with one partition prefix, total order, cursor, policy, and global work contract and no ULID-specific or durable-format branch. Registered DX-042 through DX-049 plus WP-702/WP-703 for sparse source V7 generated-surface declarations, manifest V5, lock V8, exact compiler-owned artifact inventories, and reproducible single-surface application packages. Existing source V1-V6, manifest V1-V4, lock V1-V7, indexes, query plans, storage, protocols, and runtime authority remain unchanged and readable. |
@@ -7648,7 +7649,14 @@ does not create a kernel or storage escape hatch.
   limit and protected nullable cursor directly through the shared driver core
   to one admitted provider/backend page. A binding MUST NOT walk smaller pages,
   fetch and discard a larger literal page, duplicate operations by requested
-  size, or split one public page across driver requests.
+  size, or split one public page across driver requests, except for the exact
+  owning-external-adapter translation admitted by `OQ-072` through `OQ-074`.
+- `DRV-017`: Rust, Go, TypeScript, Python, CLI, MCP, local-driver, and remote-
+  gRPC named-query paths MUST resume one ordinary ordered continuation with a
+  different valid submitted page cardinality while preserving identical token,
+  plan, non-cardinality parameter, authorization, snapshot, order, provider-
+  epoch, error, and cancellation semantics. No target-language binding may
+  select excluded cursor fields or weaken authoritative Rust validation.
 
 ### 24.5.3 Compiler-bounded collection mutations
 
@@ -7931,7 +7939,9 @@ behavior:
 - `OQ-004`: Every operational collection MUST be explicitly bounded and use a
   snapshot-bound opaque cursor by default. Numeric offset is available only
   through a compiler-declared indexed ordinal plan satisfying `OQ-028`; walking
-  and discarding rows or cursor pages is forbidden.
+  and discarding rows or cursor pages is forbidden. The exact append-only
+  owning-external-adapter translation in `OQ-072` through `OQ-074` is the sole
+  page-coalescing exception and MUST NOT discard or reshape a row.
 - `OQ-005`: Top-N MUST use a total declared index/projection order or a fully
   charged compiler-bounded candidate set and MUST append a deterministic unique
   tie-breaker. An order term whose admitted or installed-lineage values may be
@@ -8063,7 +8073,9 @@ behavior:
   remain unchanged; low-level callers already using the option remain exact.
   Any convenience iterator MUST require an explicit finite page or item bound
   and MUST NOT implement count, offset, filtering, sorting, or another public
-  semantic by walking pages.
+  semantic by walking pages. The owning-external-adapter translation admitted
+  by `OQ-072` through `OQ-074` MAY preserve one authoritative larger-page
+  semantic by exact ordered append only.
 - `OQ-032`: The compiler MUST own one closed operational index-component
   capability registry mapping each canonical, presence-aware, and versioned
   text-key encoding to its exact equality, bounded-membership, interval,
@@ -8215,12 +8227,49 @@ behavior:
 - `OQ-066`: Every existing query family that already admits runtime `Limit`
   MAY admit `Limit<MAX>` without gaining a new predicate, provider, scan,
   aggregate, or ordering capability. Provider full-population and candidate
-  costs remain independently charged, and cursors retain exact plan,
-  parameter, snapshot, policy, order, and epoch binding.
+  costs remain independently charged, and cursors retain exact plan, invariant
+  parameter, snapshot, policy, order, and epoch binding under `OQ-068` through
+  `OQ-071`.
 - `OQ-067`: Generic conformance MUST prove boundary values, default semantics,
   maximum drift, cursor traversal, maximum encoded results, cumulative cost,
   and one-invocation bounded pages without external-framework source,
   diagnostics, fixtures, generated branches, or wall-clock thresholds.
+- `OQ-068`: For an ordinary ordered binding whose runtime `Limit` or
+  `Limit<MAX>` parameter is used only by `take $limit after $cursor`, the
+  submitted page-cardinality value MUST NOT be part of the cursor's invariant-
+  parameter hash. The immutable plan MUST still bind its name, type, default,
+  declared maximum, cost, result ceiling, predicates, and order.
+- `OQ-069`: Cursor cardinality exclusion MUST be compiler-derived and closed.
+  A parameter used by nearest/vector K, an unpaged binding, or another semantic
+  bound remains identity-bearing, and every non-cardinality value and presence
+  choice remains in the canonical cursor hash. Callers and bindings MUST NOT
+  select or annotate excluded fields.
+- `OQ-070`: A resumed ordinary cursor MUST validate and use the newly submitted
+  cardinality within its unchanged type domain from the exact prior position,
+  snapshot, and provider epoch. Forward and reverse traversal with page-size
+  changes MUST have no duplicate, omission, restart, skipped row, stale read,
+  or authority change; invalid or excessive values fail before data work.
+- `OQ-071`: Named-query cursor lookup MUST use a cursor-specific canonical hash
+  domain without changing the shared query-parameter hash, query source, IR,
+  module, plan, application lock, public token bytes, Protobuf, driver frame,
+  storage key, or durable format. The bounded process-local registry retains
+  its existing restart-invalidates behavior and no predecessor is reinterpreted.
+- `OQ-072`: An owning external adapter MAY assemble one finite authoritative
+  upstream page from repeated bounded RiffDB named-query invocations only when
+  the upstream interface requires a larger exact page. It MUST request
+  `min(remaining, compiled MAX)`, follow one unchanged cursor chain, append
+  every row exactly once in returned order, and stop only at the requested size
+  or true exhaustion.
+- `OQ-073`: The external translation in `OQ-072` MUST perform no filtering,
+  sorting, counting, deduplication, discarding, offset simulation, page restart,
+  query construction, or storage access. Cancellation, cursor, authorization,
+  provider, or transport failure releases no partial success; a filled page
+  returns the final RiffDB cursor unchanged and exhaustion returns none.
+- `OQ-074`: External coalescing owns checked finite request/response allocation
+  and remains outside the RiffDB repository. Each RiffDB invocation retains its
+  compiled row, byte, fuel, scan, policy, provider, frame, and response bounds;
+  no ceiling increase, hidden server page walk, framework branch, schema,
+  route, adapter source, or speculative streaming protocol is introduced.
 
 ### 24.5.5 Compiled workflow concurrency
 

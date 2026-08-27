@@ -42,8 +42,13 @@ precision or scale is rejected.
 ## Cursor rule
 
 Persist the opaque `next_cursor` returned with a page and submit it only to the
-same exact generated operation, contract, module, parameters, principal, and
-page shape. Do not decode it. An invalid, expired, cross-principal, or stale
+same exact generated operation, contract, module, invariant parameters,
+principal, and page semantics. Do not decode it. For an ordinary ordered
+`take $limit after $cursor` binding, a resumed invocation may choose a different
+valid runtime `Limit` or `Limit<MAX>` value; page cardinality does not identify
+the keyset position. The plan and declared maximum remain immutable, and
+nearest/vector K, filters, partition, ordering, authority, snapshot, and
+provider epoch remain bound. An invalid, expired, cross-principal, or stale
 cursor is a typed failure; clients must not silently restart from the first
 page.
 
@@ -123,7 +128,7 @@ a scan.
 Canonical length-prefixed strings are not logical text-order ranges; use an
 explicit `binary_utf8_v1` component for bytewise string intervals. Multiple
 branching dimensions, overlapping unions, joins, provider bridges,
-caller-selected indexes, and client page walking remain unsupported. An older
+caller-selected indexes, and general client page walking remain unsupported. An older
 module whose range was never physically proved is refused as query unavailable
 with `refresh_contract` guidance; recompile and redeploy rather than filtering
 a returned page.
@@ -251,7 +256,13 @@ another through the same six public surfaces.
 Framework integrations own their generated profile and route-level acceptance
 in their own repositories. They pin a RiffDB build and prove that their public
 API delegates to generated named methods without client-side filtering,
-sorting, counting, page walking, raw query construction, or storage access.
+sorting, counting, raw query construction, or storage access. An owning
+external adapter may perform ADR-0159's narrow exact-page translation when its
+authoritative interface requires more rows than one compiled RiffDB page: it
+requests `min(remaining, MAX)`, follows one unchanged cursor chain, appends
+every row exactly once in order, and returns the final cursor unchanged or none
+on true exhaustion. It may not discard, reshape, restart, or release partial
+success after any cancellation or error.
 RiffDB keeps the generic compiler, provider, policy, transport, and conformance
 surface; it does not ship a Better Auth admin route or generated Better Auth
 admin SDK.
