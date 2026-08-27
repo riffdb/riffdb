@@ -28,6 +28,15 @@ readers. A bounded maximum is immutable operation identity: changing it
 requires module/application rotation and invalidates predecessor cursors, but
 does not migrate entity data or change storage or public Protobuf formats.
 
+ADR-0159 adds a process-local named-query cursor hash domain that excludes only
+compiler-proved ordinary page-cardinality values. Shared parameter hashes,
+query/IR/module/plan/lock identities, public opaque token bytes, protocols,
+storage, and durable formats are unchanged. Cursor registries already do not
+survive process restart, so predecessor tokens are not reinterpreted. A
+resumed ordinary ordered query may change its valid submitted page size while
+all invariant parameters, authority, snapshot, order, and provider epoch stay
+bound.
+
 - `release/version-topology-v1.json`, the cross-domain map of independently
   owned reader/writer windows, writer policy, lifecycle, source assertions, and
   evidence described in [Versioning and Retirement](versioning-and-retirement.md);

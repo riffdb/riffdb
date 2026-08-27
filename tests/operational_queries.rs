@@ -98,6 +98,21 @@ query DocumentsByBinaryTitle(
 }
 "#;
 
+const RUNTIME_LIMIT_ORDER_QUERY: &str = r#"
+query DocumentsByRuntimePage(
+  $organization_id: Document.organization_id,
+  $limit: Limit<5> = 2,
+  $after: Cursor?,
+) {
+  many documents from Document
+    where organization_id == $organization_id
+    order by sequence asc, document_id asc
+    take $limit after $after
+  return Found { documents: documents { document_id sequence } }
+  outcomes Found
+}
+"#;
+
 const BINARY_COMPONENT_ORDER_QUERY: &str = r#"
 query DocumentsByRelationAndUser(
   $organization_id: Document.organization_id,
@@ -337,6 +352,7 @@ struct QueryInputs<'a> {
     excluded: Option<u64>,
     text_range: Option<(&'a str, &'a str)>,
     text_excluded: Option<&'a str>,
+    limit: Option<u64>,
     prior: Option<&'a QueryContinuation>,
 }
 
@@ -541,6 +557,9 @@ fn execute_page(
             CanonicalValue::string(excluded).expect("excluded text"),
         );
     }
+    if let Some(limit) = inputs.limit {
+        parameter_values.insert("limit".to_owned(), CanonicalValue::U64(limit));
+    }
     let parameters = QueryParameters::checked(parameter_values).expect("parameters");
     let mut view = IndexedView { rows: indexed };
     execute_operational_page_in_snapshot(
@@ -573,6 +592,29 @@ fn titles(rows: &[QueryRow]) -> Vec<&str> {
             other => panic!("title missing: {other:?}"),
         })
         .collect()
+}
+
+fn sequences(rows: &[QueryRow]) -> Vec<u64> {
+    rows.iter()
+        .map(|row| match row.field("sequence") {
+            Some(CanonicalValue::U64(value)) => *value,
+            other => panic!("sequence missing: {other:?}"),
+        })
+        .collect()
+}
+
+fn continuation(snapshot: &QueryOwnedSnapshot) -> Option<QueryContinuation> {
+    snapshot.continuation().map(|lower| {
+        QueryContinuation::checked(
+            snapshot
+                .continuation_binding()
+                .expect("continuation binding")
+                .to_owned(),
+            lower.to_vec(),
+            snapshot.index_epochs().clone(),
+        )
+        .expect("checked continuation")
+    })
 }
 
 fn execute_all_cursor_pages(source: &str, relation: Option<&str>) -> Vec<QueryRow> {
@@ -772,6 +814,62 @@ fn binary_text_key_order_is_bytewise_and_cursor_exact_in_both_directions() {
         ["doc6", "doc-3", "ac", "abacus", "ab", "a"]
     );
     assert_eq!(ordinals(&descending), [6, 7, 5, 4, 3, 2]);
+}
+
+#[test]
+fn runtime_page_cardinality_changes_preserve_exact_forward_and_reverse_continuation() {
+    for (source, expected) in [
+        (RUNTIME_LIMIT_ORDER_QUERY.to_owned(), vec![2, 3, 4, 5, 6, 7]),
+        (
+            RUNTIME_LIMIT_ORDER_QUERY.replace(
+                "order by sequence asc, document_id asc",
+                "order by sequence desc, document_id desc",
+            ),
+            vec![7, 6, 5, 4, 3, 2],
+        ),
+    ] {
+        let first = execute_page(
+            &source,
+            QueryInputs {
+                limit: Some(1),
+                ..QueryInputs::default()
+            },
+        )
+        .expect("one-row first page");
+        let first_cursor = continuation(&first).expect("first page continues");
+
+        let second = execute_page(
+            &source,
+            QueryInputs {
+                limit: Some(4),
+                prior: Some(&first_cursor),
+                ..QueryInputs::default()
+            },
+        )
+        .expect("four-row resumed page");
+        let second_cursor = continuation(&second).expect("second page continues");
+
+        let third = execute_page(
+            &source,
+            QueryInputs {
+                limit: Some(1),
+                prior: Some(&second_cursor),
+                ..QueryInputs::default()
+            },
+        )
+        .expect("one-row final page");
+        assert!(continuation(&third).is_none());
+
+        let rows = [&first, &second, &third]
+            .into_iter()
+            .flat_map(|snapshot| match snapshot.fields().get("documents") {
+                Some(QueryResultValue::Many(rows)) => rows.iter(),
+                other => panic!("expected documents page, got {other:?}"),
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        assert_eq!(sequences(&rows), expected);
+    }
 }
 
 #[test]

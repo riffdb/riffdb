@@ -107,6 +107,85 @@ fn initialized_transition_revalidates_absent_and_present_races_without_stale_con
 }
 
 #[test]
+fn shared_initialized_root_and_local_transitions_commit_and_replay_as_one_graph() {
+    let database = BulkRowsDatabase::create("shared-initialized-root");
+    let ports = database.open();
+    let item_ids = [[0x45; 16], [0x46; 16]];
+    let first = database.prepare_shared_initialized_put(&ports, &item_ids, 0x47, 0x57, 0x67);
+    let replay = database.prepare_shared_initialized_put(&ports, &item_ids, 0x47, 0x57, 0x68);
+    let replace = database.prepare_shared_initialized_put(&ports, &item_ids, 0x48, 0x58, 0x69);
+    let notifications = Arc::new(RecordingApplicationCommitNotifications::default());
+    let coordinator = start_coordinator_with_notifications(
+        ports,
+        Arc::new(FixedAdmissionClock::new(command_timestamp())),
+        Arc::new(IncrementingProvenanceSource::new(0x71)),
+        notifications,
+    );
+    let executor = coordinator.command_executor();
+
+    let (first, replay, replace) = runtime().block_on(async {
+        let first = executor
+            .reserve_capacity()
+            .await
+            .expect("reserve shared initialized transition")
+            .submit(first)
+            .expect("submit shared initialized transition")
+            .completion()
+            .await
+            .expect("complete shared initialized transition");
+        let replay = executor
+            .reserve_capacity()
+            .await
+            .expect("reserve shared initialized replay")
+            .submit(replay)
+            .expect("submit shared initialized replay")
+            .completion()
+            .await
+            .expect("complete shared initialized replay");
+        let replace = executor
+            .reserve_capacity()
+            .await
+            .expect("reserve shared initialized replacements")
+            .submit(replace)
+            .expect("submit shared initialized replacements")
+            .completion()
+            .await
+            .expect("complete shared initialized replacements");
+        (first, replay, replace)
+    });
+    let CommandExecutionResult::Committed(first) = first else {
+        panic!("shared initialized transition must commit");
+    };
+    let CommandExecutionResult::Committed(replay) = replay else {
+        panic!("shared initialized transition replay must resolve");
+    };
+    let CommandExecutionResult::Committed(replace) = replace else {
+        panic!("shared initialized replacements must commit");
+    };
+    assert_eq!(
+        first.disposition(),
+        CommittedOutcomeDisposition::FirstCommit
+    );
+    assert_eq!(replay.disposition(), CommittedOutcomeDisposition::Replay);
+    assert_eq!(
+        replace.disposition(),
+        CommittedOutcomeDisposition::FirstCommit
+    );
+    assert_eq!(first.stored_outcome(), replay.stored_outcome());
+
+    drop(executor);
+    coordinator
+        .shutdown()
+        .expect("drain shared initialized coordinator");
+    let reopened = database.open();
+    database.assert_shared_initialized_versions(
+        &reopened,
+        &item_ids,
+        riffdb_types::EntityVersion::new(2).expect("second shared initialized version"),
+    );
+}
+
+#[test]
 fn unary_delete_race_commits_one_preimage_and_replays_after_reopen() {
     let database = BulkRowsDatabase::create("unary-delete-race");
     let ports = database.open();
