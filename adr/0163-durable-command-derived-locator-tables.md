@@ -1,8 +1,12 @@
 # ADR-0163: Durable Command-Derived Locator Tables
 
 - **Status:** Proposed
-- **Direction approved:** 2026-08-27 (separate locator tables, with the
-  registry-chain migration and its one-time revalidation cost accepted)
+- **Direction approved:** 2026-08-27 (separate locator tables). The approval
+  accepted a registry-chain migration and one complete-validation start per
+  database. Verification before implementation showed that cost does not exist;
+  see "Migration" below. The placement decision is unaffected and its stated
+  reasoning holds, but the maintainer approved a worse trade than the real one
+  and should re-read on that basis.
 - **Exact text accepted:** Not yet — maintainer acceptance wording pending
 - **Decision deadline:** Before any implementation adds a durable table, a
   `RegistryMigration` variant, or a record-registry digest link
@@ -137,37 +141,44 @@ provenance id by its uniqueness reservation, and an audit-by-request key by a
 freshly allocated administration sequence that cannot collide. Paying a read per
 row to re-establish that measured 12–16% of seed throughput by itself.
 
-### 5. Migrate through the existing record-registry chain
+### 5. Install the tables additively, with no registry transition
 
-Adding tables in this engine is done through the authoritative record-registry
-digest chain, not a `StorageFormatVersion` bump. This record adds one link:
+This record adds **no durable message type**: `StoredCommandLocatorV1` is
+already in `READABLE_RECORD_SCHEMAS`. The authoritative record-registry digest
+is computed by `record_registry_digest()` purely over that schema set — compact
+tag, schema revision, record type name and schema hash — and **table names are
+not an input**. Adding these tables therefore changes no digest and needs no
+`RegistryMigration` variant, no digest constant, no chain link, and no cascading
+predecessor arms.
 
-- a new `RegistryMigration` variant (the twentieth);
-- a new digest constant, with today's current digest becoming the new
-  `PRE_*_REGISTRY_DIGEST`;
-- an idempotent `install_*` step paired with `publish_record_registry`;
-- the cascading predecessor arms extended at all three open sites;
-- `TABLE_NAMES` 39 to 42 with its architecture test;
-- compatibility fixtures.
+What is required is only:
+
+- an idempotent additive install of the three tables at open, taking a write
+  transaction only when they are absent;
+- `TABLE_NAMES` 39 to 42 with its architecture test.
+
+Historical table installs were paired with `publish_record_registry` because
+those changes also introduced message types. This one does not, so it rides no
+chain link.
 
 The three tables are additive and empty on install. Existing databases remain
-readable; commands written after the migration carry locators, and commands
-written before them remain resolvable through the transient index.
+readable; commands written after the install carry locators, and commands
+written before it remain resolvable through the transient index — which is why
+the transient rebuild must remain available rather than being deleted.
 
 ## Consequences
 
 - The five remaining absent-for-present defects become fail-closed or correct,
   discharging ADR-0156 section 5's obligation for these kinds.
-- **Every existing clean-close certificate is invalidated, so each existing
-  database takes exactly one complete-validation startup after upgrade.** The
-  certificate binds `META_RECORD_REGISTRY`, and the migration changes that
-  digest. At production scale that one start is the twenty-minute pass this work
-  exists to remove. It is one-time, per database, and already the documented
-  behaviour for registry changes ("Restore and incompatible format/registry
-  changes invalidate clean-close evidence"). It is accepted deliberately, and it
-  is the main operational cost of this record. The startup reason code names it
-  (`binding_mismatch` or `bounded_roots_unavailable`), so it is diagnosable
-  rather than mysterious.
+- **Existing clean-close certificates remain valid.** An earlier revision of
+  this record stated that the registry-digest migration would invalidate every
+  certificate, costing each existing database one complete-validation startup —
+  at production scale, the twenty-minute pass this work exists to remove. That
+  was wrong. The certificate binds `META_RECORD_REGISTRY`, whose value is the
+  registry digest, and that digest does not change because no message schema
+  changes. There is no revalidation cost and no upgrade stall. The correction is
+  recorded rather than silently removed, because the accepted trade was chosen
+  against the incorrect cost.
 - **Write cost, measured.** On an idle N1 (8 vCPU Xeon, load 0.23, ext4), four
   interleaved reps per arm, 115,690 commands, one `IDEMPOTENCY` locator row per
   command: baseline mean 2492.2 ops/s (2465.6–2523.7), locators mean 2338.6
@@ -238,11 +249,14 @@ only one whose upgrade invalidates clean-close certificates.
 ## Options Considered
 
 1. **Separate locator tables:** selected. Keeps ADR-0085's derivation and the
-   physical-emptiness invariant literally true; costs a registry-chain migration
-   and one complete-validation start per existing database.
-2. **Locator rows in the indexed tables plus a per-table census:** rejected.
-   Cheaper to build and needs no migration, but amends ADR-0085's derivation and
-   the emptiness invariant, and its failure mode is a silently wrong checkpoint.
+   physical-emptiness invariant literally true. Costs three additive tables and
+   a `TABLE_NAMES` change; no registry transition and no revalidation, since no
+   message schema changes.
+2. **Locator rows in the indexed tables plus a per-table census:** rejected. It
+   amends ADR-0085's derivation and the physical-emptiness invariant, and its
+   failure mode is a silently wrong checkpoint from a mis-seeded census. With
+   the migration cost of option 1 shown to be illusory, this option is no
+   cheaper and remains worse on failure mode.
 3. **Warm the transient index on demand at the read sites:** rejected as the
    primary fix. It needs no durable change, but converts a startup stall into a
    first-read stall of the same magnitude and leaves the locator absence in the
