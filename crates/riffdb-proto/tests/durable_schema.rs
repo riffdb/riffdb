@@ -3,13 +3,16 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use prost::Message;
-use prost_types::{DescriptorProto, FileDescriptorSet, field_descriptor_proto::Type};
+use prost_types::{
+    DescriptorProto, FileDescriptorSet,
+    field_descriptor_proto::{Label, Type},
+};
 use riffdb_proto::STORAGE_FILE_DESCRIPTOR_SET;
 use riffdb_proto::durable::{
     CURRENT_RECORD_SCHEMA_COUNT, CURRENT_RECORD_SCHEMAS, READABLE_RECORD_SCHEMA_COUNT,
     READABLE_RECORD_SCHEMAS, WRITABLE_RECORD_SCHEMA_COUNT, WRITABLE_RECORD_SCHEMAS,
     current_record_registry, current_record_schema, readable_record_registry,
-    readable_record_schema, writable_record_schema,
+    readable_record_schema, record_registry_digest, writable_record_schema,
 };
 use riffdb_proto::envelope::{
     EnvelopeError, MAX_STORED_ENVELOPE_BYTES, PayloadValidationError, encode, encode_v1,
@@ -113,6 +116,76 @@ fn message_map(descriptors: &FileDescriptorSet) -> BTreeMap<String, &DescriptorP
                 .map(move |message| (format!("{}.{}", file.package(), message.name()), message))
         })
         .collect()
+}
+
+#[test]
+fn clean_close_lifecycle_descriptor_is_exact() {
+    let descriptors = descriptors();
+    let source = descriptors
+        .file
+        .iter()
+        .find(|file| file.name() == "riffdb/storage/v1/clean_close_lifecycle_v1.proto")
+        .expect("ADR-0157 clean-close lifecycle source descriptor");
+    assert!(source.dependency.is_empty());
+    assert_eq!(source.package(), "riffdb.storage.v1");
+
+    let lifecycle_state = source
+        .enum_type
+        .iter()
+        .find(|enumeration| enumeration.name() == "StoredCleanCloseLifecycleStateV1")
+        .expect("ADR-0157 lifecycle state enum");
+    assert_eq!(
+        lifecycle_state
+            .value
+            .iter()
+            .map(|value| (value.name(), value.number()))
+            .collect::<Vec<_>>(),
+        vec![
+            ("STORED_CLEAN_CLOSE_LIFECYCLE_STATE_V1_UNSPECIFIED", 0),
+            ("STORED_CLEAN_CLOSE_LIFECYCLE_STATE_V1_DIRTY", 1),
+            ("STORED_CLEAN_CLOSE_LIFECYCLE_STATE_V1_CLEAN", 2),
+        ]
+    );
+
+    let lifecycle = source
+        .message_type
+        .iter()
+        .find(|message| message.name() == "StoredCleanCloseLifecycleV1")
+        .expect("ADR-0157 lifecycle record");
+    assert_eq!(
+        lifecycle
+            .field
+            .iter()
+            .map(|field| {
+                (
+                    field.name(),
+                    field.number(),
+                    field.r#type(),
+                    field.type_name(),
+                )
+            })
+            .collect::<Vec<_>>(),
+        vec![
+            ("database_id", 1, Type::Bytes, ""),
+            ("history_incarnation", 2, Type::Fixed64, ""),
+            ("record_registry_digest", 3, Type::Bytes, ""),
+            ("lifecycle_generation", 4, Type::Fixed64, ""),
+            (
+                "state",
+                5,
+                Type::Enum,
+                ".riffdb.storage.v1.StoredCleanCloseLifecycleStateV1",
+            ),
+            ("clean_state_binding_hash", 6, Type::Bytes, ""),
+            ("lifecycle_hash", 7, Type::Bytes, ""),
+        ]
+    );
+    assert!(lifecycle.oneof_decl.is_empty());
+    for field in &lifecycle.field {
+        assert_eq!(field.label(), Label::Optional);
+        assert!(!field.proto3_optional());
+        assert!(field.oneof_index.is_none());
+    }
 }
 
 fn descriptor_closure(descriptors: &FileDescriptorSet, root: &str) -> FileDescriptorSet {
@@ -233,6 +306,10 @@ fn storage_source_import_and_type_inventory_is_exact() {
             (
                 "riffdb/storage/v1/catalog.proto".to_owned(),
                 vec!["riffdb/storage/v1/common.proto"],
+            ),
+            (
+                "riffdb/storage/v1/clean_close_lifecycle_v1.proto".to_owned(),
+                vec![],
             ),
             (
                 "riffdb/storage/v1/command_capsule_v1.proto".to_owned(),
@@ -425,8 +502,8 @@ fn storage_source_import_and_type_inventory_is_exact() {
             .iter()
             .map(|file| file.message_type.len())
             .sum::<usize>(),
-        181,
-        "177 semantic messages plus the unchanged StoredEnvelope"
+        182,
+        "178 semantic messages plus the unchanged StoredEnvelope"
     );
     assert_eq!(
         descriptors
@@ -434,7 +511,7 @@ fn storage_source_import_and_type_inventory_is_exact() {
             .iter()
             .map(|file| file.enum_type.len())
             .sum::<usize>(),
-        24
+        25
     );
     assert!(
         descriptors
@@ -455,9 +532,9 @@ fn storage_source_import_and_type_inventory_is_exact() {
 
 #[test]
 fn closed_registry_order_and_schema_hashes_are_exactly_derived() {
-    assert_eq!(CURRENT_RECORD_SCHEMA_COUNT, 73);
-    assert_eq!(READABLE_RECORD_SCHEMA_COUNT, 96);
-    assert_eq!(WRITABLE_RECORD_SCHEMA_COUNT, 73);
+    assert_eq!(CURRENT_RECORD_SCHEMA_COUNT, 74);
+    assert_eq!(READABLE_RECORD_SCHEMA_COUNT, 97);
+    assert_eq!(WRITABLE_RECORD_SCHEMA_COUNT, 74);
     assert_eq!(
         CURRENT_RECORD_SCHEMAS
             .iter()
@@ -542,6 +619,7 @@ fn closed_registry_order_and_schema_hashes_are_exactly_derived() {
     readable_names.push("riffdb.storage.v1.StoredVectorProjectionControlV1".to_owned());
     readable_names.push("riffdb.storage.v1.StoredCommandCapsuleV6".to_owned());
     readable_names.push("riffdb.storage.v1.StoredCommandSegmentV5".to_owned());
+    readable_names.push("riffdb.storage.v1.StoredCleanCloseLifecycleV1".to_owned());
     readable_names.push("riffdb.storage.v1.CapabilityRecordV1".to_owned());
     readable_names.push("riffdb.storage.v1.CapabilityRecordV1".to_owned());
     readable_names.push("riffdb.storage.v1.CapabilityTokenLookupV1".to_owned());
@@ -607,6 +685,7 @@ fn closed_registry_order_and_schema_hashes_are_exactly_derived() {
     writable_names.push("riffdb.storage.v1.StoredVectorProjectionControlV1".to_owned());
     writable_names.push("riffdb.storage.v1.StoredCommandCapsuleV6".to_owned());
     writable_names.push("riffdb.storage.v1.StoredCommandSegmentV5".to_owned());
+    writable_names.push("riffdb.storage.v1.StoredCleanCloseLifecycleV1".to_owned());
     assert_eq!(
         READABLE_RECORD_SCHEMAS
             .iter()
@@ -689,8 +768,8 @@ fn closed_registry_order_and_schema_hashes_are_exactly_derived() {
             .map(|schema| schema.max_payload_bytes())
             .collect::<BTreeSet<_>>()
             .len(),
-        11,
-        "four semantic classes plus seven FQN-specific absolute maxima"
+        12,
+        "five semantic classes plus seven FQN-specific absolute maxima"
     );
 
     let v1 = "riffdb.storage.v1.StoredIndexEntryV1";
@@ -714,6 +793,13 @@ fn closed_registry_order_and_schema_hashes_are_exactly_derived() {
     assert!(writable_record_schema(commit_v3).is_some());
     assert!(current_record_schema(commit_v3).is_some());
 
+    let clean_close = writable_record_schema("riffdb.storage.v1.StoredCleanCloseLifecycleV1")
+        .expect("ADR-0157 lifecycle record is current writable");
+    assert_eq!(clean_close.compact_tag(), 66);
+    assert_eq!(clean_close.schema_revision(), 1);
+    assert_eq!(clean_close.max_payload_bytes(), 192);
+    assert_eq!(clean_close.max_envelope_bytes(), 283);
+
     for unregistered in [
         "riffdb.storage.v1.StoredEnvelope",
         "riffdb.storage.v1.StoredReadDependenciesV1",
@@ -734,8 +820,8 @@ fn closed_registry_order_and_schema_hashes_are_exactly_derived() {
 #[test]
 fn generated_registry_fixtures_freeze_exact_membership_and_hashes() {
     let legacy = registry_fixture_entries(LEGACY_REGISTRY_FIXTURE, 26);
-    let readable = registry_fixture_entries(READABLE_REGISTRY_FIXTURE, 96);
-    let writable = registry_fixture_entries(WRITABLE_REGISTRY_FIXTURE, 73);
+    let readable = registry_fixture_entries(READABLE_REGISTRY_FIXTURE, 97);
+    let writable = registry_fixture_entries(WRITABLE_REGISTRY_FIXTURE, 74);
 
     assert_eq!(legacy, readable[..legacy.len()]);
     assert_eq!(
@@ -952,6 +1038,19 @@ fn schema_hash_hex(schema: &riffdb_proto::envelope::RecordSchema<'_>) -> String 
         write!(output, "{byte:02x}").expect("String writes are infallible");
     }
     output
+}
+
+#[test]
+fn clean_close_successor_registry_digest_is_frozen() {
+    let actual = record_registry_digest()
+        .as_bytes()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    assert_eq!(
+        actual,
+        "713f2aabc242d6d2263fd27675586453ab41c754aef84b48d4233060fe03a131"
+    );
 }
 
 #[test]
@@ -1248,6 +1347,7 @@ fn closed_oneof_and_enum_registries_are_exact() {
             ("ServiceAuditPhaseV1", "SERVICE_AUDIT_PHASE_UNSPECIFIED=0,SERVICE_AUDIT_PHASE_STARTED=1,SERVICE_AUDIT_PHASE_SUCCEEDED=2,SERVICE_AUDIT_PHASE_DENIED=3,SERVICE_AUDIT_PHASE_CANCELLED=4,SERVICE_AUDIT_PHASE_FAILED=5,SERVICE_AUDIT_PHASE_OUTCOME_UNCERTAIN=6"),
             ("ServiceIngressKindV1", "SERVICE_INGRESS_KIND_UNSPECIFIED=0,SERVICE_INGRESS_KIND_GRPC=1,SERVICE_INGRESS_KIND_MCP_HTTP=2,SERVICE_INGRESS_KIND_IN_PROCESS_TEST_COMPARISON=3"),
             ("ServiceOperationV1", "SERVICE_OPERATION_UNSPECIFIED=0,SERVICE_OPERATION_VALIDATE_CONTRACT=1,SERVICE_OPERATION_EXPLAIN_COMMAND=2,SERVICE_OPERATION_DEPLOY_CONTRACT=3,SERVICE_OPERATION_GET_ACTIVE_CONTRACT=4,SERVICE_OPERATION_GET_CONTRACT_VERSION=5,SERVICE_OPERATION_EXECUTE_COMMAND=6,SERVICE_OPERATION_RESOLVE_COMMAND_OUTCOME=7,SERVICE_OPERATION_GET_ENTITY=8,SERVICE_OPERATION_SCAN_INDEX=9,SERVICE_OPERATION_QUERY_PROJECTION=10,SERVICE_OPERATION_GET_PROJECTION_STATUS=11,SERVICE_OPERATION_GET_COMMIT=12,SERVICE_OPERATION_SCAN_COMMITS=13,SERVICE_OPERATION_SUBSCRIBE_TO_COMMITS=14,SERVICE_OPERATION_TRACE_PROVENANCE=15,SERVICE_OPERATION_GET_HEALTH=16,SERVICE_OPERATION_GET_STATISTICS=17,SERVICE_OPERATION_CREATE_CAPABILITY=18,SERVICE_OPERATION_REVOKE_CAPABILITY=19,SERVICE_OPERATION_LIST_PENDING_OUTBOX_DELIVERIES=20,SERVICE_OPERATION_DISCOVER_COMMAND_TOOLS=21,SERVICE_OPERATION_DISCOVER_RESOURCES=22,SERVICE_OPERATION_DESCRIBE_CONTRACT=23,SERVICE_OPERATION_CHECK_QUERY=24,SERVICE_OPERATION_EXPLAIN_QUERY=25,SERVICE_OPERATION_EXECUTE_QUERY=26,SERVICE_OPERATION_DEPLOY_QUERY_MODULE=27"),
+            ("StoredCleanCloseLifecycleStateV1", "STORED_CLEAN_CLOSE_LIFECYCLE_STATE_V1_UNSPECIFIED=0,STORED_CLEAN_CLOSE_LIFECYCLE_STATE_V1_DIRTY=1,STORED_CLEAN_CLOSE_LIFECYCLE_STATE_V1_CLEAN=2"),
             ("StoredCommandAuditMemberV1", "STORED_COMMAND_AUDIT_MEMBER_UNSPECIFIED=0,STORED_COMMAND_AUDIT_MEMBER_STARTED=1,STORED_COMMAND_AUDIT_MEMBER_TERMINAL=2"),
             ("StoredVectorProjectionLifecycleV1", "STORED_VECTOR_PROJECTION_LIFECYCLE_V1_UNSPECIFIED=0,STORED_VECTOR_PROJECTION_LIFECYCLE_V1_BUILDING=1,STORED_VECTOR_PROJECTION_LIFECYCLE_V1_READY=2,STORED_VECTOR_PROJECTION_LIFECYCLE_V1_REBUILD_REQUIRED=3,STORED_VECTOR_PROJECTION_LIFECYCLE_V1_REBUILDING=4,STORED_VECTOR_PROJECTION_LIFECYCLE_V1_INVALID=5"),
             ("StoredVectorProjectionRebuildReasonV1", "STORED_VECTOR_PROJECTION_REBUILD_REASON_V1_UNSPECIFIED=0,STORED_VECTOR_PROJECTION_REBUILD_REASON_V1_REPLAY_AGE=1,STORED_VECTOR_PROJECTION_REBUILD_REASON_V1_REPLAY_BYTES=2,STORED_VECTOR_PROJECTION_REBUILD_REASON_V1_REPLAY_BACKLOG=3,STORED_VECTOR_PROJECTION_REBUILD_REASON_V1_DEFINITION_CHANGED=4"),

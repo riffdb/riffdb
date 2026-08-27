@@ -125,6 +125,10 @@ artifacts=(
     fixtures/proto/durable-correlated-index-work-command-authority-v6-schema-hashes.bin
     crates/riffdb-proto/fixtures/durable-correlated-index-work-command-authority-v6-record-bounds.bin
     crates/riffdb-proto/fixtures/durable-correlated-index-work-command-authority-v6-schema-hashes.bin
+    fixtures/proto/durable-clean-close-lifecycle-v1-record-bound.bin
+    fixtures/proto/durable-clean-close-lifecycle-v1-schema-hash.bin
+    crates/riffdb-proto/fixtures/durable-clean-close-lifecycle-v1-record-bound.bin
+    crates/riffdb-proto/fixtures/durable-clean-close-lifecycle-v1-schema-hash.bin
     fixtures/proto/durable-registry-v2-record-bound.bin
     fixtures/proto/durable-registry-v2-schema-hash.bin
     fixtures/proto/durable-index-v2-wire-vector.txt

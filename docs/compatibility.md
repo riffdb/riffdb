@@ -82,6 +82,13 @@ before creating the redb container. A crash with only that marker (or an empty
 container) resumes initialization on the next start; it is never mistaken for
 a predecessor database that needs an offline upgrade.
 
+The current durable-record registry adds the private clean-close lifecycle
+record through one exact predecessor-to-successor registry migration. That
+migration does not synthesize clean evidence: the first open performs complete
+validation and records dirty lifecycle state. A matching clean lifecycle record
+is eligible only under the exact successor registry digest. Older binaries do
+not recognize that registry and downgrade remains unsupported.
+
 Inspect the same decision while the server is stopped:
 
 ```bash
@@ -118,6 +125,10 @@ in an isolated nested workspace and cannot be substituted into the server.
 - Do not deploy two independently changed public/durable schemas under the same
   version.
 - A downgrade is unsupported.
+- Copying a database file does not grant clean-start eligibility in another
+  configured database. Clean evidence remains bound to the stored database
+  identity, history incarnation, registry, frontiers, journal, and bounded
+  roots; any mismatch selects complete validation.
 - A backup should be restored with the release family that created and verifies
   its declared restore range before any later migration is attempted. A legacy
   backup without a physical compatibility range is inspected but not restored

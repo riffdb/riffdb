@@ -1,4 +1,4 @@
-spec_version: '1.13'
+spec_version: '1.14'
 product: RiffDB
 repository: riffdb
 status: deployable-application-alpha-architecture-accepted
@@ -1278,6 +1278,142 @@ work_packages:
       no selector grants transport, transaction, authorization, storage, MCP, or guarantee bypass.
     scale: Target sets contain at most five entries and acceptance uses bounded fresh packages and
       fixture trees; generation retains no database state and performs no operation-proportional work.
+  human_review_triggers: *id001
+- id: WP-704
+  name: Clean-close certificate durable interface and fast-startup safety closure
+  depends_on: [WP-130, WP-422, WP-448, WP-489, WP-669]
+  objective: Implement ADR-0156's private conventional clean-close lifecycle state, bounded
+    readiness proof, durable consume-before-writers transition, and complete dirty fallback while
+    moving every integrity fact skipped at clean startup onto the operational path that first uses
+    it and preserving the existing exact-end validation stream for recovery and explicit scrub.
+  requirements: [STO-001, STO-012, STO-020, STO-021, STO-022, STO-023,
+    REC-001, REC-002, REC-004, PERF-007, PERF-013, PERF-014, PERF-019]
+  required_adrs: [ADR-0004, ADR-0006, ADR-0019, ADR-0034, ADR-0050,
+    ADR-0061, ADR-0073, ADR-0085, ADR-0101, ADR-0103, ADR-0104, ADR-0112,
+    ADR-0156, ADR-0157]
+  allowed_paths: [SPEC.md, work_packages.yaml, adr/README.md,
+    adr/0156-clean-close-certificate-fast-startup.md,
+    adr/0157-clean-close-lifecycle-durable-identity.md,
+    proto/riffdb/storage/v1/**, crates/riffdb-proto/**, fixtures/proto/**,
+    crates/riffdb-storage-api/**, crates/riffdb-storage-redb/**,
+    crates/riffdb-catalog/**, crates/riffdb-auth/**, crates/riffdb-commit/**,
+    crates/riffdb-server/**, crates/riffdb-observability/**,
+    tests/storage_recovery/**, tests/recovery/**, tests/command_semantics/**,
+    scripts/generate-proto*, scripts/check-generated,
+    docs/SUMMARY.md, docs/architecture/**, docs/operations/**,
+    docs/performance/**, docs/compatibility.md]
+  deliverables:
+  - ADR-0157 accepted BEFORE implementation freezes the exact private
+    meta key, Protobuf fields/tags/presence, canonical hash domain, semantic byte ceiling, registry
+    predecessor/successor digests, dirty-consumption representation, and old-reader behavior; no
+    code may infer these durable choices from this package text
+  - One sealed lifecycle typestate whose clean variant can be constructed only after final
+    admission/writer/worker/journal drain and committed Immediate as the final authoritative
+    mutation, and whose startup consumption becomes durable before any coordinator, outbox,
+    projection, reactive, maintenance, or public writer can activate
+  - A bounded clean readiness proof over engine status, database/incarnation/format/registry,
+    allocators/frontiers, journal/checkpoint generation, bootstrap, active catalog lineage and
+    executable artifacts, and initial authority roots, with every absence, mismatch, decode error,
+    repair, incompatible version, migration, restore, or uncertainty selecting complete validation
+  - A source and test inventory for every population row class skipped by clean startup, followed by
+    fail-closed local envelope/checksum/canonical-key/schema/bound/required-reciprocity validation
+    before that row can influence authorization, execution, output, delivery, projection, or
+    mutation; no corruption becomes absence, partial output, business rejection, skip, or repair
+  - The existing structural and historical exact-end path retained byte-for-byte for dirty recovery
+    and explicit verification, including the golden evidence sequence, collector rejection order,
+    pagination/ExactEnd semantics, validated-prefix behavior, bounded locator memory, and the full
+    recovery matrix
+  - Deterministic schedules and process kills before/after every drain, journal checkpoint,
+    certificate commit, certificate consume/dirty commit, readiness, first write, and final close,
+    plus negative copied/stale/torn/substituted certificate and write-after-certificate arms
+  acceptance_commands:
+  - cargo +1.97.0 test -p riffdb-proto --test durable_schema --all-features
+  - cargo +1.97.0 test -p riffdb-storage-api -p riffdb-storage-redb --all-features
+  - cargo +1.97.0 test -p riffdb-catalog -p riffdb-auth -p riffdb-commit -p riffdb-server --all-features
+  - cargo +1.97.0 test -p riffdb-storage-redb --test storage_recovery_matrix --all-features
+  - ./scripts/recovery_full
+  - ./scripts/generate-proto --check
+  - ./scripts/check-generated
+  - ./scripts/check-requirement-coverage
+  - ./scripts/check-workspace-policy
+  - ./scripts/handbook check
+  - cargo +1.97.0 fmt --all -- --check
+  - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: A clean certificate is written only as the final mutation and consumed durably before
+    writers; eligible clean state reaches an operational proof without a population walk; every
+    uncertain lifecycle takes the unchanged complete path; every skipped row fails closed on first
+    influence; and no caller, configuration, operator, transport, or backend can select or forge
+    startup mode.
+  standing_design_tests:
+    interface_safety: The certificate and startup proof are sealed private typestates. Applications,
+      agents, operators, transports, and configuration cannot force clean eligibility, suppress a
+      fallback, activate a writer early, or opt out of durability, authorization, idempotency,
+      schema validation, accessed-row integrity, or dirty recovery.
+    scale: Clean open and close inspect only fixed metadata plus bounded catalog/authority roots and
+      retain no population-sized plan. Dirty and explicit validation stream under existing page,
+      byte, migration, diagnostic, and heap bounds rather than materializing live-row locators.
+  human_review_triggers: *id001
+- id: WP-705
+  name: Clean-startup scrub operations compatibility and production-scale evidence
+  depends_on: [WP-610, WP-668, WP-704]
+  objective: Close ADR-0156 with an explicit offline complete-integrity scrub, backup/restore/
+    migration/retention compatibility, operator and handbook guidance, production-scale clean and
+    dirty lifecycle evidence, and endurance integration without presenting asymmetric PostgreSQL
+    process startup as a database-semantic comparison.
+  requirements: [STO-012, STO-023, REC-001, REC-002, REC-004,
+    PERF-013, PERF-014, PERF-019, END-004, END-006, END-007, END-008, END-009]
+  required_adrs: [ADR-0019, ADR-0041, ADR-0050, ADR-0056, ADR-0073,
+    ADR-0085, ADR-0104, ADR-0112, ADR-0123, ADR-0156, ADR-0157]
+  allowed_paths: [SPEC.md, work_packages.yaml,
+    adr/0156-clean-close-certificate-fast-startup.md,
+    adr/0157-clean-close-lifecycle-durable-identity.md,
+    proto/**, crates/**, fixtures/**, tests/**, examples/**, benchmarks/**,
+    scripts/**, docs/**, release/**, .github/workflows/**]
+  deliverables:
+  - One authorized offline integrity-scrub operation and versioned bounded receipt that drives the
+    complete exact-end structural/catalog validation path without forging dirty process state,
+    publishes no partial success, mutates no application authority, and does not create a clean
+    certificate while an operational writer can run
+  - Backup, restore, registry/format migration, history-incarnation rotation, retention prune,
+    maintenance replacement, and database-copy conformance proving exactly which operations preserve
+    a matching clean certificate and which invalidate it into complete validation
+  - Redaction-safe closed startup/shutdown mode and stage observations that expose no database path,
+    identifier, frontier, table count, hash, key, application value, or unbounded label and cannot be
+    supplied back as control input
+  - A production-scale cleanly seeded and cleanly shut down database proving clean reopen and final
+    close retain bounded heap and perform zero population-table evidence walks, with separate dirty
+    kill/reopen evidence proving full validation, recovery, idempotency, and the 86-arm matrix remain
+    exact
+  - PERF-013/PERF-014/PERF-019 evidence distinguishing engine open, bounded roots, certificate
+    consumption, readiness, drain, final certificate commit, and complete validation; PostgreSQL
+    lifecycle numbers are excluded unless the harness owns equivalent process and integrity work
+  - Handbook, troubleshooting, compatibility, backup/restore, maintenance, endurance, and known-
+    limitation guidance stating that clean readiness is not a full scrub and latent unrelated
+    corruption may fail closed on access; END-009 restart cycles use the clean path while scheduled
+    scrub and forced-kill arms retain complete evidence
+  acceptance_commands:
+  - cargo +1.97.0 test --workspace --all-features
+  - ./scripts/recovery_full
+  - ./scripts/check-version-topology
+  - ./scripts/check-generated
+  - ./scripts/check-requirement-coverage
+  - ./scripts/check-workspace-policy
+  - ./scripts/handbook check
+  - cargo +1.97.0 fmt --all -- --check
+  - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
+  - cargo +1.97.0 doc --workspace --no-deps
+  exit_gate: Clean production-scale reopen and shutdown are bounded independently of live and
+    retained populations, dirty and explicit scrub paths retain complete fail-closed validation,
+    every maintenance and compatibility transition has exact certificate behavior, documentation
+    states the reduced clean-start assurance honestly, and endurance no longer pays a full scrub on
+    every graceful restart or mistakes an asymmetric comparator lifecycle for product evidence.
+  standing_design_tests:
+    interface_safety: The only new operator action requests more validation through an exclusive
+      offline scrub; no public surface can request less, force readiness, preserve a stale
+      certificate, or convert an integrity incident into ordinary application behavior.
+    scale: Clean lifecycle work and observations are bounded independently of population; scrub and
+      dirty validation stream without population-sized memory; evidence uses fixed checkpoints,
+      stages, labels, durations, artifacts, and diagnostic ceilings.
   human_review_triggers: *id001
 - id: WP-678
   name: Aggregate collection-byte language, proof, and IR successors
