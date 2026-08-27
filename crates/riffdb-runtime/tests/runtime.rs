@@ -75,6 +75,41 @@ contract InitializedStateRuntime version 1 {
   }
 }
 "#;
+const SHARED_INITIALIZED_ROOT_SOURCE: &str = r#"
+contract SharedInitializedRootRuntime version 1 {
+  entity Partition {
+    key (organization_id: uuid)
+    field revision: u64
+  }
+  entity Item {
+    key (organization_id: uuid, item_id: uuid)
+    field revision: u64
+  }
+  aggregate Items {
+    root Partition
+    child Item
+    partition_by organization_id
+    conflict_key (organization_id)
+  }
+  bulk command PutItems {
+    input request_id: uuid
+    input organization_id: uuid
+    input items: list<Item, 1..8>
+    idempotency_key request_id
+    init_or_mutate Partition(organization_id) as partition initialize {
+      revision: 0,
+    }
+    for item_input in items {
+      init_or_mutate Item(organization_id, item_input.item_id) as item initialize {
+        revision: 0,
+      }
+      set item.revision = item.revision + 1
+    }
+    set partition.revision = partition.revision + 1
+    return Written { revision: partition.revision }
+  }
+}
+"#;
 const BULK_DELETE_SOURCE: &str = r#"
 contract BulkDeleteRuntime version 1 {
   entity Row {
@@ -3812,6 +3847,100 @@ fn initialized_state_bulk_selects_one_mutation_for_absent_present_and_mixed_targ
                 }
             }
         }
+    }
+}
+
+#[test]
+fn initialized_state_bulk_executes_one_shared_root_and_element_local_transitions() {
+    let bundle = compile_contract_source(SHARED_INITIALIZED_ROOT_SOURCE)
+        .expect("shared initialized root contract compiles");
+    let plan = command(&bundle, "PutItems");
+    let item = bundle
+        .schema()
+        .entities()
+        .iter()
+        .find(|entity| entity.name() == "Item")
+        .expect("item entity");
+    let items = [0x41_u8, 0x42]
+        .into_iter()
+        .map(|seed| {
+            CanonicalValue::Record(input_record(
+                item.record(),
+                [
+                    ("organization_id", CanonicalValue::Uuid([0x31; 16])),
+                    ("item_id", CanonicalValue::Uuid([seed; 16])),
+                    ("revision", CanonicalValue::U64(0)),
+                ],
+            ))
+        })
+        .collect();
+    let input = input_record(
+        plan.input().record(),
+        [
+            ("request_id", CanonicalValue::Uuid([0x30; 16])),
+            ("organization_id", CanonicalValue::Uuid([0x31; 16])),
+            (
+                "items",
+                CanonicalValue::List(CanonicalList::new(items).expect("bounded items")),
+            ),
+        ],
+    );
+    let facts = derive_input_command_facts(plan, input.clone()).expect("command facts");
+    assert_eq!(facts.binding_element_ordinals(), &[None, Some(0), Some(1)]);
+    let observations = facts
+        .binding_plan_indices()
+        .iter()
+        .zip(facts.binding_entity_keys())
+        .map(|(binding_index, key)| {
+            EntityObservation::Absent(
+                EntityTarget::new(
+                    plan.bindings()[*binding_index as usize].entity_type(),
+                    key.clone(),
+                )
+                .expect("binding target"),
+            )
+        })
+        .collect::<Vec<_>>();
+    let read_snapshot = snapshot(plan_ref(&bundle, plan), observations);
+    let transaction = TransactionContext::new(
+        RequestId::from_unix_milliseconds_and_random(1, [0x12; 10]).expect("request ID"),
+        AdmittedActorContext::new(
+            ActorId::new("runtime-test").expect("actor"),
+            ActorKind::Service,
+            TenantScope::Global,
+            None,
+        ),
+        plan_ref(&bundle, plan),
+        LogicalTime::new(Timestamp::new(102, 0).expect("time")),
+        facts.partition_key().clone(),
+    );
+    let ExecutionResult::CommitRequired(evaluated) = execute_command(
+        &bundle,
+        &input,
+        &read_snapshot,
+        &transaction,
+        EvaluationBudget::v1(),
+    )
+    .expect("shared and local initialized mutations evaluate") else {
+        panic!("initialized mutations require commit");
+    };
+
+    assert_eq!(evaluated.mutations().len(), 3);
+    for mutation in evaluated.mutations() {
+        let EntityMutation::Create(image) = mutation else {
+            panic!("absent initialized target must create");
+        };
+        let entity = bundle
+            .schema()
+            .entity(image.target().entity_type_id())
+            .expect("mutation entity");
+        assert_eq!(
+            field(
+                image.fields(),
+                entity_field(&bundle, entity.name(), "revision")
+            ),
+            &CanonicalValue::U64(1)
+        );
     }
 }
 
