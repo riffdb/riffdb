@@ -360,6 +360,9 @@ pub struct RedbStructuralEvidenceSession {
     clean_close_fast: bool,
     /// Exact clean lifecycle consumed to DIRTY immediately before activation.
     verified_clean_lifecycle: Option<crate::clean_close::CleanCloseLifecycle>,
+    /// Which precondition declined the ADR-0157 bounded path, if it declined.
+    /// `None` exactly when `clean_close_fast` is true.
+    clean_close_declined_reason: Option<crate::clean_close::CleanCloseDeclineReason>,
     /// Walk plan counts (full or suffix-adjusted under a verified checkpoint).
     structural_counts: [u64; STRUCTURAL_TABLE_COUNT],
     /// Full table lens from the immutable snapshot (for below-S count verification).
@@ -771,7 +774,8 @@ impl StructuralEvidenceOpen for RedbStore {
             database_id,
             snapshot.retained_metadata.history_incarnation(),
         )?;
-        if let Some(lifecycle) = verified_clean_lifecycle {
+        let clean_close_declined_reason = verified_clean_lifecycle.declined();
+        if let Some(lifecycle) = verified_clean_lifecycle.verified() {
             // The binding verifier already checked every fixed meta/catalog
             // root plus every active query-module pointer and body. The
             // remaining startup proof walks only the bounded contract catalog;
@@ -796,6 +800,7 @@ impl StructuralEvidenceOpen for RedbStore {
                 inputs,
                 clean_close_fast: true,
                 verified_clean_lifecycle: Some(lifecycle),
+                clean_close_declined_reason: None,
                 structural_counts,
                 full_structural_counts,
                 additive_structural_counts,
@@ -942,6 +947,7 @@ impl StructuralEvidenceOpen for RedbStore {
             inputs,
             clean_close_fast: false,
             verified_clean_lifecycle: None,
+            clean_close_declined_reason,
             structural_counts,
             full_structural_counts,
             additive_structural_counts,
@@ -1533,6 +1539,20 @@ impl RedbStructuralEvidenceSession {
     #[must_use]
     pub fn clean_close_fast_path(&self) -> bool {
         self.clean_close_fast
+    }
+
+    /// Test/operator observability: which precondition declined the ADR-0157
+    /// bounded path on this open, or `None` when the bounded path was admitted.
+    ///
+    /// Answers "why is this start slow?" from the session itself, before the
+    /// complete validation pass runs. Nine preconditions previously shared one
+    /// observable — a very slow start — which is how this cost was misdiagnosed
+    /// twice. This is observation only and cannot select startup behavior.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn clean_close_declined_reason(&self) -> Option<&'static str> {
+        self.clean_close_declined_reason
+            .map(crate::clean_close::CleanCloseDeclineReason::as_str)
     }
 
     /// Test observability: rows actually inspected by deterministic sample windows.
@@ -8511,6 +8531,11 @@ contract RedbMigration version 1 {
             .begin_structural_evidence(inputs())
             .expect("begin predecessor full validation");
         assert!(!first.clean_close_fast);
+        // A freshly initialized database carries no certificate at all — the
+        // DIRTY record is written at activation — and the declined open must
+        // say which of the nine preconditions closed the gate, not decline
+        // anonymously.
+        assert_eq!(first.clean_close_declined_reason(), Some("record_absent"));
         let structural_end = finish_structural(&mut first);
         let historical_end = finish_historical(&mut first);
         let StructuralOpenOutcome::Clean(opened) = first
@@ -8595,6 +8620,7 @@ contract RedbMigration version 1 {
             .begin_structural_evidence(inputs())
             .expect("begin bounded clean startup");
         assert!(bounded.clean_close_fast);
+        assert_eq!(bounded.clean_close_declined_reason(), None);
         assert_eq!(
             bounded.structural_counts[3..],
             [0; STRUCTURAL_TABLE_COUNT - 3]
@@ -8630,6 +8656,170 @@ contract RedbMigration version 1 {
             crate::clean_close::CleanCloseState::Dirty
         );
         assert_eq!(lifecycle.lifecycle_generation(), 3);
+    }
+
+    /// Drives one initialized store through a full validation pass, activates
+    /// its ports, writes the ADR-0157 certificate, and closes — the exact
+    /// sequence a graceful `riffdbd` shutdown performs.
+    fn certify_clean_close(store: RedbStore) {
+        let mut session = store
+            .begin_structural_evidence(inputs())
+            .expect("begin full validation before certification");
+        let structural_end = finish_structural(&mut session);
+        let historical_end = finish_historical(&mut session);
+        let StructuralOpenOutcome::Clean(opened) = session
+            .finish(structural_end, historical_end)
+            .expect("finish full validation before certification")
+        else {
+            panic!("initialized store must finish cleanly");
+        };
+        let (_, _, _, dormant) = opened.into_parts();
+        let ports = dormant
+            .into_operational_after_catalog_validation()
+            .expect("activate ports before certification");
+        ports
+            .write_clean_close_lifecycle()
+            .expect("write clean-close certificate");
+        assert_eq!(ports.clean_close_write_failures(), 0);
+        drop(ports);
+    }
+
+    /// Drives one initialized store through a full validation pass and
+    /// activates its ports, then closes WITHOUT certifying — what a killed
+    /// daemon leaves behind. Activation consumes the certificate to DIRTY.
+    fn activate_without_certifying(store: RedbStore) {
+        let mut session = store
+            .begin_structural_evidence(inputs())
+            .expect("begin full validation before an uncertified close");
+        let structural_end = finish_structural(&mut session);
+        let historical_end = finish_historical(&mut session);
+        let StructuralOpenOutcome::Clean(opened) = session
+            .finish(structural_end, historical_end)
+            .expect("finish full validation before an uncertified close")
+        else {
+            panic!("initialized store must finish cleanly");
+        };
+        let (_, _, _, dormant) = opened.into_parts();
+        drop(
+            dormant
+                .into_operational_after_catalog_validation()
+                .expect("activate ports before an uncertified close"),
+        );
+    }
+
+    /// Every declined bounded startup names its precondition.
+    ///
+    /// Nine preconditions decline the ADR-0157 bounded path and all nine used
+    /// to share one observable: the next open silently took the complete
+    /// validation pass. On a large database that is tens of minutes of SHA-256
+    /// and record decoding, so "slow start" was the only evidence available and
+    /// the cost was misdiagnosed twice. These assertions pin that each decline
+    /// is now separately nameable from the session and separately counted on
+    /// the store. Fail-closed behavior is unchanged: every case below still
+    /// takes the complete pass.
+    #[test]
+    fn declined_bounded_startup_names_and_counts_its_precondition() {
+        // (1) Certificate verified: no reason, no decline counted.
+        let verified_path = TestDatabasePath::new("clean-close-reason-verified");
+        let verified_id = database_id(0x71);
+        certify_clean_close(initialized_store(&verified_path, verified_id));
+        let reopened = RedbStore::open(&verified_path.0).expect("reopen certified database");
+        let handle = reopened.reopen_for_test();
+        let session = reopened
+            .begin_structural_evidence(inputs())
+            .expect("begin bounded startup over a certified database");
+        assert!(session.clean_close_fast_path());
+        assert_eq!(session.clean_close_declined_reason(), None);
+        assert!(
+            handle
+                .clean_close_decline_counts()
+                .iter()
+                .all(|(_, count)| *count == 0),
+            "a verified certificate must count no decline: {:?}",
+            handle.clean_close_decline_counts()
+        );
+        drop(session);
+        drop(handle);
+
+        // (2) The certificate was consumed to DIRTY by an earlier activation
+        // and no clean close replaced it. This is what a killed daemon leaves,
+        // and what any process that activates the database and exits without a
+        // graceful shutdown leaves behind.
+        let dirty_path = TestDatabasePath::new("clean-close-reason-dirty");
+        let dirty_id = database_id(0x72);
+        activate_without_certifying(initialized_store(&dirty_path, dirty_id));
+        let reopened = RedbStore::open(&dirty_path.0).expect("reopen dirty database");
+        let handle = reopened.reopen_for_test();
+        let session = reopened
+            .begin_structural_evidence(inputs())
+            .expect("begin full validation over a dirty database");
+        assert!(!session.clean_close_fast_path());
+        assert_eq!(
+            session.clean_close_declined_reason(),
+            Some("state_not_clean")
+        );
+        assert_eq!(
+            handle
+                .clean_close_decline_counts()
+                .iter()
+                .find(|(reason, _)| *reason == "state_not_clean")
+                .map(|(_, count)| *count),
+            Some(1)
+        );
+        drop(session);
+        drop(handle);
+
+        // (3) No certificate row at all.
+        let absent_path = TestDatabasePath::new("clean-close-reason-absent");
+        let absent_id = database_id(0x73);
+        certify_clean_close(initialized_store(&absent_path, absent_id));
+        {
+            let store = RedbStore::open(&absent_path.0).expect("open to remove the certificate");
+            let mut write = store
+                .shared
+                .database
+                .begin_write()
+                .expect("begin certificate removal");
+            write
+                .set_durability(redb::Durability::Immediate)
+                .expect("immediate durability");
+            let mut meta = write.open_table(META).expect("meta table");
+            meta.remove(META_CLEAN_CLOSE_LIFECYCLE)
+                .expect("remove certificate row");
+            drop(meta);
+            write.commit().expect("commit certificate removal");
+        }
+        let reopened = RedbStore::open(&absent_path.0).expect("reopen without a certificate");
+        let session = reopened
+            .begin_structural_evidence(inputs())
+            .expect("begin full validation without a certificate");
+        assert!(!session.clean_close_fast_path());
+        assert_eq!(session.clean_close_declined_reason(), Some("record_absent"));
+        drop(session);
+
+        // (4) A non-authoritative journal extent name is present when the gate
+        // runs, so the final journal boundary cannot be the clean-close
+        // boundary. Planted after open because store open reconciles and
+        // removes scratch extents. Fail-closed: still declined, now nameably.
+        let journal_path_case = TestDatabasePath::new("clean-close-reason-journal");
+        let journal_id = database_id(0x75);
+        certify_clean_close(initialized_store(&journal_path_case, journal_id));
+        let reopened =
+            RedbStore::open(&journal_path_case.0).expect("reopen before planting a scratch extent");
+        std::fs::write(
+            crate::journal::spare_journal_path(&journal_path_case.0),
+            [0_u8; 8],
+        )
+        .expect("plant a non-authoritative extent name");
+        let session = reopened
+            .begin_structural_evidence(inputs())
+            .expect("begin full validation with a scratch extent present");
+        assert!(!session.clean_close_fast_path());
+        assert_eq!(
+            session.clean_close_declined_reason(),
+            Some("journal_boundary_unverified")
+        );
+        drop(session);
     }
 
     #[test]

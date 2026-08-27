@@ -161,6 +161,13 @@ pub(crate) struct SharedRedb {
     /// Per-reason counts of ignored validated-prefix checkpoints
     /// (index = `CheckpointIgnoreReason::index`).
     checkpoint_ignored: [AtomicU64; 10],
+    /// Failed clean-close certificate writes (non-fatal; next open's bounded
+    /// path lost). The checkpoint path's peer counter for the same class of
+    /// deliberately-ignored graceful-shutdown write failure.
+    clean_close_write_failures: AtomicU64,
+    /// Per-reason counts of declined ADR-0157 bounded startups
+    /// (index = `CleanCloseDeclineReason::index`).
+    clean_close_declined: [AtomicU64; 9],
     /// Retention watermark sequence, loaded and self-hash-verified once at
     /// open. The watermark advances only under exclusive OFFLINE maintenance,
     /// which cannot run while this handle holds the database open, so reads
@@ -313,6 +320,41 @@ impl SharedRedb {
         self.checkpoint_write_failures.load(Ordering::Relaxed)
     }
 
+    /// Counts one failed clean-close certificate write.
+    ///
+    /// The graceful-shutdown call site discards the error per ADR-0019 A1
+    /// write-failure semantics, which is defensible — acknowledged work is
+    /// already durable — but it left a failed certificate write with no
+    /// observable at all. The next open then reports `record_absent` or
+    /// `state_not_clean` with nothing to distinguish "never tried" from
+    /// "tried and failed". This is the checkpoint path's
+    /// `note_checkpoint_write_failure` equivalent; it changes no control flow.
+    pub(crate) fn note_clean_close_write_failure(&self) {
+        let _ = self
+            .clean_close_write_failures
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub(crate) fn clean_close_write_failures(&self) -> u64 {
+        self.clean_close_write_failures.load(Ordering::Relaxed)
+    }
+
+    pub(crate) fn note_clean_close_declined(
+        &self,
+        reason: crate::clean_close::CleanCloseDeclineReason,
+    ) {
+        let _ = self.clean_close_declined[reason.index()].fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub(crate) fn clean_close_decline_counts(&self) -> [(&'static str, u64); 9] {
+        crate::clean_close::CleanCloseDeclineReason::ALL.map(|reason| {
+            (
+                reason.as_str(),
+                self.clean_close_declined[reason.index()].load(Ordering::Relaxed),
+            )
+        })
+    }
+
     /// Seeds the terminal execution-failure census from one completed startup
     /// walk. Called only where the checkpoint write gate opens, so "the census
     /// is exact for this durable head" and "checkpoints may be written" become
@@ -362,33 +404,72 @@ impl SharedRedb {
         })
     }
 
+    /// Verifies the ADR-0157 clean-close certificate, naming the precondition
+    /// that declined bounded startup.
+    ///
+    /// Fail-closed is unchanged: every path that used to return `None` still
+    /// returns `Declined`, in the same order, on exactly the same conditions.
+    /// The only new behaviour is that the reason is now a closed discriminant,
+    /// counted on the store and readable from the startup session, instead of
+    /// being erased into an anonymous `None`.
     pub(crate) fn verified_clean_close_lifecycle(
         &self,
         transaction: &ReadTransaction,
         database_id: DatabaseId,
         history_incarnation: u64,
-    ) -> Result<Option<crate::clean_close::CleanCloseLifecycle>, StorageError> {
+    ) -> Result<crate::clean_close::CleanCloseVerdict, StorageError> {
+        let verdict =
+            self.verify_clean_close_lifecycle_inner(transaction, database_id, history_incarnation)?;
+        if let Some(reason) = verdict.declined() {
+            self.note_clean_close_declined(reason);
+        }
+        Ok(verdict)
+    }
+
+    fn verify_clean_close_lifecycle_inner(
+        &self,
+        transaction: &ReadTransaction,
+        database_id: DatabaseId,
+        history_incarnation: u64,
+    ) -> Result<crate::clean_close::CleanCloseVerdict, StorageError> {
+        use crate::clean_close::{CleanCloseDeclineReason, CleanCloseVerdict};
+
         if self.engine_repaired_at_open {
-            return Ok(None);
+            return Ok(CleanCloseVerdict::Declined(
+                CleanCloseDeclineReason::EngineRepairedAtOpen,
+            ));
         }
         let meta = transaction.open_table(META).map_err(table_error)?;
         let Some(encoded) = meta
             .get(META_CLEAN_CLOSE_LIFECYCLE)
             .map_err(precommit_storage_error)?
         else {
-            return Ok(None);
+            return Ok(CleanCloseVerdict::Declined(
+                CleanCloseDeclineReason::RecordAbsent,
+            ));
         };
         let Ok(lifecycle) = crate::clean_close::CleanCloseLifecycle::decode(encoded.value()) else {
-            return Ok(None);
+            return Ok(CleanCloseVerdict::Declined(
+                CleanCloseDeclineReason::RecordDecodeFailed,
+            ));
         };
-        if lifecycle.database_id() != database_id
-            || lifecycle.history_incarnation() != history_incarnation
-            || !matches!(
-                lifecycle.state(),
-                crate::clean_close::CleanCloseState::Clean(_)
-            )
-        {
-            return Ok(None);
+        if lifecycle.database_id() != database_id {
+            return Ok(CleanCloseVerdict::Declined(
+                CleanCloseDeclineReason::DatabaseIdMismatch,
+            ));
+        }
+        if lifecycle.history_incarnation() != history_incarnation {
+            return Ok(CleanCloseVerdict::Declined(
+                CleanCloseDeclineReason::IncarnationMismatch,
+            ));
+        }
+        if !matches!(
+            lifecycle.state(),
+            crate::clean_close::CleanCloseState::Clean(_)
+        ) {
+            return Ok(CleanCloseVerdict::Declined(
+                CleanCloseDeclineReason::StateNotClean,
+            ));
         }
         drop(encoded);
         drop(meta);
@@ -402,7 +483,11 @@ impl SharedRedb {
             administration_frontier,
         ) {
             Ok(digest) => digest,
-            Err(crate::journal::JournalIoError::Corrupt) => return Ok(None),
+            Err(crate::journal::JournalIoError::Corrupt) => {
+                return Ok(CleanCloseVerdict::Declined(
+                    CleanCloseDeclineReason::JournalBoundaryUnverified,
+                ));
+            }
             Err(error) => return Err(recovery_journal_error(error)),
         };
         let binding =
@@ -414,14 +499,18 @@ impl SharedRedb {
                         StorageErrorKind::CorruptData | StorageErrorKind::LimitExceeded
                     ) =>
                 {
-                    return Ok(None);
+                    return Ok(CleanCloseVerdict::Declined(
+                        CleanCloseDeclineReason::BoundedRootsUnavailable,
+                    ));
                 }
                 Err(error) => return Err(error),
             };
         if lifecycle.state() != crate::clean_close::CleanCloseState::Clean(binding) {
-            return Ok(None);
+            return Ok(CleanCloseVerdict::Declined(
+                CleanCloseDeclineReason::BindingMismatch,
+            ));
         }
-        Ok(Some(lifecycle))
+        Ok(CleanCloseVerdict::Verified(lifecycle))
     }
 
     pub(crate) fn advance_dirty_lifecycle_before_activation(
@@ -1437,6 +1526,8 @@ impl RedbStore {
                 startup_validation_clean: AtomicBool::new(false),
                 checkpoint_write_failures: AtomicU64::new(0),
                 checkpoint_ignored: [(); 10].map(|()| AtomicU64::new(0)),
+                clean_close_write_failures: AtomicU64::new(0),
+                clean_close_declined: [(); 9].map(|()| AtomicU64::new(0)),
                 retention_watermark: AtomicU64::new(0),
                 terminal_execution_failure_rows: AtomicU64::new(0),
                 checkpoint_count_rows_walked: AtomicU64::new(0),
@@ -2242,10 +2333,21 @@ impl RedbStore {
 
     /// Writes the private ADR-0157 clean-close lifecycle as the final
     /// authoritative graceful-shutdown mutation.
+    ///
+    /// A failure is non-fatal at the process boundary — acknowledged work is
+    /// already durable and only the next open's bounded path is lost — and the
+    /// graceful-shutdown call site therefore discards the error. It is counted
+    /// here so a discarded failure is still observable.
     pub fn write_clean_close_lifecycle(&self) -> Result<(), StorageError> {
         let _lease = self.acquire_mutation_lease()?;
         self.ensure_writable()?;
-        self.shared.write_final_clean_close_lifecycle()
+        match self.shared.write_final_clean_close_lifecycle() {
+            Ok(()) => Ok(()),
+            Err(error) => {
+                self.shared.note_clean_close_write_failure();
+                Err(error)
+            }
+        }
     }
 
     /// Failed checkpoint writes after clean validation (non-fatal; counted).
@@ -2253,6 +2355,20 @@ impl RedbStore {
     #[must_use]
     pub fn checkpoint_write_failures(&self) -> u64 {
         self.shared.checkpoint_write_failures()
+    }
+
+    /// Failed clean-close certificate writes on this handle (non-fatal; counted).
+    #[doc(hidden)]
+    #[must_use]
+    pub fn clean_close_write_failures(&self) -> u64 {
+        self.shared.clean_close_write_failures()
+    }
+
+    /// Per-reason counts of declined ADR-0157 bounded startups on this handle.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn clean_close_decline_counts(&self) -> [(&'static str, u64); 9] {
+        self.shared.clean_close_decline_counts()
     }
 
     /// Per-reason counts of ignored validated-prefix checkpoints on this handle.
@@ -2270,7 +2386,7 @@ impl RedbStore {
     }
 
     #[cfg(test)]
-    fn reopen_for_test(&self) -> Self {
+    pub(crate) fn reopen_for_test(&self) -> Self {
         Self {
             shared: Arc::clone(&self.shared),
         }
@@ -4030,6 +4146,23 @@ impl RedbOperationalPorts {
     #[must_use]
     pub fn checkpoint_write_failures(&self) -> u64 {
         self.shared.checkpoint_write_failures()
+    }
+
+    /// Failed clean-close certificate writes on this database (non-fatal; counted).
+    #[doc(hidden)]
+    #[must_use]
+    pub fn clean_close_write_failures(&self) -> u64 {
+        self.shared.clean_close_write_failures()
+    }
+
+    /// Per-reason counts of declined ADR-0157 bounded startups on this database.
+    ///
+    /// Nonzero at exactly one index after an open that took the complete
+    /// validation pass, naming which precondition closed the bounded gate.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn clean_close_decline_counts(&self) -> [(&'static str, u64); 9] {
+        self.shared.clean_close_decline_counts()
     }
 
     /// Per-reason counts of ignored validated-prefix checkpoints on this database.

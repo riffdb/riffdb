@@ -1498,10 +1498,29 @@ fn assert_graceful_shutdown_checkpoint(
     let session = store
         .begin_structural_evidence(daemon_startup_inputs())
         .map_err(|error| test_failure(format!("evidence session failed: {error:?}")))?;
-    if !session.clean_close_fast_path() && !session.checkpoint_verified() {
-        return Err(test_failure(
-            "graceful shutdown evidence must verify on the next open (fast path)",
-        ));
+    // The ADR-0157 clean-close certificate specifically, not merely "one of the
+    // two fast paths". This assertion used to accept either proof, so a
+    // graceful shutdown that stopped certifying its clean close would still
+    // pass here on the retained validated-prefix checkpoint alone — and the
+    // only symptom would be that every future open of a large database took the
+    // complete validation pass. Name the declined precondition when it fails so
+    // the next reader does not have to instrument the engine to find out which
+    // of the nine closed the gate.
+    if !session.clean_close_fast_path() {
+        return Err(test_failure(format!(
+            "a real graceful daemon shutdown must leave a verifiable clean-close \
+             certificate; the next open declined bounded startup with decline={:?} \
+             (checkpoint_verified={} checkpoint_ignored={:?})",
+            session.clean_close_declined_reason(),
+            session.checkpoint_verified(),
+            session.checkpoint_ignored_reason(),
+        )));
+    }
+    if !session.checkpoint_verified() && session.checkpoint_ignored_reason().is_some() {
+        return Err(test_failure(format!(
+            "graceful shutdown left an unusable validated-prefix checkpoint: {:?}",
+            session.checkpoint_ignored_reason(),
+        )));
     }
     drop(session);
     Ok(())
