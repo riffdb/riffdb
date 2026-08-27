@@ -553,12 +553,7 @@ fn run_from_process(recovery: MaintenanceRecoveryController) -> Result<(), Daemo
     // `redb::Database::drop` included. Reprint the release census with the
     // remainder filled in: this is the only receipt that can cover it.
     crate::shutdown_census::record_post_graph_release();
-    {
-        let stdout = io::stdout();
-        let mut stdout = stdout.lock();
-        let _ = writeln!(stdout, "{}", crate::shutdown_census::format_v1_line());
-        let _ = stdout.flush();
-    }
+    eprintln!("{}", crate::shutdown_census::format_v1_line());
     result
 }
 
@@ -3190,16 +3185,16 @@ async fn supervise_ready_process(
         // BYTE-IDENTICAL with prior releases: Tier 2 harness depends on this line.
         let _ = writeln!(stdout, "riffdb-write-completion-groups-v1\t{counts}");
         let _ = writeln!(stdout, "riffdb-dispatch-reasons-v1\t{reasons}");
-        let _ = writeln!(
-            stdout,
+        let _ = writeln!(stdout, "{}", shutdown_stages.format_v1_line());
+        // Stderr for both: the shutdown evidence block on stdout is an exact
+        // ordered protocol, and an additional line in it fails a lifecycle
+        // transition. Stamp the receipt moment so the remainder to the process
+        // boundary is attributable too.
+        eprintln!(
             "{}",
             ProductionGraphShutdownStageEvidence::format_labels_v1_line()
         );
-        let _ = writeln!(stdout, "{}", shutdown_stages.format_v1_line());
-        // The post-drain release stages the line above cannot cover. Stamped
-        // here so the remainder to the process boundary is attributable too;
-        // `run_from_process` reprints this line once that remainder is known.
-        let _ = writeln!(stdout, "{}", crate::shutdown_census::format_v1_line());
+        eprintln!("{}", crate::shutdown_census::format_v1_line());
         crate::shutdown_census::mark_graph_receipt();
         let read_stages_line = riffdb_observability::format_read_stages_v1_line(&read_stages);
         let _ = writeln!(stdout, "{read_stages_line}");
@@ -3355,13 +3350,14 @@ async fn wait_for_shutdown_input(
 }
 
 fn publish_readiness(endpoint: &HostedGrpcEndpoint) -> Result<(), DaemonError> {
-    // Emitted BEFORE the ready line so a harness that stops reading stdout at
-    // readiness still captures it, and so a start that never becomes ready
-    // leaves no census rather than a misleading partial one.
-    let census = crate::startup_census::format_v1_line();
+    // Stderr, not stdout: the readiness stream is a checked lifecycle protocol
+    // whose first line must be the ready line within a fixed byte bound, so an
+    // extra stdout line is a protocol violation rather than a log entry.
+    // Stderr is already this process's diagnostic channel and carries the
+    // startup-selection line beside this one.
+    eprintln!("{}", crate::startup_census::format_v1_line());
     let stdout = io::stdout();
     let mut stdout = stdout.lock();
-    let _ = writeln!(stdout, "{census}");
     writeln!(stdout, "{READY_PROTOCOL}\t{endpoint}").map_err(DaemonError::Readiness)?;
     stdout.flush().map_err(DaemonError::Readiness)
 }
