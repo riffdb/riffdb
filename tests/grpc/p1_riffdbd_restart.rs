@@ -6,7 +6,7 @@
 use std::error::Error;
 use std::fs::{File, OpenOptions};
 use std::future::Future;
-use std::io::{self, BufReader, Read, Write};
+use std::io::{self, BufRead, BufReader, Read, Write};
 use std::net::SocketAddr;
 use std::num::NonZeroU16;
 use std::os::unix::fs::OpenOptionsExt;
@@ -14,6 +14,7 @@ use std::path::Path;
 use std::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, ExitStatus, Stdio};
 use std::str;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender};
+use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
@@ -67,6 +68,8 @@ const ENVIRONMENT: &str = "p1-restart-test";
 const READY_PREFIX: &str = "riffdbd-ready-v1\t";
 const SHUTDOWN_COMMAND: &[u8] = b"shutdown\n";
 const MAX_READY_LINE_BYTES: usize = 256;
+/// Bound on retained child stderr lines (diagnostics only, never payload).
+const MAX_RETAINED_STDERR_LINES: usize = 256;
 const PROCESS_START_TIMEOUT: Duration = Duration::from_secs(15);
 const PROCESS_STOP_TIMEOUT: Duration = Duration::from_secs(10);
 const PROCESS_KILL_TIMEOUT: Duration = Duration::from_secs(5);
@@ -295,6 +298,27 @@ async fn real_riffdbd_restart_preserves_budget_and_bootstrap_replay() -> TestRes
         &idempotency_keys_path,
     )?;
     let second_address = second_process.wait_for_ready_address()?;
+    // Tripwire on the readiness path's transient population-index rebuilds.
+    //
+    // ADR-0156 says a bounded start leaves the population caches cold, and the
+    // rebuild it means -- a walk of every command segment, decoding each one and
+    // re-deriving every manifest key -- is 96% of a bounded start's wall clock
+    // at 115,690 retained commands. So the target number is zero.
+    //
+    // It is ONE today, and deliberately so: with the index dormant,
+    // `read_stored_outcome` answers `Ok(None)` for a durably committed outcome,
+    // because in the current layout IDEMPOTENCY/PROVENANCE/EVENTS/EVENT_ROUTES/
+    // OUTBOX hold no physical rows and the command-derived index is the only
+    // locator into a command segment. Removing the incidental rebuild made this
+    // very test fail with "durable command outcome was not found". The rebuild
+    // is load-bearing for read correctness, not just for the outbox.
+    //
+    // Pinned exactly rather than as an upper bound so this fails in BOTH
+    // directions: a second readiness-path caller that reaches the rebuild trips
+    // it, and so does the fix -- whoever gives cold-cache reads a correct answer
+    // (durable locator rows, or warm-on-demand at the read sites) must come here
+    // and change this to zero on purpose.
+    assert_readiness_path_rebuild_census(&second_process, 1)?;
     let mut second_client = connect(second_address).await?;
 
     assert_principal_less_liveness(&mut second_client).await?;
@@ -1478,6 +1502,26 @@ fn replayed_commit_sequences(page: &v1::EventPage) -> TestResult<Vec<u64>> {
         .collect()
 }
 
+/// Pins how many transient population-index rebuilds the readiness path performs.
+///
+/// Reads the child's own `riffdb-startup-stages-v1` census rather than timing
+/// anything, so the assertion is exact and host-independent.
+fn assert_readiness_path_rebuild_census(process: &ServerProcess, expected: u64) -> TestResult<()> {
+    let census = process.startup_census()?;
+    let rebuilds = census
+        .split('\t')
+        .find_map(|field| field.strip_prefix("transient_index_rebuilds="))
+        .ok_or_else(|| test_failure("startup census omitted transient_index_rebuilds"))?;
+    if rebuilds != expected.to_string() {
+        return Err(test_failure(format!(
+            "readiness path performed {rebuilds} transient population-index \
+             rebuild(s), expected {expected}. Each one walks every command \
+             segment before the ready line. Census: {census}"
+        )));
+    }
+    Ok(())
+}
+
 fn assert_graceful_shutdown_checkpoint(
     database_path: &Path,
     expected_sequence: u64,
@@ -2296,6 +2340,7 @@ struct ServerProcess {
     reaper: Option<JoinHandle<()>>,
     stdout: Option<JoinHandle<usize>>,
     stderr: Option<JoinHandle<usize>>,
+    retained_stderr: Arc<Mutex<Vec<String>>>,
     exit_observed: bool,
 }
 
@@ -2345,7 +2390,9 @@ impl ServerProcess {
 
         let (ready_sender, ready) = mpsc::sync_channel(1);
         let stdout = thread::spawn(move || read_ready_then_drain(stdout, ready_sender));
-        let stderr = thread::spawn(move || drain_stream(stderr));
+        let retained_stderr = Arc::new(Mutex::new(Vec::new()));
+        let retained_stderr_worker = Arc::clone(&retained_stderr);
+        let stderr = thread::spawn(move || drain_stream(stderr, retained_stderr_worker));
         let (reaper_commands, commands) = mpsc::sync_channel(1);
         let (exit_sender, exited) = mpsc::sync_channel(1);
         let reaper = thread::spawn(move || reap_child(child, commands, exit_sender));
@@ -2358,8 +2405,28 @@ impl ServerProcess {
             reaper: Some(reaper),
             stdout: Some(stdout),
             stderr: Some(stderr),
+            retained_stderr,
             exit_observed: false,
         })
+    }
+
+    /// Bounded copy of the child's retained stderr diagnostic lines.
+    fn stderr_lines(&self) -> Vec<String> {
+        self.retained_stderr
+            .lock()
+            .map(|lines| lines.clone())
+            .unwrap_or_default()
+    }
+
+    /// The child's `riffdb-startup-stages-v1` census, once it has been emitted.
+    ///
+    /// Emitted immediately before the ready line, so it is available to any
+    /// caller that has already observed readiness.
+    fn startup_census(&self) -> TestResult<String> {
+        self.stderr_lines()
+            .into_iter()
+            .find(|line| line.starts_with("riffdb-startup-stages-v1\t"))
+            .ok_or_else(|| test_failure("riffdbd emitted no startup stage census"))
     }
 
     fn wait_for_ready_address(&self) -> TestResult<SocketAddr> {
@@ -2532,8 +2599,32 @@ fn drain_through_newline(reader: &mut impl Read) -> io::Result<()> {
     }
 }
 
-fn drain_stream(stderr: ChildStderr) -> usize {
-    drain_reader(&mut BufReader::new(stderr))
+/// Drains stderr while retaining the bounded diagnostic lines this suite
+/// asserts on.
+///
+/// `riffdbd` publishes its startup stage census and startup-selection line on
+/// stderr, because the stdout readiness stream is a checked protocol whose
+/// first line must be the ready line. Discarding stderr entirely meant those
+/// lines could not be asserted, which is how a readiness-path regression stayed
+/// invisible to this suite.
+fn drain_stream(stderr: ChildStderr, retained: Arc<Mutex<Vec<String>>>) -> usize {
+    let mut reader = BufReader::new(stderr);
+    let mut total = 0_usize;
+    let mut line = String::new();
+    loop {
+        line.clear();
+        match reader.read_line(&mut line) {
+            Ok(0) | Err(_) => return total,
+            Ok(read) => {
+                total = total.saturating_add(read);
+                if let Ok(mut retained) = retained.lock()
+                    && retained.len() < MAX_RETAINED_STDERR_LINES
+                {
+                    retained.push(line.trim_end().to_owned());
+                }
+            }
+        }
+    }
 }
 
 fn drain_reader(reader: &mut impl Read) -> usize {

@@ -114,11 +114,21 @@ pub(crate) enum CleanCloseDeclineReason {
     /// Everything decoded and verified, but the recomputed bounded-state
     /// binding differs from the one the certificate recorded.
     BindingMismatch,
+    /// The certificate verified, but an in-flight `Delivering` outbox entry was
+    /// positively observed.
+    ///
+    /// A clean close means every writer and delivery lane stopped, so no
+    /// delivery attempt can still hold a lease. Observing one contradicts the
+    /// certificate about state the certificate does not cover, which is exactly
+    /// the case ADR-0156 resolves by taking the complete path. Distinguished
+    /// from "could not tell": the probe reports ignorance separately and
+    /// ignorance does not decline.
+    OutboxDeliveringObserved,
 }
 
 impl CleanCloseDeclineReason {
     /// Every reason, in counter-index order (see [`Self::index`]).
-    pub(crate) const ALL: [Self; 10] = [
+    pub(crate) const ALL: [Self; 11] = [
         Self::EngineInitializedAtOpen,
         Self::EngineRepairedAtOpen,
         Self::RecordAbsent,
@@ -129,6 +139,7 @@ impl CleanCloseDeclineReason {
         Self::JournalBoundaryUnverified,
         Self::BoundedRootsUnavailable,
         Self::BindingMismatch,
+        Self::OutboxDeliveringObserved,
     ];
 
     /// Stable counter index for per-store decline-reason counting.
@@ -145,6 +156,7 @@ impl CleanCloseDeclineReason {
             Self::JournalBoundaryUnverified => 7,
             Self::BoundedRootsUnavailable => 8,
             Self::BindingMismatch => 9,
+            Self::OutboxDeliveringObserved => 10,
         }
     }
 
@@ -161,6 +173,7 @@ impl CleanCloseDeclineReason {
             Self::JournalBoundaryUnverified => "journal_boundary_unverified",
             Self::BoundedRootsUnavailable => "bounded_roots_unavailable",
             Self::BindingMismatch => "binding_mismatch",
+            Self::OutboxDeliveringObserved => "outbox_delivering_observed",
         }
     }
 }

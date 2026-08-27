@@ -8789,6 +8789,91 @@ contract RedbMigration version 1 {
         assert_eq!(ports.transient_index_rebuilds(), 1);
     }
 
+    /// A positively observed in-flight `Delivering` entry contradicts a clean
+    /// certificate, and the contradiction takes the complete path.
+    ///
+    /// This is the fail-closed property that licenses skipping outbox
+    /// normalization on the readiness path at all. Skipping is justified only by
+    /// "there is nothing in `Delivering` to normalize"; if that is false the
+    /// certificate is describing a state the database is not in, and ADR-0156's
+    /// existing rule for contradictory state applies — complete validation,
+    /// named, never a fast readiness.
+    ///
+    /// The planted row deliberately does NOT disturb the bounded-state binding:
+    /// `OUTBOX_STATUS` is outside the certificate's bounded roots, so this start
+    /// would otherwise verify and be admitted. That is what makes the assertion
+    /// load-bearing rather than incidental.
+    #[test]
+    fn an_in_flight_delivering_entry_contradicts_the_certificate_and_takes_the_complete_path() {
+        use riffdb_storage_api::{
+            OutboxDestinationIdV1, StoredOutboxStatusV1, encode_outbox_status_v1,
+        };
+        use riffdb_types::EventId;
+
+        let path = TestDatabasePath::new("clean-close-delivering-contradiction");
+        let id = database_id(0x77);
+        certify_clean_close(initialized_store(&path, id));
+
+        // Plant one in-flight attempt, as a killed delivery worker would leave.
+        {
+            let store = RedbStore::open(&path.0).expect("open to plant a Delivering row");
+            let mut write = store
+                .shared
+                .database
+                .begin_write()
+                .expect("begin planting write");
+            write
+                .set_durability(redb::Durability::Immediate)
+                .expect("immediate durability");
+            let event_id = EventId::new(CommitSequence::first(), 0);
+            let status = StoredOutboxStatusV1::delivering(
+                event_id,
+                std::num::NonZeroU32::new(1).expect("nonzero attempt"),
+                OutboxDestinationIdV1::new("test/contradiction").expect("destination"),
+                Timestamp::new(10, 0).expect("started at"),
+                Timestamp::new(70, 0).expect("lease deadline"),
+            );
+            let encoded = encode_outbox_status_v1(&status).expect("encode delivering status");
+            let mut statuses = write
+                .open_table(crate::layout::OUTBOX_STATUS)
+                .expect("outbox status table");
+            statuses
+                .insert(
+                    crate::keys::encode_event_key(event_id).as_slice(),
+                    encoded.as_bytes(),
+                )
+                .expect("insert delivering status");
+            drop(statuses);
+            write.commit().expect("commit planted status");
+        }
+
+        let reopened = RedbStore::open(&path.0).expect("reopen with an in-flight attempt");
+        let handle = reopened.reopen_for_test();
+        let session = reopened
+            .begin_structural_evidence(inputs())
+            .expect("begin startup over a contradicted certificate");
+        assert!(
+            !session.clean_close_fast_path(),
+            "an in-flight Delivering entry must not reach a bounded readiness"
+        );
+        assert_eq!(
+            session.clean_close_declined_reason(),
+            Some("outbox_delivering_observed")
+        );
+        assert_eq!(
+            handle
+                .clean_close_decline_counts()
+                .iter()
+                .find(|(reason, _)| *reason == "outbox_delivering_observed")
+                .map(|(_, count)| *count),
+            Some(1)
+        );
+        drop(session);
+        // Never proof after a contradiction: a caller must not skip
+        // normalization on the strength of this flag here.
+        assert!(!handle.shared.outbox_delivering_proven_absent());
+    }
+
     /// Every declined bounded startup names its precondition.
     ///
     /// Ten preconditions decline the ADR-0157 bounded path and all of them used

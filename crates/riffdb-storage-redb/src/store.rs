@@ -65,14 +65,43 @@ use crate::layout::{
     META_CAPABILITY_BOOTSTRAP, META_CHANGELOG_V2_ROTATION_RECEIPT, META_CLEAN_CLOSE_LIFECYCLE,
     META_DATABASE_ID, META_FORMAT_VERSION, META_HISTORY_INCARNATION,
     META_INDEX_EPOCH_ROWS_REPAIRED, META_KEYS, META_RECORD_REGISTRY, META_RETENTION_HOLDS,
-    META_RETENTION_WATERMARK, META_VALIDATED_PREFIX_CHECKPOINT, OUTBOX, SECONDARY_INDEXES,
-    TABLE_NAMES, VALIDATED_PREFIX_ENTITY_HEADS, VECTOR_EVIDENCE, VECTOR_EVIDENCE_INDEX,
-    VECTOR_OBSERVATIONS, VECTOR_PROJECTION_CONTROLS, create_all_tables,
+    META_RETENTION_WATERMARK, META_VALIDATED_PREFIX_CHECKPOINT, OUTBOX, OUTBOX_STATUS,
+    SECONDARY_INDEXES, TABLE_NAMES, VALIDATED_PREFIX_ENTITY_HEADS, VECTOR_EVIDENCE,
+    VECTOR_EVIDENCE_INDEX, VECTOR_OBSERVATIONS, VECTOR_PROJECTION_CONTROLS, create_all_tables,
 };
 use crate::media::{DynStorageBackend, JournalMedia, RealJournalMedia, RedbStorageMedia};
 use crate::transient::{
     TransientIndexDelta, TransientIndexState, TransientIndexes, UnpublishedCommandIndexes,
 };
+
+/// Bound on `OUTBOX_STATUS` rows decoded by the pre-readiness `Delivering`
+/// probe.
+///
+/// The probe exists to let a bounded start assert an invariant, so it must
+/// itself be bounded: above this many retained status rows it reports
+/// `Inconclusive` and the caller normalizes instead of claiming proof. Chosen at
+/// the same order as the crate's other pre-readiness observation bounds
+/// (`MAX_ROOT_VALIDATION_OBSERVATIONS`), which is far above any plausible
+/// in-flight delivery set and far below a population-sized table.
+///
+/// A deployment that retains more than this many status rows keeps the
+/// normalization it has today; it does not lose bounded startup.
+pub(crate) const MAX_DELIVERING_PROBE_ROWS: u64 = 4_096;
+
+/// Result of the bounded pre-readiness `Delivering` probe.
+///
+/// Three outcomes, not two, because "I could not tell" must not be recorded as
+/// either proof. Only `Observed` is a contradiction of a clean certificate;
+/// `Inconclusive` is ignorance and is resolved by doing the work.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum OutboxDeliveringProbe {
+    /// Proven: no `Delivering` entry exists in this snapshot.
+    NoneObserved,
+    /// A `Delivering` entry was positively observed.
+    Observed,
+    /// Too many retained status rows to decide within the probe's bound.
+    Inconclusive,
+}
 
 static COMMAND_PUBLICATION_COUNT: AtomicU64 = AtomicU64::new(0);
 static COMMAND_PUBLICATION_RESIDENCE_MICROS: AtomicU64 = AtomicU64::new(0);
@@ -172,7 +201,12 @@ pub(crate) struct SharedRedb {
     clean_close_write_failures: AtomicU64,
     /// Per-reason counts of declined ADR-0157 bounded startups
     /// (index = `CleanCloseDeclineReason::index`).
-    clean_close_declined: [AtomicU64; 10],
+    clean_close_declined: [AtomicU64; 11],
+    /// True only when a bounded start PROVED no in-flight `Delivering` outbox
+    /// entry exists. Never set optimistically: an inconclusive probe leaves it
+    /// false, so a caller that skips normalization on the strength of this flag
+    /// can only do so on proof.
+    outbox_delivering_proven_absent: AtomicBool,
     /// Transient population-index rebuilds performed on this handle, and the
     /// `COMMITS` rows each one walked.
     ///
@@ -363,6 +397,10 @@ impl SharedRedb {
         let _ = self.clean_close_declined[reason.index()].fetch_add(1, Ordering::Relaxed);
     }
 
+    pub(crate) fn outbox_delivering_proven_absent(&self) -> bool {
+        self.outbox_delivering_proven_absent.load(Ordering::Acquire)
+    }
+
     pub(crate) fn note_transient_index_rebuild(&self, commit_rows: u64) {
         let _ = self
             .transient_index_rebuilds
@@ -380,7 +418,7 @@ impl SharedRedb {
         self.transient_index_commit_rows.load(Ordering::Relaxed)
     }
 
-    pub(crate) fn clean_close_decline_counts(&self) -> [(&'static str, u64); 10] {
+    pub(crate) fn clean_close_decline_counts(&self) -> [(&'static str, u64); 11] {
         crate::clean_close::CleanCloseDeclineReason::ALL.map(|reason| {
             (
                 reason.as_str(),
@@ -551,7 +589,78 @@ impl SharedRedb {
                 CleanCloseDeclineReason::BindingMismatch,
             ));
         }
+        // The certificate covers bounded roots, not delivery lane state. A
+        // clean close stopped every writer and delivery lane, so no attempt can
+        // still hold a lease; assert that rather than assume it, with a probe
+        // that cannot reach the population indexes. Only a positive observation
+        // declines — ignorance is recorded and resolved by normalizing.
+        match self.probe_outbox_delivering(transaction)? {
+            OutboxDeliveringProbe::Observed => {
+                self.outbox_delivering_proven_absent
+                    .store(false, Ordering::Release);
+                return Ok(CleanCloseVerdict::Declined(
+                    CleanCloseDeclineReason::OutboxDeliveringObserved,
+                ));
+            }
+            OutboxDeliveringProbe::NoneObserved => {
+                self.outbox_delivering_proven_absent
+                    .store(true, Ordering::Release);
+            }
+            OutboxDeliveringProbe::Inconclusive => {
+                self.outbox_delivering_proven_absent
+                    .store(false, Ordering::Release);
+            }
+        }
         Ok(CleanCloseVerdict::Verified(lifecycle))
+    }
+
+    /// Bounded probe for any in-flight `Delivering` outbox entry.
+    ///
+    /// `Delivering` is written only by a delivery worker holding a lease, and an
+    /// event with no `OUTBOX_STATUS` row canonically means never-attempted
+    /// `Pending` (SPEC 8.6). So `Delivering` is a subset of `OUTBOX_STATUS`
+    /// rows, and this probe never consults `COMMITS`, the undelivered set, or
+    /// the transient population indexes — it cannot reach
+    /// `ensure_transient_indexes_ready` and therefore cannot trigger a rebuild.
+    ///
+    /// Bounded three ways, in cost order: redb reports the row count from table
+    /// metadata (no walk); an empty table proves absence outright; and a
+    /// non-empty table is decoded only up to
+    /// [`MAX_DELIVERING_PROBE_ROWS`], above which the probe reports
+    /// [`OutboxDeliveringProbe::Inconclusive`] rather than walking a
+    /// population-sized table before readiness (ADR-0156 §5).
+    ///
+    /// Inconclusive is ignorance, not contradiction: the caller must still
+    /// normalize, and must not treat it as proof of either state.
+    pub(crate) fn probe_outbox_delivering(
+        &self,
+        transaction: &ReadTransaction,
+    ) -> Result<OutboxDeliveringProbe, StorageError> {
+        let statuses = transaction.open_table(OUTBOX_STATUS).map_err(table_error)?;
+        let rows = statuses.len().map_err(precommit_storage_error)?;
+        if rows == 0 {
+            return Ok(OutboxDeliveringProbe::NoneObserved);
+        }
+        if rows > MAX_DELIVERING_PROBE_ROWS {
+            return Ok(OutboxDeliveringProbe::Inconclusive);
+        }
+        let mut inspected = 0_u64;
+        for entry in statuses.iter().map_err(precommit_storage_error)? {
+            let (_, value) = entry.map_err(precommit_storage_error)?;
+            inspected = inspected.saturating_add(1);
+            if inspected > MAX_DELIVERING_PROBE_ROWS {
+                // The count and the iteration disagreed. Claim nothing.
+                return Ok(OutboxDeliveringProbe::Inconclusive);
+            }
+            let status = crate::codec::decode_outbox_status_v1(value.value())?;
+            if matches!(
+                status.value().state(),
+                riffdb_storage_api::OutboxDeliveryStateV1::Delivering { .. }
+            ) {
+                return Ok(OutboxDeliveringProbe::Observed);
+            }
+        }
+        Ok(OutboxDeliveringProbe::NoneObserved)
     }
 
     pub(crate) fn advance_dirty_lifecycle_before_activation(
@@ -1569,7 +1678,8 @@ impl RedbStore {
                 checkpoint_write_failures: AtomicU64::new(0),
                 checkpoint_ignored: [(); 10].map(|()| AtomicU64::new(0)),
                 clean_close_write_failures: AtomicU64::new(0),
-                clean_close_declined: [(); 10].map(|()| AtomicU64::new(0)),
+                clean_close_declined: [(); 11].map(|()| AtomicU64::new(0)),
+                outbox_delivering_proven_absent: AtomicBool::new(false),
                 transient_index_rebuilds: AtomicU64::new(0),
                 transient_index_commit_rows: AtomicU64::new(0),
                 retention_watermark: AtomicU64::new(0),
@@ -2411,7 +2521,7 @@ impl RedbStore {
     /// Per-reason counts of declined ADR-0157 bounded startups on this handle.
     #[doc(hidden)]
     #[must_use]
-    pub fn clean_close_decline_counts(&self) -> [(&'static str, u64); 10] {
+    pub fn clean_close_decline_counts(&self) -> [(&'static str, u64); 11] {
         self.shared.clean_close_decline_counts()
     }
 
@@ -4206,8 +4316,20 @@ impl RedbOperationalPorts {
     /// validation pass, naming which precondition closed the bounded gate.
     #[doc(hidden)]
     #[must_use]
-    pub fn clean_close_decline_counts(&self) -> [(&'static str, u64); 10] {
+    pub fn clean_close_decline_counts(&self) -> [(&'static str, u64); 11] {
         self.shared.clean_close_decline_counts()
+    }
+
+    /// True only when bounded startup PROVED no in-flight `Delivering` outbox
+    /// entry exists at the startup snapshot.
+    ///
+    /// Callers may skip outbox normalization on the readiness path only on this
+    /// proof. It is false on the complete path and false whenever the bounded
+    /// probe could not decide, so ignorance never reads as proof.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn outbox_delivering_proven_absent(&self) -> bool {
+        self.shared.outbox_delivering_proven_absent()
     }
 
     /// Transient population-index rebuilds performed on this database.
