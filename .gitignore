@@ -35,3 +35,6 @@ __pycache__/
 
 # AI coding tools
 .serena
+
+# Compiled Go harness binary (built by benchmarks/run-app-baseline-golang).
+/examples/app-baseline/golang/app-baseline-golang
