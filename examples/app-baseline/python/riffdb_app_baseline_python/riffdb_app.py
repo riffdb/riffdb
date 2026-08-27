@@ -2,10 +2,19 @@
 
 from __future__ import annotations
 
+import sys
+import time
 from pathlib import Path
+
+from riffdb_application import CommandBatchOptions
 
 from .ids import as_uuid, encode_short, sql_status_to_riff
 from .seed import CloseTicketWithCommentSeed, CommentSeed, OpenTicketWithLabelsSeed, SeedDataset
+
+#: Bounded batch fan-out for seeding, matching the Rust harness.
+SEED_CONCURRENCY = 128
+#: Generated batch row ceiling.
+SEED_BATCH_ROWS = 4096
 
 RIFFDB_BACKEND_ID = "riffdb_public_grpc"
 
@@ -193,112 +202,186 @@ class RiffDbDriver:
         self.token = token
 
     def seed(self, dataset: SeedDataset) -> None:
+        # Seed through the generated bounded batch envelope, as the Rust harness
+        # does. A sequential request-per-row loop runs at single-client rate,
+        # which is invisible at `full` scale (19,220 commands) and unusable at
+        # `production` scale (~1.1M). Every item remains an ordinary independent
+        # generated command with its own durable lifecycle; only the transport is
+        # batched, and the runtime's sync batch releases the GIL for each native
+        # round trip.
         generated = _load_generated()
         session = RiffDbSession(self.endpoint, self.token)
+        options = CommandBatchOptions(concurrency=SEED_CONCURRENCY)
+        total = (
+            len(dataset.organizations)
+            + len(dataset.users)
+            + len(dataset.projects)
+            + len(dataset.members)
+            + len(dataset.labels)
+            + len(dataset.tickets)
+            + len(dataset.comments)
+            + len(dataset.ticket_labels)
+        )
+        completed = 0
+        started = time.monotonic()
+        print(
+            f"riffdb-seed-start\ttotal={total}\tconcurrency={SEED_CONCURRENCY}",
+            file=sys.stderr,
+            flush=True,
+        )
+
+        def run_phase(phase: str, inputs: list[object], call: object) -> None:
+            nonlocal completed
+            for offset in range(0, len(inputs), SEED_BATCH_ROWS):
+                chunk = inputs[offset : offset + SEED_BATCH_ROWS]
+                result = call(chunk, options)
+                if len(result.items) != len(chunk):
+                    raise RiffDbError(
+                        f"seed phase {phase} returned {len(result.items)} of {len(chunk)}"
+                    )
+                for item in result.items:
+                    # A batch reports a per-item failure in `error` rather than
+                    # raising, so a phase that ignored it would seed short.
+                    if item.error is not None:
+                        raise item.error
+                    if item.result is None:
+                        raise RiffDbError(
+                            f"seed phase {phase} item {item.index} carried no result"
+                        )
+                    _require_outcome(item.result.outcome, "Created")
+                completed += len(chunk)
+            print(
+                f"riffdb-seed-progress\tphase={phase}\tcompleted={completed}/{total}"
+                f"\toverall_ms={int((time.monotonic() - started) * 1000)}",
+                file=sys.stderr,
+                flush=True,
+            )
+
         try:
-            for org_id, name in dataset.organizations:
-                _require_outcome(
-                    session._client.create_organization(
-                        generated.CreateOrganizationInput(
-                            name=name,
-                            organization_id=as_uuid(org_id),
-                            idempotency_key=f"seed-org-{encode_short(org_id)}",
-                        )
-                    ).outcome,
-                    "Created",
-                )
-            for org_id, user_id, email, display in dataset.users:
-                _require_outcome(
-                    session._client.create_user(
-                        generated.CreateUserInput(
-                            email=email,
-                            user_id=as_uuid(user_id),
-                            display_name=display,
-                            organization_id=as_uuid(org_id),
-                            idempotency_key=f"seed-user-{encode_short(user_id)}",
-                        )
-                    ).outcome,
-                    "Created",
-                )
-            for org_id, project_id, name in dataset.projects:
-                _require_outcome(
-                    session._client.create_project(
-                        generated.CreateProjectInput(
-                            name=name,
-                            project_id=as_uuid(project_id),
-                            organization_id=as_uuid(org_id),
-                            idempotency_key=f"seed-project-{encode_short(project_id)}",
-                        )
-                    ).outcome,
-                    "Created",
-                )
-            for org_id, project_id, user_id, role in dataset.members:
-                _require_outcome(
-                    session._client.add_project_member(
-                        generated.AddProjectMemberInput(
-                            role=role,
-                            user_id=as_uuid(user_id),
-                            project_id=as_uuid(project_id),
-                            organization_id=as_uuid(org_id),
-                            idempotency_key=f"seed-member-{encode_short(project_id)}-{encode_short(user_id)}",
-                        )
-                    ).outcome,
-                    "Created",
-                )
-            for org_id, label_id, name in dataset.labels:
-                _require_outcome(
-                    session._client.create_label(
-                        generated.CreateLabelInput(
-                            name=name,
-                            label_id=as_uuid(label_id),
-                            organization_id=as_uuid(org_id),
-                            idempotency_key=f"seed-label-{encode_short(label_id)}",
-                        )
-                    ).outcome,
-                    "Created",
-                )
-            for ticket in dataset.tickets:
-                _require_outcome(
-                    session._client.create_ticket(
-                        generated.CreateTicketInput(
-                            title=ticket.title,
-                            status=generated.TicketStatus(sql_status_to_riff(ticket.status)),
-                            ticket_id=as_uuid(ticket.ticket_id),
-                            project_id=as_uuid(ticket.project_id),
-                            assignee_id=as_uuid(ticket.assignee_id),
-                            reporter_id=as_uuid(ticket.reporter_id),
-                            organization_id=as_uuid(ticket.organization_id),
-                            idempotency_key=f"seed-ticket-{encode_short(ticket.ticket_id)}",
-                        )
-                    ).outcome,
-                    "Created",
-                )
-            for comment in dataset.comments:
-                _require_outcome(
-                    session._client.create_comment(
-                        generated.CreateCommentInput(
-                            body=comment.body,
-                            author_id=as_uuid(comment.author_id),
-                            ticket_id=as_uuid(comment.ticket_id),
-                            comment_id=as_uuid(comment.comment_id),
-                            organization_id=as_uuid(comment.organization_id),
-                            idempotency_key=f"seed-comment-{encode_short(comment.comment_id)}",
-                        )
-                    ).outcome,
-                    "Created",
-                )
-            for org_id, ticket_id, label_id in dataset.ticket_labels:
-                _require_outcome(
-                    session._client.attach_label(
-                        generated.AttachLabelInput(
-                            label_id=as_uuid(label_id),
-                            ticket_id=as_uuid(ticket_id),
-                            organization_id=as_uuid(org_id),
-                            idempotency_key=f"seed-link-{encode_short(ticket_id)}-{encode_short(label_id)}",
-                        )
-                    ).outcome,
-                    "Created",
-                )
+            client = session._client
+
+            # Phases respect foreign-key order.
+            run_phase(
+                "organization",
+                [
+                    generated.CreateOrganizationInput(
+                        name=name,
+                        organization_id=as_uuid(org_id),
+                        idempotency_key=f"seed-org-{encode_short(org_id)}",
+                    )
+                    for org_id, name in dataset.organizations
+                ],
+                client.create_organization_batch,
+            )
+            run_phase(
+                "user",
+                [
+                    generated.CreateUserInput(
+                        email=email,
+                        user_id=as_uuid(user_id),
+                        display_name=display,
+                        organization_id=as_uuid(org_id),
+                        idempotency_key=f"seed-user-{encode_short(user_id)}",
+                    )
+                    for org_id, user_id, email, display in dataset.users
+                ],
+                client.create_user_batch,
+            )
+            run_phase(
+                "project",
+                [
+                    generated.CreateProjectInput(
+                        name=name,
+                        project_id=as_uuid(project_id),
+                        organization_id=as_uuid(org_id),
+                        idempotency_key=f"seed-project-{encode_short(project_id)}",
+                    )
+                    for org_id, project_id, name in dataset.projects
+                ],
+                client.create_project_batch,
+            )
+            run_phase(
+                "member",
+                [
+                    generated.AddProjectMemberInput(
+                        role=role,
+                        user_id=as_uuid(user_id),
+                        project_id=as_uuid(project_id),
+                        organization_id=as_uuid(org_id),
+                        idempotency_key=(
+                            f"seed-member-{encode_short(project_id)}-{encode_short(user_id)}"
+                        ),
+                    )
+                    for org_id, project_id, user_id, role in dataset.members
+                ],
+                client.add_project_member_batch,
+            )
+            run_phase(
+                "label",
+                [
+                    generated.CreateLabelInput(
+                        name=name,
+                        label_id=as_uuid(label_id),
+                        organization_id=as_uuid(org_id),
+                        idempotency_key=f"seed-label-{encode_short(label_id)}",
+                    )
+                    for org_id, label_id, name in dataset.labels
+                ],
+                client.create_label_batch,
+            )
+            run_phase(
+                "ticket",
+                [
+                    generated.CreateTicketInput(
+                        title=ticket.title,
+                        status=generated.TicketStatus(sql_status_to_riff(ticket.status)),
+                        ticket_id=as_uuid(ticket.ticket_id),
+                        project_id=as_uuid(ticket.project_id),
+                        assignee_id=as_uuid(ticket.assignee_id),
+                        reporter_id=as_uuid(ticket.reporter_id),
+                        organization_id=as_uuid(ticket.organization_id),
+                        idempotency_key=f"seed-ticket-{encode_short(ticket.ticket_id)}",
+                    )
+                    for ticket in dataset.tickets
+                ],
+                client.create_ticket_batch,
+            )
+            run_phase(
+                "comment",
+                [
+                    generated.CreateCommentInput(
+                        body=comment.body,
+                        author_id=as_uuid(comment.author_id),
+                        ticket_id=as_uuid(comment.ticket_id),
+                        comment_id=as_uuid(comment.comment_id),
+                        organization_id=as_uuid(comment.organization_id),
+                        idempotency_key=f"seed-comment-{encode_short(comment.comment_id)}",
+                    )
+                    for comment in dataset.comments
+                ],
+                client.create_comment_batch,
+            )
+            run_phase(
+                "ticket_label",
+                [
+                    generated.AttachLabelInput(
+                        label_id=as_uuid(label_id),
+                        ticket_id=as_uuid(ticket_id),
+                        organization_id=as_uuid(org_id),
+                        idempotency_key=(
+                            f"seed-link-{encode_short(ticket_id)}-{encode_short(label_id)}"
+                        ),
+                    )
+                    for org_id, ticket_id, label_id in dataset.ticket_labels
+                ],
+                client.attach_label_batch,
+            )
+            print(
+                f"riffdb-seed-progress\tphase=done\tcompleted={completed}/{total}"
+                f"\toverall_ms={int((time.monotonic() - started) * 1000)}",
+                file=sys.stderr,
+                flush=True,
+            )
         finally:
             session.close()
 

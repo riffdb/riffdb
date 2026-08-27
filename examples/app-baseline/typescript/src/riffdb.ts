@@ -18,7 +18,12 @@ import type {
 } from "./seed.js";
 import * as generatedClient from "./ticketdesk-client.js";
 
-export const RIFFDB_BACKEND_ID = "riffdb_public_grpc";
+export /** Bounded batch fan-out for seeding, matching the Rust harness. */
+const SEED_CONCURRENCY = 128;
+/** Generated batch row ceiling. */
+const SEED_BATCH_ROWS = 4096;
+
+const RIFFDB_BACKEND_ID = "riffdb_public_grpc";
 
 type TicketDeskModule = typeof generatedClient;
 
@@ -214,117 +219,111 @@ export class RiffDbSession {
   }
 
   async seed(dataset: SeedDataset): Promise<void> {
-    for (const [orgId, name] of dataset.organizations) {
-      requireOutcome(
-        (
-          await this.client.createOrganization({
-            name,
-            organization_id: formatUuid(orgId),
-            idempotency_key: `seed-org-${encodeShort(orgId)}`,
-          })
-        ).outcome.outcome,
-        "Created",
+    // Seed through the generated bounded batch envelope, as the Rust harness
+    // does. A sequential `for`/`await` loop ran at single-client rate, which is
+    // invisible at `full` scale (19,220 commands) and unusable at `production`
+    // scale (~1.1M): a measured run reached 1.4 GB after twenty-one minutes
+    // without finishing. Every item remains an ordinary independent generated
+    // command with its own durable lifecycle; only the transport is batched.
+    const options = { concurrency: SEED_CONCURRENCY };
+    const total =
+      dataset.organizations.length + dataset.users.length + dataset.projects.length +
+      dataset.members.length + dataset.labels.length + dataset.tickets.length +
+      dataset.comments.length + dataset.ticketLabels.length;
+    let completed = 0;
+    const started = Date.now();
+    process.stderr.write(
+      `riffdb-seed-start\ttotal=${total}\tconcurrency=${SEED_CONCURRENCY}\n`,
+    );
+
+    // Phases respect foreign-key order.
+    const runPhase = async <I, O extends { readonly outcome: string }>(
+      phase: string,
+      inputs: ReadonlyArray<I>,
+      call: (
+        chunk: ReadonlyArray<I>,
+        options: generatedClient.CommandBatchOptions,
+      ) => Promise<generatedClient.CommandBatchResult<O>>,
+      expected: string,
+    ): Promise<void> => {
+      for (let offset = 0; offset < inputs.length; offset += SEED_BATCH_ROWS) {
+        const chunk = inputs.slice(offset, offset + SEED_BATCH_ROWS);
+        const result = await call(chunk, options);
+        if (result.items.length !== chunk.length) {
+          throw new Error(`seed phase ${phase} returned ${result.items.length} of ${chunk.length}`);
+        }
+        for (const item of result.items) {
+          // A batch reports a per-item failure in `error` rather than rejecting,
+          // so a phase that ignored it would seed silently short.
+          if (item.error !== undefined) throw item.error;
+          if (item.result === undefined) {
+            throw new RiffDbLoadError(`seed phase ${phase} item ${item.index} carried no result`);
+          }
+          requireOutcome(item.result.outcome.outcome, expected);
+        }
+        completed += chunk.length;
+      }
+      process.stderr.write(
+        `riffdb-seed-progress\tphase=${phase}\tcompleted=${completed}/${total}` +
+          `\toverall_ms=${Date.now() - started}\n`,
       );
-    }
-    for (const [orgId, userId, email, display] of dataset.users) {
-      requireOutcome(
-        (
-          await this.client.createUser({
-            email,
-            user_id: formatUuid(userId),
-            display_name: display,
-            organization_id: formatUuid(orgId),
-            idempotency_key: `seed-user-${encodeShort(userId)}`,
-          })
-        ).outcome.outcome,
-        "Created",
-      );
-    }
-    for (const [orgId, projectId, name] of dataset.projects) {
-      requireOutcome(
-        (
-          await this.client.createProject({
-            name,
-            project_id: formatUuid(projectId),
-            organization_id: formatUuid(orgId),
-            idempotency_key: `seed-project-${encodeShort(projectId)}`,
-          })
-        ).outcome.outcome,
-        "Created",
-      );
-    }
-    for (const [orgId, projectId, userId, role] of dataset.members) {
-      requireOutcome(
-        (
-          await this.client.addProjectMember({
-            role,
-            user_id: formatUuid(userId),
-            project_id: formatUuid(projectId),
-            organization_id: formatUuid(orgId),
-            idempotency_key: `seed-member-${encodeShort(projectId)}-${encodeShort(userId)}`,
-          })
-        ).outcome.outcome,
-        "Created",
-      );
-    }
-    for (const [orgId, labelId, name] of dataset.labels) {
-      requireOutcome(
-        (
-          await this.client.createLabel({
-            name,
-            label_id: formatUuid(labelId),
-            organization_id: formatUuid(orgId),
-            idempotency_key: `seed-label-${encodeShort(labelId)}`,
-          })
-        ).outcome.outcome,
-        "Created",
-      );
-    }
-    for (const ticket of dataset.tickets) {
-      requireOutcome(
-        (
-          await this.client.createTicket({
-            title: ticket.title,
-            status: sqlStatusToRiff(ticket.status),
-            ticket_id: formatUuid(ticket.ticketId),
-            project_id: formatUuid(ticket.projectId),
-            assignee_id: formatUuid(ticket.assigneeId),
-            reporter_id: formatUuid(ticket.reporterId),
-            organization_id: formatUuid(ticket.organizationId),
-            idempotency_key: `seed-ticket-${encodeShort(ticket.ticketId)}`,
-          })
-        ).outcome.outcome,
-        "Created",
-      );
-    }
-    for (const comment of dataset.comments) {
-      requireOutcome(
-        (
-          await this.client.createComment({
-            body: comment.body,
-            author_id: formatUuid(comment.authorId),
-            ticket_id: formatUuid(comment.ticketId),
-            comment_id: formatUuid(comment.commentId),
-            organization_id: formatUuid(comment.organizationId),
-            idempotency_key: `seed-comment-${encodeShort(comment.commentId)}`,
-          })
-        ).outcome.outcome,
-        "Created",
-      );
-    }
-    for (const [orgId, ticketId, labelId] of dataset.ticketLabels) {
-      requireOutcome(
-        (
-          await this.client.attachLabel({
-            label_id: formatUuid(labelId),
-            ticket_id: formatUuid(ticketId),
-            organization_id: formatUuid(orgId),
-            idempotency_key: `seed-link-${encodeShort(ticketId)}-${encodeShort(labelId)}`,
-          })
-        ).outcome.outcome,
-        "Created",
-      );
-    }
+    };
+
+    await runPhase("organization", dataset.organizations.map(([orgId, name]) => ({
+      name, organization_id: formatUuid(orgId),
+      idempotency_key: `seed-org-${encodeShort(orgId)}`,
+    })), (chunk, o) => this.client.createOrganizationBatch(chunk, o), "Created");
+
+    await runPhase("user", dataset.users.map(([orgId, userId, email, display]) => ({
+      email, user_id: formatUuid(userId), display_name: display,
+      organization_id: formatUuid(orgId),
+      idempotency_key: `seed-user-${encodeShort(userId)}`,
+    })), (chunk, o) => this.client.createUserBatch(chunk, o), "Created");
+
+    await runPhase("project", dataset.projects.map(([orgId, projectId, name]) => ({
+      name, project_id: formatUuid(projectId), organization_id: formatUuid(orgId),
+      idempotency_key: `seed-project-${encodeShort(projectId)}`,
+    })), (chunk, o) => this.client.createProjectBatch(chunk, o), "Created");
+
+    await runPhase("member", dataset.members.map(([orgId, projectId, userId, role]) => ({
+      role, user_id: formatUuid(userId), project_id: formatUuid(projectId),
+      organization_id: formatUuid(orgId),
+      idempotency_key: `seed-member-${encodeShort(projectId)}-${encodeShort(userId)}`,
+    })), (chunk, o) => this.client.addProjectMemberBatch(chunk, o), "Created");
+
+    await runPhase("label", dataset.labels.map(([orgId, labelId, name]) => ({
+      name, label_id: formatUuid(labelId), organization_id: formatUuid(orgId),
+      idempotency_key: `seed-label-${encodeShort(labelId)}`,
+    })), (chunk, o) => this.client.createLabelBatch(chunk, o), "Created");
+
+    await runPhase("ticket", dataset.tickets.map((ticket) => ({
+      title: ticket.title, status: sqlStatusToRiff(ticket.status),
+      ticket_id: formatUuid(ticket.ticketId),
+      project_id: formatUuid(ticket.projectId),
+      reporter_id: formatUuid(ticket.reporterId),
+      assignee_id: formatUuid(ticket.assigneeId),
+      organization_id: formatUuid(ticket.organizationId),
+      idempotency_key: `seed-ticket-${encodeShort(ticket.ticketId)}`,
+    })), (chunk, o) => this.client.createTicketBatch(chunk, o), "Created");
+
+    await runPhase("comment", dataset.comments.map((comment) => ({
+      body: comment.body, comment_id: formatUuid(comment.commentId),
+      ticket_id: formatUuid(comment.ticketId),
+      author_id: formatUuid(comment.authorId),
+      organization_id: formatUuid(comment.organizationId),
+      idempotency_key: `seed-comment-${encodeShort(comment.commentId)}`,
+    })), (chunk, o) => this.client.createCommentBatch(chunk, o), "Created");
+
+    await runPhase("ticket_label", dataset.ticketLabels.map(([orgId, ticketId, labelId]) => ({
+      label_id: formatUuid(labelId), ticket_id: formatUuid(ticketId),
+      organization_id: formatUuid(orgId),
+      idempotency_key: `seed-link-${encodeShort(ticketId)}-${encodeShort(labelId)}`,
+    })), (chunk, o) => this.client.attachLabelBatch(chunk, o), "Created");
+
+    process.stderr.write(
+      `riffdb-seed-progress\tphase=done\tcompleted=${completed}/${total}` +
+        `\toverall_ms=${Date.now() - started}\n`,
+    );
   }
 }
 

@@ -9,6 +9,7 @@ import (
 	"os"
 	"reflect"
 	"strconv"
+	"time"
 
 	application "riffdb.dev/application"
 	"riffdb.dev/ticketdesk"
@@ -287,80 +288,149 @@ func (s *riffDbSession) OpenTicketWithLabels(ctx context.Context, input openTick
 	return requireOutcome(namedOutcome(result.Outcome), "Created")
 }
 
+// Bounded batch fan-out for seeding, matching the Rust harness's
+// DEFAULT_SEED_CONCURRENCY. A sequential request-per-row loop runs at
+// single-client rate, which is invisible at `full` scale (19,220 commands) and
+// unusable at `production` scale (~1.1M). Every item is still an ordinary
+// independent generated command with its own durable lifecycle; only the
+// transport is batched.
+const (
+	seedConcurrency = 128
+	seedBatchRows   = 4096
+)
+
+// runSeedPhase drives one foreign-key-ordered phase through a generated batch
+// method. It is a package function rather than a method because Go methods
+// cannot introduce type parameters.
+func runSeedPhase[I any, O any](
+	ctx context.Context,
+	tracker *seedTracker,
+	phase string,
+	inputs []I,
+	call func(context.Context, []I, uint32, uint32) (ticketdesk.BatchResult[O], error),
+	expected string,
+) error {
+	for offset := 0; offset < len(inputs); offset += seedBatchRows {
+		end := offset + seedBatchRows
+		if end > len(inputs) {
+			end = len(inputs)
+		}
+		chunk := inputs[offset:end]
+		result, err := call(ctx, chunk, seedConcurrency, 0)
+		if err != nil {
+			return fmt.Errorf("seed phase %s: %w", phase, err)
+		}
+		if len(result.Items) != len(chunk) {
+			return fmt.Errorf("seed phase %s returned %d of %d", phase, len(result.Items), len(chunk))
+		}
+		for _, item := range result.Items {
+			// A batch reports a per-item failure in Error rather than returning
+			// one, so a phase that ignored it would seed silently short.
+			if item.Error != nil {
+				return fmt.Errorf("seed phase %s item %d: %w", phase, item.Index, item.Error)
+			}
+			if item.Result == nil {
+				return fmt.Errorf("seed phase %s item %d carried no result", phase, item.Index)
+			}
+			if err := requireOutcome(namedOutcome(item.Result.Outcome), expected); err != nil {
+				return err
+			}
+		}
+		tracker.completed += len(chunk)
+	}
+	tracker.report(phase)
+	return nil
+}
+
+type seedTracker struct {
+	total     int
+	completed int
+	started   time.Time
+}
+
+func (t *seedTracker) report(phase string) {
+	fmt.Fprintf(os.Stderr, "riffdb-seed-progress\tphase=%s\tcompleted=%d/%d\toverall_ms=%d\n",
+		phase, t.completed, t.total, time.Since(t.started).Milliseconds())
+}
+
 func (s *riffDbSession) Seed(ctx context.Context, dataset seedDataset) error {
+	tracker := &seedTracker{
+		total: len(dataset.organizations) + len(dataset.users) + len(dataset.projects) +
+			len(dataset.members) + len(dataset.labels) + len(dataset.tickets) +
+			len(dataset.comments) + len(dataset.ticketLabels),
+		started: time.Now(),
+	}
+	fmt.Fprintf(os.Stderr, "riffdb-seed-start\ttotal=%d\tconcurrency=%d\n", tracker.total, seedConcurrency)
+
+	organizations := make([]ticketdesk.CreateOrganizationInput, 0, len(dataset.organizations))
 	for _, org := range dataset.organizations {
-		result, err := s.client.CreateOrganization(ctx, ticketdesk.CreateOrganizationInput{
+		organizations = append(organizations, ticketdesk.CreateOrganizationInput{
 			Name:           org.name,
 			OrganizationId: formatUUID(org.id),
 			IdempotencyKey: "seed-org-" + encodeShort(org.id),
 		})
-		if err != nil {
-			return err
-		}
-		if err := requireOutcome(namedOutcome(result.Outcome), "Created"); err != nil {
-			return err
-		}
 	}
+	if err := runSeedPhase(ctx, tracker, "organization", organizations, s.client.CreateOrganizationBatch, "Created"); err != nil {
+		return err
+	}
+
+	users := make([]ticketdesk.CreateUserInput, 0, len(dataset.users))
 	for _, user := range dataset.users {
-		result, err := s.client.CreateUser(ctx, ticketdesk.CreateUserInput{
+		users = append(users, ticketdesk.CreateUserInput{
 			Email:          user.email,
 			UserId:         formatUUID(user.userID),
 			DisplayName:    user.display,
 			OrganizationId: formatUUID(user.organizationID),
 			IdempotencyKey: "seed-user-" + encodeShort(user.userID),
 		})
-		if err != nil {
-			return err
-		}
-		if err := requireOutcome(namedOutcome(result.Outcome), "Created"); err != nil {
-			return err
-		}
 	}
+	if err := runSeedPhase(ctx, tracker, "user", users, s.client.CreateUserBatch, "Created"); err != nil {
+		return err
+	}
+
+	projects := make([]ticketdesk.CreateProjectInput, 0, len(dataset.projects))
 	for _, project := range dataset.projects {
-		result, err := s.client.CreateProject(ctx, ticketdesk.CreateProjectInput{
+		projects = append(projects, ticketdesk.CreateProjectInput{
 			Name:           project.name,
 			ProjectId:      formatUUID(project.projectID),
 			OrganizationId: formatUUID(project.organizationID),
 			IdempotencyKey: "seed-project-" + encodeShort(project.projectID),
 		})
-		if err != nil {
-			return err
-		}
-		if err := requireOutcome(namedOutcome(result.Outcome), "Created"); err != nil {
-			return err
-		}
 	}
+	if err := runSeedPhase(ctx, tracker, "project", projects, s.client.CreateProjectBatch, "Created"); err != nil {
+		return err
+	}
+
+	members := make([]ticketdesk.AddProjectMemberInput, 0, len(dataset.members))
 	for _, member := range dataset.members {
-		result, err := s.client.AddProjectMember(ctx, ticketdesk.AddProjectMemberInput{
+		members = append(members, ticketdesk.AddProjectMemberInput{
 			Role:           member.role,
 			UserId:         formatUUID(member.userID),
 			ProjectId:      formatUUID(member.projectID),
 			OrganizationId: formatUUID(member.organizationID),
 			IdempotencyKey: "seed-member-" + encodeShort(member.projectID) + "-" + encodeShort(member.userID),
 		})
-		if err != nil {
-			return err
-		}
-		if err := requireOutcome(namedOutcome(result.Outcome), "Created"); err != nil {
-			return err
-		}
 	}
+	if err := runSeedPhase(ctx, tracker, "member", members, s.client.AddProjectMemberBatch, "Created"); err != nil {
+		return err
+	}
+
+	labels := make([]ticketdesk.CreateLabelInput, 0, len(dataset.labels))
 	for _, label := range dataset.labels {
-		result, err := s.client.CreateLabel(ctx, ticketdesk.CreateLabelInput{
+		labels = append(labels, ticketdesk.CreateLabelInput{
 			Name:           label.name,
 			LabelId:        formatUUID(label.labelID),
 			OrganizationId: formatUUID(label.organizationID),
 			IdempotencyKey: "seed-label-" + encodeShort(label.labelID),
 		})
-		if err != nil {
-			return err
-		}
-		if err := requireOutcome(namedOutcome(result.Outcome), "Created"); err != nil {
-			return err
-		}
 	}
+	if err := runSeedPhase(ctx, tracker, "label", labels, s.client.CreateLabelBatch, "Created"); err != nil {
+		return err
+	}
+
+	tickets := make([]ticketdesk.CreateTicketInput, 0, len(dataset.tickets))
 	for _, ticket := range dataset.tickets {
-		result, err := s.client.CreateTicket(ctx, ticketdesk.CreateTicketInput{
+		tickets = append(tickets, ticketdesk.CreateTicketInput{
 			Title:          ticket.title,
 			Status:         ticketdesk.TicketStatus(sqlStatusToRiff(ticket.status)),
 			TicketId:       formatUUID(ticket.ticketID),
@@ -370,15 +440,14 @@ func (s *riffDbSession) Seed(ctx context.Context, dataset seedDataset) error {
 			OrganizationId: formatUUID(ticket.organizationID),
 			IdempotencyKey: "seed-ticket-" + encodeShort(ticket.ticketID),
 		})
-		if err != nil {
-			return err
-		}
-		if err := requireOutcome(namedOutcome(result.Outcome), "Created"); err != nil {
-			return err
-		}
 	}
+	if err := runSeedPhase(ctx, tracker, "ticket", tickets, s.client.CreateTicketBatch, "Created"); err != nil {
+		return err
+	}
+
+	comments := make([]ticketdesk.CreateCommentInput, 0, len(dataset.comments))
 	for _, comment := range dataset.comments {
-		result, err := s.client.CreateComment(ctx, ticketdesk.CreateCommentInput{
+		comments = append(comments, ticketdesk.CreateCommentInput{
 			Body:           comment.body,
 			AuthorId:       formatUUID(comment.authorID),
 			TicketId:       formatUUID(comment.ticketID),
@@ -386,27 +455,25 @@ func (s *riffDbSession) Seed(ctx context.Context, dataset seedDataset) error {
 			OrganizationId: formatUUID(comment.organizationID),
 			IdempotencyKey: "seed-comment-" + encodeShort(comment.commentID),
 		})
-		if err != nil {
-			return err
-		}
-		if err := requireOutcome(namedOutcome(result.Outcome), "Created"); err != nil {
-			return err
-		}
 	}
+	if err := runSeedPhase(ctx, tracker, "comment", comments, s.client.CreateCommentBatch, "Created"); err != nil {
+		return err
+	}
+
+	links := make([]ticketdesk.AttachLabelInput, 0, len(dataset.ticketLabels))
 	for _, link := range dataset.ticketLabels {
-		result, err := s.client.AttachLabel(ctx, ticketdesk.AttachLabelInput{
+		links = append(links, ticketdesk.AttachLabelInput{
 			LabelId:        formatUUID(link.labelID),
 			TicketId:       formatUUID(link.ticketID),
 			OrganizationId: formatUUID(link.organizationID),
 			IdempotencyKey: "seed-link-" + encodeShort(link.ticketID) + "-" + encodeShort(link.labelID),
 		})
-		if err != nil {
-			return err
-		}
-		if err := requireOutcome(namedOutcome(result.Outcome), "Created"); err != nil {
-			return err
-		}
 	}
+	if err := runSeedPhase(ctx, tracker, "ticket_label", links, s.client.AttachLabelBatch, "Created"); err != nil {
+		return err
+	}
+
+	tracker.report("done")
 	return nil
 }
 
