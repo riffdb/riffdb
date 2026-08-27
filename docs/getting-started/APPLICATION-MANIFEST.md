@@ -188,7 +188,13 @@ until the user removes it explicitly.
 subset in one checkout, but it cannot add a target to the lock or change the
 authoritative identity. Omitting `mcp` suppresses only the generated catalog
 file; it does not disable or change the hosted MCP service, authorization, or
-operation visibility.
+operation visibility. A local generated driver still needs a closed dispatch
+catalog. `riffdb dev --run` recompiles that catalog once from the exact source
+and lock into its private temporary directory, verifies every operation against
+the locked role, and passes its compiler-domain hash through the local
+handshake. The temporary runtime catalog is not an application artifact, does
+not appear in Manifest V5 or Lock V8, and is removed with the disposable
+development process.
 
 The source document is closed JSON with exactly these top-level members:
 

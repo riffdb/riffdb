@@ -290,7 +290,7 @@ use crate::scaffold::{
     preview_application_lock_from_pinned_bundle, preview_application_lock_with_bundle,
     preview_genesis_application_lock, refresh_application_lock_from_pinned_bundle,
     write_application_lock, write_application_lock_with_bundle,
-    write_project_application_lock_with_bundle,
+    write_project_application_lock_with_bundle, write_runtime_operation_catalog,
 };
 use crate::value::{InputValue, RecordInput, ValueError, parse_uuid};
 
@@ -701,6 +701,27 @@ pub async fn run() -> ExitCode {
                 }
             };
         }
+        if let ApplicationCommand::RuntimeCatalog {
+            source,
+            lock,
+            catalog_output,
+        } = command
+        {
+            return match write_runtime_operation_catalog(
+                Path::new(source),
+                Some(Path::new(lock)),
+                Path::new(catalog_output),
+            ) {
+                Ok(hash) => {
+                    println!("{}", hex(hash.as_bytes()));
+                    ExitCode::SUCCESS
+                }
+                Err(error) => {
+                    emit_scaffold_failure("riffdb application failed", &error, cli.output);
+                    ExitCode::FAILURE
+                }
+            };
+        }
         if let ApplicationCommand::Migrate { source, to, write } = command {
             debug_assert_eq!(to, "v2");
             return match migrate_application_source_v2(Path::new(source), *write) {
@@ -765,6 +786,9 @@ pub async fn run() -> ExitCode {
             ApplicationCommand::Migrate { .. } => unreachable!("migration returned above"),
             ApplicationCommand::Check { .. } => unreachable!("check returned above"),
             ApplicationCommand::Preview { .. } => unreachable!("preview returned above"),
+            ApplicationCommand::RuntimeCatalog { .. } => {
+                unreachable!("runtime catalog returned above")
+            }
             ApplicationCommand::Lock {
                 source,
                 write,
@@ -1780,6 +1804,7 @@ async fn application_command(
         | ApplicationCommand::Conformance { .. }
         | ApplicationCommand::Migrate { .. }
         | ApplicationCommand::Preview { .. }
+        | ApplicationCommand::RuntimeCatalog { .. }
         | ApplicationCommand::Lock { .. }
         | ApplicationCommand::Generate { .. }
         | ApplicationCommand::Install { .. }
