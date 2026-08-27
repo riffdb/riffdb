@@ -300,16 +300,23 @@ const (
 	seedMaxBatchRows = 4096
 	// The driver frames a whole batch as one message bounded at 1 MiB, so the
 	// generated row ceiling is not the binding constraint: 4,096 comment inputs
-	// carrying 256-byte bodies encode to roughly 1.8 MB and the driver refuses
-	// the frame. Target half the budget so per-row variation and framing
-	// overhead have headroom.
-	seedFrameTargetBytes = 512 * 1024
+	// carrying 256-byte bodies overrun it and the frame is refused.
+	//
+	// Chunks are sized from a plain JSON measurement of the phase's own inputs,
+	// but that measurement is not what goes on the wire: the driver sends each
+	// field as a typed record, which inflates a row well past its plain form.
+	// Sizing against the plain bytes at half the budget was still too generous
+	// and the daemon closed the session mid-phase, so the inflation is allowed
+	// for explicitly and only part of the bound is targeted.
+	seedFrameBoundBytes = 1024 * 1024
+	// Fraction of the bound to aim for, leaving room for envelope overhead.
+	seedFrameUtilisationPercent = 80
+	// Allowance for typed-record inflation over the plain JSON measurement.
+	seedTypedRecordFactor = 4
 )
 
 // chunkRowsFor sizes a phase's chunk from its own inputs rather than applying
-// one guess to eight differently shaped phases. json.Marshal is a proxy for the
-// driver's own encoding, not identical to it; the half-budget target is what
-// absorbs the difference.
+// one guess to eight differently shaped phases.
 func chunkRowsFor[I any](inputs []I) int {
 	if len(inputs) == 0 {
 		return seedMaxBatchRows
@@ -318,7 +325,8 @@ func chunkRowsFor[I any](inputs []I) int {
 	if err != nil || len(encoded) == 0 {
 		return seedMaxBatchRows
 	}
-	rows := seedFrameTargetBytes / len(encoded)
+	budget := seedFrameBoundBytes * seedFrameUtilisationPercent / 100
+	rows := budget / (len(encoded) * seedTypedRecordFactor)
 	if rows < 1 {
 		return 1
 	}
