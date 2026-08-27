@@ -66,21 +66,30 @@ pub(crate) enum CleanCloseDeclineReason {
     /// allocator state for a file that did not exist. Benign and unavoidable:
     /// there is no history to fast-path over. Split out from
     /// [`Self::EngineRepairedAtOpen`] so a healthy first boot does not report
-    /// the same reason as a database whose previous close left no allocator
-    /// state — otherwise the signal cries wolf on every new database.
+    /// the same reason as a pre-existing database whose previous close left no
+    /// usable allocator state — otherwise the signal cries wolf on every new
+    /// database, which is how a diagnostic stops being read.
     EngineInitializedAtOpen,
     /// redb ran its own repair pass at open over a pre-existing file; no prior
     /// certificate can bind the repaired roots.
     ///
-    /// redb 4.2.0 skips that repair only when the PREVIOUS handle persisted the
-    /// `allocator_state` system table, and the only thing that writes it is
-    /// `close_database` from `redb::Database::drop` (RiffDB never enables
-    /// `quick_repair`, which is the only other writer). So this reason means
-    /// the previous close did not complete its drop-time commit: an abrupt
-    /// stop, a kill, a panic, or a drop-time commit that failed — redb swallows
-    /// that failure, and RiffDB does not enable redb's `logging` feature, so it
-    /// is otherwise invisible. The next open then pays redb's full allocator
-    /// repair AND the complete RiffDB validation pass.
+    /// This is the one decline whose cost is doubled: redb's repair rebuilds
+    /// allocator state over the whole file (up to three full scans) and THEN
+    /// the complete RiffDB validation pass runs. Both are silent.
+    ///
+    /// In redb 4.2.0 the repair is skipped only when the open finds a persisted
+    /// `allocator_state` system table, which is written by `close_database`
+    /// from `redb::Database::drop` under `quick_repair`. RiffDB never enables
+    /// `quick_repair` on its own writes (see `open_after_format_preflight`), so
+    /// that drop-time commit is the only thing that leaves one — and its failure
+    /// is swallowed by redb, invisible here because redb's `logging` feature is
+    /// off. Read this reason as "the previous handle's close left no usable
+    /// allocator state".
+    ///
+    /// redb's repair has two branches: one that only rebuilds in-memory
+    /// allocator state over unchanged roots, and one that rolls back a
+    /// partially committed transaction. They are not distinguished here, so
+    /// this declines for both.
     EngineRepairedAtOpen,
     /// No lifecycle record at all (never gracefully closed, or a shutdown that
     /// failed to write it — the write side is `let _ =` at its call site).
