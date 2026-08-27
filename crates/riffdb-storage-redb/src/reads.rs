@@ -284,6 +284,37 @@ impl AuthoritativePointReader for RedbOperationalPorts {
         let watermark = self.shared.retention_watermark();
         let encoded_key = encode_event_key(event_id);
         let Some(encoded) = transaction.read_value(JournalTable::Events, &encoded_key)? else {
+            // Segment-owned events have no physical EVENTS row, so an index miss
+            // plus an empty table is NOT absence. `EVENTS` holds zero rows in
+            // the current layout, which made this the whole answer whenever the
+            // transient index was dormant: a durable event read as absent
+            // (ADR-0156 §5 forbids converting cold state into absence).
+            //
+            // Unlike the idempotency and provenance keys, an event id carries
+            // its commit sequence, so the owning segment is directly addressable
+            // in `COMMITS` and needs no durable locator row. This is the same
+            // fallback `read_commit` already performs.
+            // Only a V2 capsule embeds its events; a historical V1 row always
+            // has its own physical EVENTS row, so its absence here is genuine.
+            if let Some(crate::command_authority::CommandAuthorityMember::CapsuleV2(capsule)) =
+                crate::command_authority::command_member_at_access(
+                    &transaction,
+                    event_id.commit_sequence(),
+                )?
+            {
+                if capsule.base().commit_sequence() != event_id.commit_sequence() {
+                    return Err(corrupt());
+                }
+                let ordinal = usize::try_from(event_id.event_ordinal()).map_err(|_| corrupt())?;
+                // Fail closed, never absent: the segment owning this sequence is
+                // present, so a missing ordinal or mismatched identity is
+                // corruption, not a missing event.
+                let event = capsule.events().get(ordinal).ok_or_else(corrupt)?;
+                if event.event_id() != event_id {
+                    return Err(corrupt());
+                }
+                return Ok(Some(event.clone()));
+            }
             if crate::retention::sequence_covered_by_watermark(
                 event_id.commit_sequence().get(),
                 watermark,
