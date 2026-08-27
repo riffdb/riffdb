@@ -177,6 +177,7 @@ direction, merged draft, or implementation choice.
 | [0156](0156-clean-close-certificate-fast-startup.md) | Clean-Close Certificate Fast Startup | Accepted |
 | [0157](0157-clean-close-lifecycle-durable-identity.md) | Clean-Close Lifecycle Durable Identity | Accepted |
 | [0158](0158-compiler-declared-bounded-runtime-page-limits.md) | Compiler-Declared Bounded Runtime Page Limits | Accepted |
+| [0159](0159-page-cardinality-independent-query-cursors.md) | Page-Cardinality-Independent Query Cursors and External Page Coalescing | Accepted |
 
 The human architecture review on 2026-07-12 approved the direction represented
 by ADR-0001 through ADR-0012. The human maintainer accepted ADR-0001 through
