@@ -21,7 +21,16 @@ import * as generatedClient from "./ticketdesk-client.js";
 export /** Bounded batch fan-out for seeding, matching the Rust harness. */
 const SEED_CONCURRENCY = 128;
 /** Generated batch row ceiling. */
-const SEED_BATCH_ROWS = 4096;
+const SEED_MAX_BATCH_ROWS = 4096;
+/**
+ * The driver frames a whole batch as one message bounded at 1 MiB, so the
+ * generated row ceiling is not the binding constraint: 4,096 comment inputs
+ * carrying 256-byte bodies encode to roughly 1.8 MB and the driver refuses the
+ * frame. Target half the budget so per-row variation and framing overhead have
+ * headroom, and size each phase from its own inputs rather than guessing one
+ * number for eight differently shaped phases.
+ */
+const SEED_FRAME_TARGET_BYTES = 512 * 1024;
 
 const RIFFDB_BACKEND_ID = "riffdb_public_grpc";
 
@@ -237,6 +246,16 @@ export class RiffDbSession {
     );
 
     // Phases respect foreign-key order.
+    // JSON.stringify is a proxy for the driver's own encoding, not identical to
+    // it; the half-budget target above is what absorbs the difference.
+    const chunkRowsFor = (inputs: ReadonlyArray<unknown>): number => {
+      if (inputs.length === 0) return SEED_MAX_BATCH_ROWS;
+      const sample = Buffer.byteLength(JSON.stringify(inputs[0]), "utf8");
+      if (sample <= 0) return SEED_MAX_BATCH_ROWS;
+      const rows = Math.floor(SEED_FRAME_TARGET_BYTES / sample);
+      return Math.max(1, Math.min(SEED_MAX_BATCH_ROWS, rows));
+    };
+
     const runPhase = async <I, O extends { readonly outcome: string }>(
       phase: string,
       inputs: ReadonlyArray<I>,
@@ -246,8 +265,9 @@ export class RiffDbSession {
       ) => Promise<generatedClient.CommandBatchResult<O>>,
       expected: string,
     ): Promise<void> => {
-      for (let offset = 0; offset < inputs.length; offset += SEED_BATCH_ROWS) {
-        const chunk = inputs.slice(offset, offset + SEED_BATCH_ROWS);
+      const batchRows = chunkRowsFor(inputs);
+      for (let offset = 0; offset < inputs.length; offset += batchRows) {
+        const chunk = inputs.slice(offset, offset + batchRows);
         const result = await call(chunk, options);
         if (result.items.length !== chunk.length) {
           throw new Error(`seed phase ${phase} returned ${result.items.length} of ${chunk.length}`);
@@ -265,7 +285,7 @@ export class RiffDbSession {
       }
       process.stderr.write(
         `riffdb-seed-progress\tphase=${phase}\tcompleted=${completed}/${total}` +
-          `\toverall_ms=${Date.now() - started}\n`,
+          `\tbatch_rows=${batchRows}\toverall_ms=${Date.now() - started}\n`,
       );
     };
 
