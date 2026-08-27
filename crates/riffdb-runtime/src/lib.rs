@@ -305,14 +305,14 @@ pub fn execute_command(
             .schema()
             .entity(read.entity_type())
             .ok_or(ExecutionFault::Integrity)?;
-        roots.push(materialize_entity_record(
+        roots.push(Some(materialize_entity_record(
             bundle.schema(),
             entity.record(),
             entity.primary_key_fields(),
             read.key_schema(),
             record.target(),
             record.fields(),
-        )?);
+        )?));
     }
 
     let mut evaluated_builder = None;
@@ -1004,14 +1004,10 @@ fn execute_collection_command(
     let binding_end = first_binding
         .checked_add(expansion.binding_count())
         .ok_or(ExecutionFault::ResourceLimit)?;
-    if first_binding != 0
-        || binding_end != plan.bindings().len()
+    if binding_end != plan.bindings().len()
         || first_instruction != 0
-        || instruction_end > plan.instructions().len()
+        || instruction_end >= plan.instructions().len()
     {
-        // The first runtime slice deliberately accepts only the compiler's
-        // closed all-local template. Shared command bindings/instructions need
-        // their own semantic schedule rather than accidental partial reuse.
         return Err(ExecutionFault::Integrity);
     }
 
@@ -1026,6 +1022,155 @@ fn execute_collection_command(
     let mut mutations = Vec::new();
     let mut events = Vec::new();
     let mut embedding_writes = Vec::new();
+    let mut records = vec![None; plan.bindings().len()];
+    for (slot, observation) in snapshot.bindings().iter().enumerate() {
+        let ordinal = facts
+            .binding_element_ordinals()
+            .get(slot)
+            .ok_or(ExecutionFault::Integrity)?;
+        if ordinal.is_some() {
+            continue;
+        }
+        let binding_index = *facts
+            .binding_plan_indices()
+            .get(slot)
+            .ok_or(ExecutionFault::Integrity)? as usize;
+        if binding_index >= first_binding {
+            return Err(ExecutionFault::Integrity);
+        }
+        let binding = plan
+            .bindings()
+            .get(binding_index)
+            .ok_or(ExecutionFault::Integrity)?;
+        match (binding.mode(), observation) {
+            (
+                BindingMode::Read | BindingMode::Mutate | BindingMode::Delete,
+                EntityObservation::Absent(_),
+            )
+            | (BindingMode::Create, EntityObservation::Present(_)) => {
+                let values = RuntimeValues {
+                    schema: bundle.schema(),
+                    plan,
+                    input,
+                    records: &records,
+                    roots: &[],
+                    tx_time: context.tx_time(),
+                    service_values: context.service_values(),
+                };
+                let mut evaluation = evaluator.batch(&values);
+                let outcome = construct_outcome(
+                    binding.failure().ok_or(ExecutionFault::Integrity)?,
+                    &mut evaluation,
+                )?;
+                return finish_declared(plan, snapshot, budget, outcome, vec![], vec![], vec![]);
+            }
+            (
+                BindingMode::Read
+                | BindingMode::Mutate
+                | BindingMode::InitOrMutate
+                | BindingMode::Delete,
+                EntityObservation::Present(record),
+            ) => {
+                let entity = bundle
+                    .schema()
+                    .entity(binding.entity_type())
+                    .ok_or(ExecutionFault::Integrity)?;
+                records[binding_index] = Some(materialize_entity_record(
+                    bundle.schema(),
+                    entity.record(),
+                    entity.primary_key_fields(),
+                    binding.key_schema(),
+                    record.target(),
+                    record.fields(),
+                )?);
+            }
+            (BindingMode::Create, EntityObservation::Absent(target)) => {
+                let entity = bundle
+                    .schema()
+                    .entity(binding.entity_type())
+                    .ok_or(ExecutionFault::Integrity)?;
+                records[binding_index] = Some(initialize_create_record(
+                    entity.record(),
+                    entity.primary_key_fields(),
+                    binding.key_schema(),
+                    target,
+                )?);
+            }
+            (BindingMode::InitOrMutate, EntityObservation::Absent(target)) => {
+                let entity = bundle
+                    .schema()
+                    .entity(binding.entity_type())
+                    .ok_or(ExecutionFault::Integrity)?;
+                records[binding_index] = Some(initialize_create_record(
+                    entity.record(),
+                    entity.primary_key_fields(),
+                    binding.key_schema(),
+                    target,
+                )?);
+                for initialized in binding.initializer() {
+                    let value = {
+                        let values = RuntimeValues {
+                            schema: bundle.schema(),
+                            plan,
+                            input,
+                            records: &records,
+                            roots: &[],
+                            tx_time: context.tx_time(),
+                            service_values: context.service_values(),
+                        };
+                        evaluator
+                            .batch(&values)
+                            .evaluate(initialized.expression())?
+                    };
+                    set_working_field(
+                        bundle.schema(),
+                        plan,
+                        &mut records,
+                        binding.id(),
+                        initialized.field_id(),
+                        value,
+                    )?;
+                }
+            }
+        }
+    }
+    if records[..first_binding].iter().any(Option::is_none) {
+        return Err(ExecutionFault::Integrity);
+    }
+
+    let mut shared_roots = vec![None; plan.root_validation_reads().len()];
+    for (slot, observation) in snapshot.root_validations().iter().enumerate() {
+        let ordinal = facts
+            .root_validation_element_ordinals()
+            .get(slot)
+            .ok_or(ExecutionFault::Integrity)?;
+        if ordinal.is_some() {
+            continue;
+        }
+        let read_index = *facts
+            .root_validation_plan_indices()
+            .get(slot)
+            .ok_or(ExecutionFault::Integrity)? as usize;
+        let read = plan
+            .root_validation_reads()
+            .get(read_index)
+            .ok_or(ExecutionFault::Integrity)?;
+        let EntityObservation::Present(record) = observation else {
+            return Err(ExecutionFault::Integrity);
+        };
+        let entity = bundle
+            .schema()
+            .entity(read.entity_type())
+            .ok_or(ExecutionFault::Integrity)?;
+        shared_roots[read_index] = Some(materialize_entity_record(
+            bundle.schema(),
+            entity.record(),
+            entity.primary_key_fields(),
+            read.key_schema(),
+            record.target(),
+            record.fields(),
+        )?);
+    }
     if let Some(binding_slot) = delete_evidence.failure_binding_slot {
         let binding_index = *facts
             .binding_plan_indices()
@@ -1061,10 +1206,10 @@ fn execute_collection_command(
             embedding_writes,
         );
     }
+    let mut roots = shared_roots;
     for (element_ordinal, element) in elements.values().iter().enumerate() {
         let ordinal = u16::try_from(element_ordinal).map_err(|_| ExecutionFault::ResourceLimit)?;
-        let mut records = vec![None; plan.bindings().len()];
-        let mut roots = vec![None; plan.root_validation_reads().len()];
+        records[first_binding..binding_end].fill(None);
 
         for (slot, observation) in snapshot.bindings().iter().enumerate() {
             if facts.binding_element_ordinals().get(slot) != Some(&Some(ordinal)) {
@@ -1084,9 +1229,6 @@ fn execute_collection_command(
                     EntityObservation::Absent(_),
                 )
                 | (BindingMode::Create, EntityObservation::Present(_)) => {
-                    if !roots.is_empty() {
-                        return Err(ExecutionFault::Integrity);
-                    }
                     let values = CollectionRuntimeValues::new(
                         bundle.schema(),
                         plan,
@@ -1209,10 +1351,9 @@ fn execute_collection_command(
                 record.fields(),
             )?);
         }
-        let roots = roots
-            .into_iter()
-            .map(|root| root.ok_or(ExecutionFault::Integrity))
-            .collect::<Result<Vec<_>, _>>()?;
+        if roots.iter().any(Option::is_none) {
+            return Err(ExecutionFault::Integrity);
+        }
 
         for instruction in &plan.instructions()[first_instruction..instruction_end] {
             match instruction {
@@ -1389,48 +1530,171 @@ fn execute_collection_command(
                     });
                 }
             }
-            let record = records[binding_index]
-                .as_ref()
-                .ok_or(ExecutionFault::Integrity)?;
-            let entity = bundle
-                .schema()
-                .entity(binding.entity_type())
-                .ok_or(ExecutionFault::Integrity)?;
-            validate_entity_post_image(bundle.schema(), entity.record(), record)?;
-            let image = EntityPostImage::new(
-                observation.target().clone(),
-                plan.contract_version(),
-                record.clone(),
-            )
-            .map_err(map_storage_value_error)?;
-            mutations.push(match (binding.mode(), observation) {
-                (BindingMode::Create, EntityObservation::Absent(_)) => {
-                    EntityMutation::Create(image)
-                }
-                (BindingMode::Mutate, EntityObservation::Present(record)) => {
-                    EntityMutation::Replace {
-                        expected_version: record.entity_version(),
-                        post_image: image,
-                    }
-                }
-                (BindingMode::InitOrMutate, EntityObservation::Absent(_)) => {
-                    EntityMutation::Create(image)
-                }
-                (BindingMode::InitOrMutate, EntityObservation::Present(record)) => {
-                    EntityMutation::Replace {
-                        expected_version: record.entity_version(),
-                        post_image: image,
-                    }
-                }
-                (BindingMode::Delete, EntityObservation::Present(record)) => {
-                    EntityMutation::Delete {
-                        expected_version: record.entity_version(),
-                        prior_image: image,
-                    }
-                }
-                _ => return Err(ExecutionFault::Integrity),
-            });
+            mutations.push(collection_binding_mutation(
+                bundle,
+                plan,
+                binding,
+                observation,
+                records[binding_index]
+                    .as_ref()
+                    .ok_or(ExecutionFault::Integrity)?,
+            )?);
         }
+    }
+
+    records[first_binding..binding_end].fill(None);
+    let return_index = plan
+        .instructions()
+        .len()
+        .checked_sub(1)
+        .ok_or(ExecutionFault::Integrity)?;
+    if instruction_end > return_index {
+        return Err(ExecutionFault::Integrity);
+    }
+    for instruction in &plan.instructions()[instruction_end..return_index] {
+        match instruction {
+            Instruction::Require {
+                predicate, reject, ..
+            } => {
+                let values = RuntimeValues {
+                    schema: bundle.schema(),
+                    plan,
+                    input,
+                    records: &records,
+                    roots: &roots,
+                    tx_time: context.tx_time(),
+                    service_values: context.service_values(),
+                };
+                let mut evaluation = evaluator.batch(&values);
+                if !evaluation.evaluate_predicate(*predicate)? {
+                    let outcome = construct_outcome(reject, &mut evaluation)?;
+                    return finish_declared(
+                        plan,
+                        snapshot,
+                        budget,
+                        outcome,
+                        vec![],
+                        vec![],
+                        vec![],
+                    );
+                }
+            }
+            Instruction::SetField {
+                binding,
+                field,
+                value,
+            } => {
+                if binding.get() as usize >= first_binding {
+                    return Err(ExecutionFault::Integrity);
+                }
+                let value = {
+                    let values = RuntimeValues {
+                        schema: bundle.schema(),
+                        plan,
+                        input,
+                        records: &records,
+                        roots: &roots,
+                        tx_time: context.tx_time(),
+                        service_values: context.service_values(),
+                    };
+                    evaluator.batch(&values).evaluate(*value)?
+                };
+                set_working_field(bundle.schema(), plan, &mut records, *binding, *field, value)?;
+            }
+            Instruction::SetEmbedding {
+                binding,
+                field,
+                value,
+                model_identity,
+                model_version,
+            } => {
+                if binding.get() as usize >= first_binding {
+                    return Err(ExecutionFault::Integrity);
+                }
+                let (value, model_identity, model_version) = {
+                    let values = RuntimeValues {
+                        schema: bundle.schema(),
+                        plan,
+                        input,
+                        records: &records,
+                        roots: &roots,
+                        tx_time: context.tx_time(),
+                        service_values: context.service_values(),
+                    };
+                    let mut evaluation = evaluator.batch(&values);
+                    (
+                        evaluation.evaluate(*value)?,
+                        evaluation.evaluate(*model_identity)?,
+                        evaluation.evaluate(*model_version)?,
+                    )
+                };
+                let slot = facts
+                    .binding_plan_indices()
+                    .iter()
+                    .zip(facts.binding_element_ordinals())
+                    .position(|(plan_index, element_ordinal)| {
+                        *plan_index as usize == binding.get() as usize && element_ordinal.is_none()
+                    })
+                    .ok_or(ExecutionFault::Integrity)?;
+                let target = snapshot
+                    .bindings()
+                    .get(slot)
+                    .map(EntityObservation::target)
+                    .ok_or(ExecutionFault::Integrity)?;
+                embedding_writes.push(embedding_write_intent(
+                    bundle.schema(),
+                    plan,
+                    target,
+                    *binding,
+                    *field,
+                    model_identity,
+                    model_version,
+                )?);
+                set_working_field(bundle.schema(), plan, &mut records, *binding, *field, value)?;
+            }
+            Instruction::EmitEvent(event) => {
+                let payload = {
+                    let values = RuntimeValues {
+                        schema: bundle.schema(),
+                        plan,
+                        input,
+                        records: &records,
+                        roots: &roots,
+                        tx_time: context.tx_time(),
+                        service_values: context.service_values(),
+                    };
+                    let mut evaluation = evaluator.batch(&values);
+                    construct_record(event.payload(), &mut evaluation)?
+                };
+                events.push(event_intent(bundle, context, event.event_type(), payload)?);
+            }
+            Instruction::WorkflowTransition { .. }
+            | Instruction::WorkflowLease { .. }
+            | Instruction::Return(_) => return Err(ExecutionFault::Integrity),
+        }
+    }
+
+    for (slot, observation) in snapshot.bindings().iter().enumerate() {
+        if facts.binding_element_ordinals().get(slot) != Some(&None) {
+            continue;
+        }
+        let binding_index = facts.binding_plan_indices()[slot] as usize;
+        let binding = plan
+            .bindings()
+            .get(binding_index)
+            .ok_or(ExecutionFault::Integrity)?;
+        if binding.mode() == BindingMode::Read {
+            continue;
+        }
+        mutations.push(collection_binding_mutation(
+            bundle,
+            plan,
+            binding,
+            observation,
+            records[binding_index]
+                .as_ref()
+                .ok_or(ExecutionFault::Integrity)?,
+        )?);
     }
 
     if !delete_evidence.has_cascade {
@@ -1445,23 +1709,18 @@ fn execute_collection_command(
     }
     let return_instruction = plan
         .instructions()
-        .get(instruction_end)
+        .get(return_index)
         .filter(|instruction| matches!(instruction, Instruction::Return(_)))
         .ok_or(ExecutionFault::Integrity)?;
-    if plan.instructions().len() != instruction_end + 1 {
-        return Err(ExecutionFault::Integrity);
-    }
     let Instruction::Return(outcome) = return_instruction else {
         return Err(ExecutionFault::Integrity);
     };
-    let empty_records = vec![None; plan.bindings().len()];
-    let empty_roots = vec![];
     let values = RuntimeValues {
         schema: bundle.schema(),
         plan,
         input,
-        records: &empty_records,
-        roots: &empty_roots,
+        records: &records,
+        roots: &roots,
         tx_time: context.tx_time(),
         service_values: context.service_values(),
     };
@@ -1476,6 +1735,46 @@ fn execute_collection_command(
         events,
         embedding_writes,
     )
+}
+
+fn collection_binding_mutation(
+    bundle: &ContractBundle,
+    plan: &CommandPlan,
+    binding: &riffdb_contract_ir::BindingPlan,
+    observation: &EntityObservation,
+    record: &CanonicalRecord,
+) -> Result<EntityMutation, ExecutionFault> {
+    let entity = bundle
+        .schema()
+        .entity(binding.entity_type())
+        .ok_or(ExecutionFault::Integrity)?;
+    validate_entity_post_image(bundle.schema(), entity.record(), record)?;
+    let image = EntityPostImage::new(
+        observation.target().clone(),
+        plan.contract_version(),
+        record.clone(),
+    )
+    .map_err(map_storage_value_error)?;
+    match (binding.mode(), observation) {
+        (BindingMode::Create, EntityObservation::Absent(_))
+        | (BindingMode::InitOrMutate, EntityObservation::Absent(_)) => {
+            Ok(EntityMutation::Create(image))
+        }
+        (BindingMode::Mutate | BindingMode::InitOrMutate, EntityObservation::Present(record)) => {
+            Ok(EntityMutation::Replace {
+                expected_version: record.entity_version(),
+                post_image: image,
+            })
+        }
+        (BindingMode::Delete, EntityObservation::Present(record)) => Ok(EntityMutation::Delete {
+            expected_version: record.entity_version(),
+            prior_image: image,
+        }),
+        (BindingMode::Read, _)
+        | (BindingMode::Create | BindingMode::Mutate | BindingMode::Delete, _) => {
+            Err(ExecutionFault::Integrity)
+        }
+    }
 }
 
 fn event_intent(
@@ -2330,7 +2629,7 @@ struct RuntimeValues<'a> {
     plan: &'a CommandPlan,
     input: &'a CanonicalRecord,
     records: &'a [Option<CanonicalRecord>],
-    roots: &'a [CanonicalRecord],
+    roots: &'a [Option<CanonicalRecord>],
     tx_time: LogicalTime,
     service_values: &'a CanonicalRecord,
 }
@@ -2346,7 +2645,7 @@ impl<'a> CollectionRuntimeValues<'a> {
         plan: &'a CommandPlan,
         input: &'a CanonicalRecord,
         records: &'a [Option<CanonicalRecord>],
-        roots: &'a [CanonicalRecord],
+        roots: &'a [Option<CanonicalRecord>],
         context: &'a TransactionContext,
         element: &'a CanonicalValue,
     ) -> Self {
@@ -2460,6 +2759,7 @@ impl ExpressionValueSource for RuntimeValues<'_> {
     ) -> Option<CanonicalValue> {
         self.roots
             .get(read.get() as usize)
+            .and_then(Option::as_ref)
             .and_then(|record| record_field(record, field))
             .cloned()
     }
