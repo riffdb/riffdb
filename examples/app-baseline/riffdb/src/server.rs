@@ -61,7 +61,14 @@ const WRITER_PUBLICATION_STAGES_PREFIX: &str = "riffdb-writer-publication-stages
 const COMPLETION_LANE_PREFIX: &str = "riffdb-completion-lane-v1\t";
 const QUERY_EXECUTE_WINDOWS_PREFIX: &str = "riffdb-query-execute-windows-v1\t";
 const SHUTDOWN_STAGES_PREFIX: &str = "riffdb-shutdown-stages-v1\t";
-const PROCESS_START_TIMEOUT: Duration = Duration::from_secs(90);
+/// Readiness budget.
+///
+/// Startup cost depends on whether the clean-close certificate admits the fast
+/// path (ADR-0156). When it does not, readiness pays the complete validation
+/// pass, whose cost scales with the live entity and index population, so ninety
+/// seconds is ample for the `full` dataset and not for the `production` tier's
+/// ~1.1M rows. `RIFFDB_START_TIMEOUT_SECS` overrides it.
+const PROCESS_START_TIMEOUT: Duration = Duration::from_secs(600);
 /// Clean-shutdown budget.
 ///
 /// Graceful shutdown checkpoints the published journal suffix, so the cost
@@ -72,6 +79,15 @@ const PROCESS_START_TIMEOUT: Duration = Duration::from_secs(90);
 /// overrides it for a larger dataset; the default stays generous rather than
 /// tight so a slow host does not read as a hang.
 const PROCESS_STOP_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// Readiness budget, with an environment override for large datasets.
+fn process_start_timeout() -> Duration {
+    std::env::var("RIFFDB_START_TIMEOUT_SECS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|seconds| (1..=3_600).contains(seconds))
+        .map_or(PROCESS_START_TIMEOUT, Duration::from_secs)
+}
 
 /// Clean-shutdown budget, with an environment override for large datasets.
 fn process_stop_timeout() -> Duration {
@@ -1255,7 +1271,7 @@ impl ServerProcess {
     }
 
     fn wait_for_ready_address(&self) -> io::Result<SocketAddr> {
-        let line = match self.ready.recv_timeout(PROCESS_START_TIMEOUT) {
+        let line = match self.ready.recv_timeout(process_start_timeout()) {
             Ok(result) => result?,
             Err(RecvTimeoutError::Timeout) => {
                 return Err(io::Error::new(

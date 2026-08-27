@@ -119,18 +119,13 @@ holding.
   only current symptom. This mirrors the duplication ADR-0148 addresses for the
   drivers and deserves the same treatment.
 
-## Confirmed defect: startup materialises one evidence entry per live row
+## Resolved: the startup ceiling (ADR-0156 / ADR-0157)
 
-`--seed-only` completes cleanly at this tier: 1,112,350 commands in 192 s at
-5,794 ops/s, a clean 21 s shutdown, exit 0. The measured process then cannot
-start against the seeded database.
-
-### Root cause
-
-Startup builds a *paginated* historical evidence plan, but it materialises the
-whole ordered locator list up front and refuses when that index exceeds
-`MAX_STARTUP_EVIDENCE_INDEX_BYTES`, 512 MiB. Distinct entries and charged bytes
-per collector, measured:
+This profile's first run could not start the measured process against its own
+cleanly seeded database. Startup built a paginated historical evidence plan but
+materialised the whole ordered locator list up front, and refused once that index
+exceeded `MAX_STARTUP_EVIDENCE_INDEX_BYTES`, 512 MiB. Measured attribution, per
+collector inside `build_historical_evidence_plan`:
 
 ```text
 after bundle_locators:                  distinct=1   bytes=85
@@ -141,68 +136,44 @@ after active_catalog_locator:           distinct=10  bytes=1629
 LIMIT site=evidence_plan index=536871037
 ```
 
-The catalog-shaped collectors are trivial: **ten entries, 1,629 bytes**. The
-budget is consumed entirely inside `collect_persisted_key_locators`, which walks
-`ENTITIES` and `SECONDARY_INDEXES` and inserts one locator per row, retaining
-each row's key bytes. This profile holds roughly 1.1 million entities and a
-comparable number of index rows, at roughly 488 bytes charged per entry.
+The catalog-shaped collectors were trivial. The whole budget went to
+`collect_persisted_key_locators`, which walked `ENTITIES` and
+`SECONDARY_INDEXES` and retained one locator per row at roughly 488 charged
+bytes each. The ceiling therefore scaled with live data size, not history, so
+retention could not relieve it: a database over roughly a million rows would not
+open.
 
-So the ceiling scales with **live data size, not history length**: a RiffDB
-database holding more than roughly a million rows cannot be opened. Retention
-does not help, because these are current-state rows rather than history.
+ADR-0156 and ADR-0157 resolve it with a durable clean-close certificate. A
+process that shut down gracefully records one private versioned lifecycle
+record, and the next start admits a bounded readiness path instead of the
+complete pass; anything dirty, uncertain, migrated, restored or contradictory
+still takes complete validation and recovery. That amends ADR-0019's
+unconditional complete-pass rule, ADR-0073's rejection of clean-shutdown
+markers, and ADR-0085's rejection of a validation-free clean fast path, and it
+was accepted with exact maintainer text.
 
-The failure surfaces as `CatalogErrorKind::Storage`, because the plan is built
-under catalog resolution.
+Verified on this profile after merging that work: the production cell now runs
+to completion against ~1,112,350 seeded commands and roughly 1.1M rows, at
+11,260 ops/s over 135,148 operations with zero errors, zero conflicts and zero
+idempotency mismatches. The `LimitExceeded` refusal is gone.
 
-### Two earlier characterisations in this document were wrong
+Two notes worth keeping with the profile:
 
-Both are recorded because the corrections matter more than the guesses:
+- ADR-0156 records that latent corruption outside the bounded readiness roots
+  may now be detected after readiness, when the affected data is accessed or
+  during an explicit scrub, rather than at startup. That is the trade the fast
+  path makes.
+- The memory-bounded historical cursor remains required rather than becoming
+  dead code, so the underlying materialisation cost still applies whenever the
+  complete path runs -- which is every dirty start.
 
-- The ADR-0085 validated-prefix checkpoint was blamed first, on evidence from a
-  database copied mid-run, after the seed but before the post-seed checkpoint
-  write, so its stale `commit_sequence = 0` was that snapshot's expected state.
-  Traced end to end the mechanism works: the suffix materialises at shutdown
-  (19,856 to 19,878 commit rows) and the next boot loads `seq=1112350`.
-  `ensure_command_cache` is bounded by it and stays inside budget.
-- `collect_plan_locators` was blamed second, on an insert-call counter that
-  counted 1,112,351 calls. The insert closure already deduplicates by order key
-  and charges nothing for a repeat, so those 1.1 million calls collapse to
-  **nine** distinct plans. Plan collection is not the problem.
+### Readiness budget
 
-### The fix
-
-The order key is a typed tag plus natural key components, not a hash
-(`0x01` bundle, `0x02` plan reference, `0x03` active catalog, `0x04` persisted
-key), so evidence is grouped by kind and then ordered within kind. The plan is
-already consumed as a cursor: `next_index` walks it and each item is
-materialised on demand from the table.
-
-The materialised list is therefore unnecessary for the high-cardinality kinds.
-Replace it with a lazy per-kind cursor: keep the handful of catalog-shaped
-entries materialised, and for persisted keys and index migrations iterate the
-source table in place, since the table's own order already agrees with the
-order key within a contract version. The bound then caps what it was meant to
-cap, and startup memory stops scaling with row count.
-
-Four properties must be preserved and are the substance of the work rather than
-the mechanism:
-
-1. the exact evidence sequence, kind by kind, byte for byte;
-2. every rejection the collectors perform *while walking* -- for example
-   `collect_persisted_key_locators` refuses a row whose decoded target does not
-   match its physical key;
-3. the pagination cursor semantics, including `last_historical_key` and the
-   `ExactEnd` boundary; and
-4. the fail-closed behaviour on any decode or reciprocity failure.
-
-This is a scoped refactor of a fail-closed path, not a patch, and it needs a
-fixture-based test proving the evidence sequence is identical before and after.
-It is written up here rather than applied so it can be done with that test
-rather than under time pressure.
-
-What is fixed here is the diagnostic. A startup refusal now names the closed
-`StorageErrorKind`, `StartupIntegrityFailure`, or `CatalogErrorKind`
-discriminant instead of only `kind=startup`.
+Because a start that cannot use the certificate still pays the complete pass,
+readiness at this size can exceed a minute. The harness budgeted ninety seconds
+and reported `ready timeout` for a daemon that was starting correctly; it now
+budgets 600 s with a `RIFFDB_START_TIMEOUT_SECS` override, matching the
+`RIFFDB_STOP_TIMEOUT_SECS` treatment the shutdown budget already needed.
 
 ## What this does not change
 

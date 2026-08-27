@@ -1376,6 +1376,7 @@ dependencies = [
  "redb",
  "riffdb-catalog",
  "riffdb-policy",
+ "riffdb-proto",
  "riffdb-query-executor",
  "riffdb-query-ir",
  "riffdb-storage-api",
