@@ -54,16 +54,33 @@ pub(crate) enum CleanCloseCodecError {
 /// Every variant costs exactly one thing — the next open takes the complete
 /// validation pass — and every variant used to produce that outcome silently.
 /// On a large database the complete pass is tens of minutes of SHA-256 and
-/// record decoding, so "slow start" was the only observable and all nine
-/// preconditions were indistinguishable from outside the engine. This enum
+/// record decoding, so "slow start" was the only observable and every
+/// precondition was indistinguishable from outside the engine. This enum
 /// carries no path, key, value, or identity, so naming it leaks nothing.
 ///
 /// Observability only: declining still means full validation, and nothing here
 /// may widen what bounded startup accepts.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum CleanCloseDeclineReason {
-    /// redb ran its own repair pass at open; no prior certificate can bind the
-    /// repaired roots.
+    /// This open created the durable unit, so redb necessarily rebuilt
+    /// allocator state for a file that did not exist. Benign and unavoidable:
+    /// there is no history to fast-path over. Split out from
+    /// [`Self::EngineRepairedAtOpen`] so a healthy first boot does not report
+    /// the same reason as a database whose previous close left no allocator
+    /// state — otherwise the signal cries wolf on every new database.
+    EngineInitializedAtOpen,
+    /// redb ran its own repair pass at open over a pre-existing file; no prior
+    /// certificate can bind the repaired roots.
+    ///
+    /// redb 4.2.0 skips that repair only when the PREVIOUS handle persisted the
+    /// `allocator_state` system table, and the only thing that writes it is
+    /// `close_database` from `redb::Database::drop` (RiffDB never enables
+    /// `quick_repair`, which is the only other writer). So this reason means
+    /// the previous close did not complete its drop-time commit: an abrupt
+    /// stop, a kill, a panic, or a drop-time commit that failed — redb swallows
+    /// that failure, and RiffDB does not enable redb's `logging` feature, so it
+    /// is otherwise invisible. The next open then pays redb's full allocator
+    /// repair AND the complete RiffDB validation pass.
     EngineRepairedAtOpen,
     /// No lifecycle record at all (never gracefully closed, or a shutdown that
     /// failed to write it — the write side is `let _ =` at its call site).
@@ -92,7 +109,8 @@ pub(crate) enum CleanCloseDeclineReason {
 
 impl CleanCloseDeclineReason {
     /// Every reason, in counter-index order (see [`Self::index`]).
-    pub(crate) const ALL: [Self; 9] = [
+    pub(crate) const ALL: [Self; 10] = [
+        Self::EngineInitializedAtOpen,
         Self::EngineRepairedAtOpen,
         Self::RecordAbsent,
         Self::RecordDecodeFailed,
@@ -108,21 +126,23 @@ impl CleanCloseDeclineReason {
     #[must_use]
     pub(crate) const fn index(self) -> usize {
         match self {
-            Self::EngineRepairedAtOpen => 0,
-            Self::RecordAbsent => 1,
-            Self::RecordDecodeFailed => 2,
-            Self::DatabaseIdMismatch => 3,
-            Self::IncarnationMismatch => 4,
-            Self::StateNotClean => 5,
-            Self::JournalBoundaryUnverified => 6,
-            Self::BoundedRootsUnavailable => 7,
-            Self::BindingMismatch => 8,
+            Self::EngineInitializedAtOpen => 0,
+            Self::EngineRepairedAtOpen => 1,
+            Self::RecordAbsent => 2,
+            Self::RecordDecodeFailed => 3,
+            Self::DatabaseIdMismatch => 4,
+            Self::IncarnationMismatch => 5,
+            Self::StateNotClean => 6,
+            Self::JournalBoundaryUnverified => 7,
+            Self::BoundedRootsUnavailable => 8,
+            Self::BindingMismatch => 9,
         }
     }
 
     #[must_use]
     pub(crate) const fn as_str(self) -> &'static str {
         match self {
+            Self::EngineInitializedAtOpen => "engine_initialized_at_open",
             Self::EngineRepairedAtOpen => "engine_repaired_at_open",
             Self::RecordAbsent => "record_absent",
             Self::RecordDecodeFailed => "record_decode_failed",
@@ -138,7 +158,8 @@ impl CleanCloseDeclineReason {
 
 /// The one closed answer to "may this open take the bounded path?".
 ///
-/// Replaces an `Option` whose `None` collapsed nine distinct preconditions.
+/// Replaces an `Option` whose `None` collapsed every distinct precondition
+/// into one anonymous answer.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum CleanCloseVerdict {
     /// The certificate verified; bounded startup is admitted.

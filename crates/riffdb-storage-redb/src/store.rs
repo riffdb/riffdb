@@ -122,6 +122,11 @@ pub(crate) struct SharedRedb {
     /// True when redb invoked repair while opening this handle. Engine repair
     /// always disqualifies carried clean-close evidence for this generation.
     engine_repaired_at_open: bool,
+    /// True when THIS open created the durable unit (the format preflight
+    /// selected `InitializeCurrent`). A brand-new redb file has no persisted
+    /// allocator state, so `engine_repaired_at_open` is always true here and
+    /// says nothing about a previous close.
+    engine_initialized_at_open: bool,
     /// Set only by the verified ADR-0157 startup handoff. Operational
     /// composition uses it to keep rebuildable population accelerators cold.
     pub(crate) bounded_clean_startup: AtomicBool,
@@ -167,7 +172,7 @@ pub(crate) struct SharedRedb {
     clean_close_write_failures: AtomicU64,
     /// Per-reason counts of declined ADR-0157 bounded startups
     /// (index = `CleanCloseDeclineReason::index`).
-    clean_close_declined: [AtomicU64; 9],
+    clean_close_declined: [AtomicU64; 10],
     /// Retention watermark sequence, loaded and self-hash-verified once at
     /// open. The watermark advances only under exclusive OFFLINE maintenance,
     /// which cannot run while this handle holds the database open, so reads
@@ -346,7 +351,7 @@ impl SharedRedb {
         let _ = self.clean_close_declined[reason.index()].fetch_add(1, Ordering::Relaxed);
     }
 
-    pub(crate) fn clean_close_decline_counts(&self) -> [(&'static str, u64); 9] {
+    pub(crate) fn clean_close_decline_counts(&self) -> [(&'static str, u64); 10] {
         crate::clean_close::CleanCloseDeclineReason::ALL.map(|reason| {
             (
                 reason.as_str(),
@@ -435,8 +440,15 @@ impl SharedRedb {
         use crate::clean_close::{CleanCloseDeclineReason, CleanCloseVerdict};
 
         if self.engine_repaired_at_open {
+            // Both decline, exactly as before; the split only says whether the
+            // rebuild was the unavoidable cost of creating the durable unit or
+            // the consequence of a previous close that left no allocator state.
             return Ok(CleanCloseVerdict::Declined(
-                CleanCloseDeclineReason::EngineRepairedAtOpen,
+                if self.engine_initialized_at_open {
+                    CleanCloseDeclineReason::EngineInitializedAtOpen
+                } else {
+                    CleanCloseDeclineReason::EngineRepairedAtOpen
+                },
             ));
         }
         let meta = transaction.open_table(META).map_err(table_error)?;
@@ -1510,6 +1522,7 @@ impl RedbStore {
                 mutation_gate: ExclusiveGate::default(),
                 write_fenced: AtomicBool::new(false),
                 engine_repaired_at_open: repair_observed.load(Ordering::Acquire),
+                engine_initialized_at_open: initialize_marker_witness.is_some(),
                 bounded_clean_startup: AtomicBool::new(false),
                 durable_commit_epoch: AtomicU64::new(0),
                 durable_read_frontier: RwLock::new(None),
@@ -1527,7 +1540,7 @@ impl RedbStore {
                 checkpoint_write_failures: AtomicU64::new(0),
                 checkpoint_ignored: [(); 10].map(|()| AtomicU64::new(0)),
                 clean_close_write_failures: AtomicU64::new(0),
-                clean_close_declined: [(); 9].map(|()| AtomicU64::new(0)),
+                clean_close_declined: [(); 10].map(|()| AtomicU64::new(0)),
                 retention_watermark: AtomicU64::new(0),
                 terminal_execution_failure_rows: AtomicU64::new(0),
                 checkpoint_count_rows_walked: AtomicU64::new(0),
@@ -2367,7 +2380,7 @@ impl RedbStore {
     /// Per-reason counts of declined ADR-0157 bounded startups on this handle.
     #[doc(hidden)]
     #[must_use]
-    pub fn clean_close_decline_counts(&self) -> [(&'static str, u64); 9] {
+    pub fn clean_close_decline_counts(&self) -> [(&'static str, u64); 10] {
         self.shared.clean_close_decline_counts()
     }
 
@@ -4161,7 +4174,7 @@ impl RedbOperationalPorts {
     /// validation pass, naming which precondition closed the bounded gate.
     #[doc(hidden)]
     #[must_use]
-    pub fn clean_close_decline_counts(&self) -> [(&'static str, u64); 9] {
+    pub fn clean_close_decline_counts(&self) -> [(&'static str, u64); 10] {
         self.shared.clean_close_decline_counts()
     }
 
