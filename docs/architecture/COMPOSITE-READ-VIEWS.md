@@ -63,7 +63,9 @@ awaiting publication, it observes transient writer backpressure and retries
 without degrading authoritative application readiness. A successful barrier
 advances the operational read root to its exact post-barrier state before
 publishing a cache or result. Graceful shutdown drains the suffix before
-writing the validated-prefix checkpoint.
+optionally writing the validated-prefix checkpoint, then commits the bound
+clean-close lifecycle record as its final authoritative mutation. The next
+startup durably consumes that clean state before activating any writer.
 
 ## Current implementation boundary
 

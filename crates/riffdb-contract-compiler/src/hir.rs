@@ -366,7 +366,8 @@ pub(crate) struct HirBinding {
     pub(crate) name_span: Span,
     pub(crate) span: Span,
     pub(crate) arguments: Vec<HirExpressionRoot>,
-    pub(crate) failure: HirOutcome,
+    pub(crate) initializer: Vec<HirObjectField>,
+    pub(crate) failure: Option<HirOutcome>,
     pub(crate) restriction_failure: Option<HirOutcome>,
     pub(crate) cascade_failure: Option<HirOutcome>,
     pub(crate) collection_local: bool,
@@ -2181,35 +2182,37 @@ fn lower_commands(
             .chain(collection_bindings.iter().map(|binding| (binding, true)))
             .enumerate()
         {
-            let (binding, mode) = match &binding.value {
-                Binding::Read(binding) => (binding, BindingMode::Read),
-                Binding::Mutate(binding) => (binding, BindingMode::Mutate),
-                Binding::Create(binding) => (binding, BindingMode::Create),
-                Binding::Delete(binding) => (binding, BindingMode::Delete),
+            let mode = match &binding.value {
+                Binding::Read(_) => BindingMode::Read,
+                Binding::Mutate(_) => BindingMode::Mutate,
+                Binding::Create(_) => BindingMode::Create,
+                Binding::InitOrMutate(_) => BindingMode::InitOrMutate,
+                Binding::Delete(_) => BindingMode::Delete,
             };
-            let Some(entity_id) = symbols.entities.get(&binding.entity.value).copied() else {
+            let Some(entity_id) = symbols.entities.get(&binding.value.entity().value).copied()
+            else {
                 diagnostics.push(CompilerDiagnostic::new(
                     CompilerDiagnosticCode::UnknownName,
-                    binding.entity.span,
+                    binding.value.entity().span,
                 ));
                 continue;
             };
             let Some(entity) = entities.iter().find(|entity| entity.id == entity_id) else {
                 diagnostics.push(CompilerDiagnostic::new(
                     CompilerDiagnosticCode::InvalidIr,
-                    binding.entity.span,
+                    binding.value.entity().span,
                 ));
                 continue;
             };
             let Ok(index) = u32::try_from(index) else {
                 diagnostics.push(CompilerDiagnostic::new(
                     CompilerDiagnosticCode::BoundExceeded,
-                    binding.binding.span,
+                    binding.value.name().span,
                 ));
                 continue;
             };
             binding_descriptors.push((
-                binding,
+                &binding.value,
                 BindingId::new(index),
                 mode,
                 entity,
@@ -2220,7 +2223,7 @@ fn lower_commands(
             .iter()
             .map(|(source, id, _, entity, collection_local)| {
                 (
-                    source.binding.value.clone(),
+                    source.name().value.clone(),
                     BindingExpressionScope {
                         id: *id,
                         entity_id: entity.id,
@@ -2234,7 +2237,7 @@ fn lower_commands(
             .iter()
             .map(|(source, id, _, entity, _)| {
                 (
-                    source.binding.value.clone(),
+                    source.name().value.clone(),
                     SecretRevealScopeEntry {
                         binding: *id,
                         entity: entity.id,
@@ -2281,15 +2284,15 @@ fn lower_commands(
         let mut bindings = Vec::new();
         for (binding, binding_id, mode, entity, collection_local) in binding_descriptors {
             resolver.set_collection_context(collection_local);
-            if binding.arguments.len() != entity.key_fields.len() {
+            if binding.arguments().len() != entity.key_fields.len() {
                 diagnostics.push(CompilerDiagnostic::new(
                     CompilerDiagnosticCode::InvalidBinding,
-                    binding.entity.span,
+                    binding.entity().span,
                 ));
                 continue;
             }
             let arguments = binding
-                .arguments
+                .arguments()
                 .iter()
                 .zip(&entity.key_fields)
                 .filter_map(|(argument, field_id)| {
@@ -2301,33 +2304,41 @@ fn lower_commands(
                     lower_root(&mut resolver, argument, expected, false, diagnostics)
                 })
                 .collect();
-            let Some(failure) = lower_outcome(
-                command_id,
-                &binding.failure,
-                symbols,
-                &mut resolver,
-                &reveal_scope,
-                true,
-                diagnostics,
-            ) else {
-                continue;
+            let failure = match binding.failure() {
+                Some(source) => {
+                    let Some(outcome) = lower_outcome(
+                        command_id,
+                        source,
+                        symbols,
+                        &mut resolver,
+                        &reveal_scope,
+                        true,
+                        diagnostics,
+                    ) else {
+                        continue;
+                    };
+                    Some(outcome)
+                }
+                None => None,
             };
+            let initializer = binding.initializer().map_or_else(Vec::new, |source| {
+                lower_initializer(source, entity, &mut resolver, diagnostics)
+            });
             let requires_restriction_failure = mode == BindingMode::Delete
                 && matches!(
                     entity.delete_policy.as_ref(),
                     Some(HirDeletePolicy::Restrict { .. })
                 );
-            if requires_restriction_failure != binding.restriction_failure.is_some() {
+            if requires_restriction_failure != binding.restriction_failure().is_some() {
                 diagnostics.push(CompilerDiagnostic::new(
                     CompilerDiagnosticCode::InvalidDeletePolicy,
                     binding
-                        .restriction_failure
-                        .as_ref()
-                        .map_or(binding.entity.span, |outcome| outcome.span),
+                        .restriction_failure()
+                        .map_or(binding.entity().span, |outcome| outcome.span),
                 ));
                 continue;
             }
-            let restriction_failure = match &binding.restriction_failure {
+            let restriction_failure = match binding.restriction_failure() {
                 Some(source) => {
                     let Some(outcome) = lower_outcome(
                         command_id,
@@ -2349,17 +2360,16 @@ fn lower_commands(
                     entity.delete_policy.as_ref(),
                     Some(HirDeletePolicy::Cascade { .. })
                 );
-            if requires_cascade_failure != binding.cascade_failure.is_some() {
+            if requires_cascade_failure != binding.cascade_failure().is_some() {
                 diagnostics.push(CompilerDiagnostic::new(
                     CompilerDiagnosticCode::InvalidDeletePolicy,
                     binding
-                        .cascade_failure
-                        .as_ref()
-                        .map_or(binding.entity.span, |outcome| outcome.span),
+                        .cascade_failure()
+                        .map_or(binding.entity().span, |outcome| outcome.span),
                 ));
                 continue;
             }
-            let cascade_failure = match &binding.cascade_failure {
+            let cascade_failure = match binding.cascade_failure() {
                 Some(source) => {
                     let Some(outcome) = lower_outcome(
                         command_id,
@@ -2380,17 +2390,25 @@ fn lower_commands(
                 id: binding_id,
                 mode,
                 entity_id: entity.id,
-                entity_span: binding.entity.span,
-                name: binding.binding.value.clone(),
-                name_span: binding.binding.span,
-                span: binding
-                    .cascade_failure
-                    .as_ref()
-                    .or(binding.restriction_failure.as_ref())
-                    .as_ref()
-                    .map_or(binding.failure.span, |outcome| outcome.span)
-                    .cover(binding.entity.span),
+                entity_span: binding.entity().span,
+                name: binding.name().value.clone(),
+                name_span: binding.name().span,
+                span: binding.entity().span.cover(
+                    binding
+                        .cascade_failure()
+                        .or(binding.restriction_failure())
+                        .or(binding.failure())
+                        .map_or_else(
+                            || {
+                                binding
+                                    .initializer()
+                                    .map_or(binding.name().span, |value| value.span)
+                            },
+                            |outcome| outcome.span,
+                        ),
+                ),
                 arguments,
+                initializer,
                 failure,
                 restriction_failure,
                 cascade_failure,
@@ -2666,7 +2684,10 @@ fn lower_commands(
                         ));
                         continue;
                     }
-                    if binding.mode != BindingMode::Mutate {
+                    if !matches!(
+                        binding.mode,
+                        BindingMode::Mutate | BindingMode::InitOrMutate
+                    ) {
                         diagnostics.push(CompilerDiagnostic::new(
                             CompilerDiagnosticCode::InvalidWorkflowTransition,
                             transition.binding.span,
@@ -2773,7 +2794,11 @@ fn lower_commands(
                         ));
                         continue;
                     };
-                    if binding.mode != BindingMode::Mutate || !leased_bindings.insert(binding.id) {
+                    if !matches!(
+                        binding.mode,
+                        BindingMode::Mutate | BindingMode::InitOrMutate
+                    ) || !leased_bindings.insert(binding.id)
+                    {
                         diagnostics.push(CompilerDiagnostic::new(
                             CompilerDiagnosticCode::InvalidWorkflowLease,
                             effect.span,
@@ -3480,6 +3505,67 @@ fn lower_outcome(
         span: source.span,
         fields,
     })
+}
+
+fn lower_initializer(
+    source: &Spanned<ObjectLiteral>,
+    entity: &HirEntity,
+    resolver: &mut ExpressionLowerer<'_>,
+    diagnostics: &mut Vec<CompilerDiagnostic>,
+) -> Vec<HirObjectField> {
+    reject_duplicate_fields(
+        &source.value,
+        CompilerDiagnosticCode::InvalidCreation,
+        diagnostics,
+    );
+    let key_fields = entity.key_field_set();
+    let mut fields = source
+        .value
+        .fields
+        .iter()
+        .filter_map(|supplied| {
+            let Some(field) = entity
+                .fields
+                .iter()
+                .find(|field| field.name == supplied.value.name.value)
+            else {
+                diagnostics.push(CompilerDiagnostic::new(
+                    CompilerDiagnosticCode::InvalidCreation,
+                    supplied.value.name.span,
+                ));
+                return None;
+            };
+            if key_fields.contains(&field.id) || !supplied.value.reveals.is_empty() {
+                diagnostics.push(CompilerDiagnostic::new(
+                    CompilerDiagnosticCode::InvalidCreation,
+                    supplied.span,
+                ));
+                return None;
+            }
+            let value = match resolver
+                .lower_state_independent(&supplied.value.value, Some(&field.value_type))
+            {
+                Ok((id, value_type)) => HirExpressionRoot {
+                    id,
+                    value_type,
+                    span: supplied.value.value.span,
+                },
+                Err(diagnostic) => {
+                    diagnostics.push(diagnostic);
+                    return None;
+                }
+            };
+            Some(HirObjectField {
+                id: field.id,
+                name: field.name.clone(),
+                name_span: supplied.value.name.span,
+                value,
+                reveals: Vec::new(),
+            })
+        })
+        .collect::<Vec<_>>();
+    fields.sort_by_key(|field| field.id);
+    fields
 }
 
 fn lower_declared_object(

@@ -1,0 +1,198 @@
+{
+  "compatibility": {
+    "durable_or_wire_format_changed": false,
+    "historically_unproved_plans_executable": false,
+    "proved_predecessor_artifacts_preserved": true,
+    "recovery": "refresh_contract_then_recompile_and_redeploy",
+    "typed_refusal": "RDB-QUERY-0102"
+  },
+  "compiler_only_corpus": {
+    "nullable_presence_and_order": {
+      "path": "fixtures/riffql/operational-access-corpus-v1/queries/items_by_published_state.riffq",
+      "sha256": "b5a6c3923ce5c21a0dafe07011f9baabe312a58a4169228f94d10738d153d809"
+    },
+    "test": "riffdb-query-compiler/generic_operational_access_corpus"
+  },
+  "contract": {
+    "bundle_hash": "824b7c29849f5e63ba5271c74f183dce60ca68c7fead647b025217c6ecba36ca",
+    "lineage": "OperationalAccessCorpus",
+    "version": 1
+  },
+  "external_acceptance": {
+    "consumer_class": "partitioned_tuple_changelog",
+    "framework_artifacts_retained": false,
+    "full_framework_conformance_claimed": false,
+    "path": "fixtures/riffql/wp701-external-binary-text-interval-capability-v1.json",
+    "sha256": "22e4a8a69869fd4867a578319a9a80d5ed2d84a37f372a64e3dfe3354ee12673",
+    "status": "passed"
+  },
+  "generated_artifacts": [
+    {
+      "kind": "go",
+      "path": "fixtures/riffql/operational-access-corpus-v1/generated/go/client.go",
+      "sha256": "4bb2175cadc42e3b02b43278cc855ea608d87c08527e8eeb09f3a9a7d0dc0253"
+    },
+    {
+      "kind": "mcp",
+      "path": "fixtures/riffql/operational-access-corpus-v1/generated/mcp/tools.json",
+      "sha256": "e7ee0c731e14c74f07d0174476023abdb0d824cf549d74a84b5875bd72ba7340"
+    },
+    {
+      "kind": "python",
+      "path": "fixtures/riffql/operational-access-corpus-v1/generated/python/client.py",
+      "sha256": "43ef340303f39c9c3920300d69dfc4a2ae1585aa018aa6eee5d0e7518fa9a897"
+    },
+    {
+      "kind": "rust",
+      "path": "fixtures/riffql/operational-access-corpus-v1/generated/rust/client.rs",
+      "sha256": "7a6786891fe9daa47e872af66c682b3fe75a80fca4660aa07a3f6186cbe3782c"
+    },
+    {
+      "kind": "typescript",
+      "path": "fixtures/riffql/operational-access-corpus-v1/generated/typescript/client.ts",
+      "sha256": "0e3e2f1c9ecace550659f53eeda73e8773d9b1cf4dece4c034213ba41ac2d23f"
+    }
+  ],
+  "operational_access_operations": [
+    {
+      "name": "ItemsByCode",
+      "plan_hash": "fce5d3696d9e20cf9f9e186339598d92f4fe3084f3d80f0db39087c47933b856",
+      "roles": [
+        "binary_text_exact",
+        "forward_cursor"
+      ],
+      "source_hash": "8f29f19f63218543a2e23dd59aeb46d92340292e34a411a9ed69b6d171bcfc70"
+    },
+    {
+      "name": "ItemsByCodePrefix",
+      "plan_hash": "bb15dd7fd9465143c4a83336af0a537a1a5da381897bf4b6ec255f815c28393a",
+      "roles": [
+        "binary_text_prefix",
+        "forward_cursor"
+      ],
+      "source_hash": "6e00602db9948a49574429627dbcb2f6949082348e704e908134c16dd7dbd0f8"
+    },
+    {
+      "name": "ItemsByCodes",
+      "plan_hash": "8aa64d13ba12e6e733cae4f634449ac953ff8c234096a9924550811e0f56bd75",
+      "roles": [
+        "binary_text_membership",
+        "forward_cursor"
+      ],
+      "source_hash": "f079f1bd639a209ffdc6f0ec34fb6192ff6c18c35e168b6cbfe8490b3023ccd9"
+    },
+    {
+      "name": "ItemsByCodesReverse",
+      "plan_hash": "838f4ed5fbc017f8d46372ac7ba836775a7f6797a8909fc2c2d6e4a1ca47979f",
+      "roles": [
+        "binary_text_membership",
+        "reverse_cursor"
+      ],
+      "source_hash": "9e403b72d7d7e457588f3468db74c23efe7ce85e892d7bade4312ba7d55c1925"
+    },
+    {
+      "name": "ItemsByKinds",
+      "plan_hash": "94bc02975553237d038c5fbe3aab62851e4f96dd3376f3b7598c052b07dc8aec",
+      "roles": [
+        "canonical_membership",
+        "forward_cursor"
+      ],
+      "source_hash": "6b24e99d9975da21102bf6bf265585ca4d2b6030e1b1b6b62a70d84c63d4bc4d"
+    },
+    {
+      "name": "ItemsInCodeWindow",
+      "plan_hash": "cbd844e502056b6bfe9229ccd4a4186f7dfc69a1ba79887420def8048927780c",
+      "roles": [
+        "binary_text_interval",
+        "forward_cursor"
+      ],
+      "source_hash": "88d76761aca5cc297ae26e690eb5db29702bf28d0a499781c7cfb0af7fa8f6f6"
+    },
+    {
+      "name": "ItemsInScoreWindow",
+      "plan_hash": "b9fe29b0b6bcce2d4df93f1edc4df502fffe78d37ace9ce0c194c8fee1121310",
+      "roles": [
+        "canonical_typed_interval",
+        "forward_cursor"
+      ],
+      "source_hash": "14cec42a9a8fec47a5b69a1c0319cc2e1e456e84d3d1e7e949b4a778c85eb06b"
+    },
+    {
+      "name": "ItemsOutsideCode",
+      "plan_hash": "f891f2c81f0f206c4b0cdd1a48c956a0f4f48baf0446904a170f99205357ea54",
+      "roles": [
+        "binary_text_complement",
+        "reverse_cursor"
+      ],
+      "source_hash": "a2128e23eadea603ee1815aef3bbdfc88324bada4ff6fa8c36b8afcb251175a4"
+    },
+    {
+      "name": "ItemsOutsideScore",
+      "plan_hash": "c2f5048cf586b549abf48abfbc70ba922de684d3e032e2ac7f60536728bb542b",
+      "roles": [
+        "canonical_typed_complement",
+        "reverse_cursor"
+      ],
+      "source_hash": "d046c6f14da258dc0055ec7e22d545faa9413816398a6320cb85efef9e491397"
+    },
+    {
+      "name": "ItemsWithLabels",
+      "plan_hash": "df52120843cf7e2b5c9492dce7cb2b153d5ae8941ec3fa9ed8d54a8d198499a8",
+      "roles": [
+        "dependent_complete_key_batch"
+      ],
+      "source_hash": "bfb79ae27ee26eaf49d00fb37b79338f2fa707c6ab07bfeb60892822c794bb80"
+    }
+  ],
+  "predecessor": {
+    "path": "fixtures/riffql/operational-query-capability-v4.json",
+    "sha256": "d4df09daa026aad644bba0771b0bd2c3ecd108e96b7634c03712d9fb336fd38b",
+    "unchanged": true
+  },
+  "query_module": {
+    "module_hash": "e943b03babf87d680037f0b10a9cf1a42631577ee2056813217befc0e5301cb5",
+    "name": "operational_access_corpus",
+    "version": 1
+  },
+  "refusal_inventory": {
+    "external_consumer_classes": [
+      {
+        "client_emulation_permitted": false,
+        "compiler_code": "RDB-QP003",
+        "consumer_class": "partitioned_tuple_store",
+        "historical_runtime_code": "RDB-QUERY-0102",
+        "recovery": "normalize_to_one_endpoint_or_obtain_a_separately_accepted_compiler_shape_then_recompile_and_redeploy",
+        "refused_source_count": 2,
+        "shape": "multiple_same_side_binary_text_endpoints"
+      }
+    ],
+    "repository_active_unproved_ordinary_plans": 0
+  },
+  "schema": "riffdb.operational-query-capability/v5",
+  "semantics": {
+    "caller_supplied_structure": false,
+    "client_shaping": false,
+    "finite_compiler_family": true,
+    "global_range_budget": true,
+    "logical_predicates_before_page": true,
+    "one_component_capability_registry": true,
+    "one_semantic_storage_schedule": true,
+    "partition_local": true,
+    "policy_before_release": true,
+    "profile_aware_binary_text_interval": true,
+    "request_time_authoritative_scan": false,
+    "row_store_provider_bridge": false,
+    "typed_generated_languages": [
+      "go",
+      "python",
+      "rust",
+      "typescript"
+    ]
+  },
+  "source_lock": {
+    "path": "fixtures/riffql/operational-access-corpus-v1/riffdb.application.lock.json",
+    "sha256": "42753e183a4991ecb1f89b16feed85d6931b94212948e8c90b09d7037bf42934"
+  },
+  "status": "development",
+  "work_package": "WP-701"
+}

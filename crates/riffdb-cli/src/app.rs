@@ -816,7 +816,7 @@ pub async fn run() -> ExitCode {
             role,
             watch: *watch,
             run: *run,
-            go_runner_package,
+            go_runner_package: go_runner_package.as_deref(),
             seed: *seed,
             seed_dir: seed_dir.as_deref(),
             seed_concurrency,
@@ -888,14 +888,7 @@ fn project_artifact_selection(
     project
         .generators()
         .iter()
-        .map(|target| match target {
-            crate::config::ProjectGenerator::Rust => GeneratedApplicationArtifactKind::Rust,
-            crate::config::ProjectGenerator::Go => GeneratedApplicationArtifactKind::Go,
-            crate::config::ProjectGenerator::Typescript => {
-                GeneratedApplicationArtifactKind::TypeScript
-            }
-            crate::config::ProjectGenerator::Python => GeneratedApplicationArtifactKind::Python,
-        })
+        .map(|target| target.surface().artifact_kind())
         .collect()
 }
 
@@ -1305,7 +1298,7 @@ struct DevInvocation<'a> {
     role: &'a str,
     watch: bool,
     run: bool,
-    go_runner_package: &'a std::ffi::OsStr,
+    go_runner_package: Option<&'a std::ffi::OsStr>,
     seed: bool,
     seed_dir: Option<&'a std::ffi::OsStr>,
     seed_concurrency: &'a str,
@@ -1330,6 +1323,27 @@ fn run_dev(invocation: DevInvocation<'_>) -> ExitCode {
         return ExitCode::FAILURE;
     };
     let mut command = ProcessCommand::new(script);
+    append_dev_script_arguments(&mut command, &application_root, &invocation);
+    match command.status() {
+        Ok(status) if status.success() => ExitCode::SUCCESS,
+        Ok(status) => ExitCode::from(
+            status
+                .code()
+                .and_then(|code| u8::try_from(code).ok())
+                .unwrap_or(1),
+        ),
+        Err(_) => {
+            eprintln!("riffdb dev workflow could not be started");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn append_dev_script_arguments(
+    command: &mut ProcessCommand,
+    application_root: &Path,
+    invocation: &DevInvocation<'_>,
+) {
     command.args([
         "--role",
         invocation.role,
@@ -1337,16 +1351,16 @@ fn run_dev(invocation: DevInvocation<'_>) -> ExitCode {
         invocation.seed_concurrency,
     ]);
     if application_root.join("riffdb.application.json").is_file() {
-        command.arg("--application-root").arg(&application_root);
+        command.arg("--application-root").arg(application_root);
     }
     if invocation.watch {
         command.arg("--watch");
     }
     if invocation.run {
         command.arg("--run");
-        command
-            .arg("--go-runner-package")
-            .arg(invocation.go_runner_package);
+    }
+    if let Some(go_runner_package) = invocation.go_runner_package {
+        command.arg("--go-runner-package").arg(go_runner_package);
     }
     if invocation.seed {
         command.arg("--seed");
@@ -1361,19 +1375,6 @@ fn run_dev(invocation: DevInvocation<'_>) -> ExitCode {
     }
     if invocation.acceptance {
         command.arg("--acceptance");
-    }
-    match command.status() {
-        Ok(status) if status.success() => ExitCode::SUCCESS,
-        Ok(status) => ExitCode::from(
-            status
-                .code()
-                .and_then(|code| u8::try_from(code).ok())
-                .unwrap_or(1),
-        ),
-        Err(_) => {
-            eprintln!("riffdb dev workflow could not be started");
-            ExitCode::FAILURE
-        }
     }
 }
 
@@ -12766,6 +12767,54 @@ mod tests {
             resolve_dev_script(&application, Some(&executable), &manifest),
             Some(workspace)
         );
+    }
+
+    #[test]
+    fn dev_script_receives_a_go_runner_package_only_when_explicitly_selected() {
+        let directory =
+            tempfile::TempDir::with_prefix("riffdb-cli-dev-arguments-").expect("scratch directory");
+        fs::write(directory.path().join("riffdb.application.json"), b"{}\n")
+            .expect("application source marker");
+        fs::write(directory.path().join("package.json"), b"{}\n")
+            .expect("TypeScript runner marker");
+
+        let arguments = |go_runner_package| {
+            let invocation = DevInvocation {
+                role: "application",
+                watch: false,
+                run: true,
+                go_runner_package,
+                seed: false,
+                seed_dir: None,
+                seed_concurrency: "8",
+                acceptance: false,
+            };
+            let mut command = ProcessCommand::new("riffdb-dev");
+            append_dev_script_arguments(&mut command, directory.path(), &invocation);
+            command
+                .get_args()
+                .map(std::ffi::OsStr::to_os_string)
+                .collect::<Vec<_>>()
+        };
+
+        let typescript_default = arguments(None);
+        assert!(
+            typescript_default
+                .iter()
+                .any(|argument| argument == "--run")
+        );
+        assert!(
+            !typescript_default
+                .iter()
+                .any(|argument| argument == "--go-runner-package")
+        );
+
+        let explicit_go = arguments(Some(std::ffi::OsStr::new("cmd/server")));
+        let option = explicit_go
+            .iter()
+            .position(|argument| argument == "--go-runner-package")
+            .expect("explicit Go package option");
+        assert_eq!(explicit_go.get(option + 1), Some(&"cmd/server".into()));
     }
 
     fn assert_terminal_omits(terminal: Terminal, needle: &[u8], mode: crate::cli::OutputMode) {

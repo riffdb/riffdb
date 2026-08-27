@@ -12,11 +12,12 @@ use riffdb_contract_ir::{
     EXECUTABLE_IR_VERSION_V6, EXECUTABLE_IR_VERSION_V7, EXECUTABLE_IR_VERSION_V8,
     EXECUTABLE_IR_VERSION_V9, EXECUTABLE_IR_VERSION_V10, EXECUTABLE_IR_VERSION_V11,
     EXECUTABLE_IR_VERSION_V12, EXECUTABLE_IR_VERSION_V13, EXECUTABLE_IR_VERSION_V14,
-    EXECUTABLE_IR_VERSION_V15, EXECUTABLE_IR_VERSION_V16, ExecutionClass, GRAMMAR_VERSION_V1,
-    GRAMMAR_VERSION_V2, GRAMMAR_VERSION_V3, GRAMMAR_VERSION_V4, GRAMMAR_VERSION_V5,
-    GRAMMAR_VERSION_V6, GRAMMAR_VERSION_V7, GRAMMAR_VERSION_V8, GRAMMAR_VERSION_V9,
-    GRAMMAR_VERSION_V10, GRAMMAR_VERSION_V11, GRAMMAR_VERSION_V12, GRAMMAR_VERSION_V13,
-    GRAMMAR_VERSION_V14, GRAMMAR_VERSION_V15, GRAMMAR_VERSION_V16, IndexSchema,
+    EXECUTABLE_IR_VERSION_V15, EXECUTABLE_IR_VERSION_V16, EXECUTABLE_IR_VERSION_V17,
+    ExecutionClass, GRAMMAR_VERSION_V1, GRAMMAR_VERSION_V2, GRAMMAR_VERSION_V3, GRAMMAR_VERSION_V4,
+    GRAMMAR_VERSION_V5, GRAMMAR_VERSION_V6, GRAMMAR_VERSION_V7, GRAMMAR_VERSION_V8,
+    GRAMMAR_VERSION_V9, GRAMMAR_VERSION_V10, GRAMMAR_VERSION_V11, GRAMMAR_VERSION_V12,
+    GRAMMAR_VERSION_V13, GRAMMAR_VERSION_V14, GRAMMAR_VERSION_V15, GRAMMAR_VERSION_V16,
+    GRAMMAR_VERSION_V17, IndexSchema,
 };
 use riffdb_invariant::{InputDerivedCommandFacts, derive_input_command_facts};
 #[cfg(test)]
@@ -1596,6 +1597,7 @@ const fn index_derivation_version_supported(grammar: u32, ir: u32) -> bool {
             | (GRAMMAR_VERSION_V14, EXECUTABLE_IR_VERSION_V14)
             | (GRAMMAR_VERSION_V15, EXECUTABLE_IR_VERSION_V15)
             | (GRAMMAR_VERSION_V16, EXECUTABLE_IR_VERSION_V16)
+            | (GRAMMAR_VERSION_V17, EXECUTABLE_IR_VERSION_V17)
     )
 }
 
@@ -1675,6 +1677,10 @@ fn derive_grammar_v1_indexes(
 
         let current_record = match (binding.mode(), &current.bindings()[binding_position]) {
             (BindingMode::Create, EntityObservation::Absent(_)) => None,
+            (BindingMode::InitOrMutate, EntityObservation::Absent(_)) => None,
+            (BindingMode::InitOrMutate, EntityObservation::Present(record)) => {
+                Some(record.fields())
+            }
             (BindingMode::Mutate | BindingMode::Delete, EntityObservation::Present(record)) => {
                 Some(record.fields())
             }
@@ -1947,10 +1953,10 @@ mod tests {
     // gate.
     #[test]
     fn index_derivation_admits_exactly_the_audited_identity_pairs() {
-        for grammar in 0..=16_u32 {
-            for ir in 0..=16_u32 {
+        for grammar in 0..=17_u32 {
+            for ir in 0..=17_u32 {
                 let audited_identity_pair =
-                    grammar == ir && (GRAMMAR_VERSION_V1..=GRAMMAR_VERSION_V16).contains(&grammar);
+                    grammar == ir && (GRAMMAR_VERSION_V1..=GRAMMAR_VERSION_V17).contains(&grammar);
                 assert_eq!(
                     index_derivation_version_supported(grammar, ir),
                     audited_identity_pair,

@@ -12,9 +12,9 @@ use crate::envelope::{PayloadValidationError, RecordRegistry, RecordSchema};
 use crate::storage::v1;
 
 /// Number of durable semantic payload tuples accepted while opening or migrating storage.
-pub const READABLE_RECORD_SCHEMA_COUNT: usize = 96;
+pub const READABLE_RECORD_SCHEMA_COUNT: usize = 97;
 /// Number of durable semantic roles accepted for current writes.
-pub const WRITABLE_RECORD_SCHEMA_COUNT: usize = 73;
+pub const WRITABLE_RECORD_SCHEMA_COUNT: usize = 74;
 /// Number of durable semantic roles accepted for current writes.
 pub const CURRENT_RECORD_SCHEMA_COUNT: usize = WRITABLE_RECORD_SCHEMA_COUNT;
 
@@ -332,6 +332,14 @@ const VECTOR_EVIDENCE_INDEX_V1_SCHEMA_HASH_BYTES: &[u8; 32] = include_bytes!(con
 const VECTOR_EVIDENCE_INDEX_V1_RECORD_BOUND_BYTES: &[u8; 8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/fixtures/durable-vector-evidence-index-v1-record-bound.bin"
+));
+const CLEAN_CLOSE_LIFECYCLE_V1_SCHEMA_HASH_BYTES: &[u8; 32] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/fixtures/durable-clean-close-lifecycle-v1-schema-hash.bin"
+));
+const CLEAN_CLOSE_LIFECYCLE_V1_RECORD_BOUND_BYTES: &[u8; 8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/fixtures/durable-clean-close-lifecycle-v1-record-bound.bin"
 ));
 const PRE_WP280_CAPABILITY_SCHEMA_HASH: SchemaHash = SchemaHash::from_bytes([
     0xcb, 0x42, 0xc4, 0xeb, 0xbc, 0xe8, 0x28, 0x01, 0x23, 0xf8, 0xb3, 0x4d, 0x4d, 0xcd, 0xe7, 0x4c,
@@ -1632,6 +1640,26 @@ const VECTOR_PROJECTION_CONTROL_V1_RECORD_SCHEMA: RecordSchema<'static> =
     )
     .with_compact_identity(65, 1);
 
+const CLEAN_CLOSE_LIFECYCLE_V1_RECORD_SCHEMA: RecordSchema<'static> = RecordSchema::new_current(
+    "riffdb.storage.v1.StoredCleanCloseLifecycleV1",
+    SchemaHash::from_bytes(*CLEAN_CLOSE_LIFECYCLE_V1_SCHEMA_HASH_BYTES),
+    u32::from_be_bytes([
+        CLEAN_CLOSE_LIFECYCLE_V1_RECORD_BOUND_BYTES[0],
+        CLEAN_CLOSE_LIFECYCLE_V1_RECORD_BOUND_BYTES[1],
+        CLEAN_CLOSE_LIFECYCLE_V1_RECORD_BOUND_BYTES[2],
+        CLEAN_CLOSE_LIFECYCLE_V1_RECORD_BOUND_BYTES[3],
+    ]) as usize,
+    u32::from_be_bytes([
+        CLEAN_CLOSE_LIFECYCLE_V1_RECORD_BOUND_BYTES[4],
+        CLEAN_CLOSE_LIFECYCLE_V1_RECORD_BOUND_BYTES[5],
+        CLEAN_CLOSE_LIFECYCLE_V1_RECORD_BOUND_BYTES[6],
+        CLEAN_CLOSE_LIFECYCLE_V1_RECORD_BOUND_BYTES[7],
+    ]) as usize,
+    preflight_payload::<91>,
+    validate_payload::<91, v1::StoredCleanCloseLifecycleV1>,
+)
+.with_compact_identity(66, 1);
+
 mod sealed {
     pub trait ReadableRecordMessage {}
     pub trait WritableRecordMessage: ReadableRecordMessage {}
@@ -1823,6 +1851,10 @@ readable_message!(v1::StoredCommandSegmentV4, COMMAND_SEGMENT_V4_RECORD_SCHEMA);
 readable_message!(v1::StoredCommandCapsuleV6, COMMAND_CAPSULE_V6_RECORD_SCHEMA);
 readable_message!(v1::StoredCommandSegmentV5, COMMAND_SEGMENT_V5_RECORD_SCHEMA);
 readable_message!(
+    v1::StoredCleanCloseLifecycleV1,
+    CLEAN_CLOSE_LIFECYCLE_V1_RECORD_SCHEMA
+);
+readable_message!(
     v1::StoredValidatedPrefixCheckpointV1,
     VALIDATED_PREFIX_CHECKPOINT_V1_RECORD_SCHEMA
 );
@@ -1970,6 +2002,7 @@ writable_message!(v1::StoredCommandCapsuleV5);
 writable_message!(v1::StoredCommandSegmentV4);
 writable_message!(v1::StoredCommandCapsuleV6);
 writable_message!(v1::StoredCommandSegmentV5);
+writable_message!(v1::StoredCleanCloseLifecycleV1);
 writable_message!(v1::StoredEntityChainHeadV1);
 writable_message!(v1::StoredChangelogV2RotationReceiptV1);
 writable_message!(v1::StoredCommandCapsuleV4);
@@ -2163,6 +2196,7 @@ pub static READABLE_RECORD_SCHEMAS: [RecordSchema<'static>; READABLE_RECORD_SCHE
     VECTOR_PROJECTION_CONTROL_V1_RECORD_SCHEMA,
     COMMAND_CAPSULE_V6_RECORD_SCHEMA,
     COMMAND_SEGMENT_V5_RECORD_SCHEMA,
+    CLEAN_CLOSE_LIFECYCLE_V1_RECORD_SCHEMA,
     PRE_WP280_CAPABILITY_RECORD_SCHEMA,
     PRE_WP416_CAPABILITY_RECORD_SCHEMA,
     PRE_WP416_CAPABILITY_TOKEN_LOOKUP_RECORD_SCHEMA,
@@ -2245,6 +2279,7 @@ pub static WRITABLE_RECORD_SCHEMAS: [RecordSchema<'static>; WRITABLE_RECORD_SCHE
     VECTOR_PROJECTION_CONTROL_V1_RECORD_SCHEMA,
     COMMAND_CAPSULE_V6_RECORD_SCHEMA,
     COMMAND_SEGMENT_V5_RECORD_SCHEMA,
+    CLEAN_CLOSE_LIFECYCLE_V1_RECORD_SCHEMA,
 ];
 
 /// Current durable schemas. `current` is exactly synonymous with writable roles.

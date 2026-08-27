@@ -410,7 +410,7 @@ pub struct ConsumeVerificationTokenInput {
     pub verification_token_id: String,
 }
 
-#[allow(clippy::large_enum_variant)]
+#[allow(clippy::enum_variant_names, clippy::large_enum_variant)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ConsumeVerificationTokenOutcome {
     VerificationTokenExpired,
@@ -475,7 +475,7 @@ pub struct CreateUserAccountSessionsInput {
     pub request_id: String,
 }
 
-#[allow(clippy::large_enum_variant)]
+#[allow(clippy::enum_variant_names, clippy::large_enum_variant)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CreateUserAccountSessionsOutcome {
     SignupUserExists,
@@ -530,7 +530,7 @@ pub struct DeleteUsersInput {
     pub organization_id: String,
 }
 
-#[allow(clippy::large_enum_variant)]
+#[allow(clippy::enum_variant_names, clippy::large_enum_variant)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum DeleteUsersOutcome {
     DeleteUserMissing,
@@ -586,7 +586,7 @@ pub struct IssueVerificationTokenInput {
     pub verification_token_id: String,
 }
 
-#[allow(clippy::large_enum_variant)]
+#[allow(clippy::enum_variant_names, clippy::large_enum_variant)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum IssueVerificationTokenOutcome {
     VerificationTokenExists,
@@ -646,6 +646,10 @@ impl GeneratedCommand for IssueVerificationTokenInput {
     }
 }
 
+pub const REFRESH_SESSION_SECRET_OUTPUTS: &[(&str, &str, &str, &str)] = &[
+    ("SessionRefreshed", "session", "Session", "token_digest"),
+];
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RefreshSessionInput {
     pub user_id: String,
@@ -656,8 +660,8 @@ pub struct RefreshSessionInput {
     pub successor_token_digest: String,
 }
 
-#[allow(clippy::large_enum_variant)]
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[allow(clippy::enum_variant_names, clippy::large_enum_variant)]
+#[derive(Clone, Eq, PartialEq)]
 pub enum RefreshSessionOutcome {
     SessionRefreshed {
         session: Session,
@@ -670,6 +674,10 @@ pub enum RefreshSessionOutcome {
     RefreshSessionMissing,
 
     RefreshSessionRevoked,
+}
+
+impl std::fmt::Debug for RefreshSessionOutcome {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { formatter.write_str("RefreshSessionOutcome([REDACTED])") }
 }
 
 const REFRESH_SESSION_PLAN_HASH: [u8; 32] = [0xbe, 0xc1, 0x58, 0x66, 0x3a, 0x65, 0x11, 0x37, 0x2e, 0x7f, 0x49, 0x7f, 0x3d, 0x0e, 0xd5, 0xae, 0x9f, 0xfa, 0x45, 0xa0, 0xa3, 0x9b, 0x7b, 0x54, 0xd7, 0x1a, 0x81, 0x7d, 0x9f, 0xd3, 0x10, 0x67];
@@ -725,6 +733,10 @@ impl GeneratedCommand for RefreshSessionInput {
     }
 }
 
+pub const REVOKE_SESSION_SECRET_OUTPUTS: &[(&str, &str, &str, &str)] = &[
+    ("SessionRevoked", "session", "Session", "token_digest"),
+];
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RevokeSessionInput {
     pub user_id: String,
@@ -734,8 +746,8 @@ pub struct RevokeSessionInput {
     pub expected_revision: u64,
 }
 
-#[allow(clippy::large_enum_variant)]
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[allow(clippy::enum_variant_names, clippy::large_enum_variant)]
+#[derive(Clone, Eq, PartialEq)]
 pub enum RevokeSessionOutcome {
     SessionRevoked {
         session: Session,
@@ -746,6 +758,10 @@ pub enum RevokeSessionOutcome {
     RevokeSessionMissing,
 
     SessionAlreadyRevoked,
+}
+
+impl std::fmt::Debug for RevokeSessionOutcome {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { formatter.write_str("RevokeSessionOutcome([REDACTED])") }
 }
 
 const REVOKE_SESSION_PLAN_HASH: [u8; 32] = [0x30, 0x90, 0x62, 0xf5, 0x0e, 0xe3, 0x5e, 0xea, 0x4b, 0x2a, 0xb7, 0x39, 0x3c, 0x8a, 0x3b, 0xe7, 0x45, 0x47, 0xa3, 0xd7, 0xe0, 0x59, 0x95, 0xeb, 0x6b, 0x8c, 0x6c, 0xec, 0xc9, 0xf3, 0x98, 0x13];

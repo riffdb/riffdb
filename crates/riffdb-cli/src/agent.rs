@@ -216,7 +216,7 @@ fn temporary_path(path: &Path) -> Result<PathBuf, AgentInitError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cli::ApplicationLanguage;
+    use crate::cli::ApplicationGenerator;
     use crate::project::{DEFAULT_PROJECT_FILE, initialize as initialize_project};
 
     fn project(root: &Path) -> ProjectConfig {
@@ -226,7 +226,7 @@ mod tests {
             Some("inventory"),
             Some("http://127.0.0.1:7443"),
             Some("inventory-db"),
-            &[ApplicationLanguage::Rust],
+            &[ApplicationGenerator::Rust],
         )
         .expect("project")
     }

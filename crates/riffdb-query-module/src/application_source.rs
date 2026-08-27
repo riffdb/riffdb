@@ -22,6 +22,8 @@ pub const APPLICATION_SOURCE_SCHEMA_V4: &str = "riffdb.application-source/v4";
 pub const APPLICATION_SOURCE_SCHEMA_V5: &str = "riffdb.application-source/v5";
 /// Symbolic source schema binding compiler-owned row policies to exact roles.
 pub const APPLICATION_SOURCE_SCHEMA_V6: &str = "riffdb.application-source/v6";
+/// Symbolic source schema with a closed sparse generated-surface declaration.
+pub const APPLICATION_SOURCE_SCHEMA_V7: &str = "riffdb.application-source/v7";
 /// Maximum accepted application-source bytes.
 pub const MAX_APPLICATION_SOURCE_BYTES: usize = 1_048_576;
 const MAX_NAME_BYTES: usize = 256;
@@ -246,24 +248,36 @@ impl ApplicationSourceRole {
 /// Compiler-generated output paths.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ApplicationSourceGeneration {
-    rust: String,
-    typescript: String,
+    rust: Option<String>,
+    typescript: Option<String>,
     go: Option<String>,
-    mcp: String,
+    mcp: Option<String>,
     python: Option<String>,
 }
 
 impl ApplicationSourceGeneration {
+    /// Declared output path for one compiler-owned surface.
+    #[must_use]
+    pub fn path(&self, surface: crate::GeneratedApplicationSurface) -> Option<&str> {
+        match surface {
+            crate::GeneratedApplicationSurface::Rust => self.rust(),
+            crate::GeneratedApplicationSurface::Go => self.go(),
+            crate::GeneratedApplicationSurface::TypeScript => self.typescript(),
+            crate::GeneratedApplicationSurface::Python => self.python(),
+            crate::GeneratedApplicationSurface::Mcp => self.mcp(),
+        }
+    }
+
     /// Rust output path.
     #[must_use]
-    pub fn rust(&self) -> &str {
-        &self.rust
+    pub fn rust(&self) -> Option<&str> {
+        self.rust.as_deref()
     }
 
     /// TypeScript output path.
     #[must_use]
-    pub fn typescript(&self) -> &str {
-        &self.typescript
+    pub fn typescript(&self) -> Option<&str> {
+        self.typescript.as_deref()
     }
 
     /// Go output path for V5 source manifests.
@@ -274,8 +288,8 @@ impl ApplicationSourceGeneration {
 
     /// MCP output path.
     #[must_use]
-    pub fn mcp(&self) -> &str {
-        &self.mcp
+    pub fn mcp(&self) -> Option<&str> {
+        self.mcp.as_deref()
     }
 
     /// Python output path for V2 source manifests.
@@ -321,6 +335,7 @@ impl ApplicationSourceManifest {
             APPLICATION_SOURCE_SCHEMA_V4
                 | APPLICATION_SOURCE_SCHEMA_V5
                 | APPLICATION_SOURCE_SCHEMA_V6
+                | APPLICATION_SOURCE_SCHEMA_V7
         ) {
             &[
                 "application",
@@ -363,6 +378,7 @@ impl ApplicationSourceManifest {
             APPLICATION_SOURCE_SCHEMA_V4 => APPLICATION_SOURCE_SCHEMA_V4,
             APPLICATION_SOURCE_SCHEMA_V5 => APPLICATION_SOURCE_SCHEMA_V5,
             APPLICATION_SOURCE_SCHEMA_V6 => APPLICATION_SOURCE_SCHEMA_V6,
+            APPLICATION_SOURCE_SCHEMA_V7 => APPLICATION_SOURCE_SCHEMA_V7,
             _ => {
                 return Err(ApplicationSourceError::new(
                     ApplicationSourceErrorKind::UnsupportedVersion,
@@ -377,6 +393,7 @@ impl ApplicationSourceManifest {
             APPLICATION_SOURCE_SCHEMA_V4
                 | APPLICATION_SOURCE_SCHEMA_V5
                 | APPLICATION_SOURCE_SCHEMA_V6
+                | APPLICATION_SOURCE_SCHEMA_V7
         ) {
             parse_reactive_modules(required(root, "reactive_modules")?)?
         } else {
@@ -391,6 +408,7 @@ impl ApplicationSourceManifest {
                 | APPLICATION_SOURCE_SCHEMA_V4
                 | APPLICATION_SOURCE_SCHEMA_V5
                 | APPLICATION_SOURCE_SCHEMA_V6
+                | APPLICATION_SOURCE_SCHEMA_V7
         ) {
             parse_migrations(required(root, "migrations")?)?
         } else {
@@ -521,6 +539,7 @@ impl ApplicationSourceManifest {
             APPLICATION_SOURCE_SCHEMA_V4
                 | APPLICATION_SOURCE_SCHEMA_V5
                 | APPLICATION_SOURCE_SCHEMA_V6
+                | APPLICATION_SOURCE_SCHEMA_V7
         ) {
             return Err(ApplicationSourceError::new(
                 ApplicationSourceErrorKind::IdentityMismatch,
@@ -614,6 +633,7 @@ impl ApplicationSourceManifest {
             APPLICATION_SOURCE_SCHEMA_V4
                 | APPLICATION_SOURCE_SCHEMA_V5
                 | APPLICATION_SOURCE_SCHEMA_V6
+                | APPLICATION_SOURCE_SCHEMA_V7
         ) || reactive.len() != self.reactive_modules.len()
         {
             return Err(ApplicationSourceError::new(
@@ -627,7 +647,9 @@ impl ApplicationSourceManifest {
             .expect("compiler-created manifest object");
         root.insert(
             "schema".to_owned(),
-            json!(if self.schema == APPLICATION_SOURCE_SCHEMA_V6 {
+            json!(if self.schema == APPLICATION_SOURCE_SCHEMA_V7 {
+                crate::APPLICATION_MANIFEST_SCHEMA_V5
+            } else if self.schema == APPLICATION_SOURCE_SCHEMA_V6 {
                 crate::APPLICATION_MANIFEST_SCHEMA_V4
             } else if self.schema == APPLICATION_SOURCE_SCHEMA_V5 {
                 crate::APPLICATION_MANIFEST_SCHEMA_V3
@@ -639,10 +661,18 @@ impl ApplicationSourceManifest {
         if let Some(go) = self.generation.go() {
             generation.insert("go".to_owned(), json!(go));
         }
-        generation.insert("mcp".to_owned(), json!(self.generation.mcp));
-        generation.insert("python".to_owned(), json!(self.generation.python));
-        generation.insert("rust".to_owned(), json!(self.generation.rust));
-        generation.insert("typescript".to_owned(), json!(self.generation.typescript));
+        if let Some(mcp) = self.generation.mcp() {
+            generation.insert("mcp".to_owned(), json!(mcp));
+        }
+        if let Some(python) = self.generation.python() {
+            generation.insert("python".to_owned(), json!(python));
+        }
+        if let Some(rust) = self.generation.rust() {
+            generation.insert("rust".to_owned(), json!(rust));
+        }
+        if let Some(typescript) = self.generation.typescript() {
+            generation.insert("typescript".to_owned(), json!(typescript));
+        }
         root.insert("generation".to_owned(), Value::Object(generation));
         root.insert("reactive_modules".to_owned(), json!(self.reactive_modules.iter().map(|declared| {
             let module = reactive.iter().find(|module| module.name() == declared.name)
@@ -673,6 +703,60 @@ impl ApplicationSourceManifest {
         contract: &ContractBundle,
         modules: &[QueryModule],
     ) -> Result<Value, ApplicationSourceError> {
+        if self.schema == APPLICATION_SOURCE_SCHEMA_V7 {
+            if contract.lineage().as_str() != self.contract.lineage
+                || contract.contract_version().get() != self.contract.version
+                || modules.len() != self.query_modules.len()
+            {
+                return Err(ApplicationSourceError::new(
+                    ApplicationSourceErrorKind::IdentityMismatch,
+                ));
+            }
+            let mut exact_modules = Vec::with_capacity(modules.len());
+            for declared in &self.query_modules {
+                let module = modules
+                    .iter()
+                    .find(|module| module.name().as_str() == declared.name)
+                    .ok_or_else(|| {
+                        ApplicationSourceError::new(ApplicationSourceErrorKind::IdentityMismatch)
+                    })?;
+                if module.version().get() != declared.version
+                    || module.contract_hash() != contract.bundle_hash()
+                    || module.queries().len() != declared.queries.len()
+                    || declared
+                        .queries
+                        .iter()
+                        .any(|query| module.query(&query.name).is_none())
+                {
+                    return Err(ApplicationSourceError::new(
+                        ApplicationSourceErrorKind::IdentityMismatch,
+                    ));
+                }
+                exact_modules.push(json!({
+                    "module_hash": hex(module.identity().as_bytes()),
+                    "name": declared.name,
+                    "queries": declared.queries.iter().map(|query| json!({
+                        "name": query.name,
+                        "source": query.source,
+                    })).collect::<Vec<_>>(),
+                    "version": declared.version,
+                }));
+            }
+            return Ok(json!({
+                "application": self.application_name,
+                "contract": {
+                    "bundle_hash": hex(contract.bundle_hash().as_bytes()),
+                    "lineage": self.contract.lineage,
+                    "source": self.contract.source,
+                    "version": self.contract.version,
+                },
+                "generation": {},
+                "query_modules": exact_modules,
+                "roles": [],
+                "schema": crate::APPLICATION_MANIFEST_SCHEMA_V5,
+                "seed_inputs": self.seed_inputs,
+            }));
+        }
         let compatible = self.exact_manifest_legacy(contract, modules)?;
         serde_json::from_slice(compatible.canonical_bytes())
             .map_err(|_| ApplicationSourceError::new(ApplicationSourceErrorKind::InvalidJson))
@@ -776,15 +860,21 @@ fn canonical_value(source: CanonicalApplicationSource<'_>) -> Value {
         schema,
     } = source;
     let mut generation_value = Map::new();
-    generation_value.insert("mcp".to_owned(), json!(generation.mcp));
+    if let Some(mcp) = &generation.mcp {
+        generation_value.insert("mcp".to_owned(), json!(mcp));
+    }
     if let Some(go) = &generation.go {
         generation_value.insert("go".to_owned(), json!(go));
     }
     if let Some(python) = &generation.python {
         generation_value.insert("python".to_owned(), json!(python));
     }
-    generation_value.insert("rust".to_owned(), json!(generation.rust));
-    generation_value.insert("typescript".to_owned(), json!(generation.typescript));
+    if let Some(rust) = &generation.rust {
+        generation_value.insert("rust".to_owned(), json!(rust));
+    }
+    if let Some(typescript) = &generation.typescript {
+        generation_value.insert("typescript".to_owned(), json!(typescript));
+    }
     let mut root = Map::new();
     root.insert("application".to_owned(), json!(application));
     root.insert(
@@ -802,6 +892,7 @@ fn canonical_value(source: CanonicalApplicationSource<'_>) -> Value {
             | APPLICATION_SOURCE_SCHEMA_V4
             | APPLICATION_SOURCE_SCHEMA_V5
             | APPLICATION_SOURCE_SCHEMA_V6
+            | APPLICATION_SOURCE_SCHEMA_V7
     ) {
         root.insert(
             "migrations".to_owned(),
@@ -834,7 +925,10 @@ fn canonical_value(source: CanonicalApplicationSource<'_>) -> Value {
     );
     if matches!(
         schema,
-        APPLICATION_SOURCE_SCHEMA_V4 | APPLICATION_SOURCE_SCHEMA_V5 | APPLICATION_SOURCE_SCHEMA_V6
+        APPLICATION_SOURCE_SCHEMA_V4
+            | APPLICATION_SOURCE_SCHEMA_V5
+            | APPLICATION_SOURCE_SCHEMA_V6
+            | APPLICATION_SOURCE_SCHEMA_V7
     ) {
         root.insert(
             "reactive_modules".to_owned(),
@@ -853,7 +947,7 @@ fn canonical_value(source: CanonicalApplicationSource<'_>) -> Value {
         json!(
             roles
                 .iter()
-                .map(|role| if matches!(schema, APPLICATION_SOURCE_SCHEMA_V4 | APPLICATION_SOURCE_SCHEMA_V5 | APPLICATION_SOURCE_SCHEMA_V6) {
+                .map(|role| if matches!(schema, APPLICATION_SOURCE_SCHEMA_V4 | APPLICATION_SOURCE_SCHEMA_V5 | APPLICATION_SOURCE_SCHEMA_V6 | APPLICATION_SOURCE_SCHEMA_V7) {
                     reactive_role_value(role, schema)
                 } else { json!({
                     "commands": role.commands, "environment": role.environment, "name": role.name,
@@ -878,7 +972,10 @@ fn reactive_role_value(role: &ApplicationSourceRole, schema: &str) -> Value {
         "tenant_scope": role.tenant_scope.as_str(),
         "watch_queries": role.watch_queries,
     });
-    if schema == APPLICATION_SOURCE_SCHEMA_V6 {
+    if matches!(
+        schema,
+        APPLICATION_SOURCE_SCHEMA_V6 | APPLICATION_SOURCE_SCHEMA_V7
+    ) {
         value
             .as_object_mut()
             .expect("compiler-created role object")
@@ -989,7 +1086,10 @@ fn parse_roles(
         .collect::<BTreeSet<_>>();
     let mut roles = Vec::with_capacity(values.len());
     for value in values {
-        let object = if schema == APPLICATION_SOURCE_SCHEMA_V6 {
+        let object = if matches!(
+            schema,
+            APPLICATION_SOURCE_SCHEMA_V6 | APPLICATION_SOURCE_SCHEMA_V7
+        ) {
             object(
                 value,
                 &[
@@ -1036,6 +1136,7 @@ fn parse_roles(
             APPLICATION_SOURCE_SCHEMA_V4
                 | APPLICATION_SOURCE_SCHEMA_V5
                 | APPLICATION_SOURCE_SCHEMA_V6
+                | APPLICATION_SOURCE_SCHEMA_V7
         ) {
             parse_names(required(object, "event_streams")?, MAX_ROLE_OPERATIONS)?
         } else {
@@ -1046,6 +1147,7 @@ fn parse_roles(
             APPLICATION_SOURCE_SCHEMA_V4
                 | APPLICATION_SOURCE_SCHEMA_V5
                 | APPLICATION_SOURCE_SCHEMA_V6
+                | APPLICATION_SOURCE_SCHEMA_V7
         ) {
             parse_names(required(object, "watch_queries")?, MAX_ROLE_OPERATIONS)?
         } else {
@@ -1056,6 +1158,7 @@ fn parse_roles(
             APPLICATION_SOURCE_SCHEMA_V4
                 | APPLICATION_SOURCE_SCHEMA_V5
                 | APPLICATION_SOURCE_SCHEMA_V6
+                | APPLICATION_SOURCE_SCHEMA_V7
         ) {
             parse_names(
                 required(object, "agent_subscriptions")?,
@@ -1064,7 +1167,10 @@ fn parse_roles(
         } else {
             Vec::new()
         };
-        let mut row_policies = if schema == APPLICATION_SOURCE_SCHEMA_V6 {
+        let mut row_policies = if matches!(
+            schema,
+            APPLICATION_SOURCE_SCHEMA_V6 | APPLICATION_SOURCE_SCHEMA_V7
+        ) {
             parse_names(required(object, "row_policies")?, MAX_ROLE_OPERATIONS)?
         } else {
             Vec::new()
@@ -1116,7 +1222,22 @@ fn parse_generation(
     value: &Value,
     schema: &str,
 ) -> Result<ApplicationSourceGeneration, ApplicationSourceError> {
-    let object = if schema == APPLICATION_SOURCE_SCHEMA_V1 {
+    let object = if schema == APPLICATION_SOURCE_SCHEMA_V7 {
+        let object = value
+            .as_object()
+            .ok_or_else(|| ApplicationSourceError::new(ApplicationSourceErrorKind::InvalidShape))?;
+        if object.is_empty()
+            || object.len() > 5
+            || object
+                .keys()
+                .any(|key| crate::GeneratedApplicationSurface::parse(key).is_none())
+        {
+            return Err(ApplicationSourceError::new(
+                ApplicationSourceErrorKind::InvalidShape,
+            ));
+        }
+        object
+    } else if schema == APPLICATION_SOURCE_SCHEMA_V1 {
         object(value, &["mcp", "rust", "typescript"])?
     } else if matches!(
         schema,
@@ -1126,10 +1247,32 @@ fn parse_generation(
     } else {
         object(value, &["mcp", "python", "rust", "typescript"])?
     };
+    let optional_path = |key: &str| {
+        object
+            .get(key)
+            .map(|value| {
+                value.as_str().ok_or_else(|| {
+                    ApplicationSourceError::new(ApplicationSourceErrorKind::InvalidShape)
+                })
+            })
+            .transpose()?
+            .map(checked_path)
+            .transpose()
+    };
     let generation = ApplicationSourceGeneration {
-        rust: checked_path(string(object, "rust")?)?,
-        typescript: checked_path(string(object, "typescript")?)?,
-        go: if matches!(
+        rust: if schema == APPLICATION_SOURCE_SCHEMA_V7 {
+            optional_path("rust")?
+        } else {
+            Some(checked_path(string(object, "rust")?)?)
+        },
+        typescript: if schema == APPLICATION_SOURCE_SCHEMA_V7 {
+            optional_path("typescript")?
+        } else {
+            Some(checked_path(string(object, "typescript")?)?)
+        },
+        go: if schema == APPLICATION_SOURCE_SCHEMA_V7 {
+            optional_path("go")?
+        } else if matches!(
             schema,
             APPLICATION_SOURCE_SCHEMA_V5 | APPLICATION_SOURCE_SCHEMA_V6
         ) {
@@ -1137,25 +1280,30 @@ fn parse_generation(
         } else {
             None
         },
-        mcp: checked_path(string(object, "mcp")?)?,
-        python: if schema != APPLICATION_SOURCE_SCHEMA_V1 {
+        mcp: if schema == APPLICATION_SOURCE_SCHEMA_V7 {
+            optional_path("mcp")?
+        } else {
+            Some(checked_path(string(object, "mcp")?)?)
+        },
+        python: if schema == APPLICATION_SOURCE_SCHEMA_V7 {
+            optional_path("python")?
+        } else if schema != APPLICATION_SOURCE_SCHEMA_V1 {
             Some(checked_path(string(object, "python")?)?)
         } else {
             None
         },
     };
-    let mut paths = vec![
-        generation.rust.as_str(),
-        generation.typescript.as_str(),
-        generation.mcp.as_str(),
-    ];
-    if let Some(go) = generation.go.as_deref() {
-        paths.push(go);
-    }
-    if let Some(python) = generation.python.as_deref() {
-        paths.push(python);
-    }
-    ensure_unique(paths)?;
+    ensure_unique(
+        [
+            generation.go.as_deref(),
+            generation.mcp.as_deref(),
+            generation.python.as_deref(),
+            generation.rust.as_deref(),
+            generation.typescript.as_deref(),
+        ]
+        .into_iter()
+        .flatten(),
+    )?;
     Ok(generation)
 }
 
@@ -1396,6 +1544,39 @@ mod tests {
             include_str!("../../../fixtures/application-manifests/empty-project-v5.identity")
                 .trim_end()
         );
+    }
+
+    #[test]
+    fn v7_accepts_only_a_nonempty_closed_unique_sparse_surface_set() {
+        let fixture = include_str!("../../../fixtures/application-manifests/go-only-v7.json");
+        let source = ApplicationSourceManifest::decode_canonical(fixture.as_bytes())
+            .expect("canonical Go-only V7 source");
+        assert_eq!(source.schema(), APPLICATION_SOURCE_SCHEMA_V7);
+        assert_eq!(source.generation().go(), Some("generated/go/client.go"));
+        assert_eq!(source.generation().rust(), None);
+        assert_eq!(source.generation().typescript(), None);
+        assert_eq!(source.generation().python(), None);
+        assert_eq!(source.generation().mcp(), None);
+
+        for invalid in [
+            fixture.replace(
+                r#""generation":{"go":"generated/go/client.go"}"#,
+                r#""generation":{}"#,
+            ),
+            fixture.replace(
+                r#""generation":{"go":"generated/go/client.go"}"#,
+                r#""generation":{"java":"generated/java/Client.java"}"#,
+            ),
+            fixture.replace(
+                r#""generation":{"go":"generated/go/client.go"}"#,
+                r#""generation":{"go":"generated/client","rust":"generated/client"}"#,
+            ),
+        ] {
+            assert!(
+                ApplicationSourceManifest::parse(&invalid).is_err(),
+                "invalid sparse declaration must fail closed"
+            );
+        }
     }
 
     #[test]

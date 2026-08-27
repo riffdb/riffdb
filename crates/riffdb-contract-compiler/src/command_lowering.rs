@@ -210,8 +210,10 @@ fn lower_command(
     let mut cascade_failure_occurrence = BTreeMap::new();
     let mut occurrences = Vec::new();
     for binding in &command.bindings {
-        failure_occurrence.insert(binding.id, occurrences.len());
-        occurrences.push(&binding.failure);
+        if let Some(failure) = &binding.failure {
+            failure_occurrence.insert(binding.id, occurrences.len());
+            occurrences.push(failure);
+        }
         if let Some(failure) = &binding.restriction_failure {
             restriction_failure_occurrence.insert(binding.id, occurrences.len());
             occurrences.push(failure);
@@ -351,30 +353,49 @@ fn lower_command(
             let entity = schema
                 .entity(binding.entity_id)
                 .ok_or_else(|| ir_diagnostic(binding.entity_span))?;
-            BindingPlan::new_with_delete_failures(
-                binding.id,
-                binding.name.clone(),
-                binding.mode,
-                binding.entity_id,
-                entity.primary_key().clone(),
-                binding
-                    .arguments
-                    .iter()
-                    .map(|argument| argument.id)
-                    .collect(),
-                accessed_fields[index].iter().copied().collect(),
-                complete_access[index],
-                constructions[*failure_occurrence
-                    .get(&binding.id)
-                    .expect("binding occurrence")]
-                .clone(),
-                restriction_failure_occurrence
-                    .get(&binding.id)
-                    .map(|occurrence| constructions[*occurrence].clone()),
-                cascade_failure_occurrence
-                    .get(&binding.id)
-                    .map(|occurrence| constructions[*occurrence].clone()),
-            )
+            let key_expressions = binding
+                .arguments
+                .iter()
+                .map(|argument| argument.id)
+                .collect();
+            let accessed_fields = accessed_fields[index].iter().copied().collect();
+            if binding.mode == BindingMode::InitOrMutate {
+                BindingPlan::new_initialized(
+                    binding.id,
+                    binding.name.clone(),
+                    binding.entity_id,
+                    entity.primary_key().clone(),
+                    key_expressions,
+                    accessed_fields,
+                    complete_access[index],
+                    binding
+                        .initializer
+                        .iter()
+                        .map(|field| FieldExpression::new(field.id, field.value.id))
+                        .collect(),
+                )
+            } else {
+                BindingPlan::new_with_delete_failures(
+                    binding.id,
+                    binding.name.clone(),
+                    binding.mode,
+                    binding.entity_id,
+                    entity.primary_key().clone(),
+                    key_expressions,
+                    accessed_fields,
+                    complete_access[index],
+                    constructions[*failure_occurrence
+                        .get(&binding.id)
+                        .expect("ordinary binding occurrence")]
+                    .clone(),
+                    restriction_failure_occurrence
+                        .get(&binding.id)
+                        .map(|occurrence| constructions[*occurrence].clone()),
+                    cascade_failure_occurrence
+                        .get(&binding.id)
+                        .map(|occurrence| constructions[*occurrence].clone()),
+                )
+            }
             .map_err(|_| ir_diagnostic(binding.name_span))
         })
         .collect::<Result<Vec<_>, _>>()
@@ -552,7 +573,10 @@ fn lower_command(
     let execution_class = if command.bindings.iter().any(|binding| {
         matches!(
             binding.mode,
-            BindingMode::Mutate | BindingMode::Create | BindingMode::Delete
+            BindingMode::Mutate
+                | BindingMode::Create
+                | BindingMode::InitOrMutate
+                | BindingMode::Delete
         )
     }) || !command.effects.is_empty()
     {
@@ -928,7 +952,10 @@ fn lower_locality(
         .find(|binding| {
             matches!(
                 binding.mode,
-                BindingMode::Mutate | BindingMode::Create | BindingMode::Delete
+                BindingMode::Mutate
+                    | BindingMode::Create
+                    | BindingMode::InitOrMutate
+                    | BindingMode::Delete
             )
         })
         .or_else(|| command.bindings.first())
@@ -972,7 +999,10 @@ fn lower_locality(
         .filter(|binding| {
             matches!(
                 binding.mode,
-                BindingMode::Mutate | BindingMode::Create | BindingMode::Delete
+                BindingMode::Mutate
+                    | BindingMode::Create
+                    | BindingMode::InitOrMutate
+                    | BindingMode::Delete
             )
         })
         .collect::<Vec<_>>();
@@ -1028,11 +1058,12 @@ fn lower_commit_checks(
     diagnostics: &mut Vec<CompilerDiagnostic>,
 ) -> (Vec<RawCommitCheck>, Vec<RawRootValidationRead>) {
     let mut checks = Vec::new();
-    for binding in command
-        .bindings
-        .iter()
-        .filter(|binding| matches!(binding.mode, BindingMode::Mutate | BindingMode::Create))
-    {
+    for binding in command.bindings.iter().filter(|binding| {
+        matches!(
+            binding.mode,
+            BindingMode::Mutate | BindingMode::Create | BindingMode::InitOrMutate
+        )
+    }) {
         let Some(entity) = hir.entity(binding.entity_id) else {
             diagnostics.push(ir_diagnostic(binding.entity_span));
             continue;
@@ -1098,7 +1129,10 @@ fn lower_commit_checks(
     for binding in command.bindings.iter().filter(|binding| {
         matches!(
             binding.mode,
-            BindingMode::Mutate | BindingMode::Create | BindingMode::Delete
+            BindingMode::Mutate
+                | BindingMode::Create
+                | BindingMode::InitOrMutate
+                | BindingMode::Delete
         )
     }) {
         if binding.mode == BindingMode::Delete && binding.entity_id == aggregate.root {
@@ -1324,7 +1358,7 @@ fn command_instructions(
         .bindings
         .iter()
         .map(|binding| {
-            1usize
+            usize::from(binding.failure.is_some())
                 + usize::from(binding.restriction_failure.is_some())
                 + usize::from(binding.cascade_failure.is_some())
         })
@@ -1748,13 +1782,25 @@ contract Example version 1 {
         assert_eq!(plan.bindings()[0].id(), BindingId::new(0));
         assert_eq!(plan.bindings()[1].id(), BindingId::new(1));
         assert_ne!(
-            plan.bindings()[0].failure().outcome_id(),
-            plan.bindings()[1].failure().outcome_id()
+            plan.bindings()[0]
+                .failure()
+                .expect("first failure")
+                .outcome_id(),
+            plan.bindings()[1]
+                .failure()
+                .expect("second failure")
+                .outcome_id()
         );
         assert_eq!(
             plan.outcomes()
                 .iter()
-                .find(|outcome| { outcome.id() == plan.bindings()[0].failure().outcome_id() })
+                .find(|outcome| {
+                    outcome.id()
+                        == plan.bindings()[0]
+                            .failure()
+                            .expect("first failure")
+                            .outcome_id()
+                })
                 .expect("first failure outcome")
                 .name(),
             "MissingFirst"
@@ -1762,7 +1808,13 @@ contract Example version 1 {
         assert_eq!(
             plan.outcomes()
                 .iter()
-                .find(|outcome| { outcome.id() == plan.bindings()[1].failure().outcome_id() })
+                .find(|outcome| {
+                    outcome.id()
+                        == plan.bindings()[1]
+                            .failure()
+                            .expect("second failure")
+                            .outcome_id()
+                })
                 .expect("second failure outcome")
                 .name(),
             "MissingSecond"

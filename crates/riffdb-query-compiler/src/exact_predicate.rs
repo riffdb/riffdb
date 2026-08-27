@@ -8,14 +8,17 @@ use riffdb_query_ir::{
     ExactOrderTermV1, ExactOrderTermV2, ExactPredicateLeafV1, ExactPredicateNodeV1,
     ExactPredicateOperatorV1, ExactPredicateProgramV1, ExactPredicateProgramV2,
     ExactProviderRequirementV1, ExactStatePlacementV1, ExactValueSlotV1, OperationalQueryFamilyV1,
-    ResolvedQueryV1, SymbolicCatalog, resolve_query_surface,
+    ResolvedQueryV1, SymbolicCatalog, resolve_query_surface, source_aggregate_semantic_identity,
 };
 use riffdb_riffql_syntax::{
     AggregateFunction, BinaryOperator, Cardinality, Direction, Document, Expression, NullPlacement,
     Path, RIFFQL_LANGUAGE_VERSION_EXACT_PREDICATE_V1,
     RIFFQL_LANGUAGE_VERSION_NULLABLE_EXACT_ORDER_V1, Span, Spanned, TypeReference, UnaryOperator,
 };
-use riffdb_types::{MAX_EXACT_TEXT_ROWS_PER_PARTITION_V1, ProjectionProviderPolicyModeV1};
+use riffdb_types::{
+    AggregateSemanticIdentityV1, MAX_EXACT_TEXT_ROWS_PER_PARTITION_V1,
+    ProjectionProviderPolicyModeV1,
+};
 
 use crate::{PlannerDiagnosticCode, PlannerDiagnostics, compile_operational_query_family, one};
 
@@ -176,7 +179,8 @@ fn compile_exact_predicate_query_core(
     if aggregate.source.value != binding.name.value
         || !aggregate.group_by.is_empty()
         || aggregate.measures.len() != 1
-        || aggregate.measures[0].function.value != AggregateFunction::ExactCount
+        || source_aggregate_semantic_identity(aggregate.measures[0].function.value)
+            != AggregateSemanticIdentityV1::ExactCount
         || aggregate.measures[0].field.is_some()
     {
         return Err(diagnostic(
@@ -407,7 +411,9 @@ fn compile_metadata(
     }
     for aggregate in &mut metadata.body.aggregates {
         for measure in &mut aggregate.measures {
-            if measure.function.value == AggregateFunction::ExactCount {
+            if source_aggregate_semantic_identity(measure.function.value)
+                == AggregateSemanticIdentityV1::ExactCount
+            {
                 measure.function.value = AggregateFunction::Count;
             }
         }

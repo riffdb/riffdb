@@ -83,7 +83,10 @@ pub(crate) fn analyze_locality(
             };
             if matches!(
                 binding.mode,
-                BindingMode::Create | BindingMode::Mutate | BindingMode::Delete
+                BindingMode::Create
+                    | BindingMode::Mutate
+                    | BindingMode::InitOrMutate
+                    | BindingMode::Delete
             ) {
                 if let Some(expected) = mutation_aggregate {
                     if expected != aggregate_id {

@@ -1,0 +1,19 @@
+syntax = "proto3";
+
+package riffdb.storage.v1;
+
+enum StoredCleanCloseLifecycleStateV1 {
+  STORED_CLEAN_CLOSE_LIFECYCLE_STATE_V1_UNSPECIFIED = 0;
+  STORED_CLEAN_CLOSE_LIFECYCLE_STATE_V1_DIRTY = 1;
+  STORED_CLEAN_CLOSE_LIFECYCLE_STATE_V1_CLEAN = 2;
+}
+
+message StoredCleanCloseLifecycleV1 {
+  bytes database_id = 1;
+  fixed64 history_incarnation = 2;
+  bytes record_registry_digest = 3;
+  fixed64 lifecycle_generation = 4;
+  StoredCleanCloseLifecycleStateV1 state = 5;
+  bytes clean_state_binding_hash = 6;
+  bytes lifecycle_hash = 7;
+}

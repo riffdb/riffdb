@@ -46,16 +46,23 @@ capability, but neither its route vocabulary nor its userland policy becomes a
 RiffDB feature.
 
 External adapters can pin
-`release/evidence/operational-query-capability-v3.json`. The current development
-receipt preserves immutable V1 and V2 predecessors and binds the neutral
-contract, module, V6 predicate plans, V7 nullable-order plans, and generated
-Rust/Go/TypeScript/Python artifacts to immutable hashes. V3 additionally binds
-reachability-only TypeScript compact helpers and strict unused-symbol compiler
-acceptance. It deliberately records external route acceptance as
-`not_proved_by_neutral_corpus`: the adapter repository must still show that its
-real public routes delegate only to those pinned generated operations without
-filtering, sorting, counting, page walking, raw query construction, or storage
-access.
+`fixtures/riffql/operational-query-capability-v5.json`. V5 preserves the
+immutable V1 through V4 receipts and extends the neutral operational-access
+corpus with binary UTF-8 interval/complement alongside shared equality,
+membership, prefix, canonical range/complement, nullable, cursor, policy, and
+dependent-key shapes. It binds the exact application lock and generated Rust,
+Go, TypeScript, Python, and MCP artifacts.
+
+V5 also binds one value-free external tuple-changelog receipt demonstrating
+that one bytewise text-key index can supply strict lower/upper selection and
+order, and that its exact package may declare only a generated Go surface.
+That receipt contains hashes and typed verification classes only; it contains
+no external schema, route, adapter, generated profile, or stored value. It
+explicitly does not claim external runtime, full external application, or
+framework conformance. The owning
+adapter repository must still prove that its real public surface delegates only
+to pinned generated operations without filtering, sorting, counting, page
+walking, raw query construction, or storage access.
 
 ## Keyless upstream retries
 

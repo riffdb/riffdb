@@ -638,8 +638,106 @@ pub enum Binding {
     Mutate(EntityBinding),
     /// A mutable new-entity binding.
     Create(EntityBinding),
+    /// A mutable binding that initializes an absent entity before common command logic.
+    InitOrMutate(InitializedEntityBinding),
     /// A checked removal of one existing entity under its declared deletion policy.
     Delete(EntityBinding),
+}
+
+impl Binding {
+    /// Unresolved entity name shared by every binding form.
+    #[must_use]
+    pub const fn entity(&self) -> &Spanned<String> {
+        match self {
+            Self::Read(binding)
+            | Self::Mutate(binding)
+            | Self::Create(binding)
+            | Self::Delete(binding) => &binding.entity,
+            Self::InitOrMutate(binding) => &binding.entity,
+        }
+    }
+
+    /// Key arguments shared by every binding form.
+    #[must_use]
+    pub fn arguments(&self) -> &[Spanned<Expression>] {
+        match self {
+            Self::Read(binding)
+            | Self::Mutate(binding)
+            | Self::Create(binding)
+            | Self::Delete(binding) => &binding.arguments,
+            Self::InitOrMutate(binding) => &binding.arguments,
+        }
+    }
+
+    /// Command-local alias shared by every binding form.
+    #[must_use]
+    pub const fn name(&self) -> &Spanned<String> {
+        match self {
+            Self::Read(binding)
+            | Self::Mutate(binding)
+            | Self::Create(binding)
+            | Self::Delete(binding) => &binding.binding,
+            Self::InitOrMutate(binding) => &binding.binding,
+        }
+    }
+
+    /// Explicit failure outcome, absent only for initialized mutation.
+    #[must_use]
+    pub const fn failure(&self) -> Option<&Spanned<OutcomeExpression>> {
+        match self {
+            Self::Read(binding)
+            | Self::Mutate(binding)
+            | Self::Create(binding)
+            | Self::Delete(binding) => Some(&binding.failure),
+            Self::InitOrMutate(_) => None,
+        }
+    }
+
+    /// Absent-state initializer, present only for initialized mutation.
+    #[must_use]
+    pub const fn initializer(&self) -> Option<&Spanned<ObjectLiteral>> {
+        match self {
+            Self::InitOrMutate(binding) => Some(&binding.initializer),
+            Self::Read(_) | Self::Mutate(_) | Self::Create(_) | Self::Delete(_) => None,
+        }
+    }
+
+    /// Delete-policy restrict failure.
+    #[must_use]
+    pub const fn restriction_failure(&self) -> Option<&Spanned<OutcomeExpression>> {
+        match self {
+            Self::Read(binding)
+            | Self::Mutate(binding)
+            | Self::Create(binding)
+            | Self::Delete(binding) => binding.restriction_failure.as_ref(),
+            Self::InitOrMutate(_) => None,
+        }
+    }
+
+    /// Delete-policy cascade failure.
+    #[must_use]
+    pub const fn cascade_failure(&self) -> Option<&Spanned<OutcomeExpression>> {
+        match self {
+            Self::Read(binding)
+            | Self::Mutate(binding)
+            | Self::Create(binding)
+            | Self::Delete(binding) => binding.cascade_failure.as_ref(),
+            Self::InitOrMutate(_) => None,
+        }
+    }
+}
+
+/// A compiler-sealed mutable binding with an explicit absent-state initializer.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct InitializedEntityBinding {
+    /// The unresolved entity name.
+    pub entity: Spanned<String>,
+    /// Key expressions in source order.
+    pub arguments: Vec<Spanned<Expression>>,
+    /// The local binding name shared by the initialized and existing paths.
+    pub binding: Spanned<String>,
+    /// Non-key fields supplied only when the authoritative row is absent.
+    pub initializer: Spanned<ObjectLiteral>,
 }
 
 /// The common syntax of every entity binding.

@@ -142,7 +142,7 @@ pub struct CreateItemInput {
     pub idempotency_key: String,
 }
 
-#[allow(clippy::large_enum_variant)]
+#[allow(clippy::enum_variant_names, clippy::large_enum_variant)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CreateItemOutcome {
     Created {

@@ -18,12 +18,175 @@ use riffdb_storage_redb::{RedbTestController, RedbTestOperation, RedbTestPhase};
 use riffdb_types::{CommitSequence, ExecutionFailureCode};
 
 use support::{
-    BudgetDatabase, CountingProvenanceSource, FailingApplicationCommitNotifications,
-    FixedAdmissionClock, FrameworkProfileDatabase, IncrementingProvenanceSource,
-    PanickingApplicationCommitNotifications, RecordingApplicationCommitNotifications,
-    UniqueUserDatabase, command_timestamp, runtime, start_coordinator_with_notifications,
-    start_group_coordinator_with_commit_telemetry, start_group_coordinator_with_notifications,
+    BudgetDatabase, BulkRowsDatabase, CountingProvenanceSource,
+    FailingApplicationCommitNotifications, FixedAdmissionClock, FrameworkProfileDatabase,
+    IncrementingProvenanceSource, PanickingApplicationCommitNotifications,
+    RecordingApplicationCommitNotifications, UniqueUserDatabase, command_timestamp, runtime,
+    start_coordinator_with_notifications, start_group_coordinator_with_commit_telemetry,
+    start_group_coordinator_with_notifications,
 };
+
+#[test]
+fn initialized_transition_revalidates_absent_and_present_races_without_stale_conversion() {
+    let database = BulkRowsDatabase::create("initialized-transition-races");
+    let ports = database.open();
+    let row = [0x40; 16];
+    let first = database.prepare_initialized_put(&ports, &[row], 0x41, 0x51, 0x61);
+    let second = database.prepare_initialized_put(&ports, &[row], 0x42, 0x52, 0x62);
+    let third = database.prepare_initialized_put(&ports, &[row], 0x43, 0x53, 0x63);
+    let fourth = database.prepare_initialized_put(&ports, &[row], 0x44, 0x54, 0x64);
+    let notifications = Arc::new(RecordingApplicationCommitNotifications::default());
+    let coordinator = start_coordinator_with_notifications(
+        ports,
+        Arc::new(FixedAdmissionClock::new(command_timestamp())),
+        Arc::new(IncrementingProvenanceSource::new(0x71)),
+        notifications.clone(),
+    );
+    let executor = coordinator.command_executor();
+
+    let outcomes = runtime().block_on(async {
+        let first = executor
+            .reserve_capacity()
+            .await
+            .expect("reserve first absent transition")
+            .submit(first)
+            .expect("submit first absent transition");
+        let second = executor
+            .reserve_capacity()
+            .await
+            .expect("reserve second absent transition")
+            .submit(second)
+            .expect("submit second absent transition");
+        let first = first.completion().await.expect("first absent completion");
+        let second = second.completion().await.expect("second absent completion");
+
+        let third = executor
+            .reserve_capacity()
+            .await
+            .expect("reserve first present transition")
+            .submit(third)
+            .expect("submit first present transition");
+        let fourth = executor
+            .reserve_capacity()
+            .await
+            .expect("reserve second present transition")
+            .submit(fourth)
+            .expect("submit second present transition");
+        let third = third.completion().await.expect("first present completion");
+        let fourth = fourth
+            .completion()
+            .await
+            .expect("second present completion");
+        [first, second, third, fourth]
+    });
+    assert!(
+        outcomes
+            .iter()
+            .all(|outcome| matches!(outcome, CommandExecutionResult::Committed(_)))
+    );
+    assert_eq!(
+        notifications.sequences(),
+        vec![
+            CommitSequence::first(),
+            CommitSequence::new(2).expect("second sequence"),
+            CommitSequence::new(3).expect("third sequence"),
+            CommitSequence::new(4).expect("fourth sequence"),
+        ]
+    );
+
+    drop(executor);
+    coordinator
+        .shutdown()
+        .expect("drain initialized-transition coordinator");
+    let reopened = database.open();
+    database.assert_row_versions(
+        &reopened,
+        &[row],
+        riffdb_types::EntityVersion::new(4).expect("fourth version"),
+    );
+}
+
+#[test]
+fn unary_delete_race_commits_one_preimage_and_replays_after_reopen() {
+    let database = BulkRowsDatabase::create("unary-delete-race");
+    let ports = database.open();
+    let row = [0x41; 16];
+    let seed = database.prepare_put(&ports, &[row], 0x42, 0x52, 0x62);
+    let first = database.prepare_consume_child(&ports, row, row, 0x43, 0x53, 0x63);
+    let second = database.prepare_consume_child(&ports, row, row, 0x44, 0x54, 0x64);
+    let replay = database.prepare_consume_child(&ports, row, row, 0x43, 0x53, 0x65);
+    let notifications = Arc::new(RecordingApplicationCommitNotifications::default());
+    let coordinator = start_coordinator_with_notifications(
+        ports,
+        Arc::new(FixedAdmissionClock::new(command_timestamp())),
+        Arc::new(IncrementingProvenanceSource::new(0x71)),
+        notifications.clone(),
+    );
+    let executor = coordinator.command_executor();
+
+    let (winner, loser, replayed) = runtime().block_on(async {
+        let seeded = executor
+            .reserve_capacity()
+            .await
+            .expect("reserve seed")
+            .submit(seed)
+            .expect("submit seed")
+            .completion()
+            .await
+            .expect("complete seed");
+        assert!(matches!(seeded, CommandExecutionResult::Committed(_)));
+
+        let first_permit = executor
+            .reserve_capacity()
+            .await
+            .expect("reserve first consume");
+        let second_permit = executor
+            .reserve_capacity()
+            .await
+            .expect("reserve second consume");
+        let first = first_permit.submit(first).expect("submit first consume");
+        let second = second_permit.submit(second).expect("submit second consume");
+        let winner = first.completion().await.expect("complete first consume");
+        let loser = second.completion().await.expect("complete second consume");
+        let replayed = executor
+            .reserve_capacity()
+            .await
+            .expect("reserve replay")
+            .submit(replay)
+            .expect("submit replay")
+            .completion()
+            .await
+            .expect("complete replay");
+        (winner, loser, replayed)
+    });
+
+    assert_transition_outcome(
+        &winner,
+        database.outcome_id("ConsumeChild", "ChildConsumed"),
+        CommittedOutcomeDisposition::FirstCommit,
+        "winning consume",
+    );
+    assert_transition_outcome(
+        &loser,
+        database.outcome_id("ConsumeChild", "ChildMissing"),
+        CommittedOutcomeDisposition::FirstCommit,
+        "losing consume",
+    );
+    assert_transition_outcome(
+        &replayed,
+        database.outcome_id("ConsumeChild", "ChildConsumed"),
+        CommittedOutcomeDisposition::Replay,
+        "replayed consume",
+    );
+
+    drop(executor);
+    coordinator
+        .shutdown()
+        .expect("drain unary-delete coordinator");
+    let reopened = database.open();
+    database.assert_child_present(&reopened, row, row, false);
+    assert_eq!(notifications.sequences().len(), 3);
+}
 
 #[test]
 fn audited_standard_singleton_uses_one_unpublished_root_and_one_journal_tail() {

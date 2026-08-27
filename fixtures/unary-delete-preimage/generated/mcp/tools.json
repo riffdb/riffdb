@@ -1,0 +1,292 @@
+{
+  "application_manifest_hash": "7d8ed75489ce986fda95332c7bbcb6d296c364b77bbd7cbee27be02e37e826f4",
+  "commands": [
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "contract_bundle_hash": "aa5c19da0fd5994991e20b68c62e49b251501951b1847d29a2dd1389f3eb1b71",
+      "description": "Execute the exact ConsumeToken compiled command from contract OneTimeTokenAcceptance.",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "organization_id": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "token_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "token_id",
+          "request_id",
+          "organization_id"
+        ],
+        "type": "object"
+      },
+      "name": "one_time_tokens_consume_token",
+      "operation_name": "ConsumeToken",
+      "plan_hash": "d42336ae6bbb2f75abd3616d8918f9a7628084e97be26c5e82348fddb6b0af84",
+      "result_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "TokenExpired",
+                "type": "string"
+              }
+            },
+            "required": [
+              "outcome"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "TokenMissing",
+                "type": "string"
+              }
+            },
+            "required": [
+              "outcome"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "expires_at": {
+                "type": "string"
+              },
+              "identifier": {
+                "type": "string"
+              },
+              "issued_at": {
+                "type": "string"
+              },
+              "outcome": {
+                "const": "TokenConsumed",
+                "type": "string"
+              },
+              "token_id": {
+                "type": "string"
+              },
+              "value": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "value",
+              "token_id",
+              "issued_at",
+              "expires_at",
+              "identifier",
+              "outcome"
+            ],
+            "type": "object"
+          }
+        ],
+        "x-riffdb-secretOutputs": [
+          {
+            "entity": "OneTimeToken",
+            "field": "value",
+            "outcome": "TokenConsumed",
+            "sourceField": "value"
+          }
+        ]
+      },
+      "title": "Run ConsumeToken"
+    },
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "contract_bundle_hash": "aa5c19da0fd5994991e20b68c62e49b251501951b1847d29a2dd1389f3eb1b71",
+      "description": "Execute the exact IssueToken compiled command from contract OneTimeTokenAcceptance.",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "expires_at": {
+            "type": "string"
+          },
+          "identifier": {
+            "type": "string"
+          },
+          "organization_id": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "token_id": {
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "value",
+          "token_id",
+          "expires_at",
+          "identifier",
+          "request_id",
+          "organization_id"
+        ],
+        "type": "object"
+      },
+      "name": "one_time_tokens_issue_token",
+      "operation_name": "IssueToken",
+      "plan_hash": "78176cd7418c41fb346a742bf10856c364829b4a3ae7e6176e0791172b2f03ff",
+      "result_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "issued_at": {
+                "type": "string"
+              },
+              "outcome": {
+                "const": "TokenIssued",
+                "type": "string"
+              },
+              "token_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "token_id",
+              "issued_at",
+              "outcome"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "TokenAlreadyExists",
+                "type": "string"
+              }
+            },
+            "required": [
+              "outcome"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "title": "Run IssueToken"
+    }
+  ],
+  "reactive_tools": [],
+  "schema": "riffdb-generated-application-operations/v2",
+  "tools": [
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "Execute the exact GetToken named query from immutable module one_time_tokens.",
+      "input_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "organization_id": {
+            "type": "string"
+          },
+          "token_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "organization_id",
+          "token_id"
+        ],
+        "type": "object"
+      },
+      "module_hash": "5f8ff11ab269d01bc46d7fc470247d1b26f273de4cb1bd4a7c8e5aa161003cd6",
+      "name": "one_time_tokens_get_token",
+      "operation_name": "GetToken",
+      "result_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "TokenFound",
+                "type": "string"
+              },
+              "token": {
+                "additionalProperties": false,
+                "properties": {
+                  "expires_at": {
+                    "type": "string"
+                  },
+                  "identifier": {
+                    "type": "string"
+                  },
+                  "issued_at": {
+                    "type": "string"
+                  },
+                  "organization_id": {
+                    "type": "string"
+                  },
+                  "token_id": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "organization_id",
+                  "token_id",
+                  "identifier",
+                  "expires_at",
+                  "issued_at"
+                ],
+                "type": "object"
+              }
+            },
+            "required": [
+              "outcome",
+              "token"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "outcome": {
+                "const": "TokenMissing",
+                "type": "string"
+              }
+            },
+            "required": [
+              "outcome"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "title": "Run GetToken"
+    }
+  ]
+}

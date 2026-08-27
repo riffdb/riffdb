@@ -7,7 +7,9 @@ use std::fmt;
 use riffdb_contract_ir::{ValueType, ValueTypeTag};
 use riffdb_policy::{AuthorizedProjectedRowAdmissionV1, MAX_PROJECTED_POLICY_CANDIDATES_V1};
 use riffdb_types::{
-    CanonicalValue, EntityKey, EntityTypeId, EntityVersion, FieldId, encode_canonical_value,
+    AggregateInputClassV1, AggregateSemanticIdentityV1, CanonicalValue, EntityKey, EntityTypeId,
+    EntityVersion, FieldId, MAX_AGGREGATE_ARITHMETIC_OPERATIONS_V1,
+    MAX_AGGREGATE_DISTINCT_VALUES_V1, MAX_AGGREGATE_STATE_BYTES_V1, encode_canonical_value,
 };
 
 use crate::definition::RegisteredDefinition;
@@ -90,6 +92,55 @@ pub enum AggregateOp {
         /// Field to maximize.
         field: FieldId,
     },
+    /// Count non-null values of a projected scalar column.
+    CountPresent {
+        /// Field whose present values contribute.
+        field: FieldId,
+    },
+    /// Count exact canonical distinct values, including null.
+    CountDistinct {
+        /// Field whose values contribute.
+        field: FieldId,
+    },
+    /// Count exact canonical distinct non-null values.
+    CountDistinctPresent {
+        /// Field whose present values contribute.
+        field: FieldId,
+    },
+    /// Return an exact numeric total and contributing count.
+    Mean {
+        /// Required numeric field whose values contribute.
+        field: FieldId,
+    },
+    /// Boolean disjunction over a required field.
+    Any {
+        /// Required Boolean field whose values contribute.
+        field: FieldId,
+    },
+    /// Boolean conjunction over a required field.
+    All {
+        /// Required Boolean field whose values contribute.
+        field: FieldId,
+    },
+}
+
+impl AggregateOp {
+    /// Returns the shared semantic identity implemented by this provider arm.
+    #[must_use]
+    pub const fn semantic_identity(&self) -> AggregateSemanticIdentityV1 {
+        match self {
+            Self::Count => AggregateSemanticIdentityV1::Count,
+            Self::Sum { .. } => AggregateSemanticIdentityV1::Sum,
+            Self::Min { .. } => AggregateSemanticIdentityV1::Min,
+            Self::Max { .. } => AggregateSemanticIdentityV1::Max,
+            Self::CountPresent { .. } => AggregateSemanticIdentityV1::CountPresent,
+            Self::CountDistinct { .. } => AggregateSemanticIdentityV1::CountDistinct,
+            Self::CountDistinctPresent { .. } => AggregateSemanticIdentityV1::CountDistinctPresent,
+            Self::Mean { .. } => AggregateSemanticIdentityV1::Mean,
+            Self::Any { .. } => AggregateSemanticIdentityV1::Any,
+            Self::All { .. } => AggregateSemanticIdentityV1::All,
+        }
+    }
 }
 
 /// Optional group-by specification.
@@ -185,6 +236,15 @@ pub enum AggregateValue {
     Sum(i128),
     /// Min/max or missing.
     Scalar(Option<CanonicalValue>),
+    /// Exact total and contributing count, without division or rounding.
+    ExactMean {
+        /// Checked exact numeric total coefficient.
+        total: i128,
+        /// Exact number of contributions.
+        count: u64,
+    },
+    /// Boolean any/all result.
+    Bool(bool),
 }
 
 /// Full query result variants.
@@ -244,6 +304,13 @@ pub enum QueryError {
         /// Configured max.
         max: usize,
     },
+    /// An independent exact-aggregate resource bound was exhausted.
+    AggregateBudgetExceeded {
+        /// Stable resource dimension.
+        resource: &'static str,
+        /// Compiler/runtime maximum.
+        max: usize,
+    },
     /// Aggregate not defined for the column type.
     InvalidAggregate(&'static str),
     /// Org scope encoding failed.
@@ -298,6 +365,9 @@ impl fmt::Display for QueryError {
             Self::ScanBudgetExceeded { max } => write!(f, "scan budget exceeded (max {max})"),
             Self::GroupCardinalityExceeded { max } => {
                 write!(f, "group cardinality exceeded (max {max})")
+            }
+            Self::AggregateBudgetExceeded { resource, max } => {
+                write!(f, "aggregate {resource} budget exceeded (max {max})")
             }
             Self::InvalidAggregate(message) => write!(f, "invalid aggregate: {message}"),
             Self::InvalidOrgScope => f.write_str("invalid org scope value"),
@@ -835,7 +905,13 @@ pub(crate) fn execute_query(
         return execute_group_by(definition, &matched, group, &request.budget);
     }
     if let Some(agg) = &request.aggregate {
-        let value = compute_aggregate(definition, matched.iter().map(|(_, _, row)| row), agg)?;
+        let mut fuel = ColumnarAggregateFuel::new();
+        let value = compute_aggregate(
+            definition,
+            matched.iter().map(|(_, _, row)| row),
+            agg,
+            &mut fuel,
+        )?;
         return Ok(QueryResult::Aggregate(value));
     }
 
@@ -950,11 +1026,25 @@ fn execute_group_by(
         }
     }
 
+    let mut fuel = ColumnarAggregateFuel::new();
     let mut out = Vec::with_capacity(groups.len());
     for (_, (key_cells, rows)) in groups {
+        let group_state = key_cells.iter().try_fold(32_usize, |bytes, value| {
+            encode_canonical_value(value)
+                .map_err(|_| QueryError::InvalidAggregate("group key encoding"))
+                .and_then(|encoded| {
+                    bytes
+                        .checked_add(encoded.len())
+                        .ok_or(QueryError::AggregateBudgetExceeded {
+                            resource: "state bytes",
+                            max: MAX_AGGREGATE_STATE_BYTES_V1 as usize,
+                        })
+                })
+        })?;
+        fuel.consume_state(group_state)?;
         let mut aggregates = Vec::with_capacity(group.aggregates.len());
         for agg in &group.aggregates {
-            aggregates.push(compute_aggregate(definition, rows.iter(), agg)?);
+            aggregates.push(compute_aggregate(definition, rows.iter(), agg, &mut fuel)?);
         }
         out.push((key_cells, aggregates));
     }
@@ -968,29 +1058,36 @@ fn compute_aggregate<'a, I>(
     definition: &RegisteredDefinition,
     rows: I,
     agg: &AggregateOp,
+    fuel: &mut ColumnarAggregateFuel,
 ) -> Result<AggregateValue, QueryError>
 where
     I: Iterator<Item = &'a MergedRow>,
 {
-    match agg {
-        AggregateOp::Count => {
-            let count = rows.count() as u64;
+    let semantic = agg.semantic_identity();
+    let rows = rows.collect::<Vec<_>>();
+    fuel.consume_operations(rows.len())?;
+    match semantic {
+        AggregateSemanticIdentityV1::Count => {
+            fuel.consume_state(std::mem::size_of::<u64>())?;
+            let count = u64::try_from(rows.len())
+                .map_err(|_| QueryError::InvalidAggregate("count overflow"))?;
             Ok(AggregateValue::Count(count))
         }
-        AggregateOp::Sum { field } => {
-            let idx = projected_field_index(definition, *field)?;
+        AggregateSemanticIdentityV1::Sum => {
+            let idx = projected_field_index(definition, aggregate_input_field(agg)?)?;
             let mut sum: i128 = 0;
-            for row in rows {
+            for row in &rows {
                 sum = sum
                     .checked_add(numeric_as_i128(&row.cells[idx])?)
                     .ok_or(QueryError::InvalidAggregate("sum overflow"))?;
             }
+            fuel.consume_state(std::mem::size_of::<i128>())?;
             Ok(AggregateValue::Sum(sum))
         }
-        AggregateOp::Min { field } => {
-            let idx = projected_field_index(definition, *field)?;
+        AggregateSemanticIdentityV1::Min => {
+            let idx = projected_field_index(definition, aggregate_input_field(agg)?)?;
             let mut min: Option<CanonicalValue> = None;
-            for row in rows {
+            for row in &rows {
                 let value = &row.cells[idx];
                 min = Some(match min {
                     None => value.clone(),
@@ -1003,12 +1100,15 @@ where
                     }
                 });
             }
+            if let Some(value) = min.as_ref() {
+                fuel.consume_canonical_state(value)?;
+            }
             Ok(AggregateValue::Scalar(min))
         }
-        AggregateOp::Max { field } => {
-            let idx = projected_field_index(definition, *field)?;
+        AggregateSemanticIdentityV1::Max => {
+            let idx = projected_field_index(definition, aggregate_input_field(agg)?)?;
             let mut max: Option<CanonicalValue> = None;
-            for row in rows {
+            for row in &rows {
                 let value = &row.cells[idx];
                 max = Some(match max {
                     None => value.clone(),
@@ -1021,8 +1121,146 @@ where
                     }
                 });
             }
+            if let Some(value) = max.as_ref() {
+                fuel.consume_canonical_state(value)?;
+            }
             Ok(AggregateValue::Scalar(max))
         }
+        AggregateSemanticIdentityV1::CountPresent => {
+            let idx = projected_field_index(definition, aggregate_input_field(agg)?)?;
+            let count = rows
+                .iter()
+                .filter(|row| !matches!(row.cells[idx], CanonicalValue::Null))
+                .count();
+            fuel.consume_state(std::mem::size_of::<u64>())?;
+            Ok(AggregateValue::Count(u64::try_from(count).map_err(
+                |_| QueryError::InvalidAggregate("count overflow"),
+            )?))
+        }
+        AggregateSemanticIdentityV1::CountDistinct
+        | AggregateSemanticIdentityV1::CountDistinctPresent => {
+            let idx = projected_field_index(definition, aggregate_input_field(agg)?)?;
+            let mut distinct = BTreeSet::new();
+            for row in &rows {
+                let value = &row.cells[idx];
+                if semantic == AggregateSemanticIdentityV1::CountDistinctPresent
+                    && matches!(value, CanonicalValue::Null)
+                {
+                    continue;
+                }
+                let encoded = encode_canonical_value(value)
+                    .map_err(|_| QueryError::InvalidAggregate("distinct encoding"))?;
+                if !distinct.contains(&encoded) {
+                    if distinct.len() >= usize::from(MAX_AGGREGATE_DISTINCT_VALUES_V1) {
+                        return Err(QueryError::AggregateBudgetExceeded {
+                            resource: "distinct values",
+                            max: usize::from(MAX_AGGREGATE_DISTINCT_VALUES_V1),
+                        });
+                    }
+                    fuel.consume_state(encoded.len().checked_add(32).ok_or(
+                        QueryError::AggregateBudgetExceeded {
+                            resource: "state bytes",
+                            max: MAX_AGGREGATE_STATE_BYTES_V1 as usize,
+                        },
+                    )?)?;
+                    distinct.insert(encoded);
+                }
+            }
+            Ok(AggregateValue::Count(
+                u64::try_from(distinct.len())
+                    .map_err(|_| QueryError::InvalidAggregate("count overflow"))?,
+            ))
+        }
+        AggregateSemanticIdentityV1::Mean => {
+            let idx = projected_field_index(definition, aggregate_input_field(agg)?)?;
+            let mut total = 0_i128;
+            let mut count = 0_u64;
+            for row in &rows {
+                total = total
+                    .checked_add(numeric_as_i128(&row.cells[idx])?)
+                    .ok_or(QueryError::InvalidAggregate("mean total overflow"))?;
+                count = count
+                    .checked_add(1)
+                    .ok_or(QueryError::InvalidAggregate("mean count overflow"))?;
+            }
+            fuel.consume_state(std::mem::size_of::<i128>() + std::mem::size_of::<u64>())?;
+            Ok(AggregateValue::ExactMean { total, count })
+        }
+        AggregateSemanticIdentityV1::Any | AggregateSemanticIdentityV1::All => {
+            let idx = projected_field_index(definition, aggregate_input_field(agg)?)?;
+            let mut result = semantic == AggregateSemanticIdentityV1::All;
+            for row in &rows {
+                let CanonicalValue::Bool(value) = row.cells[idx] else {
+                    return Err(QueryError::InvalidAggregate("any/all requires bool"));
+                };
+                if semantic == AggregateSemanticIdentityV1::Any {
+                    result |= value;
+                } else {
+                    result &= value;
+                }
+            }
+            fuel.consume_state(std::mem::size_of::<bool>())?;
+            Ok(AggregateValue::Bool(result))
+        }
+        AggregateSemanticIdentityV1::ExactCount => Err(QueryError::InvalidAggregate(
+            "unsupported aggregate semantic",
+        )),
+    }
+}
+
+fn aggregate_input_field(aggregate: &AggregateOp) -> Result<FieldId, QueryError> {
+    match aggregate {
+        AggregateOp::Sum { field }
+        | AggregateOp::Min { field }
+        | AggregateOp::Max { field }
+        | AggregateOp::CountPresent { field }
+        | AggregateOp::CountDistinct { field }
+        | AggregateOp::CountDistinctPresent { field }
+        | AggregateOp::Mean { field }
+        | AggregateOp::Any { field }
+        | AggregateOp::All { field } => Ok(*field),
+        AggregateOp::Count => Err(QueryError::InvalidAggregate("missing field")),
+    }
+}
+
+struct ColumnarAggregateFuel {
+    remaining_state_bytes: usize,
+    remaining_arithmetic_operations: usize,
+}
+
+impl ColumnarAggregateFuel {
+    const fn new() -> Self {
+        Self {
+            remaining_state_bytes: MAX_AGGREGATE_STATE_BYTES_V1 as usize,
+            remaining_arithmetic_operations: MAX_AGGREGATE_ARITHMETIC_OPERATIONS_V1 as usize,
+        }
+    }
+
+    fn consume_state(&mut self, bytes: usize) -> Result<(), QueryError> {
+        self.remaining_state_bytes = self.remaining_state_bytes.checked_sub(bytes).ok_or(
+            QueryError::AggregateBudgetExceeded {
+                resource: "state bytes",
+                max: MAX_AGGREGATE_STATE_BYTES_V1 as usize,
+            },
+        )?;
+        Ok(())
+    }
+
+    fn consume_canonical_state(&mut self, value: &CanonicalValue) -> Result<(), QueryError> {
+        let encoded = encode_canonical_value(value)
+            .map_err(|_| QueryError::InvalidAggregate("state encoding"))?;
+        self.consume_state(encoded.len())
+    }
+
+    fn consume_operations(&mut self, operations: usize) -> Result<(), QueryError> {
+        self.remaining_arithmetic_operations = self
+            .remaining_arithmetic_operations
+            .checked_sub(operations)
+            .ok_or(QueryError::AggregateBudgetExceeded {
+                resource: "arithmetic operations",
+                max: MAX_AGGREGATE_ARITHMETIC_OPERATIONS_V1 as usize,
+            })?;
+        Ok(())
     }
 }
 
@@ -1182,10 +1420,14 @@ fn validate_aggregate_field(
     definition: &RegisteredDefinition,
     agg: &AggregateOp,
 ) -> Result<(), QueryError> {
-    match agg {
-        AggregateOp::Count => Ok(()),
-        AggregateOp::Sum { field } | AggregateOp::Min { field } | AggregateOp::Max { field } => {
-            projected_field_index(definition, *field).map(|_| ())
+    match agg.semantic_identity().descriptor().input_class() {
+        AggregateInputClassV1::NoField => Ok(()),
+        AggregateInputClassV1::ExactNumericField
+        | AggregateInputClassV1::OrderedScalarField
+        | AggregateInputClassV1::CanonicalScalarField
+        | AggregateInputClassV1::RequiredBooleanField => {
+            let field = aggregate_input_field(agg)?;
+            projected_field_index(definition, field).map(|_| ())
         }
     }
 }

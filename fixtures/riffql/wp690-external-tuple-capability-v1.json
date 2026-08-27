@@ -1,0 +1,62 @@
+{
+  "schema": "riffdb.external-operational-capability/v1",
+  "work_package": "WP-690",
+  "status": "passed",
+  "owner": "external_consumer_repository",
+  "consumer_class": "partitioned_tuple_store",
+  "source_revision": "5d2b6fe25f87296331d5e8af78c3711a4edefb70",
+  "riffdb_revisions": {
+    "binary_text_membership": "0547d368e63b01d053a1e9065fd666a238658a9d",
+    "typed_intervals": "e61f019c40756f2b7f2d9ecee703de4a9a7b18bd",
+    "relationship_audit": "25ecbc24b399d9db4b8c6d79637563be157be841"
+  },
+  "value_free_source_receipt": {
+    "acceptance_profile_sha256": "6e21795d3df3055178f9409d5576f69cfa21230678a23360f8c677dc0d119bcf",
+    "contract_source_sha256": "4655019f0d2831ae73379e2ef2b13d12f322d2f816b32f7298fff441748a48ba",
+    "query_source_sha256": [
+      "2fbd1588cca0e180d50ea4c442139efb67e69967e36da3939787e8a30777cfd2",
+      "5a1bd6d823963bbb95cdcb25ecf0152052c91753d6e7d08725e4923a5ed6870f",
+      "ce18cda06ae8faabd2d915d33ba67a4152fdfb9b5afc683b7e2f4f595a920228",
+      "d2890bfc4254c72b52dc8a903071d638dc358751d7e42fa9e95629c7be0c218c",
+      "d8f46adf62bc2bdd1e349eb0d466695d66a6360b224d2f6f1f73cc14658bd0d6",
+      "fc21e556d3df706a311621027eabfaee525290fe15635952d8a93767bc8d9e83"
+    ],
+    "named_operation_count": 6,
+    "schema_or_route_names_retained": false,
+    "stored_values_retained": false
+  },
+  "capability": {
+    "component_profile": "binary_utf8_v1",
+    "same_declared_component_roles": [
+      "exact_equality_prefix",
+      "bounded_membership",
+      "ordered_value_production"
+    ],
+    "directions": ["forward"],
+    "cursor_pagination": true,
+    "caller_selected_structure": false,
+    "client_side_shaping": false
+  },
+  "duplicate_index_pressure": {
+    "atomic_mutation_maximum": 100,
+    "shared_profile_index_entry_deltas": 3800,
+    "redundant_index_fallback_entry_deltas": 4200,
+    "compiler_maximum_entry_deltas": 4096,
+    "redundant_fallback_admissible": false,
+    "shared_profile_shape_admissible": true
+  },
+  "verification": {
+    "command_class": "application_check_source_only",
+    "result": "passed",
+    "files_changed": false,
+    "full_framework_conformance_claimed": false,
+    "full_external_application_claimed": false
+  },
+  "separate_typed_refusal": {
+    "present": true,
+    "code": "RDB-QP003",
+    "reason": "canonical_string_range_has_no_proved_ordinary_physical_interval",
+    "recovery": "recompile_after_an_accepted_profile_or_redesign_the_named_query",
+    "membership_capability_affected": false
+  }
+}

@@ -4,8 +4,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 
 use riffdb_contract_ir::{
-    CommandPlan, ContractBundle, ExpressionKind, Instruction, RecordTypeRef, ValueType,
-    ValueTypeTag, WorkflowLeaseOperation,
+    CommandPlan, ContractBundle, ExpressionKind, Instruction, RecordTypeRef,
+    SecretRevealDestinationV1, ValueType, ValueTypeTag, WorkflowLeaseOperation,
 };
 use riffdb_query_ir::{
     CoveredResultLayoutV1, NamedQuerySchemas, NamedTypeSchema, PageBound, QueryAccessKind,
@@ -22,6 +22,58 @@ const MCP_SCHEMA_DIALECT: &str = "https://json-schema.org/draft/2020-12/schema";
 pub(crate) struct WorkflowRevisionBinding<'a> {
     pub(crate) binding_name: &'a str,
     pub(crate) input_name: &'a str,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct CommandSecretOutput<'a> {
+    pub(crate) outcome: &'a str,
+    pub(crate) field: &'a str,
+    pub(crate) entity: &'a str,
+    pub(crate) source_field: &'a str,
+}
+
+pub(crate) fn command_secret_outputs<'a>(
+    command: &'a CommandPlan,
+    contract: &'a ContractBundle,
+) -> Vec<CommandSecretOutput<'a>> {
+    command
+        .secret_reveals()
+        .iter()
+        .filter_map(|reveal| {
+            let SecretRevealDestinationV1::OutcomeField { outcome, field } = reveal.destination()
+            else {
+                return None;
+            };
+            let binding = command
+                .bindings()
+                .iter()
+                .find(|binding| binding.id() == reveal.source_binding())
+                .expect("checked secret source binding");
+            let entity = contract
+                .schema()
+                .entity(binding.entity_type())
+                .expect("checked secret source entity");
+            let source_field = entity
+                .record()
+                .field(reveal.source_field())
+                .expect("checked secret source field");
+            let outcome = command
+                .outcomes()
+                .iter()
+                .find(|candidate| candidate.id() == outcome)
+                .expect("checked secret destination outcome");
+            let field = outcome
+                .payload()
+                .field(field)
+                .expect("checked secret destination field");
+            Some(CommandSecretOutput {
+                outcome: outcome.name(),
+                field: field.name(),
+                entity: entity.name(),
+                source_field: source_field.name(),
+            })
+        })
+        .collect()
 }
 
 /// One compiler-proven production embedding assignment used to generate a
@@ -1063,6 +1115,30 @@ pub fn generate_mcp_commands(
                     })
                 })
                 .collect::<Vec<_>>();
+            let secret_outputs = command_secret_outputs(command, contract)
+                .into_iter()
+                .map(|output| {
+                    json!({
+                        "outcome": output.outcome,
+                        "field": output.field,
+                        "entity": output.entity,
+                        "sourceField": output.source_field,
+                    })
+                })
+                .collect::<Vec<_>>();
+            let mut result_schema = json!({
+                "$schema": MCP_SCHEMA_DIALECT,
+                "oneOf": outcomes,
+            });
+            if !secret_outputs.is_empty() {
+                result_schema
+                    .as_object_mut()
+                    .expect("generated result schema object")
+                    .insert(
+                        "x-riffdb-secretOutputs".to_owned(),
+                        Value::Array(secret_outputs),
+                    );
+            }
             Ok(GeneratedMcpCommand {
                 operation_name: command.name().to_owned(),
                 name: format!(
@@ -1084,11 +1160,8 @@ pub fn generate_mcp_commands(
                     "type": "object",
                 }))
                 .map_err(|_| McpToolGenerationError::InvalidSchema)?,
-                result_schema: serde_json::to_string(&json!({
-                    "$schema": MCP_SCHEMA_DIALECT,
-                    "oneOf": outcomes,
-                }))
-                .map_err(|_| McpToolGenerationError::InvalidSchema)?,
+                result_schema: serde_json::to_string(&result_schema)
+                    .map_err(|_| McpToolGenerationError::InvalidSchema)?,
                 contract_bundle_hash: *contract.bundle_hash().as_bytes(),
                 plan_hash: *command.plan_hash().as_bytes(),
             })
@@ -1348,6 +1421,24 @@ pub fn generate_rust_client(module: &QueryModule, contract: &ContractBundle) -> 
     for command in &commands {
         let name = command.name();
         let input_name = format!("{name}Input");
+        let secret_outputs = command_secret_outputs(command, contract);
+        if !secret_outputs.is_empty() {
+            writeln!(
+                output,
+                "pub const {}_SECRET_OUTPUTS: &[(&str, &str, &str, &str)] = &[",
+                screaming_snake(name)
+            )
+            .expect("string");
+            for secret in &secret_outputs {
+                writeln!(
+                    output,
+                    "    ({:?}, {:?}, {:?}, {:?}),",
+                    secret.outcome, secret.field, secret.entity, secret.source_field
+                )
+                .expect("string");
+            }
+            writeln!(output, "];\n").expect("string");
+        }
         writeln!(
             output,
             "#[derive(Clone, Debug, Eq, PartialEq)]\npub struct {input_name} {{"
@@ -2805,11 +2896,13 @@ fn emit_rust_command_outcome(
     contract: &ContractBundle,
 ) {
     let name = command.name();
+    let redacted = !command_secret_outputs(command, contract).is_empty();
     write!(
         output,
-        "#[allow(clippy::large_enum_variant)]\n\
-         #[derive(Clone, Debug, Eq, PartialEq)]\n\
-         pub enum {name}Outcome {{"
+        "#[allow(clippy::enum_variant_names, clippy::large_enum_variant)]\n\
+         #[derive(Clone, {debug}Eq, PartialEq)]\n\
+         pub enum {name}Outcome {{",
+        debug = if redacted { "" } else { "Debug, " }
     )
     .expect("string");
     for outcome in command.outcomes() {
@@ -2831,6 +2924,9 @@ fn emit_rust_command_outcome(
         }
     }
     writeln!(output, "}}\n").expect("string");
+    if redacted {
+        writeln!(output, "impl std::fmt::Debug for {name}Outcome {{\n    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {{ formatter.write_str(\"{name}Outcome([REDACTED])\") }}\n}}\n").expect("string");
+    }
 }
 
 fn emit_rust_generated_command_impl(
@@ -3850,6 +3946,24 @@ pub fn generate_typescript_client(module: &QueryModule, contract: &ContractBundl
             .expect("string");
         }
         writeln!(output, "}}\n").expect("string");
+        let secret_outputs = command_secret_outputs(command, contract);
+        if !secret_outputs.is_empty() {
+            writeln!(
+                output,
+                "export const {}_SECRET_OUTPUTS = [",
+                screaming_snake(name)
+            )
+            .expect("string");
+            for secret in &secret_outputs {
+                writeln!(
+                    output,
+                    "  {{ outcome: {:?}, field: {:?}, entity: {:?}, sourceField: {:?} }},",
+                    secret.outcome, secret.field, secret.entity, secret.source_field
+                )
+                .expect("string");
+            }
+            writeln!(output, "] as const;\n").expect("string");
+        }
         emit_typescript_embedding_constructors(&mut output, command, contract);
         write!(output, "export type {name}Outcome = ").expect("string");
         for (index, outcome) in command.outcomes().iter().enumerate() {
@@ -3869,6 +3983,17 @@ pub fn generate_typescript_client(module: &QueryModule, contract: &ContractBundl
             write!(output, " }}").expect("string");
         }
         writeln!(output, ";\n").expect("string");
+        if !secret_outputs.is_empty() {
+            writeln!(
+                output,
+                "export function redact{}Outcome(value: {}Outcome): {{ readonly outcome: string; readonly redactedSecretOutputs: typeof {}_SECRET_OUTPUTS }} {{\n  return {{ outcome: value.outcome, redactedSecretOutputs: {}_SECRET_OUTPUTS }};\n}}\n",
+                pascal(name),
+                name,
+                screaming_snake(name),
+                screaming_snake(name),
+            )
+            .expect("string");
+        }
         let idempotency = command
             .idempotency_input()
             .and_then(|id| command.input().record().field(id))

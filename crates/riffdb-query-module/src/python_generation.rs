@@ -4,7 +4,7 @@ use std::collections::BTreeSet;
 use std::fmt::{self, Write as _};
 
 use riffdb_contract_ir::{ContractBundle, RecordTypeRef, ValueType, ValueTypeTag};
-use riffdb_contract_syntax::ast::{Binding, Declaration, EntityItem, OutcomeExpression};
+use riffdb_contract_syntax::ast::{Declaration, EntityItem, OutcomeExpression};
 use riffdb_query_ir::{
     NamedTypeSchema, ReactiveModulePlanV1, ReactiveOperationPlanV1, ReactiveParameterV1,
 };
@@ -12,8 +12,9 @@ use riffdb_riffql_syntax::{FieldSelection, Selection};
 
 use crate::QueryModule;
 use crate::generation::{
-    RustCompactResultShape, embedding_command_facades, rust_compact_result_shape,
-    vector_inspection_facades, workflow_revision_bindings, workflow_success_outcome_name,
+    RustCompactResultShape, command_secret_outputs, embedding_command_facades,
+    rust_compact_result_shape, vector_inspection_facades, workflow_revision_bindings,
+    workflow_success_outcome_name,
 };
 
 /// Source symbol responsible for one Python name collision.
@@ -223,12 +224,7 @@ fn locate_contract_outcome<'a>(
     command
         .bindings
         .iter()
-        .map(|binding| match &binding.value {
-            Binding::Read(binding)
-            | Binding::Mutate(binding)
-            | Binding::Create(binding)
-            | Binding::Delete(binding) => &binding.failure.value,
-        })
+        .filter_map(|binding| binding.value.failure().map(|failure| &failure.value))
         .chain(
             command
                 .requirements
@@ -556,6 +552,24 @@ pub fn generate_python_client(
     for command in &commands {
         let wire_name = command.name();
         let name = pascal(wire_name);
+        let secret_outputs = command_secret_outputs(command, contract);
+        if !secret_outputs.is_empty() {
+            writeln!(
+                output,
+                "{}_SECRET_OUTPUTS: Final[tuple[tuple[str, str, str, str], ...]] = (",
+                screaming_snake(wire_name)
+            )
+            .expect("String writes cannot fail");
+            for secret in secret_outputs {
+                writeln!(
+                    output,
+                    "    ({:?}, {:?}, {:?}, {:?}),",
+                    secret.outcome, secret.field, secret.entity, secret.source_field
+                )
+                .expect("String writes cannot fail");
+            }
+            writeln!(output, ")\n").expect("String writes cannot fail");
+        }
         emit_contract_record(
             &mut output,
             &format!("{name}Input"),
@@ -577,9 +591,13 @@ pub fn generate_python_client(
         .expect("String writes cannot fail");
         for outcome in command.outcomes() {
             let outcome_name = format!("{name}{}", pascal(outcome.name()));
+            let redacted = command_secret_outputs(command, contract)
+                .iter()
+                .any(|secret| secret.outcome == outcome.name());
             writeln!(
                 output,
-                "@dataclass(frozen=True, slots=True, kw_only=True)\nclass {outcome_name}:"
+                "@dataclass(frozen=True, slots=True, kw_only=True{repr})\nclass {outcome_name}:",
+                repr = if redacted { ", repr=False" } else { "" }
             )
             .expect("String writes cannot fail");
             for payload_field in outcome.payload().fields() {
@@ -598,6 +616,9 @@ pub fn generate_python_client(
                 outcome.name()
             )
             .expect("String writes cannot fail");
+            if redacted {
+                writeln!(output, "    def __repr__(self) -> str:\n        return \"{outcome_name}(<secret outputs redacted>)\"\n").expect("String writes cannot fail");
+            }
         }
         write!(output, "{name}Outcome: TypeAlias = ").expect("String writes cannot fail");
         for (index, outcome) in command.outcomes().iter().enumerate() {

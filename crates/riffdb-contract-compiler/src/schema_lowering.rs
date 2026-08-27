@@ -843,6 +843,7 @@ fn lower_events(
                             binding.mode,
                             riffdb_contract_ir::BindingMode::Mutate
                                 | riffdb_contract_ir::BindingMode::Create
+                                | riffdb_contract_ir::BindingMode::InitOrMutate
                         )
                     })
                     .or_else(|| command.bindings.first())

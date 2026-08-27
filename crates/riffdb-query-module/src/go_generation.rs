@@ -9,9 +9,9 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 use crate::generation::{
-    RustCompactResultShape, embedding_command_facades, generated_query_driver_operations,
-    rust_compact_result_shape, vector_inspection_facades, workflow_revision_bindings,
-    workflow_success_outcome_name,
+    RustCompactResultShape, command_secret_outputs, embedding_command_facades,
+    generated_query_driver_operations, rust_compact_result_shape, vector_inspection_facades,
+    workflow_revision_bindings, workflow_success_outcome_name,
 };
 use crate::{
     QueryModule, generate_mcp_commands, generate_mcp_reactive_tools,
@@ -223,6 +223,19 @@ fn emit_command_types(output: &mut String, contract: &ContractBundle) {
     commands.sort_by(|left, right| left.name().cmp(right.name()));
     for command in commands {
         let name = go_public(command.name());
+        let secret_outputs = command_secret_outputs(command, contract);
+        if !secret_outputs.is_empty() {
+            writeln!(output, "var {name}SecretOutputs = []struct {{ Outcome, Field, Entity, SourceField string }}{{").unwrap();
+            for secret in secret_outputs {
+                writeln!(
+                    output,
+                    "\t{{Outcome: {:?}, Field: {:?}, Entity: {:?}, SourceField: {:?}}},",
+                    secret.outcome, secret.field, secret.entity, secret.source_field
+                )
+                .unwrap();
+            }
+            writeln!(output, "}}\n").unwrap();
+        }
         writeln!(output, "type {name}Input struct {{").unwrap();
         for field in command.input().record().fields() {
             writeln!(
@@ -253,6 +266,12 @@ fn emit_command_types(output: &mut String, contract: &ContractBundle) {
                 .unwrap();
             }
             writeln!(output, "}}\nfunc ({outcome_name}) is{name}Outcome() {{}}\n").unwrap();
+            if command_secret_outputs(command, contract)
+                .iter()
+                .any(|secret| secret.outcome == outcome.name())
+            {
+                writeln!(output, "func ({outcome_name}) String() string {{ return \"{outcome_name}{{<secret outputs redacted>}}\" }}\nfunc ({outcome_name}) GoString() string {{ return \"{outcome_name}{{<secret outputs redacted>}}\" }}\n").unwrap();
+            }
         }
     }
 }

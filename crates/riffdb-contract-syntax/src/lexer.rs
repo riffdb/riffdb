@@ -185,6 +185,10 @@ pub(crate) enum Token {
     Mutate,
     #[token("create")]
     Create,
+    #[token("init_or_mutate")]
+    InitOrMutate,
+    #[token("initialize")]
+    Initialize,
     #[token("as")]
     As,
     #[token("else")]

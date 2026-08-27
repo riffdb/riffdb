@@ -7,7 +7,7 @@ use std::path::{Component, Path, PathBuf};
 
 use riffdb_types::DatabaseAlias;
 
-use crate::cli::ApplicationLanguage;
+use crate::cli::ApplicationGenerator;
 use crate::config::{ProjectConfig, ProjectGenerator, load_project, validate_endpoint};
 use crate::scaffold::{ScaffoldError, render_project_schema};
 
@@ -82,7 +82,7 @@ pub(crate) fn initialize(
     application: Option<&str>,
     endpoint: Option<&str>,
     database: Option<&str>,
-    generators: &[ApplicationLanguage],
+    generators: &[ApplicationGenerator],
 ) -> Result<ProjectConfig, ProjectError> {
     let root = fs::canonicalize(root).map_err(|_| ProjectError::UnsafePath)?;
     let metadata = fs::symlink_metadata(&root).map_err(|_| ProjectError::UnsafePath)?;
@@ -103,7 +103,8 @@ pub(crate) fn initialize(
     let database = database.unwrap_or(riffdb_types::DEFAULT_DATABASE_ALIAS);
     DatabaseAlias::new(database).map_err(|_| ProjectError::ConfigurationInvalid)?;
     let generators = canonical_generators(generators)?;
-    let schema_files = render_project_schema(&application).map_err(ProjectError::Scaffold)?;
+    let schema_files =
+        render_project_schema(&application, &generators).map_err(ProjectError::Scaffold)?;
     let config_bytes = render_config(endpoint, database, &generators);
     let mut files = Vec::with_capacity(MAX_PROJECT_FILES);
     files.push((config_path.clone(), config_bytes));
@@ -140,20 +141,21 @@ fn absolute_project_file(root: &Path, path: &Path) -> Result<PathBuf, ProjectErr
 }
 
 fn canonical_generators(
-    values: &[ApplicationLanguage],
+    values: &[ApplicationGenerator],
 ) -> Result<Vec<ProjectGenerator>, ProjectError> {
     let mut values = values
         .iter()
         .map(|value| match value {
-            ApplicationLanguage::Rust => ProjectGenerator::Rust,
-            ApplicationLanguage::Go => ProjectGenerator::Go,
-            ApplicationLanguage::Typescript => ProjectGenerator::Typescript,
-            ApplicationLanguage::Python => ProjectGenerator::Python,
+            ApplicationGenerator::Rust => ProjectGenerator::Rust,
+            ApplicationGenerator::Go => ProjectGenerator::Go,
+            ApplicationGenerator::Typescript => ProjectGenerator::Typescript,
+            ApplicationGenerator::Python => ProjectGenerator::Python,
+            ApplicationGenerator::Mcp => ProjectGenerator::Mcp,
         })
         .collect::<Vec<_>>();
     values.sort_unstable();
     values.dedup();
-    if values.is_empty() || values.len() > 4 {
+    if values.is_empty() || values.len() > 5 {
         return Err(ProjectError::ConfigurationInvalid);
     }
     Ok(values)
@@ -272,7 +274,7 @@ mod tests {
             Some("inventory"),
             None,
             None,
-            &[ApplicationLanguage::Rust, ApplicationLanguage::Typescript],
+            &[ApplicationGenerator::Rust, ApplicationGenerator::Typescript],
         )
         .expect("first init");
         let second = initialize(
@@ -281,7 +283,7 @@ mod tests {
             Some("inventory"),
             None,
             None,
-            &[ApplicationLanguage::Typescript, ApplicationLanguage::Rust],
+            &[ApplicationGenerator::Typescript, ApplicationGenerator::Rust],
         )
         .expect("idempotent init");
         assert_eq!(first, second);
@@ -310,7 +312,7 @@ mod tests {
             Some("inventory"),
             None,
             None,
-            &[ApplicationLanguage::Rust],
+            &[ApplicationGenerator::Rust],
         )
         .expect_err("conflict");
         assert!(matches!(error, ProjectError::InitializationConflict));
@@ -357,7 +359,7 @@ mod tests {
             Some("inventory"),
             None,
             None,
-            &[ApplicationLanguage::Rust],
+            &[ApplicationGenerator::Rust],
         )
         .expect("empty project");
         let preview = crate::scaffold::preview_genesis_application_lock(project.schema())
@@ -370,7 +372,7 @@ mod tests {
         .expect("selected publication");
 
         assert!(scratch.path().join("generated/rust/client.rs").is_file());
-        assert!(scratch.path().join("generated/mcp/tools.json").is_file());
+        assert!(!scratch.path().join("generated/mcp/tools.json").exists());
         assert!(
             !scratch
                 .path()
@@ -384,23 +386,122 @@ mod tests {
             project.schema(),
             &[GeneratedApplicationArtifactKind::TypeScript],
         )
-        .expect("selected generation");
+        .expect_err("undeclared target");
         assert!(
-            scratch
+            !scratch
                 .path()
                 .join("generated/typescript/client.ts")
-                .is_file()
+                .exists()
+        );
+        fs::create_dir_all(scratch.path().join("generated/typescript")).expect("unowned parent");
+        fs::write(
+            scratch.path().join("generated/typescript/client.ts"),
+            b"unowned\n",
+        )
+        .expect("unowned former target");
+        crate::scaffold::generate_project_application(
+            project.schema(),
+            &[GeneratedApplicationArtifactKind::Rust],
+        )
+        .expect("declared generation leaves unowned files alone");
+        assert_eq!(
+            fs::read(scratch.path().join("generated/typescript/client.ts")).expect("unowned file"),
+            b"unowned\n"
         );
 
         fs::write(scratch.path().join("generated/rust/client.rs"), b"stale\n")
             .expect("corrupt retained artifact");
-        assert!(
-            crate::scaffold::generate_project_application(
-                project.schema(),
-                &[GeneratedApplicationArtifactKind::TypeScript],
-            )
-            .is_err(),
-            "an existing unselected artifact must never be silently stale"
+        let repair = crate::scaffold::generate_project_application(
+            project.schema(),
+            &[GeneratedApplicationArtifactKind::Rust],
         );
+        assert!(
+            repair.is_ok(),
+            "a selected declared artifact may be repaired: {repair:?}"
+        );
+    }
+
+    #[test]
+    fn every_singleton_generator_declares_locks_and_materializes_only_its_surface() {
+        let cases = [
+            (
+                ApplicationGenerator::Rust,
+                GeneratedApplicationArtifactKind::Rust,
+                "generated/rust/client.rs",
+            ),
+            (
+                ApplicationGenerator::Go,
+                GeneratedApplicationArtifactKind::Go,
+                "generated/go/client.go",
+            ),
+            (
+                ApplicationGenerator::Typescript,
+                GeneratedApplicationArtifactKind::TypeScript,
+                "generated/typescript/client.ts",
+            ),
+            (
+                ApplicationGenerator::Python,
+                GeneratedApplicationArtifactKind::Python,
+                "generated/python/client.py",
+            ),
+            (
+                ApplicationGenerator::Mcp,
+                GeneratedApplicationArtifactKind::Mcp,
+                "generated/mcp/tools.json",
+            ),
+        ];
+        for (generator, artifact_kind, expected_path) in cases {
+            let scratch = tempfile::TempDir::with_prefix("riffdb-project-singleton-")
+                .expect("scratch directory");
+            let project = initialize(
+                scratch.path(),
+                Path::new(DEFAULT_PROJECT_FILE),
+                Some("inventory"),
+                None,
+                None,
+                &[generator],
+            )
+            .expect("singleton project");
+            let source_bytes = fs::read(project.schema()).expect("source");
+            let source =
+                riffdb_query_module::ApplicationSourceManifest::decode_canonical(&source_bytes)
+                    .expect("canonical source");
+            assert_eq!(
+                source.schema(),
+                riffdb_query_module::APPLICATION_SOURCE_SCHEMA_V7
+            );
+            assert_eq!(
+                riffdb_query_module::GeneratedApplicationSurface::ALL
+                    .into_iter()
+                    .filter_map(|surface| source.generation().path(surface).map(|_| surface))
+                    .collect::<Vec<_>>(),
+                vec![generator_to_project(generator).surface()]
+            );
+
+            let preview = crate::scaffold::preview_genesis_application_lock(project.schema())
+                .expect("genesis preview");
+            crate::scaffold::write_project_application_lock_with_bundle(
+                project.schema(),
+                preview.into_contract(),
+                &[artifact_kind],
+            )
+            .expect("singleton lock publication");
+            assert!(scratch.path().join(expected_path).is_file());
+            for surface in riffdb_query_module::GeneratedApplicationSurface::ALL {
+                if surface.artifact_kind() != artifact_kind {
+                    assert!(!scratch.path().join(surface.default_path()).exists());
+                }
+            }
+        }
+    }
+
+    fn generator_to_project(generator: ApplicationGenerator) -> ProjectGenerator {
+        match generator {
+            ApplicationGenerator::Rust => ProjectGenerator::Rust,
+            ApplicationGenerator::Go => ProjectGenerator::Go,
+            ApplicationGenerator::Typescript => ProjectGenerator::Typescript,
+            ApplicationGenerator::Python => ProjectGenerator::Python,
+            ApplicationGenerator::Mcp => ProjectGenerator::Mcp,
+        }
     }
 }

@@ -98,6 +98,7 @@ fn validate_command(
     command: &HirCommand,
     diagnostics: &mut Vec<CompilerDiagnostic>,
 ) {
+    validate_ordinary_delete_shape(hir, command, diagnostics);
     let mut cascade_bindings = command.bindings.iter().filter(|binding| {
         hir.entity(binding.entity_id).is_some_and(|entity| {
             matches!(
@@ -165,19 +166,30 @@ fn validate_command(
         .filter_map(|binding| {
             let entity = hir.entity(binding.entity_id)?;
             let key_fields = entity.key_field_set();
-            let initialized_fields = if binding.mode == BindingMode::Create {
+            let initialized_fields = if matches!(
+                binding.mode,
+                BindingMode::Create | BindingMode::InitOrMutate
+            ) {
                 entity
                     .fields
                     .iter()
                     .filter_map(|field| {
-                        (key_fields.contains(&field.id) || field.value_type.is_optional())
-                            .then_some(field.id)
+                        (key_fields.contains(&field.id)
+                            || field.value_type.is_optional()
+                            || binding
+                                .initializer
+                                .iter()
+                                .any(|initialized| initialized.id == field.id))
+                        .then_some(field.id)
                     })
                     .collect()
             } else {
                 entity.fields.iter().map(|field| field.id).collect()
             };
-            let required_create_fields = if binding.mode == BindingMode::Create {
+            let required_create_fields = if matches!(
+                binding.mode,
+                BindingMode::Create | BindingMode::InitOrMutate
+            ) {
                 entity
                     .fields
                     .iter()
@@ -204,7 +216,10 @@ fn validate_command(
     let mut influential_roots = Vec::new();
     for binding in &command.bindings {
         influential_roots.extend(binding.arguments.iter());
-        influential_roots.extend(binding.failure.fields.iter().map(|field| &field.value));
+        influential_roots.extend(binding.initializer.iter().map(|field| &field.value));
+        if let Some(failure) = &binding.failure {
+            influential_roots.extend(failure.fields.iter().map(|field| &field.value));
+        }
         if let Some(failure) = &binding.restriction_failure {
             influential_roots.extend(failure.fields.iter().map(|field| &field.value));
         }
@@ -216,7 +231,9 @@ fn validate_command(
         .bindings
         .iter()
         .flat_map(|binding| {
-            std::iter::once(&binding.failure)
+            binding
+                .failure
+                .iter()
                 .chain(binding.restriction_failure.iter())
                 .chain(binding.cascade_failure.iter())
         })
@@ -252,7 +269,7 @@ fn validate_command(
                     ));
                     continue;
                 };
-                if state.mode == BindingMode::Read
+                if matches!(state.mode, BindingMode::Read | BindingMode::Delete)
                     || state.key_fields.contains(field)
                     || !written.insert((*binding, *field))
                 {
@@ -285,7 +302,7 @@ fn validate_command(
                     ));
                     continue;
                 };
-                if state.mode == BindingMode::Read
+                if matches!(state.mode, BindingMode::Read | BindingMode::Delete)
                     || state.key_fields.contains(field)
                     || !written.insert((*binding, *field))
                 {
@@ -325,7 +342,7 @@ fn validate_command(
                     ));
                     continue;
                 };
-                if state.mode != BindingMode::Mutate
+                if !matches!(state.mode, BindingMode::Mutate | BindingMode::InitOrMutate)
                     || state.key_fields.contains(state_field)
                     || !written.insert((*binding, *state_field))
                 {
@@ -377,7 +394,7 @@ fn validate_command(
                     }
                     HirWorkflowLeaseOperation::Fence { .. } => [None, None, None, None],
                 };
-                if state.mode != BindingMode::Mutate
+                if !matches!(state.mode, BindingMode::Mutate | BindingMode::InitOrMutate)
                     || written_fields.into_iter().flatten().any(|field| {
                         state.key_fields.contains(&field) || !written.insert((*binding, field))
                     })
@@ -400,11 +417,12 @@ fn validate_command(
             }
         }
     }
-    for binding in command
-        .bindings
-        .iter()
-        .filter(|binding| binding.mode == BindingMode::Mutate)
-    {
+    for binding in command.bindings.iter().filter(|binding| {
+        matches!(
+            binding.mode,
+            BindingMode::Mutate | BindingMode::InitOrMutate
+        )
+    }) {
         let lease_protected = hir
             .workflows
             .iter()
@@ -430,7 +448,7 @@ fn validate_command(
     outcomes.push(&command.success);
 
     for state in states.values() {
-        if state.mode == BindingMode::Create
+        if matches!(state.mode, BindingMode::Create | BindingMode::InitOrMutate)
             && !state
                 .required_create_fields
                 .is_subset(&state.initialized_fields)
@@ -444,6 +462,69 @@ fn validate_command(
     validate_outcome_shapes(&outcomes, diagnostics);
     validate_secret_flows(hir, command, &outcomes, diagnostics);
     validate_secret_taint(secret_input, command, &influential_roots, diagnostics);
+}
+
+fn validate_ordinary_delete_shape(
+    hir: &TypedContractHir,
+    command: &HirCommand,
+    diagnostics: &mut Vec<CompilerDiagnostic>,
+) {
+    if command.collection_expansion.is_some() {
+        return;
+    }
+    let deletes = command
+        .bindings
+        .iter()
+        .filter(|binding| binding.mode == BindingMode::Delete)
+        .collect::<Vec<_>>();
+    let Some(first) = deletes.first().copied() else {
+        return;
+    };
+    for binding in deletes.iter().skip(1) {
+        diagnostics.push(
+            CompilerDiagnostic::new(
+                CompilerDiagnosticCode::InvalidDeletePolicy,
+                binding.entity_span,
+            )
+            .with_related_span(first.entity_span),
+        );
+    }
+    for binding in &deletes {
+        if hir.entity(binding.entity_id).is_none_or(|entity| {
+            !matches!(
+                entity.delete_policy.as_ref(),
+                Some(crate::hir::HirDeletePolicy::NoInbound { .. })
+            )
+        }) {
+            diagnostics.push(CompilerDiagnostic::new(
+                CompilerDiagnosticCode::InvalidDeletePolicy,
+                binding.entity_span,
+            ));
+        }
+    }
+    for candidate in &command.bindings {
+        if candidate.id == first.id || candidate.entity_id != first.entity_id {
+            continue;
+        }
+        let same_target = candidate.arguments.len() == first.arguments.len()
+            && candidate
+                .arguments
+                .iter()
+                .zip(&first.arguments)
+                .all(|(candidate, deleted)| {
+                    command_expression_fingerprint(&command.expressions, candidate.id)
+                        == command_expression_fingerprint(&command.expressions, deleted.id)
+                });
+        if same_target {
+            diagnostics.push(
+                CompilerDiagnostic::new(
+                    CompilerDiagnosticCode::InvalidBinding,
+                    candidate.entity_span,
+                )
+                .with_related_span(first.entity_span),
+            );
+        }
+    }
 }
 
 fn validate_cascade_binding(
@@ -466,7 +547,10 @@ fn validate_cascade_binding(
     if binding.mode != BindingMode::Delete
         || !binding.collection_local
         || command.collection_expansion.is_none()
-        || failure.id == binding.failure.id
+        || binding
+            .failure
+            .as_ref()
+            .is_some_and(|ordinary| failure.id == ordinary.id)
     {
         diagnostics.push(CompilerDiagnostic::new(
             CompilerDiagnosticCode::InvalidDeletePolicy,
@@ -721,20 +805,23 @@ fn validate_unique_conflicts(
             HirEffect::WorkflowTransition { .. } | HirEffect::WorkflowLease { .. } => None,
         })
         .collect::<BTreeMap<_, _>>();
-    for binding in command
-        .bindings
-        .iter()
-        .filter(|binding| matches!(binding.mode, BindingMode::Create | BindingMode::Mutate))
-    {
+    for binding in command.bindings.iter().filter(|binding| {
+        matches!(
+            binding.mode,
+            BindingMode::Create | BindingMode::Mutate | BindingMode::InitOrMutate
+        )
+    }) {
         let Some(entity) = hir.entity(binding.entity_id) else {
             continue;
         };
         for unique in entity.indexes.iter().filter(|index| index.unique) {
-            let changes = binding.mode == BindingMode::Create
-                || unique
-                    .fields
-                    .iter()
-                    .any(|field| assignments.contains_key(&(binding.id, field.0)));
+            let changes = matches!(
+                binding.mode,
+                BindingMode::Create | BindingMode::InitOrMutate
+            ) || unique
+                .fields
+                .iter()
+                .any(|field| assignments.contains_key(&(binding.id, field.0)));
             if !changes {
                 continue;
             }
@@ -745,6 +832,13 @@ fn validate_unique_conflicts(
                     assignments
                         .get(&(binding.id, field.0))
                         .copied()
+                        .or_else(|| {
+                            binding
+                                .initializer
+                                .iter()
+                                .find(|initialized| initialized.id == field.0)
+                                .map(|initialized| &initialized.value)
+                        })
                         .or_else(|| {
                             entity
                                 .key_fields
@@ -801,7 +895,7 @@ fn validate_relationship_reads(
     for source_binding in &command.bindings {
         if !matches!(
             source_binding.mode,
-            BindingMode::Create | BindingMode::Mutate
+            BindingMode::Create | BindingMode::Mutate | BindingMode::InitOrMutate
         ) {
             continue;
         }
@@ -809,11 +903,13 @@ fn validate_relationship_reads(
             continue;
         };
         for relationship in &source_entity.relationships {
-            let changes_relationship = source_binding.mode == BindingMode::Create
-                || relationship
-                    .source_fields
-                    .iter()
-                    .any(|field| assignments.contains_key(&(source_binding.id, field.0)));
+            let changes_relationship = matches!(
+                source_binding.mode,
+                BindingMode::Create | BindingMode::InitOrMutate
+            ) || relationship
+                .source_fields
+                .iter()
+                .any(|field| assignments.contains_key(&(source_binding.id, field.0)));
             if !changes_relationship {
                 continue;
             }
@@ -824,6 +920,13 @@ fn validate_relationship_reads(
                     assignments
                         .get(&(source_binding.id, field.0))
                         .copied()
+                        .or_else(|| {
+                            source_binding
+                                .initializer
+                                .iter()
+                                .find(|initialized| initialized.id == field.0)
+                                .map(|initialized| &initialized.value)
+                        })
                         .or_else(|| {
                             source_entity
                                 .key_fields
@@ -838,7 +941,10 @@ fn validate_relationship_reads(
                     target.id < source_binding.id
                         && matches!(
                             target.mode,
-                            BindingMode::Read | BindingMode::Mutate | BindingMode::Create
+                            BindingMode::Read
+                                | BindingMode::Mutate
+                                | BindingMode::Create
+                                | BindingMode::InitOrMutate
                         )
                         && target.entity_id == relationship.target_entity
                         && target.arguments.len() == values.len()
@@ -872,7 +978,10 @@ fn validate_binding_ownership(command: &HirCommand, diagnostics: &mut Vec<Compil
     let has_mutable_binding = command.bindings.iter().any(|binding| {
         matches!(
             binding.mode,
-            BindingMode::Mutate | BindingMode::Create | BindingMode::Delete
+            BindingMode::Mutate
+                | BindingMode::Create
+                | BindingMode::InitOrMutate
+                | BindingMode::Delete
         )
     });
     if !command.bindings.is_empty() && (command.effects.is_empty() || has_mutable_binding) {
@@ -904,7 +1013,10 @@ fn validate_idempotency(
     let mutating = command.bindings.iter().any(|binding| {
         matches!(
             binding.mode,
-            BindingMode::Mutate | BindingMode::Create | BindingMode::Delete
+            BindingMode::Mutate
+                | BindingMode::Create
+                | BindingMode::InitOrMutate
+                | BindingMode::Delete
         )
     }) || !command.effects.is_empty();
     if command.invocation_class == riffdb_contract_ir::CommandInvocationClass::Reimport {
@@ -996,7 +1108,8 @@ fn validate_create_reads(
     };
     for (binding, field) in dependencies.bound_fields() {
         if states.get(binding).is_some_and(|state| {
-            state.mode == BindingMode::Create && !state.initialized_fields.contains(field)
+            matches!(state.mode, BindingMode::Create | BindingMode::InitOrMutate)
+                && !state.initialized_fields.contains(field)
         }) {
             diagnostics.push(CompilerDiagnostic::new(
                 CompilerDiagnosticCode::InvalidCreation,
@@ -1006,7 +1119,7 @@ fn validate_create_reads(
     }
     for binding in dependencies.complete_bindings() {
         if states.get(binding).is_some_and(|state| {
-            state.mode == BindingMode::Create
+            matches!(state.mode, BindingMode::Create | BindingMode::InitOrMutate)
                 && !state
                     .required_create_fields
                     .is_subset(&state.initialized_fields)

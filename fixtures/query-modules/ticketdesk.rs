@@ -1697,7 +1697,7 @@ pub struct AddProjectMemberInput {
     pub organization_id: String,
 }
 
-#[allow(clippy::large_enum_variant)]
+#[allow(clippy::enum_variant_names, clippy::large_enum_variant)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum AddProjectMemberOutcome {
     Created {
@@ -1789,7 +1789,7 @@ pub struct AttachLabelInput {
     pub organization_id: String,
 }
 
-#[allow(clippy::large_enum_variant)]
+#[allow(clippy::enum_variant_names, clippy::large_enum_variant)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum AttachLabelOutcome {
     Created {
@@ -1882,7 +1882,7 @@ pub struct CloseTicketWithCommentInput {
     pub organization_id: String,
 }
 
-#[allow(clippy::large_enum_variant)]
+#[allow(clippy::enum_variant_names, clippy::large_enum_variant)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CloseTicketWithCommentOutcome {
     Closed {
@@ -1988,7 +1988,7 @@ pub struct CreateCommentInput {
     pub organization_id: String,
 }
 
-#[allow(clippy::large_enum_variant)]
+#[allow(clippy::enum_variant_names, clippy::large_enum_variant)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CreateCommentOutcome {
     Created {
@@ -2079,7 +2079,7 @@ pub struct CreateLabelInput {
     pub organization_id: String,
 }
 
-#[allow(clippy::large_enum_variant)]
+#[allow(clippy::enum_variant_names, clippy::large_enum_variant)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CreateLabelOutcome {
     Created {
@@ -2156,7 +2156,7 @@ pub struct CreateOrganizationInput {
     pub organization_id: String,
 }
 
-#[allow(clippy::large_enum_variant)]
+#[allow(clippy::enum_variant_names, clippy::large_enum_variant)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CreateOrganizationOutcome {
     Created {
@@ -2222,7 +2222,7 @@ pub struct CreateProjectInput {
     pub organization_id: String,
 }
 
-#[allow(clippy::large_enum_variant)]
+#[allow(clippy::enum_variant_names, clippy::large_enum_variant)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CreateProjectOutcome {
     Created {
@@ -2304,7 +2304,7 @@ pub struct CreateTicketInput {
     pub organization_id: String,
 }
 
-#[allow(clippy::large_enum_variant)]
+#[allow(clippy::enum_variant_names, clippy::large_enum_variant)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CreateTicketOutcome {
     Created {
@@ -2409,7 +2409,7 @@ pub struct CreateUserInput {
     pub organization_id: String,
 }
 
-#[allow(clippy::large_enum_variant)]
+#[allow(clippy::enum_variant_names, clippy::large_enum_variant)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CreateUserOutcome {
     Created {
@@ -2493,7 +2493,7 @@ pub struct OpenTicketWithLabelsInput {
     pub organization_id: String,
 }
 
-#[allow(clippy::large_enum_variant)]
+#[allow(clippy::enum_variant_names, clippy::large_enum_variant)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum OpenTicketWithLabelsOutcome {
     Created {
@@ -2629,7 +2629,7 @@ pub struct SwapMemberRolesInput {
     pub organization_id: String,
 }
 
-#[allow(clippy::large_enum_variant)]
+#[allow(clippy::enum_variant_names, clippy::large_enum_variant)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum SwapMemberRolesOutcome {
     Swapped {

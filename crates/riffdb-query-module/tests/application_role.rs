@@ -332,6 +332,116 @@ query GetDocument(
 }
 
 #[test]
+fn initialized_transition_role_requires_both_create_and_update_policy_coverage() {
+    let contract_source = |rules: &str| {
+        format!(
+            r#"
+contract InitializedPolicySurface version 1 {{
+  entity Document {{
+    key (organization_id: uuid, document_id: uuid)
+    field owner_id: uuid
+    field value: u64
+  }}
+  aggregate Documents {{
+    root Document
+    partition_by organization_id
+    conflict_key (organization_id, document_id)
+  }}
+  row policy DocumentAccess on Document {{
+    {rules}
+  }}
+  command PutDocument {{
+    input request_id: uuid
+    input organization_id: uuid
+    input document_id: uuid
+    input owner_id: uuid
+    input value: u64
+    idempotency_key request_id
+    init_or_mutate Document(organization_id, document_id) as document initialize {{
+      owner_id: owner_id,
+      value: 0,
+    }}
+    set document.owner_id = owner_id
+    set document.value = value
+    return Written {{}}
+  }}
+}}
+"#
+        )
+    };
+    let manifest_source = r#"{
+      "application":"init-policy",
+      "contract":{"lineage":"InitializedPolicySurface","source":"contract.riff","version":1},
+      "generation":{"go":"generated/go/client.go","mcp":"generated/mcp/tools.json","python":"generated/python/client.py","rust":"generated/rust/client.rs","typescript":"generated/typescript/client.ts"},
+      "migrations":[],
+      "query_modules":[{"name":"empty","queries":[],"version":1}],
+      "reactive_modules":[],
+      "roles":[{"agent_subscriptions":[],"commands":["PutDocument"],"environment":"development","event_streams":[],"name":"DocumentWriter","queries":[],"row_policies":["DocumentAccess"],"tenant_scope":"global","watch_queries":[]}],
+      "schema":"riffdb.application-source/v6",
+      "seed_inputs":[]
+    }"#;
+
+    for incomplete_rules in [
+        "allow create when owner_id == principal.id",
+        "allow update when owner_id == principal.id",
+    ] {
+        let contract = compile_contract_source(&contract_source(incomplete_rules))
+            .expect("incomplete policy contract compiles");
+        let module = QueryModule::compile(
+            QueryModuleCandidate::new(
+                QueryModuleName::new("empty").expect("module name"),
+                QueryModuleVersion::new(1).expect("module version"),
+                vec![],
+            )
+            .expect("candidate"),
+            &contract,
+        )
+        .expect("empty module");
+        let manifest = ApplicationSourceManifest::parse(manifest_source)
+            .expect("source manifest")
+            .exact_manifest_v2(&contract, std::slice::from_ref(&module), &[])
+            .expect("exact manifest");
+        let error = compile_application_role(
+            &manifest,
+            "DocumentWriter",
+            None,
+            &contract,
+            std::slice::from_ref(&module),
+        )
+        .expect_err("one policy operation cannot authorize both runtime alternatives");
+        assert_eq!(error.kind(), ApplicationRoleErrorKind::PolicyCoverage);
+    }
+
+    let contract = compile_contract_source(&contract_source(
+        "allow create when owner_id == principal.id\n    allow update when owner_id == principal.id",
+    ))
+    .expect("complete policy contract compiles");
+    let module = QueryModule::compile(
+        QueryModuleCandidate::new(
+            QueryModuleName::new("empty").expect("module name"),
+            QueryModuleVersion::new(1).expect("module version"),
+            vec![],
+        )
+        .expect("candidate"),
+        &contract,
+    )
+    .expect("empty module");
+    let manifest = ApplicationSourceManifest::parse(manifest_source)
+        .expect("source manifest")
+        .exact_manifest_v2(&contract, std::slice::from_ref(&module), &[])
+        .expect("exact manifest");
+    let role = compile_application_role(
+        &manifest,
+        "DocumentWriter",
+        None,
+        &contract,
+        std::slice::from_ref(&module),
+    )
+    .expect("create and update policy union authorizes the command");
+    assert_eq!(role.row_policies()[0].operations().len(), 2);
+}
+
+#[test]
 fn compiled_role_resolves_enum_principal_facts_by_symbol_only() {
     let contract = compile_contract_source(
         r#"

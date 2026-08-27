@@ -23,6 +23,70 @@ const ROW_POLICY_SURFACE: &str =
     include_str!("../../../fixtures/compiler/row-policy/valid/document-access.riff");
 
 #[test]
+fn parses_initialized_mutable_bindings_in_ordinary_and_bulk_commands() {
+    let source = r#"
+contract InitializedTransition version 1 {
+  entity State {
+    key (tenant_id: uuid, state_id: uuid)
+    field active: bool
+    field revision: u64
+    field payload: bytes<64>
+  }
+  command PutOne {
+    input request_id: uuid
+    input tenant_id: uuid
+    input state_id: uuid
+    input payload: bytes<64>
+    idempotency_key request_id
+    init_or_mutate State(tenant_id, state_id) as state initialize {
+      active: false,
+      revision: 0,
+    }
+    require current_revision: state.revision == 0 else Changed {}
+    set state.active = true
+    set state.payload = payload
+    set state.revision = state.revision + 1
+    return Written {}
+  }
+  bulk command PutMany {
+    input request_id: uuid
+    input states: list<State, 1..100>
+    idempotency_key request_id
+    for state_input in states {
+      init_or_mutate State(state_input.tenant_id, state_input.state_id) as state initialize {
+        active: false,
+        revision: 0,
+      }
+      require current_revision: state.revision == 0 else Changed {}
+      set state.active = true
+      set state.payload = state_input.payload
+      set state.revision = state.revision + 1
+    }
+    return Written {}
+  }
+}
+"#;
+
+    let document = parse_contract(source).expect("initialized mutable bindings parse");
+    let Declaration::Command(ordinary) = &document.contract.value.declarations[1].value else {
+        panic!("second declaration must be an ordinary command");
+    };
+    assert_eq!(ordinary.bindings.len(), 1);
+    let Declaration::Command(bulk) = &document.contract.value.declarations[2].value else {
+        panic!("third declaration must be a bulk command");
+    };
+    assert_eq!(
+        bulk.bulk_iteration
+            .as_ref()
+            .expect("bulk iteration")
+            .value
+            .bindings
+            .len(),
+        1
+    );
+}
+
+#[test]
 fn parses_one_explicit_bulk_iteration_and_checked_delete_with_exact_spans() {
     let source = r#"
 contract BulkSurface version 1 {
@@ -634,7 +698,7 @@ fn checked_legal_spend_matches_both_authoritative_spec_copies() {
 }
 
 #[test]
-fn every_binding_mode_has_one_explicit_failure_outcome() {
+fn legacy_binding_modes_retain_one_explicit_failure_outcome() {
     let legal_spend = parse_contract(LEGAL_SPEND).expect("LegalSpend must parse");
     let full_surface = parse_contract(FULL_SURFACE).expect("full surface must parse");
 
@@ -650,6 +714,7 @@ fn every_binding_mode_has_one_explicit_failure_outcome() {
                     Binding::Mutate(binding) => ("mutate", binding),
                     Binding::Create(binding) => ("create", binding),
                     Binding::Delete(binding) => ("delete", binding),
+                    Binding::InitOrMutate(_) => continue,
                 };
                 observed.push((mode, binding.failure.value.name.value.as_str()));
             }

@@ -42,6 +42,7 @@ const STORAGE_SOURCES: &[&str] = &[
     "riffdb/storage/v1/capability.proto",
     "riffdb/storage/v1/capability_migration.proto",
     "riffdb/storage/v1/catalog.proto",
+    "riffdb/storage/v1/clean_close_lifecycle_v1.proto",
     "riffdb/storage/v1/command_capsule_v1.proto",
     "riffdb/storage/v1/command_segment_v1.proto",
     "riffdb/storage/v1/common.proto",
@@ -90,6 +91,7 @@ const PRODUCTION_SOURCES: &[&str] = &[
     "riffdb/storage/v1/capability.proto",
     "riffdb/storage/v1/capability_migration.proto",
     "riffdb/storage/v1/catalog.proto",
+    "riffdb/storage/v1/clean_close_lifecycle_v1.proto",
     "riffdb/storage/v1/command_capsule_v1.proto",
     "riffdb/storage/v1/command_segment_v1.proto",
     "riffdb/storage/v1/common.proto",
@@ -191,6 +193,7 @@ enum PayloadBound {
     Admission,
     Document,
     EnvelopeMaximum,
+    Exact(usize),
 }
 
 #[derive(Clone, Copy)]
@@ -651,6 +654,11 @@ const DURABLE_RECORDS: &[DurableRecord] = &[
         "correlated_index_work_command_authority_v6.proto",
         "StoredCommandSegmentV5",
         PayloadBound::EnvelopeMaximum,
+    ),
+    durable(
+        "clean_close_lifecycle_v1.proto",
+        "StoredCleanCloseLifecycleV1",
+        PayloadBound::Exact(192),
     ),
 ];
 
@@ -1144,6 +1152,9 @@ fn main() -> Result<(), Box<dyn Error>> {
         .ok_or_else(|| {
             io::Error::other("durable correlated-index command-authority registry is incomplete")
         })?;
+    let clean_close_lifecycle_record = durable_registry
+        .get(current_v1_record_count + 62)
+        .ok_or_else(|| io::Error::other("durable clean-close lifecycle registry is incomplete"))?;
     write_artifact(
         &output_root,
         "fixtures/proto/durable-registry.txt",
@@ -1621,6 +1632,26 @@ fn main() -> Result<(), Box<dyn Error>> {
     )?;
     write_artifact(
         &output_root,
+        "fixtures/proto/durable-clean-close-lifecycle-v1-schema-hash.bin",
+        &clean_close_lifecycle_record.schema_hash,
+    )?;
+    write_artifact(
+        &output_root,
+        "fixtures/proto/durable-clean-close-lifecycle-v1-record-bound.bin",
+        &durable_record_bounds(std::slice::from_ref(clean_close_lifecycle_record)),
+    )?;
+    write_artifact(
+        &output_root,
+        "crates/riffdb-proto/fixtures/durable-clean-close-lifecycle-v1-schema-hash.bin",
+        &clean_close_lifecycle_record.schema_hash,
+    )?;
+    write_artifact(
+        &output_root,
+        "crates/riffdb-proto/fixtures/durable-clean-close-lifecycle-v1-record-bound.bin",
+        &durable_record_bounds(std::slice::from_ref(clean_close_lifecycle_record)),
+    )?;
+    write_artifact(
+        &output_root,
         "fixtures/proto/durable-entity-transitions-v4-schema-hashes.bin",
         &durable_schema_hashes(entity_transitions_v4_records),
     )?;
@@ -1896,9 +1927,9 @@ struct BuiltDurableRecord {
 fn build_durable_registry(
     storage: &FileDescriptorSet,
 ) -> Result<Vec<BuiltDurableRecord>, Box<dyn Error>> {
-    if DURABLE_RECORDS.len() != 91 {
+    if DURABLE_RECORDS.len() != 92 {
         return Err(
-            io::Error::other("readable durable registry must contain exactly 91 records").into(),
+            io::Error::other("readable durable registry must contain exactly 92 records").into(),
         );
     }
     if storage.file.len() != STORAGE_SOURCES.len()
@@ -1922,9 +1953,9 @@ fn build_durable_registry(
         .iter()
         .map(|file| file.enum_type.len())
         .sum::<usize>();
-    if message_count != 181 || enum_count != 24 {
+    if message_count != 182 || enum_count != 25 {
         return Err(io::Error::other(format!(
-            "storage schema must contain exactly 181 messages and 24 enums; found {message_count} messages and {enum_count} enums"
+            "storage schema must contain exactly 182 messages and 25 enums; found {message_count} messages and {enum_count} enums"
         ))
         .into());
     }
@@ -1970,6 +2001,7 @@ fn build_durable_registry(
             PayloadBound::Admission => ADMISSION_PAYLOAD_BOUND,
             PayloadBound::Document => DOCUMENT_PAYLOAD_BOUND,
             PayloadBound::EnvelopeMaximum => maximum_payload_for_envelope(&record_type),
+            PayloadBound::Exact(bytes) => bytes,
         };
         let max_envelope_bytes =
             maximum_encoded_envelope_bytes_for(&record_type, max_payload_bytes)?;
@@ -2250,6 +2282,9 @@ fn durable_writable_registry_fixture(
         .ok_or_else(|| {
             io::Error::other("durable registry is missing correlated-index command authority")
         })?;
+    let clean_close_lifecycle = records
+        .get(current_v1_record_count + 62)
+        .ok_or_else(|| io::Error::other("durable registry is missing clean-close lifecycle"))?;
     let writable = legacy[..8]
         .iter()
         .chain(std::iter::once(v2))
@@ -2292,10 +2327,11 @@ fn durable_writable_registry_fixture(
         .chain(std::iter::once(vector_evidence_index))
         .chain(std::iter::once(vector_health_observation))
         .chain(std::iter::once(vector_projection_control))
-        .chain(correlated_index_work_command_authority.iter());
+        .chain(correlated_index_work_command_authority.iter())
+        .chain(std::iter::once(clean_close_lifecycle));
 
     let mut output = String::from("riffdb-durable-writable-registry-v1\n");
-    let _ = writeln!(output, "records {}", current_v1_record_count + 44);
+    let _ = writeln!(output, "records {}", current_v1_record_count + 45);
     for record in writable {
         let _ = write!(output, "{} schema-hash=", record.record_type);
         for byte in record.schema_hash {

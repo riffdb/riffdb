@@ -222,6 +222,10 @@ type IssueVerificationTokenVerificationTokenUserMissing struct {
 }
 func (IssueVerificationTokenVerificationTokenUserMissing) isIssueVerificationTokenOutcome() {}
 
+var RefreshSessionSecretOutputs = []struct { Outcome, Field, Entity, SourceField string }{
+	{Outcome: "SessionRefreshed", Field: "session", Entity: "Session", SourceField: "token_digest"},
+}
+
 type RefreshSessionInput struct {
 	UserId string
 	RequestId string
@@ -236,6 +240,9 @@ type RefreshSessionSessionRefreshed struct {
 	Session Session
 }
 func (RefreshSessionSessionRefreshed) isRefreshSessionOutcome() {}
+
+func (RefreshSessionSessionRefreshed) String() string { return "RefreshSessionSessionRefreshed{<secret outputs redacted>}" }
+func (RefreshSessionSessionRefreshed) GoString() string { return "RefreshSessionSessionRefreshed{<secret outputs redacted>}" }
 
 type RefreshSessionRefreshSessionStale struct {
 	Outcome string
@@ -257,6 +264,10 @@ type RefreshSessionRefreshSessionRevoked struct {
 }
 func (RefreshSessionRefreshSessionRevoked) isRefreshSessionOutcome() {}
 
+var RevokeSessionSecretOutputs = []struct { Outcome, Field, Entity, SourceField string }{
+	{Outcome: "SessionRevoked", Field: "session", Entity: "Session", SourceField: "token_digest"},
+}
+
 type RevokeSessionInput struct {
 	UserId string
 	RequestId string
@@ -270,6 +281,9 @@ type RevokeSessionSessionRevoked struct {
 	Session Session
 }
 func (RevokeSessionSessionRevoked) isRevokeSessionOutcome() {}
+
+func (RevokeSessionSessionRevoked) String() string { return "RevokeSessionSessionRevoked{<secret outputs redacted>}" }
+func (RevokeSessionSessionRevoked) GoString() string { return "RevokeSessionSessionRevoked{<secret outputs redacted>}" }
 
 type RevokeSessionRevokeSessionStale struct {
 	Outcome string

@@ -77,19 +77,19 @@ fn lock_covers_every_compiler_owned_identity_and_generated_artifact() {
     let artifacts = [
         GeneratedApplicationArtifact::new(
             GeneratedApplicationArtifactKind::Rust,
-            source.generation().rust(),
+            source.generation().rust().expect("rust"),
             b"generated rust",
         )
         .expect("rust"),
         GeneratedApplicationArtifact::new(
             GeneratedApplicationArtifactKind::TypeScript,
-            source.generation().typescript(),
+            source.generation().typescript().expect("typescript"),
             b"generated typescript",
         )
         .expect("typescript"),
         GeneratedApplicationArtifact::new(
             GeneratedApplicationArtifactKind::Mcp,
-            source.generation().mcp(),
+            source.generation().mcp().expect("mcp"),
             b"generated mcp",
         )
         .expect("mcp"),
@@ -288,13 +288,13 @@ query GetDocument(
         .expect("bundle"),
         GeneratedApplicationArtifact::new(
             GeneratedApplicationArtifactKind::Rust,
-            source.generation().rust(),
+            source.generation().rust().expect("rust"),
             b"rust",
         )
         .expect("rust"),
         GeneratedApplicationArtifact::new(
             GeneratedApplicationArtifactKind::TypeScript,
-            source.generation().typescript(),
+            source.generation().typescript().expect("typescript"),
             b"typescript",
         )
         .expect("typescript"),
@@ -312,7 +312,7 @@ query GetDocument(
         .expect("go"),
         GeneratedApplicationArtifact::new(
             GeneratedApplicationArtifactKind::Mcp,
-            source.generation().mcp(),
+            source.generation().mcp().expect("mcp"),
             b"mcp",
         )
         .expect("mcp"),
@@ -396,6 +396,115 @@ fn checked_row_policy_rotation_fixtures_decode_as_one_current_identity_family() 
     assert!(text.contains(r#""name":"DocumentAccess""#));
     assert!(text.contains(r#""application_role_definition":3"#));
     assert!(!text.contains("team_ids"));
+}
+
+#[test]
+fn v8_lock_contains_exactly_the_v7_declared_surface_set() {
+    let source = ApplicationSourceManifest::decode_canonical(include_bytes!(
+        "../../../fixtures/application-manifests/go-only-v7.json"
+    ))
+    .expect("Go-only V7 source");
+    let contract =
+        compile_contract_source("contract Inventory version 1 {\n}\n").expect("empty contract");
+    let module = QueryModule::compile(
+        QueryModuleCandidate::new(
+            QueryModuleName::new("inventory").expect("module name"),
+            QueryModuleVersion::new(1).expect("module version"),
+            Vec::new(),
+        )
+        .expect("candidate"),
+        &contract,
+    )
+    .expect("module");
+    let manifest = source
+        .exact_manifest_v2(&contract, std::slice::from_ref(&module), &[])
+        .expect("V5 manifest");
+    assert_eq!(
+        manifest.schema(),
+        riffdb_query_module::APPLICATION_MANIFEST_SCHEMA_V5
+    );
+    let mandatory = [
+        GeneratedApplicationArtifact::new(
+            GeneratedApplicationArtifactKind::Manifest,
+            riffdb_query_module::EXACT_MANIFEST_ARTIFACT_PATH,
+            manifest.canonical_bytes(),
+        )
+        .expect("manifest artifact"),
+        GeneratedApplicationArtifact::new(
+            GeneratedApplicationArtifactKind::Go,
+            source.generation().go().expect("Go path"),
+            b"generated Go",
+        )
+        .expect("Go artifact"),
+        GeneratedApplicationArtifact::new(
+            GeneratedApplicationArtifactKind::ContractBundle,
+            riffdb_query_module::CONTRACT_BUNDLE_ARTIFACT_PATH,
+            contract.canonical_bytes(),
+        )
+        .expect("contract artifact"),
+    ];
+    let lock = ApplicationLock::compile_v8(
+        &source,
+        &manifest,
+        &contract,
+        std::slice::from_ref(&module),
+        &[],
+        &mandatory,
+        &[],
+    )
+    .expect("V8 lock");
+    assert_eq!(
+        lock.schema(),
+        riffdb_query_module::APPLICATION_LOCK_SCHEMA_V8
+    );
+    assert_eq!(
+        ApplicationLock::decode_canonical(lock.canonical_bytes()).expect("round trip"),
+        lock
+    );
+    assert_eq!(
+        lock.artifacts()
+            .iter()
+            .filter(|artifact| matches!(
+                artifact.kind(),
+                GeneratedApplicationArtifactKind::Rust
+                    | GeneratedApplicationArtifactKind::Go
+                    | GeneratedApplicationArtifactKind::TypeScript
+                    | GeneratedApplicationArtifactKind::Python
+                    | GeneratedApplicationArtifactKind::Mcp
+            ))
+            .map(GeneratedApplicationArtifact::kind)
+            .collect::<Vec<_>>(),
+        vec![GeneratedApplicationArtifactKind::Go]
+    );
+
+    for invalid in [
+        mandatory[..2].to_vec(),
+        mandatory
+            .iter()
+            .cloned()
+            .chain([GeneratedApplicationArtifact::new(
+                GeneratedApplicationArtifactKind::Rust,
+                "generated/rust/client.rs",
+                b"extra Rust",
+            )
+            .expect("extra artifact")])
+            .collect(),
+    ] {
+        assert_eq!(
+            ApplicationLock::compile_v8(
+                &source,
+                &manifest,
+                &contract,
+                std::slice::from_ref(&module),
+                &[],
+                &invalid,
+                &[],
+            )
+            .expect_err("missing or extra artifacts fail closed")
+            .kind(),
+            ApplicationLockErrorKind::IdentityMismatch
+        );
+    }
 }
 
 #[test]

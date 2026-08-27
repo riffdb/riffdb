@@ -82,8 +82,8 @@ Arguments:
 Options:
       --config <PATH>
 
-      --generator <rust|go|typescript|python>
-          [default: rust] [possible values: rust, go, typescript, python]
+      --generator <rust|go|typescript|python|mcp>
+          [default: rust] [possible values: rust, go, typescript, python, mcp]
       --endpoint <HTTP_OR_HTTPS_ENDPOINT>
 
       --database <DATABASE>
@@ -322,7 +322,7 @@ Options:
       --run
           Runs the repository's generated application against the local server
       --go-runner-package <PATH>
-          Repository-relative Go main-package directory used by `--run` [default: .]
+          Repository-relative Go main-package directory used by `--run`
       --output <human|json>
           [possible values: human, json]
       --max-attempts <1..10>

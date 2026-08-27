@@ -8,10 +8,25 @@ contract DriverConformance version 1 {
     index by_item_title (organization_id, item_id, title) text_key(title, binary_utf8_v1)
   }
 
+  entity OneTimeToken {
+    key (organization_id: uuid, token_id: uuid)
+    field identifier: string<256>
+    field secret value: string<512>
+    field expires_at: timestamp
+    field issued_at: timestamp
+    delete_policy no_inbound
+  }
+
   aggregate ItemRoot {
     root Item
     partition_by organization_id
     conflict_key (organization_id, item_id)
+  }
+
+  aggregate TokenRoot {
+    root OneTimeToken
+    partition_by organization_id
+    conflict_key (organization_id, token_id)
   }
 
   command CreateItem {
@@ -27,5 +42,38 @@ contract DriverConformance version 1 {
     set item.token_digest = token_digest
     set item.created_at = tx.time
     return Created {}
+  }
+
+  command IssueToken {
+    input request_id: uuid
+    input organization_id: uuid
+    input token_id: uuid
+    input identifier: string<256>
+    input value: string<512>
+    input expires_at: timestamp
+    service issued_at: transaction_time
+    idempotency_key request_id
+    create OneTimeToken(organization_id, token_id) as token else TokenAlreadyExists {}
+    set token.identifier = identifier
+    set token.value = value
+    set token.expires_at = expires_at
+    set token.issued_at = issued_at
+    return TokenIssued { token_id: token.token_id, issued_at: token.issued_at }
+  }
+
+  command ConsumeToken {
+    input request_id: uuid
+    input organization_id: uuid
+    input token_id: uuid
+    idempotency_key request_id
+    delete OneTimeToken(organization_id, token_id) as token else TokenMissing {}
+    require token_unexpired: tx.time <= token.expires_at else TokenExpired {}
+    return TokenConsumed {
+      token_id: token.token_id,
+      identifier: token.identifier,
+      value: token.value reveals token.value,
+      expires_at: token.expires_at,
+      issued_at: token.issued_at
+    }
   }
 }

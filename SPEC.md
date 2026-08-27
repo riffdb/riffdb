@@ -6,9 +6,9 @@
 **Tagline:** *Vibe fast. Commit safely.*  
 **Category:** Contract-first operational database for agent-built applications  
 
-**Version:** 1.11
+**Version:** 1.14
 **Status:** Deployable Application Alpha architecture accepted; implementation gated by work packages
-**Date:** 25 August 2026
+**Date:** 26 August 2026
 **Audience:** Coding agents, database engineers, compiler engineers, security reviewers, and technical product leads  
 **Working binaries:** `riffdbd`, `riffdb`, `riffdb-mcp`  
 **Working URI scheme:** `riffdb://`  
@@ -37,6 +37,9 @@
 
 | Version | Date | Summary |
 |---|---|---|
+| 1.14 | 2026-08-26 | Accepted ADR-0156 and ADR-0157 and registered STO-023, REC-004, PERF-019, WP-704, and WP-705 for an automatic conventional clean-close fast path. One private engine-atomic CLEAN/DIRTY lifecycle certificate may replace population-wide validation only after every writer and journal suffix drains and only when bounded identity, frontier, catalog, and authority roots match; its exact key, seven-field Protobuf identity, hashes, bounded-root framing, checked generation, and registry migration are frozen, and it is durably replaced by DIRTY before writers reactivate. Missing, dirty, stale, repaired, migrated, restored, or contradictory state retains complete validation. Latent unrelated corruption may be detected on access or explicit scrub rather than before clean readiness. No caller or operator can select the fast path, and no signing key or hostile-offline-write claim is added. |
+| 1.13 | 2026-08-26 | Accepted ADR-0154 and ADR-0155. Registered OQ-056 through OQ-061 plus WP-700/WP-701 for compiler-sealed strict, inclusive, and complement intervals over the existing `binary_utf8_v1` physical order, with one partition prefix, total order, cursor, policy, and global work contract and no ULID-specific or durable-format branch. Registered DX-042 through DX-049 plus WP-702/WP-703 for sparse source V7 generated-surface declarations, manifest V5, lock V8, exact compiler-owned artifact inventories, and reproducible single-surface application packages. Existing source V1-V6, manifest V1-V4, lock V1-V7, indexes, query plans, storage, protocols, and runtime authority remain unchanged and readable. |
+| 1.12 | 2026-08-26 | Accepted ADR-0153 and registered BLK-036 through BLK-045 plus WP-697 through WP-699 for one compiler-sealed `init_or_mutate` exact-key binding. An absent observation uses compiler-declared initial fields and produces one create; a present observation uses the revalidated preimage and produces one replace; both follow one common checked suffix. Create/update authority, policy, idempotency, atomic outcome/event/provenance, collection and index-work bounds, and pay-once proofs remain mandatory. V17 is least-sufficient and old contracts remain byte-exact. General upsert, conditional command blocks, state-origin exposure, framework behavior, and caller-selected conflict semantics remain forbidden pending real-consumer review and exact acceptance. |
 | 1.11 | 2026-08-25 | Corrected accepted ADR-0108 exact text-key equality: a declared `binary_utf8_v1` component MAY consume an exact typed string equality while forming an ordinary bounded index prefix, so compatible wider ordered and narrower equality-prefix named queries can share one maintained index. Runtime transforms the bound string to the existing physical ordered bytes only for prefix formation; logical predicate evaluation, complete declared order, cursor identity, and every existing partition, policy, and cost proof remain unchanged. Registered WP-686. |
 | 1.10 | 2026-08-25 | Clarified accepted ADR-0108 ordering: a declared `binary_utf8_v1` text-key component MAY provide the ordinary bounded total order of an operational query without also carrying a prefix predicate. The selected index, partition equality prefix, complete compiler-declared order, deterministic key tie-breaker, opaque cursor binding, and all existing cost and authorization checks remain mandatory; canonical length-first string indexes do not acquire bytewise text ordering. Registered WP-685. |
 | 1.09 | 2026-08-25 | Accepted ADR-0149 and registered BLK-022 through BLK-027 plus WP-683 and WP-684. Physical index-entry deltas remain capped at 4,096 while affected-prefix epochs and validation positions gain 65,535-entry structural maxima beneath one compiler-owned 65,535-unit correlated index-work budget and the unchanged byte ceilings. Collection planning may use only proved partition and aggregate-byte correlations; runtime derives one sealed canonical target set per attempt; least-sufficient durable capsule/segment successors preserve old 4,096-transition identities; and RDB-C020 reports a closed resource identity, actual value, and maximum without application data. |
@@ -581,6 +584,53 @@ passed to `go run` without a shell or caller-supplied flags. Absolute paths,
 parent traversal, symlink escape, nested-module ambiguity, non-main packages,
 and argument injection MUST fail before runner execution. Contract, module,
 role, plan, and application-lock identity MUST remain unchanged.
+
+`DX-042` Application source V7 MUST declare one nonempty closed sparse map of
+generated `rust`, `go`, `typescript`, `python`, and `mcp` surfaces. Present
+targets MUST have unique bounded workspace-relative paths; absent targets MUST
+not be generated, materialized, hashed as generated artifacts, freshness-
+checked, installed, or required through an unrelated ecosystem toolchain.
+
+`DX-043` The symbolic application source MUST be the sole authority for the
+exact generated-surface set. Local project configuration MAY materialize only
+a subset of declared surfaces and MUST NOT add an undeclared target or cause
+the compiler-owned application lock to vary across machines.
+
+`DX-044` Source parsing, canonical generation, artifact-kind mapping, lock
+compilation, project publication, checking, installation, scaffolding, and
+development publication MUST derive from one compiler-owned declared-surface
+registry. Every declared artifact is generated and hashed exactly once per
+compilation; every absent surface incurs no generation or toolchain discovery.
+
+`DX-045` Selective generation MUST use the least-sufficient additive
+`riffdb.application-source/v7`, `riffdb.application-manifest/v5`, and
+`riffdb.application-lock/v8` identities. Source V1-V6, manifest V1-V4, and lock
+V1-V7 bytes and required artifact sets MUST remain supported for their
+registered windows, and no decoder may be retired by this change.
+
+`DX-046` `riffdb init` and the installed development workflow MUST produce and
+execute truthful Rust-only, Go-only, TypeScript-only, Python-only, and MCP-only
+application packages. A Go-only package MUST pass generation, exact checking,
+installation, and loopback execution without npm, TypeScript, Python, or a
+generated Rust application facade.
+
+`DX-047` Generated-surface selection MUST affect only compiler-owned package
+artifacts and their exact identities. It MUST NOT change commands, queries,
+roles, row policy, hosted protocol availability, authorization, storage,
+outcomes, cost classes, or runtime behavior, and every selected language
+facade MUST retain the first-party Rust driver boundary.
+
+`DX-048` Adding or removing a declared surface MUST produce an exact proposed
+source/manifest/lock identity change through the existing review ceremony. A
+migration helper MUST be read-only unless explicitly asked to write, MUST NOT
+infer intent from installed toolchains, and MUST NOT delete an undeclared or
+formerly generated file.
+
+`DX-049` Singleton and representative multi-surface fixtures, fresh external
+packages, old-version compatibility, filesystem interruption, and global
+driver/MCP conformance MUST prove one bounded declared-surface registry with no
+local-config-derived lock, unconditional MCP artifact, target-language semantic
+branch, raw transport escape, or value-bearing diagnostic.
 
 ## 4.4 Additive contract evolution
 
@@ -3114,18 +3164,21 @@ commit allocator state; administration audit allocator state; the active
 contract pointer and its catalog-consistency data; the singleton
 `capability_bootstrap/v1` marker; the compact `record_registry/v2` digest; the
 `history_incarnation/v1` fence (ADR-0072); and the optional
-`index_epoch_rows_repaired/v1` one-shot repair marker. Application and
+`index_epoch_rows_repaired/v1` one-shot repair marker. ADR-0156 additionally
+permits the optional private versioned clean-close lifecycle record once its
+exact field/tag amendment is accepted and registered. Application and
 administration allocator metadata starts at 1; zero is unassigned and every
 advance uses checked arithmetic. Committing the maximum representable sequence
 atomically leaves the corresponding allocator in an explicit exhausted semantic
 state; it never wraps or advertises another numeric value.
 
-The POC defines no durable node identity, clean-shutdown marker, or persisted
-last-successful-integrity-check value. Every production startup MUST run the
-complete accepted read-only authoritative integrity and metadata-consistency
-validation before readiness, regardless of whether the prior process terminated
-gracefully. Graceful shutdown remains required process-lifecycle behavior but
-MUST NOT write a clean-shutdown marker or substitute authoritative metadata.
+The POC defines no durable node identity or persisted last-successful-integrity-
+check value. A production startup MUST either verify and durably consume the
+private ADR-0156 clean-close certificate plus its bounded readiness roots before
+activating any writer, or run the complete accepted read-only authoritative
+integrity and metadata-consistency validation before readiness. No caller,
+configuration, or operator request may select the certificate path or force it
+after absence, repair, mismatch, migration, restore, or uncertainty.
 
 ## 10.3 Record envelope
 
@@ -3146,6 +3199,20 @@ The payload is a typed Protobuf message. The outer checksum provides early corru
 `STO-021` Unknown future record types MUST cause a controlled startup error, not silent deletion or reinterpretation.
 
 `STO-022` POC storage migrations MAY be offline but MUST be restartable and idempotent.
+
+`STO-023` A clean-close certificate MUST be one private, versioned,
+canonically encoded, engine-atomic lifecycle record written with Immediate
+durability only after all admission and writers stop, every published journal
+frame reaches the matching redb checkpoint, and its bounded database,
+incarnation, registry, allocator, frontier, catalog, bootstrap, and journal
+bindings are reread from final authoritative state. It MUST be the last
+authoritative mutation of that process generation, MUST be durably consumed or
+replaced by dirty state before any next-generation writer activates, and MUST
+fall back to complete validation on every absence, decode failure, repair,
+binding mismatch, incompatible format, migration, restore, or uncertainty. Its
+production and verification MUST NOT scan population-sized tables, and it MUST
+NOT claim authenticity against a principal with offline database-file write
+access.
 
 The `riffdb.storage.v1` readable compatibility registry contains exactly the
 accepted 26 top-level `StoredEnvelope` payload tuples below, with their existing
@@ -3426,6 +3493,15 @@ offline, and a terminal receipt must be durable before readiness.
 from commits; source entities and commit records MUST not depend on projection
 state for correctness. Rebuild MUST NOT lower the published frontier of one exact
 `ProjectionIdentity` or expose candidate rows.
+
+`REC-004` Startup after a missing, consumed, malformed, stale, repaired,
+migrated, restored, or otherwise ineligible clean-close certificate MUST execute
+the existing complete structural and catalog-semantic recovery path through
+exact end. Clean eligibility MUST be consumed durably before any writer or
+derived worker activates, so every crash boundary observes either the reusable
+unchanged clean state or an unambiguously dirty next generation. Repeated
+fallback, certificate consumption, and crash recovery MUST create no command,
+event, outcome, provenance, audit, projection, outbox, or allocator advance.
 
 ## 10.7 Storage benchmark gate
 
@@ -7719,6 +7795,55 @@ does not create a kernel or storage escape hatch.
   generated surfaces, and memory/redb evidence MUST prove exact preimage,
   concurrency, replay, crash, secret, and atomicity semantics without adding
   application-specific behavior.
+- `BLK-036`: Contract source MAY declare one `init_or_mutate` binding for a
+  compiler-resolved entity and complete input-computable primary key. An absent
+  observation MUST construct its working record from the key and declared
+  initializer and produce one create; a present observation MUST use the exact
+  current preimage and produce one revision-checked replace. Both MUST execute
+  one common checked instruction suffix.
+- `BLK-037`: Initializer fields MUST be unique, typed, non-key, canonically
+  ordered in executable IR, and limited to constants, command inputs,
+  service-owned values, deterministic transaction context, and the current
+  bounded collection element. Self/other-binding, query, projection, storage,
+  clock, randomness, callback, and runtime-selected dependencies are forbidden.
+- `BLK-038`: Definite-assignment analysis MUST prove separately that every
+  absent-path field is initialized before read and that every successful create
+  postimage is complete, while present-path fields come from the revalidated
+  preimage. Runtime MUST NOT invent defaults or expose a state-origin value.
+- `BLK-039`: One initialized mutable binding MUST retain one exact presence or
+  version/hash snapshot dependency, one conflict capability, and at most one
+  authoritative entity mutation. A conflict MUST discard the complete
+  evaluated graph and reevaluate; it MUST NOT convert create to replace or
+  replace to create after validation.
+- `BLK-040`: Invocation authority MUST include both create and update operation
+  classes before storage access. The selected create or update row policy MUST
+  run over the exact initializer/successor or preimage/successor respectively;
+  denial MUST NOT reveal presence, values, policy exclusion, or partial work.
+- `BLK-041`: Requirements, relationships, uniqueness, invariants, secrets,
+  events, outcomes, provenance, admission, replay, and recovery MUST use the
+  same selected working record and retain existing atomicity and redaction.
+  Initialization grants no read, output, reveal, or last-write-wins authority.
+- `BLK-042`: An initialized mutable binding MAY occur in the existing bounded
+  collection template only when every target, initializer, route, dependency,
+  mutation, and charge is statically derivable. Duplicate/aliased targets,
+  cross-partition work, nested iteration, and multiple sequential mutations of
+  one row remain rejected.
+- `BLK-043`: Static mutation and index work MUST charge the conservative maximum
+  of the absent-create and present-replace alternatives, not their sum, while
+  runtime charges only the selected alternative. Every existing index-delta,
+  prefix, validation, correlated-work, graph-byte, element, and partition
+  ceiling remains unchanged.
+- `BLK-044`: The new binding MUST use least-sufficient V17 grammar, executable-
+  IR, and bundle identities with a distinct tag and canonical initializer
+  encoding. V1 through V16 source, plan, bundle, lock, role, and generated bytes
+  MUST remain exact; old readers MUST reject V17 before activation with typed
+  upgrade guidance and no decoder retirement.
+- `BLK-045`: Generic ordinary and 1/9/19/100-element corpora MUST prove absent,
+  present, mixed, business-failure, concurrency, policy, index, crash, replay,
+  and every generated-surface behavior. Acceptance MUST prove one observation
+  and one mutation per target with no dormant-row command, internal service
+  recursion, generic upsert/branching, framework code, or per-index repeated
+  initializer/compatibility proof.
 
 Compiler-bounded one-hop cascade deletion extends that closed bulk-command
 model without introducing recursive graph traversal or caller-selected delete
@@ -8030,6 +8155,35 @@ behavior:
   epoch, recovery, compatibility, generated-surface, and architecture evidence
   MUST use generic corpora and prove no target-language callback, external-
   framework branch, per-row descriptor proof, or unsafe fallback exists.
+- `OQ-056`: A bounded string range or complement MAY execute through a declared
+  `text_key(field, binary_utf8_v1)` component only when every preceding index
+  component is an exact partition-bound prefix, that text component supplies
+  the first remaining order term, and the query declares the complete total
+  order with its deterministic key tie-breaker.
+- `OQ-057`: Binary-text `<`, `<=`, `>`, `>=`, and `!=` MUST use exact valid
+  UTF-8 bytewise order with no normalization, collation, case folding, numeric
+  chunking, token parsing, or canonical length-first substitution. Runtime MUST
+  encode each endpoint through the selected profile once before storage.
+- `OQ-058`: One binary-text predicate cell MAY contain at most one lower and
+  one upper bound or one two-range complement. All ranges MUST share one page,
+  plus-one probe, scan/fuel, hydration, output, direction, and snapshot-bound
+  cursor contract; contradictory bounds return an exact empty page without a
+  scan.
+- `OQ-059`: Every binary-text interval predicate MUST be physically consumed
+  before page, continuation, policy-admitted result, and output formation.
+  Authorization, partition routing, row policy, endpoint bytes, and diagnostics
+  remain bounded, and profile/compatibility proof MUST be paid once per plan
+  and request rather than per row or storage operation.
+- `OQ-060`: Binary-text interval support MUST reuse the existing index-key
+  encoding and ordinary range schedule unless implementation proves a new
+  identity necessary. Existing artifacts remain byte-exact; an insufficient
+  activation gate MUST stop for ADR-0124 review rather than reinterpret an old
+  plan or fail after partial execution.
+- `OQ-061`: Generated Rust, Go, TypeScript, Python, CLI, MCP, local-driver, and
+  remote-gRPC surfaces MUST preserve identical binary-text interval semantics
+  and return original logical strings, never physical bytes. External receipts
+  remain value-free and MUST NOT introduce a ULID/framework branch or claim a
+  database-owned external continuation token.
 
 ### 24.5.5 Compiled workflow concurrency
 
@@ -8339,6 +8493,16 @@ behavior:
   obligations, authorization, durability, isolation, workload weights,
   correctness reconciliation, calculations, and host-validity rules remain
   unchanged, and legacy requests continue to use the legacy arm.
+- `PERF-019`: Clean-certificate startup and graceful certificate production
+  MUST retain bounded heap and perform no entity-, index-, history-, event-,
+  audit-, provenance-, projection-, outbox-, or idempotency-population walk.
+  Release evidence MUST report engine open, bounded-root validation,
+  certificate consumption, readiness, drain, final certificate commit, and
+  total wall time separately on at least the 65,536-row and production-scale
+  checkpoints. Dirty complete validation remains separately measured under
+  PERF-013/PERF-014. A PostgreSQL comparison is non-evidentiary unless the
+  harness owns equivalent server lifecycle and integrity work for both
+  backends.
 
 ### 24.5.11 Secret field classification and display-surface redaction
 

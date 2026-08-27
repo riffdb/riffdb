@@ -77,15 +77,27 @@ pub(crate) enum ProjectGenerator {
     Go,
     Typescript,
     Python,
+    Mcp,
 }
 
 impl ProjectGenerator {
+    pub(crate) const fn surface(self) -> riffdb_query_module::GeneratedApplicationSurface {
+        match self {
+            Self::Rust => riffdb_query_module::GeneratedApplicationSurface::Rust,
+            Self::Go => riffdb_query_module::GeneratedApplicationSurface::Go,
+            Self::Typescript => riffdb_query_module::GeneratedApplicationSurface::TypeScript,
+            Self::Python => riffdb_query_module::GeneratedApplicationSurface::Python,
+            Self::Mcp => riffdb_query_module::GeneratedApplicationSurface::Mcp,
+        }
+    }
+
     pub(crate) const fn as_str(self) -> &'static str {
         match self {
             Self::Rust => "rust",
             Self::Go => "go",
             Self::Typescript => "typescript",
             Self::Python => "python",
+            Self::Mcp => "mcp",
         }
     }
 
@@ -95,6 +107,7 @@ impl ProjectGenerator {
             "go" => Some(Self::Go),
             "typescript" => Some(Self::Typescript),
             "python" => Some(Self::Python),
+            "mcp" => Some(Self::Mcp),
             _ => None,
         }
     }
@@ -297,7 +310,7 @@ pub(crate) fn load_project(path: &Path) -> Result<ProjectConfig, ConfigError> {
     riffdb_types::DatabaseAlias::new(&database).map_err(|_| ConfigError::Invalid)?;
     let project = document.project.ok_or(ConfigError::Invalid)?;
     let schema = checked_project_path(&project.schema)?;
-    if project.generators.is_empty() || project.generators.len() > 4 {
+    if project.generators.is_empty() || project.generators.len() > 5 {
         return Err(ConfigError::Invalid);
     }
     let mut generators = project

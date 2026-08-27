@@ -6,9 +6,9 @@ use riffdb_query_compiler::{
 };
 use riffdb_query_ir::{
     AccessDirection, MAX_OPERATIONAL_PRESENCE_PARAMETERS, NamedTypeSchema,
-    OperationalAggregateFunctionV1, PageBound, QUERY_IR_VERSION_OPERATIONAL_AGGREGATE_V1,
-    QueryAccessKind, QueryDiagnosticCode, QueryPredicateOperator, SourceSymbolKind,
-    SymbolicCatalog, resolve_query_surface,
+    OperationalAggregateFunctionV1, PageBound, QUERY_IR_VERSION_EXACT_AGGREGATE_V1,
+    QUERY_IR_VERSION_OPERATIONAL_AGGREGATE_V1, QueryAccessKind, QueryDiagnosticCode,
+    QueryPredicateOperator, SourceSymbolKind, SymbolicCatalog, resolve_query_surface,
 };
 use riffdb_riffql_syntax::parse_query;
 
@@ -19,6 +19,7 @@ contract Operational version 1 {
     field status: string<32>
     field priority: string<32>
     field story_points: i64
+    field active: bool
     field deleted_at: optional<timestamp>
     field created_at: timestamp
     field updated_at: timestamp
@@ -287,28 +288,50 @@ fn binary_text_key_proves_bounded_membership_and_bytewise_order() {
 }
 
 #[test]
-fn binary_text_order_does_not_reinterpret_other_typed_predicates() {
+fn binary_text_key_proves_bounded_interval_and_bytewise_order() {
     let source = SHARED_BINARY_EQUALITY_QUERY
         .replace("relation == $relation", "relation >= $relation")
         .replace("order by user asc", "order by relation asc, user asc");
-    let diagnostics = compile_operational_query_family(
+    let family = compile_operational_query_family(
         &parse_query(&source).expect("binary range query"),
         &catalog(SHARED_BINARY_COMPONENT_CONTRACT),
     )
-    .expect_err("binary text order cannot reinterpret canonical string range semantics");
-    let diagnostic = &diagnostics.as_slice()[0];
-    assert_eq!(diagnostic.code(), PlannerDiagnosticCode::Unindexed);
+    .expect("binary text key proves the bounded bytewise interval");
+    let program = family.select(&[]).expect("sole family member").program();
+    assert!(program.steps()[0].predicates().iter().any(|predicate| {
+        predicate.field() == "relation"
+            && predicate.operator() == QueryPredicateOperator::GreaterEqual
+    }));
+}
+
+#[test]
+fn canonical_string_range_refusal_suggests_the_binary_text_profile() {
+    let source = r#"
+query TicketsAfterPriority(
+    $organization_id: Ticket.organization_id,
+    $priority: Ticket.priority,
+) {
+    many tickets from Ticket
+        where organization_id == $organization_id && priority > $priority
+        order by priority asc, updated_at asc, ticket_id asc
+        take 25
+    return Found { tickets: tickets { ticket_id priority updated_at } }
+    outcomes Found
+}
+"#;
+    let diagnostics = compile_operational_query_family(
+        &parse_query(source).expect("canonical string range query"),
+        &catalog(CONTRACT),
+    )
+    .expect_err("canonical string bytes do not prove UTF-8 lexical order");
     assert_eq!(
-        format!(
-            "{}|{}..{}|{}|{}|{}\n",
-            diagnostic.code().as_str(),
-            diagnostic.primary().start,
-            diagnostic.primary().end,
-            diagnostic.symbol_path().join("."),
-            diagnostic.summary(),
-            diagnostic.suggested_index().unwrap_or("")
-        ),
-        include_str!("../../../fixtures/riffql/binary-text-range-unindexed.snapshot")
+        diagnostics.as_slice()[0].code(),
+        PlannerDiagnosticCode::Unindexed
+    );
+    assert!(
+        diagnostics.as_slice()[0]
+            .suggested_index()
+            .is_some_and(|suggestion| suggestion.contains("text_key(priority, binary_utf8_v1)"))
     );
 }
 
@@ -886,4 +909,88 @@ fn aggregate_result_aliases_fail_with_a_source_spanned_semantic_diagnostic() {
         rendered,
         include_str!("../../../fixtures/riffql/aggregate_result_alias.snapshot")
     );
+}
+
+#[test]
+fn exact_aggregate_core_seals_types_tags_and_independent_budgets() {
+    let catalog = catalog(CONTRACT);
+    let source = QUERY.replace(
+        "    return Found { tickets: tickets { ticket_id status priority updated_at } }",
+        r#"    aggregate summary from tickets {
+        count_present(deleted_at) as present_deleted
+        count_distinct(deleted_at) as distinct_deleted
+        count_distinct_present(deleted_at) as distinct_present_deleted
+        mean(story_points) as mean_points
+        any(active) as any_active
+        all(active) as all_active
+    }
+    return Found { summary: summary {
+        present_deleted distinct_deleted distinct_present_deleted
+        mean_points any_active all_active
+    } }"#,
+    );
+    let family = compile_operational_query_family(&parse_query(&source).expect("syntax"), &catalog)
+        .expect("exact aggregate family");
+    assert_eq!(
+        family.surface().ir_version(),
+        QUERY_IR_VERSION_EXACT_AGGREGATE_V1
+    );
+    let aggregate = &family.aggregates()[0];
+    assert_eq!(
+        aggregate
+            .measures()
+            .iter()
+            .map(|measure| measure.function())
+            .collect::<Vec<_>>(),
+        [
+            OperationalAggregateFunctionV1::CountPresent,
+            OperationalAggregateFunctionV1::CountDistinct,
+            OperationalAggregateFunctionV1::CountDistinctPresent,
+            OperationalAggregateFunctionV1::Mean,
+            OperationalAggregateFunctionV1::Any,
+            OperationalAggregateFunctionV1::All,
+        ]
+    );
+    assert!(matches!(
+        aggregate.measures()[3].result_type(),
+        NamedTypeSchema::Record(fields)
+            if fields[0].name() == "total" && fields[1].name() == "count"
+    ));
+    let budget = aggregate.execution_budget();
+    assert_eq!(budget.maximum_distinct_values_per_measure(), 256);
+    assert_eq!(budget.maximum_state_bytes(), 1_048_576);
+    assert_eq!(budget.maximum_arithmetic_operations(), 150);
+}
+
+#[test]
+fn exact_aggregate_core_type_failures_are_source_spanned() {
+    let catalog = catalog(CONTRACT);
+    for (expression, expected_span, expected_summary) in [
+        (
+            "mean(status) as invalid",
+            "status",
+            "sum input must be i64, u64, or decimal; money sums require an explicit currency rule",
+        ),
+        (
+            "any(deleted_at) as invalid",
+            "deleted_at",
+            "any/all input must be a required bool field",
+        ),
+    ] {
+        let source = QUERY.replace(
+            "    return Found { tickets: tickets { ticket_id status priority updated_at } }",
+            &format!(
+                "    aggregate summary from tickets {{ {expression} }}\n    return Found {{ summary: summary {{ invalid }} }}"
+            ),
+        );
+        let document = parse_query(&source).expect("syntax");
+        let diagnostics = resolve_query_surface(&document, &catalog).expect_err("must reject");
+        let diagnostic = &diagnostics.as_slice()[0];
+        assert_eq!(diagnostic.code(), QueryDiagnosticCode::InvalidType);
+        assert_eq!(diagnostic.summary(), expected_summary);
+        assert_eq!(
+            &source[diagnostic.primary().start as usize..diagnostic.primary().end as usize],
+            expected_span
+        );
+    }
 }

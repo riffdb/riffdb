@@ -515,8 +515,21 @@ Binding: Spanned<Binding> = {
         => parser::spanned(Binding::Mutate(binding), lo, hi),
     <lo:@L> "create" <binding:EntityBinding> <hi:@R>
         => parser::spanned(Binding::Create(binding), lo, hi),
+    <lo:@L> "init_or_mutate" <binding:InitializedEntityBinding> <hi:@R>
+        => parser::spanned(Binding::InitOrMutate(binding), lo, hi),
     <lo:@L> "delete" <binding:DeleteEntityBinding> <hi:@R>
         => parser::spanned(Binding::Delete(binding), lo, hi),
+};
+
+InitializedEntityBinding: InitializedEntityBinding = {
+    <entity:Identifier> "(" <arguments:ExpressionList> ")"
+        "as" <binding:Identifier> "initialize" <initializer:ObjectLiteral>
+        => InitializedEntityBinding {
+            entity,
+            arguments,
+            binding,
+            initializer,
+        },
 };
 
 EntityBinding: EntityBinding = {
@@ -1013,6 +1026,8 @@ extern {
         "read" => Token::Read,
         "mutate" => Token::Mutate,
         "create" => Token::Create,
+        "init_or_mutate" => Token::InitOrMutate,
+        "initialize" => Token::Initialize,
         "as" => Token::As,
         "else" => Token::Else,
         "require" => Token::Require,

@@ -692,7 +692,7 @@ pub struct AttachTagInput {
     pub idempotency_key: String,
 }
 
-#[allow(clippy::large_enum_variant)]
+#[allow(clippy::enum_variant_names, clippy::large_enum_variant)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum AttachTagOutcome {
     Created {
@@ -783,7 +783,7 @@ pub struct CreateAuthorInput {
     pub idempotency_key: String,
 }
 
-#[allow(clippy::large_enum_variant)]
+#[allow(clippy::enum_variant_names, clippy::large_enum_variant)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CreateAuthorOutcome {
     Created {
@@ -864,7 +864,7 @@ pub struct CreateCommentInput {
     pub idempotency_key: String,
 }
 
-#[allow(clippy::large_enum_variant)]
+#[allow(clippy::enum_variant_names, clippy::large_enum_variant)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CreateCommentOutcome {
     Created {
@@ -960,7 +960,7 @@ pub struct CreatePostInput {
     pub idempotency_key: String,
 }
 
-#[allow(clippy::large_enum_variant)]
+#[allow(clippy::enum_variant_names, clippy::large_enum_variant)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CreatePostOutcome {
     Created {
@@ -1053,7 +1053,7 @@ pub struct CreatePostRouteInput {
     pub idempotency_key: String,
 }
 
-#[allow(clippy::large_enum_variant)]
+#[allow(clippy::enum_variant_names, clippy::large_enum_variant)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CreatePostRouteOutcome {
     Created {
@@ -1141,7 +1141,7 @@ pub struct CreateSiteInput {
     pub idempotency_key: String,
 }
 
-#[allow(clippy::large_enum_variant)]
+#[allow(clippy::enum_variant_names, clippy::large_enum_variant)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CreateSiteOutcome {
     Created {
@@ -1207,7 +1207,7 @@ pub struct CreateTagInput {
     pub idempotency_key: String,
 }
 
-#[allow(clippy::large_enum_variant)]
+#[allow(clippy::enum_variant_names, clippy::large_enum_variant)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CreateTagOutcome {
     Created {
