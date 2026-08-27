@@ -373,6 +373,7 @@ fn run_redb_startup_pass(
 ) -> Result<RedbStartupPass, RedbStartupError> {
     let initialized_database_id = initialized.database_id();
     let mut session = initialized.begin_structural_evidence(inputs)?;
+    report_clean_close_startup_selection(&session);
     if session.database_id() != initialized_database_id {
         return Err(RedbStartupError::Integrity(
             StartupIntegrityFailure::InitializationIdentityMismatch,
@@ -426,6 +427,31 @@ fn run_redb_startup_pass(
         _ => Err(RedbStartupError::Integrity(
             StartupIntegrityFailure::StartupOutcomeMismatch,
         )),
+    }
+}
+
+/// Names the startup path this open selected, and why, on one stderr line.
+///
+/// Emitted immediately after the validation session opens — before the pass
+/// itself runs — because the cost being diagnosed is the pass. On a large
+/// database the complete pass is tens of minutes of SHA-256 and record
+/// decoding, and until this line existed the nine preconditions that decline
+/// the ADR-0157 bounded path all presented as the identical symptom: a start
+/// that never becomes ready. Waiting for the pass to finish before reporting
+/// would report only what an operator already knows.
+///
+/// The reason is a closed enum discriminant carrying no path, key, value, or
+/// identity — the same disclosure rule the startup-refusal lines follow. Purely
+/// observational: it cannot select startup behavior.
+fn report_clean_close_startup_selection(
+    session: &riffdb_storage_redb::RedbStructuralEvidenceSession,
+) {
+    match session.clean_close_declined_reason() {
+        None => eprintln!("[riffdbd-diag] trigger=startup clean_close_fast=true"),
+        Some(reason) => eprintln!(
+            "[riffdbd-diag] trigger=startup clean_close_fast=false decline={reason} \
+             (full validation pass; cost scales with retained history)"
+        ),
     }
 }
 

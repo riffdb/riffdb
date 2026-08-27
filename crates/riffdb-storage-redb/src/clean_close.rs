@@ -49,6 +49,124 @@ pub(crate) enum CleanCloseCodecError {
     GenerationExhausted,
 }
 
+/// Why the ADR-0157 clean-close certificate did not admit bounded startup.
+///
+/// Every variant costs exactly one thing — the next open takes the complete
+/// validation pass — and every variant used to produce that outcome silently.
+/// On a large database the complete pass is tens of minutes of SHA-256 and
+/// record decoding, so "slow start" was the only observable and all nine
+/// preconditions were indistinguishable from outside the engine. This enum
+/// carries no path, key, value, or identity, so naming it leaks nothing.
+///
+/// Observability only: declining still means full validation, and nothing here
+/// may widen what bounded startup accepts.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum CleanCloseDeclineReason {
+    /// redb ran its own repair pass at open; no prior certificate can bind the
+    /// repaired roots.
+    EngineRepairedAtOpen,
+    /// No lifecycle record at all (never gracefully closed, or a shutdown that
+    /// failed to write it — the write side is `let _ =` at its call site).
+    RecordAbsent,
+    /// A lifecycle record exists but does not decode.
+    RecordDecodeFailed,
+    /// The record binds a different database identity.
+    DatabaseIdMismatch,
+    /// The record binds a different history incarnation.
+    IncarnationMismatch,
+    /// The record decodes and matches identity, but its state is `Dirty` — an
+    /// open consumed the certificate and no clean close replaced it.
+    StateNotClean,
+    /// The final journal boundary did not verify: a non-authoritative extent
+    /// name is present, the active extent is missing, its header disagrees with
+    /// the durable application/administration frontier, or its tail is not the
+    /// empty clean-close tail.
+    JournalBoundaryUnverified,
+    /// The bounded meta/catalog/query-module roots could not be re-hashed
+    /// (corrupt row or a bound exceeded).
+    BoundedRootsUnavailable,
+    /// Everything decoded and verified, but the recomputed bounded-state
+    /// binding differs from the one the certificate recorded.
+    BindingMismatch,
+}
+
+impl CleanCloseDeclineReason {
+    /// Every reason, in counter-index order (see [`Self::index`]).
+    pub(crate) const ALL: [Self; 9] = [
+        Self::EngineRepairedAtOpen,
+        Self::RecordAbsent,
+        Self::RecordDecodeFailed,
+        Self::DatabaseIdMismatch,
+        Self::IncarnationMismatch,
+        Self::StateNotClean,
+        Self::JournalBoundaryUnverified,
+        Self::BoundedRootsUnavailable,
+        Self::BindingMismatch,
+    ];
+
+    /// Stable counter index for per-store decline-reason counting.
+    #[must_use]
+    pub(crate) const fn index(self) -> usize {
+        match self {
+            Self::EngineRepairedAtOpen => 0,
+            Self::RecordAbsent => 1,
+            Self::RecordDecodeFailed => 2,
+            Self::DatabaseIdMismatch => 3,
+            Self::IncarnationMismatch => 4,
+            Self::StateNotClean => 5,
+            Self::JournalBoundaryUnverified => 6,
+            Self::BoundedRootsUnavailable => 7,
+            Self::BindingMismatch => 8,
+        }
+    }
+
+    #[must_use]
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::EngineRepairedAtOpen => "engine_repaired_at_open",
+            Self::RecordAbsent => "record_absent",
+            Self::RecordDecodeFailed => "record_decode_failed",
+            Self::DatabaseIdMismatch => "database_id_mismatch",
+            Self::IncarnationMismatch => "incarnation_mismatch",
+            Self::StateNotClean => "state_not_clean",
+            Self::JournalBoundaryUnverified => "journal_boundary_unverified",
+            Self::BoundedRootsUnavailable => "bounded_roots_unavailable",
+            Self::BindingMismatch => "binding_mismatch",
+        }
+    }
+}
+
+/// The one closed answer to "may this open take the bounded path?".
+///
+/// Replaces an `Option` whose `None` collapsed nine distinct preconditions.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum CleanCloseVerdict {
+    /// The certificate verified; bounded startup is admitted.
+    Verified(CleanCloseLifecycle),
+    /// The certificate did not verify; full validation is required.
+    Declined(CleanCloseDeclineReason),
+}
+
+impl CleanCloseVerdict {
+    /// The verified certificate, or `None` when bounded startup was declined.
+    #[must_use]
+    pub(crate) const fn verified(self) -> Option<CleanCloseLifecycle> {
+        match self {
+            Self::Verified(lifecycle) => Some(lifecycle),
+            Self::Declined(_) => None,
+        }
+    }
+
+    /// Why bounded startup was declined, or `None` when it was admitted.
+    #[must_use]
+    pub(crate) const fn declined(self) -> Option<CleanCloseDeclineReason> {
+        match self {
+            Self::Verified(_) => None,
+            Self::Declined(reason) => Some(reason),
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum CleanCloseState {
     Dirty,
