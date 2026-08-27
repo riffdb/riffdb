@@ -6,6 +6,7 @@
 
 use std::sync::Arc;
 
+use redb::ReadableDatabase;
 use riffdb_policy::{AuthorizedProjectedRowAdmissionV1, AuthorizedQueryRowPolicyContextV1};
 use riffdb_query_executor::{
     QueryContinuation, QueryExecutionError, QueryExecutionPort, QueryExecutionRequest,
@@ -71,6 +72,30 @@ impl RedbSharedPorts {
         RedbOperationalPorts {
             shared: Arc::clone(&self.0),
         }
+    }
+
+    /// Reloads the active catalog pair from the bounded root proven during
+    /// clean-close startup. It is unavailable on every other startup path.
+    #[doc(hidden)]
+    pub fn load_clean_startup_active_catalog(
+        &self,
+    ) -> Result<Option<(ActiveCatalogPointerV1, StoredContractBundleV1)>, StorageError> {
+        if !self
+            .0
+            .bounded_clean_startup
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            return Err(StorageError::new(
+                StorageErrorKind::InvariantViolation,
+                None,
+            ));
+        }
+        let transaction = self
+            .0
+            .database
+            .begin_read()
+            .map_err(crate::error::transaction_error)?;
+        crate::clean_close::load_bound_active_catalog(&transaction)
     }
 
     /// Loads every active query-module pointer and its matching module body.

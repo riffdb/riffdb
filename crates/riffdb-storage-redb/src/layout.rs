@@ -181,8 +181,10 @@ pub(crate) const META_RETENTION_WATERMARK: &str = "retention_watermark/v1";
 pub(crate) const META_RETENTION_HOLDS: &str = "retention_holds/v1";
 /// One-shot binding from the V1 changelog frontier to delete-aware V2 state.
 pub(crate) const META_CHANGELOG_V2_ROTATION_RECEIPT: &str = "changelog_v2_rotation_receipt/v1";
+/// Private clean-close lifecycle evidence (ADR-0157).
+pub(crate) const META_CLEAN_CLOSE_LIFECYCLE: &str = "clean_close_certificate/v1";
 
-pub(crate) const META_KEYS: [&str; 12] = [
+pub(crate) const META_KEYS: [&str; 13] = [
     META_FORMAT_VERSION,
     META_DATABASE_ID,
     META_APPLICATION_SEQUENCE,
@@ -195,6 +197,7 @@ pub(crate) const META_KEYS: [&str; 12] = [
     META_RETENTION_WATERMARK,
     META_RETENTION_HOLDS,
     META_CHANGELOG_V2_ROTATION_RECEIPT,
+    META_CLEAN_CLOSE_LIFECYCLE,
 ];
 
 #[allow(dead_code, reason = "WP-070 catalog ports consume this frozen key")]
@@ -320,9 +323,10 @@ mod tests {
                 "retention_watermark/v1",
                 "retention_holds/v1",
                 "changelog_v2_rotation_receipt/v1",
+                "clean_close_certificate/v1",
             ]
         );
-        assert_eq!(META_KEYS.len(), 12);
+        assert_eq!(META_KEYS.len(), 13);
         assert_eq!(
             META_KEYS.into_iter().collect::<BTreeSet<_>>().len(),
             META_KEYS.len()

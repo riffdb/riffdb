@@ -1380,9 +1380,10 @@ fn read_migration_control_state(path: &Path) -> MigrationControlState {
         .filter_map(|entry| {
             let (key, value) = entry.expect("read migration fixture metadata");
             let key = key.value().to_owned();
-            // Optional validated-prefix checkpoint is rewritten on every clean
-            // finish and is not a migration control marker.
-            if key == "validated_prefix_checkpoint/v1" {
+            // The optional validated-prefix checkpoint and private clean-close
+            // lifecycle are rewritten by startup/close and are not migration
+            // control markers.
+            if key == "validated_prefix_checkpoint/v1" || key == "clean_close_certificate/v1" {
                 return None;
             }
             Some((key, value.value().to_vec()))

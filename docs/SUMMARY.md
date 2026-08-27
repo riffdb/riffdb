@@ -78,6 +78,7 @@
 - [Configuration](configuration.md)
 - [Remote and Local Application Ingress](operations/REMOTE-INGRESS.md)
 - [Multiple Databases](operations/MULTIPLE-DATABASES.md)
+- [Startup Integrity and Clean Restarts](operations/STARTUP-INTEGRITY.md)
 - [Backup and Restore](backup-restore.md)
 - [Symbolic Application Export](operations/APPLICATION-EXPORT.md)
 - [Contract Migration Acceptance](operations/CONTRACT-MIGRATION-ACCEPTANCE.md)

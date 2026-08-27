@@ -1671,6 +1671,54 @@ pub struct StoredQueryModuleAdministrationV1 {
     #[prost(string, optional, tag = "7")]
     pub approval_id: ::core::option::Option<::prost::alloc::string::String>,
 }
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct StoredCleanCloseLifecycleV1 {
+    #[prost(bytes = "vec", tag = "1")]
+    pub database_id: ::prost::alloc::vec::Vec<u8>,
+    #[prost(fixed64, tag = "2")]
+    pub history_incarnation: u64,
+    #[prost(bytes = "vec", tag = "3")]
+    pub record_registry_digest: ::prost::alloc::vec::Vec<u8>,
+    #[prost(fixed64, tag = "4")]
+    pub lifecycle_generation: u64,
+    #[prost(enumeration = "StoredCleanCloseLifecycleStateV1", tag = "5")]
+    pub state: i32,
+    #[prost(bytes = "vec", tag = "6")]
+    pub clean_state_binding_hash: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "vec", tag = "7")]
+    pub lifecycle_hash: ::prost::alloc::vec::Vec<u8>,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum StoredCleanCloseLifecycleStateV1 {
+    Unspecified = 0,
+    Dirty = 1,
+    Clean = 2,
+}
+impl StoredCleanCloseLifecycleStateV1 {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "STORED_CLEAN_CLOSE_LIFECYCLE_STATE_V1_UNSPECIFIED",
+            Self::Dirty => "STORED_CLEAN_CLOSE_LIFECYCLE_STATE_V1_DIRTY",
+            Self::Clean => "STORED_CLEAN_CLOSE_LIFECYCLE_STATE_V1_CLEAN",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "STORED_CLEAN_CLOSE_LIFECYCLE_STATE_V1_UNSPECIFIED" => {
+                Some(Self::Unspecified)
+            }
+            "STORED_CLEAN_CLOSE_LIFECYCLE_STATE_V1_DIRTY" => Some(Self::Dirty),
+            "STORED_CLEAN_CLOSE_LIFECYCLE_STATE_V1_CLEAN" => Some(Self::Clean),
+            _ => None,
+        }
+    }
+}
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct StoredCommandAuditInvocationV1 {
     #[prost(bytes = "vec", tag = "1")]

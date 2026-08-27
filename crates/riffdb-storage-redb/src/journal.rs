@@ -2622,6 +2622,17 @@ pub(crate) fn recover_journal_path_with_media(
         header.checkpoint_administration_sequence(),
     );
     let tail_frontier = (tail.last_sequence, tail.last_administration_sequence);
+    // An exact empty recovered extent needs no mutation. Preserving its
+    // selected canonical header is required by ADR-0157 clean-close binding;
+    // recycling an already-empty exact extent would manufacture a new header
+    // generation on every otherwise read-only open.
+    if frames.is_empty()
+        && !tail.incomplete_tail
+        && tail_frontier == checkpoint_frontier
+        && redb_frontier == checkpoint_frontier
+    {
+        return Ok(());
+    }
     if frames.is_empty()
         && !tail.incomplete_tail
         && tail_frontier == checkpoint_frontier
@@ -2782,6 +2793,47 @@ pub(crate) fn verify_retention_journal_rebase_with_media(
         _terminal_frame_hash: tail.last_hash,
         _selected_generation: Some(state.header.generation),
     })
+}
+
+/// Verifies the final clean-close journal boundary and returns the SHA-256 of
+/// the selected extent's complete canonical encoded header slot (ADR-0157).
+pub(crate) fn verify_clean_close_header_digest_with_media(
+    media: &dyn JournalMedia,
+    database_path: &Path,
+    database_id: DatabaseId,
+    application_frontier: Option<CommitSequence>,
+    administration_frontier: Option<AdministrationSequence>,
+) -> Result<[u8; HASH_BYTES], JournalIoError> {
+    for non_authoritative in [
+        checkpoint_journal_path(database_path),
+        spare_journal_path(database_path),
+    ] {
+        if media
+            .try_exists(&non_authoritative)
+            .map_err(|_| JournalIoError::Io)?
+        {
+            return Err(JournalIoError::Corrupt);
+        }
+    }
+    let active = journal_path(database_path);
+    if !media.try_exists(&active).map_err(|_| JournalIoError::Io)? {
+        return Err(JournalIoError::Corrupt);
+    }
+    let (header, tail, state) =
+        scan_extent_with_media(media, &active, Some(database_id), |_| Ok(()))?;
+    if header.checkpoint_sequence() != application_frontier
+        || header.checkpoint_administration_sequence() != administration_frontier
+        || tail.last_sequence != application_frontier
+        || tail.last_administration_sequence != administration_frontier
+        || tail.last_hash != header.checkpoint_frame_hash()
+        || tail.incomplete_tail
+        || tail.transition_count != 0
+        || tail.command_count != 0
+        || tail.audit_count != 0
+    {
+        return Err(JournalIoError::Corrupt);
+    }
+    Ok(digest(&state.header.encode()))
 }
 
 fn replay_frames(database: &Database, frames: &[JournalFrame]) -> Result<(), JournalIoError> {
