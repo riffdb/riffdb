@@ -16,12 +16,12 @@ use riffdb_query_module::{
     GeneratedApplicationArtifact, GeneratedApplicationArtifactKind, GeneratedMcpCommand,
     GeneratedMcpReactiveTool, GeneratedMcpTool, GeneratedVectorInspectionTool, NamedQuerySource,
     PythonGenerationError, QueryModule, QueryModuleCandidate, QueryModuleName, QueryModuleVersion,
-    compile_application_role, compile_application_role_v2, compile_reactive_source,
-    generate_go_application_client, generate_mcp_commands, generate_mcp_reactive_tools,
-    generate_mcp_tools, generate_python_application_client, generate_python_client,
-    generate_rust_application_client, generate_rust_client, generate_sdk_only_query_tools,
-    generate_typescript_application_client, generate_typescript_client,
-    generate_vector_inspection_tools,
+    ReactiveModulePlanV1, compile_application_role, compile_application_role_v2,
+    compile_reactive_source, generate_go_application_client, generate_mcp_commands,
+    generate_mcp_reactive_tools, generate_mcp_tools, generate_python_application_client,
+    generate_python_client, generate_rust_application_client, generate_rust_client,
+    generate_sdk_only_query_tools, generate_typescript_application_client,
+    generate_typescript_client, generate_vector_inspection_tools,
 };
 use riffdb_types::{TenantId, hash_generated_artifact, hash_source};
 use serde_json::json;
@@ -300,6 +300,7 @@ fn generate_legacy_application(manifest_path: &Path) -> Result<(), ScaffoldError
 struct CompiledSymbolicApplication {
     lock: ApplicationLock,
     outputs: Vec<(String, Vec<u8>)>,
+    runtime_operation_catalog: Option<Vec<u8>>,
 }
 
 pub(crate) struct LockedApplication {
@@ -1083,6 +1084,16 @@ fn compile_for_existing_lock(
     lock_path: &Path,
     lock: &ApplicationLock,
 ) -> Result<CompiledSymbolicApplication, ScaffoldError> {
+    compile_for_existing_lock_mode(source_path, root, lock_path, lock, false)
+}
+
+fn compile_for_existing_lock_mode(
+    source_path: &Path,
+    root: &Path,
+    lock_path: &Path,
+    lock: &ApplicationLock,
+    include_runtime_operation_catalog: bool,
+) -> Result<CompiledSymbolicApplication, ScaffoldError> {
     if matches!(
         lock.schema(),
         riffdb_query_module::APPLICATION_LOCK_SCHEMA_V3
@@ -1106,7 +1117,11 @@ fn compile_for_existing_lock(
                 riffdb_query_module::ApplicationLockErrorKind::IdentityMismatch,
             )
         })?;
-        compile_symbolic_application_with_bundle(source_path, contract)
+        if include_runtime_operation_catalog {
+            compile_symbolic_application_with_bundle_and_runtime_catalog(source_path, contract)
+        } else {
+            compile_symbolic_application_with_bundle(source_path, contract)
+        }
     } else {
         if application_contract_version(source_path)? != 1 {
             return Err(lock_diagnostic(
@@ -1114,8 +1129,53 @@ fn compile_for_existing_lock(
                 riffdb_query_module::ApplicationLockErrorKind::IdentityMismatch,
             ));
         }
-        compile_symbolic_application_legacy(source_path)
+        if include_runtime_operation_catalog {
+            compile_symbolic_application_mode(source_path, None, false, true)
+        } else {
+            compile_symbolic_application_legacy(source_path)
+        }
     }
+}
+
+pub(crate) fn runtime_operation_catalog(
+    source_path: &Path,
+    lock_path: Option<&Path>,
+) -> Result<Vec<u8>, ScaffoldError> {
+    let root = source_parent(source_path);
+    let lock_path = workspace_lock_path(root, lock_path)?;
+    let existing = read_bounded(&lock_path, riffdb_query_module::MAX_APPLICATION_LOCK_BYTES)?;
+    let decoded = ApplicationLock::decode_canonical(&existing)
+        .map_err(|error| lock_diagnostic(&lock_path, error.kind()))?;
+    let compiled = compile_for_existing_lock_mode(source_path, root, &lock_path, &decoded, true)?;
+    if decoded.canonical_bytes() != compiled.lock.canonical_bytes() {
+        return Err(lock_diagnostic(
+            &lock_path,
+            riffdb_query_module::ApplicationLockErrorKind::IdentityMismatch,
+        ));
+    }
+    for (path, expected) in &compiled.outputs {
+        let actual = read_workspace_file(root, path, 16 * 1_024 * 1_024)?;
+        if actual != *expected {
+            return Err(lock_diagnostic(
+                &lock_path,
+                riffdb_query_module::ApplicationLockErrorKind::IdentityMismatch,
+            ));
+        }
+    }
+    compiled
+        .runtime_operation_catalog
+        .ok_or(ScaffoldError::GenerateMcp)
+}
+
+pub(crate) fn write_runtime_operation_catalog(
+    source_path: &Path,
+    lock_path: Option<&Path>,
+    output_path: &Path,
+) -> Result<riffdb_types::GeneratedArtifactHash, ScaffoldError> {
+    let catalog = runtime_operation_catalog(source_path, lock_path)?;
+    let hash = hash_generated_artifact(&catalog);
+    atomic_write_absolute(output_path, &catalog)?;
+    Ok(hash)
 }
 
 fn compiled_contract_bundle(
@@ -1155,26 +1215,34 @@ pub(crate) fn application_contract_source(source_path: &Path) -> Result<String, 
 fn compile_symbolic_application(
     source_path: &Path,
 ) -> Result<CompiledSymbolicApplication, ScaffoldError> {
-    compile_symbolic_application_mode(source_path, None, true)
+    compile_symbolic_application_mode(source_path, None, true, false)
 }
 
 fn compile_symbolic_application_legacy(
     source_path: &Path,
 ) -> Result<CompiledSymbolicApplication, ScaffoldError> {
-    compile_symbolic_application_mode(source_path, None, false)
+    compile_symbolic_application_mode(source_path, None, false, false)
 }
 
 fn compile_symbolic_application_with_bundle(
     source_path: &Path,
     contract: ContractBundle,
 ) -> Result<CompiledSymbolicApplication, ScaffoldError> {
-    compile_symbolic_application_mode(source_path, Some(contract), true)
+    compile_symbolic_application_mode(source_path, Some(contract), true, false)
+}
+
+fn compile_symbolic_application_with_bundle_and_runtime_catalog(
+    source_path: &Path,
+    contract: ContractBundle,
+) -> Result<CompiledSymbolicApplication, ScaffoldError> {
+    compile_symbolic_application_mode(source_path, Some(contract), true, true)
 }
 
 fn compile_symbolic_application_mode(
     source_path: &Path,
     contract_override: Option<ContractBundle>,
     lock_v3: bool,
+    include_runtime_operation_catalog: bool,
 ) -> Result<CompiledSymbolicApplication, ScaffoldError> {
     let source_bytes = read_bounded(source_path, 1_048_576)?;
     let source_text =
@@ -1419,31 +1487,23 @@ fn compile_symbolic_application_mode(
                 .into_bytes(),
         ));
     }
+    let runtime_operation_catalog = if include_runtime_operation_catalog {
+        Some(
+            render_application_operation_catalog(&exact, module, &contract, &reactive_modules)?
+                .into_bytes(),
+        )
+    } else {
+        None
+    };
     if let Some(path) = source.generation().mcp() {
-        let tools = generate_mcp_tools(module).map_err(|_| ScaffoldError::GenerateMcp)?;
-        let sdk_tools =
-            generate_sdk_only_query_tools(module).map_err(|_| ScaffoldError::GenerateMcp)?;
-        let commands =
-            generate_mcp_commands(module, &contract).map_err(|_| ScaffoldError::GenerateMcp)?;
-        let reactive_tools = reactive_modules
-            .iter()
-            .map(|module| generate_mcp_reactive_tools(module, &contract))
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|_| ScaffoldError::GenerateMcp)?
-            .into_iter()
-            .flatten()
-            .collect::<Vec<_>>();
-        let vector_tools = generate_vector_inspection_tools(module, &contract)
-            .map_err(|_| ScaffoldError::GenerateMcp)?;
-        let generated_mcp = render_mcp_manifest(
-            &exact,
-            &tools,
-            &sdk_tools,
-            &commands,
-            &reactive_tools,
-            &vector_tools,
-        )?;
-        outputs.push((path.to_owned(), generated_mcp.into_bytes()));
+        let generated_mcp = match runtime_operation_catalog.as_ref() {
+            Some(catalog) => catalog.clone(),
+            None => {
+                render_application_operation_catalog(&exact, module, &contract, &reactive_modules)?
+                    .into_bytes()
+            }
+        };
+        outputs.push((path.to_owned(), generated_mcp));
     }
     if let Some(path) = source.generation().python() {
         outputs.push((
@@ -1555,7 +1615,11 @@ fn compile_symbolic_application_mode(
     }
     .map_err(|error| lock_diagnostic(Path::new(DEFAULT_LOCK_PATH), error.kind()))?;
     outputs.extend(migration_outputs);
-    Ok(CompiledSymbolicApplication { lock, outputs })
+    Ok(CompiledSymbolicApplication {
+        lock,
+        outputs,
+        runtime_operation_catalog,
+    })
 }
 
 impl std::error::Error for ScaffoldError {
@@ -2700,6 +2764,37 @@ fn copy_typescript_tree(
     Ok(())
 }
 
+fn render_application_operation_catalog(
+    manifest: &ApplicationManifest,
+    module: &QueryModule,
+    contract: &ContractBundle,
+    reactive_modules: &[ReactiveModulePlanV1],
+) -> Result<String, ScaffoldError> {
+    let tools = generate_mcp_tools(module).map_err(|_| ScaffoldError::GenerateMcp)?;
+    let sdk_tools =
+        generate_sdk_only_query_tools(module).map_err(|_| ScaffoldError::GenerateMcp)?;
+    let commands =
+        generate_mcp_commands(module, contract).map_err(|_| ScaffoldError::GenerateMcp)?;
+    let reactive_tools = reactive_modules
+        .iter()
+        .map(|module| generate_mcp_reactive_tools(module, contract))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| ScaffoldError::GenerateMcp)?
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
+    let vector_tools = generate_vector_inspection_tools(module, contract)
+        .map_err(|_| ScaffoldError::GenerateMcp)?;
+    render_mcp_manifest(
+        manifest,
+        &tools,
+        &sdk_tools,
+        &commands,
+        &reactive_tools,
+        &vector_tools,
+    )
+}
+
 fn render_mcp_manifest(
     manifest: &ApplicationManifest,
     tools: &[GeneratedMcpTool],
@@ -3375,6 +3470,62 @@ mod tests {
         }
         check_application_lock(&base.join("riffdb.application.json"), None)
             .expect("exact Go scaffold");
+    }
+
+    #[test]
+    fn v7_go_only_application_emits_a_transient_exact_runtime_catalog() {
+        let parent = tempfile::TempDir::with_prefix("riffdb-go-runtime-catalog-test-")
+            .expect("scratch directory");
+        let base = parent.path().join("app");
+        create_application("go-catalog", ScaffoldLanguage::Go, &base).expect("Go scaffold");
+        let source_path = base.join("riffdb.application.json");
+        let mut source: serde_json::Value =
+            serde_json::from_slice(&fs::read(&source_path).expect("source JSON"))
+                .expect("source value");
+        source["schema"] = json!(riffdb_query_module::APPLICATION_SOURCE_SCHEMA_V7);
+        source["generation"] = json!({"go": "generated/go/client.go"});
+        for role in source["roles"].as_array_mut().expect("roles") {
+            role["row_policies"] = json!([]);
+        }
+        fs::write(
+            &source_path,
+            ApplicationSourceManifest::parse(&serde_json::to_string(&source).expect("source JSON"))
+                .expect("V7 Go-only source")
+                .canonical_bytes(),
+        )
+        .expect("write source");
+        write_application_lock(&source_path, None).expect("write sparse lock");
+        for undeclared in [
+            "generated/mcp/tools.json",
+            "generated/python/client.py",
+            "generated/rust/client.rs",
+            "generated/typescript/client.ts",
+        ] {
+            if base.join(undeclared).exists() {
+                fs::remove_file(base.join(undeclared)).expect("remove undeclared artifact");
+            }
+        }
+
+        let catalog = runtime_operation_catalog(&source_path, None).expect("runtime catalog");
+        let catalog: serde_json::Value = serde_json::from_slice(&catalog).expect("catalog JSON");
+        let lock = ApplicationLock::decode_canonical(
+            &fs::read(base.join(DEFAULT_LOCK_PATH)).expect("lock"),
+        )
+        .expect("canonical lock");
+        assert_eq!(
+            lock.schema(),
+            riffdb_query_module::APPLICATION_LOCK_SCHEMA_V8
+        );
+        assert!(
+            lock.artifacts()
+                .iter()
+                .all(|artifact| artifact.kind() != GeneratedApplicationArtifactKind::Mcp)
+        );
+        assert_eq!(
+            catalog["application_manifest_hash"],
+            json!(hex(lock.manifest_hash().as_bytes()))
+        );
+        assert!(!base.join("generated/mcp/tools.json").exists());
     }
 
     #[test]

@@ -18,6 +18,8 @@ pub const RIFFQL_LANGUAGE_VERSION_EXACT_PREDICATE_V1: u32 = 6;
 pub const RIFFQL_LANGUAGE_VERSION_NULLABLE_EXACT_ORDER_V1: u32 = 7;
 /// Additive exact aggregate core function family.
 pub const RIFFQL_LANGUAGE_VERSION_EXACT_AGGREGATE_V1: u32 = 8;
+/// Compiler-declared bounded runtime page-limit language version.
+pub const RIFFQL_LANGUAGE_VERSION_BOUNDED_LIMIT_V1: u32 = 9;
 /// Maximum compiler-declared causal projection wait.
 pub const MAX_PROJECTED_CAUSAL_WAIT_MS: u32 = 30_000;
 /// Maximum compiler-declared bounded projection lag.
@@ -149,6 +151,8 @@ pub enum TypeReference {
     Cursor,
     /// Positive row limit.
     Limit,
+    /// Positive row limit with a compiler-declared inclusive maximum.
+    BoundedLimit(u64),
 }
 
 /// Ordered query body.

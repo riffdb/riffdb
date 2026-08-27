@@ -2824,6 +2824,19 @@ fn resolve_page_bound(
                 parameter: name.clone(),
             }),
         },
+        PageBound::BoundedParameter { name, maximum } => match parameters.get(name) {
+            Some(CanonicalValue::U64(value))
+                if *value > 0 && *value <= *maximum && page_take_within_scan_bound(*value) =>
+            {
+                Ok(*value)
+            }
+            Some(_) => Err(QueryExecutionError::InvalidParameter {
+                parameter: name.clone(),
+            }),
+            None => Err(QueryExecutionError::MissingParameter {
+                parameter: name.clone(),
+            }),
+        },
         PageBound::Literal(_) => Err(QueryExecutionError::InvalidProgram),
     }
 }
@@ -3042,6 +3055,33 @@ fn resolve_row_limit(
             // Parameterized Limit is validated before any backend scan so an
             // over-bound runtime value is InputInvalid, never INTERNAL.
             if value == 0 || !page_take_within_scan_bound(value) || value > step.maximum_rows() {
+                return Err(QueryExecutionError::InvalidParameter {
+                    parameter: name.clone(),
+                });
+            }
+            value
+        }
+        QueryRowLimit::BoundedParameter {
+            name,
+            maximum,
+            default,
+        } => {
+            let value = match parameters.get(name) {
+                Some(CanonicalValue::U64(value)) => *value,
+                Some(_) => {
+                    return Err(QueryExecutionError::InvalidParameter {
+                        parameter: name.clone(),
+                    });
+                }
+                None => default.ok_or_else(|| QueryExecutionError::MissingParameter {
+                    parameter: name.clone(),
+                })?,
+            };
+            if value == 0
+                || value > *maximum
+                || !page_take_within_scan_bound(value)
+                || value > step.maximum_rows()
+            {
                 return Err(QueryExecutionError::InvalidParameter {
                     parameter: name.clone(),
                 });

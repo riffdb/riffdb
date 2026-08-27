@@ -171,6 +171,11 @@ seed inputs). The four-step `init` / `push` / `generate` / invoke workflow is
 the remote-service path: `push` deliberately requires both the service and its
 credential and does not bootstrap either one.
 
+Sparse V7 packages do not acquire undeclared generated surfaces during this
+workflow. When a Go or TypeScript package omits `mcp`, the installed CLI derives
+the local driver's exact operation catalog once into protected disposable
+state; no `generated/mcp/tools.json` file or MCP lock artifact is required.
+
 For a Go or TypeScript HTTP application, `--run` remains attached while the
 application serves. Wait for the application's ready marker, exercise the
 page, and then terminate the development process. A healthy serving process is

@@ -2,7 +2,8 @@
 
 use riffdb_contract_compiler::compile_contract_source;
 use riffdb_query_module::{
-    NamedQuerySource, QUERY_MODULE_FORMAT_VERSION_EXACT_PREDICATE_V1,
+    NamedQuerySource, QUERY_MODULE_FORMAT_VERSION_BOUNDED_LIMIT_V1,
+    QUERY_MODULE_FORMAT_VERSION_EXACT_PREDICATE_V1,
     QUERY_MODULE_FORMAT_VERSION_NULLABLE_EXACT_ORDER_V1, QueryModule, QueryModuleCandidate,
     generate_go_client, generate_python_client, generate_rust_client, generate_typescript_client,
 };
@@ -86,6 +87,67 @@ fn semantic_family_rotates_module_identity_and_round_trips_by_recompilation() {
         assert!(!generated.contains("ExactPredicateNodeV1"));
         assert!(!generated.contains("provider_requirement"));
     }
+}
+
+#[test]
+fn bounded_limit_composes_with_present_and_nullable_exact_predicate_families() {
+    let contract = compile_contract_source(CONTRACT).expect("contract");
+    let bounded = QUERY.replace("$limit: Limit,", "$limit: Limit<100>,");
+    let candidate = QueryModuleCandidate::new(
+        QueryModuleName::new("bounded_directory").expect("module name"),
+        QueryModuleVersion::new(1).expect("version"),
+        vec![NamedQuerySource::new("SearchUsers", bounded).expect("source")],
+    )
+    .expect("candidate");
+    let module = QueryModule::compile(candidate, &contract).expect("bounded module");
+    assert_eq!(
+        module.format_version(),
+        QUERY_MODULE_FORMAT_VERSION_BOUNDED_LIMIT_V1
+    );
+    assert_eq!(
+        module.queries()[0]
+            .exact_predicate_result()
+            .expect("exact predicate")
+            .program()
+            .max_limit(),
+        100
+    );
+
+    let nullable_contract = compile_contract_source(
+        &CONTRACT
+            .replace("field created_at: u64", "field created_at: optional<u64>")
+            .replace(
+                "index by_created (organization_id, created_at, user_id)",
+                "index by_created (organization_id, created_at, user_id) presence(created_at)",
+            ),
+    )
+    .expect("nullable contract");
+    let nullable = QUERY
+        .replace("$limit: Limit,", "$limit: Limit<100>,")
+        .replace(
+            "order by created_at desc, user_id asc",
+            "order by created_at desc nulls last, user_id asc",
+        );
+    let candidate = QueryModuleCandidate::new(
+        QueryModuleName::new("bounded_nullable_directory").expect("module name"),
+        QueryModuleVersion::new(1).expect("version"),
+        vec![NamedQuerySource::new("SearchUsers", nullable).expect("source")],
+    )
+    .expect("candidate");
+    let module =
+        QueryModule::compile(candidate, &nullable_contract).expect("bounded nullable module");
+    assert_eq!(
+        module.format_version(),
+        QUERY_MODULE_FORMAT_VERSION_BOUNDED_LIMIT_V1
+    );
+    assert_eq!(
+        module.queries()[0]
+            .nullable_exact_predicate_result()
+            .expect("nullable exact predicate")
+            .program()
+            .max_limit(),
+        100
+    );
 }
 
 #[test]

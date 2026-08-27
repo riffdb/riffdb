@@ -230,13 +230,16 @@ credential.
 
 ## Whole-query bounds
 
-`Limit` means a caller may request any page size through the 500-row service
-ceiling. The compiler therefore charges a `take $limit` binding as 500 rows,
-even when the parameter has a smaller default. Index-scan charges from every
-binding in one named query are added before a role is accepted.
+Plain `Limit` means a caller may request any positive page size through 499.
+The compiler therefore charges a `take $limit` binding as 499 rows, even when
+the parameter has a smaller default. Use `Limit<100>` (or another reviewed
+maximum from 1 through 499) when callers need a runtime page size but the role
+should authorize a narrower bound. Index-scan charges from every binding in
+one named query are added before a role is accepted.
 
 For a page with several independently bounded collections, use reviewed fixed
-limits whose aggregate index-scan maximum is at most 500:
+limits or bounded runtime limits whose aggregate index-scan maximum fits the
+role:
 
 ```riffql
 many comments from Comment

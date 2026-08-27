@@ -214,13 +214,19 @@ impl ApplicationCatalog {
             serde_json::from_slice(tools).map_err(|_| CatalogError::InvalidArtifact)?;
         let tools: GeneratedCatalog = serde_json::from_value(tools_value.clone())
             .map_err(|_| CatalogError::InvalidArtifact)?;
-        if !lock.artifacts.iter().any(|artifact| {
+        let declared_catalog = lock.artifacts.iter().any(|artifact| {
             artifact.kind == "mcp"
                 && parse_hash(&artifact.content_hash).ok() == Some(tools_file_hash)
-        }) || !lock.artifacts.iter().any(|artifact| {
-            artifact.kind == "manifest"
-                && parse_hash(&artifact.content_hash).ok() == Some(manifest_file_hash)
-        }) {
+        });
+        let compiler_runtime_catalog = lock.schema == "riffdb.application-lock/v8"
+            && manifest.schema == "riffdb.application-manifest/v5"
+            && manifest.generation.mcp.is_none();
+        if (!declared_catalog && !compiler_runtime_catalog)
+            || !lock.artifacts.iter().any(|artifact| {
+                artifact.kind == "manifest"
+                    && parse_hash(&artifact.content_hash).ok() == Some(manifest_file_hash)
+            })
+        {
             return Err(CatalogError::IdentityMismatch);
         }
         if !matches!(
@@ -229,12 +235,14 @@ impl ApplicationCatalog {
                 | "riffdb.application-lock/v5"
                 | "riffdb.application-lock/v6"
                 | "riffdb.application-lock/v7"
+                | "riffdb.application-lock/v8"
         ) || !matches!(
             manifest.schema.as_str(),
             "riffdb.application-manifest/v1"
                 | "riffdb.application-manifest/v2"
                 | "riffdb.application-manifest/v3"
                 | "riffdb.application-manifest/v4"
+                | "riffdb.application-manifest/v5"
         ) || !matches!(
             tools.schema.as_str(),
             "riffdb-generated-application-operations/v2"
@@ -669,9 +677,16 @@ struct LockReactiveOperation {
 struct ExactManifest {
     schema: String,
     contract: ManifestContract,
+    #[serde(default)]
+    generation: ManifestGeneration,
     roles: Vec<ManifestRole>,
     #[serde(default)]
     reactive_modules: Vec<ManifestReactiveModule>,
+}
+#[derive(Default, Deserialize)]
+struct ManifestGeneration {
+    #[serde(default)]
+    mcp: Option<String>,
 }
 #[derive(Deserialize)]
 struct ManifestRole {

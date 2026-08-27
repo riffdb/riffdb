@@ -1,4 +1,4 @@
-spec_version: '1.14'
+spec_version: '1.15'
 product: RiffDB
 repository: riffdb
 status: deployable-application-alpha-architecture-accepted
@@ -1414,6 +1414,109 @@ work_packages:
     scale: Clean lifecycle work and observations are bounded independently of population; scrub and
       dirty validation stream without population-sized memory; evidence uses fixed checkpoints,
       stages, labels, durations, artifacts, and diagnostic ceilings.
+  human_review_triggers: *id001
+- id: WP-706
+  name: Compiler-declared bounded runtime page limits
+  depends_on: [WP-690, WP-696, WP-701, WP-703]
+  objective: Implement ADR-0158's closed Limit<MAX> query-only refinement through syntax,
+    resolution, versioned immutable IR/module identity, exact whole-request cost, runtime admission,
+    provider/storage execution, compatibility fixtures, and core handbook guidance without changing
+    plain Limit or any global safety ceiling.
+  requirements: [OQ-004, OQ-005, OQ-006, OQ-015, OQ-017, OQ-019, OQ-022,
+    OQ-024, OQ-049, OQ-051, OQ-052, OQ-053, OQ-062, OQ-063, OQ-064, OQ-065,
+    OQ-066, OQ-067]
+  required_adrs: [ADR-0002, ADR-0013, ADR-0027, ADR-0051, ADR-0052,
+    ADR-0055, ADR-0108, ADR-0112, ADR-0124, ADR-0129, ADR-0130, ADR-0134,
+    ADR-0150, ADR-0155, ADR-0158]
+  allowed_paths: [SPEC.md, work_packages.yaml, adr/README.md,
+    adr/0158-compiler-declared-bounded-runtime-page-limits.md,
+    release/version-topology-v1.json, crates/riffdb-riffql-syntax/**,
+    crates/riffdb-query-ir/**, crates/riffdb-query-compiler/**,
+    crates/riffdb-query-executor/**, crates/riffdb-query-module/**,
+    crates/riffdb-catalog/**, crates/riffdb-service/**,
+    crates/riffdb-storage-api/**, crates/riffdb-storage-memory/**,
+    crates/riffdb-storage-redb/**, crates/riffdb-testkit/**,
+    fixtures/riffql/**, fixtures/query-modules/**, fixtures/compatibility/**,
+    tests/operational_queries.rs, tests/compatibility.rs, scripts/**,
+    docs/SUMMARY.md, docs/riffql/**, docs/getting-started/**,
+    docs/compatibility.md, docs/known-limitations.md]
+  deliverables:
+  - Limit<MAX> parser/formatter/resolver support with implicit minimum one, maximum 499, one canonical
+    unsigned maximum, valid default enforcement, and source-spanned negative snapshots
+  - RiffQL V9, query IR V12, and query-module V12 canonical successors carrying MAX through parameter,
+    result-list, row-limit, cost, role, schema, plan, module, and lock identity while all old bytes remain exact
+  - Planner and role costs use declared MAX cumulatively; executor and every provider/backend reject zero,
+    wrong-type, missing-required, and MAX-plus-one before data work and execute one direct bounded page
+  - Generic large-field, multi-binding, exact-result, projection, aggregate, vector, forward/reverse cursor,
+    default, maximum-drift, backend-spy, compatibility, topology, and handbook evidence
+  acceptance_commands:
+  - cargo +1.97.0 test -p riffdb-riffql-syntax -p riffdb-query-ir -p riffdb-query-compiler -p riffdb-query-executor -p riffdb-query-module --all-features
+  - cargo +1.97.0 test -p riffdb-testkit --test operational_queries --all-features
+  - cargo +1.97.0 test -p riffdb-storage-memory -p riffdb-storage-redb --all-features
+  - ./scripts/check-version-topology
+  - ./scripts/check-generated
+  - ./scripts/check-requirement-coverage
+  - ./scripts/check-workspace-policy
+  - ./scripts/handbook check
+  - cargo +1.97.0 fmt --all -- --check
+  - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: Every bounded-limit query has one canonical declared maximum shared by type, immutable
+    identity, cost, authorization, schemas, runtime, and provider work; boundaries and cursors are exact,
+    old artifacts remain byte-exact, and no default, submitted value, framework branch, or raised ceiling
+    can weaken the proof.
+  standing_design_tests:
+    interface_safety: A caller may choose only a positive value within an immutable named query's
+      compiler-declared maximum; it cannot alter cost, provider, access shape, policy, snapshot, or cursor.
+    scale: Work is bounded by MAX beneath existing row, byte, step, provider, policy, and response ceilings;
+      validation is per compilation/request, never per row, and no population materialization is introduced.
+  human_review_triggers: *id001
+- id: WP-707
+  name: Bounded-limit generated surfaces and external conformance
+  depends_on: [WP-611, WP-703, WP-706]
+  objective: Close ADR-0158 with exact bounded-limit schemas and validation across every generated and
+    driver surface, editor/LSP support, semantic invocation-count evidence, and a fresh sparse Go-only
+    installed package, retaining all external adapter artifacts in their owning repositories.
+  requirements: [OQ-015, OQ-016, OQ-030, OQ-062, OQ-063, OQ-064, OQ-065,
+    OQ-066, OQ-067, DX-026, DX-027, DX-028, DX-029, DX-030, DX-031, DX-046,
+    DX-047, DX-049, DX-050, DRV-007, DRV-008, DRV-012, DRV-014, DRV-015,
+    DRV-016]
+  required_adrs: [ADR-0055, ADR-0112, ADR-0120, ADR-0121, ADR-0124,
+    ADR-0148, ADR-0155, ADR-0158]
+  allowed_paths: [SPEC.md, work_packages.yaml,
+    adr/0158-compiler-declared-bounded-runtime-page-limits.md,
+    release/version-topology-v1.json, crates/**, clients/**, templates/**,
+    fixtures/**, examples/**, tests/**, scripts/**, release/distribution/**,
+    docs/**, .github/workflows/**]
+  deliverables:
+  - Rust, Go, TypeScript, and Python generated parameter validation plus canonical JSON schema, CLI, MCP,
+    local-driver, and remote-gRPC parity for defaults, exact MAX, zero, MAX-plus-one, and wrong types
+  - Editor grammar/highlighting/formatter/LSP understand Limit<MAX>; plain Limit outputs and every old
+    generated fixture remain byte-exact, and changing MAX rotates every required immutable identity
+  - A framework-neutral instrumented corpus proves one invocation and one backend page for a multi-row
+    request, no client page walk or discard, exact forward/reverse continuation, and separately safe maxima
+    for distinct bounded row sizes without wall-clock thresholds
+  - Fresh sparse Go-only init/generate/check/install/dev execution with a bounded multi-row page and no
+    MCP artifact, npm, TypeScript, Python, generated Rust facade, external-framework branch, or adapter file
+  acceptance_commands:
+  - cargo +1.97.0 test --workspace --all-features
+  - ./scripts/driver-conformance --all-languages --remote
+  - ./scripts/check-application-bindings
+  - ./scripts/check-driver-development-registry
+  - ./scripts/check-version-topology
+  - ./scripts/check-generated
+  - ./scripts/check-requirement-coverage
+  - ./scripts/check-workspace-policy
+  - ./scripts/handbook check
+  - cargo +1.97.0 fmt --all -- --check
+  - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: Every generated and driver surface preserves one compiler-declared bounded-limit domain and
+    direct page invocation, the sparse Go-only package runs without undeclared surfaces/toolchains, all old
+    outputs remain exact, and no framework code, client-side pagination, hidden fallback, or warning remains.
+  standing_design_tests:
+    interface_safety: Generated callers can submit only a typed value checked against the immutable MAX;
+      target code cannot bypass authoritative validation or select an uncompiled operation or cursor route.
+    scale: Generated checks are constant-time, each page is one bounded invocation/backend request, fixtures
+      are finite, and no page walk, overfetch, per-row proof, or machine-dependent timing gate is introduced.
   human_review_triggers: *id001
 - id: WP-678
   name: Aggregate collection-byte language, proof, and IR successors
