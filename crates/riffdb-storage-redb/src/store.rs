@@ -173,6 +173,18 @@ pub(crate) struct SharedRedb {
     /// Per-reason counts of declined ADR-0157 bounded startups
     /// (index = `CleanCloseDeclineReason::index`).
     clean_close_declined: [AtomicU64; 10],
+    /// Transient population-index rebuilds performed on this handle, and the
+    /// `COMMITS` rows each one walked.
+    ///
+    /// The rebuild decodes every command segment, re-derives every manifest
+    /// key, and retains every segment, so it is the most expensive thing this
+    /// adapter does at open. Bounded clean-close startup deliberately skips it
+    /// and leaves the caches cold, but `ensure_transient_indexes_ready` will
+    /// still build them on the first derived read — which can be before
+    /// readiness. Counted so a "bounded" start that paid for it anyway is
+    /// visible rather than inferred from wall clock.
+    transient_index_rebuilds: AtomicU64,
+    transient_index_commit_rows: AtomicU64,
     /// Retention watermark sequence, loaded and self-hash-verified once at
     /// open. The watermark advances only under exclusive OFFLINE maintenance,
     /// which cannot run while this handle holds the database open, so reads
@@ -349,6 +361,23 @@ impl SharedRedb {
         reason: crate::clean_close::CleanCloseDeclineReason,
     ) {
         let _ = self.clean_close_declined[reason.index()].fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub(crate) fn note_transient_index_rebuild(&self, commit_rows: u64) {
+        let _ = self
+            .transient_index_rebuilds
+            .fetch_add(1, Ordering::Relaxed);
+        let _ = self
+            .transient_index_commit_rows
+            .fetch_add(commit_rows, Ordering::Relaxed);
+    }
+
+    pub(crate) fn transient_index_rebuilds(&self) -> u64 {
+        self.transient_index_rebuilds.load(Ordering::Relaxed)
+    }
+
+    pub(crate) fn transient_index_commit_rows(&self) -> u64 {
+        self.transient_index_commit_rows.load(Ordering::Relaxed)
     }
 
     pub(crate) fn clean_close_decline_counts(&self) -> [(&'static str, u64); 10] {
@@ -1541,6 +1570,8 @@ impl RedbStore {
                 checkpoint_ignored: [(); 10].map(|()| AtomicU64::new(0)),
                 clean_close_write_failures: AtomicU64::new(0),
                 clean_close_declined: [(); 10].map(|()| AtomicU64::new(0)),
+                transient_index_rebuilds: AtomicU64::new(0),
+                transient_index_commit_rows: AtomicU64::new(0),
                 retention_watermark: AtomicU64::new(0),
                 terminal_execution_failure_rows: AtomicU64::new(0),
                 checkpoint_count_rows_walked: AtomicU64::new(0),
@@ -4002,8 +4033,9 @@ fn activate_operational_ports(
         return Ok(RedbOperationalPorts { shared });
     }
     let transaction = shared.database.begin_read().map_err(transaction_error)?;
-    let indexes = TransientIndexes::rebuild(&transaction)?;
+    let (indexes, commit_rows) = TransientIndexes::rebuild_counted(&transaction)?;
     drop(transaction);
+    shared.note_transient_index_rebuild(commit_rows);
     let mut state = shared
         .transient_indexes
         .write()
@@ -4176,6 +4208,24 @@ impl RedbOperationalPorts {
     #[must_use]
     pub fn clean_close_decline_counts(&self) -> [(&'static str, u64); 10] {
         self.shared.clean_close_decline_counts()
+    }
+
+    /// Transient population-index rebuilds performed on this database.
+    ///
+    /// Expected to be zero for the whole life of a handle that reached
+    /// readiness through bounded clean-close startup. A nonzero value means the
+    /// bounded path's saving was given back by a later derived read.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn transient_index_rebuilds(&self) -> u64 {
+        self.shared.transient_index_rebuilds()
+    }
+
+    /// `COMMITS` rows walked by transient population-index rebuilds.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn transient_index_commit_rows(&self) -> u64 {
+        self.shared.transient_index_commit_rows()
     }
 
     /// Per-reason counts of ignored validated-prefix checkpoints on this database.
@@ -7588,8 +7638,9 @@ impl SharedRedb {
         }
         self.checkpoint_published_journal_suffix_for_barrier()?;
         let transaction = self.database.begin_read().map_err(transaction_error)?;
-        let indexes = TransientIndexes::rebuild(&transaction)?;
+        let (indexes, commit_rows) = TransientIndexes::rebuild_counted(&transaction)?;
         drop(transaction);
+        self.note_transient_index_rebuild(commit_rows);
         let mut state = self
             .transient_indexes
             .write()

@@ -160,6 +160,20 @@ impl TransientIndexDelta {
 }
 
 impl TransientIndexes {
+    /// Rebuilds every transient population index from durable tables.
+    ///
+    /// Walks the whole `COMMITS` table, decoding each command segment and
+    /// re-deriving each manifest key, and retains every decoded segment. Cost
+    /// is linear in retained commands with a large per-command constant, and it
+    /// is the single most expensive operation in an open. Returns the rows
+    /// walked so the caller can count what it paid.
+    pub(crate) fn rebuild_counted(
+        transaction: &ReadTransaction,
+    ) -> Result<(Self, u64), StorageError> {
+        let commit_rows = table_row_count(transaction, COMMITS)?;
+        Ok((Self::rebuild(transaction)?, commit_rows))
+    }
+
     pub(crate) fn rebuild(transaction: &ReadTransaction) -> Result<Self, StorageError> {
         let command_derived = rebuild_command_derived_indexes(transaction)?;
         let event_routes = rebuild_event_routes(transaction, command_derived.as_ref())?;
@@ -837,6 +851,17 @@ fn expected_manifest_key(
             Ok(encode_event_key(event.event_id()).to_vec())
         }
     }
+}
+
+/// Row count from redb table metadata (never a walk).
+fn table_row_count(
+    transaction: &ReadTransaction,
+    definition: redb::TableDefinition<'static, &'static [u8], &'static [u8]>,
+) -> Result<u64, StorageError> {
+    use redb::ReadableTableMetadata;
+
+    let table = transaction.open_table(definition).map_err(table_error)?;
+    table.len().map_err(precommit_storage_error)
 }
 
 fn rebuild_command_derived_indexes(

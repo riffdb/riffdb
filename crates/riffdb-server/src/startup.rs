@@ -29,6 +29,7 @@ use riffdb_storage_redb::{
 use riffdb_types::{ContractBundleHash, ContractLineage, ContractVersion, DatabaseId};
 
 use crate::identifiers::{DatabaseIdCandidateSource, ServerIdentifierSourceError};
+use crate::startup_census::{StartupStage, timed};
 
 const STARTUP_EVIDENCE_PAGE_ITEMS: u32 = 500;
 
@@ -298,8 +299,11 @@ pub(crate) fn open_redb_startup_with_commit_profile(
     database_ids: &DatabaseIdCandidateSource,
     application_commit_profile: RedbCommitProfile,
 ) -> Result<CheckedRedbStartup, RedbStartupError> {
-    preflight_redb_startup_format(path)?;
-    let store = RedbStore::open_with_commit_profile(path, application_commit_profile)?;
+    let store = timed(StartupStage::StoreOpen, || {
+        preflight_redb_startup_format(path)?;
+        RedbStore::open_with_commit_profile(path, application_commit_profile)
+            .map_err(RedbStartupError::from)
+    })?;
     complete_redb_startup(store, inputs, || database_ids.next_database_id())
 }
 
@@ -372,7 +376,9 @@ fn run_redb_startup_pass(
     inputs: StartupValidationInputs,
 ) -> Result<RedbStartupPass, RedbStartupError> {
     let initialized_database_id = initialized.database_id();
-    let mut session = initialized.begin_structural_evidence(inputs)?;
+    let mut session = timed(StartupStage::EvidenceBegin, || {
+        initialized.begin_structural_evidence(inputs)
+    })?;
     report_clean_close_startup_selection(&session);
     if session.database_id() != initialized_database_id {
         return Err(RedbStartupError::Integrity(
@@ -380,10 +386,16 @@ fn run_redb_startup_pass(
         ));
     }
 
-    let structural_end = drive_structural_evidence(&mut session)?;
-    let validation = validate_catalog_history(&mut session)?;
+    let structural_end = timed(StartupStage::StructuralDrain, || {
+        drive_structural_evidence(&mut session)
+    })?;
+    let validation = timed(StartupStage::CatalogHistory, || {
+        validate_catalog_history(&mut session)
+    })?;
     let (catalog_outcome, historical_end) = validation.into_parts();
-    let storage_outcome = session.finish(structural_end, historical_end)?;
+    let storage_outcome = timed(StartupStage::EvidenceFinish, || {
+        session.finish(structural_end, historical_end)
+    })?;
     validate_startup_outcome_kinds(
         match &catalog_outcome {
             CatalogHistoryOutcome::Ready(_) => CatalogStartupOutcomeKind::Ready,
@@ -490,7 +502,9 @@ fn complete_ready_redb_startup(
 
     // This is the sole activation call. No storage observation is made by this module
     // after the same-session proof is released.
-    let operational_ports = dormant_ports.into_operational_after_catalog_validation()?;
+    let operational_ports = timed(StartupStage::PortActivation, || {
+        dormant_ports.into_operational_after_catalog_validation()
+    })?;
     Ok(CheckedRedbStartup {
         database_id,
         retained_metadata,

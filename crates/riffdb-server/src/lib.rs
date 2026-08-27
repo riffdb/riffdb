@@ -38,7 +38,9 @@ mod recovery_host;
 mod restore_retry_host;
 mod runtime_support;
 mod server_generation;
+mod shutdown_census;
 mod startup;
+mod startup_census;
 mod storage;
 
 pub use daemon::riffdbd_main;
