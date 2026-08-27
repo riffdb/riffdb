@@ -159,6 +159,16 @@ Production seed throughput, 1,112,350 commands:
 Before the batched seed landed, a TypeScript production seed reached 1.4 GB
 after twenty-one minutes and had not finished; it now completes in eleven.
 
+### What a run costs
+
+A production dual-backend run took 46 minutes wall clock on E2 and about 78 on
+N1. Roughly: 10-12 minutes of RiffDB seeding, 3-5 minutes of Postgres seeding
+and settling, two 65-second load windows, and the rest startup validation --
+paid twice, once by the measured daemon and once by the post-measurement
+inventory reopen, which deliberately still takes the complete pass because it is
+a corruption check and removing it to speed up a benchmark would be the wrong
+trade. Budget an hour per cell until the fast path engages.
+
 ### Not yet measured
 
 - **No same-host production pair.** N1 has the production Postgres number and
