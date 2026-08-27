@@ -209,6 +209,7 @@ fn canonical_type(value: &NamedTypeSchema) -> Option<String> {
         NamedTypeSchema::Set(inner) => Some(format!("Set<{}>", canonical_type(inner)?)),
         NamedTypeSchema::Cursor => Some("Cursor".to_owned()),
         NamedTypeSchema::Limit => Some("Limit".to_owned()),
+        NamedTypeSchema::BoundedLimit { maximum } => Some(format!("Limit<{maximum}>")),
         NamedTypeSchema::Record(_) | NamedTypeSchema::List { .. } => None,
     }
 }

@@ -212,12 +212,22 @@ existing maximum visible-field multiplier, and encoded bytes retain the fixed
 consumed as execution fuel, so these derived ceilings do not create ambient or
 unmetered read authority.
 
-A `Limit` parameter is charged at its complete 499-row page range. Therefore,
-two index scans each controlled by an independent `Limit` parameter require
-998 aggregate index rows and fail a role whose whole-query allowance is only
-500. Fixed `take` bounds let a multi-collection page divide that allowance
-deliberately. The separate 500-row physical scan ceiling reserves one row for
-a continuation probe; it is not an application-visible page size.
+A plain `Limit` parameter is charged at its complete 499-row page range.
+Therefore, two index scans each controlled by an independent plain `Limit`
+parameter require 998 aggregate index rows and fail a role whose whole-query
+allowance is only 500. Fixed `take` bounds let a multi-collection page divide
+that allowance deliberately. `Limit<MAX>` provides the runtime-selectable
+middle: each access is charged at its immutable declared `MAX`, and two uses
+of `Limit<100>` charge 200 rows even when a request submits smaller values.
+Defaults and submitted values never narrow static cost. The separate 500-row
+physical scan ceiling reserves one row for a continuation probe; it is not an
+application-visible page size.
+
+The V12 row-limit IR retains the parameter name, positive declared maximum,
+and optional default. Runtime validates the effective value before opening a
+provider or storage access. One accepted invocation executes the selected
+page directly; it does not walk one-row cursors, overfetch and discard, or
+re-plan per page.
 
 At runtime the executor creates a move-only fuel value from the exact program
 cost. It decrements fuel for every access step, backend-reported scanned row,

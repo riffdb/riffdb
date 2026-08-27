@@ -3,13 +3,14 @@
 use riffdb_contract_compiler::compile_contract_source;
 use riffdb_query_module::{
     ApplicationManifest, CompiledNamedQuery, CompiledNamedQueryPlan, ManifestErrorKind,
-    NamedQuerySource, QUERY_MODULE_FORMAT_VERSION_COVERED_RESULT_V1,
-    QUERY_MODULE_FORMAT_VERSION_EXACT_AGGREGATE_V1,
+    NamedQuerySource, QUERY_MODULE_FORMAT_VERSION_BOUNDED_LIMIT_V1,
+    QUERY_MODULE_FORMAT_VERSION_COVERED_RESULT_V1, QUERY_MODULE_FORMAT_VERSION_EXACT_AGGREGATE_V1,
     QUERY_MODULE_FORMAT_VERSION_OPERATIONAL_AGGREGATE_V1,
     QUERY_MODULE_FORMAT_VERSION_OPERATIONAL_V1, QUERY_MODULE_FORMAT_VERSION_V1, QueryModule,
     QueryModuleCandidate, QueryModuleErrorKind, QueryModuleName, QueryModuleVersion,
-    generate_go_client, generate_mcp_commands, generate_mcp_tools, generate_python_client,
-    generate_rust_client, generate_typescript_client,
+    generate_go_application_client, generate_go_client, generate_mcp_commands, generate_mcp_tools,
+    generate_python_application_client, generate_python_client, generate_rust_application_client,
+    generate_rust_client, generate_typescript_application_client, generate_typescript_client,
 };
 use std::sync::Arc;
 
@@ -459,6 +460,44 @@ fn strict_decode_recompiles_against_the_exact_contract() {
     assert!(matches!(
         error.kind(),
         QueryModuleErrorKind::InvalidEncoding | QueryModuleErrorKind::IdentityMismatch
+    ));
+}
+
+#[test]
+fn bounded_limit_uses_module_v12_and_freezes_its_generated_schema_maximum() {
+    let bundle = compile_contract_source(CONTRACT).expect("contract");
+    let source = include_str!("../../../queries/ticketdesk/list_tickets.riffq")
+        .replace("$limit: Limit = 25", "$limit: Limit<100> = 25");
+    let candidate = QueryModuleCandidate::new(
+        QueryModuleName::new("bounded_pages").expect("module name"),
+        QueryModuleVersion::new(1).expect("module version"),
+        vec![NamedQuerySource::new("ListTickets", source).expect("source")],
+    )
+    .expect("candidate");
+    let module = QueryModule::compile(candidate, &bundle).expect("bounded module");
+    assert_eq!(
+        module.format_version(),
+        QUERY_MODULE_FORMAT_VERSION_BOUNDED_LIMIT_V1
+    );
+    let decoded = QueryModule::decode_and_validate(module.canonical_bytes(), &bundle)
+        .expect("decode bounded module");
+    assert_eq!(decoded.identity(), module.identity());
+    let tools = generate_mcp_tools(&module).expect("tools");
+    let schema: serde_json::Value =
+        serde_json::from_str(&tools[0].input_schema).expect("input schema");
+    assert_eq!(schema["properties"]["limit"]["minimum"], 1);
+    assert_eq!(schema["properties"]["limit"]["maximum"], 100);
+    let rust = generate_rust_application_client(&module, &bundle, &[]);
+    assert!(rust.contains("self.0.limit == 0 || self.0.limit > 100"));
+    let go = generate_go_application_client(&module, &bundle, &[]);
+    assert!(go.contains("*parameters.Limit == 0 || uint64(*parameters.Limit) > 100"));
+    let typescript = generate_typescript_application_client(&module, &bundle, &[]);
+    assert!(typescript.contains(
+        "!Number.isSafeInteger(parameters.limit) || parameters.limit < 1 || parameters.limit > 100"
+    ));
+    let python = generate_python_application_client(&module, &bundle, &[]).expect("Python client");
+    assert!(python.contains(
+        "not isinstance(parameters.limit, int) or parameters.limit < 1 or parameters.limit > 100"
     ));
 }
 

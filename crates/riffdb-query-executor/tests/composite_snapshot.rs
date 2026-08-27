@@ -792,6 +792,23 @@ query ParamPage(
 }
 "#;
 
+const BOUNDED_PARAM_PAGE: &str = r#"
+query BoundedParamPage(
+    $organization_id: Organization.organization_id,
+    $project_id: Project.project_id,
+    $limit: Limit<100> = 25,
+) {
+    many tickets from Ticket
+        where organization_id == $organization_id
+            && project_id == $project_id
+            && status == TicketStatus.Open
+        order by ticket_id asc
+        take $limit
+    return Found { tickets: tickets { ticket_id } }
+    outcomes Found
+}
+"#;
+
 /// Adapter-style view that mirrors real storage: fetch limit+1, charge the probe
 /// to scanned_rows, return at most `limit` rows with a continuation when more exist.
 struct ProbeScanView {
@@ -980,6 +997,80 @@ fn parameterized_limit_over_max_page_take_is_invalid_parameter_with_zero_scan() 
             assert_eq!(rows.len() as u64, max_query_page_take());
         }
         other => panic!("expected many tickets, got {other:?}"),
+    }
+}
+
+#[test]
+fn bounded_limit_executes_one_direct_page_and_rejects_maximum_plus_one_before_scan() {
+    let bundle = compile_contract_source(&contract_without_cover()).expect("contract");
+    let catalog = SymbolicCatalog::from_bundle(&bundle).expect("catalog");
+    let program =
+        compile_query(&parse_query(BOUNDED_PARAM_PAGE).expect("query"), &catalog).expect("program");
+    assert_eq!(program.steps()[0].maximum_rows(), 100);
+
+    let parameters = |limit| {
+        QueryParameters::checked(BTreeMap::from([
+            ("organization_id".to_owned(), CanonicalValue::Uuid([1; 16])),
+            ("project_id".to_owned(), CanonicalValue::Uuid([2; 16])),
+            ("limit".to_owned(), CanonicalValue::U64(limit)),
+        ]))
+        .expect("parameters")
+    };
+    let mut view = ProbeScanView {
+        available: 150,
+        scan_calls: 0,
+        open_status: open_status_value(&catalog),
+    };
+    let snapshot = execute_in_snapshot(&program, &parameters(100), &mut view)
+        .expect("declared maximum executes");
+    assert_eq!(view.scan_calls, 1);
+    assert!(matches!(
+        snapshot.fields().get("tickets"),
+        Some(QueryResultValue::Many(rows)) if rows.len() == 100
+    ));
+    assert!(snapshot.continuation().is_some());
+
+    let defaults = QueryParameters::checked(BTreeMap::from([
+        ("organization_id".to_owned(), CanonicalValue::Uuid([1; 16])),
+        ("project_id".to_owned(), CanonicalValue::Uuid([2; 16])),
+    ]))
+    .expect("parameters");
+    let mut defaulted = ProbeScanView {
+        available: 150,
+        scan_calls: 0,
+        open_status: open_status_value(&catalog),
+    };
+    let snapshot = execute_in_snapshot(&program, &defaults, &mut defaulted)
+        .expect("compiled default executes");
+    assert_eq!(defaulted.scan_calls, 1);
+    assert!(matches!(
+        snapshot.fields().get("tickets"),
+        Some(QueryResultValue::Many(rows)) if rows.len() == 25
+    ));
+
+    for invalid in [
+        CanonicalValue::U64(0),
+        CanonicalValue::U64(101),
+        CanonicalValue::string("100").expect("string"),
+    ] {
+        let invalid = QueryParameters::checked(BTreeMap::from([
+            ("organization_id".to_owned(), CanonicalValue::Uuid([1; 16])),
+            ("project_id".to_owned(), CanonicalValue::Uuid([2; 16])),
+            ("limit".to_owned(), invalid),
+        ]))
+        .expect("parameters");
+        let mut rejected = ProbeScanView {
+            available: 150,
+            scan_calls: 0,
+            open_status: open_status_value(&catalog),
+        };
+        assert_eq!(
+            execute_in_snapshot(&program, &invalid, &mut rejected),
+            Err(QueryExecutionError::InvalidParameter {
+                parameter: "limit".to_owned(),
+            })
+        );
+        assert_eq!(rejected.scan_calls, 0);
     }
 }
 

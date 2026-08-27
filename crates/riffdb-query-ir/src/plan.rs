@@ -237,6 +237,15 @@ pub enum QueryRowLimit {
         /// Positive default, when declared.
         default: Option<u64>,
     },
+    /// Typed `Limit<MAX>` parameter with its immutable maximum and optional default.
+    BoundedParameter {
+        /// Parameter name without `$`.
+        name: String,
+        /// Inclusive compiler-declared maximum.
+        maximum: u64,
+        /// Positive default, when declared.
+        default: Option<u64>,
+    },
 }
 
 /// Closed normalized predicate operator.
@@ -631,6 +640,19 @@ impl QueryAccessStep {
                         *value > 0 && *value <= maximum_rows && *value <= max_query_page_take()
                     })
             }
+            QueryRowLimit::BoundedParameter {
+                name,
+                maximum,
+                default,
+            } => {
+                !name.is_empty()
+                    && *maximum > 0
+                    && *maximum <= maximum_rows
+                    && *maximum <= max_query_page_take()
+                    && default
+                        .as_ref()
+                        .is_none_or(|value| *value > 0 && *value <= *maximum)
+            }
         };
         let access_is_valid = match &access {
             QueryAccessKind::Point { key_fields } => {
@@ -728,7 +750,8 @@ impl QueryAccessStep {
                     && maximum_rows == u64::from(*k)
                     && match &row_limit {
                         QueryRowLimit::Literal(value) => *value == u64::from(*k),
-                        QueryRowLimit::Parameter { .. } => true,
+                        QueryRowLimit::Parameter { .. }
+                        | QueryRowLimit::BoundedParameter { .. } => true,
                     }
                     && cardinality == Cardinality::Many
             }
@@ -1044,7 +1067,9 @@ impl QueryAccessProgramV1 {
         {
             return None;
         }
-        let ir_version = if projected_source.is_some() {
+        let ir_version = if surface.has_bounded_limit() {
+            crate::QUERY_IR_VERSION_BOUNDED_LIMIT_V1
+        } else if projected_source.is_some() {
             crate::QUERY_IR_VERSION_PROJECTED_VECTOR_V1
         } else if steps
             .iter()
@@ -1123,7 +1148,9 @@ impl QueryAccessProgramV1 {
     /// Least-sufficient executable IR identity for this exact program.
     #[must_use]
     pub fn ir_version(&self) -> u32 {
-        if self.projected_source.is_some() {
+        if self.surface.has_bounded_limit() {
+            crate::QUERY_IR_VERSION_BOUNDED_LIMIT_V1
+        } else if self.projected_source.is_some() {
             crate::QUERY_IR_VERSION_PROJECTED_VECTOR_V1
         } else if self
             .steps
@@ -1252,7 +1279,12 @@ fn encode_program(
     write_count(&mut out, surface.canonical_bytes.len())?;
     out.extend_from_slice(surface.canonical_bytes);
     write_text(&mut out, surface.name.unwrap_or(""))?;
-    if surface.ir_version == crate::QUERY_IR_VERSION_PROJECTED_VECTOR_V1 {
+    if projected_source.is_some()
+        && matches!(
+            surface.ir_version,
+            crate::QUERY_IR_VERSION_PROJECTED_VECTOR_V1 | crate::QUERY_IR_VERSION_BOUNDED_LIMIT_V1
+        )
+    {
         let source = projected_source?;
         write_text(&mut out, source.entity())?;
         write_text(&mut out, source.field())?;
@@ -1295,6 +1327,16 @@ fn encode_program(
             QueryRowLimit::Parameter { name, default } => {
                 out.push(2);
                 write_text(&mut out, name)?;
+                out.extend_from_slice(&default.unwrap_or(0).to_be_bytes());
+            }
+            QueryRowLimit::BoundedParameter {
+                name,
+                maximum,
+                default,
+            } => {
+                out.push(3);
+                write_text(&mut out, name)?;
+                out.extend_from_slice(&maximum.to_be_bytes());
                 out.extend_from_slice(&default.unwrap_or(0).to_be_bytes());
             }
         }
@@ -1349,7 +1391,10 @@ fn encode_program(
         write_text(&mut out, step.absence_outcome.as_deref().unwrap_or(""))?;
         write_text(&mut out, step.cursor_parameter.as_deref().unwrap_or(""))?;
         write_strings(&mut out, &step.dependencies)?;
-        if surface.ir_version == crate::QUERY_IR_VERSION_COVERED_RESULT_V1 {
+        if matches!(
+            surface.ir_version,
+            crate::QUERY_IR_VERSION_COVERED_RESULT_V1 | crate::QUERY_IR_VERSION_BOUNDED_LIMIT_V1
+        ) {
             match &step.covered_result_layout {
                 None => out.push(0),
                 Some(layout) => {

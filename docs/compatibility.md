@@ -21,6 +21,13 @@ Generated source, descriptors, schema inventories, wire vectors, contract
 fixtures, and interface checkpoints are compatibility evidence. The current
 source release also carries:
 
+RiffQL V9, query IR V12, and query-module V12 are additive identities for the
+compiler-declared `Limit<MAX>` page type. V1 through V8 language sources and V1
+through V11 IR/module artifacts retain their existing writers and strict
+readers. A bounded maximum is immutable operation identity: changing it
+requires module/application rotation and invalidates predecessor cursors, but
+does not migrate entity data or change storage or public Protobuf formats.
+
 - `release/version-topology-v1.json`, the cross-domain map of independently
   owned reader/writer windows, writer policy, lifecycle, source assertions, and
   evidence described in [Versioning and Retirement](versioning-and-retirement.md);
