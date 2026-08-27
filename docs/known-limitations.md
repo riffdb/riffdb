@@ -65,11 +65,11 @@ These limits are part of the POC release posture, not hidden roadmap promises.
   where supported. Delete authority never implies secret-output authority.
 - Ordinary row-store indexes currently execute exact equality, one bounded
   membership or presence/text-prefix branch, and the complete declared order.
-  `binary_utf8_v1` membership is bytewise and cursor-safe when it supplies the
+  `binary_utf8_v1` membership and strict/inclusive interval or two-range `!=`
+  complement are bytewise and cursor-safe when that component supplies the
   first remaining order term. Order-preserving canonical numeric, time, UUID,
-  and enum components support one typed lower/upper interval or a two-range
-  `!=` complement when that component supplies the first remaining order term.
-  Canonical string ranges, multiple branching dimensions, overlapping unions,
+  and enum components support the same bounded interval shape. Canonical
+  string ranges, multiple branching dimensions, overlapping unions,
   residual post-page filters, index intersections, caller-selected plans, and
   general joins are unavailable. Relationship composition is limited to
   compiler-declared same-partition complete-key points, singular-key-driven
@@ -81,11 +81,11 @@ These limits are part of the POC release posture, not hidden roadmap promises.
   code.
 - The WP-690 external receipt is intentionally a narrow source-compilation
   acceptance for shared bytewise equality, membership, and order. It is not a
-  full external application or framework-conformance result. That consumer's
-  separate canonical-string range sources remain correctly refused because
-  length-prefixed canonical string order cannot prove lexical range semantics;
-  they require an accepted text-range profile or a redesigned named query, not
-  client filtering or comparator substitution.
+  full external application or framework-conformance result. Canonical-string
+  range sources remain correctly refused because length-prefixed canonical
+  order cannot prove lexical range semantics; recompile against an explicitly
+  declared `binary_utf8_v1` component rather than applying client filtering or
+  comparator substitution.
 - Vector search's exact and declared approximate tiers are application-reachable
   through the same named RiffQL operation. The server chooses exact search at
   or below the contract's per-organization `ann_threshold` and first-party HNSW

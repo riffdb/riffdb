@@ -33,9 +33,9 @@ pub(crate) enum TopLevel {
             long = "generator",
             value_enum,
             default_value = "rust",
-            value_name = "rust|go|typescript|python"
+            value_name = "rust|go|typescript|python|mcp"
         )]
-        generators: Vec<ApplicationLanguage>,
+        generators: Vec<ApplicationGenerator>,
     },
     /// Checks, locks, and installs the configured schema.
     Push {
@@ -562,6 +562,16 @@ pub(crate) enum ApplicationLanguage {
     Go,
     Typescript,
     Python,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+#[value(rename_all = "lower")]
+pub(crate) enum ApplicationGenerator {
+    Rust,
+    Go,
+    Typescript,
+    Python,
+    Mcp,
 }
 
 #[derive(Debug, Subcommand)]
@@ -1779,7 +1789,7 @@ mod tests {
             init.command,
             TopLevel::Init { application: Some(application), generators }
                 if application == "inventory"
-                    && generators == vec![ApplicationLanguage::Rust, ApplicationLanguage::Typescript]
+                    && generators == vec![ApplicationGenerator::Rust, ApplicationGenerator::Typescript]
         ));
 
         let accepted = "ab".repeat(32);

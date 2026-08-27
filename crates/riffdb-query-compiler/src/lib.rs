@@ -2543,7 +2543,7 @@ const OPERATIONAL_COMPONENT_CAPABILITY_REGISTRY: [(
         OperationalComponentCapabilities {
             exact: true,
             membership: true,
-            range_or_complement: false,
+            range_or_complement: true,
             presence_state: false,
             prefix: true,
             order: true,
@@ -2884,17 +2884,32 @@ fn suggested_index(
             entity.name(),
             fields.join(", ")
         );
+        let mut text_key_fields = BTreeSet::new();
         for comparison in comparisons {
             match comparison.operator {
                 SourcePredicateOperator::Unary(_) => {
                     suggestion.push_str(&format!(" presence({})", comparison.field));
                 }
                 SourcePredicateOperator::Binary(BinaryOperator::Prefix) => {
-                    suggestion
-                        .push_str(&format!(" text_key({}, binary_utf8_v1)", comparison.field));
+                    text_key_fields.insert(comparison.field);
+                }
+                SourcePredicateOperator::Binary(
+                    BinaryOperator::NotEqual
+                    | BinaryOperator::Less
+                    | BinaryOperator::LessEqual
+                    | BinaryOperator::Greater
+                    | BinaryOperator::GreaterEqual,
+                ) if entity
+                    .field(comparison.field)
+                    .is_some_and(|field| field.value_type().tag() == ValueTypeTag::String) =>
+                {
+                    text_key_fields.insert(comparison.field);
                 }
                 _ => {}
             }
+        }
+        for field in text_key_fields {
+            suggestion.push_str(&format!(" text_key({field}, binary_utf8_v1)"));
         }
         suggestion
     })
@@ -2958,26 +2973,33 @@ fn operational_access_shape(
                     )
                 })
                 .count();
-            let canonical_order_is_physical = index.internal_encodings()[order_start]
-                == IndexFieldEncodingV1::Canonical
-                && entity.field(field).is_some_and(|field| {
-                    matches!(
-                        field.value_type().tag(),
+            let logical_order_is_physical = entity.field(field).is_some_and(|field| {
+                matches!(
+                    (
+                        index.internal_encodings()[order_start],
+                        field.value_type().tag()
+                    ),
+                    (
+                        IndexFieldEncodingV1::Canonical,
                         ValueTypeTag::I64
                             | ValueTypeTag::U64
                             | ValueTypeTag::Timestamp
                             | ValueTypeTag::Date
                             | ValueTypeTag::Uuid
                             | ValueTypeTag::Enum
+                    ) | (
+                        IndexFieldEncodingV1::TextKey(TextKeyProfileV1::BinaryUtf8),
+                        ValueTypeTag::String
                     )
-                });
+                )
+            });
             let comparison_shape_is_finite = if has_complement {
                 matching.len() == 1
             } else {
                 matching.len() <= 2 && lower_count <= 1 && upper_count <= 1
             };
             if !capabilities.range_or_complement
-                || !canonical_order_is_physical
+                || !logical_order_is_physical
                 || !comparison_shape_is_finite
             {
                 return None;
@@ -3376,7 +3398,7 @@ mod operational_component_registry_tests {
             super::OperationalComponentCapabilities {
                 exact: true,
                 membership: true,
-                range_or_complement: false,
+                range_or_complement: true,
                 presence_state: false,
                 prefix: true,
                 order: true,

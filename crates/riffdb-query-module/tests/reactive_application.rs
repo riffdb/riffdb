@@ -133,12 +133,12 @@ fn v6_lock_pins_the_exact_go_reactive_facade_without_rotating_v4() {
     let artifacts = vec![
         artifact(
             GeneratedApplicationArtifactKind::Rust,
-            source.generation().rust(),
+            source.generation().rust().expect("rust"),
             b"rust",
         ),
         artifact(
             GeneratedApplicationArtifactKind::TypeScript,
-            source.generation().typescript(),
+            source.generation().typescript().expect("typescript"),
             b"ts",
         ),
         artifact(
@@ -153,7 +153,7 @@ fn v6_lock_pins_the_exact_go_reactive_facade_without_rotating_v4() {
         ),
         artifact(
             GeneratedApplicationArtifactKind::Mcp,
-            source.generation().mcp(),
+            source.generation().mcp().expect("mcp"),
             b"mcp",
         ),
         artifact(
@@ -236,12 +236,12 @@ fn v5_lock_and_role_bind_every_reactive_identity_without_implicit_seek() {
     let artifacts = vec![
         artifact(
             GeneratedApplicationArtifactKind::Rust,
-            source.generation().rust(),
+            source.generation().rust().expect("rust"),
             b"rust",
         ),
         artifact(
             GeneratedApplicationArtifactKind::TypeScript,
-            source.generation().typescript(),
+            source.generation().typescript().expect("typescript"),
             b"ts",
         ),
         artifact(
@@ -251,7 +251,7 @@ fn v5_lock_and_role_bind_every_reactive_identity_without_implicit_seek() {
         ),
         artifact(
             GeneratedApplicationArtifactKind::Mcp,
-            source.generation().mcp(),
+            source.generation().mcp().expect("mcp"),
             b"mcp",
         ),
         artifact(

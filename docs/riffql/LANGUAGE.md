@@ -385,7 +385,8 @@ support exact equality, bounded membership at the first remaining order term,
 canonical order, and typed intervals for order-preserving `i64`, `u64`,
 `timestamp`, `date`, `uuid`, and enum components; presence components support
 state selection and explicit state placement; `binary_utf8_v1` supports
-equality, bounded membership, leading-byte prefix, and bytewise order;
+equality, bounded membership, leading-byte prefix, bytewise interval and
+complement predicates, and bytewise order;
 `unicode_fold_v1` remains unavailable. A lower and upper comparison form one
 half-open physical interval. `!=` forms at most two disjoint complement
 intervals. Inclusive source bounds are normalized around the complete encoded
@@ -396,8 +397,10 @@ All intervals in one query share a single page limit, continuation probe, scan
 budget, cursor, and output budget. Reverse traversal reverses both interval
 order and the rows inside each interval. Contradictory submitted bounds return
 an exact empty page without scanning. Canonical length-prefixed strings do not
-preserve logical text comparison and therefore cannot prove a range; declare an
-accepted text/provider profile rather than relying on comparator substitution.
+preserve logical text comparison and therefore cannot prove a range; declare
+`text_key(field, binary_utf8_v1)` for exact valid UTF-8 bytewise interval
+semantics. Physical ordered bytes never replace the returned logical string,
+and the database performs no token parsing, normalization, or collation.
 Multiple interval dimensions, overlapping unions, intersections, skip scans,
 and post-page residual predicates remain unavailable.
 

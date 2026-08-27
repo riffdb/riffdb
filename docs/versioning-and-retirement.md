@@ -32,6 +32,13 @@ API surfaces. It does not permit a silent break. The exact generated
 application lock remains the application compatibility identity, while package
 versions communicate release selection.
 
+Application Source V7, Manifest V5, and Lock V8 are a least-sufficient linked
+transition for sparse generated surfaces. Existing Source V1-V6 documents keep
+their byte-exact generation requirements and select their historical manifest
+and lock writers. A sparse or newly initialized package uses V7/V5/V8; local
+project generator selection cannot change those identities. No prior decoder
+is retired by this transition.
+
 When a version changes, update the owning constant or schema, its frozen
 fixtures, the topology record and classification, affected generated artifacts,
 and release notes in one reviewed change. A durable change also updates the

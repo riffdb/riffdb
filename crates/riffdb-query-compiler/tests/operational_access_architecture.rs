@@ -39,9 +39,7 @@ fn one_compiler_registry_and_one_executor_lowering_own_component_semantics() {
         "all ordinary selections have one physical range-schedule owner"
     );
     assert_eq!(
-        executor
-            .matches("fn encode_canonical_interval_schedule")
-            .count(),
+        executor.matches("fn encode_interval_schedule").count(),
         1,
         "typed interval lowering has one executor owner"
     );

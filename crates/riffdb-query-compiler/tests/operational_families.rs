@@ -288,28 +288,50 @@ fn binary_text_key_proves_bounded_membership_and_bytewise_order() {
 }
 
 #[test]
-fn binary_text_order_does_not_reinterpret_other_typed_predicates() {
+fn binary_text_key_proves_bounded_interval_and_bytewise_order() {
     let source = SHARED_BINARY_EQUALITY_QUERY
         .replace("relation == $relation", "relation >= $relation")
         .replace("order by user asc", "order by relation asc, user asc");
-    let diagnostics = compile_operational_query_family(
+    let family = compile_operational_query_family(
         &parse_query(&source).expect("binary range query"),
         &catalog(SHARED_BINARY_COMPONENT_CONTRACT),
     )
-    .expect_err("binary text order cannot reinterpret canonical string range semantics");
-    let diagnostic = &diagnostics.as_slice()[0];
-    assert_eq!(diagnostic.code(), PlannerDiagnosticCode::Unindexed);
+    .expect("binary text key proves the bounded bytewise interval");
+    let program = family.select(&[]).expect("sole family member").program();
+    assert!(program.steps()[0].predicates().iter().any(|predicate| {
+        predicate.field() == "relation"
+            && predicate.operator() == QueryPredicateOperator::GreaterEqual
+    }));
+}
+
+#[test]
+fn canonical_string_range_refusal_suggests_the_binary_text_profile() {
+    let source = r#"
+query TicketsAfterPriority(
+    $organization_id: Ticket.organization_id,
+    $priority: Ticket.priority,
+) {
+    many tickets from Ticket
+        where organization_id == $organization_id && priority > $priority
+        order by priority asc, updated_at asc, ticket_id asc
+        take 25
+    return Found { tickets: tickets { ticket_id priority updated_at } }
+    outcomes Found
+}
+"#;
+    let diagnostics = compile_operational_query_family(
+        &parse_query(source).expect("canonical string range query"),
+        &catalog(CONTRACT),
+    )
+    .expect_err("canonical string bytes do not prove UTF-8 lexical order");
     assert_eq!(
-        format!(
-            "{}|{}..{}|{}|{}|{}\n",
-            diagnostic.code().as_str(),
-            diagnostic.primary().start,
-            diagnostic.primary().end,
-            diagnostic.symbol_path().join("."),
-            diagnostic.summary(),
-            diagnostic.suggested_index().unwrap_or("")
-        ),
-        include_str!("../../../fixtures/riffql/binary-text-range-unindexed.snapshot")
+        diagnostics.as_slice()[0].code(),
+        PlannerDiagnosticCode::Unindexed
+    );
+    assert!(
+        diagnostics.as_slice()[0]
+            .suggested_index()
+            .is_some_and(|suggestion| suggestion.contains("text_key(priority, binary_utf8_v1)"))
     );
 }
 

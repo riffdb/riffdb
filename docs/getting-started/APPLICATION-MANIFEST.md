@@ -1,13 +1,13 @@
 # Symbolic application source and exact lock
 
-The normal author-owned input is `riffdb.application.json`. New repositories
-use `riffdb.application-source/v6`; older V1 through V5 documents remain exact
-compatibility inputs. The source names paths, operations, roles, and output
+The normal author-owned input is `riffdb.application.json`. New project-shaped
+repositories use `riffdb.application-source/v7`; existing V1 through V6
+documents retain their exact writers and decoders. The source names paths, operations, roles, and output
 targets. It never asks an author or agent to discover, copy, or maintain a
 compiler-derived identity.
 
 The compiler writes `riffdb.application.lock.json` using the lock generation
-corresponding to the source schema (V1 through V7 today). That exact lock covers the normalized symbolic
+corresponding to the source schema (V1 through V8 today). That exact lock covers the normalized symbolic
 source; contract source, bundle, plan-root, lineage, version, and compiler
 formats; query module, source, and plan identities; tenant-unbound role
 definitions and their exact operation authority; and every generated artifact
@@ -161,6 +161,35 @@ consumer's bounded `next`/long-poll operation instead. Application middleware
 is not an accepted substitute. See
 [Compiled Row Policies](../security/ROW-POLICIES.md).
 
+Application Source V7 keeps V6 command, query, reactive, migration, role, and
+row-policy semantics, but replaces the complete generation object with one
+nonempty closed subset of `rust`, `go`, `typescript`, `python`, and `mcp`. It
+emits Application Manifest V5 and Lock V8. Each present member is generated in
+memory and hashed into the exact lock; an absent member is not generated,
+hashed, checked, materialized, or used to discover a language toolchain.
+
+```json
+{
+  "generation": {
+    "go": "generated/go/client.go"
+  },
+  "schema": "riffdb.application-source/v7"
+}
+```
+
+The five target names and their artifact kinds come from one compiler-owned
+closed registry. Paths must be unique. Empty maps, aliases, unknown targets,
+unsafe paths, missing declared artifacts, and extra undeclared SDK or MCP lock
+artifacts fail closed. Removing a target changes source, manifest, and lock
+identity; RiffDB leaves any old undeclared file in place as unowned content
+until the user removes it explicitly.
+
+`riffdb.toml` may request only targets declared by V7. It may materialize a
+subset in one checkout, but it cannot add a target to the lock or change the
+authoritative identity. Omitting `mcp` suppresses only the generated catalog
+file; it does not disable or change the hosted MCP service, authorization, or
+operation visibility.
+
 The source document is closed JSON with exactly these top-level members:
 
 ```json
@@ -256,7 +285,9 @@ riffdb application generate --locked
 
 Generated Rust and TypeScript facades are present in V1; V2 also requires the
 generated Python facade. V3 and V4 retain all four generation targets. V5 adds
-the generated Go facade and requires all five targets. They own
+the generated Go facade and requires all five targets; V6 retains that complete
+set. V7 declares any nonempty subset and binds exactly that subset in Manifest
+V5 and Lock V8. The language facades own
 parameter serialization, response decoding,
 exact identity checks, opaque cursors, read-after-commit fences, typed command
 outcomes, and retry-safe uncertainty recovery. Generated MCP schemas come from

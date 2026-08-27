@@ -12,10 +12,10 @@ use riffdb_diagnostics::{
 };
 use riffdb_query_module::{
     ApplicationLock, ApplicationManifest, ApplicationMigrationLockInput, ApplicationSourceManifest,
-    ApplicationSourceTenantScope, CONTRACT_BUNDLE_ARTIFACT_PATH, GeneratedApplicationArtifact,
-    GeneratedApplicationArtifactKind, GeneratedMcpCommand, GeneratedMcpReactiveTool,
-    GeneratedMcpTool, GeneratedVectorInspectionTool, NamedQuerySource, PythonGenerationError,
-    QueryModule, QueryModuleCandidate, QueryModuleName, QueryModuleVersion,
+    ApplicationSourceTenantScope, CONTRACT_BUNDLE_ARTIFACT_PATH, EXACT_MANIFEST_ARTIFACT_PATH,
+    GeneratedApplicationArtifact, GeneratedApplicationArtifactKind, GeneratedMcpCommand,
+    GeneratedMcpReactiveTool, GeneratedMcpTool, GeneratedVectorInspectionTool, NamedQuerySource,
+    PythonGenerationError, QueryModule, QueryModuleCandidate, QueryModuleName, QueryModuleVersion,
     compile_application_role, compile_application_role_v2, compile_reactive_source,
     generate_go_application_client, generate_mcp_commands, generate_mcp_reactive_tools,
     generate_mcp_tools, generate_python_application_client, generate_python_client,
@@ -59,7 +59,7 @@ const MAX_APPLICATION_NAME_BYTES: usize = 64;
 const MAX_SCAFFOLD_TOP_LEVEL_ENTRIES: usize = 16;
 const MAX_TYPESCRIPT_TOOLCHAIN_FILES: usize = 16_384;
 const MAX_TYPESCRIPT_TOOLCHAIN_BYTES: u64 = 128 * 1_024 * 1_024;
-const EXACT_MANIFEST_PATH: &str = "generated/riffdb.application.exact.json";
+const EXACT_MANIFEST_PATH: &str = EXACT_MANIFEST_ARTIFACT_PATH;
 const DEFAULT_LOCK_PATH: &str = "riffdb.application.lock.json";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -179,7 +179,8 @@ pub(crate) fn generate_application(
             | "riffdb.application-source/v3"
             | "riffdb.application-source/v4"
             | "riffdb.application-source/v5"
-            | "riffdb.application-source/v6",
+            | "riffdb.application-source/v6"
+            | "riffdb.application-source/v7",
         ) if locked => generate_application_locked(
             manifest_path,
             lock_path.unwrap_or_else(|| Path::new(DEFAULT_LOCK_PATH)),
@@ -190,7 +191,8 @@ pub(crate) fn generate_application(
             | "riffdb.application-source/v3"
             | "riffdb.application-source/v4"
             | "riffdb.application-source/v5"
-            | "riffdb.application-source/v6",
+            | "riffdb.application-source/v6"
+            | "riffdb.application-source/v7",
         ) => Err(ScaffoldError::LockRequired),
         _ => Err(ScaffoldError::Manifest),
     }
@@ -273,15 +275,25 @@ fn generate_legacy_application(manifest_path: &Path) -> Result<(), ScaffoldError
         render_mcp_manifest(&manifest, &tools, &sdk_tools, &commands, &[], &vector_tools)?;
     write_file(
         root,
-        manifest.generation().rust(),
+        manifest
+            .generation()
+            .rust()
+            .ok_or(ScaffoldError::Manifest)?,
         generate_rust_client(&module, &contract).as_bytes(),
     )?;
     write_file(
         root,
-        manifest.generation().typescript(),
+        manifest
+            .generation()
+            .typescript()
+            .ok_or(ScaffoldError::Manifest)?,
         generate_typescript_client(&module, &contract).as_bytes(),
     )?;
-    write_file(root, manifest.generation().mcp(), generated_mcp.as_bytes())?;
+    write_file(
+        root,
+        manifest.generation().mcp().ok_or(ScaffoldError::Manifest)?,
+        generated_mcp.as_bytes(),
+    )?;
     Ok(())
 }
 
@@ -451,6 +463,7 @@ pub(crate) fn preview_application_lock_from_pinned_bundle(
             | riffdb_query_module::APPLICATION_LOCK_SCHEMA_V5
             | riffdb_query_module::APPLICATION_LOCK_SCHEMA_V6
             | riffdb_query_module::APPLICATION_LOCK_SCHEMA_V7
+            | riffdb_query_module::APPLICATION_LOCK_SCHEMA_V8
     ) {
         return Ok(PinnedLockPreview::NotPinned);
     }
@@ -570,6 +583,7 @@ pub(crate) fn refresh_application_lock_from_pinned_bundle(
             | riffdb_query_module::APPLICATION_LOCK_SCHEMA_V5
             | riffdb_query_module::APPLICATION_LOCK_SCHEMA_V6
             | riffdb_query_module::APPLICATION_LOCK_SCHEMA_V7
+            | riffdb_query_module::APPLICATION_LOCK_SCHEMA_V8
     ) {
         return Ok(PinnedLockRefresh::NotPinned);
     }
@@ -622,6 +636,7 @@ fn publish_compiled_project_lock(
     selected: &[GeneratedApplicationArtifactKind],
 ) -> Result<(), ScaffoldError> {
     let root = source_parent(source_path);
+    require_selected_declared(compiled, selected)?;
     for (path, bytes) in &compiled.outputs {
         let kind = compiled_output_kind(compiled, path);
         let present = match fs::symlink_metadata(root.join(path)) {
@@ -629,8 +644,8 @@ fn publish_compiled_project_lock(
             Err(error) if error.kind() == io::ErrorKind::NotFound => false,
             Err(error) => return Err(ScaffoldError::Io(error)),
         };
-        let required =
-            kind.is_none_or(|kind| !language_artifact(kind) || selected.contains(&kind) || present);
+        let required = kind
+            .is_none_or(|kind| !selectable_artifact(kind) || selected.contains(&kind) || present);
         if required {
             atomic_write_workspace(root, path, bytes)?;
         }
@@ -689,6 +704,7 @@ fn check_project_compilation(
     selected: &[GeneratedApplicationArtifactKind],
     selected_may_be_repaired: bool,
 ) -> Result<(), ScaffoldError> {
+    require_selected_declared(compiled, selected)?;
     if lock.canonical_bytes() != compiled.lock.canonical_bytes() {
         return Err(ScaffoldError::IdentityMismatch);
     }
@@ -697,8 +713,8 @@ fn check_project_compilation(
         if selected_may_be_repaired && kind.is_some_and(|kind| selected.contains(&kind)) {
             continue;
         }
-        let language = kind.is_some_and(language_artifact);
-        let required = !language || kind.is_some_and(|kind| selected.contains(&kind));
+        let selectable = kind.is_some_and(selectable_artifact);
+        let required = !selectable || kind.is_some_and(|kind| selected.contains(&kind));
         let present = match fs::symlink_metadata(root.join(path)) {
             Ok(_) => true,
             Err(error) if error.kind() == io::ErrorKind::NotFound => false,
@@ -715,6 +731,23 @@ fn check_project_compilation(
     Ok(())
 }
 
+fn require_selected_declared(
+    compiled: &CompiledSymbolicApplication,
+    selected: &[GeneratedApplicationArtifactKind],
+) -> Result<(), ScaffoldError> {
+    if selected.iter().any(|selected| {
+        !selectable_artifact(*selected)
+            || !compiled
+                .lock
+                .artifacts()
+                .iter()
+                .any(|artifact| artifact.kind() == *selected)
+    }) {
+        return Err(ScaffoldError::IdentityMismatch);
+    }
+    Ok(())
+}
+
 fn compiled_output_kind(
     compiled: &CompiledSymbolicApplication,
     path: &str,
@@ -727,13 +760,14 @@ fn compiled_output_kind(
         .map(GeneratedApplicationArtifact::kind)
 }
 
-const fn language_artifact(kind: GeneratedApplicationArtifactKind) -> bool {
+const fn selectable_artifact(kind: GeneratedApplicationArtifactKind) -> bool {
     matches!(
         kind,
         GeneratedApplicationArtifactKind::Rust
             | GeneratedApplicationArtifactKind::TypeScript
             | GeneratedApplicationArtifactKind::Go
             | GeneratedApplicationArtifactKind::Python
+            | GeneratedApplicationArtifactKind::Mcp
     )
 }
 
@@ -770,6 +804,7 @@ fn plan_application_migrations_checked(
             | riffdb_query_module::APPLICATION_LOCK_SCHEMA_V5
             | riffdb_query_module::APPLICATION_LOCK_SCHEMA_V6
             | riffdb_query_module::APPLICATION_LOCK_SCHEMA_V7
+            | riffdb_query_module::APPLICATION_LOCK_SCHEMA_V8
     ) {
         return Err(lock_diagnostic(
             &lock_path,
@@ -1055,6 +1090,7 @@ fn compile_for_existing_lock(
             | riffdb_query_module::APPLICATION_LOCK_SCHEMA_V5
             | riffdb_query_module::APPLICATION_LOCK_SCHEMA_V6
             | riffdb_query_module::APPLICATION_LOCK_SCHEMA_V7
+            | riffdb_query_module::APPLICATION_LOCK_SCHEMA_V8
     ) {
         let artifact = lock.contract_bundle_artifact().ok_or_else(|| {
             lock_diagnostic(
@@ -1313,6 +1349,7 @@ fn compile_symbolic_application_mode(
         riffdb_query_module::APPLICATION_SOURCE_SCHEMA_V4
             | riffdb_query_module::APPLICATION_SOURCE_SCHEMA_V5
             | riffdb_query_module::APPLICATION_SOURCE_SCHEMA_V6
+            | riffdb_query_module::APPLICATION_SOURCE_SCHEMA_V7
     ) {
         source.exact_manifest_v2(&contract, &modules, &reactive_modules)
     } else {
@@ -1331,6 +1368,7 @@ fn compile_symbolic_application_mode(
             riffdb_query_module::APPLICATION_SOURCE_SCHEMA_V4
                 | riffdb_query_module::APPLICATION_SOURCE_SCHEMA_V5
                 | riffdb_query_module::APPLICATION_SOURCE_SCHEMA_V6
+                | riffdb_query_module::APPLICATION_SOURCE_SCHEMA_V7
         ) {
             compile_application_role_v2(
                 &exact,
@@ -1364,48 +1402,49 @@ fn compile_symbolic_application_mode(
     let [module] = modules.as_slice() else {
         return Err(ScaffoldError::Manifest);
     };
-    let tools = generate_mcp_tools(module).map_err(|_| ScaffoldError::GenerateMcp)?;
-    let sdk_tools =
-        generate_sdk_only_query_tools(module).map_err(|_| ScaffoldError::GenerateMcp)?;
-    let commands =
-        generate_mcp_commands(module, &contract).map_err(|_| ScaffoldError::GenerateMcp)?;
-    let reactive_tools = reactive_modules
-        .iter()
-        .map(|module| generate_mcp_reactive_tools(module, &contract))
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|_| ScaffoldError::GenerateMcp)?
-        .into_iter()
-        .flatten()
-        .collect::<Vec<_>>();
-    let vector_tools = generate_vector_inspection_tools(module, &contract)
-        .map_err(|_| ScaffoldError::GenerateMcp)?;
-    let generated_mcp = render_mcp_manifest(
-        &exact,
-        &tools,
-        &sdk_tools,
-        &commands,
-        &reactive_tools,
-        &vector_tools,
-    )?;
-    let mut outputs = vec![
-        (
-            EXACT_MANIFEST_PATH.to_owned(),
-            exact.canonical_bytes().to_vec(),
-        ),
-        (
-            source.generation().rust().to_owned(),
+    let mut outputs = vec![(
+        EXACT_MANIFEST_PATH.to_owned(),
+        exact.canonical_bytes().to_vec(),
+    )];
+    if let Some(path) = source.generation().rust() {
+        outputs.push((
+            path.to_owned(),
             generate_rust_application_client(module, &contract, &reactive_modules).into_bytes(),
-        ),
-        (
-            source.generation().typescript().to_owned(),
+        ));
+    }
+    if let Some(path) = source.generation().typescript() {
+        outputs.push((
+            path.to_owned(),
             generate_typescript_application_client(module, &contract, &reactive_modules)
                 .into_bytes(),
-        ),
-        (
-            source.generation().mcp().to_owned(),
-            generated_mcp.into_bytes(),
-        ),
-    ];
+        ));
+    }
+    if let Some(path) = source.generation().mcp() {
+        let tools = generate_mcp_tools(module).map_err(|_| ScaffoldError::GenerateMcp)?;
+        let sdk_tools =
+            generate_sdk_only_query_tools(module).map_err(|_| ScaffoldError::GenerateMcp)?;
+        let commands =
+            generate_mcp_commands(module, &contract).map_err(|_| ScaffoldError::GenerateMcp)?;
+        let reactive_tools = reactive_modules
+            .iter()
+            .map(|module| generate_mcp_reactive_tools(module, &contract))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|_| ScaffoldError::GenerateMcp)?
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>();
+        let vector_tools = generate_vector_inspection_tools(module, &contract)
+            .map_err(|_| ScaffoldError::GenerateMcp)?;
+        let generated_mcp = render_mcp_manifest(
+            &exact,
+            &tools,
+            &sdk_tools,
+            &commands,
+            &reactive_tools,
+            &vector_tools,
+        )?;
+        outputs.push((path.to_owned(), generated_mcp.into_bytes()));
+    }
     if let Some(path) = source.generation().python() {
         outputs.push((
             path.to_owned(),
@@ -1439,9 +1478,9 @@ fn compile_symbolic_application_mode(
         .map(|(path, bytes)| {
             let kind = if path == EXACT_MANIFEST_PATH {
                 GeneratedApplicationArtifactKind::Manifest
-            } else if path == source.generation().rust() {
+            } else if source.generation().rust() == Some(path.as_str()) {
                 GeneratedApplicationArtifactKind::Rust
-            } else if path == source.generation().typescript() {
+            } else if source.generation().typescript() == Some(path.as_str()) {
                 GeneratedApplicationArtifactKind::TypeScript
             } else if source.generation().python() == Some(path.as_str()) {
                 GeneratedApplicationArtifactKind::Python
@@ -1451,14 +1490,26 @@ fn compile_symbolic_application_mode(
                 GeneratedApplicationArtifactKind::ContractBundle
             } else if path.ends_with(".riffdb.reactive.module") {
                 GeneratedApplicationArtifactKind::ReactiveModule
-            } else {
+            } else if source.generation().mcp() == Some(path.as_str()) {
                 GeneratedApplicationArtifactKind::Mcp
+            } else {
+                return Err(ScaffoldError::ApplicationLock);
             };
             GeneratedApplicationArtifact::new(kind, path.clone(), bytes)
                 .map_err(|error| lock_diagnostic(Path::new(DEFAULT_LOCK_PATH), error.kind()))
         })
         .collect::<Result<Vec<_>, _>>()?;
-    let lock = if source.schema() == riffdb_query_module::APPLICATION_SOURCE_SCHEMA_V6 {
+    let lock = if source.schema() == riffdb_query_module::APPLICATION_SOURCE_SCHEMA_V7 {
+        ApplicationLock::compile_v8(
+            &source,
+            &exact,
+            &contract,
+            &modules,
+            &reactive_modules,
+            &artifacts,
+            &migration_inputs,
+        )
+    } else if source.schema() == riffdb_query_module::APPLICATION_SOURCE_SCHEMA_V6 {
         ApplicationLock::compile_v7(
             &source,
             &exact,
@@ -1763,13 +1814,19 @@ pub(crate) fn create_application(
         .map_err(|_| ScaffoldError::ApplicationLock)?,
         GeneratedApplicationArtifact::new(
             GeneratedApplicationArtifactKind::Rust,
-            source.generation().rust(),
+            source
+                .generation()
+                .rust()
+                .ok_or(ScaffoldError::ApplicationSource)?,
             generated_rust.as_bytes(),
         )
         .map_err(|_| ScaffoldError::ApplicationLock)?,
         GeneratedApplicationArtifact::new(
             GeneratedApplicationArtifactKind::TypeScript,
-            source.generation().typescript(),
+            source
+                .generation()
+                .typescript()
+                .ok_or(ScaffoldError::ApplicationSource)?,
             generated_typescript.as_bytes(),
         )
         .map_err(|_| ScaffoldError::ApplicationLock)?,
@@ -1784,7 +1841,10 @@ pub(crate) fn create_application(
         .map_err(|_| ScaffoldError::ApplicationLock)?,
         GeneratedApplicationArtifact::new(
             GeneratedApplicationArtifactKind::Mcp,
-            source.generation().mcp(),
+            source
+                .generation()
+                .mcp()
+                .ok_or(ScaffoldError::ApplicationSource)?,
             generated_mcp.as_bytes(),
         )
         .map_err(|_| ScaffoldError::ApplicationLock)?,
@@ -1866,6 +1926,7 @@ pub(crate) fn create_application(
 /// artifacts.
 pub(crate) fn render_project_schema(
     application: &str,
+    generators: &[crate::config::ProjectGenerator],
 ) -> Result<Vec<(PathBuf, Vec<u8>)>, ScaffoldError> {
     if !valid_application_name(application) {
         return Err(ScaffoldError::InvalidApplicationName);
@@ -1883,6 +1944,11 @@ pub(crate) fn render_project_schema(
     .map_err(|_| ScaffoldError::CompileQuery)?;
     let module =
         QueryModule::compile(candidate, &contract).map_err(|_| ScaffoldError::CompileQuery)?;
+    let mut generation = serde_json::Map::new();
+    for generator in generators {
+        let surface = generator.surface();
+        generation.insert(surface.key().to_owned(), json!(surface.default_path()));
+    }
     let source_text = serde_json::to_string(&json!({
         "application": application,
         "contract": {
@@ -1890,13 +1956,7 @@ pub(crate) fn render_project_schema(
             "source": "riffdb/contract.riff",
             "version": contract.contract_version().get(),
         },
-        "generation": {
-            "go": "generated/go/client.go",
-            "mcp": "generated/mcp/tools.json",
-            "python": "generated/python/client.py",
-            "rust": "generated/rust/client.rs",
-            "typescript": "generated/typescript/client.ts",
-        },
+        "generation": generation,
         "migrations": [],
         "query_modules": [{
             "name": module_name,
@@ -1905,7 +1965,7 @@ pub(crate) fn render_project_schema(
         }],
         "reactive_modules": [],
         "roles": [],
-        "schema": "riffdb.application-source/v5",
+        "schema": "riffdb.application-source/v7",
         "seed_inputs": [],
     }))
     .map_err(|_| ScaffoldError::ApplicationSource)?;

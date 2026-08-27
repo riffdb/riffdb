@@ -11,6 +11,7 @@ mod application_source;
 mod exact_predicate_result_set;
 mod exact_text;
 mod exact_text_result_set;
+mod generated_surface;
 mod generation;
 mod go_generation;
 mod projection_result_set;
@@ -19,10 +20,10 @@ mod reactive_module;
 
 pub use application_manifest::{
     APPLICATION_MANIFEST_SCHEMA_V1, APPLICATION_MANIFEST_SCHEMA_V2, APPLICATION_MANIFEST_SCHEMA_V3,
-    APPLICATION_MANIFEST_SCHEMA_V4, ApplicationManifest, ApplicationManifestSourceMap,
-    MAX_APPLICATION_MANIFEST_BYTES, ManifestContract, ManifestError, ManifestErrorKind,
-    ManifestGenerationTargets, ManifestQueryModule, ManifestQuerySource, ManifestReactiveModule,
-    ManifestRole, ManifestSpan, ManifestTenantScope,
+    APPLICATION_MANIFEST_SCHEMA_V4, APPLICATION_MANIFEST_SCHEMA_V5, ApplicationManifest,
+    ApplicationManifestSourceMap, MAX_APPLICATION_MANIFEST_BYTES, ManifestContract, ManifestError,
+    ManifestErrorKind, ManifestGenerationTargets, ManifestQueryModule, ManifestQuerySource,
+    ManifestReactiveModule, ManifestRole, ManifestSpan, ManifestTenantScope,
 };
 pub use application_role::{
     ApplicationRoleError, ApplicationRoleErrorKind, ApplicationRoleFactSchema,
@@ -33,15 +34,16 @@ pub use application_role::{
 pub use application_source::{
     APPLICATION_SOURCE_SCHEMA_V1, APPLICATION_SOURCE_SCHEMA_V2, APPLICATION_SOURCE_SCHEMA_V3,
     APPLICATION_SOURCE_SCHEMA_V4, APPLICATION_SOURCE_SCHEMA_V5, APPLICATION_SOURCE_SCHEMA_V6,
-    ApplicationSourceContract, ApplicationSourceError, ApplicationSourceErrorKind,
-    ApplicationSourceGeneration, ApplicationSourceManifest, ApplicationSourceMigration,
-    ApplicationSourceQuery, ApplicationSourceQueryModule, ApplicationSourceReactiveModule,
-    ApplicationSourceRole, ApplicationSourceTenantScope, MAX_APPLICATION_MIGRATIONS,
-    MAX_APPLICATION_SOURCE_BYTES,
+    APPLICATION_SOURCE_SCHEMA_V7, ApplicationSourceContract, ApplicationSourceError,
+    ApplicationSourceErrorKind, ApplicationSourceGeneration, ApplicationSourceManifest,
+    ApplicationSourceMigration, ApplicationSourceQuery, ApplicationSourceQueryModule,
+    ApplicationSourceReactiveModule, ApplicationSourceRole, ApplicationSourceTenantScope,
+    MAX_APPLICATION_MIGRATIONS, MAX_APPLICATION_SOURCE_BYTES,
 };
 pub use exact_predicate_result_set::*;
 pub use exact_text::*;
 pub use exact_text_result_set::*;
+pub use generated_surface::GeneratedApplicationSurface;
 pub use generation::{
     GeneratedMcpCommand, GeneratedMcpReactiveTool, GeneratedMcpTool, GeneratedVectorInspectionTool,
     McpToolGenerationError, generate_mcp_commands, generate_mcp_reactive_tools, generate_mcp_tools,
@@ -1718,9 +1720,9 @@ impl<'a> Reader<'a> {
 pub use application_lock::{
     APPLICATION_LOCK_SCHEMA_V1, APPLICATION_LOCK_SCHEMA_V2, APPLICATION_LOCK_SCHEMA_V3,
     APPLICATION_LOCK_SCHEMA_V4, APPLICATION_LOCK_SCHEMA_V5, APPLICATION_LOCK_SCHEMA_V6,
-    APPLICATION_LOCK_SCHEMA_V7, APPLICATION_ROLE_DEFINITION_FORMAT_V1,
+    APPLICATION_LOCK_SCHEMA_V7, APPLICATION_LOCK_SCHEMA_V8, APPLICATION_ROLE_DEFINITION_FORMAT_V1,
     APPLICATION_ROLE_DEFINITION_FORMAT_V2, APPLICATION_ROLE_DEFINITION_FORMAT_V3, ApplicationLock,
     ApplicationLockError, ApplicationLockErrorKind, ApplicationMigrationLockInput,
-    CONTRACT_BUNDLE_ARTIFACT_PATH, GeneratedApplicationArtifact, GeneratedApplicationArtifactKind,
-    LockedApplicationMigration, MAX_APPLICATION_LOCK_BYTES,
+    CONTRACT_BUNDLE_ARTIFACT_PATH, EXACT_MANIFEST_ARTIFACT_PATH, GeneratedApplicationArtifact,
+    GeneratedApplicationArtifactKind, LockedApplicationMigration, MAX_APPLICATION_LOCK_BYTES,
 };

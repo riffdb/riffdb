@@ -142,6 +142,39 @@ query DocumentsByRelations(
 }
 "#;
 
+const BINARY_TEXT_RANGE_QUERY: &str = r#"
+query DocumentsByTitleRange(
+  $organization_id: Document.organization_id,
+  $text_lower: Document.title,
+  $text_upper: Document.title,
+  $after: Cursor?,
+) {
+  many documents from Document
+    where organization_id == $organization_id
+      && title > $text_lower
+      && title < $text_upper
+    order by title asc, document_id asc
+    take 1 after $after
+  return Found { documents: documents { document_id title } }
+  outcomes Found
+}
+"#;
+
+const BINARY_TEXT_COMPLEMENT_QUERY: &str = r#"
+query DocumentsExceptTitle(
+  $organization_id: Document.organization_id,
+  $text_excluded: Document.title,
+  $after: Cursor?,
+) {
+  many documents from Document
+    where organization_id == $organization_id && title != $text_excluded
+    order by title asc, document_id asc
+    take 1 after $after
+  return Found { documents: documents { document_id title } }
+  outcomes Found
+}
+"#;
+
 const CANONICAL_RANGE_QUERY: &str = r#"
 query DocumentsBySequenceRange(
   $organization_id: Document.organization_id,
@@ -302,6 +335,8 @@ fn execute_page(
     relations: Option<&[&str]>,
     range: Option<(u64, u64)>,
     excluded: Option<u64>,
+    text_range: Option<(&str, &str)>,
+    text_excluded: Option<&str>,
     prior: Option<&QueryContinuation>,
 ) -> Result<QueryOwnedSnapshot, QueryExecutionError> {
     let bundle = compile_contract_source(CONTRACT).expect("contract");
@@ -485,6 +520,22 @@ fn execute_page(
     if let Some(excluded) = excluded {
         parameter_values.insert("excluded".to_owned(), CanonicalValue::U64(excluded));
     }
+    if let Some((lower, upper)) = text_range {
+        parameter_values.insert(
+            "text_lower".to_owned(),
+            CanonicalValue::string(lower).expect("text lower"),
+        );
+        parameter_values.insert(
+            "text_upper".to_owned(),
+            CanonicalValue::string(upper).expect("text upper"),
+        );
+    }
+    if let Some(excluded) = text_excluded {
+        parameter_values.insert(
+            "text_excluded".to_owned(),
+            CanonicalValue::string(excluded).expect("excluded text"),
+        );
+    }
     let parameters = QueryParameters::checked(parameter_values).expect("parameters");
     let mut view = IndexedView { rows: indexed };
     execute_operational_page_in_snapshot(
@@ -497,7 +548,7 @@ fn execute_page(
 }
 
 fn execute(source: &str, prefix: Option<&str>) -> Result<Vec<QueryRow>, QueryExecutionError> {
-    let snapshot = execute_page(source, prefix, None, None, None, None, None)?;
+    let snapshot = execute_page(source, prefix, None, None, None, None, None, None, None)?;
     match snapshot.fields().get("documents") {
         Some(QueryResultValue::Many(rows)) => Ok(rows.clone()),
         other => panic!("expected documents result, got {other:?}"),
@@ -517,8 +568,18 @@ fn execute_all_cursor_pages(source: &str, relation: Option<&str>) -> Vec<QueryRo
     let mut rows = Vec::new();
     let mut prior = None;
     loop {
-        let snapshot = execute_page(source, None, relation, None, None, None, prior.as_ref())
-            .expect("binary-order page");
+        let snapshot = execute_page(
+            source,
+            None,
+            relation,
+            None,
+            None,
+            None,
+            None,
+            None,
+            prior.as_ref(),
+        )
+        .expect("binary-order page");
         match snapshot.fields().get("documents") {
             Some(QueryResultValue::Many(page)) => rows.extend(page.iter().cloned()),
             other => panic!("expected documents page, got {other:?}"),
@@ -550,6 +611,8 @@ fn execute_all_membership_cursor_pages(source: &str, relations: &[&str]) -> Vec<
             None,
             None,
             Some(relations),
+            None,
+            None,
             None,
             None,
             prior.as_ref(),
@@ -585,8 +648,60 @@ fn execute_all_interval_cursor_pages(
     let mut rows = Vec::new();
     let mut prior = None;
     loop {
-        let snapshot = execute_page(source, None, None, None, range, excluded, prior.as_ref())
-            .expect("canonical interval page");
+        let snapshot = execute_page(
+            source,
+            None,
+            None,
+            None,
+            range,
+            excluded,
+            None,
+            None,
+            prior.as_ref(),
+        )
+        .expect("canonical interval page");
+        match snapshot.fields().get("documents") {
+            Some(QueryResultValue::Many(page)) => rows.extend(page.iter().cloned()),
+            other => panic!("expected documents page, got {other:?}"),
+        }
+        let Some(lower) = snapshot.continuation() else {
+            break;
+        };
+        prior = Some(
+            QueryContinuation::checked(
+                snapshot
+                    .continuation_binding()
+                    .expect("continuation binding")
+                    .to_owned(),
+                lower.to_vec(),
+                snapshot.index_epochs().clone(),
+            )
+            .expect("checked continuation"),
+        );
+    }
+    rows
+}
+
+fn execute_all_text_interval_cursor_pages(
+    source: &str,
+    range: Option<(&str, &str)>,
+    excluded: Option<&str>,
+) -> Vec<QueryRow> {
+    let mut rows = Vec::new();
+    let mut prior = None;
+    loop {
+        let snapshot = execute_page(
+            source,
+            None,
+            None,
+            None,
+            None,
+            None,
+            range,
+            excluded,
+            prior.as_ref(),
+        )
+        .expect("binary text interval page");
         match snapshot.fields().get("documents") {
             Some(QueryResultValue::Many(page)) => rows.extend(page.iter().cloned()),
             other => panic!("expected documents page, got {other:?}"),
@@ -708,5 +823,32 @@ fn canonical_intervals_and_complements_share_exact_forward_reverse_cursors() {
 
     assert!(
         execute_all_interval_cursor_pages(CANONICAL_RANGE_QUERY, Some((7, 3)), None).is_empty()
+    );
+}
+
+#[test]
+fn binary_text_intervals_and_complements_share_bytewise_forward_reverse_cursors() {
+    let ascending =
+        execute_all_text_interval_cursor_pages(BINARY_TEXT_RANGE_QUERY, Some(("ab", "doc6")), None);
+    assert_eq!(titles(&ascending), ["abacus", "ac", "doc-3"]);
+
+    let descending_source = BINARY_TEXT_RANGE_QUERY
+        .replace("title asc", "title desc")
+        .replace("document_id asc", "document_id desc");
+    let descending =
+        execute_all_text_interval_cursor_pages(&descending_source, Some(("ab", "doc6")), None);
+    assert_eq!(titles(&descending), ["doc-3", "ac", "abacus"]);
+
+    let complement =
+        execute_all_text_interval_cursor_pages(BINARY_TEXT_COMPLEMENT_QUERY, None, Some("ac"));
+    assert_eq!(titles(&complement), ["a", "ab", "abacus", "doc-3", "doc6"]);
+
+    assert!(
+        execute_all_text_interval_cursor_pages(
+            BINARY_TEXT_RANGE_QUERY,
+            Some(("doc6", "ab")),
+            None,
+        )
+        .is_empty()
     );
 }
