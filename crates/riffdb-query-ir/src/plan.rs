@@ -1145,6 +1145,34 @@ impl QueryAccessProgramV1 {
         &self.steps
     }
 
+    /// Compiler-derived runtime page-cardinality parameters that do not identify a cursor position.
+    ///
+    /// A parameter is eligible only when every access-step use is the limit of an ordinary
+    /// cursor-paged index traversal. Mixed use, unpaged limits, dependent access, and nearest K
+    /// remain identity-bearing. The returned names are canonical and bounded by the step count.
+    #[must_use]
+    pub fn cursor_page_cardinality_parameters(&self) -> Vec<&str> {
+        let mut eligibility = std::collections::BTreeMap::<&str, bool>::new();
+        for step in &self.steps {
+            let name = match &step.row_limit {
+                QueryRowLimit::Parameter { name, .. }
+                | QueryRowLimit::BoundedParameter { name, .. } => name.as_str(),
+                QueryRowLimit::Literal(_) => continue,
+            };
+            let is_cursor_page_cardinality = step.cardinality == Cardinality::Many
+                && step.cursor_parameter.is_some()
+                && matches!(step.access, QueryAccessKind::Index { .. });
+            eligibility
+                .entry(name)
+                .and_modify(|eligible| *eligible &= is_cursor_page_cardinality)
+                .or_insert(is_cursor_page_cardinality);
+        }
+        eligibility
+            .into_iter()
+            .filter_map(|(name, eligible)| eligible.then_some(name))
+            .collect()
+    }
+
     /// Least-sufficient executable IR identity for this exact program.
     #[must_use]
     pub fn ir_version(&self) -> u32 {

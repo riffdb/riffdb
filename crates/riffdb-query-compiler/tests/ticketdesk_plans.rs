@@ -73,6 +73,51 @@ const BOUNDED_RUNTIME_BOARD_PAGE: &str = r#"query BoundedBoardPage(
 }
 "#;
 
+const CURSOR_BOUNDED_RUNTIME_BOARD_PAGE: &str = r#"query CursorBoundedBoardPage(
+    $organization_id: Organization.organization_id,
+    $project_id: Project.project_id,
+    $status: TicketStatus,
+    $limit: Limit<100> = 50,
+    $after: Cursor?,
+) {
+    many tickets from Ticket
+        where organization_id == $organization_id
+            && project_id == $project_id
+            && status == $status
+        order by ticket_id asc
+        take $limit after $after
+    return Found { tickets: tickets { ticket_id title } }
+    outcomes Found
+}
+"#;
+
+const MIXED_CURSOR_AND_UNPAGED_LIMIT: &str = r#"query MixedCursorAndUnpagedLimit(
+    $organization_id: Organization.organization_id,
+    $project_id: Project.project_id,
+    $status: TicketStatus,
+    $limit: Limit<100> = 50,
+    $after: Cursor?,
+) {
+    many first from Ticket
+        where organization_id == $organization_id
+            && project_id == $project_id
+            && status == $status
+        order by ticket_id asc
+        take $limit after $after
+    many second from Ticket
+        where organization_id == $organization_id
+            && project_id == $project_id
+            && status == $status
+        order by ticket_id asc
+        take $limit
+    return Found {
+        first: first { ticket_id title }
+        second: second { ticket_id title }
+    }
+    outcomes Found
+}
+"#;
+
 const TWO_BOUNDED_COLLECTIONS: &str = r#"query TwoBoundedCollections(
     $organization_id: Organization.organization_id,
     $project_id: Project.project_id,
@@ -127,6 +172,25 @@ fn bounded_runtime_limit_cost_is_cumulative_for_every_reference() {
     assert_eq!(plan.steps().len(), 2);
     assert!(plan.steps().iter().all(|step| step.maximum_rows() == 100));
     assert_eq!(plan.cost().scanned_index_rows(), 200);
+}
+
+#[test]
+fn only_exclusively_cursor_paged_limits_are_page_cardinality_parameters() {
+    let bundle = compile_contract_source(CONTRACT).expect("contract");
+    let catalog = SymbolicCatalog::from_bundle(&bundle).expect("catalog");
+
+    let cursor_document =
+        parse_query(CURSOR_BOUNDED_RUNTIME_BOARD_PAGE).expect("cursor-paged source");
+    let cursor_plan = compile_query(&cursor_document, &catalog).expect("cursor-paged plan");
+    assert_eq!(cursor_plan.cursor_page_cardinality_parameters(), ["limit"]);
+
+    let unpaged_document = parse_query(BOUNDED_RUNTIME_BOARD_PAGE).expect("unpaged source");
+    let unpaged_plan = compile_query(&unpaged_document, &catalog).expect("unpaged plan");
+    assert!(unpaged_plan.cursor_page_cardinality_parameters().is_empty());
+
+    let mixed_document = parse_query(MIXED_CURSOR_AND_UNPAGED_LIMIT).expect("mixed-use source");
+    let mixed_plan = compile_query(&mixed_document, &catalog).expect("mixed-use plan");
+    assert!(mixed_plan.cursor_page_cardinality_parameters().is_empty());
 }
 
 #[test]

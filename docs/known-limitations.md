@@ -63,6 +63,12 @@ These limits are part of the POC release posture, not hidden roadmap promises.
   refine offsets, byte budgets, contract integers, full-population aggregate
   work, or projection candidate work; those retain their separately compiled
   bounds.
+- One RiffDB invocation still returns at most its compiled maximum and never
+  more than 499 rows. ADR-0159 permits an owning external adapter to preserve a
+  larger authoritative page only by exact ordered append over one unchanged
+  cursor chain; RiffDB has no hidden multi-page response or streaming query
+  protocol. Large upstream pages may therefore require multiple driver
+  crossings until a separately accepted streaming design exists.
 - An ordinary command may atomically delete and return the transaction-current preimage of exactly
   one complete-key, partition-local `no_inbound` entity. Multiple ordinary deletes, inbound
   `restrict` or `cascade`, set-null, orphaning, cross-partition deletion, and physical erasure are
