@@ -86,7 +86,101 @@ backend cannot absorb appears as `client_queue_rejected` and a growing
 `queue_delay`, which is the point: the curve shows where a service level stops
 holding.
 
+## First measured cells
+
+All non-evidentiary. Run on idle GCP VMs rather than the workstation, because
+the workstation was carrying a load average near six and, as the host note
+below records, its hardware is the least representative of the three.
+
+Hosts, both 8 vCPU:
+
+| Host | CPU | `sha_ni` | fsync p50 (4 KiB) |
+| --- | --- | --- | ---: |
+| N1 | Intel Xeon @ 2.30GHz | no | 1.543 ms |
+| E2 | AMD EPYC 7B12 | yes | 2.601 ms |
+
+`interactive` profile, `--load-clients 32`, 60 s window, one rep, single tenant.
+
+| Host | Language | Scale | Backend | ops/s | p50 | p95 | p99 | errors |
+| --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: |
+| N1 | Rust | full | Postgres | 32,592 | 0.508 ms | 3.539 ms | 6.029 ms | 0 |
+| N1 | Rust | full | RiffDB | 7,259 | 1.769 ms | 20.972 ms | 28.312 ms | 0 |
+| N1 | Rust | production | Postgres | 30,167 | 0.557 ms | 3.801 ms | 6.291 ms | 0 |
+| E2 | TypeScript | production | RiffDB | 4,235 | 5.767 ms | 20.972 ms | 29.360 ms | 0 |
+| E2 | Go | production | RiffDB | 2,742 | 9.437 ms | 29.360 ms | 39.846 ms | 0 |
+
+The full-scale pair is the only same-host, same-harness comparison here:
+**RiffDB reaches 0.223x Postgres on N1**. That is the shape of the long-standing
+"wins on the workstation, loses on a GCP VM" report, now reproduced on a quiet
+host with the frozen comparator scale.
+
+Postgres barely moves between `full` and `production` on N1 (32,592 to 30,167,
+a 7% decline for 76x the rows), which is worth stating plainly: at these sizes
+the tier does not stress either engine's storage much. See the working-set note
+under limitations.
+
+Production seed throughput, 1,112,350 commands:
+
+| Host | Harness | Seed time | ops/s |
+| --- | --- | ---: | ---: |
+| N1 | Rust | 492 s | 2,259 |
+| E2 | TypeScript | 674 s | 1,650 |
+| E2 | Go | 716 s | 1,554 |
+
+Before the batched seed landed, a TypeScript production seed reached 1.4 GB
+after twenty-one minutes and had not finished; it now completes in eleven.
+
+### Not yet measured
+
+- **No same-host production pair.** N1 has the production Postgres number and
+  E2 has the production RiffDB numbers. The RiffDB production number on N1 is
+  blocked by the startup defect below.
+- **No workstation cells.** Deliberately: the host was busy, and the host note
+  explains why its numbers would not transfer anyway.
+- **Single rep, single tenant, one concurrency point.** Nothing here bounds
+  run-to-run variance, and an earlier session saw Postgres swing 17% between
+  identical TypeScript runs.
+
+## Open defect: the clean-close fast path does not engage
+
+A `riffdbd` started against this tier's cleanly shut down database takes the
+complete startup validation pass: more than twenty minutes at 99.9% CPU and
+about 10 GB resident on N1, without becoming ready, and with essentially no
+physical reads (12 KB), so it is CPU work over page-cached data. A `perf` flat
+profile puts 16.8% in `sha2::sha256::soft::unroll::compress` plus
+`riffdb_proto::wire::Cursor::next`, `durable_wire::preflight`, `crc32` and
+`prost` varint decoding -- a full re-parse and re-validation of every durable
+record, which is what ADR-0156 exists to avoid on a clean start.
+
+One contributing cause is fixed here: `restart_for_measurement` took its
+pre-measurement inventory through `authoritative_table_inventory_after_reopen_v1`,
+which opens a full `RedbStore` and drops it. Opening transitions the ADR-0157
+lifecycle record to dirty and nothing in `Drop` writes it back, so that reopen
+discarded the certificate the seed daemon's shutdown had just written. Every
+measured restart therefore took the complete pass, including the run previously
+cited in this document as verifying that ADR-0156 resolved the startup ceiling --
+that claim was wrong and is withdrawn. The call site now uses the read-only
+`authoritative_table_inventory_v1`.
+
+That fix was not sufficient: the restart is still slow. The gate is a single
+`verified_clean_close_lifecycle` check (`startup.rs`, admitted at the
+`clean_close_fast: true` construction) which returns `None` silently on any of
+eight preconditions, with no reason code and no counter, so the eight cannot
+currently be told apart without patching the engine. A reason code is the next
+deliverable, ahead of any change to admission logic.
+
 ## Known limitations
+
+- **The load phase reads one organization out of two hundred.** `--load-tenants`
+  defaults to 1 and is capped at 64, and a tenant is an organization, so every
+  cell above reports `tenant=single_organization`. At `production` that working
+  set is roughly 600 tickets and 3,000 comments -- *smaller* than the whole
+  `full` dataset -- sitting inside a database 76x larger. So the tier does
+  measure deeper B-trees, a larger journal, more page-cache pressure and writes
+  appending into a bigger store, but it does not measure a production-sized
+  working set, and the near-flat Postgres result across the two tiers is what
+  that looks like. Run `--load-tenants 64` for a wider set; that cell is not
+  measured yet, and it is the most important gap in this section.
 
 - **Comment bodies stop at 256 bytes.** `comment.body` is `string<256>` in
   `ticketdesk.riff`; seeding above it fails the command with `RDB-INPUT-0101`
@@ -122,6 +216,20 @@ holding.
   GIL. Seed throughput therefore measures the binding as much as the store. The
   `PERF-008` seed ceiling is stated against the frozen Rust comparator, so the
   gate itself is unaffected.
+- **The three available hosts differ in two ways that pull in opposite
+  directions**, so a RiffDB-versus-Postgres ratio does not transfer between
+  them. SHA-256 throughput, measured with the same `sha2` 0.11 crate and feature
+  set the daemon uses, 256-byte inputs: workstation (Ryzen 9 7950X, `sha_ni`)
+  7,410,788 hash/s; E2 (EPYC 7B12, `sha_ni`) 4,779,870; N1 (Xeon @2.30GHz, no
+  `sha_ni`) 476,597 -- N1 is 15.5x slower than the workstation. This is a CPU
+  capability difference, not a build flag: Intel server parts before Ice Lake
+  lack SHA-NI and every AMD Zen part has it, so GCP AMD machine types should
+  behave like E2. Durable append (4 KiB write plus fsync) runs the other way:
+  workstation 5.218 ms p50, E2 2.601 ms, N1 1.543 ms -- the workstation has the
+  **slowest** commit path of the three, by 3.4x. Moving from the workstation to
+  a GCP VM therefore makes the commit path faster and the hashing path much
+  slower at the same time. State the host with every number.
+
 - **Four independent scale definitions.** The Rust core, TypeScript, Go, and
   Python harnesses each carry their own copy of these numbers, and the flag was
   silently ignored by three of them until this change. Nothing proves they stay
@@ -162,10 +270,11 @@ unconditional complete-pass rule, ADR-0073's rejection of clean-shutdown
 markers, and ADR-0085's rejection of a validation-free clean fast path, and it
 was accepted with exact maintainer text.
 
-Verified on this profile after merging that work: the production cell now runs
-to completion against ~1,112,350 seeded commands and roughly 1.1M rows, at
-11,260 ops/s over 135,148 operations with zero errors, zero conflicts and zero
-idempotency mismatches. The `LimitExceeded` refusal is gone.
+The `LimitExceeded` refusal is gone: the production cell reaches its load phase
+and completes, which it could not before. But the claim that once stood here --
+that this verified the ADR-0156 fast path -- was wrong. That run took the
+complete validation pass, because the harness reopened and dirtied the database
+between the clean shutdown and the measured start. See the open defect above.
 
 Two notes worth keeping with the profile:
 
