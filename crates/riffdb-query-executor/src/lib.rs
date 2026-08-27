@@ -742,7 +742,7 @@ pub fn bound_index_range_schedule_v1(
             if leading.len() != 1 || consumed + matching.len() != predicates.len() {
                 return Err(QueryExecutionError::InvalidProgram);
             }
-            return encode_canonical_interval_schedule(
+            return encode_interval_schedule(
                 schema,
                 leading.pop().ok_or(QueryExecutionError::InvalidProgram)?,
                 &matching,
@@ -908,7 +908,7 @@ fn encode_physical_prefix_schedule(
     finish_range_schedule(ranges, direction)
 }
 
-fn encode_canonical_interval_schedule(
+fn encode_interval_schedule(
     schema: &riffdb_contract_ir::KeySchema,
     leading: Vec<CanonicalValue>,
     predicates: &[&BoundPredicate],
@@ -918,12 +918,11 @@ fn encode_canonical_interval_schedule(
         .components()
         .get(leading.len())
         .ok_or(QueryExecutionError::InvalidProgram)?;
-    if component.codec() != KeyComponentCodecV1::Canonical
-        || predicates.is_empty()
+    if predicates.is_empty()
         || predicates.len() > 2
         || predicates
             .iter()
-            .any(|predicate| !canonical_interval_value_supported(predicate.value()))
+            .any(|predicate| !interval_value_supported(component.codec(), predicate.value()))
     {
         return Err(QueryExecutionError::InvalidProgram);
     }
@@ -996,16 +995,19 @@ fn encode_canonical_interval_schedule(
     finish_range_schedule(ranges, direction)
 }
 
-fn canonical_interval_value_supported(value: &CanonicalValue) -> bool {
-    matches!(
-        value,
-        CanonicalValue::I64(_)
-            | CanonicalValue::U64(_)
-            | CanonicalValue::Timestamp(_)
-            | CanonicalValue::Date(_)
-            | CanonicalValue::Uuid(_)
-            | CanonicalValue::Enum { .. }
-    )
+fn interval_value_supported(codec: KeyComponentCodecV1, value: &CanonicalValue) -> bool {
+    match codec {
+        KeyComponentCodecV1::Canonical => matches!(
+            value,
+            CanonicalValue::I64(_)
+                | CanonicalValue::U64(_)
+                | CanonicalValue::Timestamp(_)
+                | CanonicalValue::Date(_)
+                | CanonicalValue::Uuid(_)
+                | CanonicalValue::Enum { .. }
+        ),
+        KeyComponentCodecV1::OrderedBytes => matches!(value, CanonicalValue::String(_)),
+    }
 }
 
 fn finish_range_schedule(

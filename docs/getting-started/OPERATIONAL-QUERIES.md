@@ -105,20 +105,23 @@ fall back to canonical string ordering.
 |---|---:|---:|---:|---:|---:|
 | Canonical scalar | yes | first remaining order term | ordered numeric/time/UUID/enum scalars | no | canonical |
 | Presence-aware | state only | no | no | no | explicit accepted state placement |
-| `binary_utf8_v1` | yes | first remaining order term | no | exact leading bytes | UTF-8 bytes |
+| `binary_utf8_v1` | yes | first remaining order term | UTF-8 byte interval / complement | exact leading bytes | UTF-8 bytes |
 | `unicode_fold_v1` | unavailable | unavailable | unavailable | unavailable | unavailable |
 
 For an order-preserving canonical `i64`, `u64`, `timestamp`, `date`, `uuid`, or
-enum component, `<`, `<=`, `>`, and `>=` compile to inclusive/exclusive
-physical endpoints. One lower and one upper bound may form an interval; `!=`
-forms two disjoint complement intervals. The selected component must supply the
-first remaining order term. Memory and redb traverse the same normalized
-half-open schedule, including reverse continuation across an interval boundary,
-under one page, plus-one probe, scan, hydration, cursor, and output budget.
-Contradictory runtime bounds produce an exact empty page without a scan.
+enum component, or a bounded string declared as `binary_utf8_v1`, `<`, `<=`,
+`>`, and `>=` compile to inclusive/exclusive physical endpoints. Binary text
+uses exact valid UTF-8 byte order without normalization, collation, case
+folding, or token parsing. One lower and one upper bound may form an interval;
+`!=` forms two disjoint complement intervals. The selected component must
+supply the first remaining order term. Memory and redb traverse the same
+normalized half-open schedule, including reverse continuation across an
+interval boundary, under one page, plus-one probe, scan, hydration, cursor, and
+output budget. Contradictory runtime bounds produce an exact empty page without
+a scan.
 
-Canonical length-prefixed strings are not logical text-order ranges, and a
-`binary_utf8_v1` component cannot reinterpret typed range operators. Multiple
+Canonical length-prefixed strings are not logical text-order ranges; use an
+explicit `binary_utf8_v1` component for bytewise string intervals. Multiple
 branching dimensions, overlapping unions, joins, provider bridges,
 caller-selected indexes, and client page walking remain unsupported. An older
 module whose range was never physically proved is refused as query unavailable

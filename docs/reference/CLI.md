@@ -82,8 +82,8 @@ Arguments:
 Options:
       --config <PATH>
 
-      --generator <rust|go|typescript|python>
-          [default: rust] [possible values: rust, go, typescript, python]
+      --generator <rust|go|typescript|python|mcp>
+          [default: rust] [possible values: rust, go, typescript, python, mcp]
       --endpoint <HTTP_OR_HTTPS_ENDPOINT>
 
       --database <DATABASE>

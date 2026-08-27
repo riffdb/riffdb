@@ -888,14 +888,7 @@ fn project_artifact_selection(
     project
         .generators()
         .iter()
-        .map(|target| match target {
-            crate::config::ProjectGenerator::Rust => GeneratedApplicationArtifactKind::Rust,
-            crate::config::ProjectGenerator::Go => GeneratedApplicationArtifactKind::Go,
-            crate::config::ProjectGenerator::Typescript => {
-                GeneratedApplicationArtifactKind::TypeScript
-            }
-            crate::config::ProjectGenerator::Python => GeneratedApplicationArtifactKind::Python,
-        })
+        .map(|target| target.surface().artifact_kind())
         .collect()
 }
 

@@ -46,8 +46,11 @@ generators = ["rust", "typescript"]
 ```
 
 `schema` is relative to the configuration file's directory. Generator names
-are limited to `rust`, `go`, `typescript`, and `python`; the list must contain
-one through four unique values. Project commands discover `riffdb.toml` in the
+are limited to `rust`, `go`, `typescript`, `python`, and `mcp`; the list must contain
+one through five unique values. `riffdb init` writes Application Source V7 and
+declares exactly this selected set, so a Go-only initialization has only a Go
+generation path and an MCP-only initialization has only an MCP catalog path.
+Project commands discover `riffdb.toml` in the
 current directory unless `--config` or `RIFFDB_CONFIG` selects another file.
 General client flags and environment values retain their documented fieldwise
 precedence.
@@ -92,16 +95,20 @@ points to `riffdb migrate plan`.
 riffdb generate
 ```
 
-The exact lock binds deterministic artifacts for every supported language, but
-`riffdb.toml` selects which language artifacts are materialized in this
-checkout. Internal manifest, MCP, contract-bundle, reactive, and migration
-artifacts are always exact. An already-present unselected SDK must also remain
-exact, so changing a target selection cannot silently leave stale generated
-code behind.
+For Application Source V7, the exact lock binds deterministic artifacts for
+exactly the declared SDK and MCP surfaces. `riffdb.toml` selects which of those
+declared artifacts are materialized in this checkout; selecting an undeclared
+target fails with a typed identity/configuration refusal. The exact manifest,
+contract bundle, reactive modules, and migration artifacts remain mandatory
+under their owning formats and are not optional SDK surfaces. An already-present
+unselected declared surface must remain exact, so local selection cannot hide
+stale generated code.
 
-`generate` writes only selected language targets and never deletes an
-unselected target. Changing only `generators` neither changes database state nor
-requires push acceptance.
+`generate` writes only selected declared targets and never deletes an
+unselected or undeclared file. Changing only `generators` within the declared
+set neither changes database state nor requires push acceptance. Adding or
+removing a source declaration changes exact identity and follows the normal
+review and push-acceptance ceremony.
 
 ## Observe local and installed identity
 

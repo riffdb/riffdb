@@ -42,8 +42,9 @@ consume the same versioned key schema.
 The compiler's closed component registry treats equality, membership,
 interval/complement, state, prefix, order, and tie-breaking as composable roles
 of one declared physical component. A component is not assigned one exclusive
-purpose: for example, `binary_utf8_v1` may consume bounded membership and
-produce the first remaining order term in the same plan. The caller cannot
+purpose: for example, `binary_utf8_v1` may consume bounded membership or one
+bytewise interval/complement and produce the first remaining order term in the
+same plan. The caller cannot
 select any role, index, encoding, comparator, or fallback.
 
 After typed parameter validation, the executor forms one bounded ordered range
