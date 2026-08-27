@@ -290,6 +290,27 @@ pub(crate) fn checksum_bytes(bytes: &[u8]) -> [u8; 32] {
     *hash(HashDomain::CanonicalValue, bytes).as_bytes()
 }
 
+/// Cumulative segment-rewrite amplification over one engine's lifetime.
+///
+/// ADR-0086's acceptance criteria require write/disk amplification evidence for
+/// the projection plane. A checkpoint rewrites in full every organization that
+/// holds at least one dirty row, so `rows_rewritten` counts *materialized* rows
+/// with repetition while `rows_dirty` counts the delta rows that provoked the
+/// rewrite. Their ratio is the amplification factor.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct ColumnarAmplification {
+    /// Checkpoints that reached segment materialization.
+    pub checkpoints: u64,
+    /// Segment files created (one per rewritten organization).
+    pub segments_written: u64,
+    /// Rows materialized into new segment files, counted with repetition.
+    pub rows_rewritten: u64,
+    /// Delta rows that provoked a rewrite, counted without repetition.
+    pub rows_dirty: u64,
+    /// Encoded segment bytes written and fsynced.
+    pub segment_bytes_written: u64,
+}
+
 /// Checkpoint directory operations.
 pub(crate) struct CheckpointDir {
     root: PathBuf,
@@ -299,6 +320,8 @@ pub(crate) struct CheckpointDir {
     /// checkpoints), and bumped on every checkpoint attempt, so `create_new`
     /// can never collide with a leftover file.
     next_generation: u64,
+    /// Cumulative rewrite amplification observed by this directory.
+    amplification: ColumnarAmplification,
 }
 
 impl CheckpointDir {
@@ -316,7 +339,12 @@ impl CheckpointDir {
             root,
             controller: None,
             next_generation: max_generation.saturating_add(1),
+            amplification: ColumnarAmplification::default(),
         })
+    }
+
+    pub(crate) const fn amplification(&self) -> ColumnarAmplification {
+        self.amplification
     }
 
     pub(crate) fn install_controller(&mut self, controller: ColumnarTestController) {
@@ -426,12 +454,29 @@ impl CheckpointDir {
         let touched: BTreeSet<OrgKey> = delta.keys().cloned().collect();
 
         let mut new_segments: Vec<std::sync::Arc<Segment>> = Vec::new();
+        if !delta.is_empty() {
+            self.amplification.checkpoints = self.amplification.checkpoints.saturating_add(1);
+        }
         for (ordinal, (org, org_delta)) in delta.into_iter().enumerate() {
             let rows = materialize_org_rows(&working.segments, &org, &org_delta);
             let file_name = format!("seg-{generation:08}-{ordinal:04}.col");
             let bytes = encode_segment_rows(&rows)?;
             let checksum = checksum_bytes(&bytes);
             let path = self.root.join(&file_name);
+            self.amplification.segments_written =
+                self.amplification.segments_written.saturating_add(1);
+            self.amplification.rows_rewritten = self
+                .amplification
+                .rows_rewritten
+                .saturating_add(rows.len() as u64);
+            self.amplification.rows_dirty = self
+                .amplification
+                .rows_dirty
+                .saturating_add(org_delta.len() as u64);
+            self.amplification.segment_bytes_written = self
+                .amplification
+                .segment_bytes_written
+                .saturating_add(bytes.len() as u64);
 
             // write-temp → sync → rename is for the manifest; segment files are
             // written then synced before the manifest names them.

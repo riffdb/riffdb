@@ -252,6 +252,26 @@ impl ColumnarEngine {
         self.apply.deferred.len()
     }
 
+    /// Cumulative segment-rewrite amplification since this engine was opened.
+    #[must_use]
+    pub const fn amplification(&self) -> crate::checkpoint::ColumnarAmplification {
+        self.checkpoint.amplification()
+    }
+
+    /// Live row count across published segments and the working delta.
+    ///
+    /// Counts with repetition across segments, so it is an upper bound on
+    /// distinct rows and an exact measure of per-checkpoint rewrite cost.
+    #[must_use]
+    pub fn resident_segment_rows(&self) -> u64 {
+        self.apply
+            .working
+            .segments
+            .iter()
+            .map(|segment| segment.rows.len() as u64)
+            .sum()
+    }
+
     /// Pulls and applies all commits currently available from `reader`.
     pub fn apply_available(
         &mut self,
