@@ -14,18 +14,20 @@ ROOT = Path(__file__).resolve().parent.parent
 CORPUS = ROOT / "fixtures/riffql/operational-access-corpus-v1"
 LOCK = CORPUS / "riffdb.application.lock.json"
 NULLABLE_QUERY = CORPUS / "queries/items_by_published_state.riffq"
-EXTERNAL = ROOT / "fixtures/riffql/wp690-external-tuple-capability-v1.json"
-PREDECESSOR = ROOT / "release/evidence/operational-query-capability-v3.json"
-PREDECESSOR_SHA256 = "7538b2bec3e155e9ec3b6137fbf453f7fcb77aa35f42994f17a46214039d1d24"
-OUTPUT = ROOT / "fixtures/riffql/operational-query-capability-v4.json"
+EXTERNAL = ROOT / "fixtures/riffql/wp701-external-binary-text-interval-capability-v1.json"
+PREDECESSOR = ROOT / "fixtures/riffql/operational-query-capability-v4.json"
+PREDECESSOR_SHA256 = "d4df09daa026aad644bba0771b0bd2c3ecd108e96b7634c03712d9fb336fd38b"
+OUTPUT = ROOT / "fixtures/riffql/operational-query-capability-v5.json"
 OPERATION_ROLES = {
     "ItemsByCode": ["binary_text_exact", "forward_cursor"],
     "ItemsByCodePrefix": ["binary_text_prefix", "forward_cursor"],
     "ItemsByCodes": ["binary_text_membership", "forward_cursor"],
     "ItemsByCodesReverse": ["binary_text_membership", "reverse_cursor"],
+    "ItemsInCodeWindow": ["binary_text_interval", "forward_cursor"],
     "ItemsByKinds": ["canonical_membership", "forward_cursor"],
     "ItemsInScoreWindow": ["canonical_typed_interval", "forward_cursor"],
     "ItemsOutsideScore": ["canonical_typed_complement", "reverse_cursor"],
+    "ItemsOutsideCode": ["binary_text_complement", "reverse_cursor"],
     "ItemsWithLabels": ["dependent_complete_key_batch"],
 }
 
@@ -37,7 +39,7 @@ def sha256(path: Path) -> str:
 def render() -> bytes:
     lock = json.loads(LOCK.read_text(encoding="utf-8"))
     external = json.loads(EXTERNAL.read_text(encoding="utf-8"))
-    if external.get("schema") != "riffdb.external-operational-capability/v1":
+    if external.get("schema") != "riffdb.external-operational-capability/v2":
         raise ValueError("external operational capability has the wrong schema")
     if external.get("status") != "passed":
         raise ValueError("external operational capability did not pass")
@@ -62,8 +64,8 @@ def render() -> bytes:
         key=lambda artifact: artifact["kind"],
     )
     receipt = {
-        "schema": "riffdb.operational-query-capability/v4",
-        "work_package": "WP-690",
+        "schema": "riffdb.operational-query-capability/v5",
+        "work_package": "WP-701",
         "status": "development",
         "predecessor": {
             "path": str(PREDECESSOR.relative_to(ROOT)),
@@ -104,6 +106,7 @@ def render() -> bytes:
             "global_range_budget": True,
             "logical_predicates_before_page": True,
             "one_component_capability_registry": True,
+            "profile_aware_binary_text_interval": True,
             "one_semantic_storage_schedule": True,
             "partition_local": True,
             "policy_before_release": True,
@@ -131,11 +134,11 @@ def render() -> bytes:
             "external_consumer_classes": [
                 {
                     "consumer_class": "partitioned_tuple_store",
-                    "refused_source_count": 4,
-                    "shape": "canonical_string_range",
+                    "refused_source_count": 2,
+                    "shape": "multiple_same_side_binary_text_endpoints",
                     "compiler_code": "RDB-QP003",
                     "historical_runtime_code": "RDB-QUERY-0102",
-                    "recovery": "declare_an_accepted_order_preserving_profile_or_redesign_then_recompile_and_redeploy",
+                    "recovery": "normalize_to_one_endpoint_or_obtain_a_separately_accepted_compiler_shape_then_recompile_and_redeploy",
                     "client_emulation_permitted": False,
                 }
             ],

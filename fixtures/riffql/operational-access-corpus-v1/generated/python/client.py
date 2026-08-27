@@ -23,7 +23,7 @@ def _compact_tag(value: object, tag: str, keys: frozenset[str]) -> dict[str, obj
 CONTRACT_LINEAGE: Final[str] = "OperationalAccessCorpus"
 CONTRACT_VERSION: Final[int] = 1
 CONTRACT_BUNDLE_HASH: Final[str] = "824b7c29849f5e63ba5271c74f183dce60ca68c7fead647b025217c6ecba36ca"
-QUERY_MODULE_HASH: Final[str] = "b1018ceabd9840a0eb71a05346f880b7278113c3c68bc35805a265c27222b1d1"
+QUERY_MODULE_HASH: Final[str] = "e943b03babf87d680037f0b10a9cf1a42631577ee2056813217befc0e5301cb5"
 
 class Visibility(StrEnum):
     PUBLIC = "Public"
@@ -167,6 +167,30 @@ class ItemsByKindsFound:
 
 ItemsByKindsResult: TypeAlias = ItemsByKindsFound
 
+ITEMS_IN_CODE_WINDOW_QUERY_PLAN_HASH: Final[str] = "cbd844e502056b6bfe9229ccd4a4186f7dfc69a1ba79887420def8048927780c"
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ItemsInCodeWindowParams:
+    workspace_id: UUID
+    after_code: str
+    horizon_code: str
+    after: str | None = None
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ItemsInCodeWindowFoundItems:
+    item_id: UUID
+    code: str
+    kind: str
+    score: Annotated[int, "i64"]
+    published_at: Timestamp | None
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ItemsInCodeWindowFound:
+    items: tuple[ItemsInCodeWindowFoundItems, ...]
+    outcome: Literal["Found"] = field(default="Found", init=False)
+
+ItemsInCodeWindowResult: TypeAlias = ItemsInCodeWindowFound
+
 ITEMS_IN_SCORE_WINDOW_QUERY_PLAN_HASH: Final[str] = "b9fe29b0b6bcce2d4df93f1edc4df502fffe78d37ace9ce0c194c8fee1121310"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -190,6 +214,29 @@ class ItemsInScoreWindowFound:
     outcome: Literal["Found"] = field(default="Found", init=False)
 
 ItemsInScoreWindowResult: TypeAlias = ItemsInScoreWindowFound
+
+ITEMS_OUTSIDE_CODE_QUERY_PLAN_HASH: Final[str] = "f891f2c81f0f206c4b0cdd1a48c956a0f4f48baf0446904a170f99205357ea54"
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ItemsOutsideCodeParams:
+    workspace_id: UUID
+    excluded_code: str
+    after: str | None = None
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ItemsOutsideCodeFoundItems:
+    item_id: UUID
+    code: str
+    kind: str
+    score: Annotated[int, "i64"]
+    published_at: Timestamp | None
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ItemsOutsideCodeFound:
+    items: tuple[ItemsOutsideCodeFoundItems, ...]
+    outcome: Literal["Found"] = field(default="Found", init=False)
+
+ItemsOutsideCodeResult: TypeAlias = ItemsOutsideCodeFound
 
 ITEMS_OUTSIDE_SCORE_QUERY_PLAN_HASH: Final[str] = "c2f5048cf586b549abf48abfbc70ba922de684d3e032e2ac7f60536728bb542b"
 
@@ -342,6 +389,25 @@ class OperationalAccessCorpusClient:
         }
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
+    def items_in_code_window(self, parameters: ItemsInCodeWindowParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ItemsInCodeWindowResult]:
+        encoded_parameters = encode_record(parameters)
+        generated_cursor = parameters.after
+        if generated_cursor is not None:
+            if options.cursor is not None:
+                raise ValueError("generated cursor conflicts with query options")
+            options = QueryOptions(cursor=generated_cursor, read_after_commit=options.read_after_commit)
+        encoded_parameters.pop("after", None)
+        raw = self._transport._execute_named_query(
+            contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
+            contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
+            query_name="ItemsInCodeWindow", plan_hash=ITEMS_IN_CODE_WINDOW_QUERY_PLAN_HASH,
+            parameters=encoded_parameters, options=options,
+        )
+        outcomes = {
+            "Found": ItemsInCodeWindowFound,
+        }
+        return raw._map_value(lambda value: decode_variant(outcomes, value))
+
     def items_in_score_window(self, parameters: ItemsInScoreWindowParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ItemsInScoreWindowResult]:
         encoded_parameters = encode_record(parameters)
         generated_cursor = parameters.after
@@ -358,6 +424,25 @@ class OperationalAccessCorpusClient:
         )
         outcomes = {
             "Found": ItemsInScoreWindowFound,
+        }
+        return raw._map_value(lambda value: decode_variant(outcomes, value))
+
+    def items_outside_code(self, parameters: ItemsOutsideCodeParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ItemsOutsideCodeResult]:
+        encoded_parameters = encode_record(parameters)
+        generated_cursor = parameters.after
+        if generated_cursor is not None:
+            if options.cursor is not None:
+                raise ValueError("generated cursor conflicts with query options")
+            options = QueryOptions(cursor=generated_cursor, read_after_commit=options.read_after_commit)
+        encoded_parameters.pop("after", None)
+        raw = self._transport._execute_named_query(
+            contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
+            contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
+            query_name="ItemsOutsideCode", plan_hash=ITEMS_OUTSIDE_CODE_QUERY_PLAN_HASH,
+            parameters=encoded_parameters, options=options,
+        )
+        outcomes = {
+            "Found": ItemsOutsideCodeFound,
         }
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
@@ -493,6 +578,25 @@ class AsyncOperationalAccessCorpusClient:
         }
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 
+    async def items_in_code_window(self, parameters: ItemsInCodeWindowParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ItemsInCodeWindowResult]:
+        encoded_parameters = encode_record(parameters)
+        generated_cursor = parameters.after
+        if generated_cursor is not None:
+            if options.cursor is not None:
+                raise ValueError("generated cursor conflicts with query options")
+            options = QueryOptions(cursor=generated_cursor, read_after_commit=options.read_after_commit)
+        encoded_parameters.pop("after", None)
+        raw = await self._transport._execute_named_query(
+            contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
+            contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
+            query_name="ItemsInCodeWindow", plan_hash=ITEMS_IN_CODE_WINDOW_QUERY_PLAN_HASH,
+            parameters=encoded_parameters, options=options,
+        )
+        outcomes = {
+            "Found": ItemsInCodeWindowFound,
+        }
+        return raw._map_value(lambda value: decode_variant(outcomes, value))
+
     async def items_in_score_window(self, parameters: ItemsInScoreWindowParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ItemsInScoreWindowResult]:
         encoded_parameters = encode_record(parameters)
         generated_cursor = parameters.after
@@ -509,6 +613,25 @@ class AsyncOperationalAccessCorpusClient:
         )
         outcomes = {
             "Found": ItemsInScoreWindowFound,
+        }
+        return raw._map_value(lambda value: decode_variant(outcomes, value))
+
+    async def items_outside_code(self, parameters: ItemsOutsideCodeParams, options: QueryOptions = QueryOptions()) -> TypedQueryResult[ItemsOutsideCodeResult]:
+        encoded_parameters = encode_record(parameters)
+        generated_cursor = parameters.after
+        if generated_cursor is not None:
+            if options.cursor is not None:
+                raise ValueError("generated cursor conflicts with query options")
+            options = QueryOptions(cursor=generated_cursor, read_after_commit=options.read_after_commit)
+        encoded_parameters.pop("after", None)
+        raw = await self._transport._execute_named_query(
+            contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
+            contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,
+            query_name="ItemsOutsideCode", plan_hash=ITEMS_OUTSIDE_CODE_QUERY_PLAN_HASH,
+            parameters=encoded_parameters, options=options,
+        )
+        outcomes = {
+            "Found": ItemsOutsideCodeFound,
         }
         return raw._map_value(lambda value: decode_variant(outcomes, value))
 

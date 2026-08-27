@@ -62,6 +62,20 @@ fn one_generic_application_proves_the_complete_operational_access_matrix() {
             cursor: true,
         },
         ExpectedOperation {
+            file: "items_in_code_window.riffq",
+            index: "by_code",
+            direction: AccessDirection::Forward,
+            predicate: QueryPredicateOperator::Greater,
+            cursor: true,
+        },
+        ExpectedOperation {
+            file: "items_outside_code.riffq",
+            index: "by_code",
+            direction: AccessDirection::Reverse,
+            predicate: QueryPredicateOperator::NotEqual,
+            cursor: true,
+        },
+        ExpectedOperation {
             file: "items_by_kinds.riffq",
             index: "by_kind",
             direction: AccessDirection::Forward,

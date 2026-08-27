@@ -5,7 +5,7 @@ use riffdb_client_rust::{ApplicationCardinality, ApplicationClientError, Applica
 pub use riffdb_client_rust::QueryOptions;
 use riffdb_client_rust::v1::value::Kind as WireKind;
 
-pub const QUERY_MODULE_HASH: [u8; 32] = [0xb1, 0x01, 0x8c, 0xea, 0xbd, 0x98, 0x40, 0xa0, 0xeb, 0x71, 0xa0, 0x53, 0x46, 0xf8, 0x80, 0xb7, 0x27, 0x81, 0x13, 0xc3, 0xc6, 0x8b, 0xc3, 0x58, 0x05, 0xa2, 0x65, 0xc2, 0x72, 0x22, 0xb1, 0xd1];
+pub const QUERY_MODULE_HASH: [u8; 32] = [0xe9, 0x43, 0xb0, 0x3b, 0xab, 0xf8, 0x7d, 0x68, 0x00, 0x37, 0xf0, 0xb1, 0x0a, 0x9c, 0xf1, 0xa4, 0x26, 0x31, 0x57, 0x7e, 0xe2, 0x05, 0x68, 0x13, 0x21, 0x7b, 0xef, 0xc0, 0xe5, 0x30, 0x1c, 0xb5];
 pub const CONTRACT_LINEAGE: &str = "OperationalAccessCorpus";
 pub const CONTRACT_VERSION: u64 = 1;
 
@@ -419,6 +419,86 @@ fn decode_items_by_kinds_found_items_record(mut record: ApplicationRecord) -> Re
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ItemsInCodeWindowParams {
+    pub workspace_id: String,
+    pub after_code: String,
+    pub horizon_code: String,
+    pub after: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ItemsInCodeWindowFoundItems {
+    pub item_id: String,
+    pub code: String,
+    pub kind: String,
+    pub score: i64,
+    pub published_at: Option<TimestampValue>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ItemsInCodeWindowFound {
+    pub items: Vec<ItemsInCodeWindowFoundItems>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ItemsInCodeWindowResult {
+    Found(Box<ItemsInCodeWindowFound>),
+}
+
+pub const ITEMS_IN_CODE_WINDOW_QUERY_PLAN_HASH: [u8; 32] = [0xcb, 0xd8, 0x44, 0xe5, 0x02, 0x05, 0x6b, 0x6b, 0xfe, 0x92, 0x29, 0xcc, 0xd4, 0xa4, 0x18, 0x6f, 0x7d, 0xfc, 0x69, 0xa1, 0xba, 0x79, 0x88, 0x74, 0x20, 0xde, 0xf8, 0x04, 0x89, 0x27, 0x78, 0x0c];
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ItemsInCodeWindowQuery(pub ItemsInCodeWindowParams);
+impl GeneratedQuery for ItemsInCodeWindowQuery {
+    type Output = ItemsInCodeWindowResult;
+
+    fn named_query(self, options: QueryOptions) -> Result<NamedQuery, ApplicationClientError> {
+        let mut parameters = BTreeMap::new();
+        let generated_cursor = self.0.after;
+        parameters.insert("workspace_id".to_owned(), ApplicationValue::Uuid(ApplicationUuid::from_text(self.0.workspace_id)?));
+        parameters.insert("after_code".to_owned(), ApplicationValue::String(self.0.after_code));
+        parameters.insert("horizon_code".to_owned(), ApplicationValue::String(self.0.horizon_code));
+        let options = options.with_generated_cursor(generated_cursor)?;
+        NamedQuery::new(
+            ApplicationContract::Exact {
+                lineage: CONTRACT_LINEAGE.to_owned(),
+                version: CONTRACT_VERSION,
+                bundle_hash: Some(CONTRACT_BUNDLE_HASH),
+            },
+            "ItemsInCodeWindow",
+            Some(QUERY_MODULE_HASH),
+            parameters,
+            None,
+        )?.expect_plan_hash(ITEMS_IN_CODE_WINDOW_QUERY_PLAN_HASH).with_options(options)
+    }
+
+    fn decode_result(mut response: NamedQueryResult) -> Result<Self::Output, ApplicationClientError> {
+        let outcome = response.outcome.clone();
+        match outcome.as_str() {
+            "Found" => {
+                let decoded = ItemsInCodeWindowFound {
+                    items: many_result_records(take_result_field(&mut response.fields, "items")?)?.into_iter().map(decode_items_in_code_window_found_items_record).collect::<Result<Vec<_>, _>>()?,
+                };
+                if !response.fields.is_empty() { return Err(ApplicationClientError::InvalidResponse); }
+                Ok(ItemsInCodeWindowResult::Found(Box::new(decoded)))
+            },
+            _ => Err(ApplicationClientError::InvalidResponse),
+        }
+    }
+}
+
+fn decode_items_in_code_window_found_items_record(mut record: ApplicationRecord) -> Result<ItemsInCodeWindowFoundItems, ApplicationClientError> {
+    let value = ItemsInCodeWindowFoundItems {
+        item_id: application_uuid(take_application_value(&mut record.fields, "item_id")?)?,
+        code: application_string(take_application_value(&mut record.fields, "code")?)?,
+        kind: application_string(take_application_value(&mut record.fields, "kind")?)?,
+        score: application_i64(take_application_value(&mut record.fields, "score")?)?,
+        published_at: match take_application_value(&mut record.fields, "published_at")? { ApplicationValue::Null => None, value => Some(application_timestamp(value)?) },
+    };
+    if !record.fields.is_empty() { return Err(ApplicationClientError::InvalidResponse); }
+    Ok(value)
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ItemsInScoreWindowParams {
     pub workspace_id: String,
     pub minimum: i64,
@@ -488,6 +568,84 @@ impl GeneratedQuery for ItemsInScoreWindowQuery {
 
 fn decode_items_in_score_window_found_items_record(mut record: ApplicationRecord) -> Result<ItemsInScoreWindowFoundItems, ApplicationClientError> {
     let value = ItemsInScoreWindowFoundItems {
+        item_id: application_uuid(take_application_value(&mut record.fields, "item_id")?)?,
+        code: application_string(take_application_value(&mut record.fields, "code")?)?,
+        kind: application_string(take_application_value(&mut record.fields, "kind")?)?,
+        score: application_i64(take_application_value(&mut record.fields, "score")?)?,
+        published_at: match take_application_value(&mut record.fields, "published_at")? { ApplicationValue::Null => None, value => Some(application_timestamp(value)?) },
+    };
+    if !record.fields.is_empty() { return Err(ApplicationClientError::InvalidResponse); }
+    Ok(value)
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ItemsOutsideCodeParams {
+    pub workspace_id: String,
+    pub excluded_code: String,
+    pub after: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ItemsOutsideCodeFoundItems {
+    pub item_id: String,
+    pub code: String,
+    pub kind: String,
+    pub score: i64,
+    pub published_at: Option<TimestampValue>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ItemsOutsideCodeFound {
+    pub items: Vec<ItemsOutsideCodeFoundItems>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ItemsOutsideCodeResult {
+    Found(Box<ItemsOutsideCodeFound>),
+}
+
+pub const ITEMS_OUTSIDE_CODE_QUERY_PLAN_HASH: [u8; 32] = [0xf8, 0x91, 0xf2, 0xc8, 0x1f, 0x0f, 0x20, 0x6c, 0x4b, 0x0c, 0xdd, 0x1a, 0x48, 0xc9, 0x56, 0xa0, 0xf4, 0xf4, 0x8b, 0xaf, 0x04, 0x46, 0x90, 0x4a, 0x17, 0x0f, 0x99, 0x20, 0x53, 0x57, 0xea, 0x54];
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ItemsOutsideCodeQuery(pub ItemsOutsideCodeParams);
+impl GeneratedQuery for ItemsOutsideCodeQuery {
+    type Output = ItemsOutsideCodeResult;
+
+    fn named_query(self, options: QueryOptions) -> Result<NamedQuery, ApplicationClientError> {
+        let mut parameters = BTreeMap::new();
+        let generated_cursor = self.0.after;
+        parameters.insert("workspace_id".to_owned(), ApplicationValue::Uuid(ApplicationUuid::from_text(self.0.workspace_id)?));
+        parameters.insert("excluded_code".to_owned(), ApplicationValue::String(self.0.excluded_code));
+        let options = options.with_generated_cursor(generated_cursor)?;
+        NamedQuery::new(
+            ApplicationContract::Exact {
+                lineage: CONTRACT_LINEAGE.to_owned(),
+                version: CONTRACT_VERSION,
+                bundle_hash: Some(CONTRACT_BUNDLE_HASH),
+            },
+            "ItemsOutsideCode",
+            Some(QUERY_MODULE_HASH),
+            parameters,
+            None,
+        )?.expect_plan_hash(ITEMS_OUTSIDE_CODE_QUERY_PLAN_HASH).with_options(options)
+    }
+
+    fn decode_result(mut response: NamedQueryResult) -> Result<Self::Output, ApplicationClientError> {
+        let outcome = response.outcome.clone();
+        match outcome.as_str() {
+            "Found" => {
+                let decoded = ItemsOutsideCodeFound {
+                    items: many_result_records(take_result_field(&mut response.fields, "items")?)?.into_iter().map(decode_items_outside_code_found_items_record).collect::<Result<Vec<_>, _>>()?,
+                };
+                if !response.fields.is_empty() { return Err(ApplicationClientError::InvalidResponse); }
+                Ok(ItemsOutsideCodeResult::Found(Box::new(decoded)))
+            },
+            _ => Err(ApplicationClientError::InvalidResponse),
+        }
+    }
+}
+
+fn decode_items_outside_code_found_items_record(mut record: ApplicationRecord) -> Result<ItemsOutsideCodeFoundItems, ApplicationClientError> {
+    let value = ItemsOutsideCodeFoundItems {
         item_id: application_uuid(take_application_value(&mut record.fields, "item_id")?)?,
         code: application_string(take_application_value(&mut record.fields, "code")?)?,
         kind: application_string(take_application_value(&mut record.fields, "kind")?)?,
@@ -854,6 +1012,19 @@ impl OperationalAccessCorpusClient {
         self.client.execute_generated_query(ItemsByKindsQuery(parameters), options, &self.metadata).await
     }
 
+    /// Executes the generated `ItemsInCodeWindow` named query.
+    pub async fn items_in_code_window(&mut self, parameters: ItemsInCodeWindowParams) -> Result<ItemsInCodeWindowResult, ApplicationClientError> {
+        Ok(self.items_in_code_window_with_options(parameters, QueryOptions::new()).await?.value)
+    }
+    /// Executes `ItemsInCodeWindow` against a snapshot at or after the supplied command commit.
+    pub async fn items_in_code_window_after_commit(&mut self, parameters: ItemsInCodeWindowParams, commit_sequence: u64) -> Result<TypedQueryResult<ItemsInCodeWindowResult>, ApplicationClientError> {
+        self.items_in_code_window_with_options(parameters, QueryOptions::new().read_after_commit(commit_sequence)).await
+    }
+    /// Executes `ItemsInCodeWindow` with generated pagination or read-fence options.
+    pub async fn items_in_code_window_with_options(&mut self, parameters: ItemsInCodeWindowParams, options: QueryOptions) -> Result<TypedQueryResult<ItemsInCodeWindowResult>, ApplicationClientError> {
+        self.client.execute_generated_query(ItemsInCodeWindowQuery(parameters), options, &self.metadata).await
+    }
+
     /// Executes the generated `ItemsInScoreWindow` named query.
     pub async fn items_in_score_window(&mut self, parameters: ItemsInScoreWindowParams) -> Result<ItemsInScoreWindowResult, ApplicationClientError> {
         Ok(self.items_in_score_window_with_options(parameters, QueryOptions::new()).await?.value)
@@ -865,6 +1036,19 @@ impl OperationalAccessCorpusClient {
     /// Executes `ItemsInScoreWindow` with generated pagination or read-fence options.
     pub async fn items_in_score_window_with_options(&mut self, parameters: ItemsInScoreWindowParams, options: QueryOptions) -> Result<TypedQueryResult<ItemsInScoreWindowResult>, ApplicationClientError> {
         self.client.execute_generated_query(ItemsInScoreWindowQuery(parameters), options, &self.metadata).await
+    }
+
+    /// Executes the generated `ItemsOutsideCode` named query.
+    pub async fn items_outside_code(&mut self, parameters: ItemsOutsideCodeParams) -> Result<ItemsOutsideCodeResult, ApplicationClientError> {
+        Ok(self.items_outside_code_with_options(parameters, QueryOptions::new()).await?.value)
+    }
+    /// Executes `ItemsOutsideCode` against a snapshot at or after the supplied command commit.
+    pub async fn items_outside_code_after_commit(&mut self, parameters: ItemsOutsideCodeParams, commit_sequence: u64) -> Result<TypedQueryResult<ItemsOutsideCodeResult>, ApplicationClientError> {
+        self.items_outside_code_with_options(parameters, QueryOptions::new().read_after_commit(commit_sequence)).await
+    }
+    /// Executes `ItemsOutsideCode` with generated pagination or read-fence options.
+    pub async fn items_outside_code_with_options(&mut self, parameters: ItemsOutsideCodeParams, options: QueryOptions) -> Result<TypedQueryResult<ItemsOutsideCodeResult>, ApplicationClientError> {
+        self.client.execute_generated_query(ItemsOutsideCodeQuery(parameters), options, &self.metadata).await
     }
 
     /// Executes the generated `ItemsOutsideScore` named query.

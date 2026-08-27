@@ -328,16 +328,21 @@ impl QueryReadView for IndexedView {
     }
 }
 
-fn execute_page(
-    source: &str,
-    prefix: Option<&str>,
-    relation: Option<&str>,
-    relations: Option<&[&str]>,
+#[derive(Default)]
+struct QueryInputs<'a> {
+    prefix: Option<&'a str>,
+    relation: Option<&'a str>,
+    relations: Option<&'a [&'a str]>,
     range: Option<(u64, u64)>,
     excluded: Option<u64>,
-    text_range: Option<(&str, &str)>,
-    text_excluded: Option<&str>,
-    prior: Option<&QueryContinuation>,
+    text_range: Option<(&'a str, &'a str)>,
+    text_excluded: Option<&'a str>,
+    prior: Option<&'a QueryContinuation>,
+}
+
+fn execute_page(
+    source: &str,
+    inputs: QueryInputs<'_>,
 ) -> Result<QueryOwnedSnapshot, QueryExecutionError> {
     let bundle = compile_contract_source(CONTRACT).expect("contract");
     let catalog = SymbolicCatalog::from_bundle(&bundle).expect("catalog");
@@ -489,19 +494,19 @@ fn execute_page(
     indexed.sort_unstable_by(|left, right| left.0.cmp(&right.0));
 
     let mut parameter_values = BTreeMap::from([("organization_id".to_owned(), organization)]);
-    if let Some(prefix) = prefix {
+    if let Some(prefix) = inputs.prefix {
         parameter_values.insert(
             "prefix".to_owned(),
             CanonicalValue::string(prefix).expect("prefix"),
         );
     }
-    if let Some(relation) = relation {
+    if let Some(relation) = inputs.relation {
         parameter_values.insert(
             "relation".to_owned(),
             CanonicalValue::string(relation).expect("relation"),
         );
     }
-    if let Some(relations) = relations {
+    if let Some(relations) = inputs.relations {
         parameter_values.insert(
             "relations".to_owned(),
             CanonicalValue::list(
@@ -513,14 +518,14 @@ fn execute_page(
             .expect("bounded relation set"),
         );
     }
-    if let Some((lower, upper)) = range {
+    if let Some((lower, upper)) = inputs.range {
         parameter_values.insert("lower".to_owned(), CanonicalValue::U64(lower));
         parameter_values.insert("upper".to_owned(), CanonicalValue::U64(upper));
     }
-    if let Some(excluded) = excluded {
+    if let Some(excluded) = inputs.excluded {
         parameter_values.insert("excluded".to_owned(), CanonicalValue::U64(excluded));
     }
-    if let Some((lower, upper)) = text_range {
+    if let Some((lower, upper)) = inputs.text_range {
         parameter_values.insert(
             "text_lower".to_owned(),
             CanonicalValue::string(lower).expect("text lower"),
@@ -530,7 +535,7 @@ fn execute_page(
             CanonicalValue::string(upper).expect("text upper"),
         );
     }
-    if let Some(excluded) = text_excluded {
+    if let Some(excluded) = inputs.text_excluded {
         parameter_values.insert(
             "text_excluded".to_owned(),
             CanonicalValue::string(excluded).expect("excluded text"),
@@ -542,13 +547,19 @@ fn execute_page(
         program,
         family.aggregates(),
         &parameters,
-        prior,
+        inputs.prior,
         &mut view,
     )
 }
 
 fn execute(source: &str, prefix: Option<&str>) -> Result<Vec<QueryRow>, QueryExecutionError> {
-    let snapshot = execute_page(source, prefix, None, None, None, None, None, None, None)?;
+    let snapshot = execute_page(
+        source,
+        QueryInputs {
+            prefix,
+            ..QueryInputs::default()
+        },
+    )?;
     match snapshot.fields().get("documents") {
         Some(QueryResultValue::Many(rows)) => Ok(rows.clone()),
         other => panic!("expected documents result, got {other:?}"),
@@ -570,14 +581,11 @@ fn execute_all_cursor_pages(source: &str, relation: Option<&str>) -> Vec<QueryRo
     loop {
         let snapshot = execute_page(
             source,
-            None,
-            relation,
-            None,
-            None,
-            None,
-            None,
-            None,
-            prior.as_ref(),
+            QueryInputs {
+                relation,
+                prior: prior.as_ref(),
+                ..QueryInputs::default()
+            },
         )
         .expect("binary-order page");
         match snapshot.fields().get("documents") {
@@ -608,14 +616,11 @@ fn execute_all_membership_cursor_pages(source: &str, relations: &[&str]) -> Vec<
     loop {
         let snapshot = execute_page(
             source,
-            None,
-            None,
-            Some(relations),
-            None,
-            None,
-            None,
-            None,
-            prior.as_ref(),
+            QueryInputs {
+                relations: Some(relations),
+                prior: prior.as_ref(),
+                ..QueryInputs::default()
+            },
         )
         .expect("binary-membership page");
         match snapshot.fields().get("documents") {
@@ -650,14 +655,12 @@ fn execute_all_interval_cursor_pages(
     loop {
         let snapshot = execute_page(
             source,
-            None,
-            None,
-            None,
-            range,
-            excluded,
-            None,
-            None,
-            prior.as_ref(),
+            QueryInputs {
+                range,
+                excluded,
+                prior: prior.as_ref(),
+                ..QueryInputs::default()
+            },
         )
         .expect("canonical interval page");
         match snapshot.fields().get("documents") {
@@ -692,14 +695,12 @@ fn execute_all_text_interval_cursor_pages(
     loop {
         let snapshot = execute_page(
             source,
-            None,
-            None,
-            None,
-            None,
-            None,
-            range,
-            excluded,
-            prior.as_ref(),
+            QueryInputs {
+                text_range: range,
+                text_excluded: excluded,
+                prior: prior.as_ref(),
+                ..QueryInputs::default()
+            },
         )
         .expect("binary text interval page");
         match snapshot.fields().get("documents") {
