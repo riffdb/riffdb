@@ -284,6 +284,53 @@ fn runtime_limit_board_page_still_resolves() {
 }
 
 #[test]
+fn bounded_limit_maximum_is_retained_in_parameter_and_result_schemas() {
+    let bundle = compile_contract_source(CONTRACT).expect("compile TicketDesk contract");
+    let catalog = SymbolicCatalog::from_bundle(&bundle).expect("symbolic catalog");
+    let source = RUNTIME_LIMIT_BOARD_PAGE.replace("Limit = 50", "Limit<100> = 50");
+    let document = parse_query(&source).expect("parse bounded BoardPage");
+    let resolved = resolve_query_surface(&document, &catalog).expect("bounded BoardPage resolves");
+    let limit = resolved
+        .schemas()
+        .parameters()
+        .iter()
+        .find(|parameter| parameter.name() == "limit")
+        .expect("limit parameter");
+    assert!(matches!(
+        limit.value_type(),
+        NamedTypeSchema::BoundedLimit { maximum: 100 }
+    ));
+    assert!(matches!(
+        resolved.schemas().results()[0].fields()[0].value_type(),
+        NamedTypeSchema::List {
+            maximum: riffdb_query_ir::PageBound::BoundedParameter {
+                name,
+                maximum: 100,
+            },
+            ..
+        } if name == "limit"
+    ));
+}
+
+#[test]
+fn bounded_limit_default_above_declared_maximum_is_rejected() {
+    let bundle = compile_contract_source(CONTRACT).expect("compile TicketDesk contract");
+    let catalog = SymbolicCatalog::from_bundle(&bundle).expect("symbolic catalog");
+    let source = RUNTIME_LIMIT_BOARD_PAGE.replace("Limit = 50", "Limit<49> = 50");
+    let document = parse_query(&source).expect("parse bounded BoardPage");
+    let diagnostics = resolve_query_surface(&document, &catalog)
+        .expect_err("default above declared maximum must fail");
+    assert_eq!(
+        diagnostics.as_slice()[0].code(),
+        QueryDiagnosticCode::ArtifactLimit
+    );
+    assert_eq!(
+        diagnostics.as_slice()[0].summary(),
+        "Limit default exceeds its compiler-declared maximum"
+    );
+}
+
+#[test]
 fn limit_default_over_max_page_take_is_rejected_at_resolve() {
     let bundle = compile_contract_source(CONTRACT).expect("compile TicketDesk contract");
     let catalog = SymbolicCatalog::from_bundle(&bundle).expect("symbolic catalog");

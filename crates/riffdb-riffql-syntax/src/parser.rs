@@ -6,11 +6,11 @@ use crate::{
     MAX_COLLECTION_ITEMS, MAX_NESTING, MAX_PROJECTED_CAUSAL_WAIT_MS, MAX_PROJECTED_LAG_MS,
     MAX_SYNTAX_ITEMS, NullPlacement, OrderTerm, Parameter, ParseDiagnostic, ParseDiagnostics, Path,
     ProjectedFreshness, ProjectedSource, QueryBody, RIFFQL_LANGUAGE_VERSION,
-    RIFFQL_LANGUAGE_VERSION_EXACT_AGGREGATE_V1, RIFFQL_LANGUAGE_VERSION_EXACT_PREDICATE_V1,
-    RIFFQL_LANGUAGE_VERSION_EXACT_RESULT_SET_V1, RIFFQL_LANGUAGE_VERSION_NULLABLE_EXACT_ORDER_V1,
-    RIFFQL_LANGUAGE_VERSION_OPERATIONAL_V1, RIFFQL_LANGUAGE_VERSION_PROJECTED_VECTOR_V1,
-    RIFFQL_LANGUAGE_VERSION_SECRET_OUTPUT_V1, Selection, Span, Spanned, Take, TypeReference,
-    UnaryOperator,
+    RIFFQL_LANGUAGE_VERSION_BOUNDED_LIMIT_V1, RIFFQL_LANGUAGE_VERSION_EXACT_AGGREGATE_V1,
+    RIFFQL_LANGUAGE_VERSION_EXACT_PREDICATE_V1, RIFFQL_LANGUAGE_VERSION_EXACT_RESULT_SET_V1,
+    RIFFQL_LANGUAGE_VERSION_NULLABLE_EXACT_ORDER_V1, RIFFQL_LANGUAGE_VERSION_OPERATIONAL_V1,
+    RIFFQL_LANGUAGE_VERSION_PROJECTED_VECTOR_V1, RIFFQL_LANGUAGE_VERSION_SECRET_OUTPUT_V1,
+    Selection, Span, Spanned, Take, TypeReference, UnaryOperator,
 };
 
 /// Parses one UTF-8 RiffQL source document in a supported language version.
@@ -144,32 +144,13 @@ impl Parser {
             selection,
             outcomes,
         };
-        let language_version = if body_uses_exact_aggregate_core(&body) {
-            RIFFQL_LANGUAGE_VERSION_EXACT_AGGREGATE_V1
-        } else if projected_source.is_some() {
-            RIFFQL_LANGUAGE_VERSION_PROJECTED_VECTOR_V1
-        } else if body
-            .bindings
+        let language_version = if parameters
             .iter()
-            .flat_map(|binding| &binding.order)
-            .any(|term| term.null_placement.is_some())
+            .any(|parameter| matches!(parameter.ty.value, TypeReference::BoundedLimit(_)))
         {
-            RIFFQL_LANGUAGE_VERSION_NULLABLE_EXACT_ORDER_V1
-        } else if body_uses_rich_exact_result_set(&body) {
-            RIFFQL_LANGUAGE_VERSION_EXACT_PREDICATE_V1
-        } else if body_uses_exact_result_set(&body) {
-            RIFFQL_LANGUAGE_VERSION_EXACT_RESULT_SET_V1
-        } else if selection_uses_secret_output(&body.selection) {
-            RIFFQL_LANGUAGE_VERSION_SECRET_OUTPUT_V1
-        } else if !body.aggregates.is_empty()
-            || body
-                .bindings
-                .iter()
-                .any(|binding| expression_uses_operational_syntax(&binding.predicate.value))
-        {
-            RIFFQL_LANGUAGE_VERSION_OPERATIONAL_V1
+            RIFFQL_LANGUAGE_VERSION_BOUNDED_LIMIT_V1
         } else {
-            RIFFQL_LANGUAGE_VERSION
+            query_shape_language_version(&body, projected_source.as_ref())
         };
         Ok(Document {
             language_version,
@@ -290,16 +271,56 @@ impl Parser {
         let mut value = if self.take_word("Set").is_some() {
             self.expect(TokenKind::Less)?;
             let inner = self.type_reference()?;
+            if type_contains_bounded_limit(&inner.value) {
+                return Err(ParseDiagnostics::one(ParseDiagnostic::new(
+                    DiagnosticCode::InvalidToken,
+                    inner.span,
+                    "bounded Limit cannot be nested in a query type",
+                    Some("declare Limit<MAX> directly and use it only for take or nearest"),
+                )));
+            }
             self.expect(TokenKind::Greater)?;
             TypeReference::Set(Box::new(inner))
         } else if self.take_word("Cursor").is_some() {
             TypeReference::Cursor
         } else if self.take_word("Limit").is_some() {
-            TypeReference::Limit
+            if self.take(TokenKind::Less).is_some() {
+                let maximum = self.next()?.clone();
+                let TokenKind::Unsigned(value) = maximum.kind else {
+                    return Err(ParseDiagnostics::one(ParseDiagnostic::new(
+                        DiagnosticCode::UnexpectedToken,
+                        maximum.span,
+                        "bounded Limit maximum must be an unsigned literal",
+                        Some("use Limit<MAX> where MAX is from 1 through 499"),
+                    )));
+                };
+                let canonical = value == "0" || !value.starts_with('0');
+                let maximum_value = value.parse::<u64>().ok();
+                if !canonical || !maximum_value.is_some_and(|value| (1..=499).contains(&value)) {
+                    return Err(ParseDiagnostics::one(ParseDiagnostic::new(
+                        DiagnosticCode::InvalidToken,
+                        maximum.span,
+                        "bounded Limit maximum is outside the supported range",
+                        Some("use one canonical unsigned literal from 1 through 499"),
+                    )));
+                }
+                self.expect(TokenKind::Greater)?;
+                TypeReference::BoundedLimit(maximum_value.expect("checked bounded Limit maximum"))
+            } else {
+                TypeReference::Limit
+            }
         } else {
             TypeReference::Named(self.path()?)
         };
         if self.take(TokenKind::Question).is_some() {
+            if type_contains_bounded_limit(&value) {
+                return Err(ParseDiagnostics::one(ParseDiagnostic::new(
+                    DiagnosticCode::InvalidToken,
+                    self.span_from(start),
+                    "bounded Limit cannot be optional",
+                    Some("omit the parameter only by declaring a compiled default"),
+                )));
+            }
             let span = self.span_from(start);
             value = TypeReference::Optional(Box::new(Spanned { value, span }));
         }
@@ -1180,6 +1201,59 @@ impl Parser {
             "RiffQL collection limit exceeded",
             None,
         )
+    }
+}
+
+fn type_contains_bounded_limit(value: &TypeReference) -> bool {
+    match value {
+        TypeReference::BoundedLimit(_) => true,
+        TypeReference::Optional(inner) | TypeReference::Set(inner) => {
+            type_contains_bounded_limit(&inner.value)
+        }
+        TypeReference::Named(_) | TypeReference::Cursor | TypeReference::Limit => false,
+    }
+}
+
+/// Returns the pre-bounded-limit language family selected by one parsed query.
+///
+/// `Limit<MAX>` is an additive parameter constraint rather than a replacement
+/// for the query's execution family. Consumers that dispatch to specialized
+/// exact-result providers use this classifier after parsing V9 source.
+#[must_use]
+pub fn document_query_shape_language_version(document: &Document) -> u32 {
+    query_shape_language_version(&document.body, document.projected_source.as_ref())
+}
+
+fn query_shape_language_version(
+    body: &QueryBody,
+    projected_source: Option<&ProjectedSource>,
+) -> u32 {
+    if body_uses_exact_aggregate_core(body) {
+        RIFFQL_LANGUAGE_VERSION_EXACT_AGGREGATE_V1
+    } else if projected_source.is_some() {
+        RIFFQL_LANGUAGE_VERSION_PROJECTED_VECTOR_V1
+    } else if body
+        .bindings
+        .iter()
+        .flat_map(|binding| &binding.order)
+        .any(|term| term.null_placement.is_some())
+    {
+        RIFFQL_LANGUAGE_VERSION_NULLABLE_EXACT_ORDER_V1
+    } else if body_uses_rich_exact_result_set(body) {
+        RIFFQL_LANGUAGE_VERSION_EXACT_PREDICATE_V1
+    } else if body_uses_exact_result_set(body) {
+        RIFFQL_LANGUAGE_VERSION_EXACT_RESULT_SET_V1
+    } else if selection_uses_secret_output(&body.selection) {
+        RIFFQL_LANGUAGE_VERSION_SECRET_OUTPUT_V1
+    } else if !body.aggregates.is_empty()
+        || body
+            .bindings
+            .iter()
+            .any(|binding| expression_uses_operational_syntax(&binding.predicate.value))
+    {
+        RIFFQL_LANGUAGE_VERSION_OPERATIONAL_V1
+    } else {
+        RIFFQL_LANGUAGE_VERSION
     }
 }
 
