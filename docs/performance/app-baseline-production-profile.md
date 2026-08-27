@@ -56,8 +56,19 @@ benchmarks/run-app-baseline-rate-sweep --language typescript --scale production 
   --rates "500 2000 5000 10000 20000"
 ```
 
-`--production` is accepted by every language runner. Reports carry
-`scale: "production"`, so a production cell cannot be mistaken for a `full` one.
+`--production` is accepted by every language runner and, since this profile
+first ran, by `benchmarks/run-app-baseline` -- the Rust runner, and the only one
+that stands up the Postgres comparator. Until that arm existed a production run
+had to be `--skip-postgres` against the harness binary directly, so a
+production-scale RiffDB-versus-Postgres comparison was not expressible.
+
+```bash
+benchmarks/run-app-baseline --production \
+  --load interactive --load-clients 32 --load-duration-secs 30 --reps 1
+```
+
+Reports carry `scale: "production"`, so a production cell cannot be mistaken
+for a `full` one.
 
 ## The rate sweep
 
@@ -101,17 +112,16 @@ holding.
   on its own: a 4.7 GB database takes tens of seconds to close cleanly, and
   nothing outside this profile measures that. Set
   `RIFFDB_STOP_TIMEOUT_SECS` generously for larger datasets.
-- **Only the Rust harness seeds concurrently.** `examples/app-baseline/riffdb`
-  seeds with `DEFAULT_SEED_CONCURRENCY: usize = 128`; the TypeScript harness
-  seeds with a sequential `for`/`await` loop over one session, and Go and Python
-  do the same. At `full` that difference is invisible because the seed is 19,220
-  commands. At `production` it is roughly 723,000 commands, and a sequential
-  seed runs at single-client rate: a measured TypeScript run reached 1.4 GB of
-  durable data after twenty-one minutes and had not finished. Use the Rust
-  harness for production-scale runs until the other three seed concurrently.
-  This also means seed *time* is not comparable across harnesses, which matters
-  because the seed ceiling is a `PERF-008` metric; it is stated against the
-  frozen Rust comparator, so the gate itself is unaffected.
+- **Seed time is not comparable across harnesses.** All four now seed
+  concurrently -- the Rust harness with `DEFAULT_SEED_CONCURRENCY: usize = 128`,
+  and TypeScript, Go and Python through their generated bounded batch envelopes
+  at the same concurrency and the same 4,096-row chunking. But they reach that
+  concurrency by different means: the Rust harness fans out inside one async
+  runtime, the TypeScript and Go clients fan out over `driverd`, and the Python
+  runtime fans out over a thread pool whose per-item work still contends for the
+  GIL. Seed throughput therefore measures the binding as much as the store. The
+  `PERF-008` seed ceiling is stated against the frozen Rust comparator, so the
+  gate itself is unaffected.
 - **Four independent scale definitions.** The Rust core, TypeScript, Go, and
   Python harnesses each carry their own copy of these numbers, and the flag was
   silently ignored by three of them until this change. Nothing proves they stay
