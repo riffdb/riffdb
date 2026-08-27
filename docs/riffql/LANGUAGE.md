@@ -174,6 +174,15 @@ page work; a projection provider's separately declared candidate or
 full-population work remains unchanged. This is not a general integer
 refinement and cannot be used for offsets, byte budgets, or contract fields.
 
+For an ordinary ordered `take $limit after $cursor` page, the submitted limit
+controls only that invocation's cardinality. A continuation may be resumed
+with another valid value in the same `Limit` or `Limit<MAX>` domain. The cursor
+still binds the immutable plan—including the declared maximum—and every
+invariant parameter, predicate, order, authority, snapshot, physical profile,
+and provider epoch. A limit used by `nearest`, by an unpaged binding, or by any
+mixed semantic shape remains cursor-identity-bearing. There is no source
+annotation for this distinction; the compiler derives it from the closed plan.
+
 ## Nearest-neighbor bindings (alpha)
 
 A `many` binding over an entity that declares a contract `vector_field` may

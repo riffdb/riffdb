@@ -344,6 +344,10 @@ fn parameterized_nearest_program() -> riffdb_query_ir::QueryAccessProgramV1 {
 #[test]
 fn parameterized_nearest_k_499_compiles_binds_and_executes() {
     let program = parameterized_nearest_program();
+    assert!(
+        program.cursor_page_cardinality_parameters().is_empty(),
+        "nearest K remains cursor-identity-bearing even when it uses Limit"
+    );
     let step = &program.steps()[0];
     assert_eq!(step.maximum_rows(), 499);
     assert_eq!(

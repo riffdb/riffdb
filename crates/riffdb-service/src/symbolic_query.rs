@@ -4467,7 +4467,7 @@ async fn execute_compiled_query(
     let param_materialize_started = Instant::now();
     let parameters =
         materialize_query_parameters(&service, OPERATION, bundle.bundle(), &document, &submitted)?;
-    let parameter_hash = query_parameter_hash(&parameters)
+    let cursor_parameter_hash = query_cursor_parameter_hash(&program, &parameters)
         .ok_or_else(|| validation_failure(ValidationCode::InvalidValue))?;
     let target =
         application_query_target(bundle.bundle(), &program, &parameters, context.ingress())
@@ -4493,7 +4493,7 @@ async fn execute_compiled_query(
         ),
         module_hash,
         named_plan_hash.unwrap_or_else(|| program.identity().hash()),
-        parameter_hash,
+        cursor_parameter_hash,
         context.principal().capability_id(),
         context.principal().capability_revision(),
     );
@@ -4996,6 +4996,32 @@ pub(crate) fn query_parameter_hash(
     Some(hash_query_parameters(&bytes))
 }
 
+fn query_cursor_parameter_hash(
+    program: &QueryAccessProgramV1,
+    parameters: &QueryParameters,
+) -> Option<riffdb_types::QueryParameterHash> {
+    let cardinality_parameters = program.cursor_page_cardinality_parameters();
+    let included_count = parameters
+        .iter()
+        .filter(|(name, _)| cardinality_parameters.binary_search(name).is_err())
+        .count();
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(b"RDBQCURSORPARAM\x01");
+    bytes.extend_from_slice(&u32::try_from(included_count).ok()?.to_be_bytes());
+    for (name, value) in parameters.iter() {
+        if cardinality_parameters.binary_search(&name).is_ok() {
+            continue;
+        }
+        let name = name.as_bytes();
+        bytes.extend_from_slice(&u32::try_from(name.len()).ok()?.to_be_bytes());
+        bytes.extend_from_slice(name);
+        let value = encode_canonical_value(value).ok()?;
+        bytes.extend_from_slice(&u32::try_from(value.len()).ok()?.to_be_bytes());
+        bytes.extend_from_slice(&value);
+    }
+    Some(hash_query_parameters(&bytes))
+}
+
 pub(crate) fn application_query_target(
     bundle: &riffdb_contract_ir::ContractBundle,
     program: &QueryAccessProgramV1,
@@ -5403,6 +5429,72 @@ fn render_contract_type(
 #[cfg(test)]
 mod operational_cursor_identity_tests {
     use super::*;
+    use riffdb_contract_compiler::compile_contract_source;
+    use riffdb_query_compiler::compile_query;
+    use riffdb_query_ir::SymbolicCatalog;
+    use riffdb_riffql_syntax::parse_query;
+
+    const CONTRACT: &str = r#"
+contract CursorIdentity version 1 {
+  entity Item {
+    key (organization_id: uuid, item_id: uuid)
+    field label: string<32>
+    index by_item (organization_id, item_id)
+  }
+  aggregate Items {
+    root Item
+    partition_by organization_id
+    conflict_key (organization_id, item_id)
+  }
+}
+"#;
+
+    const CURSOR_QUERY: &str = r#"
+query CursorItems(
+  $organization_id: Item.organization_id,
+  $limit: Limit<100> = 50,
+  $after: Cursor?,
+) {
+  many items from Item
+    where organization_id == $organization_id
+    order by item_id asc
+    take $limit after $after
+  return Found { items: items { item_id label } }
+  outcomes Found
+}
+"#;
+
+    const UNPAGED_QUERY: &str = r#"
+query UnpagedItems(
+  $organization_id: Item.organization_id,
+  $limit: Limit<100> = 50,
+) {
+  many items from Item
+    where organization_id == $organization_id
+    order by item_id asc
+    take $limit
+  return Found { items: items { item_id label } }
+  outcomes Found
+}
+"#;
+
+    fn program(source: &str) -> QueryAccessProgramV1 {
+        let bundle = compile_contract_source(CONTRACT).expect("contract");
+        let catalog = SymbolicCatalog::from_bundle(&bundle).expect("catalog");
+        let document = parse_query(source).expect("query source");
+        compile_query(&document, &catalog).expect("query plan")
+    }
+
+    fn parameters(organization: u8, limit: u64) -> QueryParameters {
+        QueryParameters::checked(BTreeMap::from([
+            (
+                "organization_id".to_owned(),
+                CanonicalValue::Uuid([organization; 16]),
+            ),
+            ("limit".to_owned(), CanonicalValue::U64(limit)),
+        ]))
+        .expect("bounded parameters")
+    }
 
     #[test]
     fn canonical_parameter_hash_changes_when_optional_filter_becomes_present() {
@@ -5424,6 +5516,45 @@ mod operational_cursor_identity_tests {
             query_parameter_hash(&absent).expect("absent hash"),
             query_parameter_hash(&present).expect("present hash"),
             "a cursor from the absent family member must not resume the present member"
+        );
+    }
+
+    #[test]
+    fn cursor_hash_excludes_only_eligible_runtime_page_cardinality() {
+        let cursor_program = program(CURSOR_QUERY);
+        let one = parameters(0x11, 1);
+        let maximum = parameters(0x11, 100);
+
+        assert_ne!(
+            query_parameter_hash(&one).expect("complete hash"),
+            query_parameter_hash(&maximum).expect("complete hash"),
+            "shared parameter identity remains value-complete"
+        );
+        assert_eq!(
+            query_cursor_parameter_hash(&cursor_program, &one).expect("one-row cursor hash"),
+            query_cursor_parameter_hash(&cursor_program, &maximum)
+                .expect("maximum-row cursor hash"),
+            "page cardinality does not identify the continuation position"
+        );
+        assert_ne!(
+            query_cursor_parameter_hash(&cursor_program, &one).expect("original partition"),
+            query_cursor_parameter_hash(&cursor_program, &parameters(0x22, 1))
+                .expect("changed partition"),
+            "partition and other semantic parameters remain bound"
+        );
+
+        let unpaged_program = program(UNPAGED_QUERY);
+        assert_ne!(
+            query_cursor_parameter_hash(&unpaged_program, &one).expect("unpaged one"),
+            query_cursor_parameter_hash(&unpaged_program, &maximum).expect("unpaged maximum"),
+            "an unpaged runtime limit remains identity-bearing"
+        );
+
+        let wider_program = program(&CURSOR_QUERY.replace("Limit<100>", "Limit<101>"));
+        assert_ne!(
+            cursor_program.identity(),
+            wider_program.identity(),
+            "the declared maximum remains bound by immutable plan identity"
         );
     }
 }
