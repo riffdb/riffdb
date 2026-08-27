@@ -111,6 +111,7 @@ Hosts, both 8 vCPU:
 | E2 | Rust | production | RiffDB | 5,225 | 2.490 ms | 29.360 ms | 39.846 ms | 0 |
 | E2 | TypeScript | production | RiffDB | 4,235 | 5.767 ms | 20.972 ms | 29.360 ms | 0 |
 | E2 | Go | production | RiffDB | 2,742 | 9.437 ms | 29.360 ms | 39.846 ms | 0 |
+| N1 | Python | production | RiffDB | 1,691 | 11.534 ms | 58.720 ms | 100.663 ms | 0 |
 
 Three same-host, same-harness pairs: **RiffDB reaches 0.223x Postgres at `full`
 on N1, 0.208x at `production` on N1, and 0.174x at `production` on E2**. That is
@@ -148,6 +149,16 @@ a 6% decline for 76x the rows), and E2 independently reports 29,978 for the same
 production Postgres cell. At these sizes the tier does not stress either
 engine's storage much -- see the working-set note under limitations.
 
+**The Rust cells and the language cells are not measured the same way.** Only
+`examples/app-baseline/src/main.rs` calls `restart_for_measurement`; the
+TypeScript, Go and Python harnesses load against the same daemon that just
+performed the seed. So the Rust rows measure a freshly started process and the
+other three measure a warm one that has just written 1.1M records. If anything
+that flatters the language rows, and they are still well below Rust -- 4,235,
+2,742 and 1,691 against 6,359 -- so the binding cost dominates the difference
+rather than daemon warmth. Do not read a language row against a Rust row as a
+storage comparison.
+
 Production seed throughput, 1,112,350 commands:
 
 | Host | Harness | Seed time | ops/s |
@@ -155,9 +166,17 @@ Production seed throughput, 1,112,350 commands:
 | N1 | Rust | 492 s | 2,259 |
 | E2 | TypeScript | 674 s | 1,650 |
 | E2 | Go | 716 s | 1,554 |
+| N1 | Python | 574 s | 1,938 |
 
 Before the batched seed landed, a TypeScript production seed reached 1.4 GB
-after twenty-one minutes and had not finished; it now completes in eleven.
+after twenty-one minutes and had not finished; it now completes in eleven. All
+four harnesses now complete a production seed, which is the point of the change.
+
+Python is the fastest of the three non-Rust harnesses despite being the slowest
+under load, which is consistent with where each spends its time: its runtime
+batch dispatches per item across a thread pool that releases the GIL for each
+native round trip, while TypeScript and Go fan out over `driverd` and pay
+framing per batch.
 
 ### What a run costs
 
