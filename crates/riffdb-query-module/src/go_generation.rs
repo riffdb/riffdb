@@ -410,6 +410,32 @@ fn emit_query_methods(
             emit_go_compact_query_decoder(output, name.as_str(), shape, contract);
         }
         writeln!(output, "func (client *Client) {name}(ctx context.Context, parameters {name}Params, options QueryOptions) (QueryResult[{name}Result], error) {{ input := map[string]riffdb.Value{{}}").unwrap();
+        for parameter in query.plan().schemas().parameters() {
+            if let NamedTypeSchema::BoundedLimit { maximum } = parameter.value_type() {
+                let field = go_public(parameter.name());
+                if parameter.has_default() {
+                    writeln!(
+                        output,
+                        "if parameters.{field} != nil && (*parameters.{field} == 0 || uint64(*parameters.{field}) > {maximum}) {{ return QueryResult[{name}Result]{{}}, errors.New({:?}) }}",
+                        format!(
+                            "{} must be from 1 through {maximum}",
+                            parameter.name()
+                        )
+                    )
+                    .unwrap();
+                } else {
+                    writeln!(
+                        output,
+                        "if parameters.{field} == 0 || uint64(parameters.{field}) > {maximum} {{ return QueryResult[{name}Result]{{}}, errors.New({:?}) }}",
+                        format!(
+                            "{} must be from 1 through {maximum}",
+                            parameter.name()
+                        )
+                    )
+                    .unwrap();
+                }
+            }
+        }
         if let Some(cursor) = query
             .plan()
             .schemas()
@@ -1416,6 +1442,7 @@ fn go_named_type(value: &NamedTypeSchema, contract: &ContractBundle) -> String {
         ),
         NamedTypeSchema::Cursor => "string".into(),
         NamedTypeSchema::Limit => "uint32".into(),
+        NamedTypeSchema::BoundedLimit { .. } => "uint32".into(),
     }
 }
 
@@ -1449,6 +1476,7 @@ fn encode_named_expr(value: &str, ty: &NamedTypeSchema, contract: &ContractBundl
         ),
         NamedTypeSchema::Cursor => format!("riffdb.String({value})"),
         NamedTypeSchema::Limit => format!("riffdb.U64(uint64({value}))"),
+        NamedTypeSchema::BoundedLimit { .. } => format!("riffdb.U64(uint64({value}))"),
         NamedTypeSchema::Scalar(name) => match name.as_str() {
             "bool" => format!("riffdb.Bool({value})"),
             "i64" => format!("riffdb.I64({value})"),
@@ -1498,6 +1526,9 @@ fn decode_named_expr(value: &str, ty: &NamedTypeSchema, contract: &ContractBundl
         }
         NamedTypeSchema::Cursor => format!("riffdb.StringValue({value})"),
         NamedTypeSchema::Limit => format!(
+            "func() (uint32, error) {{ raw, err := riffdb.U64Value({value}); return uint32(raw), err }}()"
+        ),
+        NamedTypeSchema::BoundedLimit { .. } => format!(
             "func() (uint32, error) {{ raw, err := riffdb.U64Value({value}); return uint32(raw), err }}()"
         ),
         NamedTypeSchema::Scalar(name) => match name.as_str() {

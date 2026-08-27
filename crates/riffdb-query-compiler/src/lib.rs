@@ -25,8 +25,8 @@ use riffdb_query_ir::{
 };
 use riffdb_riffql_syntax::{
     AggregateFunction, BinaryOperator, Cardinality, Direction, Document, Expression,
-    FieldSelection, Literal, Path, ProjectedFreshness, RIFFQL_LANGUAGE_VERSION_EXACT_RESULT_SET_V1,
-    Span, Spanned, TypeReference, UnaryOperator,
+    FieldSelection, Literal, Path, ProjectedFreshness, RIFFQL_LANGUAGE_VERSION_BOUNDED_LIMIT_V1,
+    RIFFQL_LANGUAGE_VERSION_EXACT_RESULT_SET_V1, Span, Spanned, TypeReference, UnaryOperator,
 };
 use riffdb_types::{
     AggregateResultSchemaV1, AggregateSemanticIdentityV1, EXACT_TEXT_PROVIDER_STATE_SCHEMA_HASH_V1,
@@ -278,8 +278,10 @@ pub fn compile_exact_text_query_v1(
     document: &Document,
     catalog: &SymbolicCatalog,
 ) -> Result<CompiledExactTextQueryV1, PlannerDiagnostics> {
-    if document.language_version != RIFFQL_LANGUAGE_VERSION_EXACT_RESULT_SET_V1
-        || document.body.bindings.len() != 1
+    if !matches!(
+        document.language_version,
+        RIFFQL_LANGUAGE_VERSION_EXACT_RESULT_SET_V1 | RIFFQL_LANGUAGE_VERSION_BOUNDED_LIMIT_V1
+    ) || document.body.bindings.len() != 1
         || document.body.aggregates.len() != 1
     {
         return Err(exact_text_diagnostic(
@@ -423,6 +425,9 @@ pub fn compile_exact_text_query_v1(
             "exact result limit must be a typed parameter",
         )
     })?;
+    let max_limit = declared_limit_maximum(document, &limit_parameter).ok_or_else(|| {
+        exact_text_diagnostic(take.limit.span, "exact result limit type is invalid")
+    })?;
     let offset = take.offset.as_ref().expect("checked exact offset");
     let offset_parameter = exact_parameter_name(&offset.value).ok_or_else(|| {
         exact_text_diagnostic(offset.span, "exact result offset must be a typed parameter")
@@ -460,7 +465,7 @@ pub fn compile_exact_text_query_v1(
             whole_set_measures: true,
             window: ResultSetWindowBoundsV2::Ordinal {
                 max_offset: family.max_candidates(),
-                max_limit: std::num::NonZeroU16::new(499).expect("fixed nonzero page limit"),
+                max_limit,
             },
             output: ResultSetOutputShapeV1::TypedRows,
         },
@@ -489,6 +494,24 @@ pub fn compile_exact_text_query_v1(
         offset_parameter,
         filter,
     })
+}
+
+pub(crate) fn declared_limit_maximum(
+    document: &Document,
+    parameter_name: &str,
+) -> Option<std::num::NonZeroU16> {
+    let maximum = document
+        .parameters
+        .iter()
+        .find(|parameter| parameter.name.value.as_str() == parameter_name)
+        .and_then(|parameter| match parameter.ty.value {
+            TypeReference::Limit => Some(riffdb_query_ir::max_query_page_take()),
+            TypeReference::BoundedLimit(maximum) => Some(maximum),
+            _ => None,
+        })?;
+    u16::try_from(maximum)
+        .ok()
+        .and_then(std::num::NonZeroU16::new)
 }
 
 fn validate_exact_predicate_completeness(
@@ -1405,7 +1428,7 @@ impl<'a> Planner<'a> {
                 .entity(binding.entity.value.as_str())
                 .ok_or_else(internal)?;
             let comparisons = comparisons(&binding.predicate.value);
-            let maximum_rows = maximum_rows(binding)?;
+            let maximum_rows = maximum_rows(binding, self.document)?;
             self.type_check(entity, binding, &comparisons)?;
 
             let partition_field = entity.partition_field();
@@ -1975,7 +1998,10 @@ impl<'a> Planner<'a> {
                     .enumeration(name)
                     .map(|enumeration| ValueType::enumeration(enumeration.internal_id())),
             },
-            TypeReference::Set(_) | TypeReference::Cursor | TypeReference::Limit => None,
+            TypeReference::Set(_)
+            | TypeReference::Cursor
+            | TypeReference::Limit
+            | TypeReference::BoundedLimit(_) => None,
         }
     }
 }
@@ -2277,6 +2303,7 @@ impl QueryCostAccumulator {
             let groups = match aggregate.maximum_groups() {
                 riffdb_query_ir::PageBound::Literal(value) => *value,
                 riffdb_query_ir::PageBound::Parameter(_) => riffdb_query_ir::max_query_page_take(),
+                riffdb_query_ir::PageBound::BoundedParameter { maximum, .. } => *maximum,
             };
             let cells = u64::try_from(aggregate.group_keys().len() + aggregate.measures().len())
                 .map_err(|_| internal())?;
@@ -3078,7 +3105,10 @@ fn operational_access_shape(
     Some(OperationalAccessShape { order_start })
 }
 
-fn maximum_rows(binding: &riffdb_riffql_syntax::Binding) -> Result<u64, PlannerDiagnostics> {
+fn maximum_rows(
+    binding: &riffdb_riffql_syntax::Binding,
+    document: &Document,
+) -> Result<u64, PlannerDiagnostics> {
     if binding.cardinality.value != Cardinality::Many {
         return Ok(1);
     }
@@ -3090,7 +3120,9 @@ fn maximum_rows(binding: &riffdb_riffql_syntax::Binding) -> Result<u64, PlannerD
     if let (None, Some(nearest)) = (&binding.take, &binding.nearest) {
         return match &nearest.k.value {
             Expression::Literal(Literal::Unsigned(value)) => value.parse::<u64>().ok(),
-            Expression::Parameter(_) => Some(riffdb_query_ir::max_query_page_take()),
+            Expression::Parameter(parameter) => {
+                document_limit_maximum(document, parameter.value.as_str())
+            }
             _ => None,
         }
         .filter(|value| (1..=riffdb_query_ir::max_query_page_take()).contains(value))
@@ -3115,7 +3147,9 @@ fn maximum_rows(binding: &riffdb_riffql_syntax::Binding) -> Result<u64, PlannerD
     };
     match &take.limit.value {
         Expression::Literal(Literal::Unsigned(value)) => value.parse::<u64>().ok(),
-        Expression::Parameter(_) => Some(riffdb_query_ir::max_query_page_take()),
+        Expression::Parameter(parameter) => {
+            document_limit_maximum(document, parameter.value.as_str())
+        }
         _ => None,
     }
     .filter(|value| (1..=MAX_QUERY_ROWS).contains(value))
@@ -3153,13 +3187,33 @@ fn lowered_row_limit(
                 None => None,
                 Some(_) => return Err(internal()),
             };
-            Ok(QueryRowLimit::Parameter {
-                name: parameter.value.as_str().to_owned(),
-                default,
-            })
+            match declared.ty.value {
+                TypeReference::Limit => Ok(QueryRowLimit::Parameter {
+                    name: parameter.value.as_str().to_owned(),
+                    default,
+                }),
+                TypeReference::BoundedLimit(maximum) => Ok(QueryRowLimit::BoundedParameter {
+                    name: parameter.value.as_str().to_owned(),
+                    maximum,
+                    default,
+                }),
+                _ => Err(internal()),
+            }
         }
         _ => Err(internal()),
     }
+}
+
+fn document_limit_maximum(document: &Document, parameter: &str) -> Option<u64> {
+    document
+        .parameters
+        .iter()
+        .find(|candidate| candidate.name.value.as_str() == parameter)
+        .and_then(|candidate| match candidate.ty.value {
+            TypeReference::Limit => Some(riffdb_query_ir::max_query_page_take()),
+            TypeReference::BoundedLimit(maximum) => Some(maximum),
+            _ => None,
+        })
 }
 
 fn row_limit(

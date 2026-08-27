@@ -174,6 +174,7 @@ direction, merged draft, or implementation choice.
 | [0153](0153-compiler-sealed-initialized-state-transitions.md) | Compiler-Sealed Initialized State Transitions | Accepted |
 | [0154](0154-profile-aware-binary-text-intervals.md) | Profile-Aware Binary Text Intervals for Bounded Operational Queries | Accepted |
 | [0155](0155-selectively-declared-generated-application-surfaces.md) | Selectively Declared Generated Application Surfaces | Accepted |
+| [0158](0158-compiler-declared-bounded-runtime-page-limits.md) | Compiler-Declared Bounded Runtime Page Limits | Accepted |
 
 The human architecture review on 2026-07-12 approved the direction represented
 by ADR-0001 through ADR-0012. The human maintainer accepted ADR-0001 through

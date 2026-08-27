@@ -37,9 +37,16 @@ bounded requirements participate in the surface, plan, module, and role
 hashes. A declaration-free query retains its earlier exact bytes.
 
 Parameter types are contract enums, `Entity.field` references, optional
-wrappers, bounded query sets, `Cursor`, or `Limit`. Result schemas contain only
-source names and closed scalar/optional/record/list shapes. A list repeats its
-literal bound or typed `Limit` parameter name.
+wrappers, bounded query sets, `Cursor`, `Limit`, or the closed query-only
+`Limit<MAX>` refinement. Result schemas contain only source names and closed
+scalar/optional/record/list shapes. A list repeats its literal bound, plain
+`Limit` parameter name, or bounded-limit parameter name and inclusive maximum.
+
+RiffQL V9 selects additive query IR V12. V12 encodes `Limit<MAX>` with its
+positive maximum before its optional default in the parameter schema and row
+limit, and uses the same maximum for result-list bounds and whole-plan cost.
+Existing V1 through V11 bytes remain unchanged. Changing only `MAX` changes
+the surface, plan, module, role, lock, generated schema, and operation hashes.
 
 Resolution diagnostics are bounded and value-free:
 

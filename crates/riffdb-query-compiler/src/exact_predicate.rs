@@ -12,7 +12,7 @@ use riffdb_query_ir::{
 };
 use riffdb_riffql_syntax::{
     AggregateFunction, BinaryOperator, Cardinality, Direction, Document, Expression, NullPlacement,
-    Path, RIFFQL_LANGUAGE_VERSION_EXACT_PREDICATE_V1,
+    Path, RIFFQL_LANGUAGE_VERSION_BOUNDED_LIMIT_V1, RIFFQL_LANGUAGE_VERSION_EXACT_PREDICATE_V1,
     RIFFQL_LANGUAGE_VERSION_NULLABLE_EXACT_ORDER_V1, Span, Spanned, TypeReference, UnaryOperator,
 };
 use riffdb_types::{
@@ -20,7 +20,10 @@ use riffdb_types::{
     ProjectionProviderPolicyModeV1,
 };
 
-use crate::{PlannerDiagnosticCode, PlannerDiagnostics, compile_operational_query_family, one};
+use crate::{
+    PlannerDiagnosticCode, PlannerDiagnostics, compile_operational_query_family,
+    declared_limit_maximum, one,
+};
 
 /// Compiler-owned exact predicate operation before a physical provider exists.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -153,8 +156,10 @@ fn compile_exact_predicate_query_core(
         .name
         .as_ref()
         .map_or(Span { start: 0, end: 0 }, |name| name.span);
-    if document.language_version != RIFFQL_LANGUAGE_VERSION_EXACT_PREDICATE_V1
-        || document.body.bindings.len() != 1
+    if !matches!(
+        document.language_version,
+        RIFFQL_LANGUAGE_VERSION_EXACT_PREDICATE_V1 | RIFFQL_LANGUAGE_VERSION_BOUNDED_LIMIT_V1
+    ) || document.body.bindings.len() != 1
         || document.body.aggregates.len() != 1
     {
         return Err(diagnostic(
@@ -222,9 +227,11 @@ fn compile_exact_predicate_query_core(
         .iter()
         .map(|parameter| (parameter.name.value.as_str(), &parameter.ty.value))
         .collect::<BTreeMap<_, _>>();
+    let max_limit = declared_limit_maximum(document, &limit_parameter)
+        .ok_or_else(|| diagnostic(take.limit.span, "exact predicate limit type is invalid"))?;
     if !matches!(
         parameters.get(limit_parameter.as_str()),
-        Some(TypeReference::Limit)
+        Some(TypeReference::Limit | TypeReference::BoundedLimit(_))
     ) {
         return Err(diagnostic(
             take.limit.span,
@@ -320,7 +327,7 @@ fn compile_exact_predicate_query_core(
             .map_err(|_| diagnostic(primary, "exact predicate family bound exceeded"))?,
         true,
         max_candidates,
-        499,
+        max_limit.get(),
         requirement,
     )
     .map_err(|_| diagnostic(primary, "exact predicate family exceeds a static bound"))?;
@@ -346,7 +353,10 @@ pub fn compile_nullable_exact_predicate_query_v1(
         .name
         .as_ref()
         .map_or(Span { start: 0, end: 0 }, |name| name.span);
-    if document.language_version != RIFFQL_LANGUAGE_VERSION_NULLABLE_EXACT_ORDER_V1 {
+    if !matches!(
+        document.language_version,
+        RIFFQL_LANGUAGE_VERSION_NULLABLE_EXACT_ORDER_V1 | RIFFQL_LANGUAGE_VERSION_BOUNDED_LIMIT_V1
+    ) {
         return Err(diagnostic(
             primary,
             "nullable exact-order query shape is incomplete",

@@ -19,3 +19,33 @@ query List() { return Found {} outcomes Found }
   (keyword)
   (identifier)
   (punctuation))
+
+==================
+Bounded runtime limit tokens
+==================
+
+query List($limit: Limit<100> = 25) { return Found {} outcomes Found }
+
+---
+
+(source_file
+  (keyword)
+  (identifier)
+  (punctuation)
+  (parameter)
+  (punctuation)
+  (keyword)
+  (operator)
+  (number)
+  (operator)
+  (operator)
+  (number)
+  (punctuation)
+  (punctuation)
+  (keyword)
+  (identifier)
+  (punctuation)
+  (punctuation)
+  (keyword)
+  (identifier)
+  (punctuation))

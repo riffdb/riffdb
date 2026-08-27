@@ -3,7 +3,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use riffdb_contract_ir::{ValueType, ValueTypeTag};
 use riffdb_riffql_syntax::{
     Cardinality, Document, Expression, FieldSelection, Literal, Path,
-    RIFFQL_LANGUAGE_VERSION_EXACT_AGGREGATE_V1, Selection, Span, TypeReference, format_query,
+    RIFFQL_LANGUAGE_VERSION_BOUNDED_LIMIT_V1, RIFFQL_LANGUAGE_VERSION_EXACT_AGGREGATE_V1,
+    Selection, Span, TypeReference, format_query,
 };
 use riffdb_types::{
     AggregateSemanticIdentityV1, ContractBundleHash, ContractLineage, ContractVersion,
@@ -16,10 +17,11 @@ use crate::{
     MAX_SOURCE_MAP_ENTRIES, NamedFieldSchema, NamedParameterSchema, NamedQuerySchemas,
     NamedResultBranchSchema, NamedTypeSchema, OperationalAggregateFunctionV1,
     OperationalAggregateGroupKeyV1, OperationalAggregateMeasureV1, OperationalAggregateV1,
-    PageBound, QUERY_IR_VERSION_EXACT_AGGREGATE_V1, QUERY_IR_VERSION_OPERATIONAL_AGGREGATE_V1,
-    QUERY_IR_VERSION_PROJECTED_VECTOR_V1, QUERY_IR_VERSION_SECRET_OUTPUT_V1, QUERY_IR_VERSION_V1,
-    QueryDiagnostic, QueryDiagnosticCode, QueryDiagnosticStage, QueryDiagnostics, SymbolicCatalog,
-    page_take_within_scan_bound, source_aggregate_semantic_identity,
+    PageBound, QUERY_IR_VERSION_BOUNDED_LIMIT_V1, QUERY_IR_VERSION_EXACT_AGGREGATE_V1,
+    QUERY_IR_VERSION_OPERATIONAL_AGGREGATE_V1, QUERY_IR_VERSION_PROJECTED_VECTOR_V1,
+    QUERY_IR_VERSION_SECRET_OUTPUT_V1, QUERY_IR_VERSION_V1, QueryDiagnostic, QueryDiagnosticCode,
+    QueryDiagnosticStage, QueryDiagnostics, SymbolicCatalog, page_take_within_scan_bound,
+    source_aggregate_semantic_identity,
 };
 
 const IR_MAGIC: &[u8] = b"RIFFDB-QUERY-SURFACE\0";
@@ -273,7 +275,9 @@ impl ResolvedQueryV1 {
     /// Query IR version.
     #[must_use]
     pub fn ir_version(&self) -> u32 {
-        if self.projected {
+        if self.has_bounded_limit() {
+            QUERY_IR_VERSION_BOUNDED_LIMIT_V1
+        } else if self.projected {
             QUERY_IR_VERSION_PROJECTED_VECTOR_V1
         } else if self.has_exact_aggregate_core() {
             QUERY_IR_VERSION_EXACT_AGGREGATE_V1
@@ -285,6 +289,15 @@ impl ResolvedQueryV1 {
         } else {
             QUERY_IR_VERSION_SECRET_OUTPUT_V1
         }
+    }
+
+    /// Whether any public parameter uses ADR-0158's bounded page-limit type.
+    #[must_use]
+    pub fn has_bounded_limit(&self) -> bool {
+        self.schemas
+            .parameters()
+            .iter()
+            .any(|parameter| matches!(parameter.value_type(), NamedTypeSchema::BoundedLimit { .. }))
     }
 
     /// Whether the surface contains an ADR-0152 additive aggregate semantic.
@@ -428,20 +441,35 @@ impl<'a> Resolver<'a> {
                 ));
             }
             let ty = self.resolve_type(&parameter.ty.value, parameter.ty.span)?;
-            if matches!(ty, NamedTypeSchema::Limit)
-                && let Some(default) = parameter.default.as_ref()
+            if matches!(
+                ty,
+                NamedTypeSchema::Limit | NamedTypeSchema::BoundedLimit { .. }
+            ) && let Some(default) = parameter.default.as_ref()
             {
+                let (declared_maximum, exceeded_summary) = match &ty {
+                    NamedTypeSchema::Limit => (
+                        crate::max_query_page_take(),
+                        "Limit default exceeds the maximum page take of 499 (scan ceiling reserves one row for the continuation probe)",
+                    ),
+                    NamedTypeSchema::BoundedLimit { maximum } => (
+                        *maximum,
+                        "Limit default exceeds its compiler-declared maximum",
+                    ),
+                    _ => unreachable!("matched limit schema"),
+                };
                 match &default.value {
                     Literal::Unsigned(value) => {
                         let parsed = value.parse::<u64>().ok().filter(|value| *value > 0);
                         match parsed {
-                            Some(limit) if page_take_within_scan_bound(limit) => {}
+                            Some(limit)
+                                if page_take_within_scan_bound(limit)
+                                    && limit <= declared_maximum => {}
                             Some(_) => {
                                 return Err(self.diagnostic(
                                     QueryDiagnosticCode::ArtifactLimit,
                                     default.span,
                                     vec![name.to_owned()],
-                                    "Limit default exceeds the maximum page take of 499 (scan ceiling reserves one row for the continuation probe)",
+                                    exceeded_summary,
                                 ));
                             }
                             None => {
@@ -804,6 +832,7 @@ impl<'a> Resolver<'a> {
             let maximum_input_rows = match source.take.as_ref() {
                 Some(PageBound::Literal(value)) => *value,
                 Some(PageBound::Parameter(_)) => crate::max_query_page_take(),
+                Some(PageBound::BoundedParameter { maximum, .. }) => *maximum,
                 None => return Err(self.aggregate_invariant(aggregate.source.span)),
             };
             let maximum_arithmetic_operations = maximum_input_rows
@@ -1060,6 +1089,9 @@ impl<'a> Resolver<'a> {
             }
             TypeReference::Cursor => Ok(NamedTypeSchema::Cursor),
             TypeReference::Limit => Ok(NamedTypeSchema::Limit),
+            TypeReference::BoundedLimit(maximum) => {
+                Ok(NamedTypeSchema::BoundedLimit { maximum: *maximum })
+            }
         }
     }
 
@@ -1635,6 +1667,29 @@ impl<'a> Resolver<'a> {
             {
                 Ok(PageBound::Parameter(parameter.value.as_str().to_owned()))
             }
+            Expression::Parameter(parameter) => {
+                let Some(NamedTypeSchema::BoundedLimit { maximum }) =
+                    self.parameters.get(parameter.value.as_str())
+                else {
+                    return Err(self.diagnostic(
+                        QueryDiagnosticCode::InvalidType,
+                        span,
+                        Vec::new(),
+                        match clause {
+                            PageBoundClause::Take => {
+                                "take parameter must have type Limit or Limit<MAX>"
+                            }
+                            PageBoundClause::NearestK => {
+                                "nearest k parameter must have type Limit or Limit<MAX>"
+                            }
+                        },
+                    ));
+                };
+                Ok(PageBound::BoundedParameter {
+                    name: parameter.value.as_str().to_owned(),
+                    maximum: *maximum,
+                })
+            }
             _ => Err(self.diagnostic(
                 QueryDiagnosticCode::InvalidType,
                 span,
@@ -1721,7 +1776,9 @@ fn canonical_surface(
     );
     bytes.extend_from_slice(IR_MAGIC);
     bytes.extend_from_slice(
-        &if document.language_version == RIFFQL_LANGUAGE_VERSION_EXACT_AGGREGATE_V1 {
+        &if document.language_version == RIFFQL_LANGUAGE_VERSION_BOUNDED_LIMIT_V1 {
+            QUERY_IR_VERSION_BOUNDED_LIMIT_V1
+        } else if document.language_version == RIFFQL_LANGUAGE_VERSION_EXACT_AGGREGATE_V1 {
             QUERY_IR_VERSION_EXACT_AGGREGATE_V1
         } else if document.projected_source.is_some() {
             QUERY_IR_VERSION_PROJECTED_VECTOR_V1
@@ -1775,7 +1832,11 @@ fn canonical_surface(
                 encode_named_type(&mut bytes, measure.result_type())?;
             }
             encode_page_bound(&mut bytes, aggregate.maximum_groups())?;
-            if document.language_version == RIFFQL_LANGUAGE_VERSION_EXACT_AGGREGATE_V1 {
+            if matches!(
+                document.language_version,
+                RIFFQL_LANGUAGE_VERSION_EXACT_AGGREGATE_V1
+                    | RIFFQL_LANGUAGE_VERSION_BOUNDED_LIMIT_V1
+            ) {
                 bytes.extend_from_slice(
                     &aggregate
                         .execution_budget()
@@ -1848,6 +1909,11 @@ fn encode_page_bound(output: &mut Vec<u8>, bound: &PageBound) -> Result<(), Quer
             output.push(2);
             push_bytes(output, name.as_bytes())?;
         }
+        PageBound::BoundedParameter { name, maximum } => {
+            output.push(3);
+            push_bytes(output, name.as_bytes())?;
+            output.extend_from_slice(&maximum.to_be_bytes());
+        }
     }
     Ok(())
 }
@@ -1897,10 +1963,19 @@ fn encode_named_type(
                     output.push(2);
                     push_bytes(output, name.as_bytes())?;
                 }
+                PageBound::BoundedParameter { name, maximum } => {
+                    output.push(3);
+                    push_bytes(output, name.as_bytes())?;
+                    output.extend_from_slice(&maximum.to_be_bytes());
+                }
             }
         }
         NamedTypeSchema::Cursor => output.push(6),
         NamedTypeSchema::Limit => output.push(7),
+        NamedTypeSchema::BoundedLimit { maximum } => {
+            output.push(8);
+            output.extend_from_slice(&maximum.to_be_bytes());
+        }
     }
     Ok(())
 }

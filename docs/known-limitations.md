@@ -58,6 +58,11 @@ These limits are part of the POC release posture, not hidden roadmap promises.
   presentation.
 - There is no general SQL surface, arbitrary transaction callback, analytical
   join engine, distributed transaction, replication, failover, or consensus.
+- Runtime-selectable page sizes use either plain `Limit` (the full 1..=499
+  domain) or the query-only `Limit<MAX>` refinement. Bounded limits do not
+  refine offsets, byte budgets, contract integers, full-population aggregate
+  work, or projection candidate work; those retain their separately compiled
+  bounds.
 - An ordinary command may atomically delete and return the transaction-current preimage of exactly
   one complete-key, partition-local `no_inbound` entity. Multiple ordinary deletes, inbound
   `restrict` or `cascade`, set-null, orphaning, cross-partition deletion, and physical erasure are

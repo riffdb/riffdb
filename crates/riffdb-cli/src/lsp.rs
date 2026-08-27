@@ -1229,7 +1229,7 @@ contract Desk version 1 {
   entity Ticket {
     key (organization_id: uuid, ticket_id: uuid)
     field title: string<200>
-    index by_organization (organization_id)
+    index by_organization (organization_id, ticket_id)
   }
   aggregate Tickets {
     root Ticket
@@ -1395,6 +1395,34 @@ contract Desk version 1 {
         assert!(!diagnostics.is_empty());
         assert!(diagnostics.len() <= 32);
         assert!(diagnostics[0].code.starts_with("RDB-QS"));
+    }
+
+    #[test]
+    fn bounded_limit_query_is_understood_by_lsp_compilation() {
+        let mut server = Server::default();
+        server.documents.insert(
+            "file:///workspace/contract.riff".to_owned(),
+            OpenDocument {
+                text: VALID.to_owned(),
+                version: 1,
+                kind: DocumentKind::Contract,
+            },
+        );
+        let source = r#"
+query TicketPage(
+  $organization_id: Ticket.organization_id,
+  $limit: Limit<10> = 5,
+) {
+  many tickets from Ticket
+    where organization_id == $organization_id
+    order by ticket_id asc
+    take $limit
+  return Found { tickets: tickets { ticket_id title } }
+  outcomes Found
+}
+"#;
+        let diagnostics = server.query_diagnostics("file:///workspace/ticket_page.riffq", source);
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
     }
 
     #[test]
