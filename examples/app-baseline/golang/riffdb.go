@@ -296,8 +296,37 @@ func (s *riffDbSession) OpenTicketWithLabels(ctx context.Context, input openTick
 // transport is batched.
 const (
 	seedConcurrency = 128
-	seedBatchRows   = 4096
+	// Generated batch row ceiling.
+	seedMaxBatchRows = 4096
+	// The driver frames a whole batch as one message bounded at 1 MiB, so the
+	// generated row ceiling is not the binding constraint: 4,096 comment inputs
+	// carrying 256-byte bodies encode to roughly 1.8 MB and the driver refuses
+	// the frame. Target half the budget so per-row variation and framing
+	// overhead have headroom.
+	seedFrameTargetBytes = 512 * 1024
 )
+
+// chunkRowsFor sizes a phase's chunk from its own inputs rather than applying
+// one guess to eight differently shaped phases. json.Marshal is a proxy for the
+// driver's own encoding, not identical to it; the half-budget target is what
+// absorbs the difference.
+func chunkRowsFor[I any](inputs []I) int {
+	if len(inputs) == 0 {
+		return seedMaxBatchRows
+	}
+	encoded, err := json.Marshal(inputs[0])
+	if err != nil || len(encoded) == 0 {
+		return seedMaxBatchRows
+	}
+	rows := seedFrameTargetBytes / len(encoded)
+	if rows < 1 {
+		return 1
+	}
+	if rows > seedMaxBatchRows {
+		return seedMaxBatchRows
+	}
+	return rows
+}
 
 // runSeedPhase drives one foreign-key-ordered phase through a generated batch
 // method. It is a package function rather than a method because Go methods
@@ -310,8 +339,9 @@ func runSeedPhase[I any, O any](
 	call func(context.Context, []I, uint32, uint32) (ticketdesk.BatchResult[O], error),
 	expected string,
 ) error {
-	for offset := 0; offset < len(inputs); offset += seedBatchRows {
-		end := offset + seedBatchRows
+	batchRows := chunkRowsFor(inputs)
+	for offset := 0; offset < len(inputs); offset += batchRows {
+		end := offset + batchRows
 		if end > len(inputs) {
 			end = len(inputs)
 		}
@@ -338,7 +368,7 @@ func runSeedPhase[I any, O any](
 		}
 		tracker.completed += len(chunk)
 	}
-	tracker.report(phase)
+	tracker.report(phase, batchRows)
 	return nil
 }
 
@@ -348,9 +378,10 @@ type seedTracker struct {
 	started   time.Time
 }
 
-func (t *seedTracker) report(phase string) {
-	fmt.Fprintf(os.Stderr, "riffdb-seed-progress\tphase=%s\tcompleted=%d/%d\toverall_ms=%d\n",
-		phase, t.completed, t.total, time.Since(t.started).Milliseconds())
+func (t *seedTracker) report(phase string, batchRows int) {
+	fmt.Fprintf(os.Stderr,
+		"riffdb-seed-progress\tphase=%s\tcompleted=%d/%d\tbatch_rows=%d\toverall_ms=%d\n",
+		phase, t.completed, t.total, batchRows, time.Since(t.started).Milliseconds())
 }
 
 func (s *riffDbSession) Seed(ctx context.Context, dataset seedDataset) error {
@@ -473,7 +504,7 @@ func (s *riffDbSession) Seed(ctx context.Context, dataset seedDataset) error {
 		return err
 	}
 
-	tracker.report("done")
+	tracker.report("done", 0)
 	return nil
 }
 
