@@ -8531,11 +8531,16 @@ contract RedbMigration version 1 {
             .begin_structural_evidence(inputs())
             .expect("begin predecessor full validation");
         assert!(!first.clean_close_fast);
-        // A freshly initialized database carries no certificate at all — the
-        // DIRTY record is written at activation — and the declined open must
-        // say which of the nine preconditions closed the gate, not decline
-        // anonymously.
-        assert_eq!(first.clean_close_declined_reason(), Some("record_absent"));
+        // The open that CREATED this database necessarily rebuilt allocator
+        // state for a file that did not exist, so redb reports a repair and the
+        // gate declines on that alone. The declined open must name which
+        // precondition closed the gate rather than decline anonymously, and
+        // must distinguish this benign first boot from a pre-existing database
+        // whose previous close left no allocator state.
+        assert_eq!(
+            first.clean_close_declined_reason(),
+            Some("engine_initialized_at_open")
+        );
         let structural_end = finish_structural(&mut first);
         let historical_end = finish_historical(&mut first);
         let StructuralOpenOutcome::Clean(opened) = first
@@ -8709,7 +8714,7 @@ contract RedbMigration version 1 {
 
     /// Every declined bounded startup names its precondition.
     ///
-    /// Nine preconditions decline the ADR-0157 bounded path and all nine used
+    /// Ten preconditions decline the ADR-0157 bounded path and all of them used
     /// to share one observable: the next open silently took the complete
     /// validation pass. On a large database that is tens of minutes of SHA-256
     /// and record decoding, so "slow start" was the only evidence available and
