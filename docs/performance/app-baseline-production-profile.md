@@ -105,19 +105,48 @@ Hosts, both 8 vCPU:
 | --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: |
 | N1 | Rust | full | Postgres | 32,592 | 0.508 ms | 3.539 ms | 6.029 ms | 0 |
 | N1 | Rust | full | RiffDB | 7,259 | 1.769 ms | 20.972 ms | 28.312 ms | 0 |
-| N1 | Rust | production | Postgres | 30,167 | 0.557 ms | 3.801 ms | 6.291 ms | 0 |
+| N1 | Rust | production | Postgres | 30,577 | 0.557 ms | 3.801 ms | 6.291 ms | 0 |
+| N1 | Rust | production | RiffDB | 6,359 | 2.097 ms | 24.117 ms | 33.554 ms | 0 |
+| E2 | Rust | production | Postgres | 29,978 | 0.508 ms | 4.063 ms | 6.554 ms | 0 |
+| E2 | Rust | production | RiffDB | 5,225 | 2.490 ms | 29.360 ms | 39.846 ms | 0 |
 | E2 | TypeScript | production | RiffDB | 4,235 | 5.767 ms | 20.972 ms | 29.360 ms | 0 |
 | E2 | Go | production | RiffDB | 2,742 | 9.437 ms | 29.360 ms | 39.846 ms | 0 |
 
-The full-scale pair is the only same-host, same-harness comparison here:
-**RiffDB reaches 0.223x Postgres on N1**. That is the shape of the long-standing
-"wins on the workstation, loses on a GCP VM" report, now reproduced on a quiet
-host with the frozen comparator scale.
+Three same-host, same-harness pairs: **RiffDB reaches 0.223x Postgres at `full`
+on N1, 0.208x at `production` on N1, and 0.174x at `production` on E2**. That is
+the shape of the long-standing "wins on the workstation, loses on a GCP VM"
+report, now reproduced on two quiet hosts.
 
-Postgres barely moves between `full` and `production` on N1 (32,592 to 30,167,
-a 7% decline for 76x the rows), which is worth stating plainly: at these sizes
-the tier does not stress either engine's storage much. See the working-set note
-under limitations.
+E2 has SHA-NI and N1 does not, and E2 is the **worse** of the two for RiffDB.
+So hardware SHA-256 does not explain the serving gap -- it explains the startup
+cost and nothing else. What does track is fsync: E2's durable append is 1.7x
+slower than N1's (2.601 ms against 1.543 ms) and its RiffDB write latency is
+correspondingly higher (`create_comment` p50 25.166 ms against 20.972 ms) while
+its Postgres numbers are unchanged. A load-phase `perf` profile of `riffdbd`
+agrees that the serving path is not hashing: it is dominated by libc
+`malloc`/`free` plus drop glue for `CanonicalValue`, `CommandDerivedIndexes` and
+`StoredProvenanceRecordV1`.
+
+The ratio is almost unchanged between the tiers, and the per-scenario breakdown
+says why: the gap is in the write path, not in reads or in data size.
+
+| Scenario (N1, production, c=32) | Postgres p50 | RiffDB p50 | RiffDB / PG |
+| --- | ---: | ---: | ---: |
+| point_get_ticket | 0.410 ms | 1.704 ms | 4.2x |
+| list_comments_for_ticket | 0.459 ms | 1.835 ms | 4.0x |
+| ticket_detail_page | 2.228 ms | 2.228 ms | 1.0x |
+| create_comment | 2.753 ms | 20.972 ms | **7.6x** |
+| close_ticket_with_comment | 4.981 ms | 20.972 ms | 4.2x |
+| open_ticket_with_labels | 4.981 ms | 22.020 ms | 4.4x |
+
+Reads are a consistent 4x behind and the composite read page is level. Writes
+are 21 ms at p50 against Postgres's 2.8 ms, and `interactive` is a quarter
+writes, so the write path sets the aggregate.
+
+Postgres barely moves between `full` and `production` on N1 (32,592 to 30,577,
+a 6% decline for 76x the rows), and E2 independently reports 29,978 for the same
+production Postgres cell. At these sizes the tier does not stress either
+engine's storage much -- see the working-set note under limitations.
 
 Production seed throughput, 1,112,350 commands:
 
