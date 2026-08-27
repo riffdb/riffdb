@@ -25,12 +25,21 @@ const SEED_MAX_BATCH_ROWS = 4096;
 /**
  * The driver frames a whole batch as one message bounded at 1 MiB, so the
  * generated row ceiling is not the binding constraint: 4,096 comment inputs
- * carrying 256-byte bodies encode to roughly 1.8 MB and the driver refuses the
- * frame. Target half the budget so per-row variation and framing overhead have
- * headroom, and size each phase from its own inputs rather than guessing one
- * number for eight differently shaped phases.
+ * carrying 256-byte bodies overrun it and the frame is refused.
+ *
+ * Chunks are sized from a plain JSON measurement of the phase's own inputs, but
+ * that measurement is not what goes on the wire: the driver sends each field as
+ * a typed record (`{"type":"uuid","value":...}`), which inflates a row well
+ * past its plain form. Sizing against the plain bytes at half the budget was
+ * still too generous and the daemon closed the session mid-phase. So allow for
+ * that inflation explicitly rather than trusting the proxy measurement, and aim
+ * at part of the bound rather than all of it.
  */
-const SEED_FRAME_TARGET_BYTES = 512 * 1024;
+const SEED_FRAME_BOUND_BYTES = 1024 * 1024;
+/** Fraction of the bound to aim for, leaving room for envelope overhead. */
+const SEED_FRAME_UTILISATION = 0.8;
+/** Allowance for typed-record inflation over the plain JSON measurement. */
+const SEED_TYPED_RECORD_FACTOR = 4;
 
 const RIFFDB_BACKEND_ID = "riffdb_public_grpc";
 
@@ -246,13 +255,12 @@ export class RiffDbSession {
     );
 
     // Phases respect foreign-key order.
-    // JSON.stringify is a proxy for the driver's own encoding, not identical to
-    // it; the half-budget target above is what absorbs the difference.
     const chunkRowsFor = (inputs: ReadonlyArray<unknown>): number => {
       if (inputs.length === 0) return SEED_MAX_BATCH_ROWS;
       const sample = Buffer.byteLength(JSON.stringify(inputs[0]), "utf8");
       if (sample <= 0) return SEED_MAX_BATCH_ROWS;
-      const rows = Math.floor(SEED_FRAME_TARGET_BYTES / sample);
+      const budget = SEED_FRAME_BOUND_BYTES * SEED_FRAME_UTILISATION;
+      const rows = Math.floor(budget / (sample * SEED_TYPED_RECORD_FACTOR));
       return Math.max(1, Math.min(SEED_MAX_BATCH_ROWS, rows));
     };
 
