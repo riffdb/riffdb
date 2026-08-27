@@ -539,8 +539,24 @@ impl RiffDbServerSession {
                     detail: error.to_string(),
                 })?;
         let database_path = self._temporary.path().join("riffdb.redb");
+        // Read-only, deliberately. The `_after_reopen_v1` variant opens a full
+        // RedbStore, and opening transitions the ADR-0157 clean-close lifecycle
+        // record to dirty with nothing in Drop writing it back. Sitting here --
+        // between the seed daemon's clean shutdown and the measured daemon's
+        // start -- it threw away the certificate the shutdown had just written,
+        // so every measured restart took the complete validation pass and the
+        // ADR-0156 fast path was never exercised by a benchmark. At `full` scale
+        // that was merely wasteful; at `production` scale the measured daemon
+        // burned more than twenty minutes of CPU and about ten gigabytes of
+        // resident memory and had still not become ready.
+        //
+        // The reopen is also redundant here: the measured daemon reopens this
+        // same file immediately below, which is a stronger check than the one
+        // being dropped. `authoritative_table_inventory_v1` still opens the
+        // database fresh, just read-only, so a fresh reader is still proven to
+        // see the same rows.
         let table_inventory_before_measurement =
-            riffdb_storage_redb::benchmark_support::authoritative_table_inventory_after_reopen_v1(
+            riffdb_storage_redb::benchmark_support::authoritative_table_inventory_v1(
                 &database_path,
             )
             .map_err(|error| RiffDbError::Server {
