@@ -8,7 +8,7 @@ import (
 	riffdb "riffdb.dev/application"
 )
 
-const QueryModuleHash = "b1018ceabd9840a0eb71a05346f880b7278113c3c68bc35805a265c27222b1d1"
+const QueryModuleHash = "e943b03babf87d680037f0b10a9cf1a42631577ee2056813217befc0e5301cb5"
 const ContractLineage = "OperationalAccessCorpus"
 const ContractVersion uint64 = 1
 const ContractBundleHash = "824b7c29849f5e63ba5271c74f183dce60ca68c7fead647b025217c6ecba36ca"
@@ -116,6 +116,20 @@ type ItemsByKindsFound struct {
 }
 func (ItemsByKindsFound) isItemsByKindsResult() {}
 
+type ItemsInCodeWindowParams struct {
+	WorkspaceId string
+	AfterCode string
+	HorizonCode string
+	After *string
+}
+
+type ItemsInCodeWindowResult interface { isItemsInCodeWindowResult() }
+type ItemsInCodeWindowFound struct {
+	Outcome string
+	Items []struct { ItemId string; Code string; Kind string; Score int64; PublishedAt *riffdb.Instant }
+}
+func (ItemsInCodeWindowFound) isItemsInCodeWindowResult() {}
+
 type ItemsInScoreWindowParams struct {
 	WorkspaceId string
 	Minimum int64
@@ -129,6 +143,19 @@ type ItemsInScoreWindowFound struct {
 	Items []struct { ItemId string; Code string; Kind string; Score int64; PublishedAt *riffdb.Instant }
 }
 func (ItemsInScoreWindowFound) isItemsInScoreWindowResult() {}
+
+type ItemsOutsideCodeParams struct {
+	WorkspaceId string
+	ExcludedCode string
+	After *string
+}
+
+type ItemsOutsideCodeResult interface { isItemsOutsideCodeResult() }
+type ItemsOutsideCodeFound struct {
+	Outcome string
+	Items []struct { ItemId string; Code string; Kind string; Score int64; PublishedAt *riffdb.Instant }
+}
+func (ItemsOutsideCodeFound) isItemsOutsideCodeResult() {}
 
 type ItemsOutsideScoreParams struct {
 	WorkspaceId string
@@ -272,6 +299,20 @@ input["workspace_id"] = riffdb.UUID(parameters.WorkspaceId)
 input["kinds"] = riffdb.Values(parameters.Kinds, func(item string) riffdb.Value { return riffdb.String(item) })
 response, err := client.session.Invoke(ctx, ItemsByKindsOperation, input, options); if err != nil { return QueryResult[ItemsByKindsResult]{}, err }; if response.ApplicationHead == nil { return QueryResult[ItemsByKindsResult]{}, errors.New("RiffDB driver omitted query frontier") }; value, err := decodeItemsByKindsResult(response.Value); if err != nil { return QueryResult[ItemsByKindsResult]{}, err }; identity := QueryIdentity{ContractLineage: ContractLineage, ContractVersion: ContractVersion, ContractBundleHash: ContractBundleHash, ModuleHash: QueryModuleHash, QueryName: "ItemsByKinds", PlanHash: ItemsByKindsQueryPlanHash}; return QueryResult[ItemsByKindsResult]{Value: value, Identity: identity, ApplicationHead: *response.ApplicationHead, NextCursor: response.Cursor}, nil }
 
+const ItemsInCodeWindowQueryPlanHash = "cbd844e502056b6bfe9229ccd4a4186f7dfc69a1ba79887420def8048927780c"
+var ItemsInCodeWindowOperation = riffdb.Operation{Name: "operational_access_corpus_items_in_code_window", InputSchemaHash: "713471943006d39a31f0ad95da0935b21ed44ac1484840f6851a9718e608362d"}
+func decodeItemsInCodeWindowResult(value riffdb.Value) (ItemsInCodeWindowResult, error) { fields, err := riffdb.RecordFields(value); if err != nil { return nil, err }; outcomeValue, err := requiredField(fields, "outcome"); if err != nil { return nil, err }; outcome, err := riffdb.EnumValue(outcomeValue); if err != nil { return nil, err }; var raw riffdb.Value; switch outcome {
+case "Found": result := ItemsInCodeWindowFound{Outcome: outcome}
+raw, err = requiredField(fields, "items"); if err != nil { return nil, err }; result.Items, err = riffdb.DecodeValues(raw, func(item riffdb.Value) (struct { ItemId string; Code string; Kind string; Score int64; PublishedAt *riffdb.Instant }, error) { return func() (struct { ItemId string; Code string; Kind string; Score int64; PublishedAt *riffdb.Instant }, error) { fields, err := riffdb.RecordFields(item); if err != nil { return struct { ItemId string; Code string; Kind string; Score int64; PublishedAt *riffdb.Instant }{}, err }; var result struct { ItemId string; Code string; Kind string; Score int64; PublishedAt *riffdb.Instant }; var raw riffdb.Value; raw, err = requiredField(fields, "item_id"); if err != nil { return result, err }; result.ItemId, err = riffdb.UUIDValue(raw); if err != nil { return result, err }; raw, err = requiredField(fields, "code"); if err != nil { return result, err }; result.Code, err = riffdb.StringValue(raw); if err != nil { return result, err }; raw, err = requiredField(fields, "kind"); if err != nil { return result, err }; result.Kind, err = riffdb.StringValue(raw); if err != nil { return result, err }; raw, err = requiredField(fields, "score"); if err != nil { return result, err }; result.Score, err = riffdb.I64Value(raw); if err != nil { return result, err }; raw, err = requiredField(fields, "published_at"); if err != nil { return result, err }; result.PublishedAt, err = riffdb.DecodeOptional(raw, func(item riffdb.Value) (riffdb.Instant, error) { return riffdb.TimestampValue(item) }); if err != nil { return result, err }; return result, nil }() }); if err != nil { return nil, err }
+return result, nil
+default: return nil, errors.New("RiffDB driver returned unknown query outcome") } }
+func (client *Client) ItemsInCodeWindow(ctx context.Context, parameters ItemsInCodeWindowParams, options QueryOptions) (QueryResult[ItemsInCodeWindowResult], error) { input := map[string]riffdb.Value{}
+if parameters.After != nil { if options.Cursor != "" { return QueryResult[ItemsInCodeWindowResult]{}, errors.New("generated cursor conflicts with query options") }; options.Cursor = *parameters.After }
+input["workspace_id"] = riffdb.UUID(parameters.WorkspaceId)
+input["after_code"] = riffdb.String(parameters.AfterCode)
+input["horizon_code"] = riffdb.String(parameters.HorizonCode)
+response, err := client.session.Invoke(ctx, ItemsInCodeWindowOperation, input, options); if err != nil { return QueryResult[ItemsInCodeWindowResult]{}, err }; if response.ApplicationHead == nil { return QueryResult[ItemsInCodeWindowResult]{}, errors.New("RiffDB driver omitted query frontier") }; value, err := decodeItemsInCodeWindowResult(response.Value); if err != nil { return QueryResult[ItemsInCodeWindowResult]{}, err }; identity := QueryIdentity{ContractLineage: ContractLineage, ContractVersion: ContractVersion, ContractBundleHash: ContractBundleHash, ModuleHash: QueryModuleHash, QueryName: "ItemsInCodeWindow", PlanHash: ItemsInCodeWindowQueryPlanHash}; return QueryResult[ItemsInCodeWindowResult]{Value: value, Identity: identity, ApplicationHead: *response.ApplicationHead, NextCursor: response.Cursor}, nil }
+
 const ItemsInScoreWindowQueryPlanHash = "b9fe29b0b6bcce2d4df93f1edc4df502fffe78d37ace9ce0c194c8fee1121310"
 var ItemsInScoreWindowOperation = riffdb.Operation{Name: "operational_access_corpus_items_in_score_window", InputSchemaHash: "a0893342eb63ddb65020ba021f6f56040803db16038777d9891bd5b0d1cbe4cc"}
 func decodeItemsInScoreWindowResult(value riffdb.Value) (ItemsInScoreWindowResult, error) { fields, err := riffdb.RecordFields(value); if err != nil { return nil, err }; outcomeValue, err := requiredField(fields, "outcome"); if err != nil { return nil, err }; outcome, err := riffdb.EnumValue(outcomeValue); if err != nil { return nil, err }; var raw riffdb.Value; switch outcome {
@@ -285,6 +326,19 @@ input["workspace_id"] = riffdb.UUID(parameters.WorkspaceId)
 input["minimum"] = riffdb.I64(parameters.Minimum)
 input["maximum"] = riffdb.I64(parameters.Maximum)
 response, err := client.session.Invoke(ctx, ItemsInScoreWindowOperation, input, options); if err != nil { return QueryResult[ItemsInScoreWindowResult]{}, err }; if response.ApplicationHead == nil { return QueryResult[ItemsInScoreWindowResult]{}, errors.New("RiffDB driver omitted query frontier") }; value, err := decodeItemsInScoreWindowResult(response.Value); if err != nil { return QueryResult[ItemsInScoreWindowResult]{}, err }; identity := QueryIdentity{ContractLineage: ContractLineage, ContractVersion: ContractVersion, ContractBundleHash: ContractBundleHash, ModuleHash: QueryModuleHash, QueryName: "ItemsInScoreWindow", PlanHash: ItemsInScoreWindowQueryPlanHash}; return QueryResult[ItemsInScoreWindowResult]{Value: value, Identity: identity, ApplicationHead: *response.ApplicationHead, NextCursor: response.Cursor}, nil }
+
+const ItemsOutsideCodeQueryPlanHash = "f891f2c81f0f206c4b0cdd1a48c956a0f4f48baf0446904a170f99205357ea54"
+var ItemsOutsideCodeOperation = riffdb.Operation{Name: "operational_access_corpus_items_outside_code", InputSchemaHash: "4e1c7de5fa5cf61b39a4ed15b8280af853668bd309eef50cee5f332e8ba3d7ab"}
+func decodeItemsOutsideCodeResult(value riffdb.Value) (ItemsOutsideCodeResult, error) { fields, err := riffdb.RecordFields(value); if err != nil { return nil, err }; outcomeValue, err := requiredField(fields, "outcome"); if err != nil { return nil, err }; outcome, err := riffdb.EnumValue(outcomeValue); if err != nil { return nil, err }; var raw riffdb.Value; switch outcome {
+case "Found": result := ItemsOutsideCodeFound{Outcome: outcome}
+raw, err = requiredField(fields, "items"); if err != nil { return nil, err }; result.Items, err = riffdb.DecodeValues(raw, func(item riffdb.Value) (struct { ItemId string; Code string; Kind string; Score int64; PublishedAt *riffdb.Instant }, error) { return func() (struct { ItemId string; Code string; Kind string; Score int64; PublishedAt *riffdb.Instant }, error) { fields, err := riffdb.RecordFields(item); if err != nil { return struct { ItemId string; Code string; Kind string; Score int64; PublishedAt *riffdb.Instant }{}, err }; var result struct { ItemId string; Code string; Kind string; Score int64; PublishedAt *riffdb.Instant }; var raw riffdb.Value; raw, err = requiredField(fields, "item_id"); if err != nil { return result, err }; result.ItemId, err = riffdb.UUIDValue(raw); if err != nil { return result, err }; raw, err = requiredField(fields, "code"); if err != nil { return result, err }; result.Code, err = riffdb.StringValue(raw); if err != nil { return result, err }; raw, err = requiredField(fields, "kind"); if err != nil { return result, err }; result.Kind, err = riffdb.StringValue(raw); if err != nil { return result, err }; raw, err = requiredField(fields, "score"); if err != nil { return result, err }; result.Score, err = riffdb.I64Value(raw); if err != nil { return result, err }; raw, err = requiredField(fields, "published_at"); if err != nil { return result, err }; result.PublishedAt, err = riffdb.DecodeOptional(raw, func(item riffdb.Value) (riffdb.Instant, error) { return riffdb.TimestampValue(item) }); if err != nil { return result, err }; return result, nil }() }); if err != nil { return nil, err }
+return result, nil
+default: return nil, errors.New("RiffDB driver returned unknown query outcome") } }
+func (client *Client) ItemsOutsideCode(ctx context.Context, parameters ItemsOutsideCodeParams, options QueryOptions) (QueryResult[ItemsOutsideCodeResult], error) { input := map[string]riffdb.Value{}
+if parameters.After != nil { if options.Cursor != "" { return QueryResult[ItemsOutsideCodeResult]{}, errors.New("generated cursor conflicts with query options") }; options.Cursor = *parameters.After }
+input["workspace_id"] = riffdb.UUID(parameters.WorkspaceId)
+input["excluded_code"] = riffdb.String(parameters.ExcludedCode)
+response, err := client.session.Invoke(ctx, ItemsOutsideCodeOperation, input, options); if err != nil { return QueryResult[ItemsOutsideCodeResult]{}, err }; if response.ApplicationHead == nil { return QueryResult[ItemsOutsideCodeResult]{}, errors.New("RiffDB driver omitted query frontier") }; value, err := decodeItemsOutsideCodeResult(response.Value); if err != nil { return QueryResult[ItemsOutsideCodeResult]{}, err }; identity := QueryIdentity{ContractLineage: ContractLineage, ContractVersion: ContractVersion, ContractBundleHash: ContractBundleHash, ModuleHash: QueryModuleHash, QueryName: "ItemsOutsideCode", PlanHash: ItemsOutsideCodeQueryPlanHash}; return QueryResult[ItemsOutsideCodeResult]{Value: value, Identity: identity, ApplicationHead: *response.ApplicationHead, NextCursor: response.Cursor}, nil }
 
 const ItemsOutsideScoreQueryPlanHash = "c2f5048cf586b549abf48abfbc70ba922de684d3e032e2ac7f60536728bb542b"
 var ItemsOutsideScoreOperation = riffdb.Operation{Name: "operational_access_corpus_items_outside_score", InputSchemaHash: "3d9d33ec209963d1f72bc4b8e96c775bc4b46a5daaf206a347b374dfb8c0303e"}

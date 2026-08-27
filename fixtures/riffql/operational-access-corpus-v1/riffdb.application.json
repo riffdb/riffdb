@@ -23,8 +23,10 @@
         { "name": "ItemsByCodes", "source": "queries/items_by_codes.riffq" },
         { "name": "ItemsByCodesReverse", "source": "queries/items_by_codes_reverse.riffq" },
         { "name": "ItemsByCodePrefix", "source": "queries/items_by_code_prefix.riffq" },
+        { "name": "ItemsInCodeWindow", "source": "queries/items_in_code_window.riffq" },
         { "name": "ItemsByKinds", "source": "queries/items_by_kinds.riffq" },
         { "name": "ItemsInScoreWindow", "source": "queries/items_in_score_window.riffq" },
+        { "name": "ItemsOutsideCode", "source": "queries/items_outside_code.riffq" },
         { "name": "ItemsOutsideScore", "source": "queries/items_outside_score.riffq" },
         { "name": "ItemsWithLabels", "source": "queries/items_with_labels.riffq" }
       ]
@@ -41,8 +43,10 @@
         "ItemsByCodes",
         "ItemsByCodesReverse",
         "ItemsByCodePrefix",
+        "ItemsInCodeWindow",
         "ItemsByKinds",
         "ItemsInScoreWindow",
+        "ItemsOutsideCode",
         "ItemsOutsideScore",
         "ItemsWithLabels"
       ],

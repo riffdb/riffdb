@@ -46,18 +46,20 @@ capability, but neither its route vocabulary nor its userland policy becomes a
 RiffDB feature.
 
 External adapters can pin
-`fixtures/riffql/operational-query-capability-v4.json`. V4 preserves the
-immutable V1 through V3 receipts and adds the neutral operational-access corpus
-for shared equality, membership, prefix, range/complement, nullable, cursor,
-policy, and dependent-key shapes. It binds the exact application lock and
-generated Rust, Go, TypeScript, Python, and MCP artifacts.
+`fixtures/riffql/operational-query-capability-v5.json`. V5 preserves the
+immutable V1 through V4 receipts and extends the neutral operational-access
+corpus with binary UTF-8 interval/complement alongside shared equality,
+membership, prefix, canonical range/complement, nullable, cursor, policy, and
+dependent-key shapes. It binds the exact application lock and generated Rust,
+Go, TypeScript, Python, and MCP artifacts.
 
-V4 also binds one value-free external tuple-consumer receipt demonstrating that
-one bytewise text-key index can supply exact prefix, bounded membership, and
-order without a redundant-index fallback. That receipt contains hashes,
-bounded work figures, and the typed result only; it contains no external
-schema, route, adapter, generated profile, or stored value. It explicitly does
-not claim full external application or framework conformance. The owning
+V5 also binds one value-free external tuple-changelog receipt demonstrating
+that one bytewise text-key index can supply strict lower/upper selection and
+order, and that its exact package may declare only a generated Go surface.
+That receipt contains hashes and typed verification classes only; it contains
+no external schema, route, adapter, generated profile, or stored value. It
+explicitly does not claim external runtime, full external application, or
+framework conformance. The owning
 adapter repository must still prove that its real public surface delegates only
 to pinned generated operations without filtering, sorting, counting, page
 walking, raw query construction, or storage access.

@@ -156,17 +156,19 @@ combination requires all of the following in one reviewed change:
 
 The neutral application at
 `fixtures/riffql/operational-access-corpus-v1` freezes equality, canonical and
-binary-text membership, prefix, typed interval and complement, nullable state
-and order, forward/reverse cursor, row-policy authority, and dependent complete-
-key shapes. Its exact lock and Rust, Go, TypeScript, Python, and MCP artifacts
-are checked by `scripts/generate-operational-access-corpus --check`.
+binary-text membership, prefix, typed canonical and binary-text interval and
+complement, nullable state and order, forward/reverse cursor, row-policy
+authority, and dependent complete-key shapes. Its exact lock and Rust, Go,
+TypeScript, Python, and MCP artifacts are checked by
+`scripts/generate-operational-access-corpus --check`.
 
-`fixtures/riffql/operational-query-capability-v4.json` binds that corpus, the
-unchanged V3 capability receipt, and a value-free external tuple-consumer
-source-compilation receipt. The external receipt proves only the named access
-shapes it lists. It deliberately does not copy an external contract, schema,
-route, adapter, generated profile, or stored value into RiffDB, and it does not
-claim full framework conformance.
+`fixtures/riffql/operational-query-capability-v5.json` binds that corpus, the
+unchanged V4 capability receipt, and a value-free external tuple-changelog
+source-compilation and Go-only package receipt. The external receipt proves
+only the named access shapes it lists. It deliberately does not copy an
+external contract, schema, route, adapter, generated profile, or stored value
+into RiffDB, and it does not claim external runtime or full framework
+conformance.
 
 ## Feature preflight
 
