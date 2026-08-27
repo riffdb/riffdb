@@ -83,7 +83,7 @@ use crate::maintenance_recovery_controller::{
 };
 use crate::process_graph::{
     ProductionDigestKeys, ProductionGraphBuildError, ProductionGraphBuilder,
-    ProductionGraphShutdownError, RunningProductionGraph,
+    ProductionGraphShutdownError, ProductionGraphShutdownStageEvidence, RunningProductionGraph,
 };
 use crate::recovery_host::{
     RecoveryHostShutdownError, RecoveryHostStartError, RunningRecoveryHost,
@@ -540,6 +540,7 @@ pub(crate) fn riffdbd_test_fixture_main(
 }
 
 fn run_from_process(recovery: MaintenanceRecoveryController) -> Result<(), DaemonError> {
+    crate::startup_census::mark_process_start();
     let config = ServerConfig::from_process_args().map_err(DaemonError::Config)?;
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(RUNTIME_WORKER_THREADS)
@@ -548,6 +549,16 @@ fn run_from_process(recovery: MaintenanceRecoveryController) -> Result<(), Daemo
         .map_err(DaemonError::Runtime)?;
     let result = runtime.block_on(run_server(config, recovery));
     runtime.shutdown_timeout(RUNTIME_DRAIN_LIMIT);
+    // Every storage clone that outlived the graph has now been dropped,
+    // `redb::Database::drop` included. Reprint the release census with the
+    // remainder filled in: this is the only receipt that can cover it.
+    crate::shutdown_census::record_post_graph_release();
+    {
+        let stdout = io::stdout();
+        let mut stdout = stdout.lock();
+        let _ = writeln!(stdout, "{}", crate::shutdown_census::format_v1_line());
+        let _ = stdout.flush();
+    }
     result
 }
 
@@ -3179,7 +3190,17 @@ async fn supervise_ready_process(
         // BYTE-IDENTICAL with prior releases: Tier 2 harness depends on this line.
         let _ = writeln!(stdout, "riffdb-write-completion-groups-v1\t{counts}");
         let _ = writeln!(stdout, "riffdb-dispatch-reasons-v1\t{reasons}");
+        let _ = writeln!(
+            stdout,
+            "{}",
+            ProductionGraphShutdownStageEvidence::format_labels_v1_line()
+        );
         let _ = writeln!(stdout, "{}", shutdown_stages.format_v1_line());
+        // The post-drain release stages the line above cannot cover. Stamped
+        // here so the remainder to the process boundary is attributable too;
+        // `run_from_process` reprints this line once that remainder is known.
+        let _ = writeln!(stdout, "{}", crate::shutdown_census::format_v1_line());
+        crate::shutdown_census::mark_graph_receipt();
         let read_stages_line = riffdb_observability::format_read_stages_v1_line(&read_stages);
         let _ = writeln!(stdout, "{read_stages_line}");
         let write_service_stages_line =
@@ -3334,8 +3355,13 @@ async fn wait_for_shutdown_input(
 }
 
 fn publish_readiness(endpoint: &HostedGrpcEndpoint) -> Result<(), DaemonError> {
+    // Emitted BEFORE the ready line so a harness that stops reading stdout at
+    // readiness still captures it, and so a start that never becomes ready
+    // leaves no census rather than a misleading partial one.
+    let census = crate::startup_census::format_v1_line();
     let stdout = io::stdout();
     let mut stdout = stdout.lock();
+    let _ = writeln!(stdout, "{census}");
     writeln!(stdout, "{READY_PROTOCOL}\t{endpoint}").map_err(DaemonError::Readiness)?;
     stdout.flush().map_err(DaemonError::Readiness)
 }

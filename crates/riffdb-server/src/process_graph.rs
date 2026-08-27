@@ -109,7 +109,34 @@ pub(crate) struct ProductionGraphShutdownStageEvidence {
     elapsed_us: [u64; PRODUCTION_SHUTDOWN_STAGE_COUNT],
 }
 
+/// Names for `riffdb-shutdown-stages-v1`'s positional stage values.
+///
+/// The stage line is positional and unlabelled, which is how a 36-second
+/// columnar backlog drain was read as an inexpensive shutdown: the reader had
+/// no way to tell which slot was which, and a benchmark run emits three of
+/// these lines from three different daemons, only one of which has a large
+/// history. Emitting the names alongside removes both ambiguities without
+/// touching the byte format harnesses already parse.
+pub(crate) const PRODUCTION_SHUTDOWN_STAGE_LABELS_V1: [&str; PRODUCTION_SHUTDOWN_STAGE_COUNT] = [
+    "service_jobs_idle",
+    "exact_text_worker",
+    "columnar_worker",
+    "projection_worker",
+    "notifications",
+    "coordinator",
+    "blocking_ports",
+    "validated_prefix_checkpoint_write",
+];
+
 impl ProductionGraphShutdownStageEvidence {
+    /// Companion label line for [`Self::format_v1_line`]'s positional values.
+    pub(crate) fn format_labels_v1_line() -> String {
+        format!(
+            "riffdb-shutdown-stage-labels-v1\t{}",
+            PRODUCTION_SHUTDOWN_STAGE_LABELS_V1.join(",")
+        )
+    }
+
     /// Stable process-evidence line consumed by benchmark harnesses.
     pub(crate) fn format_v1_line(self) -> String {
         let values = self
@@ -258,6 +285,15 @@ impl ProductionGraphBuilder {
 
     /// Constructs each production authority exactly once and publishes it atomically.
     pub(crate) fn build(self) -> Result<RunningProductionGraph, ProductionGraphBuildError> {
+        let graph_build_started = std::time::Instant::now();
+        let outcome = self.build_inner();
+        // GraphRest is the remainder: whole build minus the three stages the
+        // build names itself, so an unnamed cost inside the build still shows.
+        crate::startup_census::record_graph_rest(graph_build_started);
+        outcome
+    }
+
+    fn build_inner(self) -> Result<RunningProductionGraph, ProductionGraphBuildError> {
         let Self {
             startup,
             activator,
@@ -303,18 +339,35 @@ impl ProductionGraphBuilder {
             .map_err(ProductionGraphBuildError::Runtime)?;
 
         let health: Arc<dyn ServiceHealthHooks> = Arc::new(runtime.clone());
-        let mut storage = SharedRedbOperationalPorts::new(operational_ports, Some(health))
+        let mut storage =
+            crate::startup_census::timed(crate::startup_census::StartupStage::CurrentViews, || {
+                SharedRedbOperationalPorts::new(operational_ports, Some(health))
+            })
             .map_err(|_| ProductionGraphBuildError::CurrentView)?;
         let consumer_recovery_time = clocks
             .process_time()
             .map_err(|_| ProductionGraphBuildError::CurrentView)?;
-        recover_event_consumers(
-            &mut storage,
-            consumer_recovery_time,
-            retained_metadata.history_incarnation(),
+        crate::startup_census::timed(
+            crate::startup_census::StartupStage::ConsumerRecovery,
+            || {
+                recover_event_consumers(
+                    &mut storage,
+                    consumer_recovery_time,
+                    retained_metadata.history_incarnation(),
+                )
+            },
         )
         .map_err(|_| ProductionGraphBuildError::CurrentView)?;
+        let outbox_recovery_started = std::time::Instant::now();
         let outbox_recovery = recover_outbox(storage.clone(), clocks.outbox());
+        crate::startup_census::record(
+            crate::startup_census::StartupStage::OutboxRecovery,
+            outbox_recovery_started,
+        );
+        // Read AFTER outbox recovery: that is the first derived read a bounded
+        // start performs, and therefore the first thing that can warm the
+        // population caches the bounded path deliberately left cold.
+        storage.record_transient_index_census();
         let bounded_clean_startup = storage.bounded_clean_startup();
         let outbox_health = NoDestinationOutboxHealth::new(if bounded_clean_startup {
             OutboxRecoveryReadiness::Degraded
@@ -1064,6 +1117,25 @@ impl RunningProductionGraph {
         let started = Instant::now();
         write_shutdown_validated_prefix_checkpoint(&self.storage);
         elapsed_us[7] = elapsed_microseconds(started);
+        let evidence = ProductionGraphShutdownStageEvidence {
+            graph_elapsed_us: elapsed_microseconds(graph_started),
+            elapsed_us,
+        };
+        // Releasing the graph's storage owners is where `redb::Database::drop`
+        // runs, and that drop is not free: redb persists its allocator-state
+        // table and trims the file so the NEXT open can skip a full repair.
+        // It used to happen implicitly at function exit, after
+        // `graph_elapsed_us` was already computed, so the whole cost fell
+        // outside every shutdown receipt this process emits. Dropping it here
+        // changes nothing about what is dropped or in what order relative to
+        // any live user — every worker above is already joined and the final
+        // checkpoint write is done — it only makes the cost nameable.
+        let release_started = Instant::now();
+        drop(self);
+        crate::shutdown_census::record(
+            crate::shutdown_census::ShutdownReleaseStage::GraphStorageRelease,
+            release_started,
+        );
         shutdown_result(
             exact,
             columnar,
@@ -1072,10 +1144,7 @@ impl RunningProductionGraph {
             coordinator,
             blocking,
         )?;
-        Ok(ProductionGraphShutdownStageEvidence {
-            graph_elapsed_us: elapsed_microseconds(graph_started),
-            elapsed_us,
-        })
+        Ok(evidence)
     }
 }
 

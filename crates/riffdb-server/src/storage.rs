@@ -125,6 +125,21 @@ impl SharedRedbOperationalPorts {
         self.bounded_clean_startup
     }
 
+    /// Publishes the storage adapter's transient-index rebuild census into the
+    /// startup census so a bounded start that warmed the caches anyway is
+    /// visible on the readiness line.
+    pub(crate) fn record_transient_index_census(&self) {
+        let census = self.cell.with_mut(|ports| {
+            Ok((
+                ports.transient_index_rebuilds(),
+                ports.transient_index_commit_rows(),
+            ))
+        });
+        if let Ok((rebuilds, commit_rows)) = census {
+            crate::startup_census::record_transient_index_rebuilds(rebuilds, commit_rows);
+        }
+    }
+
     /// Reads the active query-module pointer from process-local state only.
     ///
     /// Never touches redb, never takes a write lock, and never blocks on the

@@ -1460,6 +1460,12 @@ fn read_server_stdout(
                 if line.starts_with(READY_PREFIX) {
                     break Ok(line.trim_end().to_owned());
                 }
+                // Mirror pre-ready stdout the same way the post-ready loop
+                // does. The startup stage census is emitted before the ready
+                // line by construction, so swallowing everything up to
+                // readiness discarded exactly the evidence that explains a
+                // slow start.
+                eprint!("{line}");
             }
             Err(error) => break Err(error),
         }
