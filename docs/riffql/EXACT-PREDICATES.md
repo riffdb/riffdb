@@ -169,8 +169,11 @@ implementation may incrementally maintain the same V4 identity without
 changing query semantics.
 
 The immutable generic capability receipt is
-`release/evidence/operational-query-capability-v3.json`. It preserves the V1
-and V2 receipts and binds the neutral contract, nullable operation plans,
-generated-language artifacts, and strict TypeScript helper-reachability gate.
-It does not claim any external framework route has passed: that evidence
-remains the responsibility of the repository owning the adapter.
+`fixtures/riffql/operational-query-capability-v5.json`. It preserves V1
+through V4 byte-for-byte, so the V6/V7 exact-result plans, generated-language
+artifacts, and strict TypeScript helper-reachability gate retain their prior
+evidence. V5 adds binary UTF-8 interval/complement operations to the separately
+governed ordinary access-path corpus and binds one value-free external source-
+compilation and Go-only package receipt. It does not claim an external runtime,
+framework route, or full application has passed: that evidence remains the
+responsibility of the repository owning the adapter.

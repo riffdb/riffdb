@@ -887,6 +887,8 @@ const EXPECTED_TOKEN_NAMES: &[&str] = &[
     "read",
     "mutate",
     "create",
+    "init_or_mutate",
+    "initialize",
     "as",
     "else",
     "require",
@@ -1219,6 +1221,9 @@ impl NodeCounter {
                 | Binding::Delete(entity) => {
                     self.entity_binding(entity, binding.span)?;
                 }
+                Binding::InitOrMutate(entity) => {
+                    self.initialized_entity_binding(entity, binding.span)?;
+                }
             }
         }
         if let Some(iteration) = &command.bulk_iteration {
@@ -1239,6 +1244,9 @@ impl NodeCounter {
                     | Binding::Mutate(entity)
                     | Binding::Create(entity)
                     | Binding::Delete(entity) => self.entity_binding(entity, binding.span)?,
+                    Binding::InitOrMutate(entity) => {
+                        self.initialized_entity_binding(entity, binding.span)?;
+                    }
                 }
             }
             for requirement in &iteration.value.requirements {
@@ -1424,6 +1432,18 @@ impl NodeCounter {
             self.outcome(failure)?;
         }
         Ok(())
+    }
+
+    fn initialized_entity_binding(
+        &mut self,
+        binding: &InitializedEntityBinding,
+        span: Span,
+    ) -> Result<(), SyntaxDiagnostic> {
+        self.add(1, span)?;
+        self.name(&binding.entity)?;
+        self.expressions(&binding.arguments, span)?;
+        self.name(&binding.binding)?;
+        self.object(&binding.initializer)
     }
 
     fn outcome(&mut self, outcome: &Spanned<OutcomeExpression>) -> Result<(), SyntaxDiagnostic> {

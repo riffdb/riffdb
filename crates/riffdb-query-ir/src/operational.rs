@@ -2,12 +2,21 @@
 
 use std::sync::Arc;
 
-use riffdb_types::{QueryCostVectorV1, QueryPlanHash, hash_query_plan};
+use riffdb_riffql_syntax::AggregateFunction;
+use riffdb_types::{
+    AggregateInputClassV1, AggregateSemanticIdentityV1, QueryCostVectorV1, QueryPlanHash,
+    hash_query_plan,
+};
+
+pub use riffdb_types::{
+    MAX_AGGREGATE_ARITHMETIC_OPERATIONS_V1, MAX_AGGREGATE_DISTINCT_VALUES_V1,
+    MAX_AGGREGATE_STATE_BYTES_V1,
+};
 
 use crate::{
     AuthorizationEntityAccess, MAX_QUERY_ARTIFACT_BYTES, NamedTypeSchema, PageBound,
-    QUERY_IR_VERSION_OPERATIONAL_AGGREGATE_V1, QUERY_IR_VERSION_OPERATIONAL_V1,
-    QueryAccessProgramV1, ResolvedQueryV1,
+    QUERY_IR_VERSION_EXACT_AGGREGATE_V1, QUERY_IR_VERSION_OPERATIONAL_AGGREGATE_V1,
+    QUERY_IR_VERSION_OPERATIONAL_V1, QueryAccessProgramV1, ResolvedQueryV1,
 };
 
 const FAMILY_MAGIC: &[u8] = b"RIFFDB-OPERATIONAL-QUERY-FAMILY\0";
@@ -16,6 +25,27 @@ const FAMILY_MAGIC: &[u8] = b"RIFFDB-OPERATIONAL-QUERY-FAMILY\0";
 pub const MAX_OPERATIONAL_PRESENCE_PARAMETERS: usize = 8;
 /// Maximum compiler-enumerated access plans in one operational family.
 pub const MAX_OPERATIONAL_PLAN_MEMBERS: usize = 1 << MAX_OPERATIONAL_PRESENCE_PARAMETERS;
+/// Maps the unchanged source syntax arms to the shared semantic registry.
+#[must_use]
+pub const fn source_aggregate_semantic_identity(
+    function: AggregateFunction,
+) -> AggregateSemanticIdentityV1 {
+    match function {
+        AggregateFunction::Count => AggregateSemanticIdentityV1::Count,
+        AggregateFunction::ExactCount => AggregateSemanticIdentityV1::ExactCount,
+        AggregateFunction::Sum => AggregateSemanticIdentityV1::Sum,
+        AggregateFunction::Min => AggregateSemanticIdentityV1::Min,
+        AggregateFunction::Max => AggregateSemanticIdentityV1::Max,
+        AggregateFunction::CountPresent => AggregateSemanticIdentityV1::CountPresent,
+        AggregateFunction::CountDistinct => AggregateSemanticIdentityV1::CountDistinct,
+        AggregateFunction::CountDistinctPresent => {
+            AggregateSemanticIdentityV1::CountDistinctPresent
+        }
+        AggregateFunction::Mean => AggregateSemanticIdentityV1::Mean,
+        AggregateFunction::Any => AggregateSemanticIdentityV1::Any,
+        AggregateFunction::All => AggregateSemanticIdentityV1::All,
+    }
+}
 
 /// Closed aggregate functions shared with the projected exact evaluator.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -28,6 +58,44 @@ pub enum OperationalAggregateFunctionV1 {
     Min,
     /// Maximum contributed value, absent for an empty input.
     Max,
+    /// Exact count of present values.
+    CountPresent,
+    /// Exact distinct count including `NoValue`.
+    CountDistinct,
+    /// Exact distinct count excluding `NoValue`.
+    CountDistinctPresent,
+    /// Exact total and contributing count.
+    Mean,
+    /// Boolean disjunction.
+    Any,
+    /// Boolean conjunction.
+    All,
+}
+
+impl OperationalAggregateFunctionV1 {
+    /// Returns the shared semantic identity represented by this durable IR arm.
+    #[must_use]
+    pub const fn semantic_identity(self) -> AggregateSemanticIdentityV1 {
+        match self {
+            Self::Count => AggregateSemanticIdentityV1::Count,
+            Self::Sum => AggregateSemanticIdentityV1::Sum,
+            Self::Min => AggregateSemanticIdentityV1::Min,
+            Self::Max => AggregateSemanticIdentityV1::Max,
+            Self::CountPresent => AggregateSemanticIdentityV1::CountPresent,
+            Self::CountDistinct => AggregateSemanticIdentityV1::CountDistinct,
+            Self::CountDistinctPresent => AggregateSemanticIdentityV1::CountDistinctPresent,
+            Self::Mean => AggregateSemanticIdentityV1::Mean,
+            Self::Any => AggregateSemanticIdentityV1::Any,
+            Self::All => AggregateSemanticIdentityV1::All,
+        }
+    }
+
+    pub(crate) fn durable_tag(self) -> u8 {
+        self.semantic_identity()
+            .descriptor()
+            .operational_ir_tag()
+            .expect("every operational aggregate has its frozen v1 tag")
+    }
 }
 
 /// One resolved grouping field.
@@ -99,11 +167,12 @@ impl OperationalAggregateMeasureV1 {
         input_field: Option<String>,
         result_type: NamedTypeSchema,
     ) -> Option<Self> {
-        let input_is_valid = match function {
-            OperationalAggregateFunctionV1::Count => input_field.is_none(),
-            OperationalAggregateFunctionV1::Sum
-            | OperationalAggregateFunctionV1::Min
-            | OperationalAggregateFunctionV1::Max => {
+        let input_is_valid = match function.semantic_identity().descriptor().input_class() {
+            AggregateInputClassV1::NoField => input_field.is_none(),
+            AggregateInputClassV1::ExactNumericField
+            | AggregateInputClassV1::OrderedScalarField
+            | AggregateInputClassV1::CanonicalScalarField
+            | AggregateInputClassV1::RequiredBooleanField => {
                 input_field.as_ref().is_some_and(|field| !field.is_empty())
             }
         };
@@ -125,6 +194,58 @@ pub struct OperationalAggregateV1 {
     group_keys: Vec<OperationalAggregateGroupKeyV1>,
     measures: Vec<OperationalAggregateMeasureV1>,
     maximum_groups: PageBound,
+    execution_budget: AggregateExecutionBudgetV1,
+}
+
+/// Independent compiler-sealed runtime bounds for exact aggregate state.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct AggregateExecutionBudgetV1 {
+    maximum_distinct_values_per_measure: u16,
+    maximum_state_bytes: u32,
+    maximum_arithmetic_operations: u32,
+}
+
+impl AggregateExecutionBudgetV1 {
+    /// Constructs one bounded aggregate budget.
+    #[must_use]
+    pub const fn checked(
+        maximum_distinct_values_per_measure: u16,
+        maximum_state_bytes: u32,
+        maximum_arithmetic_operations: u32,
+    ) -> Option<Self> {
+        if maximum_distinct_values_per_measure == 0
+            || maximum_distinct_values_per_measure > MAX_AGGREGATE_DISTINCT_VALUES_V1
+            || maximum_state_bytes == 0
+            || maximum_state_bytes > MAX_AGGREGATE_STATE_BYTES_V1
+            || maximum_arithmetic_operations == 0
+            || maximum_arithmetic_operations > MAX_AGGREGATE_ARITHMETIC_OPERATIONS_V1
+        {
+            return None;
+        }
+        Some(Self {
+            maximum_distinct_values_per_measure,
+            maximum_state_bytes,
+            maximum_arithmetic_operations,
+        })
+    }
+
+    /// Maximum distinct values retained by one measure in one group.
+    #[must_use]
+    pub const fn maximum_distinct_values_per_measure(self) -> u16 {
+        self.maximum_distinct_values_per_measure
+    }
+
+    /// Maximum aggregate partial-state bytes across the query result.
+    #[must_use]
+    pub const fn maximum_state_bytes(self) -> u32 {
+        self.maximum_state_bytes
+    }
+
+    /// Maximum exact contribution and merge operations.
+    #[must_use]
+    pub const fn maximum_arithmetic_operations(self) -> u32 {
+        self.maximum_arithmetic_operations
+    }
 }
 
 impl OperationalAggregateV1 {
@@ -164,6 +285,12 @@ impl OperationalAggregateV1 {
         &self.maximum_groups
     }
 
+    /// Independent compiler-sealed aggregate execution bounds.
+    #[must_use]
+    pub const fn execution_budget(&self) -> AggregateExecutionBudgetV1 {
+        self.execution_budget
+    }
+
     #[doc(hidden)]
     #[must_use]
     pub fn checked(
@@ -173,6 +300,7 @@ impl OperationalAggregateV1 {
         group_keys: Vec<OperationalAggregateGroupKeyV1>,
         measures: Vec<OperationalAggregateMeasureV1>,
         maximum_groups: PageBound,
+        execution_budget: AggregateExecutionBudgetV1,
     ) -> Option<Self> {
         let group_names = group_keys
             .iter()
@@ -202,6 +330,7 @@ impl OperationalAggregateV1 {
             group_keys,
             measures,
             maximum_groups,
+            execution_budget,
         })
     }
 }
@@ -443,7 +572,9 @@ fn encode_family(
     let mut output = Vec::new();
     output.extend_from_slice(FAMILY_MAGIC);
     output.extend_from_slice(
-        &if ir_version == crate::QUERY_IR_VERSION_SECRET_OUTPUT_V1 {
+        &if ir_version == QUERY_IR_VERSION_EXACT_AGGREGATE_V1 {
+            QUERY_IR_VERSION_EXACT_AGGREGATE_V1
+        } else if ir_version == crate::QUERY_IR_VERSION_SECRET_OUTPUT_V1 {
             crate::QUERY_IR_VERSION_SECRET_OUTPUT_V1
         } else if has_aggregates {
             QUERY_IR_VERSION_OPERATIONAL_AGGREGATE_V1

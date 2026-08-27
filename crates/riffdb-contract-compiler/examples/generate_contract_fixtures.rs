@@ -161,6 +161,40 @@ contract RootValidationConstantFixture version 1 {
 }
 "#;
 
+/// Compiler-sealed initialized transition fixture (ADR-0153 / WP-697): pins
+/// the V17 binding tag, canonical initializer ordering, optional failure arm,
+/// plan hash, bundle hash, and public explain output.
+const INITIALIZED_STATE_TRANSITION_SOURCE: &str = r#"
+contract InitializedStateTransitionShape version 1 {
+  entity State {
+    key (organization_id: uuid, state_id: uuid)
+    field active: bool
+    field revision: u64
+    field payload: bytes<64>
+  }
+  aggregate States {
+    root State
+    partition_by organization_id
+    conflict_key (organization_id, state_id)
+  }
+  command PutState {
+    input request_id: uuid
+    input organization_id: uuid
+    input state_id: uuid
+    input payload: bytes<64>
+    idempotency_key request_id
+    init_or_mutate State(organization_id, state_id) as state initialize {
+      active: false,
+      revision: 0,
+    }
+    set state.active = true
+    set state.payload = payload
+    set state.revision = state.revision + 1
+    return Written { revision: state.revision }
+  }
+}
+"#;
+
 /// Secret-classified fixture contract (ADR-0118 / WP-597): pins the v7
 /// bundle encoding so a decoder that loses the secret extension arm reds
 /// against checked-in bytes rather than freshly generated ones.
@@ -411,6 +445,32 @@ fn main() -> Result<(), Box<dyn Error>> {
                 .commands()
                 .first()
                 .ok_or("aggregate collection fixture command is absent")?,
+        )
+        .render_text(),
+    )?;
+
+    let initialized_bundle = compile_contract_source(INITIALIZED_STATE_TRANSITION_SOURCE)?;
+    let initialized_root = fixture_root.join("initialized-state-transition");
+    fs::create_dir_all(&initialized_root)?;
+    fs::write(
+        initialized_root.join("contract.riff"),
+        INITIALIZED_STATE_TRANSITION_SOURCE,
+    )?;
+    fs::write(
+        initialized_root.join("bundle.bin"),
+        initialized_bundle.canonical_bytes(),
+    )?;
+    fs::write(
+        initialized_root.join("bundle-hash.txt"),
+        format!("{}\n", hex(initialized_bundle.bundle_hash().as_bytes())),
+    )?;
+    fs::write(
+        initialized_root.join("command-explain.txt"),
+        CommandExplain::from_plan(
+            initialized_bundle
+                .commands()
+                .first()
+                .ok_or("initialized transition fixture command is absent")?,
         )
         .render_text(),
     )?;
@@ -1461,7 +1521,10 @@ fn render_command_plans(bundle: &ContractBundle) -> Result<String, Box<dyn Error
                 ids(binding.key_expressions().iter().map(|id| id.get())),
                 ids(binding.accessed_fields().iter().map(|id| id.get())),
                 binding.complete_record_access(),
-                render_object(binding.failure().payload()),
+                binding.failure().map_or_else(
+                    || "none".to_owned(),
+                    |failure| render_object(failure.payload())
+                ),
             )?;
             render_key_schema(&mut output, "binding.key", binding.key_schema())?;
         }
@@ -2232,6 +2295,7 @@ fn binding_mode(mode: BindingMode) -> &'static str {
         BindingMode::Read => "read",
         BindingMode::Mutate => "mutate",
         BindingMode::Create => "create",
+        BindingMode::InitOrMutate => "init-or-mutate",
         BindingMode::Delete => "delete",
     }
 }

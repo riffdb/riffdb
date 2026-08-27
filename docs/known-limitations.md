@@ -44,7 +44,9 @@ These limits are part of the POC release posture, not hidden roadmap promises.
   evidence. The synchronized report records no production gap, but this is
   crash evidence for the POC matrix rather than a general disaster-recovery
   guarantee.
-- Projected ad-hoc aggregates are deliberately narrow. `count`, `sum`, `min`,
+- Named bounded RiffQL aggregates support exact row/present/distinct counts,
+  exact sum and mean state, min/max, and Boolean any/all. The separate
+  projected ad-hoc CLI remains deliberately narrow: `count`, `sum`, `min`,
   and `max` with bounded `group_by` are available; `sum` accepts integer
   columns only and rejects decimal or money columns with a typed
   `type_mismatch`. One ungrouped request computes exactly one function — ask
@@ -56,13 +58,18 @@ These limits are part of the POC release posture, not hidden roadmap promises.
   presentation.
 - There is no general SQL surface, arbitrary transaction callback, analytical
   join engine, distributed transaction, replication, failover, or consensus.
+- An ordinary command may atomically delete and return the transaction-current preimage of exactly
+  one complete-key, partition-local `no_inbound` entity. Multiple ordinary deletes, inbound
+  `restrict` or `cascade`, set-null, orphaning, cross-partition deletion, and physical erasure are
+  unavailable on that unary path; use the separately compiler-bounded collection deletion forms
+  where supported. Delete authority never implies secret-output authority.
 - Ordinary row-store indexes currently execute exact equality, one bounded
   membership or presence/text-prefix branch, and the complete declared order.
-  `binary_utf8_v1` membership is bytewise and cursor-safe when it supplies the
+  `binary_utf8_v1` membership and strict/inclusive interval or two-range `!=`
+  complement are bytewise and cursor-safe when that component supplies the
   first remaining order term. Order-preserving canonical numeric, time, UUID,
-  and enum components support one typed lower/upper interval or a two-range
-  `!=` complement when that component supplies the first remaining order term.
-  Canonical string ranges, multiple branching dimensions, overlapping unions,
+  and enum components support the same bounded interval shape. Canonical
+  string ranges, multiple branching dimensions, overlapping unions,
   residual post-page filters, index intersections, caller-selected plans, and
   general joins are unavailable. Relationship composition is limited to
   compiler-declared same-partition complete-key points, singular-key-driven
@@ -72,6 +79,13 @@ These limits are part of the POC release posture, not hidden roadmap promises.
   products, recursion, and runtime join optimization are unavailable. Recompile
   and redeploy a refused named query rather than emulating it in application
   code.
+- The WP-690 external receipt is intentionally a narrow source-compilation
+  acceptance for shared bytewise equality, membership, and order. It is not a
+  full external application or framework-conformance result. Canonical-string
+  range sources remain correctly refused because length-prefixed canonical
+  order cannot prove lexical range semantics; recompile against an explicitly
+  declared `binary_utf8_v1` component rather than applying client filtering or
+  comparator substitution.
 - Vector search's exact and declared approximate tiers are application-reachable
   through the same named RiffQL operation. The server chooses exact search at
   or below the contract's per-organization `ann_threshold` and first-party HNSW
@@ -154,6 +168,11 @@ These limits are part of the POC release posture, not hidden roadmap promises.
   create-if-absent operation. Do not run it concurrently with another writer
   to the same user's Codex MCP configuration.
 - Metrics are in-process; there is no network metrics exporter.
+- A graceful clean restart proves bounded continuity but is not a full
+  population scrub. Latent corruption outside the bound roots may fail closed
+  when an affected row is first accessed. Dirty restart still performs complete
+  startup validation, but the separately specified authorized offline scrub is
+  not yet exposed as a public POC operation.
 - Outbox delivery has only the explicitly configured POC connector behavior.
 - Projection state is rebuildable and can be degraded while authoritative
   commits remain available.

@@ -1,0 +1,98 @@
+{
+  "commands": [
+    {
+      "name": "IssueToken",
+      "plan_hash": "dcb17bcfe14d85d58fc46e49c031b1bd3642c8f9beca51101c1e368fb05eba86"
+    },
+    {
+      "name": "ConsumeToken",
+      "plan_hash": "da9bd3f011355d787c5939e270ee331aea5e20560887d9e3591fb62b0e7ebe8f"
+    }
+  ],
+  "contract": {
+    "bundle_hash": "2fcc01955fcad80a8b6ac5fc6149e95b96889d29182301eb416b8cd1fa70bb0a",
+    "lineage": "DriverConformance",
+    "version": 1
+  },
+  "external_consumer": {
+    "framework_adapter_code_retained": false,
+    "framework_authentication_policy_retained": false,
+    "framework_generated_profiles_retained": false,
+    "framework_routes_retained": false,
+    "framework_schema_retained": false,
+    "languages": [
+      "go",
+      "python",
+      "rust",
+      "typescript"
+    ],
+    "runner_source_hashes": {
+      "go": "32f8ca7f62bdec78de68ae05be373d5abe917d8c376257f446ec69fedb0c044c",
+      "python": "d356bccb8a41feed90c37b5c3ba03c4e291e13fee11986b9abd8c77667574c44",
+      "rust": "e3e732e1a26d2c5f06623be9bf6ac310fe375f3621fab403c154d1dbcf438eb3",
+      "typescript": "40cfef08902ee396ff42275d74488e0597231c78876c480319ef7fc37f37e23f"
+    },
+    "workspace": "temporary_directory_outside_repository"
+  },
+  "generated_artifacts": [
+    {
+      "kind": "go",
+      "path": "fixtures/driver/conformance-app/generated/go/client.go",
+      "sha256": "8df4f52c4a923a7c3c90b6ee741cd4de29075ce99fa41876bae18ba89f218653"
+    },
+    {
+      "kind": "mcp",
+      "path": "fixtures/driver/conformance-app/generated/mcp/tools.json",
+      "sha256": "e4bed2a3a77628cdf4a62e0ad898d6ac6d2740cd6db635c3ebf3df8e47ef8278"
+    },
+    {
+      "kind": "python",
+      "path": "fixtures/driver/conformance-app/generated/python/client.py",
+      "sha256": "3303532744803d0634790650c2ffee58f199920be834981d503ec453b8bb044f"
+    },
+    {
+      "kind": "rust",
+      "path": "fixtures/driver/conformance-app/generated/rust/client.rs",
+      "sha256": "3422c0e0129a018dc1f99c0cf86c23fb4b3036eb495a8bd77b5f42224ebd33dc"
+    },
+    {
+      "kind": "typescript",
+      "path": "fixtures/driver/conformance-app/generated/typescript/client.ts",
+      "sha256": "e2e9f1caa2aa7c1cfa8a955a658b293298125845f7839d0b794b10879f1f2947"
+    }
+  ],
+  "observation": {
+    "canonical_sha256": "285ef37d6f2ccb9f03138bc16d3ab4326468a8f6e68a57b4e37d82764729e557",
+    "language_count": 4,
+    "schema": "riffdb.driver-conformance-observation/v1"
+  },
+  "role": {
+    "definition_hash": "c6a9241b80b7a5844188ea9c58ff6dd099e2d9cc55195e943e2a2e7b4cd239fc",
+    "name": "DriverConformanceApplication",
+    "secret_outputs": [
+      {
+        "entity": "OneTimeToken",
+        "field": "value",
+        "outcome": "TokenConsumed",
+        "sourceField": "value"
+      }
+    ]
+  },
+  "schema": "riffdb.unary-delete-preimage-external-acceptance/v1",
+  "source_lock": {
+    "path": "fixtures/driver/conformance-app/riffdb.application.lock.json",
+    "sha256": "5b470b6e00fec5b35fb4207f48600d3ecc066535e2d857304fd0ea6eb197f06f"
+  },
+  "status": "passed",
+  "verified_semantics": {
+    "diagnostics_redacted": true,
+    "exact_deleted_preimage": true,
+    "idempotent_replay_equal": true,
+    "memory_and_redb_paths": true,
+    "revoked_role_refused": "RDB-AUTH-0215",
+    "second_consumer_missing": true,
+    "secret_release_authorized": true,
+    "shared_remote_tls_service": true
+  },
+  "work_package": "WP-692"
+}

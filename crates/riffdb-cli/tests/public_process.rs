@@ -7,7 +7,7 @@ use std::error::Error;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::net::SocketAddr;
-use std::os::unix::fs::OpenOptionsExt;
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Output, Stdio};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
@@ -817,6 +817,37 @@ fn process_test_source_never_passes_a_database_path_to_the_cli() {
 fn process_server_uses_an_explicit_backup_root() {
     let source = include_str!("public_process.rs");
     assert!(source.contains(".arg(\"--backup-root\")"));
+}
+
+#[test]
+fn dev_run_forwards_a_go_package_only_when_the_public_option_is_present() -> TestResult<()> {
+    let application = tempfile::TempDir::with_prefix("riffdb-dev-typescript-")?;
+    fs::create_dir(application.path().join("scripts"))?;
+    write_regular(&application.path().join("riffdb.application.json"), b"{}\n")?;
+    write_regular(&application.path().join("package.json"), b"{}\n")?;
+    let runner = application.path().join("scripts/riffdb-dev");
+    write_regular(
+        &runner,
+        b"#!/bin/sh\nfor argument do\n  [ \"$argument\" != \"--go-runner-package\" ] || exit 97\ndone\nexit 0\n",
+    )?;
+    fs::set_permissions(&runner, fs::Permissions::from_mode(0o700))?;
+
+    let default = Command::new(env!("CARGO_BIN_EXE_riffdb"))
+        .current_dir(application.path())
+        .args(["dev", "--run"])
+        .output()?;
+    assert!(
+        default.status.success(),
+        "default TypeScript run received the Go-only option: {}",
+        String::from_utf8_lossy(&default.stderr)
+    );
+
+    let explicit = Command::new(env!("CARGO_BIN_EXE_riffdb"))
+        .current_dir(application.path())
+        .args(["dev", "--run", "--go-runner-package", "."])
+        .output()?;
+    assert_eq!(explicit.status.code(), Some(97));
+    Ok(())
 }
 
 #[test]

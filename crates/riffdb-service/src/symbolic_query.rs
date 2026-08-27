@@ -1204,6 +1204,7 @@ pub struct SymbolicResultRecord {
     entity: Arc<str>,
     fields: BTreeMap<Arc<str>, CanonicalValue>,
     exact_decimals: BTreeMap<Arc<str>, ExactDecimalResult>,
+    exact_means: BTreeMap<Arc<str>, ExactMeanResult>,
 }
 
 /// Move-only components of one symbolic result record.
@@ -1211,6 +1212,7 @@ pub type SymbolicResultRecordParts = (
     Arc<str>,
     BTreeMap<Arc<str>, CanonicalValue>,
     BTreeMap<Arc<str>, ExactDecimalResult>,
+    BTreeMap<Arc<str>, ExactMeanResult>,
 );
 
 /// Full-width exact decimal returned by an operational aggregate.
@@ -1234,6 +1236,34 @@ impl ExactDecimalResult {
     }
 }
 
+/// Full-width exact mean state returned without division or rounding.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ExactMeanResult {
+    coefficient: i128,
+    scale: u8,
+    count: u64,
+}
+
+impl ExactMeanResult {
+    /// Signed total coefficient at the declared scale.
+    #[must_use]
+    pub const fn coefficient(self) -> i128 {
+        self.coefficient
+    }
+
+    /// Declared scale of the exact total.
+    #[must_use]
+    pub const fn scale(self) -> u8 {
+        self.scale
+    }
+
+    /// Exact number of contributing rows.
+    #[must_use]
+    pub const fn count(self) -> u64 {
+        self.count
+    }
+}
+
 impl SymbolicResultRecord {
     fn from_row(row: QueryRow) -> Self {
         let (entity, fields) = row.into_parts();
@@ -1241,6 +1271,7 @@ impl SymbolicResultRecord {
             entity,
             fields,
             exact_decimals: BTreeMap::new(),
+            exact_means: BTreeMap::new(),
         }
     }
 
@@ -1248,6 +1279,7 @@ impl SymbolicResultRecord {
         let (entity, cells) = row.into_parts();
         let mut fields = BTreeMap::new();
         let mut exact_decimals = BTreeMap::new();
+        let mut exact_means = BTreeMap::new();
         for (name, cell) in cells {
             match cell {
                 QueryAggregateCell::Canonical(value) => {
@@ -1256,12 +1288,27 @@ impl SymbolicResultRecord {
                 QueryAggregateCell::ExactDecimal { coefficient, scale } => {
                     exact_decimals.insert(name, ExactDecimalResult { coefficient, scale });
                 }
+                QueryAggregateCell::ExactMean {
+                    coefficient,
+                    scale,
+                    count,
+                } => {
+                    exact_means.insert(
+                        name,
+                        ExactMeanResult {
+                            coefficient,
+                            scale,
+                            count,
+                        },
+                    );
+                }
             }
         }
         Self {
             entity,
             fields,
             exact_decimals,
+            exact_means,
         }
     }
 
@@ -1276,6 +1323,7 @@ impl SymbolicResultRecord {
             entity,
             fields,
             exact_decimals: BTreeMap::new(),
+            exact_means: BTreeMap::new(),
         }
     }
 
@@ -1296,6 +1344,32 @@ impl SymbolicResultRecord {
                     (name, ExactDecimalResult { coefficient, scale })
                 })
                 .collect(),
+            exact_means: BTreeMap::new(),
+        }
+    }
+
+    /// Test-only exact-mean constructor for transport carriage fixtures.
+    #[cfg(any(test, feature = "test-fixtures"))]
+    #[doc(hidden)]
+    pub fn from_exact_mean_for_test(
+        entity: Arc<str>,
+        name: Arc<str>,
+        coefficient: i128,
+        scale: u8,
+        count: u64,
+    ) -> Self {
+        Self {
+            entity,
+            fields: BTreeMap::new(),
+            exact_decimals: BTreeMap::new(),
+            exact_means: BTreeMap::from([(
+                name,
+                ExactMeanResult {
+                    coefficient,
+                    scale,
+                    count,
+                },
+            )]),
         }
     }
 
@@ -1317,10 +1391,21 @@ impl SymbolicResultRecord {
         &self.exact_decimals
     }
 
+    /// Full-width exact mean fields in canonical name order.
+    #[must_use]
+    pub const fn exact_means(&self) -> &BTreeMap<Arc<str>, ExactMeanResult> {
+        &self.exact_means
+    }
+
     /// Consumes the record into owned name handles and values.
     #[must_use]
     pub fn into_parts(self) -> SymbolicResultRecordParts {
-        (self.entity, self.fields, self.exact_decimals)
+        (
+            self.entity,
+            self.fields,
+            self.exact_decimals,
+            self.exact_means,
+        )
     }
 }
 
@@ -3115,6 +3200,7 @@ fn vector_projection_response(
                 entity: Arc::from(step.entity()),
                 fields,
                 exact_decimals: BTreeMap::new(),
+                exact_means: BTreeMap::new(),
             })
         })
         .collect::<Option<Vec<_>>>()?;
@@ -3886,6 +3972,7 @@ fn exact_result_response(
                 entity: Arc::from(step.entity()),
                 fields,
                 exact_decimals: BTreeMap::new(),
+                exact_means: BTreeMap::new(),
             })
         })
         .collect::<Option<Vec<_>>>()?;
@@ -3918,6 +4005,7 @@ fn exact_result_response(
                 CanonicalValue::U64(exact_total),
             )]),
             exact_decimals: BTreeMap::new(),
+            exact_means: BTreeMap::new(),
         }),
     );
     Some(ExecuteSymbolicQueryResult {
@@ -3969,6 +4057,7 @@ fn exact_predicate_result_response(
                 entity: Arc::from(step.entity()),
                 fields,
                 exact_decimals: BTreeMap::new(),
+                exact_means: BTreeMap::new(),
             })
         })
         .collect::<Option<Vec<_>>>()?;
@@ -4000,6 +4089,7 @@ fn exact_predicate_result_response(
                 CanonicalValue::U64(exact_total),
             )]),
             exact_decimals: BTreeMap::new(),
+            exact_means: BTreeMap::new(),
         }),
     );
     Some(ExecuteSymbolicQueryResult {
@@ -4220,7 +4310,11 @@ fn hash_reimport_query_result(
 
 fn hash_observation_row(bytes: &mut Vec<u8>, row: &SymbolicResultRecord) -> Option<()> {
     push_observation_bytes(bytes, row.entity().as_bytes())?;
-    let count = row.fields().len().checked_add(row.exact_decimals().len())?;
+    let count = row
+        .fields()
+        .len()
+        .checked_add(row.exact_decimals().len())?
+        .checked_add(row.exact_means().len())?;
     bytes.extend_from_slice(&u32::try_from(count).ok()?.to_be_bytes());
     for (name, value) in row.fields() {
         push_observation_bytes(bytes, name.as_bytes())?;
@@ -4233,6 +4327,13 @@ fn hash_observation_row(bytes: &mut Vec<u8>, row: &SymbolicResultRecord) -> Opti
         bytes.push(2);
         bytes.extend_from_slice(&value.coefficient().to_be_bytes());
         bytes.push(value.scale());
+    }
+    for (name, value) in row.exact_means() {
+        push_observation_bytes(bytes, name.as_bytes())?;
+        bytes.push(3);
+        bytes.extend_from_slice(&value.coefficient().to_be_bytes());
+        bytes.push(value.scale());
+        bytes.extend_from_slice(&value.count().to_be_bytes());
     }
     Some(())
 }
@@ -5771,6 +5872,7 @@ mod reimport_observation_tests {
                 ),
             ]),
             exact_decimals: BTreeMap::new(),
+            exact_means: BTreeMap::new(),
         };
         ExecuteSymbolicQueryResult {
             identity: SymbolicQueryIdentity {

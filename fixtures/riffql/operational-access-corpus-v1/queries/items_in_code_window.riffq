@@ -1,0 +1,15 @@
+query ItemsInCodeWindow(
+    $workspace_id: CatalogItem.workspace_id,
+    $after_code: CatalogItem.code,
+    $horizon_code: CatalogItem.code,
+    $after: Cursor?,
+) {
+    many items from CatalogItem
+        where workspace_id == $workspace_id
+          && code > $after_code
+          && code < $horizon_code
+        order by code asc, item_id asc
+        take 16 after $after
+    return Found { items: items { item_id code kind score published_at } }
+    outcomes Found
+}

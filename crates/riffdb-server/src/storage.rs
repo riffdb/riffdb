@@ -83,6 +83,7 @@ pub(crate) struct SharedRedbOperationalPorts {
     catalog: Arc<CurrentCatalogView>,
     capabilities: Arc<CurrentCapabilityView>,
     query_modules: Arc<CurrentQueryModuleView>,
+    bounded_clean_startup: bool,
     health: Option<Arc<dyn ServiceHealthHooks>>,
 }
 
@@ -96,9 +97,18 @@ impl SharedRedbOperationalPorts {
         ports: RedbOperationalPorts,
         health: Option<Arc<dyn ServiceHealthHooks>>,
     ) -> Result<Self, StorageError> {
+        let bounded_clean_startup = ports.clean_close_fast_startup();
         let shared = ports.shared_ports();
-        let catalog = CurrentCatalogView::rebuild(&shared)?;
-        let capabilities = CurrentCapabilityView::rebuild(&shared)?;
+        let catalog = if bounded_clean_startup {
+            CurrentCatalogView::rebuild_from_clean_startup(&shared)?
+        } else {
+            CurrentCatalogView::rebuild(&shared)?
+        };
+        let capabilities = if bounded_clean_startup {
+            CurrentCapabilityView::cold()
+        } else {
+            CurrentCapabilityView::rebuild(&shared)?
+        };
         let query_modules = CurrentQueryModuleView::rebuild(&shared)?;
         Ok(Self {
             cell: SharedStorageCell::new(ports),
@@ -106,8 +116,13 @@ impl SharedRedbOperationalPorts {
             catalog: Arc::new(catalog),
             capabilities: Arc::new(capabilities),
             query_modules: Arc::new(query_modules),
+            bounded_clean_startup,
             health,
         })
+    }
+
+    pub(crate) const fn bounded_clean_startup(&self) -> bool {
+        self.bounded_clean_startup
     }
 
     /// Reads the active query-module pointer from process-local state only.
@@ -167,6 +182,12 @@ impl SharedRedbOperationalPorts {
             .with_mut(|ports| ports.write_validated_prefix_checkpoint())
     }
 
+    /// Writes the final private clean-close lifecycle certificate.
+    pub(crate) fn write_clean_close_lifecycle(&self) -> Result<(), StorageError> {
+        self.cell
+            .with_mut(|ports| ports.write_clean_close_lifecycle())
+    }
+
     /// Executes protected event selection inside the same redb mutation fence
     /// as current capability, row, relationship, checkpoint, and lease state.
     pub(crate) fn coordinate_protected_event_consumer_lease(
@@ -216,6 +237,7 @@ impl Clone for SharedRedbOperationalPorts {
             catalog: Arc::clone(&self.catalog),
             capabilities: Arc::clone(&self.capabilities),
             query_modules: Arc::clone(&self.query_modules),
+            bounded_clean_startup: self.bounded_clean_startup,
             health: self.health.clone(),
         }
     }
@@ -424,6 +446,16 @@ struct CurrentCatalogView {
 }
 
 impl CurrentCatalogView {
+    fn rebuild_from_clean_startup(ports: &RedbSharedPorts) -> Result<Self, StorageError> {
+        let mut state = CurrentCatalogViewState::default();
+        if let Some((active, bundle)) = ports.load_clean_startup_active_catalog()? {
+            state.install_rebuilt(active, bundle)?;
+        }
+        Ok(Self {
+            state: RwLock::new(state),
+        })
+    }
+
     fn rebuild(ports: &RedbSharedPorts) -> Result<Self, StorageError> {
         let active = CatalogRepository::read_active_catalog(ports)?;
         let mut state = CurrentCatalogViewState::default();
@@ -778,6 +810,12 @@ struct CurrentCapabilityView {
 }
 
 impl CurrentCapabilityView {
+    fn cold() -> Self {
+        Self {
+            state: RwLock::new(CurrentCapabilityViewState::default()),
+        }
+    }
+
     fn rebuild(ports: &RedbSharedPorts) -> Result<Self, StorageError> {
         let mut state = CurrentCapabilityViewState::default();
         let limit = StorageScanLimit::new(500).expect("fixed inventory page limit is valid");

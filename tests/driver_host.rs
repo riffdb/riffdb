@@ -183,9 +183,13 @@ fn generated_go_results_carry_exact_compiler_owned_operation_identity() {
     let query_hash = lock["modules"][0]["queries"][0]["plan_hash"]
         .as_str()
         .expect("query plan hash");
-    let command_hash = lock["roles"][0]["definition"]["commands"][0]["plan_hash"]
-        .as_str()
-        .expect("command plan hash");
+    let command_hash = lock["roles"][0]["definition"]["commands"]
+        .as_array()
+        .expect("role commands")
+        .iter()
+        .find(|command| command["name"] == "CreateItem")
+        .and_then(|command| command["plan_hash"].as_str())
+        .expect("CreateItem plan hash");
 
     assert!(generated.contains("type QueryIdentity struct"));
     assert!(generated.contains("Identity QueryIdentity"));

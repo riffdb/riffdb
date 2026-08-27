@@ -1,0 +1,12 @@
+query ItemsByCodesReverse(
+    $workspace_id: CatalogItem.workspace_id,
+    $codes: Set<CatalogItem.code>,
+    $after: Cursor?,
+) {
+    many items from CatalogItem
+        where workspace_id == $workspace_id && code in $codes
+        order by code desc, item_id desc
+        take 16 after $after
+    return Found { items: items { item_id code kind score published_at } }
+    outcomes Found
+}

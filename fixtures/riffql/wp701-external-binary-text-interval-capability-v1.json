@@ -1,0 +1,59 @@
+{
+  "schema": "riffdb.external-operational-capability/v2",
+  "work_package": "WP-701",
+  "status": "passed",
+  "owner": "external_consumer_repository",
+  "consumer_class": "partitioned_tuple_changelog",
+  "source_revision": "92c70560518dec9fa348e549854a24bce7bd27f1",
+  "riffdb_revision": "247307622c5d82bd98a78b5d1c6f8106c122cccf",
+  "value_free_source_receipt": {
+    "acceptance_profile_sha256": "e40898ee9483c70d54df637970194b08d77df08a8586c3f99307c568151ae1a3",
+    "contract_source_sha256": "1f27a3b9aed03d165a050fe6222bdf8dd7ef95ab30b06ecc6cf871853ab5f3f2",
+    "query_source_sha256": [
+      "7bf8f2b63dc46e408b4d046c3fea2a20874a38c454c69acf16f18bfb44544dce",
+      "f6e8282c40cb8eac1857797fcee4e6b7f52cc55ac0dbb00a4ca7500ec75efffe"
+    ],
+    "named_operation_count": 2,
+    "schema_or_route_names_retained": false,
+    "stored_values_retained": false
+  },
+  "capability": {
+    "component_profile": "binary_utf8_v1",
+    "same_declared_component_roles": [
+      "strict_lower_endpoint",
+      "strict_upper_endpoint",
+      "ordered_value_production"
+    ],
+    "directions": ["forward"],
+    "cursor_pagination": true,
+    "logical_string_returned_unchanged": true,
+    "caller_selected_structure": false,
+    "client_side_shaping": false
+  },
+  "selective_generation": {
+    "source_schema": "riffdb.application-source/v7",
+    "lock_schema": "riffdb.application-lock/v8",
+    "declared_surfaces": ["go"],
+    "generated_go_sha256": "d8bea269a16a46b854e16e56dc66b9ce461f3a8acb3191d83fddae38a841149c",
+    "generated_manifest_sha256": "76da367ae315961bd09c8d8bc31e05b55dd2af0508a2ecc6f69f846b138b79ac",
+    "generated_contract_bundle_sha256": "96e569ea198fc7820391671d9a088386e8f81822b4d35ee4b14ff4242273995f",
+    "application_lock_sha256": "e4f51cc732dc77c4a326c09af381c9a3756dfe1fd1ce6282cbef7c33ddf28971",
+    "unrelated_generated_surfaces_present": false
+  },
+  "verification": {
+    "source_only_application_check": "passed",
+    "exact_application_lock": "passed",
+    "go_package_compile_and_test": "passed",
+    "generic_memory_and_redb_execution": "passed",
+    "files_changed_in_external_repository": false,
+    "external_runtime_execution_claimed": false,
+    "full_framework_conformance_claimed": false,
+    "full_external_application_claimed": false
+  },
+  "scope_boundary": {
+    "one_lower_and_one_upper_endpoint": true,
+    "multiple_same_side_endpoints": false,
+    "canonical_string_range_reinterpreted": false,
+    "external_token_conversion_added": false
+  }
+}

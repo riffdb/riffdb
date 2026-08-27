@@ -64,7 +64,11 @@ def main() -> int:
     )
     artifacts = {entry["kind"]: entry for entry in lock["artifacts"]}
     bundle_hash = lock["contract"]["bundle_hash"]
-    command = lock["roles"][0]["definition"]["commands"][0]
+    command = next(
+        command
+        for command in lock["roles"][0]["definition"]["commands"]
+        if command["name"] == "CreateItem"
+    )
     query = lock["modules"][0]["queries"][0]
     identity_literals = [bundle_hash, command["plan_hash"], query["plan_hash"]]
     generated_sources: dict[str, str] = {}

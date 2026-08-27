@@ -6,6 +6,9 @@ import time
 from uuid import UUID
 
 from client import (
+    ConsumeTokenInput,
+    ConsumeTokenTokenConsumed,
+    ConsumeTokenTokenMissing,
     CreateItemCreated,
     CreateItemInput,
     DriverConformanceClient,
@@ -13,6 +16,8 @@ from client import (
     ItemPageParams,
     ItemSecretFound,
     ItemSecretParams,
+    IssueTokenInput,
+    IssueTokenTokenIssued,
     SearchItemsFound,
     SearchItemsParams,
 )
@@ -25,6 +30,7 @@ from riffdb_application import (
     QueryOptions,
     RiffDbApplicationError,
     SyncApplicationTransport,
+    Timestamp,
     VerifiedTlsConfig,
 )
 
@@ -82,6 +88,50 @@ def main() -> None:
         replay = client.create_item(input_value)
         if not replay.replayed:
             raise RuntimeError("second Python command did not replay")
+        token_id = UUID("018f0f8b-7c6d-7e31-8a4f-000000000141")
+        token_value = "python-one-time-secret-must-not-log"
+        issued = client.issue_token(
+            IssueTokenInput(
+                value=token_value,
+                token_id=token_id,
+                expires_at=Timestamp(4_102_444_800, 0),
+                identifier="python-loopback",
+                request_id=UUID("018f0f8b-7c6d-7e31-8a4f-000000000142"),
+                organization_id=organization_id,
+            )
+        )
+        if not isinstance(issued.outcome, IssueTokenTokenIssued):
+            raise RuntimeError("Python token issue did not create the token")
+        consume_input = ConsumeTokenInput(
+            token_id=token_id,
+            request_id=UUID("018f0f8b-7c6d-7e31-8a4f-000000000143"),
+            organization_id=organization_id,
+        )
+        consumed = client.consume_token(consume_input)
+        if (
+            not isinstance(consumed.outcome, ConsumeTokenTokenConsumed)
+            or consumed.outcome.value != token_value
+            or consumed.outcome.token_id != token_id
+            or consumed.outcome.identifier != "python-loopback"
+            or token_value in repr(consumed.outcome)
+        ):
+            raise RuntimeError("Python deleted preimage or redacted repr was incorrect")
+        consumed_replay = client.consume_token(consume_input)
+        if (
+            not consumed_replay.replayed
+            or not isinstance(consumed_replay.outcome, ConsumeTokenTokenConsumed)
+            or consumed_replay.outcome.value != token_value
+        ):
+            raise RuntimeError("Python token consume did not replay the persisted preimage")
+        missing = client.consume_token(
+            ConsumeTokenInput(
+                token_id=token_id,
+                request_id=UUID("018f0f8b-7c6d-7e31-8a4f-000000000144"),
+                organization_id=organization_id,
+            )
+        )
+        if not isinstance(missing.outcome, ConsumeTokenTokenMissing):
+            raise RuntimeError("Python second consumer did not observe the atomic delete")
         page = client.item_page(
             ItemPageParams(organization_id=organization_id, item_id=item_id),
             QueryOptions(read_after_commit=first.commit_sequence),
@@ -162,6 +212,10 @@ def main() -> None:
                 "secret_redacted": True,
                 "exact_query": "Found",
                 "exact_total": 1,
+                "consume": "TokenConsumed",
+                "consume_replayed": True,
+                "consume_missing": True,
+                "delete_preimage_redacted": True,
             },
             separators=(",", ":"),
         )

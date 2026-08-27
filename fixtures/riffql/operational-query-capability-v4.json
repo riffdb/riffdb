@@ -1,0 +1,179 @@
+{
+  "compatibility": {
+    "durable_or_wire_format_changed": false,
+    "historically_unproved_plans_executable": false,
+    "proved_predecessor_artifacts_preserved": true,
+    "recovery": "refresh_contract_then_recompile_and_redeploy",
+    "typed_refusal": "RDB-QUERY-0102"
+  },
+  "compiler_only_corpus": {
+    "nullable_presence_and_order": {
+      "path": "fixtures/riffql/operational-access-corpus-v1/queries/items_by_published_state.riffq",
+      "sha256": "b5a6c3923ce5c21a0dafe07011f9baabe312a58a4169228f94d10738d153d809"
+    },
+    "test": "riffdb-query-compiler/generic_operational_access_corpus"
+  },
+  "contract": {
+    "bundle_hash": "824b7c29849f5e63ba5271c74f183dce60ca68c7fead647b025217c6ecba36ca",
+    "lineage": "OperationalAccessCorpus",
+    "version": 1
+  },
+  "external_acceptance": {
+    "consumer_class": "partitioned_tuple_store",
+    "framework_artifacts_retained": false,
+    "full_framework_conformance_claimed": false,
+    "path": "fixtures/riffql/wp690-external-tuple-capability-v1.json",
+    "sha256": "374e22e3cf21f60b456ffeaf370f7b7995ddd27d906875adab835eec7b68509e",
+    "status": "passed"
+  },
+  "generated_artifacts": [
+    {
+      "kind": "go",
+      "path": "fixtures/riffql/operational-access-corpus-v1/generated/go/client.go",
+      "sha256": "60cb60f11dfa2dfd287b62f315a0845fcd10ee0824d2d3dd6ae21a6ad70b7563"
+    },
+    {
+      "kind": "mcp",
+      "path": "fixtures/riffql/operational-access-corpus-v1/generated/mcp/tools.json",
+      "sha256": "7c1193e8c7898fd9a5990124272df52d35f2a6938cb89e58f55d0f10207b5087"
+    },
+    {
+      "kind": "python",
+      "path": "fixtures/riffql/operational-access-corpus-v1/generated/python/client.py",
+      "sha256": "426bb32d53144b5d57a8af57af5069e447d564a4bb06267dbe86c3f77fba7b90"
+    },
+    {
+      "kind": "rust",
+      "path": "fixtures/riffql/operational-access-corpus-v1/generated/rust/client.rs",
+      "sha256": "c529f94c3c9984bcfa69249bbbe36e82c706c059bb7d7c5623742549e3fbcae2"
+    },
+    {
+      "kind": "typescript",
+      "path": "fixtures/riffql/operational-access-corpus-v1/generated/typescript/client.ts",
+      "sha256": "09b6b60146a5424e127eaff09fd6c9c09f36168239c84b4cac0182fc6fc43229"
+    }
+  ],
+  "operational_access_operations": [
+    {
+      "name": "ItemsByCode",
+      "plan_hash": "fce5d3696d9e20cf9f9e186339598d92f4fe3084f3d80f0db39087c47933b856",
+      "roles": [
+        "binary_text_exact",
+        "forward_cursor"
+      ],
+      "source_hash": "8f29f19f63218543a2e23dd59aeb46d92340292e34a411a9ed69b6d171bcfc70"
+    },
+    {
+      "name": "ItemsByCodePrefix",
+      "plan_hash": "bb15dd7fd9465143c4a83336af0a537a1a5da381897bf4b6ec255f815c28393a",
+      "roles": [
+        "binary_text_prefix",
+        "forward_cursor"
+      ],
+      "source_hash": "6e00602db9948a49574429627dbcb2f6949082348e704e908134c16dd7dbd0f8"
+    },
+    {
+      "name": "ItemsByCodes",
+      "plan_hash": "8aa64d13ba12e6e733cae4f634449ac953ff8c234096a9924550811e0f56bd75",
+      "roles": [
+        "binary_text_membership",
+        "forward_cursor"
+      ],
+      "source_hash": "f079f1bd639a209ffdc6f0ec34fb6192ff6c18c35e168b6cbfe8490b3023ccd9"
+    },
+    {
+      "name": "ItemsByCodesReverse",
+      "plan_hash": "838f4ed5fbc017f8d46372ac7ba836775a7f6797a8909fc2c2d6e4a1ca47979f",
+      "roles": [
+        "binary_text_membership",
+        "reverse_cursor"
+      ],
+      "source_hash": "9e403b72d7d7e457588f3468db74c23efe7ce85e892d7bade4312ba7d55c1925"
+    },
+    {
+      "name": "ItemsByKinds",
+      "plan_hash": "94bc02975553237d038c5fbe3aab62851e4f96dd3376f3b7598c052b07dc8aec",
+      "roles": [
+        "canonical_membership",
+        "forward_cursor"
+      ],
+      "source_hash": "6b24e99d9975da21102bf6bf265585ca4d2b6030e1b1b6b62a70d84c63d4bc4d"
+    },
+    {
+      "name": "ItemsInScoreWindow",
+      "plan_hash": "b9fe29b0b6bcce2d4df93f1edc4df502fffe78d37ace9ce0c194c8fee1121310",
+      "roles": [
+        "canonical_typed_interval",
+        "forward_cursor"
+      ],
+      "source_hash": "14cec42a9a8fec47a5b69a1c0319cc2e1e456e84d3d1e7e949b4a778c85eb06b"
+    },
+    {
+      "name": "ItemsOutsideScore",
+      "plan_hash": "c2f5048cf586b549abf48abfbc70ba922de684d3e032e2ac7f60536728bb542b",
+      "roles": [
+        "canonical_typed_complement",
+        "reverse_cursor"
+      ],
+      "source_hash": "d046c6f14da258dc0055ec7e22d545faa9413816398a6320cb85efef9e491397"
+    },
+    {
+      "name": "ItemsWithLabels",
+      "plan_hash": "df52120843cf7e2b5c9492dce7cb2b153d5ae8941ec3fa9ed8d54a8d198499a8",
+      "roles": [
+        "dependent_complete_key_batch"
+      ],
+      "source_hash": "bfb79ae27ee26eaf49d00fb37b79338f2fa707c6ab07bfeb60892822c794bb80"
+    }
+  ],
+  "predecessor": {
+    "path": "release/evidence/operational-query-capability-v3.json",
+    "sha256": "7538b2bec3e155e9ec3b6137fbf453f7fcb77aa35f42994f17a46214039d1d24",
+    "unchanged": true
+  },
+  "query_module": {
+    "module_hash": "b1018ceabd9840a0eb71a05346f880b7278113c3c68bc35805a265c27222b1d1",
+    "name": "operational_access_corpus",
+    "version": 1
+  },
+  "refusal_inventory": {
+    "external_consumer_classes": [
+      {
+        "client_emulation_permitted": false,
+        "compiler_code": "RDB-QP003",
+        "consumer_class": "partitioned_tuple_store",
+        "historical_runtime_code": "RDB-QUERY-0102",
+        "recovery": "declare_an_accepted_order_preserving_profile_or_redesign_then_recompile_and_redeploy",
+        "refused_source_count": 4,
+        "shape": "canonical_string_range"
+      }
+    ],
+    "repository_active_unproved_ordinary_plans": 0
+  },
+  "schema": "riffdb.operational-query-capability/v4",
+  "semantics": {
+    "caller_supplied_structure": false,
+    "client_shaping": false,
+    "finite_compiler_family": true,
+    "global_range_budget": true,
+    "logical_predicates_before_page": true,
+    "one_component_capability_registry": true,
+    "one_semantic_storage_schedule": true,
+    "partition_local": true,
+    "policy_before_release": true,
+    "request_time_authoritative_scan": false,
+    "row_store_provider_bridge": false,
+    "typed_generated_languages": [
+      "go",
+      "python",
+      "rust",
+      "typescript"
+    ]
+  },
+  "source_lock": {
+    "path": "fixtures/riffql/operational-access-corpus-v1/riffdb.application.lock.json",
+    "sha256": "64e7f88bf0bed2b199ee278a27045366a02a83ebd21048126f82b3e8f5d1c1c1"
+  },
+  "status": "development",
+  "work_package": "WP-690"
+}

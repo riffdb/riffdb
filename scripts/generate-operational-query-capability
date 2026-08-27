@@ -11,17 +11,25 @@ import sys
 
 
 ROOT = Path(__file__).resolve().parent.parent
-LOCK = ROOT / "fixtures/adapters/operational-conformance/riffdb.application.lock.json"
-PREDECESSOR = ROOT / "release/evidence/operational-query-capability-v2.json"
-PREDECESSOR_SHA256 = "63cb3eca67367c1a476d1db6a200afa05fd4f37b607b018d8b92d43c04b4a67e"
-OUTPUT = ROOT / "release/evidence/operational-query-capability-v3.json"
-V6_OPERATIONS = ("ReviewedDirectoryUsers", "SearchDirectoryUsers")
-V7_OPERATIONS = (
-    "InventoryByObservedAscNullsLast",
-    "InventoryByObservedDescNullsFirst",
-    "InventoryBySubtitleAscNullsFirst",
-    "InventoryBySubtitleDescNullsLast",
-)
+CORPUS = ROOT / "fixtures/riffql/operational-access-corpus-v1"
+LOCK = CORPUS / "riffdb.application.lock.json"
+NULLABLE_QUERY = CORPUS / "queries/items_by_published_state.riffq"
+EXTERNAL = ROOT / "fixtures/riffql/wp701-external-binary-text-interval-capability-v1.json"
+PREDECESSOR = ROOT / "fixtures/riffql/operational-query-capability-v4.json"
+PREDECESSOR_SHA256 = "d4df09daa026aad644bba0771b0bd2c3ecd108e96b7634c03712d9fb336fd38b"
+OUTPUT = ROOT / "fixtures/riffql/operational-query-capability-v5.json"
+OPERATION_ROLES = {
+    "ItemsByCode": ["binary_text_exact", "forward_cursor"],
+    "ItemsByCodePrefix": ["binary_text_prefix", "forward_cursor"],
+    "ItemsByCodes": ["binary_text_membership", "forward_cursor"],
+    "ItemsByCodesReverse": ["binary_text_membership", "reverse_cursor"],
+    "ItemsInCodeWindow": ["binary_text_interval", "forward_cursor"],
+    "ItemsByKinds": ["canonical_membership", "forward_cursor"],
+    "ItemsInScoreWindow": ["canonical_typed_interval", "forward_cursor"],
+    "ItemsOutsideScore": ["canonical_typed_complement", "reverse_cursor"],
+    "ItemsOutsideCode": ["binary_text_complement", "reverse_cursor"],
+    "ItemsWithLabels": ["dependent_complete_key_batch"],
+}
 
 
 def sha256(path: Path) -> str:
@@ -30,13 +38,24 @@ def sha256(path: Path) -> str:
 
 def render() -> bytes:
     lock = json.loads(LOCK.read_text(encoding="utf-8"))
+    external = json.loads(EXTERNAL.read_text(encoding="utf-8"))
+    if external.get("schema") != "riffdb.external-operational-capability/v2":
+        raise ValueError("external operational capability has the wrong schema")
+    if external.get("status") != "passed":
+        raise ValueError("external operational capability did not pass")
+    if external.get("verification", {}).get("full_framework_conformance_claimed") is not False:
+        raise ValueError("external receipt must not claim framework conformance")
+    if external.get("value_free_source_receipt", {}).get("schema_or_route_names_retained") is not False:
+        raise ValueError("external receipt retained framework vocabulary")
     module = lock["modules"][0]
     queries = {query["name"]: query for query in module["queries"]}
+    if set(queries) != set(OPERATION_ROLES):
+        raise ValueError("generic operational corpus operation inventory drifted")
     artifacts = sorted(
         (
             {
                 "kind": artifact["kind"],
-                "path": f"fixtures/adapters/operational-conformance/{artifact['path']}",
+                "path": f"fixtures/riffql/operational-access-corpus-v1/{artifact['path']}",
                 "sha256": artifact["content_hash"],
             }
             for artifact in lock["artifacts"]
@@ -45,8 +64,14 @@ def render() -> bytes:
         key=lambda artifact: artifact["kind"],
     )
     receipt = {
-        "schema": "riffdb.operational-query-capability/v3",
+        "schema": "riffdb.operational-query-capability/v5",
+        "work_package": "WP-701",
         "status": "development",
+        "predecessor": {
+            "path": str(PREDECESSOR.relative_to(ROOT)),
+            "sha256": PREDECESSOR_SHA256,
+            "unchanged": True,
+        },
         "contract": {
             "lineage": lock["contract"]["lineage"],
             "version": lock["contract"]["version"],
@@ -57,43 +82,66 @@ def render() -> bytes:
             "version": module["version"],
             "module_hash": module["module_hash"],
         },
-        "exact_predicate_operations": [
+        "operational_access_operations": [
             {
                 "name": name,
                 "plan_hash": queries[name]["plan_hash"],
                 "source_hash": queries[name]["source_hash"],
+                "roles": roles,
             }
-            for name in V6_OPERATIONS
+            for name, roles in sorted(OPERATION_ROLES.items())
         ],
-        "nullable_exact_order_operations": [
-            {
-                "name": name,
-                "plan_hash": queries[name]["plan_hash"],
-                "source_hash": queries[name]["source_hash"],
-            }
-            for name in V7_OPERATIONS
-        ],
+        "compiler_only_corpus": {
+            "nullable_presence_and_order": {
+                "path": str(NULLABLE_QUERY.relative_to(ROOT)),
+                "sha256": sha256(NULLABLE_QUERY),
+            },
+            "test": "riffdb-query-compiler/generic_operational_access_corpus",
+        },
         "generated_artifacts": artifacts,
         "semantics": {
             "caller_supplied_structure": False,
             "client_shaping": False,
-            "exact_total": True,
             "finite_compiler_family": True,
-            "independent_total_order": True,
-            "ordinal_window": True,
-            "policy_before_index": True,
-            "missing_and_null_order_class": "NoValue",
-            "nullable_order_placement": ["nulls_first", "nulls_last"],
-            "provider_state_format": 5,
+            "global_range_budget": True,
+            "logical_predicates_before_page": True,
+            "one_component_capability_registry": True,
+            "profile_aware_binary_text_interval": True,
+            "one_semantic_storage_schedule": True,
+            "partition_local": True,
+            "policy_before_release": True,
             "request_time_authoritative_scan": False,
-            "typescript_compact_helpers": "decoder_reachable_only",
-            "typescript_strict_unused_checks": True,
+            "row_store_provider_bridge": False,
             "typed_generated_languages": ["go", "python", "rust", "typescript"],
         },
         "external_acceptance": {
-            "owner": "external_adapter_repository",
-            "status": "not_proved_by_neutral_corpus",
-            "required_evidence": "public framework routes delegate only to pinned generated operations",
+            "path": str(EXTERNAL.relative_to(ROOT)),
+            "sha256": sha256(EXTERNAL),
+            "status": external["status"],
+            "consumer_class": external["consumer_class"],
+            "full_framework_conformance_claimed": False,
+            "framework_artifacts_retained": False,
+        },
+        "compatibility": {
+            "proved_predecessor_artifacts_preserved": True,
+            "historically_unproved_plans_executable": False,
+            "typed_refusal": "RDB-QUERY-0102",
+            "recovery": "refresh_contract_then_recompile_and_redeploy",
+            "durable_or_wire_format_changed": False,
+        },
+        "refusal_inventory": {
+            "repository_active_unproved_ordinary_plans": 0,
+            "external_consumer_classes": [
+                {
+                    "consumer_class": "partitioned_tuple_store",
+                    "refused_source_count": 2,
+                    "shape": "multiple_same_side_binary_text_endpoints",
+                    "compiler_code": "RDB-QP003",
+                    "historical_runtime_code": "RDB-QUERY-0102",
+                    "recovery": "normalize_to_one_endpoint_or_obtain_a_separately_accepted_compiler_shape_then_recompile_and_redeploy",
+                    "client_emulation_permitted": False,
+                }
+            ],
         },
         "source_lock": {
             "path": str(LOCK.relative_to(ROOT)),

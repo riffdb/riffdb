@@ -15,7 +15,7 @@ use riffdb_commit::{
 };
 use riffdb_storage_api::AuthoritativePointReader;
 use riffdb_storage_redb::{RedbTestController, RedbTestOperation};
-use riffdb_types::CommitSequence;
+use riffdb_types::{CommitSequence, EntityVersion};
 
 use support::{
     BulkRowsDatabase, CountingProvenanceSource, FixedAdmissionClock, IncrementingProvenanceSource,
@@ -29,28 +29,36 @@ const ROW_IDS: [[u8; 16]; 4] = [[0x61; 16], [0x62; 16], [0x63; 16], [0x64; 16]];
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Operation {
     Put,
+    InitializedPut,
     Delete,
+    Consume,
 }
 
 impl Operation {
     const fn label(self) -> &'static str {
         match self {
             Self::Put => "put",
+            Self::InitializedPut => "initialized-put",
             Self::Delete => "delete",
+            Self::Consume => "consume",
         }
     }
 
     const fn input_seed(self) -> u8 {
         match self {
             Self::Put => 0xa1,
+            Self::InitializedPut => 0xa4,
             Self::Delete => 0xa2,
+            Self::Consume => 0xa3,
         }
     }
 
     const fn digest_seed(self) -> u8 {
         match self {
             Self::Put => 0xb1,
+            Self::InitializedPut => 0xb4,
             Self::Delete => 0xb2,
+            Self::Consume => 0xb3,
         }
     }
 }
@@ -90,7 +98,12 @@ impl CrashPhase {
 
 #[test]
 fn collection_create_and_delete_are_complete_or_absent_across_process_crash() {
-    for operation in [Operation::Delete, Operation::Put] {
+    for operation in [
+        Operation::Delete,
+        Operation::Put,
+        Operation::InitializedPut,
+        Operation::Consume,
+    ] {
         for phase in [CrashPhase::BeforeCommit, CrashPhase::AfterCommit] {
             run_crash_case(operation, phase);
         }
@@ -121,6 +134,32 @@ fn healthy_collection_delete_can_be_recreated_through_the_same_entity_chain() {
     database.assert_commit_graph(&ports, put.stored_outcome(), ROW_IDS.len());
     database.assert_commit_graph(&ports, deleted.stored_outcome(), ROW_IDS.len());
     database.assert_commit_graph(&ports, recreated.stored_outcome(), ROW_IDS.len());
+}
+
+#[test]
+fn initialized_collection_creates_then_revision_checked_replaces_on_redb() {
+    let database = BulkRowsDatabase::create("initialized-create-replace");
+    let created = execute_healthy(&database, Operation::InitializedPut, 0x96, 0xe6, 0xf6, 0x86);
+    let ports = database.open();
+    database.assert_row_versions(&ports, &ROW_IDS, EntityVersion::first());
+    drop(ports);
+
+    let replaced = execute_healthy(&database, Operation::InitializedPut, 0x97, 0xe7, 0xf7, 0x87);
+    assert_eq!(
+        created.stored_outcome().commit_sequence(),
+        CommitSequence::first()
+    );
+    assert_eq!(
+        replaced.stored_outcome().commit_sequence(),
+        CommitSequence::new(2).expect("second sequence")
+    );
+    let ports = database.open();
+    database.assert_row_versions(
+        &ports,
+        &ROW_IDS,
+        EntityVersion::new(2).expect("second version"),
+    );
+    database.assert_commit_graph(&ports, replaced.stored_outcome(), ROW_IDS.len());
 }
 
 #[test]
@@ -306,7 +345,7 @@ fn bulk_command_recovery_child() {
 fn run_crash_case(operation: Operation, phase: CrashPhase) {
     let label = format!("{}-{}", operation.label(), phase.label());
     let database = BulkRowsDatabase::create(&label);
-    if operation == Operation::Delete {
+    if matches!(operation, Operation::Delete | Operation::Consume) {
         let outcome = execute_healthy(&database, Operation::Put, 0x91, 0xe1, 0xf1, 0x81);
         let ports = database.open();
         database.assert_rows_present(&ports, &ROW_IDS, true);
@@ -337,10 +376,15 @@ fn run_crash_case(operation: Operation, phase: CrashPhase) {
     let ports = database.open();
     let durable_visibility = phase == CrashPhase::AfterCommit;
     let expected_present = match operation {
-        Operation::Put => durable_visibility,
+        Operation::Put | Operation::InitializedPut => durable_visibility,
         Operation::Delete => !durable_visibility,
+        Operation::Consume => true,
     };
-    database.assert_rows_present(&ports, &ROW_IDS, expected_present);
+    if operation == Operation::Consume {
+        database.assert_child_present(&ports, ROW_IDS[0], ROW_IDS[0], !durable_visibility);
+    } else {
+        database.assert_rows_present(&ports, &ROW_IDS, expected_present);
+    }
 
     let replay_preparation = preparation(&database, &ports, operation, 0xc2);
     let provenance = Arc::new(CountingProvenanceSource::new(0xd2));
@@ -376,11 +420,21 @@ fn run_crash_case(operation: Operation, phase: CrashPhase) {
         .expect("drain recovered collection coordinator");
 
     let ports = database.open();
-    database.assert_rows_present(&ports, &ROW_IDS, operation == Operation::Put);
-    database.assert_commit_graph(&ports, replay.stored_outcome(), ROW_IDS.len());
+    if operation == Operation::Consume {
+        database.assert_child_present(&ports, ROW_IDS[0], ROW_IDS[0], false);
+        database.assert_commit_graph(&ports, replay.stored_outcome(), 0);
+    } else {
+        database.assert_rows_present(
+            &ports,
+            &ROW_IDS,
+            matches!(operation, Operation::Put | Operation::InitializedPut),
+        );
+        database.assert_commit_graph(&ports, replay.stored_outcome(), ROW_IDS.len());
+    }
     let expected_sequence = match operation {
-        Operation::Put => CommitSequence::first(),
+        Operation::Put | Operation::InitializedPut => CommitSequence::first(),
         Operation::Delete => CommitSequence::new(2).expect("second sequence"),
+        Operation::Consume => CommitSequence::new(2).expect("second sequence"),
     };
     assert_eq!(replay.stored_outcome().commit_sequence(), expected_sequence);
 }
@@ -399,9 +453,24 @@ fn execute_healthy(
         Operation::Put => {
             database.prepare_put(&ports, &ROW_IDS, input_seed, digest_seed, admission_seed)
         }
+        Operation::InitializedPut => database.prepare_initialized_put(
+            &ports,
+            &ROW_IDS,
+            input_seed,
+            digest_seed,
+            admission_seed,
+        ),
         Operation::Delete => {
             database.prepare_delete(&ports, &ROW_IDS, input_seed, digest_seed, admission_seed)
         }
+        Operation::Consume => database.prepare_consume_child(
+            &ports,
+            ROW_IDS[0],
+            ROW_IDS[0],
+            input_seed,
+            digest_seed,
+            admission_seed,
+        ),
     };
     let coordinator = start_coordinator(
         ports,
@@ -449,9 +518,24 @@ fn preparation(
             operation.digest_seed(),
             admission_seed,
         ),
+        Operation::InitializedPut => database.prepare_initialized_put(
+            ports,
+            &ROW_IDS,
+            operation.input_seed(),
+            operation.digest_seed(),
+            admission_seed,
+        ),
         Operation::Delete => database.prepare_delete(
             ports,
             &ROW_IDS,
+            operation.input_seed(),
+            operation.digest_seed(),
+            admission_seed,
+        ),
+        Operation::Consume => database.prepare_consume_child(
+            ports,
+            ROW_IDS[0],
+            ROW_IDS[0],
             operation.input_seed(),
             operation.digest_seed(),
             admission_seed,
@@ -463,8 +547,12 @@ fn parse_mode(mode: &str) -> (Operation, CrashPhase) {
     match mode {
         "put-before" => (Operation::Put, CrashPhase::BeforeCommit),
         "put-after" => (Operation::Put, CrashPhase::AfterCommit),
+        "initialized-put-before" => (Operation::InitializedPut, CrashPhase::BeforeCommit),
+        "initialized-put-after" => (Operation::InitializedPut, CrashPhase::AfterCommit),
         "delete-before" => (Operation::Delete, CrashPhase::BeforeCommit),
         "delete-after" => (Operation::Delete, CrashPhase::AfterCommit),
+        "consume-before" => (Operation::Consume, CrashPhase::BeforeCommit),
+        "consume-after" => (Operation::Consume, CrashPhase::AfterCommit),
         _ => panic!("unknown bulk recovery child mode"),
     }
 }

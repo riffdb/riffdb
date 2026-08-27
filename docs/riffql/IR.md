@@ -21,6 +21,14 @@ the symbolic source binding/entity, ordered group keys and result types,
 ordered measures and result types, and the compiler-proven maximum group
 count. Ordinary version-1 and non-aggregate version-2 bytes do not rotate.
 
+The additive exact aggregate core uses query-IR version 11. It adds closed
+function tags for present count, both exact distinct forms, exact mean state,
+Boolean any, and Boolean all, plus compiler-sealed distinct-value,
+partial-state-byte, and arithmetic-operation budgets. `ExactMeanV1` is a
+structural result record containing a widened exact decimal `total` and `u64`
+`count`; the IR never carries a quotient, rounding mode, or floating-point
+value. Earlier aggregate surface and family bytes remain version 3.
+
 An exact secret-output declaration selects additive query-IR version 4. The
 surface records the immutable contract identity plus the query-local binding,
 symbolic and stable entity/field identities, result branch and nested slot,

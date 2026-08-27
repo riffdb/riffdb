@@ -34,6 +34,12 @@ the sealed descriptors alongside the selected family member; an adapter that
 does not implement this exact boundary fails closed with `InvalidProgram`
 instead of falling back to the ordinary source-row result.
 
+A module using the additive exact aggregate core uses version 11 paired with
+RiffQL language version 8 and query IR version 11. Its canonical bytes include
+the new closed function tags and the independently sealed distinct, state, and
+arithmetic budgets. Strict decode recompiles all three identities; module
+versions 1 through 10 retain their existing readers and exact bytes.
+
 Operational families currently execute through the named-query application
 surface. Version-1 reactive/live-query modules do not substitute a representative
 member: compilation excludes an operational family until a versioned reactive

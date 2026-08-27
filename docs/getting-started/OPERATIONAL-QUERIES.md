@@ -105,20 +105,23 @@ fall back to canonical string ordering.
 |---|---:|---:|---:|---:|---:|
 | Canonical scalar | yes | first remaining order term | ordered numeric/time/UUID/enum scalars | no | canonical |
 | Presence-aware | state only | no | no | no | explicit accepted state placement |
-| `binary_utf8_v1` | yes | first remaining order term | no | exact leading bytes | UTF-8 bytes |
+| `binary_utf8_v1` | yes | first remaining order term | UTF-8 byte interval / complement | exact leading bytes | UTF-8 bytes |
 | `unicode_fold_v1` | unavailable | unavailable | unavailable | unavailable | unavailable |
 
 For an order-preserving canonical `i64`, `u64`, `timestamp`, `date`, `uuid`, or
-enum component, `<`, `<=`, `>`, and `>=` compile to inclusive/exclusive
-physical endpoints. One lower and one upper bound may form an interval; `!=`
-forms two disjoint complement intervals. The selected component must supply the
-first remaining order term. Memory and redb traverse the same normalized
-half-open schedule, including reverse continuation across an interval boundary,
-under one page, plus-one probe, scan, hydration, cursor, and output budget.
-Contradictory runtime bounds produce an exact empty page without a scan.
+enum component, or a bounded string declared as `binary_utf8_v1`, `<`, `<=`,
+`>`, and `>=` compile to inclusive/exclusive physical endpoints. Binary text
+uses exact valid UTF-8 byte order without normalization, collation, case
+folding, or token parsing. One lower and one upper bound may form an interval;
+`!=` forms two disjoint complement intervals. The selected component must
+supply the first remaining order term. Memory and redb traverse the same
+normalized half-open schedule, including reverse continuation across an
+interval boundary, under one page, plus-one probe, scan, hydration, cursor, and
+output budget. Contradictory runtime bounds produce an exact empty page without
+a scan.
 
-Canonical length-prefixed strings are not logical text-order ranges, and a
-`binary_utf8_v1` component cannot reinterpret typed range operators. Multiple
+Canonical length-prefixed strings are not logical text-order ranges; use an
+explicit `binary_utf8_v1` component for bytewise string intervals. Multiple
 branching dimensions, overlapping unions, joins, provider bridges,
 caller-selected indexes, and client page walking remain unsupported. An older
 module whose range was never physically proved is refused as query unavailable
@@ -132,6 +135,40 @@ The richer directory filtering fixture uses the separately governed exact
 result-set provider. Historical external ordinary range queries require
 recompilation so the compiler can prove their physical interval shape;
 unsupported scalar or multi-branch forms remain refused.
+
+## Extending ordinary access paths
+
+Ordinary access support is a closed compiler matrix, not a collection of
+backend conveniences. Adding an encoding, comparison profile, role, or role
+combination requires all of the following in one reviewed change:
+
+1. Freeze the logical equality/order meaning and the exact compatible
+   component roles.
+2. Prove one complete partition prefix, branching or interval component,
+   total-order suffix, unique tie-breaker, authority set, and static bounds.
+3. Lower typed values once per step and request into the shared immutable range
+   schedule; never validate profiles or construct ranges per row.
+4. Pass the same forward/reverse, exact-end/plus-one, cursor, policy, fuel, and
+   cancellation matrix in memory and redb.
+5. Add a real-consumer amendment for any new relationship shape and separately
+   bound driver rows, fan-out, intermediates, probes, bytes, output, missing
+   behavior, policy, and identity.
+
+The neutral application at
+`fixtures/riffql/operational-access-corpus-v1` freezes equality, canonical and
+binary-text membership, prefix, typed canonical and binary-text interval and
+complement, nullable state and order, forward/reverse cursor, row-policy
+authority, and dependent complete-key shapes. Its exact lock and Rust, Go,
+TypeScript, Python, and MCP artifacts are checked by
+`scripts/generate-operational-access-corpus --check`.
+
+`fixtures/riffql/operational-query-capability-v5.json` binds that corpus, the
+unchanged V4 capability receipt, and a value-free external tuple-changelog
+source-compilation and Go-only package receipt. The external receipt proves
+only the named access shapes it lists. It deliberately does not copy an
+external contract, schema, route, adapter, generated profile, or stored value
+into RiffDB, and it does not claim external runtime or full framework
+conformance.
 
 ## Feature preflight
 

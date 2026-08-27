@@ -2,7 +2,7 @@
 
 use riffdb_query_compiler::{ExactTextCompilerDeclarationV1, compile_exact_text_family_v1};
 use riffdb_riffql_syntax::Span;
-use riffdb_types::{FieldId, ProjectionProviderPolicyModeV1};
+use riffdb_types::{AggregateSemanticIdentityV1, FieldId, ProjectionProviderPolicyModeV1};
 
 #[test]
 fn compiler_enumerates_only_the_declared_finite_operator_family() {
@@ -16,6 +16,11 @@ fn compiler_enumerates_only_the_declared_finite_operator_family() {
     assert_eq!(family.members().len(), 6);
     assert_ne!(family.members()[0].order(), family.members()[1].order());
     assert_eq!(family.source_span(), Span { start: 20, end: 90 });
+    let semantics = family.descriptor().aggregate_semantics();
+    assert_eq!(semantics.len(), 1);
+    assert!(semantics.contains(AggregateSemanticIdentityV1::ExactCount));
+    assert!(!semantics.contains(AggregateSemanticIdentityV1::Count));
+    assert!(!semantics.contains(AggregateSemanticIdentityV1::Mean));
 }
 
 #[test]

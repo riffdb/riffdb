@@ -1,4 +1,4 @@
-spec_version: '1.11'
+spec_version: '1.14'
 product: RiffDB
 repository: riffdb
 status: deployable-application-alpha-architecture-accepted
@@ -672,6 +672,24 @@ work_packages:
       function, field, precision, approximation, state, provider, policy, epoch, bound, or fallback.
     scale: Registry and descriptor validation are fixed/pay-once; sketches allocate no runtime state;
       existing bounded/grouped/provider work retains its current finite limits.
+  closure:
+    status: complete
+    completed_at: "2026-08-25"
+    requirements_satisfied: [OQ-011, OQ-012, OQ-013, OQ-017, OQ-022, OQ-024,
+      OQ-044, OQ-045, OQ-049, OQ-050, OQ-052, OQ-053, OQ-054]
+    evidence: One closed transient registry now owns the five existing RiffQL aggregate semantic
+      descriptors and is consumed by source-to-semantic resolution, frozen operational tags,
+      compiler cost derivation, authoritative execution, module explanation, and the existing
+      columnar engine. Checked architecture evidence inventories parser/formatter, exact-count
+      providers, group-by, result, wire, generated, fixture, and separate durable materialized-
+      projection arms. Exact variance, approximate-cardinality, and percentile/histogram sketches
+      cover numerical, quality, state, epoch, policy, bound, and durable-identity dimensions only on
+      paper. Package tests, topology, generated, coverage, policy, formatting, and workspace Clippy
+      gates pass without changing existing durable bytes or adding a topology identity.
+    known_limitations: The registry describes only the five already executable semantics; ADR-0152's
+      additional exact core remains WP-694. Materialized projection Count/Sum state remains a
+      separately versioned write-time DSL and is not advertised as a RiffQL provider capability.
+    follow_ups: [WP-694, WP-695, WP-696]
   human_review_triggers: *id001
 - id: WP-694
   name: Exact aggregate core functions and generated result algebra
@@ -724,6 +742,26 @@ work_packages:
       budgets are compiled; callers submit values only and cannot select an unsafe fold or fallback.
     scale: Source rows, groups, distinct values, state bytes, arithmetic, scans, cells, and output
       are independently finite; no page walk, unbounded set, or database-wide memory is introduced.
+  closure:
+    status: complete
+    completed_at: "2026-08-25"
+    requirements_satisfied: [OQ-011, OQ-012, OQ-013, OQ-044, OQ-045, OQ-046,
+      OQ-047, OQ-048, OQ-049, OQ-050, OQ-051, OQ-053, OQ-055]
+    evidence: RiffQL language V8, query IR V11, and query module V11 add count_present,
+      count_distinct, count_distinct_present, mean, any, and all through the shared semantic
+      registry. Compiler-owned type checks and independent row, group, distinct, state,
+      arithmetic, and output budgets seal every plan. Authoritative and columnar evaluators share
+      exact NoValue, empty-set, canonical-distinct, Boolean, and ExactMeanV1 total/count semantics,
+      with typed whole-result refusal before release. Service, gRPC, MCP, CLI, and generated Rust,
+      Go, TypeScript, and Python surfaces carry the structural mean result without floating point
+      or target-language aggregation logic. Focused package suites, remote driver conformance,
+      topology, generated-artifact, requirement-coverage, workspace-policy, handbook, formatting,
+      and workspace Clippy gates pass.
+    known_limitations: Matched-epoch provider capability advertisement and combined page, total,
+      facets, and aggregate proofs remain WP-695. Differential recovery, security, compatibility,
+      and external generic acceptance remain WP-696. Approximate and advanced statistical families
+      remain descriptor sketches only and have no executable or persisted state.
+    follow_ups: [WP-695, WP-696]
   human_review_triggers: *id001
 - id: WP-695
   name: Aggregate columnar and exact-provider capability integration
@@ -772,6 +810,28 @@ work_packages:
       compiler-sealed; callers cannot request a provider superset, approximation, or fallback.
     scale: Provider work is partition-scoped with independent row/group/distinct/state/output bounds
       and pay-once proofs; no database-wide or cross-provider materialization is required.
+  closure:
+    status: complete
+    completed_at: "2026-08-25"
+    requirements_satisfied: [OQ-013, OQ-017, OQ-019, OQ-020, OQ-021, OQ-022,
+      OQ-024, OQ-044, OQ-046, OQ-047, OQ-048, OQ-049, OQ-050, OQ-051,
+      OQ-052, OQ-053, OQ-055]
+    evidence: The sealed provider descriptor now exposes one closed exact aggregate semantic subset
+      derived from its already-versioned provider kind and MEASURE stage. The real columnar adapter
+      advertises and executes the ten bounded/grouped exact functions but not exact_count; the
+      indexed exact-result adapter advertises only exact_count; vector and non-MEASURE descriptors
+      advertise none. Compiler architecture tests enumerate all eleven registry identities and
+      prove that provider subsets never collapse into their union, while real columnar and exact-
+      text conformance tests bind those advertisements to their executable adapters. Existing
+      result-set epoch proofs, partition-first policy admission, catalog-generation validation,
+      exact page/count execution, columnar grouped/whole folds, rebuild/compaction suites, and
+      memory/redb recovery suites pass as one provider integration matrix. The capability view is
+      transient and preserves provider V1 bytes, digests, state layouts, and topology exactly.
+    known_limitations: No provider bridge or composite executor is introduced. The indexed exact-
+      result provider continues to offer only maintained exact_count; it does not claim columnar
+      folds or facets. Differential merge-law, inference, mixed-version, generated-surface, and
+      external generic application closure remains WP-696.
+    follow_ups: [WP-696]
   human_review_triggers: *id001
 - id: WP-696
   name: Aggregate differential security compatibility and final evidence
@@ -816,6 +876,544 @@ work_packages:
       no caller-selected structure, approximation, provider, policy, precision, or fallback.
     scale: All row/group/distinct/state/scan/output and evidence dimensions are fixed and bounded;
       no database-wide memory, unbounded materialization, or duration-proportional state exists.
+  closure:
+    status: complete
+    completed_at: "2026-08-25"
+    requirements_satisfied: [OQ-044, OQ-045, OQ-046, OQ-047, OQ-048, OQ-049,
+      OQ-050, OQ-051, OQ-052, OQ-053, OQ-054, OQ-055]
+    evidence: The final closure corpus proves the merge identity, partition independence, and
+      canonical order of every registered exact partial state over empty, NoValue, duplicate,
+      one-row, and bounded multi-chunk inputs. Its architecture inventory binds those laws to the
+      existing randomized reference differential, ordinary executor, grouped columnar,
+      exact-provider, compaction, recovery, policy-before-contribution, generated-schema, and gRPC
+      evidence. The public handbook matrix identifies all eleven exact functions, empty and
+      NoValue results, refusal boundaries, provider subsets, epoch behavior, and deferred families.
+      Architecture negatives keep approximation, ordered-set and collection aggregates,
+      user-defined functions, floating-point state, per-row compatibility proof, callbacks,
+      framework branches, and speculative provider bridges absent. Full workspace, remote
+      four-language driver, topology, generated-artifact, requirement-coverage, policy, handbook,
+      formatting, and Clippy gates pass together. The package-first driver fixture generator now
+      selects its named CreateItem command rather than relying on role-command array position,
+      preserving exact generated identity evidence when unrelated commands are added.
+    known_limitations: Approximate statistics, ordered-set and collection aggregates, windows,
+      user-defined functions, provider bridges, and BM25 execution remain deliberately deferred.
+      Provider capability subsets remain exact; columnar supplies its bounded fold family,
+      indexed exact results supply exact_count, and vector providers supply neither.
+    follow_ups: []
+  human_review_triggers: *id001
+- id: WP-697
+  name: Initialized state-transition language compiler and V17 identity
+  depends_on: [WP-560, WP-612, WP-678, WP-683]
+  objective: Implement ADR-0153's exact-key `init_or_mutate` source and compiler semantics with
+    state-independent typed initializer dataflow, path-sensitive definite assignment, complete
+    create/update authority and cost proofs, and least-sufficient V17 identities without adding
+    general branching, generic upsert, or a framework-specific path.
+  requirements: [BLK-009, BLK-036, BLK-037, BLK-038, BLK-040, BLK-042,
+    BLK-043, BLK-044, DSL-001, DSL-002, DSL-003, DSL-004, DSL-005, DSL-006,
+    DSL-007, DSL-008, DSL-009, DSL-010, DSL-011, DSL-012, SAFE-004, SAFE-005]
+  required_adrs: [ADR-0002, ADR-0003, ADR-0012, ADR-0031, ADR-0055,
+    ADR-0107, ADR-0124, ADR-0129, ADR-0147, ADR-0149, ADR-0153]
+  allowed_paths: [SPEC.md, work_packages.yaml, adr/README.md,
+    adr/0153-compiler-sealed-initialized-state-transitions.md,
+    release/version-topology-v1.json, crates/riffdb-types/**,
+    crates/riffdb-contract-syntax/**, crates/riffdb-contract-ir/**,
+    crates/riffdb-contract-compiler/**, crates/riffdb-diagnostics/**,
+    crates/riffdb-cli/assets/editor/**, clients/editor/**, fixtures/compiler/**,
+    fixtures/contracts/**, fuzz/**, tests/**, scripts/**, docs/SUMMARY.md,
+    docs/contracts/**, docs/architecture/**, docs/known-limitations.md]
+  deliverables:
+  - Exact init_or_mutate binding and initializer grammar, formatter, syntax AST, source spans,
+    bounded item accounting, editor grammar, and diagnostics, with no absent/present blocks,
+    state-origin expression, dynamic outcome, callback, conflict selector, or alternate target
+  - One checked initialized mutable binding plan whose initializer fields are canonical FieldId-
+    ordered, unique, non-key, typed, and limited to constants/input/service/transaction/current-
+    element values, with all other entity, query, projection, storage, clock, randomness, and
+    runtime-selected dependencies rejected
+  - Path-sensitive command analysis proving absent-path read-before-initialize safety and complete
+    create postimages while retaining present-preimage behavior, common requirements/effects,
+    relationships, uniqueness, invariants, secrets, events, outcomes, and one exact target
+  - Static authorization and explain metadata containing the union of create/update operation and
+    field authority, plus row-policy applicability for both possible states without exposing state
+    origin through a caller field or generated option
+  - Conservative alternative cost proof using max(absent create, present replace), not the sum,
+    under unchanged collection, byte, mutation, index-delta, affected-prefix, validation-position,
+    correlated-work, and one-partition ceilings
+  - Least-sufficient grammar/executable-IR/bundle V17 tags and canonical initializer encoding,
+    topology registration, golden/hash/lock fixtures, old-reader rejection, and byte-exact V1-V16
+    writer regression with no durable decoder retirement
+  acceptance_commands:
+  - cargo +1.97.0 test -p riffdb-contract-syntax -p riffdb-contract-ir -p riffdb-contract-compiler --all-features
+  - cargo +1.97.0 test -p riffdb-diagnostics --all-features
+  - ./scripts/check-version-topology
+  - ./scripts/check-generated
+  - ./scripts/check-requirement-coverage
+  - ./scripts/check-workspace-policy
+  - ./scripts/handbook check
+  - cargo +1.97.0 fmt --all -- --check
+  - cargo +1.97.0 clippy -p riffdb-contract-syntax -p riffdb-contract-ir -p riffdb-contract-compiler -p riffdb-diagnostics --all-targets --all-features -- -D warnings
+  exit_gate: Valid ordinary and collection initialized transitions lower to one exact V17 binding
+    with complete dataflow, authority, locality, conflict, relationship, uniqueness, secret, and
+    max-alternative cost proofs; invalid shapes fail at source spans; old contracts retain their
+    exact bytes; and no general branch, upsert, origin flag, framework path, or unregistered identity
+    exists.
+  standing_design_tests:
+    interface_safety: The application declares one exact entity/key, initializer, and common command
+      suffix. It cannot choose runtime state, conflict target, overwrite policy, transaction,
+      authority, budget, retry, or fallback, and generated callers receive no new unsafe option.
+    scale: Compiler work is bounded by existing binding/field/expression/collection limits and
+      charges the maximum of two sealed alternatives once; no population scan, dynamic graph,
+      per-index initializer evaluation, or cross-partition state is introduced.
+  human_review_triggers: *id001
+- id: WP-698
+  name: Initialized state-transition runtime coordinator and storage conformance
+  depends_on: [WP-561, WP-679, WP-684, WP-697]
+  objective: Execute ADR-0153 initialized mutable bindings as one absence-or-presence observation
+    and exactly one create-or-replace mutation per target, preserving whole-command revalidation,
+    atomicity, idempotency, policy, index work, recovery, and bounded bulk behavior across memory
+    and redb without an internal command or dormant authoritative row.
+  requirements: [BLK-036, BLK-038, BLK-039, BLK-040, BLK-041, BLK-042,
+    BLK-043, BLK-045, TXN-010, TXN-011, TXN-012, TXN-013, PERF-004, PERF-005]
+  required_adrs: [ADR-0002, ADR-0003, ADR-0004, ADR-0005, ADR-0012,
+    ADR-0023, ADR-0055, ADR-0107, ADR-0124, ADR-0129, ADR-0147, ADR-0149,
+    ADR-0153]
+  allowed_paths: [SPEC.md, work_packages.yaml,
+    adr/0153-compiler-sealed-initialized-state-transitions.md,
+    release/version-topology-v1.json, proto/**, crates/riffdb-types/**,
+    crates/riffdb-contract-ir/**, crates/riffdb-invariant/**,
+    crates/riffdb-runtime/**, crates/riffdb-storage-api/**,
+    crates/riffdb-storage-memory/**, crates/riffdb-storage-redb/**,
+    crates/riffdb-commit/**, crates/riffdb-policy/**, crates/riffdb-service/**,
+    crates/riffdb-testkit/**, fixtures/**, tests/**, fuzz/**, scripts/**,
+    docs/contracts/**, docs/architecture/**, docs/known-limitations.md]
+  deliverables:
+  - Snapshot materialization for one initialized mutable target that preserves exact absence or
+    present version/hash evidence and constructs a bounded provisional absent-path record without
+    changing storage or invoking another service operation
+  - Deterministic common-suffix execution producing exactly Create for a revalidated absence or
+    revision-checked Replace for a revalidated presence, with no create-plus-replace graph, dormant
+    row, implicit default, state-origin result, or stale mutation conversion
+  - Coordinator validation and deterministic schedules for absent/absent, absent/present,
+    update/update, delete/recreate, cancellation, retry exhaustion, and policy revision, discarding
+    every stale graph before durable outcome or event release
+  - Create/update authority union plus selected row/field policy, relationship, uniqueness,
+    invariant, secret, event, provenance, idempotency, uncertain response, replay, and redaction
+    equivalence to the existing individual binding modes
+  - Ordinary and bounded collection execution over all-absent, all-present, and mixed observations,
+    including 1/9/19/100 elements, duplicates, aliasing, aggregate bytes, graph bytes, business
+    rejection, complete-or-absent visibility, and exact memory/redb parity
+  - Runtime physical work charges only the selected create or replace alternative; stage evidence
+    proves one entity mutation per target and unchanged correlated index-work ceilings, with
+    initializer/compatibility proof never repeated per field, index, validation target, or retry
+  acceptance_commands:
+  - cargo +1.97.0 test -p riffdb-runtime -p riffdb-commit -p riffdb-policy -p riffdb-service --all-features
+  - cargo +1.97.0 test -p riffdb-storage-memory -p riffdb-storage-redb -p riffdb-testkit --all-features
+  - cargo +1.97.0 test -p riffdb-commit --test command_concurrency --all-features
+  - cargo +1.97.0 test -p riffdb-testkit --test bulk_command_recovery --all-features
+  - ./scripts/check-version-topology
+  - ./scripts/check-generated
+  - ./scripts/check-requirement-coverage
+  - ./scripts/check-workspace-policy
+  - cargo +1.97.0 fmt --all -- --check
+  - cargo +1.97.0 clippy -p riffdb-runtime -p riffdb-commit -p riffdb-policy -p riffdb-service -p riffdb-storage-memory -p riffdb-storage-redb -p riffdb-testkit --all-targets --all-features -- -D warnings
+  exit_gate: Every initialized binding commits exactly one transaction-current create or replace
+    with one atomic outcome/event/provenance graph, exact replay and crash recovery, selected policy,
+    bounded mixed collection behavior, and honest alternative work accounting; no stale result,
+    dormant row, internal command, double mutation, framework behavior, or weakened ceiling remains.
+  standing_design_tests:
+    interface_safety: Runtime derives the mutation kind only from revalidated authoritative state;
+      no caller value, transport, adapter, configuration, or backend can choose the path or bypass
+      authorization, policy, validation, atomicity, idempotency, durability, or provenance.
+    scale: Each target costs one point observation and one selected mutation beneath existing finite
+      collection, graph, index, validation, byte, retry, and partition limits; no scan, cross-
+      partition coordination, or duration/population-proportional state exists.
+  human_review_triggers: *id001
+- id: WP-699
+  name: Initialized transition generated recovery performance and external acceptance
+  depends_on: [WP-562, WP-565, WP-692, WP-698]
+  objective: Close ADR-0153 across every generated/public surface, compatibility and crash recovery,
+    generic lifecycle performance evidence, handbook guidance, and a value-free external-consumer
+    receipt while retaining all adapter code and framework semantics in their owning repositories.
+  requirements: [BLK-036, BLK-039, BLK-040, BLK-041, BLK-042, BLK-043,
+    BLK-044, BLK-045, DRV-007, DRV-008, DRV-012, DRV-014, SAFE-004, SAFE-005,
+    PERF-004, PERF-005]
+  required_adrs: [ADR-0055, ADR-0107, ADR-0124, ADR-0129, ADR-0142,
+    ADR-0147, ADR-0148, ADR-0149, ADR-0153]
+  allowed_paths: [SPEC.md, work_packages.yaml,
+    adr/0153-compiler-sealed-initialized-state-transitions.md,
+    release/version-topology-v1.json, proto/**, crates/**, clients/**,
+    templates/**, fixtures/**, examples/**, tests/**, benchmarks/**, scripts/**,
+    docs/**]
+  deliverables:
+  - Deterministic generated Rust, Go, TypeScript, Python, CLI, MCP, local-driver, and remote-gRPC
+    operation identity/outcome/error/authorization conformance without a caller-visible state path,
+    conflict mode, transaction handle, or handwritten binding behavior
+  - Generic lifecycle application using one initialized transition for absent, present, mixed bulk,
+    business rejection, event, secret, policy, and replay cases, with all generated artifacts and
+    documentation discoverable from docs/SUMMARY.md
+  - Process-level memory/redb crash and restart campaign across admission, snapshot, evaluation,
+    staging, durability, publication, lost response, retry, and retained V1-V16/V17 deployment
+    windows, with no decoder retirement or unexplained recovery state
+  - Stage-attributed benchmark proving one generated command and one entity mutation replace the
+    generic dormant-create-plus-replace sequence, reporting service, validation, index, journal,
+    durability, and response costs without changing ADR-0142 gates or claiming external parity
+  - Value-free external capability receipt confirming the consumer can compile and execute its
+    initialized bulk transition; the receipt may report bounded operation-count and timing deltas
+    but contains no external schema, route, adapter source, generated profile, or framework-specific
+    RiffDB branch
+  - Final architecture inventory and handbook text separating database capability from consumer
+    query batching, iterator buffering, redundant-read elimination, safe immutable-root caching, and
+    its own business semantics
+  acceptance_commands:
+  - cargo +1.97.0 test --workspace --all-features
+  - ./scripts/driver-conformance --all-languages --remote
+  - ./scripts/check-version-topology
+  - ./scripts/check-generated
+  - ./scripts/check-requirement-coverage
+  - ./scripts/check-workspace-policy
+  - ./scripts/handbook check
+  - cargo +1.97.0 fmt --all -- --check
+  - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: Every public surface, backend, restart path, policy case, bound, and compatibility
+    window preserves the exact initialized-transition semantics; generic evidence proves the
+    redundant durable transition is removed; the external receipt is green; and no framework code,
+    caller-selected upsert behavior, unsafe branch, stale artifact, warning, or unexplained failure
+    remains.
+  standing_design_tests:
+    interface_safety: Generated callers see only the finite named command's existing typed input and
+      closed outcome union; initialization, selected mutation, policy, work, retry, durability, and
+      recovery remain compiler/runtime-owned with no unsafe public selector.
+    scale: Evidence is bounded by declared ordinary/collection maxima and reports constant per-plan
+      plus per-selected-target work; no unbounded benchmark state, cursor walk, scan, cross-
+      partition operation, or application-sized retained proof is introduced.
+  human_review_triggers: *id001
+- id: WP-700
+  name: Profile-aware binary text interval compiler and storage conformance
+  depends_on: [WP-688, WP-690]
+  objective: Implement ADR-0154's strict, inclusive, and complement intervals over the existing
+    binary_utf8_v1 physical order through one compiler-sealed ordinary access shape and the shared
+    memory/redb range schedule, without a ULID branch, residual filter, or durable-format change.
+  requirements: [OQ-001, OQ-002, OQ-003, OQ-004, OQ-005, OQ-006, OQ-008,
+    OQ-009, OQ-015, OQ-032, OQ-033, OQ-034, OQ-036, OQ-037, OQ-039, OQ-040,
+    OQ-043, OQ-056, OQ-057, OQ-058, OQ-059, OQ-060]
+  required_adrs: [ADR-0038, ADR-0051, ADR-0053, ADR-0055, ADR-0108,
+    ADR-0111, ADR-0124, ADR-0129, ADR-0134, ADR-0145, ADR-0150, ADR-0154]
+  allowed_paths: [SPEC.md, work_packages.yaml, adr/README.md,
+    adr/0154-profile-aware-binary-text-intervals.md,
+    release/version-topology-v1.json, crates/riffdb-query-ir/**,
+    crates/riffdb-query-compiler/**, crates/riffdb-query-executor/**,
+    crates/riffdb-storage-api/**, crates/riffdb-storage-memory/**,
+    crates/riffdb-storage-redb/**, crates/riffdb-testkit/**,
+    fixtures/riffql/**, fixtures/query-modules/**, tests/**, fuzz/**, scripts/**,
+    docs/SUMMARY.md, docs/riffql/**,
+    docs/getting-started/OPERATIONAL-QUERIES.md, docs/known-limitations.md]
+  deliverables:
+  - Closed registry admission for binary_utf8_v1 range/complement only after an exact partition
+    prefix and only when the component supplies the first remaining complete order term and key
+    tie-breaker, with source-spanned refusal for every incomplete shape
+  - Pay-once endpoint lowering for lower-only, upper-only, strict, inclusive, closed/open, empty,
+    contradictory, and two-range complement cases using exact ordered-byte component prefixes
+  - One memory/redb forward/reverse range and cursor truth table under global page, plus-one, scan,
+    hydration, output, parameter, range-count, and encoded-byte bounds
+  - Logical predicate, authorization, row-policy, cancellation, redaction, and activation-time
+    unavailable conformance proving no post-page filter, physical-byte output, or per-row proof
+  - Compatibility evidence that old plans and indexes remain byte-exact and no query-IR, cursor,
+    storage, index-key, wire, or generated-method version is silently reinterpreted
+  acceptance_commands:
+  - cargo +1.97.0 test -p riffdb-query-ir -p riffdb-query-compiler -p riffdb-query-executor --all-features
+  - cargo +1.97.0 test -p riffdb-storage-memory -p riffdb-storage-redb -p riffdb-testkit --all-features
+  - cargo +1.97.0 test -p riffdb-testkit --test operational_queries --all-features
+  - ./scripts/check-version-topology
+  - ./scripts/check-generated
+  - ./scripts/check-requirement-coverage
+  - ./scripts/check-workspace-policy
+  - ./scripts/handbook check
+  - cargo +1.97.0 fmt --all -- --check
+  - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: One declared binary_utf8_v1 index physically enforces bytewise lower/upper/complement
+    intervals before page formation with exact memory/redb order and cursor parity, unchanged global
+    bounds and old artifacts, and no ULID/framework branch, scan, residual filter, or unsafe selector.
+  standing_design_tests:
+    interface_safety: Callers submit only typed bounded values to one generated named query and
+      cannot choose a profile, index, collation, range shape, cursor binding, policy, cost, or
+      fallback; every incomplete shape fails before storage.
+    scale: At most one interval or two complement ranges exist beneath one exact partition prefix
+      and one global finite work budget; no population materialization, page walk, cross-partition
+      scan, or per-row compatibility proof is introduced.
+  human_review_triggers: *id001
+- id: WP-701
+  name: Binary text interval generated and external acceptance
+  depends_on: [WP-700, WP-565]
+  objective: Close ADR-0154 across generated/public surfaces, handbook and architecture guidance,
+    compatibility gates, and one value-free external consumer receipt while retaining every
+    external schema, route, token convention, and adapter artifact in its owning repository.
+  requirements: [OQ-004, OQ-005, OQ-006, OQ-015, OQ-016, OQ-030, OQ-043,
+    OQ-056, OQ-057, OQ-058, OQ-059, OQ-060, OQ-061, DRV-007, DRV-008,
+    DRV-012, DRV-014, SAFE-004, SAFE-005]
+  required_adrs: [ADR-0055, ADR-0108, ADR-0112, ADR-0124, ADR-0129,
+    ADR-0148, ADR-0150, ADR-0154]
+  allowed_paths: [SPEC.md, work_packages.yaml,
+    adr/0154-profile-aware-binary-text-intervals.md,
+    release/version-topology-v1.json, crates/**, clients/**, fixtures/**,
+    examples/**, tests/**, scripts/**, docs/**]
+  deliverables:
+  - Framework-neutral changelog-shaped corpus over length-divergent and multibyte strings proving
+    raw logical token return, strict horizon exclusion, total bytewise order, page continuation,
+    policy, and bounds through every generated and transport surface
+  - Value-free external capability receipt confirming one consumer can compile and execute a strict
+    lower/upper binary-text interval without client filtering, cursor walking, duplicate indexes,
+    or a database-owned external-token conversion
+  - Final compatibility, topology, architecture, handbook, limitation, and requirement-coverage
+    evidence with no external schema, adapter source, framework-specific branch, or parity claim
+  acceptance_commands:
+  - cargo +1.97.0 test --workspace --all-features
+  - ./scripts/driver-conformance --all-languages --remote
+  - ./scripts/check-version-topology
+  - ./scripts/check-generated
+  - ./scripts/check-requirement-coverage
+  - ./scripts/check-workspace-policy
+  - ./scripts/handbook check
+  - cargo +1.97.0 fmt --all -- --check
+  - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: Every generated and transport surface agrees with the compiler/storage bytewise
+    interval contract, the external receipt is green and value-free, documentation is complete,
+    and no raw physical bytes, unsafe plan choice, framework code, or unexplained failure remains.
+  standing_design_tests:
+    interface_safety: Generated callers expose only the named query's typed values and opaque RiffDB
+      cursor; they cannot select physical semantics, and returning a logical string does not grant
+      storage, index, protocol, or cursor authority.
+    scale: Every corpus and receipt uses one partition, finite endpoints, bounded pages, and declared
+      scan/output ceilings; no external population or duration-proportional state is retained.
+  human_review_triggers: *id001
+- id: WP-702
+  name: Sparse generated-surface source manifest and lock identities
+  depends_on: [WP-602, WP-612]
+  objective: Implement ADR-0155's closed sparse application-source V7 generation declaration,
+    manifest V5, lock V8, and one compiler-owned target registry while preserving every older
+    source/manifest/lock byte and preventing local project configuration from changing exact identity.
+  requirements: [DX-004, DX-006, DX-013, DX-014, DX-015, DX-016, DX-017,
+    DX-018, DX-042, DX-043, DX-044, DX-045, DX-047, DX-048, DX-049,
+    VER-001, VER-002, VER-003, VER-004, VER-005, VER-006, VER-007, VER-008]
+  required_adrs: [ADR-0052, ADR-0055, ADR-0057, ADR-0075, ADR-0112,
+    ADR-0120, ADR-0121, ADR-0124, ADR-0155]
+  allowed_paths: [SPEC.md, work_packages.yaml, adr/README.md,
+    adr/0155-selectively-declared-generated-application-surfaces.md,
+    release/version-topology-v1.json, crates/riffdb-types/**,
+    crates/riffdb-query-module/**, crates/riffdb-cli/**, fixtures/**,
+    tests/**, scripts/**, docs/SUMMARY.md, docs/getting-started/**,
+    docs/sdks/**, docs/versioning-and-retirement.md, docs/known-limitations.md]
+  deliverables:
+  - Application-source V7 parser and canonicalizer accepting a nonempty unique-path subset of the
+    five closed target kinds, plus manifest V5 and lock V8 carrying exactly that declared set
+  - One compiler-owned declared-surface registry used by parsing, generation, artifact-kind mapping,
+    lock validation, publication, checking, installation, scaffolding, and diagnostics
+  - Exact in-memory generation and hashing for every declared surface, zero generation/toolchain
+    discovery for absent surfaces, and typed refusal when local configuration selects an undeclared
+    kind or an artifact inventory is missing, extra, stale, unsafe, or inconsistent
+  - Least-sufficient topology, canonical fixtures, old-reader rejection, migration preview, and
+    byte-exact V1-V6 source, V1-V4 manifest, and V1-V7 lock compatibility with no decoder retirement
+  - Architecture evidence that generator selection cannot change runtime commands, queries, roles,
+    policy, hosted protocols, storage, outcomes, cost, or first-party Rust driver ownership
+  acceptance_commands:
+  - cargo +1.97.0 test -p riffdb-query-module -p riffdb-cli --all-features
+  - ./scripts/check-version-topology
+  - ./scripts/check-generated
+  - ./scripts/check-requirement-coverage
+  - ./scripts/check-workspace-policy
+  - ./scripts/handbook check
+  - cargo +1.97.0 fmt --all -- --check
+  - cargo +1.97.0 clippy -p riffdb-query-module -p riffdb-cli --all-targets --all-features -- -D warnings
+  exit_gate: Sparse V7 source deterministically yields exact V5 manifest and V8 lock inventories from
+    one registry, older bytes remain exact, absent targets incur no artifact or toolchain work, and
+    local configuration or generated language code cannot alter authoritative identity or semantics.
+  standing_design_tests:
+    interface_safety: Applications select only safe first-party generated artifact kinds and paths;
+      they cannot supply implementations, alter runtime authority, bypass exact locking, or replace
+      the Rust-owned driver and service boundary.
+    scale: At most five targets are validated and generated once per compilation beneath existing
+      path/artifact/lock byte ceilings, with no runtime, row, query, or database-sized work.
+  human_review_triggers: *id001
+- id: WP-703
+  name: Selective generation project packaging and external conformance
+  depends_on: [WP-611, WP-702]
+  objective: Close ADR-0155 with truthful singleton and multi-surface project workflows, installed
+    package behavior, compatibility and filesystem recovery, cross-driver conformance, and a fresh
+    Go-only external package that requires no unrelated generated target or toolchain.
+  requirements: [DX-013, DX-014, DX-016, DX-017, DX-026, DX-027, DX-028,
+    DX-029, DX-030, DX-031, DX-037, DX-038, DX-039, DX-040, DX-042, DX-043,
+    DX-044, DX-045, DX-046, DX-047, DX-048, DX-049, DRV-007, DRV-008,
+    DRV-012, DRV-014]
+  required_adrs: [ADR-0055, ADR-0112, ADR-0120, ADR-0121, ADR-0124,
+    ADR-0148, ADR-0155]
+  allowed_paths: [SPEC.md, work_packages.yaml,
+    adr/0155-selectively-declared-generated-application-surfaces.md,
+    release/version-topology-v1.json, crates/**, clients/**, templates/**,
+    fixtures/**, examples/**, tests/**, scripts/**, release/distribution/**,
+    docs/**, .github/workflows/**]
+  deliverables:
+  - Fresh Rust-only, Go-only, TypeScript-only, Python-only, MCP-only, and representative polyglot
+    init/generate/check/diff/push-preview/install/dev workflows with exact selected artifact trees
+  - Go-only external package proving native installation, generation, lock validation, go test, and
+    local-driver execution without npm, TypeScript, Python, MCP output, or a generated Rust facade
+  - Symmetric global generator and MCP semantic conformance proving omission from one package does
+    not weaken any supported surface or change hosted protocol authority
+  - Filesystem interruption, existing undeclared file, symlink, collision, migration preview,
+    development publication inventory, compatibility, handbook, and architecture evidence
+  acceptance_commands:
+  - cargo +1.97.0 test --workspace --all-features
+  - ./scripts/driver-conformance --all-languages --remote
+  - ./scripts/check-driver-development-registry
+  - ./scripts/check-version-topology
+  - ./scripts/check-generated
+  - ./scripts/check-requirement-coverage
+  - ./scripts/check-workspace-policy
+  - ./scripts/handbook check
+  - cargo +1.97.0 fmt --all -- --check
+  - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: Every declared target set produces one exact bounded artifact inventory and truthful
+    project/package workflow, the Go-only external acceptance is green without unrelated toolchains,
+    all global surfaces retain parity, and no stale artifact, local identity drift, protocol change,
+    target-language semantic branch, warning, or unexplained failure remains.
+  standing_design_tests:
+    interface_safety: Project and package users can select only compiler-generated safe facade kinds;
+      no selector grants transport, transaction, authorization, storage, MCP, or guarantee bypass.
+    scale: Target sets contain at most five entries and acceptance uses bounded fresh packages and
+      fixture trees; generation retains no database state and performs no operation-proportional work.
+  human_review_triggers: *id001
+- id: WP-704
+  name: Clean-close certificate durable interface and fast-startup safety closure
+  depends_on: [WP-130, WP-422, WP-448, WP-489, WP-669]
+  objective: Implement ADR-0156's private conventional clean-close lifecycle state, bounded
+    readiness proof, durable consume-before-writers transition, and complete dirty fallback while
+    moving every integrity fact skipped at clean startup onto the operational path that first uses
+    it and preserving the existing exact-end validation stream for recovery and explicit scrub.
+  requirements: [STO-001, STO-012, STO-020, STO-021, STO-022, STO-023,
+    REC-001, REC-002, REC-004, PERF-007, PERF-013, PERF-014, PERF-019]
+  required_adrs: [ADR-0004, ADR-0006, ADR-0019, ADR-0034, ADR-0050,
+    ADR-0061, ADR-0073, ADR-0085, ADR-0101, ADR-0103, ADR-0104, ADR-0112,
+    ADR-0156, ADR-0157]
+  allowed_paths: [SPEC.md, work_packages.yaml, adr/README.md,
+    adr/0156-clean-close-certificate-fast-startup.md,
+    adr/0157-clean-close-lifecycle-durable-identity.md,
+    proto/riffdb/storage/v1/**, crates/riffdb-proto/**, fixtures/proto/**,
+    crates/riffdb-storage-api/**, crates/riffdb-storage-redb/**,
+    crates/riffdb-catalog/**, crates/riffdb-auth/**, crates/riffdb-commit/**,
+    crates/riffdb-server/**, crates/riffdb-observability/**,
+    tests/storage_recovery/**, tests/recovery/**, tests/command_semantics/**,
+    scripts/generate-proto*, scripts/check-generated,
+    docs/SUMMARY.md, docs/architecture/**, docs/operations/**,
+    docs/performance/**, docs/compatibility.md]
+  deliverables:
+  - ADR-0157 accepted BEFORE implementation freezes the exact private
+    meta key, Protobuf fields/tags/presence, canonical hash domain, semantic byte ceiling, registry
+    predecessor/successor digests, dirty-consumption representation, and old-reader behavior; no
+    code may infer these durable choices from this package text
+  - One sealed lifecycle typestate whose clean variant can be constructed only after final
+    admission/writer/worker/journal drain and committed Immediate as the final authoritative
+    mutation, and whose startup consumption becomes durable before any coordinator, outbox,
+    projection, reactive, maintenance, or public writer can activate
+  - A bounded clean readiness proof over engine status, database/incarnation/format/registry,
+    allocators/frontiers, journal/checkpoint generation, bootstrap, active catalog lineage and
+    executable artifacts, and initial authority roots, with every absence, mismatch, decode error,
+    repair, incompatible version, migration, restore, or uncertainty selecting complete validation
+  - A source and test inventory for every population row class skipped by clean startup, followed by
+    fail-closed local envelope/checksum/canonical-key/schema/bound/required-reciprocity validation
+    before that row can influence authorization, execution, output, delivery, projection, or
+    mutation; no corruption becomes absence, partial output, business rejection, skip, or repair
+  - The existing structural and historical exact-end path retained byte-for-byte for dirty recovery
+    and explicit verification, including the golden evidence sequence, collector rejection order,
+    pagination/ExactEnd semantics, validated-prefix behavior, bounded locator memory, and the full
+    recovery matrix
+  - Deterministic schedules and process kills before/after every drain, journal checkpoint,
+    certificate commit, certificate consume/dirty commit, readiness, first write, and final close,
+    plus negative copied/stale/torn/substituted certificate and write-after-certificate arms
+  acceptance_commands:
+  - cargo +1.97.0 test -p riffdb-proto --test durable_schema --all-features
+  - cargo +1.97.0 test -p riffdb-storage-api -p riffdb-storage-redb --all-features
+  - cargo +1.97.0 test -p riffdb-catalog -p riffdb-auth -p riffdb-commit -p riffdb-server --all-features
+  - cargo +1.97.0 test -p riffdb-storage-redb --test storage_recovery_matrix --all-features
+  - ./scripts/recovery_full
+  - ./scripts/generate-proto --check
+  - ./scripts/check-generated
+  - ./scripts/check-requirement-coverage
+  - ./scripts/check-workspace-policy
+  - ./scripts/handbook check
+  - cargo +1.97.0 fmt --all -- --check
+  - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
+  exit_gate: A clean certificate is written only as the final mutation and consumed durably before
+    writers; eligible clean state reaches an operational proof without a population walk; every
+    uncertain lifecycle takes the unchanged complete path; every skipped row fails closed on first
+    influence; and no caller, configuration, operator, transport, or backend can select or forge
+    startup mode.
+  standing_design_tests:
+    interface_safety: The certificate and startup proof are sealed private typestates. Applications,
+      agents, operators, transports, and configuration cannot force clean eligibility, suppress a
+      fallback, activate a writer early, or opt out of durability, authorization, idempotency,
+      schema validation, accessed-row integrity, or dirty recovery.
+    scale: Clean open and close inspect only fixed metadata plus bounded catalog/authority roots and
+      retain no population-sized plan. Dirty and explicit validation stream under existing page,
+      byte, migration, diagnostic, and heap bounds rather than materializing live-row locators.
+  human_review_triggers: *id001
+- id: WP-705
+  name: Clean-startup scrub operations compatibility and production-scale evidence
+  depends_on: [WP-610, WP-668, WP-704]
+  objective: Close ADR-0156 with an explicit offline complete-integrity scrub, backup/restore/
+    migration/retention compatibility, operator and handbook guidance, production-scale clean and
+    dirty lifecycle evidence, and endurance integration without presenting asymmetric PostgreSQL
+    process startup as a database-semantic comparison.
+  requirements: [STO-012, STO-023, REC-001, REC-002, REC-004,
+    PERF-013, PERF-014, PERF-019, END-004, END-006, END-007, END-008, END-009]
+  required_adrs: [ADR-0019, ADR-0041, ADR-0050, ADR-0056, ADR-0073,
+    ADR-0085, ADR-0104, ADR-0112, ADR-0123, ADR-0156, ADR-0157]
+  allowed_paths: [SPEC.md, work_packages.yaml,
+    adr/0156-clean-close-certificate-fast-startup.md,
+    adr/0157-clean-close-lifecycle-durable-identity.md,
+    proto/**, crates/**, fixtures/**, tests/**, examples/**, benchmarks/**,
+    scripts/**, docs/**, release/**, .github/workflows/**]
+  deliverables:
+  - One authorized offline integrity-scrub operation and versioned bounded receipt that drives the
+    complete exact-end structural/catalog validation path without forging dirty process state,
+    publishes no partial success, mutates no application authority, and does not create a clean
+    certificate while an operational writer can run
+  - Backup, restore, registry/format migration, history-incarnation rotation, retention prune,
+    maintenance replacement, and database-copy conformance proving exactly which operations preserve
+    a matching clean certificate and which invalidate it into complete validation
+  - Redaction-safe closed startup/shutdown mode and stage observations that expose no database path,
+    identifier, frontier, table count, hash, key, application value, or unbounded label and cannot be
+    supplied back as control input
+  - A production-scale cleanly seeded and cleanly shut down database proving clean reopen and final
+    close retain bounded heap and perform zero population-table evidence walks, with separate dirty
+    kill/reopen evidence proving full validation, recovery, idempotency, and the 86-arm matrix remain
+    exact
+  - PERF-013/PERF-014/PERF-019 evidence distinguishing engine open, bounded roots, certificate
+    consumption, readiness, drain, final certificate commit, and complete validation; PostgreSQL
+    lifecycle numbers are excluded unless the harness owns equivalent process and integrity work
+  - Handbook, troubleshooting, compatibility, backup/restore, maintenance, endurance, and known-
+    limitation guidance stating that clean readiness is not a full scrub and latent unrelated
+    corruption may fail closed on access; END-009 restart cycles use the clean path while scheduled
+    scrub and forced-kill arms retain complete evidence
+  acceptance_commands:
+  - cargo +1.97.0 test --workspace --all-features
+  - ./scripts/recovery_full
+  - ./scripts/check-version-topology
+  - ./scripts/check-generated
+  - ./scripts/check-requirement-coverage
+  - ./scripts/check-workspace-policy
+  - ./scripts/handbook check
+  - cargo +1.97.0 fmt --all -- --check
+  - cargo +1.97.0 clippy --workspace --all-targets --all-features -- -D warnings
+  - cargo +1.97.0 doc --workspace --no-deps
+  exit_gate: Clean production-scale reopen and shutdown are bounded independently of live and
+    retained populations, dirty and explicit scrub paths retain complete fail-closed validation,
+    every maintenance and compatibility transition has exact certificate behavior, documentation
+    states the reduced clean-start assurance honestly, and endurance no longer pays a full scrub on
+    every graceful restart or mistakes an asymmetric comparator lifecycle for product evidence.
+  standing_design_tests:
+    interface_safety: The only new operator action requests more validation through an exclusive
+      offline scrub; no public surface can request less, force readiness, preserve a stale
+      certificate, or convert an integrity incident into ordinary application behavior.
+    scale: Clean lifecycle work and observations are bounded independently of population; scrub and
+      dirty validation stream without population-sized memory; evidence uses fixed checkpoints,
+      stages, labels, durations, artifacts, and diagnostic ceilings.
   human_review_triggers: *id001
 - id: WP-678
   name: Aggregate collection-byte language, proof, and IR successors
@@ -1022,6 +1620,22 @@ work_packages:
       database, role authority, transport, or application operation.
     scale: Validation visits one bounded path and Go package; process count, output, shutdown,
       driver connection, arguments, and diagnostics retain existing bounded runner limits.
+  closure:
+    status: complete
+    completed_at: "2026-08-26"
+    requirements_satisfied: [DX-004, DX-026, DX-029, DX-031, DX-041, NET-012,
+      DRV-002, DRV-003, DRV-004, DRV-011]
+    evidence: The public CLI retains whether --go-runner-package was explicitly supplied and
+      forwards the option only in that case. Omitted runner configuration remains language-neutral,
+      so the shared source and installed scripts detect package.json and preserve their npm build
+      then start path; detected Go repositories still default to the module-root package. CLI parser,
+      exact argument-vector, and external-process regressions prove omission versus explicit dot,
+      while the repository-confined Go validation, symbolic development orchestration, application
+      boundary, generated-reference, requirement, handbook, formatting, and workspace Clippy gates
+      pass without changing the script, protected driver-host boundary, or application identity.
+    known_limitations: The Go driver-host development path retains its documented Linux-only alpha
+      limitation. This package adds no production runner selection or caller-selected executable.
+    follow_ups: []
   human_review_triggers: *id001
 - id: WP-683
   name: Correlated command index-work planning and precise bound diagnostics

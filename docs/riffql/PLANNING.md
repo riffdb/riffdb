@@ -39,6 +39,23 @@ entity-key tie-breaker; forward and reverse cursor traversal use the same
 encoded key bytes. Compiler, command index maintenance, and both storage readers
 consume the same versioned key schema.
 
+The compiler's closed component registry treats equality, membership,
+interval/complement, state, prefix, order, and tie-breaking as composable roles
+of one declared physical component. A component is not assigned one exclusive
+purpose: for example, `binary_utf8_v1` may consume bounded membership or one
+bytewise interval/complement and produce the first remaining order term in the
+same plan. The caller cannot
+select any role, index, encoding, comparator, or fallback.
+
+After typed parameter validation, the executor forms one bounded ordered range
+schedule per access step and request. Canonical set normalization, text-profile
+encoding, typed endpoint construction, range sorting, deduplication, and shape
+validation happen once. One page, continuation probe, scan/fuel allowance,
+policy/hydration allowance, cursor, and output budget covers the entire
+schedule. Memory and redb consume that semantic schedule; neither backend may
+apply a logical predicate after page selection or invent a storage-local
+profile transform.
+
 The program contains ordered accesses, dependency edges, cardinality and row
 bounds, and the complete entity/field/index authorization requirement. The
 application supplies names; stable numeric IDs remain compiler-internal.
@@ -81,6 +98,13 @@ ignored. The operational family seals exact aggregate descriptors, source
 fields, authorization union, cost, and the source-row-limit group clamp. At
 runtime the selected member access and all folds execute in one engine-owned
 snapshot; no storage scan fallback or client-side fold exists.
+
+Language-version-8 aggregate queries use query-IR/module version 11. The plan
+seals exact distinct cardinality, partial-state byte, and arithmetic-operation
+ceilings independently from its source row, group, scan, cell, and output
+bounds. The reference and columnar evaluators consume those resources across
+the whole result, apply row policy before contribution, and withhold every
+aggregate cell if any dimension is exhausted.
 
 Declared relationship metadata may justify symbolic navigation only when it
 lowers to the target's complete primary-key point read or an already bounded
@@ -128,6 +152,13 @@ duplicate, noncanonical, out-of-order, over-bound, missing, or policy-denied
 targets release neither partial rows nor a cursor. Memory and redb preserve
 input position and apply one shared row-policy context while the same
 engine-owned snapshot remains open.
+
+The closure corpus is
+`fixtures/riffql/operational-access-corpus-v1`. It is intentionally domain-
+neutral and generates an exact cross-language application surface. External
+consumer evidence is retained only as the value-free receipt
+`fixtures/riffql/wp690-external-tuple-capability-v1.json`; external schemas,
+routes, adapters, and generated profiles remain in their owning repository.
 
 ## Whole-query authorization and execution fuel
 

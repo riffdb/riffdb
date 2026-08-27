@@ -5,7 +5,7 @@ mod common;
 
 use riffdb_storage_api::CommittedEntityReferenceV2;
 use riffdb_types::{
-    CanonicalValue, CommitSequence, EntityVersion, FrontierPosition,
+    AggregateSemanticIdentityV1, CanonicalValue, CommitSequence, EntityVersion, FrontierPosition,
     ProjectionProviderCapabilitiesV1, ProjectionProviderKindV1, ProjectionProviderPolicyModeV1,
     ProjectionProviderPostureV1, ProjectionProviderStaticBoundsV1,
 };
@@ -554,6 +554,41 @@ fn acceptance_query_range_sort_limit_aggregates_group_by_budgets() {
             })
             .expect("agg");
         assert!(matches!(result, QueryResult::Aggregate(_)));
+    }
+    for (op, expected) in [
+        (
+            AggregateOp::CountPresent { field: title },
+            riffdb_columnar::AggregateValue::Count(4),
+        ),
+        (
+            AggregateOp::CountDistinct { field: title },
+            riffdb_columnar::AggregateValue::Count(4),
+        ),
+        (
+            AggregateOp::CountDistinctPresent { field: title },
+            riffdb_columnar::AggregateValue::Count(4),
+        ),
+        (
+            AggregateOp::Mean { field: priority },
+            riffdb_columnar::AggregateValue::ExactMean {
+                total: 100,
+                count: 4,
+            },
+        ),
+    ] {
+        let result = engine
+            .query(&ColumnarQueryRequest {
+                org_scope: CanonicalValue::Uuid(org),
+                select: Vec::new(),
+                predicates: Vec::new(),
+                order: Vec::new(),
+                limit: None,
+                group_by: None,
+                aggregate: Some(op),
+                budget: QueryBudget::default(),
+            })
+            .expect("exact core aggregate");
+        assert_eq!(result, QueryResult::Aggregate(expected));
     }
 
     // Group-by status
@@ -1785,4 +1820,20 @@ fn columnar_provider_descriptor_matches_real_reference_engine_contract() {
             .capabilities()
             .contains(ProjectionProviderCapabilitiesV1::RANK)
     );
+    let aggregate_semantics = descriptor.aggregate_semantics();
+    for semantic in [
+        AggregateSemanticIdentityV1::Count,
+        AggregateSemanticIdentityV1::Sum,
+        AggregateSemanticIdentityV1::Min,
+        AggregateSemanticIdentityV1::Max,
+        AggregateSemanticIdentityV1::CountPresent,
+        AggregateSemanticIdentityV1::CountDistinct,
+        AggregateSemanticIdentityV1::CountDistinctPresent,
+        AggregateSemanticIdentityV1::Mean,
+        AggregateSemanticIdentityV1::Any,
+        AggregateSemanticIdentityV1::All,
+    ] {
+        assert!(aggregate_semantics.contains(semantic));
+    }
+    assert!(!aggregate_semantics.contains(AggregateSemanticIdentityV1::ExactCount));
 }

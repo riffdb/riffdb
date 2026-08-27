@@ -40,6 +40,35 @@ try {
   }
   const replay = await client.createItem(input);
   if (!replay.replayed) throw new Error("second TypeScript command did not replay");
+  const tokenId = "018f0f8b-7c6d-7e31-8a4f-000000000131";
+  const tokenValue = "typescript-one-time-secret-must-not-log";
+  const issued = await client.issueToken({
+    value: tokenValue, token_id: tokenId, expires_at: { seconds: 4102444800n, nanos: 0 },
+    identifier: "typescript-loopback", request_id: "018f0f8b-7c6d-7e31-8a4f-000000000132",
+    organization_id: organizationId,
+  });
+  if (issued.outcome.outcome !== "TokenIssued") throw new Error("TypeScript token issue did not create the token");
+  const consumeInput = {
+    token_id: tokenId, request_id: "018f0f8b-7c6d-7e31-8a4f-000000000133",
+    organization_id: organizationId,
+  };
+  const consumed = await client.consumeToken(consumeInput);
+  const redactedConsumed = generated.redactConsumeTokenOutcome(consumed.outcome);
+  if (consumed.outcome.outcome !== "TokenConsumed" || consumed.outcome.value !== tokenValue
+      || consumed.outcome.token_id !== tokenId || consumed.outcome.identifier !== "typescript-loopback"
+      || JSON.stringify(redactedConsumed).includes(tokenValue)) {
+    throw new Error("TypeScript deleted preimage or redacted diagnostic was incorrect");
+  }
+  const consumedReplay = await client.consumeToken(consumeInput);
+  if (!consumedReplay.replayed || consumedReplay.outcome.outcome !== "TokenConsumed"
+      || consumedReplay.outcome.value !== tokenValue) {
+    throw new Error("TypeScript token consume did not replay the persisted preimage");
+  }
+  const missing = await client.consumeToken({
+    token_id: tokenId, request_id: "018f0f8b-7c6d-7e31-8a4f-000000000134",
+    organization_id: organizationId,
+  });
+  if (missing.outcome.outcome !== "TokenMissing") throw new Error("TypeScript second consumer did not observe the atomic delete");
   const page = await client.itemPage({ organization_id: organizationId, item_id: itemId }, { readAfterCommit: first.commitSequence });
   if (page.value.outcome !== "Found" || page.value.item.item_id !== itemId
       || page.value.item.title !== "Shared remote TypeScript") {
@@ -85,6 +114,8 @@ try {
     created: "Created", replayed: true, query: "Found", read_after_commit: true,
     reuse_error: reuseError, secret_query: "Found", secret_redacted: true,
     exact_query: "Found", exact_total: 1,
+    consume: "TokenConsumed", consume_replayed: true, consume_missing: true,
+    delete_preimage_redacted: true,
   }));
   }
 } finally {

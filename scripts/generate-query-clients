@@ -208,6 +208,9 @@ if [[ "${1:-}" == "--check" ]]; then
         fixtures/adapters/bulk-conformance/riffdb.application.json \
         --lock riffdb.application.lock.json --output json >/dev/null
     cargo run --quiet -p riffdb-cli --bin riffdb -- application lock --check \
+        fixtures/unary-delete-preimage/riffdb.application.json \
+        --lock riffdb.application.lock.json --output json >/dev/null
+    cargo run --quiet -p riffdb-cli --bin riffdb -- application lock --check \
         fixtures/adapters/mlflow/riffdb.application.json \
         --lock riffdb.application.lock.json --output json >/dev/null
     cargo run --quiet -p riffdb-cli --bin riffdb -- application lock --check \
@@ -258,6 +261,9 @@ cargo run --quiet -p riffdb-cli --bin riffdb -- application lock --write \
     --lock riffdb.application.lock.json >/dev/null
 cargo run --quiet -p riffdb-cli --bin riffdb -- application lock --write \
     fixtures/adapters/bulk-conformance/riffdb.application.json \
+    --lock riffdb.application.lock.json >/dev/null
+cargo run --quiet -p riffdb-cli --bin riffdb -- application lock --write \
+    fixtures/unary-delete-preimage/riffdb.application.json \
     --lock riffdb.application.lock.json >/dev/null
 cargo run --quiet -p riffdb-cli --bin riffdb -- application lock --write \
     fixtures/adapters/mlflow/riffdb.application.json \

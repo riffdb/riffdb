@@ -230,6 +230,10 @@ class IssueVerificationTokenVerificationTokenUserMissing:
 
 IssueVerificationTokenOutcome: TypeAlias = IssueVerificationTokenVerificationTokenExists | IssueVerificationTokenVerificationTokenIssued | IssueVerificationTokenVerificationTokenUserMissing
 
+REFRESH_SESSION_SECRET_OUTPUTS: Final[tuple[tuple[str, str, str, str], ...]] = (
+    ("SessionRefreshed", "session", "Session", "token_digest"),
+)
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class RefreshSessionInput:
     user_id: UUID
@@ -240,10 +244,13 @@ class RefreshSessionInput:
     successor_token_digest: str
 
 REFRESH_SESSION_PLAN_HASH: Final[str] = "bec158663a6511372e7f497f3d0ed5ae9ffa45a0a39b7b54d71a817d9fd31067"
-@dataclass(frozen=True, slots=True, kw_only=True)
+@dataclass(frozen=True, slots=True, kw_only=True, repr=False)
 class RefreshSessionSessionRefreshed:
     session: Session
     outcome: Literal["SessionRefreshed"] = field(default="SessionRefreshed", init=False)
+
+    def __repr__(self) -> str:
+        return "RefreshSessionSessionRefreshed(<secret outputs redacted>)"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class RefreshSessionRefreshSessionStale:
@@ -263,6 +270,10 @@ class RefreshSessionRefreshSessionRevoked:
 
 RefreshSessionOutcome: TypeAlias = RefreshSessionSessionRefreshed | RefreshSessionRefreshSessionStale | RefreshSessionRefreshSessionExpired | RefreshSessionRefreshSessionMissing | RefreshSessionRefreshSessionRevoked
 
+REVOKE_SESSION_SECRET_OUTPUTS: Final[tuple[tuple[str, str, str, str], ...]] = (
+    ("SessionRevoked", "session", "Session", "token_digest"),
+)
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class RevokeSessionInput:
     user_id: UUID
@@ -272,10 +283,13 @@ class RevokeSessionInput:
     expected_revision: Annotated[int, "u64"]
 
 REVOKE_SESSION_PLAN_HASH: Final[str] = "309062f50ee35eea4b2ab7393c8a3be74547a3d7e05995eb6b8c6cecc9f39813"
-@dataclass(frozen=True, slots=True, kw_only=True)
+@dataclass(frozen=True, slots=True, kw_only=True, repr=False)
 class RevokeSessionSessionRevoked:
     session: Session
     outcome: Literal["SessionRevoked"] = field(default="SessionRevoked", init=False)
+
+    def __repr__(self) -> str:
+        return "RevokeSessionSessionRevoked(<secret outputs redacted>)"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class RevokeSessionRevokeSessionStale:

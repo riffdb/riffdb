@@ -2223,6 +2223,7 @@ dependencies = [
  "riffdb-catalog",
  "riffdb-contract-compiler",
  "riffdb-policy",
+ "riffdb-proto",
  "riffdb-query-compiler",
  "riffdb-query-executor",
  "riffdb-query-ir",

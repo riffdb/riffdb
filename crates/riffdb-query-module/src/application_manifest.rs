@@ -17,6 +17,8 @@ pub const APPLICATION_MANIFEST_SCHEMA_V2: &str = "riffdb.application-manifest/v2
 pub const APPLICATION_MANIFEST_SCHEMA_V3: &str = "riffdb.application-manifest/v3";
 /// Exact manifest schema binding compiler-owned row policies to roles.
 pub const APPLICATION_MANIFEST_SCHEMA_V4: &str = "riffdb.application-manifest/v4";
+/// Exact manifest schema with a closed sparse generated-surface declaration.
+pub const APPLICATION_MANIFEST_SCHEMA_V5: &str = "riffdb.application-manifest/v5";
 /// Maximum accepted application-manifest source bytes.
 pub const MAX_APPLICATION_MANIFEST_BYTES: usize = 1_048_576;
 const MAX_NAME_BYTES: usize = 256;
@@ -273,24 +275,24 @@ impl ManifestRole {
 /// Generated artifact output roots.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ManifestGenerationTargets {
-    rust: String,
-    typescript: String,
+    rust: Option<String>,
+    typescript: Option<String>,
     go: Option<String>,
-    mcp: String,
+    mcp: Option<String>,
     python: Option<String>,
 }
 
 impl ManifestGenerationTargets {
     /// Workspace-relative Rust output.
     #[must_use]
-    pub fn rust(&self) -> &str {
-        &self.rust
+    pub fn rust(&self) -> Option<&str> {
+        self.rust.as_deref()
     }
 
     /// Workspace-relative TypeScript output.
     #[must_use]
-    pub fn typescript(&self) -> &str {
-        &self.typescript
+    pub fn typescript(&self) -> Option<&str> {
+        self.typescript.as_deref()
     }
 
     /// Workspace-relative Go output when present.
@@ -301,8 +303,8 @@ impl ManifestGenerationTargets {
 
     /// Workspace-relative MCP-schema output.
     #[must_use]
-    pub fn mcp(&self) -> &str {
-        &self.mcp
+    pub fn mcp(&self) -> Option<&str> {
+        self.mcp.as_deref()
     }
     /// Workspace-relative Python output when present.
     #[must_use]
@@ -345,6 +347,7 @@ impl ApplicationManifest {
             APPLICATION_MANIFEST_SCHEMA_V2
                 | APPLICATION_MANIFEST_SCHEMA_V3
                 | APPLICATION_MANIFEST_SCHEMA_V4
+                | APPLICATION_MANIFEST_SCHEMA_V5
         ) {
             &[
                 "application",
@@ -373,6 +376,7 @@ impl ApplicationManifest {
             APPLICATION_MANIFEST_SCHEMA_V2 => APPLICATION_MANIFEST_SCHEMA_V2,
             APPLICATION_MANIFEST_SCHEMA_V3 => APPLICATION_MANIFEST_SCHEMA_V3,
             APPLICATION_MANIFEST_SCHEMA_V4 => APPLICATION_MANIFEST_SCHEMA_V4,
+            APPLICATION_MANIFEST_SCHEMA_V5 => APPLICATION_MANIFEST_SCHEMA_V5,
             _ => return Err(ManifestError::new(ManifestErrorKind::UnsupportedVersion)),
         };
         let application_name = checked_name(string(root, "application")?)?;
@@ -383,6 +387,7 @@ impl ApplicationManifest {
             APPLICATION_MANIFEST_SCHEMA_V2
                 | APPLICATION_MANIFEST_SCHEMA_V3
                 | APPLICATION_MANIFEST_SCHEMA_V4
+                | APPLICATION_MANIFEST_SCHEMA_V5
         ) {
             parse_reactive_modules(required(root, "reactive_modules")?)?
         } else {
@@ -414,7 +419,7 @@ impl ApplicationManifest {
                 })).collect::<Vec<_>>(),
                 "version": module.version,
             })).collect::<Vec<_>>(),
-            "roles": roles.iter().map(|role| if matches!(schema, APPLICATION_MANIFEST_SCHEMA_V2 | APPLICATION_MANIFEST_SCHEMA_V3 | APPLICATION_MANIFEST_SCHEMA_V4) {
+            "roles": roles.iter().map(|role| if matches!(schema, APPLICATION_MANIFEST_SCHEMA_V2 | APPLICATION_MANIFEST_SCHEMA_V3 | APPLICATION_MANIFEST_SCHEMA_V4 | APPLICATION_MANIFEST_SCHEMA_V5) {
                 manifest_role_value(role, schema)
             } else {
                 json!({"commands": role.commands, "environment": role.environment,
@@ -429,16 +434,25 @@ impl ApplicationManifest {
             APPLICATION_MANIFEST_SCHEMA_V2
                 | APPLICATION_MANIFEST_SCHEMA_V3
                 | APPLICATION_MANIFEST_SCHEMA_V4
+                | APPLICATION_MANIFEST_SCHEMA_V5
         ) {
             let root = canonical_value.as_object_mut().expect("manifest object");
             let mut generation_value = Map::new();
             if let Some(go) = generation.go() {
                 generation_value.insert("go".to_owned(), json!(go));
             }
-            generation_value.insert("mcp".to_owned(), json!(generation.mcp));
-            generation_value.insert("python".to_owned(), json!(generation.python));
-            generation_value.insert("rust".to_owned(), json!(generation.rust));
-            generation_value.insert("typescript".to_owned(), json!(generation.typescript));
+            if let Some(mcp) = generation.mcp() {
+                generation_value.insert("mcp".to_owned(), json!(mcp));
+            }
+            if let Some(python) = generation.python() {
+                generation_value.insert("python".to_owned(), json!(python));
+            }
+            if let Some(rust) = generation.rust() {
+                generation_value.insert("rust".to_owned(), json!(rust));
+            }
+            if let Some(typescript) = generation.typescript() {
+                generation_value.insert("typescript".to_owned(), json!(typescript));
+            }
             root.insert("generation".to_owned(), Value::Object(generation_value));
             root.insert(
                 "reactive_modules".to_owned(),
@@ -700,7 +714,10 @@ fn parse_roles(
         .collect::<BTreeSet<_>>();
     let mut roles = Vec::with_capacity(values.len());
     for value in values {
-        let object = if schema == APPLICATION_MANIFEST_SCHEMA_V4 {
+        let object = if matches!(
+            schema,
+            APPLICATION_MANIFEST_SCHEMA_V4 | APPLICATION_MANIFEST_SCHEMA_V5
+        ) {
             object(
                 value,
                 &[
@@ -745,6 +762,7 @@ fn parse_roles(
             APPLICATION_MANIFEST_SCHEMA_V2
                 | APPLICATION_MANIFEST_SCHEMA_V3
                 | APPLICATION_MANIFEST_SCHEMA_V4
+                | APPLICATION_MANIFEST_SCHEMA_V5
         ) {
             parse_names(required(object, "event_streams")?, MAX_ROLE_OPERATIONS)?
         } else {
@@ -755,6 +773,7 @@ fn parse_roles(
             APPLICATION_MANIFEST_SCHEMA_V2
                 | APPLICATION_MANIFEST_SCHEMA_V3
                 | APPLICATION_MANIFEST_SCHEMA_V4
+                | APPLICATION_MANIFEST_SCHEMA_V5
         ) {
             parse_names(required(object, "watch_queries")?, MAX_ROLE_OPERATIONS)?
         } else {
@@ -765,6 +784,7 @@ fn parse_roles(
             APPLICATION_MANIFEST_SCHEMA_V2
                 | APPLICATION_MANIFEST_SCHEMA_V3
                 | APPLICATION_MANIFEST_SCHEMA_V4
+                | APPLICATION_MANIFEST_SCHEMA_V5
         ) {
             parse_names(
                 required(object, "agent_subscriptions")?,
@@ -773,7 +793,10 @@ fn parse_roles(
         } else {
             Vec::new()
         };
-        let mut row_policies = if schema == APPLICATION_MANIFEST_SCHEMA_V4 {
+        let mut row_policies = if matches!(
+            schema,
+            APPLICATION_MANIFEST_SCHEMA_V4 | APPLICATION_MANIFEST_SCHEMA_V5
+        ) {
             parse_names(required(object, "row_policies")?, MAX_ROLE_OPERATIONS)?
         } else {
             Vec::new()
@@ -828,7 +851,10 @@ fn manifest_role_value(role: &ManifestRole, schema: &str) -> Value {
         "tenant_scope": role.tenant_scope.as_str(),
         "watch_queries": role.watch_queries,
     });
-    if schema == APPLICATION_MANIFEST_SCHEMA_V4 {
+    if matches!(
+        schema,
+        APPLICATION_MANIFEST_SCHEMA_V4 | APPLICATION_MANIFEST_SCHEMA_V5
+    ) {
         value
             .as_object_mut()
             .expect("compiler-created role object")
@@ -841,7 +867,20 @@ fn parse_generation(
     value: &Value,
     schema: &str,
 ) -> Result<ManifestGenerationTargets, ManifestError> {
-    let object = if matches!(
+    let object = if schema == APPLICATION_MANIFEST_SCHEMA_V5 {
+        let object = value
+            .as_object()
+            .ok_or_else(|| ManifestError::new(ManifestErrorKind::InvalidShape))?;
+        if object.is_empty()
+            || object.len() > 5
+            || object
+                .keys()
+                .any(|key| crate::GeneratedApplicationSurface::parse(key).is_none())
+        {
+            return Err(ManifestError::new(ManifestErrorKind::InvalidShape));
+        }
+        object
+    } else if matches!(
         schema,
         APPLICATION_MANIFEST_SCHEMA_V3 | APPLICATION_MANIFEST_SCHEMA_V4
     ) {
@@ -851,10 +890,32 @@ fn parse_generation(
     } else {
         object(value, &["mcp", "rust", "typescript"])?
     };
+    let optional_path = |key: &str| {
+        object
+            .get(key)
+            .map(|value| {
+                value
+                    .as_str()
+                    .ok_or_else(|| ManifestError::new(ManifestErrorKind::InvalidShape))
+            })
+            .transpose()?
+            .map(checked_path)
+            .transpose()
+    };
     let generation = ManifestGenerationTargets {
-        rust: checked_path(string(object, "rust")?)?,
-        typescript: checked_path(string(object, "typescript")?)?,
-        go: if matches!(
+        rust: if schema == APPLICATION_MANIFEST_SCHEMA_V5 {
+            optional_path("rust")?
+        } else {
+            Some(checked_path(string(object, "rust")?)?)
+        },
+        typescript: if schema == APPLICATION_MANIFEST_SCHEMA_V5 {
+            optional_path("typescript")?
+        } else {
+            Some(checked_path(string(object, "typescript")?)?)
+        },
+        go: if schema == APPLICATION_MANIFEST_SCHEMA_V5 {
+            optional_path("go")?
+        } else if matches!(
             schema,
             APPLICATION_MANIFEST_SCHEMA_V3 | APPLICATION_MANIFEST_SCHEMA_V4
         ) {
@@ -862,8 +923,14 @@ fn parse_generation(
         } else {
             None
         },
-        mcp: checked_path(string(object, "mcp")?)?,
-        python: if matches!(
+        mcp: if schema == APPLICATION_MANIFEST_SCHEMA_V5 {
+            optional_path("mcp")?
+        } else {
+            Some(checked_path(string(object, "mcp")?)?)
+        },
+        python: if schema == APPLICATION_MANIFEST_SCHEMA_V5 {
+            optional_path("python")?
+        } else if matches!(
             schema,
             APPLICATION_MANIFEST_SCHEMA_V2
                 | APPLICATION_MANIFEST_SCHEMA_V3
@@ -874,18 +941,17 @@ fn parse_generation(
             None
         },
     };
-    let mut paths = vec![
-        generation.rust.as_str(),
-        generation.typescript.as_str(),
-        generation.mcp.as_str(),
-    ];
-    if let Some(go) = generation.go.as_deref() {
-        paths.push(go);
-    }
-    if let Some(python) = generation.python.as_deref() {
-        paths.push(python);
-    }
-    ensure_unique(paths)?;
+    ensure_unique(
+        [
+            generation.go.as_deref(),
+            generation.mcp.as_deref(),
+            generation.python.as_deref(),
+            generation.rust.as_deref(),
+            generation.typescript.as_deref(),
+        ]
+        .into_iter()
+        .flatten(),
+    )?;
     Ok(generation)
 }
 
@@ -1030,15 +1096,21 @@ fn build_source_map(
     let mut requested = vec![
         ("contract.source".to_owned(), contract.source.as_str()),
         ("contract.lineage".to_owned(), contract.lineage.as_str()),
-        ("generation.rust".to_owned(), generation.rust.as_str()),
-        (
-            "generation.typescript".to_owned(),
-            generation.typescript.as_str(),
-        ),
-        ("generation.mcp".to_owned(), generation.mcp.as_str()),
     ];
+    if let Some(rust) = generation.rust.as_deref() {
+        requested.push(("generation.rust".to_owned(), rust));
+    }
+    if let Some(typescript) = generation.typescript.as_deref() {
+        requested.push(("generation.typescript".to_owned(), typescript));
+    }
+    if let Some(mcp) = generation.mcp.as_deref() {
+        requested.push(("generation.mcp".to_owned(), mcp));
+    }
     if let Some(go) = generation.go.as_deref() {
         requested.push(("generation.go".to_owned(), go));
+    }
+    if let Some(python) = generation.python.as_deref() {
+        requested.push(("generation.python".to_owned(), python));
     }
     for module in modules {
         requested.push((

@@ -1449,7 +1449,28 @@ fn bindings_compatible(
             return Ok(false);
         }
     }
-    outcome_constructions_compatible(old_plan, old.failure(), next_plan, next.failure())
+    match (old.failure(), next.failure()) {
+        (Some(old), Some(next)) => outcome_constructions_compatible(old_plan, old, next_plan, next),
+        (None, None) => {
+            if old.initializer().len() != next.initializer().len() {
+                return Ok(false);
+            }
+            for (old_field, next_field) in old.initializer().iter().zip(next.initializer()) {
+                if old_field.field_id() != next_field.field_id()
+                    || !expression_trees_equal(
+                        old_plan.expressions(),
+                        old_field.expression(),
+                        next_plan.expressions(),
+                        next_field.expression(),
+                    )?
+                {
+                    return Ok(false);
+                }
+            }
+            Ok(true)
+        }
+        (Some(_), None) | (None, Some(_)) => Ok(false),
+    }
 }
 
 fn locality_semantics_equal(

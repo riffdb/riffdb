@@ -1520,6 +1520,9 @@ fn charge_aggregate_query_row(
         match value {
             QueryAggregateCell::Canonical(value) => charge.nested(value)?,
             QueryAggregateCell::ExactDecimal { .. } => charge.add(18)?,
+            // Conservative public-record carriage for named `total` and
+            // `count` fields plus the widened exact payload.
+            QueryAggregateCell::ExactMean { .. } => charge.add(80)?,
         }
     }
     Ok(())

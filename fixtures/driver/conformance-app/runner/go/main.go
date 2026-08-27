@@ -14,17 +14,21 @@ import (
 )
 
 type observation struct {
-	Schema          string `json:"schema"`
-	Language        string `json:"language"`
-	Created         string `json:"created"`
-	Replayed        bool   `json:"replayed"`
-	Query           string `json:"query"`
-	ReadAfterCommit bool   `json:"read_after_commit"`
-	ReuseError      string `json:"reuse_error"`
-	SecretQuery     string `json:"secret_query"`
-	SecretRedacted  bool   `json:"secret_redacted"`
-	ExactQuery      string `json:"exact_query"`
-	ExactTotal      uint64 `json:"exact_total"`
+	Schema           string `json:"schema"`
+	Language         string `json:"language"`
+	Created          string `json:"created"`
+	Replayed         bool   `json:"replayed"`
+	Query            string `json:"query"`
+	ReadAfterCommit  bool   `json:"read_after_commit"`
+	ReuseError       string `json:"reuse_error"`
+	SecretQuery      string `json:"secret_query"`
+	SecretRedacted   bool   `json:"secret_redacted"`
+	ExactQuery       string `json:"exact_query"`
+	ExactTotal       uint64 `json:"exact_total"`
+	Consume          string `json:"consume"`
+	ConsumeReplayed  bool   `json:"consume_replayed"`
+	ConsumeMissing   bool   `json:"consume_missing"`
+	PreimageRedacted bool   `json:"delete_preimage_redacted"`
 }
 
 func main() {
@@ -104,6 +108,39 @@ func run() error {
 	if err != nil || !replay.Replayed {
 		return errors.New("second Go command did not replay")
 	}
+	tokenID := "018f0f8b-7c6d-7e31-8a4f-000000000121"
+	tokenValue := "go-one-time-secret-must-not-log"
+	issued, err := client.IssueToken(ctx, generated.IssueTokenInput{Value: tokenValue, TokenId: tokenID, ExpiresAt: riffdb.Instant{Seconds: 4_102_444_800}, Identifier: "go-loopback", RequestId: "018f0f8b-7c6d-7e31-8a4f-000000000122", OrganizationId: organizationID})
+	if err != nil {
+		return err
+	}
+	if _, ok := issued.Outcome.(generated.IssueTokenTokenIssued); !ok {
+		return errors.New("Go token issue did not create the token")
+	}
+	consumeInput := generated.ConsumeTokenInput{TokenId: tokenID, RequestId: "018f0f8b-7c6d-7e31-8a4f-000000000123", OrganizationId: organizationID}
+	consumed, err := client.ConsumeToken(ctx, consumeInput)
+	if err != nil {
+		return err
+	}
+	consumedOutcome, ok := consumed.Outcome.(generated.ConsumeTokenTokenConsumed)
+	if !ok || consumedOutcome.Value != tokenValue || consumedOutcome.TokenId != tokenID || consumedOutcome.Identifier != "go-loopback" || strings.Contains(fmt.Sprintf("%#v", consumedOutcome), tokenValue) {
+		return errors.New("Go deleted preimage or redacted diagnostic was incorrect")
+	}
+	consumedReplay, err := client.ConsumeToken(ctx, consumeInput)
+	if err != nil || !consumedReplay.Replayed {
+		return errors.New("Go token consume did not replay the persisted preimage")
+	}
+	replayedOutcome, ok := consumedReplay.Outcome.(generated.ConsumeTokenTokenConsumed)
+	if !ok || replayedOutcome.Value != tokenValue || replayedOutcome.TokenId != tokenID {
+		return errors.New("Go replay returned a different deleted preimage")
+	}
+	missing, err := client.ConsumeToken(ctx, generated.ConsumeTokenInput{TokenId: tokenID, RequestId: "018f0f8b-7c6d-7e31-8a4f-000000000124", OrganizationId: organizationID})
+	if err != nil {
+		return err
+	}
+	if _, ok := missing.Outcome.(generated.ConsumeTokenTokenMissing); !ok {
+		return errors.New("Go second consumer did not observe the atomic delete")
+	}
 	page, err := client.ItemPage(ctx, generated.ItemPageParams{OrganizationId: organizationID, ItemId: itemID}, riffdb.Options{ReadAfterCommit: first.CommitSequence})
 	if err != nil {
 		return err
@@ -149,5 +186,7 @@ func run() error {
 		Replayed: true, Query: "Found", ReadAfterCommit: true, ReuseError: applicationError.Details.Code,
 		SecretQuery: "Found", SecretRedacted: true,
 		ExactQuery: "Found", ExactTotal: 1,
+		Consume: "TokenConsumed", ConsumeReplayed: true, ConsumeMissing: true,
+		PreimageRedacted: true,
 	})
 }

@@ -1,0 +1,18 @@
+query ItemsWithLabels($workspace_id: CatalogAssignment.workspace_id) {
+    many items from CatalogAssignment
+        where workspace_id == $workspace_id
+        order by label_id asc
+        take 16
+
+    many labels from CatalogLabel
+        where workspace_id == $workspace_id && label_id in items.label_id
+        order by label_id asc
+        take 16
+        else IntegrityFailure
+
+    return Found {
+        items: items { label_id item_code }
+        labels: labels { label_id name }
+    }
+    outcomes Found | IntegrityFailure
+}

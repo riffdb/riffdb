@@ -11,6 +11,7 @@ mod application_source;
 mod exact_predicate_result_set;
 mod exact_text;
 mod exact_text_result_set;
+mod generated_surface;
 mod generation;
 mod go_generation;
 mod projection_result_set;
@@ -19,10 +20,10 @@ mod reactive_module;
 
 pub use application_manifest::{
     APPLICATION_MANIFEST_SCHEMA_V1, APPLICATION_MANIFEST_SCHEMA_V2, APPLICATION_MANIFEST_SCHEMA_V3,
-    APPLICATION_MANIFEST_SCHEMA_V4, ApplicationManifest, ApplicationManifestSourceMap,
-    MAX_APPLICATION_MANIFEST_BYTES, ManifestContract, ManifestError, ManifestErrorKind,
-    ManifestGenerationTargets, ManifestQueryModule, ManifestQuerySource, ManifestReactiveModule,
-    ManifestRole, ManifestSpan, ManifestTenantScope,
+    APPLICATION_MANIFEST_SCHEMA_V4, APPLICATION_MANIFEST_SCHEMA_V5, ApplicationManifest,
+    ApplicationManifestSourceMap, MAX_APPLICATION_MANIFEST_BYTES, ManifestContract, ManifestError,
+    ManifestErrorKind, ManifestGenerationTargets, ManifestQueryModule, ManifestQuerySource,
+    ManifestReactiveModule, ManifestRole, ManifestSpan, ManifestTenantScope,
 };
 pub use application_role::{
     ApplicationRoleError, ApplicationRoleErrorKind, ApplicationRoleFactSchema,
@@ -33,15 +34,16 @@ pub use application_role::{
 pub use application_source::{
     APPLICATION_SOURCE_SCHEMA_V1, APPLICATION_SOURCE_SCHEMA_V2, APPLICATION_SOURCE_SCHEMA_V3,
     APPLICATION_SOURCE_SCHEMA_V4, APPLICATION_SOURCE_SCHEMA_V5, APPLICATION_SOURCE_SCHEMA_V6,
-    ApplicationSourceContract, ApplicationSourceError, ApplicationSourceErrorKind,
-    ApplicationSourceGeneration, ApplicationSourceManifest, ApplicationSourceMigration,
-    ApplicationSourceQuery, ApplicationSourceQueryModule, ApplicationSourceReactiveModule,
-    ApplicationSourceRole, ApplicationSourceTenantScope, MAX_APPLICATION_MIGRATIONS,
-    MAX_APPLICATION_SOURCE_BYTES,
+    APPLICATION_SOURCE_SCHEMA_V7, ApplicationSourceContract, ApplicationSourceError,
+    ApplicationSourceErrorKind, ApplicationSourceGeneration, ApplicationSourceManifest,
+    ApplicationSourceMigration, ApplicationSourceQuery, ApplicationSourceQueryModule,
+    ApplicationSourceReactiveModule, ApplicationSourceRole, ApplicationSourceTenantScope,
+    MAX_APPLICATION_MIGRATIONS, MAX_APPLICATION_SOURCE_BYTES,
 };
 pub use exact_predicate_result_set::*;
 pub use exact_text::*;
 pub use exact_text_result_set::*;
+pub use generated_surface::GeneratedApplicationSurface;
 pub use generation::{
     GeneratedMcpCommand, GeneratedMcpReactiveTool, GeneratedMcpTool, GeneratedVectorInspectionTool,
     McpToolGenerationError, generate_mcp_commands, generate_mcp_reactive_tools, generate_mcp_tools,
@@ -69,19 +71,20 @@ use riffdb_query_compiler::{
 };
 use riffdb_query_ir::{
     AuthorizationEntityAccess, CoveredResultLayoutV1, NamedQuerySchemas, OperationalQueryFamilyV1,
-    QUERY_IR_VERSION_COVERED_RESULT_V1, QUERY_IR_VERSION_EXACT_FILTERED_RESULT_SET_V1,
-    QUERY_IR_VERSION_EXACT_PREDICATE_V1, QUERY_IR_VERSION_EXACT_RESULT_SET_V1,
-    QUERY_IR_VERSION_NULLABLE_EXACT_ORDER_V1, QUERY_IR_VERSION_OPERATIONAL_AGGREGATE_V1,
-    QUERY_IR_VERSION_OPERATIONAL_V1, QUERY_IR_VERSION_PROJECTED_VECTOR_V1,
-    QUERY_IR_VERSION_SECRET_OUTPUT_V1, QUERY_IR_VERSION_V1, QueryAccessProgramV1, QuerySourceMap,
-    SecretOutputRequirement, SourceSymbolKind, SymbolicCatalog,
+    QUERY_IR_VERSION_COVERED_RESULT_V1, QUERY_IR_VERSION_EXACT_AGGREGATE_V1,
+    QUERY_IR_VERSION_EXACT_FILTERED_RESULT_SET_V1, QUERY_IR_VERSION_EXACT_PREDICATE_V1,
+    QUERY_IR_VERSION_EXACT_RESULT_SET_V1, QUERY_IR_VERSION_NULLABLE_EXACT_ORDER_V1,
+    QUERY_IR_VERSION_OPERATIONAL_AGGREGATE_V1, QUERY_IR_VERSION_OPERATIONAL_V1,
+    QUERY_IR_VERSION_PROJECTED_VECTOR_V1, QUERY_IR_VERSION_SECRET_OUTPUT_V1, QUERY_IR_VERSION_V1,
+    QueryAccessProgramV1, QuerySourceMap, SecretOutputRequirement, SourceSymbolKind,
+    SymbolicCatalog,
 };
 use riffdb_riffql_syntax::{
     Document, MAX_IDENTIFIER_BYTES, MAX_SOURCE_BYTES, ParseDiagnostics, RIFFQL_LANGUAGE_VERSION,
-    RIFFQL_LANGUAGE_VERSION_EXACT_PREDICATE_V1, RIFFQL_LANGUAGE_VERSION_EXACT_RESULT_SET_V1,
-    RIFFQL_LANGUAGE_VERSION_NULLABLE_EXACT_ORDER_V1, RIFFQL_LANGUAGE_VERSION_OPERATIONAL_V1,
-    RIFFQL_LANGUAGE_VERSION_PROJECTED_VECTOR_V1, RIFFQL_LANGUAGE_VERSION_SECRET_OUTPUT_V1,
-    format_query, parse_query,
+    RIFFQL_LANGUAGE_VERSION_EXACT_AGGREGATE_V1, RIFFQL_LANGUAGE_VERSION_EXACT_PREDICATE_V1,
+    RIFFQL_LANGUAGE_VERSION_EXACT_RESULT_SET_V1, RIFFQL_LANGUAGE_VERSION_NULLABLE_EXACT_ORDER_V1,
+    RIFFQL_LANGUAGE_VERSION_OPERATIONAL_V1, RIFFQL_LANGUAGE_VERSION_PROJECTED_VECTOR_V1,
+    RIFFQL_LANGUAGE_VERSION_SECRET_OUTPUT_V1, format_query, parse_query,
 };
 use riffdb_types::{
     ContractBundleHash, ContractLineage, ContractVersion, QueryCostVectorV1, QueryModuleHash,
@@ -117,6 +120,8 @@ pub const QUERY_MODULE_FORMAT_VERSION_PROJECTED_VECTOR_V1: u32 = 8;
 pub const QUERY_MODULE_FORMAT_VERSION_EXACT_PREDICATE_V1: u32 = 9;
 /// Additive module codec carrying nullable exact-order placement.
 pub const QUERY_MODULE_FORMAT_VERSION_NULLABLE_EXACT_ORDER_V1: u32 = 10;
+/// Additive module codec carrying the exact aggregate core and independent budgets.
+pub const QUERY_MODULE_FORMAT_VERSION_EXACT_AGGREGATE_V1: u32 = 11;
 /// Maximum queries retained in one immutable module.
 pub const MAX_MODULE_QUERIES: usize = 4_096;
 /// Maximum canonical bytes for one immutable module.
@@ -821,6 +826,12 @@ impl QueryModule {
     #[must_use]
     pub fn format_version(&self) -> u32 {
         if self.queries.iter().any(|query| {
+            query
+                .operational_family()
+                .is_some_and(|family| family.surface().has_exact_aggregate_core())
+        }) {
+            QUERY_MODULE_FORMAT_VERSION_EXACT_AGGREGATE_V1
+        } else if self.queries.iter().any(|query| {
             matches!(
                 query.plan(),
                 CompiledNamedQueryPlan::NullableExactPredicateV1(_)
@@ -1181,12 +1192,11 @@ fn query_explain_lines(query: &CompiledNamedQuery) -> Vec<String> {
                         "operational.aggregate.{}.measure.{}={}",
                         aggregate.name(),
                         measure.alias(),
-                        match measure.function() {
-                            riffdb_query_ir::OperationalAggregateFunctionV1::Count => "count",
-                            riffdb_query_ir::OperationalAggregateFunctionV1::Sum => "sum",
-                            riffdb_query_ir::OperationalAggregateFunctionV1::Min => "min",
-                            riffdb_query_ir::OperationalAggregateFunctionV1::Max => "max",
-                        }
+                        measure
+                            .function()
+                            .semantic_identity()
+                            .descriptor()
+                            .source_spelling()
                     ));
                 }
             }
@@ -1300,6 +1310,11 @@ fn encode_module(
             .operational_family()
             .is_some_and(|family| !family.aggregates().is_empty())
     });
+    let exact_aggregate = queries.iter().any(|query| {
+        query
+            .operational_family()
+            .is_some_and(|family| family.surface().has_exact_aggregate_core())
+    });
     let secret_output = queries
         .iter()
         .any(|query| !query.plan().secret_outputs().is_empty());
@@ -1313,7 +1328,9 @@ fn encode_module(
             .projected_source()
             .is_some()
     });
-    let format_version = if nullable_exact_order {
+    let format_version = if exact_aggregate {
+        QUERY_MODULE_FORMAT_VERSION_EXACT_AGGREGATE_V1
+    } else if nullable_exact_order {
         QUERY_MODULE_FORMAT_VERSION_NULLABLE_EXACT_ORDER_V1
     } else if exact_predicate {
         QUERY_MODULE_FORMAT_VERSION_EXACT_PREDICATE_V1
@@ -1343,7 +1360,9 @@ fn encode_module(
     output.extend_from_slice(&contract.contract_version().get().to_be_bytes());
     output.extend_from_slice(contract.bundle_hash().as_bytes());
     output.extend_from_slice(
-        &if nullable_exact_order {
+        &if exact_aggregate {
+            RIFFQL_LANGUAGE_VERSION_EXACT_AGGREGATE_V1
+        } else if nullable_exact_order {
             RIFFQL_LANGUAGE_VERSION_NULLABLE_EXACT_ORDER_V1
         } else if exact_predicate {
             RIFFQL_LANGUAGE_VERSION_EXACT_PREDICATE_V1
@@ -1361,7 +1380,9 @@ fn encode_module(
         .to_be_bytes(),
     );
     output.extend_from_slice(
-        &if nullable_exact_order {
+        &if exact_aggregate {
+            QUERY_IR_VERSION_EXACT_AGGREGATE_V1
+        } else if nullable_exact_order {
             QUERY_IR_VERSION_NULLABLE_EXACT_ORDER_V1
         } else if exact_predicate {
             QUERY_IR_VERSION_EXACT_PREDICATE_V1
@@ -1455,6 +1476,7 @@ fn decode_candidate(bytes: &[u8]) -> Result<DecodedCandidate, QueryModuleError> 
             | QUERY_MODULE_FORMAT_VERSION_PROJECTED_VECTOR_V1
             | QUERY_MODULE_FORMAT_VERSION_EXACT_PREDICATE_V1
             | QUERY_MODULE_FORMAT_VERSION_NULLABLE_EXACT_ORDER_V1
+            | QUERY_MODULE_FORMAT_VERSION_EXACT_AGGREGATE_V1
     ) {
         return Err(QueryModuleError::new(
             QueryModuleErrorKind::UnsupportedVersion,
@@ -1516,6 +1538,10 @@ fn decode_candidate(bytes: &[u8]) -> Result<DecodedCandidate, QueryModuleError> 
             language_version == RIFFQL_LANGUAGE_VERSION_NULLABLE_EXACT_ORDER_V1
                 && ir_version == QUERY_IR_VERSION_NULLABLE_EXACT_ORDER_V1
         }
+        QUERY_MODULE_FORMAT_VERSION_EXACT_AGGREGATE_V1 => {
+            language_version == RIFFQL_LANGUAGE_VERSION_EXACT_AGGREGATE_V1
+                && ir_version == QUERY_IR_VERSION_EXACT_AGGREGATE_V1
+        }
         _ => false,
     };
     if !versions_match {
@@ -1552,7 +1578,8 @@ fn decode_candidate(bytes: &[u8]) -> Result<DecodedCandidate, QueryModuleError> 
                 | QUERY_MODULE_FORMAT_VERSION_COVERED_RESULT_V1
                 | QUERY_MODULE_FORMAT_VERSION_PROJECTED_VECTOR_V1
                 | QUERY_MODULE_FORMAT_VERSION_EXACT_PREDICATE_V1
-                | QUERY_MODULE_FORMAT_VERSION_NULLABLE_EXACT_ORDER_V1 => 10,
+                | QUERY_MODULE_FORMAT_VERSION_NULLABLE_EXACT_ORDER_V1
+                | QUERY_MODULE_FORMAT_VERSION_EXACT_AGGREGATE_V1 => 10,
                 QUERY_MODULE_FORMAT_VERSION_OPERATIONAL_AGGREGATE_V1 => 9,
                 _ => 7,
             };
@@ -1693,9 +1720,9 @@ impl<'a> Reader<'a> {
 pub use application_lock::{
     APPLICATION_LOCK_SCHEMA_V1, APPLICATION_LOCK_SCHEMA_V2, APPLICATION_LOCK_SCHEMA_V3,
     APPLICATION_LOCK_SCHEMA_V4, APPLICATION_LOCK_SCHEMA_V5, APPLICATION_LOCK_SCHEMA_V6,
-    APPLICATION_LOCK_SCHEMA_V7, APPLICATION_ROLE_DEFINITION_FORMAT_V1,
+    APPLICATION_LOCK_SCHEMA_V7, APPLICATION_LOCK_SCHEMA_V8, APPLICATION_ROLE_DEFINITION_FORMAT_V1,
     APPLICATION_ROLE_DEFINITION_FORMAT_V2, APPLICATION_ROLE_DEFINITION_FORMAT_V3, ApplicationLock,
     ApplicationLockError, ApplicationLockErrorKind, ApplicationMigrationLockInput,
-    CONTRACT_BUNDLE_ARTIFACT_PATH, GeneratedApplicationArtifact, GeneratedApplicationArtifactKind,
-    LockedApplicationMigration, MAX_APPLICATION_LOCK_BYTES,
+    CONTRACT_BUNDLE_ARTIFACT_PATH, EXACT_MANIFEST_ARTIFACT_PATH, GeneratedApplicationArtifact,
+    GeneratedApplicationArtifactKind, LockedApplicationMigration, MAX_APPLICATION_LOCK_BYTES,
 };

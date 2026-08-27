@@ -133,6 +133,7 @@ Expression constants use exactly `u32 canonical_document_byte_length || canonica
 | `0x02` | mutate |
 | `0x03` | create |
 | `0x04` | delete |
+| `0x05` | initialize or mutate |
 
 ### Delete policy mode
 

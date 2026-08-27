@@ -15,6 +15,15 @@ authoritative commit.
 | Persist | Storage engine | Atomic authoritative command graph |
 | Publish derived work | Server-owned sinks | Outbox/projection notification |
 
+An `init_or_mutate` binding does not add a stage or a second command. Snapshot
+materialization records one exact absence or presence observation. Deterministic
+evaluation constructs one provisional initialized record or loads one exact
+preimage, applies the common compiled suffix, and emits one create or one
+revision-checked replace. The coordinator revalidates that original observation
+before committing the same atomic outcome, event, provenance, and mutation
+graph. It never converts a stale create candidate into a replace (or the
+reverse) without whole-command reevaluation.
+
 ## Boundaries that must remain closed
 
 - Transports cannot construct an already-authorized command.

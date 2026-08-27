@@ -172,7 +172,7 @@ pub struct ClaimPipelineInput {
     pub expected_revision: u64,
 }
 
-#[allow(clippy::large_enum_variant)]
+#[allow(clippy::enum_variant_names, clippy::large_enum_variant)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ClaimPipelineOutcome {
     ClaimStale,
@@ -254,7 +254,7 @@ pub struct ReleasePipelineInput {
     pub expected_revision: u64,
 }
 
-#[allow(clippy::large_enum_variant)]
+#[allow(clippy::enum_variant_names, clippy::large_enum_variant)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ReleasePipelineOutcome {
     ReleaseStale,
@@ -330,7 +330,7 @@ pub struct StartPipelineInput {
     pub expected_revision: u64,
 }
 
-#[allow(clippy::large_enum_variant)]
+#[allow(clippy::enum_variant_names, clippy::large_enum_variant)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum StartPipelineOutcome {
     FenceStale,

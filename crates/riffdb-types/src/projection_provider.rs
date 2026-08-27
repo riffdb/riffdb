@@ -5,7 +5,9 @@ use std::fmt;
 use std::num::NonZeroU32;
 use std::ops::{BitOr, BitOrAssign};
 
-use crate::{ProjectionProviderDescriptorHash, hash_projection_provider_descriptor};
+use crate::{
+    AggregateSemanticSetV1, ProjectionProviderDescriptorHash, hash_projection_provider_descriptor,
+};
 
 /// Canonical projection-provider descriptor identity.
 pub const PROJECTION_PROVIDER_DESCRIPTOR_VERSION_V1: u16 = 1;
@@ -352,6 +354,25 @@ impl ProjectionProviderDescriptorV1 {
     #[must_use]
     pub const fn capabilities(&self) -> ProjectionProviderCapabilitiesV1 {
         self.capabilities
+    }
+    /// Exact aggregate semantic subset implemented by this provider.
+    ///
+    /// A generic `MEASURE` stage is insufficient to prove a particular fold;
+    /// this closed subset prevents a compiler from treating the union of real
+    /// providers as capabilities of any one provider.
+    #[must_use]
+    pub const fn aggregate_semantics(&self) -> AggregateSemanticSetV1 {
+        if !self
+            .capabilities
+            .contains(ProjectionProviderCapabilitiesV1::MEASURE)
+        {
+            return AggregateSemanticSetV1::NONE;
+        }
+        match self.kind {
+            ProjectionProviderKindV1::Columnar => AggregateSemanticSetV1::BOUNDED_EXACT_CORE,
+            ProjectionProviderKindV1::ExactText => AggregateSemanticSetV1::EXACT_COUNT_ONLY,
+            ProjectionProviderKindV1::Vector => AggregateSemanticSetV1::NONE,
+        }
     }
     /// Ranked authorization-shaping mode.
     #[must_use]

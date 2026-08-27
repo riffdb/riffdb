@@ -65,6 +65,7 @@ pub(crate) struct ExpressionLowerer<'a> {
     symbols: &'a GenesisSymbols,
     scope: ExpressionScope,
     input_only: bool,
+    state_independent: bool,
     collection_context: bool,
     nodes: Vec<HirExpressionNode>,
 }
@@ -75,6 +76,7 @@ impl<'a> ExpressionLowerer<'a> {
             symbols,
             scope,
             input_only: false,
+            state_independent: false,
             collection_context: false,
             nodes: Vec::new(),
         }
@@ -184,6 +186,18 @@ impl<'a> ExpressionLowerer<'a> {
         let previous = std::mem::replace(&mut self.input_only, true);
         let result = self.lower(expression, expected);
         self.input_only = previous;
+        result
+    }
+
+    /// Lowers an initialized-binding expression without access to entity state.
+    pub(crate) fn lower_state_independent(
+        &mut self,
+        expression: &Spanned<Expression>,
+        expected: Option<&ValueType>,
+    ) -> Result<(ExprId, ValueType), CompilerDiagnostic> {
+        let previous = std::mem::replace(&mut self.state_independent, true);
+        let result = self.lower(expression, expected);
+        self.state_independent = previous;
         result
     }
 
@@ -444,7 +458,7 @@ impl<'a> ExpressionLowerer<'a> {
                         } else {
                             Some((ExpressionKind::ServiceValue(field), value_type))
                         }
-                    } else if self.input_only {
+                    } else if self.input_only || self.state_independent {
                         None
                     } else {
                         bindings
@@ -477,7 +491,7 @@ impl<'a> ExpressionLowerer<'a> {
                             },
                         )
                     })
-                } else if segments.len() == 2 {
+                } else if segments.len() == 2 && !self.state_independent {
                     bindings
                         .get(&segments[0].value)
                         .filter(|binding| self.collection_context || !binding.collection_local)

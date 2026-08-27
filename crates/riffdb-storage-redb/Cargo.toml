@@ -18,6 +18,7 @@ riffdb-catalog = { version = "0.1.0", path = "../riffdb-catalog", default-featur
 riffdb-policy = { version = "0.1.0", path = "../riffdb-policy", default-features = false }
 riffdb-query-executor = { version = "0.1.0", path = "../riffdb-query-executor", default-features = false }
 riffdb-query-ir = { version = "0.1.0", path = "../riffdb-query-ir", default-features = false }
+riffdb-proto = { version = "0.1.0", path = "../riffdb-proto" }
 riffdb-storage-api = { version = "0.1.0", path = "../riffdb-storage-api" }
 riffdb-types = { version = "0.1.0", path = "../riffdb-types" }
 sha2 = { version = "=0.11.0", default-features = false }
