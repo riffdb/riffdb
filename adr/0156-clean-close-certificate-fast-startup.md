@@ -361,3 +361,49 @@ fails closed before corrupt bytes can influence an operational result.
 Exact human acceptance is required before any implementation changes startup
 validation scope, adds the durable record, consumes a clean certificate, or
 allows operational readiness without the complete historical evidence stream.
+
+## Amendment 3 — bounded delivery-state assertion and the deferred locator obligation (Accepted 2026-08-27)
+
+ADR-0156 §5 states that the fast path "does not enumerate every entity,
+secondary-index entry, historical plan reference, idempotency record, event,
+outbox row, provenance row, audit row, projection row, or other
+population-sized table before readiness." That claim is not currently met, and
+this amendment separates the part now satisfied from the part still owed.
+
+- **Assertion (in effect).** Bounded startup must positively assert that no
+  in-flight `Delivering` outbox entry exists before admitting the certificate.
+  `Delivering` is written only by a delivery worker holding a lease, and an
+  event with no `OUTBOX_STATUS` row canonically means never-attempted `Pending`
+  (SPEC 8.6), so `Delivering` is a subset of `OUTBOX_STATUS` rows. The probe
+  reads that table only: never `COMMITS`, the undelivered set, or the transient
+  population indexes.
+- **Bound.** Row count comes from engine metadata; an empty table proves
+  absence; a non-empty table is decoded to a fixed bound (4096 rows), above
+  which the probe reports ignorance. The probe is never population-proportional.
+- **Three outcomes.** Proof of absence admits. A positive observation
+  contradicts the certificate about state the certificate does not cover and
+  takes the complete path under §6, with the closed reason
+  `outbox_delivering_observed`. Ignorance admits the certificate but grants no
+  permission: it is not recorded as proof, and normalization still runs.
+- **No skip is authorised by this amendment.** Outbox normalization remains on
+  the readiness path.
+- **Outstanding obligation (§5, undischarged).** In the current durable layout
+  IDEMPOTENCY, PROVENANCE, EVENTS, EVENT_ROUTES and OUTBOX hold no physical
+  rows; the command-derived index is the sole locator into a command segment.
+  With it dormant, `read_stored_outcome` answers absent for a durably committed
+  outcome, which §5 forbids. Until a separate accepted record supplies either
+  durable locator rows or an equivalent fail-closed local check at the read
+  sites, the fast path MUST continue to build that index before readiness, and
+  §5's enumeration claim is read as an objective, not a description.
+- **Consequence.** Clean restart remains proportional to retained commands
+  through the locator-index build. This narrows, and does not remove, the
+  Consequences bullet "Clean restart no longer scales with live entity/index
+  population or retained history beyond bounded catalog and authority roots."
+  The existing bullet "Latent corruption outside bounded readiness roots may be
+  detected after readiness" is the precedent an after-readiness locator build
+  would extend; this amendment does not authorise it.
+- **Tests.** A planted in-flight `Delivering` entry on a certificate-bearing
+  database takes the complete path with the named reason; the probe never
+  triggers a population rebuild; and a real-daemon restart pins the readiness
+  path's rebuild count so both a new accidental rebuild and the eventual fix
+  must change it deliberately.
