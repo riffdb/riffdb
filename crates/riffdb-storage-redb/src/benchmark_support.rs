@@ -210,6 +210,20 @@ pub fn authoritative_table_inventory_after_reopen_v1(
         stage: InventoryStage::ReopenDatabase,
         table: None,
     })?;
+    // Opening transitions the ADR-0157 clean-close lifecycle record to dirty, and
+    // nothing in `Drop` writes it back. A plain drop therefore left the database
+    // dirty and forced the NEXT start onto the complete validation pass -- which
+    // is precisely where this helper sits, between the seed daemon's clean
+    // shutdown and the measured daemon's start in `restart_for_measurement`. At
+    // production scale that cost more than twenty minutes of CPU and about ten
+    // gigabytes of resident memory, so the ADR-0156 fast path was never once
+    // exercised by a benchmark restart. Close cleanly, as any consumer must.
+    reopened
+        .write_clean_close_lifecycle()
+        .map_err(|_| EngineBenchmarkError::Inventory {
+            stage: InventoryStage::ReopenDatabase,
+            table: None,
+        })?;
     drop(reopened);
     authoritative_table_inventory_v1(path)
 }
