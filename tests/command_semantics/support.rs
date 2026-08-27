@@ -132,6 +132,14 @@ contract BulkRowsRecovery version 1 {
     reference row (tenant_id, row_id) -> Row(tenant_id, row_id)
     delete_policy no_inbound
   }
+  entity SharedPartition {
+    key (tenant_id: uuid)
+    field revision: u64
+  }
+  entity SharedItem {
+    key (tenant_id: uuid, item_id: uuid)
+    field revision: u64
+  }
   event RowWritten { row_id: uuid value: i64 }
   event RowDeleted { row_id: uuid }
   aggregate Rows {
@@ -139,6 +147,12 @@ contract BulkRowsRecovery version 1 {
     child Child
     partition_by tenant_id
     conflict_key (tenant_id, row_id)
+  }
+  aggregate SharedItems {
+    root SharedPartition
+    child SharedItem
+    partition_by tenant_id
+    conflict_key (tenant_id)
   }
   bulk command PutRows {
     input request_id: uuid
@@ -166,6 +180,23 @@ contract BulkRowsRecovery version 1 {
       emit RowWritten { row_id: row.row_id, value: stored.value }
     }
     return Written {}
+  }
+  bulk command InitSharedItems {
+    input request_id: uuid
+    input tenant_id: uuid
+    input item_ids: list<uuid, 1..8>
+    idempotency_key request_id
+    init_or_mutate SharedPartition(tenant_id) as partition initialize {
+      revision: 0,
+    }
+    for item_id in item_ids {
+      init_or_mutate SharedItem(tenant_id, item_id) as item initialize {
+        revision: 0,
+      }
+      set item.revision = item.revision + 1
+    }
+    set partition.revision = partition.revision + 1
+    return SharedItemsInitialized { revision: partition.revision }
   }
   bulk command DeleteRows {
     input request_id: uuid
@@ -337,6 +368,8 @@ pub(crate) struct BulkRowsDatabase {
     checked_bundle: ValidatedContractBundle,
     row_entity_type: EntityTypeId,
     child_entity_type: EntityTypeId,
+    shared_partition_entity_type: EntityTypeId,
+    shared_item_entity_type: EntityTypeId,
     _scratch: Option<ScratchDir>,
 }
 
@@ -399,11 +432,29 @@ impl BulkRowsDatabase {
             .find(|entity| entity.name() == "Child")
             .expect("Child entity schema")
             .id();
+        let shared_partition_entity_type = checked_bundle
+            .bundle()
+            .schema()
+            .entities()
+            .iter()
+            .find(|entity| entity.name() == "SharedPartition")
+            .expect("SharedPartition entity schema")
+            .id();
+        let shared_item_entity_type = checked_bundle
+            .bundle()
+            .schema()
+            .entities()
+            .iter()
+            .find(|entity| entity.name() == "SharedItem")
+            .expect("SharedItem entity schema")
+            .id();
         Self {
             path,
             checked_bundle,
             row_entity_type,
             child_entity_type,
+            shared_partition_entity_type,
+            shared_item_entity_type,
             _scratch: scratch,
         }
     }
@@ -532,6 +583,46 @@ impl BulkRowsDatabase {
                 (
                     "rows",
                     CanonicalValue::List(CanonicalList::new(rows).expect("bounded row list")),
+                ),
+            ],
+        );
+        let caller_key = canonical_uuid_text(input_request_seed);
+        self.prepare_command(
+            ports,
+            plan,
+            input,
+            &caller_key,
+            digest_seed,
+            admission_request_seed,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn prepare_shared_initialized_put(
+        &self,
+        ports: &RedbOperationalPorts,
+        item_ids: &[[u8; 16]],
+        input_request_seed: u8,
+        digest_seed: u8,
+        admission_request_seed: u8,
+    ) -> CommandExecutionPreparation {
+        let plan = self.command_plan("InitSharedItems");
+        let input = input_record(
+            plan.input().record(),
+            [
+                (
+                    "request_id",
+                    CanonicalValue::Uuid(uuid_bytes(input_request_seed)),
+                ),
+                ("tenant_id", CanonicalValue::Uuid(ORGANIZATION_ID)),
+                (
+                    "item_ids",
+                    CanonicalValue::List(
+                        CanonicalList::new(
+                            item_ids.iter().copied().map(CanonicalValue::Uuid).collect(),
+                        )
+                        .expect("bounded shared item list"),
+                    ),
                 ),
             ],
         );
@@ -793,6 +884,26 @@ impl BulkRowsDatabase {
         }
     }
 
+    pub(crate) fn assert_shared_initialized_versions(
+        &self,
+        ports: &RedbOperationalPorts,
+        item_ids: &[[u8; 16]],
+        expected: EntityVersion,
+    ) {
+        let partition = ports
+            .read_entity(&self.shared_partition_target())
+            .expect("read shared partition")
+            .expect("shared partition exists");
+        assert_eq!(partition.entity_version(), expected);
+        for item_id in item_ids {
+            let item = ports
+                .read_entity(&self.shared_item_target(*item_id))
+                .expect("read shared initialized item")
+                .expect("shared initialized item exists");
+            assert_eq!(item.entity_version(), expected);
+        }
+    }
+
     pub(crate) fn assert_child_present(
         &self,
         ports: &RedbOperationalPorts,
@@ -880,6 +991,29 @@ impl BulkRowsDatabase {
             key.finish().expect("child entity key"),
         )
         .expect("Child entity target")
+    }
+
+    fn shared_partition_target(&self) -> riffdb_storage_api::EntityTarget {
+        let mut key = EntityKeyBuilder::new(self.shared_partition_entity_type);
+        key.push_uuid(&ORGANIZATION_ID)
+            .expect("shared partition key component");
+        riffdb_storage_api::EntityTarget::new(
+            self.shared_partition_entity_type,
+            key.finish().expect("shared partition entity key"),
+        )
+        .expect("SharedPartition entity target")
+    }
+
+    fn shared_item_target(&self, item_id: [u8; 16]) -> riffdb_storage_api::EntityTarget {
+        let mut key = EntityKeyBuilder::new(self.shared_item_entity_type);
+        key.push_uuid(&ORGANIZATION_ID)
+            .expect("shared item tenant key component");
+        key.push_uuid(&item_id).expect("shared item key component");
+        riffdb_storage_api::EntityTarget::new(
+            self.shared_item_entity_type,
+            key.finish().expect("shared item entity key"),
+        )
+        .expect("SharedItem entity target")
     }
 }
 
