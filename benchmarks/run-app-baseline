@@ -8,7 +8,7 @@ usage() {
     printf '%s\n' \
         'usage: benchmarks/run-app-baseline [--self-test]' \
         '         | [--alpha-matrix|--alpha-matrix-smoke]' \
-        '         | [--smoke|--full] [--samples N] [--warmup N] [--board-density N]' \
+        '         | [--smoke|--full|--production] [--samples N] [--warmup N] [--board-density N]' \
         '         [--organizations N] [--tickets-per-project N] [--comments-per-ticket N]' \
         '         [--labels-per-ticket N] [--payload-bytes N]' \
         '         [--concurrent-clients N] [--concurrent-operations N]' \
@@ -393,6 +393,7 @@ while (($#)); do
             ;;
         --smoke) mode=smoke; shift ;;
         --full) mode=full; shift ;;
+        --production) mode=production; shift ;;
         --samples)
             (($# >= 2)) || usage
             samples="$2"
@@ -850,11 +851,15 @@ PY
 }
 
 extra_args=()
-if [[ "$mode" == full ]]; then
-    extra_args+=(--full)
-else
-    extra_args+=(--smoke)
-fi
+# `production` is a dataset tier, not an evidence mode: PERF-018 freezes the
+# comparator at `full`, so a production cell is reported under its own scale
+# name and never counts toward a gate. It is here because the dual-backend
+# Postgres comparison lives in this runner and nowhere else.
+case "$mode" in
+    full) extra_args+=(--full) ;;
+    production) extra_args+=(--production) ;;
+    *) extra_args+=(--smoke) ;;
+esac
 [[ -n "$samples" ]] && extra_args+=(--samples "$samples")
 [[ -n "$warmup" ]] && extra_args+=(--warmup "$warmup")
 [[ -n "$board_density" ]] && extra_args+=(--board-density "$board_density")

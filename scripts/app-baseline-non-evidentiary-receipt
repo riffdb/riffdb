@@ -44,7 +44,7 @@ def main() -> None:
         required=True,
         choices=("host_interference", "backend_execution_failed"),
     )
-    parser.add_argument("--mode", required=True, choices=("smoke", "full"))
+    parser.add_argument("--mode", required=True, choices=("smoke", "full", "production"))
     parser.add_argument("--profile", required=True)
     parser.add_argument("--duration-secs", required=True, type=int)
     parser.add_argument("--reps", required=True, type=int)
