@@ -1267,6 +1267,7 @@ fn mcp_type_schema(value_type: &NamedTypeSchema) -> Value {
                 PageBound::Literal(maximum) => *maximum,
                 // Parameterized page bound is capped by the continuation-aware max take.
                 PageBound::Parameter(_) => max_query_page_take(),
+                PageBound::BoundedParameter { maximum, .. } => *maximum,
             };
             json!({"type": "array", "items": mcp_type_schema(element), "maxItems": maximum})
         }
@@ -1289,6 +1290,9 @@ fn mcp_type_schema(value_type: &NamedTypeSchema) -> Value {
         NamedTypeSchema::Cursor => json!({"type": "string"}),
         NamedTypeSchema::Limit => {
             json!({"maximum": max_query_page_take(), "minimum": 1, "type": "integer"})
+        }
+        NamedTypeSchema::BoundedLimit { maximum } => {
+            json!({"maximum": maximum, "minimum": 1, "type": "integer"})
         }
     }
 }
@@ -1953,6 +1957,16 @@ fn emit_rust_generated_query_impl(
          \x20       let mut parameters = BTreeMap::new();"
     )
     .expect("string");
+    for parameter in schemas.parameters() {
+        if let NamedTypeSchema::BoundedLimit { maximum } = parameter.value_type() {
+            let field = rust_identifier(parameter.name());
+            writeln!(
+                output,
+                "        if self.0.{field} == 0 || self.0.{field} > {maximum} {{ return Err(ApplicationClientError::InvalidInput); }}"
+            )
+            .expect("string");
+        }
+    }
     let cursor = schemas
         .parameters()
         .iter()
@@ -2132,6 +2146,7 @@ pub(crate) fn rust_compact_result_shape(
     let maximum_rows = match maximum {
         PageBound::Literal(value) => *value,
         PageBound::Parameter(_) => max_query_page_take(),
+        PageBound::BoundedParameter { maximum, .. } => *maximum,
     };
     Some(RustCompactResultShape {
         outcome: branch.name().to_owned(),
@@ -2664,7 +2679,10 @@ fn emit_rust_query_decoder(output: &mut String, name: &str, value_type: &NamedTy
             )
             .expect("string");
         }
-        NamedTypeSchema::Scalar(_) | NamedTypeSchema::Cursor | NamedTypeSchema::Limit => {}
+        NamedTypeSchema::Scalar(_)
+        | NamedTypeSchema::Cursor
+        | NamedTypeSchema::Limit
+        | NamedTypeSchema::BoundedLimit { .. } => {}
     }
 }
 
@@ -2732,6 +2750,7 @@ fn rust_encode_application_expr(value_type: &NamedTypeSchema, access: &str) -> S
         }
         NamedTypeSchema::Cursor => format!("ApplicationValue::String({access})"),
         NamedTypeSchema::Limit => format!("ApplicationValue::U64({access})"),
+        NamedTypeSchema::BoundedLimit { .. } => format!("ApplicationValue::U64({access})"),
         NamedTypeSchema::Record(_) => "ApplicationValue::Null".to_owned(),
     }
 }
@@ -2805,6 +2824,7 @@ fn rust_decode_application_expr(
         ),
         NamedTypeSchema::Cursor => format!("application_string({access})?"),
         NamedTypeSchema::Limit => format!("application_u64({access})?"),
+        NamedTypeSchema::BoundedLimit { .. } => format!("application_u64({access})?"),
     }
 }
 
@@ -3911,9 +3931,25 @@ pub fn generate_typescript_client(module: &QueryModule, contract: &ContractBundl
         let compact_decoder = compact_shape.as_ref().map_or_else(String::new, |_| {
             format!(", compactDecoder: decode{}Compact", pascal(name))
         });
+        let bounded_validation = schemas
+            .parameters()
+            .iter()
+            .filter_map(|parameter| match parameter.value_type() {
+                NamedTypeSchema::BoundedLimit { maximum } => Some(format!(
+                    "  if (parameters.{field} !== undefined && (!Number.isSafeInteger(parameters.{field}) || parameters.{field} < 1 || parameters.{field} > {maximum})) throw new RangeError({message:?});\n",
+                    field = ts_identifier(parameter.name()),
+                    message = format!(
+                        "{} must be an integer from 1 through {maximum}",
+                        parameter.name()
+                    ),
+                )),
+                _ => None,
+            })
+            .collect::<String>();
         writeln!(
             output,
             "export function {function}(parameters: {name}Params): NamedQueryRequest<{name}Params, {name}Result> {{\n\
+             {bounded_validation}\
              \x20 return {{ driverOperation: {{ name: \"{driver_operation_name}\", inputSchemaHash: \"{driver_input_schema_hash}\" }}, \
              contractLineage: CONTRACT_LINEAGE, contractVersion: CONTRACT_VERSION, \
              contractBundleHash: CONTRACT_BUNDLE_HASH, moduleHash: QUERY_MODULE_HASH, queryName: \"{name}\", planHash: {constant}, parameters, \
@@ -4951,7 +4987,10 @@ fn emit_rust_nested_type(
                 writeln!(output, "impl std::fmt::Debug for {name} {{\n    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {{\n        formatter.write_str(\"{name} {{ <secret outputs redacted> }}\")\n    }}\n}}\n").expect("string");
             }
         }
-        NamedTypeSchema::Scalar(_) | NamedTypeSchema::Cursor | NamedTypeSchema::Limit => {}
+        NamedTypeSchema::Scalar(_)
+        | NamedTypeSchema::Cursor
+        | NamedTypeSchema::Limit
+        | NamedTypeSchema::BoundedLimit { .. } => {}
     }
 }
 
@@ -4979,6 +5018,7 @@ fn rust_query_type(value_type: &NamedTypeSchema, nested_name: &str) -> String {
         NamedTypeSchema::Record(_) => nested_name.to_owned(),
         NamedTypeSchema::Cursor => "String".to_owned(),
         NamedTypeSchema::Limit => "u64".to_owned(),
+        NamedTypeSchema::BoundedLimit { .. } => "u64".to_owned(),
     }
 }
 
@@ -5052,6 +5092,7 @@ fn ts_query_type(value_type: &NamedTypeSchema) -> String {
         }
         NamedTypeSchema::Cursor => "string".to_owned(),
         NamedTypeSchema::Limit => "number".to_owned(),
+        NamedTypeSchema::BoundedLimit { .. } => "number".to_owned(),
     }
 }
 
@@ -5129,6 +5170,9 @@ fn ts_named_value_schema(value_type: &NamedTypeSchema, contract: &ContractBundle
         }
         NamedTypeSchema::Cursor => json!({"kind": "cursor"}),
         NamedTypeSchema::Limit => json!({"kind": "limit"}),
+        NamedTypeSchema::BoundedLimit { maximum } => {
+            json!({"kind": "limit", "maximum": maximum})
+        }
     }
 }
 

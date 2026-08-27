@@ -46,8 +46,9 @@ The main correction codes are deliberately executable concepts:
 - `add_index`: add the bounded index identified by query explain.
 - `add_bound`: declare explicit positive cardinality/work bounds.
 - `reduce_input`: reduce a complete worst-case input or query-work bound. For
-  `RDB-AR007`, replace unconstrained `Limit` parameters on a multi-collection
-  page with fixed `take` limits whose aggregate index-scan bound is at most 500.
+  `RDB-AR007`, replace plain `Limit` parameters on a multi-collection page with
+  fixed `take` limits or reviewed `Limit<MAX>` declarations whose aggregate
+  index-scan bound fits the role.
 - `narrow_role`: remove or correct unsafe symbolic authority.
 - `write_lock`: review the symbolic/authority diff, then run
   `riffdb application lock --write`.

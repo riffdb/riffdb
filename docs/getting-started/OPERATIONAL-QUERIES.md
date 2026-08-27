@@ -228,8 +228,9 @@ filter or ignored condition.
 
 Set parameters accept at most 64 submitted values. RiffDB sorts and
 deduplicates them canonically before indexed execution; empty `in` and
-`not_in` sets retain their documented exact semantics. `Limit` is positive and
-at most 499; offset is bounded by the compiled family. Every declared
+`not_in` sets retain their documented exact semantics. Plain `Limit` is
+positive and at most 499; `Limit<MAX>` enforces its smaller compiler-declared
+maximum and is charged at that maximum. Offset is bounded by the compiled family. Every declared
 predicate and order field contributes provider storage and rebuild work, and
 every optional guard multiplies the finite member count. Keep named operations
 small and task-shaped rather than building one combinatorial search endpoint.

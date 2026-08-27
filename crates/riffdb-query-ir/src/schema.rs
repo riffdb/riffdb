@@ -20,6 +20,11 @@ pub enum NamedTypeSchema {
     Cursor,
     /// Positive service-bounded row limit.
     Limit,
+    /// Positive row limit with a compiler-declared inclusive maximum.
+    BoundedLimit {
+        /// Inclusive maximum accepted runtime value.
+        maximum: u64,
+    },
 }
 
 /// Exact explicit page bound.
@@ -29,6 +34,13 @@ pub enum PageBound {
     Literal(u64),
     /// Name of a typed `Limit` parameter.
     Parameter(String),
+    /// Name and inclusive maximum of a typed `Limit<MAX>` parameter.
+    BoundedParameter {
+        /// Parameter name without `$`.
+        name: String,
+        /// Inclusive maximum accepted runtime value.
+        maximum: u64,
+    },
 }
 
 /// One name-addressed field schema.
