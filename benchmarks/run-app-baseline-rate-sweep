@@ -62,8 +62,24 @@ while (($#)); do
     esac
 done
 
-runner="benchmarks/run-app-baseline-${language}"
+# The Rust runner is `run-app-baseline`, with no language suffix, and it selects
+# backends by exclusion rather than with `--backend`. Both differences are real
+# and a `--language rust` sweep failed outright before this translation existed.
+if [[ "$language" == "rust" ]]; then
+    runner="benchmarks/run-app-baseline"
+else
+    runner="benchmarks/run-app-baseline-${language}"
+fi
 [[ -x "$runner" ]] || { printf 'no runner for language %s\n' "$language" >&2; exit 2; }
+
+backend_args=()
+case "$language:$backend" in
+    rust:riffdb) backend_args=(--skip-postgres) ;;
+    rust:postgres) backend_args=(--skip-riffdb) ;;
+    rust:both) backend_args=() ;;
+    *:riffdb|*:postgres|*:both) backend_args=(--backend "$backend") ;;
+    *) printf 'unknown backend %s\n' "$backend" >&2; usage ;;
+esac
 
 case "$scale" in
     smoke) scale_flag="--smoke" ;;
@@ -87,7 +103,7 @@ for rate in $rates; do
     # curve is meant to show where a service level stops holding.
     "$runner" \
         "$scale_flag" \
-        --backend "$backend" \
+        ${backend_args[@]+"${backend_args[@]}"} \
         --load-clients "$clients" \
         --load-duration-secs "$duration" \
         --load-warmup-secs "$warmup" \
