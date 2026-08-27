@@ -2929,6 +2929,19 @@ async fn execute_projected_vector_named_query(
             })
             .or(*default)
             .ok_or_else(|| validation_failure(ValidationCode::InvalidValue))?,
+        riffdb_query_ir::QueryRowLimit::BoundedParameter {
+            name,
+            maximum,
+            default,
+        } => parameters
+            .get(name)
+            .and_then(|value| match value {
+                CanonicalValue::U64(value) if *value > 0 && *value <= *maximum => Some(*value),
+                _ => None,
+            })
+            .or(*default)
+            .filter(|value| *value > 0 && *value <= *maximum)
+            .ok_or_else(|| validation_failure(ValidationCode::InvalidValue))?,
     };
     let k = u32::try_from(k)
         .ok()
@@ -4807,6 +4820,7 @@ fn materialize_query_parameters(
                 canonical.insert(name.to_owned(), value);
             }
             (TypeReference::Limit, None) if parameter.default.is_some() => continue,
+            (TypeReference::BoundedLimit(_), None) if parameter.default.is_some() => continue,
             (_, None) => return Err(validation_failure(ValidationCode::InvalidValue)),
             (TypeReference::Limit, Some(SubmittedValue::U64(value)))
                 if *value >= 1 && riffdb_query_executor::page_take_within_scan_bound(*value) =>
@@ -4814,6 +4828,16 @@ fn materialize_query_parameters(
                 canonical.insert(name.to_owned(), CanonicalValue::U64(*value));
             }
             (TypeReference::Limit, Some(_)) => {
+                return Err(validation_failure(ValidationCode::TypeMismatch));
+            }
+            (TypeReference::BoundedLimit(maximum), Some(SubmittedValue::U64(value)))
+                if *value >= 1
+                    && *value <= *maximum
+                    && riffdb_query_executor::page_take_within_scan_bound(*value) =>
+            {
+                canonical.insert(name.to_owned(), CanonicalValue::U64(*value));
+            }
+            (TypeReference::BoundedLimit(_), Some(_)) => {
                 return Err(validation_failure(ValidationCode::TypeMismatch));
             }
             (TypeReference::Set(inner), Some(SubmittedValue::List(values))) => {
@@ -4935,7 +4959,10 @@ fn query_value_type(
         TypeReference::Optional(inner) => {
             riffdb_contract_ir::ValueType::optional(query_value_type(bundle, &inner.value)?).ok()
         }
-        TypeReference::Set(_) | TypeReference::Cursor | TypeReference::Limit => None,
+        TypeReference::Set(_)
+        | TypeReference::Cursor
+        | TypeReference::Limit
+        | TypeReference::BoundedLimit(_) => None,
     }
 }
 
@@ -5257,6 +5284,7 @@ fn render_named_type(value: &NamedTypeSchema) -> String {
         }
         NamedTypeSchema::Cursor => "Cursor".to_owned(),
         NamedTypeSchema::Limit => "Limit".to_owned(),
+        NamedTypeSchema::BoundedLimit { maximum } => format!("Limit<{maximum}>"),
     }
 }
 

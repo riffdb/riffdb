@@ -66,6 +66,8 @@ pub const QUERY_IR_VERSION_EXACT_PREDICATE_V1: u32 = 9;
 pub const QUERY_IR_VERSION_NULLABLE_EXACT_ORDER_V1: u32 = 10;
 /// Additive operational aggregate core IR identity.
 pub const QUERY_IR_VERSION_EXACT_AGGREGATE_V1: u32 = 11;
+/// Canonical query IR carrying compiler-declared bounded runtime page limits.
+pub const QUERY_IR_VERSION_BOUNDED_LIMIT_V1: u32 = 12;
 /// Maximum public query schema and canonical IR bytes.
 pub const MAX_QUERY_ARTIFACT_BYTES: usize = 4_194_304;
 /// Maximum source-map entries.

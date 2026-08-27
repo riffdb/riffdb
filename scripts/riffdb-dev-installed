@@ -427,8 +427,20 @@ fi
 jq -e '.ok == true and .command == "role.bind"' "$work_root/role.json" >/dev/null
 
 driver_socket=
+operation_catalog_file=
+catalog_hash=
 if ((driver_runner)); then
     driver_socket="$work_root/riffdb-driver.sock"
+    declared_operation_catalog="$(jq -r '.generation.mcp // empty' "$application_manifest")"
+    if [[ -n "$declared_operation_catalog" ]]; then
+        operation_catalog_file="$application_root/$declared_operation_catalog"
+        catalog_hash="$(jq -er '.artifacts[] | select(.kind == "mcp") | .content_hash' "$application_root/riffdb.application.lock.json")"
+    else
+        operation_catalog_file="$work_root/operation-catalog.json"
+        catalog_hash="$("$riffdb" application runtime-catalog "$application_source" \
+            --catalog-output "$operation_catalog_file")"
+        chmod 0600 "$operation_catalog_file"
+    fi
     cat >"$work_root/driver.toml" <<EOF
 [driver]
 socket = "$driver_socket"
@@ -436,7 +448,7 @@ socket = "$driver_socket"
 [application]
 lock_file = "$application_root/riffdb.application.lock.json"
 manifest_file = "$application_manifest"
-operation_catalog_file = "$application_root/generated/mcp/tools.json"
+operation_catalog_file = "$operation_catalog_file"
 database = "default"
 role = "$role_symbol"
 
@@ -564,7 +576,6 @@ if ((run)); then
     driver_arguments=()
     if ((driver_runner)); then
         manifest_hash="$(jq -er '.exact_manifest_hash' "$application_root/riffdb.application.lock.json")"
-        catalog_hash="$(jq -er '.artifacts[] | select(.kind == "mcp") | .content_hash' "$application_root/riffdb.application.lock.json")"
         role_hash="$(jq -er --arg role "$role_symbol" '.roles[] | select(.definition.name == $role) | .definition_hash' "$application_root/riffdb.application.lock.json")"
         bundle_hash="$(jq -er '.contract.bundle_hash' "$application_root/riffdb.application.lock.json")"
         remote_hash="$(printf '%s' "$endpoint|127.0.0.1" | sha256sum | cut -d' ' -f1)"

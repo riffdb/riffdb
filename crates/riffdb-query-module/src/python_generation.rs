@@ -1357,7 +1357,26 @@ fn emit_client(
             .parameters()
             .iter()
             .find(|parameter| is_cursor(parameter.value_type()));
-        let (parameter_prelude, parameter_argument) = cursor.map_or_else(
+        let bounded_validation = query
+            .plan()
+            .schemas()
+            .parameters()
+            .iter()
+            .filter_map(|parameter| match parameter.value_type() {
+                NamedTypeSchema::BoundedLimit { maximum } => {
+                    let field = python_identifier(parameter.name());
+                    Some(format!(
+                        "        if parameters.{field} is not None and (isinstance(parameters.{field}, bool) or not isinstance(parameters.{field}, int) or parameters.{field} < 1 or parameters.{field} > {maximum}):\n            raise ValueError({:?})\n",
+                        format!(
+                            "{} must be an integer from 1 through {maximum}",
+                            parameter.name()
+                        )
+                    ))
+                }
+                _ => None,
+            })
+            .collect::<String>();
+        let (cursor_prelude, parameter_argument) = cursor.map_or_else(
             || (String::new(), "encode_record(parameters)".to_owned()),
             |parameter| {
                 let field = python_identifier(parameter.name());
@@ -1370,6 +1389,7 @@ fn emit_client(
                 )
             },
         );
+        let parameter_prelude = format!("{bounded_validation}{cursor_prelude}");
         writeln!(
             output,
             "    {async_token}def {method}(self, parameters: {name}Params, options: QueryOptions = QueryOptions()) -> TypedQueryResult[{name}Result]:\n{parameter_prelude}        raw = {await_token}self._transport._execute_named_query(\n            contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,\n            contract_bundle_hash=CONTRACT_BUNDLE_HASH, module_hash=QUERY_MODULE_HASH,\n            query_name={wire_name:?}, plan_hash={constant}_QUERY_PLAN_HASH,\n            parameters={parameter_argument}, options=options,\n{compact_argument}        )\n        outcomes = {{",
@@ -1603,7 +1623,10 @@ fn emit_named_nested(
             }
             output.push('\n');
         }
-        NamedTypeSchema::Scalar(_) | NamedTypeSchema::Cursor | NamedTypeSchema::Limit => {}
+        NamedTypeSchema::Scalar(_)
+        | NamedTypeSchema::Cursor
+        | NamedTypeSchema::Limit
+        | NamedTypeSchema::BoundedLimit { .. } => {}
     }
 }
 
@@ -1650,6 +1673,7 @@ fn python_named_type(
         NamedTypeSchema::Record(_) => nested_name.to_owned(),
         NamedTypeSchema::Cursor => "str".to_owned(),
         NamedTypeSchema::Limit => "Annotated[int, \"u64\"]".to_owned(),
+        NamedTypeSchema::BoundedLimit { .. } => "Annotated[int, \"u64\"]".to_owned(),
     }
 }
 
@@ -1963,7 +1987,10 @@ fn register_nested_names(
             }
             Ok(())
         }
-        NamedTypeSchema::Scalar(_) | NamedTypeSchema::Cursor | NamedTypeSchema::Limit => Ok(()),
+        NamedTypeSchema::Scalar(_)
+        | NamedTypeSchema::Cursor
+        | NamedTypeSchema::Limit
+        | NamedTypeSchema::BoundedLimit { .. } => Ok(()),
     }
 }
 

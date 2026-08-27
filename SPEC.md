@@ -6,7 +6,7 @@
 **Tagline:** *Vibe fast. Commit safely.*  
 **Category:** Contract-first operational database for agent-built applications  
 
-**Version:** 1.14
+**Version:** 1.15
 **Status:** Deployable Application Alpha architecture accepted; implementation gated by work packages
 **Date:** 26 August 2026
 **Audience:** Coding agents, database engineers, compiler engineers, security reviewers, and technical product leads  
@@ -37,6 +37,7 @@
 
 | Version | Date | Summary |
 |---|---|---|
+| 1.15 | 2026-08-27 | Accepted ADR-0158 and registered OQ-062 through OQ-067, DX-050, DRV-016, and WP-706/WP-707. RiffQL adds the closed query-only `Limit<MAX>` refinement with an implicit minimum of one and a maximum through 499. Planner cost, role authority, generated schemas, runtime validation, and result budgets use the declared maximum rather than the default or submitted value. RiffQL V9, query IR V12, and query-module format V12 are additive successors; old `Limit` source and every V1-V8/V1-V11/V1-V11 artifact remain byte-exact and readable. No global ceiling, protocol, storage format, provider algorithm, or external-framework branch changes. |
 | 1.14 | 2026-08-26 | Accepted ADR-0156 and ADR-0157 and registered STO-023, REC-004, PERF-019, WP-704, and WP-705 for an automatic conventional clean-close fast path. One private engine-atomic CLEAN/DIRTY lifecycle certificate may replace population-wide validation only after every writer and journal suffix drains and only when bounded identity, frontier, catalog, and authority roots match; its exact key, seven-field Protobuf identity, hashes, bounded-root framing, checked generation, and registry migration are frozen, and it is durably replaced by DIRTY before writers reactivate. Missing, dirty, stale, repaired, migrated, restored, or contradictory state retains complete validation. Latent unrelated corruption may be detected on access or explicit scrub rather than before clean readiness. No caller or operator can select the fast path, and no signing key or hostile-offline-write claim is added. |
 | 1.13 | 2026-08-26 | Accepted ADR-0154 and ADR-0155. Registered OQ-056 through OQ-061 plus WP-700/WP-701 for compiler-sealed strict, inclusive, and complement intervals over the existing `binary_utf8_v1` physical order, with one partition prefix, total order, cursor, policy, and global work contract and no ULID-specific or durable-format branch. Registered DX-042 through DX-049 plus WP-702/WP-703 for sparse source V7 generated-surface declarations, manifest V5, lock V8, exact compiler-owned artifact inventories, and reproducible single-surface application packages. Existing source V1-V6, manifest V1-V4, lock V1-V7, indexes, query plans, storage, protocols, and runtime authority remain unchanged and readable. |
 | 1.12 | 2026-08-26 | Accepted ADR-0153 and registered BLK-036 through BLK-045 plus WP-697 through WP-699 for one compiler-sealed `init_or_mutate` exact-key binding. An absent observation uses compiler-declared initial fields and produces one create; a present observation uses the revalidated preimage and produces one replace; both follow one common checked suffix. Create/update authority, policy, idempotency, atomic outcome/event/provenance, collection and index-work bounds, and pay-once proofs remain mandatory. V17 is least-sufficient and old contracts remain byte-exact. General upsert, conditional command blocks, state-origin exposure, framework behavior, and caller-selected conflict semantics remain forbidden pending real-consumer review and exact acceptance. |
@@ -631,6 +632,12 @@ packages, old-version compatibility, filesystem interruption, and global
 driver/MCP conformance MUST prove one bounded declared-surface registry with no
 local-config-derived lock, unconditional MCP artifact, target-language semantic
 branch, raw transport escape, or value-bearing diagnostic.
+
+`DX-050` Generated Rust, Go, TypeScript, and Python parameter types, compiler-
+owned JSON schemas, CLI/MCP metadata, editor grammar, formatter, and LSP MUST
+preserve the exact `Limit<MAX>` maximum and default. Generated validation MAY
+reject early but MUST NOT replace or weaken authoritative Rust validation, and
+plain `Limit` generated surfaces MUST remain byte-exact.
 
 ## 4.4 Additive contract evolution
 
@@ -7637,6 +7644,11 @@ does not create a kernel or storage escape hatch.
   byte-identical request material, identical canonical value graphs, and
   identical public error classes; a binding that cannot reproduce an entry
   fails, and the corpus MUST NOT be narrowed to keep a binding green.
+- `DRV-016`: One generated named-query invocation MUST carry a valid bounded
+  limit and protected nullable cursor directly through the shared driver core
+  to one admitted provider/backend page. A binding MUST NOT walk smaller pages,
+  fetch and discard a larger literal page, duplicate operations by requested
+  size, or split one public page across driver requests.
 
 ### 24.5.3 Compiler-bounded collection mutations
 
@@ -8184,6 +8196,31 @@ behavior:
   and return original logical strings, never physical bytes. External receipts
   remain value-free and MUST NOT introduce a ULID/framework branch or claim a
   database-owned external continuation token.
+- `OQ-062`: RiffQL MAY declare a query-only `Limit<MAX>` parameter where `MAX`
+  is one canonical unsigned literal in 1..=499. The effective runtime value is
+  always in 1..=`MAX`; optional, set, nested, nonliteral, zero, excessive, and
+  multi-bound forms MUST fail with a source-spanned diagnostic.
+- `OQ-063`: A bounded-limit default MUST be absent or a positive literal no
+  greater than `MAX`. Defaults and submitted values MUST NOT narrow static
+  cost: planner, role, scan, hydration, policy, intermediate, output-row, and
+  result-byte budgets use the declared maximum cumulatively for every binding.
+- `OQ-064`: Every public path MUST reject a missing required, wrongly typed,
+  zero, or above-maximum bounded-limit value before provider or storage work.
+  Generated validation is additive; the first-party Rust service remains the
+  authoritative validator and uses the same compiler-owned maximum.
+- `OQ-065`: Bounded limits MUST use additive RiffQL V9, query IR V12, and
+  query-module format V12 identities that canonically encode `MAX`. RiffQL
+  V1-V8, query IR V1-V11, module V1-V11, and plain `Limit` bytes and hashes
+  remain exact and readable under ADR-0124 topology governance.
+- `OQ-066`: Every existing query family that already admits runtime `Limit`
+  MAY admit `Limit<MAX>` without gaining a new predicate, provider, scan,
+  aggregate, or ordering capability. Provider full-population and candidate
+  costs remain independently charged, and cursors retain exact plan,
+  parameter, snapshot, policy, order, and epoch binding.
+- `OQ-067`: Generic conformance MUST prove boundary values, default semantics,
+  maximum drift, cursor traversal, maximum encoded results, cumulative cost,
+  and one-invocation bounded pages without external-framework source,
+  diagnostics, fixtures, generated branches, or wall-clock thresholds.
 
 ### 24.5.5 Compiled workflow concurrency
 

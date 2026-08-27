@@ -82,6 +82,12 @@ They are substitution evidence used only to open the generated application
 session. The workflow supports `go.mod` as a first-class runner manifest and
 runs with the caller's selected offline module source.
 
+A V7 Go-only application does not declare or retain an MCP artifact. Before
+starting the driver, the development workflow derives its operation catalog
+once from the exact application source and V8 lock in a private temporary
+directory. The catalog remains compiler-checked and role-bounded; it is not a
+hidden generated application surface and disappears when the workflow exits.
+
 A Go library module can keep its executable in one dedicated package:
 
 ```bash

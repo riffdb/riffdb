@@ -491,6 +491,23 @@ pub(crate) enum ApplicationCommand {
         )]
         lock: OsString,
     },
+    /// Emits the compiler-verified operation catalog used by a local generated driver.
+    #[command(hide = true)]
+    RuntimeCatalog {
+        #[arg(
+            default_value = "riffdb.application.json",
+            value_name = "APPLICATION_SOURCE"
+        )]
+        source: OsString,
+        #[arg(
+            long,
+            default_value = "riffdb.application.lock.json",
+            value_name = "APPLICATION_LOCK"
+        )]
+        lock: OsString,
+        #[arg(long, value_name = "PROTECTED_RUNTIME_CATALOG")]
+        catalog_output: OsString,
+    },
     /// Deploys one exact lock, with optional explicit role provisioning and seed.
     Deploy {
         #[arg(
@@ -1937,6 +1954,25 @@ mod tests {
             TopLevel::Application {
                 command: ApplicationCommand::Generate { locked: true, .. }
             }
+        ));
+        assert!(matches!(
+            Cli::try_parse_from([
+                "riffdb",
+                "application",
+                "runtime-catalog",
+                "custom.application.json",
+                "--lock",
+                "custom.application.lock.json",
+                "--catalog-output",
+                "/tmp/runtime-catalog.json",
+            ])
+            .expect("runtime catalog")
+            .command,
+            TopLevel::Application {
+                command: ApplicationCommand::RuntimeCatalog { source, lock, catalog_output }
+            } if source == "custom.application.json"
+                && lock == "custom.application.lock.json"
+                && catalog_output == "/tmp/runtime-catalog.json"
         ));
         assert!(matches!(
             Cli::try_parse_from([

@@ -3,8 +3,9 @@
 use riffdb_contract_compiler::compile_contract_source;
 use riffdb_query_compiler::compile_query;
 use riffdb_query_ir::{
-    QUERY_IR_VERSION_COVERED_RESULT_V1, QUERY_IR_VERSION_V1, QueryAccessKind, QueryAccessProgramV1,
-    QueryAccessStep, QueryPredicateValue, SymbolicCatalog,
+    QUERY_IR_VERSION_BOUNDED_LIMIT_V1, QUERY_IR_VERSION_COVERED_RESULT_V1, QUERY_IR_VERSION_V1,
+    QueryAccessKind, QueryAccessProgramV1, QueryAccessStep, QueryPredicateValue, QueryRowLimit,
+    SymbolicCatalog,
 };
 use riffdb_riffql_syntax::parse_query;
 use riffdb_types::QueryCostVectorV1;
@@ -54,6 +55,79 @@ const QUERIES: &[(&str, &str)] = &[
 ];
 
 const BOARD_PAGE_450: &str = include_str!("../../../queries/ticketdesk/board_page_450.riffq");
+
+const BOUNDED_RUNTIME_BOARD_PAGE: &str = r#"query BoundedBoardPage(
+    $organization_id: Organization.organization_id,
+    $project_id: Project.project_id,
+    $status: TicketStatus,
+    $limit: Limit<100> = 50,
+) {
+    many tickets from Ticket
+        where organization_id == $organization_id
+            && project_id == $project_id
+            && status == $status
+        order by ticket_id asc
+        take $limit
+    return Found { tickets: tickets { ticket_id title } }
+    outcomes Found
+}
+"#;
+
+const TWO_BOUNDED_COLLECTIONS: &str = r#"query TwoBoundedCollections(
+    $organization_id: Organization.organization_id,
+    $project_id: Project.project_id,
+    $status: TicketStatus,
+    $limit: Limit<100> = 50,
+) {
+    many first from Ticket
+        where organization_id == $organization_id
+            && project_id == $project_id
+            && status == $status
+        order by ticket_id asc
+        take $limit
+    many second from Ticket
+        where organization_id == $organization_id
+            && project_id == $project_id
+            && status == $status
+        order by ticket_id asc
+        take $limit
+    return Found {
+        first: first { ticket_id title }
+        second: second { ticket_id title }
+    }
+    outcomes Found
+}
+"#;
+
+#[test]
+fn bounded_runtime_limit_drives_the_plan_and_whole_request_cost() {
+    let bundle = compile_contract_source(CONTRACT).expect("contract");
+    let catalog = SymbolicCatalog::from_bundle(&bundle).expect("catalog");
+    let document = parse_query(BOUNDED_RUNTIME_BOARD_PAGE).expect("bounded source");
+    let plan = compile_query(&document, &catalog).expect("bounded plan");
+    assert_eq!(plan.ir_version(), QUERY_IR_VERSION_BOUNDED_LIMIT_V1);
+    assert_eq!(plan.steps()[0].maximum_rows(), 100);
+    assert_eq!(plan.cost().scanned_index_rows(), 100);
+    assert!(matches!(
+        plan.steps()[0].row_limit(),
+        QueryRowLimit::BoundedParameter {
+            name,
+            maximum: 100,
+            default: Some(50),
+        } if name == "limit"
+    ));
+}
+
+#[test]
+fn bounded_runtime_limit_cost_is_cumulative_for_every_reference() {
+    let bundle = compile_contract_source(CONTRACT).expect("contract");
+    let catalog = SymbolicCatalog::from_bundle(&bundle).expect("catalog");
+    let document = parse_query(TWO_BOUNDED_COLLECTIONS).expect("bounded source");
+    let plan = compile_query(&document, &catalog).expect("bounded plan");
+    assert_eq!(plan.steps().len(), 2);
+    assert!(plan.steps().iter().all(|step| step.maximum_rows() == 100));
+    assert_eq!(plan.cost().scanned_index_rows(), 200);
+}
 
 #[test]
 fn complete_cover_seals_board_page_layout_and_incomplete_cover_does_not() {

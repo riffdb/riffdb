@@ -212,6 +212,20 @@ fn development_runners_bind_native_configuration_and_sealed_typescript_tooling()
         ] {
             assert!(source.contains(name), "{relative} omits {name}");
         }
+        assert!(
+            source.contains("application runtime-catalog"),
+            "{relative} does not derive driver metadata for sparse applications"
+        );
+        assert!(
+            source.contains(".generation.mcp // empty"),
+            "{relative} does not honor a declared MCP catalog path"
+        );
+        assert!(
+            !source.contains(
+                "operation_catalog_file = \"$application_root/generated/mcp/tools.json\""
+            ),
+            "{relative} still requires an optional MCP artifact"
+        );
     }
     let installed =
         fs::read_to_string(root.join("scripts/riffdb-dev-installed")).expect("installed runner");

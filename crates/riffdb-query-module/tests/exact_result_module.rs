@@ -4,7 +4,7 @@
 
 use riffdb_contract_compiler::compile_contract_source;
 use riffdb_query_module::{
-    CompiledNamedQueryPlan, NamedQuerySource,
+    CompiledNamedQueryPlan, NamedQuerySource, QUERY_MODULE_FORMAT_VERSION_BOUNDED_LIMIT_V1,
     QUERY_MODULE_FORMAT_VERSION_EXACT_FILTERED_RESULT_SET_V1,
     QUERY_MODULE_FORMAT_VERSION_EXACT_RESULT_SET_V1, QueryModule, QueryModuleCandidate,
     QueryModuleName, QueryModuleVersion, generate_go_application_client, generate_mcp_tools,
@@ -12,6 +12,7 @@ use riffdb_query_module::{
     generate_typescript_application_client,
 };
 use riffdb_types::{ExactTextOperatorV1, ExactTextOrderV1, ProjectionProviderPolicyModeV1};
+use std::num::NonZeroU16;
 
 const CONTRACT: &str = r#"
 contract ExactUsers version 1 {
@@ -147,6 +148,44 @@ fn exact_source_compiles_to_one_sealed_provider_plan_and_v5_round_trips() {
         .expect("strict exact module decode");
     assert_eq!(decoded.identity(), module.identity());
     assert_eq!(decoded.canonical_bytes(), module.canonical_bytes());
+}
+
+#[test]
+fn bounded_limit_composes_with_exact_result_provider_window() {
+    let contract = compile_contract_source(CONTRACT).expect("contract");
+    let source = QUERY.replace("$limit: Limit = 50", "$limit: Limit<100> = 50");
+    let candidate = QueryModuleCandidate::new(
+        QueryModuleName::new("bounded_exact_users").expect("name"),
+        QueryModuleVersion::new(1).expect("version"),
+        vec![NamedQuerySource::new("SearchUsers", source).expect("query")],
+    )
+    .expect("candidate");
+    let module = QueryModule::compile(candidate, &contract).expect("bounded exact module");
+    assert_eq!(
+        module.format_version(),
+        QUERY_MODULE_FORMAT_VERSION_BOUNDED_LIMIT_V1
+    );
+    let exact = module
+        .query("SearchUsers")
+        .and_then(|query| query.exact_text_result())
+        .expect("exact result provider");
+    assert!(
+        exact
+            .binding()
+            .plan()
+            .bind_window(0, NonZeroU16::new(100).expect("limit"))
+            .is_ok()
+    );
+    assert!(
+        exact
+            .binding()
+            .plan()
+            .bind_window(0, NonZeroU16::new(101).expect("limit"))
+            .is_err()
+    );
+    let decoded = QueryModule::decode_and_validate(module.canonical_bytes(), &contract)
+        .expect("strict bounded exact decode");
+    assert_eq!(decoded.identity(), module.identity());
 }
 
 #[test]
