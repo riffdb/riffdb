@@ -982,8 +982,14 @@ shape!(VECTOR_PROJECTION_CONTROL [
     message(7, &VECTOR_PROJECTION_FRONTIER),
     message(8, &VECTOR_PROJECTION_FRONTIER),
 ]);
+shape!(CLEAN_CLOSE_LIFECYCLE [
+    fixed_bytes(1, 16),
+    fixed_bytes(3, 32),
+    bytes(6, 32),
+    fixed_bytes(7, 32),
+]);
 
-const ROOTS: [&Shape; 91] = [
+const ROOTS: [&Shape; 92] = [
     &ROOT_EMPTY,
     &ROOT_DATABASE_ID,
     &ROOT_OPTIONAL_UNIT_FIELD_TWO,
@@ -1086,6 +1092,7 @@ const ROOTS: [&Shape; 91] = [
     &VECTOR_PROJECTION_CONTROL,
     &COMMAND_CAPSULE_V6,
     &COMMAND_SEGMENT_V5,
+    &CLEAN_CLOSE_LIFECYCLE,
 ];
 
 pub(crate) fn payload(record_index: usize, input: &[u8]) -> Result<(), DurablePreflightError> {

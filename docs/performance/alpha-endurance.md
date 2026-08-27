@@ -255,6 +255,19 @@ unless two installed prune/restart cycles pass. The harness never deletes the
 journal, marks pending intents delivered, or weakens startup validation to make
 that evidence green.
 
+Startup validation also keeps its historical-evidence plan bounded by catalog
+and persisted-key shape rather than by the number of live rows. Catalog-shaped
+bundle, plan, active-pointer, and capability entries remain materialized. Live
+entities, secondary-index rows, and index epochs are first assigned to bounded
+`(schema, kind, owner, key length)` groups and then read lazily from the pinned
+database snapshot. Within each group startup verifies that physical table order
+agrees with the existing historical order key; index rows and legacy epochs are
+merged in that same order. The complete byte sequence, page continuation, and
+ExactEnd behavior are unchanged, and every row is still decoded and checked
+before the plan is served. Consequently a post-soak reopen no longer consumes
+the 512 MiB plan ceiling merely because the database has about one million live
+rows; the ceiling remains fail-closed for excessive catalog or key-shape state.
+
 Environment setup creates one short-lived test CA and two distinct leaf/key
 pairs before starting RiffDB. Certificate rotation atomically replaces the
 configured leaf and key with the inactive pair, gracefully restarts the

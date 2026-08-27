@@ -15,6 +15,7 @@ mod backup;
 #[doc(hidden)]
 pub mod benchmark_support;
 mod changelog;
+mod clean_close;
 mod codec;
 mod command_authority;
 mod command_segment_preparation;

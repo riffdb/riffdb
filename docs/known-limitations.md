@@ -168,6 +168,11 @@ These limits are part of the POC release posture, not hidden roadmap promises.
   create-if-absent operation. Do not run it concurrently with another writer
   to the same user's Codex MCP configuration.
 - Metrics are in-process; there is no network metrics exporter.
+- A graceful clean restart proves bounded continuity but is not a full
+  population scrub. Latent corruption outside the bound roots may fail closed
+  when an affected row is first accessed. Dirty restart still performs complete
+  startup validation, but the separately specified authorized offline scrub is
+  not yet exposed as a public POC operation.
 - Outbox delivery has only the explicitly configured POC connector behavior.
 - Projection state is rebuildable and can be degraded while authoritative
   commits remain available.

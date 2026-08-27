@@ -55,6 +55,7 @@ use crate::transient::TransientIndexDelta;
 
 impl OutboxRepository for RedbOperationalPorts {
     fn has_undelivered_outbox(&self) -> Result<bool, StorageError> {
+        self.shared.ensure_transient_indexes_ready()?;
         let _lease = self.acquire_indexed_read_lease()?;
         self.undelivered_outbox_page(None, 1)
             .map(|(event_ids, _)| !event_ids.is_empty())
@@ -79,6 +80,7 @@ impl OutboxRepository for RedbOperationalPorts {
         after: Option<EventId>,
         limit: OutboxPageLimit,
     ) -> Result<PendingOutboxScanV1, StorageError> {
+        self.shared.ensure_transient_indexes_ready()?;
         let _lease = self.acquire_indexed_read_lease()?;
         let wanted = usize::from(limit.get().get());
         let (event_ids, mut has_more) = self.pending_outbox_page(after, wanted)?;
@@ -117,6 +119,7 @@ impl OutboxRepository for RedbOperationalPorts {
         &self,
         request: UndeliveredOutboxStatusScanRequestV1,
     ) -> Result<UndeliveredOutboxStatusScanV1, StorageError> {
+        self.shared.ensure_transient_indexes_ready()?;
         let _lease = self.acquire_indexed_read_lease()?;
         // The transient index gates derived-component availability only. The
         // recovery page itself is always read and proven from durable tables.

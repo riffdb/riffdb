@@ -315,8 +315,15 @@ impl ProductionGraphBuilder {
         )
         .map_err(|_| ProductionGraphBuildError::CurrentView)?;
         let outbox_recovery = recover_outbox(storage.clone(), clocks.outbox());
-        let outbox_health = NoDestinationOutboxHealth::new(outbox_recovery);
-        outbox_health.refresh(&storage);
+        let bounded_clean_startup = storage.bounded_clean_startup();
+        let outbox_health = NoDestinationOutboxHealth::new(if bounded_clean_startup {
+            OutboxRecoveryReadiness::Degraded
+        } else {
+            outbox_recovery
+        });
+        if !bounded_clean_startup {
+            outbox_health.refresh(&storage);
+        }
         let blocking = BlockingPortDriver::new(runtime.clone())
             .map_err(ProductionGraphBuildError::BlockingDriver)?;
         let notifications = FirstCommitNotificationHub::from_retained_application_sequence(
@@ -1083,6 +1090,9 @@ fn elapsed_microseconds(started: Instant) -> u64 {
 fn write_shutdown_validated_prefix_checkpoint(storage: &SharedRedbOperationalPorts) {
     // Deliberately ignore Err — ADR-0019 A1 write-failure semantics.
     let _ = storage.write_validated_prefix_checkpoint();
+    // Also non-fatal: acknowledged work is already durable. This MUST remain
+    // after the optional checkpoint so CLEAN is the final authoritative write.
+    let _ = storage.write_clean_close_lifecycle();
 }
 
 /// Cloned least-authority inputs for the optional loopback MCP transport.

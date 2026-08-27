@@ -30,8 +30,9 @@ use riffdb_storage_api::{
 };
 use riffdb_types::{
     CommitSequence, ContractBundleHash, ContractLineage, ContractMigrationOperationId,
-    ContractVersion, DatabaseId, EntityTypeId, FieldId, FrontierPosition, MigrationBundleHash,
-    hash_contract_bundle, hash_query_module, hash_reactive_module, hash_reactive_source,
+    ContractVersion, DatabaseId, ENTITY_KEY_V1_PREFIX, EntityTypeId, FieldId, FrontierPosition,
+    INDEX_ENTRY_KEY_V1_PREFIX, MigrationBundleHash, hash_contract_bundle, hash_query_module,
+    hash_reactive_module, hash_reactive_source,
 };
 
 use crate::codec::{self, IdempotencyRecordV1};
@@ -50,7 +51,7 @@ use crate::layout::{
     EVENT_CONSUMER_DELIVERIES, EVENT_CONSUMERS, EVENT_ROUTES, EVENTS, HISTORY_TOMBSTONES,
     IDEMPOTENCY, IDEMPOTENCY_PENDING, INDEX_EPOCHS, META, META_ADMINISTRATION_SEQUENCE,
     META_APPLICATION_SEQUENCE, META_CAPABILITY_BOOTSTRAP, META_CHANGELOG_V2_ROTATION_RECEIPT,
-    META_DATABASE_ID, META_FORMAT_VERSION, META_HISTORY_INCARNATION,
+    META_CLEAN_CLOSE_LIFECYCLE, META_DATABASE_ID, META_FORMAT_VERSION, META_HISTORY_INCARNATION,
     META_INDEX_EPOCH_ROWS_REPAIRED, META_KEYS, META_RECORD_REGISTRY, META_RETENTION_HOLDS,
     META_RETENTION_WATERMARK, META_VALIDATED_PREFIX_CHECKPOINT, OUTBOX, OUTBOX_STATUS,
     PROJECTION_APPLIED, PROJECTION_FRONTIER, PROJECTION_STATE, PROVENANCE, QUERY_MODULE_ACTIVE,
@@ -228,9 +229,6 @@ enum EvidenceLocator {
     ContractMigrationEdge(ContractBundleHash),
     PlanReference(riffdb_storage_api::ExecutablePlanRef),
     ActiveCatalog,
-    PersistedKeyEntity(Vec<u8>),
-    IndexMigration(Vec<u8>),
-    PersistedKeyEpoch(Vec<u8>),
     CapabilityPartition {
         capability_id: riffdb_types::CapabilityId,
         entry_ordinal: usize,
@@ -240,10 +238,7 @@ enum EvidenceLocator {
 impl EvidenceLocator {
     fn retained_bytes(&self) -> usize {
         match self {
-            Self::Bundle(key)
-            | Self::PersistedKeyEntity(key)
-            | Self::IndexMigration(key)
-            | Self::PersistedKeyEpoch(key) => key.len().saturating_add(8),
+            Self::Bundle(key) => key.len().saturating_add(8),
             Self::ContractMigrationEdge(_) => 32 + 8,
             Self::PlanReference(plan) => plan
                 .contract_lineage()
@@ -256,10 +251,77 @@ impl EvidenceLocator {
     }
 }
 
+#[derive(Clone, Copy, Default)]
+struct PersistedEvidenceGroupSources {
+    entities: bool,
+    index_rows: bool,
+    legacy_epochs: bool,
+    partition_epochs: bool,
+}
+
+impl PersistedEvidenceGroupSources {
+    const fn retained_bytes(self) -> usize {
+        4
+    }
+}
+
+struct PersistedEvidenceGroup {
+    /// Complete historical order-key prefix through the bounded raw-key length.
+    /// Every row in this group therefore has table order equal to evidence order.
+    order_prefix: Vec<u8>,
+    sources: PersistedEvidenceGroupSources,
+}
+
+struct PendingHistoricalEvidence {
+    order_key: Vec<u8>,
+    evidence: HistoricalSemanticEvidence,
+}
+
+enum PersistedEvidenceGroupCursor {
+    Entities {
+        after: Option<Vec<u8>>,
+        exhausted: bool,
+        prior: Option<Vec<u8>>,
+        buffered: VecDeque<PendingHistoricalEvidence>,
+    },
+    IndexKeys {
+        after_index: Option<Vec<u8>>,
+        index_exhausted: bool,
+        after_epoch: Option<Vec<u8>>,
+        epoch_exhausted: bool,
+        pending_index: Option<Box<PendingHistoricalEvidence>>,
+        pending_epoch: Option<Box<PendingHistoricalEvidence>>,
+        prior_index: Option<Vec<u8>>,
+        prior_epoch: Option<Vec<u8>>,
+        buffered_index: VecDeque<PendingHistoricalEvidence>,
+        buffered_epoch: VecDeque<PendingHistoricalEvidence>,
+    },
+    PartitionEpochs {
+        after: Option<Vec<u8>>,
+        exhausted: bool,
+        prior: Option<Vec<u8>>,
+        buffered: VecDeque<PendingHistoricalEvidence>,
+    },
+}
+
 struct HistoricalEvidencePlan {
-    /// Sorted unique (order_key, compact locator) pairs — no payload retention.
-    entries: Vec<(Vec<u8>, EvidenceLocator)>,
-    next_index: usize,
+    /// Catalog-shaped entries preceding the 0x04 persisted-key domain.
+    prefix_entries: Vec<(Vec<u8>, EvidenceLocator)>,
+    next_prefix: usize,
+    /// Bounded schema/kind/owner/key-length groups. Row locators are never kept.
+    persisted_groups: Vec<PersistedEvidenceGroup>,
+    next_group: usize,
+    group_cursor: Option<PersistedEvidenceGroupCursor>,
+    /// Capability-partition entries following the 0x04 domain.
+    suffix_entries: Vec<(Vec<u8>, EvidenceLocator)>,
+    next_suffix: usize,
+    /// One page-deferred item; semantic page ceilings never lose a consumed row.
+    pending: Option<PendingHistoricalEvidence>,
+    #[cfg_attr(
+        not(test),
+        allow(dead_code, reason = "startup-plan test observability")
+    )]
+    retained_bytes: usize,
 }
 
 #[derive(Clone)]
@@ -294,6 +356,10 @@ pub struct RedbStructuralEvidenceSession {
     open_session_id: OpenSessionId,
     retained_metadata: RetainedMetadataV1,
     inputs: StartupValidationInputs,
+    /// True only for an ADR-0157 verified clean-close bounded startup.
+    clean_close_fast: bool,
+    /// Exact clean lifecycle consumed to DIRTY immediately before activation.
+    verified_clean_lifecycle: Option<crate::clean_close::CleanCloseLifecycle>,
     /// Walk plan counts (full or suffix-adjusted under a verified checkpoint).
     structural_counts: [u64; STRUCTURAL_TABLE_COUNT],
     /// Full table lens from the immutable snapshot (for below-S count verification).
@@ -700,6 +766,71 @@ impl StructuralEvidenceOpen for RedbStore {
         let additive_structural_counts = snapshot.additive_structural_counts;
         let mut structural_counts = snapshot.structural_counts;
         let mut structural_total = snapshot.structural_total;
+        let verified_clean_lifecycle = self.shared.verified_clean_close_lifecycle(
+            &transaction,
+            database_id,
+            snapshot.retained_metadata.history_incarnation(),
+        )?;
+        if let Some(lifecycle) = verified_clean_lifecycle {
+            // The binding verifier already checked every fixed meta/catalog
+            // root plus every active query-module pointer and body. The
+            // remaining startup proof walks only the bounded contract catalog;
+            // population rows are validated locally when read.
+            self.shared.set_startup_validation_clean(false);
+            structural_counts = [0; STRUCTURAL_TABLE_COUNT];
+            structural_counts[0] = full_structural_counts[0];
+            structural_counts[1] = full_structural_counts[1];
+            structural_counts[2] = full_structural_counts[2];
+            let additive_structural_counts = [0; ADDITIVE_STRUCTURAL_TABLE_COUNT];
+            structural_total = structural_counts.iter().try_fold(1_u64, |total, count| {
+                total.checked_add(*count).ok_or_else(limit_exceeded)
+            })?;
+            let binding_bundles = collect_bundle_bindings(&transaction)?;
+            return Ok(Self::Session {
+                shared: Arc::clone(&self.shared),
+                lease: Some(lease),
+                durable_commit_epoch,
+                database_id,
+                open_session_id,
+                retained_metadata: snapshot.retained_metadata,
+                inputs,
+                clean_close_fast: true,
+                verified_clean_lifecycle: Some(lifecycle),
+                structural_counts,
+                full_structural_counts,
+                additive_structural_counts,
+                structural_total,
+                next_structural: StructuralEvidenceCursor::start(database_id, open_session_id),
+                next_historical: HistoricalEvidenceCursor::start(database_id, open_session_id),
+                last_historical_key: None,
+                structural_finished: false,
+                historical_finished: false,
+                authoritative_finding_seen: false,
+                any_finding_seen: false,
+                saw_v1_index: false,
+                validation_read: Some(transaction),
+                historical_tables: None,
+                structural_cursors: None,
+                command_audits: BTreeMap::new(),
+                command_audit_bytes: 0,
+                command_capsules: BTreeMap::new(),
+                embedded_command_authority: BTreeSet::new(),
+                command_cache_built: false,
+                publication_audits: None,
+                binding_bundles,
+                entity_chains: None,
+                reactive_publication_audit_decodes: 0,
+                pending_entity_orphan_findings: VecDeque::new(),
+                historical_plan: None,
+                checkpoint: None,
+                sampled_window_rows_inspected: 0,
+                checkpoint_verified: false,
+                checkpoint_ignored_reason: None,
+                walked_suffix_counts: [0; STRUCTURAL_TABLE_COUNT],
+                walked_prefix_counts: [0; STRUCTURAL_TABLE_COUNT],
+                terminal_execution_failure_rows: 0,
+            });
+        }
         // Re-validate retention watermark bindings (never advance). Verify the
         // tombstone chain covers [1, watermark] when pruned history exists —
         // against the rooting registry digest RECORDED in the watermark
@@ -809,6 +940,8 @@ impl StructuralEvidenceOpen for RedbStore {
             open_session_id,
             retained_metadata: snapshot.retained_metadata,
             inputs,
+            clean_close_fast: false,
+            verified_clean_lifecycle: None,
             structural_counts,
             full_structural_counts,
             additive_structural_counts,
@@ -962,19 +1095,14 @@ impl StructuralEvidenceSession for RedbStructuralEvidenceSession {
         self.ensure_historical_read()?;
         if self.historical_plan.is_none() {
             let transaction = self.validation_read.as_ref().ok_or_else(invariant)?;
-            let plan = build_historical_evidence_plan(transaction, &self.inputs)?;
+            let plan = if self.clean_close_fast {
+                build_clean_close_historical_evidence_plan(transaction)?
+            } else {
+                build_historical_evidence_plan(transaction, &self.inputs)?
+            };
             self.historical_plan = Some(plan);
         }
         let requested = usize::try_from(limit.get()).map_err(|_| limit_exceeded())?;
-        {
-            let plan = self.historical_plan.as_ref().ok_or_else(invariant)?;
-            if plan.next_index >= plan.entries.len() {
-                self.historical_finished = true;
-                return Ok(HistoricalEvidencePage::ExactEnd(
-                    RedbHistoricalEvidenceEnd { cursor },
-                ));
-            }
-        }
         let transaction = self.validation_read.as_ref().ok_or_else(invariant)?;
         let materialization_tables = self.historical_tables.as_ref().ok_or_else(invariant)?;
         let mut evidence = Vec::new();
@@ -984,13 +1112,25 @@ impl StructuralEvidenceSession for RedbStructuralEvidenceSession {
         let mut migration_instruction_bytes = 0usize;
         let mut last_key = self.last_historical_key.clone();
         let plan = self.historical_plan.as_mut().ok_or_else(invariant)?;
-        while evidence.len() < requested && plan.next_index < plan.entries.len() {
-            let order_key = plan.entries[plan.next_index].0.clone();
-            let item = materialize_historical_evidence(
-                transaction,
-                materialization_tables,
-                &plan.entries[plan.next_index].1,
-            )?;
+        let mut exhausted = false;
+        while evidence.len() < requested {
+            let Some(next_item) = plan.next(transaction, materialization_tables)? else {
+                exhausted = true;
+                break;
+            };
+            let PendingHistoricalEvidence {
+                order_key,
+                evidence: item,
+            } = next_item;
+            if let Some(prior) = last_key.as_ref() {
+                if prior > &order_key {
+                    return Err(invariant());
+                }
+                if prior == &order_key {
+                    // Preserve the old BTreeMap's order-key deduplication.
+                    continue;
+                }
+            }
             let next_bytes = bytes
                 .checked_add(historical_semantic_bytes(&item)?)
                 .ok_or_else(limit_exceeded)?;
@@ -998,6 +1138,10 @@ impl StructuralEvidenceSession for RedbStructuralEvidenceSession {
                 if evidence.is_empty() {
                     return Err(limit_exceeded());
                 }
+                plan.pending = Some(PendingHistoricalEvidence {
+                    order_key,
+                    evidence: item,
+                });
                 break;
             }
             if let HistoricalSemanticEvidence::IndexMigrationRow(row) = &item {
@@ -1015,6 +1159,10 @@ impl StructuralEvidenceSession for RedbStructuralEvidenceSession {
                     if evidence.is_empty() {
                         return Err(limit_exceeded());
                     }
+                    plan.pending = Some(PendingHistoricalEvidence {
+                        order_key,
+                        evidence: item,
+                    });
                     break;
                 }
                 migration_rows = next_rows;
@@ -1030,9 +1178,11 @@ impl StructuralEvidenceSession for RedbStructuralEvidenceSession {
                 self.saw_v1_index = true;
             }
             evidence.push(item);
-            plan.next_index = plan.next_index.checked_add(1).ok_or_else(limit_exceeded)?;
         }
         if evidence.is_empty() {
+            if !exhausted {
+                return Err(invariant());
+            }
             self.historical_finished = true;
             return Ok(HistoricalEvidencePage::ExactEnd(
                 RedbHistoricalEvidenceEnd { cursor },
@@ -1144,7 +1294,7 @@ impl StructuralEvidenceSession for RedbStructuralEvidenceSession {
             // validation session produced ZERO findings of ANY scope. A finding
             // of any severity (authoritative, outbox, projection, sampled)
             // vetoes the write so the fast path can never silence it.
-            if !self.any_finding_seen {
+            if !self.clean_close_fast && !self.any_finding_seen {
                 // Seed the terminal execution-failure census from THIS walk
                 // before the gate opens. The census and the write permission are
                 // established by the same statement pair, so no checkpoint can
@@ -1168,6 +1318,14 @@ impl StructuralEvidenceSession for RedbStructuralEvidenceSession {
                     self.shared.note_checkpoint_write_failure();
                 }
             }
+            self.shared.advance_dirty_lifecycle_before_activation(
+                self.database_id,
+                self.retained_metadata.history_incarnation(),
+                self.verified_clean_lifecycle.take(),
+            )?;
+            self.shared
+                .bounded_clean_startup
+                .store(self.clean_close_fast, Ordering::Release);
             drop(lease);
             Ok(StructuralOpenOutcome::Clean(
                 StructurallyOpened::from_finished_session(
@@ -1280,6 +1438,11 @@ impl RedbStructuralEvidenceSession {
         if counts != self.full_structural_counts {
             return Err(corrupt());
         }
+        if self.clean_close_fast {
+            // Redb table lengths are metadata reads. They prove the immutable
+            // snapshot did not change without walking any population table.
+            return Ok(());
+        }
         if self.checkpoint.is_none() && counts != self.structural_counts {
             return Err(corrupt());
         }
@@ -1361,6 +1524,15 @@ impl RedbStructuralEvidenceSession {
     #[must_use]
     pub fn checkpoint_verified(&self) -> bool {
         self.checkpoint_verified
+    }
+
+    /// Test/benchmark observability: whether a verified clean-close lifecycle
+    /// selected the bounded readiness path. This is observation only and cannot
+    /// select startup behavior.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn clean_close_fast_path(&self) -> bool {
+        self.clean_close_fast
     }
 
     /// Test observability: rows actually inspected by deterministic sample windows.
@@ -1603,6 +1775,9 @@ impl RedbStructuralEvidenceSession {
     ) -> Result<Option<StructuralFinding>, StorageError> {
         // Positions are always requested in strictly ascending order by the page loop.
         if position == 0 {
+            if self.clean_close_fast {
+                return Ok(None);
+            }
             // Allocator continuity and the later command/audit phases need the
             // same exact command graph. Build it once (suffix-only under a
             // validated checkpoint) and share it instead of decoding every
@@ -1651,6 +1826,16 @@ impl RedbStructuralEvidenceSession {
         if phase == 0 {
             let key = std::str::from_utf8(&key).map_err(|_| corrupt())?;
             return Ok(inspect_meta_row(key, &value, self.database_id));
+        }
+        if self.clean_close_fast && phase == 1 {
+            return inspect_clean_close_bundle_row(&key, &value);
+        }
+        if self.clean_close_fast && phase == 2 {
+            return inspect_clean_close_active_catalog_row(
+                self.validation_read.as_ref().ok_or_else(invariant)?,
+                &key,
+                &value,
+            );
         }
         if phase == 5 {
             return self.inspect_entity_row_with_chains(&key, &value);
@@ -2146,6 +2331,21 @@ impl RedbStructuralEvidenceSession {
             };
             if phase >= STARTUP_TABLE_COUNT {
                 return Err(invariant());
+            }
+            let configured_count = self
+                .structural_counts
+                .iter()
+                .chain(self.additive_structural_counts.iter())
+                .nth(phase)
+                .copied()
+                .ok_or_else(invariant)?;
+            if self.clean_close_fast && configured_count == 0 {
+                let cursors = self.structural_cursors.as_mut().ok_or_else(invariant)?;
+                cursors.meta = None;
+                cursors.bytes = None;
+                cursors.phase = cursors.phase.checked_add(1).ok_or_else(invariant)?;
+                cursors.consumed_in_phase = 0;
+                continue;
             }
             if phase == 0 {
                 let need_open = self
@@ -3298,6 +3498,10 @@ fn inspect_meta_row(key: &str, value: &[u8], database_id: DatabaseId) -> Option<
         META_CHANGELOG_V2_ROTATION_RECEIPT => {
             riffdb_storage_api::decode_changelog_v2_rotation_receipt_v1(value).is_ok()
         }
+        // Lifecycle evidence is optional to the complete validator. Malformed
+        // bytes merely disqualify the fast path and are reset after complete
+        // validation (ADR-0157 section 4).
+        META_CLEAN_CLOSE_LIFECYCLE => true,
         _ => false,
     };
     (!valid).then(|| authoritative(StructuralFindingCode::MalformedRecord))
@@ -3328,6 +3532,39 @@ fn inspect_bundle_row(
         (!bundle_has_activation_cached(transaction, publication_audits, &bundle)?)
             .then(|| authoritative(StructuralFindingCode::MissingCrossLink)),
     )
+}
+
+fn inspect_clean_close_bundle_row(
+    key: &[u8],
+    value: &[u8],
+) -> Result<Option<StructuralFinding>, StorageError> {
+    let Ok((lineage, version)) = keys::decode_contract_bundle_key(key) else {
+        return Ok(Some(authoritative(StructuralFindingCode::MalformedRecord)));
+    };
+    let bundle = match decoded(codec::decode_contract_bundle_v1(value)) {
+        Ok(bundle) => bundle,
+        Err(code) => return Ok(Some(authoritative(code))),
+    };
+    Ok((bundle.lineage() != &lineage
+        || bundle.contract_version() != version
+        || hash_contract_bundle(bundle.canonical_bytes()) != bundle.bundle_hash())
+    .then(|| authoritative(StructuralFindingCode::CrossLinkMismatch)))
+}
+
+fn inspect_clean_close_active_catalog_row(
+    transaction: &ReadTransaction,
+    key: &[u8],
+    value: &[u8],
+) -> Result<Option<StructuralFinding>, StorageError> {
+    if key != CATALOG_ACTIVE_KEY {
+        return Ok(Some(authoritative(StructuralFindingCode::MalformedRecord)));
+    }
+    let active = match decoded(codec::decode_active_catalog_pointer_v1(value)) {
+        Ok(active) => active,
+        Err(code) => return Ok(Some(authoritative(code))),
+    };
+    Ok((!bundle_pointer_exists(transaction, &active)?)
+        .then(|| authoritative(StructuralFindingCode::MissingCrossLink)))
 }
 
 fn inspect_active_row(
@@ -4321,6 +4558,7 @@ fn inspect_audit_by_request_row(
 }
 
 const MAX_STARTUP_EVIDENCE_INDEX_BYTES: usize = 512 * 1024 * 1024;
+const HISTORICAL_GROUP_PREFETCH_ITEMS: usize = 500;
 
 fn build_historical_evidence_plan(
     transaction: &ReadTransaction,
@@ -4329,32 +4567,134 @@ fn build_historical_evidence_plan(
     let mut ordered: std::collections::BTreeMap<Vec<u8>, EvidenceLocator> =
         std::collections::BTreeMap::new();
     let mut index_bytes = 0usize;
-    let mut insert = |order_key: Vec<u8>, locator: EvidenceLocator| -> Result<(), StorageError> {
-        if ordered.contains_key(&order_key) {
+    {
+        let mut insert =
+            |order_key: Vec<u8>, locator: EvidenceLocator| -> Result<(), StorageError> {
+                if ordered.contains_key(&order_key) {
+                    return Ok(());
+                }
+                let charge = order_key
+                    .len()
+                    .checked_add(locator.retained_bytes())
+                    .ok_or_else(limit_exceeded)?;
+                index_bytes = index_bytes.checked_add(charge).ok_or_else(limit_exceeded)?;
+                if index_bytes > MAX_STARTUP_EVIDENCE_INDEX_BYTES {
+                    return Err(limit_exceeded());
+                }
+                ordered.insert(order_key, locator);
+                Ok(())
+            };
+
+        collect_bundle_locators(transaction, &mut insert)?;
+        collect_contract_migration_edge_locators(transaction, &mut insert)?;
+        collect_plan_locators(transaction, &mut insert)?;
+        collect_active_catalog_locator(transaction, &mut insert)?;
+    }
+
+    let mut groups: std::collections::BTreeMap<Vec<u8>, PersistedEvidenceGroupSources> =
+        std::collections::BTreeMap::new();
+    collect_persisted_key_groups(transaction, &mut |order_prefix, source| {
+        if let Some(sources) = groups.get_mut(&order_prefix) {
+            source.add_to(sources);
             return Ok(());
         }
-        let charge = order_key
+        let charge = order_prefix
             .len()
-            .checked_add(locator.retained_bytes())
+            .checked_add(PersistedEvidenceGroupSources::default().retained_bytes())
             .ok_or_else(limit_exceeded)?;
         index_bytes = index_bytes.checked_add(charge).ok_or_else(limit_exceeded)?;
         if index_bytes > MAX_STARTUP_EVIDENCE_INDEX_BYTES {
             return Err(limit_exceeded());
         }
-        ordered.insert(order_key, locator);
+        let mut sources = PersistedEvidenceGroupSources::default();
+        source.add_to(&mut sources);
+        groups.insert(order_prefix, sources);
         Ok(())
-    };
+    })?;
 
-    collect_bundle_locators(transaction, &mut insert)?;
-    collect_contract_migration_edge_locators(transaction, &mut insert)?;
-    collect_plan_locators(transaction, &mut insert)?;
-    collect_active_catalog_locator(transaction, &mut insert)?;
-    collect_persisted_key_locators(transaction, &mut insert)?;
-    collect_capability_partition_locators(transaction, inputs, &mut insert)?;
+    {
+        let mut insert =
+            |order_key: Vec<u8>, locator: EvidenceLocator| -> Result<(), StorageError> {
+                if ordered.contains_key(&order_key) {
+                    return Ok(());
+                }
+                let charge = order_key
+                    .len()
+                    .checked_add(locator.retained_bytes())
+                    .ok_or_else(limit_exceeded)?;
+                index_bytes = index_bytes.checked_add(charge).ok_or_else(limit_exceeded)?;
+                if index_bytes > MAX_STARTUP_EVIDENCE_INDEX_BYTES {
+                    return Err(limit_exceeded());
+                }
+                ordered.insert(order_key, locator);
+                Ok(())
+            };
+        collect_capability_partition_locators(transaction, inputs, &mut insert)?;
+    }
+
+    let split = ordered
+        .keys()
+        .position(|key| key.first().is_some_and(|tag| *tag >= 0x05))
+        .unwrap_or(ordered.len());
+    let mut entries = ordered.into_iter().collect::<Vec<_>>();
+    let suffix_entries = entries.split_off(split);
+    let prefix_entries = entries;
 
     Ok(HistoricalEvidencePlan {
-        entries: ordered.into_iter().collect(),
-        next_index: 0,
+        prefix_entries,
+        next_prefix: 0,
+        persisted_groups: groups
+            .into_iter()
+            .map(|(order_prefix, sources)| PersistedEvidenceGroup {
+                order_prefix,
+                sources,
+            })
+            .collect(),
+        next_group: 0,
+        group_cursor: None,
+        suffix_entries,
+        next_suffix: 0,
+        pending: None,
+        retained_bytes: index_bytes,
+    })
+}
+
+fn build_clean_close_historical_evidence_plan(
+    transaction: &ReadTransaction,
+) -> Result<HistoricalEvidencePlan, StorageError> {
+    let mut ordered = BTreeMap::<Vec<u8>, EvidenceLocator>::new();
+    let mut index_bytes = 0_usize;
+    {
+        let mut insert =
+            |order_key: Vec<u8>, locator: EvidenceLocator| -> Result<(), StorageError> {
+                if ordered.contains_key(&order_key) {
+                    return Ok(());
+                }
+                let charge = order_key
+                    .len()
+                    .checked_add(locator.retained_bytes())
+                    .ok_or_else(limit_exceeded)?;
+                index_bytes = index_bytes.checked_add(charge).ok_or_else(limit_exceeded)?;
+                if index_bytes > MAX_STARTUP_EVIDENCE_INDEX_BYTES {
+                    return Err(limit_exceeded());
+                }
+                ordered.insert(order_key, locator);
+                Ok(())
+            };
+        collect_bundle_locators(transaction, &mut insert)?;
+        collect_contract_migration_edge_locators(transaction, &mut insert)?;
+        collect_active_catalog_locator(transaction, &mut insert)?;
+    }
+    Ok(HistoricalEvidencePlan {
+        prefix_entries: ordered.into_iter().collect(),
+        next_prefix: 0,
+        persisted_groups: Vec::new(),
+        next_group: 0,
+        group_cursor: None,
+        suffix_entries: Vec::new(),
+        next_suffix: 0,
+        pending: None,
+        retained_bytes: index_bytes,
     })
 }
 
@@ -4516,71 +4856,129 @@ fn collect_active_catalog_locator(
     )
 }
 
-fn collect_persisted_key_locators(
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum PersistedEvidenceGroupSource {
+    Entity,
+    IndexRow,
+    LegacyEpoch,
+    PartitionEpoch,
+}
+
+impl PersistedEvidenceGroupSource {
+    const fn add_to(self, sources: &mut PersistedEvidenceGroupSources) {
+        match self {
+            Self::Entity => sources.entities = true,
+            Self::IndexRow => sources.index_rows = true,
+            Self::LegacyEpoch => sources.legacy_epochs = true,
+            Self::PartitionEpoch => sources.partition_epochs = true,
+        }
+    }
+}
+
+fn persisted_evidence_group(
+    evidence: &HistoricalSemanticEvidence,
+) -> Result<(Vec<u8>, PersistedEvidenceGroupSource), StorageError> {
+    let (suffix_len, source) = match evidence {
+        HistoricalSemanticEvidence::PersistedKey(persisted) => match persisted.key() {
+            riffdb_storage_api::IrOpaquePersistedKeyV1::Entity { key, .. } => {
+                (key.as_bytes().len(), PersistedEvidenceGroupSource::Entity)
+            }
+            riffdb_storage_api::IrOpaquePersistedKeyV1::IndexRangePrefix(prefix) => (
+                prefix.as_bytes().len(),
+                PersistedEvidenceGroupSource::LegacyEpoch,
+            ),
+            riffdb_storage_api::IrOpaquePersistedKeyV1::PartitionIndex(target) => (
+                target.partition_key().as_bytes().len(),
+                PersistedEvidenceGroupSource::PartitionEpoch,
+            ),
+        },
+        HistoricalSemanticEvidence::IndexMigrationRow(row) => (
+            row.physical_key().as_bytes().len(),
+            PersistedEvidenceGroupSource::IndexRow,
+        ),
+        _ => return Err(invariant()),
+    };
+    let mut order_prefix = historical_order_key(evidence);
+    let prefix_len = order_prefix
+        .len()
+        .checked_sub(suffix_len)
+        .ok_or_else(invariant)?;
+    order_prefix.truncate(prefix_len);
+    Ok((order_prefix, source))
+}
+
+fn entity_historical_evidence(
+    key: &[u8],
+    value: &[u8],
+) -> Result<HistoricalSemanticEvidence, StorageError> {
+    let physical = keys::decode_entity_key(key).map_err(|_| corrupt())?;
+    let record = decoded(codec::decode_entity_record_v1(value)).map_err(|_| corrupt())?;
+    if record.target().key() != &physical {
+        return Err(corrupt());
+    }
+    Ok(HistoricalSemanticEvidence::PersistedKey(
+        HistoricalPersistedKeyEvidenceV1::from_entity(&record),
+    ))
+}
+
+fn index_historical_evidence(
+    key: &[u8],
+    value: &[u8],
+) -> Result<HistoricalSemanticEvidence, StorageError> {
+    let physical = keys::decode_index_entry_key(key).map_err(|_| corrupt())?;
+    codec::decode_index_migration_row(&physical, value)
+        .map(HistoricalSemanticEvidence::IndexMigrationRow)
+}
+
+fn epoch_historical_evidence(
+    key: &[u8],
+    value: &[u8],
+) -> Result<HistoricalSemanticEvidence, StorageError> {
+    if let Ok(record) = decoded(codec::decode_legacy_index_epoch_v1(value)) {
+        let physical = keys::decode_index_range_prefix_key(key).map_err(|_| corrupt())?;
+        if record.target() != &physical {
+            return Err(corrupt());
+        }
+        return Ok(HistoricalSemanticEvidence::PersistedKey(
+            HistoricalPersistedKeyEvidenceV1::from_legacy_index_epoch(&record),
+        ));
+    }
+    let physical = keys::decode_partition_index_key(key).map_err(|_| corrupt())?;
+    let record = decoded(codec::decode_index_epoch_v1(value)).map_err(|_| corrupt())?;
+    if record.target() != &physical {
+        return Err(corrupt());
+    }
+    Ok(HistoricalSemanticEvidence::PersistedKey(
+        HistoricalPersistedKeyEvidenceV1::from_index_epoch(&record),
+    ))
+}
+
+fn collect_persisted_key_groups(
     transaction: &ReadTransaction,
-    insert: &mut dyn FnMut(Vec<u8>, EvidenceLocator) -> Result<(), StorageError>,
+    insert: &mut dyn FnMut(Vec<u8>, PersistedEvidenceGroupSource) -> Result<(), StorageError>,
 ) -> Result<(), StorageError> {
     let entities = transaction.open_table(ENTITIES).map_err(table_error)?;
     for entry in entities.iter().map_err(precommit_storage_error)? {
         let (key, value) = entry.map_err(precommit_storage_error)?;
-        let physical = keys::decode_entity_key(key.value()).map_err(|_| corrupt())?;
-        let record =
-            decoded(codec::decode_entity_record_v1(value.value())).map_err(|_| corrupt())?;
-        if record.target().key() != &physical {
-            return Err(corrupt());
-        }
-        let evidence = HistoricalSemanticEvidence::PersistedKey(
-            HistoricalPersistedKeyEvidenceV1::from_entity(&record),
-        );
-        insert(
-            historical_order_key(&evidence),
-            EvidenceLocator::PersistedKeyEntity(key.value().to_vec()),
-        )?;
+        let evidence = entity_historical_evidence(key.value(), value.value())?;
+        let (order_prefix, source) = persisted_evidence_group(&evidence)?;
+        insert(order_prefix, source)?;
     }
     let indexes = transaction
         .open_table(SECONDARY_INDEXES)
         .map_err(table_error)?;
     for entry in indexes.iter().map_err(precommit_storage_error)? {
         let (key, value) = entry.map_err(precommit_storage_error)?;
-        let physical = keys::decode_index_entry_key(key.value()).map_err(|_| corrupt())?;
-        let record = codec::decode_index_migration_row(&physical, value.value())?;
-        let evidence = HistoricalSemanticEvidence::IndexMigrationRow(record);
-        insert(
-            historical_order_key(&evidence),
-            EvidenceLocator::IndexMigration(key.value().to_vec()),
-        )?;
+        let evidence = index_historical_evidence(key.value(), value.value())?;
+        let (order_prefix, source) = persisted_evidence_group(&evidence)?;
+        insert(order_prefix, source)?;
     }
     let epochs = transaction.open_table(INDEX_EPOCHS).map_err(table_error)?;
     for entry in epochs.iter().map_err(precommit_storage_error)? {
         let (key, value) = entry.map_err(precommit_storage_error)?;
-        if let Ok(record) = decoded(codec::decode_legacy_index_epoch_v1(value.value())) {
-            let physical =
-                keys::decode_index_range_prefix_key(key.value()).map_err(|_| corrupt())?;
-            if record.target() != &physical {
-                return Err(corrupt());
-            }
-            let evidence = HistoricalSemanticEvidence::PersistedKey(
-                HistoricalPersistedKeyEvidenceV1::from_legacy_index_epoch(&record),
-            );
-            insert(
-                historical_order_key(&evidence),
-                EvidenceLocator::PersistedKeyEpoch(key.value().to_vec()),
-            )?;
-        } else {
-            let physical = keys::decode_partition_index_key(key.value()).map_err(|_| corrupt())?;
-            let record =
-                decoded(codec::decode_index_epoch_v1(value.value())).map_err(|_| corrupt())?;
-            if record.target() != &physical {
-                return Err(corrupt());
-            }
-            let evidence = HistoricalSemanticEvidence::PersistedKey(
-                HistoricalPersistedKeyEvidenceV1::from_index_epoch(&record),
-            );
-            insert(
-                historical_order_key(&evidence),
-                EvidenceLocator::PersistedKeyEpoch(key.value().to_vec()),
-            )?;
-        }
+        let evidence = epoch_historical_evidence(key.value(), value.value())?;
+        let (order_prefix, source) = persisted_evidence_group(&evidence)?;
+        insert(order_prefix, source)?;
     }
     Ok(())
 }
@@ -4651,6 +5049,283 @@ impl HistoricalMaterializationTables {
     }
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "private evidence iterator keeps each bounded cursor and decoder explicit"
+)]
+fn next_matching_group_row(
+    table: &ReadOnlyTable<&'static [u8], &'static [u8]>,
+    after: &mut Option<Vec<u8>>,
+    exhausted: &mut bool,
+    order_prefix: &[u8],
+    expected_source: PersistedEvidenceGroupSource,
+    prior: &mut Option<Vec<u8>>,
+    buffered: &mut VecDeque<PendingHistoricalEvidence>,
+    decode: fn(&[u8], &[u8]) -> Result<HistoricalSemanticEvidence, StorageError>,
+) -> Result<Option<PendingHistoricalEvidence>, StorageError> {
+    if let Some(item) = buffered.pop_front() {
+        return Ok(Some(item));
+    }
+    if *exhausted {
+        return Ok(None);
+    }
+    let physical_prefix = match expected_source {
+        PersistedEvidenceGroupSource::Entity => Some(ENTITY_KEY_V1_PREFIX),
+        PersistedEvidenceGroupSource::IndexRow | PersistedEvidenceGroupSource::LegacyEpoch => {
+            Some(INDEX_ENTRY_KEY_V1_PREFIX)
+        }
+        PersistedEvidenceGroupSource::PartitionEpoch => None,
+    }
+    .map(|namespace| {
+        let owner_start = order_prefix.len().checked_sub(8).ok_or_else(invariant)?;
+        let owner_end = owner_start.checked_add(4).ok_or_else(invariant)?;
+        let owner = order_prefix
+            .get(owner_start..owner_end)
+            .ok_or_else(invariant)?;
+        let mut prefix = Vec::with_capacity(namespace.len() + owner.len());
+        prefix.extend_from_slice(&namespace);
+        prefix.extend_from_slice(owner);
+        Ok::<_, StorageError>(prefix)
+    })
+    .transpose()?;
+    let physical_end = physical_prefix.as_ref().map(|prefix| {
+        let mut end = prefix.clone();
+        for byte in end.iter_mut().rev() {
+            if *byte != u8::MAX {
+                *byte = byte.saturating_add(1);
+                return Ok(end);
+            }
+            *byte = 0;
+        }
+        Err(invariant())
+    });
+    let physical_end = physical_end.transpose()?;
+    let lower = after.as_ref().map_or_else(
+        || physical_prefix.as_deref().map_or(Unbounded, Included),
+        |key| Excluded(key.as_slice()),
+    );
+    let upper = physical_end.as_deref().map_or(Unbounded, Excluded);
+    let mut rows = table
+        .range::<&[u8]>((lower, upper))
+        .map_err(precommit_storage_error)?;
+    let mut stopped_early = false;
+    for entry in &mut rows {
+        let (key, value) = entry.map_err(precommit_storage_error)?;
+        let evidence = decode(key.value(), value.value())?;
+        let (actual_prefix, source) = persisted_evidence_group(&evidence)?;
+        if source != expected_source || actual_prefix != order_prefix {
+            *after = Some(key.value().to_vec());
+            continue;
+        }
+        let order_key = historical_order_key(&evidence);
+        // This is the load-bearing ordering proof: once schema, kind, owner,
+        // and raw-key length are fixed, redb's bytewise table order must agree
+        // with the historical key. Refuse an implementation drift rather than
+        // silently emit a reordered startup stream.
+        if prior.as_ref().is_some_and(|prior| prior >= &order_key) {
+            return Err(invariant());
+        }
+        *after = Some(key.value().to_vec());
+        *prior = Some(order_key.clone());
+        buffered.push_back(PendingHistoricalEvidence {
+            order_key,
+            evidence,
+        });
+        if buffered.len() >= HISTORICAL_GROUP_PREFETCH_ITEMS {
+            stopped_early = true;
+            break;
+        }
+    }
+    if !stopped_early {
+        *exhausted = true;
+    }
+    Ok(buffered.pop_front())
+}
+
+impl PersistedEvidenceGroupCursor {
+    fn next(
+        &mut self,
+        order_prefix: &[u8],
+        tables: &HistoricalMaterializationTables,
+    ) -> Result<Option<PendingHistoricalEvidence>, StorageError> {
+        match self {
+            Self::Entities {
+                after,
+                exhausted,
+                prior,
+                buffered,
+            } => next_matching_group_row(
+                &tables.entities,
+                after,
+                exhausted,
+                order_prefix,
+                PersistedEvidenceGroupSource::Entity,
+                prior,
+                buffered,
+                entity_historical_evidence,
+            ),
+            Self::PartitionEpochs {
+                after,
+                exhausted,
+                prior,
+                buffered,
+            } => next_matching_group_row(
+                &tables.epochs,
+                after,
+                exhausted,
+                order_prefix,
+                PersistedEvidenceGroupSource::PartitionEpoch,
+                prior,
+                buffered,
+                epoch_historical_evidence,
+            ),
+            Self::IndexKeys {
+                after_index,
+                index_exhausted,
+                after_epoch,
+                epoch_exhausted,
+                pending_index,
+                pending_epoch,
+                prior_index,
+                prior_epoch,
+                buffered_index,
+                buffered_epoch,
+            } => {
+                if pending_index.is_none() && (!*index_exhausted || !buffered_index.is_empty()) {
+                    *pending_index = next_matching_group_row(
+                        &tables.indexes,
+                        after_index,
+                        index_exhausted,
+                        order_prefix,
+                        PersistedEvidenceGroupSource::IndexRow,
+                        prior_index,
+                        buffered_index,
+                        index_historical_evidence,
+                    )?
+                    .map(Box::new);
+                }
+                if pending_epoch.is_none() && (!*epoch_exhausted || !buffered_epoch.is_empty()) {
+                    *pending_epoch = next_matching_group_row(
+                        &tables.epochs,
+                        after_epoch,
+                        epoch_exhausted,
+                        order_prefix,
+                        PersistedEvidenceGroupSource::LegacyEpoch,
+                        prior_epoch,
+                        buffered_epoch,
+                        epoch_historical_evidence,
+                    )?
+                    .map(Box::new);
+                }
+                match (
+                    pending_index.as_ref().map(|item| item.order_key.as_slice()),
+                    pending_epoch.as_ref().map(|item| item.order_key.as_slice()),
+                ) {
+                    (None, None) => Ok(None),
+                    (Some(_), None) => Ok(pending_index.take().map(|item| *item)),
+                    (None, Some(_)) => Ok(pending_epoch.take().map(|item| *item)),
+                    (Some(index_key), Some(epoch_key)) if index_key <= epoch_key => {
+                        if index_key == epoch_key {
+                            // The old BTreeMap retained the SECONDARY_INDEXES
+                            // locator inserted before INDEX_EPOCHS on a collision.
+                            let _ = pending_epoch.take();
+                        }
+                        Ok(pending_index.take().map(|item| *item))
+                    }
+                    (Some(_), Some(_)) => Ok(pending_epoch.take().map(|item| *item)),
+                }
+            }
+        }
+    }
+}
+
+impl HistoricalEvidencePlan {
+    fn open_group_cursor(
+        group: &PersistedEvidenceGroup,
+    ) -> Result<PersistedEvidenceGroupCursor, StorageError> {
+        let sources = group.sources;
+        if sources.entities
+            && !sources.index_rows
+            && !sources.legacy_epochs
+            && !sources.partition_epochs
+        {
+            return Ok(PersistedEvidenceGroupCursor::Entities {
+                after: None,
+                exhausted: false,
+                prior: None,
+                buffered: VecDeque::new(),
+            });
+        }
+        if sources.partition_epochs
+            && !sources.entities
+            && !sources.index_rows
+            && !sources.legacy_epochs
+        {
+            return Ok(PersistedEvidenceGroupCursor::PartitionEpochs {
+                after: None,
+                exhausted: false,
+                prior: None,
+                buffered: VecDeque::new(),
+            });
+        }
+        if !sources.entities && !sources.partition_epochs {
+            return Ok(PersistedEvidenceGroupCursor::IndexKeys {
+                after_index: None,
+                index_exhausted: !sources.index_rows,
+                after_epoch: None,
+                epoch_exhausted: !sources.legacy_epochs,
+                pending_index: None,
+                pending_epoch: None,
+                prior_index: None,
+                prior_epoch: None,
+                buffered_index: VecDeque::new(),
+                buffered_epoch: VecDeque::new(),
+            });
+        }
+        Err(invariant())
+    }
+
+    fn next(
+        &mut self,
+        transaction: &ReadTransaction,
+        tables: &HistoricalMaterializationTables,
+    ) -> Result<Option<PendingHistoricalEvidence>, StorageError> {
+        if let Some(pending) = self.pending.take() {
+            return Ok(Some(pending));
+        }
+        if let Some((order_key, locator)) = self.prefix_entries.get(self.next_prefix) {
+            let evidence = materialize_historical_evidence(transaction, tables, locator)?;
+            let item = PendingHistoricalEvidence {
+                order_key: order_key.clone(),
+                evidence,
+            };
+            self.next_prefix = self.next_prefix.checked_add(1).ok_or_else(limit_exceeded)?;
+            return Ok(Some(item));
+        }
+        while let Some(group) = self.persisted_groups.get(self.next_group) {
+            if self.group_cursor.is_none() {
+                self.group_cursor = Some(Self::open_group_cursor(group)?);
+            }
+            let cursor = self.group_cursor.as_mut().ok_or_else(invariant)?;
+            if let Some(item) = cursor.next(&group.order_prefix, tables)? {
+                return Ok(Some(item));
+            }
+            self.group_cursor = None;
+            self.next_group = self.next_group.checked_add(1).ok_or_else(limit_exceeded)?;
+        }
+        if let Some((order_key, locator)) = self.suffix_entries.get(self.next_suffix) {
+            let evidence = materialize_historical_evidence(transaction, tables, locator)?;
+            let item = PendingHistoricalEvidence {
+                order_key: order_key.clone(),
+                evidence,
+            };
+            self.next_suffix = self.next_suffix.checked_add(1).ok_or_else(limit_exceeded)?;
+            return Ok(Some(item));
+        }
+        Ok(None)
+    }
+}
+
 fn materialize_historical_evidence(
     transaction: &ReadTransaction,
     tables: &HistoricalMaterializationTables,
@@ -4702,58 +5377,6 @@ fn materialize_historical_evidence(
                     )
                 },
             )))
-        }
-        EvidenceLocator::PersistedKeyEntity(key) => {
-            let value = tables
-                .entities
-                .get(key.as_slice())
-                .map_err(precommit_storage_error)?
-                .ok_or_else(corrupt)?;
-            let physical = keys::decode_entity_key(key).map_err(|_| corrupt())?;
-            let record =
-                decoded(codec::decode_entity_record_v1(value.value())).map_err(|_| corrupt())?;
-            if record.target().key() != &physical {
-                return Err(corrupt());
-            }
-            Ok(HistoricalSemanticEvidence::PersistedKey(
-                HistoricalPersistedKeyEvidenceV1::from_entity(&record),
-            ))
-        }
-        EvidenceLocator::IndexMigration(key) => {
-            let value = tables
-                .indexes
-                .get(key.as_slice())
-                .map_err(precommit_storage_error)?
-                .ok_or_else(corrupt)?;
-            let physical = keys::decode_index_entry_key(key).map_err(|_| corrupt())?;
-            let record = codec::decode_index_migration_row(&physical, value.value())?;
-            Ok(HistoricalSemanticEvidence::IndexMigrationRow(record))
-        }
-        EvidenceLocator::PersistedKeyEpoch(key) => {
-            let value = tables
-                .epochs
-                .get(key.as_slice())
-                .map_err(precommit_storage_error)?
-                .ok_or_else(corrupt)?;
-            if let Ok(record) = decoded(codec::decode_legacy_index_epoch_v1(value.value())) {
-                let physical = keys::decode_index_range_prefix_key(key).map_err(|_| corrupt())?;
-                if record.target() != &physical {
-                    return Err(corrupt());
-                }
-                Ok(HistoricalSemanticEvidence::PersistedKey(
-                    HistoricalPersistedKeyEvidenceV1::from_legacy_index_epoch(&record),
-                ))
-            } else {
-                let physical = keys::decode_partition_index_key(key).map_err(|_| corrupt())?;
-                let record =
-                    decoded(codec::decode_index_epoch_v1(value.value())).map_err(|_| corrupt())?;
-                if record.target() != &physical {
-                    return Err(corrupt());
-                }
-                Ok(HistoricalSemanticEvidence::PersistedKey(
-                    HistoricalPersistedKeyEvidenceV1::from_index_epoch(&record),
-                ))
-            }
         }
         EvidenceLocator::CapabilityPartition {
             capability_id,
@@ -7880,6 +8503,136 @@ contract RedbMigration version 1 {
     }
 
     #[test]
+    fn graceful_clean_close_selects_bounded_startup_and_is_consumed_before_activation() {
+        let path = TestDatabasePath::new("clean-close-bounded-startup");
+        let id = database_id(0x12);
+        let store = initialized_store(&path, id);
+        let mut first = store
+            .begin_structural_evidence(inputs())
+            .expect("begin predecessor full validation");
+        assert!(!first.clean_close_fast);
+        let structural_end = finish_structural(&mut first);
+        let historical_end = finish_historical(&mut first);
+        let StructuralOpenOutcome::Clean(opened) = first
+            .finish(structural_end, historical_end)
+            .expect("finish predecessor full validation")
+        else {
+            panic!("initialized current store must finish cleanly");
+        };
+        let (_, _, _, dormant) = opened.into_parts();
+        let ports = dormant
+            .into_operational_after_catalog_validation()
+            .expect("activate full-validation ports");
+        assert!(!ports.clean_close_fast_startup());
+        ports
+            .write_clean_close_lifecycle()
+            .expect("write final clean lifecycle");
+        let immediate_read = ports
+            .shared
+            .database
+            .begin_read()
+            .expect("immediate proof read");
+        let immediate_meta = immediate_read
+            .open_table(META)
+            .expect("immediate proof meta");
+        let immediate_lifecycle = crate::clean_close::CleanCloseLifecycle::decode(
+            immediate_meta
+                .get(META_CLEAN_CLOSE_LIFECYCLE)
+                .expect("immediate lifecycle read")
+                .expect("immediate lifecycle present")
+                .value(),
+        )
+        .expect("immediate lifecycle decode");
+        drop(immediate_meta);
+        let immediate_header = crate::journal::verify_clean_close_header_digest_with_media(
+            &crate::media::RealJournalMedia,
+            &path.0,
+            id,
+            crate::store::read_commit_tail(&immediate_read).expect("immediate application"),
+            crate::store::read_administration_tail(&immediate_read)
+                .expect("immediate administration"),
+        )
+        .expect("immediate journal proof");
+        let immediate_binding =
+            crate::clean_close::bounded_state_binding_hash(&immediate_read, immediate_header)
+                .expect("immediate bounded proof");
+        assert_eq!(
+            immediate_lifecycle.state(),
+            crate::clean_close::CleanCloseState::Clean(immediate_binding)
+        );
+        drop(immediate_read);
+        drop(ports);
+
+        let reopened = RedbStore::open(&path.0).expect("reopen clean database");
+        let proof_read = reopened.shared.database.begin_read().expect("proof read");
+        let proof_meta = proof_read.open_table(META).expect("proof meta");
+        let proof_encoded = proof_meta
+            .get(META_CLEAN_CLOSE_LIFECYCLE)
+            .expect("proof lifecycle read")
+            .expect("proof lifecycle present");
+        let proof_lifecycle =
+            crate::clean_close::CleanCloseLifecycle::decode(proof_encoded.value())
+                .expect("proof lifecycle decodes");
+        drop(proof_encoded);
+        drop(proof_meta);
+        let proof_header = crate::journal::verify_clean_close_header_digest_with_media(
+            &crate::media::RealJournalMedia,
+            &path.0,
+            id,
+            crate::store::read_commit_tail(&proof_read).expect("application frontier"),
+            crate::store::read_administration_tail(&proof_read).expect("administration frontier"),
+        )
+        .expect("clean journal proof");
+        let proof_binding =
+            crate::clean_close::bounded_state_binding_hash(&proof_read, proof_header)
+                .expect("bounded proof");
+        assert_eq!(
+            proof_lifecycle.state(),
+            crate::clean_close::CleanCloseState::Clean(proof_binding)
+        );
+        drop(proof_read);
+        let mut bounded = reopened
+            .begin_structural_evidence(inputs())
+            .expect("begin bounded clean startup");
+        assert!(bounded.clean_close_fast);
+        assert_eq!(
+            bounded.structural_counts[3..],
+            [0; STRUCTURAL_TABLE_COUNT - 3]
+        );
+        assert_eq!(
+            bounded.additive_structural_counts,
+            [0; ADDITIVE_STRUCTURAL_TABLE_COUNT]
+        );
+        let structural_end = finish_structural(&mut bounded);
+        let historical_end = finish_historical(&mut bounded);
+        let StructuralOpenOutcome::Clean(opened) = bounded
+            .finish(structural_end, historical_end)
+            .expect("consume clean lifecycle")
+        else {
+            panic!("bounded startup must not request migration");
+        };
+        let (_, _, _, dormant) = opened.into_parts();
+        let ports = dormant
+            .into_operational_after_catalog_validation()
+            .expect("activate bounded ports");
+        assert!(ports.clean_close_fast_startup());
+
+        let read = ports.shared.database.begin_read().expect("read lifecycle");
+        let meta = read.open_table(META).expect("meta table");
+        let encoded = meta
+            .get(META_CLEAN_CLOSE_LIFECYCLE)
+            .expect("read lifecycle row")
+            .expect("lifecycle present");
+        let lifecycle = crate::clean_close::CleanCloseLifecycle::decode(encoded.value())
+            .expect("decode consumed lifecycle");
+        assert_eq!(
+            lifecycle.state(),
+            crate::clean_close::CleanCloseState::Dirty
+        );
+        assert_eq!(lifecycle.lifecycle_generation(), 3);
+    }
+
+    #[test]
     fn migration_compare_mismatch_rolls_back_the_complete_catalog_batch() {
         let path = TestDatabasePath::new("migration-compare-mismatch");
         let id = database_id(0x18);
@@ -10242,21 +10995,107 @@ contract RedbMigration version 1 {
         let store = RedbStore::open(path).expect("open");
         let transaction = store.shared.database.begin_read().expect("read");
         let validation = inputs_at(70);
-        let plan = build_historical_evidence_plan(&transaction, &validation).expect("plan");
+        let mut plan = build_historical_evidence_plan(&transaction, &validation).expect("plan");
         let tables = HistoricalMaterializationTables::open(&transaction).expect("tables");
-        plan.entries
-            .into_iter()
-            .map(|(key, locator)| {
-                let evidence = materialize_historical_evidence(&transaction, &tables, &locator)
-                    .expect("materialize");
-                assert_eq!(
-                    key,
-                    historical_order_key(&evidence),
-                    "plan order_key must match materialized evidence"
+        let mut sequence = Vec::new();
+        while let Some(PendingHistoricalEvidence {
+            order_key,
+            evidence,
+        }) = plan.next(&transaction, &tables).expect("materialize")
+        {
+            assert_eq!(
+                order_key,
+                historical_order_key(&evidence),
+                "plan order_key must match materialized evidence"
+            );
+            sequence.push((order_key, evidence));
+        }
+        sequence
+    }
+
+    /// Canonical characterization bytes for one complete historical item.
+    ///
+    /// The order key already contains every field of plans, active-catalog,
+    /// persisted-key, and capability-partition evidence. Payload-bearing
+    /// variants additionally retain their exact canonical bytes here, so one
+    /// digest line pins both the locator order and the materialized item.
+    fn historical_sequence_fixture_line(
+        order_key: &[u8],
+        evidence: &HistoricalSemanticEvidence,
+    ) -> String {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(
+            &u32::try_from(order_key.len())
+                .expect("bounded historical order key")
+                .to_be_bytes(),
+        );
+        bytes.extend_from_slice(order_key);
+        match evidence {
+            HistoricalSemanticEvidence::Bundle(bundle) => {
+                bytes.push(0x01);
+                bytes.extend_from_slice(
+                    &u32::try_from(bundle.bytes().as_bytes().len())
+                        .expect("bounded bundle")
+                        .to_be_bytes(),
                 );
-                (key, evidence)
-            })
+                bytes.extend_from_slice(bundle.bytes().as_bytes());
+            }
+            HistoricalSemanticEvidence::ContractMigrationEdge(edge) => {
+                bytes.push(0x02);
+                let retirement =
+                    riffdb_storage_api::proto_codec::encode_contract_write_retirement_v1(
+                        edge.retirement(),
+                    )
+                    .expect("encode retirement fixture");
+                let migration =
+                    riffdb_storage_api::proto_codec::encode_contract_migration_record_v1(
+                        edge.migration(),
+                    )
+                    .expect("encode migration fixture");
+                for payload in [retirement.as_bytes(), migration.as_bytes()] {
+                    bytes.extend_from_slice(
+                        &u32::try_from(payload.len())
+                            .expect("bounded migration fixture")
+                            .to_be_bytes(),
+                    );
+                    bytes.extend_from_slice(payload);
+                }
+            }
+            HistoricalSemanticEvidence::PlanReference(_) => bytes.push(0x03),
+            HistoricalSemanticEvidence::ActiveCatalog(_) => bytes.push(0x04),
+            HistoricalSemanticEvidence::PersistedKey(_) => bytes.push(0x05),
+            HistoricalSemanticEvidence::IndexMigrationRow(row) => {
+                bytes.push(0x06);
+                bytes.extend_from_slice(
+                    &u32::try_from(row.canonical_envelope().len())
+                        .expect("bounded index envelope")
+                        .to_be_bytes(),
+                );
+                bytes.extend_from_slice(row.canonical_envelope());
+            }
+            HistoricalSemanticEvidence::CapabilityPartition(_) => bytes.push(0x07),
+        }
+        let digest = hash_contract_bundle(&bytes);
+        digest
+            .as_bytes()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
             .collect()
+    }
+
+    fn historical_sequence_fixture(sequence: &[(Vec<u8>, HistoricalSemanticEvidence)]) -> String {
+        let canonical_lines = sequence
+            .iter()
+            .map(|(order_key, evidence)| historical_sequence_fixture_line(order_key, evidence))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let digest = hash_contract_bundle(canonical_lines.as_bytes());
+        let digest = digest
+            .as_bytes()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        format!("items={}\ndigest={digest}\n", sequence.len())
     }
 
     fn oracle_plan_ref(seed: u8) -> ExecutablePlanRef {
@@ -10328,9 +11167,10 @@ contract RedbMigration version 1 {
             bundles[3].contract_version(),
             bundles[3].bundle_hash(),
         );
-        let entities = (1..=5)
+        let entities = (1..=260)
             .map(|value| {
-                let entity_type = EntityTypeId::new(7).expect("entity type");
+                let entity_type =
+                    EntityTypeId::new(if value % 2 == 0 { 7 } else { 9 }).expect("entity type");
                 let mut key = EntityKeyBuilder::new(entity_type);
                 key.push_u64(value).expect("entity component");
                 StoredEntityRecordV1::new(
@@ -10483,7 +11323,7 @@ contract RedbMigration version 1 {
             .filter(|(_, e)| matches!(e, HistoricalSemanticEvidence::ActiveCatalog(Some(_))))
             .count();
         assert!(bundles >= 4, "bundles={bundles}");
-        assert!(entities >= 5, "entities={entities}");
+        assert_eq!(entities, 260, "entities={entities}");
         assert!(indexes >= 6, "indexes={indexes}");
         assert!(partitions >= 5, "capability partitions={partitions}");
         assert!(plans >= 1, "plans={plans}");
@@ -10497,6 +11337,85 @@ contract RedbMigration version 1 {
         assert!(
             sequence.windows(2).all(|pair| pair[0].0 < pair[1].0),
             "order_keys must be strictly increasing"
+        );
+    }
+
+    #[test]
+    fn historical_evidence_sequence_matches_the_golden_fixture_byte_for_byte() {
+        let path = TestDatabasePath::new("hist-sequence-golden");
+        populate_mixed_oracle_fixture(&path, database_id(0x8a));
+        let sequence = collect_historical_plan_sequence(&path.0);
+        let actual = historical_sequence_fixture(&sequence);
+        let expected = include_str!("historical-evidence-sequence-v1.fixture");
+        assert_eq!(actual, expected, "historical evidence sequence changed");
+    }
+
+    fn historical_plan_retained_shape(entity_rows: u64) -> (usize, usize) {
+        let path = TestDatabasePath::new("hist-plan-retained-shape");
+        let store = initialized_store(&path, database_id(0x8b));
+        let bundle = stored_bundle("plan-shape", 1, b"plan-shape-bundle");
+        let binding = DurableKeySchemaBindingV1::new(
+            bundle.lineage().clone(),
+            bundle.contract_version(),
+            bundle.bundle_hash(),
+        );
+        let write = store
+            .shared
+            .database
+            .begin_write()
+            .expect("write plan-shape fixture");
+        {
+            let mut bundles = write.open_table(CONTRACT_BUNDLES).expect("bundles");
+            let key = keys::encode_contract_bundle_key(bundle.lineage(), bundle.contract_version())
+                .expect("bundle key");
+            let encoded = codec::encode_contract_bundle_v1(&bundle).expect("encode bundle");
+            bundles
+                .insert(key.as_slice(), encoded.as_bytes())
+                .expect("insert bundle");
+        }
+        {
+            let mut entities = write.open_table(ENTITIES).expect("entities");
+            for ordinal in 0..entity_rows {
+                let entity_type =
+                    EntityTypeId::new(if ordinal % 2 == 0 { 7 } else { 9 }).expect("entity type");
+                let mut key = EntityKeyBuilder::new(entity_type);
+                key.push_u64(ordinal).expect("entity key component");
+                let target = EntityTarget::new(entity_type, key.finish().expect("entity key"))
+                    .expect("entity target");
+                let record = StoredEntityRecordV1::new(
+                    target,
+                    EntityVersion::first(),
+                    bundle.contract_version(),
+                    binding.clone(),
+                    CanonicalRecord::new(Vec::new()).expect("empty record"),
+                )
+                .expect("entity record");
+                let encoded = codec::encode_entity_record_v1(&record).expect("encode entity");
+                entities
+                    .insert(record.target().key().as_bytes(), encoded.as_bytes())
+                    .expect("insert entity");
+            }
+        }
+        write.commit().expect("commit plan-shape fixture");
+        let transaction = store.shared.database.begin_read().expect("read plan shape");
+        let plan = build_historical_evidence_plan(&transaction, &inputs_at(70)).expect("plan");
+        (plan.persisted_groups.len(), plan.retained_bytes)
+    }
+
+    #[test]
+    fn historical_plan_memory_does_not_scale_with_live_row_count() {
+        let small = historical_plan_retained_shape(2);
+        let large = historical_plan_retained_shape(50_000);
+        assert_eq!(small.0, 2, "one group per entity type");
+        assert_eq!(large.0, small.0, "row growth must not add locator groups");
+        assert_eq!(
+            large.1, small.1,
+            "the retained historical index must depend on bounded key shapes, not live rows"
+        );
+        assert!(
+            large.1 < 4 * 1024,
+            "the 50,000-row fixture retained an unexpectedly large plan: {} bytes",
+            large.1
         );
     }
 
