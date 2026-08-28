@@ -1747,7 +1747,7 @@ fn prove_mutation_coverage(
     let request = evaluated.validation_request();
     let facts = derive_input_command_facts(plan, normalized_input.clone())
         .map_err(|_| CommandValidationError::integrity())?;
-    let mutable_count = facts
+    let maximum_mutation_count = facts
         .binding_plan_indices()
         .iter()
         .filter(|index| {
@@ -1758,7 +1758,17 @@ fn prove_mutation_coverage(
         .count()
         .checked_add(request.cascade_targets().len())
         .ok_or_else(CommandValidationError::integrity)?;
-    if evaluated.mutations().len() != mutable_count {
+    // Compiler-sealed decisions may select `no_effect` for any subset of
+    // decision-owned bindings. The exact target proof below still requires
+    // every unconditional mutation, consumes every cascade mutation, and
+    // rejects every extra target, so this precheck is an upper bound rather
+    // than an equality for V18 plans.
+    let invalid_count = if plan.requires_ir_v18() {
+        evaluated.mutations().len() > maximum_mutation_count
+    } else {
+        evaluated.mutations().len() != maximum_mutation_count
+    };
+    if invalid_count {
         return Err(CommandValidationError::integrity());
     }
 

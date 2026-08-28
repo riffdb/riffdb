@@ -172,6 +172,85 @@ fn sealed_decision_apply_then_no_effect_persists_two_outcomes_and_one_entity_ver
 }
 
 #[test]
+fn sealed_decision_mixed_apply_and_no_effect_persists_one_atomic_outcome() {
+    let database = BulkRowsDatabase::create("sealed-decision-mixed-apply-no-effect");
+    let ports = database.open();
+    let existing = [0x4c; 16];
+    let absent = [0x4d; 16];
+    let seed =
+        database.prepare_decision_put_with_values(&ports, &[existing], &[1], 0x4e, 0x5e, 0x6e);
+    let mixed = database.prepare_decision_put_with_values(
+        &ports,
+        &[existing, absent],
+        &[2, 0],
+        0x4f,
+        0x5f,
+        0x6f,
+    );
+    let notifications = Arc::new(RecordingApplicationCommitNotifications::default());
+    let coordinator = start_coordinator_with_notifications(
+        ports,
+        Arc::new(FixedAdmissionClock::new(command_timestamp())),
+        Arc::new(IncrementingProvenanceSource::new(0x73)),
+        notifications.clone(),
+    );
+    let executor = coordinator.command_executor();
+
+    let outcomes = runtime().block_on(async {
+        let seed = executor
+            .reserve_capacity()
+            .await
+            .expect("reserve seed")
+            .submit(seed)
+            .expect("submit seed")
+            .completion()
+            .await
+            .expect("complete seed");
+        let mixed = executor
+            .reserve_capacity()
+            .await
+            .expect("reserve mixed")
+            .submit(mixed)
+            .expect("submit mixed")
+            .completion()
+            .await
+            .expect("complete mixed");
+        [seed, mixed]
+    });
+    assert!(
+        outcomes
+            .iter()
+            .all(|outcome| matches!(outcome, CommandExecutionResult::Committed(_)))
+    );
+    assert_eq!(
+        notifications.sequences(),
+        vec![
+            CommitSequence::first(),
+            CommitSequence::new(2).expect("second sequence"),
+        ]
+    );
+
+    drop(executor);
+    coordinator.shutdown().expect("drain decision coordinator");
+    let reopened = database.open();
+    let stored = reopened
+        .read_entity(&database.row_target(existing))
+        .expect("read applied row")
+        .expect("applied row exists");
+    assert_eq!(
+        stored.entity_version(),
+        riffdb_types::EntityVersion::new(2).expect("second version")
+    );
+    assert!(
+        reopened
+            .read_entity(&database.row_target(absent))
+            .expect("read ignored row")
+            .is_none(),
+        "no-effect on an absent initialized binding must not create a row"
+    );
+}
+
+#[test]
 fn sealed_decision_rejection_discards_every_earlier_bulk_effect() {
     let database = BulkRowsDatabase::create("sealed-decision-whole-command-rejection");
     let ports = database.open();
