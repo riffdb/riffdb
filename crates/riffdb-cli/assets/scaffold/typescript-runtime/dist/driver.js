@@ -15,7 +15,7 @@ const MAX_U64 = 18446744073709551615n;
 const UTF8_DECODER = new TextDecoder("utf-8", { fatal: true });
 let nextSession = 0;
 /** Exact alpha driver protocol generation. */
-export const DRIVER_PROTOCOL_VERSION = 3;
+export const DRIVER_PROTOCOL_VERSION = 4;
 /** Exact tagged value registry compiled into `riffdb-driverd`. */
 export const DRIVER_VALUE_REGISTRY_HASH = "8e1681ddf5e6a82e7fa646f9737128ad7e36f54f8b5846ac6e33e732125407e5";
 /** Exact structured-error registry compiled into `riffdb-driverd`. */
@@ -112,7 +112,9 @@ export class DriverApplicationTransport {
         validateOperation(operation);
         if (items.length < 1 || items.length > MAX_COLLECTION_ITEMS
             || !Number.isInteger(concurrency) || concurrency < 1 || concurrency > 384
-            || !Number.isInteger(checkpoint) || checkpoint < 0 || checkpoint > items.length) {
+            || !Number.isInteger(checkpoint) || checkpoint < 0 || checkpoint > items.length
+            || options.readAfterCommit !== undefined || options.cursor !== undefined
+            || options.queryConsistency !== undefined) {
             throw new Error("invalid RiffDB driver batch bounds");
         }
         for (const input of items)
@@ -274,6 +276,7 @@ function lowerOptions(options) {
         || !Number.isInteger(attempts) || attempts < 1 || attempts > 10
         || (options.readAfterCommit !== undefined && options.readAfterCommit < 1n)
         || (options.cursor !== undefined && options.cursor.length > 16_384)
+        || (options.queryConsistency !== undefined && options.queryConsistency !== "admissionHead")
         || (options.acceptPackedResult === true && options.acceptCompactResult !== true)) {
         throw new Error("invalid RiffDB driver invocation options");
     }
@@ -282,6 +285,7 @@ function lowerOptions(options) {
         maximum_attempts: attempts,
         read_after_commit: options.readAfterCommit ?? null,
         cursor: options.cursor ?? null,
+        query_consistency: options.queryConsistency === "admissionHead" ? "admission_head" : null,
         accept_compact_result: options.acceptCompactResult ?? false,
         accept_packed_result: options.acceptPackedResult ?? false,
     };

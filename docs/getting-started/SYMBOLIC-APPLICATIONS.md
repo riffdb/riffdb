@@ -188,7 +188,9 @@ let page = db
             ticket_id: "535bbe7a-3f53-4792-97bb-5d9a692be0ef".to_owned(),
             comments_after: None,
         },
-        QueryOptions::new().read_after_commit(1843),
+        QueryOptions::new()
+            .read_after_commit(1843)
+            .at_least_admission_head(),
     )
     .await?;
 # let _ = page;
@@ -196,8 +198,15 @@ let page = db
 # }
 ```
 
+`read_after_commit` is the exact causal choice when the caller has a commit
+sequence. `at_least_admission_head` is the stronger server-resolved choice when
+the caller has only a consistency preference. If both are present, RiffDB uses
+the greater floor. The latter may return a typed freshness failure rather than
+serve a provider epoch behind the head observed after admission.
+
 TypeScript exposes the same named operations and observations, including
-`bigint` application heads and commit sequences. MCP query and command schemas
+`bigint` application heads and commit sequences and the closed
+`consistency: "admissionHead"` query option. MCP query and command schemas
 are generated from the same registry and carry the same exact identities.
 
 Code generation is optional for exploration: ad-hoc RiffQL and named CLI/MCP

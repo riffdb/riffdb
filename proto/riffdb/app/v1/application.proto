@@ -185,6 +185,13 @@ message ExplainQueryResponse {
   repeated Diagnostic diagnostics = 4;
 }
 
+// Closed stronger query consistency classes. The unspecified value preserves
+// the query's existing compiler-declared freshness behavior.
+enum QueryConsistency {
+  QUERY_CONSISTENCY_UNSPECIFIED = 0;
+  QUERY_CONSISTENCY_ADMISSION_HEAD = 1;
+}
+
 message ExecuteQueryRequest {
   optional ContractSelector contract = 1;
   oneof query {
@@ -199,6 +206,7 @@ message ExecuteQueryRequest {
   // advertise LEGACY_RECORDS followed by COMPACT_V1 so an ineligible deployed
   // plan can retain the byte-equivalent legacy representation.
   repeated NamedResultEncoding accepted_result_encodings = 8;
+  QueryConsistency consistency = 9;
   bytes request_id = 100;
 }
 

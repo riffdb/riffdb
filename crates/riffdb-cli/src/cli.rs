@@ -655,6 +655,12 @@ pub(crate) enum VectorInspectionKind {
     Outdated,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+#[value(rename_all = "kebab-case")]
+pub(crate) enum QueryConsistency {
+    AdmissionHead,
+}
+
 #[derive(Debug, Subcommand)]
 pub(crate) enum QueryCommand {
     Describe {
@@ -682,6 +688,8 @@ pub(crate) enum QueryCommand {
         cursor: Option<String>,
         #[arg(long, value_name = "COMMIT_SEQUENCE")]
         read_after_commit: Option<String>,
+        #[arg(long, value_enum)]
+        consistency: Option<QueryConsistency>,
         #[command(flatten)]
         contract: ContractSelectionArgs,
     },
@@ -696,6 +704,8 @@ pub(crate) enum QueryCommand {
         cursor: Option<String>,
         #[arg(long, value_name = "COMMIT_SEQUENCE")]
         read_after_commit: Option<String>,
+        #[arg(long, value_enum)]
+        consistency: Option<QueryConsistency>,
         #[command(flatten)]
         contract: ContractSelectionArgs,
     },

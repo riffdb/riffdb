@@ -300,7 +300,7 @@ class OperationalAccessCorpusClient:
         if generated_cursor is not None:
             if options.cursor is not None:
                 raise ValueError("generated cursor conflicts with query options")
-            options = QueryOptions(cursor=generated_cursor, read_after_commit=options.read_after_commit)
+            options = QueryOptions(cursor=generated_cursor, read_after_commit=options.read_after_commit, consistency=options.consistency)
         encoded_parameters.pop("after", None)
         raw = self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
@@ -319,7 +319,7 @@ class OperationalAccessCorpusClient:
         if generated_cursor is not None:
             if options.cursor is not None:
                 raise ValueError("generated cursor conflicts with query options")
-            options = QueryOptions(cursor=generated_cursor, read_after_commit=options.read_after_commit)
+            options = QueryOptions(cursor=generated_cursor, read_after_commit=options.read_after_commit, consistency=options.consistency)
         encoded_parameters.pop("after", None)
         raw = self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
@@ -338,7 +338,7 @@ class OperationalAccessCorpusClient:
         if generated_cursor is not None:
             if options.cursor is not None:
                 raise ValueError("generated cursor conflicts with query options")
-            options = QueryOptions(cursor=generated_cursor, read_after_commit=options.read_after_commit)
+            options = QueryOptions(cursor=generated_cursor, read_after_commit=options.read_after_commit, consistency=options.consistency)
         encoded_parameters.pop("after", None)
         raw = self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
@@ -357,7 +357,7 @@ class OperationalAccessCorpusClient:
         if generated_cursor is not None:
             if options.cursor is not None:
                 raise ValueError("generated cursor conflicts with query options")
-            options = QueryOptions(cursor=generated_cursor, read_after_commit=options.read_after_commit)
+            options = QueryOptions(cursor=generated_cursor, read_after_commit=options.read_after_commit, consistency=options.consistency)
         encoded_parameters.pop("after", None)
         raw = self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
@@ -376,7 +376,7 @@ class OperationalAccessCorpusClient:
         if generated_cursor is not None:
             if options.cursor is not None:
                 raise ValueError("generated cursor conflicts with query options")
-            options = QueryOptions(cursor=generated_cursor, read_after_commit=options.read_after_commit)
+            options = QueryOptions(cursor=generated_cursor, read_after_commit=options.read_after_commit, consistency=options.consistency)
         encoded_parameters.pop("after", None)
         raw = self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
@@ -395,7 +395,7 @@ class OperationalAccessCorpusClient:
         if generated_cursor is not None:
             if options.cursor is not None:
                 raise ValueError("generated cursor conflicts with query options")
-            options = QueryOptions(cursor=generated_cursor, read_after_commit=options.read_after_commit)
+            options = QueryOptions(cursor=generated_cursor, read_after_commit=options.read_after_commit, consistency=options.consistency)
         encoded_parameters.pop("after", None)
         raw = self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
@@ -414,7 +414,7 @@ class OperationalAccessCorpusClient:
         if generated_cursor is not None:
             if options.cursor is not None:
                 raise ValueError("generated cursor conflicts with query options")
-            options = QueryOptions(cursor=generated_cursor, read_after_commit=options.read_after_commit)
+            options = QueryOptions(cursor=generated_cursor, read_after_commit=options.read_after_commit, consistency=options.consistency)
         encoded_parameters.pop("after", None)
         raw = self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
@@ -433,7 +433,7 @@ class OperationalAccessCorpusClient:
         if generated_cursor is not None:
             if options.cursor is not None:
                 raise ValueError("generated cursor conflicts with query options")
-            options = QueryOptions(cursor=generated_cursor, read_after_commit=options.read_after_commit)
+            options = QueryOptions(cursor=generated_cursor, read_after_commit=options.read_after_commit, consistency=options.consistency)
         encoded_parameters.pop("after", None)
         raw = self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
@@ -452,7 +452,7 @@ class OperationalAccessCorpusClient:
         if generated_cursor is not None:
             if options.cursor is not None:
                 raise ValueError("generated cursor conflicts with query options")
-            options = QueryOptions(cursor=generated_cursor, read_after_commit=options.read_after_commit)
+            options = QueryOptions(cursor=generated_cursor, read_after_commit=options.read_after_commit, consistency=options.consistency)
         encoded_parameters.pop("after", None)
         raw = self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
@@ -489,7 +489,7 @@ class AsyncOperationalAccessCorpusClient:
         if generated_cursor is not None:
             if options.cursor is not None:
                 raise ValueError("generated cursor conflicts with query options")
-            options = QueryOptions(cursor=generated_cursor, read_after_commit=options.read_after_commit)
+            options = QueryOptions(cursor=generated_cursor, read_after_commit=options.read_after_commit, consistency=options.consistency)
         encoded_parameters.pop("after", None)
         raw = await self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
@@ -508,7 +508,7 @@ class AsyncOperationalAccessCorpusClient:
         if generated_cursor is not None:
             if options.cursor is not None:
                 raise ValueError("generated cursor conflicts with query options")
-            options = QueryOptions(cursor=generated_cursor, read_after_commit=options.read_after_commit)
+            options = QueryOptions(cursor=generated_cursor, read_after_commit=options.read_after_commit, consistency=options.consistency)
         encoded_parameters.pop("after", None)
         raw = await self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
@@ -527,7 +527,7 @@ class AsyncOperationalAccessCorpusClient:
         if generated_cursor is not None:
             if options.cursor is not None:
                 raise ValueError("generated cursor conflicts with query options")
-            options = QueryOptions(cursor=generated_cursor, read_after_commit=options.read_after_commit)
+            options = QueryOptions(cursor=generated_cursor, read_after_commit=options.read_after_commit, consistency=options.consistency)
         encoded_parameters.pop("after", None)
         raw = await self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
@@ -546,7 +546,7 @@ class AsyncOperationalAccessCorpusClient:
         if generated_cursor is not None:
             if options.cursor is not None:
                 raise ValueError("generated cursor conflicts with query options")
-            options = QueryOptions(cursor=generated_cursor, read_after_commit=options.read_after_commit)
+            options = QueryOptions(cursor=generated_cursor, read_after_commit=options.read_after_commit, consistency=options.consistency)
         encoded_parameters.pop("after", None)
         raw = await self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
@@ -565,7 +565,7 @@ class AsyncOperationalAccessCorpusClient:
         if generated_cursor is not None:
             if options.cursor is not None:
                 raise ValueError("generated cursor conflicts with query options")
-            options = QueryOptions(cursor=generated_cursor, read_after_commit=options.read_after_commit)
+            options = QueryOptions(cursor=generated_cursor, read_after_commit=options.read_after_commit, consistency=options.consistency)
         encoded_parameters.pop("after", None)
         raw = await self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
@@ -584,7 +584,7 @@ class AsyncOperationalAccessCorpusClient:
         if generated_cursor is not None:
             if options.cursor is not None:
                 raise ValueError("generated cursor conflicts with query options")
-            options = QueryOptions(cursor=generated_cursor, read_after_commit=options.read_after_commit)
+            options = QueryOptions(cursor=generated_cursor, read_after_commit=options.read_after_commit, consistency=options.consistency)
         encoded_parameters.pop("after", None)
         raw = await self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
@@ -603,7 +603,7 @@ class AsyncOperationalAccessCorpusClient:
         if generated_cursor is not None:
             if options.cursor is not None:
                 raise ValueError("generated cursor conflicts with query options")
-            options = QueryOptions(cursor=generated_cursor, read_after_commit=options.read_after_commit)
+            options = QueryOptions(cursor=generated_cursor, read_after_commit=options.read_after_commit, consistency=options.consistency)
         encoded_parameters.pop("after", None)
         raw = await self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
@@ -622,7 +622,7 @@ class AsyncOperationalAccessCorpusClient:
         if generated_cursor is not None:
             if options.cursor is not None:
                 raise ValueError("generated cursor conflicts with query options")
-            options = QueryOptions(cursor=generated_cursor, read_after_commit=options.read_after_commit)
+            options = QueryOptions(cursor=generated_cursor, read_after_commit=options.read_after_commit, consistency=options.consistency)
         encoded_parameters.pop("after", None)
         raw = await self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,
@@ -641,7 +641,7 @@ class AsyncOperationalAccessCorpusClient:
         if generated_cursor is not None:
             if options.cursor is not None:
                 raise ValueError("generated cursor conflicts with query options")
-            options = QueryOptions(cursor=generated_cursor, read_after_commit=options.read_after_commit)
+            options = QueryOptions(cursor=generated_cursor, read_after_commit=options.read_after_commit, consistency=options.consistency)
         encoded_parameters.pop("after", None)
         raw = await self._transport._execute_named_query(
             contract_lineage=CONTRACT_LINEAGE, contract_version=CONTRACT_VERSION,

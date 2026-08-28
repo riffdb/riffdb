@@ -1775,10 +1775,11 @@ Options:
       --endpoint <HTTP_OR_HTTPS_ENDPOINT>
       --database <DATABASE>
       --read-after-commit <COMMIT_SEQUENCE>
-      --contract-lineage <LINEAGE>
+      --consistency <CONSISTENCY>            [possible values: admission-head]
       --output <human|json>                  [possible values: human, json]
-      --contract-version <VERSION>
+      --contract-lineage <LINEAGE>
       --max-attempts <1..10>
+      --contract-version <VERSION>
       --credential-file <PATH>
   -h, --help                                 Print help
 ```
@@ -1800,10 +1801,11 @@ Options:
       --database <DATABASE>
       --output <human|json>                  [possible values: human, json]
       --read-after-commit <COMMIT_SEQUENCE>
-      --contract-lineage <LINEAGE>
+      --consistency <CONSISTENCY>            [possible values: admission-head]
       --max-attempts <1..10>
-      --contract-version <VERSION>
+      --contract-lineage <LINEAGE>
       --credential-file <PATH>
+      --contract-version <VERSION>
   -h, --help                                 Print help
 ```
 

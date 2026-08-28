@@ -709,7 +709,11 @@ fn append_symbolic_tools(
         if !valid_public_tool_name(specification.name) {
             return Err(RegistryError);
         }
-        let input_id = format!("riffdb.fixed-tool/{}/input/v1", specification.name);
+        let input_version = if specification.kind == 18 { "v2" } else { "v1" };
+        let input_id = format!(
+            "riffdb.fixed-tool/{}/input/{input_version}",
+            specification.name
+        );
         let result_id = format!("riffdb.fixed-tool/{}/result/v1", specification.name);
         let input_schema = generated_schema(input_id.clone(), specification.input)?;
         let result_schema = generated_schema(result_id.clone(), specification.result)?;
@@ -723,7 +727,10 @@ fn append_symbolic_tools(
             grpc_service: "ApplicationQueryService".to_owned(),
             grpc_method: specification.method.to_owned(),
             service_operation: specification.operation.to_owned(),
-            request_converter_id: format!("riffdb.mcp.symbolic.{}.request/v1", specification.kind),
+            request_converter_id: format!(
+                "riffdb.mcp.symbolic.{}.request/{input_version}",
+                specification.kind
+            ),
             result_converter_id: format!("riffdb.mcp.symbolic.{}.result/v1", specification.kind),
             result_branches: specification
                 .branches
@@ -1309,6 +1316,10 @@ fn symbolic_source_schema(execute: bool) -> Value {
             "cursor".to_owned(),
             serde_json::json!({"type": "string", "minLength": 1, "maxLength": 64}),
         );
+        properties.insert(
+            "consistency".to_owned(),
+            serde_json::json!({"type": "string", "enum": ["admission_head"]}),
+        );
         required.push(Value::String("parameters".to_owned()));
     }
     serde_json::json!({
@@ -1874,6 +1885,34 @@ mod tests {
         assert!(registry.by_name("RIFFDB.CONTRACT.DEPLOY").is_none());
         assert!(registry.by_name("riffdb_contract_deploy ").is_none());
         assert!(registry.by_name("riffdb.contract.unknown").is_none());
+    }
+
+    #[test]
+    fn symbolic_query_schema_versions_only_the_additive_consistency_input() {
+        let registry = fixed_tool_registry().expect("accepted fixed registry loads");
+        let query = registry
+            .by_name("riffdb_query")
+            .expect("symbolic query tool");
+        assert_eq!(
+            query.input_schema().schema_id(),
+            "riffdb.fixed-tool/riffdb_query/input/v2"
+        );
+        assert_eq!(
+            query.request_converter_id(),
+            "riffdb.mcp.symbolic.18.request/v2"
+        );
+        assert_eq!(
+            query.input_schema().json_object()["properties"]["consistency"]["enum"],
+            serde_json::json!(["admission_head"])
+        );
+        assert_eq!(
+            registry
+                .by_name("riffdb_query_check")
+                .expect("query check tool")
+                .input_schema()
+                .schema_id(),
+            "riffdb.fixed-tool/riffdb_query_check/input/v1"
+        );
     }
 
     #[test]

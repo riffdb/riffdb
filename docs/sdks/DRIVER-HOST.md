@@ -82,7 +82,10 @@ integers and exact decimals never pass through floating point. Fixed-dimension
 vectors cross this local JSON boundary as bounded arrays of exact IEEE-754
 binary32 component bits; the host reconstructs and revalidates the canonical
 finite vector before application dispatch. Query calls may carry an opaque
-cursor and read-after-commit frontier. Deadline and retry bounds are explicit.
+cursor, a read-after-commit frontier, and the one closed `admission_head`
+consistency value. Deadline and retry bounds are explicit. Driver protocol V4
+adds that stronger value; V1 through V3 remain readable but fail closed rather
+than accept or downgrade it.
 
 For a compiler-proven covering named query, a generated client also advertises
 that it accepts the V2 compact result arm. The host returns the compiler-sealed

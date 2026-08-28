@@ -4,8 +4,9 @@ use std::collections::BTreeMap;
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use riffdb_driver_host::{
-    DRIVER_ERROR_REGISTRY_HASH, DRIVER_PROTOCOL_VERSION, DRIVER_VALUE_REGISTRY_HASH, DriverRequest,
-    DriverResponse, DriverValue, DriverVector, FrameCodec, InvokeOptions, ProtocolError,
+    DRIVER_ERROR_REGISTRY_HASH, DRIVER_PROTOCOL_VERSION, DRIVER_VALUE_REGISTRY_HASH,
+    DriverQueryConsistency, DriverRequest, DriverResponse, DriverValue, DriverVector, FrameCodec,
+    InvokeOptions, ProtocolError,
 };
 
 const HASH: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
@@ -25,6 +26,7 @@ fn byte_values_retain_the_canonical_half_mebibyte_boundary_over_base64() {
             maximum_attempts: 3,
             read_after_commit: None,
             cursor: None,
+            query_consistency: None,
             accept_compact_result: false,
             accept_packed_result: false,
         },
@@ -54,6 +56,7 @@ fn request_round_trip_is_exact_and_name_addressed() {
             maximum_attempts: 3,
             read_after_commit: None,
             cursor: None,
+            query_consistency: None,
             accept_compact_result: false,
             accept_packed_result: false,
         },
@@ -80,6 +83,49 @@ fn request_round_trip_is_exact_and_name_addressed() {
 }
 
 #[test]
+fn admission_head_query_consistency_round_trips_as_one_closed_value() {
+    let request = DriverRequest::Invoke {
+        request_id: "fresh-query".to_owned(),
+        operation: "ticketdesk_get_ticket".to_owned(),
+        input_schema_hash: HASH.to_owned(),
+        input: BTreeMap::new(),
+        options: InvokeOptions {
+            deadline_millis: 1_000,
+            maximum_attempts: 1,
+            read_after_commit: Some(42),
+            cursor: None,
+            query_consistency: Some(DriverQueryConsistency::AdmissionHead),
+            accept_compact_result: false,
+            accept_packed_result: false,
+        },
+    };
+    let encoded = FrameCodec::encode_request(&request).expect("encode stronger query");
+    assert_eq!(
+        FrameCodec::decode_request(&encoded).expect("decode stronger query"),
+        request
+    );
+    assert!(
+        std::str::from_utf8(&encoded[4..])
+            .expect("canonical JSON")
+            .contains("\"query_consistency\":\"admission_head\"")
+    );
+
+    let hostile = std::str::from_utf8(&encoded[4..])
+        .expect("canonical JSON")
+        .replace("admission_head", "stale_ok");
+    let mut frame = Vec::from(
+        u32::try_from(hostile.len())
+            .expect("bounded hostile request")
+            .to_be_bytes(),
+    );
+    frame.extend_from_slice(hostile.as_bytes());
+    assert_eq!(
+        FrameCodec::decode_request(&frame),
+        Err(ProtocolError::InvalidMessage)
+    );
+}
+
+#[test]
 fn canonical_vector_registry_round_trips_exact_component_bits() {
     let vector = DriverValue::Vector(DriverVector {
         component_bits: vec![0, 1.5_f32.to_bits(), (-2.25_f32).to_bits()],
@@ -94,6 +140,7 @@ fn canonical_vector_registry_round_trips_exact_component_bits() {
             maximum_attempts: 1,
             read_after_commit: None,
             cursor: None,
+            query_consistency: None,
             accept_compact_result: false,
             accept_packed_result: false,
         },
@@ -127,6 +174,7 @@ fn non_finite_driver_vector_bits_fail_before_dispatch() {
             maximum_attempts: 1,
             read_after_commit: None,
             cursor: None,
+            query_consistency: None,
             accept_compact_result: false,
             accept_packed_result: false,
         },
@@ -159,11 +207,33 @@ fn handshake_registry_identities_are_frozen() {
         FrameCodec::decode_request(&encoded).expect("decode"),
         request
     );
-    let expected = include_bytes!("../../../fixtures/driver/v3/handshake-request.json");
+    let expected = include_bytes!("../../../fixtures/driver/v4/handshake-request.json");
     assert_eq!(
         &encoded[4..],
         expected.strip_suffix(b"\n").unwrap_or(expected)
     );
+}
+
+#[test]
+fn v3_handshake_remains_packed_read_compatible() {
+    let body = include_bytes!("../../../fixtures/driver/v3/handshake-request.json")
+        .strip_suffix(b"\n")
+        .unwrap_or(include_bytes!(
+            "../../../fixtures/driver/v3/handshake-request.json"
+        ));
+    let mut frame = Vec::from(
+        u32::try_from(body.len())
+            .expect("bounded fixture")
+            .to_be_bytes(),
+    );
+    frame.extend_from_slice(body);
+    assert!(matches!(
+        FrameCodec::decode_request(&frame).expect("decode V3 handshake"),
+        DriverRequest::Handshake {
+            protocol_version: 3,
+            ..
+        }
+    ));
 }
 
 #[test]
@@ -411,6 +481,7 @@ fn packed_negotiation_requires_the_compact_predecessor() {
             maximum_attempts: 1,
             read_after_commit: None,
             cursor: None,
+            query_consistency: None,
             accept_compact_result: false,
             accept_packed_result: true,
         },
@@ -456,6 +527,7 @@ fn bounded_batch_round_trip_retains_independent_items_and_checkpoint() {
             maximum_attempts: 3,
             read_after_commit: None,
             cursor: None,
+            query_consistency: None,
             accept_compact_result: false,
             accept_packed_result: false,
         },

@@ -853,16 +853,16 @@
       "title": "Application driver-host protocol",
       "classification": "protocol",
       "owner": "riffdb-driver-host",
-      "source_assertions": [{"kind":"literal","path":"crates/riffdb-driver-host/src/protocol.rs","literal":"pub const DRIVER_PROTOCOL_VERSION: u32 = 3;"}],
-      "readable_identities": ["1", "2", "3"], "writable_identities": ["3"], "current_identities": ["3"],
+      "source_assertions": [{"kind":"literal","path":"crates/riffdb-driver-host/src/protocol.rs","literal":"pub const DRIVER_PROTOCOL_VERSION: u32 = 4;"}],
+      "readable_identities": ["1", "2", "3", "4"], "writable_identities": ["4"], "current_identities": ["4"],
       "writer_policy": "single_current",
-      "compatibility_rule": "The Rust host accepts V1 legacy invocations, V2 additive compact-query negotiation, and V3 additive packed-query compatibility; transport trust, framing, values, and typed outcomes remain Rust-owned.",
-      "breaking_when": "A V1 legacy or V2 compact frame changes meaning, or a compact/packed result is accepted without exact generated layout validation.",
-      "supported_release_posture": "Driver protocol V3 is current; V1 and V2 remain read-only compatible, and production generated clients do not negotiate the unactivated packed arm.",
-      "lifecycle": {"active":["3"],"read_only":["1", "2"],"retirement_candidate":[],"retired":[]},
+      "compatibility_rule": "The Rust host accepts V1 legacy invocations, V2 additive compact-query negotiation, V3 additive packed-query compatibility, and V4 additive AdmissionHead query consistency; older protocols cannot submit or silently downgrade the stronger guarantee.",
+      "breaking_when": "A V1 legacy, V2 compact, or V3 packed frame changes meaning, a compact/packed result bypasses exact generated layout validation, or AdmissionHead is accepted below V4.",
+      "supported_release_posture": "Driver protocol V4 is current; V1 through V3 remain read-only compatible without AdmissionHead negotiation.",
+      "lifecycle": {"active":["4"],"read_only":["1", "2", "3"],"retirement_candidate":[],"retired":[]},
       "reserved_identity_policy": "Protocol versions, opcodes, and fields are never reused.",
-      "evidence": ["fixtures/driver/v1/handshake-request.json", "fixtures/driver/v2/handshake-request.json", "fixtures/driver/v3/handshake-request.json"], "checks": ["./scripts/check-generated"],
-      "last_change": {"classification":"new_domain_identity","decision":"ADR-0135/WP-659 packed result compatibility V3"}
+      "evidence": ["fixtures/driver/v1/handshake-request.json", "fixtures/driver/v2/handshake-request.json", "fixtures/driver/v3/handshake-request.json", "fixtures/driver/v4/handshake-request.json"], "checks": ["./scripts/check-generated"],
+      "last_change": {"classification":"new_domain_identity","decision":"ADR-0164/WP-720 AdmissionHead consistency V4"}
     },
     {
       "id": "protocol.mcp",
@@ -910,7 +910,7 @@
       "lifecycle": {"active":["riffdb.app.v1"],"read_only":[],"retirement_candidate":[],"retired":[]},
       "reserved_identity_policy": "Published Protobuf fields, enum values, and method identities remain reserved.",
       "evidence": ["fixtures/proto/descriptors/riffdb-v1-descriptor-set.bin"], "checks": ["./scripts/check-generated"],
-      "last_change": {"classification":"no_format_change","decision":"ADR-0124 baseline"}
+      "last_change": {"classification":"additive_same_identity","decision":"ADR-0164/WP-720 ExecuteQuery AdmissionHead enum field"}
     },
     {
       "id": "wire.canonical_value",

@@ -79,9 +79,12 @@ export function exactMoney<const Currency extends string>(
   return { currency, amount: exactDecimal(value, 38, 2) };
 }
 
+export type QueryConsistency = "admissionHead";
+
 export interface QueryOptions {
   readonly cursor?: string;
   readonly readAfterCommit?: bigint;
+  readonly consistency?: QueryConsistency;
 }
 
 interface NamedQueryRequest<P, R> {
@@ -283,6 +286,7 @@ export class CliApplicationTransport {
       if (options.readAfterCommit < 1n) throw new Error("invalid read-after-commit fence");
       args.push("--read-after-commit", options.readAfterCommit.toString());
     }
+    if (options.consistency === "admissionHead") args.push("--consistency", "admission-head");
     const envelope = await this.invoke(args, parameters, request.decodeError);
     const result = exactObject(envelope.result);
     const rawIdentity = exactObject(result.identity);
@@ -719,6 +723,7 @@ export class DriverGeneratedApplicationTransport {
       {
         ...(options.cursor === undefined ? {} : { cursor: options.cursor }),
         ...(options.readAfterCommit === undefined ? {} : { readAfterCommit: options.readAfterCommit }),
+        ...(options.consistency === undefined ? {} : { queryConsistency: options.consistency }),
         ...(request.compactDecoder === undefined ? {} : { acceptCompactResult: true }),
         ...(request.packedDecoder === undefined ? {} : { acceptPackedResult: true }),
       },

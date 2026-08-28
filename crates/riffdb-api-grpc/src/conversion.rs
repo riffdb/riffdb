@@ -261,6 +261,12 @@ pub fn execute_symbolic_query_request_from_proto(
     if minimum_application_head == Some(0) {
         return Err(invalid_request());
     }
+    let admission_head_consistency = match app_v1::QueryConsistency::try_from(request.consistency)
+        .map_err(|_| invalid_request())?
+    {
+        app_v1::QueryConsistency::Unspecified => false,
+        app_v1::QueryConsistency::AdmissionHead => true,
+    };
     let invocation = match request.query {
         Some(app_v1::execute_query_request::Query::Source(source)) if module_hash.is_none() => {
             let mut request = ExecuteSymbolicQueryRequest::new(
@@ -274,6 +280,9 @@ pub fn execute_symbolic_query_request_from_proto(
             if let Some(minimum) = minimum_application_head {
                 request = request.with_minimum_application_head(minimum);
             }
+            if admission_head_consistency {
+                request = request.with_admission_head_consistency();
+            }
             ExecuteSymbolicQueryInvocation::AdHoc(request)
         }
         Some(app_v1::execute_query_request::Query::QueryName(name)) => {
@@ -285,6 +294,9 @@ pub fn execute_symbolic_query_request_from_proto(
             }
             if let Some(minimum) = minimum_application_head {
                 request = request.with_minimum_application_head(minimum);
+            }
+            if admission_head_consistency {
+                request = request.with_admission_head_consistency();
             }
             if accepts_compact_result_v1 {
                 request = request.accepting_compact_result_v1();
@@ -6903,12 +6915,61 @@ mod tests {
                 cursor: None,
                 minimum_application_head: Some(42),
                 accepted_result_encodings: Vec::new(),
+                consistency: app_v1::QueryConsistency::Unspecified as i32,
             })
             .expect("positive fence");
         let ExecuteSymbolicQueryInvocation::Named(request) = invocation else {
             panic!("expected named query")
         };
         assert_eq!(request.minimum_application_head(), Some(42));
+    }
+
+    #[test]
+    fn named_query_preserves_admission_head_consistency() {
+        let (_, invocation) =
+            execute_symbolic_query_request_from_proto(app_v1::ExecuteQueryRequest {
+                request_id: request_id().as_bytes().to_vec(),
+                contract: None,
+                query: Some(app_v1::execute_query_request::Query::QueryName(
+                    "TicketPage".to_owned(),
+                )),
+                module_hash: None,
+                parameters: Vec::new(),
+                cursor: None,
+                minimum_application_head: Some(42),
+                accepted_result_encodings: Vec::new(),
+                consistency: app_v1::QueryConsistency::AdmissionHead as i32,
+            })
+            .expect("closed stronger consistency");
+        let ExecuteSymbolicQueryInvocation::Named(request) = invocation else {
+            panic!("expected named query")
+        };
+        assert_eq!(request.minimum_application_head(), Some(42));
+        assert_eq!(
+            request.consistency(),
+            Some(riffdb_service::QueryConsistencyV1::AdmissionHead)
+        );
+    }
+
+    #[test]
+    fn query_rejects_unknown_consistency() {
+        let result = execute_symbolic_query_request_from_proto(app_v1::ExecuteQueryRequest {
+            request_id: request_id().as_bytes().to_vec(),
+            contract: None,
+            query: Some(app_v1::execute_query_request::Query::QueryName(
+                "TicketPage".to_owned(),
+            )),
+            module_hash: None,
+            parameters: Vec::new(),
+            cursor: None,
+            minimum_application_head: None,
+            accepted_result_encodings: Vec::new(),
+            consistency: 99,
+        });
+        let Err(status) = result else {
+            panic!("unknown consistency must fail")
+        };
+        assert_eq!(status.code(), tonic::Code::InvalidArgument);
     }
 
     #[test]
@@ -6948,6 +7009,7 @@ mod tests {
             cursor: None,
             minimum_application_head: Some(0),
             accepted_result_encodings: Vec::new(),
+            consistency: app_v1::QueryConsistency::Unspecified as i32,
         });
         let Err(status) = result else {
             panic!("zero fence must fail closed")

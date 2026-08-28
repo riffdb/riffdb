@@ -8,7 +8,9 @@ use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::{Semaphore, mpsc, watch};
 use tokio::task::JoinSet;
 
-use crate::protocol::{DRIVER_PROTOCOL_VERSION_V1, DRIVER_PROTOCOL_VERSION_V2};
+use crate::protocol::{
+    DRIVER_PROTOCOL_VERSION_V1, DRIVER_PROTOCOL_VERSION_V2, DRIVER_PROTOCOL_VERSION_V3,
+};
 use crate::{DriverHost, DriverRequest, DriverResponse, FrameCodec};
 
 const MAX_CONNECTIONS: usize = 256;
@@ -160,10 +162,18 @@ async fn serve_connection(stream: UnixStream, host: DriverHost, mut drain: watch
                 DRIVER_PROTOCOL_VERSION_V2,
                 DriverRequest::Invoke { options, .. }
             ) if options.accept_packed_result
+        ) || matches!(
+            (protocol_version, &request),
+            (
+                DRIVER_PROTOCOL_VERSION_V1
+                    | DRIVER_PROTOCOL_VERSION_V2
+                    | DRIVER_PROTOCOL_VERSION_V3,
+                DriverRequest::Invoke { options, .. }
+            ) if options.query_consistency.is_some()
         ) {
             let response = local_protocol_error(
                 &request,
-                "this driver protocol cannot negotiate generated result encodings",
+                "this driver protocol cannot negotiate the requested query feature",
             );
             if responses.send(response).await.is_err() {
                 break;

@@ -26,7 +26,7 @@ import (
 )
 
 const (
-	ProtocolVersion   = uint32(3)
+	ProtocolVersion   = uint32(4)
 	ValueRegistryHash = "8e1681ddf5e6a82e7fa646f9737128ad7e36f54f8b5846ac6e33e732125407e5"
 	ErrorRegistryHash = "b94d685ecbc18f2369a2bfa1a53139d06100699c4ee41b31c86d6a7e17039850"
 	maxFrameBytes     = 1_048_576
@@ -511,9 +511,18 @@ type Options struct {
 	MaximumAttempts     uint32
 	ReadAfterCommit     *uint64
 	Cursor              string
+	QueryConsistency    QueryConsistency
 	AcceptCompactResult bool
 	AcceptPackedResult  bool
 }
+
+// QueryConsistency is the closed set of stronger generated-query guarantees.
+type QueryConsistency string
+
+const (
+	// AdmissionHead fences the first page at the server-observed admission head.
+	AdmissionHead QueryConsistency = "admission_head"
+)
 
 func (options Options) wire() (wireOptions, error) {
 	deadline := options.Deadline
@@ -524,11 +533,11 @@ func (options Options) wire() (wireOptions, error) {
 	if attempts == 0 {
 		attempts = 3
 	}
-	if deadline < time.Millisecond || deadline > 5*time.Minute || attempts < 1 || attempts > 10 || len(options.Cursor) > 16_384 || options.AcceptPackedResult && !options.AcceptCompactResult {
+	if deadline < time.Millisecond || deadline > 5*time.Minute || attempts < 1 || attempts > 10 || len(options.Cursor) > 16_384 || (options.QueryConsistency != "" && options.QueryConsistency != AdmissionHead) || options.AcceptPackedResult && !options.AcceptCompactResult {
 		return wireOptions{}, errors.New("invalid RiffDB driver invocation options")
 	}
 	deadlineMillis := deadline.Milliseconds()
-	return wireOptions{DeadlineMillis: uint64(deadlineMillis), MaximumAttempts: attempts, ReadAfterCommit: options.ReadAfterCommit, Cursor: optionalString(options.Cursor), AcceptCompactResult: options.AcceptCompactResult, AcceptPackedResult: options.AcceptPackedResult}, nil
+	return wireOptions{DeadlineMillis: uint64(deadlineMillis), MaximumAttempts: attempts, ReadAfterCommit: options.ReadAfterCommit, Cursor: optionalString(options.Cursor), QueryConsistency: optionalQueryConsistency(options.QueryConsistency), AcceptCompactResult: options.AcceptCompactResult, AcceptPackedResult: options.AcceptPackedResult}, nil
 }
 
 type CompactQueryResult struct {
@@ -747,7 +756,7 @@ func (session *Session) Batch(ctx context.Context, operation Operation, items []
 	if err != nil {
 		return BatchResult{}, err
 	}
-	if wire.ReadAfterCommit != nil || wire.Cursor != nil {
+	if wire.ReadAfterCommit != nil || wire.Cursor != nil || wire.QueryConsistency != nil {
 		return BatchResult{}, errors.New("invalid RiffDB driver batch options")
 	}
 	requestID := session.requestID("batch")
@@ -884,12 +893,13 @@ func newSessionRequestPrefix() string {
 }
 
 type wireOptions struct {
-	DeadlineMillis      uint64  `json:"deadline_millis"`
-	MaximumAttempts     uint32  `json:"maximum_attempts"`
-	ReadAfterCommit     *uint64 `json:"read_after_commit"`
-	Cursor              *string `json:"cursor"`
-	AcceptCompactResult bool    `json:"accept_compact_result"`
-	AcceptPackedResult  bool    `json:"accept_packed_result"`
+	DeadlineMillis      uint64            `json:"deadline_millis"`
+	MaximumAttempts     uint32            `json:"maximum_attempts"`
+	ReadAfterCommit     *uint64           `json:"read_after_commit"`
+	Cursor              *string           `json:"cursor"`
+	QueryConsistency    *QueryConsistency `json:"query_consistency"`
+	AcceptCompactResult bool              `json:"accept_compact_result"`
+	AcceptPackedResult  bool              `json:"accept_packed_result"`
 }
 type handshakeRequest struct {
 	Type                    string `json:"type"`
@@ -1328,6 +1338,12 @@ func validIdentity(identity Identity) bool {
 	return hashPattern.MatchString(identity.ApplicationManifestHash) && hashPattern.MatchString(identity.OperationCatalogHash) && symbolPattern.MatchString(identity.ContractLineage) && identity.ContractVersion > 0 && hashPattern.MatchString(identity.ContractBundleHash) && symbolPattern.MatchString(identity.Database) && symbolPattern.MatchString(identity.Role) && hashPattern.MatchString(identity.RoleDefinitionHash) && hashPattern.MatchString(identity.RemoteIdentityHash)
 }
 func optionalString(value string) *string {
+	if value == "" {
+		return nil
+	}
+	return &value
+}
+func optionalQueryConsistency(value QueryConsistency) *QueryConsistency {
 	if value == "" {
 		return nil
 	}

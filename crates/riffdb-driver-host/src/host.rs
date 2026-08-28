@@ -26,8 +26,8 @@ use crate::catalog::{
 };
 use crate::protocol::{
     DRIVER_PROTOCOL_VERSION, DRIVER_PROTOCOL_VERSION_V1, DRIVER_PROTOCOL_VERSION_V2,
-    DriverBatchItem, DriverBatchOutcome, DriverPackedColumn, DriverRequest, DriverResponse,
-    DriverTimestamp, DriverValue, InvokeOptions,
+    DRIVER_PROTOCOL_VERSION_V3, DriverBatchItem, DriverBatchOutcome, DriverPackedColumn,
+    DriverRequest, DriverResponse, DriverTimestamp, DriverValue, InvokeOptions,
 };
 
 #[cfg(test)]
@@ -216,7 +216,10 @@ impl DriverHost {
         };
         if !matches!(
             *protocol_version,
-            DRIVER_PROTOCOL_VERSION_V1 | DRIVER_PROTOCOL_VERSION_V2 | DRIVER_PROTOCOL_VERSION
+            DRIVER_PROTOCOL_VERSION_V1
+                | DRIVER_PROTOCOL_VERSION_V2
+                | DRIVER_PROTOCOL_VERSION_V3
+                | DRIVER_PROTOCOL_VERSION
         ) || application_manifest_hash != &self.inner.catalog.application_manifest_hash()
             || operation_catalog_hash != &self.inner.catalog.catalog_hash()
             || contract_lineage != self.inner.catalog.contract_lineage()
@@ -680,6 +683,11 @@ impl DriverHost {
                 if let Some(frontier) = options.read_after_commit {
                     query_options = query_options.read_after_commit(frontier);
                 }
+                if options.query_consistency
+                    == Some(crate::protocol::DriverQueryConsistency::AdmissionHead)
+                {
+                    query_options = query_options.at_least_admission_head();
+                }
                 let query = NamedQuery::new(
                     contract,
                     spec.symbol(),
@@ -837,7 +845,10 @@ impl DriverHost {
                 }
             }
             OperationKind::VectorInspection => {
-                if options.accept_compact_result || options.read_after_commit.is_some() {
+                if options.accept_compact_result
+                    || options.read_after_commit.is_some()
+                    || options.query_consistency.is_some()
+                {
                     return local_error(
                         Some(request_id),
                         Some(spec.public_name().to_owned()),
@@ -2195,6 +2206,7 @@ mod tests {
                     maximum_attempts: 1,
                     read_after_commit: None,
                     cursor: None,
+                    query_consistency: None,
                     accept_compact_result: false,
                     accept_packed_result: false,
                 },

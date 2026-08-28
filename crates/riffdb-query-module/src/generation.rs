@@ -3783,7 +3783,8 @@ pub fn generate_typescript_client(module: &QueryModule, contract: &ContractBundl
          export interface TypedCommandResult<T> {{ readonly outcome: T; readonly commitSequence?: bigint; \
          readonly contractVersion: number; readonly planHash: string; readonly replayed: boolean; readonly outcomeUri?: string; \
          readonly workflowRevisions?: ReadonlyArray<WorkflowSuccessorRevision>; }}\n\
-         export interface QueryOptions {{ readonly cursor?: string; readonly readAfterCommit?: bigint; }}\n\
+         export type QueryConsistency = \"admissionHead\";\n\
+         export interface QueryOptions {{ readonly cursor?: string; readonly readAfterCommit?: bigint; readonly consistency?: QueryConsistency; }}\n\
          export interface CommandBatchProgress {{ readonly completed: number; readonly total: number; readonly checkpoint: number; }}\n\
          export const MAX_COMMAND_BATCH_CONCURRENCY = 384;\n\
          export interface CommandBatchOptions {{ readonly concurrency: number; readonly checkpoint?: number; readonly onProgress?: (progress: CommandBatchProgress) => void; }}\n\

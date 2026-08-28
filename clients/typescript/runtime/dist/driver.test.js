@@ -232,10 +232,11 @@ test("u64 frontiers remain exact across the JSON number protocol", async () => {
     });
     try {
         const transport = await DriverApplicationTransport.connect({ socketPath: fixture.path, identity });
-        const result = await transport.invoke({ name: "ticketdesk_after_commit", inputSchemaHash: HASH }, {}, { readAfterCommit: maximum });
+        const result = await transport.invoke({ name: "ticketdesk_after_commit", inputSchemaHash: HASH }, {}, { readAfterCommit: maximum, queryConsistency: "admissionHead" });
         assert.equal(result.applicationHead, maximum);
         assert.match(fixture.lastRequest, /"read_after_commit":18446744073709551615/);
         assert.doesNotMatch(fixture.lastRequest, /"read_after_commit":"18446744073709551615"/);
+        assert.match(fixture.lastRequest, /"query_consistency":"admission_head"/);
         await transport.shutdown();
     }
     finally {

@@ -9,9 +9,10 @@ use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 /// Exact alpha driver protocol generation.
-pub const DRIVER_PROTOCOL_VERSION: u32 = 3;
+pub const DRIVER_PROTOCOL_VERSION: u32 = 4;
 pub(crate) const DRIVER_PROTOCOL_VERSION_V1: u32 = 1;
 pub(crate) const DRIVER_PROTOCOL_VERSION_V2: u32 = 2;
+pub(crate) const DRIVER_PROTOCOL_VERSION_V3: u32 = 3;
 /// Hard bound for one complete local request or response body.
 pub const MAX_DRIVER_FRAME_BYTES: usize = 1_048_576;
 const MAX_COLLECTION_ITEMS: usize = 4_096;
@@ -102,12 +103,23 @@ pub struct InvokeOptions {
     pub read_after_commit: Option<u64>,
     /// Optional opaque generated-operation cursor.
     pub cursor: Option<String>,
+    /// Optional stronger query consistency class.
+    #[serde(default)]
+    pub query_consistency: Option<DriverQueryConsistency>,
     /// Generated query accepts the exact compiler-sealed positional arm.
     #[serde(default)]
     pub accept_compact_result: bool,
     /// Generated query accepts canonical packed columns.
     #[serde(default)]
     pub accept_packed_result: bool,
+}
+
+/// Closed stronger query consistency classes supported by the local driver.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DriverQueryConsistency {
+    /// Fence the first page at the server-observed admission head.
+    AdmissionHead,
 }
 
 /// Closed application value registry used by every target language.
@@ -547,7 +559,10 @@ fn validate_request(request: &DriverRequest) -> Result<(), ProtocolError> {
             valid_id(request_id)?;
             if !matches!(
                 *protocol_version,
-                DRIVER_PROTOCOL_VERSION_V1 | DRIVER_PROTOCOL_VERSION_V2 | DRIVER_PROTOCOL_VERSION
+                DRIVER_PROTOCOL_VERSION_V1
+                    | DRIVER_PROTOCOL_VERSION_V2
+                    | DRIVER_PROTOCOL_VERSION_V3
+                    | DRIVER_PROTOCOL_VERSION
             ) || !is_hash(application_manifest_hash)
                 || !is_hash(operation_catalog_hash)
                 || contract_lineage.is_empty()
@@ -614,6 +629,7 @@ fn validate_request(request: &DriverRequest) -> Result<(), ProtocolError> {
                 || options.deadline_millis > 300_000
                 || options.read_after_commit.is_some()
                 || options.cursor.is_some()
+                || options.query_consistency.is_some()
                 || options.accept_compact_result
                 || options.accept_packed_result
             {
@@ -659,7 +675,10 @@ fn validate_response(response: &DriverResponse) -> Result<(), ProtocolError> {
             valid_id(request_id)?;
             if !matches!(
                 *protocol_version,
-                DRIVER_PROTOCOL_VERSION_V1 | DRIVER_PROTOCOL_VERSION_V2 | DRIVER_PROTOCOL_VERSION
+                DRIVER_PROTOCOL_VERSION_V1
+                    | DRIVER_PROTOCOL_VERSION_V2
+                    | DRIVER_PROTOCOL_VERSION_V3
+                    | DRIVER_PROTOCOL_VERSION
             ) || driver_identity.is_empty()
                 || driver_identity.len() > 128
                 || !is_hash(application_manifest_hash)

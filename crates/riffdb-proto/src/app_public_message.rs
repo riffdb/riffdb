@@ -525,6 +525,9 @@ app_message!(
                     && *packed == app_v1::NamedResultEncoding::PackedV1 as i32 => {}
             _ => return Err(PublicWireError::InvalidEnum),
         }
+        if app_v1::QueryConsistency::try_from(value.consistency).is_err() {
+            return Err(PublicWireError::InvalidEnum);
+        }
         Ok(())
     }
 );
@@ -1171,12 +1174,21 @@ mod tests {
                 app_v1::NamedResultEncoding::LegacyRecords as i32,
                 app_v1::NamedResultEncoding::CompactV1 as i32,
             ],
+            consistency: app_v1::QueryConsistency::Unspecified as i32,
             request_id: vec![0x77; 16],
             query: Some(app_v1::execute_query_request::Query::QueryName(
                 "BoardPage".to_owned(),
             )),
         };
         assert_eq!(request.validate_structure(), Ok(()));
+        request.consistency = app_v1::QueryConsistency::AdmissionHead as i32;
+        assert_eq!(request.validate_structure(), Ok(()));
+        request.consistency = 99;
+        assert_eq!(
+            request.validate_structure(),
+            Err(PublicWireError::InvalidEnum)
+        );
+        request.consistency = app_v1::QueryConsistency::Unspecified as i32;
         request.accepted_result_encodings.reverse();
         assert_eq!(
             request.validate_structure(),
@@ -1249,6 +1261,7 @@ mod tests {
                 app_v1::NamedResultEncoding::CompactV1 as i32,
                 app_v1::NamedResultEncoding::PackedV1 as i32,
             ],
+            consistency: app_v1::QueryConsistency::Unspecified as i32,
             request_id: vec![0x77; 16],
             query: Some(app_v1::execute_query_request::Query::QueryName(
                 "BoardPage".to_owned(),

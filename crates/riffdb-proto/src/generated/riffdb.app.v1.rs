@@ -152,6 +152,8 @@ pub struct ExecuteQueryRequest {
     pub minimum_application_head: ::core::option::Option<u64>,
     #[prost(enumeration = "NamedResultEncoding", repeated, tag = "8")]
     pub accepted_result_encodings: ::prost::alloc::vec::Vec<i32>,
+    #[prost(enumeration = "QueryConsistency", tag = "9")]
+    pub consistency: i32,
     #[prost(bytes = "vec", tag = "100")]
     pub request_id: ::prost::alloc::vec::Vec<u8>,
     #[prost(oneof = "execute_query_request::Query", tags = "2, 3")]
@@ -1147,6 +1149,32 @@ impl ApplicationFixCode {
             "APPLICATION_FIX_CODE_CONTACT_OPERATOR_WITH_INCIDENT" => {
                 Some(Self::ContactOperatorWithIncident)
             }
+            _ => None,
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum QueryConsistency {
+    Unspecified = 0,
+    AdmissionHead = 1,
+}
+impl QueryConsistency {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "QUERY_CONSISTENCY_UNSPECIFIED",
+            Self::AdmissionHead => "QUERY_CONSISTENCY_ADMISSION_HEAD",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "QUERY_CONSISTENCY_UNSPECIFIED" => Some(Self::Unspecified),
+            "QUERY_CONSISTENCY_ADMISSION_HEAD" => Some(Self::AdmissionHead),
             _ => None,
         }
     }
