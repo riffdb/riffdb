@@ -864,7 +864,7 @@ fn corrupt_value(_: StorageValueError) -> StorageError {
     corrupt()
 }
 
-fn corrupt() -> StorageError {
+const fn corrupt() -> StorageError {
     storage_error(StorageErrorKind::CorruptData)
 }
 

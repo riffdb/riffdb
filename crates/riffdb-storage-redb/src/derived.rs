@@ -1709,7 +1709,7 @@ fn stored_value_error(error: StorageValueError) -> StorageError {
     }
 }
 
-fn corrupt() -> StorageError {
+const fn corrupt() -> StorageError {
     storage_error(StorageErrorKind::CorruptData)
 }
 

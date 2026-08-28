@@ -497,6 +497,6 @@ fn segment_member(
     Ok(Some(CommandAuthorityMember::CapsuleV2(command.clone())))
 }
 
-fn corrupt() -> StorageError {
+const fn corrupt() -> StorageError {
     StorageError::new(StorageErrorKind::CorruptData, None)
 }

@@ -75,7 +75,6 @@ fn decoded_value<T>(item: EncodedPageItem<T>) -> T {
     item.into_parts().0
 }
 
-#[track_caller]
 fn corrupt() -> StorageError {
     storage_error(StorageErrorKind::CorruptData)
 }
@@ -343,11 +342,46 @@ fn command_audit_at_command_tail(
     access: &crate::store::RedbWriteAccess,
     sequence: AdministrationSequence,
 ) -> Result<Option<StoredServiceAuditRecordV1>, StorageError> {
-    let rows = access.read_command_range(JournalTable::Commits, &[0], &[u8::MAX; 9], 0)?;
-    let Some((_, value)) = rows.last() else {
+    // The tail administration sequence belongs to the NEWEST command, whose
+    // commit sequence is the application frontier. That is a META point read,
+    // which turns "last COMMITS row" into the existing bounded window lookup
+    // keyed by commit sequence -- never a full-table scan, which is exactly what
+    // the bounded-startup skip exists to eliminate.
+    let Some(encoded_allocator) = access.read_command_value(
+        JournalTable::Meta,
+        crate::layout::META_APPLICATION_SEQUENCE.as_bytes(),
+    )?
+    else {
         return Ok(None);
     };
-    let Ok(segment) = riffdb_storage_api::decode_command_segment_v1(&value[..]) else {
+    let allocator = decoded_value(
+        riffdb_storage_api::decode_application_sequence_allocator_v1(&encoded_allocator)
+            .map_err(crate::error::codec_error)?,
+    );
+    let last = match allocator {
+        riffdb_storage_api::ApplicationSequenceAllocator::Next(next) => {
+            riffdb_types::CommitSequence::new(next.get().saturating_sub(1))
+        }
+        riffdb_storage_api::ApplicationSequenceAllocator::Exhausted => {
+            riffdb_types::CommitSequence::new(u64::MAX)
+        }
+    };
+    let Some(last) = last else {
+        return Ok(None);
+    };
+    let Some(member) = crate::command_authority::command_member_at_write_access(access, last)?
+    else {
+        return Ok(None);
+    };
+    let base = member.base();
+    for audit in [base.started_audit(), base.terminal_audit()] {
+        if audit.administration_sequence() == sequence {
+            return Ok(Some(audit.clone()));
+        }
+    }
+    return Ok(None);
+    #[allow(unreachable_code)]
+    let Ok(segment) = riffdb_storage_api::decode_command_segment_v1(&[][..]) else {
         return Ok(None);
     };
     let Some(command) = segment.value().commands().last() else {

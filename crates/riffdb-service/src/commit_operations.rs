@@ -1058,21 +1058,15 @@ async fn finish_success(
     context: &RequestContext,
     begun: &BegunInvocation,
 ) -> ServiceResult<()> {
-    let finish_result = begun
+    if begun
         .finish(
             service,
             context,
             ServiceAuditPhaseV1::Succeeded,
             ServiceAuditLinkV1::None,
         )
-        .await;
-    if let Err(ref e) = finish_result {
-        use std::io::Write;
-        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/riffdb-dbg.log") {
-            let _ = writeln!(f, "audit finish failed: {e:?}");
-        }
-    }
-    if finish_result.is_err()
+        .await
+        .is_err()
     {
         service.note_audit_failure(begun.initial_authorization().operation());
         return Err(PublicError::storage_unavailable().into());

@@ -358,7 +358,9 @@ async fn real_riffdbd_restart_preserves_budget_and_bootstrap_replay() -> TestRes
     )?;
     assert_eq!(outcome_after_restart, outcome_before_restart);
 
-    for line in second_process.stderr_lines() { eprintln!("DBG {line}"); }
+    for line in second_process.stderr_lines() {
+        eprintln!("DBG {line}");
+    }
     let bootstrap_replayed = bounded_rpc(
         "retained bootstrap replay after restart",
         second_client.create_bootstrap_capability(
@@ -370,7 +372,9 @@ async fn real_riffdbd_restart_preserves_budget_and_bootstrap_replay() -> TestRes
     let replayed_transition = replayed_bootstrap_transition(bootstrap_replayed)?;
     assert_eq!(replayed_transition, bootstrap_transition);
 
-    for line in second_process.stderr_lines() { eprintln!("DBG2 {line}"); }
+    for line in second_process.stderr_lines() {
+        eprintln!("DBG2 {line}");
+    }
     let live_subscription = bounded_rpc(
         "live commit subscription before clean shutdown",
         second_client.subscribe_commits(
