@@ -53,7 +53,16 @@ pub struct StorageError {
 impl StorageError {
     /// Constructs a closed storage failure with optional opaque correlation.
     #[must_use]
-    pub const fn new(kind: StorageErrorKind, incident_id: Option<IncidentId>) -> Self {
+    #[track_caller]
+    pub fn new(kind: StorageErrorKind, incident_id: Option<IncidentId>) -> Self {
+        if matches!(kind, StorageErrorKind::Unavailable | StorageErrorKind::InvariantViolation | StorageErrorKind::CorruptData) {
+            use std::io::Write;
+            if let Ok(mut f) = std::fs::OpenOptions::new()
+                .create(true).append(true).open("/tmp/riffdb-dbg.log")
+            {
+                let _ = writeln!(f, "{kind:?} from {}", std::panic::Location::caller());
+            }
+        }
         Self { kind, incident_id }
     }
 

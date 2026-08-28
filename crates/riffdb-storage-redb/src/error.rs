@@ -6,13 +6,14 @@ use riffdb_storage_api::{
 
 /// Constructs one source-free storage error at the adapter boundary.
 #[must_use]
-pub(crate) const fn storage_error(kind: StorageErrorKind) -> StorageError {
+#[track_caller]
+pub(crate) fn storage_error(kind: StorageErrorKind) -> StorageError {
     StorageError::new(kind, None)
 }
 
 /// Classifies a checked durable-codec failure without retaining payload details.
 #[must_use]
-pub(crate) const fn codec_error(error: DurableCodecError) -> StorageError {
+pub(crate) fn codec_error(error: DurableCodecError) -> StorageError {
     let kind = match error.kind() {
         DurableCodecErrorKind::IncompatibleFormat => StorageErrorKind::IncompatibleFormat,
         DurableCodecErrorKind::CorruptData | DurableCodecErrorKind::UnexpectedRecordType => {

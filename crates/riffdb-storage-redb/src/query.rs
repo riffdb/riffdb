@@ -1400,11 +1400,11 @@ impl RowMaterializePlan {
     }
 }
 
-const fn invariant() -> StorageError {
+fn invariant() -> StorageError {
     storage_error(StorageErrorKind::InvariantViolation)
 }
 
-const fn corrupt() -> StorageError {
+fn corrupt() -> StorageError {
     storage_error(StorageErrorKind::CorruptData)
 }
 
