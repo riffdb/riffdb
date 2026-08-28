@@ -88,8 +88,16 @@ pub fn writer_publication_stage_census_v1() -> [u64; 9] {
 }
 
 /// Fixed execute-stage order for the bounded query-growth diagnostic.
+///
+/// Stages `point_lookup` through `scan_setup` are physically disjoint segments
+/// nested inside the storage read-view callbacks the program drive makes.
+/// `view_call_residual` is what remains inside those callbacks, and
+/// `program_drive_exclusive` is what remains in the executor once every
+/// callback is removed. The three `point_*` sub-stages decompose `point_lookup`
+/// itself and are therefore already counted inside it: they are deliberately
+/// excluded from the residual subtraction.
 #[doc(hidden)]
-pub const QUERY_EXECUTE_STAGE_LABELS_V1: [&str; 14] = [
+pub const QUERY_EXECUTE_STAGE_LABELS_V1: [&str; 22] = [
     "publication_outer_lock",
     "publication_view_capture",
     "frontier_capture",
@@ -103,8 +111,24 @@ pub const QUERY_EXECUTE_STAGE_LABELS_V1: [&str; 14] = [
     "target_validate",
     "row_policy",
     "row_materialize",
+    "index_epoch_read",
+    "index_range_read",
+    "index_entry_decode",
+    "scan_setup",
+    "point_open_table",
+    "point_btree_get",
+    "point_value_copy",
+    "view_call_residual",
     "program_drive_exclusive",
 ];
+
+/// Trailing fixed-cardinality census values emitted after the stage vector.
+///
+/// Order: overlay transition sum/max, overlay byte sum/max, authority-tail
+/// byte sum/max, authority-tail command sum/max, entity point-read sum/max,
+/// index-row sum/max, index-range-read sum/max, program-step sum/max.
+#[doc(hidden)]
+pub const QUERY_EXECUTE_TRAILING_VALUES_V1: usize = 16;
 
 /// Number of query-execute samples merged into one ordinal window.
 #[doc(hidden)]
@@ -127,6 +151,14 @@ pub struct QueryExecuteWindowV1 {
     pub authority_tail_bytes_max: u64,
     pub authority_tail_commands_sum: u64,
     pub authority_tail_commands_max: u64,
+    pub entity_point_reads_sum: u64,
+    pub entity_point_reads_max: u64,
+    pub index_rows_sum: u64,
+    pub index_rows_max: u64,
+    pub index_range_reads_sum: u64,
+    pub index_range_reads_max: u64,
+    pub program_steps_sum: u64,
+    pub program_steps_max: u64,
 }
 
 /// Complete fixed-cardinality process-generation query-execute census.

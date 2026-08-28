@@ -619,6 +619,18 @@ fn query_execute_json(evidence: Option<&RiffDbQueryExecuteEvidence>) -> Value {
             "authority_tail_commands_mean": window.authority_tail_commands_sum
                 .checked_div(window.count).unwrap_or(0),
             "authority_tail_commands_max": window.authority_tail_commands_max,
+            "entity_point_reads_mean": window.entity_point_reads_sum
+                .checked_div(window.count).unwrap_or(0),
+            "entity_point_reads_max": window.entity_point_reads_max,
+            "index_rows_mean": window.index_rows_sum
+                .checked_div(window.count).unwrap_or(0),
+            "index_rows_max": window.index_rows_max,
+            "index_range_reads_mean": window.index_range_reads_sum
+                .checked_div(window.count).unwrap_or(0),
+            "index_range_reads_max": window.index_range_reads_max,
+            "program_steps_mean": window.program_steps_sum
+                .checked_div(window.count).unwrap_or(0),
+            "program_steps_max": window.program_steps_max,
         })).collect::<Vec<_>>(),
     })
 }

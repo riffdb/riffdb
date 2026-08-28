@@ -3203,7 +3203,73 @@ fn validate_before_image_parts(
     }
 }
 
+thread_local! {
+    /// Per-thread `open_table` / `get` / value-copy nanoseconds for the last
+    /// point-read window, in that order.
+    ///
+    /// A thread-local avoids threading a profile through
+    /// `CompositeViewBase::read_base`, whose signature is fixed by
+    /// `riffdb-storage-api`. Only the diagnostic path writes it, and one query
+    /// execute runs entirely on one thread.
+    static POINT_READ_SUBSTAGES: std::cell::Cell<[u64; 3]> = const { std::cell::Cell::new([0; 3]) };
+}
+
+/// Clears the point-read sub-stage accumulator before one timed window.
+pub(crate) fn reset_point_read_substages() {
+    POINT_READ_SUBSTAGES.with(|cell| cell.set([0; 3]));
+}
+
+/// Returns `open_table`, `get` and value-copy nanoseconds since the last reset.
+pub(crate) fn point_read_substages() -> [u64; 3] {
+    POINT_READ_SUBSTAGES.with(std::cell::Cell::get)
+}
+
+fn charge_point_read_substage(index: usize, started: Instant) {
+    let elapsed = u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX);
+    POINT_READ_SUBSTAGES.with(|cell| {
+        let mut current = cell.get();
+        current[index] = current[index].saturating_add(elapsed);
+        cell.set(current);
+    });
+}
+
 pub(crate) fn read_value(
+    transaction: &redb::ReadTransaction,
+    table: JournalTable,
+    key: &[u8],
+) -> Result<Option<Vec<u8>>, JournalIoError> {
+    if crate::query::query_execute_diagnostics_enabled()
+        && let Some(definition) = byte_table_definition(table)
+    {
+        return read_value_profiled(transaction, definition, key);
+    }
+    read_value_inner(transaction, table, key)
+}
+
+/// Splits one point read into `open_table`, `get` and value-copy segments.
+///
+/// Reachable only when the query-execute diagnostic is enabled, so the
+/// ordinary read path keeps the single-expression form below.
+fn read_value_profiled(
+    transaction: &redb::ReadTransaction,
+    definition: TableDefinition<'static, &'static [u8], &'static [u8]>,
+    key: &[u8],
+) -> Result<Option<Vec<u8>>, JournalIoError> {
+    let started = Instant::now();
+    let opened = transaction
+        .open_table(definition)
+        .map_err(|_| JournalIoError::Corrupt)?;
+    charge_point_read_substage(0, started);
+    let started = Instant::now();
+    let found = opened.get(key).map_err(|_| JournalIoError::Corrupt)?;
+    charge_point_read_substage(1, started);
+    let started = Instant::now();
+    let value = found.map(|value| value.value().to_vec());
+    charge_point_read_substage(2, started);
+    Ok(value)
+}
+
+fn read_value_inner(
     transaction: &redb::ReadTransaction,
     table: JournalTable,
     key: &[u8],

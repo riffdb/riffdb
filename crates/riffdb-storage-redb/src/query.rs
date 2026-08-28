@@ -56,7 +56,20 @@ const SEMANTIC_RECONSTRUCT: usize = 9;
 const TARGET_VALIDATE: usize = 10;
 const ROW_POLICY: usize = 11;
 const ROW_MATERIALIZE: usize = 12;
-const PROGRAM_DRIVE_EXCLUSIVE: usize = 13;
+const INDEX_EPOCH_READ: usize = 13;
+const INDEX_RANGE_READ: usize = 14;
+const INDEX_ENTRY_DECODE: usize = 15;
+const SCAN_SETUP: usize = 16;
+/// Exclusive end of the disjoint nested-stage run measured inside view calls.
+///
+/// `point_open_table`, `point_btree_get` and `point_value_copy` follow it and
+/// decompose `point_lookup`, so they are already inside the subtracted total.
+const NESTED_STAGE_END: usize = 17;
+const POINT_OPEN_TABLE: usize = 17;
+const POINT_BTREE_GET: usize = 18;
+const POINT_VALUE_COPY: usize = 19;
+const VIEW_CALL_RESIDUAL: usize = 20;
+const PROGRAM_DRIVE_EXCLUSIVE: usize = 21;
 
 #[derive(Clone, Copy, Default)]
 struct QueryExecuteProfile {
@@ -65,6 +78,12 @@ struct QueryExecuteProfile {
     overlay_bytes: u64,
     authority_tail_bytes: u64,
     authority_tail_commands: u64,
+    entity_point_reads: u64,
+    index_rows: u64,
+    index_range_reads: u64,
+    program_steps: u64,
+    /// Wall time spent inside every storage read-view callback of one execute.
+    view_total_ns: u64,
 }
 
 struct QueryExecuteWindowCounters {
@@ -78,6 +97,14 @@ struct QueryExecuteWindowCounters {
     authority_tail_bytes_max: AtomicU64,
     authority_tail_commands_sum: AtomicU64,
     authority_tail_commands_max: AtomicU64,
+    entity_point_reads_sum: AtomicU64,
+    entity_point_reads_max: AtomicU64,
+    index_rows_sum: AtomicU64,
+    index_rows_max: AtomicU64,
+    index_range_reads_sum: AtomicU64,
+    index_range_reads_max: AtomicU64,
+    program_steps_sum: AtomicU64,
+    program_steps_max: AtomicU64,
 }
 
 impl QueryExecuteWindowCounters {
@@ -93,6 +120,14 @@ impl QueryExecuteWindowCounters {
             authority_tail_bytes_max: AtomicU64::new(0),
             authority_tail_commands_sum: AtomicU64::new(0),
             authority_tail_commands_max: AtomicU64::new(0),
+            entity_point_reads_sum: AtomicU64::new(0),
+            entity_point_reads_max: AtomicU64::new(0),
+            index_rows_sum: AtomicU64::new(0),
+            index_rows_max: AtomicU64::new(0),
+            index_range_reads_sum: AtomicU64::new(0),
+            index_range_reads_max: AtomicU64::new(0),
+            program_steps_sum: AtomicU64::new(0),
+            program_steps_max: AtomicU64::new(0),
         }
     }
 }
@@ -114,7 +149,7 @@ impl QueryExecuteCensus {
 static QUERY_EXECUTE_DIAGNOSTICS: OnceLock<bool> = OnceLock::new();
 static QUERY_EXECUTE_CENSUS: OnceLock<QueryExecuteCensus> = OnceLock::new();
 
-fn query_execute_diagnostics_enabled() -> bool {
+pub(crate) fn query_execute_diagnostics_enabled() -> bool {
     *QUERY_EXECUTE_DIAGNOSTICS.get_or_init(|| {
         std::env::var_os("RIFFDB_QUERY_EXECUTE_DIAGNOSTICS").is_some_and(|value| value == "1")
     })
@@ -152,6 +187,14 @@ fn record_query_execute_profile(profile: QueryExecuteProfile) {
         &window.authority_tail_commands_max,
         profile.authority_tail_commands,
     );
+    saturating_atomic_add(&window.entity_point_reads_sum, profile.entity_point_reads);
+    atomic_max(&window.entity_point_reads_max, profile.entity_point_reads);
+    saturating_atomic_add(&window.index_rows_sum, profile.index_rows);
+    atomic_max(&window.index_rows_max, profile.index_rows);
+    saturating_atomic_add(&window.index_range_reads_sum, profile.index_range_reads);
+    atomic_max(&window.index_range_reads_max, profile.index_range_reads);
+    saturating_atomic_add(&window.program_steps_sum, profile.program_steps);
+    atomic_max(&window.program_steps_max, profile.program_steps);
 }
 
 fn saturating_atomic_add(target: &AtomicU64, value: u64) {
@@ -192,6 +235,14 @@ pub(crate) fn query_execute_census_v1() -> crate::QueryExecuteCensusV1 {
                 authority_tail_commands_max: window
                     .authority_tail_commands_max
                     .load(Ordering::Relaxed),
+                entity_point_reads_sum: window.entity_point_reads_sum.load(Ordering::Relaxed),
+                entity_point_reads_max: window.entity_point_reads_max.load(Ordering::Relaxed),
+                index_rows_sum: window.index_rows_sum.load(Ordering::Relaxed),
+                index_rows_max: window.index_rows_max.load(Ordering::Relaxed),
+                index_range_reads_sum: window.index_range_reads_sum.load(Ordering::Relaxed),
+                index_range_reads_max: window.index_range_reads_max.load(Ordering::Relaxed),
+                program_steps_sum: window.program_steps_sum.load(Ordering::Relaxed),
+                program_steps_max: window.program_steps_max.load(Ordering::Relaxed),
             }
         }),
     }
@@ -325,11 +376,14 @@ impl QueryExecutionPort for RedbOperationalPorts {
         let result = execute_page_in_snapshot(program, parameters, prior, &mut view);
         if let Some(mut profile) = view.profile.take() {
             let drive_ns = drive_started.map_or(0, elapsed_nanos);
-            let nested_ns = profile.stage_ns[POINT_LOOKUP..PROGRAM_DRIVE_EXCLUSIVE]
+            let nested_ns = profile.stage_ns[POINT_LOOKUP..NESTED_STAGE_END]
                 .iter()
                 .copied()
                 .fold(0_u64, u64::saturating_add);
-            profile.stage_ns[PROGRAM_DRIVE_EXCLUSIVE] = drive_ns.saturating_sub(nested_ns);
+            profile.stage_ns[VIEW_CALL_RESIDUAL] =
+                profile.view_total_ns.saturating_sub(nested_ns);
+            profile.stage_ns[PROGRAM_DRIVE_EXCLUSIVE] =
+                drive_ns.saturating_sub(profile.view_total_ns);
             record_query_execute_profile(profile);
         }
         result
@@ -780,18 +834,26 @@ impl RedbQueryView<'_> {
     ) -> Result<Option<riffdb_storage_api::StoredEntityRecordV1>, StorageError> {
         self.touch_entities();
         let key = encode_entity_key(target.key());
-        let lookup_started = self.profile.as_ref().map(|_| Instant::now());
-        let Some(encoded) = self.transaction.read_value(JournalTable::Entities, key)? else {
-            if let (Some(profile), Some(started)) = (self.profile.as_mut(), lookup_started) {
-                profile.stage_ns[POINT_LOOKUP] =
-                    profile.stage_ns[POINT_LOOKUP].saturating_add(elapsed_nanos(started));
-            }
-            return Ok(None);
-        };
+        let lookup_started = self.profile.as_ref().map(|_| {
+            crate::journal::reset_point_read_substages();
+            Instant::now()
+        });
+        let outcome = self.transaction.read_value(JournalTable::Entities, key);
         if let (Some(profile), Some(started)) = (self.profile.as_mut(), lookup_started) {
             profile.stage_ns[POINT_LOOKUP] =
                 profile.stage_ns[POINT_LOOKUP].saturating_add(elapsed_nanos(started));
+            profile.entity_point_reads = profile.entity_point_reads.saturating_add(1);
+            let [open_ns, get_ns, copy_ns] = crate::journal::point_read_substages();
+            profile.stage_ns[POINT_OPEN_TABLE] =
+                profile.stage_ns[POINT_OPEN_TABLE].saturating_add(open_ns);
+            profile.stage_ns[POINT_BTREE_GET] =
+                profile.stage_ns[POINT_BTREE_GET].saturating_add(get_ns);
+            profile.stage_ns[POINT_VALUE_COPY] =
+                profile.stage_ns[POINT_VALUE_COPY].saturating_add(copy_ns);
         }
+        let Some(encoded) = outcome? else {
+            return Ok(None);
+        };
         let decoded = if let Some(profile) = self.profile.as_mut() {
             let (decoded, decode) = decode_entity_record_v1_profiled(&encoded)?;
             profile.stage_ns[ENVELOPE_IDENTITY_BOUNDS] = profile.stage_ns[ENVELOPE_IDENTITY_BOUNDS]
@@ -822,6 +884,16 @@ impl RedbQueryView<'_> {
     }
 
     fn read_epoch(&mut self, target: &PartitionIndexTarget) -> Result<u64, StorageError> {
+        let started = self.profile.as_ref().map(|_| Instant::now());
+        let epoch = self.read_epoch_inner(target);
+        if let (Some(profile), Some(started)) = (self.profile.as_mut(), started) {
+            profile.stage_ns[INDEX_EPOCH_READ] =
+                profile.stage_ns[INDEX_EPOCH_READ].saturating_add(elapsed_nanos(started));
+        }
+        epoch
+    }
+
+    fn read_epoch_inner(&mut self, target: &PartitionIndexTarget) -> Result<u64, StorageError> {
         self.touch_epochs();
         let key = encode_partition_index_key(target);
         let Some(encoded) = self
@@ -835,6 +907,63 @@ impl RedbQueryView<'_> {
             return Err(corrupt());
         }
         Ok(epoch.epoch().get())
+    }
+
+    /// Reads one bounded secondary-index window, charging the storage segment
+    /// to `index_range_read` rather than leaving it in the drive residual.
+    fn read_index_range(
+        &mut self,
+        direction: AccessDirection,
+        start_inclusive: &[u8],
+        end_exclusive: &[u8],
+        max_rows: usize,
+    ) -> Result<Vec<riffdb_storage_api::CompositeRow>, StorageError> {
+        let started = self.profile.as_ref().map(|_| Instant::now());
+        let rows = match direction {
+            AccessDirection::Forward => self.transaction.read_range(
+                JournalTable::SecondaryIndexes,
+                start_inclusive,
+                end_exclusive,
+                max_rows,
+            ),
+            AccessDirection::Reverse => self.transaction.read_range_reverse(
+                JournalTable::SecondaryIndexes,
+                start_inclusive,
+                end_exclusive,
+                max_rows,
+            ),
+        };
+        if let (Some(profile), Some(started)) = (self.profile.as_mut(), started) {
+            profile.stage_ns[INDEX_RANGE_READ] =
+                profile.stage_ns[INDEX_RANGE_READ].saturating_add(elapsed_nanos(started));
+            profile.index_range_reads = profile.index_range_reads.saturating_add(1);
+            if let Ok(rows) = &rows {
+                profile.index_rows = profile
+                    .index_rows
+                    .saturating_add(u64::try_from(rows.len()).unwrap_or(u64::MAX));
+            }
+        }
+        rows
+    }
+
+    fn note_program_step(&mut self) {
+        if let Some(profile) = self.profile.as_mut() {
+            profile.program_steps = profile.program_steps.saturating_add(1);
+        }
+    }
+
+    /// Opens one read-view callback window, returning its start instant.
+    fn begin_view_call(&self) -> Option<Instant> {
+        self.profile.as_ref().map(|_| Instant::now())
+    }
+
+    /// Closes the window opened by [`Self::begin_view_call`].
+    fn end_view_call(&mut self, started: Option<Instant>) {
+        if let (Some(profile), Some(started)) = (self.profile.as_mut(), started) {
+            profile.view_total_ns = profile
+                .view_total_ns
+                .saturating_add(elapsed_nanos(started));
+        }
     }
 }
 
@@ -855,8 +984,10 @@ impl QueryReadView for RedbQueryView<'_> {
         predicates: &[BoundPredicate],
         policy: Option<&AuthorizedQueryRowPolicyContextV1>,
     ) -> Result<Option<QueryRow>, Self::Error> {
-        let plan = RowMaterializePlan::for_step(self.program, step)?;
-        self.point_with_plan(step, predicates, &plan, policy)
+        let call = self.begin_view_call();
+        let result = self.point_inner(step, predicates, policy);
+        self.end_view_call(call);
+        result
     }
 
     fn dependent_point_batch(
@@ -865,15 +996,10 @@ impl QueryReadView for RedbQueryView<'_> {
         predicates: &[Vec<BoundPredicate>],
         policy: Option<&AuthorizedQueryRowPolicyContextV1>,
     ) -> Result<Vec<Option<QueryRow>>, Self::Error> {
-        if !matches!(step.access(), QueryAccessKind::DependentPointBatch { .. }) {
-            return Err(invariant());
-        }
-        // One plan for the whole batch (not per predicate/row).
-        let plan = RowMaterializePlan::for_step(self.program, step)?;
-        predicates
-            .iter()
-            .map(|predicates| self.point_with_plan(step, predicates, &plan, policy))
-            .collect()
+        let call = self.begin_view_call();
+        let result = self.dependent_point_batch_inner(step, predicates, policy);
+        self.end_view_call(call);
+        result
     }
 
     fn scan(
@@ -884,6 +1010,89 @@ impl QueryReadView for RedbQueryView<'_> {
         after: Option<&[u8]>,
         policy: Option<&AuthorizedQueryRowPolicyContextV1>,
     ) -> Result<QueryScanPage, Self::Error> {
+        let call = self.begin_view_call();
+        let result = self.scan_inner(step, predicates, limit, after, policy);
+        self.end_view_call(call);
+        result
+    }
+
+    fn scan_covered(
+        &mut self,
+        step: &QueryAccessStep,
+        predicates: &[BoundPredicate],
+        limit: u64,
+        after: Option<&[u8]>,
+        policy: Option<&AuthorizedQueryRowPolicyContextV1>,
+    ) -> Result<Option<CoveredResultBatch>, Self::Error> {
+        let call = self.begin_view_call();
+        let result = self.scan_covered_inner(step, predicates, limit, after, policy);
+        self.end_view_call(call);
+        result
+    }
+
+    fn nearest(
+        &mut self,
+        _step: &QueryAccessStep,
+        _predicates: &[BoundPredicate],
+        _k: u32,
+        _policy: Option<&AuthorizedQueryRowPolicyContextV1>,
+    ) -> Result<QueryNearestPage, Self::Error> {
+        // Row-store does not support vector nearest-neighbor search (ADR-0091).
+        // Nearest queries must be routed through the columnar projection engine.
+        Err(invariant())
+    }
+}
+
+impl RedbQueryView<'_> {
+    fn point_inner(
+        &mut self,
+        step: &QueryAccessStep,
+        predicates: &[BoundPredicate],
+        policy: Option<&AuthorizedQueryRowPolicyContextV1>,
+    ) -> Result<Option<QueryRow>, StorageError> {
+        self.note_program_step();
+        let started = self.profile.as_ref().map(|_| Instant::now());
+        let plan = RowMaterializePlan::for_step(self.program, step)?;
+        if let (Some(profile), Some(started)) = (self.profile.as_mut(), started) {
+            profile.stage_ns[SCAN_SETUP] =
+                profile.stage_ns[SCAN_SETUP].saturating_add(elapsed_nanos(started));
+        }
+        self.point_with_plan(step, predicates, &plan, policy)
+    }
+
+    fn dependent_point_batch_inner(
+        &mut self,
+        step: &QueryAccessStep,
+        predicates: &[Vec<BoundPredicate>],
+        policy: Option<&AuthorizedQueryRowPolicyContextV1>,
+    ) -> Result<Vec<Option<QueryRow>>, StorageError> {
+        if !matches!(step.access(), QueryAccessKind::DependentPointBatch { .. }) {
+            return Err(invariant());
+        }
+        self.note_program_step();
+        let started = self.profile.as_ref().map(|_| Instant::now());
+        // One plan for the whole batch (not per predicate/row).
+        let plan = RowMaterializePlan::for_step(self.program, step)?;
+        if let (Some(profile), Some(started)) = (self.profile.as_mut(), started) {
+            profile.stage_ns[SCAN_SETUP] =
+                profile.stage_ns[SCAN_SETUP].saturating_add(elapsed_nanos(started));
+        }
+        predicates
+            .iter()
+            .map(|predicates| self.point_with_plan(step, predicates, &plan, policy))
+            .collect()
+    }
+
+    fn scan_inner(
+        &mut self,
+        step: &QueryAccessStep,
+        predicates: &[BoundPredicate],
+        limit: u64,
+        after: Option<&[u8]>,
+        policy: Option<&AuthorizedQueryRowPolicyContextV1>,
+    ) -> Result<QueryScanPage, StorageError> {
+        self.note_program_step();
+        let setup_started = self.profile.as_ref().map(|_| Instant::now());
         let QueryAccessKind::Index { direction, .. } = step.access() else {
             return Err(invariant());
         };
@@ -898,7 +1107,12 @@ impl QueryReadView for RedbQueryView<'_> {
             .map_err(|_| invariant())?;
         let generation_target =
             PartitionIndexTarget::new(partition, step.internal_index_id().ok_or_else(invariant)?);
+        if let (Some(profile), Some(started)) = (self.profile.as_mut(), setup_started) {
+            profile.stage_ns[SCAN_SETUP] =
+                profile.stage_ns[SCAN_SETUP].saturating_add(elapsed_nanos(started));
+        }
         let epoch = self.read_epoch(&generation_target)?;
+        let setup_started = self.profile.as_ref().map(|_| Instant::now());
         let page_limit =
             usize::try_from(limit).map_err(|_| storage_error(StorageErrorKind::LimitExceeded))?;
         let fetch_limit = page_limit.saturating_add(1);
@@ -910,6 +1124,10 @@ impl QueryReadView for RedbQueryView<'_> {
         let schedule = riffdb_query_executor::bound_index_range_schedule_v1(step, predicates)
             .map_err(|_| invariant())?;
         let plan = RowMaterializePlan::for_step(self.program, step)?;
+        if let (Some(profile), Some(started)) = (self.profile.as_mut(), setup_started) {
+            profile.stage_ns[SCAN_SETUP] =
+                profile.stage_ns[SCAN_SETUP].saturating_add(elapsed_nanos(started));
+        }
 
         self.touch_indexes();
         'ranges: for range in schedule.ranges() {
@@ -920,20 +1138,12 @@ impl QueryReadView for RedbQueryView<'_> {
             if remaining_scan == 0 {
                 return Err(storage_error(StorageErrorKind::LimitExceeded));
             }
-            let rows = match direction {
-                AccessDirection::Forward => self.transaction.read_range(
-                    JournalTable::SecondaryIndexes,
-                    window.start_inclusive(),
-                    window.end_exclusive(),
-                    remaining_scan,
-                )?,
-                AccessDirection::Reverse => self.transaction.read_range_reverse(
-                    JournalTable::SecondaryIndexes,
-                    window.start_inclusive(),
-                    window.end_exclusive(),
-                    remaining_scan,
-                )?,
-            };
+            let rows = self.read_index_range(
+                *direction,
+                window.start_inclusive(),
+                window.end_exclusive(),
+                remaining_scan,
+            )?;
             let inspected_this_prefix = rows.len();
             inspected = inspected
                 .checked_add(inspected_this_prefix)
@@ -945,8 +1155,14 @@ impl QueryReadView for RedbQueryView<'_> {
                 {
                     continue;
                 }
+                let entry_started = self.profile.as_ref().map(|_| Instant::now());
                 let decoded = decode_current_index_entry(entry)?;
                 if decoded.1.partition_key() != generation_target.partition_key() {
+                    if let (Some(profile), Some(started)) = (self.profile.as_mut(), entry_started) {
+                        profile.stage_ns[INDEX_ENTRY_DECODE] = profile.stage_ns
+                            [INDEX_ENTRY_DECODE]
+                            .saturating_add(elapsed_nanos(started));
+                    }
                     continue;
                 }
                 partition_candidates = partition_candidates
@@ -956,6 +1172,10 @@ impl QueryReadView for RedbQueryView<'_> {
                 let target =
                     EntityTarget::new(step.internal_entity_id(), decoded_key.entity_key().clone())
                         .map_err(|_| corrupt())?;
+                if let (Some(profile), Some(started)) = (self.profile.as_mut(), entry_started) {
+                    profile.stage_ns[INDEX_ENTRY_DECODE] = profile.stage_ns[INDEX_ENTRY_DECODE]
+                        .saturating_add(elapsed_nanos(started));
+                }
                 let record = self.read_entity(&target)?.ok_or_else(corrupt)?;
                 let policy_started = self.profile.as_ref().map(|_| Instant::now());
                 let allowed =
@@ -1007,17 +1227,19 @@ impl QueryReadView for RedbQueryView<'_> {
         }
     }
 
-    fn scan_covered(
+    fn scan_covered_inner(
         &mut self,
         step: &QueryAccessStep,
         predicates: &[BoundPredicate],
         limit: u64,
         after: Option<&[u8]>,
         policy: Option<&AuthorizedQueryRowPolicyContextV1>,
-    ) -> Result<Option<CoveredResultBatch>, Self::Error> {
+    ) -> Result<Option<CoveredResultBatch>, StorageError> {
         let Some(layout) = step.covered_result_layout() else {
             return Ok(None);
         };
+        self.note_program_step();
+        let setup_started = self.profile.as_ref().map(|_| Instant::now());
         if policy.is_some() {
             return Err(invariant());
         }
@@ -1035,7 +1257,12 @@ impl QueryReadView for RedbQueryView<'_> {
             .map_err(|_| invariant())?;
         let generation_target =
             PartitionIndexTarget::new(partition, step.internal_index_id().ok_or_else(invariant)?);
+        if let (Some(profile), Some(started)) = (self.profile.as_mut(), setup_started) {
+            profile.stage_ns[SCAN_SETUP] =
+                profile.stage_ns[SCAN_SETUP].saturating_add(elapsed_nanos(started));
+        }
         let epoch = self.read_epoch(&generation_target)?;
+        let setup_started = self.profile.as_ref().map(|_| Instant::now());
         let page_limit =
             usize::try_from(limit).map_err(|_| storage_error(StorageErrorKind::LimitExceeded))?;
         let fetch_limit = page_limit.saturating_add(1);
@@ -1063,6 +1290,10 @@ impl QueryReadView for RedbQueryView<'_> {
             .collect::<Result<Vec<_>, _>>()?;
         let schedule = riffdb_query_executor::bound_index_range_schedule_v1(step, predicates)
             .map_err(|_| invariant())?;
+        if let (Some(profile), Some(started)) = (self.profile.as_mut(), setup_started) {
+            profile.stage_ns[SCAN_SETUP] =
+                profile.stage_ns[SCAN_SETUP].saturating_add(elapsed_nanos(started));
+        }
 
         self.touch_indexes();
         'ranges: for range in schedule.ranges() {
@@ -1073,24 +1304,17 @@ impl QueryReadView for RedbQueryView<'_> {
             if remaining_scan == 0 {
                 return Err(storage_error(StorageErrorKind::LimitExceeded));
             }
-            let rows = match direction {
-                AccessDirection::Forward => self.transaction.read_range(
-                    JournalTable::SecondaryIndexes,
-                    window.start_inclusive(),
-                    window.end_exclusive(),
-                    remaining_scan,
-                )?,
-                AccessDirection::Reverse => self.transaction.read_range_reverse(
-                    JournalTable::SecondaryIndexes,
-                    window.start_inclusive(),
-                    window.end_exclusive(),
-                    remaining_scan,
-                )?,
-            };
+            let rows = self.read_index_range(
+                *direction,
+                window.start_inclusive(),
+                window.end_exclusive(),
+                remaining_scan,
+            )?;
             let inspected_this_prefix = rows.len();
             inspected = inspected
                 .checked_add(inspected_this_prefix)
                 .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
+            let entries_started = self.profile.as_ref().map(|_| Instant::now());
             for entry in rows {
                 if matches!(direction, AccessDirection::Forward)
                     && window.skip_start_equal()
@@ -1153,8 +1377,19 @@ impl QueryReadView for RedbQueryView<'_> {
                 }
                 entries.push((entry_key, values));
                 if entries.len() == fetch_limit {
+                    if let (Some(profile), Some(started)) =
+                        (self.profile.as_mut(), entries_started)
+                    {
+                        profile.stage_ns[INDEX_ENTRY_DECODE] = profile.stage_ns
+                            [INDEX_ENTRY_DECODE]
+                            .saturating_add(elapsed_nanos(started));
+                    }
                     break 'ranges;
                 }
+            }
+            if let (Some(profile), Some(started)) = (self.profile.as_mut(), entries_started) {
+                profile.stage_ns[INDEX_ENTRY_DECODE] =
+                    profile.stage_ns[INDEX_ENTRY_DECODE].saturating_add(elapsed_nanos(started));
             }
             if inspected_this_prefix == remaining_scan {
                 return Err(storage_error(StorageErrorKind::LimitExceeded));
@@ -1176,20 +1411,6 @@ impl QueryReadView for RedbQueryView<'_> {
             .ok_or_else(invariant)
     }
 
-    fn nearest(
-        &mut self,
-        _step: &QueryAccessStep,
-        _predicates: &[BoundPredicate],
-        _k: u32,
-        _policy: Option<&AuthorizedQueryRowPolicyContextV1>,
-    ) -> Result<QueryNearestPage, Self::Error> {
-        // Row-store does not support vector nearest-neighbor search (ADR-0091).
-        // Nearest queries must be routed through the columnar projection engine.
-        Err(invariant())
-    }
-}
-
-impl RedbQueryView<'_> {
     fn point_with_plan(
         &mut self,
         step: &QueryAccessStep,
@@ -1270,8 +1491,8 @@ impl RedbQueryView<'_> {
         self.touch_indexes();
         let maximum = usize::try_from(MAX_QUERY_SCANNED_ROWS)
             .map_err(|_| storage_error(StorageErrorKind::LimitExceeded))?;
-        let rows = self.transaction.read_range(
-            JournalTable::SecondaryIndexes,
+        let rows = self.read_index_range(
+            AccessDirection::Forward,
             lookup.index_prefix(),
             &upper,
             maximum,
@@ -1279,11 +1500,20 @@ impl RedbQueryView<'_> {
         if rows.len() == maximum {
             return Err(storage_error(StorageErrorKind::LimitExceeded));
         }
+        let started = self.profile.as_ref().map(|_| Instant::now());
         for row in rows {
             let (_, entry) = decode_current_index_entry(row)?;
             if entry.partition_key() == lookup.partition() {
+                if let (Some(profile), Some(started)) = (self.profile.as_mut(), started) {
+                    profile.stage_ns[INDEX_ENTRY_DECODE] = profile.stage_ns[INDEX_ENTRY_DECODE]
+                        .saturating_add(elapsed_nanos(started));
+                }
                 return Ok(true);
             }
+        }
+        if let (Some(profile), Some(started)) = (self.profile.as_mut(), started) {
+            profile.stage_ns[INDEX_ENTRY_DECODE] =
+                profile.stage_ns[INDEX_ENTRY_DECODE].saturating_add(elapsed_nanos(started));
         }
         Ok(false)
     }

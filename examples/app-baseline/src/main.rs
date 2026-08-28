@@ -1054,6 +1054,14 @@ fn riffdb_shutdown_evidence_json(evidence: &RiffDbShutdownEvidence) -> serde_jso
                     "authority_tail_bytes_max": window.authority_tail_bytes_max,
                     "authority_tail_commands_sum": window.authority_tail_commands_sum,
                     "authority_tail_commands_max": window.authority_tail_commands_max,
+                    "entity_point_reads_sum": window.entity_point_reads_sum,
+                    "entity_point_reads_max": window.entity_point_reads_max,
+                    "index_rows_sum": window.index_rows_sum,
+                    "index_rows_max": window.index_rows_max,
+                    "index_range_reads_sum": window.index_range_reads_sum,
+                    "index_range_reads_max": window.index_range_reads_max,
+                    "program_steps_sum": window.program_steps_sum,
+                    "program_steps_max": window.program_steps_max,
                 })
             })
             .collect::<Vec<_>>();
