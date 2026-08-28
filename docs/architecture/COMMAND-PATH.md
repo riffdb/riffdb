@@ -24,6 +24,17 @@ before committing the same atomic outcome, event, provenance, and mutation
 graph. It never converts a stale create candidate into a replace (or the
 reverse) without whole-command reevaluation.
 
+An `observe_or_initialize`/`decide` pair uses the same stages. Snapshot
+materialization retains the exact absent or present-version observation and
+the compiler-enumerated finite target set. Deterministic evaluation tests the
+ordered predicates once for that decision instance and constructs only the
+selected apply graph, exact no-effect dependency, or typed rejection. Worker
+preparation replays the sealed V18 program once against the normalized
+snapshot, caches its mutation coverage, and the writer revalidates the exact
+observations before accepting that proof. Rejection discards the whole graph;
+all-no-effect still commits the normal outcome, audit, provenance, and
+sequence without an application mutation.
+
 ## Boundaries that must remain closed
 
 - Transports cannot construct an already-authorized command.

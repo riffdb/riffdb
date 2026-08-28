@@ -14,13 +14,14 @@ use riffdb_types::{
 use crate::codec::{Reader, Writer};
 use crate::format_registry::{
     binary_operator as binary_tag, binding_mode as binding_tag,
-    capability_requirement as capability_tag, compatibility_class as compatibility_tag,
-    enum_variant_owner as variant_owner_tag, execution_class as execution_tag,
-    expression as expression_tag, index_owner as index_owner_tag, instruction as instruction_tag,
-    invariant_owner as invariant_owner_tag, key_purpose as key_purpose_tag,
-    lineage_entry_state as lineage_state_tag, outcome_owner as outcome_owner_tag,
-    projection_aggregation as aggregation_tag, projection_frontier as frontier_tag,
-    record_owner as record_owner_tag, record_reference as record_tag, retry_policy as retry_tag,
+    capability_requirement as capability_tag, command_decision_action as decision_action_tag,
+    compatibility_class as compatibility_tag, enum_variant_owner as variant_owner_tag,
+    execution_class as execution_tag, expression as expression_tag, index_owner as index_owner_tag,
+    instruction as instruction_tag, invariant_owner as invariant_owner_tag,
+    key_purpose as key_purpose_tag, lineage_entry_state as lineage_state_tag,
+    outcome_owner as outcome_owner_tag, projection_aggregation as aggregation_tag,
+    projection_frontier as frontier_tag, record_owner as record_owner_tag,
+    record_reference as record_tag, retry_policy as retry_tag,
     stable_id_namespace as namespace_tag, unary_operator as unary_tag,
     value_type as value_type_tag, workflow_lease_operation as lease_operation_tag,
 };
@@ -30,10 +31,11 @@ use crate::row_policy::{
 use crate::{
     AggregateKeyPlan, AggregateSchema, BinaryOperator, BindingId, BindingMode, BindingPlan,
     CapabilityRequirement, CollectionDuplicatePolicyV1, CollectionExpansionPlanV1,
-    CommandInputSchema, CommandPlan, CompatibilityClass, CompatibilityCode, CompatibilityEntry,
-    CompatibilityReport, ConflictDerivationPlan, EntitySchema, EnumSchema, EnumVariantSchema,
-    EventConstruction, EventPolicyAnchorFieldV1, EventPolicyAnchorV1, EventSchema, ExecutionClass,
-    ExprId, ExpressionArena, ExpressionKind, FieldExpression, FieldSchema, GeneratedSchemaArtifact,
+    CommandDecisionActionV1, CommandDecisionArmV1, CommandDecisionPlanV1, CommandInputSchema,
+    CommandPlan, CompatibilityClass, CompatibilityCode, CompatibilityEntry, CompatibilityReport,
+    ConflictDerivationPlan, EntitySchema, EnumSchema, EnumVariantSchema, EventConstruction,
+    EventPolicyAnchorFieldV1, EventPolicyAnchorV1, EventSchema, ExecutionClass, ExprId,
+    ExpressionArena, ExpressionKind, FieldExpression, FieldSchema, GeneratedSchemaArtifact,
     IndexFieldEncodingV1, IndexSchema, Instruction, InvariantPlan, IrValidationError,
     KeyComponentCodecV1, KeyComponentSchema, KeyPurpose, KeySchema, LocalityPlan,
     McpCommandNameEntryV2, McpCommandNameRegistryV2, ObjectConstruction, OutcomeConstruction,
@@ -79,6 +81,8 @@ pub const BUNDLE_FORMAT_VERSION_V15: u32 = 15;
 pub const BUNDLE_FORMAT_VERSION_V16: u32 = 16;
 /// Bundle framing containing compiler-sealed initialized mutable bindings.
 pub const BUNDLE_FORMAT_VERSION_V17: u32 = 17;
+/// Bundle framing containing compiler-sealed command decisions.
+pub const BUNDLE_FORMAT_VERSION_V18: u32 = 18;
 /// Canonical grammar version represented by a bundle.
 pub const GRAMMAR_VERSION_V1: u32 = 1;
 /// Contract grammar containing compiled workflows and service-owned values.
@@ -113,6 +117,8 @@ pub const GRAMMAR_VERSION_V15: u32 = 15;
 pub const GRAMMAR_VERSION_V16: u32 = 16;
 /// Contract grammar containing initialized mutable bindings.
 pub const GRAMMAR_VERSION_V17: u32 = 17;
+/// Contract grammar containing deferred initialized decisions.
+pub const GRAMMAR_VERSION_V18: u32 = 18;
 /// Executable IR version represented by a bundle.
 pub const EXECUTABLE_IR_VERSION_V1: u32 = 1;
 /// Executable IR containing compiled workflow transitions and service values.
@@ -147,6 +153,8 @@ pub const EXECUTABLE_IR_VERSION_V15: u32 = 15;
 pub const EXECUTABLE_IR_VERSION_V16: u32 = 16;
 /// Executable IR containing initialized mutable binding plans.
 pub const EXECUTABLE_IR_VERSION_V17: u32 = 17;
+/// Executable IR containing compiler-sealed command decisions.
+pub const EXECUTABLE_IR_VERSION_V18: u32 = 18;
 
 const RELATIONSHIP_SCHEMA_EXTENSION: u32 = 0xffff_fffe;
 const UNIQUE_KEY_SCHEMA_EXTENSION: u32 = 0xffff_fffd;
@@ -1074,7 +1082,9 @@ impl ContractBundle {
         mcp_command_names: McpCommandNameRegistryV2,
         compatibility: CompatibilityReport,
     ) -> Result<Self, IrValidationError> {
-        let version = if commands.iter().any(CommandPlan::requires_ir_v17) {
+        let version = if commands.iter().any(CommandPlan::requires_ir_v18) {
+            BUNDLE_FORMAT_VERSION_V18
+        } else if commands.iter().any(CommandPlan::requires_ir_v17) {
             BUNDLE_FORMAT_VERSION_V17
         } else if commands.iter().any(CommandPlan::requires_ir_v16) {
             BUNDLE_FORMAT_VERSION_V16
@@ -1220,6 +1230,10 @@ impl ContractBundle {
                 BUNDLE_FORMAT_VERSION_V17,
                 GRAMMAR_VERSION_V17,
                 EXECUTABLE_IR_VERSION_V17
+            ) | (
+                BUNDLE_FORMAT_VERSION_V18,
+                GRAMMAR_VERSION_V18,
+                EXECUTABLE_IR_VERSION_V18
             )
         ) || (ir_version < EXECUTABLE_IR_VERSION_V2
             && (!workflows.is_empty() || commands.iter().any(CommandPlan::requires_ir_v2)))
@@ -1247,6 +1261,8 @@ impl ContractBundle {
                 && commands.iter().any(CommandPlan::requires_ir_v16))
             || (ir_version < EXECUTABLE_IR_VERSION_V17
                 && commands.iter().any(CommandPlan::requires_ir_v17))
+            || (ir_version < EXECUTABLE_IR_VERSION_V18
+                && commands.iter().any(CommandPlan::requires_ir_v18))
             || (ir_version >= EXECUTABLE_IR_VERSION_V6
                 && commands
                     .iter()
@@ -1936,7 +1952,9 @@ pub(crate) fn compute_command_plan_hash(
 ) -> Result<PlanHash, IrValidationError> {
     let mut writer = Writer::new(MAX_BUNDLE_BYTES);
     writer.raw(COMMAND_PLAN_MAGIC)?;
-    let ir_version = if plan.requires_ir_v17() {
+    let ir_version = if plan.requires_ir_v18() {
+        EXECUTABLE_IR_VERSION_V18
+    } else if plan.requires_ir_v17() {
         EXECUTABLE_IR_VERSION_V17
     } else if plan.requires_ir_v16() {
         EXECUTABLE_IR_VERSION_V16
@@ -3058,7 +3076,9 @@ fn encode_command_bundle_entry(
     command: &CommandPlan,
     schema: &SchemaIr,
 ) -> Result<(), IrValidationError> {
-    let ir_version = if command.requires_ir_v17() {
+    let ir_version = if command.requires_ir_v18() {
+        EXECUTABLE_IR_VERSION_V18
+    } else if command.requires_ir_v17() {
         EXECUTABLE_IR_VERSION_V17
     } else if command.requires_ir_v16() {
         EXECUTABLE_IR_VERSION_V16
@@ -3100,7 +3120,9 @@ fn encode_command_semantics(
     schema: &SchemaIr,
     include_display_names: bool,
 ) -> Result<(), IrValidationError> {
-    let ir_version = if command.requires_ir_v17() {
+    let ir_version = if command.requires_ir_v18() {
+        EXECUTABLE_IR_VERSION_V18
+    } else if command.requires_ir_v17() {
         EXECUTABLE_IR_VERSION_V17
     } else if command.requires_ir_v16() {
         EXECUTABLE_IR_VERSION_V16
@@ -3247,6 +3269,12 @@ fn encode_command_semantics_versioned(
     for instruction in command.instructions() {
         encode_instruction(writer, instruction)?;
     }
+    if ir_version >= EXECUTABLE_IR_VERSION_V18 {
+        writer.u32(command.decisions().len() as u32)?;
+        for decision in command.decisions() {
+            encode_command_decision(writer, decision)?;
+        }
+    }
     if ir_version >= EXECUTABLE_IR_VERSION_V11 {
         writer.u32(command.secret_reveals().len() as u32)?;
         for reveal in command.secret_reveals() {
@@ -3326,6 +3354,14 @@ fn encode_command_semantics_versioned(
     let mut events = command
         .instructions()
         .iter()
+        .chain(command.decisions().iter().flat_map(|decision| {
+            decision
+                .when_arms()
+                .iter()
+                .map(CommandDecisionArmV1::action)
+                .chain(std::iter::once(decision.else_action()))
+                .flat_map(CommandDecisionActionV1::instructions)
+        }))
         .filter_map(|instruction| match instruction {
             Instruction::EmitEvent(event) => Some(event.event_type()),
             _ => None,
@@ -3344,6 +3380,48 @@ fn encode_command_semantics_versioned(
                 })?,
             include_display_names,
         )?;
+    }
+    Ok(())
+}
+
+fn encode_command_decision(
+    writer: &mut Writer,
+    decision: &CommandDecisionPlanV1,
+) -> Result<(), IrValidationError> {
+    writer.u32(decision.binding().get())?;
+    writer.bool(decision.collection_local())?;
+    writer.u32(decision.when_arms().len() as u32)?;
+    for arm in decision.when_arms() {
+        writer.u32(arm.predicate().get())?;
+        encode_command_decision_action(writer, arm.action())?;
+    }
+    encode_command_decision_action(writer, decision.else_action())
+}
+
+fn encode_command_decision_action(
+    writer: &mut Writer,
+    action: &CommandDecisionActionV1,
+) -> Result<(), IrValidationError> {
+    match action {
+        CommandDecisionActionV1::Apply {
+            bindings,
+            instructions,
+        } => {
+            writer.u8(decision_action_tag::APPLY)?;
+            writer.u32(bindings.len() as u32)?;
+            for binding in bindings {
+                writer.u32(binding.get())?;
+            }
+            writer.u32(instructions.len() as u32)?;
+            for instruction in instructions {
+                encode_instruction(writer, instruction)?;
+            }
+        }
+        CommandDecisionActionV1::NoEffect => writer.u8(decision_action_tag::NO_EFFECT)?,
+        CommandDecisionActionV1::Reject(outcome) => {
+            writer.u8(decision_action_tag::REJECT)?;
+            encode_outcome_construction(writer, outcome)?;
+        }
     }
     Ok(())
 }
@@ -3838,6 +3916,10 @@ fn decode_bundle(bytes: &[u8]) -> Result<ContractBundle, IrValidationError> {
             BUNDLE_FORMAT_VERSION_V17,
             GRAMMAR_VERSION_V17,
             EXECUTABLE_IR_VERSION_V17
+        ) | (
+            BUNDLE_FORMAT_VERSION_V18,
+            GRAMMAR_VERSION_V18,
+            EXECUTABLE_IR_VERSION_V18
         )
     ) {
         return Err(IrValidationError::UnsupportedVersion {
@@ -5412,6 +5494,22 @@ fn decode_command_versioned(
             ir_version,
         )?);
     }
+    let decisions = if ir_version >= EXECUTABLE_IR_VERSION_V18 {
+        let count = decode_len(reader, "command decisions", crate::MAX_COMMAND_ITEMS)?;
+        let mut decisions = Vec::with_capacity(count);
+        for _ in 0..count {
+            decisions.push(decode_command_decision(
+                reader,
+                &outcomes,
+                schema,
+                &expressions,
+                ir_version,
+            )?);
+        }
+        decisions
+    } else {
+        Vec::new()
+    };
     let secret_reveals = if ir_version >= EXECUTABLE_IR_VERSION_V11 {
         let count = decode_len(reader, "command secret reveals", crate::MAX_COMMAND_ITEMS)?;
         let mut reveals = Vec::with_capacity(count);
@@ -5481,6 +5579,7 @@ fn decode_command_versioned(
         &root_validation_reads,
         locality.aggregate_id(),
         &instructions,
+        &decisions,
     )?;
     if invocation_class == crate::CommandInvocationClass::Reimport && !secret_reveals.is_empty() {
         return Err(IrValidationError::InvalidDependency {
@@ -5536,7 +5635,7 @@ fn decode_command_versioned(
                 });
             }
             (crate::CommandInvocationClass::Application, Some(expansion)) => {
-                CommandPlan::new_collection_with_secret_reveals(
+                CommandPlan::new_collection_with_decisions_and_secret_reveals(
                     command_id,
                     lineage.clone(),
                     name,
@@ -5553,13 +5652,14 @@ fn decode_command_versioned(
                     commit_checks,
                     instructions,
                     expansion,
+                    decisions,
                     secret_reveals,
                     execution_class,
                     schema,
                 )?
             }
             (crate::CommandInvocationClass::Application, None) => {
-                CommandPlan::new_with_service_values_and_secret_reveals(
+                CommandPlan::new_with_decisions_and_secret_reveals(
                     command_id,
                     lineage.clone(),
                     name,
@@ -5575,6 +5675,7 @@ fn decode_command_versioned(
                     locality,
                     commit_checks,
                     instructions,
+                    decisions,
                     secret_reveals,
                     execution_class,
                     schema,
@@ -5616,6 +5717,76 @@ fn decode_command_versioned(
         });
     }
     Ok(plan)
+}
+
+fn decode_command_decision(
+    reader: &mut Reader<'_>,
+    outcomes: &[OutcomeSchema],
+    schema: &SchemaIr,
+    arena: &ExpressionArena,
+    ir_version: u32,
+) -> Result<CommandDecisionPlanV1, IrValidationError> {
+    let binding = BindingId::new(reader.u32()?);
+    let collection_local = reader.bool()?;
+    let count = decode_len(
+        reader,
+        "command decision arms",
+        crate::MAX_COMMAND_DECISION_ARMS_V1,
+    )?;
+    let mut when_arms = Vec::with_capacity(count);
+    for _ in 0..count {
+        when_arms.push(CommandDecisionArmV1::new(
+            ExprId::new(reader.u32()?),
+            decode_command_decision_action(reader, outcomes, schema, arena, ir_version)?,
+        ));
+    }
+    let else_action = decode_command_decision_action(reader, outcomes, schema, arena, ir_version)?;
+    CommandDecisionPlanV1::new(binding, collection_local, when_arms, else_action)
+}
+
+fn decode_command_decision_action(
+    reader: &mut Reader<'_>,
+    outcomes: &[OutcomeSchema],
+    schema: &SchemaIr,
+    arena: &ExpressionArena,
+    ir_version: u32,
+) -> Result<CommandDecisionActionV1, IrValidationError> {
+    match reader.u8()? {
+        decision_action_tag::APPLY => {
+            let binding_count = decode_len(
+                reader,
+                "command decision branch bindings",
+                crate::MAX_COMMAND_ITEMS,
+            )?;
+            let mut bindings = Vec::with_capacity(binding_count);
+            for _ in 0..binding_count {
+                bindings.push(BindingId::new(reader.u32()?));
+            }
+            let instruction_count = decode_len(
+                reader,
+                "command decision branch instructions",
+                crate::MAX_COMMAND_ITEMS,
+            )?;
+            let mut instructions = Vec::with_capacity(instruction_count);
+            for _ in 0..instruction_count {
+                instructions.push(decode_instruction_versioned(
+                    reader, outcomes, schema, arena, ir_version,
+                )?);
+            }
+            Ok(CommandDecisionActionV1::Apply {
+                bindings,
+                instructions,
+            })
+        }
+        decision_action_tag::NO_EFFECT => Ok(CommandDecisionActionV1::NoEffect),
+        decision_action_tag::REJECT => Ok(CommandDecisionActionV1::Reject(
+            decode_outcome_construction(reader, outcomes, arena)?,
+        )),
+        tag => Err(IrValidationError::UnknownTag {
+            kind: "command decision action",
+            tag,
+        }),
+    }
 }
 
 fn decode_command_invocation_class(
@@ -5749,22 +5920,38 @@ fn decode_binding(
     } else {
         None
     };
-    if mode == BindingMode::InitOrMutate {
+    if matches!(
+        mode,
+        BindingMode::InitOrMutate | BindingMode::ObserveOrInitialize
+    ) {
         if failure.is_some() || restriction_failure.is_some() || cascade_failure.is_some() {
             return Err(IrValidationError::InvalidDependency {
                 reason: "initialized mutable binding carries a failure outcome",
             });
         }
-        BindingPlan::new_initialized(
-            id,
-            name,
-            entity_type,
-            key_schema,
-            key_expressions,
-            accessed_fields,
-            complete_record_access,
-            initializer,
-        )
+        if mode == BindingMode::InitOrMutate {
+            BindingPlan::new_initialized(
+                id,
+                name,
+                entity_type,
+                key_schema,
+                key_expressions,
+                accessed_fields,
+                complete_record_access,
+                initializer,
+            )
+        } else {
+            BindingPlan::new_deferred_initialized(
+                id,
+                name,
+                entity_type,
+                key_schema,
+                key_expressions,
+                accessed_fields,
+                complete_record_access,
+                initializer,
+            )
+        }
     } else {
         BindingPlan::new_with_delete_failures(
             id,
@@ -5792,6 +5979,9 @@ fn decode_binding_mode(tag: u8, ir_version: u32) -> Result<BindingMode, IrValida
         binding_tag::DELETE if ir_version >= EXECUTABLE_IR_VERSION_V5 => Ok(BindingMode::Delete),
         binding_tag::INIT_OR_MUTATE if ir_version >= EXECUTABLE_IR_VERSION_V17 => {
             Ok(BindingMode::InitOrMutate)
+        }
+        binding_tag::OBSERVE_OR_INITIALIZE if ir_version >= EXECUTABLE_IR_VERSION_V18 => {
+            Ok(BindingMode::ObserveOrInitialize)
         }
         tag => Err(IrValidationError::UnknownTag {
             kind: "binding mode",
@@ -6060,6 +6250,7 @@ fn decode_command_schema_closure(
     root_validation_reads: &[crate::RootValidationReadPlan],
     aggregate_id: AggregateTypeId,
     instructions: &[Instruction],
+    decisions: &[CommandDecisionPlanV1],
 ) -> Result<(), IrValidationError> {
     let mut expected_entities = bindings
         .iter()
@@ -6098,6 +6289,14 @@ fn decode_command_schema_closure(
     }
     let mut expected_events = instructions
         .iter()
+        .chain(decisions.iter().flat_map(|decision| {
+            decision
+                .when_arms()
+                .iter()
+                .map(CommandDecisionArmV1::action)
+                .chain(std::iter::once(decision.else_action()))
+                .flat_map(CommandDecisionActionV1::instructions)
+        }))
         .filter_map(|instruction| match instruction {
             Instruction::EmitEvent(event) => Some(event.event_type()),
             _ => None,

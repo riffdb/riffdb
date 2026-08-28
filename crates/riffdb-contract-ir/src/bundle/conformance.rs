@@ -438,6 +438,7 @@ fn ordered_layout_registry_has_one_closed_witness_slot_per_layout() {
                 "locality",
                 "commit_checks",
                 "instructions",
+                "decisions",
                 "secret_reveals",
                 "invocation_class",
                 "execution_class",
@@ -471,6 +472,11 @@ fn ordered_layout_registry_has_one_closed_witness_slot_per_layout() {
                 "duplicate_policy",
             ],
         ),
+        (
+            "CommandDecisionPlanV1",
+            vec!["binding", "collection_local", "when_arms", "else_action"],
+        ),
+        ("CommandDecisionArmV1", vec!["predicate", "action"]),
         ("OutcomeSchema", vec!["id", "name", "payload"]),
         (
             "BindingPlan",
@@ -666,6 +672,8 @@ fn ordered_layout_registry_has_one_closed_witness_slot_per_layout() {
         ("CommandSemantics", "root-validation command fixture"),
         ("SecretRevealSpecV1", "secret reveal command fixture"),
         ("CollectionExpansionPlanV1", "collection command fixture"),
+        ("CommandDecisionPlanV1", "command decision V18 fixture"),
+        ("CommandDecisionArmV1", "command decision V18 fixture"),
         ("OutcomeSchema", "root-validation command fixture"),
         ("BindingPlan", "root-validation command fixture"),
         ("RootValidationReadPlan", "root-validation command fixture"),
@@ -870,6 +878,14 @@ fn tagged_union_registry_is_closed_in_tag_order() {
                             "model_version",
                         ],
                     ),
+                ],
+            ),
+            (
+                "CommandDecisionActionV1",
+                vec![
+                    (0x01, "apply", vec!["bindings", "instructions"]),
+                    (0x02, "no effect", vec![]),
+                    (0x03, "reject command", vec!["outcome"]),
                 ],
             ),
             (

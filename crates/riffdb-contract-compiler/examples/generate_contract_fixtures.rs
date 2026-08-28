@@ -30,6 +30,8 @@ const REIMPORT_SOURCE: &str = include_str!("../../../fixtures/compiler/reimport/
 const SECRET_REVEAL_SOURCE: &str =
     include_str!("../../../fixtures/compiler/secret-reveal/contract.riff");
 const CASCADE_SOURCE: &str = include_str!("../../../fixtures/compiler/cascade/contract.riff");
+const COMMAND_DECISION_SOURCE: &str =
+    include_str!("../../../fixtures/compiler/command-decision/contract.riff");
 const MIGRATION_FIXTURE_README: &str = include_str!("../../../fixtures/migrations/README.md");
 const RELATIONSHIP_FIXTURES: &[(&str, &str)] = &[
     (
@@ -471,6 +473,29 @@ fn main() -> Result<(), Box<dyn Error>> {
                 .commands()
                 .first()
                 .ok_or("initialized transition fixture command is absent")?,
+        )
+        .render_text(),
+    )?;
+
+    let decision_bundle = compile_contract_source(COMMAND_DECISION_SOURCE)?;
+    let decision_root = fixture_root.join("command-decision");
+    fs::create_dir_all(&decision_root)?;
+    fs::write(decision_root.join("contract.riff"), COMMAND_DECISION_SOURCE)?;
+    fs::write(
+        decision_root.join("bundle.bin"),
+        decision_bundle.canonical_bytes(),
+    )?;
+    fs::write(
+        decision_root.join("bundle-hash.txt"),
+        format!("{}\n", hex(decision_bundle.bundle_hash().as_bytes())),
+    )?;
+    fs::write(
+        decision_root.join("command-explain.txt"),
+        CommandExplain::from_plan(
+            decision_bundle
+                .commands()
+                .first()
+                .ok_or("command decision fixture command is absent")?,
         )
         .render_text(),
     )?;
@@ -2296,6 +2321,7 @@ fn binding_mode(mode: BindingMode) -> &'static str {
         BindingMode::Mutate => "mutate",
         BindingMode::Create => "create",
         BindingMode::InitOrMutate => "init-or-mutate",
+        BindingMode::ObserveOrInitialize => "observe-or-initialize",
         BindingMode::Delete => "delete",
     }
 }

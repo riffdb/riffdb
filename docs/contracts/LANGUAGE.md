@@ -440,6 +440,7 @@ CommandDeclaration: CommandDeclaration = {
         <service_values:ServiceValueDeclaration*>
         <idempotency:IdempotencyClause?>
         <bindings:Binding*>
+        <decisions:CommandDecision*>
         <bulk_iteration:BulkIteration?>
         <requirements:Requirement*>
         <effects:Effect*>
@@ -451,6 +452,7 @@ CommandDeclaration: CommandDeclaration = {
         service_values,
         idempotency,
         bindings,
+        decisions,
         bulk_iteration,
         reconstitution: None,
         requirements,
@@ -468,6 +470,7 @@ CommandDeclaration: CommandDeclaration = {
         service_values: Vec::new(),
         idempotency: None,
         bindings: Vec::new(),
+        decisions: Vec::new(),
         bulk_iteration: None,
         reconstitution: Some(reconstitution),
         requirements: Vec::new(),
@@ -490,15 +493,52 @@ ReconstitutionClause: Spanned<ReconstitutionClause> = {
 BulkIteration: Spanned<BulkIteration> = {
     <lo:@L> "for" <element:Identifier> "in" <collection:Identifier> "{"
         <bindings:Binding*>
+        <decisions:CommandDecision*>
         <requirements:Requirement*>
         <effects:Effect*>
     "}" <hi:@R> => parser::spanned(BulkIteration {
         element,
         collection,
         bindings,
+        decisions,
         requirements,
         effects,
     }, lo, hi),
+};
+
+CommandDecision: Spanned<CommandDecision> = {
+    <lo:@L> "observe_or_initialize" <binding:InitializedEntityBinding>
+        "decide" <subject:Identifier> "{"
+            <when_arms:DecisionWhenArm+>
+            <else_action:DecisionElseArm>
+        "}" <hi:@R>
+        => parser::spanned(CommandDecision {
+            binding,
+            subject,
+            when_arms,
+            else_action,
+        }, lo, hi),
+};
+
+DecisionWhenArm: Spanned<DecisionArm> = {
+    <lo:@L> "when" <predicate:Expression> "=>" <action:DecisionAction> <hi:@R>
+        => parser::spanned(DecisionArm {
+            predicate: predicate.into_syntax(),
+            action,
+        }, lo, hi),
+};
+
+DecisionElseArm: Spanned<DecisionAction> = {
+    "else" "=>" <action:DecisionAction> => action,
+};
+
+DecisionAction: Spanned<DecisionAction> = {
+    <lo:@L> "apply" "{" <bindings:Binding*> <effects:Effect*> "}" <hi:@R>
+        => parser::spanned(DecisionAction::Apply { bindings, effects }, lo, hi),
+    <lo:@L> "no_effect" <hi:@R>
+        => parser::spanned(DecisionAction::NoEffect, lo, hi),
+    <lo:@L> "reject" <outcome:OutcomeExpression> <hi:@R>
+        => parser::spanned(DecisionAction::Reject(outcome), lo, hi),
 };
 
 ServiceValueDeclaration: Spanned<ServiceValueDeclaration> = {
@@ -1042,6 +1082,11 @@ extern {
         "mutate" => Token::Mutate,
         "create" => Token::Create,
         "init_or_mutate" => Token::InitOrMutate,
+        "observe_or_initialize" => Token::ObserveOrInitialize,
+        "decide" => Token::Decide,
+        "apply" => Token::Apply,
+        "no_effect" => Token::NoEffect,
+        "reject" => Token::Reject,
         "initialize" => Token::Initialize,
         "as" => Token::As,
         "else" => Token::Else,
@@ -1086,6 +1131,7 @@ extern {
         "<=" => Token::LessEqual,
         ">=" => Token::GreaterEqual,
         "->" => Token::Arrow,
+        "=>" => Token::FatArrow,
         "==" => Token::EqualEqual,
         "!=" => Token::BangEqual,
         "&&" => Token::AndAnd,

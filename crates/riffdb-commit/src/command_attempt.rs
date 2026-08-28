@@ -22,7 +22,7 @@ use riffdb_policy::{
 use riffdb_runtime::{ExecutionFault, ExecutionResult, TransactionContext, execute_command};
 use riffdb_storage_api::{
     AdmissionLookupResultV1, AdmissionRepository, CandidateValidationRejection,
-    CommandCandidateAwaitingValidation, CommitIntent, EvaluatedCommand,
+    CommandCandidateAwaitingValidation, CommitIntent, EvaluatedCommand, EvaluationBudget,
     ExecutionFailureTransitionRequestV1, IdempotencyLookupCandidatesV1, PreEvaluationCommitContext,
     ReadSnapshot, SnapshotReader, SnapshotRequest, StorageError, StoredAdmissionStateV1,
     StoredExecutionFailedV1, StoredOutcomeV1, TransactionCurrentState,
@@ -275,6 +275,25 @@ impl EvaluatedCommandAttempt {
         &self.evaluated
     }
 
+    /// Replays a V18 sealed decision against its exact normalized snapshot.
+    /// Worker preparation caches the resulting mutation proof, so the writer
+    /// does not repeat this per-plan/per-attempt semantic check.
+    pub(super) fn sealed_decision_evaluation_is_exact(&self) -> bool {
+        if !self.resolved_plan().plan().requires_ir_v18() {
+            return true;
+        }
+        matches!(
+            execute_command(
+                self.resolved_plan().bundle().bundle(),
+                self.normalized_input(),
+                self.materialized_snapshot().snapshot(),
+                &transaction_context(self.commit_context()),
+                EvaluationBudget::v1(),
+            ),
+            Ok(ExecutionResult::CommitRequired(replayed)) if replayed == *self.evaluated()
+        )
+    }
+
     /// Installs deterministic worker preparation bound to this exact attempt.
     pub(super) fn prepare_body(mut self) -> Result<Self, CommandAttemptError> {
         if self.prepared_body.is_some() {
@@ -453,6 +472,10 @@ impl ProvenanceBoundCommandAttempt {
 
     pub(super) fn evaluated(&self) -> &EvaluatedCommand {
         self.attempt.evaluated()
+    }
+
+    pub(super) fn sealed_decision_evaluation_is_exact(&self) -> bool {
+        self.attempt.sealed_decision_evaluation_is_exact()
     }
 
     pub(super) fn take_prepared_mutation_positions(&mut self) -> Option<Box<[Option<usize>]>> {

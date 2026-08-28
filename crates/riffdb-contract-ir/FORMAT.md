@@ -134,6 +134,15 @@ Expression constants use exactly `u32 canonical_document_byte_length || canonica
 | `0x03` | create |
 | `0x04` | delete |
 | `0x05` | initialize or mutate |
+| `0x06` | observe or initialize |
+
+### Command decision action
+
+| Tag | Variant |
+|---:|---|
+| `0x01` | apply |
+| `0x02` | no effect |
+| `0x03` | reject command |
 
 ### Delete policy mode
 
@@ -380,6 +389,14 @@ Each row lists all bytes immediately following the tag, in byte order. `empty` m
 | `0x05` | workflow transition | `binding`: BindingId as u32; `state_field`: FieldId as u32; `source_states`: u32 count + EnumVariantId[]; `destination`: EnumVariantId as u32; `expected_revision`: ExprId as u32; `stale`: OutcomeConstruction; `illegal`: OutcomeConstruction |
 | `0x06` | workflow lease | `binding`: BindingId as u32; `fields`: WorkflowLeaseFields; `operation`: tagged WorkflowLeaseOperation |
 | `0x07` | set production embedding | `binding`: BindingId as u32; `field`: FieldId as u32; `value`: ExprId as u32; `model_identity`: ExprId as u32; `model_version`: ExprId as u32 |
+
+### CommandDecisionActionV1
+
+| Tag | Variant | Ordered payload after tag |
+|---:|---|---|
+| `0x01` | apply | `bindings`: u32 count + canonical BindingId[]; `instructions`: u32 count + Instruction[] |
+| `0x02` | no effect | empty |
+| `0x03` | reject command | `outcome`: OutcomeConstruction |
 
 ### WorkflowLeaseOperation
 
@@ -832,14 +849,15 @@ Fields below are listed in exact byte order. A collection field includes its cou
 | 14 | `locality` | LocalityPlan |
 | 15 | `commit_checks` | u32 count + CommitCheckPlan[] |
 | 16 | `instructions` | u32 count + Instruction[] |
-| 17 | `secret_reveals` | IR v11+: u32 count + SecretRevealSpecV1[]; omitted in v1-v10 |
-| 18 | `invocation_class` | IR v10+: Command invocation class tag; application in v1-v9 |
-| 19 | `execution_class` | Execution class tag |
-| 20 | `retry_policy` | Retry policy tag |
-| 21 | `required_capability` | CapabilityRequirement tag plus exact selected payload |
-| 22 | `entity_closure` | u32 count + EntitySchema[] |
-| 23 | `aggregate_closure` | AggregateSchema |
-| 24 | `event_closure` | u32 count + EventSchema[] |
+| 17 | `decisions` | IR v18+: u32 count + CommandDecisionPlanV1[]; omitted in v1-v17 |
+| 18 | `secret_reveals` | IR v11+: u32 count + SecretRevealSpecV1[]; omitted in v1-v10 |
+| 19 | `invocation_class` | IR v10+: Command invocation class tag; application in v1-v9 |
+| 20 | `execution_class` | Execution class tag |
+| 21 | `retry_policy` | Retry policy tag |
+| 22 | `required_capability` | CapabilityRequirement tag plus exact selected payload |
+| 23 | `entity_closure` | u32 count + EntitySchema[] |
+| 24 | `aggregate_closure` | AggregateSchema |
+| 25 | `event_closure` | u32 count + EventSchema[] |
 
 ### SecretRevealSpecV1
 
@@ -863,6 +881,22 @@ Fields below are listed in exact byte order. A collection field includes its cou
 | 7 | `first_instruction` | dense zero-based u32 instruction position |
 | 8 | `instruction_count` | u32 consecutive template instructions; zero is valid for delete-only expansion |
 | 9 | `duplicate_policy` | u8 = 0x01 (reject) |
+
+### CommandDecisionPlanV1
+
+| # | Field | Encoding |
+|---:|---|---|
+| 1 | `binding` | BindingId of one deferred initialized observation |
+| 2 | `collection_local` | Boolean |
+| 3 | `when_arms` | u32 count in 1..=8 + CommandDecisionArmV1[] in source order |
+| 4 | `else_action` | CommandDecisionActionV1 tag plus exact selected payload |
+
+### CommandDecisionArmV1
+
+| # | Field | Encoding |
+|---:|---|---|
+| 1 | `predicate` | ExprId of total Boolean expression |
+| 2 | `action` | CommandDecisionActionV1 tag plus exact selected payload |
 
 ### OutcomeSchema
 

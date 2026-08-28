@@ -1747,7 +1747,18 @@ fn validate_embedding_metadata_inputs(
     normalized: &CanonicalRecord,
 ) -> Result<(), InputPreparationError> {
     let mut issues = Vec::new();
-    for instruction in plan.instructions() {
+    for instruction in plan.instructions().iter().chain(
+        plan.decisions()
+            .iter()
+            .flat_map(|decision| {
+                decision
+                    .when_arms()
+                    .iter()
+                    .map(|arm| arm.action())
+                    .chain(std::iter::once(decision.else_action()))
+            })
+            .flat_map(riffdb_contract_ir::CommandDecisionActionV1::instructions),
+    ) {
         let Instruction::SetEmbedding {
             binding,
             field,

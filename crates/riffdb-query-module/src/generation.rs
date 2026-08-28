@@ -143,9 +143,7 @@ pub(crate) fn embedding_command_facades(
     command: &CommandPlan,
     contract: &ContractBundle,
 ) -> Vec<EmbeddingCommandFacade> {
-    command
-        .instructions()
-        .iter()
+    command_effect_instructions(command)
         .filter_map(|instruction| {
             let Instruction::SetEmbedding {
                 binding,
@@ -211,7 +209,7 @@ pub(crate) fn workflow_revision_bindings(
     command: &CommandPlan,
 ) -> Vec<WorkflowRevisionBinding<'_>> {
     let mut revisions = BTreeMap::new();
-    for instruction in command.instructions() {
+    for instruction in command_effect_instructions(command) {
         let (binding, expected_revision) = match instruction {
             Instruction::WorkflowTransition {
                 binding,
@@ -277,6 +275,22 @@ pub(crate) fn workflow_revision_bindings(
             input_name,
         })
         .collect()
+}
+
+fn command_effect_instructions(command: &CommandPlan) -> impl Iterator<Item = &Instruction> {
+    command.instructions().iter().chain(
+        command
+            .decisions()
+            .iter()
+            .flat_map(|decision| {
+                decision
+                    .when_arms()
+                    .iter()
+                    .map(|arm| arm.action())
+                    .chain(std::iter::once(decision.else_action()))
+            })
+            .flat_map(riffdb_contract_ir::CommandDecisionActionV1::instructions),
+    )
 }
 
 /// One compiler-owned generated MCP tool for a visible named query.

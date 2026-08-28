@@ -21,6 +21,10 @@ pub struct Contract {
 }
 
 /// Grammar-version-1 top-level declarations.
+#[allow(
+    clippy::large_enum_variant,
+    reason = "the source AST keeps declaration ownership direct and is compiler-only"
+)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Declaration {
     /// A persistent entity schema.
@@ -546,6 +550,8 @@ pub struct CommandDeclaration {
     pub idempotency: Option<Spanned<IdempotencyClause>>,
     /// Up-front entity bindings in source order.
     pub bindings: Vec<Spanned<Binding>>,
+    /// Compiler-sealed decisions in source order.
+    pub decisions: Vec<Spanned<CommandDecision>>,
     /// The one compiler-owned collection expansion, present only for bulk commands.
     pub bulk_iteration: Option<Spanned<BulkIteration>>,
     /// The compiler-owned exact-record construction, present only for reimport commands.
@@ -589,6 +595,8 @@ pub struct BulkIteration {
     pub collection: Spanned<String>,
     /// Element-local entity bindings.
     pub bindings: Vec<Spanned<Binding>>,
+    /// Element-local compiler-sealed decisions.
+    pub decisions: Vec<Spanned<CommandDecision>>,
     /// Element-local deterministic business requirements.
     pub requirements: Vec<Spanned<Requirement>>,
     /// Element-local state/event effects.
@@ -738,6 +746,44 @@ pub struct InitializedEntityBinding {
     pub binding: Spanned<String>,
     /// Non-key fields supplied only when the authoritative row is absent.
     pub initializer: Spanned<ObjectLiteral>,
+}
+
+/// One deferred initialized binding and its immediately consuming decision.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CommandDecision {
+    /// Exact-key binding whose absent path uses the compiler-declared initializer.
+    pub binding: InitializedEntityBinding,
+    /// Repeated local name after `decide`; semantic validation requires the binding alias.
+    pub subject: Spanned<String>,
+    /// One through eight ordered predicate arms.
+    pub when_arms: Vec<Spanned<DecisionArm>>,
+    /// Mandatory total fallback action.
+    pub else_action: Spanned<DecisionAction>,
+}
+
+/// One ordered predicate arm in a compiler-sealed command decision.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DecisionArm {
+    /// Total deterministic Boolean predicate.
+    pub predicate: Spanned<Expression>,
+    /// Closed action selected by this arm.
+    pub action: Spanned<DecisionAction>,
+}
+
+/// The three closed actions accepted by a command decision arm.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum DecisionAction {
+    /// Finalize the deferred binding and execute one finite branch-local suffix.
+    Apply {
+        /// Branch-local entity bindings.
+        bindings: Vec<Spanned<Binding>>,
+        /// Branch-local effects.
+        effects: Vec<Spanned<Effect>>,
+    },
+    /// Preserve the observed state and emit no application effect.
+    NoEffect,
+    /// Reject the complete command with one declared typed outcome.
+    Reject(Spanned<OutcomeExpression>),
 }
 
 /// The common syntax of every entity binding.

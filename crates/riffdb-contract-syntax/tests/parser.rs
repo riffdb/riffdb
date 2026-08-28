@@ -2,8 +2,9 @@
 
 use proptest::prelude::*;
 use riffdb_contract_syntax::ast::{
-    BinaryOperator, Binding, CommandKind, Declaration, DeletePolicyDeclaration, Effect, EntityItem,
-    Expression, Literal, RowPolicyExpression, RowPolicyOperation, ServiceValueKind, TypeExpression,
+    BinaryOperator, Binding, CommandKind, DecisionAction, Declaration, DeletePolicyDeclaration,
+    Effect, EntityItem, Expression, Literal, RowPolicyExpression, RowPolicyOperation,
+    ServiceValueKind, TypeExpression,
 };
 use riffdb_contract_syntax::diagnostic::SyntaxDiagnosticCode;
 use riffdb_contract_syntax::limits::{MAX_EXPECTED_TOKENS, MAX_SYNTAX_DIAGNOSTICS};
@@ -21,6 +22,165 @@ const WORKFLOW_SURFACE: &str =
     include_str!("../../../fixtures/workflows/compiler/valid/workflow_surface.riff");
 const ROW_POLICY_SURFACE: &str =
     include_str!("../../../fixtures/compiler/row-policy/valid/document-access.riff");
+
+#[test]
+fn parses_sealed_decisions_in_ordinary_and_bulk_commands_with_exact_spans() {
+    let source = r#"
+contract SealedTransition version 1 {
+  entity State {
+    key (tenant_id: uuid, state_id: uuid)
+    field active: bool
+    field revision: u64
+  }
+  command PutOne {
+    input request_id: uuid
+    input tenant_id: uuid
+    input state_id: uuid
+    idempotency_key request_id
+    observe_or_initialize State(tenant_id, state_id) as state initialize {
+      active: false,
+      revision: 0,
+    }
+    decide state {
+      when state.active == false => apply {
+        set state.active = true
+        set state.revision = state.revision + 1
+      }
+      when state.active == true => no_effect
+      else => reject StateConflict { state_id: state_id }
+    }
+    return Written {}
+  }
+  bulk command PutMany {
+    input request_id: uuid
+    input states: list<State, 1..100>
+    idempotency_key request_id
+    for state_input in states {
+      observe_or_initialize State(state_input.tenant_id, state_input.state_id) as state initialize {
+        active: false,
+        revision: 0,
+      }
+      decide state {
+        when state.active == false => apply {
+          set state.active = true
+          set state.revision = state.revision + 1
+        }
+        else => no_effect
+      }
+    }
+    return Written {}
+  }
+}
+"#;
+
+    let document = parse_contract(source).expect("sealed decisions parse");
+    let Declaration::Command(ordinary) = &document.contract.value.declarations[1].value else {
+        panic!("second declaration must be an ordinary command");
+    };
+    assert!(ordinary.bindings.is_empty());
+    assert_eq!(ordinary.decisions.len(), 1);
+    let decision = &ordinary.decisions[0];
+    assert_eq!(decision.value.binding.binding.value, "state");
+    assert_eq!(decision.value.subject.value, "state");
+    assert_eq!(decision.value.when_arms.len(), 2);
+    assert!(matches!(
+        decision.value.when_arms[0].value.action.value,
+        DecisionAction::Apply { .. }
+    ));
+    assert!(matches!(
+        decision.value.when_arms[1].value.action.value,
+        DecisionAction::NoEffect
+    ));
+    assert!(matches!(
+        decision.value.else_action.value,
+        DecisionAction::Reject(_)
+    ));
+    assert_eq!(
+        decision.span.start() as usize,
+        source
+            .find("observe_or_initialize")
+            .expect("decision source")
+    );
+    assert_eq!(
+        decision.value.when_arms[0].span.start() as usize,
+        source.find("when state.active").expect("first arm source")
+    );
+
+    let Declaration::Command(bulk) = &document.contract.value.declarations[2].value else {
+        panic!("third declaration must be a bulk command");
+    };
+    let iteration = bulk.bulk_iteration.as_ref().expect("bulk iteration");
+    assert!(iteration.value.bindings.is_empty());
+    assert_eq!(iteration.value.decisions.len(), 1);
+    assert!(matches!(
+        iteration.value.decisions[0].value.else_action.value,
+        DecisionAction::NoEffect
+    ));
+}
+
+#[test]
+fn sealed_decisions_accept_eight_when_arms_and_reject_the_ninth() {
+    fn contract_with_arms(arm_count: usize) -> String {
+        let arms = (0..arm_count)
+            .map(|_| "when state.active == false => no_effect")
+            .collect::<Vec<_>>()
+            .join("\n");
+        format!(
+            r#"
+contract DecisionBound version 1 {{
+  entity State {{
+    key (state_id: uuid)
+    field active: bool
+  }}
+  command Decide {{
+    input request_id: uuid
+    input state_id: uuid
+    idempotency_key request_id
+    observe_or_initialize State(state_id) as state initialize {{ active: false }}
+    decide state {{
+      {arms}
+      else => no_effect
+    }}
+    return Decided {{}}
+  }}
+}}
+"#
+        )
+    }
+
+    parse_contract(&contract_with_arms(8)).expect("eight decision arms are valid");
+    let diagnostics =
+        parse_contract(&contract_with_arms(9)).expect_err("nine decision arms exceed the bound");
+    assert_eq!(
+        diagnostics.as_slice()[0].code(),
+        SyntaxDiagnosticCode::CollectionLimit
+    );
+}
+
+#[test]
+fn sealed_decisions_require_a_when_and_a_total_else_arm() {
+    for body in [
+        "else => no_effect",
+        "when state.active == false => no_effect",
+    ] {
+        let source = format!(
+            r#"
+contract DecisionShape version 1 {{
+  entity State {{ key (state_id: uuid) field active: bool }}
+  command Decide {{
+    input request_id: uuid
+    input state_id: uuid
+    idempotency_key request_id
+    observe_or_initialize State(state_id) as state initialize {{ active: false }}
+    decide state {{ {body} }}
+    return Decided {{}}
+  }}
+}}
+"#
+        );
+        parse_contract(&source).expect_err("a decision requires when arms and an else arm");
+    }
+}
 
 #[test]
 fn parses_initialized_mutable_bindings_in_ordinary_and_bulk_commands() {

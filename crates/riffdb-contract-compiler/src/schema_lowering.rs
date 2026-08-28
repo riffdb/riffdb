@@ -823,7 +823,21 @@ fn lower_events(
 
         let mut aggregate_id = None;
         for command in &hir.commands {
-            for effect in &command.effects {
+            let decision_effects = command.decisions.iter().flat_map(|decision| {
+                decision
+                    .when_arms
+                    .iter()
+                    .map(|arm| &arm.action)
+                    .chain(std::iter::once(&decision.else_action))
+                    .flat_map(|action| match action {
+                        crate::hir::HirDecisionAction::Apply { effects, .. } => {
+                            effects.iter().collect::<Vec<_>>()
+                        }
+                        crate::hir::HirDecisionAction::NoEffect { .. }
+                        | crate::hir::HirDecisionAction::Reject(_) => Vec::new(),
+                    })
+            });
+            for effect in command.effects.iter().chain(decision_effects) {
                 let HirEffect::Emit {
                     event_id,
                     event_span,
@@ -844,6 +858,7 @@ fn lower_events(
                             riffdb_contract_ir::BindingMode::Mutate
                                 | riffdb_contract_ir::BindingMode::Create
                                 | riffdb_contract_ir::BindingMode::InitOrMutate
+                                | riffdb_contract_ir::BindingMode::ObserveOrInitialize
                         )
                     })
                     .or_else(|| command.bindings.first())

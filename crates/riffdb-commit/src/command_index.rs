@@ -13,11 +13,12 @@ use riffdb_contract_ir::{
     EXECUTABLE_IR_VERSION_V9, EXECUTABLE_IR_VERSION_V10, EXECUTABLE_IR_VERSION_V11,
     EXECUTABLE_IR_VERSION_V12, EXECUTABLE_IR_VERSION_V13, EXECUTABLE_IR_VERSION_V14,
     EXECUTABLE_IR_VERSION_V15, EXECUTABLE_IR_VERSION_V16, EXECUTABLE_IR_VERSION_V17,
-    ExecutionClass, GRAMMAR_VERSION_V1, GRAMMAR_VERSION_V2, GRAMMAR_VERSION_V3, GRAMMAR_VERSION_V4,
-    GRAMMAR_VERSION_V5, GRAMMAR_VERSION_V6, GRAMMAR_VERSION_V7, GRAMMAR_VERSION_V8,
-    GRAMMAR_VERSION_V9, GRAMMAR_VERSION_V10, GRAMMAR_VERSION_V11, GRAMMAR_VERSION_V12,
-    GRAMMAR_VERSION_V13, GRAMMAR_VERSION_V14, GRAMMAR_VERSION_V15, GRAMMAR_VERSION_V16,
-    GRAMMAR_VERSION_V17, IndexSchema,
+    EXECUTABLE_IR_VERSION_V18, ExecutionClass, GRAMMAR_VERSION_V1, GRAMMAR_VERSION_V2,
+    GRAMMAR_VERSION_V3, GRAMMAR_VERSION_V4, GRAMMAR_VERSION_V5, GRAMMAR_VERSION_V6,
+    GRAMMAR_VERSION_V7, GRAMMAR_VERSION_V8, GRAMMAR_VERSION_V9, GRAMMAR_VERSION_V10,
+    GRAMMAR_VERSION_V11, GRAMMAR_VERSION_V12, GRAMMAR_VERSION_V13, GRAMMAR_VERSION_V14,
+    GRAMMAR_VERSION_V15, GRAMMAR_VERSION_V16, GRAMMAR_VERSION_V17, GRAMMAR_VERSION_V18,
+    IndexSchema,
 };
 use riffdb_invariant::{InputDerivedCommandFacts, derive_input_command_facts};
 #[cfg(test)]
@@ -414,6 +415,9 @@ pub(super) fn prepare_command_body(
             .collect(),
     )
     .map_err(|_| CommandIndexError::internal_defect())?;
+    if !attempt.sealed_decision_evaluation_is_exact() {
+        return Err(CommandIndexError::internal_defect());
+    }
     let decision = crate::command_validation::validate_transaction_current_command_parts(
         attempt.resolved_plan(),
         attempt.normalized_input(),
@@ -1598,6 +1602,7 @@ const fn index_derivation_version_supported(grammar: u32, ir: u32) -> bool {
             | (GRAMMAR_VERSION_V15, EXECUTABLE_IR_VERSION_V15)
             | (GRAMMAR_VERSION_V16, EXECUTABLE_IR_VERSION_V16)
             | (GRAMMAR_VERSION_V17, EXECUTABLE_IR_VERSION_V17)
+            | (GRAMMAR_VERSION_V18, EXECUTABLE_IR_VERSION_V18)
     )
 }
 
@@ -1678,9 +1683,11 @@ fn derive_grammar_v1_indexes(
         let current_record = match (binding.mode(), &current.bindings()[binding_position]) {
             (BindingMode::Create, EntityObservation::Absent(_)) => None,
             (BindingMode::InitOrMutate, EntityObservation::Absent(_)) => None,
-            (BindingMode::InitOrMutate, EntityObservation::Present(record)) => {
-                Some(record.fields())
-            }
+            (
+                BindingMode::InitOrMutate | BindingMode::ObserveOrInitialize,
+                EntityObservation::Present(record),
+            ) => Some(record.fields()),
+            (BindingMode::ObserveOrInitialize, EntityObservation::Absent(_)) => None,
             (BindingMode::Mutate | BindingMode::Delete, EntityObservation::Present(record)) => {
                 Some(record.fields())
             }

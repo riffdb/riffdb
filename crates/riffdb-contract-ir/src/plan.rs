@@ -25,6 +25,8 @@ pub const MAX_OBJECT_FIELDS: usize = 1_024;
 pub const MAX_COLLECTION_COMMAND_ELEMENTS_V1: usize = 256;
 /// Maximum canonical input plus authoritative mutation/event graph for one collection command.
 pub const MAX_COLLECTION_COMMAND_GRAPH_BYTES_V1: usize = 16 * 1024 * 1024;
+/// Maximum ordered predicate arms in one compiler-sealed command decision.
+pub const MAX_COMMAND_DECISION_ARMS_V1: usize = 8;
 
 /// Closed service-owned command-value kinds introduced by executable IR v2.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -87,6 +89,8 @@ pub enum BindingMode {
     Delete = crate::format_registry::binding_mode::DELETE,
     /// Mutable entity whose absent path begins from a compiler-declared initializer.
     InitOrMutate = crate::format_registry::binding_mode::INIT_OR_MUTATE,
+    /// Deferred initialized observation finalized only by its consuming decision.
+    ObserveOrInitialize = crate::format_registry::binding_mode::OBSERVE_OR_INITIALIZE,
 }
 
 /// The closed first-release duplicate policy for collection commands.
@@ -579,6 +583,34 @@ impl BindingPlan {
         )
     }
 
+    /// Creates a deferred initialized binding consumed by one sealed decision.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_deferred_initialized(
+        id: BindingId,
+        name: impl Into<String>,
+        entity_type: EntityTypeId,
+        key_schema: KeySchema,
+        key_expressions: Vec<ExprId>,
+        accessed_fields: Vec<FieldId>,
+        complete_record_access: bool,
+        initializer: Vec<FieldExpression>,
+    ) -> Result<Self, IrValidationError> {
+        Self::new_internal(
+            id,
+            name,
+            BindingMode::ObserveOrInitialize,
+            entity_type,
+            key_schema,
+            key_expressions,
+            accessed_fields,
+            complete_record_access,
+            initializer,
+            None,
+            None,
+            None,
+        )
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn new_internal(
         id: BindingId,
@@ -618,9 +650,11 @@ impl BindingPlan {
                 kind: "binding initializer fields",
             });
         }
-        if (mode == BindingMode::InitOrMutate) != failure.is_none()
-            || (mode != BindingMode::InitOrMutate && !initializer.is_empty())
-        {
+        let initialized = matches!(
+            mode,
+            BindingMode::InitOrMutate | BindingMode::ObserveOrInitialize
+        );
+        if initialized != failure.is_none() || (!initialized && !initializer.is_empty()) {
             return Err(IrValidationError::InvalidDependency {
                 reason: "initialized mutable binding initializer/failure shape mismatch",
             });
@@ -715,6 +749,138 @@ impl BindingPlan {
     #[must_use]
     pub const fn cascade_failure(&self) -> Option<&OutcomeConstruction> {
         self.cascade_failure.as_ref()
+    }
+}
+
+/// One closed action selected by a compiler-sealed command decision.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum CommandDecisionActionV1 {
+    /// Finalize the deferred binding and execute this finite branch-local graph.
+    Apply {
+        /// Dense global binding IDs owned only by this arm, in source order.
+        bindings: Vec<BindingId>,
+        /// Branch-local effect stream. It never contains a terminal return.
+        instructions: Vec<Instruction>,
+    },
+    /// Preserve the observation while producing no application effect.
+    NoEffect,
+    /// Reject the complete command with one declared business outcome.
+    Reject(OutcomeConstruction),
+}
+
+impl CommandDecisionActionV1 {
+    /// Branch-local binding IDs, empty for non-apply actions.
+    #[must_use]
+    pub fn bindings(&self) -> &[BindingId] {
+        match self {
+            Self::Apply { bindings, .. } => bindings,
+            Self::NoEffect | Self::Reject(_) => &[],
+        }
+    }
+
+    /// Branch-local effect stream, empty for non-apply actions.
+    #[must_use]
+    pub fn instructions(&self) -> &[Instruction] {
+        match self {
+            Self::Apply { instructions, .. } => instructions,
+            Self::NoEffect | Self::Reject(_) => &[],
+        }
+    }
+
+    /// Typed whole-command rejection, present only for `reject`.
+    #[must_use]
+    pub const fn rejection(&self) -> Option<&OutcomeConstruction> {
+        match self {
+            Self::Reject(outcome) => Some(outcome),
+            Self::Apply { .. } | Self::NoEffect => None,
+        }
+    }
+}
+
+/// One ordered predicate/action arm before a decision's mandatory fallback.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CommandDecisionArmV1 {
+    predicate: ExprId,
+    action: CommandDecisionActionV1,
+}
+
+impl CommandDecisionArmV1 {
+    /// Creates one ordered arm. Command construction validates its Boolean predicate and action.
+    #[must_use]
+    pub const fn new(predicate: ExprId, action: CommandDecisionActionV1) -> Self {
+        Self { predicate, action }
+    }
+
+    /// Total Boolean predicate evaluated in source order.
+    #[must_use]
+    pub const fn predicate(&self) -> ExprId {
+        self.predicate
+    }
+
+    /// Closed action for this arm.
+    #[must_use]
+    pub const fn action(&self) -> &CommandDecisionActionV1 {
+        &self.action
+    }
+}
+
+/// One deferred initialized binding and its immediately consuming closed decision.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CommandDecisionPlanV1 {
+    binding: BindingId,
+    collection_local: bool,
+    when_arms: Vec<CommandDecisionArmV1>,
+    else_action: CommandDecisionActionV1,
+}
+
+impl CommandDecisionPlanV1 {
+    /// Creates one structurally bounded decision. Command construction validates full dataflow.
+    pub fn new(
+        binding: BindingId,
+        collection_local: bool,
+        when_arms: Vec<CommandDecisionArmV1>,
+        else_action: CommandDecisionActionV1,
+    ) -> Result<Self, IrValidationError> {
+        checked_len(
+            "command decision arms",
+            when_arms.len(),
+            MAX_COMMAND_DECISION_ARMS_V1,
+        )?;
+        if when_arms.is_empty() {
+            return Err(IrValidationError::Empty {
+                kind: "command decision arms",
+            });
+        }
+        Ok(Self {
+            binding,
+            collection_local,
+            when_arms,
+            else_action,
+        })
+    }
+
+    /// Deferred binding consumed by this decision.
+    #[must_use]
+    pub const fn binding(&self) -> BindingId {
+        self.binding
+    }
+
+    /// Whether this decision is instantiated once for each bounded collection element.
+    #[must_use]
+    pub const fn collection_local(&self) -> bool {
+        self.collection_local
+    }
+
+    /// Ordered predicate arms.
+    #[must_use]
+    pub fn when_arms(&self) -> &[CommandDecisionArmV1] {
+        &self.when_arms
+    }
+
+    /// Mandatory total fallback.
+    #[must_use]
+    pub const fn else_action(&self) -> &CommandDecisionActionV1 {
+        &self.else_action
     }
 }
 
@@ -1519,6 +1685,7 @@ pub struct CommandPlan {
     locality: LocalityPlan,
     commit_checks: Vec<CommitCheckPlan>,
     instructions: Vec<Instruction>,
+    decisions: Vec<CommandDecisionPlanV1>,
     collection_expansion: Option<CollectionExpansionPlanV1>,
     secret_reveals: Vec<SecretRevealSpecV1>,
     invocation_class: CommandInvocationClass,
@@ -1641,6 +1808,52 @@ impl CommandPlan {
         execution_class: ExecutionClass,
         contract_schema: &SchemaIr,
     ) -> Result<Self, IrValidationError> {
+        Self::new_with_decisions_and_secret_reveals(
+            command_id,
+            contract_lineage,
+            name,
+            contract_version,
+            input,
+            service_values,
+            outcomes,
+            success_outcome,
+            idempotency_input,
+            expressions,
+            bindings,
+            root_validation_reads,
+            locality,
+            commit_checks,
+            instructions,
+            Vec::new(),
+            secret_reveals,
+            execution_class,
+            contract_schema,
+        )
+    }
+
+    /// Creates a command plan with sealed decisions and exact secret disclosures.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_with_decisions_and_secret_reveals(
+        command_id: CommandId,
+        contract_lineage: ContractLineage,
+        name: impl Into<String>,
+        contract_version: ContractVersion,
+        input: CommandInputSchema,
+        service_values: Vec<ServiceValueSchema>,
+        outcomes: Vec<OutcomeSchema>,
+        success_outcome: OutcomeId,
+        idempotency_input: Option<FieldId>,
+        expressions: ExpressionArena,
+        bindings: Vec<BindingPlan>,
+        root_validation_reads: Vec<RootValidationReadPlan>,
+        locality: LocalityPlan,
+        commit_checks: Vec<CommitCheckPlan>,
+        instructions: Vec<Instruction>,
+        decisions: Vec<CommandDecisionPlanV1>,
+        secret_reveals: Vec<SecretRevealSpecV1>,
+        execution_class: ExecutionClass,
+        contract_schema: &SchemaIr,
+    ) -> Result<Self, IrValidationError> {
         Self::new_internal(
             command_id,
             contract_lineage,
@@ -1658,6 +1871,7 @@ impl CommandPlan {
             commit_checks,
             instructions,
             None,
+            decisions,
             secret_reveals,
             SecretRevealValidation::Exact,
             CommandInvocationClass::Application,
@@ -1734,6 +1948,54 @@ impl CommandPlan {
         execution_class: ExecutionClass,
         contract_schema: &SchemaIr,
     ) -> Result<Self, IrValidationError> {
+        Self::new_collection_with_decisions_and_secret_reveals(
+            command_id,
+            contract_lineage,
+            name,
+            contract_version,
+            input,
+            service_values,
+            outcomes,
+            success_outcome,
+            idempotency_input,
+            expressions,
+            bindings,
+            root_validation_reads,
+            locality,
+            commit_checks,
+            instructions,
+            collection_expansion,
+            Vec::new(),
+            secret_reveals,
+            execution_class,
+            contract_schema,
+        )
+    }
+
+    /// Creates a bounded collection plan with sealed decisions and exact disclosures.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_collection_with_decisions_and_secret_reveals(
+        command_id: CommandId,
+        contract_lineage: ContractLineage,
+        name: impl Into<String>,
+        contract_version: ContractVersion,
+        input: CommandInputSchema,
+        service_values: Vec<ServiceValueSchema>,
+        outcomes: Vec<OutcomeSchema>,
+        success_outcome: OutcomeId,
+        idempotency_input: Option<FieldId>,
+        expressions: ExpressionArena,
+        bindings: Vec<BindingPlan>,
+        root_validation_reads: Vec<RootValidationReadPlan>,
+        locality: LocalityPlan,
+        commit_checks: Vec<CommitCheckPlan>,
+        instructions: Vec<Instruction>,
+        collection_expansion: CollectionExpansionPlanV1,
+        decisions: Vec<CommandDecisionPlanV1>,
+        secret_reveals: Vec<SecretRevealSpecV1>,
+        execution_class: ExecutionClass,
+        contract_schema: &SchemaIr,
+    ) -> Result<Self, IrValidationError> {
         Self::new_internal(
             command_id,
             contract_lineage,
@@ -1751,6 +2013,7 @@ impl CommandPlan {
             commit_checks,
             instructions,
             Some(collection_expansion),
+            decisions,
             secret_reveals,
             SecretRevealValidation::Exact,
             CommandInvocationClass::Application,
@@ -1795,6 +2058,7 @@ impl CommandPlan {
             commit_checks,
             instructions,
             Some(collection_expansion),
+            Vec::new(),
             Vec::new(),
             SecretRevealValidation::Exact,
             CommandInvocationClass::Reimport,
@@ -1849,6 +2113,7 @@ impl CommandPlan {
             instructions,
             collection_expansion,
             Vec::new(),
+            Vec::new(),
             SecretRevealValidation::LegacyPreV11,
             invocation_class,
             execution_class,
@@ -1874,6 +2139,7 @@ impl CommandPlan {
         mut commit_checks: Vec<CommitCheckPlan>,
         instructions: Vec<Instruction>,
         mut collection_expansion: Option<CollectionExpansionPlanV1>,
+        decisions: Vec<CommandDecisionPlanV1>,
         mut secret_reveals: Vec<SecretRevealSpecV1>,
         secret_reveal_validation: SecretRevealValidation,
         invocation_class: CommandInvocationClass,
@@ -1921,6 +2187,22 @@ impl CommandPlan {
             instructions.len(),
             MAX_COMMAND_ITEMS,
         )?;
+        checked_len("command decisions", decisions.len(), MAX_COMMAND_ITEMS)?;
+        let mut union_instructions = instructions.clone();
+        union_instructions.extend(decisions.iter().flat_map(|decision| {
+            decision
+                .when_arms()
+                .iter()
+                .map(CommandDecisionArmV1::action)
+                .chain(std::iter::once(decision.else_action()))
+                .flat_map(CommandDecisionActionV1::instructions)
+                .cloned()
+        }));
+        checked_len(
+            "command union instructions",
+            union_instructions.len(),
+            MAX_COMMAND_ITEMS,
+        )?;
         if outcomes.is_empty() || bindings.is_empty() || instructions.is_empty() {
             return Err(IrValidationError::Empty {
                 kind: "command plan",
@@ -1941,6 +2223,7 @@ impl CommandPlan {
                 &expressions,
                 &bindings,
                 &instructions,
+                &decisions,
                 contract_schema,
             )?;
             if let Some(coefficient) = coefficient {
@@ -2007,6 +2290,16 @@ impl CommandPlan {
                 });
             }
         }
+        validate_command_decisions(
+            &expressions,
+            &decisions,
+            &bindings,
+            &outcomes,
+            success_outcome,
+            &instructions,
+            collection_expansion.as_ref(),
+            contract_schema,
+        )?;
         checked_len(
             "command root-validation reads",
             root_validation_reads.len(),
@@ -2039,7 +2332,7 @@ impl CommandPlan {
         validate_declared_constructions(
             &expressions,
             &bindings,
-            &instructions,
+            &union_instructions,
             &outcomes,
             success_outcome,
             contract_schema,
@@ -2084,6 +2377,7 @@ impl CommandPlan {
             &locality,
             contract_schema,
         )?;
+        let no_common_completion = BTreeSet::new();
         validate_instruction_stream(
             &expressions,
             &instructions,
@@ -2091,12 +2385,14 @@ impl CommandPlan {
             &outcomes,
             success_outcome,
             contract_schema,
+            (!decisions.is_empty()).then_some(&no_common_completion),
         )?;
         validate_root_validation_expression_uses(
             &expressions,
             &bindings,
             &locality,
             &instructions,
+            &decisions,
         )?;
         validate_read_dependencies(
             &expressions,
@@ -2104,6 +2400,7 @@ impl CommandPlan {
             &root_validation_reads,
             &commit_checks,
             &instructions,
+            &decisions,
         )?;
         validate_command_expression_reachability(
             &expressions,
@@ -2112,6 +2409,7 @@ impl CommandPlan {
             &locality,
             &commit_checks,
             &instructions,
+            &decisions,
         )?;
         validate_idempotency(
             invocation_class,
@@ -2140,6 +2438,7 @@ impl CommandPlan {
                     BindingMode::Mutate
                         | BindingMode::Create
                         | BindingMode::InitOrMutate
+                        | BindingMode::ObserveOrInitialize
                         | BindingMode::Delete
                 )
             })
@@ -2174,6 +2473,7 @@ impl CommandPlan {
             &root_validation_reads,
             &delete_checks,
             &instructions,
+            &decisions,
             collection_expansion.as_ref(),
             locality.partition_schema().maximum_encoded_bytes(),
             contract_schema,
@@ -2194,14 +2494,23 @@ impl CommandPlan {
                 &expressions,
                 &bindings,
                 &instructions,
+                &decisions,
                 &secret_reveals,
                 contract_schema,
             )?;
         }
-        let relationship_checks =
-            derive_relationship_checks(&expressions, &bindings, &instructions, contract_schema)?;
-        let unique_conflicts =
-            derive_unique_conflicts(&expressions, &bindings, &instructions, contract_schema)?;
+        let relationship_checks = derive_relationship_checks(
+            &expressions,
+            &bindings,
+            &union_instructions,
+            contract_schema,
+        )?;
+        let unique_conflicts = derive_unique_conflicts(
+            &expressions,
+            &bindings,
+            &union_instructions,
+            contract_schema,
+        )?;
         checked_len(
             "all command conflict derivations",
             locality
@@ -2232,6 +2541,7 @@ impl CommandPlan {
             locality,
             commit_checks,
             instructions,
+            decisions,
             collection_expansion,
             secret_reveals,
             invocation_class,
@@ -2328,6 +2638,15 @@ impl CommandPlan {
             .iter()
             .any(|binding| binding.mode == BindingMode::InitOrMutate)
     }
+    /// Whether this command carries compiler-sealed decision semantics.
+    #[must_use]
+    pub fn requires_ir_v18(&self) -> bool {
+        !self.decisions.is_empty()
+            || self
+                .bindings
+                .iter()
+                .any(|binding| binding.mode == BindingMode::ObserveOrInitialize)
+    }
     /// Whether this command requires the distinct reimport invocation class in IR v10.
     #[must_use]
     pub const fn requires_ir_v10(&self) -> bool {
@@ -2416,6 +2735,11 @@ impl CommandPlan {
     pub fn instructions(&self) -> &[Instruction] {
         &self.instructions
     }
+    /// Compiler-sealed decisions in source order.
+    #[must_use]
+    pub fn decisions(&self) -> &[CommandDecisionPlanV1] {
+        &self.decisions
+    }
     /// Compiler-owned collection expansion, present only for an explicit bulk command.
     #[must_use]
     pub const fn collection_expansion(&self) -> Option<&CollectionExpansionPlanV1> {
@@ -2471,6 +2795,7 @@ impl CommandPlan {
                 BindingMode::Read => {}
                 BindingMode::Mutate => return None,
                 BindingMode::InitOrMutate => return None,
+                BindingMode::ObserveOrInitialize => return None,
                 BindingMode::Delete => return None,
                 BindingMode::Create => {
                     if aggregate
@@ -2505,10 +2830,372 @@ impl CommandPlan {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
+fn validate_command_decisions(
+    arena: &ExpressionArena,
+    decisions: &[CommandDecisionPlanV1],
+    bindings: &[BindingPlan],
+    outcomes: &[OutcomeSchema],
+    success_outcome: OutcomeId,
+    common_instructions: &[Instruction],
+    collection_expansion: Option<&CollectionExpansionPlanV1>,
+    schema: &SchemaIr,
+) -> Result<(), IrValidationError> {
+    let deferred = bindings
+        .iter()
+        .filter(|binding| binding.mode() == BindingMode::ObserveOrInitialize)
+        .map(BindingPlan::id)
+        .collect::<BTreeSet<_>>();
+    if decisions.is_empty() {
+        if deferred.is_empty() {
+            return Ok(());
+        }
+        return Err(IrValidationError::InvalidDependency {
+            reason: "deferred initialized binding lacks one consuming decision",
+        });
+    }
+    if common_instructions.is_empty()
+        || !matches!(common_instructions.last(), Some(Instruction::Return(_)))
+        || common_instructions[..common_instructions.len() - 1]
+            .iter()
+            .any(|instruction| !matches!(instruction, Instruction::Require { .. }))
+    {
+        return Err(IrValidationError::InvalidInstructionStream {
+            reason: "decision command has effects outside its sealed arms",
+        });
+    }
+    if bindings.iter().any(|binding| {
+        binding.mode() != BindingMode::Read
+            && binding.mode() != BindingMode::ObserveOrInitialize
+            && decisions.iter().all(|decision| {
+                decision
+                    .when_arms()
+                    .iter()
+                    .map(CommandDecisionArmV1::action)
+                    .chain(std::iter::once(decision.else_action()))
+                    .all(|action| !action.bindings().contains(&binding.id()))
+            })
+    }) {
+        return Err(IrValidationError::InvalidDependency {
+            reason: "decision command mutation binding is not owned by one apply arm",
+        });
+    }
+
+    let mut consumed = BTreeSet::new();
+    let mut branch_owner = BTreeMap::<BindingId, BindingId>::new();
+    for decision in decisions {
+        if !consumed.insert(decision.binding())
+            || !deferred.contains(&decision.binding())
+            || decision.when_arms().is_empty()
+            || decision.when_arms().len() > MAX_COMMAND_DECISION_ARMS_V1
+        {
+            return Err(IrValidationError::InvalidDependency {
+                reason: "command decision does not uniquely consume one deferred binding",
+            });
+        }
+        let expected_collection_local = collection_expansion.is_some_and(|expansion| {
+            let first = expansion.first_binding().get() as usize;
+            let end = first.saturating_add(expansion.binding_count());
+            let binding = decision.binding().get() as usize;
+            binding >= first && binding < end
+        });
+        if decision.collection_local() != expected_collection_local {
+            return Err(IrValidationError::InvalidDependency {
+                reason: "command decision collection locality does not match its binding",
+            });
+        }
+        for arm in decision.when_arms() {
+            if arena
+                .get(arm.predicate())
+                .is_none_or(|node| node.result_type().tag() != ValueTypeTag::Bool)
+            {
+                return Err(IrValidationError::TypeMismatch {
+                    context: "command decision predicate",
+                });
+            }
+        }
+        for action in decision
+            .when_arms()
+            .iter()
+            .map(CommandDecisionArmV1::action)
+            .chain(std::iter::once(decision.else_action()))
+        {
+            if !action.bindings().windows(2).all(|pair| pair[0] < pair[1]) {
+                return Err(IrValidationError::NonCanonicalOrder {
+                    kind: "command decision branch bindings",
+                });
+            }
+            for binding in action.bindings() {
+                let plan = bindings.get(binding.get() as usize).ok_or(
+                    IrValidationError::InvalidReference {
+                        kind: "command decision branch binding",
+                    },
+                )?;
+                if plan.id() != *binding
+                    || plan.mode() == BindingMode::ObserveOrInitialize
+                    || branch_owner.insert(*binding, decision.binding()).is_some()
+                {
+                    return Err(IrValidationError::InvalidDependency {
+                        reason: "command decision branch binding has multiple owners",
+                    });
+                }
+            }
+        }
+    }
+    if consumed != deferred {
+        return Err(IrValidationError::InvalidDependency {
+            reason: "deferred initialized binding is not consumed exactly once",
+        });
+    }
+
+    let all_branch_bindings = branch_owner.keys().copied().collect::<BTreeSet<_>>();
+    for instruction in common_instructions {
+        if instruction_binding_dependencies(arena, instruction)?
+            .iter()
+            .any(|binding| all_branch_bindings.contains(binding))
+        {
+            return Err(IrValidationError::InvalidDependency {
+                reason: "decision common requirement or success reads a branch-local binding",
+            });
+        }
+    }
+    let success = match common_instructions
+        .last()
+        .expect("validated decision command terminal instruction")
+    {
+        Instruction::Return(outcome) => outcome.clone(),
+        _ => unreachable!("validated decision command terminal return"),
+    };
+    for decision in decisions {
+        for arm in decision.when_arms() {
+            let dependencies = arena.dependencies(arm.predicate())?;
+            if dependencies
+                .bindings()
+                .iter()
+                .any(|binding| all_branch_bindings.contains(binding))
+            {
+                return Err(IrValidationError::InvalidDependency {
+                    reason: "command decision predicate depends on a branch-local binding",
+                });
+            }
+        }
+        for action in decision
+            .when_arms()
+            .iter()
+            .map(CommandDecisionArmV1::action)
+            .chain(std::iter::once(decision.else_action()))
+        {
+            match action {
+                CommandDecisionActionV1::Apply {
+                    bindings: owned,
+                    instructions,
+                } => {
+                    if instructions.iter().any(|instruction| {
+                        matches!(
+                            instruction,
+                            Instruction::Require { .. } | Instruction::Return(_)
+                        )
+                    }) {
+                        return Err(IrValidationError::InvalidInstructionStream {
+                            reason: "decision apply arm contains a non-effect instruction",
+                        });
+                    }
+                    let allowed_locals = owned.iter().copied().collect::<BTreeSet<_>>();
+                    for instruction in instructions {
+                        for binding in instruction_binding_dependencies(arena, instruction)? {
+                            if all_branch_bindings.contains(&binding)
+                                && !allowed_locals.contains(&binding)
+                            {
+                                return Err(IrValidationError::InvalidDependency {
+                                    reason: "decision apply arm references another arm's binding",
+                                });
+                            }
+                        }
+                        if let Some(target) = instruction_target_binding(instruction)
+                            && bindings[target.get() as usize].mode()
+                                == BindingMode::ObserveOrInitialize
+                            && target != decision.binding()
+                        {
+                            return Err(IrValidationError::InvalidDependency {
+                                reason: "decision apply arm finalizes another decision binding",
+                            });
+                        }
+                    }
+                    let mut stream = instructions.clone();
+                    stream.push(Instruction::Return(success.clone()));
+                    let mut completion = allowed_locals;
+                    completion.insert(decision.binding());
+                    validate_instruction_stream(
+                        arena,
+                        &stream,
+                        bindings,
+                        outcomes,
+                        success_outcome,
+                        schema,
+                        Some(&completion),
+                    )?;
+                }
+                CommandDecisionActionV1::NoEffect => {
+                    for field in success.payload().fields() {
+                        ensure_initialized_reads(
+                            arena,
+                            field.expression(),
+                            bindings,
+                            schema,
+                            &initial_binding_fields(bindings, schema),
+                        )?;
+                    }
+                }
+                CommandDecisionActionV1::Reject(outcome) => {
+                    for field in outcome.payload().fields() {
+                        ensure_initialized_reads(
+                            arena,
+                            field.expression(),
+                            bindings,
+                            schema,
+                            &initial_binding_fields(bindings, schema),
+                        )?;
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn initial_binding_fields(bindings: &[BindingPlan], schema: &SchemaIr) -> Vec<BTreeSet<FieldId>> {
+    bindings
+        .iter()
+        .map(|binding| {
+            let entity = schema
+                .entity(binding.entity_type())
+                .expect("validated decision binding entity");
+            if matches!(
+                binding.mode(),
+                BindingMode::Create | BindingMode::InitOrMutate | BindingMode::ObserveOrInitialize
+            ) {
+                let mut fields = entity
+                    .record()
+                    .fields()
+                    .iter()
+                    .filter(|field| {
+                        entity.primary_key_fields().contains(&field.id())
+                            || field.value_type().is_optional()
+                    })
+                    .map(FieldSchema::id)
+                    .collect::<BTreeSet<_>>();
+                fields.extend(binding.initializer().iter().map(|field| field.field_id()));
+                fields
+            } else {
+                entity
+                    .record()
+                    .fields()
+                    .iter()
+                    .map(FieldSchema::id)
+                    .collect()
+            }
+        })
+        .collect()
+}
+
+fn instruction_target_binding(instruction: &Instruction) -> Option<BindingId> {
+    match instruction {
+        Instruction::SetField { binding, .. }
+        | Instruction::SetEmbedding { binding, .. }
+        | Instruction::WorkflowTransition { binding, .. }
+        | Instruction::WorkflowLease { binding, .. } => Some(*binding),
+        Instruction::Require { .. } | Instruction::EmitEvent(_) | Instruction::Return(_) => None,
+    }
+}
+
+fn instruction_binding_dependencies(
+    arena: &ExpressionArena,
+    instruction: &Instruction,
+) -> Result<BTreeSet<BindingId>, IrValidationError> {
+    let mut roots = Vec::new();
+    match instruction {
+        Instruction::Require {
+            predicate, reject, ..
+        } => {
+            roots.push(*predicate);
+            roots.extend(
+                reject
+                    .payload()
+                    .fields()
+                    .iter()
+                    .map(|field| field.expression()),
+            );
+        }
+        Instruction::SetField { value, .. } => roots.push(*value),
+        Instruction::SetEmbedding {
+            value,
+            model_identity,
+            model_version,
+            ..
+        } => roots.extend([*value, *model_identity, *model_version]),
+        Instruction::WorkflowTransition {
+            expected_revision,
+            stale,
+            illegal,
+            ..
+        } => {
+            roots.push(*expected_revision);
+            for outcome in [stale, illegal] {
+                roots.extend(
+                    outcome
+                        .payload()
+                        .fields()
+                        .iter()
+                        .map(|field| field.expression()),
+                );
+            }
+        }
+        Instruction::WorkflowLease { operation, .. } => {
+            roots.extend(operation.expressions());
+            for outcome in operation.outcomes() {
+                roots.extend(
+                    outcome
+                        .payload()
+                        .fields()
+                        .iter()
+                        .map(|field| field.expression()),
+                );
+            }
+        }
+        Instruction::EmitEvent(event) => {
+            roots.extend(
+                event
+                    .payload()
+                    .fields()
+                    .iter()
+                    .map(|field| field.expression()),
+            );
+        }
+        Instruction::Return(outcome) => {
+            roots.extend(
+                outcome
+                    .payload()
+                    .fields()
+                    .iter()
+                    .map(|field| field.expression()),
+            );
+        }
+    }
+    let mut bindings = BTreeSet::new();
+    if let Some(target) = instruction_target_binding(instruction) {
+        bindings.insert(target);
+    }
+    for root in roots {
+        bindings.extend(arena.dependencies(root)?.bindings().iter().copied());
+    }
+    Ok(bindings)
+}
+
 fn validate_secret_reveals(
     expressions: &ExpressionArena,
     bindings: &[BindingPlan],
     instructions: &[Instruction],
+    decisions: &[CommandDecisionPlanV1],
     declared: &[SecretRevealSpecV1],
     schema: &SchemaIr,
 ) -> Result<(), IrValidationError> {
@@ -2524,7 +3211,26 @@ fn validate_secret_reveals(
             append_outcome_secret_flows(&mut flows, outcome);
         }
     }
-    for instruction in instructions {
+    let decision_instructions = decisions.iter().flat_map(|decision| {
+        decision
+            .when_arms()
+            .iter()
+            .map(CommandDecisionArmV1::action)
+            .chain(std::iter::once(decision.else_action()))
+            .flat_map(CommandDecisionActionV1::instructions)
+    });
+    for action in decisions.iter().flat_map(|decision| {
+        decision
+            .when_arms()
+            .iter()
+            .map(CommandDecisionArmV1::action)
+            .chain(std::iter::once(decision.else_action()))
+    }) {
+        if let Some(outcome) = action.rejection() {
+            append_outcome_secret_flows(&mut flows, outcome);
+        }
+    }
+    for instruction in instructions.iter().chain(decision_instructions) {
         match instruction {
             Instruction::Require { reject, .. } => {
                 append_outcome_secret_flows(&mut flows, reject);
@@ -2762,6 +3468,7 @@ fn validate_collection_expansion(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn validate_collection_graph_bytes(
     expansion: &CollectionExpansionPlanV1,
     command_name: &str,
@@ -2769,9 +3476,23 @@ fn validate_collection_graph_bytes(
     expressions: &ExpressionArena,
     bindings: &[BindingPlan],
     instructions: &[Instruction],
+    decisions: &[CommandDecisionPlanV1],
     schema: &SchemaIr,
 ) -> Result<Option<usize>, IrValidationError> {
     if expansion.maximum_aggregate_element_bytes().is_some() {
+        if !decisions.is_empty() {
+            return validate_decision_aggregate_collection_graph_bytes(
+                expansion,
+                command_name,
+                input,
+                expressions,
+                bindings,
+                instructions,
+                decisions,
+                schema,
+            )
+            .map(Some);
+        }
         return validate_aggregate_collection_graph_bytes(
             expansion,
             command_name,
@@ -2782,6 +3503,17 @@ fn validate_collection_graph_bytes(
             schema,
         )
         .map(Some);
+    }
+    if !decisions.is_empty() {
+        return validate_decision_collection_graph_bytes(
+            expansion,
+            input,
+            bindings,
+            instructions,
+            decisions,
+            schema,
+        )
+        .map(|()| None);
     }
     let mut total = maximum_record_value_bytes(input.record(), schema, 0)?;
     let first_binding = expansion.first_binding().get() as usize;
@@ -2846,7 +3578,10 @@ fn validate_collection_graph_bytes(
         }
         if !matches!(
             binding.mode(),
-            BindingMode::Create | BindingMode::Mutate | BindingMode::InitOrMutate
+            BindingMode::Create
+                | BindingMode::Mutate
+                | BindingMode::InitOrMutate
+                | BindingMode::ObserveOrInitialize
         ) {
             continue;
         }
@@ -2910,6 +3645,208 @@ fn validate_collection_graph_bytes(
     Ok(None)
 }
 
+fn validate_decision_collection_graph_bytes(
+    expansion: &CollectionExpansionPlanV1,
+    input: &CommandInputSchema,
+    bindings: &[BindingPlan],
+    instructions: &[Instruction],
+    decisions: &[CommandDecisionPlanV1],
+    schema: &SchemaIr,
+) -> Result<(), IrValidationError> {
+    let mut total = maximum_record_value_bytes(input.record(), schema, 0)?;
+    let branch_bindings = decisions
+        .iter()
+        .flat_map(|decision| {
+            decision
+                .when_arms()
+                .iter()
+                .map(CommandDecisionArmV1::action)
+                .chain(std::iter::once(decision.else_action()))
+                .flat_map(CommandDecisionActionV1::bindings)
+                .copied()
+        })
+        .collect::<BTreeSet<_>>();
+    let deferred = decisions
+        .iter()
+        .map(CommandDecisionPlanV1::binding)
+        .collect::<BTreeSet<_>>();
+    for binding in bindings.iter().filter(|binding| {
+        !branch_bindings.contains(&binding.id()) && !deferred.contains(&binding.id())
+    }) {
+        total = total
+            .checked_add(collection_binding_graph_bytes(expansion, binding, schema)?)
+            .ok_or(IrValidationError::SizeOverflow {
+                kind: "collection command graph",
+            })?;
+    }
+    let first_instruction = expansion.first_instruction() as usize;
+    let instruction_end = first_instruction + expansion.instruction_count();
+    for (position, instruction) in instructions.iter().enumerate() {
+        if let Instruction::EmitEvent(event) = instruction {
+            let copies = if (first_instruction..instruction_end).contains(&position) {
+                expansion.maximum_elements()
+            } else {
+                1
+            };
+            total = total
+                .checked_add(collection_event_graph_bytes(event, copies, schema)?)
+                .ok_or(IrValidationError::SizeOverflow {
+                    kind: "collection command graph",
+                })?;
+        }
+    }
+    for decision in decisions {
+        let mut maximum = 0usize;
+        for action in decision
+            .when_arms()
+            .iter()
+            .map(CommandDecisionArmV1::action)
+            .chain(std::iter::once(decision.else_action()))
+        {
+            let CommandDecisionActionV1::Apply {
+                bindings: owned,
+                instructions,
+            } = action
+            else {
+                continue;
+            };
+            let mut selected = std::iter::once(decision.binding())
+                .chain(owned.iter().copied())
+                .collect::<Vec<_>>();
+            selected.sort_unstable();
+            let mut candidate = 0usize;
+            for binding in selected {
+                candidate = candidate
+                    .checked_add(collection_binding_graph_bytes(
+                        expansion,
+                        bindings.get(binding.get() as usize).ok_or(
+                            IrValidationError::InvalidReference {
+                                kind: "decision graph binding",
+                            },
+                        )?,
+                        schema,
+                    )?)
+                    .ok_or(IrValidationError::SizeOverflow {
+                        kind: "decision collection graph",
+                    })?;
+            }
+            let copies = if decision.collection_local() {
+                expansion.maximum_elements()
+            } else {
+                1
+            };
+            for instruction in instructions {
+                if let Instruction::EmitEvent(event) = instruction {
+                    candidate = candidate
+                        .checked_add(collection_event_graph_bytes(event, copies, schema)?)
+                        .ok_or(IrValidationError::SizeOverflow {
+                            kind: "decision collection graph",
+                        })?;
+                }
+            }
+            maximum = maximum.max(candidate);
+        }
+        total = total
+            .checked_add(maximum)
+            .ok_or(IrValidationError::SizeOverflow {
+                kind: "decision collection graph",
+            })?;
+    }
+    checked_len(
+        "collection command canonical input and write graph bytes",
+        total,
+        MAX_COLLECTION_COMMAND_GRAPH_BYTES_V1,
+    )
+}
+
+fn collection_binding_graph_bytes(
+    expansion: &CollectionExpansionPlanV1,
+    binding: &BindingPlan,
+    schema: &SchemaIr,
+) -> Result<usize, IrValidationError> {
+    let copies = {
+        let first = expansion.first_binding().get() as usize;
+        let end = first + expansion.binding_count();
+        if (first..end).contains(&(binding.id().get() as usize)) {
+            expansion.maximum_elements()
+        } else {
+            1
+        }
+    };
+    if binding.mode() == BindingMode::Delete && binding.cascade_failure().is_some() {
+        let root =
+            schema
+                .entity(binding.entity_type())
+                .ok_or(IrValidationError::InvalidReference {
+                    kind: "cascade graph root entity",
+                })?;
+        let mut total = checked_index_derivation_mul(
+            maximum_record_value_bytes(root.record(), schema, 0)?,
+            copies,
+        )?;
+        let policy = schema.delete_policy(binding.entity_type()).ok_or(
+            IrValidationError::InvalidDependency {
+                reason: "cascade delete lacks structural policy",
+            },
+        )?;
+        let crate::DeletePolicyModeV1::Cascade { relationships } = policy.mode() else {
+            return Err(IrValidationError::InvalidDependency {
+                reason: "cascade failure does not match structural policy",
+            });
+        };
+        for relationship in relationships {
+            let child = schema.entity(relationship.source_entity()).ok_or(
+                IrValidationError::InvalidReference {
+                    kind: "cascade graph child entity",
+                },
+            )?;
+            total = checked_index_derivation_add(
+                total,
+                checked_index_derivation_mul(
+                    maximum_record_value_bytes(child.record(), schema, 0)?,
+                    checked_index_derivation_mul(copies, usize::from(relationship.maximum()))?,
+                )?,
+            )?;
+        }
+        return Ok(total);
+    }
+    if matches!(
+        binding.mode(),
+        BindingMode::Create
+            | BindingMode::Mutate
+            | BindingMode::InitOrMutate
+            | BindingMode::ObserveOrInitialize
+    ) {
+        let entity =
+            schema
+                .entity(binding.entity_type())
+                .ok_or(IrValidationError::InvalidReference {
+                    kind: "collection graph entity",
+                })?;
+        return checked_index_derivation_mul(
+            maximum_record_value_bytes(entity.record(), schema, 0)?,
+            copies,
+        );
+    }
+    Ok(0)
+}
+
+fn collection_event_graph_bytes(
+    event: &EventConstruction,
+    copies: usize,
+    schema: &SchemaIr,
+) -> Result<usize, IrValidationError> {
+    let declared = schema
+        .event(event.event_type())
+        .ok_or(IrValidationError::InvalidReference {
+            kind: "collection graph event",
+        })?;
+    checked_index_derivation_mul(
+        maximum_record_value_bytes(declared.payload(), schema, 0)?,
+        copies,
+    )
+}
+
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 enum AggregateElementSource {
     Whole,
@@ -2959,6 +3896,361 @@ where
         .ok_or(IrValidationError::SizeOverflow {
             kind: "collection aggregate byte copy coefficient",
         })
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct AggregateGraphCharge {
+    fixed_bytes: usize,
+    copy_coefficient: usize,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn validate_decision_aggregate_collection_graph_bytes(
+    expansion: &CollectionExpansionPlanV1,
+    command_name: &str,
+    input: &CommandInputSchema,
+    expressions: &ExpressionArena,
+    bindings: &[BindingPlan],
+    instructions: &[Instruction],
+    decisions: &[CommandDecisionPlanV1],
+    schema: &SchemaIr,
+) -> Result<usize, IrValidationError> {
+    let aggregate_bytes =
+        expansion
+            .maximum_aggregate_element_bytes()
+            .ok_or(IrValidationError::InvalidReference {
+                kind: "collection aggregate byte maximum",
+            })?;
+    let (mut fixed_bytes, request_bytes) =
+        aggregate_collection_input_charge(expansion, command_name, input, aggregate_bytes, schema)?;
+    checked_len(
+        "collection aggregate public request bytes",
+        request_bytes,
+        MAX_APPLICATION_REQUEST_BYTES_V1,
+    )?;
+    let mut coefficient = 1usize;
+    let branch_bindings = decisions
+        .iter()
+        .flat_map(|decision| {
+            decision
+                .when_arms()
+                .iter()
+                .map(CommandDecisionArmV1::action)
+                .chain(std::iter::once(decision.else_action()))
+                .flat_map(CommandDecisionActionV1::bindings)
+                .copied()
+        })
+        .collect::<BTreeSet<_>>();
+    let deferred = decisions
+        .iter()
+        .map(CommandDecisionPlanV1::binding)
+        .collect::<BTreeSet<_>>();
+    for binding in bindings.iter().filter(|binding| {
+        !branch_bindings.contains(&binding.id()) && !deferred.contains(&binding.id())
+    }) {
+        let charge =
+            aggregate_binding_graph_charge(expansion, expressions, binding, instructions, schema)?;
+        fixed_bytes = checked_index_derivation_add(fixed_bytes, charge.fixed_bytes)?;
+        coefficient = checked_index_derivation_add(coefficient, charge.copy_coefficient)?;
+    }
+    let first_instruction = expansion.first_instruction() as usize;
+    let instruction_end = first_instruction + expansion.instruction_count();
+    for (position, instruction) in instructions.iter().enumerate() {
+        if let Instruction::EmitEvent(event) = instruction {
+            let charge = aggregate_event_graph_charge(
+                expansion,
+                expressions,
+                event,
+                (first_instruction..instruction_end).contains(&position),
+                schema,
+            )?;
+            fixed_bytes = checked_index_derivation_add(fixed_bytes, charge.fixed_bytes)?;
+            coefficient = checked_index_derivation_add(coefficient, charge.copy_coefficient)?;
+        }
+    }
+    for decision in decisions {
+        let mut maximum = AggregateGraphCharge::default();
+        for action in decision
+            .when_arms()
+            .iter()
+            .map(CommandDecisionArmV1::action)
+            .chain(std::iter::once(decision.else_action()))
+        {
+            let CommandDecisionActionV1::Apply {
+                bindings: owned,
+                instructions,
+            } = action
+            else {
+                continue;
+            };
+            let mut candidate = AggregateGraphCharge::default();
+            for binding in std::iter::once(decision.binding()).chain(owned.iter().copied()) {
+                candidate = add_aggregate_graph_charge(
+                    candidate,
+                    aggregate_binding_graph_charge(
+                        expansion,
+                        expressions,
+                        bindings.get(binding.get() as usize).ok_or(
+                            IrValidationError::InvalidReference {
+                                kind: "decision aggregate graph binding",
+                            },
+                        )?,
+                        instructions,
+                        schema,
+                    )?,
+                )?;
+            }
+            for instruction in instructions {
+                if let Instruction::EmitEvent(event) = instruction {
+                    candidate = add_aggregate_graph_charge(
+                        candidate,
+                        aggregate_event_graph_charge(
+                            expansion,
+                            expressions,
+                            event,
+                            decision.collection_local(),
+                            schema,
+                        )?,
+                    )?;
+                }
+            }
+            maximum.fixed_bytes = maximum.fixed_bytes.max(candidate.fixed_bytes);
+            maximum.copy_coefficient = maximum.copy_coefficient.max(candidate.copy_coefficient);
+        }
+        fixed_bytes = checked_index_derivation_add(fixed_bytes, maximum.fixed_bytes)?;
+        coefficient = checked_index_derivation_add(coefficient, maximum.copy_coefficient)?;
+    }
+    let total = aggregate_bytes
+        .checked_mul(coefficient)
+        .and_then(|variable| fixed_bytes.checked_add(variable))
+        .ok_or(IrValidationError::SizeOverflow {
+            kind: "collection aggregate command graph bytes",
+        })?;
+    checked_len(
+        "collection command canonical input and write graph bytes",
+        total,
+        MAX_COLLECTION_COMMAND_GRAPH_BYTES_V1,
+    )?;
+    Ok(coefficient)
+}
+
+fn aggregate_collection_input_charge(
+    expansion: &CollectionExpansionPlanV1,
+    command_name: &str,
+    input: &CommandInputSchema,
+    aggregate_bytes: usize,
+    schema: &SchemaIr,
+) -> Result<(usize, usize), IrValidationError> {
+    let mut fixed_bytes = 6usize;
+    let mut request_bytes = 4usize
+        .checked_add(command_name.len())
+        .and_then(|bytes| bytes.checked_add(1 + 8 + 4 + 4))
+        .ok_or(IrValidationError::SizeOverflow {
+            kind: "collection aggregate public request bytes",
+        })?;
+    for field in input.record().fields() {
+        fixed_bytes = checked_index_derivation_add(fixed_bytes, 4)?;
+        if field.id() == expansion.input_field() {
+            fixed_bytes = checked_index_derivation_add(fixed_bytes, 6)?;
+            request_bytes = request_bytes
+                .checked_add(5 + field.name().len())
+                .and_then(|bytes| bytes.checked_add(5))
+                .and_then(|bytes| bytes.checked_add(aggregate_bytes))
+                .and_then(|bytes| {
+                    aggregate_structural_overhead(expansion.element_type(), schema, 0)
+                        .ok()
+                        .and_then(|overhead| {
+                            overhead
+                                .checked_mul(expansion.maximum_elements())
+                                .and_then(|overhead| bytes.checked_add(overhead))
+                        })
+                })
+                .ok_or(IrValidationError::SizeOverflow {
+                    kind: "collection aggregate public request bytes",
+                })?;
+        } else {
+            fixed_bytes = fixed_bytes
+                .checked_add(maximum_typed_value_bytes(field.value_type(), schema, 1)?)
+                .ok_or(IrValidationError::SizeOverflow {
+                    kind: "collection aggregate fixed input bytes",
+                })?;
+            request_bytes = request_bytes
+                .checked_add(5 + field.name().len())
+                .and_then(|bytes| {
+                    maximum_submitted_value_bytes(field.value_type(), schema, 0)
+                        .ok()
+                        .and_then(|value| bytes.checked_add(value))
+                })
+                .ok_or(IrValidationError::SizeOverflow {
+                    kind: "collection aggregate public request bytes",
+                })?;
+        }
+    }
+    Ok((fixed_bytes, request_bytes))
+}
+
+fn aggregate_binding_graph_charge(
+    expansion: &CollectionExpansionPlanV1,
+    expressions: &ExpressionArena,
+    binding: &BindingPlan,
+    instructions: &[Instruction],
+    schema: &SchemaIr,
+) -> Result<AggregateGraphCharge, IrValidationError> {
+    let entity =
+        schema
+            .entity(binding.entity_type())
+            .ok_or(IrValidationError::InvalidReference {
+                kind: "collection aggregate graph entity",
+            })?;
+    let first_binding = expansion.first_binding().get() as usize;
+    let repeated = (first_binding..first_binding + expansion.binding_count())
+        .contains(&(binding.id().get() as usize));
+    if !matches!(
+        binding.mode(),
+        BindingMode::Create
+            | BindingMode::Mutate
+            | BindingMode::InitOrMutate
+            | BindingMode::ObserveOrInitialize
+    ) || binding.cascade_failure().is_some()
+    {
+        let contributes = matches!(
+            binding.mode(),
+            BindingMode::Create
+                | BindingMode::Mutate
+                | BindingMode::InitOrMutate
+                | BindingMode::ObserveOrInitialize
+        ) || binding.cascade_failure().is_some();
+        return Ok(AggregateGraphCharge {
+            fixed_bytes: if contributes {
+                checked_index_derivation_mul(
+                    maximum_record_value_bytes(entity.record(), schema, 0)?,
+                    if repeated {
+                        expansion.maximum_elements()
+                    } else {
+                        1
+                    },
+                )?
+            } else {
+                0
+            },
+            copy_coefficient: 0,
+        });
+    }
+    if !repeated {
+        return Ok(AggregateGraphCharge {
+            fixed_bytes: maximum_record_value_bytes(entity.record(), schema, 0)?,
+            copy_coefficient: 0,
+        });
+    }
+    let mut expressions_by_field = entity
+        .primary_key_fields()
+        .iter()
+        .copied()
+        .zip(binding.key_expressions().iter().copied())
+        .collect::<BTreeMap<_, _>>();
+    expressions_by_field.extend(
+        binding
+            .initializer()
+            .iter()
+            .map(|field| (field.field_id(), field.expression())),
+    );
+    for instruction in instructions {
+        match instruction {
+            Instruction::SetField {
+                binding: target,
+                field,
+                value,
+            }
+            | Instruction::SetEmbedding {
+                binding: target,
+                field,
+                value,
+                ..
+            } if *target == binding.id() => {
+                expressions_by_field.insert(*field, *value);
+            }
+            _ => {}
+        }
+    }
+    let mut sources = Vec::new();
+    let mut per_record_fixed = 6usize;
+    for field in entity.record().fields() {
+        per_record_fixed = checked_index_derivation_add(per_record_fixed, 4)?;
+        if let Some(source) = expressions_by_field
+            .get(&field.id())
+            .and_then(|expression| direct_aggregate_source(expressions, *expression))
+        {
+            sources.push(source);
+        } else {
+            per_record_fixed = checked_index_derivation_add(
+                per_record_fixed,
+                maximum_typed_value_bytes(field.value_type(), schema, 1)?,
+            )?;
+        }
+    }
+    Ok(AggregateGraphCharge {
+        fixed_bytes: checked_index_derivation_mul(per_record_fixed, expansion.maximum_elements())?,
+        copy_coefficient: aggregate_copy_charge(sources)?,
+    })
+}
+
+fn aggregate_event_graph_charge(
+    expansion: &CollectionExpansionPlanV1,
+    expressions: &ExpressionArena,
+    event: &EventConstruction,
+    repeated: bool,
+    schema: &SchemaIr,
+) -> Result<AggregateGraphCharge, IrValidationError> {
+    let declared = schema
+        .event(event.event_type())
+        .ok_or(IrValidationError::InvalidReference {
+            kind: "collection aggregate graph event",
+        })?;
+    if !repeated {
+        return Ok(AggregateGraphCharge {
+            fixed_bytes: maximum_record_value_bytes(declared.payload(), schema, 0)?,
+            copy_coefficient: 0,
+        });
+    }
+    let mappings = event
+        .payload()
+        .fields()
+        .iter()
+        .map(|mapping| (mapping.field_id(), mapping.expression()))
+        .collect::<BTreeMap<_, _>>();
+    let mut sources = Vec::new();
+    let mut per_event_fixed = 6usize;
+    for field in declared.payload().fields() {
+        per_event_fixed = checked_index_derivation_add(per_event_fixed, 4)?;
+        if let Some(source) = mappings
+            .get(&field.id())
+            .and_then(|expression| direct_aggregate_source(expressions, *expression))
+        {
+            sources.push(source);
+        } else {
+            per_event_fixed = checked_index_derivation_add(
+                per_event_fixed,
+                maximum_typed_value_bytes(field.value_type(), schema, 1)?,
+            )?;
+        }
+    }
+    Ok(AggregateGraphCharge {
+        fixed_bytes: checked_index_derivation_mul(per_event_fixed, expansion.maximum_elements())?,
+        copy_coefficient: aggregate_copy_charge(sources)?,
+    })
+}
+
+fn add_aggregate_graph_charge(
+    left: AggregateGraphCharge,
+    right: AggregateGraphCharge,
+) -> Result<AggregateGraphCharge, IrValidationError> {
+    Ok(AggregateGraphCharge {
+        fixed_bytes: checked_index_derivation_add(left.fixed_bytes, right.fixed_bytes)?,
+        copy_coefficient: checked_index_derivation_add(
+            left.copy_coefficient,
+            right.copy_coefficient,
+        )?,
+    })
 }
 
 fn validate_aggregate_collection_graph_bytes(
@@ -3063,13 +4355,19 @@ fn validate_aggregate_collection_graph_bytes(
         if !(first_binding..binding_end).contains(&position)
             || !matches!(
                 binding.mode(),
-                BindingMode::Create | BindingMode::Mutate | BindingMode::InitOrMutate
+                BindingMode::Create
+                    | BindingMode::Mutate
+                    | BindingMode::InitOrMutate
+                    | BindingMode::ObserveOrInitialize
             )
             || binding.cascade_failure().is_some()
         {
             if matches!(
                 binding.mode(),
-                BindingMode::Create | BindingMode::Mutate | BindingMode::InitOrMutate
+                BindingMode::Create
+                    | BindingMode::Mutate
+                    | BindingMode::InitOrMutate
+                    | BindingMode::ObserveOrInitialize
             ) || binding.cascade_failure().is_some()
             {
                 let copies = if (first_binding..binding_end).contains(&position) {
@@ -3421,7 +4719,10 @@ fn derive_relationship_checks(
     for source_binding in bindings.iter().filter(|binding| {
         matches!(
             binding.mode(),
-            BindingMode::Create | BindingMode::Mutate | BindingMode::InitOrMutate
+            BindingMode::Create
+                | BindingMode::Mutate
+                | BindingMode::InitOrMutate
+                | BindingMode::ObserveOrInitialize
         )
     }) {
         let source_entity = schema.entity(source_binding.entity_type()).ok_or(
@@ -3436,7 +4737,7 @@ fn derive_relationship_checks(
         {
             let changes = matches!(
                 source_binding.mode(),
-                BindingMode::Create | BindingMode::InitOrMutate
+                BindingMode::Create | BindingMode::InitOrMutate | BindingMode::ObserveOrInitialize
             ) || relationship
                 .source_fields()
                 .iter()
@@ -3481,6 +4782,7 @@ fn derive_relationship_checks(
                             | BindingMode::Mutate
                             | BindingMode::Create
                             | BindingMode::InitOrMutate
+                            | BindingMode::ObserveOrInitialize
                     )
                     || target.entity_type() != relationship.target_entity()
                     || target.key_expressions().len() != resulting.len()
@@ -3586,7 +4888,10 @@ fn derive_unique_conflicts(
     for binding in bindings.iter().filter(|binding| {
         matches!(
             binding.mode(),
-            BindingMode::Create | BindingMode::Mutate | BindingMode::InitOrMutate
+            BindingMode::Create
+                | BindingMode::Mutate
+                | BindingMode::InitOrMutate
+                | BindingMode::ObserveOrInitialize
         )
     }) {
         let entity =
@@ -3607,7 +4912,7 @@ fn derive_unique_conflicts(
         {
             let changes = matches!(
                 binding.mode(),
-                BindingMode::Create | BindingMode::InitOrMutate
+                BindingMode::Create | BindingMode::InitOrMutate | BindingMode::ObserveOrInitialize
             ) || unique
                 .fields()
                 .iter()
@@ -3687,7 +4992,7 @@ fn derive_unique_conflicts(
     Ok(conflicts)
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 struct WorstCaseIndexDerivation {
     index_entry_deltas: usize,
     index_entry_puts: usize,
@@ -3708,76 +5013,216 @@ fn validate_worst_case_index_derivation(
     root_validation_reads: &[RootValidationReadPlan],
     delete_checks: &[DeleteCheckPlanV1],
     instructions: &[Instruction],
+    decisions: &[CommandDecisionPlanV1],
     collection_expansion: Option<&CollectionExpansionPlanV1>,
     maximum_partition_key_bytes: usize,
     schema: &SchemaIr,
 ) -> Result<(), IrValidationError> {
-    let derivation = worst_case_index_derivation(
-        expressions,
-        bindings,
-        instructions,
-        collection_expansion,
-        maximum_partition_key_bytes,
-        schema,
-    )?;
     let repeated = |binding: BindingId| {
         collection_expansion.is_some_and(|expansion| {
             let first = expansion.first_binding().get() as usize;
             (first..first + expansion.binding_count()).contains(&(binding.get() as usize))
         })
     };
-    let mut binding_count = bindings.iter().try_fold(0usize, |count, binding| {
-        checked_index_derivation_add(
-            count,
-            if repeated(binding.id()) {
-                collection_expansion.map_or(1, CollectionExpansionPlanV1::maximum_elements)
-            } else {
-                1
-            },
-        )
-    })?;
-    let root_validation_read_count =
-        root_validation_reads
-            .iter()
-            .try_fold(0usize, |count, read| {
-                checked_index_derivation_add(
-                    count,
-                    if repeated(read.source_binding()) {
-                        collection_expansion.map_or(1, CollectionExpansionPlanV1::maximum_elements)
-                    } else {
-                        1
-                    },
-                )
-            })?;
-    let mut influential_range_count = 0usize;
-    for check in delete_checks {
-        let multiplier = if repeated(check.binding()) {
+    let multiplicity = |binding: BindingId| {
+        if repeated(binding) {
             collection_expansion.map_or(1, CollectionExpansionPlanV1::maximum_elements)
         } else {
             1
-        };
-        match check.mode() {
-            DeleteCheckModeV1::NoInbound => {}
-            DeleteCheckModeV1::Restrict { .. } => {
-                influential_range_count =
-                    checked_index_derivation_add(influential_range_count, multiplier)?;
-            }
-            DeleteCheckModeV1::Cascade { relationships } => {
-                influential_range_count = checked_index_derivation_add(
-                    influential_range_count,
-                    checked_index_derivation_mul(relationships.len(), multiplier)?,
-                )?;
-                let cascade_bindings =
-                    relationships.iter().try_fold(0usize, |total, relation| {
-                        checked_index_derivation_add(total, usize::from(relation.maximum()))
-                    })?;
-                binding_count = checked_index_derivation_add(
-                    binding_count,
-                    checked_index_derivation_mul(cascade_bindings, multiplier)?,
-                )?;
-            }
         }
+    };
+    if decisions.is_empty() {
+        let derivation = worst_case_index_derivation(
+            expressions,
+            bindings,
+            instructions,
+            None,
+            collection_expansion,
+            maximum_partition_key_bytes,
+            schema,
+        )?;
+        let mut binding_count = bindings.iter().try_fold(0usize, |count, binding| {
+            checked_index_derivation_add(count, multiplicity(binding.id()))
+        })?;
+        let root_validation_read_count = root_validation_reads
+            .iter()
+            .try_fold(0usize, |count, read| {
+                checked_index_derivation_add(count, multiplicity(read.source_binding()))
+            })?;
+        let mut influential_range_count = 0usize;
+        add_delete_validation_cost(
+            delete_checks,
+            None,
+            &multiplicity,
+            &mut binding_count,
+            &mut influential_range_count,
+        )?;
+        return validate_worst_case_index_limits(
+            derivation,
+            binding_count,
+            root_validation_read_count,
+            influential_range_count,
+        );
     }
+
+    let conditional_bindings = decisions
+        .iter()
+        .flat_map(|decision| {
+            std::iter::once(decision.binding()).chain(
+                decision
+                    .when_arms()
+                    .iter()
+                    .map(CommandDecisionArmV1::action)
+                    .chain(std::iter::once(decision.else_action()))
+                    .flat_map(CommandDecisionActionV1::bindings)
+                    .copied(),
+            )
+        })
+        .collect::<BTreeSet<_>>();
+    let deferred = decisions
+        .iter()
+        .map(CommandDecisionPlanV1::binding)
+        .collect::<BTreeSet<_>>();
+    let mut binding_count = bindings.iter().try_fold(0usize, |count, binding| {
+        if conditional_bindings.contains(&binding.id()) && !deferred.contains(&binding.id()) {
+            Ok(count)
+        } else {
+            checked_index_derivation_add(count, multiplicity(binding.id()))
+        }
+    })?;
+    let mut root_validation_read_count =
+        root_validation_reads
+            .iter()
+            .try_fold(0usize, |count, read| {
+                if conditional_bindings.contains(&read.source_binding()) {
+                    Ok(count)
+                } else {
+                    checked_index_derivation_add(count, multiplicity(read.source_binding()))
+                }
+            })?;
+    let mut influential_range_count = 0usize;
+    add_delete_validation_cost(
+        delete_checks,
+        Some(&conditional_bindings),
+        &multiplicity,
+        &mut binding_count,
+        &mut influential_range_count,
+    )?;
+
+    let mut derivation = WorstCaseIndexDerivation::default();
+    let mut affected_indexes = BTreeSet::new();
+    for decision in decisions {
+        let mut maximum = WorstCaseIndexDerivation::default();
+        let mut maximum_bindings = 0usize;
+        let mut maximum_root_reads = 0usize;
+        let mut maximum_ranges = 0usize;
+        for action in decision
+            .when_arms()
+            .iter()
+            .map(CommandDecisionArmV1::action)
+            .chain(std::iter::once(decision.else_action()))
+        {
+            let mut active = BTreeSet::new();
+            let action_instructions = if let CommandDecisionActionV1::Apply {
+                bindings: owned,
+                instructions,
+            } = action
+            {
+                active.insert(decision.binding());
+                active.extend(owned.iter().copied());
+                instructions.as_slice()
+            } else {
+                &[]
+            };
+            for binding in bindings
+                .iter()
+                .filter(|binding| active.contains(&binding.id()))
+            {
+                if binding.mode() != BindingMode::Read {
+                    let entity = schema.entity(binding.entity_type()).ok_or(
+                        IrValidationError::InvalidReference {
+                            kind: "decision cost entity",
+                        },
+                    )?;
+                    affected_indexes.extend(entity.indexes().iter().map(crate::IndexSchema::id));
+                }
+            }
+            let mut candidate = worst_case_index_derivation(
+                expressions,
+                bindings,
+                action_instructions,
+                Some(&active),
+                collection_expansion,
+                maximum_partition_key_bytes,
+                schema,
+            )?;
+            let action_index_count = affected_index_count(bindings, &active, schema)?;
+            candidate.affected_prefixes = candidate
+                .affected_prefixes
+                .checked_sub(action_index_count)
+                .ok_or(IrValidationError::SizeOverflow {
+                    kind: "decision affected-prefix arm cost",
+                })?;
+            candidate.affected_target_bytes = candidate
+                .affected_target_bytes
+                .checked_sub(checked_index_derivation_mul(
+                    action_index_count,
+                    INDEX_PREFIX_TARGET_FIXED_SEMANTIC_BYTES_V1,
+                )?)
+                .ok_or(IrValidationError::SizeOverflow {
+                    kind: "decision affected-target arm cost",
+                })?;
+            maximum = component_maximum_index_derivation(maximum, candidate);
+
+            let selected_owned = action
+                .bindings()
+                .iter()
+                .try_fold(0usize, |count, binding| {
+                    checked_index_derivation_add(count, multiplicity(*binding))
+                })?;
+            maximum_bindings = maximum_bindings.max(selected_owned);
+            let selected_root_reads =
+                root_validation_reads
+                    .iter()
+                    .try_fold(0usize, |count, read| {
+                        if active.contains(&read.source_binding()) {
+                            checked_index_derivation_add(count, multiplicity(read.source_binding()))
+                        } else {
+                            Ok(count)
+                        }
+                    })?;
+            maximum_root_reads = maximum_root_reads.max(selected_root_reads);
+            let mut selected_cascade_bindings = 0usize;
+            let mut selected_ranges = 0usize;
+            add_delete_validation_cost(
+                delete_checks,
+                Some(&active),
+                &multiplicity,
+                &mut selected_cascade_bindings,
+                &mut selected_ranges,
+            )?;
+            maximum_bindings = maximum_bindings.max(checked_index_derivation_add(
+                selected_owned,
+                selected_cascade_bindings,
+            )?);
+            maximum_ranges = maximum_ranges.max(selected_ranges);
+        }
+        derivation = add_index_derivations(derivation, maximum)?;
+        binding_count = checked_index_derivation_add(binding_count, maximum_bindings)?;
+        root_validation_read_count =
+            checked_index_derivation_add(root_validation_read_count, maximum_root_reads)?;
+        influential_range_count =
+            checked_index_derivation_add(influential_range_count, maximum_ranges)?;
+    }
+    derivation.affected_prefixes =
+        checked_index_derivation_add(derivation.affected_prefixes, affected_indexes.len())?;
+    derivation.affected_target_bytes = checked_index_derivation_add(
+        derivation.affected_target_bytes,
+        checked_index_derivation_mul(
+            affected_indexes.len(),
+            INDEX_PREFIX_TARGET_FIXED_SEMANTIC_BYTES_V1,
+        )?,
+    )?;
     validate_worst_case_index_limits(
         derivation,
         binding_count,
@@ -3786,10 +5231,127 @@ fn validate_worst_case_index_derivation(
     )
 }
 
+fn component_maximum_index_derivation(
+    left: WorstCaseIndexDerivation,
+    right: WorstCaseIndexDerivation,
+) -> WorstCaseIndexDerivation {
+    WorstCaseIndexDerivation {
+        index_entry_deltas: left.index_entry_deltas.max(right.index_entry_deltas),
+        index_entry_puts: left.index_entry_puts.max(right.index_entry_puts),
+        index_entry_v2_partition_semantic_bytes: left
+            .index_entry_v2_partition_semantic_bytes
+            .max(right.index_entry_v2_partition_semantic_bytes),
+        affected_prefixes: left.affected_prefixes.max(right.affected_prefixes),
+        affected_target_bytes: left.affected_target_bytes.max(right.affected_target_bytes),
+        unique_occupancies: left.unique_occupancies.max(right.unique_occupancies),
+        unique_occupancy_bytes: left
+            .unique_occupancy_bytes
+            .max(right.unique_occupancy_bytes),
+    }
+}
+
+fn add_index_derivations(
+    left: WorstCaseIndexDerivation,
+    right: WorstCaseIndexDerivation,
+) -> Result<WorstCaseIndexDerivation, IrValidationError> {
+    Ok(WorstCaseIndexDerivation {
+        index_entry_deltas: checked_index_derivation_add(
+            left.index_entry_deltas,
+            right.index_entry_deltas,
+        )?,
+        index_entry_puts: checked_index_derivation_add(
+            left.index_entry_puts,
+            right.index_entry_puts,
+        )?,
+        index_entry_v2_partition_semantic_bytes: checked_index_derivation_add(
+            left.index_entry_v2_partition_semantic_bytes,
+            right.index_entry_v2_partition_semantic_bytes,
+        )?,
+        affected_prefixes: checked_index_derivation_add(
+            left.affected_prefixes,
+            right.affected_prefixes,
+        )?,
+        affected_target_bytes: checked_index_derivation_add(
+            left.affected_target_bytes,
+            right.affected_target_bytes,
+        )?,
+        unique_occupancies: checked_index_derivation_add(
+            left.unique_occupancies,
+            right.unique_occupancies,
+        )?,
+        unique_occupancy_bytes: checked_index_derivation_add(
+            left.unique_occupancy_bytes,
+            right.unique_occupancy_bytes,
+        )?,
+    })
+}
+
+fn affected_index_count(
+    bindings: &[BindingPlan],
+    active: &BTreeSet<BindingId>,
+    schema: &SchemaIr,
+) -> Result<usize, IrValidationError> {
+    let mut indexes = BTreeSet::new();
+    for binding in bindings
+        .iter()
+        .filter(|binding| binding.mode() != BindingMode::Read && active.contains(&binding.id()))
+    {
+        let entity =
+            schema
+                .entity(binding.entity_type())
+                .ok_or(IrValidationError::InvalidReference {
+                    kind: "decision affected-index entity",
+                })?;
+        indexes.extend(entity.indexes().iter().map(crate::IndexSchema::id));
+    }
+    Ok(indexes.len())
+}
+
+fn add_delete_validation_cost<F>(
+    delete_checks: &[DeleteCheckPlanV1],
+    selected: Option<&BTreeSet<BindingId>>,
+    multiplicity: &F,
+    binding_count: &mut usize,
+    influential_range_count: &mut usize,
+) -> Result<(), IrValidationError>
+where
+    F: Fn(BindingId) -> usize,
+{
+    for check in delete_checks
+        .iter()
+        .filter(|check| selected.is_none_or(|bindings| bindings.contains(&check.binding())))
+    {
+        let multiplier = multiplicity(check.binding());
+        match check.mode() {
+            DeleteCheckModeV1::NoInbound => {}
+            DeleteCheckModeV1::Restrict { .. } => {
+                *influential_range_count =
+                    checked_index_derivation_add(*influential_range_count, multiplier)?;
+            }
+            DeleteCheckModeV1::Cascade { relationships } => {
+                *influential_range_count = checked_index_derivation_add(
+                    *influential_range_count,
+                    checked_index_derivation_mul(relationships.len(), multiplier)?,
+                )?;
+                let cascade_bindings =
+                    relationships.iter().try_fold(0usize, |total, relation| {
+                        checked_index_derivation_add(total, usize::from(relation.maximum()))
+                    })?;
+                *binding_count = checked_index_derivation_add(
+                    *binding_count,
+                    checked_index_derivation_mul(cascade_bindings, multiplier)?,
+                )?;
+            }
+        }
+    }
+    Ok(())
+}
+
 fn worst_case_index_derivation(
     expressions: &ExpressionArena,
     bindings: &[BindingPlan],
     instructions: &[Instruction],
+    active_bindings: Option<&BTreeSet<BindingId>>,
     collection_expansion: Option<&CollectionExpansionPlanV1>,
     maximum_partition_key_bytes: usize,
     schema: &SchemaIr,
@@ -3824,7 +5386,9 @@ fn worst_case_index_derivation(
     let mut unique_occupancy_bytes = 0usize;
 
     for (binding, assigned) in bindings.iter().zip(&assigned_fields) {
-        if binding.mode == BindingMode::Read {
+        if binding.mode == BindingMode::Read
+            || active_bindings.is_some_and(|active| !active.contains(&binding.id()))
+        {
             continue;
         }
         let entity =
@@ -3881,7 +5445,7 @@ fn worst_case_index_derivation(
                 BindingMode::Read => continue,
                 BindingMode::Create => None,
                 BindingMode::Delete => None,
-                BindingMode::InitOrMutate => index
+                BindingMode::InitOrMutate | BindingMode::ObserveOrInitialize => index
                     .fields()
                     .iter()
                     .position(|field| assigned.contains(field)),
@@ -3900,7 +5464,7 @@ fn worst_case_index_derivation(
             let entry_delta = match binding.mode {
                 BindingMode::Create | BindingMode::Delete => 1,
                 BindingMode::Mutate => 2,
-                BindingMode::InitOrMutate => {
+                BindingMode::InitOrMutate | BindingMode::ObserveOrInitialize => {
                     if earliest_changed_component.is_some() {
                         2
                     } else {
@@ -3984,7 +5548,9 @@ fn worst_case_index_derivation(
                         BindingMode::Delete => {
                             checked_index_derivation_mul(prefix_bytes, multiplier)?
                         }
-                        BindingMode::Mutate | BindingMode::InitOrMutate
+                        BindingMode::Mutate
+                        | BindingMode::InitOrMutate
+                        | BindingMode::ObserveOrInitialize
                             if earliest_changed_component
                                 .is_some_and(|earliest| position >= earliest) =>
                         {
@@ -3998,7 +5564,10 @@ fn worst_case_index_derivation(
                             )?;
                             checked_index_derivation_add(old, new)?
                         }
-                        BindingMode::Mutate | BindingMode::InitOrMutate | BindingMode::Read => {
+                        BindingMode::Mutate
+                        | BindingMode::InitOrMutate
+                        | BindingMode::ObserveOrInitialize
+                        | BindingMode::Read => {
                             checked_index_derivation_mul(prefix_bytes, multiplier)?
                         }
                     }
@@ -4011,7 +5580,9 @@ fn worst_case_index_derivation(
                     let new_prefix_is_present = binding.mode == BindingMode::Create
                         || (matches!(
                             binding.mode,
-                            BindingMode::Mutate | BindingMode::InitOrMutate
+                            BindingMode::Mutate
+                                | BindingMode::InitOrMutate
+                                | BindingMode::ObserveOrInitialize
                         ) && earliest_changed_component
                             .is_some_and(|earliest| position >= earliest));
                     if new_prefix_is_present {
@@ -4459,6 +6030,7 @@ fn validate_collection_expression_uses(
                 BindingMode::Mutate
                     | BindingMode::Create
                     | BindingMode::InitOrMutate
+                    | BindingMode::ObserveOrInitialize
                     | BindingMode::Delete
             )
         })
@@ -4561,6 +6133,7 @@ fn validate_binding_plans(
                 BindingMode::Mutate
                     | BindingMode::Create
                     | BindingMode::InitOrMutate
+                    | BindingMode::ObserveOrInitialize
                     | BindingMode::Delete
             ) && owner.id() != locality.aggregate_id)
         {
@@ -4706,6 +6279,7 @@ fn validate_root_validation_reads(
                 BindingMode::Mutate
                     | BindingMode::Create
                     | BindingMode::InitOrMutate
+                    | BindingMode::ObserveOrInitialize
                     | BindingMode::Delete
             ) && binding.entity_type != root.id()
         }) {
@@ -4762,6 +6336,7 @@ fn validate_root_validation_reads(
             BindingMode::Mutate
                 | BindingMode::Create
                 | BindingMode::InitOrMutate
+                | BindingMode::ObserveOrInitialize
                 | BindingMode::Delete
         ) || source.entity_type == root.id()
             || read.entity_type != root.id()
@@ -4872,6 +6447,7 @@ fn validate_locality(
                 BindingMode::Mutate
                     | BindingMode::Create
                     | BindingMode::InitOrMutate
+                    | BindingMode::ObserveOrInitialize
                     | BindingMode::Delete
             )
         })
@@ -5348,7 +6924,10 @@ fn validate_commit_checks(
         .filter(|binding| {
             matches!(
                 binding.mode,
-                BindingMode::Mutate | BindingMode::Create | BindingMode::InitOrMutate
+                BindingMode::Mutate
+                    | BindingMode::Create
+                    | BindingMode::InitOrMutate
+                    | BindingMode::ObserveOrInitialize
             )
         })
         .collect::<Vec<_>>();
@@ -5379,6 +6958,7 @@ fn validate_commit_checks(
                 BindingMode::Mutate
                     | BindingMode::Create
                     | BindingMode::InitOrMutate
+                    | BindingMode::ObserveOrInitialize
                     | BindingMode::Delete
             )
         }) {
@@ -5493,6 +7073,7 @@ fn validate_instruction_stream(
     outcomes: &[OutcomeSchema],
     success_outcome: OutcomeId,
     schema: &SchemaIr,
+    completion_bindings: Option<&BTreeSet<BindingId>>,
 ) -> Result<(), IrValidationError> {
     if !matches!(instructions.last(), Some(Instruction::Return(value)) if value.outcome_id == success_outcome)
     {
@@ -5511,7 +7092,7 @@ fn validate_instruction_stream(
                 .expect("validated binding entity");
             if matches!(
                 binding.mode,
-                BindingMode::Create | BindingMode::InitOrMutate
+                BindingMode::Create | BindingMode::InitOrMutate | BindingMode::ObserveOrInitialize
             ) {
                 let mut fields = entity
                     .record()
@@ -5747,7 +7328,9 @@ fn validate_instruction_stream(
                     .collect::<BTreeSet<_>>();
                 if !matches!(
                     binding_plan.mode,
-                    BindingMode::Mutate | BindingMode::InitOrMutate
+                    BindingMode::Mutate
+                        | BindingMode::InitOrMutate
+                        | BindingMode::ObserveOrInitialize
                 ) || entity.primary_key_fields().contains(state_field)
                     || !assigned.insert((*binding, *state_field))
                     || source_states.is_empty()
@@ -5901,7 +7484,9 @@ fn validate_instruction_stream(
                     .collect::<BTreeSet<_>>();
                 if !matches!(
                     binding_plan.mode,
-                    BindingMode::Mutate | BindingMode::InitOrMutate
+                    BindingMode::Mutate
+                        | BindingMode::InitOrMutate
+                        | BindingMode::ObserveOrInitialize
                 ) || owner
                     .value_type()
                     .optional_inner()
@@ -5975,8 +7560,8 @@ fn validate_instruction_stream(
     for binding in bindings.iter().filter(|binding| {
         matches!(
             binding.mode,
-            BindingMode::Create | BindingMode::InitOrMutate
-        )
+            BindingMode::Create | BindingMode::InitOrMutate | BindingMode::ObserveOrInitialize
+        ) && completion_bindings.is_none_or(|active| active.contains(&binding.id()))
     }) {
         let entity = schema
             .entity(binding.entity_type)
@@ -6050,6 +7635,7 @@ fn validate_read_dependencies(
     root_validation_reads: &[RootValidationReadPlan],
     checks: &[CommitCheckPlan],
     instructions: &[Instruction],
+    decisions: &[CommandDecisionPlanV1],
 ) -> Result<(), IrValidationError> {
     let mut fields = vec![BTreeSet::new(); bindings.len()];
     let mut complete = vec![false; bindings.len()];
@@ -6070,6 +7656,23 @@ fn validate_read_dependencies(
     for check in checks {
         include(check.predicate)?;
     }
+    for decision in decisions {
+        for arm in decision.when_arms() {
+            include(arm.predicate())?;
+        }
+        for action in decision
+            .when_arms()
+            .iter()
+            .map(CommandDecisionArmV1::action)
+            .chain(std::iter::once(decision.else_action()))
+        {
+            if let Some(outcome) = action.rejection() {
+                for field in outcome.payload().fields() {
+                    include(field.expression())?;
+                }
+            }
+        }
+    }
     for binding in bindings {
         for initialized in binding.initializer() {
             include(initialized.expression())?;
@@ -6080,7 +7683,17 @@ fn validate_read_dependencies(
             }
         }
     }
-    for instruction in instructions {
+    let decision_instructions = || {
+        decisions.iter().flat_map(|decision| {
+            decision
+                .when_arms()
+                .iter()
+                .map(CommandDecisionArmV1::action)
+                .chain(std::iter::once(decision.else_action()))
+                .flat_map(CommandDecisionActionV1::instructions)
+        })
+    };
+    for instruction in instructions.iter().chain(decision_instructions()) {
         match instruction {
             Instruction::Require {
                 predicate, reject, ..
@@ -6136,7 +7749,7 @@ fn validate_read_dependencies(
             }
         }
     }
-    for instruction in instructions {
+    for instruction in instructions.iter().chain(decision_instructions()) {
         match instruction {
             Instruction::WorkflowTransition {
                 binding,
@@ -6197,6 +7810,7 @@ fn validate_root_validation_expression_uses(
     bindings: &[BindingPlan],
     locality: &LocalityPlan,
     instructions: &[Instruction],
+    decisions: &[CommandDecisionPlanV1],
 ) -> Result<(), IrValidationError> {
     let reject = |expression: ExprId| -> Result<(), IrValidationError> {
         if arena
@@ -6230,7 +7844,32 @@ fn validate_root_validation_expression_uses(
             reject(*expression)?;
         }
     }
-    for instruction in instructions {
+    for decision in decisions {
+        for arm in decision.when_arms() {
+            reject(arm.predicate())?;
+        }
+        for action in decision
+            .when_arms()
+            .iter()
+            .map(CommandDecisionArmV1::action)
+            .chain(std::iter::once(decision.else_action()))
+        {
+            if let Some(outcome) = action.rejection() {
+                for field in outcome.payload().fields() {
+                    reject(field.expression())?;
+                }
+            }
+        }
+    }
+    let decision_instructions = decisions.iter().flat_map(|decision| {
+        decision
+            .when_arms()
+            .iter()
+            .map(CommandDecisionArmV1::action)
+            .chain(std::iter::once(decision.else_action()))
+            .flat_map(CommandDecisionActionV1::instructions)
+    });
+    for instruction in instructions.iter().chain(decision_instructions) {
         match instruction {
             Instruction::Require {
                 predicate,
@@ -6298,6 +7937,7 @@ fn validate_command_expression_reachability(
     locality: &LocalityPlan,
     checks: &[CommitCheckPlan],
     instructions: &[Instruction],
+    decisions: &[CommandDecisionPlanV1],
 ) -> Result<(), IrValidationError> {
     let mut roots = Vec::new();
     for binding in bindings {
@@ -6315,6 +7955,93 @@ fn validate_command_expression_reachability(
         roots.extend(conflict.expressions.iter().copied());
     }
     roots.extend(checks.iter().map(|check| check.predicate));
+    for decision in decisions {
+        for arm in decision.when_arms() {
+            roots.push(arm.predicate());
+        }
+        for action in decision
+            .when_arms()
+            .iter()
+            .map(CommandDecisionArmV1::action)
+            .chain(std::iter::once(decision.else_action()))
+        {
+            if let Some(outcome) = action.rejection() {
+                roots.extend(
+                    outcome
+                        .payload()
+                        .fields()
+                        .iter()
+                        .map(|field| field.expression()),
+                );
+            }
+            for instruction in action.instructions() {
+                match instruction {
+                    Instruction::Require {
+                        predicate, reject, ..
+                    } => {
+                        roots.push(*predicate);
+                        roots.extend(
+                            reject
+                                .payload()
+                                .fields()
+                                .iter()
+                                .map(|field| field.expression()),
+                        );
+                    }
+                    Instruction::SetField { value, .. } => roots.push(*value),
+                    Instruction::SetEmbedding {
+                        value,
+                        model_identity,
+                        model_version,
+                        ..
+                    } => roots.extend([*value, *model_identity, *model_version]),
+                    Instruction::WorkflowTransition {
+                        expected_revision,
+                        stale,
+                        illegal,
+                        ..
+                    } => {
+                        roots.push(*expected_revision);
+                        for outcome in [stale, illegal] {
+                            roots.extend(
+                                outcome
+                                    .payload()
+                                    .fields()
+                                    .iter()
+                                    .map(|field| field.expression()),
+                            );
+                        }
+                    }
+                    Instruction::WorkflowLease { operation, .. } => {
+                        roots.extend(operation.expressions());
+                        for outcome in operation.outcomes() {
+                            roots.extend(
+                                outcome
+                                    .payload()
+                                    .fields()
+                                    .iter()
+                                    .map(|field| field.expression()),
+                            );
+                        }
+                    }
+                    Instruction::EmitEvent(event) => roots.extend(
+                        event
+                            .payload()
+                            .fields()
+                            .iter()
+                            .map(|field| field.expression()),
+                    ),
+                    Instruction::Return(outcome) => roots.extend(
+                        outcome
+                            .payload()
+                            .fields()
+                            .iter()
+                            .map(|field| field.expression()),
+                    ),
+                }
+            }
+        }
+    }
     for instruction in instructions {
         match instruction {
             Instruction::Require {
@@ -6714,6 +8441,7 @@ pub(crate) mod tests {
             &expressions,
             &bindings,
             &instructions,
+            None,
             collection_expansion.as_ref(),
             maximum_partition_key_bytes,
             &schema,

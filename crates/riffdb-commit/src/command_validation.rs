@@ -4,7 +4,11 @@
 //! coordinator can carry one runtime attempt through admission, current-state
 //! acquisition, validation, and derived-index planning by construction.
 
-use std::{collections::BTreeMap, error::Error, fmt};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    error::Error,
+    fmt,
+};
 
 use riffdb_catalog::{
     MaterializedTransactionCurrentState, ResolvedExecutablePlan, TransactionCurrentMaterialization,
@@ -15,7 +19,7 @@ use riffdb_contract_ir::{
 };
 use riffdb_invariant::{
     CommitCheckResult, EvaluationError, ExpressionValueSource, derive_input_command_facts,
-    evaluate_commit_checks,
+    evaluate_commit_checks, evaluate_expression,
 };
 use riffdb_policy::AuthorizedCommandRowPolicyContextV1;
 use riffdb_storage_api::{
@@ -422,8 +426,8 @@ where
             let lookups = match context.relationship_lookups(
                 transition.entity_type,
                 transition.operation,
-                transition.current,
-                transition.successor,
+                transition.current.as_ref(),
+                transition.successor.as_ref(),
             ) {
                 Ok(lookups) => lookups,
                 Err(_) => return CheckedRowPolicyDecision::Denied(self.reject_row_policy()),
@@ -466,8 +470,8 @@ where
             if !context.allows_transition(
                 transition.entity_type,
                 transition.operation,
-                transition.current,
-                transition.successor,
+                transition.current.as_ref(),
+                transition.successor.as_ref(),
                 selected,
             ) {
                 return CheckedRowPolicyDecision::Denied(self.reject_row_policy());
@@ -497,16 +501,16 @@ where
     }
 }
 
-struct PolicyTransition<'a> {
+struct PolicyTransition {
     entity_type: riffdb_types::EntityTypeId,
     operation: riffdb_contract_ir::RowPolicyOperationV1,
-    current: Option<&'a CanonicalRecord>,
-    successor: Option<&'a CanonicalRecord>,
+    current: Option<CanonicalRecord>,
+    successor: Option<CanonicalRecord>,
 }
 
-fn command_policy_transitions<'a, C>(
-    command: &'a CheckedValidatedCommand<C>,
-) -> Result<Vec<PolicyTransition<'a>>, ()> {
+fn command_policy_transitions<C>(
+    command: &CheckedValidatedCommand<C>,
+) -> Result<Vec<PolicyTransition>, ()> {
     let mut transitions = Vec::new();
     for mutation in command.evaluated().mutations() {
         if !mutation_entity_is_protected(command.resolved(), mutation) {
@@ -524,6 +528,7 @@ fn command_policy_transitions<'a, C>(
             successor,
         });
     }
+    append_decision_no_effect_policy_transitions(command, &mut transitions)?;
     if !transitions.is_empty() || !is_cascade_failure(command.resolved(), command.evaluated()) {
         return Ok(transitions);
     }
@@ -562,7 +567,7 @@ fn command_policy_transitions<'a, C>(
             transitions.push(PolicyTransition {
                 entity_type: record.target().entity_type_id(),
                 operation: riffdb_contract_ir::RowPolicyOperationV1::Delete,
-                current: Some(record.fields()),
+                current: Some(record.fields().clone()),
                 successor: None,
             });
         }
@@ -575,12 +580,144 @@ fn command_policy_transitions<'a, C>(
             transitions.push(PolicyTransition {
                 entity_type: record.target().entity_type_id(),
                 operation: riffdb_contract_ir::RowPolicyOperationV1::Delete,
-                current: Some(record.fields()),
+                current: Some(record.fields().clone()),
                 successor: None,
             });
         }
     }
     Ok(transitions)
+}
+
+fn append_decision_no_effect_policy_transitions<C>(
+    command: &CheckedValidatedCommand<C>,
+    transitions: &mut Vec<PolicyTransition>,
+) -> Result<(), ()> {
+    let plan = command.resolved().plan();
+    if !plan.requires_ir_v18() {
+        return Ok(());
+    }
+    let facts = derive_input_command_facts(plan, command.attempt.normalized_input().clone())
+        .map_err(|_| ())?;
+    let mutated = command
+        .evaluated()
+        .mutations()
+        .iter()
+        .map(EntityMutation::target)
+        .collect::<std::collections::BTreeSet<_>>();
+    let elements = plan
+        .collection_expansion()
+        .map(|expansion| {
+            let Some(CanonicalValue::List(elements)) =
+                record_field(command.attempt.normalized_input(), expansion.input_field())
+            else {
+                return Err(());
+            };
+            Ok(elements)
+        })
+        .transpose()?;
+    let pending = command.attempt.commit_context().pending();
+    for ((plan_index, ordinal), observation) in facts
+        .binding_plan_indices()
+        .iter()
+        .zip(facts.binding_element_ordinals())
+        .zip(command.current().bindings())
+    {
+        let binding = plan.bindings().get(*plan_index as usize).ok_or(())?;
+        if binding.mode() != BindingMode::ObserveOrInitialize
+            || mutated.contains(observation.target())
+            || !entity_is_policy_protected(command.resolved(), binding.entity_type())
+        {
+            continue;
+        }
+        let (operation, current, successor) = match observation {
+            EntityObservation::Present(record) => (
+                riffdb_contract_ir::RowPolicyOperationV1::Update,
+                Some(record.fields().clone()),
+                Some(record.fields().clone()),
+            ),
+            EntityObservation::Absent(target) => {
+                let entity = command
+                    .resolved()
+                    .bundle()
+                    .bundle()
+                    .schema()
+                    .entity(binding.entity_type())
+                    .ok_or(())?;
+                let key_values = entity
+                    .primary_key()
+                    .decode_entity(target.key())
+                    .map_err(|_| ())?;
+                let mut fields = entity
+                    .primary_key_fields()
+                    .iter()
+                    .copied()
+                    .zip(key_values)
+                    .collect::<Vec<_>>();
+                let element = ordinal.and_then(|ordinal| {
+                    elements.and_then(|items| items.values().get(ordinal as usize))
+                });
+                let values = DecisionInitializerValues {
+                    input: command.attempt.normalized_input(),
+                    service_values: pending.service_values(),
+                    element,
+                    logical_time: pending.logical_time(),
+                };
+                for initializer in binding.initializer() {
+                    fields.push((
+                        initializer.field_id(),
+                        evaluate_expression(plan.expressions(), initializer.expression(), &values)
+                            .map_err(|_| ())?,
+                    ));
+                }
+                fields.sort_unstable_by_key(|(field, _)| *field);
+                let provisional = CanonicalRecord::new(fields).map_err(|_| ())?;
+                (
+                    riffdb_contract_ir::RowPolicyOperationV1::Create,
+                    None,
+                    Some(provisional),
+                )
+            }
+        };
+        transitions.push(PolicyTransition {
+            entity_type: binding.entity_type(),
+            operation,
+            current,
+            successor,
+        });
+    }
+    Ok(())
+}
+
+struct DecisionInitializerValues<'a> {
+    input: &'a CanonicalRecord,
+    service_values: &'a CanonicalRecord,
+    element: Option<&'a CanonicalValue>,
+    logical_time: LogicalTime,
+}
+
+impl ExpressionValueSource for DecisionInitializerValues<'_> {
+    fn input_field(&self, field: FieldId) -> Option<CanonicalValue> {
+        record_field(self.input, field).cloned()
+    }
+
+    fn service_value(&self, field: FieldId) -> Option<CanonicalValue> {
+        record_field(self.service_values, field).cloned()
+    }
+
+    fn collection_element(&self) -> Option<CanonicalValue> {
+        self.element.cloned()
+    }
+
+    fn collection_element_field(&self, field: FieldId) -> Option<CanonicalValue> {
+        let CanonicalValue::Record(record) = self.element? else {
+            return None;
+        };
+        record_field(record, field).cloned()
+    }
+
+    fn transaction_time(&self) -> Option<LogicalTime> {
+        Some(self.logical_time)
+    }
 }
 
 fn is_cascade_failure(resolved: &ResolvedExecutablePlan, evaluated: &EvaluatedCommand) -> bool {
@@ -611,13 +748,13 @@ fn entity_is_policy_protected(
         .any(|policy| policy.entity() == entity_type)
 }
 
-fn mutation_policy_rows<'a>(
-    current: &'a TransactionCurrentState,
-    mutation: &'a EntityMutation,
+fn mutation_policy_rows(
+    current: &TransactionCurrentState,
+    mutation: &EntityMutation,
 ) -> Option<(
     riffdb_contract_ir::RowPolicyOperationV1,
-    Option<&'a CanonicalRecord>,
-    Option<&'a CanonicalRecord>,
+    Option<CanonicalRecord>,
+    Option<CanonicalRecord>,
 )> {
     let current_row = current
         .bindings()
@@ -625,7 +762,7 @@ fn mutation_policy_rows<'a>(
         .chain(current.cascade_predecessors())
         .find_map(|observation| match observation {
             EntityObservation::Present(record) if record.target() == mutation.target() => {
-                Some(record.fields())
+                Some(record.fields().clone())
             }
             EntityObservation::Absent(_) | EntityObservation::Present(_) => None,
         });
@@ -633,12 +770,12 @@ fn mutation_policy_rows<'a>(
         EntityMutation::Create(post_image) => Some((
             riffdb_contract_ir::RowPolicyOperationV1::Create,
             None,
-            Some(post_image.fields()),
+            Some(post_image.fields().clone()),
         )),
         EntityMutation::Replace { post_image, .. } => Some((
             riffdb_contract_ir::RowPolicyOperationV1::Update,
             Some(current_row?),
-            Some(post_image.fields()),
+            Some(post_image.fields().clone()),
         )),
         EntityMutation::Delete { .. } => Some((
             riffdb_contract_ir::RowPolicyOperationV1::Delete,
@@ -1079,6 +1216,9 @@ where
             },
         ));
     }
+    if !attempt.sealed_decision_evaluation_is_exact() {
+        return Err(CommandValidationError::integrity());
+    }
     let pending = attempt.commit_context().pending();
     let decision = validate_transaction_current_command_parts(
         attempt.resolved_plan(),
@@ -1165,7 +1305,38 @@ pub(super) fn validate_transaction_current_command_parts(
     } else {
         vec![None]
     };
+    let facts = derive_input_command_facts(resolved.plan(), normalized_input.clone())
+        .map_err(|_| CommandValidationError::integrity())?;
     for ordinal in element_ordinals {
+        let active_bindings = facts
+            .binding_plan_indices()
+            .iter()
+            .zip(facts.binding_element_ordinals())
+            .zip(coverage.iter())
+            .filter_map(|((plan_index, element), mutation)| {
+                (*element == ordinal && mutation.is_some()).then_some(BindingId::new(*plan_index))
+            })
+            .collect::<std::collections::BTreeSet<_>>();
+        let selected_checks = resolved
+            .plan()
+            .commit_checks()
+            .iter()
+            .filter(|check| {
+                check.source_bindings().iter().all(|binding| {
+                    resolved
+                        .plan()
+                        .bindings()
+                        .get(binding.get() as usize)
+                        .is_some_and(|plan| {
+                            plan.mode() == BindingMode::Read || active_bindings.contains(binding)
+                        })
+                })
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        if selected_checks.is_empty() {
+            continue;
+        }
         let values = assemble_transaction_current_values(
             resolved,
             normalized_input,
@@ -1175,11 +1346,7 @@ pub(super) fn validate_transaction_current_command_parts(
             &coverage,
             ordinal,
         )?;
-        match evaluate_commit_checks(
-            resolved.plan().expressions(),
-            resolved.plan().commit_checks(),
-            &values,
-        ) {
+        match evaluate_commit_checks(resolved.plan().expressions(), &selected_checks, &values) {
             Ok(CommitCheckResult::Satisfied) => {}
             Ok(CommitCheckResult::Rejected { .. }) => {
                 return Ok(CheckedCommandDecision::Rejected(
@@ -1314,6 +1481,12 @@ fn validate_evaluated_output(
     validate_exact_record(schema, outcome_schema.payload(), outcome.value())?;
 
     if evaluated.mutations().is_empty() {
+        if plan.requires_ir_v18() && outcome.outcome_id() == plan.success_outcome() {
+            if !evaluated.event_intents().is_empty() || !evaluated.embedding_writes().is_empty() {
+                return Err(CommandValidationError::integrity());
+            }
+            return Ok(());
+        }
         let declared_rejection = outcome.outcome_id() != plan.success_outcome()
             && (plan.bindings().iter().any(|binding| {
                 binding
@@ -1325,6 +1498,14 @@ fn validate_evaluated_output(
                     || binding
                         .cascade_failure()
                         .is_some_and(|failure| failure.outcome_id() == outcome.outcome_id())
+            }) || plan.decisions().iter().any(|decision| {
+                decision
+                    .when_arms()
+                    .iter()
+                    .map(|arm| arm.action())
+                    .chain(std::iter::once(decision.else_action()))
+                    .filter_map(riffdb_contract_ir::CommandDecisionActionV1::rejection)
+                    .any(|candidate| candidate.outcome_id() == outcome.outcome_id())
             }) || plan
                 .instructions()
                 .iter()
@@ -1441,21 +1622,49 @@ fn validate_evaluated_output(
             | Instruction::WorkflowLease { .. }
             | Instruction::Return(_) => None,
         });
-    let mut actual_events = evaluated.event_intents().iter();
-    for expected in expected_events {
-        let actual = actual_events
-            .next()
-            .ok_or_else(CommandValidationError::integrity)?;
-        if actual.event_type_id() != expected.event_type() {
+    if plan.requires_ir_v18() {
+        let allowed = plan
+            .decisions()
+            .iter()
+            .flat_map(|decision| {
+                decision
+                    .when_arms()
+                    .iter()
+                    .map(riffdb_contract_ir::CommandDecisionArmV1::action)
+                    .chain(std::iter::once(decision.else_action()))
+                    .flat_map(riffdb_contract_ir::CommandDecisionActionV1::instructions)
+            })
+            .filter_map(|instruction| match instruction {
+                Instruction::EmitEvent(event) => Some(event.event_type()),
+                _ => None,
+            })
+            .collect::<BTreeSet<_>>();
+        for actual in evaluated.event_intents() {
+            if !allowed.contains(&actual.event_type_id()) {
+                return Err(CommandValidationError::integrity());
+            }
+            let declared = schema
+                .event(actual.event_type_id())
+                .ok_or_else(CommandValidationError::integrity)?;
+            validate_exact_record(schema, declared.payload(), actual.payload())?;
+        }
+    } else {
+        let mut actual_events = evaluated.event_intents().iter();
+        for expected in expected_events {
+            let actual = actual_events
+                .next()
+                .ok_or_else(CommandValidationError::integrity)?;
+            if actual.event_type_id() != expected.event_type() {
+                return Err(CommandValidationError::integrity());
+            }
+            let declared = schema
+                .event(expected.event_type())
+                .ok_or_else(CommandValidationError::integrity)?;
+            validate_exact_record(schema, declared.payload(), actual.payload())?;
+        }
+        if actual_events.next().is_some() {
             return Err(CommandValidationError::integrity());
         }
-        let declared = schema
-            .event(expected.event_type())
-            .ok_or_else(CommandValidationError::integrity)?;
-        validate_exact_record(schema, declared.payload(), actual.payload())?;
-    }
-    if actual_events.next().is_some() {
-        return Err(CommandValidationError::integrity());
     }
     let mut expected_embeddings = BTreeMap::<(riffdb_types::EntityTypeId, FieldId), usize>::new();
     for instruction in &instruction_ordinals {
@@ -1476,7 +1685,30 @@ fn validate_evaluated_output(
             .entry((write.target().entity_type_id(), write.vector_field()))
             .or_default() += 1;
     }
-    if actual_embeddings != expected_embeddings {
+    if plan.requires_ir_v18() {
+        let allowed = plan
+            .decisions()
+            .iter()
+            .flat_map(|decision| {
+                decision
+                    .when_arms()
+                    .iter()
+                    .map(riffdb_contract_ir::CommandDecisionArmV1::action)
+                    .chain(std::iter::once(decision.else_action()))
+                    .flat_map(riffdb_contract_ir::CommandDecisionActionV1::instructions)
+            })
+            .filter_map(|instruction| match instruction {
+                Instruction::SetEmbedding { binding, field, .. } => plan
+                    .bindings()
+                    .get(binding.get() as usize)
+                    .map(|binding| (binding.entity_type(), *field)),
+                _ => None,
+            })
+            .collect::<BTreeSet<_>>();
+        if actual_embeddings.keys().any(|key| !allowed.contains(key)) {
+            return Err(CommandValidationError::integrity());
+        }
+    } else if actual_embeddings != expected_embeddings {
         return Err(CommandValidationError::integrity());
     }
     Ok(())
@@ -1587,6 +1819,21 @@ fn prove_mutation_coverage(
         cascade_mutations.push((target, mutation_index, record));
     }
 
+    let conditional_bindings = plan
+        .decisions()
+        .iter()
+        .flat_map(|decision| {
+            std::iter::once(decision.binding()).chain(
+                decision
+                    .when_arms()
+                    .iter()
+                    .map(|arm| arm.action())
+                    .chain(std::iter::once(decision.else_action()))
+                    .flat_map(riffdb_contract_ir::CommandDecisionActionV1::bindings)
+                    .copied(),
+            )
+        })
+        .collect::<std::collections::BTreeSet<_>>();
     let mut mutable_targets = BTreeMap::<EntityTarget, BindingId>::new();
     let mut mutation_index_by_binding = vec![None; request.binding_targets().len()];
     for (slot, ((plan_index, target), observation)) in facts
@@ -1609,9 +1856,12 @@ fn prove_mutation_coverage(
         {
             return Err(CommandValidationError::integrity());
         }
-        let mutation_index = mutation_by_target
-            .remove(target)
-            .ok_or_else(CommandValidationError::integrity)?;
+        let Some(mutation_index) = mutation_by_target.remove(target) else {
+            if conditional_bindings.contains(&binding.id()) {
+                continue;
+            }
+            return Err(CommandValidationError::integrity());
+        };
         let mutation = &evaluated.mutations()[mutation_index];
         if mutation.post_image().target() != target
             || mutation.post_image().written_by_contract() != plan.contract_version()
@@ -1627,6 +1877,18 @@ fn prove_mutation_coverage(
             ) => {}
             (
                 BindingMode::InitOrMutate,
+                EntityMutation::Replace {
+                    expected_version, ..
+                },
+                EntityObservation::Present(record),
+            ) if *expected_version == record.entity_version() => {}
+            (
+                BindingMode::ObserveOrInitialize,
+                EntityMutation::Create(_),
+                EntityObservation::Absent(_),
+            ) => {}
+            (
+                BindingMode::ObserveOrInitialize,
                 EntityMutation::Replace {
                     expected_version, ..
                 },
@@ -1651,6 +1913,7 @@ fn prove_mutation_coverage(
                 BindingMode::Create
                 | BindingMode::Mutate
                 | BindingMode::InitOrMutate
+                | BindingMode::ObserveOrInitialize
                 | BindingMode::Delete,
                 _,
                 _,
@@ -1903,6 +2166,24 @@ fn assemble_transaction_current_values(
                     .post_image()
                     .fields()
             }
+            BindingMode::ObserveOrInitialize => {
+                if let Some(mutation_index) = coverage.get(slot).copied().flatten() {
+                    evaluated
+                        .mutations()
+                        .get(mutation_index)
+                        .filter(|mutation| mutation.target() == target)
+                        .ok_or_else(CommandValidationError::integrity)?
+                        .post_image()
+                        .fields()
+                } else {
+                    match observation {
+                        EntityObservation::Present(record) => record.fields(),
+                        EntityObservation::Absent(_) => {
+                            return Err(CommandValidationError::integrity());
+                        }
+                    }
+                }
+            }
         };
         let positioned = PositionedBindingRecord {
             id: binding.id(),
@@ -2099,7 +2380,10 @@ fn validate_post_image_and_project(
     match (mode, current) {
         (BindingMode::Create, EntityObservation::Absent(_)) if post_unknown.is_empty() => {}
         (BindingMode::InitOrMutate, EntityObservation::Absent(_)) if post_unknown.is_empty() => {}
+        (BindingMode::ObserveOrInitialize, EntityObservation::Absent(_))
+            if post_unknown.is_empty() => {}
         (BindingMode::InitOrMutate, EntityObservation::Present(record))
+        | (BindingMode::ObserveOrInitialize, EntityObservation::Present(record))
         | (BindingMode::Mutate, EntityObservation::Present(record)) => {
             materialize_current_entity_record(schema, entity, target, record, plan)?;
             let current_unknown = record
@@ -2123,6 +2407,7 @@ fn validate_post_image_and_project(
             | BindingMode::Create
             | BindingMode::Mutate
             | BindingMode::InitOrMutate
+            | BindingMode::ObserveOrInitialize
             | BindingMode::Delete,
             _,
         ) => {
