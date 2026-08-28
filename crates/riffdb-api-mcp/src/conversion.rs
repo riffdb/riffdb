@@ -590,6 +590,8 @@ pub enum McpFixedToolRequest {
         parameters: Map<String, Value>,
         /// Optional opaque application-query cursor.
         cursor: Option<String>,
+        /// Whether the first page is fenced at the server-observed admission head.
+        admission_head: bool,
     },
     /// `riffdb_command_run`.
     RunCommand {
@@ -908,6 +910,11 @@ pub fn decode_fixed_tool_request(
                 source: request.source,
                 parameters: request.parameters,
                 cursor: request.cursor,
+                admission_head: match request.consistency.as_deref() {
+                    None => false,
+                    Some("admission_head") => true,
+                    Some(_) => return Err(conversion("invalid query consistency")),
+                },
             })
         }
         19 => {
@@ -1695,6 +1702,7 @@ struct RawSymbolicExecute {
     source: String,
     parameters: Map<String, Value>,
     cursor: Option<String>,
+    consistency: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -2351,6 +2359,30 @@ mod tests {
         assert_eq!(partition, McpSubmittedValue::String("org-a".to_owned()));
         assert!(outdated_models);
         assert_eq!(page.limit(), 20);
+    }
+
+    #[test]
+    fn symbolic_query_consistency_is_closed_and_omission_preserves_legacy_behavior() {
+        let decode = |consistency: Option<&str>| {
+            let mut body = json!({
+                "source": "query Example { from Ticket take 1 }",
+                "parameters": {}
+            });
+            if let Some(consistency) = consistency {
+                body["consistency"] = Value::String(consistency.to_owned());
+            }
+            decode_fixed_tool_request(18, &arguments(body))
+        };
+
+        for (consistency, expected) in [(None, false), (Some("admission_head"), true)] {
+            let McpFixedToolRequest::ExecuteQuery { admission_head, .. } =
+                decode(consistency).expect("closed query consistency")
+            else {
+                panic!("wrong symbolic query request");
+            };
+            assert_eq!(admission_head, expected);
+        }
+        assert!(decode(Some("caller_selected_head")).is_err());
     }
 
     #[test]

@@ -279,7 +279,7 @@ messages
     6 invalid optional .riffdb.app.v1.ProjectedQueryInvalid oneof=outcome
     7 ready_packed optional .riffdb.app.v1.ProjectedReadyPacked oneof=outcome
     8 ready_aggregates optional .riffdb.app.v1.ProjectedReadyAggregates oneof=outcome
-  riffdb.app.v1.ExecuteQueryRequest fields=9
+  riffdb.app.v1.ExecuteQueryRequest fields=10
     1 contract optional .riffdb.app.v1.ContractSelector proto3-optional oneof=_contract
     2 source optional string oneof=query
     3 query_name optional string oneof=query
@@ -288,6 +288,7 @@ messages
     6 cursor optional string proto3-optional oneof=_cursor
     7 minimum_application_head optional uint64 proto3-optional oneof=_minimum_application_head
     8 accepted_result_encodings repeated .riffdb.app.v1.NamedResultEncoding
+    9 consistency optional .riffdb.app.v1.QueryConsistency
     100 request_id optional bytes
   riffdb.app.v1.ExecuteQueryResponse fields=8
     1 identity optional .riffdb.app.v1.QueryIdentity
@@ -2961,6 +2962,9 @@ enums
     0 PROJECTED_RESPONSE_ENCODING_UNSPECIFIED
     1 PROJECTED_RESPONSE_ENCODING_ROW
     2 PROJECTED_RESPONSE_ENCODING_PACKED
+  riffdb.app.v1.QueryConsistency values=2
+    0 QUERY_CONSISTENCY_UNSPECIFIED
+    1 QUERY_CONSISTENCY_ADMISSION_HEAD
   riffdb.app.v1.QueryModuleDeploymentOutcome values=6
     0 QUERY_MODULE_DEPLOYMENT_OUTCOME_UNSPECIFIED
     1 QUERY_MODULE_DEPLOYMENT_OUTCOME_ACTIVATED

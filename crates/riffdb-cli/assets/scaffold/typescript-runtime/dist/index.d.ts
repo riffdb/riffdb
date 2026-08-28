@@ -52,9 +52,11 @@ export interface ExactMoneyValue<Currency extends string = string> {
 export declare function exactDecimal(value: string, precision: number, scale: number): ExactDecimalValue;
 /** Constructs the exact precision-38, scale-2 value used by `money<CURRENCY>`. */
 export declare function exactMoney<const Currency extends string>(currency: Currency, value: string): ExactMoneyValue<Currency>;
+export type QueryConsistency = "admissionHead";
 export interface QueryOptions {
     readonly cursor?: string;
     readonly readAfterCommit?: bigint;
+    readonly consistency?: QueryConsistency;
 }
 interface NamedQueryRequest<P, R> {
     readonly driverOperation?: DriverOperation;

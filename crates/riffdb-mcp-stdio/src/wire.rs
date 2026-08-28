@@ -253,6 +253,7 @@ pub(crate) fn fixed_request_to_proto(
             source,
             parameters,
             cursor,
+            admission_head,
         } => {
             let mut parameters = parameters
                 .into_iter()
@@ -278,6 +279,11 @@ pub(crate) fn fixed_request_to_proto(
                     .transpose()?,
                 minimum_application_head: None,
                 accepted_result_encodings: Vec::new(),
+                consistency: if admission_head {
+                    app_v1::QueryConsistency::AdmissionHead as i32
+                } else {
+                    app_v1::QueryConsistency::Unspecified as i32
+                },
                 request_id,
             })
         }

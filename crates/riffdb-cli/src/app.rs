@@ -4350,6 +4350,7 @@ async fn query_command(
             parameters,
             cursor,
             read_after_commit,
+            consistency,
             contract,
         } => {
             let source = match read_text(&source, stdin) {
@@ -4374,6 +4375,7 @@ async fn query_command(
                 parameters,
                 cursor,
                 read_after_commit,
+                consistency,
             )
             .await
         }
@@ -4383,6 +4385,7 @@ async fn query_command(
             parameters,
             cursor,
             read_after_commit,
+            consistency,
             contract,
         } => {
             let parameters = match query_parameters(parameters.as_ref(), stdin) {
@@ -4403,6 +4406,7 @@ async fn query_command(
                 parameters,
                 cursor,
                 read_after_commit,
+                consistency,
             )
             .await
         }
@@ -4626,6 +4630,7 @@ async fn query_command(
                             cursor: None,
                             minimum_application_head: None,
                             accepted_result_encodings: Vec::new(),
+                            consistency: app_v1::QueryConsistency::Unspecified as i32,
                             request_id,
                         },
                         &metadata,
@@ -5243,6 +5248,7 @@ async fn execute_query_cli(
     parameters: serde_json::Map<String, serde_json::Value>,
     cursor: Option<String>,
     read_after_commit: Option<String>,
+    consistency: Option<crate::cli::QueryConsistency>,
 ) -> Terminal {
     let contract = match symbolic_contract_selection(contract) {
         Ok(contract) => contract,
@@ -5284,6 +5290,12 @@ async fn execute_query_cli(
                 cursor,
                 minimum_application_head,
                 accepted_result_encodings: Vec::new(),
+                consistency: match consistency {
+                    Some(crate::cli::QueryConsistency::AdmissionHead) => {
+                        app_v1::QueryConsistency::AdmissionHead as i32
+                    }
+                    None => app_v1::QueryConsistency::Unspecified as i32,
+                },
                 request_id,
             },
             metadata,
@@ -5309,6 +5321,7 @@ async fn execute_named_query_cli(
     parameters: Vec<app_v1::Parameter>,
     cursor: Option<String>,
     read_after_commit: Option<String>,
+    consistency: Option<crate::cli::QueryConsistency>,
 ) -> Terminal {
     let contract = match symbolic_contract_selection(contract) {
         Ok(contract) => contract,
@@ -5336,6 +5349,12 @@ async fn execute_named_query_cli(
                 cursor,
                 minimum_application_head,
                 accepted_result_encodings: Vec::new(),
+                consistency: match consistency {
+                    Some(crate::cli::QueryConsistency::AdmissionHead) => {
+                        app_v1::QueryConsistency::AdmissionHead as i32
+                    }
+                    None => app_v1::QueryConsistency::Unspecified as i32,
+                },
                 request_id,
             },
             metadata,

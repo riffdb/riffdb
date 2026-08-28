@@ -38,6 +38,22 @@ to a projection generation. Callers that need read-after-commit behavior pass a
 known commit sequence and wait within a bounded deadline. A projection can be
 rebuilt from authoritative history without changing command truth.
 
+## Admission-head reads
+
+When a caller needs a stronger read but does not possess a commit sequence, it
+can request `AdmissionHead`. After initial authorization, RiffDB captures the
+authoritative application head once and serves only a snapshot or provider
+epoch at or beyond that floor. A later concurrent commit is not required, so
+this is a precise fresh-through-admission guarantee rather than linearizability.
+
+The wait is bounded by the request and server freshness limits. Lag, rebuild,
+retirement, cancellation, and saturation return typed failures; RiffDB never
+falls back to a stale result. The first page stores the consistency class and
+floor in opaque server cursor state. Continuations reuse that state without
+capturing a moving head, and a non-fenced cursor cannot be upgraded in place.
+An explicit read-after-commit fence still applies, with the effective floor set
+to the maximum of all applicable fences.
+
 ## Concurrency
 
 Logical conflict capabilities reduce avoidable races but do not replace

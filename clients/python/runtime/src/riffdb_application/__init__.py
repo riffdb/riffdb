@@ -147,10 +147,15 @@ class AttemptBudget:
             raise InvalidInput("attempt budget must be a positive u32")
 
 
+class QueryConsistency(StrEnum):
+    ADMISSION_HEAD = "admission_head"
+
+
 @dataclass(frozen=True, slots=True)
 class QueryOptions:
     cursor: str | None = None
     read_after_commit: int | None = None
+    consistency: QueryConsistency | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -492,6 +497,7 @@ class SyncApplicationTransport:
         assert isinstance(options, QueryOptions)
         request["cursor"] = options.cursor
         request["read_after_commit"] = options.read_after_commit
+        request["query_consistency"] = options.consistency
         try:
             encoded = json.dumps(request, separators=(",", ":"))
             return _query_result(json.loads(self._client.execute_named_query(encoded)))
@@ -619,6 +625,7 @@ class AsyncApplicationTransport:
         assert isinstance(options, QueryOptions)
         request["cursor"] = options.cursor
         request["read_after_commit"] = options.read_after_commit
+        request["query_consistency"] = options.consistency
         try:
             encoded = json.dumps(request, separators=(",", ":"))
             return _query_result(json.loads(await self._client.execute_named_query(encoded)))
@@ -1180,6 +1187,7 @@ __all__ = [
     "OutcomeUnknown",
     "ProtocolError",
     "QueryOptions",
+    "QueryConsistency",
     "QueryResponseIdentity",
     "RiffDate",
     "RiffDbApplicationError",

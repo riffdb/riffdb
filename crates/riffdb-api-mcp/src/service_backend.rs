@@ -1432,6 +1432,7 @@ impl HostedServiceMcpBackend {
                 source,
                 parameters,
                 cursor,
+                admission_head,
             } => {
                 let parameters = parameters
                     .into_iter()
@@ -1446,6 +1447,9 @@ impl HostedServiceMcpBackend {
                     request = request.with_cursor(CursorToken::from_bytes(
                         decode_mcp_cursor(&cursor).map_err(invalid_response)?,
                     ));
+                }
+                if admission_head {
+                    request = request.with_admission_head_consistency();
                 }
                 let mut call = self.prepare_call(
                     invocation,

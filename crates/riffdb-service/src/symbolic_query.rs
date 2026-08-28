@@ -70,15 +70,97 @@ use crate::query_discovery_operations::{
 };
 use crate::wait::{ControlledWaitError, wait_with_control};
 use crate::{
-    ApplicationCatalogCursorLookup, ApplicationCatalogCursorState, ContractSelection,
-    CursorAccessError, CursorContractIdentity, CursorToken, ExactPredicateProjectionRequest,
-    ExactPredicateProjectionResult, ExactTextProjectionPortError, ExactTextProjectionRequest,
-    ExactTextProjectionResult, InternalDefect, NullableExactPredicateProjectionRequest,
+    ApplicationCatalogCursorLookup, ApplicationCatalogCursorState, AuthoritativeReadError,
+    ContractSelection, CursorAccessError, CursorContractIdentity, CursorToken,
+    ExactPredicateProjectionRequest, ExactPredicateProjectionResult, ExactTextProjectionPortError,
+    ExactTextProjectionRequest, ExactTextProjectionResult, InternalDefect,
+    NullableExactPredicateProjectionRequest, PortAdmissionError, PortDriverStopped,
     QueryCursorLookup, QueryCursorState, ReadPipelineStage, RequestContext, RiffDbService,
     RiffDbServiceInner, ServiceAuditTargetMap, ServiceFailure, ServiceFuture, ServiceResult,
     ServiceTelemetryEvent, SourceName, SubmittedEnum, SubmittedValue, VectorProjectionPortError,
     VectorProjectionRequest,
 };
+
+async fn resolve_admission_head_floor(
+    service: &RiffDbServiceInner,
+    context: &RequestContext,
+    explicit: Option<u64>,
+    consistency: Option<QueryConsistencyV1>,
+) -> Result<Option<u64>, ServiceFailure> {
+    if consistency.is_none() {
+        return Ok(explicit);
+    }
+    let permit = match wait_with_control(
+        context.control(),
+        service.providers.deadline_scheduler.as_ref(),
+        service
+            .providers
+            .authoritative
+            .reserve_application_head(context.control()),
+    )
+    .await
+    {
+        Ok(Ok(permit)) => permit,
+        Ok(Err(PortAdmissionError::Cancelled)) => return Err(ServiceFailure::Cancelled),
+        Ok(Err(PortAdmissionError::DeadlineExceeded)) => {
+            return Err(ServiceFailure::DeadlineExceeded);
+        }
+        Ok(Err(PortAdmissionError::Unavailable | PortAdmissionError::Stopped)) => {
+            return Err(PublicError::storage_unavailable().into());
+        }
+        Err(ControlledWaitError::Cancelled) => return Err(ServiceFailure::Cancelled),
+        Err(ControlledWaitError::DeadlineExceeded) => {
+            return Err(ServiceFailure::DeadlineExceeded);
+        }
+    };
+    let receipt = permit.submit(()).map_err(|error| match error {
+        PortAdmissionError::Cancelled => ServiceFailure::Cancelled,
+        PortAdmissionError::DeadlineExceeded => ServiceFailure::DeadlineExceeded,
+        PortAdmissionError::Unavailable | PortAdmissionError::Stopped => {
+            PublicError::storage_unavailable().into()
+        }
+    })?;
+    let head = match wait_with_control(
+        context.control(),
+        service.providers.deadline_scheduler.as_ref(),
+        receipt,
+    )
+    .await
+    {
+        Ok(Ok(Ok(head))) => head,
+        Ok(Ok(Err(AuthoritativeReadError::Cancelled))) => return Err(ServiceFailure::Cancelled),
+        Ok(Ok(Err(AuthoritativeReadError::DeadlineExceeded))) => {
+            return Err(ServiceFailure::DeadlineExceeded);
+        }
+        Ok(Ok(Err(AuthoritativeReadError::Unavailable))) => {
+            return Err(PublicError::storage_unavailable().into());
+        }
+        Ok(Ok(Err(
+            AuthoritativeReadError::HistoryPruned
+            | AuthoritativeReadError::Integrity
+            | AuthoritativeReadError::InvalidContinuation,
+        )))
+        | Ok(Err(PortDriverStopped)) => {
+            return Err(service.internal_failure(
+                ServiceOperationV1::ExecuteQuery,
+                InternalDefect::ProofMismatch,
+            ));
+        }
+        Err(ControlledWaitError::Cancelled) => return Err(ServiceFailure::Cancelled),
+        Err(ControlledWaitError::DeadlineExceeded) => {
+            return Err(ServiceFailure::DeadlineExceeded);
+        }
+    };
+    let captured = match head {
+        FrontierPosition::BeforeFirst => None,
+        FrontierPosition::AppliedThrough(sequence) => Some(sequence.get()),
+    };
+    Ok(match (explicit, captured) {
+        (Some(left), Some(right)) => Some(left.max(right)),
+        (Some(value), None) | (None, Some(value)) => Some(value),
+        (None, None) => None,
+    })
+}
 
 /// Stricter application-surface source ceiling.
 pub const MAX_SYMBOLIC_QUERY_SOURCE_BYTES: usize = 262_144;
@@ -88,6 +170,14 @@ pub const MAX_SYMBOLIC_QUERY_STEPS: usize = 64;
 pub const MAX_REACTIVE_MODULE_SOURCE_INPUT_BYTES: usize = 1_048_576;
 /// Maximum exact query modules admitted for one reactive compilation.
 pub const MAX_REACTIVE_QUERY_MODULE_INPUTS: usize = 32;
+
+/// One stronger server-resolved query consistency request.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum QueryConsistencyV1 {
+    /// Capture the authoritative application head after admission and require
+    /// the first-page snapshot/provider epoch to reach it.
+    AdmissionHead,
+}
 
 /// Maximum time one exact-result request waits for its background-owned provider slot.
 const EXACT_PROVIDER_READINESS_WAIT: Duration = Duration::from_millis(250);
@@ -1060,6 +1150,7 @@ pub struct NamedSymbolicQueryRequest {
     parameters: SymbolicQueryParameters,
     cursor: Option<CursorToken>,
     minimum_application_head: Option<u64>,
+    consistency: Option<QueryConsistencyV1>,
     accepts_compact_result_v1: bool,
     accepts_packed_result_v1: bool,
 }
@@ -1082,6 +1173,7 @@ impl NamedSymbolicQueryRequest {
             parameters,
             cursor: None,
             minimum_application_head: None,
+            consistency: None,
             accepts_compact_result_v1: false,
             accepts_packed_result_v1: false,
         })
@@ -1098,6 +1190,14 @@ impl NamedSymbolicQueryRequest {
     #[must_use]
     pub const fn with_minimum_application_head(mut self, minimum: u64) -> Self {
         self.minimum_application_head = Some(minimum);
+        self
+    }
+
+    /// Requires the first-page snapshot/provider epoch to reach the
+    /// authoritative application head observed after admission.
+    #[must_use]
+    pub const fn with_admission_head_consistency(mut self) -> Self {
+        self.consistency = Some(QueryConsistencyV1::AdmissionHead);
         self
     }
 
@@ -1121,6 +1221,12 @@ impl NamedSymbolicQueryRequest {
     pub const fn minimum_application_head(&self) -> Option<u64> {
         self.minimum_application_head
     }
+
+    /// Stronger server-resolved consistency class, when requested.
+    #[must_use]
+    pub const fn consistency(&self) -> Option<QueryConsistencyV1> {
+        self.consistency
+    }
 }
 
 /// One ad-hoc symbolic execution request.
@@ -1131,6 +1237,7 @@ pub struct ExecuteSymbolicQueryRequest {
     parameters: SymbolicQueryParameters,
     cursor: Option<CursorToken>,
     minimum_application_head: Option<u64>,
+    consistency: Option<QueryConsistencyV1>,
 }
 
 impl ExecuteSymbolicQueryRequest {
@@ -1147,6 +1254,7 @@ impl ExecuteSymbolicQueryRequest {
             parameters,
             cursor: None,
             minimum_application_head: None,
+            consistency: None,
         }
     }
 
@@ -1164,10 +1272,24 @@ impl ExecuteSymbolicQueryRequest {
         self
     }
 
+    /// Requires the first-page snapshot/provider epoch to reach the
+    /// authoritative application head observed after admission.
+    #[must_use]
+    pub const fn with_admission_head_consistency(mut self) -> Self {
+        self.consistency = Some(QueryConsistencyV1::AdmissionHead);
+        self
+    }
+
     /// Minimum authoritative application head required by this read.
     #[must_use]
     pub const fn minimum_application_head(&self) -> Option<u64> {
         self.minimum_application_head
+    }
+
+    /// Stronger server-resolved consistency class, when requested.
+    #[must_use]
+    pub const fn consistency(&self) -> Option<QueryConsistencyV1> {
+        self.consistency
     }
 
     /// Contract selector.
@@ -2720,6 +2842,7 @@ async fn execute_named_query(
             request.parameters,
             request.cursor,
             request.minimum_application_head,
+            request.consistency,
         )
         .await;
     }
@@ -2735,6 +2858,7 @@ async fn execute_named_query(
             request.parameters,
             request.cursor,
             request.minimum_application_head,
+            request.consistency,
         )
         .await;
     }
@@ -2772,6 +2896,7 @@ async fn execute_named_query(
             request.parameters,
             request.cursor,
             request.minimum_application_head,
+            request.consistency,
         )
         .await;
     }
@@ -2804,6 +2929,7 @@ async fn execute_named_query(
         request.parameters,
         request.cursor,
         request.minimum_application_head,
+        request.consistency,
         request.accepts_compact_result_v1,
         request.accepts_packed_result_v1,
     )
@@ -2823,6 +2949,7 @@ async fn execute_projected_vector_named_query(
     submitted: SymbolicQueryParameters,
     cursor: Option<CursorToken>,
     minimum_application_head: Option<u64>,
+    consistency: Option<QueryConsistencyV1>,
 ) -> ServiceResult<ExecuteSymbolicQueryResult> {
     const OPERATION: ServiceOperationV1 = ServiceOperationV1::ExecuteQuery;
     if cursor.is_some() || program.steps().len() != 1 {
@@ -2864,6 +2991,17 @@ async fn execute_projected_vector_named_query(
         .await?
         .into_application_query()
         .ok_or_else(|| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?;
+    let minimum_application_head = match resolve_admission_head_floor(
+        &service,
+        &context,
+        minimum_application_head,
+        consistency,
+    )
+    .await
+    {
+        Ok(floor) => floor,
+        Err(failure) => return Err(finish_failure(&service, &context, &begun, failure).await),
+    };
     let row_policy =
         resolve_authorized_query_row_policy_context(&execution_authorization, bundle.bundle())
             .map_err(|_| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?
@@ -2967,23 +3105,29 @@ async fn execute_projected_vector_named_query(
         })
         .collect::<Option<Vec<_>>>()
         .ok_or_else(|| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?;
-    let (minimum_epoch, max_lag_ms) = match source.freshness() {
-        ProjectedVectorFreshnessV1::Available => (None, None),
+    let admission_head_fenced = consistency == Some(QueryConsistencyV1::AdmissionHead);
+    let inherited_minimum_epoch = match source.freshness() {
+        ProjectedVectorFreshnessV1::Available => None,
         ProjectedVectorFreshnessV1::Causal {
             inherit_session_commit,
             ..
-        } if inherit_session_commit => match minimum_application_head {
-            Some(value) => (
-                Some(
-                    CommitSequence::new(value)
-                        .ok_or_else(|| validation_failure(ValidationCode::InvalidValue))?,
-                ),
-                None,
-            ),
-            None => (None, None),
-        },
-        ProjectedVectorFreshnessV1::Causal { .. } => (None, None),
-        ProjectedVectorFreshnessV1::Bounded { max_lag_ms } => (None, Some(max_lag_ms)),
+        } if inherit_session_commit => minimum_application_head,
+        ProjectedVectorFreshnessV1::Causal { .. } | ProjectedVectorFreshnessV1::Bounded { .. } => {
+            None
+        }
+    };
+    let minimum_epoch = admission_head_fenced
+        .then_some(minimum_application_head)
+        .flatten()
+        .or(inherited_minimum_epoch)
+        .map(|value| {
+            CommitSequence::new(value)
+                .ok_or_else(|| validation_failure(ValidationCode::InvalidValue))
+        })
+        .transpose()?;
+    let max_lag_ms = match source.freshness() {
+        ProjectedVectorFreshnessV1::Bounded { max_lag_ms } => Some(max_lag_ms),
+        ProjectedVectorFreshnessV1::Available | ProjectedVectorFreshnessV1::Causal { .. } => None,
     };
     let request = VectorProjectionRequest::new(
         source.name(),
@@ -3013,6 +3157,7 @@ async fn execute_projected_vector_named_query(
         provider.as_ref(),
         request,
         &source.freshness(),
+        admission_head_fenced,
     )
     .await
     {
@@ -3064,9 +3209,14 @@ async fn execute_vector_projection_with_freshness(
     provider: &dyn crate::VectorProjectionPort,
     request: VectorProjectionRequest,
     freshness: &ProjectedVectorFreshnessV1,
+    admission_head_fenced: bool,
 ) -> ServiceResult<crate::VectorProjectionResult> {
     const MAX_OBSERVATIONS: usize = 64;
-    let ProjectedVectorFreshnessV1::Causal { max_wait_ms, .. } = freshness else {
+    let max_wait = if admission_head_fenced {
+        EXACT_PROVIDER_READINESS_WAIT
+    } else if let ProjectedVectorFreshnessV1::Causal { max_wait_ms, .. } = freshness {
+        Duration::from_millis(u64::from(*max_wait_ms))
+    } else {
         return provider.execute(request).map_err(|error| {
             vector_projection_failure(service, ServiceOperationV1::ExecuteQuery, error)
         });
@@ -3079,8 +3229,7 @@ async fn execute_vector_projection_with_freshness(
     let Some(columnar) = service.providers.columnar.as_ref() else {
         return Err(PublicError::storage_unavailable().into());
     };
-    let wait_deadline = (Instant::now() + Duration::from_millis(u64::from(*max_wait_ms)))
-        .min(context.control().deadline());
+    let wait_deadline = (Instant::now() + max_wait).min(context.control().deadline());
     let cancellation = columnar.notifier().cancellation();
 
     for _ in 0..MAX_OBSERVATIONS {
@@ -3244,6 +3393,7 @@ async fn execute_exact_predicate_named_query(
     submitted: SymbolicQueryParameters,
     cursor: Option<CursorToken>,
     minimum_application_head: Option<u64>,
+    consistency: Option<QueryConsistencyV1>,
 ) -> ServiceResult<ExecuteSymbolicQueryResult> {
     const OPERATION: ServiceOperationV1 = ServiceOperationV1::ExecuteQuery;
     if cursor.is_some() {
@@ -3332,12 +3482,6 @@ async fn execute_exact_predicate_named_query(
         .copied()
         .find(|member| member.presence_bits() == presence_bits && member.order_ordinal() == 0)
         .ok_or_else(|| validation_failure(ValidationCode::InvalidValue))?;
-    let minimum_epoch = minimum_application_head
-        .map(|value| {
-            CommitSequence::new(value)
-                .ok_or_else(|| validation_failure(ValidationCode::InvalidValue))
-        })
-        .transpose()?;
     let operation_request = OperationRequest::execute_named_query(
         bundle.lineage().clone(),
         module_hash,
@@ -3351,6 +3495,23 @@ async fn execute_exact_predicate_named_query(
         .await?
         .into_application_query()
         .ok_or_else(|| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?;
+    let minimum_application_head = match resolve_admission_head_floor(
+        &service,
+        &context,
+        minimum_application_head,
+        consistency,
+    )
+    .await
+    {
+        Ok(floor) => floor,
+        Err(failure) => return Err(finish_failure(&service, &context, &begun, failure).await),
+    };
+    let minimum_epoch = minimum_application_head
+        .map(|value| {
+            CommitSequence::new(value)
+                .ok_or_else(|| validation_failure(ValidationCode::InvalidValue))
+        })
+        .transpose()?;
     let row_policy =
         resolve_authorized_query_row_policy_context(&execution_authorization, bundle.bundle())
             .map_err(|_| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?
@@ -3668,6 +3829,7 @@ async fn execute_exact_named_query(
     submitted: SymbolicQueryParameters,
     cursor: Option<CursorToken>,
     minimum_application_head: Option<u64>,
+    consistency: Option<QueryConsistencyV1>,
 ) -> ServiceResult<ExecuteSymbolicQueryResult> {
     const OPERATION: ServiceOperationV1 = ServiceOperationV1::ExecuteQuery;
     if cursor.is_some() {
@@ -3726,13 +3888,6 @@ async fn execute_exact_named_query(
         .plan()
         .bind_window(offset, limit)
         .map_err(|_| validation_failure(ValidationCode::InvalidValue))?;
-    let minimum_epoch = match minimum_application_head {
-        Some(value) => Some(
-            CommitSequence::new(value)
-                .ok_or_else(|| validation_failure(ValidationCode::InvalidValue))?,
-        ),
-        None => None,
-    };
     let operation_request = OperationRequest::execute_named_query(
         bundle.lineage().clone(),
         module_hash,
@@ -3747,6 +3902,23 @@ async fn execute_exact_named_query(
         .await?
         .into_application_query()
         .ok_or_else(|| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?;
+    let minimum_application_head = match resolve_admission_head_floor(
+        &service,
+        &context,
+        minimum_application_head,
+        consistency,
+    )
+    .await
+    {
+        Ok(floor) => floor,
+        Err(failure) => return Err(finish_failure(&service, &context, &begun, failure).await),
+    };
+    let minimum_epoch = minimum_application_head
+        .map(|value| {
+            CommitSequence::new(value)
+                .ok_or_else(|| validation_failure(ValidationCode::InvalidValue))
+        })
+        .transpose()?;
     // Resolve the exact current row-policy authority before provider selection.
     // The provider applies its opaque candidate-bound proof before it builds
     // count, rank, or ordinal state; public execution never post-filters.
@@ -4429,6 +4601,7 @@ async fn execute_query(
         request.parameters,
         request.cursor,
         request.minimum_application_head,
+        request.consistency,
         false,
         false,
     )
@@ -4441,6 +4614,27 @@ enum QueryAuthority {
         module_hash: QueryModuleHash,
         query_name: QueryOperationName,
     },
+}
+
+fn resume_query_consistency(
+    prior: &QueryCursorState,
+    requested_floor: Option<u64>,
+    requested_consistency: Option<QueryConsistencyV1>,
+) -> Option<(Option<u64>, bool)> {
+    if (requested_consistency == Some(QueryConsistencyV1::AdmissionHead)
+        && !prior.admission_head_fenced())
+        || requested_floor.is_some_and(|minimum| {
+            prior
+                .minimum_application_head()
+                .is_none_or(|frozen| minimum > frozen)
+        })
+    {
+        return None;
+    }
+    Some((
+        prior.minimum_application_head(),
+        prior.admission_head_fenced(),
+    ))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -4457,6 +4651,7 @@ async fn execute_compiled_query(
     submitted: SymbolicQueryParameters,
     cursor: Option<CursorToken>,
     minimum_application_head: Option<u64>,
+    consistency: Option<QueryConsistencyV1>,
     retain_compact_result: bool,
     retain_packed_result: bool,
 ) -> ServiceResult<ExecuteSymbolicQueryResult> {
@@ -4549,6 +4744,39 @@ async fn execute_compiled_query(
         .await?
         .into_application_query()
         .ok_or_else(|| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?;
+    let (minimum_application_head, admission_head_fenced) = match prior.as_deref() {
+        Some(prior) => {
+            let Some(frozen) =
+                resume_query_consistency(prior, minimum_application_head, consistency)
+            else {
+                let failure = application_validation_failure(
+                    ValidationCode::InvalidValue,
+                    ApplicationErrorCode::CursorInvalid,
+                );
+                return Err(finish_failure(&service, &context, &begun, failure).await);
+            };
+            frozen
+        }
+        None => {
+            let floor = match resolve_admission_head_floor(
+                &service,
+                &context,
+                minimum_application_head,
+                consistency,
+            )
+            .await
+            {
+                Ok(floor) => floor,
+                Err(failure) => {
+                    return Err(finish_failure(&service, &context, &begun, failure).await);
+                }
+            };
+            (
+                floor,
+                consistency == Some(QueryConsistencyV1::AdmissionHead),
+            )
+        }
+    };
     let row_policy =
         resolve_authorized_query_row_policy_context(&execution_authorization, bundle.bundle())
             .map_err(|_| service.internal_failure(OPERATION, InternalDefect::ProofMismatch))?;
@@ -4580,6 +4808,7 @@ async fn execute_compiled_query(
             let cursors = &service.cursors;
             let service = &service;
             let telemetry = service.providers.telemetry.as_ref();
+            let captured_minimum_application_head = minimum_application_head;
             async move {
                 let execute_started = Instant::now();
                 let snapshot = match execute_authorized_query_page(
@@ -4607,6 +4836,14 @@ async fn execute_compiled_query(
                         return Err(Err(execution_failure(service, OPERATION, error)));
                     }
                 };
+                if captured_minimum_application_head
+                    .is_some_and(|minimum| snapshot.application_head() < minimum)
+                {
+                    return Err(Err(application_validation_failure(
+                        ValidationCode::InvalidValue,
+                        ApplicationErrorCode::FreshnessUnsatisfied,
+                    )));
+                }
                 let continuation = match (snapshot.continuation_binding(), snapshot.continuation())
                 {
                     (Some(binding), Some(lower)) => QueryContinuation::checked(
@@ -4626,7 +4863,11 @@ async fn execute_compiled_query(
                         match cursors.register_query_unpublished(
                             &principal,
                             cursor_lookup,
-                            QueryCursorState::new(continuation),
+                            QueryCursorState::new(
+                                continuation,
+                                captured_minimum_application_head,
+                                admission_head_fenced,
+                            ),
                         ) {
                             Ok(guard) => {
                                 if guard.capacity_evicted() {
@@ -4652,10 +4893,6 @@ async fn execute_compiled_query(
         Ok(value) => value,
         Err(failure) => return Err(finish_failure(&service, &context, &begun, failure).await),
     };
-    if minimum_application_head.is_some_and(|minimum| snapshot.application_head() < minimum) {
-        let failure = PublicError::concurrency_deadline_exceeded().into();
-        return Err(finish_failure(&service, &context, &begun, failure).await);
-    }
     let authorize_post_started = Instant::now();
     // Read safe point 3, same revision-checked contract as safe point 2.
     begun.reauthorize_read(&service, &context).await?;
@@ -4764,6 +5001,50 @@ fn compile_parts(
             .collect::<Vec<_>>()
     })?;
     Ok(CompiledQuery { program, document })
+}
+
+#[cfg(test)]
+mod admission_head_cursor_tests {
+    use super::*;
+
+    fn state(floor: Option<u64>, fenced: bool) -> QueryCursorState {
+        QueryCursorState::new(
+            QueryContinuation::checked(
+                "items".to_owned(),
+                vec![1],
+                BTreeMap::from([("Item.by_id".to_owned(), 7)]),
+            )
+            .expect("bounded continuation"),
+            floor,
+            fenced,
+        )
+    }
+
+    #[test]
+    fn continuation_consistency_is_frozen_without_recapture_or_upgrade() {
+        let fenced = state(Some(42), true);
+        assert_eq!(
+            resume_query_consistency(&fenced, None, None),
+            Some((Some(42), true))
+        );
+        assert_eq!(
+            resume_query_consistency(&fenced, Some(41), Some(QueryConsistencyV1::AdmissionHead)),
+            Some((Some(42), true)),
+            "a repeated stronger option is idempotent and retains the first floor"
+        );
+        assert_eq!(
+            resume_query_consistency(&fenced, Some(43), None),
+            None,
+            "a continuation cannot raise its frozen floor"
+        );
+
+        let legacy = state(None, false);
+        assert_eq!(
+            resume_query_consistency(&legacy, None, Some(QueryConsistencyV1::AdmissionHead)),
+            None,
+            "a legacy cursor cannot be upgraded in place"
+        );
+    }
 }
 
 fn materialize_query_parameters(

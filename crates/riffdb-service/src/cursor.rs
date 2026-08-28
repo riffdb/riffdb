@@ -1598,6 +1598,8 @@ impl QueryCursorLookup {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct QueryCursorState {
     continuation: QueryContinuation,
+    minimum_application_head: Option<u64>,
+    admission_head_fenced: bool,
 }
 
 /// Caller-reconstructible protected-consumer binding.
@@ -1664,13 +1666,31 @@ impl EventConsumerProgressCursorState {
 
 impl QueryCursorState {
     #[must_use]
-    pub(crate) const fn new(continuation: QueryContinuation) -> Self {
-        Self { continuation }
+    pub(crate) const fn new(
+        continuation: QueryContinuation,
+        minimum_application_head: Option<u64>,
+        admission_head_fenced: bool,
+    ) -> Self {
+        Self {
+            continuation,
+            minimum_application_head,
+            admission_head_fenced,
+        }
     }
 
     #[must_use]
     pub(crate) const fn continuation(&self) -> &QueryContinuation {
         &self.continuation
+    }
+
+    #[must_use]
+    pub(crate) const fn minimum_application_head(&self) -> Option<u64> {
+        self.minimum_application_head
+    }
+
+    #[must_use]
+    pub(crate) const fn admission_head_fenced(&self) -> bool {
+        self.admission_head_fenced
     }
 }
 

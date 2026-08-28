@@ -1413,6 +1413,7 @@ pub struct NamedQuery {
     parameters: BTreeMap<String, ApplicationValue>,
     cursor: Option<String>,
     minimum_application_head: Option<u64>,
+    admission_head_consistency: bool,
     accept_packed_result_v1: bool,
 }
 
@@ -1444,6 +1445,7 @@ impl NamedQuery {
             parameters,
             cursor,
             minimum_application_head: None,
+            admission_head_consistency: false,
             accept_packed_result_v1: false,
         })
     }
@@ -1470,6 +1472,7 @@ impl NamedQuery {
         }
         self.cursor = options.cursor;
         self.minimum_application_head = options.read_after_commit;
+        self.admission_head_consistency = options.admission_head;
         Ok(self)
     }
 }
@@ -1479,6 +1482,7 @@ impl NamedQuery {
 pub struct QueryOptions {
     cursor: Option<String>,
     read_after_commit: Option<u64>,
+    admission_head: bool,
 }
 
 impl QueryOptions {
@@ -1488,6 +1492,7 @@ impl QueryOptions {
         Self {
             cursor: None,
             read_after_commit: None,
+            admission_head: false,
         }
     }
 
@@ -1517,6 +1522,14 @@ impl QueryOptions {
     #[must_use]
     pub const fn read_after_commit(mut self, commit_sequence: u64) -> Self {
         self.read_after_commit = Some(commit_sequence);
+        self
+    }
+
+    /// Requires a snapshot or provider epoch at least as recent as the
+    /// authoritative application head observed after server admission.
+    #[must_use]
+    pub const fn at_least_admission_head(mut self) -> Self {
+        self.admission_head = true;
         self
     }
 }
@@ -1809,6 +1822,11 @@ impl RiffDbClient {
                             app_v1::NamedResultEncoding::LegacyRecords as i32,
                             app_v1::NamedResultEncoding::CompactV1 as i32,
                         ]
+                    },
+                    consistency: if query.admission_head_consistency {
+                        app_v1::QueryConsistency::AdmissionHead as i32
+                    } else {
+                        app_v1::QueryConsistency::Unspecified as i32
                     },
                     request_id,
                 },
@@ -2456,11 +2474,13 @@ mod tests {
         .with_options(
             QueryOptions::new()
                 .after("opaque-cursor")
-                .read_after_commit(41),
+                .read_after_commit(41)
+                .at_least_admission_head(),
         )
         .expect("options");
         assert_eq!(query.cursor.as_deref(), Some("opaque-cursor"));
         assert_eq!(query.minimum_application_head, Some(41));
+        assert!(query.admission_head_consistency);
         assert!(
             NamedQuery::new(
                 ApplicationContract::Active,
@@ -2479,10 +2499,12 @@ mod tests {
     fn generated_cursor_routing_preserves_low_level_options_and_rejects_collision() {
         let routed = QueryOptions::new()
             .read_after_commit(41)
+            .at_least_admission_head()
             .with_generated_cursor(Some("generated-cursor".to_owned()))
             .expect("generated cursor");
         assert_eq!(routed.cursor.as_deref(), Some("generated-cursor"));
         assert_eq!(routed.read_after_commit, Some(41));
+        assert!(routed.admission_head);
 
         let first_page = QueryOptions::new()
             .read_after_commit(42)

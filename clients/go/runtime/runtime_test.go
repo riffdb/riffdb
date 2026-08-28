@@ -107,6 +107,19 @@ func TestPackedNegotiationRequiresCompactPredecessor(t *testing.T) {
 	}
 }
 
+func TestAdmissionHeadIsTheOnlyStrongerQueryConsistency(t *testing.T) {
+	wire, err := (Options{QueryConsistency: AdmissionHead}).wire()
+	if err != nil {
+		t.Fatalf("admission-head consistency was rejected: %v", err)
+	}
+	if wire.QueryConsistency == nil || *wire.QueryConsistency != AdmissionHead {
+		t.Fatalf("admission-head consistency was not carried: %#v", wire.QueryConsistency)
+	}
+	if _, err := (Options{QueryConsistency: QueryConsistency("stale_ok")}).wire(); err == nil {
+		t.Fatal("unknown query consistency was accepted")
+	}
+}
+
 func TestPackedCanonicalScalarDecodersRejectWrongTags(t *testing.T) {
 	value := []byte{1, 6, 0, 0, 0, 2, 'o', 'k'}
 	decoded, err := PackedString(value, 2)

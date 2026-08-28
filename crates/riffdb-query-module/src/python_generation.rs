@@ -1382,7 +1382,7 @@ fn emit_client(
                 let field = python_identifier(parameter.name());
                 (
                     format!(
-                        "        encoded_parameters = encode_record(parameters)\n        generated_cursor = parameters.{field}\n        if generated_cursor is not None:\n            if options.cursor is not None:\n                raise ValueError(\"generated cursor conflicts with query options\")\n            options = QueryOptions(cursor=generated_cursor, read_after_commit=options.read_after_commit)\n        encoded_parameters.pop({:?}, None)\n",
+                        "        encoded_parameters = encode_record(parameters)\n        generated_cursor = parameters.{field}\n        if generated_cursor is not None:\n            if options.cursor is not None:\n                raise ValueError(\"generated cursor conflicts with query options\")\n            options = QueryOptions(cursor=generated_cursor, read_after_commit=options.read_after_commit, consistency=options.consistency)\n        encoded_parameters.pop({:?}, None)\n",
                         parameter.name()
                     ),
                     "encoded_parameters".to_owned(),

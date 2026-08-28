@@ -67,6 +67,8 @@ export class CliApplicationTransport {
                 throw new Error("invalid read-after-commit fence");
             args.push("--read-after-commit", options.readAfterCommit.toString());
         }
+        if (options.consistency === "admissionHead")
+            args.push("--consistency", "admission-head");
         const envelope = await this.invoke(args, parameters, request.decodeError);
         const result = exactObject(envelope.result);
         const rawIdentity = exactObject(result.identity);
@@ -383,6 +385,7 @@ export class DriverGeneratedApplicationTransport {
         const result = await this.driver.invoke(operation, encodeDriverRecord(request.parameters, request.parameterSchema), {
             ...(options.cursor === undefined ? {} : { cursor: options.cursor }),
             ...(options.readAfterCommit === undefined ? {} : { readAfterCommit: options.readAfterCommit }),
+            ...(options.consistency === undefined ? {} : { queryConsistency: options.consistency }),
             ...(request.compactDecoder === undefined ? {} : { acceptCompactResult: true }),
             ...(request.packedDecoder === undefined ? {} : { acceptPackedResult: true }),
         });

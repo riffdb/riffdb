@@ -40,7 +40,7 @@
     {
       "kind": "python",
       "path": "fixtures/riffql/operational-access-corpus-v1/generated/python/client.py",
-      "sha256": "43ef340303f39c9c3920300d69dfc4a2ae1585aa018aa6eee5d0e7518fa9a897"
+      "sha256": "055f637ae7f23baa7bdf59c0567380fe4c3bab951337891c8aee6cde056e8c0f"
     },
     {
       "kind": "rust",
@@ -50,7 +50,7 @@
     {
       "kind": "typescript",
       "path": "fixtures/riffql/operational-access-corpus-v1/generated/typescript/client.ts",
-      "sha256": "0e3e2f1c9ecace550659f53eeda73e8773d9b1cf4dece4c034213ba41ac2d23f"
+      "sha256": "4f8cb5c7202af5662d3f5c09105702d955289cac684d85a5b36d4e27c30e4a3b"
     }
   ],
   "operational_access_operations": [
@@ -191,7 +191,7 @@
   },
   "source_lock": {
     "path": "fixtures/riffql/operational-access-corpus-v1/riffdb.application.lock.json",
-    "sha256": "42753e183a4991ecb1f89b16feed85d6931b94212948e8c90b09d7037bf42934"
+    "sha256": "927bcd0b238559079d011c6eed83f012df767c203dbe46d5512cc90052d96e4b"
   },
   "status": "development",
   "work_package": "WP-701"

@@ -1,5 +1,5 @@
 /** Exact alpha driver protocol generation. */
-export declare const DRIVER_PROTOCOL_VERSION: 3;
+export declare const DRIVER_PROTOCOL_VERSION: 4;
 /** Exact tagged value registry compiled into `riffdb-driverd`. */
 export declare const DRIVER_VALUE_REGISTRY_HASH: "8e1681ddf5e6a82e7fa646f9737128ad7e36f54f8b5846ac6e33e732125407e5";
 /** Exact structured-error registry compiled into `riffdb-driverd`. */
@@ -82,6 +82,7 @@ export interface DriverInvokeOptions {
     readonly maximumAttempts?: number;
     readonly readAfterCommit?: bigint;
     readonly cursor?: string;
+    readonly queryConsistency?: "admissionHead";
     readonly signal?: AbortSignal;
     readonly acceptCompactResult?: boolean;
     readonly acceptPackedResult?: boolean;

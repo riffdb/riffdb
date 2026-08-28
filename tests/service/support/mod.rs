@@ -549,6 +549,14 @@ impl ServiceHarness {
         self.context_with_deadline(request_seed, Instant::now() + Duration::from_secs(30))
     }
 
+    pub(crate) fn set_application_head(&self, head: Option<CommitSequence>) {
+        self.ports.set_application_head(head);
+    }
+
+    pub(crate) fn application_head_observations(&self) -> usize {
+        self.ports.application_head_observations()
+    }
+
     pub(crate) fn context_with_deadline(
         &self,
         request_seed: u8,
@@ -2599,7 +2607,10 @@ impl riffdb_service::CurrentPolicyPort for HarnessPolicy {
                 .expect("discovery-order mutex")
                 .push("policy");
         }
-        if operation == ServiceOperationV1::CreateCapability {
+        if matches!(
+            operation,
+            ServiceOperationV1::CreateCapability | ServiceOperationV1::ExecuteQuery
+        ) {
             self.capability_order
                 .lock()
                 .expect("capability-order mutex")
@@ -2742,6 +2753,8 @@ struct HarnessPortState {
     read_reservations: AtomicUsize,
     read_submissions: AtomicUsize,
     read_reservation_hook: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
+    application_head: AtomicU64,
+    application_head_observations: AtomicUsize,
     read_commit_snapshot: Mutex<Option<AuthoritativeCommitSnapshot>>,
     index_pages: Mutex<VecDeque<(Vec<AuthoritativeIndexRow>, Option<IndexEntryKey>)>>,
     index_requests: Mutex<Vec<AuthoritativeIndexRequest>>,
@@ -2821,6 +2834,8 @@ impl HarnessPorts {
                 read_reservations: AtomicUsize::new(0),
                 read_submissions: AtomicUsize::new(0),
                 read_reservation_hook: Mutex::new(None),
+                application_head: AtomicU64::new(0),
+                application_head_observations: AtomicUsize::new(0),
                 read_commit_snapshot: Mutex::new(None),
                 index_pages: Mutex::new(VecDeque::new()),
                 index_requests: Mutex::new(Vec::new()),
@@ -2883,6 +2898,18 @@ impl HarnessPorts {
             .read_reservation_hook
             .lock()
             .expect("read reservation hook mutex") = Some(hook);
+    }
+
+    fn set_application_head(&self, head: Option<CommitSequence>) {
+        self.shared
+            .application_head
+            .store(head.map_or(0, CommitSequence::get), Ordering::Release);
+    }
+
+    fn application_head_observations(&self) -> usize {
+        self.shared
+            .application_head_observations
+            .load(Ordering::Acquire)
     }
 
     fn configure_index_pages(
@@ -3303,6 +3330,10 @@ struct ReadCommitPermit {
     shared: Arc<HarnessPortState>,
 }
 
+struct ApplicationHeadPermit {
+    shared: Arc<HarnessPortState>,
+}
+
 struct SubscribeCommitPermit {
     shared: Arc<HarnessPortState>,
 }
@@ -3456,6 +3487,22 @@ fn record_operation(shared: &HarnessPortState, operation: &'static str) {
         .lock()
         .expect("operation-call mutex")
         .push(operation);
+}
+
+impl PortCapacityPermit<(), FrontierPosition, AuthoritativeReadError> for ApplicationHeadPermit {
+    fn submit(
+        self: Box<Self>,
+        (): (),
+    ) -> Result<PortReceipt<FrontierPosition, AuthoritativeReadError>, PortAdmissionError> {
+        let (sender, receipt) = port_completion_channel();
+        let head = self.shared.application_head.load(Ordering::Acquire);
+        let position = CommitSequence::new(head).map_or(
+            FrontierPosition::BeforeFirst,
+            FrontierPosition::AppliedThrough,
+        );
+        sender.complete(Ok(position));
+        Ok(receipt)
+    }
 }
 
 impl PortCapacityPermit<(), Option<ActiveCatalogSnapshot>, CatalogError> for ActiveCatalogPermit {
@@ -4095,6 +4142,26 @@ impl CatalogReadPort for HarnessPorts {
 }
 
 impl AuthoritativeReadPort for HarnessPorts {
+    fn reserve_application_head<'a>(
+        &'a self,
+        _control: &'a RequestControl,
+    ) -> PortFuture<
+        'a,
+        riffdb_service::BoxPortCapacityPermit<(), FrontierPosition, AuthoritativeReadError>,
+        PortAdmissionError,
+    > {
+        self.shared
+            .application_head_observations
+            .fetch_add(1, Ordering::AcqRel);
+        self.shared
+            .capability_order
+            .lock()
+            .expect("capability-order mutex")
+            .push("application_head");
+        let shared = Arc::clone(&self.shared);
+        Box::pin(async move { Ok(Box::new(ApplicationHeadPermit { shared }) as _) })
+    }
+
     fn reserve_read_entity<'a>(
         &'a self,
         _control: &'a RequestControl,

@@ -2432,6 +2432,69 @@ fn named_budget_request(
     .expect("named request")
 }
 
+#[test]
+fn admission_head_is_captured_after_authorization_only_for_stronger_first_pages() {
+    use riffdb_errors::ApplicationErrorCode;
+    use riffdb_service::SymbolicQueryApplication;
+    use riffdb_types::CommitSequence;
+
+    run_async(async move {
+        let (harness, module_hash) = named_query_harness(None);
+
+        let (default_context, _default_cancellation) = harness.context(0xc1);
+        harness
+            .service
+            .execute_named_symbolic_query(default_context, named_budget_request(module_hash))
+            .await
+            .expect("legacy query behavior is unchanged");
+        assert_eq!(harness.application_head_observations(), 0);
+
+        let order_start = harness.ports.capability_order().len();
+        let (fenced_context, _fenced_cancellation) = harness.context(0xc2);
+        harness
+            .service
+            .execute_named_symbolic_query(
+                fenced_context,
+                named_budget_request(module_hash).with_admission_head_consistency(),
+            )
+            .await
+            .expect("empty authoritative head is already satisfied");
+        assert_eq!(harness.application_head_observations(), 1);
+        let order = harness.ports.capability_order();
+        let invocation_order = &order[order_start..];
+        let head = invocation_order
+            .iter()
+            .position(|stage| *stage == "application_head")
+            .expect("head observation recorded");
+        let authorization = invocation_order
+            .iter()
+            .rposition(|stage| *stage == "policy")
+            .expect("initial authorization recorded");
+        assert!(
+            authorization < head,
+            "authorization must precede head capture"
+        );
+
+        harness.set_application_head(Some(CommitSequence::first()));
+        let (behind_context, _behind_cancellation) = harness.context(0xc3);
+        let failure = harness
+            .service
+            .execute_named_symbolic_query(
+                behind_context,
+                named_budget_request(module_hash).with_admission_head_consistency(),
+            )
+            .await
+            .expect_err("a lower snapshot must never be served");
+        assert_eq!(
+            failure
+                .public_error()
+                .and_then(|error| error.application_code_hint()),
+            Some(ApplicationErrorCode::FreshnessUnsatisfied)
+        );
+        assert_eq!(harness.application_head_observations(), 2);
+    });
+}
+
 /// Revoking between begin and recheck must fail the read closed.
 ///
 /// The harness never hand-sets a generation. `revoke()` applies the real

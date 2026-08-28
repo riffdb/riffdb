@@ -20,6 +20,8 @@ from riffdb_application import (
     InvalidInput,
     Money,
     ProtocolError,
+    QueryConsistency,
+    QueryOptions,
     RiffDbApplicationError,
     RiffDate,
     SyncApplicationTransport,
@@ -40,6 +42,12 @@ from riffdb_application._binding import (
     encode_record,
     encode_value,
 )
+
+
+class QueryConsistencyTests(unittest.TestCase):
+    def test_admission_head_is_one_closed_value(self) -> None:
+        options = QueryOptions(consistency=QueryConsistency.ADMISSION_HEAD)
+        self.assertEqual(options.consistency, "admission_head")
 
 
 @dataclass(frozen=True, slots=True)

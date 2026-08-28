@@ -15,8 +15,8 @@ use serde::Deserialize;
 use serde_json::{Map, Value, json};
 
 use crate::{
-    DriverDecimal, DriverMoney, DriverRequest, DriverTimestamp, DriverValue, DriverVector,
-    FrameCodec, InvokeOptions,
+    DriverDecimal, DriverMoney, DriverQueryConsistency, DriverRequest, DriverTimestamp,
+    DriverValue, DriverVector, FrameCodec, InvokeOptions,
 };
 
 const MAX_BINDING_REQUEST_BYTES: usize = 4 * 1_024 * 1_024;
@@ -217,6 +217,8 @@ struct PythonQueryRequest {
     cursor: Option<String>,
     read_after_commit: Option<u64>,
     #[serde(default)]
+    query_consistency: Option<DriverQueryConsistency>,
+    #[serde(default)]
     accept_compact_result: bool,
     #[serde(default)]
     accept_packed_result: bool,
@@ -249,6 +251,7 @@ pub fn parse_in_process_query(source: &str) -> Result<InProcessQuery, ProtocolCo
         maximum_attempts: 1,
         read_after_commit: parsed.read_after_commit,
         cursor: parsed.cursor.clone(),
+        query_consistency: parsed.query_consistency,
         accept_compact_result: parsed.accept_compact_result,
         accept_packed_result: parsed.accept_packed_result,
     };
@@ -260,6 +263,9 @@ pub fn parse_in_process_query(source: &str) -> Result<InProcessQuery, ProtocolCo
     }
     if let Some(sequence) = parsed.read_after_commit {
         query_options = query_options.read_after_commit(sequence);
+    }
+    if parsed.query_consistency == Some(DriverQueryConsistency::AdmissionHead) {
+        query_options = query_options.at_least_admission_head();
     }
     let query = NamedQuery::new(
         ApplicationContract::Exact {
@@ -304,6 +310,7 @@ pub fn parse_in_process_command(source: &str) -> Result<InProcessCommand, Protoc
         maximum_attempts: parsed.maximum_submissions,
         read_after_commit: None,
         cursor: None,
+        query_consistency: None,
         accept_compact_result: false,
         accept_packed_result: false,
     };
@@ -343,6 +350,7 @@ pub fn normalize_python_value_request(
             maximum_attempts: 1,
             read_after_commit: None,
             cursor: None,
+            query_consistency: None,
             accept_compact_result: false,
             accept_packed_result: false,
         },
@@ -566,6 +574,7 @@ fn normalize_python_fields(
             maximum_attempts: 1,
             read_after_commit: None,
             cursor: None,
+            query_consistency: None,
             accept_compact_result: false,
             accept_packed_result: false,
         },
