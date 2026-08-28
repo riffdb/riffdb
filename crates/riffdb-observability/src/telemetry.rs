@@ -992,9 +992,30 @@ impl CommitTelemetry for Observability {
                     RequiredHistogram::CommitDurationMicroseconds,
                     elapsed,
                 );
-                // Always record flush duration: production Group durability still
-                // performs a durable commit; the previous `synchronous` gate
-                // left this histogram empty under CoordinatorDurability::Group.
+                // NOT A FLUSH MEASUREMENT. This observes the *same* `elapsed`
+                // as `CommitDurationMicroseconds` above, so `flush_us` and
+                // `commit_us` are bit-for-bit identical in every
+                // `riffdb-writer-evidence-v1` line. The alias exists only so the
+                // required histogram is non-empty under
+                // `CoordinatorDurability::Group`, where the previous
+                // `synchronous` gate left it at zero.
+                //
+                // `elapsed` is the whole group-commit call: apply, frame encode,
+                // journal submission, the wait for the journal fence, and
+                // publication. Under the deferred tail the fence wait runs on
+                // the completion thread, so this value is a pipelined *latency*
+                // and is not a subset of the writer thread's `busy_us` --
+                // `commit_us` routinely exceeds per-group `busy_us`. Dividing it
+                // by a device fsync latency does not yield a flush count, and
+                // subtracting it from `busy_us` does not yield writer CPU.
+                //
+                // Real durability evidence lives elsewhere and is per-flush:
+                // `riffdb-writer-journal-stages-v1` carries the journal lane's
+                // encode/write/`sync_data` split, and
+                // `riffdb-writer-flush-census-v1` carries the flush count with
+                // the frames and commands each flush covered. The journal lane
+                // issues exactly one `fdatasync` per batch, so
+                // `COMMAND_FLUSH_COUNT` is the device flush count.
                 self.metrics.observe_required_histogram(
                     RequiredHistogram::DurableFlushDurationMicroseconds,
                     elapsed,
