@@ -214,12 +214,29 @@ fn memory_and_redb_share_one_position_preserving_policy_aware_batch_contract() {
         "crates/riffdb-storage-redb/src/query.rs",
     ] {
         let source = fs::read_to_string(root.join(path)).expect("storage query source");
-        let start = source
-            .find("    fn dependent_point_batch(")
+        // Follow a diagnostic wrapper to the implementation. `riffdb-storage-redb`
+        // wraps this method to time the storage read-view call and delegates to
+        // `dependent_point_batch_inner`; slicing to the trait method alone found
+        // only the wrapper and silently stopped checking anything. Prefer the
+        // `_inner` body when it exists so the invariants below keep applying to
+        // the code that actually batches.
+        let (start, marker) = source
+            .find("    fn dependent_point_batch_inner(")
+            .map(|index| (index, "    fn dependent_point_batch_inner("))
+            .or_else(|| {
+                source
+                    .find("    fn dependent_point_batch(")
+                    .map(|index| (index, "    fn dependent_point_batch("))
+            })
             .expect("dependent batch implementation");
-        let tail = &source[start..];
-        let end = tail.find("    fn scan(").expect("next query method");
+        let tail = &source[start + marker.len()..];
+        let end = tail.find("\n    fn ").expect("next query method");
         let body = &tail[..end];
+        assert!(
+            body.contains("RowMaterializePlan::for_step"),
+            "{path}: the sliced body does not look like the batch implementation; \
+             a rename or a new wrapper has broken this test's source slice"
+        );
         assert_eq!(
             body.matches("RowMaterializePlan::for_step").count(),
             1,
