@@ -276,6 +276,22 @@ impl KeySchema {
         decode_complete_components(key.as_bytes(), &[0x45, 0x01], owner.get(), &self.components)
     }
 
+    /// Validates a complete entity primary key without materializing its values.
+    ///
+    /// Runs exactly [`Self::decode_entity`]'s checks in the same order over the
+    /// same cursor and rejects the same keys; the decoded component values are
+    /// dropped rather than collected, so a caller that only needs the key
+    /// proved well formed does not pay for a vector it discards.
+    fn validate_entity(&self, key: &EntityKey) -> Result<(), IrValidationError> {
+        let KeyPurpose::Entity(owner) = self.purpose else {
+            return Err(IrValidationError::InvalidKey {
+                reason: "not an entity key schema",
+            });
+        };
+        complete_components::<false>(key.as_bytes(), &[0x45, 0x01], owner.get(), &self.components)
+            .map(|_| ())
+    }
+
     /// Encodes a complete logical partition key.
     pub fn encode_partition(
         &self,
@@ -364,6 +380,40 @@ impl KeySchema {
 
     /// Decodes and validates a complete local-index entry key.
     pub fn decode_index(&self, key: &IndexEntryKey) -> Result<DecodedIndexKey, IrValidationError> {
+        let (values, entity_key) = self.walk_index::<true>(key)?;
+        Ok(DecodedIndexKey { values, entity_key })
+    }
+
+    /// Validates a complete local-index entry key and returns only the owning
+    /// entity key it carries.
+    ///
+    /// Every check [`Self::decode_index`] performs is performed here, in the
+    /// same order, over the same cursor: index envelope, each leading component
+    /// against its declared schema, the nested entity-key length, trailing
+    /// bytes, the nested entity-key envelope, and that nested key's own
+    /// components against the referenced entity schema. The single difference
+    /// is that the leading component values are dropped instead of collected,
+    /// for the index scan path that reads only the entity key. Callers that
+    /// read the component values must use [`Self::decode_index`].
+    pub fn decode_index_entity_key(
+        &self,
+        key: &IndexEntryKey,
+    ) -> Result<EntityKey, IrValidationError> {
+        self.walk_index::<false>(key)
+            .map(|(_, entity_key)| entity_key)
+    }
+
+    /// The one index-key walk both public decoders run.
+    ///
+    /// `RETAIN` selects only what happens to each decoded component value: it
+    /// is collected for the caller, or dropped. Every read, bound, and
+    /// rejection is identical either way, and because `RETAIN` is a constant
+    /// the discarding walk carries no branch for it.
+    #[inline]
+    fn walk_index<const RETAIN: bool>(
+        &self,
+        key: &IndexEntryKey,
+    ) -> Result<(Vec<CanonicalValue>, EntityKey), IrValidationError> {
         let KeyPurpose::Index { index_id, .. } = self.purpose else {
             return Err(IrValidationError::InvalidKey {
                 reason: "not an index key schema",
@@ -371,9 +421,16 @@ impl KeySchema {
         };
         let mut cursor = KeyCursor::new(key.as_bytes());
         cursor.expect_prefix(&[0x49, 0x01], index_id.get())?;
-        let mut values = Vec::with_capacity(self.components.len());
+        let mut values = if RETAIN {
+            Vec::with_capacity(self.components.len())
+        } else {
+            Vec::new()
+        };
         for component in &self.components {
-            values.push(cursor.read_component(component)?);
+            let value = cursor.read_component(component)?;
+            if RETAIN {
+                values.push(value);
+            }
         }
         let length = cursor.read_u32()? as usize;
         let bytes = cursor.read(length)?.to_vec();
@@ -384,13 +441,18 @@ impl KeySchema {
             EntityKey::from_bytes(bytes).map_err(|_| IrValidationError::InvalidKey {
                 reason: "invalid nested entity key envelope",
             })?;
-        self.entity_key_schema
-            .as_ref()
-            .ok_or(IrValidationError::InvalidKey {
-                reason: "missing entity key schema",
-            })?
-            .decode_entity(&entity_key)?;
-        Ok(DecodedIndexKey { values, entity_key })
+        let entity_schema =
+            self.entity_key_schema
+                .as_ref()
+                .ok_or(IrValidationError::InvalidKey {
+                    reason: "missing entity key schema",
+                })?;
+        if RETAIN {
+            entity_schema.decode_entity(&entity_key)?;
+        } else {
+            entity_schema.validate_entity(&entity_key)?;
+        }
+        Ok((values, entity_key))
     }
 
     /// Encodes a validated component-complete transient index scan prefix.
@@ -711,11 +773,31 @@ fn decode_complete_components(
     owner: u32,
     schemas: &[KeyComponentSchema],
 ) -> Result<Vec<CanonicalValue>, IrValidationError> {
+    complete_components::<true>(bytes, prefix, owner, schemas)
+}
+
+/// The one complete-key walk, over which `RETAIN` selects only whether each
+/// decoded component value is collected or dropped. Reads, bounds, and
+/// rejections are identical either way.
+#[inline]
+fn complete_components<const RETAIN: bool>(
+    bytes: &[u8],
+    prefix: &[u8; 2],
+    owner: u32,
+    schemas: &[KeyComponentSchema],
+) -> Result<Vec<CanonicalValue>, IrValidationError> {
     let mut cursor = KeyCursor::new(bytes);
     cursor.expect_prefix(prefix, owner)?;
-    let mut result = Vec::with_capacity(schemas.len());
+    let mut result = if RETAIN {
+        Vec::with_capacity(schemas.len())
+    } else {
+        Vec::new()
+    };
     for schema in schemas {
-        result.push(cursor.read_component(schema)?);
+        let value = cursor.read_component(schema)?;
+        if RETAIN {
+            result.push(value);
+        }
     }
     if !cursor.is_empty() {
         return Err(IrValidationError::TrailingBytes);
@@ -1000,5 +1082,100 @@ mod tests {
             .expect("ordered prefix");
         assert!(key.as_bytes().starts_with(prefix.as_bytes()));
         assert_eq!(index.codec_version(), KEY_CODEC_VERSION_V2);
+    }
+
+    /// The value-free index walk accepts and rejects exactly what the
+    /// value-collecting one does, byte string for byte string.
+    #[test]
+    fn index_entity_key_walk_matches_full_decode_on_every_mutation() {
+        let entity = KeySchema::new(
+            KeyPurpose::Entity(EntityTypeId::first()),
+            vec![
+                KeyComponentSchema::new(ValueType::uuid(), vec![]).expect("component"),
+                KeyComponentSchema::new(ValueType::u64(), vec![]).expect("component"),
+            ],
+        )
+        .expect("entity");
+        let index = KeySchema::index(
+            IndexId::first(),
+            EntityTypeId::first(),
+            vec![
+                KeyComponentSchema::new(ValueType::uuid(), vec![]).expect("partition"),
+                KeyComponentSchema::new(ValueType::string(16).expect("type"), vec![])
+                    .expect("text"),
+            ],
+            entity.clone(),
+        )
+        .expect("index");
+        let entity_key = entity
+            .encode_entity(&[CanonicalValue::Uuid([3; 16]), CanonicalValue::U64(11)])
+            .expect("entity key");
+        let key = index
+            .encode_index(
+                &[
+                    CanonicalValue::Uuid([7; 16]),
+                    CanonicalValue::string("abc").expect("value"),
+                ],
+                entity_key.clone(),
+            )
+            .expect("index key");
+
+        assert_eq!(
+            index
+                .decode_index_entity_key(&key)
+                .expect("value-free walk"),
+            entity_key,
+            "value-free walk must return the same entity key"
+        );
+        assert_eq!(
+            index.decode_index(&key).expect("full decode").entity_key(),
+            &entity_key
+        );
+
+        // Every single-byte mutation, plus truncation and extension, must be
+        // classified identically by both walks. A weakened walk shows up as an
+        // accept where the full decode rejects.
+        let mut cases: Vec<Vec<u8>> = Vec::new();
+        for position in 0..key.as_bytes().len() {
+            let mut mutated = key.as_bytes().to_vec();
+            mutated[position] = mutated[position].wrapping_add(1);
+            cases.push(mutated);
+            let mut truncated = key.as_bytes().to_vec();
+            truncated.truncate(position);
+            cases.push(truncated);
+        }
+        let mut extended = key.as_bytes().to_vec();
+        extended.push(0);
+        cases.push(extended);
+        let mut disagreements = 0usize;
+        let mut rejections = 0usize;
+        for case in cases {
+            let Ok(candidate) = IndexEntryKey::from_bytes(case.clone()) else {
+                continue;
+            };
+            let full = index.decode_index(&candidate);
+            let walk = index.decode_index_entity_key(&candidate);
+            if full.is_err() {
+                rejections += 1;
+            }
+            if full.is_ok() != walk.is_ok() {
+                disagreements += 1;
+            }
+            if let (Ok(full), Ok(walk)) = (full, walk) {
+                assert_eq!(
+                    full.entity_key(),
+                    &walk,
+                    "entity keys diverged for {case:?}"
+                );
+            }
+        }
+        assert_eq!(
+            disagreements, 0,
+            "value-free walk classified a key differently"
+        );
+        assert!(
+            rejections > 0,
+            "mutation matrix produced no rejections; the comparison proves nothing"
+        );
     }
 }

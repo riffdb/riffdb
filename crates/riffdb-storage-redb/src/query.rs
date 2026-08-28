@@ -1168,10 +1168,15 @@ impl RedbQueryView<'_> {
                 partition_candidates = partition_candidates
                     .checked_add(1)
                     .ok_or_else(|| storage_error(StorageErrorKind::LimitExceeded))?;
-                let decoded_key = schema.decode_index(&decoded.0).map_err(|_| corrupt())?;
-                let target =
-                    EntityTarget::new(step.internal_entity_id(), decoded_key.entity_key().clone())
-                        .map_err(|_| corrupt())?;
+                // This scan reads the owning entity row, so the index key's
+                // leading component values are never looked at. Validating the
+                // key without materializing them keeps every rejection this
+                // path had and drops two per-row vectors plus a key copy.
+                let entity_key = schema
+                    .decode_index_entity_key(&decoded.0)
+                    .map_err(|_| corrupt())?;
+                let target = EntityTarget::new(step.internal_entity_id(), entity_key)
+                    .map_err(|_| corrupt())?;
                 if let (Some(profile), Some(started)) = (self.profile.as_mut(), entry_started) {
                     profile.stage_ns[INDEX_ENTRY_DECODE] = profile.stage_ns[INDEX_ENTRY_DECODE]
                         .saturating_add(elapsed_nanos(started));
