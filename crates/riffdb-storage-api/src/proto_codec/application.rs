@@ -28,6 +28,7 @@ use super::{
     event_id_to_proto, expected_from_proto, expected_to_proto, fixed, identity_from_proto,
     identity_to_proto, logical_time_from_proto, plan_from_proto, plan_to_proto, require,
     storage_result, structural_prefix_from_bytes, timestamp_to_proto,
+    verified_canonical_record_from_bytes,
 };
 
 pub(super) const ENTITY: &str = "riffdb.storage.v1.StoredEntityRecordV1";
@@ -132,12 +133,12 @@ pub(super) fn entity_to_proto(value: &StoredEntityRecordV1) -> wire::StoredEntit
 fn entity_from_proto(
     value: wire::StoredEntityRecordV1,
 ) -> Result<StoredEntityRecordV1, DurableCodecError> {
-    storage_result(StoredEntityRecordV1::new(
+    storage_result(StoredEntityRecordV1::from_verified_canonical_fields(
         entity_target_from_proto(require(value.target)?)?,
         EntityVersion::new(value.entity_version).ok_or_else(DurableCodecError::corrupt)?,
         ContractVersion::new(value.written_by_contract).ok_or_else(DurableCodecError::corrupt)?,
         binding_from_proto(require(value.schema_binding)?)?,
-        canonical_record_from_bytes(&value.canonical_fields)?,
+        verified_canonical_record_from_bytes(&value.canonical_fields)?,
     ))
 }
 
@@ -164,11 +165,11 @@ fn legacy_index_entry_from_proto(
 fn index_entry_from_proto(
     value: wire::StoredIndexEntryV2,
 ) -> Result<StoredIndexEntryV2, DurableCodecError> {
-    storage_result(StoredIndexEntryV2::new(
+    storage_result(StoredIndexEntryV2::from_verified_canonical_covered_values(
         IndexEntryKey::from_bytes(value.index_entry_key)
             .map_err(|_| DurableCodecError::corrupt())?,
         binding_from_proto(require(value.schema_binding)?)?,
-        canonical_record_from_bytes(&value.canonical_covered_values)?,
+        verified_canonical_record_from_bytes(&value.canonical_covered_values)?,
         PartitionKey::from_bytes(value.partition_key).map_err(|_| DurableCodecError::corrupt())?,
     ))
 }
