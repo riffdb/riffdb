@@ -109,7 +109,13 @@ fi
 
 # Trap 3: both binaries, one profile, every time. Building only one links two
 # different versions of the storage crate.
-printf 'building riffdbd and riffdb-app-baseline (profile: profiling)\n' >&2
+# Frame pointers, so `perf --call-graph fp` resolves. This cannot be set in
+# [profile.profiling] itself -- cargo's `profile-rustflags` is unstable in the
+# pinned 1.97.0 toolchain -- so it is exported here and the profile comment says
+# so. Appended rather than replacing any inherited RUSTFLAGS.
+export RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-C force-frame-pointers=yes"
+
+printf 'building riffdbd and riffdb-app-baseline (profile: profiling, frame pointers on)\n' >&2
 cargo +1.97.0 build --profile profiling -q -p riffdb-server --bin riffdbd
 (cd examples/app-baseline && cargo +1.97.0 build --profile profiling -q --bin riffdb-app-baseline)
 daemon_bin="$repo_root/target/profiling/riffdbd"

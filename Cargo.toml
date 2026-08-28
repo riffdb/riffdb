@@ -86,6 +86,11 @@ tempfile = { version = "=3.24.0", default-features = false }
 inherits = "release"
 debug = true
 strip = false
+# `-C force-frame-pointers` cannot live here: the `profile-rustflags` cargo
+# feature is unstable in the pinned 1.97.0 toolchain. `benchmarks/profile-read-path`
+# exports it via RUSTFLAGS instead, so `perf --call-graph fp` resolves. A build of
+# this profile WITHOUT that variable gives symbols but empty fp call graphs; use
+# `--call-graph dwarf` in that case.
 
 [profile.dev]
 debug = "line-tables-only"
